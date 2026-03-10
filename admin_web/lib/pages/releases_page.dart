@@ -59,8 +59,10 @@ class _ReleasesPageState extends State<ReleasesPage> {
     }
     final versionController = TextEditingController();
     final notesController = TextEditingController();
+    final minSupportedController = TextEditingController();
     String platform = _platforms.first;
     bool activate = true;
+    bool mandatory = false;
 
     final form = await showDialog<_ReleaseUploadData>(
       context: context,
@@ -94,6 +96,21 @@ class _ReleasesPageState extends State<ReleasesPage> {
                     maxLines: 4,
                     decoration:
                         const InputDecoration(labelText: 'Release notes')),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: minSupportedController,
+                  decoration: const InputDecoration(
+                    labelText: 'Min supported version',
+                    hintText: 'Optional, e.g. 1.0.5',
+                  ),
+                ),
+                CheckboxListTile(
+                  value: mandatory,
+                  onChanged: (value) =>
+                      setStateDialog(() => mandatory = value ?? false),
+                  title: const Text('Mandatory update'),
+                  contentPadding: EdgeInsets.zero,
+                ),
                 CheckboxListTile(
                   value: activate,
                   onChanged: (value) =>
@@ -114,6 +131,8 @@ class _ReleasesPageState extends State<ReleasesPage> {
                   platform: platform,
                   version: versionController.text.trim(),
                   releaseNotes: notesController.text.trim(),
+                  mandatory: mandatory,
+                  minSupportedVersion: minSupportedController.text.trim(),
                   activate: activate,
                   fileName: file.name,
                   fileBytes: bytes,
@@ -127,6 +146,7 @@ class _ReleasesPageState extends State<ReleasesPage> {
     );
     versionController.dispose();
     notesController.dispose();
+    minSupportedController.dispose();
     if (form == null) {
       return;
     }
@@ -136,6 +156,8 @@ class _ReleasesPageState extends State<ReleasesPage> {
         platform: form.platform,
         version: form.version,
         releaseNotes: form.releaseNotes,
+        mandatory: form.mandatory,
+        minSupportedVersion: form.minSupportedVersion,
         fileName: form.fileName,
         fileBytes: form.fileBytes,
         activate: form.activate,
@@ -197,8 +219,10 @@ class _ReleasesPageState extends State<ReleasesPage> {
                     ? Icons.verified
                     : Icons.inventory_2_outlined),
                 title: Text('${release.platform} ${release.version}'),
-                subtitle: Text(
-                    '${release.fileName}\n${release.publicPath}${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}'),
+                subtitle: Text('${release.fileName}\n${release.publicPath}'
+                    '${release.mandatory ? '\nMandatory update' : ''}'
+                    '${release.minSupportedVersion.isEmpty ? '' : '\nMin supported: ${release.minSupportedVersion}'}'
+                    '${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}'),
                 isThreeLine: true,
                 trailing: release.isActive
                     ? const Chip(label: Text('Active'))
@@ -219,6 +243,8 @@ class _ReleaseUploadData {
     required this.platform,
     required this.version,
     required this.releaseNotes,
+    required this.mandatory,
+    required this.minSupportedVersion,
     required this.activate,
     required this.fileName,
     required this.fileBytes,
@@ -227,6 +253,8 @@ class _ReleaseUploadData {
   final String platform;
   final String version;
   final String releaseNotes;
+  final bool mandatory;
+  final String minSupportedVersion;
   final bool activate;
   final String fileName;
   final Uint8List fileBytes;

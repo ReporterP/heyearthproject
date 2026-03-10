@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -68,14 +71,50 @@ ThemeData _buildLightTheme() {
   );
 }
 
-class HeYearthApp extends StatelessWidget {
+class HeYearthApp extends StatefulWidget {
   const HeYearthApp({super.key, required this.vpn});
   final VpnService vpn;
 
   @override
+  State<HeYearthApp> createState() => _HeYearthAppState();
+}
+
+class _HeYearthAppState extends State<HeYearthApp> {
+  late final AppState _state;
+  StreamSubscription<Uri>? _linkSubscription;
+  final AppLinks _appLinks = AppLinks();
+
+  @override
+  void initState() {
+    super.initState();
+    _state = AppState(vpn: widget.vpn)..load();
+    _bindDeepLinks();
+  }
+
+  Future<void> _bindDeepLinks() async {
+    try {
+      final initialUri = await _appLinks.getInitialLink();
+      if (initialUri != null) {
+        unawaited(_state.handleIncomingUri(initialUri));
+      }
+    } catch (_) {}
+
+    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
+      unawaited(_state.handleIncomingUri(uri));
+    });
+  }
+
+  @override
+  void dispose() {
+    _linkSubscription?.cancel();
+    _state.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => AppState(vpn: vpn)..load(),
+    return ChangeNotifierProvider.value(
+      value: _state,
       child: Consumer<AppState>(
         builder: (context, state, _) {
           return MaterialApp(
@@ -95,9 +134,15 @@ class HeYearthApp extends StatelessWidget {
               final brightness = Theme.of(context).brightness;
               SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
                 statusBarColor: Colors.transparent,
-                statusBarIconBrightness: brightness == Brightness.dark ? Brightness.light : Brightness.dark,
-                systemNavigationBarColor: brightness == Brightness.dark ? const Color(0xFF0F1419) : const Color(0xFFFAFAFA),
-                systemNavigationBarIconBrightness: brightness == Brightness.dark ? Brightness.light : Brightness.dark,
+                statusBarIconBrightness: brightness == Brightness.dark
+                    ? Brightness.light
+                    : Brightness.dark,
+                systemNavigationBarColor: brightness == Brightness.dark
+                    ? const Color(0xFF0F1419)
+                    : const Color(0xFFFAFAFA),
+                systemNavigationBarIconBrightness: brightness == Brightness.dark
+                    ? Brightness.light
+                    : Brightness.dark,
               ));
               return LayoutBuilder(
                 builder: (context, constraints) {

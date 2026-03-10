@@ -1,24 +1,18 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/rand"
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/heyearth/backend/internal/config"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/heyearth/backend/internal/pb/heyearth_v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
-
-const telegramMaxFileSize = 50 * 1024 * 1024 // 50 MB
 
 const (
 	cbGetSS           = "getss"
@@ -31,9 +25,14 @@ const (
 	cbPlatformIOS     = "plat_ios"
 	cbPlatformMacOS   = "plat_macos"
 	cbDownloadApp     = "download_app"
+	cbOpenInApp       = "open_in_app"
+	cbGetLoginCode    = "get_login_code"
+	cbProfile         = "profile"
 )
 
 const (
+	grpcBackendAddr = "127.0.0.1:50051"
+
 	instructionPhone = `🔶 *Подключение с телефона (iOS) — через Happ*
 
 • Скачай приложение *Happ*: App Store или https://www.happ.su/main/ru
@@ -50,64 +49,21 @@ const (
 
 	instructionAppAndroid = `📲 *Приложение HeYearth для Android*
 
-• Нажми кнопку «Скачать приложение» — откроется ссылка на APK.
-• Установи приложение (разреши установку из неизвестных источников при необходимости).
-• Открой HeYearth, выбери «Я новый пользователь» или «У меня уже есть ID» и введи свой ID из бота (/start → твой ID покажем).`
+• Нажми кнопку «Скачать приложение».
+• Затем выбери «Открыть в приложении» или введи код входа в приложении.
+• Если приложение уже установлено, pairing/deep-link привяжет тебя к твоему HeYearth ID.`
 
 	instructionAppWindows = `💻 *Приложение HeYearth для Windows*
 
-• Нажми кнопку «Скачать приложение» — откроется ссылка на архив.
-• Скачай zip, распакуй и запусти heyearth_vpn.exe.
-• В приложении войди по ID (его можно посмотреть в боте: /start).`
+• Нажми кнопку «Скачать приложение».
+• Установи или распакуй клиент.
+• Затем используй «Открыть в приложении» или «Получить код входа».`
 )
 
-// Клавиатура для iOS/macOS: ссылка ss:// и инструкция Happ
-func linkKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔗 Получить ссылку", cbGetSS),
-			tgbotapi.NewInlineKeyboardButtonData("🔄 Новая ссылка", cbNewSS),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
-		),
-	)
-}
-
-// Клавиатура для Android/Windows: только скачать приложение и инструкция
-func appKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📲 Скачать приложение", cbDownloadApp),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
-		),
-	)
-}
-
-// Выбор устройства при первом заходе
-func deviceChoiceKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📱 Android", cbPlatformAndroid),
-			tgbotapi.NewInlineKeyboardButtonData("💻 Windows", cbPlatformWindows),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🍎 iOS", cbPlatformIOS),
-			tgbotapi.NewInlineKeyboardButtonData("🍎 macOS", cbPlatformMacOS),
-		),
-	)
-}
-
-// Клавиатура выбора устройства для инструкции (только для iOS/macOS — типы Happ)
-func deviceKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📱 iOS", cbInstPhone),
-			tgbotapi.NewInlineKeyboardButtonData("💻 macOS / Linux", cbInstPC),
-		),
-	)
+type backendClient struct {
+	conn      *grpc.ClientConn
+	botAPI    heyearth_v1.BotApiClient
+	clientAPI heyearth_v1.ClientApiClient
 }
 
 func main() {
@@ -115,6 +71,13 @@ func main() {
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN not set")
 	}
+
+	backend, err := newBackendClient()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer backend.conn.Close()
+
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Fatal(err)
@@ -127,12 +90,13 @@ func main() {
 
 	for update := range updates {
 		if update.CallbackQuery != nil {
-			handleCallback(bot, &update)
+			handleCallback(bot, backend, &update)
 			continue
 		}
 		if update.Message == nil {
 			continue
 		}
+
 		msg := update.Message
 		userID := msg.From.ID
 		text := strings.TrimSpace(msg.Text)
@@ -142,49 +106,37 @@ func main() {
 
 		var reply string
 		var keyboard *tgbotapi.InlineKeyboardMarkup
+
 		switch {
-		case text == "/start":
-			if !isRegistered(userID) {
-				reply = "Привет! Это бот HeYearth.\n\nСначала пройди регистрацию: /register"
-			} else {
-				platform := loadPlatform(userID)
-				if platform == "" {
-					reply = "С какого устройства будешь подключаться?"
-					k := deviceChoiceKeyboard()
-					keyboard = &k
-				} else {
-					reply = firstMessageForPlatform(platform, userID)
-					k := mainKeyboardForPlatform(platform)
-					keyboard = &k
-				}
+		case text == "/start" || text == "/register":
+			profile, err := backend.ensureTelegramUser(userID, "", "ru")
+			if err != nil {
+				reply = "Не удалось загрузить профиль. Попробуй позже."
+				break
 			}
-		case text == "/register":
-			if isRegistered(userID) {
-				platform := loadPlatform(userID)
-				if platform == "" {
-					reply = "С какого устройства будешь подключаться?"
-					k := deviceChoiceKeyboard()
-					keyboard = &k
-				} else {
-					reply = firstMessageForPlatform(platform, userID)
-					k := mainKeyboardForPlatform(platform)
-					keyboard = &k
-				}
-			} else {
-				saveRegistered(userID)
-				reply = "Регистрация прошла успешно.\n\nС какого устройства будешь подключаться?"
+			if strings.TrimSpace(profile.GetPreferredPlatform()) == "" {
+				reply = "С какого устройства будешь подключаться?"
 				k := deviceChoiceKeyboard()
+				keyboard = &k
+			} else {
+				reply = firstMessageForProfile(profile)
+				k := mainKeyboardForPlatform(profile.GetPreferredPlatform())
 				keyboard = &k
 			}
 		case text == "/instruction":
-			platform := loadPlatform(userID)
+			profile, err := backend.ensureTelegramUser(userID, "", "ru")
+			if err != nil {
+				reply = "Не удалось загрузить профиль. Попробуй позже."
+				break
+			}
+			platform := strings.TrimSpace(profile.GetPreferredPlatform())
 			if platform == "" {
 				reply = "С какого устройства подключаешься?"
 				k := deviceChoiceKeyboard()
 				keyboard = &k
 			} else if platform == "android" || platform == "windows" {
 				reply = instructionForApp(platform)
-				k := appKeyboard()
+				k := mainKeyboardForPlatform(platform)
 				keyboard = &k
 			} else {
 				reply = "С какого устройства подключаешься?"
@@ -192,71 +144,109 @@ func main() {
 				keyboard = &k
 			}
 		case text == "/getss":
-			if loadPlatform(userID) != "ios" && loadPlatform(userID) != "macos" {
-				reply = "Команда для получения ss:// ссылки — только для пользователей iOS/macOS (Happ). Используй кнопку «Скачать приложение» для Android/Windows."
-			} else {
-				reply = handleGetSS(userID, false)
-				if strings.Contains(reply, "ss://") {
-					k := linkKeyboard()
-					keyboard = &k
-				}
-			}
+			reply, keyboard = handleLegacyConfigCommand(backend, userID, false)
 		case text == "/newss":
-			if loadPlatform(userID) != "ios" && loadPlatform(userID) != "macos" {
-				reply = "Команда для новой ss:// ссылки — только для iOS/macOS. Для Android/Windows используй «Скачать приложение»."
-			} else {
-				reply = handleGetSS(userID, true)
-				if strings.Contains(reply, "ss://") {
-					k := linkKeyboard()
-					keyboard = &k
-				}
+			reply, keyboard = handleLegacyConfigCommand(backend, userID, true)
+		case text == "/profile":
+			profile, err := backend.ensureTelegramUser(userID, "", "ru")
+			if err != nil {
+				reply = "Не удалось загрузить профиль. Попробуй позже."
+				break
 			}
+			reply = profileSummary(profile)
+			k := mainKeyboardForPlatform(profile.GetPreferredPlatform())
+			keyboard = &k
+		case strings.HasPrefix(text, "/promo "):
+			code := strings.TrimSpace(strings.TrimPrefix(text, "/promo"))
+			profile, err := backend.ensureTelegramUser(userID, "", "ru")
+			if err != nil {
+				reply = "Не удалось загрузить профиль. Попробуй позже."
+				break
+			}
+			ctx, cancel := contextWithTimeout()
+			resp, err := backend.clientAPI.ApplyPromocode(ctx, &heyearth_v1.ApplyPromocodeRequest{
+				UserId: profile.GetUserId(),
+				Code:   code,
+			})
+			cancel()
+			if err != nil {
+				reply = "Не удалось применить промокод: " + err.Error()
+			} else {
+				reply = resp.GetMessage()
+			}
+			k := mainKeyboardForPlatform(profile.GetPreferredPlatform())
+			keyboard = &k
 		case text == "/help":
-			reply = "Команды: /start — начало, /register — регистрация. После выбора устройства (Android, Windows, iOS или macOS) появятся нужные кнопки."
+			reply = "Команды: /start, /instruction, /profile, /promo CODE. Основной вход в приложение теперь идёт через pairing из бота."
 		default:
 			continue
 		}
+
 		sendMsg(bot, msg.Chat.ID, reply, keyboard)
 	}
 }
 
-func mainKeyboardForPlatform(platform string) tgbotapi.InlineKeyboardMarkup {
-	if platform == "android" || platform == "windows" {
-		return appKeyboard()
+func newBackendClient() (*backendClient, error) {
+	conn, err := grpc.Dial(grpcBackendAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("dial backend grpc: %w", err)
 	}
-	return linkKeyboard()
+	return &backendClient{
+		conn:      conn,
+		botAPI:    heyearth_v1.NewBotApiClient(conn),
+		clientAPI: heyearth_v1.NewClientApiClient(conn),
+	}, nil
 }
 
-func firstMessageForPlatform(platform string, userID int64) string {
-	canonicalUserID := getOrCreateCanonicalUserID(userID)
-	switch platform {
-	case "android":
-		urls := getLatestAppURLs()
-		if urls.Android != "" {
-			return fmt.Sprintf("📲 *Скачай приложение HeYearth для Android*\n\nТвой HeYearth ID:\n`%s`\n\nСсылка на APK:\n%s\n\nУстанови приложение и выбери вход по существующему ID.", canonicalUserID, urls.Android)
-		}
-		return fmt.Sprintf("📲 Приложение HeYearth для Android.\n\nТвой HeYearth ID:\n`%s`\n\nНажми «Скачать приложение» — ссылка появится, когда на сервере будет выложена сборка.", canonicalUserID)
-	case "windows":
-		urls := getLatestAppURLs()
-		if urls.Windows != "" {
-			return fmt.Sprintf("💻 *Скачай приложение HeYearth для Windows*\n\nТвой HeYearth ID:\n`%s`\n\nСсылка на архив:\n%s\n\nРаспакуй и запусти приложение. Войди по существующему ID.", canonicalUserID, urls.Windows)
-		}
-		return fmt.Sprintf("💻 Приложение HeYearth для Windows.\n\nТвой HeYearth ID:\n`%s`\n\nНажми «Скачать приложение», когда на сервере будет выложена сборка.", canonicalUserID)
-	case "ios", "macos":
-		return fmt.Sprintf("Твой HeYearth ID:\n`%s`\n\nВыбери действие: получить ссылку ss:// для Happ или прочитать инструкцию.", canonicalUserID)
-	default:
-		return fmt.Sprintf("Твой HeYearth ID:\n`%s`\n\nВыбери действие ниже.", canonicalUserID)
-	}
+func contextWithTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
-func instructionForApp(platform string) string {
-	if platform == "android" {
-		return instructionAppAndroid
-	}
-	return instructionAppWindows
+func (b *backendClient) ensureTelegramUser(telegramID int64, preferredPlatform, locale string) (*heyearth_v1.UserProfileResponse, error) {
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	return b.botAPI.EnsureTelegramUser(ctx, &heyearth_v1.EnsureTelegramUserRequest{
+		TelegramId:        telegramID,
+		PreferredPlatform: preferredPlatform,
+		Locale:            locale,
+	})
 }
 
-func handleCallback(bot *tgbotapi.BotAPI, update *tgbotapi.Update) {
+func (b *backendClient) setPreferredPlatform(telegramID int64, preferredPlatform string) (*heyearth_v1.UserProfileResponse, error) {
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	return b.botAPI.SetPreferredPlatform(ctx, &heyearth_v1.SetPreferredPlatformRequest{
+		TelegramId:        telegramID,
+		PreferredPlatform: preferredPlatform,
+	})
+}
+
+func (b *backendClient) createPairingCode(telegramID int64, preferredPlatform string) (*heyearth_v1.CreatePairingCodeResponse, error) {
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	return b.botAPI.CreatePairingCode(ctx, &heyearth_v1.CreatePairingCodeRequest{
+		TelegramId:        telegramID,
+		PreferredPlatform: preferredPlatform,
+		Locale:            "ru",
+	})
+}
+
+func (b *backendClient) getDistribution(platform string) (*heyearth_v1.GetClientDistributionResponse, error) {
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	return b.botAPI.GetClientDistribution(ctx, &heyearth_v1.GetClientDistributionRequest{Platform: platform})
+}
+
+func (b *backendClient) issueLegacyAppleConfig(telegramID int64, forceNew bool) (*heyearth_v1.ConnectionBundleResponse, error) {
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	return b.botAPI.IssueLegacyAppleConfig(ctx, &heyearth_v1.IssueLegacyAppleConfigRequest{
+		TelegramId: telegramID,
+		ForceNew:   forceNew,
+	})
+}
+
+func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbotapi.Update) {
 	cb := update.CallbackQuery
 	if cb == nil || cb.Message == nil {
 		return
@@ -271,67 +261,105 @@ func handleCallback(bot *tgbotapi.BotAPI, update *tgbotapi.Update) {
 
 	var reply string
 	var keyboard tgbotapi.InlineKeyboardMarkup
+
 	switch cb.Data {
 	case cbPlatformAndroid:
-		savePlatform(userID, "android")
-		reply = firstMessageForPlatform("android", userID)
-		keyboard = appKeyboard()
+		profile, err := backend.setPreferredPlatform(userID, "android")
+		if err != nil {
+			reply = "Не удалось сохранить платформу. Попробуй позже."
+			break
+		}
+		reply = firstMessageForProfile(profile)
+		keyboard = mainKeyboardForPlatform("android")
 	case cbPlatformWindows:
-		savePlatform(userID, "windows")
-		reply = firstMessageForPlatform("windows", userID)
-		keyboard = appKeyboard()
+		profile, err := backend.setPreferredPlatform(userID, "windows")
+		if err != nil {
+			reply = "Не удалось сохранить платформу. Попробуй позже."
+			break
+		}
+		reply = firstMessageForProfile(profile)
+		keyboard = mainKeyboardForPlatform("windows")
 	case cbPlatformIOS:
-		savePlatform(userID, "ios")
-		reply = "Для iOS подключайся через Happ. Нажми «Получить ссылку» и вставь её в приложение Happ."
-		keyboard = linkKeyboard()
+		profile, err := backend.setPreferredPlatform(userID, "ios")
+		if err != nil {
+			reply = "Не удалось сохранить платформу. Попробуй позже."
+			break
+		}
+		reply = firstMessageForProfile(profile)
+		keyboard = mainKeyboardForPlatform("ios")
 	case cbPlatformMacOS:
-		savePlatform(userID, "macos")
-		reply = "Для macOS подключайся через Happ. Нажми «Получить ссылку» и вставь в Happ."
-		keyboard = linkKeyboard()
+		profile, err := backend.setPreferredPlatform(userID, "macos")
+		if err != nil {
+			reply = "Не удалось сохранить платформу. Попробуй позже."
+			break
+		}
+		reply = firstMessageForProfile(profile)
+		keyboard = mainKeyboardForPlatform("macos")
 	case cbGetSS:
-		reply = handleGetSS(userID, false)
-		keyboard = linkKeyboard()
+		replyText, k := handleLegacyConfigCommand(backend, userID, false)
+		reply = replyText
+		if k != nil {
+			keyboard = *k
+		}
 	case cbNewSS:
-		reply = handleGetSS(userID, true)
-		keyboard = linkKeyboard()
+		replyText, k := handleLegacyConfigCommand(backend, userID, true)
+		reply = replyText
+		if k != nil {
+			keyboard = *k
+		}
 	case cbInstruction:
-		platform := loadPlatform(userID)
+		profile, err := backend.ensureTelegramUser(userID, "", "ru")
+		if err != nil {
+			reply = "Не удалось загрузить профиль. Попробуй позже."
+			break
+		}
+		platform := strings.TrimSpace(profile.GetPreferredPlatform())
 		if platform == "android" || platform == "windows" {
 			reply = instructionForApp(platform)
-			keyboard = appKeyboard()
+			keyboard = mainKeyboardForPlatform(platform)
 		} else {
 			reply = "С какого устройства подключаешься?"
 			keyboard = deviceKeyboard()
 		}
 	case cbInstPhone:
 		reply = instructionPhone
-		keyboard = linkKeyboard()
+		keyboard = mainKeyboardForPlatform("ios")
 	case cbInstPC:
 		reply = instructionPC
-		keyboard = linkKeyboard()
+		keyboard = mainKeyboardForPlatform("macos")
 	case cbDownloadApp:
-		platform := loadPlatform(userID)
-		urls := getLatestAppURLs()
-		if platform == "android" || platform == "windows" {
-			if sendAppFile(bot, chatID, platform, urls.Version) {
-				reply = "📲 Файл приложения отправлен выше 👆"
-				if platform == "windows" {
-					reply = "💻 Файл приложения отправлен выше 👆"
-				}
-			} else if platform == "android" && urls.Android != "" {
-				reply = "📲 Скачать HeYearth для Android:\n" + urls.Android
-			} else if platform == "windows" && urls.Windows != "" {
-				reply = "💻 Скачать HeYearth для Windows:\n" + urls.Windows
-			} else {
-				reply = "Ссылка на приложение пока не подготовлена. Попробуй позже или напиши в поддержку."
-			}
-		} else {
-			reply = "Кнопка «Скачать приложение» для Android/Windows. Ты выбрал iOS/macOS — используй «Получить ссылку» для Happ."
+		profile, err := backend.ensureTelegramUser(userID, "", "ru")
+		if err != nil {
+			reply = "Не удалось загрузить профиль. Попробуй позже."
+			break
 		}
-		keyboard = mainKeyboardForPlatform(platform)
+		reply = downloadMessageForProfile(backend, profile)
+		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
+	case cbOpenInApp, cbGetLoginCode:
+		profile, err := backend.ensureTelegramUser(userID, "", "ru")
+		if err != nil {
+			reply = "Не удалось загрузить профиль. Попробуй позже."
+			break
+		}
+		pairing, err := backend.createPairingCode(userID, profile.GetPreferredPlatform())
+		if err != nil {
+			reply = "Не удалось подготовить вход в приложение. Попробуй позже."
+			break
+		}
+		reply = pairingMessage(pairing)
+		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
+	case cbProfile:
+		profile, err := backend.ensureTelegramUser(userID, "", "ru")
+		if err != nil {
+			reply = "Не удалось загрузить профиль. Попробуй позже."
+			break
+		}
+		reply = profileSummary(profile)
+		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
 	default:
 		return
 	}
+
 	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, reply, keyboard)
 	edit.ParseMode = "Markdown"
 	if _, err := bot.Send(edit); err != nil {
@@ -351,248 +379,173 @@ func sendMsg(bot *tgbotapi.BotAPI, chatID int64, text string, keyboard *tgbotapi
 	}
 }
 
-func isRegistered(userID int64) bool {
-	f, err := os.Open(config.DataFile())
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	idStr := strconv.FormatInt(userID, 10)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) == idStr {
-			return true
-		}
-	}
-	return false
-}
-
-func saveRegistered(userID int64) {
-	dir := config.AppDir()
-	_ = os.MkdirAll(dir, 0755)
-	f, err := os.OpenFile(config.DataFile(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(strconv.FormatInt(userID, 10) + "\n")
-}
-
-func loadPlatform(userID int64) string {
-	f, err := os.Open(config.PlatformFile())
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	idStr := strconv.FormatInt(userID, 10)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) >= 2 && parts[0] == idStr {
-			return strings.TrimSpace(parts[1])
-		}
-	}
-	return ""
-}
-
-func savePlatform(userID int64, platform string) {
-	platformFile := config.PlatformFile()
-	// Читаем все строки, подменяем или добавляем запись для userID
-	lines := make([]string, 0)
-	idStr := strconv.FormatInt(userID, 10)
-	if f, err := os.Open(platformFile); err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			line := sc.Text()
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			parts := strings.SplitN(line, " ", 2)
-			if len(parts) >= 2 && parts[0] == idStr {
-				continue
-			}
-			lines = append(lines, line)
-		}
-		f.Close()
-	}
-	_ = os.MkdirAll(config.AppDir(), 0755)
-	lines = append(lines, idStr+" "+platform)
-	f, err := os.Create(platformFile)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	for _, l := range lines {
-		_, _ = f.WriteString(l + "\n")
-	}
-}
-
-type appURLs struct {
-	Version string `json:"version"`
-	Android string `json:"android"`
-	Windows string `json:"windows"`
-}
-
-func getLatestAppURLs() appURLs {
-	cli := &http.Client{Timeout: 5 * time.Second}
-	resp, err := cli.Get("http://127.0.0.1:8000/api/v1/app/update")
-	if err != nil {
-		return appURLs{}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return appURLs{}
-	}
-	var data appURLs
-	if json.NewDecoder(resp.Body).Decode(&data) != nil {
-		return appURLs{}
-	}
-	data.Version = strings.TrimSpace(data.Version)
-	data.Android = strings.TrimSpace(data.Android)
-	data.Windows = strings.TrimSpace(data.Windows)
-	return data
-}
-
-// sendAppFile отправляет файл приложения в чат (APK или zip). Возвращает true, если файл отправлен.
-// Telegram лимит 50 MB — при большем размере файл не отправляется.
-func sendAppFile(bot *tgbotapi.BotAPI, chatID int64, platform, version string) bool {
-	if version == "" {
-		return false
-	}
-	var filename string
-	if platform == "android" {
-		filename = fmt.Sprintf("heyearth-%s.apk", version)
-	} else if platform == "windows" {
-		filename = fmt.Sprintf("heyearth-%s-windows.zip", version)
-	} else {
-		return false
-	}
-	path := filepath.Join(config.ReleasesDir(), filename)
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if info.Size() > telegramMaxFileSize {
-		return false
-	}
-	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
-	doc.Caption = fmt.Sprintf("HeYearth %s — %s", version, platform)
-	if _, err := bot.Send(doc); err != nil {
-		log.Printf("Send document %s: %v", filename, err)
-		return false
-	}
-	return true
-}
-
-func handleGetSS(userID int64, forceNew bool) string {
-	if !isRegistered(userID) {
-		return "Сначала зарегистрируйтесь: /register"
-	}
-
-	canonicalUserID := getOrCreateCanonicalUserID(userID)
-	uri, err := fetchConfigForUser(canonicalUserID)
-	if err != nil {
-		return "Не удалось выдать ссылку: " + err.Error()
-	}
-	if !strings.HasPrefix(uri, "ss://") {
-		return "Неверный ответ от сервера."
-	}
-	if forceNew {
-		return fmt.Sprintf("Ссылка обновлена:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nВставь ссылку в Happ и включи глобальный режим с DNS через прокси.", uri, canonicalUserID)
-	}
-	return fmt.Sprintf("Ваша персональная ссылка:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nСкопируй в Happ и включи глобальный режим с DNS через прокси.", uri, canonicalUserID)
-}
-
-type botUserMap map[string]string
-
-func getOrCreateCanonicalUserID(telegramUserID int64) string {
-	idStr := strconv.FormatInt(telegramUserID, 10)
-	m := loadBotUserMap()
-	if existing := strings.TrimSpace(m[idStr]); existing != "" {
-		return existing
-	}
-
-	userID := newUUID()
-	m[idStr] = userID
-	saveBotUserMap(m)
-	return userID
-}
-
-func loadBotUserMap() botUserMap {
-	data, err := os.ReadFile(config.BotUserMapFile())
-	if err != nil {
-		return botUserMap{}
-	}
-	var m botUserMap
-	if err := json.Unmarshal(data, &m); err != nil {
-		return botUserMap{}
-	}
-	return m
-}
-
-func saveBotUserMap(m botUserMap) {
-	_ = os.MkdirAll(config.AppDir(), 0755)
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(config.BotUserMapFile(), data, 0644)
-}
-
-func newUUID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("user-%d", time.Now().UnixNano())
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-		b[0], b[1], b[2], b[3],
-		b[4], b[5],
-		b[6], b[7],
-		b[8], b[9],
-		b[10], b[11], b[12], b[13], b[14], b[15],
+func deviceChoiceKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📱 Android", cbPlatformAndroid),
+			tgbotapi.NewInlineKeyboardButtonData("💻 Windows", cbPlatformWindows),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🍎 iOS", cbPlatformIOS),
+			tgbotapi.NewInlineKeyboardButtonData("🍎 macOS", cbPlatformMacOS),
+		),
 	)
 }
 
-func fetchConfigForUser(userID string) (string, error) {
-	body, err := json.Marshal(map[string]string{"user_id": userID})
-	if err != nil {
-		return "", err
-	}
+func deviceKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📱 iOS", cbInstPhone),
+			tgbotapi.NewInlineKeyboardButtonData("💻 macOS / Linux", cbInstPC),
+		),
+	)
+}
 
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/v1/config", bytes.NewReader(body))
-	if err != nil {
-		return "", err
+func mainKeyboardForPlatform(platform string) tgbotapi.InlineKeyboardMarkup {
+	if platform == "android" || platform == "windows" {
+		return tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📲 Скачать приложение", cbDownloadApp),
+				tgbotapi.NewInlineKeyboardButtonData("🚀 Открыть в приложении", cbOpenInApp),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔑 Получить код входа", cbGetLoginCode),
+				tgbotapi.NewInlineKeyboardButtonData("👤 Мой профиль", cbProfile),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
+			),
+		)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔗 Получить ссылку", cbGetSS),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Новая ссылка", cbNewSS),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🚀 Открыть в приложении", cbOpenInApp),
+			tgbotapi.NewInlineKeyboardButtonData("🔑 Код входа", cbGetLoginCode),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("👤 Мой профиль", cbProfile),
+			tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
+		),
+	)
+}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+func firstMessageForProfile(profile *heyearth_v1.UserProfileResponse) string {
+	userID := profile.GetUserId()
+	plan := strings.TrimSpace(profile.GetCurrentPlan())
+	if plan == "" {
+		plan = "Free"
 	}
-	defer resp.Body.Close()
+	switch profile.GetPreferredPlatform() {
+	case "android":
+		return fmt.Sprintf("📲 *HeYearth для Android*\n\nТвой HeYearth ID:\n`%s`\n\nПлан: *%s*\n\nСкачай приложение и используй pairing через кнопку «Открыть в приложении» или «Получить код входа».", userID, plan)
+	case "windows":
+		return fmt.Sprintf("💻 *HeYearth для Windows*\n\nТвой HeYearth ID:\n`%s`\n\nПлан: *%s*\n\nСкачай приложение и используй pairing через кнопку «Открыть в приложении» или «Получить код входа».", userID, plan)
+	case "ios", "macos":
+		return fmt.Sprintf("🍎 *Apple fallback через Happ*\n\nТвой HeYearth ID:\n`%s`\n\nПлан: *%s*\n\nПока для %s используем Happ как fallback. При желании можешь уже подготовить pairing для будущего входа в приложение.", userID, plan, profile.GetPreferredPlatform())
+	default:
+		return fmt.Sprintf("Твой HeYearth ID:\n`%s`\n\nВыбери устройство и способ входа.", userID)
+	}
+}
 
-	if resp.StatusCode != http.StatusOK {
-		var raw map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&raw)
-		if msg, ok := raw["message"].(string); ok && msg != "" {
-			return "", fmt.Errorf(msg)
+func instructionForApp(platform string) string {
+	if platform == "android" {
+		return instructionAppAndroid
+	}
+	return instructionAppWindows
+}
+
+func handleLegacyConfigCommand(backend *backendClient, telegramID int64, forceNew bool) (string, *tgbotapi.InlineKeyboardMarkup) {
+	profile, err := backend.ensureTelegramUser(telegramID, "", "ru")
+	if err != nil {
+		return "Не удалось загрузить профиль. Попробуй позже.", nil
+	}
+	platform := profile.GetPreferredPlatform()
+	if platform != "ios" && platform != "macos" {
+		k := mainKeyboardForPlatform(platform)
+		return "Legacy ss:// ссылка сейчас доступна только для iOS/macOS через Happ. Для Android/Windows используй pairing и приложение HeYearth.", &k
+	}
+	resp, err := backend.issueLegacyAppleConfig(telegramID, forceNew)
+	if err != nil {
+		k := mainKeyboardForPlatform(platform)
+		return "Не удалось выдать ss:// ссылку: " + err.Error(), &k
+	}
+	text := fmt.Sprintf("Твоя персональная ссылка:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nИмпортируй её в Happ и включи глобальный режим с DNS через прокси.", resp.GetSsUri(), resp.GetUserId())
+	if forceNew {
+		text = fmt.Sprintf("Ссылка обновлена:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nИмпортируй её в Happ и включи глобальный режим с DNS через прокси.", resp.GetSsUri(), resp.GetUserId())
+	}
+	k := mainKeyboardForPlatform(platform)
+	return text, &k
+}
+
+func downloadMessageForProfile(backend *backendClient, profile *heyearth_v1.UserProfileResponse) string {
+	dist, err := backend.getDistribution(profile.GetPreferredPlatform())
+	if err != nil {
+		return "Не удалось получить ссылку на приложение. Попробуй позже."
+	}
+	userID := profile.GetUserId()
+	switch profile.GetPreferredPlatform() {
+	case "android":
+		if strings.TrimSpace(dist.GetAndroidUrl()) == "" {
+			return fmt.Sprintf("📲 Ссылка на Android-сборку пока не подготовлена.\n\nТвой HeYearth ID:\n`%s`", userID)
 		}
-		return "", fmt.Errorf("api returned status %d", resp.StatusCode)
+		return fmt.Sprintf("📲 Android build `%s`\n\nСкачать:\n%s\n\nПосле установки выбери pairing через кнопку «Открыть в приложении» или введи код входа.", dist.GetVersion(), dist.GetAndroidUrl())
+	case "windows":
+		if strings.TrimSpace(dist.GetWindowsUrl()) == "" {
+			return fmt.Sprintf("💻 Ссылка на Windows-сборку пока не подготовлена.\n\nТвой HeYearth ID:\n`%s`", userID)
+		}
+		return fmt.Sprintf("💻 Windows build `%s`\n\nСкачать:\n%s\n\nПосле установки используй pairing или код входа.", dist.GetVersion(), dist.GetWindowsUrl())
+	default:
+		return "Для iOS/macOS пока используется Happ fallback. Если приложение для твоей платформы появится, бот начнёт показывать ссылку здесь."
 	}
+}
 
-	var data struct {
-		UserID string `json:"user_id"`
-		SsURI  string `json:"ss_uri"`
+func profileSummary(profile *heyearth_v1.UserProfileResponse) string {
+	plan := strings.TrimSpace(profile.GetCurrentPlan())
+	if plan == "" {
+		plan = "Free"
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", err
+	validUntil := strings.TrimSpace(profile.GetValidUntil())
+	if validUntil == "" {
+		validUntil = "не ограничен"
 	}
-	return strings.TrimSpace(data.SsURI), nil
+	status := strings.TrimSpace(profile.GetAccessStatus())
+	if status == "" {
+		status = "active"
+	}
+	telegramStatus := "не привязан"
+	if profile.GetTelegramLinked() {
+		telegramStatus = "привязан"
+	}
+	return fmt.Sprintf(
+		"👤 *Профиль HeYearth*\n\nID:\n`%s`\n\nПлан: *%s*\nДоступ до: `%s`\nСтатус: `%s`\nПлатформа: `%s`\nTelegram: *%s*",
+		profile.GetUserId(),
+		plan,
+		validUntil,
+		status,
+		firstNonEmpty(strings.TrimSpace(profile.GetPreferredPlatform()), "не выбрана"),
+		telegramStatus,
+	)
+}
+
+func pairingMessage(resp *heyearth_v1.CreatePairingCodeResponse) string {
+	return fmt.Sprintf(
+		"🚀 *Вход в приложение HeYearth*\n\nHeYearth ID:\n`%s`\n\nDeep link:\n`%s`\n\nОдноразовый код:\n`%s`\n\nКод действует до `%s`.\nЕсли deep-link не откроется автоматически, введи код вручную в приложении.",
+		resp.GetProfile().GetUserId(),
+		resp.GetDeeplinkUrl(),
+		resp.GetCode(),
+		resp.GetExpiresAt(),
+	)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

@@ -30,7 +30,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// ConfigApi — выдача персонального SS URI по user_id и проверка обновлений приложения.
+// ConfigApi — legacy service kept for backward compatibility.
 type ConfigApiClient interface {
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
@@ -101,7 +101,7 @@ func (c *configApiClient) GetProfile(ctx context.Context, in *GetProfileRequest,
 // All implementations must embed UnimplementedConfigApiServer
 // for forward compatibility.
 //
-// ConfigApi — выдача персонального SS URI по user_id и проверка обновлений приложения.
+// ConfigApi — legacy service kept for backward compatibility.
 type ConfigApiServer interface {
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
@@ -270,6 +270,666 @@ var ConfigApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetProfile",
 			Handler:    _ConfigApi_GetProfile_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "heyearth/v1/config.proto",
+}
+
+const (
+	BotApi_EnsureTelegramUser_FullMethodName     = "/heyearth.v1.BotApi/EnsureTelegramUser"
+	BotApi_SetPreferredPlatform_FullMethodName   = "/heyearth.v1.BotApi/SetPreferredPlatform"
+	BotApi_CreatePairingCode_FullMethodName      = "/heyearth.v1.BotApi/CreatePairingCode"
+	BotApi_GetClientDistribution_FullMethodName  = "/heyearth.v1.BotApi/GetClientDistribution"
+	BotApi_IssueLegacyAppleConfig_FullMethodName = "/heyearth.v1.BotApi/IssueLegacyAppleConfig"
+)
+
+// BotApiClient is the client API for BotApi service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type BotApiClient interface {
+	EnsureTelegramUser(ctx context.Context, in *EnsureTelegramUserRequest, opts ...grpc.CallOption) (*UserProfileResponse, error)
+	SetPreferredPlatform(ctx context.Context, in *SetPreferredPlatformRequest, opts ...grpc.CallOption) (*UserProfileResponse, error)
+	CreatePairingCode(ctx context.Context, in *CreatePairingCodeRequest, opts ...grpc.CallOption) (*CreatePairingCodeResponse, error)
+	GetClientDistribution(ctx context.Context, in *GetClientDistributionRequest, opts ...grpc.CallOption) (*GetClientDistributionResponse, error)
+	IssueLegacyAppleConfig(ctx context.Context, in *IssueLegacyAppleConfigRequest, opts ...grpc.CallOption) (*ConnectionBundleResponse, error)
+}
+
+type botApiClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewBotApiClient(cc grpc.ClientConnInterface) BotApiClient {
+	return &botApiClient{cc}
+}
+
+func (c *botApiClient) EnsureTelegramUser(ctx context.Context, in *EnsureTelegramUserRequest, opts ...grpc.CallOption) (*UserProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserProfileResponse)
+	err := c.cc.Invoke(ctx, BotApi_EnsureTelegramUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *botApiClient) SetPreferredPlatform(ctx context.Context, in *SetPreferredPlatformRequest, opts ...grpc.CallOption) (*UserProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserProfileResponse)
+	err := c.cc.Invoke(ctx, BotApi_SetPreferredPlatform_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *botApiClient) CreatePairingCode(ctx context.Context, in *CreatePairingCodeRequest, opts ...grpc.CallOption) (*CreatePairingCodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreatePairingCodeResponse)
+	err := c.cc.Invoke(ctx, BotApi_CreatePairingCode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *botApiClient) GetClientDistribution(ctx context.Context, in *GetClientDistributionRequest, opts ...grpc.CallOption) (*GetClientDistributionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClientDistributionResponse)
+	err := c.cc.Invoke(ctx, BotApi_GetClientDistribution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *botApiClient) IssueLegacyAppleConfig(ctx context.Context, in *IssueLegacyAppleConfigRequest, opts ...grpc.CallOption) (*ConnectionBundleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConnectionBundleResponse)
+	err := c.cc.Invoke(ctx, BotApi_IssueLegacyAppleConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// BotApiServer is the server API for BotApi service.
+// All implementations must embed UnimplementedBotApiServer
+// for forward compatibility.
+type BotApiServer interface {
+	EnsureTelegramUser(context.Context, *EnsureTelegramUserRequest) (*UserProfileResponse, error)
+	SetPreferredPlatform(context.Context, *SetPreferredPlatformRequest) (*UserProfileResponse, error)
+	CreatePairingCode(context.Context, *CreatePairingCodeRequest) (*CreatePairingCodeResponse, error)
+	GetClientDistribution(context.Context, *GetClientDistributionRequest) (*GetClientDistributionResponse, error)
+	IssueLegacyAppleConfig(context.Context, *IssueLegacyAppleConfigRequest) (*ConnectionBundleResponse, error)
+	mustEmbedUnimplementedBotApiServer()
+}
+
+// UnimplementedBotApiServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedBotApiServer struct{}
+
+func (UnimplementedBotApiServer) EnsureTelegramUser(context.Context, *EnsureTelegramUserRequest) (*UserProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnsureTelegramUser not implemented")
+}
+func (UnimplementedBotApiServer) SetPreferredPlatform(context.Context, *SetPreferredPlatformRequest) (*UserProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetPreferredPlatform not implemented")
+}
+func (UnimplementedBotApiServer) CreatePairingCode(context.Context, *CreatePairingCodeRequest) (*CreatePairingCodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreatePairingCode not implemented")
+}
+func (UnimplementedBotApiServer) GetClientDistribution(context.Context, *GetClientDistributionRequest) (*GetClientDistributionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetClientDistribution not implemented")
+}
+func (UnimplementedBotApiServer) IssueLegacyAppleConfig(context.Context, *IssueLegacyAppleConfigRequest) (*ConnectionBundleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IssueLegacyAppleConfig not implemented")
+}
+func (UnimplementedBotApiServer) mustEmbedUnimplementedBotApiServer() {}
+func (UnimplementedBotApiServer) testEmbeddedByValue()                {}
+
+// UnsafeBotApiServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to BotApiServer will
+// result in compilation errors.
+type UnsafeBotApiServer interface {
+	mustEmbedUnimplementedBotApiServer()
+}
+
+func RegisterBotApiServer(s grpc.ServiceRegistrar, srv BotApiServer) {
+	// If the following call panics, it indicates UnimplementedBotApiServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&BotApi_ServiceDesc, srv)
+}
+
+func _BotApi_EnsureTelegramUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnsureTelegramUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotApiServer).EnsureTelegramUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotApi_EnsureTelegramUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotApiServer).EnsureTelegramUser(ctx, req.(*EnsureTelegramUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BotApi_SetPreferredPlatform_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPreferredPlatformRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotApiServer).SetPreferredPlatform(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotApi_SetPreferredPlatform_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotApiServer).SetPreferredPlatform(ctx, req.(*SetPreferredPlatformRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BotApi_CreatePairingCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePairingCodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotApiServer).CreatePairingCode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotApi_CreatePairingCode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotApiServer).CreatePairingCode(ctx, req.(*CreatePairingCodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BotApi_GetClientDistribution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClientDistributionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotApiServer).GetClientDistribution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotApi_GetClientDistribution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotApiServer).GetClientDistribution(ctx, req.(*GetClientDistributionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BotApi_IssueLegacyAppleConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IssueLegacyAppleConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotApiServer).IssueLegacyAppleConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotApi_IssueLegacyAppleConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotApiServer).IssueLegacyAppleConfig(ctx, req.(*IssueLegacyAppleConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// BotApi_ServiceDesc is the grpc.ServiceDesc for BotApi service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var BotApi_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "heyearth.v1.BotApi",
+	HandlerType: (*BotApiServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "EnsureTelegramUser",
+			Handler:    _BotApi_EnsureTelegramUser_Handler,
+		},
+		{
+			MethodName: "SetPreferredPlatform",
+			Handler:    _BotApi_SetPreferredPlatform_Handler,
+		},
+		{
+			MethodName: "CreatePairingCode",
+			Handler:    _BotApi_CreatePairingCode_Handler,
+		},
+		{
+			MethodName: "GetClientDistribution",
+			Handler:    _BotApi_GetClientDistribution_Handler,
+		},
+		{
+			MethodName: "IssueLegacyAppleConfig",
+			Handler:    _BotApi_IssueLegacyAppleConfig_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "heyearth/v1/config.proto",
+}
+
+const (
+	ClientApi_ClaimByCode_FullMethodName         = "/heyearth.v1.ClientApi/ClaimByCode"
+	ClientApi_ClaimByToken_FullMethodName        = "/heyearth.v1.ClientApi/ClaimByToken"
+	ClientApi_GetMe_FullMethodName               = "/heyearth.v1.ClientApi/GetMe"
+	ClientApi_GetAccessState_FullMethodName      = "/heyearth.v1.ClientApi/GetAccessState"
+	ClientApi_GetConnectionBundle_FullMethodName = "/heyearth.v1.ClientApi/GetConnectionBundle"
+	ClientApi_ListSubscriptions_FullMethodName   = "/heyearth.v1.ClientApi/ListSubscriptions"
+	ClientApi_ListPayments_FullMethodName        = "/heyearth.v1.ClientApi/ListPayments"
+	ClientApi_ApplyPromocode_FullMethodName      = "/heyearth.v1.ClientApi/ApplyPromocode"
+	ClientApi_CheckAppUpdate_FullMethodName      = "/heyearth.v1.ClientApi/CheckAppUpdate"
+)
+
+// ClientApiClient is the client API for ClientApi service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type ClientApiClient interface {
+	ClaimByCode(ctx context.Context, in *ClaimByCodeRequest, opts ...grpc.CallOption) (*ClaimResponse, error)
+	ClaimByToken(ctx context.Context, in *ClaimByTokenRequest, opts ...grpc.CallOption) (*ClaimResponse, error)
+	GetMe(ctx context.Context, in *GetMeRequest, opts ...grpc.CallOption) (*UserProfileResponse, error)
+	GetAccessState(ctx context.Context, in *GetAccessStateRequest, opts ...grpc.CallOption) (*AccessStateResponse, error)
+	GetConnectionBundle(ctx context.Context, in *GetConnectionBundleRequest, opts ...grpc.CallOption) (*ConnectionBundleResponse, error)
+	ListSubscriptions(ctx context.Context, in *ListSubscriptionsRequest, opts ...grpc.CallOption) (*ListSubscriptionsResponse, error)
+	ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error)
+	ApplyPromocode(ctx context.Context, in *ApplyPromocodeRequest, opts ...grpc.CallOption) (*ApplyPromocodeResponse, error)
+	CheckAppUpdate(ctx context.Context, in *CheckAppUpdateRequest, opts ...grpc.CallOption) (*CheckAppUpdateResponse, error)
+}
+
+type clientApiClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewClientApiClient(cc grpc.ClientConnInterface) ClientApiClient {
+	return &clientApiClient{cc}
+}
+
+func (c *clientApiClient) ClaimByCode(ctx context.Context, in *ClaimByCodeRequest, opts ...grpc.CallOption) (*ClaimResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimResponse)
+	err := c.cc.Invoke(ctx, ClientApi_ClaimByCode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) ClaimByToken(ctx context.Context, in *ClaimByTokenRequest, opts ...grpc.CallOption) (*ClaimResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimResponse)
+	err := c.cc.Invoke(ctx, ClientApi_ClaimByToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) GetMe(ctx context.Context, in *GetMeRequest, opts ...grpc.CallOption) (*UserProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserProfileResponse)
+	err := c.cc.Invoke(ctx, ClientApi_GetMe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) GetAccessState(ctx context.Context, in *GetAccessStateRequest, opts ...grpc.CallOption) (*AccessStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AccessStateResponse)
+	err := c.cc.Invoke(ctx, ClientApi_GetAccessState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) GetConnectionBundle(ctx context.Context, in *GetConnectionBundleRequest, opts ...grpc.CallOption) (*ConnectionBundleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConnectionBundleResponse)
+	err := c.cc.Invoke(ctx, ClientApi_GetConnectionBundle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) ListSubscriptions(ctx context.Context, in *ListSubscriptionsRequest, opts ...grpc.CallOption) (*ListSubscriptionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSubscriptionsResponse)
+	err := c.cc.Invoke(ctx, ClientApi_ListSubscriptions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPaymentsResponse)
+	err := c.cc.Invoke(ctx, ClientApi_ListPayments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) ApplyPromocode(ctx context.Context, in *ApplyPromocodeRequest, opts ...grpc.CallOption) (*ApplyPromocodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyPromocodeResponse)
+	err := c.cc.Invoke(ctx, ClientApi_ApplyPromocode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clientApiClient) CheckAppUpdate(ctx context.Context, in *CheckAppUpdateRequest, opts ...grpc.CallOption) (*CheckAppUpdateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckAppUpdateResponse)
+	err := c.cc.Invoke(ctx, ClientApi_CheckAppUpdate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ClientApiServer is the server API for ClientApi service.
+// All implementations must embed UnimplementedClientApiServer
+// for forward compatibility.
+type ClientApiServer interface {
+	ClaimByCode(context.Context, *ClaimByCodeRequest) (*ClaimResponse, error)
+	ClaimByToken(context.Context, *ClaimByTokenRequest) (*ClaimResponse, error)
+	GetMe(context.Context, *GetMeRequest) (*UserProfileResponse, error)
+	GetAccessState(context.Context, *GetAccessStateRequest) (*AccessStateResponse, error)
+	GetConnectionBundle(context.Context, *GetConnectionBundleRequest) (*ConnectionBundleResponse, error)
+	ListSubscriptions(context.Context, *ListSubscriptionsRequest) (*ListSubscriptionsResponse, error)
+	ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error)
+	ApplyPromocode(context.Context, *ApplyPromocodeRequest) (*ApplyPromocodeResponse, error)
+	CheckAppUpdate(context.Context, *CheckAppUpdateRequest) (*CheckAppUpdateResponse, error)
+	mustEmbedUnimplementedClientApiServer()
+}
+
+// UnimplementedClientApiServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedClientApiServer struct{}
+
+func (UnimplementedClientApiServer) ClaimByCode(context.Context, *ClaimByCodeRequest) (*ClaimResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimByCode not implemented")
+}
+func (UnimplementedClientApiServer) ClaimByToken(context.Context, *ClaimByTokenRequest) (*ClaimResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClaimByToken not implemented")
+}
+func (UnimplementedClientApiServer) GetMe(context.Context, *GetMeRequest) (*UserProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMe not implemented")
+}
+func (UnimplementedClientApiServer) GetAccessState(context.Context, *GetAccessStateRequest) (*AccessStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAccessState not implemented")
+}
+func (UnimplementedClientApiServer) GetConnectionBundle(context.Context, *GetConnectionBundleRequest) (*ConnectionBundleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConnectionBundle not implemented")
+}
+func (UnimplementedClientApiServer) ListSubscriptions(context.Context, *ListSubscriptionsRequest) (*ListSubscriptionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSubscriptions not implemented")
+}
+func (UnimplementedClientApiServer) ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPayments not implemented")
+}
+func (UnimplementedClientApiServer) ApplyPromocode(context.Context, *ApplyPromocodeRequest) (*ApplyPromocodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyPromocode not implemented")
+}
+func (UnimplementedClientApiServer) CheckAppUpdate(context.Context, *CheckAppUpdateRequest) (*CheckAppUpdateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CheckAppUpdate not implemented")
+}
+func (UnimplementedClientApiServer) mustEmbedUnimplementedClientApiServer() {}
+func (UnimplementedClientApiServer) testEmbeddedByValue()                   {}
+
+// UnsafeClientApiServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ClientApiServer will
+// result in compilation errors.
+type UnsafeClientApiServer interface {
+	mustEmbedUnimplementedClientApiServer()
+}
+
+func RegisterClientApiServer(s grpc.ServiceRegistrar, srv ClientApiServer) {
+	// If the following call panics, it indicates UnimplementedClientApiServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&ClientApi_ServiceDesc, srv)
+}
+
+func _ClientApi_ClaimByCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimByCodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).ClaimByCode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_ClaimByCode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).ClaimByCode(ctx, req.(*ClaimByCodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_ClaimByToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimByTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).ClaimByToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_ClaimByToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).ClaimByToken(ctx, req.(*ClaimByTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_GetMe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).GetMe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_GetMe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).GetMe(ctx, req.(*GetMeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_GetAccessState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAccessStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).GetAccessState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_GetAccessState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).GetAccessState(ctx, req.(*GetAccessStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_GetConnectionBundle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConnectionBundleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).GetConnectionBundle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_GetConnectionBundle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).GetConnectionBundle(ctx, req.(*GetConnectionBundleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_ListSubscriptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSubscriptionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).ListSubscriptions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_ListSubscriptions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).ListSubscriptions(ctx, req.(*ListSubscriptionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_ListPayments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPaymentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).ListPayments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_ListPayments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).ListPayments(ctx, req.(*ListPaymentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_ApplyPromocode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyPromocodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).ApplyPromocode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_ApplyPromocode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).ApplyPromocode(ctx, req.(*ApplyPromocodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClientApi_CheckAppUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckAppUpdateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClientApiServer).CheckAppUpdate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClientApi_CheckAppUpdate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClientApiServer).CheckAppUpdate(ctx, req.(*CheckAppUpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// ClientApi_ServiceDesc is the grpc.ServiceDesc for ClientApi service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var ClientApi_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "heyearth.v1.ClientApi",
+	HandlerType: (*ClientApiServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ClaimByCode",
+			Handler:    _ClientApi_ClaimByCode_Handler,
+		},
+		{
+			MethodName: "ClaimByToken",
+			Handler:    _ClientApi_ClaimByToken_Handler,
+		},
+		{
+			MethodName: "GetMe",
+			Handler:    _ClientApi_GetMe_Handler,
+		},
+		{
+			MethodName: "GetAccessState",
+			Handler:    _ClientApi_GetAccessState_Handler,
+		},
+		{
+			MethodName: "GetConnectionBundle",
+			Handler:    _ClientApi_GetConnectionBundle_Handler,
+		},
+		{
+			MethodName: "ListSubscriptions",
+			Handler:    _ClientApi_ListSubscriptions_Handler,
+		},
+		{
+			MethodName: "ListPayments",
+			Handler:    _ClientApi_ListPayments_Handler,
+		},
+		{
+			MethodName: "ApplyPromocode",
+			Handler:    _ClientApi_ApplyPromocode_Handler,
+		},
+		{
+			MethodName: "CheckAppUpdate",
+			Handler:    _ClientApi_CheckAppUpdate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

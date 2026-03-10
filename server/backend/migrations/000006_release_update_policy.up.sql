@@ -1,0 +1,3 @@
+ALTER TABLE app_releases
+    ADD COLUMN IF NOT EXISTS mandatory_update BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS min_supported_version VARCHAR(50) NOT NULL DEFAULT '';

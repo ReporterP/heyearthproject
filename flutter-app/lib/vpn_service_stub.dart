@@ -6,7 +6,8 @@ class VpnServiceStub implements VpnService {
   bool get isSupported => false;
 
   @override
-  Future<void> connect(String ssUri, {bool proxyOnly = false, bool selectedOnly = false}) async {}
+  Future<void> connect(String ssUri,
+      {bool proxyOnly = false, bool selectedOnly = false}) async {}
 
   @override
   Future<void> disconnect() async {}

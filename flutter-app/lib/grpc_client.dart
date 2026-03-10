@@ -1,10 +1,11 @@
 import 'package:grpc/grpc.dart';
 
-import 'generated/heyearth/v1/config.pbgrpc.dart';
 import 'generated/heyearth/v1/config.pb.dart' as pb;
+import 'generated/heyearth/v1/config.pbgrpc.dart';
 
 ClientChannel? _cachedChannel;
-ConfigApiClient? _cachedClient;
+ConfigApiClient? _cachedConfigClient;
+ClientApiClient? _cachedClientApi;
 String? _cachedApiBase;
 
 ChannelOptions _channelOptions(Uri uri) {
@@ -15,7 +16,9 @@ ChannelOptions _channelOptions(Uri uri) {
 }
 
 int _port(Uri uri) {
-  if (uri.hasPort) return uri.port;
+  if (uri.hasPort) {
+    return uri.port;
+  }
   return uri.scheme == 'https' ? 443 : 50051;
 }
 
@@ -30,38 +33,144 @@ ClientChannel createGrpcChannel(String apiBase) {
   );
 }
 
-ConfigApiClient getClient(String apiBase) {
-  if (_cachedClient != null && _cachedApiBase == apiBase) {
-    return _cachedClient!;
+void _ensureClients(String apiBase) {
+  if (_cachedChannel != null && _cachedApiBase == apiBase) {
+    return;
   }
-  
   if (_cachedChannel != null) {
     _cachedChannel!.shutdown();
   }
-
   _cachedChannel = createGrpcChannel(apiBase);
-  _cachedClient = ConfigApiClient(_cachedChannel!);
+  _cachedConfigClient = ConfigApiClient(_cachedChannel!);
+  _cachedClientApi = ClientApiClient(_cachedChannel!);
   _cachedApiBase = apiBase;
-  
-  return _cachedClient!;
 }
 
-Future<pb.GetConfigResponse?> getConfigGrpc(String apiBase, String userId) async {
-  final client = getClient(apiBase);
-  return await client.getConfig(pb.GetConfigRequest(userId: userId));
+ConfigApiClient getConfigClient(String apiBase) {
+  _ensureClients(apiBase);
+  return _cachedConfigClient!;
 }
 
-Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(String apiBase, String platform) async {
-  final client = getClient(apiBase);
-  return await client.checkAppUpdate(pb.CheckAppUpdateRequest(platform: platform));
+ClientApiClient getClientApi(String apiBase) {
+  _ensureClients(apiBase);
+  return _cachedClientApi!;
 }
 
-Future<pb.GetProfileResponse?> getProfileGrpc(String apiBase, String userId) async {
-  final client = getClient(apiBase);
-  return await client.getProfile(pb.GetProfileRequest(userId: userId));
+pb.DeviceContext buildDeviceContext({
+  required String platform,
+  required String deviceId,
+  required String locale,
+  required String linkedVia,
+  String deviceLabel = '',
+}) {
+  return pb.DeviceContext(
+    deviceId: deviceId,
+    platform: platform,
+    deviceLabel: deviceLabel,
+    locale: locale,
+    linkedVia: linkedVia,
+  );
 }
 
-Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(String apiBase, String userId, String code) async {
-  final client = getClient(apiBase);
-  return await client.applyPromocode(pb.ApplyPromocodeRequest(userId: userId, code: code));
+Future<pb.GetConfigResponse?> getConfigGrpc(
+    String apiBase, String userId) async {
+  final client = getConfigClient(apiBase);
+  return client.getConfig(pb.GetConfigRequest(userId: userId));
+}
+
+Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(
+  String apiBase,
+  String platform,
+) async {
+  final client = getClientApi(apiBase);
+  return client.checkAppUpdate(pb.CheckAppUpdateRequest(platform: platform));
+}
+
+Future<pb.GetProfileResponse?> getProfileGrpc(
+    String apiBase, String userId) async {
+  final client = getConfigClient(apiBase);
+  return client.getProfile(pb.GetProfileRequest(userId: userId));
+}
+
+Future<pb.UserProfileResponse?> getMeGrpc({
+  required String apiBase,
+  required String userId,
+  required pb.DeviceContext device,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.getMe(pb.GetMeRequest(userId: userId, device: device));
+}
+
+Future<pb.AccessStateResponse?> getAccessStateGrpc({
+  required String apiBase,
+  required String userId,
+  required String platform,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.getAccessState(
+    pb.GetAccessStateRequest(userId: userId, platform: platform),
+  );
+}
+
+Future<pb.ConnectionBundleResponse?> getConnectionBundleGrpc({
+  required String apiBase,
+  required String userId,
+  required String platform,
+  bool forceRefresh = false,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.getConnectionBundle(
+    pb.GetConnectionBundleRequest(
+      userId: userId,
+      platform: platform,
+      forceRefresh: forceRefresh,
+    ),
+  );
+}
+
+Future<pb.ListSubscriptionsResponse?> listSubscriptionsGrpc({
+  required String apiBase,
+  required String userId,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.listSubscriptions(pb.ListSubscriptionsRequest(userId: userId));
+}
+
+Future<pb.ListPaymentsResponse?> listPaymentsGrpc({
+  required String apiBase,
+  required String userId,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.listPayments(pb.ListPaymentsRequest(userId: userId));
+}
+
+Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(
+  String apiBase,
+  String userId,
+  String code,
+) async {
+  final client = getClientApi(apiBase);
+  return client.applyPromocode(
+    pb.ApplyPromocodeRequest(userId: userId, code: code),
+  );
+}
+
+Future<pb.ClaimResponse?> claimByCodeGrpc({
+  required String apiBase,
+  required String code,
+  required pb.DeviceContext device,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.claimByCode(pb.ClaimByCodeRequest(code: code, device: device));
+}
+
+Future<pb.ClaimResponse?> claimByTokenGrpc({
+  required String apiBase,
+  required String token,
+  required pb.DeviceContext device,
+}) async {
+  final client = getClientApi(apiBase);
+  return client.claimByToken(
+    pb.ClaimByTokenRequest(claimToken: token, device: device),
+  );
 }

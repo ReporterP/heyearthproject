@@ -27,12 +27,12 @@ class VpnServiceIo implements VpnService {
   FlutterV2ray? _v2ray;
   bool _initialized = false;
 
-  static const String _providerBundleId = 'com.example.heyearth_vpn.VPNProvider';
+  static const String _providerBundleId =
+      'com.example.heyearth_vpn.VPNProvider';
   static const String _groupId = 'group.com.example.heyearth_vpn';
 
   @override
-  bool get isSupported =>
-      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool get isSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
   Future<bool> _ensureInitialized() async {
     if (!isSupported) return false;
@@ -79,16 +79,13 @@ class VpnServiceIo implements VpnService {
   }
 
   @override
-  Future<void> connect(String ssUri, {bool proxyOnly = false, bool selectedOnly = false}) async {
+  Future<void> connect(String ssUri,
+      {bool proxyOnly = false, bool selectedOnly = false}) async {
     if (!isSupported) return;
     if (ssUri.trim().isEmpty) return;
     final v2 = _v2ray ?? FlutterV2ray();
-    if (!_initialized) {
-      await v2.initializeVless(
-        providerBundleIdentifier: _providerBundleId,
-        groupIdentifier: _groupId,
-      );
-      _initialized = true;
+    if (!await _ensureInitialized()) {
+      return;
     }
     final parsed = FlutterV2ray.parseFromURL(ssUri.trim());
     String config = parsed.getFullConfiguration();

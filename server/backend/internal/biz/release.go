@@ -12,18 +12,20 @@ import (
 var SupportedReleasePlatforms = []string{"android", "windows", "macos", "linux", "ios"}
 
 type AppRelease struct {
-	ID           int
-	Platform     string
-	Version      string
-	ReleaseNotes string
-	FileName     string
-	FilePath     string
-	PublicPath   string
-	ContentType  string
-	FileSize     int64
-	IsActive     bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                  int
+	Platform            string
+	Version             string
+	ReleaseNotes        string
+	Mandatory           bool
+	MinSupportedVersion string
+	FileName            string
+	FilePath            string
+	PublicPath          string
+	ContentType         string
+	FileSize            int64
+	IsActive            bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func NormalizeReleasePlatform(platform string) string {
@@ -42,8 +44,8 @@ func IsSupportedReleasePlatform(platform string) bool {
 
 func ListAppReleases() ([]AppRelease, error) {
 	rows, err := db.DB.Query(`
-		SELECT id, platform, version, COALESCE(release_notes, ''), file_name, file_path, public_path,
-		       COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
+		SELECT id, platform, version, COALESCE(release_notes, ''), mandatory_update, COALESCE(min_supported_version, ''),
+		       file_name, file_path, public_path, COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
 		FROM app_releases
 		ORDER BY created_at DESC, id DESC
 	`)
@@ -60,6 +62,8 @@ func ListAppReleases() ([]AppRelease, error) {
 			&release.Platform,
 			&release.Version,
 			&release.ReleaseNotes,
+			&release.Mandatory,
+			&release.MinSupportedVersion,
 			&release.FileName,
 			&release.FilePath,
 			&release.PublicPath,
@@ -89,14 +93,16 @@ func CreateAppRelease(release AppRelease) (*AppRelease, error) {
 	created := &AppRelease{}
 	err := db.DB.QueryRow(`
 		INSERT INTO app_releases (
-			platform, version, release_notes, file_name, file_path, public_path, content_type, file_size, is_active
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
-		RETURNING id, platform, version, COALESCE(release_notes, ''), file_name, file_path, public_path,
-		          COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
+			platform, version, release_notes, mandatory_update, min_supported_version, file_name, file_path, public_path, content_type, file_size, is_active
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE)
+		RETURNING id, platform, version, COALESCE(release_notes, ''), mandatory_update, COALESCE(min_supported_version, ''),
+		          file_name, file_path, public_path, COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
 	`,
 		NormalizeReleasePlatform(release.Platform),
 		strings.TrimSpace(release.Version),
 		strings.TrimSpace(release.ReleaseNotes),
+		release.Mandatory,
+		strings.TrimSpace(release.MinSupportedVersion),
 		strings.TrimSpace(release.FileName),
 		strings.TrimSpace(release.FilePath),
 		strings.TrimSpace(release.PublicPath),
@@ -107,6 +113,8 @@ func CreateAppRelease(release AppRelease) (*AppRelease, error) {
 		&created.Platform,
 		&created.Version,
 		&created.ReleaseNotes,
+		&created.Mandatory,
+		&created.MinSupportedVersion,
 		&created.FileName,
 		&created.FilePath,
 		&created.PublicPath,
@@ -158,8 +166,8 @@ func GetActiveAppRelease(platform string) (*AppRelease, error) {
 	}
 
 	query := `
-		SELECT id, platform, version, COALESCE(release_notes, ''), file_name, file_path, public_path,
-		       COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
+		SELECT id, platform, version, COALESCE(release_notes, ''), mandatory_update, COALESCE(min_supported_version, ''),
+		       file_name, file_path, public_path, COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
 		FROM app_releases
 		WHERE is_active = TRUE
 	`
@@ -176,6 +184,8 @@ func GetActiveAppRelease(platform string) (*AppRelease, error) {
 		&release.Platform,
 		&release.Version,
 		&release.ReleaseNotes,
+		&release.Mandatory,
+		&release.MinSupportedVersion,
 		&release.FileName,
 		&release.FilePath,
 		&release.PublicPath,
@@ -196,8 +206,8 @@ func GetActiveAppRelease(platform string) (*AppRelease, error) {
 
 func GetAllActiveAppReleases() (map[string]AppRelease, error) {
 	rows, err := db.DB.Query(`
-		SELECT id, platform, version, COALESCE(release_notes, ''), file_name, file_path, public_path,
-		       COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
+		SELECT id, platform, version, COALESCE(release_notes, ''), mandatory_update, COALESCE(min_supported_version, ''),
+		       file_name, file_path, public_path, COALESCE(content_type, ''), file_size, is_active, created_at, updated_at
 		FROM app_releases
 		WHERE is_active = TRUE
 		ORDER BY updated_at DESC, id DESC
@@ -215,6 +225,8 @@ func GetAllActiveAppReleases() (map[string]AppRelease, error) {
 			&release.Platform,
 			&release.Version,
 			&release.ReleaseNotes,
+			&release.Mandatory,
+			&release.MinSupportedVersion,
 			&release.FileName,
 			&release.FilePath,
 			&release.PublicPath,

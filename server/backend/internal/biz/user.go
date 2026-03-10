@@ -9,10 +9,13 @@ import (
 )
 
 type User struct {
-	ID         int
-	UserID     string
-	TelegramID sql.NullInt64
-	Role       string
+	ID                int
+	UserID            string
+	TelegramID        sql.NullInt64
+	Role              string
+	IsBlocked         bool
+	PreferredPlatform string
+	Locale            string
 }
 
 type Subscription struct {
@@ -23,34 +26,37 @@ type Subscription struct {
 
 func GetOrCreateUser(userID string) (*User, error) {
 	var user User
-	err := db.DB.QueryRow("SELECT id, user_id, telegram_id, role FROM users WHERE user_id = $1", userID).
-		Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role)
+	err := db.DB.QueryRow(`
+		SELECT id, user_id, telegram_id, role, COALESCE(is_blocked, FALSE), COALESCE(preferred_platform, ''), COALESCE(locale, 'ru')
+		FROM users
+		WHERE user_id = $1
+	`, userID).
+		Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role, &user.IsBlocked, &user.PreferredPlatform, &user.Locale)
 
 	if err == sql.ErrNoRows {
-		err = db.DB.QueryRow(
-			"INSERT INTO users (user_id) VALUES ($1) RETURNING id, user_id, telegram_id, role",
-			userID,
-		).Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role)
+		err = db.DB.QueryRow(`
+			INSERT INTO users (user_id, locale, last_seen_at)
+			VALUES ($1, 'ru', CURRENT_TIMESTAMP)
+			RETURNING id, user_id, telegram_id, role, COALESCE(is_blocked, FALSE), COALESCE(preferred_platform, ''), COALESCE(locale, 'ru')
+		`, userID).Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role, &user.IsBlocked, &user.PreferredPlatform, &user.Locale)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
 
-		var freeGroupID int
-		err = db.DB.QueryRow("SELECT id FROM user_groups WHERE name = 'Free' LIMIT 1").Scan(&freeGroupID)
-		if err == nil {
-			validUntil := time.Now().AddDate(100, 0, 0)
-			_, _ = db.DB.Exec(
-				"INSERT INTO user_subscriptions (user_id, group_id, valid_until) VALUES ($1, $2, $3) ON CONFLICT (user_id, group_id) DO NOTHING",
-				user.ID,
-				freeGroupID,
-				validUntil,
-			)
+		if err := ensureFreeSubscription(user.ID); err != nil {
+			return nil, fmt.Errorf("failed to assign free subscription: %w", err)
 		}
 
 		return &user, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to query user: %w", err)
 	}
+
+	_, _ = db.DB.Exec(`
+		UPDATE users
+		SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, user.ID)
 
 	return &user, nil
 }

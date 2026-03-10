@@ -19,17 +19,19 @@ import (
 var releaseFileSanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 type AppReleaseResponse struct {
-	ID           int    `json:"id"`
-	Platform     string `json:"platform"`
-	Version      string `json:"version"`
-	ReleaseNotes string `json:"release_notes"`
-	FileName     string `json:"file_name"`
-	PublicPath   string `json:"public_path"`
-	ContentType  string `json:"content_type"`
-	FileSize     int64  `json:"file_size"`
-	IsActive     bool   `json:"is_active"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID                  int    `json:"id"`
+	Platform            string `json:"platform"`
+	Version             string `json:"version"`
+	ReleaseNotes        string `json:"release_notes"`
+	Mandatory           bool   `json:"mandatory"`
+	MinSupportedVersion string `json:"min_supported_version"`
+	FileName            string `json:"file_name"`
+	PublicPath          string `json:"public_path"`
+	ContentType         string `json:"content_type"`
+	FileSize            int64  `json:"file_size"`
+	IsActive            bool   `json:"is_active"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 type activateReleaseRequest struct {
@@ -62,6 +64,8 @@ func UploadReleaseHandler(w http.ResponseWriter, r *http.Request) {
 	version := strings.TrimSpace(r.FormValue("version"))
 	releaseNotes := strings.TrimSpace(r.FormValue("release_notes"))
 	activate := strings.EqualFold(strings.TrimSpace(r.FormValue("activate")), "true")
+	mandatory := strings.EqualFold(strings.TrimSpace(r.FormValue("mandatory")), "true")
+	minSupportedVersion := strings.TrimSpace(r.FormValue("min_supported_version"))
 
 	if !biz.IsSupportedReleasePlatform(platform) {
 		http.Error(w, "Unsupported platform", http.StatusBadRequest)
@@ -106,14 +110,16 @@ func UploadReleaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	release, err := biz.CreateAppRelease(biz.AppRelease{
-		Platform:     platform,
-		Version:      version,
-		ReleaseNotes: releaseNotes,
-		FileName:     fileName,
-		FilePath:     storedPath,
-		PublicPath:   relativePublicPath,
-		ContentType:  header.Header.Get("Content-Type"),
-		FileSize:     fileSize,
+		Platform:            platform,
+		Version:             version,
+		ReleaseNotes:        releaseNotes,
+		Mandatory:           mandatory,
+		MinSupportedVersion: minSupportedVersion,
+		FileName:            fileName,
+		FilePath:            storedPath,
+		PublicPath:          relativePublicPath,
+		ContentType:         header.Header.Get("Content-Type"),
+		FileSize:            fileSize,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create release: %v", err), http.StatusInternalServerError)
@@ -167,16 +173,18 @@ func sanitizeReleaseFileName(name string) string {
 
 func releaseToResponse(release biz.AppRelease) AppReleaseResponse {
 	return AppReleaseResponse{
-		ID:           release.ID,
-		Platform:     release.Platform,
-		Version:      release.Version,
-		ReleaseNotes: release.ReleaseNotes,
-		FileName:     release.FileName,
-		PublicPath:   release.PublicPath,
-		ContentType:  release.ContentType,
-		FileSize:     release.FileSize,
-		IsActive:     release.IsActive,
-		CreatedAt:    release.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    release.UpdatedAt.Format(time.RFC3339),
+		ID:                  release.ID,
+		Platform:            release.Platform,
+		Version:             release.Version,
+		ReleaseNotes:        release.ReleaseNotes,
+		Mandatory:           release.Mandatory,
+		MinSupportedVersion: release.MinSupportedVersion,
+		FileName:            release.FileName,
+		PublicPath:          release.PublicPath,
+		ContentType:         release.ContentType,
+		FileSize:            release.FileSize,
+		IsActive:            release.IsActive,
+		CreatedAt:           release.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:           release.UpdatedAt.Format(time.RFC3339),
 	}
 }

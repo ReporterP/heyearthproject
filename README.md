@@ -29,6 +29,7 @@ go run ./cmd/api
 API поднимется на `127.0.0.1:8000`, gRPC на `127.0.0.1:50051`.
 `CheckAppUpdate` теперь читает активные релизы из БД, а не из `.env`.
 `ADMIN_USER` / `ADMIN_PASS` теперь нужны как bootstrap для первого `super_admin`: после первой инициализации дальнейшая работа идёт через DB-backed admin users / roles / permissions.
+При старте API автоматически импортирует legacy `bot_user_map.json` / `user_platform.txt` / `registered_users.txt` в БД, если они ещё лежат в `APP_DIR`.
 
 ### Деплой
 
@@ -72,7 +73,15 @@ cd flutter-app
 flutter build windows
 ```
 
-Клиент использует canonical `user_id` и gRPC API `ConfigApi`.
+Клиент использует canonical `user_id` и новый gRPC слой `ClientApi`; legacy `ConfigApi` оставлен для обратной совместимости.
+Новый основной вход:
+
+- Telegram bot создаёт pairing через deep-link `heyearth://claim?...` или одноразовый code claim.
+- `flutter-app` больше не создаёт локальный `user_id` сам: он получает identity из Bot/Main Server.
+- Manual вход по `user_id` остаётся fallback-only.
+- Перед connect клиент сначала читает `GetAccessState`, затем `GetConnectionBundle`.
+- Для `iOS/macOS` пока используется явный Happ fallback flow.
+- Release policy теперь идёт из БД: `mandatory` и `min_supported_version` блокируют устаревший клиент до обновления.
 
 ## Admin Web
 

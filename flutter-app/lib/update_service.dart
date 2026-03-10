@@ -9,10 +9,16 @@ class UpdateInfo {
     required this.latestVersion,
     required this.downloadUrl,
     this.releaseNotes,
+    required this.mandatory,
+    required this.minSupportedVersion,
+    required this.requiredByPolicy,
   });
   final String latestVersion;
   final String downloadUrl;
   final String? releaseNotes;
+  final bool mandatory;
+  final String minSupportedVersion;
+  final bool requiredByPolicy;
 
   bool get hasUrl => downloadUrl.isNotEmpty;
 }
@@ -63,14 +69,16 @@ String _currentPlatformForUpdates() {
 }
 
 /// Запрос к API по gRPC: CheckAppUpdate.
-/// Возвращает версию с сервера и [UpdateInfo] только если на сервере версия новее текущей.
+/// Возвращает версию с сервера и [UpdateInfo], если доступна новая версия
+/// или текущая версия ниже минимально поддерживаемой.
 Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
   try {
     final platform = _currentPlatformForUpdates();
     if (platform == 'web' || platform == 'fuchsia') {
       return const UpdateCheckResult();
     }
-    final resp = await checkAppUpdateGrpc(apiBase, platform).timeout(const Duration(seconds: 10));
+    final resp = await checkAppUpdateGrpc(apiBase, platform)
+        .timeout(const Duration(seconds: 10));
     if (resp == null) return const UpdateCheckResult();
     final version = resp.version.trim();
     if (version.isEmpty) return const UpdateCheckResult();
@@ -78,6 +86,10 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
     final info = await PackageInfo.fromPlatform();
     final current = info.version;
     final newer = isNewerVersion(current, version);
+    final minSupportedVersion = resp.minSupportedVersion.trim();
+    final belowMinSupported = minSupportedVersion.isNotEmpty &&
+        isNewerVersion(current, minSupportedVersion);
+    final requiredByPolicy = resp.mandatory || belowMinSupported;
 
     String downloadUrl = '';
     if (kIsWeb) {
@@ -88,10 +100,12 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
         defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.linux) {
       downloadUrl = resp.windowsUrl.trim();
-      if (downloadUrl.isEmpty && defaultTargetPlatform == TargetPlatform.macOS) {
+      if (downloadUrl.isEmpty &&
+          defaultTargetPlatform == TargetPlatform.macOS) {
         downloadUrl = resp.macosUrl.trim();
       }
-      if (downloadUrl.isEmpty && defaultTargetPlatform == TargetPlatform.linux) {
+      if (downloadUrl.isEmpty &&
+          defaultTargetPlatform == TargetPlatform.linux) {
         downloadUrl = resp.linuxUrl.trim();
       }
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
@@ -99,11 +113,15 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
     }
 
     UpdateInfo? update;
-    if (newer) {
+    if (newer || requiredByPolicy) {
       update = UpdateInfo(
         latestVersion: version,
         downloadUrl: downloadUrl,
-        releaseNotes: resp.releaseNotes.trim().isEmpty ? null : resp.releaseNotes.trim(),
+        releaseNotes:
+            resp.releaseNotes.trim().isEmpty ? null : resp.releaseNotes.trim(),
+        mandatory: resp.mandatory,
+        minSupportedVersion: minSupportedVersion,
+        requiredByPolicy: requiredByPolicy,
       );
     }
     return UpdateCheckResult(serverVersion: version, update: update);

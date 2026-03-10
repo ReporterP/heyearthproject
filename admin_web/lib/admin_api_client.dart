@@ -170,6 +170,8 @@ class AdminApiClient {
     required String platform,
     required String version,
     required String releaseNotes,
+    required bool mandatory,
+    required String minSupportedVersion,
     required String fileName,
     required Uint8List fileBytes,
     required bool activate,
@@ -179,6 +181,8 @@ class AdminApiClient {
     request.fields['platform'] = platform.trim();
     request.fields['version'] = version.trim();
     request.fields['release_notes'] = releaseNotes;
+    request.fields['mandatory'] = mandatory ? 'true' : 'false';
+    request.fields['min_supported_version'] = minSupportedVersion.trim();
     request.fields['activate'] = activate ? 'true' : 'false';
     request.files.add(
         http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
@@ -313,7 +317,9 @@ class AdminApiClient {
     }
     if (raw.startsWith('<')) {
       throw AdminApiException(
-        'Server returned HTML instead of JSON. Check that heyearth-api is running and the site proxies /api/admin correctly.',
+        'Server returned HTML instead of JSON. '
+        'For local dev: 1) Start API: cd server/backend && go run ./cmd/api (port 8000). '
+        '2) Run admin_web with: flutter run -d chrome --dart-define=HEYEARTH_ADMIN_API_BASE=http://127.0.0.1:8000/api/admin',
         statusCode: response.statusCode,
       );
     }

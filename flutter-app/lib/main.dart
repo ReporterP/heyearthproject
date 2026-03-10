@@ -19,7 +19,7 @@ void main() {
   }, (error, stack) {
     if (kDebugMode) {
       debugPrint('Uncaught error: $error');
-      debugPrint(stack?.toString() ?? '');
+      debugPrint(stack.toString());
     }
   });
 }

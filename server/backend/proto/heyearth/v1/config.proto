@@ -4,13 +4,33 @@ package heyearth.v1;
 
 option go_package = "github.com/heyearth/backend/internal/pb/heyearth_v1";
 
-// ConfigApi — выдача персонального SS URI по user_id и проверка обновлений приложения.
+// ConfigApi — legacy service kept for backward compatibility.
 service ConfigApi {
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
   rpc ApplyPromocode(ApplyPromocodeRequest) returns (ApplyPromocodeResponse);
   rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+}
+
+service BotApi {
+  rpc EnsureTelegramUser(EnsureTelegramUserRequest) returns (UserProfileResponse);
+  rpc SetPreferredPlatform(SetPreferredPlatformRequest) returns (UserProfileResponse);
+  rpc CreatePairingCode(CreatePairingCodeRequest) returns (CreatePairingCodeResponse);
+  rpc GetClientDistribution(GetClientDistributionRequest) returns (GetClientDistributionResponse);
+  rpc IssueLegacyAppleConfig(IssueLegacyAppleConfigRequest) returns (ConnectionBundleResponse);
+}
+
+service ClientApi {
+  rpc ClaimByCode(ClaimByCodeRequest) returns (ClaimResponse);
+  rpc ClaimByToken(ClaimByTokenRequest) returns (ClaimResponse);
+  rpc GetMe(GetMeRequest) returns (UserProfileResponse);
+  rpc GetAccessState(GetAccessStateRequest) returns (AccessStateResponse);
+  rpc GetConnectionBundle(GetConnectionBundleRequest) returns (ConnectionBundleResponse);
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+  rpc ApplyPromocode(ApplyPromocodeRequest) returns (ApplyPromocodeResponse);
+  rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
 }
 
 message GetConfigRequest {
@@ -20,6 +40,14 @@ message GetConfigRequest {
 message GetConfigResponse {
   string user_id = 1;
   string ss_uri = 2;
+}
+
+message DeviceContext {
+  string device_id = 1;
+  string platform = 2;
+  string device_label = 3;
+  string locale = 4;
+  string linked_via = 5;
 }
 
 message HealthRequest {}
@@ -40,6 +68,8 @@ message CheckAppUpdateResponse {
   string linux_url = 5;
   string ios_url = 6;
   string release_notes = 7;
+  bool mandatory = 8;
+  string min_supported_version = 9;
 }
 
 message ApplyPromocodeRequest {
@@ -59,4 +89,151 @@ message GetProfileRequest {
 message GetProfileResponse {
   string current_plan = 1;
   string valid_until = 2; // ISO8601 string
+}
+
+message EnsureTelegramUserRequest {
+  int64 telegram_id = 1;
+  string preferred_platform = 2;
+  string locale = 3;
+}
+
+message SetPreferredPlatformRequest {
+  int64 telegram_id = 1;
+  string preferred_platform = 2;
+}
+
+message CreatePairingCodeRequest {
+  int64 telegram_id = 1;
+  string preferred_platform = 2;
+  string locale = 3;
+}
+
+message CreatePairingCodeResponse {
+  UserProfileResponse profile = 1;
+  string code = 2;
+  string claim_token = 3;
+  string expires_at = 4;
+  string deeplink_url = 5;
+}
+
+message GetClientDistributionRequest {
+  string platform = 1;
+}
+
+message GetClientDistributionResponse {
+  string version = 1;
+  string android_url = 2;
+  string windows_url = 3;
+  string macos_url = 4;
+  string linux_url = 5;
+  string ios_url = 6;
+  string release_notes = 7;
+  bool mandatory = 8;
+  string min_supported_version = 9;
+}
+
+message IssueLegacyAppleConfigRequest {
+  int64 telegram_id = 1;
+  bool force_new = 2;
+}
+
+message ClaimByCodeRequest {
+  string code = 1;
+  DeviceContext device = 2;
+}
+
+message ClaimByTokenRequest {
+  string claim_token = 1;
+  DeviceContext device = 2;
+}
+
+message ClaimResponse {
+  UserProfileResponse profile = 1;
+  AccessStateResponse access_state = 2;
+}
+
+message GetMeRequest {
+  string user_id = 1;
+  DeviceContext device = 2;
+}
+
+message UserProfileResponse {
+  string user_id = 1;
+  int64 telegram_id = 2;
+  bool telegram_linked = 3;
+  string preferred_platform = 4;
+  string locale = 5;
+  bool is_blocked = 6;
+  string current_plan = 7;
+  string valid_until = 8;
+  bool legacy_happ_fallback = 9;
+  string access_status = 10;
+  string status_reason = 11;
+}
+
+message GetAccessStateRequest {
+  string user_id = 1;
+  string platform = 2;
+}
+
+message AccessStateResponse {
+  string user_id = 1;
+  string current_plan = 2;
+  string valid_until = 3;
+  string preferred_platform = 4;
+  bool is_blocked = 5;
+  bool can_connect = 6;
+  bool legacy_happ_fallback = 7;
+  string reason = 8;
+}
+
+message GetConnectionBundleRequest {
+  string user_id = 1;
+  string platform = 2;
+  bool force_refresh = 3;
+}
+
+message ConnectionBundleResponse {
+  string user_id = 1;
+  string ss_uri = 2;
+  string connect_mode = 3;
+  string status_message = 4;
+  bool legacy_happ_fallback = 5;
+  string fallback_instruction = 6;
+}
+
+message ListSubscriptionsRequest {
+  string user_id = 1;
+}
+
+message SubscriptionItem {
+  int32 group_id = 1;
+  string group_name = 2;
+  string valid_until = 3;
+  bool auto_renew = 4;
+  bool active = 5;
+}
+
+message ListSubscriptionsResponse {
+  repeated SubscriptionItem items = 1;
+}
+
+message ListPaymentsRequest {
+  string user_id = 1;
+}
+
+message PaymentItem {
+  int32 id = 1;
+  double amount = 2;
+  string currency = 3;
+  string status = 4;
+  string provider = 5;
+  string external_id = 6;
+  string notes = 7;
+  string created_at = 8;
+  string confirmed_at = 9;
+}
+
+message ListPaymentsResponse {
+  repeated PaymentItem items = 1;
 }

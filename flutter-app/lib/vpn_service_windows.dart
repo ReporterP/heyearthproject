@@ -104,7 +104,8 @@ class VpnServiceWindows implements VpnService {
   }
 
   @override
-  Future<void> connect(String ssUri, {bool proxyOnly = false, bool selectedOnly = false}) async {
+  Future<void> connect(String ssUri,
+      {bool proxyOnly = false, bool selectedOnly = false}) async {
     if (!isSupported) return;
     if (ssUri.trim().isEmpty) return;
 
@@ -125,7 +126,8 @@ class VpnServiceWindows implements VpnService {
     final socksPort = _socksPortFromConfig(config);
 
     final tempDir = await getTemporaryDirectory();
-    _configFile = File(path.join(tempDir.path, 'heyearth_xray_${DateTime.now().millisecondsSinceEpoch}.json'));
+    _configFile = File(path.join(tempDir.path,
+        'heyearth_xray_${DateTime.now().millisecondsSinceEpoch}.json'));
     await _configFile!.writeAsString(config, flush: true);
 
     try {
@@ -135,17 +137,22 @@ class VpnServiceWindows implements VpnService {
         runInShell: false,
       );
     } catch (e) {
-      try { await _configFile?.delete(); } catch (_) {}
+      try {
+        await _configFile?.delete();
+      } catch (_) {}
       _configFile = null;
       rethrow;
     }
 
     try {
-      await _proxyManager.setAsSystemProxy(ProxyTypes.socks, '127.0.0.1', socksPort);
+      await _proxyManager.setAsSystemProxy(
+          ProxyTypes.socks, '127.0.0.1', socksPort);
     } catch (e) {
       _process?.kill();
       _process = null;
-      try { await _configFile?.delete(); } catch (_) {}
+      try {
+        await _configFile?.delete();
+      } catch (_) {}
       _configFile = null;
       rethrow;
     }

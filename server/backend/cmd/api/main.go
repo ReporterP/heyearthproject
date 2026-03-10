@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
@@ -31,6 +30,8 @@ var openAPIFS embed.FS
 
 type server struct {
 	heyearth_v1.UnimplementedConfigApiServer
+	heyearth_v1.UnimplementedBotApiServer
+	heyearth_v1.UnimplementedClientApiServer
 }
 
 func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
@@ -90,41 +91,7 @@ func (s *server) GetConfig(ctx context.Context, req *heyearth_v1.GetConfigReques
 	if userID == "" || len(userID) > 256 {
 		return nil, status.Error(codes.InvalidArgument, "user_id required (max 256 chars)")
 	}
-
-	user, err := biz.GetOrCreateUser(userID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get user: %v", err)
-	}
-
-	var groupID int
-	sub, err := biz.GetUserSubscription(user.ID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get subscription: %v", err)
-	}
-	if sub != nil {
-		groupID = sub.GroupID
-	}
-
-	bestServer, err := biz.GetBestServerForGroup(groupID)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable, "no available VPN nodes: %v", err)
-	}
-
-	agentClient, conn, err := connectToNodeAgent(ctx, bestServer.IPAddress)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable, "connect node-agent: %v", err)
-	}
-	defer conn.Close()
-
-	resp, err := agentClient.CreateUser(ctx, &pbnode.CreateUserRequest{UserId: userID})
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable, "create config on node-agent: %v", err)
-	}
-
-	return &heyearth_v1.GetConfigResponse{
-		UserId: userID,
-		SsUri:  resp.GetSsLink(),
-	}, nil
+	return s.issueNodeConfig(ctx, userID)
 }
 
 func (s *server) Health(context.Context, *heyearth_v1.HealthRequest) (*heyearth_v1.HealthResponse, error) {
@@ -197,6 +164,8 @@ func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpda
 		}
 		response.Version = release.Version
 		response.ReleaseNotes = release.ReleaseNotes
+		response.Mandatory = release.Mandatory
+		response.MinSupportedVersion = release.MinSupportedVersion
 		return response, nil
 	}
 
@@ -207,6 +176,8 @@ func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpda
 	if latest != nil {
 		response.Version = latest.Version
 		response.ReleaseNotes = latest.ReleaseNotes
+		response.Mandatory = latest.Mandatory
+		response.MinSupportedVersion = latest.MinSupportedVersion
 	}
 	return response, nil
 }
@@ -220,6 +191,9 @@ func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromo
 	user, err := biz.GetOrCreateUser(userID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get user: %v", err)
+	}
+	if user.IsBlocked {
+		return nil, status.Error(codes.PermissionDenied, "user is blocked")
 	}
 
 	if err := biz.ApplyPromocode(user.ID, strings.TrimSpace(req.GetCode())); err != nil {
@@ -235,25 +209,13 @@ func (s *server) GetProfile(ctx context.Context, req *heyearth_v1.GetProfileRequ
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
 
-	user, err := biz.GetOrCreateUser(userID)
+	profile, err := biz.GetUserProfile(userID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get user: %v", err)
+		return nil, status.Errorf(codes.Internal, "get user profile: %v", err)
 	}
-
-	sub, err := biz.GetUserSubscription(user.ID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get subscription: %v", err)
-	}
-	if sub == nil {
-		return &heyearth_v1.GetProfileResponse{
-			CurrentPlan: "Free",
-			ValidUntil:  "",
-		}, nil
-	}
-
 	return &heyearth_v1.GetProfileResponse{
-		CurrentPlan: sub.GroupName,
-		ValidUntil:  sub.ValidUntil.Format(time.RFC3339),
+		CurrentPlan: profile.CurrentPlan,
+		ValidUntil:  profile.ValidUntil,
 	}, nil
 }
 
@@ -316,13 +278,15 @@ func httpGateway(srv *server) http.HandlerFunc {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{
-				"version":       resp.GetVersion(),
-				"android":       resp.GetAndroidUrl(),
-				"windows":       resp.GetWindowsUrl(),
-				"macos":         resp.GetMacosUrl(),
-				"linux":         resp.GetLinuxUrl(),
-				"ios":           resp.GetIosUrl(),
-				"release_notes": resp.GetReleaseNotes(),
+				"version":               resp.GetVersion(),
+				"android":               resp.GetAndroidUrl(),
+				"windows":               resp.GetWindowsUrl(),
+				"macos":                 resp.GetMacosUrl(),
+				"linux":                 resp.GetLinuxUrl(),
+				"ios":                   resp.GetIosUrl(),
+				"release_notes":         resp.GetReleaseNotes(),
+				"mandatory":             fmt.Sprintf("%t", resp.GetMandatory()),
+				"min_supported_version": resp.GetMinSupportedVersion(),
 			})
 		default:
 			http.NotFound(w, r)
@@ -355,6 +319,15 @@ func main() {
 	if err := admin.ValidateConfig(); err != nil {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
+	if importResult, err := biz.ImportLegacyBotState(); err != nil {
+		log.Printf("legacy bot import skipped: %v", err)
+	} else if importResult != nil && (importResult.ImportedMappings > 0 || importResult.ImportedUsers > 0) {
+		log.Printf(
+			"legacy bot import completed: mappings=%d users=%d",
+			importResult.ImportedMappings,
+			importResult.ImportedUsers,
+		)
+	}
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
@@ -367,6 +340,8 @@ func main() {
 	srv := &server{}
 	grpcServer := grpc.NewServer()
 	heyearth_v1.RegisterConfigApiServer(grpcServer, srv)
+	heyearth_v1.RegisterBotApiServer(grpcServer, srv)
+	heyearth_v1.RegisterClientApiServer(grpcServer, srv)
 	reflection.Register(grpcServer)
 	go func() {
 		log.Printf("gRPC API on %s", grpcAddr)

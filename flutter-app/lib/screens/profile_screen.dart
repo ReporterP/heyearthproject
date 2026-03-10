@@ -1,27 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../app_state.dart';
-import '../grpc_client.dart';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({Key? key}) : super(key: key);
+  const ProfileScreen({super.key});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  bool _isLoading = true;
-  String _currentPlan = 'Loading...';
-  String _validUntil = '';
-  final _promoController = TextEditingController();
-  bool _isApplyingPromo = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadProfile();
-  }
+  final TextEditingController _promoController = TextEditingController();
+  bool _promoLoading = false;
 
   @override
   void dispose() {
@@ -29,137 +20,169 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
-  Future<void> _loadProfile() async {
-    setState(() => _isLoading = true);
-    final state = context.read<AppState>();
-    final userId = state.userId;
-    if (userId == null || userId.trim().isEmpty) {
-      setState(() {
-        _currentPlan = 'User ID not set';
-        _validUntil = '';
-        _isLoading = false;
-      });
-      return;
-    }
-    try {
-      final resp = await getProfileGrpc(state.apiBase, userId);
-      if (!mounted) return;
-      if (resp != null) {
-        setState(() {
-          _currentPlan = resp.currentPlan;
-          _validUntil = resp.validUntil;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _currentPlan = 'Error loading profile';
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _applyPromo() async {
+  Future<void> _applyPromo(AppState state) async {
     final code = _promoController.text.trim();
-    if (code.isEmpty) return;
-
-    setState(() => _isApplyingPromo = true);
-    final state = context.read<AppState>();
-    final userId = state.userId;
-    if (userId == null || userId.trim().isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('User ID is missing')),
-        );
-        setState(() => _isApplyingPromo = false);
-      }
+    if (code.isEmpty) {
       return;
     }
-    try {
-      final resp = await applyPromocodeGrpc(state.apiBase, userId, code);
-      if (!mounted) return;
-      if (resp != null && resp.success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Promocode applied successfully!')),
-        );
-        _promoController.clear();
-        await _loadProfile();
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(resp?.message ?? 'Failed to apply promocode')),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isApplyingPromo = false);
-      }
+    setState(() => _promoLoading = true);
+    final ok = await state.applyPromocode(code);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _promoLoading = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text(ok
+              ? 'Промокод применён.'
+              : (state.error ?? 'Не удалось применить промокод.'))),
+    );
+    if (ok) {
+      _promoController.clear();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Profile & Subscription'),
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+    return Consumer<AppState>(
+      builder: (context, state, _) {
+        final profile = state.profile;
+        final access = state.accessState;
+        return Scaffold(
+          appBar: AppBar(title: const Text('Профиль и доступ')),
+          body: RefreshIndicator(
+            onRefresh: () => state.refreshAccountData(),
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.badge_outlined),
+                    title: const Text('HeYearth ID'),
+                    subtitle: Text(state.userId ?? 'Not set'),
+                  ),
+                ),
+                if (profile != null) ...[
+                  const SizedBox(height: 12),
                   Card(
                     child: ListTile(
-                      leading: const Icon(Icons.person),
-                      title: const Text('User ID'),
-                      subtitle: Text(state.userId ?? 'Not set'),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.star),
-                      title: const Text('Current Plan'),
-                      subtitle: Text('$_currentPlan\nValid until: ${_validUntil.isEmpty ? "Forever" : _validUntil}'),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  const Text('Apply Promocode', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _promoController,
-                          decoration: const InputDecoration(
-                            hintText: 'Enter code here',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
+                      leading: const Icon(Icons.person_outline),
+                      title: const Text('Профиль'),
+                      subtitle: Text(
+                        'Платформа: ${profile.preferredPlatform.isEmpty ? 'не выбрана' : profile.preferredPlatform}\n'
+                        'Telegram: ${profile.telegramLinked ? 'привязан' : 'не привязан'}\n'
+                        'Статус: ${profile.accessStatus.isEmpty ? 'active' : profile.accessStatus}',
                       ),
-                      const SizedBox(width: 16),
-                      ElevatedButton(
-                        onPressed: _isApplyingPromo ? null : _applyPromo,
-                        child: _isApplyingPromo
-                            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Text('Apply'),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
-              ),
+                if (access != null) ...[
+                  const SizedBox(height: 12),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.workspace_premium_outlined),
+                      title: const Text('Доступ'),
+                      subtitle: Text(
+                        'План: ${access.currentPlan.isEmpty ? 'Free' : access.currentPlan}\n'
+                        'Действует до: ${access.validUntil.isEmpty ? 'не ограничен' : access.validUntil}\n'
+                        'Подключение: ${access.canConnect ? 'разрешено' : 'недоступно'}',
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Text('Подписки',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                if (state.subscriptions.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('Подписки пока не найдены.'),
+                    ),
+                  ),
+                for (final item in state.subscriptions)
+                  Card(
+                    child: ListTile(
+                      title: Text(item.groupName),
+                      subtitle: Text(
+                        'До: ${item.validUntil.isEmpty ? 'не ограничен' : item.validUntil}\n'
+                        'Auto renew: ${item.autoRenew ? 'yes' : 'no'}\n'
+                        'Active: ${item.active ? 'yes' : 'no'}',
+                      ),
+                      isThreeLine: true,
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Text('Платежи', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                if (state.payments.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('Платежей пока нет.'),
+                    ),
+                  ),
+                for (final item in state.payments)
+                  Card(
+                    child: ListTile(
+                      title: Text('${item.amount} ${item.currency}'),
+                      subtitle: Text(
+                        'Статус: ${item.status}\n'
+                        'Provider: ${item.provider}\n'
+                        'Дата: ${item.createdAt}',
+                      ),
+                      isThreeLine: true,
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Text('Промокод',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _promoController,
+                        decoration: const InputDecoration(
+                          hintText: 'Введите код',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton(
+                      onPressed:
+                          _promoLoading ? null : () => _applyPromo(state),
+                      child: _promoLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Применить'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (state.error != null)
+                  Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        state.error!,
+                        style: TextStyle(
+                            color:
+                                Theme.of(context).colorScheme.onErrorContainer),
+                      ),
+                    ),
+                  ),
+              ],
             ),
+          ),
+        );
+      },
     );
   }
 }
