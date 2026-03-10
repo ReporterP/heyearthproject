@@ -173,25 +173,53 @@ class AdminApiClient {
     }
   }
 
+  void _ensureJsonResponse(http.Response response) {
+    final raw = response.body.trim();
+    if (raw.isEmpty) return;
+    if (raw.startsWith('<')) {
+      throw AdminApiException(
+        'Сервер вернул HTML вместо JSON (возможно, API не запущен или неверный адрес). '
+        'Проверьте API base и что heyearth-api работает на сервере.',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
   Map<String, dynamic> _decodeBody(http.Response response) {
+    _ensureJsonResponse(response);
     final raw = response.body.trim();
     if (raw.isEmpty) {
       return <String, dynamic>{};
     }
-    final decoded = jsonDecode(raw);
-    if (decoded is Map<String, dynamic>) {
-      return decoded;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      return <String, dynamic>{'message': raw};
+    } on FormatException {
+      throw AdminApiException(
+        'Ответ сервера не JSON. Проверьте API base и что сервис heyearth-api запущен.',
+        statusCode: response.statusCode,
+      );
     }
-    return <String, dynamic>{'message': raw};
   }
 
   List<dynamic> _decodeJsonList(http.Response response) {
+    _ensureJsonResponse(response);
     final raw = response.body.trim();
     if (raw.isEmpty) {
       return const <dynamic>[];
     }
-    final decoded = jsonDecode(raw);
-    return decoded is List ? decoded : const <dynamic>[];
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is List ? decoded : const <dynamic>[];
+    } on FormatException {
+      throw AdminApiException(
+        'Ответ сервера не JSON. Проверьте API base и что сервис heyearth-api запущен.',
+        statusCode: response.statusCode,
+      );
+    }
   }
 
   String _extractError(Map<String, dynamic> body, {required String fallback}) {
