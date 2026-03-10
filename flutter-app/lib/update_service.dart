@@ -42,11 +42,35 @@ List<int> _parseVersion(String s) {
   return main.split('.').map((e) => int.tryParse(e) ?? 0).toList();
 }
 
+String _currentPlatformForUpdates() {
+  if (kIsWeb) {
+    return 'web';
+  }
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.android:
+      return 'android';
+    case TargetPlatform.windows:
+      return 'windows';
+    case TargetPlatform.macOS:
+      return 'macos';
+    case TargetPlatform.linux:
+      return 'linux';
+    case TargetPlatform.iOS:
+      return 'ios';
+    case TargetPlatform.fuchsia:
+      return 'fuchsia';
+  }
+}
+
 /// Запрос к API по gRPC: CheckAppUpdate.
 /// Возвращает версию с сервера и [UpdateInfo] только если на сервере версия новее текущей.
 Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
   try {
-    final resp = await checkAppUpdateGrpc(apiBase).timeout(const Duration(seconds: 10));
+    final platform = _currentPlatformForUpdates();
+    if (platform == 'web' || platform == 'fuchsia') {
+      return const UpdateCheckResult();
+    }
+    final resp = await checkAppUpdateGrpc(apiBase, platform).timeout(const Duration(seconds: 10));
     if (resp == null) return const UpdateCheckResult();
     final version = resp.version.trim();
     if (version.isEmpty) return const UpdateCheckResult();

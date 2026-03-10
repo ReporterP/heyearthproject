@@ -1,0 +1,1 @@
+ C:\\Users\\alexander\\Desktop\\heyearthproject\\admin_web\\build\\web\\manifest.json:  C:\\Users\\alexander\\Desktop\\heyearthproject\\admin_web\\web\\index.html C:\\Users\\alexander\\Desktop\\heyearthproject\\admin_web\\web\\manifest.json

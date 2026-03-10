@@ -131,16 +131,84 @@ func (s *server) Health(context.Context, *heyearth_v1.HealthRequest) (*heyearth_
 	return &heyearth_v1.HealthResponse{Status: "ok"}, nil
 }
 
-func (s *server) CheckAppUpdate(context.Context, *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
-	return &heyearth_v1.CheckAppUpdateResponse{
-		Version:      strings.TrimSpace(os.Getenv("APP_UPDATE_VERSION")),
-		AndroidUrl:   strings.TrimSpace(os.Getenv("APP_UPDATE_URL_ANDROID")),
-		WindowsUrl:   strings.TrimSpace(os.Getenv("APP_UPDATE_URL_WINDOWS")),
-		MacosUrl:     strings.TrimSpace(os.Getenv("APP_UPDATE_URL_MACOS")),
-		LinuxUrl:     strings.TrimSpace(os.Getenv("APP_UPDATE_URL_LINUX")),
-		IosUrl:       strings.TrimSpace(os.Getenv("APP_UPDATE_URL_IOS")),
-		ReleaseNotes: strings.TrimSpace(os.Getenv("APP_UPDATE_RELEASE_NOTES")),
-	}, nil
+func publicBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := strings.TrimSpace(os.Getenv("SITE_DOMAIN")); v != "" {
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			return strings.TrimRight(v, "/")
+		}
+		return "https://" + strings.TrimRight(v, "/")
+	}
+	return ""
+}
+
+func absoluteReleaseURL(publicPath string) string {
+	publicPath = strings.TrimSpace(publicPath)
+	if publicPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(publicPath, "http://") || strings.HasPrefix(publicPath, "https://") {
+		return publicPath
+	}
+	base := publicBaseURL()
+	if base == "" {
+		return ""
+	}
+	if !strings.HasPrefix(publicPath, "/") {
+		publicPath = "/" + publicPath
+	}
+	return base + publicPath
+}
+
+func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
+	platform := biz.NormalizeReleasePlatform(req.GetPlatform())
+	if platform != "" && !biz.IsSupportedReleasePlatform(platform) {
+		return nil, status.Error(codes.InvalidArgument, "unsupported platform")
+	}
+
+	activeReleases, err := biz.GetAllActiveAppReleases()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load active releases: %v", err)
+	}
+
+	response := &heyearth_v1.CheckAppUpdateResponse{}
+	if release, ok := activeReleases["android"]; ok {
+		response.AndroidUrl = absoluteReleaseURL(release.PublicPath)
+	}
+	if release, ok := activeReleases["windows"]; ok {
+		response.WindowsUrl = absoluteReleaseURL(release.PublicPath)
+	}
+	if release, ok := activeReleases["macos"]; ok {
+		response.MacosUrl = absoluteReleaseURL(release.PublicPath)
+	}
+	if release, ok := activeReleases["linux"]; ok {
+		response.LinuxUrl = absoluteReleaseURL(release.PublicPath)
+	}
+	if release, ok := activeReleases["ios"]; ok {
+		response.IosUrl = absoluteReleaseURL(release.PublicPath)
+	}
+
+	if platform != "" {
+		release, ok := activeReleases[platform]
+		if !ok {
+			return response, nil
+		}
+		response.Version = release.Version
+		response.ReleaseNotes = release.ReleaseNotes
+		return response, nil
+	}
+
+	latest, err := biz.GetActiveAppRelease("")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load latest release: %v", err)
+	}
+	if latest != nil {
+		response.Version = latest.Version
+		response.ReleaseNotes = latest.ReleaseNotes
+	}
+	return response, nil
 }
 
 func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromocodeRequest) (*heyearth_v1.ApplyPromocodeResponse, error) {
@@ -253,9 +321,11 @@ func httpGateway(srv *server) http.HandlerFunc {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			resp, err := srv.CheckAppUpdate(r.Context(), &heyearth_v1.CheckAppUpdateRequest{})
+			resp, err := srv.CheckAppUpdate(r.Context(), &heyearth_v1.CheckAppUpdateRequest{
+				Platform: strings.TrimSpace(r.URL.Query().Get("platform")),
+			})
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				http.Error(w, status.Convert(err).Message(), grpcCodeToHTTP(status.Code(err)))
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{
@@ -330,6 +400,23 @@ func main() {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
+	})))
+	http.HandleFunc("/api/admin/releases", withAdminCORS(admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			admin.ListReleasesHandler(w, r)
+		case http.MethodPost:
+			admin.UploadReleaseHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+	http.HandleFunc("/api/admin/releases/activate", withAdminCORS(admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		admin.ActivateReleaseHandler(w, r)
 	})))
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)

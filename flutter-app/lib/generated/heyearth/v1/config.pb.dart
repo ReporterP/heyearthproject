@@ -1,4 +1,14 @@
-// Generated from config.proto. Do not edit by hand.
+// This is a generated file - do not edit.
+//
+// Generated from heyearth/v1/config.proto.
+
+// @dart = 3.3
+
+// ignore_for_file: annotate_overrides, camel_case_types, comment_references
+// ignore_for_file: constant_identifier_names
+// ignore_for_file: curly_braces_in_flow_control_structures
+// ignore_for_file: deprecated_member_use_from_same_package, library_prefixes
+// ignore_for_file: non_constant_identifier_names, prefer_relative_imports
 
 import 'dart:core' as $core;
 
@@ -7,12 +17,16 @@ import 'package:protobuf/protobuf.dart' as $pb;
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
 class GetConfigRequest extends $pb.GeneratedMessage {
-  factory GetConfigRequest({$core.String? userId}) {
+  factory GetConfigRequest({
+    $core.String? userId,
+  }) {
     final result = create();
     if (userId != null) result.userId = userId;
     return result;
   }
+
   GetConfigRequest._();
+
   factory GetConfigRequest.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -27,13 +41,24 @@ class GetConfigRequest extends $pb.GeneratedMessage {
     ..aOS(1, _omitFieldNames ? '' : 'userId')
     ..hasRequiredFields = false;
 
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetConfigRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetConfigRequest copyWith(void Function(GetConfigRequest) updates) =>
+      super.copyWith((message) => updates(message as GetConfigRequest))
+          as GetConfigRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
   @$core.pragma('dart2js:noInline')
   static GetConfigRequest create() => GetConfigRequest._();
   @$core.override
   GetConfigRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetConfigRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetConfigRequest>(create);
   static GetConfigRequest? _defaultInstance;
-  static GetConfigRequest getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get userId => $_getSZ(0);
@@ -43,19 +68,21 @@ class GetConfigRequest extends $pb.GeneratedMessage {
   $core.bool hasUserId() => $_has(0);
   @$pb.TagNumber(1)
   void clearUserId() => $_clearField(1);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class GetConfigResponse extends $pb.GeneratedMessage {
-  factory GetConfigResponse({$core.String? userId, $core.String? ssUri}) {
+  factory GetConfigResponse({
+    $core.String? userId,
+    $core.String? ssUri,
+  }) {
     final result = create();
     if (userId != null) result.userId = userId;
     if (ssUri != null) result.ssUri = ssUri;
     return result;
   }
+
   GetConfigResponse._();
+
   factory GetConfigResponse.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -71,13 +98,24 @@ class GetConfigResponse extends $pb.GeneratedMessage {
     ..aOS(2, _omitFieldNames ? '' : 'ssUri')
     ..hasRequiredFields = false;
 
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetConfigResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetConfigResponse copyWith(void Function(GetConfigResponse) updates) =>
+      super.copyWith((message) => updates(message as GetConfigResponse))
+          as GetConfigResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
   @$core.pragma('dart2js:noInline')
   static GetConfigResponse create() => GetConfigResponse._();
   @$core.override
   GetConfigResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetConfigResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetConfigResponse>(create);
   static GetConfigResponse? _defaultInstance;
-  static GetConfigResponse getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get userId => $_getSZ(0);
@@ -96,14 +134,13 @@ class GetConfigResponse extends $pb.GeneratedMessage {
   $core.bool hasSsUri() => $_has(1);
   @$pb.TagNumber(2)
   void clearSsUri() => $_clearField(2);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class HealthRequest extends $pb.GeneratedMessage {
   factory HealthRequest() => create();
+
   HealthRequest._();
+
   factory HealthRequest.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -117,25 +154,37 @@ class HealthRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..hasRequiredFields = false;
 
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  HealthRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  HealthRequest copyWith(void Function(HealthRequest) updates) =>
+      super.copyWith((message) => updates(message as HealthRequest))
+          as HealthRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
   @$core.pragma('dart2js:noInline')
   static HealthRequest create() => HealthRequest._();
   @$core.override
   HealthRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static HealthRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<HealthRequest>(create);
   static HealthRequest? _defaultInstance;
-  static HealthRequest getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class HealthResponse extends $pb.GeneratedMessage {
-  factory HealthResponse({$core.String? status}) {
+  factory HealthResponse({
+    $core.String? status,
+  }) {
     final result = create();
     if (status != null) result.status = status;
     return result;
   }
+
   HealthResponse._();
+
   factory HealthResponse.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -150,13 +199,24 @@ class HealthResponse extends $pb.GeneratedMessage {
     ..aOS(1, _omitFieldNames ? '' : 'status')
     ..hasRequiredFields = false;
 
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  HealthResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  HealthResponse copyWith(void Function(HealthResponse) updates) =>
+      super.copyWith((message) => updates(message as HealthResponse))
+          as HealthResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
   @$core.pragma('dart2js:noInline')
   static HealthResponse create() => HealthResponse._();
   @$core.override
   HealthResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static HealthResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<HealthResponse>(create);
   static HealthResponse? _defaultInstance;
-  static HealthResponse getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get status => $_getSZ(0);
@@ -166,14 +226,19 @@ class HealthResponse extends $pb.GeneratedMessage {
   $core.bool hasStatus() => $_has(0);
   @$pb.TagNumber(1)
   void clearStatus() => $_clearField(1);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class CheckAppUpdateRequest extends $pb.GeneratedMessage {
-  factory CheckAppUpdateRequest() => create();
+  factory CheckAppUpdateRequest({
+    $core.String? platform,
+  }) {
+    final result = create();
+    if (platform != null) result.platform = platform;
+    return result;
+  }
+
   CheckAppUpdateRequest._();
+
   factory CheckAppUpdateRequest.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -185,18 +250,37 @@ class CheckAppUpdateRequest extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'CheckAppUpdateRequest',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
       createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'platform')
     ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CheckAppUpdateRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CheckAppUpdateRequest copyWith(
+          void Function(CheckAppUpdateRequest) updates) =>
+      super.copyWith((message) => updates(message as CheckAppUpdateRequest))
+          as CheckAppUpdateRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
   static CheckAppUpdateRequest create() => CheckAppUpdateRequest._();
   @$core.override
   CheckAppUpdateRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static CheckAppUpdateRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CheckAppUpdateRequest>(create);
   static CheckAppUpdateRequest? _defaultInstance;
-  static CheckAppUpdateRequest getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
+  @$pb.TagNumber(1)
+  $core.String get platform => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set platform($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasPlatform() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearPlatform() => $_clearField(1);
 }
 
 class CheckAppUpdateResponse extends $pb.GeneratedMessage {
@@ -219,7 +303,9 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
     if (releaseNotes != null) result.releaseNotes = releaseNotes;
     return result;
   }
+
   CheckAppUpdateResponse._();
+
   factory CheckAppUpdateResponse.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
@@ -240,13 +326,25 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
     ..aOS(7, _omitFieldNames ? '' : 'releaseNotes')
     ..hasRequiredFields = false;
 
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CheckAppUpdateResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CheckAppUpdateResponse copyWith(
+          void Function(CheckAppUpdateResponse) updates) =>
+      super.copyWith((message) => updates(message as CheckAppUpdateResponse))
+          as CheckAppUpdateResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
   @$core.pragma('dart2js:noInline')
   static CheckAppUpdateResponse create() => CheckAppUpdateResponse._();
   @$core.override
   CheckAppUpdateResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static CheckAppUpdateResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CheckAppUpdateResponse>(create);
   static CheckAppUpdateResponse? _defaultInstance;
-  static CheckAppUpdateResponse getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get version => $_getSZ(0);
@@ -310,33 +408,55 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
   $core.bool hasReleaseNotes() => $_has(6);
   @$pb.TagNumber(7)
   void clearReleaseNotes() => $_clearField(7);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class ApplyPromocodeRequest extends $pb.GeneratedMessage {
-  factory ApplyPromocodeRequest({$core.String? userId, $core.String? code}) {
+  factory ApplyPromocodeRequest({
+    $core.String? userId,
+    $core.String? code,
+  }) {
     final result = create();
     if (userId != null) result.userId = userId;
     if (code != null) result.code = code;
     return result;
   }
-  ApplyPromocodeRequest._();
-  factory ApplyPromocodeRequest.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
-  factory ApplyPromocodeRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
-  static final $pb.BuilderInfo _i = $pb.BuilderInfo('ApplyPromocodeRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOS(1, 'userId')
-    ..aOS(2, 'code')
+  ApplyPromocodeRequest._();
+
+  factory ApplyPromocodeRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ApplyPromocodeRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ApplyPromocodeRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'userId')
+    ..aOS(2, _omitFieldNames ? '' : 'code')
     ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyPromocodeRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyPromocodeRequest copyWith(
+          void Function(ApplyPromocodeRequest) updates) =>
+      super.copyWith((message) => updates(message as ApplyPromocodeRequest))
+          as ApplyPromocodeRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
   static ApplyPromocodeRequest create() => ApplyPromocodeRequest._();
   @$core.override
   ApplyPromocodeRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ApplyPromocodeRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ApplyPromocodeRequest>(create);
   static ApplyPromocodeRequest? _defaultInstance;
-  static ApplyPromocodeRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get userId => $_getSZ(0);
@@ -355,33 +475,55 @@ class ApplyPromocodeRequest extends $pb.GeneratedMessage {
   $core.bool hasCode() => $_has(1);
   @$pb.TagNumber(2)
   void clearCode() => $_clearField(2);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class ApplyPromocodeResponse extends $pb.GeneratedMessage {
-  factory ApplyPromocodeResponse({$core.bool? success, $core.String? message}) {
+  factory ApplyPromocodeResponse({
+    $core.bool? success,
+    $core.String? message,
+  }) {
     final result = create();
     if (success != null) result.success = success;
     if (message != null) result.message = message;
     return result;
   }
-  ApplyPromocodeResponse._();
-  factory ApplyPromocodeResponse.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
-  factory ApplyPromocodeResponse.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
-  static final $pb.BuilderInfo _i = $pb.BuilderInfo('ApplyPromocodeResponse', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOB(1, 'success')
-    ..aOS(2, 'message')
+  ApplyPromocodeResponse._();
+
+  factory ApplyPromocodeResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ApplyPromocodeResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ApplyPromocodeResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
+      createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'success')
+    ..aOS(2, _omitFieldNames ? '' : 'message')
     ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyPromocodeResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyPromocodeResponse copyWith(
+          void Function(ApplyPromocodeResponse) updates) =>
+      super.copyWith((message) => updates(message as ApplyPromocodeResponse))
+          as ApplyPromocodeResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
   static ApplyPromocodeResponse create() => ApplyPromocodeResponse._();
   @$core.override
   ApplyPromocodeResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ApplyPromocodeResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ApplyPromocodeResponse>(create);
   static ApplyPromocodeResponse? _defaultInstance;
-  static ApplyPromocodeResponse getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.bool get success => $_getBF(0);
@@ -400,31 +542,51 @@ class ApplyPromocodeResponse extends $pb.GeneratedMessage {
   $core.bool hasMessage() => $_has(1);
   @$pb.TagNumber(2)
   void clearMessage() => $_clearField(2);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class GetProfileRequest extends $pb.GeneratedMessage {
-  factory GetProfileRequest({$core.String? userId}) {
+  factory GetProfileRequest({
+    $core.String? userId,
+  }) {
     final result = create();
     if (userId != null) result.userId = userId;
     return result;
   }
-  GetProfileRequest._();
-  factory GetProfileRequest.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
-  factory GetProfileRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
-  static final $pb.BuilderInfo _i = $pb.BuilderInfo('GetProfileRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOS(1, 'userId')
+  GetProfileRequest._();
+
+  factory GetProfileRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetProfileRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetProfileRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'userId')
     ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetProfileRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetProfileRequest copyWith(void Function(GetProfileRequest) updates) =>
+      super.copyWith((message) => updates(message as GetProfileRequest))
+          as GetProfileRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
   static GetProfileRequest create() => GetProfileRequest._();
   @$core.override
   GetProfileRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetProfileRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetProfileRequest>(create);
   static GetProfileRequest? _defaultInstance;
-  static GetProfileRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get userId => $_getSZ(0);
@@ -434,33 +596,54 @@ class GetProfileRequest extends $pb.GeneratedMessage {
   $core.bool hasUserId() => $_has(0);
   @$pb.TagNumber(1)
   void clearUserId() => $_clearField(1);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 class GetProfileResponse extends $pb.GeneratedMessage {
-  factory GetProfileResponse({$core.String? currentPlan, $core.String? validUntil}) {
+  factory GetProfileResponse({
+    $core.String? currentPlan,
+    $core.String? validUntil,
+  }) {
     final result = create();
     if (currentPlan != null) result.currentPlan = currentPlan;
     if (validUntil != null) result.validUntil = validUntil;
     return result;
   }
-  GetProfileResponse._();
-  factory GetProfileResponse.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
-  factory GetProfileResponse.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
-  static final $pb.BuilderInfo _i = $pb.BuilderInfo('GetProfileResponse', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOS(1, 'currentPlan')
-    ..aOS(2, 'validUntil')
+  GetProfileResponse._();
+
+  factory GetProfileResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetProfileResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetProfileResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'currentPlan')
+    ..aOS(2, _omitFieldNames ? '' : 'validUntil')
     ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetProfileResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetProfileResponse copyWith(void Function(GetProfileResponse) updates) =>
+      super.copyWith((message) => updates(message as GetProfileResponse))
+          as GetProfileResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
   static GetProfileResponse create() => GetProfileResponse._();
   @$core.override
   GetProfileResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetProfileResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetProfileResponse>(create);
   static GetProfileResponse? _defaultInstance;
-  static GetProfileResponse getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
   $core.String get currentPlan => $_getSZ(0);
@@ -479,12 +662,9 @@ class GetProfileResponse extends $pb.GeneratedMessage {
   $core.bool hasValidUntil() => $_has(1);
   @$pb.TagNumber(2)
   void clearValidUntil() => $_clearField(2);
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
 }
 
 const $core.bool _omitFieldNames =
-    $core.bool.fromEnvironment('protobuf.omit_field_names', defaultValue: false);
+    $core.bool.fromEnvironment('protobuf.omit_field_names');
 const $core.bool _omitMessageNames =
-    $core.bool.fromEnvironment('protobuf.omit_message_names', defaultValue: false);
+    $core.bool.fromEnvironment('protobuf.omit_message_names');

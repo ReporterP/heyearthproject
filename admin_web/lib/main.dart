@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'admin_api_client.dart';
@@ -123,9 +126,9 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       await widget.onLoggedIn(AdminSession(token: token, apiBase: apiBase));
     } on AdminApiException catch (e) {
-      _showError(e.message);
+      _showMessage(e.message);
     } catch (e) {
-      _showError(e.toString());
+      _showMessage(e.toString());
     } finally {
       if (mounted) {
         setState(() => _loading = false);
@@ -133,10 +136,8 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -227,38 +228,75 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  static const _releasePlatforms = <String>['android', 'windows', 'macos', 'linux', 'ios'];
+
   late AdminSession _session;
   List<AdminServer> _servers = const [];
-  bool _loading = true;
+  List<AppRelease> _releases = const [];
+  bool _loadingServers = true;
+  bool _loadingReleases = true;
+
+  AdminApiClient get _client => AdminApiClient(_session.apiBase);
 
   @override
   void initState() {
     super.initState();
     _session = widget.session;
-    _fetchServers();
+    _refreshAll();
   }
 
-  AdminApiClient get _client => AdminApiClient(_session.apiBase);
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _fetchServers(),
+      _fetchReleases(),
+    ]);
+  }
 
   Future<void> _fetchServers() async {
-    setState(() => _loading = true);
+    setState(() => _loadingServers = true);
     try {
       final servers = await _client.fetchServers(_session.token);
       if (!mounted) return;
       setState(() => _servers = servers);
     } on AdminApiException catch (e) {
-      if (e.statusCode == 401) {
-        await widget.onLogout();
-        return;
-      }
-      _showMessage(e.message);
+      await _handleApiError(e);
     } catch (e) {
       _showMessage(e.toString());
     } finally {
       if (mounted) {
-        setState(() => _loading = false);
+        setState(() => _loadingServers = false);
       }
     }
+  }
+
+  Future<void> _fetchReleases() async {
+    setState(() => _loadingReleases = true);
+    try {
+      final releases = await _client.fetchReleases(_session.token);
+      if (!mounted) return;
+      setState(() => _releases = releases);
+    } on AdminApiException catch (e) {
+      await _handleApiError(e);
+    } catch (e) {
+      _showMessage(e.toString());
+    } finally {
+      if (mounted) {
+        setState(() => _loadingReleases = false);
+      }
+    }
+  }
+
+  Future<void> _handleApiError(AdminApiException error) async {
+    if (error.statusCode == 401) {
+      await widget.onLogout();
+      return;
+    }
+    _showMessage(error.message);
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _openApiBaseDialog() async {
@@ -290,9 +328,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
     controller.dispose();
 
-    if (nextValue == null || nextValue.isEmpty) {
-      return;
-    }
+    if (nextValue == null || nextValue.isEmpty) return;
     final nextSession = AdminSession(
       token: _session.token,
       apiBase: nextValue.replaceFirst(RegExp(r'/$'), ''),
@@ -300,7 +336,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await widget.onSessionUpdated(nextSession);
     if (!mounted) return;
     setState(() => _session = nextSession);
-    await _fetchServers();
+    await _refreshAll();
   }
 
   Future<void> _showAddServerDialog() async {
@@ -320,27 +356,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: 'Name'),
-                ),
-                TextField(
-                  controller: ipController,
-                  decoration: const InputDecoration(labelText: 'IP address'),
-                ),
-                TextField(
-                  controller: countryController,
-                  decoration: const InputDecoration(labelText: 'Country code'),
-                ),
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Name')),
+                TextField(controller: ipController, decoration: const InputDecoration(labelText: 'IP address')),
+                TextField(controller: countryController, decoration: const InputDecoration(labelText: 'Country code')),
                 TextField(
                   controller: sshPortController,
                   decoration: const InputDecoration(labelText: 'SSH port'),
                   keyboardType: TextInputType.number,
                 ),
-                TextField(
-                  controller: sshUserController,
-                  decoration: const InputDecoration(labelText: 'SSH user'),
-                ),
+                TextField(controller: sshUserController, decoration: const InputDecoration(labelText: 'SSH user')),
               ],
             ),
           ),
@@ -353,19 +377,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onPressed: () {
                 final name = nameController.text.trim();
                 final ip = ipController.text.trim();
-                final country = countryController.text.trim();
-                final sshPort = int.tryParse(sshPortController.text.trim()) ?? 22;
-                final sshUser = sshUserController.text.trim().isEmpty ? 'root' : sshUserController.text.trim();
-                if (name.isEmpty || ip.isEmpty) {
-                  return;
-                }
+                if (name.isEmpty || ip.isEmpty) return;
                 Navigator.of(context).pop(
                   AddServerPayload(
                     name: name,
                     ipAddress: ip,
-                    countryCode: country,
-                    sshPort: sshPort,
-                    sshUser: sshUser,
+                    countryCode: countryController.text.trim(),
+                    sshPort: int.tryParse(sshPortController.text.trim()) ?? 22,
+                    sshUser: sshUserController.text.trim().isEmpty ? 'root' : sshUserController.text.trim(),
                   ),
                 );
               },
@@ -382,297 +401,343 @@ class _DashboardScreenState extends State<DashboardScreen> {
     sshPortController.dispose();
     sshUserController.dispose();
 
-    if (payload == null) {
-      return;
-    }
-
+    if (payload == null) return;
     try {
       await _client.addServer(_session.token, payload);
       await _fetchServers();
       _showMessage('Server created');
     } on AdminApiException catch (e) {
-      if (e.statusCode == 401) {
-        await widget.onLogout();
-        return;
-      }
-      _showMessage(e.message);
+      await _handleApiError(e);
     } catch (e) {
       _showMessage(e.toString());
     }
   }
 
-  void _showMessage(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
+  Future<void> _showUploadReleaseDialog() async {
+    final picked = await FilePicker.platform.pickFiles(withData: true);
+    if (picked == null || picked.files.isEmpty) {
+      return;
+    }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('HeYearth Admin'),
-        actions: [
-          IconButton(
-            tooltip: 'API base',
-            onPressed: _openApiBaseDialog,
-            icon: const Icon(Icons.link),
-          ),
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _fetchServers,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: widget.onLogout,
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddServerDialog,
-        child: const Icon(Icons.add),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _fetchServers,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  Card(
-                    child: ListTile(
-                      title: const Text('API base'),
-                      subtitle: Text(_session.apiBase),
+    final file = picked.files.single;
+    final fileBytes = file.bytes;
+    if (fileBytes == null || fileBytes.isEmpty) {
+      _showMessage('Failed to read selected file');
+      return;
+    }
+
+    final versionController = TextEditingController();
+    final notesController = TextEditingController();
+    String platform = _releasePlatforms.first;
+    bool activate = true;
+
+    final payload = await showDialog<_ReleaseUploadFormResult>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            return AlertDialog(
+              title: const Text('Upload release'),
+              content: SizedBox(
+                width: 460,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('File: ${file.name}'),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: platform,
+                      items: _releasePlatforms
+                          .map((value) => DropdownMenuItem<String>(value: value, child: Text(value)))
+                          .toList(growable: false),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setLocalState(() => platform = value);
+                      },
+                      decoration: const InputDecoration(labelText: 'Platform'),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (_servers.isEmpty)
-                    const Card(
-                      child: Padding(
-                        padding: EdgeInsets.all(24),
-                        child: Text('No servers yet'),
-                      ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: versionController,
+                      decoration: const InputDecoration(labelText: 'Version'),
                     ),
-                  for (final server in _servers)
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.dns),
-                        title: Text(server.name),
-                        subtitle: Text(
-                          '${server.ipAddress}:${server.sshPort}  ${server.countryCode}',
-                        ),
-                        trailing: Chip(label: Text(server.status)),
-                      ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: notesController,
+                      maxLines: 4,
+                      decoration: const InputDecoration(labelText: 'Release notes'),
                     ),
-                ],
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      value: activate,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Activate immediately'),
+                      onChanged: (value) => setLocalState(() => activate = value ?? false),
+                    ),
+                  ],
+                ),
               ),
-            ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (versionController.text.trim().isEmpty) return;
+                    Navigator.of(context).pop(
+                      _ReleaseUploadFormResult(
+                        platform: platform,
+                        version: versionController.text.trim(),
+                        releaseNotes: notesController.text.trim(),
+                        activate: activate,
+                        fileName: file.name,
+                        fileBytes: fileBytes,
+                      ),
+                    );
+                  },
+                  child: const Text('Upload'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
-  }
-}
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  runApp(const AdminApp());
-}
+    versionController.dispose();
+    notesController.dispose();
 
-class AdminApp extends StatelessWidget {
-  const AdminApp({Key? key}) : super(key: key);
+    if (payload == null) return;
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'HeYearth Admin',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        useMaterial3: true,
-      ),
-      home: const LoginScreen(),
-    );
-  }
-}
-
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({Key? key}) : super(key: key);
-
-  @override
-  _LoginScreenState createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  final _userController = TextEditingController();
-  final _passController = TextEditingController();
-  bool _loading = false;
-
-  Future<void> _login() async {
-    setState(() => _loading = true);
     try {
-      final response = await http.post(
-        Uri.parse('http://localhost:8000/api/admin/login'),
-        body: jsonEncode({
-          'username': _userController.text,
-          'password': _passController.text,
-        }),
-        headers: {'Content-Type': 'application/json'},
+      await _client.uploadRelease(
+        token: _session.token,
+        platform: payload.platform,
+        version: payload.version,
+        releaseNotes: payload.releaseNotes,
+        fileName: payload.fileName,
+        fileBytes: payload.fileBytes,
+        activate: payload.activate,
       );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('token', data['token']);
-        
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login failed')),
-        );
-      }
+      await _fetchReleases();
+      _showMessage('Release uploaded');
+    } on AdminApiException catch (e) {
+      await _handleApiError(e);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
-    } finally {
-      setState(() => _loading = false);
+      _showMessage(e.toString());
+    }
+  }
+
+  Future<void> _activateRelease(AppRelease release) async {
+    try {
+      await _client.activateRelease(_session.token, release.id);
+      await _fetchReleases();
+      _showMessage('Release activated');
+    } on AdminApiException catch (e) {
+      await _handleApiError(e);
+    } catch (e) {
+      _showMessage(e.toString());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Container(
-          width: 300,
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('HeYearth Admin', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 32),
-              TextField(
-                controller: _userController,
-                decoration: const InputDecoration(labelText: 'Username', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _passController,
-                decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()),
-                obscureText: true,
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : _login,
-                  child: _loading ? const CircularProgressIndicator() : const Text('Login'),
-                ),
-              ),
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('HeYearth Admin'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Servers', icon: Icon(Icons.dns)),
+              Tab(text: 'Releases', icon: Icon(Icons.system_update)),
             ],
           ),
+          actions: [
+            IconButton(
+              tooltip: 'API base',
+              onPressed: _openApiBaseDialog,
+              icon: const Icon(Icons.link),
+            ),
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _refreshAll,
+              icon: const Icon(Icons.refresh),
+            ),
+            IconButton(
+              tooltip: 'Logout',
+              onPressed: widget.onLogout,
+              icon: const Icon(Icons.logout),
+            ),
+          ],
+        ),
+        body: TabBarView(
+          children: [
+            _ServersTab(
+              apiBase: _session.apiBase,
+              loading: _loadingServers,
+              servers: _servers,
+              onAddServer: _showAddServerDialog,
+              onRefresh: _fetchServers,
+            ),
+            _ReleasesTab(
+              loading: _loadingReleases,
+              releases: _releases,
+              onUpload: _showUploadReleaseDialog,
+              onActivate: _activateRelease,
+              onRefresh: _fetchReleases,
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+class _ServersTab extends StatelessWidget {
+  const _ServersTab({
+    required this.apiBase,
+    required this.loading,
+    required this.servers,
+    required this.onAddServer,
+    required this.onRefresh,
+  });
 
-  @override
-  _DashboardScreenState createState() => _DashboardScreenState();
-}
-
-class _DashboardScreenState extends State<DashboardScreen> {
-  List<dynamic> _servers = [];
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchServers();
-  }
-
-  Future<void> _fetchServers() async {
-    setState(() => _loading = true);
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('token');
-      
-      final response = await http.get(
-        Uri.parse('http://localhost:8000/api/admin/servers'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode == 200) {
-        setState(() {
-          _servers = jsonDecode(response.body);
-        });
-      } else if (response.statusCode == 401 || response.statusCode == 403) {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
-      }
-    } catch (e) {
-      print(e);
-    } finally {
-      setState(() => _loading = false);
-    }
-  }
+  final String apiBase;
+  final bool loading;
+  final List<AdminServer> servers;
+  final Future<void> Function() onAddServer;
+  final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Dashboard'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _fetchServers,
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('token');
-              if (!mounted) return;
-              Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
-            },
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _servers.length,
-              itemBuilder: (context, index) {
-                final s = _servers[index];
-                return Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.dns),
-                    title: Text(s['name']),
-                    subtitle: Text('${s['ip_address']} (${s['country_code']})'),
-                    trailing: Chip(
-                      label: Text(s['status'] ?? 'unknown'),
-                      backgroundColor: s['status'] == 'online' ? Colors.green.shade100 : Colors.grey.shade200,
-                    ),
-                  ),
-                );
-              },
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              title: const Text('API base'),
+              subtitle: Text(apiBase),
+              trailing: FilledButton.icon(
+                onPressed: onAddServer,
+                icon: const Icon(Icons.add),
+                label: const Text('Add server'),
+              ),
             ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // Show add server dialog
-        },
-        child: const Icon(Icons.add),
+          ),
+          const SizedBox(height: 12),
+          if (servers.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('No servers yet'),
+              ),
+            ),
+          for (final server in servers)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.dns),
+                title: Text(server.name),
+                subtitle: Text('${server.ipAddress}:${server.sshPort}  ${server.countryCode}'),
+                trailing: Chip(label: Text(server.status)),
+              ),
+            ),
+        ],
       ),
     );
   }
+}
+
+class _ReleasesTab extends StatelessWidget {
+  const _ReleasesTab({
+    required this.loading,
+    required this.releases,
+    required this.onUpload,
+    required this.onActivate,
+    required this.onRefresh,
+  });
+
+  final bool loading;
+  final List<AppRelease> releases;
+  final Future<void> Function() onUpload;
+  final Future<void> Function(AppRelease release) onActivate;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              title: const Text('Application releases'),
+              subtitle: const Text('Upload binary files and activate releases per platform'),
+              trailing: FilledButton.icon(
+                onPressed: onUpload,
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Upload'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (releases.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('No releases uploaded'),
+              ),
+            ),
+          for (final release in releases)
+            Card(
+              child: ListTile(
+                leading: Icon(release.isActive ? Icons.verified : Icons.inventory_2_outlined),
+                title: Text('${release.platform}  ${release.version}'),
+                subtitle: Text(
+                  '${release.fileName}\n${release.publicPath}${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}',
+                ),
+                isThreeLine: true,
+                trailing: release.isActive
+                    ? const Chip(label: Text('Active'))
+                    : OutlinedButton(
+                        onPressed: () => onActivate(release),
+                        child: const Text('Activate'),
+                      ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReleaseUploadFormResult {
+  const _ReleaseUploadFormResult({
+    required this.platform,
+    required this.version,
+    required this.releaseNotes,
+    required this.activate,
+    required this.fileName,
+    required this.fileBytes,
+  });
+
+  final String platform;
+  final String version;
+  final String releaseNotes;
+  final bool activate;
+  final String fileName;
+  final Uint8List fileBytes;
 }

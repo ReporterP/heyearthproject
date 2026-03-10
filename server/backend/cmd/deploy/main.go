@@ -155,6 +155,12 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 			}
 		}
 	}
+
+	if mode == "main" || mode == "update-main" || mode == "site" {
+		if _, err := exec.LookPath("flutter"); err != nil {
+			log.Fatal("flutter is required locally to build admin_web during deploy")
+		}
+	}
 }
 
 func loadEnv(paths ...string) envMap {
@@ -375,6 +381,28 @@ func buildGoBinary(backendRoot, name, outName string) string {
 	return outPath
 }
 
+func buildAdminWeb(repoRoot string) string {
+	adminWebRoot := filepath.Join(repoRoot, "admin_web")
+
+	pubGet := exec.Command("flutter", "pub", "get")
+	pubGet.Dir = adminWebRoot
+	pubGet.Stdout = os.Stdout
+	pubGet.Stderr = os.Stderr
+	if err := pubGet.Run(); err != nil {
+		log.Fatalf("flutter pub get in admin_web: %v", err)
+	}
+
+	build := exec.Command("flutter", "build", "web", "--release", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
+	build.Dir = adminWebRoot
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		log.Fatalf("flutter build web in admin_web: %v", err)
+	}
+
+	return filepath.Join(adminWebRoot, "build", "web")
+}
+
 func installGoOnServer(client *ssh.Client) {
 	script := fmt.Sprintf(`set -e
 if command -v go >/dev/null 2>&1 && go version | grep -q %s; then
@@ -531,21 +559,16 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	}
 
 	apiEnv := map[string]string{
-		"APP_DIR":                  appDir,
-		"DATABASE_URL":             cfg.env.get("DATABASE_URL", "postgres://postgres@localhost:5432/heyearth?sslmode=disable"),
-		"ADMIN_USER":               cfg.env.get("ADMIN_USER", ""),
-		"ADMIN_PASS":               cfg.env.get("ADMIN_PASS", ""),
-		"JWT_SECRET":               cfg.env.get("JWT_SECRET", ""),
-		"APP_UPDATE_VERSION":       cfg.env.get("APP_UPDATE_VERSION", ""),
-		"APP_UPDATE_URL_ANDROID":   cfg.env.get("APP_UPDATE_URL_ANDROID", ""),
-		"APP_UPDATE_URL_WINDOWS":   cfg.env.get("APP_UPDATE_URL_WINDOWS", ""),
-		"APP_UPDATE_URL_MACOS":     cfg.env.get("APP_UPDATE_URL_MACOS", ""),
-		"APP_UPDATE_URL_LINUX":     cfg.env.get("APP_UPDATE_URL_LINUX", ""),
-		"APP_UPDATE_URL_IOS":       cfg.env.get("APP_UPDATE_URL_IOS", ""),
-		"APP_UPDATE_RELEASE_NOTES": cfg.env.get("APP_UPDATE_RELEASE_NOTES", ""),
-		"TLS_CLIENT_CERT_FILE":     filepath.Join(appDir, "certs", "client-cert.pem"),
-		"TLS_CLIENT_KEY_FILE":      filepath.Join(appDir, "certs", "client-key.pem"),
-		"TLS_CA_FILE":              filepath.Join(appDir, "certs", "ca-cert.pem"),
+		"APP_DIR":              appDir,
+		"DATABASE_URL":         cfg.env.get("DATABASE_URL", "postgres://postgres@localhost:5432/heyearth?sslmode=disable"),
+		"ADMIN_USER":           cfg.env.get("ADMIN_USER", ""),
+		"ADMIN_PASS":           cfg.env.get("ADMIN_PASS", ""),
+		"JWT_SECRET":           cfg.env.get("JWT_SECRET", ""),
+		"SITE_DOMAIN":          cfg.siteDomain,
+		"PUBLIC_BASE_URL":      publicBaseURL(cfg),
+		"TLS_CLIENT_CERT_FILE": filepath.Join(appDir, "certs", "client-cert.pem"),
+		"TLS_CLIENT_KEY_FILE":  filepath.Join(appDir, "certs", "client-key.pem"),
+		"TLS_CA_FILE":          filepath.Join(appDir, "certs", "ca-cert.pem"),
 	}
 	if err := uploadFileContent(c, []byte(serializeEnv(apiEnv)), appDir+"/api.env"); err != nil {
 		log.Fatal(err)
@@ -614,18 +637,11 @@ WantedBy=multi-user.target
 
 func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
-	_, _ = runSSH(client, "mkdir -p /var/www/heyearth", true)
+	_, _ = runSSH(client, "mkdir -p /var/www/heyearth "+appDir+"/releases", true)
 
-	adminBuildDir := filepath.Join(cfg.repoRoot, "admin_web", "build", "web")
-	if stat, err := os.Stat(adminBuildDir); err == nil && stat.IsDir() {
-		if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
-			log.Fatalf("upload admin_web build: %v", err)
-		}
-	} else {
-		placeholder := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>HeYearth</title></head><body><h1>HeYearth Main Server</h1><p>Admin web build is not uploaded yet.</p><p>API: https://%s/api/v1/health</p></body></html>`, cfg.siteDomain)
-		if err := uploadFileContent(c, []byte(placeholder), "/var/www/heyearth/index.html"); err != nil {
-			log.Fatal(err)
-		}
+	adminBuildDir := buildAdminWeb(cfg.repoRoot)
+	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
+		log.Fatalf("upload admin_web build: %v", err)
 	}
 
 	nginxConf := fmt.Sprintf(`server {
@@ -648,11 +664,17 @@ func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    location /releases/ {
+        alias %s/releases/;
+        add_header Cache-Control "public, max-age=3600";
+        try_files $uri =404;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
 }
-`, cfg.siteDomain, cfg.siteDomain)
+`, cfg.siteDomain, cfg.siteDomain, appDir)
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
 		log.Fatal(err)
 	}
@@ -672,6 +694,17 @@ func restartServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl restart heyearth-api telegram-bot nginx", false)
 }
 
+func publicBaseURL(cfg *deployConfig) string {
+	if configured := strings.TrimSpace(cfg.env.get("PUBLIC_BASE_URL", "")); configured != "" {
+		return configured
+	}
+	scheme := "http"
+	if strings.TrimSpace(cfg.letsEncryptEmail) != "" {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s", scheme, cfg.siteDomain)
+}
+
 func verifyServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl is-active heyearth-api telegram-bot nginx", false)
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
@@ -684,14 +717,9 @@ func serializeEnv(values map[string]string) string {
 		"ADMIN_USER",
 		"ADMIN_PASS",
 		"JWT_SECRET",
+		"SITE_DOMAIN",
+		"PUBLIC_BASE_URL",
 		"TELEGRAM_BOT_TOKEN",
-		"APP_UPDATE_VERSION",
-		"APP_UPDATE_URL_ANDROID",
-		"APP_UPDATE_URL_WINDOWS",
-		"APP_UPDATE_URL_MACOS",
-		"APP_UPDATE_URL_LINUX",
-		"APP_UPDATE_URL_IOS",
-		"APP_UPDATE_RELEASE_NOTES",
 		"TLS_CLIENT_CERT_FILE",
 		"TLS_CLIENT_KEY_FILE",
 		"TLS_CA_FILE",

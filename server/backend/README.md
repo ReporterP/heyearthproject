@@ -36,6 +36,7 @@ scripts\gen_proto.bat
 - `ADMIN_USER`
 - `ADMIN_PASS`
 - `JWT_SECRET`
+- `SITE_DOMAIN` или `PUBLIC_BASE_URL`
 - `TLS_CLIENT_CERT_FILE`
 - `TLS_CLIENT_KEY_FILE`
 - `TLS_CA_FILE`
@@ -56,3 +57,10 @@ Deploy tool выкладывает:
 - migrations
 - ansible role
 - mTLS cert bundle
+- `admin_web` build
+
+## App Releases
+
+- `CheckAppUpdate` читает активные релизы из таблицы `app_releases`.
+- Admin API даёт `GET /api/admin/releases`, `POST /api/admin/releases` и `POST /api/admin/releases/activate`.
+- Release files сохраняются в `APP_DIR/releases` и раздаются nginx по `/releases/...`.

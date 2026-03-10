@@ -26,6 +26,7 @@ go run ./cmd/api
 ```
 
 API поднимется на `127.0.0.1:8000`, gRPC на `127.0.0.1:50051`.
+`CheckAppUpdate` теперь читает активные релизы из БД, а не из `.env`.
 
 ### Деплой
 
@@ -83,9 +84,7 @@ flutter run -d chrome --dart-define=HEYEARTH_ADMIN_API_BASE=http://127.0.0.1:800
 
 Продакшен-сборка:
 
-```bash
-cd admin_web
-flutter build web
-```
+`cmd/deploy` теперь сам делает `flutter pub get` + `flutter build web` для `admin_web` и выкладывает результат на корень домена.
 
 По умолчанию `admin_web` использует same-origin base `/api/admin`.
+Управление релизами приложений тоже перенесено в `admin_web`: бинарники загружаются через раздел `Releases`, попадают в БД + `APP_DIR/releases`, а nginx раздаёт их по `/releases/...`.

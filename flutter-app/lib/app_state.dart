@@ -69,7 +69,9 @@ class AppState extends ChangeNotifier {
         _apiBase = savedApi.replaceFirst(RegExp(r'/$'), '');
       }
       final savedLocale = prefs.getString(_keyLocale);
-      if (savedLocale == 'en' || savedLocale == 'ru') _locale = savedLocale;
+      if (savedLocale != null && (savedLocale == 'en' || savedLocale == 'ru')) {
+        _locale = savedLocale;
+      }
       if (!_vpn.isSupported) _vpnOn = false;
     } catch (_) {}
     _loading = false;

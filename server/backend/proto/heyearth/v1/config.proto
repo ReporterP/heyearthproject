@@ -28,7 +28,9 @@ message HealthResponse {
   string status = 1;  // e.g. "ok"
 }
 
-message CheckAppUpdateRequest {}
+message CheckAppUpdateRequest {
+  string platform = 1;
+}
 
 message CheckAppUpdateResponse {
   string version = 1;

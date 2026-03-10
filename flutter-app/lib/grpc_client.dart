@@ -51,9 +51,9 @@ Future<pb.GetConfigResponse?> getConfigGrpc(String apiBase, String userId) async
   return await client.getConfig(pb.GetConfigRequest(userId: userId));
 }
 
-Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(String apiBase) async {
+Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(String apiBase, String platform) async {
   final client = getClient(apiBase);
-  return await client.checkAppUpdate(pb.CheckAppUpdateRequest());
+  return await client.checkAppUpdate(pb.CheckAppUpdateRequest(platform: platform));
 }
 
 Future<pb.GetProfileResponse?> getProfileGrpc(String apiBase, String userId) async {

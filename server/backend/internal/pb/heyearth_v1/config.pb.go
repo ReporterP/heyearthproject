@@ -199,6 +199,7 @@ func (x *HealthResponse) GetStatus() string {
 
 type CheckAppUpdateRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Platform      string                 `protobuf:"bytes,1,opt,name=platform,proto3" json:"platform,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -231,6 +232,13 @@ func (x *CheckAppUpdateRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CheckAppUpdateRequest.ProtoReflect.Descriptor instead.
 func (*CheckAppUpdateRequest) Descriptor() ([]byte, []int) {
 	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CheckAppUpdateRequest) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
 }
 
 type CheckAppUpdateResponse struct {
@@ -537,8 +545,9 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\x06ss_uri\x18\x02 \x01(\tR\x05ssUri\"\x0f\n" +
 	"\rHealthRequest\"(\n" +
 	"\x0eHealthResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"\x17\n" +
-	"\x15CheckAppUpdateRequest\"\xec\x01\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"3\n" +
+	"\x15CheckAppUpdateRequest\x12\x1a\n" +
+	"\bplatform\x18\x01 \x01(\tR\bplatform\"\xec\x01\n" +
 	"\x16CheckAppUpdateResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1f\n" +
 	"\vandroid_url\x18\x02 \x01(\tR\n" +
