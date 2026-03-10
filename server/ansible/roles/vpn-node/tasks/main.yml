@@ -8,6 +8,11 @@
     state: present
     update_cache: yes
 
+- name: Allow node-agent gRPC port in UFW
+  command: ufw allow {{ node_agent_port | default('50052') }}/tcp
+  register: ufw_node_agent_result
+  changed_when: "'Rule added' in ufw_node_agent_result.stdout"
+
 - name: Create runtime directories
   file:
     path: "{{ item }}"
