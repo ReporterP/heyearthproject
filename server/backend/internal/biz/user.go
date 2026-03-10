@@ -3,13 +3,15 @@ package biz
 import (
 	"database/sql"
 	"fmt"
-	"heyearth/internal/db"
 	"time"
+
+	"github.com/heyearth/backend/internal/db"
 )
 
 type User struct {
 	ID         int
-	TelegramID int64
+	UserID     string
+	TelegramID sql.NullInt64
 	Role       string
 }
 
@@ -19,28 +21,30 @@ type Subscription struct {
 	ValidUntil time.Time
 }
 
-func GetOrCreateUser(telegramID int64) (*User, error) {
+func GetOrCreateUser(userID string) (*User, error) {
 	var user User
-	err := db.DB.QueryRow("SELECT id, telegram_id, role FROM users WHERE telegram_id = $1", telegramID).
-		Scan(&user.ID, &user.TelegramID, &user.Role)
+	err := db.DB.QueryRow("SELECT id, user_id, telegram_id, role FROM users WHERE user_id = $1", userID).
+		Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role)
 
 	if err == sql.ErrNoRows {
-		// Create user
 		err = db.DB.QueryRow(
-			"INSERT INTO users (telegram_id) VALUES ($1) RETURNING id, telegram_id, role",
-			telegramID,
-		).Scan(&user.ID, &user.TelegramID, &user.Role)
+			"INSERT INTO users (user_id) VALUES ($1) RETURNING id, user_id, telegram_id, role",
+			userID,
+		).Scan(&user.ID, &user.UserID, &user.TelegramID, &user.Role)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
-		
-		// Assign to default Free group
+
 		var freeGroupID int
 		err = db.DB.QueryRow("SELECT id FROM user_groups WHERE name = 'Free' LIMIT 1").Scan(&freeGroupID)
 		if err == nil {
-			// Give 100 years of free access
 			validUntil := time.Now().AddDate(100, 0, 0)
-			db.DB.Exec("INSERT INTO user_subscriptions (user_id, group_id, valid_until) VALUES ($1, $2, $3)", user.ID, freeGroupID, validUntil)
+			_, _ = db.DB.Exec(
+				"INSERT INTO user_subscriptions (user_id, group_id, valid_until) VALUES ($1, $2, $3) ON CONFLICT (user_id, group_id) DO NOTHING",
+				user.ID,
+				freeGroupID,
+				validUntil,
+			)
 		}
 
 		return &user, nil
@@ -107,17 +111,19 @@ func ApplyPromocode(userID int, code string) error {
 		return err
 	}
 
-	// Apply subscription
-	validUntil := time.Now().AddDate(0, 0, durationDays)
-	
-	// Upsert subscription
+	baseValidUntil := time.Now().AddDate(0, 0, durationDays)
 	_, err = tx.Exec(`
 		INSERT INTO user_subscriptions (user_id, group_id, valid_until) 
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, group_id) 
-		DO UPDATE SET valid_until = GREATEST(user_subscriptions.valid_until, EXCLUDED.valid_until) + INTERVAL '1 day' * $4
-	`, userID, groupID, validUntil, durationDays)
-	
+		DO UPDATE SET valid_until =
+			CASE
+				WHEN user_subscriptions.valid_until > NOW()
+					THEN user_subscriptions.valid_until + ($4 * INTERVAL '1 day')
+				ELSE NOW() + ($4 * INTERVAL '1 day')
+			END
+	`, userID, groupID, baseValidUntil, durationDays)
+
 	if err != nil {
 		return err
 	}

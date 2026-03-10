@@ -23,11 +23,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadProfile();
   }
 
+  @override
+  void dispose() {
+    _promoController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadProfile() async {
     setState(() => _isLoading = true);
     final state = context.read<AppState>();
+    final userId = state.userId;
+    if (userId == null || userId.trim().isEmpty) {
+      setState(() {
+        _currentPlan = 'User ID not set';
+        _validUntil = '';
+        _isLoading = false;
+      });
+      return;
+    }
     try {
-      final resp = await getProfileGrpc(state.apiBase, state.userId);
+      final resp = await getProfileGrpc(state.apiBase, userId);
+      if (!mounted) return;
       if (resp != null) {
         setState(() {
           _currentPlan = resp.currentPlan;
@@ -35,11 +51,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _currentPlan = 'Error loading profile';
       });
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -49,8 +68,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     setState(() => _isApplyingPromo = true);
     final state = context.read<AppState>();
+    final userId = state.userId;
+    if (userId == null || userId.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('User ID is missing')),
+        );
+        setState(() => _isApplyingPromo = false);
+      }
+      return;
+    }
     try {
-      final resp = await applyPromocodeGrpc(state.apiBase, state.userId, code);
+      final resp = await applyPromocodeGrpc(state.apiBase, userId, code);
+      if (!mounted) return;
       if (resp != null && resp.success) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Promocode applied successfully!')),
@@ -63,11 +93,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         );
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e')),
       );
     } finally {
-      setState(() => _isApplyingPromo = false);
+      if (mounted) {
+        setState(() => _isApplyingPromo = false);
+      }
     }
   }
 
@@ -90,7 +123,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: ListTile(
                       leading: const Icon(Icons.person),
                       title: const Text('User ID'),
-                      subtitle: Text(state.userId),
+                      subtitle: Text(state.userId ?? 'Not set'),
                     ),
                   ),
                   const SizedBox(height: 16),

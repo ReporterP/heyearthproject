@@ -1,30 +1,31 @@
 #!/bin/bash
-# Генерация Go и Dart из proto. Требуется: protoc, protoc-gen-go, protoc-gen-go-grpc (Go),
-# для Dart: dart pub global activate protoc_plugin, затем protoc с --dart_out=grpc.
-set -e
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BACKEND="$ROOT/backend"
+set -euo pipefail
+
+BACKEND="$(cd "$(dirname "$0")/.." && pwd)"
 PROTO_DIR="$BACKEND/proto"
-GO_OUT="$BACKEND/internal/pb"
-APP_PROTO_DST="$ROOT/app/proto"
 
-echo "Backend: $BACKEND"
-echo "Proto:   $PROTO_DIR"
-
-# Go
 export PATH="$PATH:$(go env GOPATH)/bin"
-mkdir -p "$GO_OUT"
-protoc -I="$PROTO_DIR" \
-  --go_out="$BACKEND" --go_opt=module=github.com/heyearth/backend \
-  --go-grpc_out="$BACKEND" --go-grpc_opt=module=github.com/heyearth/backend \
-  "$PROTO_DIR"/heyearth/v1/config.proto
-echo "Go code generated in $GO_OUT"
 
-# Dart (Flutter app)
-if [ -d "$ROOT/app" ]; then
-  mkdir -p "$APP_PROTO_DST"
-  protoc -I="$PROTO_DIR" \
-    --dart_out=grpc:"$APP_PROTO_DST" \
-    "$PROTO_DIR"/heyearth/v1/config.proto
-  echo "Dart code generated in $APP_PROTO_DST"
-fi
+mkdir -p "$BACKEND/internal/pb/heyearth_v1" "$BACKEND/internal/pb/node_agent_v1"
+
+rm -rf "$BACKEND/internal/pb/heyearth_v1/heyearth" "$BACKEND/internal/pb/node_agent_v1/node_agent"
+
+protoc -I="$PROTO_DIR" \
+  --go_out="$BACKEND/internal/pb/heyearth_v1" --go_opt=paths=source_relative \
+  --go-grpc_out="$BACKEND/internal/pb/heyearth_v1" --go-grpc_opt=paths=source_relative \
+  "$PROTO_DIR/heyearth/v1/config.proto"
+
+mv "$BACKEND/internal/pb/heyearth_v1/heyearth/v1/config.pb.go" "$BACKEND/internal/pb/heyearth_v1/config.pb.go"
+mv "$BACKEND/internal/pb/heyearth_v1/heyearth/v1/config_grpc.pb.go" "$BACKEND/internal/pb/heyearth_v1/config_grpc.pb.go"
+rm -rf "$BACKEND/internal/pb/heyearth_v1/heyearth"
+
+protoc -I="$PROTO_DIR" \
+  --go_out="$BACKEND/internal/pb/node_agent_v1" --go_opt=paths=source_relative \
+  --go-grpc_out="$BACKEND/internal/pb/node_agent_v1" --go-grpc_opt=paths=source_relative \
+  "$PROTO_DIR/node_agent/v1/node_agent.proto"
+
+mv "$BACKEND/internal/pb/node_agent_v1/node_agent/v1/node_agent.pb.go" "$BACKEND/internal/pb/node_agent_v1/node_agent.pb.go"
+mv "$BACKEND/internal/pb/node_agent_v1/node_agent/v1/node_agent_grpc.pb.go" "$BACKEND/internal/pb/node_agent_v1/node_agent_grpc.pb.go"
+rm -rf "$BACKEND/internal/pb/node_agent_v1/node_agent"
+
+echo "Go proto stubs generated successfully."

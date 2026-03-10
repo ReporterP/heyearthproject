@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package node_agent.v1;
 
-option go_package = "heyearth/internal/pb/node_agent_v1";
+option go_package = "github.com/heyearth/backend/internal/pb/node_agent_v1";
 
 service NodeAgent {
   // Create a new VPN user (e.g., Shadowsocks)

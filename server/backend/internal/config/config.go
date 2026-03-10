@@ -33,6 +33,11 @@ func PlatformFile() string {
 	return filepath.Join(AppDir(), "user_platform.txt")
 }
 
+// BotUserMapFile stores Telegram user ID -> canonical HeYearth user_id mappings.
+func BotUserMapFile() string {
+	return filepath.Join(AppDir(), "bot_user_map.json")
+}
+
 // ReleasesDir returns the path to released app files (APK, zip) on the server.
 func ReleasesDir() string {
 	return filepath.Join(AppDir(), "releases")

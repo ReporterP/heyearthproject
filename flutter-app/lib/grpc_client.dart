@@ -56,12 +56,12 @@ Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(String apiBase) async {
   return await client.checkAppUpdate(pb.CheckAppUpdateRequest());
 }
 
-Future<pb.GetProfileResponse?> getProfileGrpc(String apiBase, String telegramId) async {
+Future<pb.GetProfileResponse?> getProfileGrpc(String apiBase, String userId) async {
   final client = getClient(apiBase);
-  return await client.getProfile(pb.GetProfileRequest(telegramId: telegramId));
+  return await client.getProfile(pb.GetProfileRequest(userId: userId));
 }
 
-Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(String apiBase, String telegramId, String code) async {
+Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(String apiBase, String userId, String code) async {
   final client = getClient(apiBase);
-  return await client.applyPromocode(pb.ApplyPromocodeRequest(telegramId: telegramId, code: code));
+  return await client.applyPromocode(pb.ApplyPromocodeRequest(userId: userId, code: code));
 }

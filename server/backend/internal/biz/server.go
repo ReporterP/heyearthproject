@@ -4,8 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"heyearth/internal/db"
 	"log"
+
+	"github.com/heyearth/backend/internal/db"
 )
 
 type ServerNode struct {
@@ -71,6 +72,7 @@ func GetBestServerForGroup(groupID int) (*ServerNode, error) {
 	}
 
 	// Fallback to any server if none in group
+	bestServer = &ServerNode{}
 	err = db.DB.QueryRow(`
 		SELECT id, ip_address, name 
 		FROM servers 
@@ -78,7 +80,7 @@ func GetBestServerForGroup(groupID int) (*ServerNode, error) {
 		ORDER BY RANDOM()
 		LIMIT 1
 	`).Scan(&bestServer.ID, &bestServer.IPAddress, &bestServer.Name)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("no available servers found")
 	} else if err != nil {

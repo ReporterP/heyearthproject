@@ -2,8 +2,9 @@ package admin
 
 import (
 	"encoding/json"
-	"heyearth/internal/db"
 	"net/http"
+
+	"github.com/heyearth/backend/internal/db"
 )
 
 type Server struct {
@@ -45,6 +46,7 @@ type AddServerRequest struct {
 	Name        string `json:"name"`
 	IPAddress   string `json:"ip_address"`
 	SSHPort     int    `json:"ssh_port"`
+	SSHUser     string `json:"ssh_user"`
 	CountryCode string `json:"country_code"`
 }
 
@@ -63,10 +65,13 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 	if req.SSHPort == 0 {
 		req.SSHPort = 22
 	}
+	if req.SSHUser == "" {
+		req.SSHUser = "root"
+	}
 
 	_, err := db.DB.Exec(
-		"INSERT INTO servers (name, ip_address, ssh_port, country_code, status) VALUES ($1, $2, $3, $4, 'offline')",
-		req.Name, req.IPAddress, req.SSHPort, req.CountryCode,
+		"INSERT INTO servers (name, ip_address, ssh_port, ssh_user, country_code, status) VALUES ($1, $2, $3, $4, $5, 'provisioning')",
+		req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.CountryCode,
 	)
 	if err != nil {
 		http.Error(w, "Failed to insert server", http.StatusInternalServerError)

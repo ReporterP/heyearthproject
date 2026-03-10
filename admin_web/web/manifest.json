@@ -1,0 +1,9 @@
+{
+  "name": "HeYearth Admin",
+  "short_name": "HeYearth",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1976d2",
+  "description": "HeYearth administration panel"
+}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,22 +16,21 @@ import (
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/heyearth/backend/internal/config"
-	"github.com/heyearth/backend/internal/ss"
 )
 
 const telegramMaxFileSize = 50 * 1024 * 1024 // 50 MB
 
 const (
-	cbGetSS          = "getss"
-	cbNewSS          = "newss"
-	cbInstruction    = "instruction"
-	cbInstPhone      = "inst_phone"
-	cbInstPC         = "inst_pc"
+	cbGetSS           = "getss"
+	cbNewSS           = "newss"
+	cbInstruction     = "instruction"
+	cbInstPhone       = "inst_phone"
+	cbInstPC          = "inst_pc"
 	cbPlatformAndroid = "plat_android"
 	cbPlatformWindows = "plat_windows"
-	cbPlatformIOS    = "plat_ios"
-	cbPlatformMacOS  = "plat_macos"
-	cbDownloadApp    = "download_app"
+	cbPlatformIOS     = "plat_ios"
+	cbPlatformMacOS   = "plat_macos"
+	cbDownloadApp     = "download_app"
 )
 
 const (
@@ -227,23 +228,24 @@ func mainKeyboardForPlatform(platform string) tgbotapi.InlineKeyboardMarkup {
 }
 
 func firstMessageForPlatform(platform string, userID int64) string {
+	canonicalUserID := getOrCreateCanonicalUserID(userID)
 	switch platform {
 	case "android":
 		urls := getLatestAppURLs()
 		if urls.Android != "" {
-			return fmt.Sprintf("📲 *Скачай приложение HeYearth для Android*\n\nСсылка на APK:\n%s\n\nУстанови приложение, открой — выбери «Я новый пользователь» или войди по ID с другого устройства.", urls.Android)
+			return fmt.Sprintf("📲 *Скачай приложение HeYearth для Android*\n\nТвой HeYearth ID:\n`%s`\n\nСсылка на APK:\n%s\n\nУстанови приложение и выбери вход по существующему ID.", canonicalUserID, urls.Android)
 		}
-		return "📲 Приложение HeYearth для Android. Нажми «Скачать приложение» — ссылка появится, когда на сервере будет выложена сборка."
+		return fmt.Sprintf("📲 Приложение HeYearth для Android.\n\nТвой HeYearth ID:\n`%s`\n\nНажми «Скачать приложение» — ссылка появится, когда на сервере будет выложена сборка.", canonicalUserID)
 	case "windows":
 		urls := getLatestAppURLs()
 		if urls.Windows != "" {
-			return fmt.Sprintf("💻 *Скачай приложение HeYearth для Windows*\n\nСсылка на архив:\n%s\n\nРаспакуй и запусти heyearth_vpn.exe. В приложении войди по ID (новый пользователь или с другого устройства).", urls.Windows)
+			return fmt.Sprintf("💻 *Скачай приложение HeYearth для Windows*\n\nТвой HeYearth ID:\n`%s`\n\nСсылка на архив:\n%s\n\nРаспакуй и запусти приложение. Войди по существующему ID.", canonicalUserID, urls.Windows)
 		}
-		return "💻 Приложение HeYearth для Windows. Нажми «Скачать приложение», когда на сервере будет выложена сборка."
+		return fmt.Sprintf("💻 Приложение HeYearth для Windows.\n\nТвой HeYearth ID:\n`%s`\n\nНажми «Скачать приложение», когда на сервере будет выложена сборка.", canonicalUserID)
 	case "ios", "macos":
-		return "Выбери действие: получить ссылку ss:// для Happ или прочитать инструкцию."
+		return fmt.Sprintf("Твой HeYearth ID:\n`%s`\n\nВыбери действие: получить ссылку ss:// для Happ или прочитать инструкцию.", canonicalUserID)
 	default:
-		return "Выбери действие ниже."
+		return fmt.Sprintf("Твой HeYearth ID:\n`%s`\n\nВыбери действие ниже.", canonicalUserID)
 	}
 }
 
@@ -490,18 +492,107 @@ func handleGetSS(userID int64, forceNew bool) string {
 	if !isRegistered(userID) {
 		return "Сначала зарегистрируйтесь: /register"
 	}
-	uri, err := ss.GetOrCreateURI(strconv.FormatInt(userID, 10), forceNew)
+
+	canonicalUserID := getOrCreateCanonicalUserID(userID)
+	uri, err := fetchConfigForUser(canonicalUserID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "Shadowsocks на сервере ещё не настроен. Обратитесь к администратору."
-		}
 		return "Не удалось выдать ссылку: " + err.Error()
 	}
 	if !strings.HasPrefix(uri, "ss://") {
 		return "Неверный ответ от сервера."
 	}
 	if forceNew {
-		return fmt.Sprintf("Новая персональная ссылка (старая больше не действует):\n\n`%s`\n\nВставь в Happ, включи глобальный режим и «DNS через прокси».", uri)
+		return fmt.Sprintf("Ссылка обновлена:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nВставь ссылку в Happ и включи глобальный режим с DNS через прокси.", uri, canonicalUserID)
 	}
-	return fmt.Sprintf("Ваша *персональная* ссылка:\n\n`%s`\n\nСкопируй в Happ. *Включи глобальный режим и «DNS через прокси»*.", uri)
+	return fmt.Sprintf("Ваша персональная ссылка:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nСкопируй в Happ и включи глобальный режим с DNS через прокси.", uri, canonicalUserID)
+}
+
+type botUserMap map[string]string
+
+func getOrCreateCanonicalUserID(telegramUserID int64) string {
+	idStr := strconv.FormatInt(telegramUserID, 10)
+	m := loadBotUserMap()
+	if existing := strings.TrimSpace(m[idStr]); existing != "" {
+		return existing
+	}
+
+	userID := newUUID()
+	m[idStr] = userID
+	saveBotUserMap(m)
+	return userID
+}
+
+func loadBotUserMap() botUserMap {
+	data, err := os.ReadFile(config.BotUserMapFile())
+	if err != nil {
+		return botUserMap{}
+	}
+	var m botUserMap
+	if err := json.Unmarshal(data, &m); err != nil {
+		return botUserMap{}
+	}
+	return m
+}
+
+func saveBotUserMap(m botUserMap) {
+	_ = os.MkdirAll(config.AppDir(), 0755)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(config.BotUserMapFile(), data, 0644)
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("user-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[0], b[1], b[2], b[3],
+		b[4], b[5],
+		b[6], b[7],
+		b[8], b[9],
+		b[10], b[11], b[12], b[13], b[14], b[15],
+	)
+}
+
+func fetchConfigForUser(userID string) (string, error) {
+	body, err := json.Marshal(map[string]string{"user_id": userID})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/v1/config", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var raw map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&raw)
+		if msg, ok := raw["message"].(string); ok && msg != "" {
+			return "", fmt.Errorf(msg)
+		}
+		return "", fmt.Errorf("api returned status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		UserID string `json:"user_id"`
+		SsURI  string `json:"ss_uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(data.SsURI), nil
 }

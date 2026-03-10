@@ -1,0 +1,13 @@
+[Unit]
+Description=Shadowsocks-libev per-user instance %i
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ss-server -c /etc/shadowsocks-libev/users/%i.json -u
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

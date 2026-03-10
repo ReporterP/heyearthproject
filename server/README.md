@@ -1,25 +1,36 @@
-# HeYearth — серверная часть
+# HeYearth Server
 
-Бэкенд (API + Telegram-бот), сайт, скрипты деплоя и диагностики. В дальнейшем может быть вынесен в отдельный репозиторий.
+Папка `server` содержит backend, ansible-роли для VPN-нод и переменные окружения для деплоя.
 
 ## Структура
 
-- **backend/** — Go: API (REST + gRPC), Telegram-бот, деплой (cmd/deploy)
-- **site/** — статика сайта (index.html)
-- **server/** — скрипты для сервера (add-ss-user.sh и др.)
-- **scripts/** — Python: деплой (`deploy.py`), диагностика HTTP/HTTPS (`server_http_diagnose_and_fix.py`)
+- `backend/` — Go API, Telegram bot, node-agent, deploy tool
+- `ansible/` — provisioning VPN nodes
+- `.env.example` — шаблон для `server/.env`
 
-## Деплой
-
-Из корня **этого** проекта (server/):
+## Деплой Main Server
 
 ```bash
-# Требуется Go
-python scripts/deploy.py --fresh   # полная установка на новый сервер
-python scripts/deploy.py --update  # обновить файлы и перезапустить сервисы
-python scripts/deploy.py --site    # только сайт и SSL (nginx, certbot)
+cd backend
+go run ./cmd/deploy --main
 ```
 
-Или из backend: `go run ./cmd/deploy --fresh | --update | --restart | --site`
+Для обновления:
 
-Скопируй `.env.example` в `.env` и заполни `DEPLOY_HOST`, `DEPLOY_SSH_PASSWORD`, `TELEGRAM_BOT_TOKEN`, при необходимости `SITE_DOMAIN`, `LETSENCRYPT_EMAIL`.
+```bash
+cd backend
+go run ./cmd/deploy --update-main
+```
+
+Для перезапуска сервисов:
+
+```bash
+cd backend
+go run ./cmd/deploy --restart
+```
+
+## Важно
+
+- Деплой требует `DEPLOY_HOST_KEY_FINGERPRINT`, чтобы не использовать `InsecureIgnoreHostKey`.
+- API не стартует без `ADMIN_USER`, `ADMIN_PASS`, `JWT_SECRET`.
+- mTLS сертификаты для `api <-> node-agent` генерируются локально deploy tool и выкладываются в `server/backend/certs`.

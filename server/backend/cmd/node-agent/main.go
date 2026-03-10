@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
-	pb "heyearth/internal/pb/node_agent_v1"
+	pb "github.com/heyearth/backend/internal/pb/node_agent_v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -25,7 +25,7 @@ type server struct {
 
 func (s *server) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.CreateUserResponse, error) {
 	log.Printf("CreateUser called for user_id: %s", req.UserId)
-	
+
 	// Execute the add-ss-user.sh script
 	cmd := exec.Command("/opt/heyearth/add-ss-user.sh", req.UserId)
 	out, err := cmd.CombinedOutput()
@@ -65,9 +65,15 @@ func loadTLSCredentials() (credentials.TransportCredentials, error) {
 	keyFile := os.Getenv("TLS_KEY_FILE")
 	caFile := os.Getenv("TLS_CA_FILE")
 
-	if certFile == "" { certFile = "certs/server-cert.pem" }
-	if keyFile == "" { keyFile = "certs/server-key.pem" }
-	if caFile == "" { caFile = "certs/ca-cert.pem" }
+	if certFile == "" {
+		certFile = "certs/server-cert.pem"
+	}
+	if keyFile == "" {
+		keyFile = "certs/server-key.pem"
+	}
+	if caFile == "" {
+		caFile = "certs/ca-cert.pem"
+	}
 
 	// Load server's certificate and private key
 	serverCert, err := tls.LoadX509KeyPair(certFile, keyFile)

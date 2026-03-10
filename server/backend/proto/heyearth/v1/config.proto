@@ -41,7 +41,7 @@ message CheckAppUpdateResponse {
 }
 
 message ApplyPromocodeRequest {
-  string telegram_id = 1;
+  string user_id = 1;
   string code = 2;
 }
 
@@ -51,7 +51,7 @@ message ApplyPromocodeResponse {
 }
 
 message GetProfileRequest {
-  string telegram_id = 1;
+  string user_id = 1;
 }
 
 message GetProfileResponse {

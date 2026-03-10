@@ -316,9 +316,9 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
 }
 
 class ApplyPromocodeRequest extends $pb.GeneratedMessage {
-  factory ApplyPromocodeRequest({$core.String? telegramId, $core.String? code}) {
+  factory ApplyPromocodeRequest({$core.String? userId, $core.String? code}) {
     final result = create();
-    if (telegramId != null) result.telegramId = telegramId;
+    if (userId != null) result.userId = userId;
     if (code != null) result.code = code;
     return result;
   }
@@ -327,7 +327,7 @@ class ApplyPromocodeRequest extends $pb.GeneratedMessage {
   factory ApplyPromocodeRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
   static final $pb.BuilderInfo _i = $pb.BuilderInfo('ApplyPromocodeRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOS(1, 'telegramId')
+    ..aOS(1, 'userId')
     ..aOS(2, 'code')
     ..hasRequiredFields = false;
 
@@ -339,13 +339,13 @@ class ApplyPromocodeRequest extends $pb.GeneratedMessage {
   static ApplyPromocodeRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
-  $core.String get telegramId => $_getSZ(0);
+  $core.String get userId => $_getSZ(0);
   @$pb.TagNumber(1)
-  set telegramId($core.String value) => $_setString(0, value);
+  set userId($core.String value) => $_setString(0, value);
   @$pb.TagNumber(1)
-  $core.bool hasTelegramId() => $_has(0);
+  $core.bool hasUserId() => $_has(0);
   @$pb.TagNumber(1)
-  void clearTelegramId() => $_clearField(1);
+  void clearUserId() => $_clearField(1);
 
   @$pb.TagNumber(2)
   $core.String get code => $_getSZ(1);
@@ -406,9 +406,9 @@ class ApplyPromocodeResponse extends $pb.GeneratedMessage {
 }
 
 class GetProfileRequest extends $pb.GeneratedMessage {
-  factory GetProfileRequest({$core.String? telegramId}) {
+  factory GetProfileRequest({$core.String? userId}) {
     final result = create();
-    if (telegramId != null) result.telegramId = telegramId;
+    if (userId != null) result.userId = userId;
     return result;
   }
   GetProfileRequest._();
@@ -416,7 +416,7 @@ class GetProfileRequest extends $pb.GeneratedMessage {
   factory GetProfileRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
 
   static final $pb.BuilderInfo _i = $pb.BuilderInfo('GetProfileRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
-    ..aOS(1, 'telegramId')
+    ..aOS(1, 'userId')
     ..hasRequiredFields = false;
 
   @$core.pragma('dart2js:noInline')
@@ -427,13 +427,13 @@ class GetProfileRequest extends $pb.GeneratedMessage {
   static GetProfileRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
 
   @$pb.TagNumber(1)
-  $core.String get telegramId => $_getSZ(0);
+  $core.String get userId => $_getSZ(0);
   @$pb.TagNumber(1)
-  set telegramId($core.String value) => $_setString(0, value);
+  set userId($core.String value) => $_setString(0, value);
   @$pb.TagNumber(1)
-  $core.bool hasTelegramId() => $_has(0);
+  $core.bool hasUserId() => $_has(0);
   @$pb.TagNumber(1)
-  void clearTelegramId() => $_clearField(1);
+  void clearUserId() => $_clearField(1);
 
   @$core.override
   $pb.BuilderInfo get info_ => _i;

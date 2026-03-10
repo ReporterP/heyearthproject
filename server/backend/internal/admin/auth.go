@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -10,14 +11,25 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtKey = []byte(getJWTSecret())
-
-func getJWTSecret() string {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		return "super-secret-key-for-dev"
+func ValidateConfig() error {
+	switch {
+	case strings.TrimSpace(os.Getenv("JWT_SECRET")) == "":
+		return fmt.Errorf("JWT_SECRET is required")
+	case strings.TrimSpace(os.Getenv("ADMIN_USER")) == "":
+		return fmt.Errorf("ADMIN_USER is required")
+	case strings.TrimSpace(os.Getenv("ADMIN_PASS")) == "":
+		return fmt.Errorf("ADMIN_PASS is required")
+	default:
+		return nil
 	}
-	return secret
+}
+
+func jwtKey() ([]byte, error) {
+	secret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if secret == "" {
+		return nil, fmt.Errorf("JWT_SECRET is required")
+	}
+	return []byte(secret), nil
 }
 
 type Claims struct {
@@ -27,6 +39,11 @@ type Claims struct {
 }
 
 func GenerateToken(username string) (string, error) {
+	key, err := jwtKey()
+	if err != nil {
+		return "", err
+	}
+
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
 		Username: username,
@@ -37,11 +54,17 @@ func GenerateToken(username string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtKey)
+	return token.SignedString(key)
 }
 
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		key, err := jwtKey()
+		if err != nil {
+			http.Error(w, "Server auth config is invalid", http.StatusInternalServerError)
+			return
+		}
+
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
@@ -52,7 +75,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		claims := &Claims{}
 
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return jwtKey, nil
+			return key, nil
 		})
 
 		if err != nil || !token.Valid {
@@ -90,16 +113,13 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hardcoded admin for now. In production, check against DB.
-	adminUser := os.Getenv("ADMIN_USER")
-	adminPass := os.Getenv("ADMIN_PASS")
-	if adminUser == "" {
-		adminUser = "admin"
-	}
-	if adminPass == "" {
-		adminPass = "admin"
+	if err := ValidateConfig(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
+	adminUser := strings.TrimSpace(os.Getenv("ADMIN_USER"))
+	adminPass := strings.TrimSpace(os.Getenv("ADMIN_PASS"))
 	if req.Username != adminUser || req.Password != adminPass {
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return

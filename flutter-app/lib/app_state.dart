@@ -69,7 +69,7 @@ class AppState extends ChangeNotifier {
         _apiBase = savedApi.replaceFirst(RegExp(r'/$'), '');
       }
       final savedLocale = prefs.getString(_keyLocale);
-      if (savedLocale == 'en' || savedLocale == 'ru') _locale = savedLocale!;
+      if (savedLocale == 'en' || savedLocale == 'ru') _locale = savedLocale;
       if (!_vpn.isSupported) _vpnOn = false;
     } catch (_) {}
     _loading = false;
@@ -81,7 +81,17 @@ class AppState extends ChangeNotifier {
   Future<void> chooseNewUser() async {
     _userId = const Uuid().v4();
     final prefs = await _prefs();
-    await prefs.setString(_keyUserId!, _userId!);
+    await prefs.setString(_keyUserId, _userId!);
+    _error = null;
+    notifyListeners();
+  }
+
+  Future<void> setApiBase(String value) async {
+    final clean = value.trim().replaceFirst(RegExp(r'/$'), '');
+    if (clean.isEmpty) return;
+    _apiBase = clean;
+    final prefs = await _prefs();
+    await prefs.setString(_keyApiBase, _apiBase);
     _error = null;
     notifyListeners();
   }
@@ -116,7 +126,7 @@ class AppState extends ChangeNotifier {
         return false;
       }
       final prefs = await _prefs();
-      await prefs.setString(_keySsUri!, _ssUri!);
+      await prefs.setString(_keySsUri, _ssUri!);
       notifyListeners();
       return true;
     } catch (e) {
@@ -208,7 +218,7 @@ class AppState extends ChangeNotifier {
     if (clean.isEmpty) return false;
     _userId = clean;
     final prefs = await _prefs();
-    await prefs.setString(_keyUserId!, _userId!);
+    await prefs.setString(_keyUserId, _userId!);
     await prefs.remove(_keySsUri);
     _ssUri = null;
     _error = null;

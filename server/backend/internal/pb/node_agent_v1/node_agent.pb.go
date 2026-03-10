@@ -317,7 +317,7 @@ const file_node_agent_v1_node_agent_proto_rawDesc = "" +
 	"\n" +
 	"DeleteUser\x12 .node_agent.v1.DeleteUserRequest\x1a!.node_agent.v1.DeleteUserResponse\"\x00\x12S\n" +
 	"\n" +
-	"GetMetrics\x12 .node_agent.v1.GetMetricsRequest\x1a!.node_agent.v1.GetMetricsResponse\"\x00B$Z\"heyearth/internal/pb/node_agent_v1b\x06proto3"
+	"GetMetrics\x12 .node_agent.v1.GetMetricsRequest\x1a!.node_agent.v1.GetMetricsResponse\"\x00B7Z5github.com/heyearth/backend/internal/pb/node_agent_v1b\x06proto3"
 
 var (
 	file_node_agent_v1_node_agent_proto_rawDescOnce sync.Once
