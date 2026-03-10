@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ConfigApi_GetConfig_FullMethodName = "/heyearth.v1.ConfigApi/GetConfig"
-	ConfigApi_Health_FullMethodName    = "/heyearth.v1.ConfigApi/Health"
+	ConfigApi_GetConfig_FullMethodName       = "/heyearth.v1.ConfigApi/GetConfig"
+	ConfigApi_Health_FullMethodName          = "/heyearth.v1.ConfigApi/Health"
+	ConfigApi_CheckAppUpdate_FullMethodName = "/heyearth.v1.ConfigApi/CheckAppUpdate"
 )
 
 // ConfigApiClient is the client API for ConfigApi service.
@@ -31,6 +32,7 @@ const (
 type ConfigApiClient interface {
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
+	CheckAppUpdate(ctx context.Context, in *CheckAppUpdateRequest, opts ...grpc.CallOption) (*CheckAppUpdateResponse, error)
 }
 
 type configApiClient struct {
@@ -61,6 +63,16 @@ func (c *configApiClient) Health(ctx context.Context, in *HealthRequest, opts ..
 	return out, nil
 }
 
+func (c *configApiClient) CheckAppUpdate(ctx context.Context, in *CheckAppUpdateRequest, opts ...grpc.CallOption) (*CheckAppUpdateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckAppUpdateResponse)
+	err := c.cc.Invoke(ctx, ConfigApi_CheckAppUpdate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConfigApiServer is the server API for ConfigApi service.
 // All implementations must embed UnimplementedConfigApiServer
 // for forward compatibility.
@@ -69,6 +81,7 @@ func (c *configApiClient) Health(ctx context.Context, in *HealthRequest, opts ..
 type ConfigApiServer interface {
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
+	CheckAppUpdate(context.Context, *CheckAppUpdateRequest) (*CheckAppUpdateResponse, error)
 	mustEmbedUnimplementedConfigApiServer()
 }
 
@@ -84,6 +97,9 @@ func (UnimplementedConfigApiServer) GetConfig(context.Context, *GetConfigRequest
 }
 func (UnimplementedConfigApiServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
+}
+func (UnimplementedConfigApiServer) CheckAppUpdate(context.Context, *CheckAppUpdateRequest) (*CheckAppUpdateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CheckAppUpdate not implemented")
 }
 func (UnimplementedConfigApiServer) mustEmbedUnimplementedConfigApiServer() {}
 func (UnimplementedConfigApiServer) testEmbeddedByValue()                   {}
@@ -142,6 +158,24 @@ func _ConfigApi_Health_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ConfigApi_CheckAppUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckAppUpdateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConfigApiServer).CheckAppUpdate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConfigApi_CheckAppUpdate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConfigApiServer).CheckAppUpdate(ctx, req.(*CheckAppUpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ConfigApi_ServiceDesc is the grpc.ServiceDesc for ConfigApi service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -156,6 +190,10 @@ var ConfigApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Health",
 			Handler:    _ConfigApi_Health_Handler,
+		},
+		{
+			MethodName: "CheckAppUpdate",
+			Handler:    _ConfigApi_CheckAppUpdate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

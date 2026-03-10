@@ -1,7 +1,5 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:heyearth_vpn/grpc_client.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -44,19 +42,13 @@ List<int> _parseVersion(String s) {
   return main.split('.').map((e) => int.tryParse(e) ?? 0).toList();
 }
 
-/// Запрос к API: GET [apiBase]/api/v1/app/update.
+/// Запрос к API по gRPC: CheckAppUpdate.
 /// Возвращает версию с сервера и [UpdateInfo] только если на сервере версия новее текущей.
 Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
   try {
-    final base = apiBase.replaceFirst(RegExp(r'/$'), '');
-    final uri = Uri.parse('$base/api/v1/app/update').replace(queryParameters: {
-      't': DateTime.now().millisecondsSinceEpoch.toString(),
-    });
-    final r = await http.get(uri).timeout(const Duration(seconds: 10));
-    if (r.statusCode != 200) return const UpdateCheckResult();
-    final data = r.body.isNotEmpty ? (jsonDecode(r.body) as Map<String, dynamic>?) : null;
-    if (data == null) return const UpdateCheckResult();
-    final version = (data['version'] as String?)?.trim() ?? '';
+    final resp = await checkAppUpdateGrpc(apiBase).timeout(const Duration(seconds: 10));
+    if (resp == null) return const UpdateCheckResult();
+    final version = resp.version.trim();
     if (version.isEmpty) return const UpdateCheckResult();
 
     final info = await PackageInfo.fromPlatform();
@@ -67,19 +59,19 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
     if (kIsWeb) {
       // веб — бинарь не скачиваем
     } else if (defaultTargetPlatform == TargetPlatform.android) {
-      downloadUrl = (data['android'] as String?)?.trim() ?? '';
+      downloadUrl = resp.androidUrl.trim();
     } else if (defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.linux) {
-      downloadUrl = (data['windows'] as String?)?.trim() ?? '';
+      downloadUrl = resp.windowsUrl.trim();
       if (downloadUrl.isEmpty && defaultTargetPlatform == TargetPlatform.macOS) {
-        downloadUrl = (data['macos'] as String?)?.trim() ?? '';
+        downloadUrl = resp.macosUrl.trim();
       }
       if (downloadUrl.isEmpty && defaultTargetPlatform == TargetPlatform.linux) {
-        downloadUrl = (data['linux'] as String?)?.trim() ?? '';
+        downloadUrl = resp.linuxUrl.trim();
       }
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      downloadUrl = (data['ios'] as String?)?.trim() ?? '';
+      downloadUrl = resp.iosUrl.trim();
     }
 
     UpdateInfo? update;
@@ -87,7 +79,7 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
       update = UpdateInfo(
         latestVersion: version,
         downloadUrl: downloadUrl,
-        releaseNotes: (data['release_notes'] as String?)?.trim(),
+        releaseNotes: resp.releaseNotes.trim().isEmpty ? null : resp.releaseNotes.trim(),
       );
     }
     return UpdateCheckResult(serverVersion: version, update: update);

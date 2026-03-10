@@ -197,6 +197,132 @@ func (x *HealthResponse) GetStatus() string {
 	return ""
 }
 
+type CheckAppUpdateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckAppUpdateRequest) Reset() {
+	*x = CheckAppUpdateRequest{}
+	mi := &file_proto_heyearth_v1_config_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckAppUpdateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckAppUpdateRequest) ProtoMessage() {}
+
+func (x *CheckAppUpdateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_heyearth_v1_config_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*CheckAppUpdateRequest) Descriptor() ([]byte, []int) {
+	return file_proto_heyearth_v1_config_proto_rawDescGZIP(), []int{4}
+}
+
+type CheckAppUpdateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	AndroidUrl    string                 `protobuf:"bytes,2,opt,name=android_url,json=androidUrl,proto3" json:"android_url,omitempty"`
+	WindowsUrl    string                 `protobuf:"bytes,3,opt,name=windows_url,json=windowsUrl,proto3" json:"windows_url,omitempty"`
+	MacosUrl      string                 `protobuf:"bytes,4,opt,name=macos_url,json=macosUrl,proto3" json:"macos_url,omitempty"`
+	LinuxUrl      string                 `protobuf:"bytes,5,opt,name=linux_url,json=linuxUrl,proto3" json:"linux_url,omitempty"`
+	IosUrl        string                 `protobuf:"bytes,6,opt,name=ios_url,json=iosUrl,proto3" json:"ios_url,omitempty"`
+	ReleaseNotes  string                 `protobuf:"bytes,7,opt,name=release_notes,json=releaseNotes,proto3" json:"release_notes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckAppUpdateResponse) Reset() {
+	*x = CheckAppUpdateResponse{}
+	mi := &file_proto_heyearth_v1_config_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckAppUpdateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckAppUpdateResponse) ProtoMessage() {}
+
+func (x *CheckAppUpdateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_heyearth_v1_config_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*CheckAppUpdateResponse) Descriptor() ([]byte, []int) {
+	return file_proto_heyearth_v1_config_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CheckAppUpdateResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetAndroidUrl() string {
+	if x != nil {
+		return x.AndroidUrl
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetWindowsUrl() string {
+	if x != nil {
+		return x.WindowsUrl
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetMacosUrl() string {
+	if x != nil {
+		return x.MacosUrl
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetLinuxUrl() string {
+	if x != nil {
+		return x.LinuxUrl
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetIosUrl() string {
+	if x != nil {
+		return x.IosUrl
+	}
+	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetReleaseNotes() string {
+	if x != nil {
+		return x.ReleaseNotes
+	}
+	return ""
+}
+
 var File_proto_heyearth_v1_config_proto protoreflect.FileDescriptor
 
 const file_proto_heyearth_v1_config_proto_rawDesc = "" +
@@ -226,20 +352,24 @@ func file_proto_heyearth_v1_config_proto_rawDescGZIP() []byte {
 	return file_proto_heyearth_v1_config_proto_rawDescData
 }
 
-var file_proto_heyearth_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_proto_heyearth_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_proto_heyearth_v1_config_proto_goTypes = []any{
 	(*GetConfigRequest)(nil),  // 0: heyearth.v1.GetConfigRequest
 	(*GetConfigResponse)(nil), // 1: heyearth.v1.GetConfigResponse
 	(*HealthRequest)(nil),     // 2: heyearth.v1.HealthRequest
-	(*HealthResponse)(nil),    // 3: heyearth.v1.HealthResponse
+	(*HealthResponse)(nil),         // 3: heyearth.v1.HealthResponse
+	(*CheckAppUpdateRequest)(nil),  // 4: heyearth.v1.CheckAppUpdateRequest
+	(*CheckAppUpdateResponse)(nil), // 5: heyearth.v1.CheckAppUpdateResponse
 }
 var file_proto_heyearth_v1_config_proto_depIdxs = []int32{
 	0, // 0: heyearth.v1.ConfigApi.GetConfig:input_type -> heyearth.v1.GetConfigRequest
 	2, // 1: heyearth.v1.ConfigApi.Health:input_type -> heyearth.v1.HealthRequest
-	1, // 2: heyearth.v1.ConfigApi.GetConfig:output_type -> heyearth.v1.GetConfigResponse
-	3, // 3: heyearth.v1.ConfigApi.Health:output_type -> heyearth.v1.HealthResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	4, // 2: heyearth.v1.ConfigApi.CheckAppUpdate:input_type -> heyearth.v1.CheckAppUpdateRequest
+	1, // 3: heyearth.v1.ConfigApi.GetConfig:output_type -> heyearth.v1.GetConfigResponse
+	3, // 4: heyearth.v1.ConfigApi.Health:output_type -> heyearth.v1.HealthResponse
+	5, // 5: heyearth.v1.ConfigApi.CheckAppUpdate:output_type -> heyearth.v1.CheckAppUpdateResponse
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -256,7 +386,7 @@ func file_proto_heyearth_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_heyearth_v1_config_proto_rawDesc), len(file_proto_heyearth_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

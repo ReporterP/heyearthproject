@@ -58,6 +58,18 @@ func (s *server) Health(ctx context.Context, _ *heyearth_v1.HealthRequest) (*hey
 	return &heyearth_v1.HealthResponse{Status: "ok"}, nil
 }
 
+func (s *server) CheckAppUpdate(ctx context.Context, _ *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
+	return &heyearth_v1.CheckAppUpdateResponse{
+		Version:      strings.TrimSpace(os.Getenv("APP_UPDATE_VERSION")),
+		AndroidUrl:   strings.TrimSpace(os.Getenv("APP_UPDATE_URL_ANDROID")),
+		WindowsUrl:   strings.TrimSpace(os.Getenv("APP_UPDATE_URL_WINDOWS")),
+		MacosUrl:     strings.TrimSpace(os.Getenv("APP_UPDATE_URL_MACOS")),
+		LinuxUrl:     strings.TrimSpace(os.Getenv("APP_UPDATE_URL_LINUX")),
+		IosUrl:       strings.TrimSpace(os.Getenv("APP_UPDATE_URL_IOS")),
+		ReleaseNotes: strings.TrimSpace(os.Getenv("APP_UPDATE_RELEASE_NOTES")),
+	}, nil
+}
+
 func sanitizeInstance(userID string) string {
 	s := regexp.MustCompile(`[^a-zA-Z0-9_-]`).ReplaceAllString(strings.ReplaceAll(userID, "-", "_"), "")
 	if len(s) > 64 {

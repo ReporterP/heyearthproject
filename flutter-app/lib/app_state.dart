@@ -1,11 +1,9 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:heyearth_vpn/grpc_client.dart';
 import 'package:heyearth_vpn/vpn_service_interface.dart';
 
 const _keyUserId = 'heyearth_user_id';
@@ -99,24 +97,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Получить конфиг с сервера (ss_uri). Вызывается автоматически при включении VPN.
+  /// Получить конфиг с сервера (ss_uri) по gRPC. Вызывается автоматически при включении VPN.
   Future<bool> fetchConfig() async {
     if (_userId == null) return false;
     _error = null;
     notifyListeners();
     try {
-      final r = await http.post(
-        Uri.parse('$_apiBase/api/v1/config'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'user_id': _userId}),
-      ).timeout(const Duration(seconds: 15));
-      if (r.statusCode != 200) {
-        _error = r.body.isNotEmpty ? r.body : 'Ошибка ${r.statusCode}';
+      final resp = await getConfigGrpc(_apiBase, _userId!).timeout(const Duration(seconds: 15));
+      if (resp == null) {
+        _error = 'Сервер не ответил.';
         notifyListeners();
         return false;
       }
-      final data = jsonDecode(r.body) as Map<String, dynamic>;
-      _ssUri = data['ss_uri'] as String?;
+      _ssUri = resp.ssUri.trim().isEmpty ? null : resp.ssUri;
       if (_ssUri == null || _ssUri!.trim().isEmpty) {
         _error = 'Сервер не вернул конфиг. Попробуйте ещё раз.';
         notifyListeners();

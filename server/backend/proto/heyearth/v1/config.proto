@@ -4,10 +4,11 @@ package heyearth.v1;
 
 option go_package = "github.com/heyearth/backend/internal/pb/heyearth_v1";
 
-// ConfigApi — выдача персонального SS URI по user_id.
+// ConfigApi — выдача персонального SS URI по user_id и проверка обновлений приложения.
 service ConfigApi {
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
 }
 
 message GetConfigRequest {
@@ -23,4 +24,16 @@ message HealthRequest {}
 
 message HealthResponse {
   string status = 1;  // e.g. "ok"
+}
+
+message CheckAppUpdateRequest {}
+
+message CheckAppUpdateResponse {
+  string version = 1;
+  string android_url = 2;
+  string windows_url = 3;
+  string macos_url = 4;
+  string linux_url = 5;
+  string ios_url = 6;
+  string release_notes = 7;
 }
