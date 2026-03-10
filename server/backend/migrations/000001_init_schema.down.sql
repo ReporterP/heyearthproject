@@ -1,0 +1,7 @@
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS promocodes;
+DROP TABLE IF EXISTS server_groups;
+DROP TABLE IF EXISTS servers;
+DROP TABLE IF EXISTS user_subscriptions;
+DROP TABLE IF EXISTS user_groups;
+DROP TABLE IF EXISTS users;

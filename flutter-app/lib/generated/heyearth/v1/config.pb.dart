@@ -315,6 +315,175 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
   $pb.BuilderInfo get info_ => _i;
 }
 
+class ApplyPromocodeRequest extends $pb.GeneratedMessage {
+  factory ApplyPromocodeRequest({$core.String? telegramId, $core.String? code}) {
+    final result = create();
+    if (telegramId != null) result.telegramId = telegramId;
+    if (code != null) result.code = code;
+    return result;
+  }
+  ApplyPromocodeRequest._();
+  factory ApplyPromocodeRequest.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
+  factory ApplyPromocodeRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo('ApplyPromocodeRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
+    ..aOS(1, 'telegramId')
+    ..aOS(2, 'code')
+    ..hasRequiredFields = false;
+
+  @$core.pragma('dart2js:noInline')
+  static ApplyPromocodeRequest create() => ApplyPromocodeRequest._();
+  @$core.override
+  ApplyPromocodeRequest createEmptyInstance() => create();
+  static ApplyPromocodeRequest? _defaultInstance;
+  static ApplyPromocodeRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
+
+  @$pb.TagNumber(1)
+  $core.String get telegramId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set telegramId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTelegramId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTelegramId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get code => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set code($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCode() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCode() => $_clearField(2);
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+}
+
+class ApplyPromocodeResponse extends $pb.GeneratedMessage {
+  factory ApplyPromocodeResponse({$core.bool? success, $core.String? message}) {
+    final result = create();
+    if (success != null) result.success = success;
+    if (message != null) result.message = message;
+    return result;
+  }
+  ApplyPromocodeResponse._();
+  factory ApplyPromocodeResponse.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
+  factory ApplyPromocodeResponse.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo('ApplyPromocodeResponse', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
+    ..aOB(1, 'success')
+    ..aOS(2, 'message')
+    ..hasRequiredFields = false;
+
+  @$core.pragma('dart2js:noInline')
+  static ApplyPromocodeResponse create() => ApplyPromocodeResponse._();
+  @$core.override
+  ApplyPromocodeResponse createEmptyInstance() => create();
+  static ApplyPromocodeResponse? _defaultInstance;
+  static ApplyPromocodeResponse getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
+
+  @$pb.TagNumber(1)
+  $core.bool get success => $_getBF(0);
+  @$pb.TagNumber(1)
+  set success($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSuccess() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSuccess() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get message => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set message($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasMessage() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMessage() => $_clearField(2);
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+}
+
+class GetProfileRequest extends $pb.GeneratedMessage {
+  factory GetProfileRequest({$core.String? telegramId}) {
+    final result = create();
+    if (telegramId != null) result.telegramId = telegramId;
+    return result;
+  }
+  GetProfileRequest._();
+  factory GetProfileRequest.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
+  factory GetProfileRequest.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo('GetProfileRequest', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
+    ..aOS(1, 'telegramId')
+    ..hasRequiredFields = false;
+
+  @$core.pragma('dart2js:noInline')
+  static GetProfileRequest create() => GetProfileRequest._();
+  @$core.override
+  GetProfileRequest createEmptyInstance() => create();
+  static GetProfileRequest? _defaultInstance;
+  static GetProfileRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
+
+  @$pb.TagNumber(1)
+  $core.String get telegramId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set telegramId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTelegramId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTelegramId() => $_clearField(1);
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+}
+
+class GetProfileResponse extends $pb.GeneratedMessage {
+  factory GetProfileResponse({$core.String? currentPlan, $core.String? validUntil}) {
+    final result = create();
+    if (currentPlan != null) result.currentPlan = currentPlan;
+    if (validUntil != null) result.validUntil = validUntil;
+    return result;
+  }
+  GetProfileResponse._();
+  factory GetProfileResponse.fromBuffer($core.List<$core.int> data, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(data, registry);
+  factory GetProfileResponse.fromJson($core.String json, [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo('GetProfileResponse', package: const $pb.PackageName('heyearth.v1'), createEmptyInstance: create)
+    ..aOS(1, 'currentPlan')
+    ..aOS(2, 'validUntil')
+    ..hasRequiredFields = false;
+
+  @$core.pragma('dart2js:noInline')
+  static GetProfileResponse create() => GetProfileResponse._();
+  @$core.override
+  GetProfileResponse createEmptyInstance() => create();
+  static GetProfileResponse? _defaultInstance;
+  static GetProfileResponse getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor(create);
+
+  @$pb.TagNumber(1)
+  $core.String get currentPlan => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set currentPlan($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasCurrentPlan() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearCurrentPlan() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get validUntil => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set validUntil($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasValidUntil() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearValidUntil() => $_clearField(2);
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+}
+
 const $core.bool _omitFieldNames =
     $core.bool.fromEnvironment('protobuf.omit_field_names', defaultValue: false);
 const $core.bool _omitMessageNames =

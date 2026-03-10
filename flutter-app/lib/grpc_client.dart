@@ -3,8 +3,10 @@ import 'package:grpc/grpc.dart';
 import 'generated/heyearth/v1/config.pbgrpc.dart';
 import 'generated/heyearth/v1/config.pb.dart' as pb;
 
-/// Парсит apiBase (например https://heyearth.ru или http://localhost:8000)
-/// и создаёт gRPC канал: для https — TLS на порт 443, для http — без TLS на порт из URL или 50051.
+ClientChannel? _cachedChannel;
+ConfigApiClient? _cachedClient;
+String? _cachedApiBase;
+
 ChannelOptions _channelOptions(Uri uri) {
   if (uri.scheme == 'https') {
     return ChannelOptions(credentials: ChannelCredentials.secure());
@@ -17,7 +19,6 @@ int _port(Uri uri) {
   return uri.scheme == 'https' ? 443 : 50051;
 }
 
-/// Создаёт ClientChannel для заданного apiBase (например https://heyearth.ru).
 ClientChannel createGrpcChannel(String apiBase) {
   final base = apiBase.replaceFirst(RegExp(r'/$'), '');
   final uri = Uri.parse(base);
@@ -29,31 +30,38 @@ ClientChannel createGrpcChannel(String apiBase) {
   );
 }
 
-/// Создаёт ConfigApiClient для заданного канала.
-ConfigApiClient createConfigApiClient(ClientChannel channel) {
-  return ConfigApiClient(channel);
+ConfigApiClient getClient(String apiBase) {
+  if (_cachedClient != null && _cachedApiBase == apiBase) {
+    return _cachedClient!;
+  }
+  
+  if (_cachedChannel != null) {
+    _cachedChannel!.shutdown();
+  }
+
+  _cachedChannel = createGrpcChannel(apiBase);
+  _cachedClient = ConfigApiClient(_cachedChannel!);
+  _cachedApiBase = apiBase;
+  
+  return _cachedClient!;
 }
 
-/// Вызов GetConfig по gRPC.
 Future<pb.GetConfigResponse?> getConfigGrpc(String apiBase, String userId) async {
-  final channel = createGrpcChannel(apiBase);
-  final client = createConfigApiClient(channel);
-  try {
-    final resp = await client.getConfig(pb.GetConfigRequest(userId: userId));
-    return resp;
-  } finally {
-    await channel.shutdown();
-  }
+  final client = getClient(apiBase);
+  return await client.getConfig(pb.GetConfigRequest(userId: userId));
 }
 
-/// Вызов CheckAppUpdate по gRPC.
 Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(String apiBase) async {
-  final channel = createGrpcChannel(apiBase);
-  final client = createConfigApiClient(channel);
-  try {
-    final resp = await client.checkAppUpdate(pb.CheckAppUpdateRequest());
-    return resp;
-  } finally {
-    await channel.shutdown();
-  }
+  final client = getClient(apiBase);
+  return await client.checkAppUpdate(pb.CheckAppUpdateRequest());
+}
+
+Future<pb.GetProfileResponse?> getProfileGrpc(String apiBase, String telegramId) async {
+  final client = getClient(apiBase);
+  return await client.getProfile(pb.GetProfileRequest(telegramId: telegramId));
+}
+
+Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(String apiBase, String telegramId, String code) async {
+  final client = getClient(apiBase);
+  return await client.applyPromocode(pb.ApplyPromocodeRequest(telegramId: telegramId, code: code));
 }

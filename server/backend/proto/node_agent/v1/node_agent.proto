@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package node_agent.v1;
+
+option go_package = "heyearth/internal/pb/node_agent_v1";
+
+service NodeAgent {
+  // Create a new VPN user (e.g., Shadowsocks)
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {}
+  
+  // Delete a VPN user
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {}
+
+  // Get current server metrics
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse) {}
+}
+
+message CreateUserRequest {
+  string user_id = 1;
+}
+
+message CreateUserResponse {
+  string ss_link = 1;
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+message DeleteUserResponse {
+  bool success = 1;
+}
+
+message GetMetricsRequest {}
+
+message GetMetricsResponse {
+  double cpu_usage = 1;
+  double memory_usage = 2;
+  int32 active_connections = 3;
+}

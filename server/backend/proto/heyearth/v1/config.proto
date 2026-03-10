@@ -9,6 +9,8 @@ service ConfigApi {
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
+  rpc ApplyPromocode(ApplyPromocodeRequest) returns (ApplyPromocodeResponse);
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
 }
 
 message GetConfigRequest {
@@ -36,4 +38,23 @@ message CheckAppUpdateResponse {
   string linux_url = 5;
   string ios_url = 6;
   string release_notes = 7;
+}
+
+message ApplyPromocodeRequest {
+  string telegram_id = 1;
+  string code = 2;
+}
+
+message ApplyPromocodeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetProfileRequest {
+  string telegram_id = 1;
+}
+
+message GetProfileResponse {
+  string current_plan = 1;
+  string valid_until = 2; // ISO8601 string
 }

@@ -1,0 +1,17 @@
+[Unit]
+Description=HeYearth Node Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/heyearth
+ExecStart=/opt/heyearth/node-agent
+Restart=always
+RestartSec=5
+
+Environment="PORT={{ node_agent_port | default('50052') }}"
+Environment="AUTH_TOKEN={{ node_agent_auth_token }}"
+
+[Install]
+WantedBy=multi-user.target

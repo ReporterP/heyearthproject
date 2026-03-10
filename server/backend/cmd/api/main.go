@@ -11,14 +11,24 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
+	"strconv"
 
-	"github.com/heyearth/backend/internal/config"
+	"heyearth/internal/admin"
+	"heyearth/internal/biz"
+	"heyearth/internal/config"
+	"heyearth/internal/db"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
+	pb_node "heyearth/internal/pb/node_agent_v1"
 	"github.com/heyearth/backend/internal/ss"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 )
 
 //go:embed openapi.json
@@ -28,21 +38,136 @@ type server struct {
 	heyearth_v1.UnimplementedConfigApiServer
 }
 
+var (
+	mappingMu    sync.RWMutex
+	mappingCache map[string]string
+)
+
+func initMapping() {
+	mappingMu.Lock()
+	defer mappingMu.Unlock()
+	mappingCache = loadMapping()
+}
+
+func getMapping(userID string) (string, bool) {
+	mappingMu.RLock()
+	defer mappingMu.RUnlock()
+	val, ok := mappingCache[userID]
+	return val, ok
+}
+
+func setMapping(userID, instance string) {
+	mappingMu.Lock()
+	defer mappingMu.Unlock()
+	mappingCache[userID] = instance
+	saveMapping(mappingCache)
+}
+
+func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
+	certFile := os.Getenv("TLS_CLIENT_CERT_FILE")
+	keyFile := os.Getenv("TLS_CLIENT_KEY_FILE")
+	caFile := os.Getenv("TLS_CA_FILE")
+
+	if certFile == "" { certFile = "certs/client-cert.pem" }
+	if keyFile == "" { keyFile = "certs/client-key.pem" }
+	if caFile == "" { caFile = "certs/ca-cert.pem" }
+
+	// Load client's certificate and private key
+	clientCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load certificate of the CA who signed server's certificate
+	pemServerCA, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(pemServerCA) {
+		return nil, fmt.Errorf("failed to add server CA's certificate")
+	}
+
+	// Create the credentials and return it
+	config := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      certPool,
+		ServerName:   "node-agent", // Must match the CN in server cert
+	}
+
+	return credentials.NewTLS(config), nil
+}
+
+func connectToNodeAgent(ip string) (pb_node.NodeAgentClient, *grpc.ClientConn, error) {
+	tlsCredentials, err := loadClientTLSCredentials()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot load TLS credentials: %w", err)
+	}
+
+	address := fmt.Sprintf("%s:50052", ip)
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(tlsCredentials))
+	if err != nil {
+		return nil, nil, fmt.Errorf("did not connect: %w", err)
+	}
+
+	return pb_node.NewNodeAgentClient(conn), conn, nil
+}
+
 func (s *server) GetConfig(ctx context.Context, req *heyearth_v1.GetConfigRequest) (*heyearth_v1.GetConfigResponse, error) {
 	userID := strings.TrimSpace(req.GetUserId())
 	if userID == "" || len(userID) > 256 {
 		return nil, status.Error(codes.InvalidArgument, "user_id required (max 256 chars)")
 	}
 
-	mappingMu.Lock()
-	mapping := loadMapping()
-	instance, ok := mapping[userID]
+	// 1. Get or create user in DB
+	telegramID, err := strconv.ParseInt(userID, 10, 64)
+	if err != nil {
+		// Fallback for non-numeric IDs (e.g. legacy)
+		telegramID = 0 
+	}
+
+	var groupID int
+	if telegramID != 0 {
+		user, err := biz.GetOrCreateUser(telegramID)
+		if err != nil {
+			log.Printf("Error getting user: %v", err)
+		} else {
+			sub, err := biz.GetUserSubscription(user.ID)
+			if err == nil && sub != nil {
+				groupID = sub.GroupID
+			}
+		}
+	}
+
+	// 2. Find best server for group
+	bestServer, err := biz.GetBestServerForGroup(groupID)
+	if err != nil {
+		log.Printf("Warning: could not find best server for group %d: %v", groupID, err)
+		// Fallback to local SS script if DB routing fails
+	} else {
+		log.Printf("Routing user %s to server %s (%s)", userID, bestServer.Name, bestServer.IPAddress)
+		
+		// Connect to Node Agent via mTLS
+		agentClient, conn, err := connectToNodeAgent(bestServer.IPAddress)
+		if err == nil {
+			defer conn.Close()
+			resp, err := agentClient.CreateUser(ctx, &pb_node.CreateUserRequest{UserId: userID})
+			if err == nil {
+				return &heyearth_v1.GetConfigResponse{UserId: userID, SsUri: resp.SsLink}, nil
+			}
+			log.Printf("Node Agent CreateUser failed: %v", err)
+		} else {
+			log.Printf("Failed to connect to Node Agent: %v", err)
+		}
+	}
+
+	// Legacy local SS script fallback
+	instance, ok := getMapping(userID)
 	if !ok {
 		instance = sanitizeInstance(userID)
-		mapping[userID] = instance
-		saveMapping(mapping)
+		setMapping(userID, instance)
 	}
-	mappingMu.Unlock()
 
 	uri, err := ss.GetOrCreateURI(instance, false)
 	if err != nil {
@@ -67,6 +192,54 @@ func (s *server) CheckAppUpdate(ctx context.Context, _ *heyearth_v1.CheckAppUpda
 		LinuxUrl:     strings.TrimSpace(os.Getenv("APP_UPDATE_URL_LINUX")),
 		IosUrl:       strings.TrimSpace(os.Getenv("APP_UPDATE_URL_IOS")),
 		ReleaseNotes: strings.TrimSpace(os.Getenv("APP_UPDATE_RELEASE_NOTES")),
+	}, nil
+}
+
+func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromocodeRequest) (*heyearth_v1.ApplyPromocodeResponse, error) {
+	telegramID, err := strconv.ParseInt(req.TelegramId, 10, 64)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid telegram_id")
+	}
+
+	user, err := biz.GetOrCreateUser(telegramID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to get user")
+	}
+
+	err = biz.ApplyPromocode(user.ID, req.Code)
+	if err != nil {
+		return &heyearth_v1.ApplyPromocodeResponse{Success: false, Message: err.Error()}, nil
+	}
+
+	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: "Promocode applied successfully"}, nil
+}
+
+func (s *server) GetProfile(ctx context.Context, req *heyearth_v1.GetProfileRequest) (*heyearth_v1.GetProfileResponse, error) {
+	telegramID, err := strconv.ParseInt(req.TelegramId, 10, 64)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid telegram_id")
+	}
+
+	user, err := biz.GetOrCreateUser(telegramID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to get user")
+	}
+
+	sub, err := biz.GetUserSubscription(user.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to get subscription")
+	}
+
+	if sub == nil {
+		return &heyearth_v1.GetProfileResponse{
+			CurrentPlan: "None",
+			ValidUntil:  "",
+		}, nil
+	}
+
+	return &heyearth_v1.GetProfileResponse{
+		CurrentPlan: sub.GroupName,
+		ValidUntil:  sub.ValidUntil.Format(time.RFC3339),
 	}, nil
 }
 
@@ -99,8 +272,6 @@ func saveMapping(m map[string]string) {
 	_ = os.WriteFile(config.MappingFile(), data, 0644)
 }
 
-var mappingMu sync.Mutex
-
 func httpGateway(srv *server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -110,6 +281,7 @@ func httpGateway(srv *server) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// Basic routing for legacy endpoints if needed
 		switch r.URL.Path {
 		case "/api/v1/health":
 			if r.Method != http.MethodGet {
@@ -150,71 +322,21 @@ func httpGateway(srv *server) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"user_id": resp.GetUserId(), "ss_uri": resp.GetSsUri()})
-		case "/api/v1/app/update":
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
-			w.Header().Set("Pragma", "no-cache")
-			version := strings.TrimSpace(os.Getenv("APP_UPDATE_VERSION"))
-			androidURL := strings.TrimSpace(os.Getenv("APP_UPDATE_URL_ANDROID"))
-			windowsURL := strings.TrimSpace(os.Getenv("APP_UPDATE_URL_WINDOWS"))
-			macosURL := strings.TrimSpace(os.Getenv("APP_UPDATE_URL_MACOS"))
-			linuxURL := strings.TrimSpace(os.Getenv("APP_UPDATE_URL_LINUX"))
-			iosURL := strings.TrimSpace(os.Getenv("APP_UPDATE_URL_IOS"))
-			releaseNotes := strings.TrimSpace(os.Getenv("APP_UPDATE_RELEASE_NOTES"))
-			if version == "" {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": "", "android": "", "windows": ""})
-				return
-			}
-			out := map[string]interface{}{
-				"version": version,
-				"android": androidURL,
-				"windows": windowsURL,
-			}
-			if macosURL != "" {
-				out["macos"] = macosURL
-			}
-			if linuxURL != "" {
-				out["linux"] = linuxURL
-			}
-			if iosURL != "" {
-				out["ios"] = iosURL
-			}
-			if releaseNotes != "" {
-				out["release_notes"] = releaseNotes
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(out)
 		default:
 			http.NotFound(w, r)
 		}
 	}
 }
 
-const swaggerHTML = `<!DOCTYPE html>
-<html>
-<head>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
-</head>
-<body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>
-    window.onload = () => {
-      window.ui = SwaggerUIBundle({
-        url: '/api/v1/openapi.json',
-        dom_id: '#swagger-ui',
-        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset]
-      });
-    };
-  </script>
-</body>
-</html>`
-
 func main() {
+	// Initialize DB
+	if err := db.InitDB(); err != nil {
+		log.Printf("Warning: Failed to initialize DB: %v", err)
+	}
+	defer db.CloseDB()
+
+	initMapping()
+
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -230,32 +352,23 @@ func main() {
 		_ = grpcServer.Serve(lis)
 	}()
 
-	openAPIBytes, _ := openAPIFS.ReadFile("openapi.json")
+	// openAPIBytes, _ := openAPIFS.ReadFile("openapi.json")
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
 	http.HandleFunc("/api/v1/config", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
-	http.HandleFunc("/api/v1/openapi.json", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(openAPIBytes)
-	})
-	http.HandleFunc("/api/v1/docs", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/docs" && r.URL.Path != "/api/v1/docs/" {
-			http.NotFound(w, r)
-			return
+	
+	// Admin API
+	http.HandleFunc("/api/admin/login", admin.LoginHandler)
+	http.HandleFunc("/api/admin/servers", admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			admin.GetServersHandler(w, r)
+		} else if r.Method == http.MethodPost {
+			admin.AddServerHandler(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-		http.Redirect(w, r, "/api/docs/", http.StatusMovedPermanently)
-	})
-	http.HandleFunc("/api/docs", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/docs" {
-			http.NotFound(w, r)
-			return
-		}
-		http.Redirect(w, r, "/api/docs/", http.StatusMovedPermanently)
-	})
-	http.HandleFunc("/api/docs/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(swaggerHTML))
-	})
-	log.Printf("REST gateway + Swagger on %s (docs: /api/docs/)", httpAddr)
+	}))
+
+	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	log.Fatal(http.ListenAndServe(httpAddr, nil))
 }

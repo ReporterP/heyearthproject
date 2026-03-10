@@ -30,6 +30,18 @@ class ConfigApiClient extends $grpc.Client {
     ($0.CheckAppUpdateRequest value) => value.writeToBuffer(),
     $0.CheckAppUpdateResponse.fromBuffer,
   );
+  static final _$applyPromocode =
+      $grpc.ClientMethod<$0.ApplyPromocodeRequest, $0.ApplyPromocodeResponse>(
+    '/heyearth.v1.ConfigApi/ApplyPromocode',
+    ($0.ApplyPromocodeRequest value) => value.writeToBuffer(),
+    $0.ApplyPromocodeResponse.fromBuffer,
+  );
+  static final _$getProfile =
+      $grpc.ClientMethod<$0.GetProfileRequest, $0.GetProfileResponse>(
+    '/heyearth.v1.ConfigApi/GetProfile',
+    ($0.GetProfileRequest value) => value.writeToBuffer(),
+    $0.GetProfileResponse.fromBuffer,
+  );
 
   ConfigApiClient($grpc.ClientChannel super.channel,
       {$grpc.CallOptions? options, super.interceptors});
@@ -54,4 +66,87 @@ class ConfigApiClient extends $grpc.Client {
   }) {
     return $createUnaryCall(_$checkAppUpdate, request, options: options);
   }
+
+  $grpc.ResponseFuture<$0.ApplyPromocodeResponse> applyPromocode(
+    $0.ApplyPromocodeRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$applyPromocode, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.GetProfileResponse> getProfile(
+    $0.GetProfileRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getProfile, request, options: options);
+  }
+}
+
+@$pb.GrpcServiceName('heyearth.v1.ConfigApi')
+abstract class ConfigApiServiceBase extends $grpc.Service {
+  $core.String get $name => 'heyearth.v1.ConfigApi';
+
+  ConfigApiServiceBase() {
+    $addMethod($grpc.ServiceMethod<$0.GetConfigRequest, $0.GetConfigResponse>(
+        'GetConfig',
+        getConfig_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.GetConfigRequest.fromBuffer(value),
+        ($0.GetConfigResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.HealthRequest, $0.HealthResponse>(
+        'Health',
+        health_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.HealthRequest.fromBuffer(value),
+        ($0.HealthResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CheckAppUpdateRequest, $0.CheckAppUpdateResponse>(
+        'CheckAppUpdate',
+        checkAppUpdate_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.CheckAppUpdateRequest.fromBuffer(value),
+        ($0.CheckAppUpdateResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.ApplyPromocodeRequest, $0.ApplyPromocodeResponse>(
+        'ApplyPromocode',
+        applyPromocode_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.ApplyPromocodeRequest.fromBuffer(value),
+        ($0.ApplyPromocodeResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetProfileRequest, $0.GetProfileResponse>(
+        'GetProfile',
+        getProfile_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.GetProfileRequest.fromBuffer(value),
+        ($0.GetProfileResponse value) => value.writeToBuffer()));
+  }
+
+  $async.Future<$0.GetConfigResponse> getConfig_Pre($grpc.ServiceCall call, $async.Future<$0.GetConfigRequest> request) async {
+    return getConfig(call, await request);
+  }
+
+  $async.Future<$0.HealthResponse> health_Pre($grpc.ServiceCall call, $async.Future<$0.HealthRequest> request) async {
+    return health(call, await request);
+  }
+
+  $async.Future<$0.CheckAppUpdateResponse> checkAppUpdate_Pre($grpc.ServiceCall call, $async.Future<$0.CheckAppUpdateRequest> request) async {
+    return checkAppUpdate(call, await request);
+  }
+
+  $async.Future<$0.ApplyPromocodeResponse> applyPromocode_Pre($grpc.ServiceCall call, $async.Future<$0.ApplyPromocodeRequest> request) async {
+    return applyPromocode(call, await request);
+  }
+
+  $async.Future<$0.GetProfileResponse> getProfile_Pre($grpc.ServiceCall call, $async.Future<$0.GetProfileRequest> request) async {
+    return getProfile(call, await request);
+  }
+
+  $async.Future<$0.GetConfigResponse> getConfig($grpc.ServiceCall call, $0.GetConfigRequest request);
+  $async.Future<$0.HealthResponse> health($grpc.ServiceCall call, $0.HealthRequest request);
+  $async.Future<$0.CheckAppUpdateResponse> checkAppUpdate($grpc.ServiceCall call, $0.CheckAppUpdateRequest request);
+  $async.Future<$0.ApplyPromocodeResponse> applyPromocode($grpc.ServiceCall call, $0.ApplyPromocodeRequest request);
+  $async.Future<$0.GetProfileResponse> getProfile($grpc.ServiceCall call, $0.GetProfileRequest request);
 }

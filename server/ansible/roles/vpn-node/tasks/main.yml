@@ -1,0 +1,41 @@
+---
+- name: Install required packages
+  apt:
+    name:
+      - shadowsocks-libev
+      - curl
+      - jq
+    state: present
+    update_cache: yes
+
+- name: Create heyearth directory
+  file:
+    path: /opt/heyearth
+    state: directory
+    mode: '0755'
+
+- name: Copy add-ss-user.sh script
+  copy:
+    src: ../../../../server/add-ss-user.sh
+    dest: /opt/heyearth/add-ss-user.sh
+    mode: '0755'
+
+- name: Download Node Agent binary (mocked for now, assuming it's built and pushed)
+  # In reality, you'd fetch it from a release or build it locally and copy
+  copy:
+    src: ../../../../backend/cmd/node-agent/node-agent # Assuming local build
+    dest: /opt/heyearth/node-agent
+    mode: '0755'
+  ignore_errors: yes # Ignore if binary is not built yet during dev
+
+- name: Setup Node Agent systemd service
+  template:
+    src: node-agent.service.j2
+    dest: /etc/systemd/system/node-agent.service
+
+- name: Start and enable Node Agent
+  systemd:
+    name: node-agent
+    state: restarted
+    enabled: yes
+    daemon_reload: yes

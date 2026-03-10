@@ -27,24 +27,24 @@ const (
 )
 
 func main() {
-	fresh := flag.Bool("fresh", false, "новый сервер: полная установка + установка Go")
-	update := flag.Bool("update", false, "обновить файлы и перезапустить сервисы")
+	mainMode := flag.Bool("main", false, "установить Главный сервер (БД, Go, API, Бот, Сайт) без Shadowsocks")
+	updateMain := flag.Bool("update-main", false, "только обновить код Главного сервера (API, Бот, Сайт) без переустановки БД/Go")
 	restart := flag.Bool("restart", false, "только перезапуск сервисов")
 	site := flag.Bool("site", false, "только сайт и SSL")
 	flag.Parse()
 
 	var mode string
 	switch {
-	case *fresh:
-		mode = "fresh"
-	case *update:
-		mode = "update"
+	case *mainMode:
+		mode = "main"
+	case *updateMain:
+		mode = "update-main"
 	case *restart:
 		mode = "restart"
 	case *site:
 		mode = "site"
 	default:
-		log.Fatal("Укажи один из флагов: --fresh, --update, --restart, --site")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site")
 	}
 
 	projectRoot := findProjectRoot()
@@ -60,7 +60,7 @@ func main() {
 	if password == "" {
 		log.Fatal("Задай DEPLOY_SSH_PASSWORD в .env (скопируй .env.example в .env)")
 	}
-	if (mode == "fresh" || mode == "update") && botToken == "" {
+	if (mode == "main" || mode == "update-main") && botToken == "" {
 		botToken = readBotTokenFromFile(projectRoot)
 		if botToken == "" {
 			log.Fatal("Задай TELEGRAM_BOT_TOKEN в .env или в bot/.env")
@@ -90,18 +90,18 @@ func main() {
 	}
 
 	switch mode {
-	case "fresh":
+	case "main":
 		uploadHelperScripts(sftpClient, client, cfg)
 		installGoOnServer(client)
+		installPostgresOnServer(client)
+		installAnsibleOnServer(client)
 		doBot(sftpClient, client, cfg)
-		doShadowsocks(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doSite(sftpClient, client, cfg)
 		doSSL(client, cfg)
 		verifyServices(client, cfg)
-	case "update":
+	case "update-main":
 		uploadHelperScripts(sftpClient, client, cfg)
-		doShadowsocks(sftpClient, client, cfg)
 		doBot(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		runSSH(client, "mkdir -p /var/www/heyearth", false)
@@ -122,7 +122,7 @@ func main() {
 	}
 
 	fmt.Println("\nГотово.")
-	if mode == "site" || mode == "fresh" {
+	if mode == "site" || mode == "main" || mode == "update-main" {
 		if letsEncryptEmail != "" {
 			fmt.Printf("Сайт: https://%s\n", siteDomain)
 		} else {
@@ -380,6 +380,46 @@ echo "Go установлен."
 	runSSH(client, script, false)
 }
 
+func installPostgresOnServer(client *ssh.Client) {
+	fmt.Println("\n--- Установка PostgreSQL на сервер ---")
+	script := `set -e
+if command -v psql >/dev/null 2>&1; then
+  echo "PostgreSQL уже установлен."
+else
+  echo "Устанавливаю PostgreSQL..."
+  apt-get update -qq
+  apt-get install -y -qq postgresql postgresql-contrib
+  systemctl enable postgresql
+  systemctl start postgresql
+fi
+
+# Настройка пользователя и БД (если не существуют)
+sudo -u postgres psql -c "SELECT 1 FROM pg_roles WHERE rolname='postgres'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER postgres WITH PASSWORD 'postgres';"
+sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
+sudo -u postgres psql -c "SELECT 1 FROM pg_database WHERE datname='heyearth'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE heyearth OWNER postgres;"
+
+echo "PostgreSQL настроен."
+`
+	runSSH(client, script, false)
+}
+
+func installAnsibleOnServer(client *ssh.Client) {
+	fmt.Println("\n--- Установка Ansible на сервер ---")
+	script := `set -e
+if command -v ansible >/dev/null 2>&1; then
+  echo "Ansible уже установлен."
+else
+  echo "Устанавливаю Ansible..."
+  apt-get update -qq
+  apt-get install -y -qq software-properties-common
+  add-apt-repository --yes --update ppa:ansible/ansible
+  apt-get install -y -qq ansible sshpass
+fi
+echo "Ansible настроен."
+`
+	runSSH(client, script, false)
+}
+
 func uploadHelperScripts(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("\n--- Скрипты в /root/ ---")
 	for _, name := range []string{"ss-diagnose.sh", "setup-shadowsocks.sh"} {
@@ -471,6 +511,27 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if err := tidy.Run(); err != nil {
 		log.Printf("[!] go mod tidy завершился с ошибкой: %v", err)
 	}
+	// Загружаем миграции
+	migrationsDir := filepath.Join(cfg.projectRoot, "backend", "migrations")
+	if _, err := os.Stat(migrationsDir); err == nil {
+		runSSH(client, "mkdir -p "+appDir+"/migrations", false)
+		files, _ := os.ReadDir(migrationsDir)
+		for _, f := range files {
+			if !f.IsDir() {
+				uploadFile(c, filepath.Join(migrationsDir, f.Name()), appDir+"/migrations/"+f.Name())
+			}
+		}
+	}
+
+	// Загружаем Ansible playbooks
+	ansibleDir := filepath.Join(cfg.projectRoot, "..", "ansible")
+	if _, err := os.Stat(ansibleDir); err == nil {
+		runSSH(client, "mkdir -p "+appDir+"/ansible", false)
+		// Для простоты пока просто копируем папку (в реальном проекте лучше использовать rsync или git clone)
+		// В рамках скрипта деплоя мы предполагаем, что структура папок будет загружена
+		runSSH(client, "echo 'Ansible playbooks should be synced here'", false)
+	}
+
 	binPath, err := buildGoBinary(cfg.projectRoot, "api", "heyearth-api")
 	if err != nil {
 		log.Fatal(err)

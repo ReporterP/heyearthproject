@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../app_state.dart';
 import '../l10n.dart';
 import '../update_service.dart';
+import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -423,6 +424,23 @@ class _SettingsTabState extends State<_SettingsTab> with SingleTickerProviderSta
                 _LanguageCard(locale: state.locale, onLocaleChanged: state.setLocale),
                 const SizedBox(height: 20),
                 FilledButton.icon(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                    );
+                  },
+                  icon: const Icon(Icons.person, size: 22),
+                  label: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 14),
+                    child: Text('Profile & Promocodes'),
+                  ),
+                  style: FilledButton.styleFrom(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
                   onPressed: widget.onCheckUpdate,
                   icon: const Icon(Icons.system_update, size: 22),
                   label: Padding(
