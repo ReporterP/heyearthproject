@@ -7,6 +7,7 @@ __pycache__/
 *.pyc
 
 # Flutter
+.pub-cache
 flutter-app/.dart_tool/
 flutter-app/build/
 flutter-app/*.iml
@@ -16,6 +17,7 @@ flutter-app/*.iml
 # Go binaries (собираются при деплое)
 server/backend/heyearth-api
 server/backend/heyearth-bot
+server/backend/bot
 
 # Windows xray (тяжёлый бинарь, кладут локально)
 flutter-app/windows/xray/xray.exe
