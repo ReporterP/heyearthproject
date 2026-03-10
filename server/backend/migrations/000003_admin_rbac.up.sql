@@ -1,0 +1,39 @@
+CREATE TABLE IF NOT EXISTS admin_users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name VARCHAR(255) NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS admin_roles (
+    id SERIAL PRIMARY KEY,
+    role_key VARCHAR(100) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS admin_permissions (
+    id SERIAL PRIMARY KEY,
+    permission_key VARCHAR(120) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS admin_user_roles (
+    admin_user_id INT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+    role_id INT NOT NULL REFERENCES admin_roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (admin_user_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS admin_role_permissions (
+    role_id INT NOT NULL REFERENCES admin_roles(id) ON DELETE CASCADE,
+    permission_id INT NOT NULL REFERENCES admin_permissions(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, permission_id)
+);

@@ -39,7 +39,10 @@ go run ./cmd/deploy --site
 ## Важно
 
 - Деплой требует `DEPLOY_HOST_KEY_FINGERPRINT`, чтобы не использовать `InsecureIgnoreHostKey`.
-- API не стартует без `ADMIN_USER`, `ADMIN_PASS`, `JWT_SECRET`.
+- API не стартует без `JWT_SECRET`; `ADMIN_USER` / `ADMIN_PASS` используются как bootstrap seed для первого `super_admin`.
 - mTLS сертификаты для `api <-> node-agent` генерируются локально deploy tool и выкладываются в `server/backend/certs`.
 - `cmd/deploy` сам собирает `admin_web`, выкладывает его на `/var/www/heyearth` и настраивает same-origin выдачу `/releases/` из `APP_DIR/releases`.
 - Release metadata больше не хранится в `APP_UPDATE_*`: активные релизы создаются и активируются через `admin_web` / admin API.
+- Backend теперь держит DB-backed `admin_users`, `admin_roles`, `admin_permissions` и связи RBAC.
+- `admin_web` покрывает users / groups / subscriptions / promocodes / payments / servers / releases / admins и сохраняет выбранную light/dark theme локально.
+- Server operations из админки (`sync_metrics`, `restart_agent`, `reprovision`) требуют, чтобы Main Server был задеплоен через `cmd/deploy` и имел ansible/sshpass + ssh-доступ к VPN нодам.

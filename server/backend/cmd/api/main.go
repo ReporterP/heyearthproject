@@ -263,19 +263,6 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func withAdminCORS(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	}
-}
-
 func httpGateway(srv *server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -389,35 +376,7 @@ func main() {
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
 	http.HandleFunc("/api/v1/config", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
-
-	http.HandleFunc("/api/admin/login", withAdminCORS(admin.LoginHandler))
-	http.HandleFunc("/api/admin/servers", withAdminCORS(admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			admin.GetServersHandler(w, r)
-		case http.MethodPost:
-			admin.AddServerHandler(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})))
-	http.HandleFunc("/api/admin/releases", withAdminCORS(admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			admin.ListReleasesHandler(w, r)
-		case http.MethodPost:
-			admin.UploadReleaseHandler(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})))
-	http.HandleFunc("/api/admin/releases/activate", withAdminCORS(admin.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		admin.ActivateReleaseHandler(w, r)
-	})))
+	admin.RegisterRoutes()
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	log.Fatal(http.ListenAndServe(httpAddr, nil))

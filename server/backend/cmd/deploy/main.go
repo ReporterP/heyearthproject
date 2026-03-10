@@ -54,6 +54,7 @@ func main() {
 	updateMain := flag.Bool("update-main", false, "обновить код Главного сервера и provisioning assets")
 	restart := flag.Bool("restart", false, "перезапустить сервисы Главного сервера")
 	site := flag.Bool("site", false, "обновить только веб-слой и Nginx")
+	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	flag.Parse()
 
 	var mode string
@@ -66,8 +67,14 @@ func main() {
 		mode = "restart"
 	case *site:
 		mode = "site"
+	case *statusMode:
+		mode = "status"
+	case flag.NArg() == 1 && flag.Arg(0) == "fix-db":
+		mode = "fix-db"
+	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
+		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --status. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -93,7 +100,9 @@ func main() {
 	}
 
 	validateLocalConfig(mode, cfg)
-	ensureLocalMTLSAssets(cfg)
+	if mode != "status" {
+		ensureLocalMTLSAssets(cfg)
+	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.deployPort)
 	client, err := sshDial(addr, cfg.deployUser, cfg.deployPassword, cfg.hostKeyFingerprint)
@@ -101,6 +110,15 @@ func main() {
 		log.Fatalf("ssh dial: %v", err)
 	}
 	defer client.Close()
+
+	if mode == "status" {
+		doStatus(client, cfg)
+		return
+	}
+	if mode == "fix-db" {
+		doFixDB(client, cfg)
+		return
+	}
 
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
@@ -160,6 +178,9 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 		if _, err := exec.LookPath("flutter"); err != nil {
 			log.Fatal("flutter is required locally to build admin_web during deploy")
 		}
+	}
+	if mode == "status" || mode == "fix-db" {
+		return
 	}
 }
 
@@ -708,6 +729,48 @@ func publicBaseURL(cfg *deployConfig) string {
 func verifyServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl is-active heyearth-api telegram-bot nginx", false)
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
+}
+
+func doStatus(client *ssh.Client, cfg *deployConfig) {
+	fmt.Println("=== Состояние сервисов ===")
+	out, _ := runSSH(client, "systemctl is-active heyearth-api telegram-bot nginx 2>/dev/null; echo '---'; systemctl status heyearth-api --no-pager -l 2>&1 | tail -18", false)
+	fmt.Println(out)
+	fmt.Println("=== Логи heyearth-api (последние 25 строк) ===")
+	logsOut, _ := runSSH(client, "journalctl -u heyearth-api -n 25 --no-pager 2>&1", false)
+	fmt.Println(logsOut)
+	fmt.Println("=== API health (127.0.0.1:8000) ===")
+	healthOut, _ := runSSH(client, "curl -s -w '\\nHTTP_CODE:%{http_code}' http://127.0.0.1:8000/api/v1/health", false)
+	fmt.Println(healthOut)
+	fmt.Println("=== API admin login (ожидается JSON) ===")
+	loginOut, _ := runSSH(client, "curl -s -w '\\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8000/api/admin/login -H 'Content-Type: application/json' -d '{\"username\":\"x\",\"password\":\"y\"}'", false)
+	fmt.Println(loginOut)
+	if strings.Contains(loginOut, "<html") || strings.Contains(loginOut, "<!DOCTYPE") {
+		fmt.Println("\n[!] Ответ API содержит HTML вместо JSON — возможно, nginx отдаёт ошибку или не проксирует на backend.")
+	} else 	if strings.Contains(loginOut, "token") || strings.Contains(loginOut, "error") || strings.Contains(loginOut, "message") {
+		fmt.Println("\n[OK] API отвечает JSON.")
+	}
+}
+
+func doFixDB(client *ssh.Client, cfg *deployConfig) {
+	fmt.Println("Проверка PostgreSQL...")
+	out, _ := runSSH(client, "systemctl start postgresql 2>&1; systemctl enable postgresql 2>&1; true", false)
+	if strings.Contains(out, "not found") {
+		fmt.Println("PostgreSQL не установлен. Устанавливаю...")
+		installPostgresOnServer(client)
+	} else {
+		fmt.Println(out)
+	}
+	// На свежем Ubuntu postgres по умолчанию требует пароль для TCP; задаём и прописываем в api.env
+	fmt.Println("Настройка доступа к БД и перезапуск heyearth-api...")
+	script := `set -e
+sudo -u postgres psql -tAc "ALTER USER postgres PASSWORD 'HeYearthDB1';" 2>/dev/null || true
+grep -q "postgres:HeYearthDB1@" /opt/heyearth/mainserver/api.env || sed -i 's#postgres://postgres@localhost:5432#postgres://postgres:HeYearthDB1@localhost:5432#' /opt/heyearth/mainserver/api.env
+systemctl restart heyearth-api
+sleep 3
+`
+	_, _ = runSSH(client, script, false)
+	fmt.Println("Проверка:")
+	doStatus(client, cfg)
 }
 
 func serializeEnv(values map[string]string) string {

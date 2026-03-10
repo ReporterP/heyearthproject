@@ -41,6 +41,8 @@ scripts\gen_proto.bat
 - `TLS_CLIENT_KEY_FILE`
 - `TLS_CA_FILE`
 
+`ADMIN_USER` / `ADMIN_PASS` теперь не являются единственным способом входа: они нужны для bootstrap первого `super_admin`, после чего админы, роли и permissions живут в БД.
+
 ## Деплой
 
 ```bash
@@ -64,3 +66,21 @@ Deploy tool выкладывает:
 - `CheckAppUpdate` читает активные релизы из таблицы `app_releases`.
 - Admin API даёт `GET /api/admin/releases`, `POST /api/admin/releases` и `POST /api/admin/releases/activate`.
 - Release files сохраняются в `APP_DIR/releases` и раздаются nginx по `/releases/...`.
+
+## Admin Scope
+
+Admin API теперь покрывает:
+
+- `overview`
+- `users`
+- `groups`
+- `subscriptions`
+- `promocodes`
+- `payments`
+- `servers`
+- `releases`
+- `admin-users`
+- `admin-roles`
+- `admin-permissions`
+
+Права проверяются через RBAC middleware и permission keys (`users.read`, `users.write`, `servers.read`, `server_ops.execute` и т.д.).

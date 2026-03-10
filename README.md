@@ -17,16 +17,18 @@ JWT_SECRET=change_me
 TELEGRAM_BOT_TOKEN=123456:token
 ```
 
-3. Запустите backend:
+3. Примените миграции и запустите backend:
 
 ```bash
 cd server/backend
 go mod tidy
+go run ./cmd/migrate
 go run ./cmd/api
 ```
 
 API поднимется на `127.0.0.1:8000`, gRPC на `127.0.0.1:50051`.
 `CheckAppUpdate` теперь читает активные релизы из БД, а не из `.env`.
+`ADMIN_USER` / `ADMIN_PASS` теперь нужны как bootstrap для первого `super_admin`: после первой инициализации дальнейшая работа идёт через DB-backed admin users / roles / permissions.
 
 ### Деплой
 
@@ -86,5 +88,7 @@ flutter run -d chrome --dart-define=HEYEARTH_ADMIN_API_BASE=http://127.0.0.1:800
 
 `cmd/deploy` теперь сам делает `flutter pub get` + `flutter build web` для `admin_web` и выкладывает результат на корень домена.
 
-По умолчанию `admin_web` использует same-origin base `/api/admin`.
-Управление релизами приложений тоже перенесено в `admin_web`: бинарники загружаются через раздел `Releases`, попадают в БД + `APP_DIR/releases`, а nginx раздаёт их по `/releases/...`.
+По умолчанию `admin_web` использует same-origin base `/api/admin` и больше не показывает editable `API base` в production UI.
+В `admin_web` теперь доступны секции `Dashboard`, `Users`, `Groups`, `Subscriptions`, `Promocodes`, `Payments`, `Servers`, `Releases`, `Admins` и `Settings`.
+Управление релизами приложений перенесено в `admin_web`: бинарники загружаются через `Releases`, попадают в БД + `APP_DIR/releases`, а nginx раздаёт их по `/releases/...`.
+Управление админами и правами теперь DB-backed: роли и permissions задаются через `Admins`, а токен несёт только snapshot уже вычисленных прав.

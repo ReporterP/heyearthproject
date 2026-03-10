@@ -1,27 +1,130 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/heyearth/backend/internal/db"
+	"golang.org/x/crypto/bcrypt"
 )
 
+type contextKey string
+
+const (
+	adminClaimsContextKey contextKey = "adminClaims"
+	superAdminRoleKey                = "super_admin"
+)
+
+type AdminUser struct {
+	ID          int      `json:"id"`
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	IsActive    bool     `json:"is_active"`
+	Roles       []string `json:"roles"`
+	Permissions []string `json:"permissions"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+}
+
+type AdminRole struct {
+	ID          int      `json:"id"`
+	RoleKey     string   `json:"role_key"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	IsSystem    bool     `json:"is_system"`
+	Permissions []string `json:"permissions"`
+}
+
+type Claims struct {
+	AdminID     int      `json:"admin_id"`
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles"`
+	Permissions []string `json:"permissions"`
+	jwt.RegisteredClaims
+}
+
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token       string      `json:"token"`
+	Admin       AdminUser   `json:"admin"`
+	Roles       []AdminRole `json:"roles"`
+	Permissions []string    `json:"permissions"`
+}
+
+type adminRecord struct {
+	ID           int
+	Username     string
+	DisplayName  string
+	PasswordHash string
+	IsActive     bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type adminUserPayload struct {
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Password    string   `json:"password"`
+	IsActive    *bool    `json:"is_active"`
+	RoleKeys    []string `json:"role_keys"`
+}
+
+type adminRolePayload struct {
+	RoleKey        string   `json:"role_key"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description"`
+	IsSystem       *bool    `json:"is_system"`
+	PermissionKeys []string `json:"permission_keys"`
+}
+
+type permissionCatalogItem struct {
+	Key         string
+	Name        string
+	Description string
+}
+
+var permissionCatalog = []permissionCatalogItem{
+	{Key: "dashboard.read", Name: "Dashboard Read", Description: "View admin dashboard"},
+	{Key: "users.read", Name: "Users Read", Description: "View users"},
+	{Key: "users.write", Name: "Users Write", Description: "Create and update users"},
+	{Key: "groups.read", Name: "Groups Read", Description: "View groups"},
+	{Key: "groups.write", Name: "Groups Write", Description: "Create and update groups"},
+	{Key: "subscriptions.read", Name: "Subscriptions Read", Description: "View subscriptions"},
+	{Key: "subscriptions.write", Name: "Subscriptions Write", Description: "Create and update subscriptions"},
+	{Key: "promocodes.read", Name: "Promocodes Read", Description: "View promocodes"},
+	{Key: "promocodes.write", Name: "Promocodes Write", Description: "Create and update promocodes"},
+	{Key: "payments.read", Name: "Payments Read", Description: "View payments"},
+	{Key: "payments.write", Name: "Payments Write", Description: "Create and update payments"},
+	{Key: "servers.read", Name: "Servers Read", Description: "View servers"},
+	{Key: "servers.write", Name: "Servers Write", Description: "Create and update servers"},
+	{Key: "server_ops.execute", Name: "Server Ops Execute", Description: "Run operational actions on servers"},
+	{Key: "releases.read", Name: "Releases Read", Description: "View releases"},
+	{Key: "releases.write", Name: "Releases Write", Description: "Upload and activate releases"},
+	{Key: "admins.read", Name: "Admins Read", Description: "View admins and roles"},
+	{Key: "admins.write", Name: "Admins Write", Description: "Manage admins and roles"},
+}
+
 func ValidateConfig() error {
-	switch {
-	case strings.TrimSpace(os.Getenv("JWT_SECRET")) == "":
+	if strings.TrimSpace(os.Getenv("JWT_SECRET")) == "" {
 		return fmt.Errorf("JWT_SECRET is required")
-	case strings.TrimSpace(os.Getenv("ADMIN_USER")) == "":
-		return fmt.Errorf("ADMIN_USER is required")
-	case strings.TrimSpace(os.Getenv("ADMIN_PASS")) == "":
-		return fmt.Errorf("ADMIN_PASS is required")
-	default:
-		return nil
 	}
+	if err := ensureBootstrapAdmin(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func jwtKey() ([]byte, error) {
@@ -32,13 +135,7 @@ func jwtKey() ([]byte, error) {
 	return []byte(secret), nil
 }
 
-type Claims struct {
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-func GenerateToken(username string) (string, error) {
+func GenerateToken(admin AdminUser) (string, error) {
 	key, err := jwtKey()
 	if err != nil {
 		return "", err
@@ -46,8 +143,11 @@ func GenerateToken(username string) (string, error) {
 
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
-		Username: username,
-		Role:     "admin",
+		AdminID:     admin.ID,
+		Username:    admin.Username,
+		DisplayName: admin.DisplayName,
+		Roles:       admin.Roles,
+		Permissions: admin.Permissions,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 		},
@@ -61,13 +161,13 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, err := jwtKey()
 		if err != nil {
-			http.Error(w, "Server auth config is invalid", http.StatusInternalServerError)
+			writeAdminError(w, http.StatusInternalServerError, "Server auth config is invalid")
 			return
 		}
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+			writeAdminError(w, http.StatusUnauthorized, "Missing Authorization header")
 			return
 		}
 
@@ -77,60 +177,735 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			return key, nil
 		})
-
 		if err != nil || !token.Valid {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			writeAdminError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 
-		if claims.Role != "admin" {
-			http.Error(w, "Forbidden", http.StatusForbidden)
+		if claims.AdminID == 0 {
+			writeAdminError(w, http.StatusUnauthorized, "Invalid token claims")
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), adminClaimsContextKey, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
-type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+func RequirePermission(permission string, next http.HandlerFunc) http.HandlerFunc {
+	return AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok {
+			writeAdminError(w, http.StatusUnauthorized, "Missing admin session")
+			return
+		}
+		if slices.Contains(claims.Permissions, "*") || slices.Contains(claims.Permissions, permission) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeAdminError(w, http.StatusForbidden, "Forbidden")
+	})
 }
 
-type LoginResponse struct {
-	Token string `json:"token"`
+func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
+	claims, ok := ctx.Value(adminClaimsContextKey).(*Claims)
+	return claims, ok
 }
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	if err := ensureBootstrapAdmin(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := ValidateConfig(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	record, err := loadAdminRecordByUsername(strings.TrimSpace(req.Username))
+	if err == sql.ErrNoRows {
+		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
+	}
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
+		return
+	}
+	if !record.IsActive {
+		writeAdminError(w, http.StatusForbidden, "Admin account is inactive")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)); err != nil {
+		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+
+	adminUser, roles, err := buildAdminUser(record)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin permissions")
+		return
+	}
+
+	token, err := GenerateToken(adminUser)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+
+	writeAdminJSON(w, http.StatusOK, LoginResponse{
+		Token:       token,
+		Admin:       adminUser,
+		Roles:       roles,
+		Permissions: adminUser.Permissions,
+	})
+}
+
+func ListAdminUsersHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.DB.Query(`
+		SELECT id, username, display_name, is_active, created_at, updated_at
+		FROM admin_users
+		ORDER BY username ASC
+	`)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to list admins")
+		return
+	}
+	defer rows.Close()
+
+	var admins []AdminUser
+	for rows.Next() {
+		var record adminRecord
+		if err := rows.Scan(&record.ID, &record.Username, &record.DisplayName, &record.IsActive, &record.CreatedAt, &record.UpdatedAt); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to scan admin")
+			return
+		}
+		adminUser, _, err := buildAdminUser(record)
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to build admin user")
+			return
+		}
+		admins = append(admins, adminUser)
+	}
+
+	writeAdminJSON(w, http.StatusOK, admins)
+}
+
+func CreateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
+	var payload adminUserPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(payload.Username) == "" || strings.TrimSpace(payload.Password) == "" {
+		writeAdminError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+	if len(payload.RoleKeys) == 0 {
+		writeAdminError(w, http.StatusBadRequest, "at least one role is required")
+		return
+	}
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+
+	tx, err := db.DB.Begin()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	isActive := true
+	if payload.IsActive != nil {
+		isActive = *payload.IsActive
+	}
+
+	var id int
+	err = tx.QueryRow(`
+		INSERT INTO admin_users (username, display_name, password_hash, is_active, updated_at)
+		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, strings.TrimSpace(payload.Username), strings.TrimSpace(payload.DisplayName), string(passwordHash), isActive).Scan(&id)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to create admin")
+		return
+	}
+
+	if err := assignRolesToAdminTx(tx, id, payload.RoleKeys); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to save admin")
+		return
+	}
+
+	record, err := loadAdminRecordByID(id)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to reload admin")
+		return
+	}
+	adminUser, _, err := buildAdminUser(record)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to build admin")
+		return
+	}
+	writeAdminJSON(w, http.StatusCreated, adminUser)
+}
+
+func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := parseLastPathInt(r.URL.Path)
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Invalid admin id")
+		return
+	}
+
+	var payload adminUserPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx, err := db.DB.Begin()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	record, err := loadAdminRecordByIDTx(tx, adminID)
+	if err == sql.ErrNoRows {
+		writeAdminError(w, http.StatusNotFound, "Admin not found")
+		return
+	}
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
+		return
+	}
+
+	username := record.Username
+	if strings.TrimSpace(payload.Username) != "" {
+		username = strings.TrimSpace(payload.Username)
+	}
+	displayName := record.DisplayName
+	if payload.DisplayName != "" || strings.TrimSpace(payload.DisplayName) == "" {
+		displayName = strings.TrimSpace(payload.DisplayName)
+	}
+	isActive := record.IsActive
+	if payload.IsActive != nil {
+		isActive = *payload.IsActive
+	}
+
+	passwordHash := record.PasswordHash
+	if strings.TrimSpace(payload.Password) != "" {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to hash password")
+			return
+		}
+		passwordHash = string(hashed)
+	}
+
+	if _, err := tx.Exec(`
+		UPDATE admin_users
+		SET username = $1, display_name = $2, password_hash = $3, is_active = $4, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $5
+	`, username, displayName, passwordHash, isActive, adminID); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to update admin")
+		return
+	}
+
+	if payload.RoleKeys != nil {
+		if _, err := tx.Exec(`DELETE FROM admin_user_roles WHERE admin_user_id = $1`, adminID); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to reset admin roles")
+			return
+		}
+		if err := assignRolesToAdminTx(tx, adminID, payload.RoleKeys); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to save admin")
+		return
+	}
+
+	updated, err := loadAdminRecordByID(adminID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to reload admin")
+		return
+	}
+	adminUser, _, err := buildAdminUser(updated)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to build admin")
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, adminUser)
+}
+
+func ListAdminRolesHandler(w http.ResponseWriter, r *http.Request) {
+	roles, err := listAdminRoles()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to list roles")
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, roles)
+}
+
+func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
+	var payload adminRolePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(payload.RoleKey) == "" || strings.TrimSpace(payload.Name) == "" {
+		writeAdminError(w, http.StatusBadRequest, "role_key and name are required")
+		return
+	}
+
+	tx, err := db.DB.Begin()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	isSystem := false
+	if payload.IsSystem != nil {
+		isSystem = *payload.IsSystem
+	}
+
+	var roleID int
+	err = tx.QueryRow(`
+		INSERT INTO admin_roles (role_key, name, description, is_system, updated_at)
+		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, strings.TrimSpace(payload.RoleKey), strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Description), isSystem).Scan(&roleID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to create role")
+		return
+	}
+
+	if err := assignPermissionsToRoleTx(tx, roleID, payload.PermissionKeys); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to save role")
+		return
+	}
+
+	roles, err := listAdminRoles()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to reload roles")
+		return
+	}
+	for _, role := range roles {
+		if role.RoleKey == strings.TrimSpace(payload.RoleKey) {
+			writeAdminJSON(w, http.StatusCreated, role)
+			return
+		}
+	}
+	writeAdminError(w, http.StatusInternalServerError, "Created role was not found")
+}
+
+func UpdateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
+	roleID, ok := parseLastPathInt(r.URL.Path)
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Invalid role id")
+		return
+	}
+
+	var payload adminRolePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx, err := db.DB.Begin()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	var isSystem bool
+	var currentRoleKey, currentName, currentDescription string
+	if err := tx.QueryRow(`SELECT role_key, name, description, is_system FROM admin_roles WHERE id = $1`, roleID).Scan(&currentRoleKey, &currentName, &currentDescription, &isSystem); err == sql.ErrNoRows {
+		writeAdminError(w, http.StatusNotFound, "Role not found")
+		return
+	} else if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load role")
+		return
+	}
+
+	roleKey := currentRoleKey
+	if strings.TrimSpace(payload.RoleKey) != "" {
+		roleKey = strings.TrimSpace(payload.RoleKey)
+	}
+	name := currentName
+	if strings.TrimSpace(payload.Name) != "" {
+		name = strings.TrimSpace(payload.Name)
+	}
+	description := currentDescription
+	if payload.Description != "" || strings.TrimSpace(payload.Description) == "" {
+		description = strings.TrimSpace(payload.Description)
+	}
+	if payload.IsSystem != nil {
+		isSystem = *payload.IsSystem
+	}
+
+	if _, err := tx.Exec(`
+		UPDATE admin_roles
+		SET role_key = $1, name = $2, description = $3, is_system = $4, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $5
+	`, roleKey, name, description, isSystem, roleID); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to update role")
+		return
+	}
+
+	if payload.PermissionKeys != nil {
+		if _, err := tx.Exec(`DELETE FROM admin_role_permissions WHERE role_id = $1`, roleID); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to reset role permissions")
+			return
+		}
+		if err := assignPermissionsToRoleTx(tx, roleID, payload.PermissionKeys); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to save role")
+		return
+	}
+	roles, err := listAdminRoles()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to reload roles")
+		return
+	}
+	for _, role := range roles {
+		if role.ID == roleID {
+			writeAdminJSON(w, http.StatusOK, role)
+			return
+		}
+	}
+	writeAdminError(w, http.StatusInternalServerError, "Updated role was not found")
+}
+
+func ListAdminPermissionsHandler(w http.ResponseWriter, r *http.Request) {
+	writeAdminJSON(w, http.StatusOK, permissionCatalog)
+}
+
+func ensureBootstrapAdmin() error {
+	if db.DB == nil {
+		return nil
+	}
+	if err := seedPermissionCatalog(); err != nil {
+		return fmt.Errorf("seed permissions: %w", err)
+	}
+	if err := ensureSuperAdminRole(); err != nil {
+		return fmt.Errorf("ensure super admin role: %w", err)
+	}
+
+	var adminCount int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&adminCount); err != nil {
+		return fmt.Errorf("count admins: %w", err)
+	}
+	if adminCount > 0 {
+		return nil
 	}
 
 	adminUser := strings.TrimSpace(os.Getenv("ADMIN_USER"))
 	adminPass := strings.TrimSpace(os.Getenv("ADMIN_PASS"))
-	if req.Username != adminUser || req.Password != adminPass {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-		return
+	if adminUser == "" || adminPass == "" {
+		return fmt.Errorf("ADMIN_USER and ADMIN_PASS are required for bootstrap")
 	}
 
-	token, err := GenerateToken(req.Username)
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("hash bootstrap admin password: %w", err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LoginResponse{Token: token})
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin bootstrap admin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var adminID int
+	err = tx.QueryRow(`
+		INSERT INTO admin_users (username, display_name, password_hash, is_active, updated_at)
+		VALUES ($1, $2, $3, TRUE, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, adminUser, adminUser, string(passwordHash)).Scan(&adminID)
+	if err != nil {
+		return fmt.Errorf("create bootstrap admin: %w", err)
+	}
+
+	if err := assignRolesToAdminTx(tx, adminID, []string{superAdminRoleKey}); err != nil {
+		return fmt.Errorf("assign bootstrap role: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bootstrap admin: %w", err)
+	}
+	return nil
+}
+
+func seedPermissionCatalog() error {
+	for _, item := range permissionCatalog {
+		if _, err := db.DB.Exec(`
+			INSERT INTO admin_permissions (permission_key, name, description)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (permission_key) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description
+		`, item.Key, item.Name, item.Description); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSuperAdminRole() error {
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var roleID int
+	err = tx.QueryRow(`
+		INSERT INTO admin_roles (role_key, name, description, is_system, updated_at)
+		VALUES ($1, $2, $3, TRUE, CURRENT_TIMESTAMP)
+		ON CONFLICT (role_key) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = CURRENT_TIMESTAMP
+		RETURNING id
+	`, superAdminRoleKey, "Super Admin", "Full access to all admin resources").Scan(&roleID)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM admin_role_permissions WHERE role_id = $1`, roleID); err != nil {
+		return err
+	}
+	if err := assignPermissionsToRoleTx(tx, roleID, allPermissionKeys()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func allPermissionKeys() []string {
+	keys := make([]string, 0, len(permissionCatalog))
+	for _, item := range permissionCatalog {
+		keys = append(keys, item.Key)
+	}
+	return keys
+}
+
+func assignRolesToAdminTx(tx *sql.Tx, adminID int, roleKeys []string) error {
+	for _, roleKey := range roleKeys {
+		var roleID int
+		if err := tx.QueryRow(`SELECT id FROM admin_roles WHERE role_key = $1`, strings.TrimSpace(roleKey)).Scan(&roleID); err == sql.ErrNoRows {
+			return fmt.Errorf("unknown role: %s", roleKey)
+		} else if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO admin_user_roles (admin_user_id, role_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, adminID, roleID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func assignPermissionsToRoleTx(tx *sql.Tx, roleID int, permissionKeys []string) error {
+	for _, permissionKey := range permissionKeys {
+		var permissionID int
+		if err := tx.QueryRow(`SELECT id FROM admin_permissions WHERE permission_key = $1`, strings.TrimSpace(permissionKey)).Scan(&permissionID); err == sql.ErrNoRows {
+			return fmt.Errorf("unknown permission: %s", permissionKey)
+		} else if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO admin_role_permissions (role_id, permission_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, roleID, permissionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func loadAdminRecordByUsername(username string) (adminRecord, error) {
+	var record adminRecord
+	err := db.DB.QueryRow(`
+		SELECT id, username, display_name, password_hash, is_active, created_at, updated_at
+		FROM admin_users
+		WHERE username = $1
+	`, username).Scan(
+		&record.ID,
+		&record.Username,
+		&record.DisplayName,
+		&record.PasswordHash,
+		&record.IsActive,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+	)
+	return record, err
+}
+
+func loadAdminRecordByID(id int) (adminRecord, error) {
+	return loadAdminRecordByIDTx(db.DB, id)
+}
+
+type queryRower interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func loadAdminRecordByIDTx(q queryRower, id int) (adminRecord, error) {
+	var record adminRecord
+	err := q.QueryRow(`
+		SELECT id, username, display_name, password_hash, is_active, created_at, updated_at
+		FROM admin_users
+		WHERE id = $1
+	`, id).Scan(
+		&record.ID,
+		&record.Username,
+		&record.DisplayName,
+		&record.PasswordHash,
+		&record.IsActive,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+	)
+	return record, err
+}
+
+func buildAdminUser(record adminRecord) (AdminUser, []AdminRole, error) {
+	roles, err := listAdminRolesForUser(record.ID)
+	if err != nil {
+		return AdminUser{}, nil, err
+	}
+	permissionsSet := make(map[string]struct{})
+	roleKeys := make([]string, 0, len(roles))
+	for _, role := range roles {
+		roleKeys = append(roleKeys, role.RoleKey)
+		for _, permission := range role.Permissions {
+			permissionsSet[permission] = struct{}{}
+		}
+	}
+
+	permissions := make([]string, 0, len(permissionsSet))
+	for permission := range permissionsSet {
+		permissions = append(permissions, permission)
+	}
+	slices.Sort(roleKeys)
+	slices.Sort(permissions)
+
+	admin := AdminUser{
+		ID:          record.ID,
+		Username:    record.Username,
+		DisplayName: record.DisplayName,
+		IsActive:    record.IsActive,
+		Roles:       roleKeys,
+		Permissions: permissions,
+		CreatedAt:   record.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   record.UpdatedAt.Format(time.RFC3339),
+	}
+	return admin, roles, nil
+}
+
+func listAdminRoles() ([]AdminRole, error) {
+	rows, err := db.DB.Query(`
+		SELECT id, role_key, name, COALESCE(description, ''), is_system
+		FROM admin_roles
+		ORDER BY role_key ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []AdminRole
+	for rows.Next() {
+		var role AdminRole
+		if err := rows.Scan(&role.ID, &role.RoleKey, &role.Name, &role.Description, &role.IsSystem); err != nil {
+			return nil, err
+		}
+		permissions, err := listPermissionsForRole(role.ID)
+		if err != nil {
+			return nil, err
+		}
+		role.Permissions = permissions
+		roles = append(roles, role)
+	}
+	return roles, rows.Err()
+}
+
+func listAdminRolesForUser(adminUserID int) ([]AdminRole, error) {
+	rows, err := db.DB.Query(`
+		SELECT r.id, r.role_key, r.name, COALESCE(r.description, ''), r.is_system
+		FROM admin_roles r
+		JOIN admin_user_roles aur ON aur.role_id = r.id
+		WHERE aur.admin_user_id = $1
+		ORDER BY r.role_key ASC
+	`, adminUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []AdminRole
+	for rows.Next() {
+		var role AdminRole
+		if err := rows.Scan(&role.ID, &role.RoleKey, &role.Name, &role.Description, &role.IsSystem); err != nil {
+			return nil, err
+		}
+		permissions, err := listPermissionsForRole(role.ID)
+		if err != nil {
+			return nil, err
+		}
+		role.Permissions = permissions
+		roles = append(roles, role)
+	}
+	return roles, rows.Err()
+}
+
+func listPermissionsForRole(roleID int) ([]string, error) {
+	rows, err := db.DB.Query(`
+		SELECT p.permission_key
+		FROM admin_permissions p
+		JOIN admin_role_permissions arp ON arp.permission_id = p.id
+		WHERE arp.role_id = $1
+		ORDER BY p.permission_key ASC
+	`, roleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var permissions []string
+	for rows.Next() {
+		var permission string
+		if err := rows.Scan(&permission); err != nil {
+			return nil, err
+		}
+		permissions = append(permissions, permission)
+	}
+	return permissions, rows.Err()
 }

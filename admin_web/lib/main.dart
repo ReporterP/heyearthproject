@@ -1,15 +1,35 @@
-import 'dart:typed_data';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'admin_api_client.dart';
-import 'app_config.dart';
+import 'app_theme.dart';
 import 'models.dart';
+import 'pages/admins_page.dart';
+import 'pages/dashboard_page.dart';
+import 'pages/groups_page.dart';
+import 'pages/payments_page.dart';
+import 'pages/promocodes_page.dart';
+import 'pages/releases_page.dart';
+import 'pages/servers_page.dart';
+import 'pages/settings_page.dart';
+import 'pages/subscriptions_page.dart';
+import 'pages/users_page.dart';
 import 'session_store.dart';
 
 void main() {
   runApp(const AdminApp());
+}
+
+enum AdminSection {
+  dashboard,
+  users,
+  groups,
+  subscriptions,
+  promocodes,
+  payments,
+  servers,
+  releases,
+  admins,
+  settings,
 }
 
 class AdminApp extends StatefulWidget {
@@ -22,7 +42,8 @@ class AdminApp extends StatefulWidget {
 class _AdminAppState extends State<AdminApp> {
   final SessionStore _sessionStore = SessionStore();
   AdminSession? _session;
-  String _apiBase = kDefaultAdminApiBase;
+  LoginResult? _loginResult;
+  ThemeMode _themeMode = ThemeMode.system;
   bool _loading = true;
 
   @override
@@ -32,84 +53,88 @@ class _AdminAppState extends State<AdminApp> {
   }
 
   Future<void> _restoreSession() async {
-    final savedApiBase = await _sessionStore.loadApiBase();
+    final themeMode = await _sessionStore.loadThemeMode();
     final session = await _sessionStore.load();
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     setState(() {
+      _themeMode = themeMode;
       _session = session;
-      _apiBase = session?.apiBase ?? savedApiBase ?? kDefaultAdminApiBase;
+      _loginResult = session?.loginResult;
       _loading = false;
     });
   }
 
-  Future<void> _handleLogin(AdminSession session) async {
+  Future<void> _handleLogin(LoginResult result) async {
+    final session = AdminSession(token: result.token, loginResult: result);
     await _sessionStore.save(session);
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _session = session;
-      _apiBase = session.apiBase;
+      _loginResult = result;
     });
   }
 
   Future<void> _handleLogout() async {
     await _sessionStore.clear();
-    if (!mounted) return;
-    setState(() => _session = null);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _session = null;
+      _loginResult = null;
+    });
+  }
+
+  Future<void> _handleThemeChanged(ThemeMode mode) async {
+    await _sessionStore.saveThemeMode(mode);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _themeMode = mode);
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'HeYearth Admin',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
+      theme: buildLightTheme(),
+      darkTheme: buildDarkTheme(),
+      themeMode: _themeMode,
       home: _loading
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _session == null
-              ? LoginScreen(
-                  initialApiBase: _apiBase,
-                  onLoggedIn: _handleLogin,
-                )
-              : DashboardScreen(
+              ? LoginScreen(onLoggedIn: _handleLogin)
+              : AdminShell(
                   session: _session!,
+                  initialLoginResult: _loginResult,
+                  themeMode: _themeMode,
+                  onThemeChanged: _handleThemeChanged,
                   onLogout: _handleLogout,
-                  onSessionUpdated: _handleLogin,
                 ),
     );
   }
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({
-    super.key,
-    required this.initialApiBase,
-    required this.onLoggedIn,
-  });
+  const LoginScreen({super.key, required this.onLoggedIn});
 
-  final String initialApiBase;
-  final Future<void> Function(AdminSession session) onLoggedIn;
+  final Future<void> Function(LoginResult result) onLoggedIn;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  late final TextEditingController _apiBaseController;
   final TextEditingController _userController = TextEditingController();
   final TextEditingController _passController = TextEditingController();
   bool _loading = false;
 
   @override
-  void initState() {
-    super.initState();
-    _apiBaseController = TextEditingController(text: widget.initialApiBase);
-  }
-
-  @override
   void dispose() {
-    _apiBaseController.dispose();
     _userController.dispose();
     _passController.dispose();
     super.dispose();
@@ -118,13 +143,11 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _login() async {
     setState(() => _loading = true);
     try {
-      final apiBase = _apiBaseController.text.trim().replaceFirst(RegExp(r'/$'), '');
-      final client = AdminApiClient(apiBase);
-      final token = await client.login(
+      final result = await const AdminApiClient().login(
         username: _userController.text,
         password: _passController.text,
       );
-      await widget.onLoggedIn(AdminSession(token: token, apiBase: apiBase));
+      await widget.onLoggedIn(result);
     } on AdminApiException catch (e) {
       _showMessage(e.message);
     } catch (e) {
@@ -137,7 +160,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -157,48 +181,36 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     Text(
                       'HeYearth Admin',
-                      style: Theme.of(context).textTheme.headlineSmall,
+                      style: Theme.of(context).textTheme.headlineMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Same-origin admin console',
+                      style: Theme.of(context).textTheme.bodyMedium,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
                     TextField(
-                      controller: _apiBaseController,
-                      decoration: const InputDecoration(
-                        labelText: 'API base',
-                        hintText: '/api/admin or https://example.com/api/admin',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
                       controller: _userController,
-                      decoration: const InputDecoration(
-                        labelText: 'Username',
-                        border: OutlineInputBorder(),
-                      ),
+                      decoration: const InputDecoration(labelText: 'Username'),
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       controller: _passController,
                       obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Password',
-                        border: OutlineInputBorder(),
-                      ),
+                      decoration: const InputDecoration(labelText: 'Password'),
                     ),
                     const SizedBox(height: 24),
-                    SizedBox(
-                      height: 48,
-                      child: ElevatedButton(
-                        onPressed: _loading ? null : _login,
-                        child: _loading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('Login'),
-                      ),
+                    FilledButton(
+                      onPressed: _loading ? null : _login,
+                      child: _loading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Login'),
                     ),
                   ],
                 ),
@@ -211,533 +223,149 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({
+class AdminShell extends StatefulWidget {
+  const AdminShell({
     super.key,
     required this.session,
+    required this.initialLoginResult,
+    required this.themeMode,
+    required this.onThemeChanged,
     required this.onLogout,
-    required this.onSessionUpdated,
   });
 
   final AdminSession session;
+  final LoginResult? initialLoginResult;
+  final ThemeMode themeMode;
+  final Future<void> Function(ThemeMode mode) onThemeChanged;
   final Future<void> Function() onLogout;
-  final Future<void> Function(AdminSession session) onSessionUpdated;
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  State<AdminShell> createState() => _AdminShellState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
-  static const _releasePlatforms = <String>['android', 'windows', 'macos', 'linux', 'ios'];
-
-  late AdminSession _session;
-  List<AdminServer> _servers = const [];
-  List<AppRelease> _releases = const [];
-  bool _loadingServers = true;
-  bool _loadingReleases = true;
-
-  AdminApiClient get _client => AdminApiClient(_session.apiBase);
+class _AdminShellState extends State<AdminShell> {
+  LoginResult? _loginResult;
+  AdminSection _section = AdminSection.dashboard;
 
   @override
   void initState() {
     super.initState();
-    _session = widget.session;
-    _refreshAll();
+    _loginResult = widget.initialLoginResult;
   }
 
-  Future<void> _refreshAll() async {
-    await Future.wait([
-      _fetchServers(),
-      _fetchReleases(),
-    ]);
+  bool _can(String permission) {
+    final permissions = _loginResult?.permissions ?? const <String>[];
+    return permissions.contains(permission);
   }
 
-  Future<void> _fetchServers() async {
-    setState(() => _loadingServers = true);
-    try {
-      final servers = await _client.fetchServers(_session.token);
-      if (!mounted) return;
-      setState(() => _servers = servers);
-    } on AdminApiException catch (e) {
-      await _handleApiError(e);
-    } catch (e) {
-      _showMessage(e.toString());
-    } finally {
-      if (mounted) {
-        setState(() => _loadingServers = false);
-      }
-    }
-  }
+  List<_SectionItem> get _items => <_SectionItem>[
+        if (_can('dashboard.read'))
+          const _SectionItem(
+              AdminSection.dashboard, 'Dashboard', Icons.dashboard_outlined),
+        if (_can('users.read'))
+          const _SectionItem(AdminSection.users, 'Users', Icons.people_outline),
+        if (_can('groups.read'))
+          const _SectionItem(
+              AdminSection.groups, 'Groups', Icons.layers_outlined),
+        if (_can('subscriptions.read'))
+          const _SectionItem(AdminSection.subscriptions, 'Subscriptions',
+              Icons.workspace_premium_outlined),
+        if (_can('promocodes.read'))
+          const _SectionItem(AdminSection.promocodes, 'Promocodes',
+              Icons.confirmation_number_outlined),
+        if (_can('payments.read'))
+          const _SectionItem(
+              AdminSection.payments, 'Payments', Icons.payments_outlined),
+        if (_can('servers.read'))
+          const _SectionItem(
+              AdminSection.servers, 'Servers', Icons.dns_outlined),
+        if (_can('releases.read'))
+          const _SectionItem(AdminSection.releases, 'Releases',
+              Icons.system_update_alt_outlined),
+        if (_can('admins.read'))
+          const _SectionItem(AdminSection.admins, 'Admins',
+              Icons.admin_panel_settings_outlined),
+        const _SectionItem(
+            AdminSection.settings, 'Settings', Icons.settings_outlined),
+      ];
 
-  Future<void> _fetchReleases() async {
-    setState(() => _loadingReleases = true);
-    try {
-      final releases = await _client.fetchReleases(_session.token);
-      if (!mounted) return;
-      setState(() => _releases = releases);
-    } on AdminApiException catch (e) {
-      await _handleApiError(e);
-    } catch (e) {
-      _showMessage(e.toString());
-    } finally {
-      if (mounted) {
-        setState(() => _loadingReleases = false);
-      }
-    }
-  }
-
-  Future<void> _handleApiError(AdminApiException error) async {
-    if (error.statusCode == 401) {
-      await widget.onLogout();
-      return;
-    }
-    _showMessage(error.message);
-  }
-
-  void _showMessage(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  Future<void> _openApiBaseDialog() async {
-    final controller = TextEditingController(text: _session.apiBase);
-    final nextValue = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('API base'),
-          content: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              hintText: '/api/admin or https://example.com/api/admin',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
+  Widget _buildSection() {
+    final token = widget.session.token;
+    switch (_section) {
+      case AdminSection.dashboard:
+        return DashboardPage(token: token);
+      case AdminSection.users:
+        return UsersPage(token: token);
+      case AdminSection.groups:
+        return GroupsPage(token: token);
+      case AdminSection.subscriptions:
+        return SubscriptionsPage(token: token);
+      case AdminSection.promocodes:
+        return PromocodesPage(token: token);
+      case AdminSection.payments:
+        return PaymentsPage(token: token);
+      case AdminSection.servers:
+        return ServersPage(token: token);
+      case AdminSection.releases:
+        return ReleasesPage(token: token);
+      case AdminSection.admins:
+        return AdminsPage(token: token);
+      case AdminSection.settings:
+        return SettingsPage(
+          loginResult: _loginResult,
+          themeMode: widget.themeMode,
+          onThemeChanged: widget.onThemeChanged,
+          onLogout: widget.onLogout,
         );
-      },
-    );
-    controller.dispose();
-
-    if (nextValue == null || nextValue.isEmpty) return;
-    final nextSession = AdminSession(
-      token: _session.token,
-      apiBase: nextValue.replaceFirst(RegExp(r'/$'), ''),
-    );
-    await widget.onSessionUpdated(nextSession);
-    if (!mounted) return;
-    setState(() => _session = nextSession);
-    await _refreshAll();
-  }
-
-  Future<void> _showAddServerDialog() async {
-    final nameController = TextEditingController();
-    final ipController = TextEditingController();
-    final countryController = TextEditingController();
-    final sshPortController = TextEditingController(text: '22');
-    final sshUserController = TextEditingController(text: 'root');
-
-    final payload = await showDialog<AddServerPayload>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Add server'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Name')),
-                TextField(controller: ipController, decoration: const InputDecoration(labelText: 'IP address')),
-                TextField(controller: countryController, decoration: const InputDecoration(labelText: 'Country code')),
-                TextField(
-                  controller: sshPortController,
-                  decoration: const InputDecoration(labelText: 'SSH port'),
-                  keyboardType: TextInputType.number,
-                ),
-                TextField(controller: sshUserController, decoration: const InputDecoration(labelText: 'SSH user')),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final name = nameController.text.trim();
-                final ip = ipController.text.trim();
-                if (name.isEmpty || ip.isEmpty) return;
-                Navigator.of(context).pop(
-                  AddServerPayload(
-                    name: name,
-                    ipAddress: ip,
-                    countryCode: countryController.text.trim(),
-                    sshPort: int.tryParse(sshPortController.text.trim()) ?? 22,
-                    sshUser: sshUserController.text.trim().isEmpty ? 'root' : sshUserController.text.trim(),
-                  ),
-                );
-              },
-              child: const Text('Add'),
-            ),
-          ],
-        );
-      },
-    );
-
-    nameController.dispose();
-    ipController.dispose();
-    countryController.dispose();
-    sshPortController.dispose();
-    sshUserController.dispose();
-
-    if (payload == null) return;
-    try {
-      await _client.addServer(_session.token, payload);
-      await _fetchServers();
-      _showMessage('Server created');
-    } on AdminApiException catch (e) {
-      await _handleApiError(e);
-    } catch (e) {
-      _showMessage(e.toString());
-    }
-  }
-
-  Future<void> _showUploadReleaseDialog() async {
-    final picked = await FilePicker.platform.pickFiles(withData: true);
-    if (picked == null || picked.files.isEmpty) {
-      return;
-    }
-
-    final file = picked.files.single;
-    final fileBytes = file.bytes;
-    if (fileBytes == null || fileBytes.isEmpty) {
-      _showMessage('Failed to read selected file');
-      return;
-    }
-
-    final versionController = TextEditingController();
-    final notesController = TextEditingController();
-    String platform = _releasePlatforms.first;
-    bool activate = true;
-
-    final payload = await showDialog<_ReleaseUploadFormResult>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setLocalState) {
-            return AlertDialog(
-              title: const Text('Upload release'),
-              content: SizedBox(
-                width: 460,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('File: ${file.name}'),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      initialValue: platform,
-                      items: _releasePlatforms
-                          .map((value) => DropdownMenuItem<String>(value: value, child: Text(value)))
-                          .toList(growable: false),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setLocalState(() => platform = value);
-                      },
-                      decoration: const InputDecoration(labelText: 'Platform'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: versionController,
-                      decoration: const InputDecoration(labelText: 'Version'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: notesController,
-                      maxLines: 4,
-                      decoration: const InputDecoration(labelText: 'Release notes'),
-                    ),
-                    const SizedBox(height: 8),
-                    CheckboxListTile(
-                      value: activate,
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Activate immediately'),
-                      onChanged: (value) => setLocalState(() => activate = value ?? false),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    if (versionController.text.trim().isEmpty) return;
-                    Navigator.of(context).pop(
-                      _ReleaseUploadFormResult(
-                        platform: platform,
-                        version: versionController.text.trim(),
-                        releaseNotes: notesController.text.trim(),
-                        activate: activate,
-                        fileName: file.name,
-                        fileBytes: fileBytes,
-                      ),
-                    );
-                  },
-                  child: const Text('Upload'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    versionController.dispose();
-    notesController.dispose();
-
-    if (payload == null) return;
-
-    try {
-      await _client.uploadRelease(
-        token: _session.token,
-        platform: payload.platform,
-        version: payload.version,
-        releaseNotes: payload.releaseNotes,
-        fileName: payload.fileName,
-        fileBytes: payload.fileBytes,
-        activate: payload.activate,
-      );
-      await _fetchReleases();
-      _showMessage('Release uploaded');
-    } on AdminApiException catch (e) {
-      await _handleApiError(e);
-    } catch (e) {
-      _showMessage(e.toString());
-    }
-  }
-
-  Future<void> _activateRelease(AppRelease release) async {
-    try {
-      await _client.activateRelease(_session.token, release.id);
-      await _fetchReleases();
-      _showMessage('Release activated');
-    } on AdminApiException catch (e) {
-      await _handleApiError(e);
-    } catch (e) {
-      _showMessage(e.toString());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('HeYearth Admin'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Servers', icon: Icon(Icons.dns)),
-              Tab(text: 'Releases', icon: Icon(Icons.system_update)),
-            ],
+    final items = _items;
+    final currentIndex = items
+        .indexWhere((item) => item.section == _section)
+        .clamp(0, items.length - 1);
+    if (!items.any((item) => item.section == _section) && items.isNotEmpty) {
+      _section = items.first.section;
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('HeYearth Admin'),
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: widget.onLogout,
+            icon: const Icon(Icons.logout),
           ),
-          actions: [
-            IconButton(
-              tooltip: 'API base',
-              onPressed: _openApiBaseDialog,
-              icon: const Icon(Icons.link),
-            ),
-            IconButton(
-              tooltip: 'Refresh',
-              onPressed: _refreshAll,
-              icon: const Icon(Icons.refresh),
-            ),
-            IconButton(
-              tooltip: 'Logout',
-              onPressed: widget.onLogout,
-              icon: const Icon(Icons.logout),
-            ),
-          ],
-        ),
-        body: TabBarView(
-          children: [
-            _ServersTab(
-              apiBase: _session.apiBase,
-              loading: _loadingServers,
-              servers: _servers,
-              onAddServer: _showAddServerDialog,
-              onRefresh: _fetchServers,
-            ),
-            _ReleasesTab(
-              loading: _loadingReleases,
-              releases: _releases,
-              onUpload: _showUploadReleaseDialog,
-              onActivate: _activateRelease,
-              onRefresh: _fetchReleases,
-            ),
-          ],
-        ),
+        ],
       ),
-    );
-  }
-}
-
-class _ServersTab extends StatelessWidget {
-  const _ServersTab({
-    required this.apiBase,
-    required this.loading,
-    required this.servers,
-    required this.onAddServer,
-    required this.onRefresh,
-  });
-
-  final String apiBase;
-  final bool loading;
-  final List<AdminServer> servers;
-  final Future<void> Function() onAddServer;
-  final Future<void> Function() onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    if (loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return RefreshIndicator(
-      onRefresh: onRefresh,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
+      body: Row(
         children: [
-          Card(
-            child: ListTile(
-              title: const Text('API base'),
-              subtitle: Text(apiBase),
-              trailing: FilledButton.icon(
-                onPressed: onAddServer,
-                icon: const Icon(Icons.add),
-                label: const Text('Add server'),
-              ),
-            ),
+          NavigationRail(
+            selectedIndex: currentIndex,
+            onDestinationSelected: (index) =>
+                setState(() => _section = items[index].section),
+            labelType: NavigationRailLabelType.all,
+            destinations: items
+                .map((item) => NavigationRailDestination(
+                      icon: Icon(item.icon),
+                      label: Text(item.label),
+                    ))
+                .toList(growable: false),
           ),
-          const SizedBox(height: 12),
-          if (servers.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No servers yet'),
-              ),
-            ),
-          for (final server in servers)
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.dns),
-                title: Text(server.name),
-                subtitle: Text('${server.ipAddress}:${server.sshPort}  ${server.countryCode}'),
-                trailing: Chip(label: Text(server.status)),
-              ),
-            ),
+          const VerticalDivider(width: 1),
+          Expanded(child: _buildSection()),
         ],
       ),
     );
   }
 }
 
-class _ReleasesTab extends StatelessWidget {
-  const _ReleasesTab({
-    required this.loading,
-    required this.releases,
-    required this.onUpload,
-    required this.onActivate,
-    required this.onRefresh,
-  });
+class _SectionItem {
+  const _SectionItem(this.section, this.label, this.icon);
 
-  final bool loading;
-  final List<AppRelease> releases;
-  final Future<void> Function() onUpload;
-  final Future<void> Function(AppRelease release) onActivate;
-  final Future<void> Function() onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    if (loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return RefreshIndicator(
-      onRefresh: onRefresh,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: ListTile(
-              title: const Text('Application releases'),
-              subtitle: const Text('Upload binary files and activate releases per platform'),
-              trailing: FilledButton.icon(
-                onPressed: onUpload,
-                icon: const Icon(Icons.upload_file),
-                label: const Text('Upload'),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (releases.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No releases uploaded'),
-              ),
-            ),
-          for (final release in releases)
-            Card(
-              child: ListTile(
-                leading: Icon(release.isActive ? Icons.verified : Icons.inventory_2_outlined),
-                title: Text('${release.platform}  ${release.version}'),
-                subtitle: Text(
-                  '${release.fileName}\n${release.publicPath}${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}',
-                ),
-                isThreeLine: true,
-                trailing: release.isActive
-                    ? const Chip(label: Text('Active'))
-                    : OutlinedButton(
-                        onPressed: () => onActivate(release),
-                        child: const Text('Activate'),
-                      ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ReleaseUploadFormResult {
-  const _ReleaseUploadFormResult({
-    required this.platform,
-    required this.version,
-    required this.releaseNotes,
-    required this.activate,
-    required this.fileName,
-    required this.fileBytes,
-  });
-
-  final String platform;
-  final String version;
-  final String releaseNotes;
-  final bool activate;
-  final String fileName;
-  final Uint8List fileBytes;
+  final AdminSection section;
+  final String label;
+  final IconData icon;
 }
