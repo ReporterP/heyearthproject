@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package heyearth.v1;
+
+option go_package = "github.com/heyearth/backend/internal/pb/heyearth_v1";
+
+// ConfigApi — выдача персонального SS URI по user_id.
+service ConfigApi {
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message GetConfigRequest {
+  string user_id = 1;
+}
+
+message GetConfigResponse {
+  string user_id = 1;
+  string ss_uri = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;  // e.g. "ok"
+}

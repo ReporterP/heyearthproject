@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram VPN Bot (WireGuard config issuer)
+After=network.target wg-quick@wg0.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpn-bot
+ExecStart=/opt/vpn-bot/venv/bin/python -u /opt/vpn-bot/bot.py
+Restart=always
+RestartSec=5
+Environment=TELEGRAM_BOT_TOKEN=ВСТАВЬ_ТОКЕН
+Environment=ADD_CLIENT_SCRIPT=/etc/wireguard/add-client.sh
+
+[Install]
+WantedBy=multi-user.target

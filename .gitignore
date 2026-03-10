@@ -1,0 +1,21 @@
+.env
+.env.local
+.release-app-update.env
+bot/.env
+bot/registered_users.txt
+__pycache__/
+*.pyc
+
+# Flutter
+flutter-app/.dart_tool/
+flutter-app/build/
+flutter-app/*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Go binaries (собираются при деплое)
+server/backend/heyearth-api
+server/backend/heyearth-bot
+
+# Windows xray (тяжёлый бинарь, кладут локально)
+flutter-app/windows/xray/xray.exe
