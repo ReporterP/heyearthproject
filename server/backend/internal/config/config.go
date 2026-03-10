@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 )
 
-// AppDir is the base directory for scripts and data (e.g. /opt/vpn-bot).
+// AppDir is the base directory for runtime assets on the main server.
 func AppDir() string {
 	if d := os.Getenv("APP_DIR"); d != "" {
 		return d
 	}
-	return "/opt/vpn-bot"
+	return "/opt/heyearth/mainserver"
 }
 
 // AddSSScript returns the path to add-ss-user.sh.

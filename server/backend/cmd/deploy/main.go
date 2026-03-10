@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -138,6 +139,7 @@ func main() {
 		doSSL(client, cfg)
 		verifyServices(client)
 	case "update-main":
+		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doBot(sftpClient, client, cfg)
@@ -555,7 +557,7 @@ func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deplo
 
 	for _, name := range []string{"ca-cert.pem", "server-cert.pem", "server-key.pem", "client-cert.pem", "client-key.pem"} {
 		local := filepath.Join(cfg.backendRoot, "certs", name)
-		if err := uploadFile(c, local, filepath.Join(appDir, "certs", name)); err != nil {
+		if err := uploadFile(c, local, path.Join(appDir, "certs", name)); err != nil {
 			log.Fatalf("upload cert %s: %v", name, err)
 		}
 	}
@@ -587,9 +589,9 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		"JWT_SECRET":           cfg.env.get("JWT_SECRET", ""),
 		"SITE_DOMAIN":          cfg.siteDomain,
 		"PUBLIC_BASE_URL":      publicBaseURL(cfg),
-		"TLS_CLIENT_CERT_FILE": filepath.Join(appDir, "certs", "client-cert.pem"),
-		"TLS_CLIENT_KEY_FILE":  filepath.Join(appDir, "certs", "client-key.pem"),
-		"TLS_CA_FILE":          filepath.Join(appDir, "certs", "ca-cert.pem"),
+		"TLS_CLIENT_CERT_FILE": path.Join(appDir, "certs", "client-cert.pem"),
+		"TLS_CLIENT_KEY_FILE":  path.Join(appDir, "certs", "client-key.pem"),
+		"TLS_CA_FILE":          path.Join(appDir, "certs", "ca-cert.pem"),
 	}
 	if err := uploadFileContent(c, []byte(serializeEnv(apiEnv)), appDir+"/api.env"); err != nil {
 		log.Fatal(err)
@@ -746,7 +748,7 @@ func doStatus(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println(loginOut)
 	if strings.Contains(loginOut, "<html") || strings.Contains(loginOut, "<!DOCTYPE") {
 		fmt.Println("\n[!] Ответ API содержит HTML вместо JSON — возможно, nginx отдаёт ошибку или не проксирует на backend.")
-	} else 	if strings.Contains(loginOut, "token") || strings.Contains(loginOut, "error") || strings.Contains(loginOut, "message") {
+	} else if strings.Contains(loginOut, "token") || strings.Contains(loginOut, "error") || strings.Contains(loginOut, "message") {
 		fmt.Println("\n[OK] API отвечает JSON.")
 	}
 }

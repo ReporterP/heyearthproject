@@ -11,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
@@ -40,13 +42,13 @@ func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
 	caFile := strings.TrimSpace(os.Getenv("TLS_CA_FILE"))
 
 	if certFile == "" {
-		certFile = "certs/client-cert.pem"
+		certFile = filepath.Join(config.AppDir(), "certs", "client-cert.pem")
 	}
 	if keyFile == "" {
-		keyFile = "certs/client-key.pem"
+		keyFile = filepath.Join(config.AppDir(), "certs", "client-key.pem")
 	}
 	if caFile == "" {
-		caFile = "certs/ca-cert.pem"
+		caFile = filepath.Join(config.AppDir(), "certs", "ca-cert.pem")
 	}
 
 	clientCert, err := tls.LoadX509KeyPair(certFile, keyFile)

@@ -1004,7 +1004,15 @@ func restartNodeAgent(server serverResponse) error {
 	if strings.TrimSpace(server.SSHPassword) == "" {
 		return fmt.Errorf("ssh_password is required for restart_agent")
 	}
-	cmd := exec.Command("sshpass", "-p", server.SSHPassword, "ssh", "-o", "StrictHostKeyChecking=no", "-p", fmt.Sprintf("%d", server.SSHPort), fmt.Sprintf("%s@%s", server.SSHUser, server.IPAddress), "systemctl restart node-agent")
+	sshpassPath, err := resolveExecutablePath("sshpass", "/usr/bin/sshpass", "/bin/sshpass")
+	if err != nil {
+		return fmt.Errorf("restart node-agent: %w", err)
+	}
+	sshPath, err := resolveExecutablePath("ssh", "/usr/bin/ssh", "/bin/ssh")
+	if err != nil {
+		return fmt.Errorf("restart node-agent: %w", err)
+	}
+	cmd := exec.Command(sshpassPath, "-p", server.SSHPassword, sshPath, "-o", "StrictHostKeyChecking=no", "-p", fmt.Sprintf("%d", server.SSHPort), fmt.Sprintf("%s@%s", server.SSHUser, server.IPAddress), "systemctl restart node-agent")
 	cmd.Env = append(os.Environ(), "SSHPASS="+server.SSHPassword)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1020,8 +1028,12 @@ func reprovisionServer(server serverResponse) error {
 	if strings.TrimSpace(server.SSHPassword) == "" {
 		return fmt.Errorf("ssh_password is required for reprovision")
 	}
+	ansiblePlaybookPath, err := resolveExecutablePath("ansible-playbook", "/usr/bin/ansible-playbook", "/bin/ansible-playbook")
+	if err != nil {
+		return fmt.Errorf("ansible reprovision: %w", err)
+	}
 	playbook := filepath.Join(config.AppDir(), "ansible", "playbook.yml")
-	cmd := exec.Command("ansible-playbook",
+	cmd := exec.Command(ansiblePlaybookPath,
 		"-i", fmt.Sprintf("%s,", server.IPAddress),
 		playbook,
 		"-u", server.SSHUser,
@@ -1034,6 +1046,7 @@ func reprovisionServer(server serverResponse) error {
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 		"ANSIBLE_STDOUT_CALLBACK=minimal",
 	)
+	cmd.Dir = config.AppDir()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ansible reprovision: %v: %s", err, strings.TrimSpace(string(output)))
@@ -1045,19 +1058,9 @@ func reprovisionServer(server serverResponse) error {
 }
 
 func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
-	certFile := strings.TrimSpace(os.Getenv("TLS_CLIENT_CERT_FILE"))
-	keyFile := strings.TrimSpace(os.Getenv("TLS_CLIENT_KEY_FILE"))
-	caFile := strings.TrimSpace(os.Getenv("TLS_CA_FILE"))
-
-	if certFile == "" {
-		certFile = "certs/client-cert.pem"
-	}
-	if keyFile == "" {
-		keyFile = "certs/client-key.pem"
-	}
-	if caFile == "" {
-		caFile = "certs/ca-cert.pem"
-	}
+	certFile := resolveRuntimePath("TLS_CLIENT_CERT_FILE", "client-cert.pem")
+	keyFile := resolveRuntimePath("TLS_CLIENT_KEY_FILE", "client-key.pem")
+	caFile := resolveRuntimePath("TLS_CA_FILE", "ca-cert.pem")
 
 	clientCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -1076,6 +1079,25 @@ func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
 		RootCAs:      certPool,
 		ServerName:   "node-agent",
 	}), nil
+}
+
+func resolveRuntimePath(envKey string, certFileName string) string {
+	if value := strings.TrimSpace(os.Getenv(envKey)); value != "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(config.AppDir(), "certs", certFileName)
+}
+
+func resolveExecutablePath(name string, candidates ...string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%q executable not found; install it on the main server", name)
 }
 
 func connectToNodeAgent(ctx context.Context, ip string) (pbnode.NodeAgentClient, *grpc.ClientConn, error) {
