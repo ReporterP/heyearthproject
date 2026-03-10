@@ -16,7 +16,7 @@ const _keySelectedOnly = 'heyearth_selected_only';
 const _keyThemeMode = 'heyearth_theme_mode';
 const _keyLocale = 'heyearth_locale';
 const _keyDeviceId = 'heyearth_device_id';
-const _defaultApiBase = 'https://heyearth.ru';
+const _defaultApiBase = 'https://quizgame.pro';
 
 class AppState extends ChangeNotifier {
   AppState({required VpnService vpn}) : _vpn = vpn;
