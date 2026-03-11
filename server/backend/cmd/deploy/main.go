@@ -635,9 +635,14 @@ func doBot(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	}
 	_, _ = runSSH(client, "chmod +x "+appDir+"/heyearth-bot", true)
 
+	publicURL := "https://" + strings.TrimRight(cfg.siteDomain, "/")
+	if strings.HasPrefix(cfg.siteDomain, "http://") || strings.HasPrefix(cfg.siteDomain, "https://") {
+		publicURL = strings.TrimRight(cfg.siteDomain, "/")
+	}
 	botEnv := map[string]string{
-		"APP_DIR":            appDir,
-		"TELEGRAM_BOT_TOKEN": cfg.botToken,
+		"APP_DIR":              appDir,
+		"TELEGRAM_BOT_TOKEN":   cfg.botToken,
+		"HEYEARTH_PUBLIC_URL":  publicURL,
 	}
 	if err := uploadFileContent(c, []byte(serializeEnv(botEnv)), appDir+"/bot.env"); err != nil {
 		log.Fatal(err)
@@ -695,6 +700,14 @@ func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
     location /heyearth.v1.BotApi/ {
         grpc_pass 127.0.0.1:50051;
         grpc_set_header Host $host;
+    }
+
+    location /go/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /api/ {

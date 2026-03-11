@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -190,6 +191,23 @@ func main() {
 	}
 }
 
+// botPublicBaseURL returns the public HTTPS base URL for building /go/claim links (Telegram only allows http(s) in URL buttons).
+func botPublicBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("HEYEARTH_PUBLIC_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := strings.TrimSpace(os.Getenv("SITE_DOMAIN")); v != "" {
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			return strings.TrimRight(v, "/")
+		}
+		return "https://" + strings.TrimRight(v, "/")
+	}
+	return ""
+}
+
 func newBackendClient() (*backendClient, error) {
 	conn, err := grpc.Dial(grpcBackendAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -351,7 +369,11 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 			break
 		}
 		reply = "🚀 *Открыть в приложении*\n\nНажми кнопку ниже — откроется приложение и устройство привяжется к твоему HeYearth ID.\n\nКод действителен до `" + pairing.GetExpiresAt() + "`."
-		keyboard = mainKeyboardWithDeeplink(profile.GetPreferredPlatform(), pairing.GetDeeplinkUrl())
+		openURL := pairing.GetDeeplinkUrl()
+		if base := botPublicBaseURL(); base != "" {
+			openURL = base + "/go/claim?token=" + url.QueryEscape(pairing.GetClaimToken())
+		}
+		keyboard = mainKeyboardWithDeeplink(profile.GetPreferredPlatform(), openURL)
 	case cbGetLoginCode:
 		profile, err := backend.ensureTelegramUser(userID, "", "ru")
 		if err != nil {

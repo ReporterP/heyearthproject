@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,22 @@ func publicBaseURL() string {
 		return "https://" + strings.TrimRight(v, "/")
 	}
 	return ""
+}
+
+// handleGoClaimRedirect redirects /go/claim?token=XXX to heyearth://claim?token=XXX so Telegram URL buttons (https-only) can open the app.
+func handleGoClaimRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+	dest := "heyearth://claim?token=" + url.QueryEscape(token)
+	w.Header().Set("Location", dest)
+	w.WriteHeader(http.StatusFound)
 }
 
 func absoluteReleaseURL(publicPath string) string {
@@ -350,6 +367,7 @@ func main() {
 		_ = grpcServer.Serve(lis)
 	}()
 
+	http.HandleFunc("/go/claim", handleGoClaimRedirect)
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
 	http.HandleFunc("/api/v1/config", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
