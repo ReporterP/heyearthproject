@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS ssh_keys (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    public_key TEXT NOT NULL DEFAULT '',
+    private_key TEXT NOT NULL,
+    fingerprint VARCHAR(255) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE servers
+    ALTER COLUMN ssh_key_id TYPE INT USING NULL::INT;
+
+ALTER TABLE servers
+    ADD CONSTRAINT fk_servers_ssh_key
+    FOREIGN KEY (ssh_key_id) REFERENCES ssh_keys(id) ON DELETE SET NULL;

@@ -1,12 +1,14 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
+	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -35,22 +39,24 @@ type dashboardOverview struct {
 }
 
 type adminUserRow struct {
-	ID          int           `json:"id"`
-	UserID      string        `json:"user_id"`
-	TelegramID  sql.NullInt64 `json:"-"`
-	Role        string        `json:"role"`
-	IsBlocked   bool          `json:"is_blocked"`
-	CreatedAt   time.Time     `json:"-"`
-	UpdatedAt   time.Time     `json:"-"`
-	CurrentPlan string        `json:"current_plan"`
-	ValidUntil  sql.NullTime  `json:"-"`
+	ID                int           `json:"id"`
+	UserID            string        `json:"user_id"`
+	TelegramID        sql.NullInt64 `json:"-"`
+	Role              string        `json:"role"`
+	IsBlocked         bool          `json:"is_blocked"`
+	PreferredPlatform string        `json:"preferred_platform"`
+	CreatedAt         time.Time     `json:"-"`
+	UpdatedAt         time.Time     `json:"-"`
+	CurrentPlan       string        `json:"current_plan"`
+	ValidUntil        sql.NullTime  `json:"-"`
 }
 
 type userPayload struct {
-	UserID     string `json:"user_id"`
-	TelegramID *int64 `json:"telegram_id"`
-	Role       string `json:"role"`
-	IsBlocked  *bool  `json:"is_blocked"`
+	UserID            string `json:"user_id"`
+	TelegramID        *int64 `json:"telegram_id"`
+	Role              string `json:"role"`
+	IsBlocked         *bool  `json:"is_blocked"`
+	PreferredPlatform string `json:"preferred_platform"`
 }
 
 type groupResponse struct {
@@ -139,6 +145,8 @@ type serverResponse struct {
 	SSHPort     int             `json:"ssh_port"`
 	SSHUser     string          `json:"ssh_user"`
 	SSHPassword string          `json:"ssh_password,omitempty"`
+	SshKeyID    *int            `json:"ssh_key_id,omitempty"`
+	SshKeyName  string          `json:"ssh_key_name,omitempty"`
 	CountryCode string          `json:"country_code"`
 	Status      string          `json:"status"`
 	LoadMetrics json.RawMessage `json:"load_metrics"`
@@ -152,6 +160,7 @@ type serverPayload struct {
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	SSHPassword string `json:"ssh_password"`
+	SshKeyID    *int   `json:"ssh_key_id"`
 	CountryCode string `json:"country_code"`
 	Status      string `json:"status"`
 	GroupIDs    []int  `json:"group_ids"`
@@ -188,8 +197,9 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 
 func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(`
-		SELECT u.id, u.user_id, u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE), u.created_at,
-		       COALESCE(u.updated_at, u.created_at),
+		SELECT u.id, u.user_id, u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE),
+		       COALESCE(u.preferred_platform, ''),
+		       u.created_at, COALESCE(u.updated_at, u.created_at),
 		       COALESCE(ug.name, 'Free') AS current_plan,
 		       us.valid_until
 		FROM users u
@@ -212,18 +222,19 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var users []map[string]any
 	for rows.Next() {
 		var row adminUserRow
-		if err := rows.Scan(&row.ID, &row.UserID, &row.TelegramID, &row.Role, &row.IsBlocked, &row.CreatedAt, &row.UpdatedAt, &row.CurrentPlan, &row.ValidUntil); err != nil {
+		if err := rows.Scan(&row.ID, &row.UserID, &row.TelegramID, &row.Role, &row.IsBlocked, &row.PreferredPlatform, &row.CreatedAt, &row.UpdatedAt, &row.CurrentPlan, &row.ValidUntil); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan user")
 			return
 		}
 		payload := map[string]any{
-			"id":           row.ID,
-			"user_id":      row.UserID,
-			"role":         row.Role,
-			"is_blocked":   row.IsBlocked,
-			"current_plan": row.CurrentPlan,
-			"created_at":   row.CreatedAt.Format(time.RFC3339),
-			"updated_at":   row.UpdatedAt.Format(time.RFC3339),
+			"id":                 row.ID,
+			"user_id":            row.UserID,
+			"role":               row.Role,
+			"is_blocked":         row.IsBlocked,
+			"preferred_platform": row.PreferredPlatform,
+			"current_plan":       row.CurrentPlan,
+			"created_at":         row.CreatedAt.Format(time.RFC3339),
+			"updated_at":         row.UpdatedAt.Format(time.RFC3339),
 		}
 		if row.TelegramID.Valid {
 			payload["telegram_id"] = row.TelegramID.Int64
@@ -293,19 +304,71 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	if payload.TelegramID != nil {
 		telegramValue = *payload.TelegramID
 	}
+	platform := strings.ToLower(strings.TrimSpace(payload.PreferredPlatform))
 	if _, err := db.DB.Exec(`
 		UPDATE users
 		SET user_id = COALESCE(NULLIF($1, ''), user_id),
 		    telegram_id = CASE WHEN $2::bigint IS NULL THEN telegram_id ELSE $2 END,
 		    role = COALESCE(NULLIF($3, ''), role),
 		    is_blocked = COALESCE($4, is_blocked),
+		    preferred_platform = CASE WHEN $5 = '' THEN preferred_platform ELSE $5 END,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $5
-	`, strings.TrimSpace(payload.UserID), telegramValue, strings.TrimSpace(payload.Role), payload.IsBlocked, userID); err != nil {
+		WHERE id = $6
+	`, strings.TrimSpace(payload.UserID), telegramValue, strings.TrimSpace(payload.Role), payload.IsBlocked, platform, userID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update user")
 		return
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User updated"})
+}
+
+func ListUserDevicesHandler(w http.ResponseWriter, r *http.Request) {
+	userID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "devices")
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
+		return
+	}
+
+	rows, err := db.DB.Query(`
+		SELECT id, platform, device_id, COALESCE(device_label, ''), COALESCE(linked_via, ''), created_at, last_seen_at
+		FROM user_devices
+		WHERE user_id = $1
+		ORDER BY last_seen_at DESC
+	`, userID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to list devices")
+		return
+	}
+	defer rows.Close()
+
+	var devices []map[string]any
+	for rows.Next() {
+		var (
+			id          int
+			platform    string
+			deviceID    string
+			deviceLabel string
+			linkedVia   string
+			createdAt   time.Time
+			lastSeenAt  time.Time
+		)
+		if err := rows.Scan(&id, &platform, &deviceID, &deviceLabel, &linkedVia, &createdAt, &lastSeenAt); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to scan device")
+			return
+		}
+		devices = append(devices, map[string]any{
+			"id":           id,
+			"platform":     platform,
+			"device_id":    deviceID,
+			"device_label": deviceLabel,
+			"linked_via":   linkedVia,
+			"created_at":   createdAt.Format(time.RFC3339),
+			"last_seen_at": lastSeenAt.Format(time.RFC3339),
+		})
+	}
+	if devices == nil {
+		devices = []map[string]any{}
+	}
+	writeAdminJSON(w, http.StatusOK, devices)
 }
 
 func ListGroupsHandler(w http.ResponseWriter, r *http.Request) {
@@ -682,9 +745,12 @@ func UpdatePaymentHandler(w http.ResponseWriter, r *http.Request) {
 
 func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(`
-		SELECT id, name, ip_address, ssh_port, ssh_user, country_code, status, load_metrics, COALESCE(updated_at, CURRENT_TIMESTAMP)
-		FROM servers
-		ORDER BY COALESCE(updated_at, CURRENT_TIMESTAMP) DESC, id DESC
+		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
+		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+		       s.ssh_key_id, COALESCE(sk.name, '')
+		FROM servers s
+		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
+		ORDER BY COALESCE(s.updated_at, CURRENT_TIMESTAMP) DESC, s.id DESC
 	`)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to query servers")
@@ -696,12 +762,16 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s serverResponse
 		var updatedAt time.Time
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt); err != nil {
+		var sshKeyName string
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
 			return
 		}
 		if len(s.LoadMetrics) == 0 {
 			s.LoadMetrics = json.RawMessage(`{}`)
+		}
+		if sshKeyName != "" {
+			s.SshKeyName = sshKeyName
 		}
 		s.GroupIDs, _ = listServerGroupIDs(s.ID)
 		s.UpdatedAt = updatedAt.Format(time.RFC3339)
@@ -758,10 +828,10 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 
 	var serverID int
 	err = tx.QueryRow(`
-		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, country_code, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key_id, country_code, status, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
 		RETURNING id
-	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser), req.SSHPassword, strings.TrimSpace(req.CountryCode), statusValue).Scan(&serverID)
+	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser), req.SSHPassword, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue).Scan(&serverID)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to insert server")
 		return
@@ -814,6 +884,9 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.SSHPassword) == "" {
 		req.SSHPassword = existing.SSHPassword
 	}
+	if req.SshKeyID == nil {
+		req.SshKeyID = existing.SshKeyID
+	}
 	if strings.TrimSpace(req.CountryCode) == "" {
 		req.CountryCode = existing.CountryCode
 	}
@@ -834,9 +907,9 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.Exec(`
 		UPDATE servers
 		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5,
-		    country_code = $6, status = $7, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $8
-	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.CountryCode, req.Status, serverID); err != nil {
+		    ssh_key_id = $6, country_code = $7, status = $8, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $9
+	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.SshKeyID, req.CountryCode, req.Status, serverID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
 		return
 	}
@@ -918,26 +991,42 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 func loadServerByID(serverID int, includePassword bool) (serverResponse, error) {
 	var server serverResponse
 	var updatedAt time.Time
-	query := `
-		SELECT id, name, ip_address, ssh_port, ssh_user, country_code, status, load_metrics, COALESCE(updated_at, CURRENT_TIMESTAMP)
-		FROM servers
-		WHERE id = $1
-	`
+	var sshKeyName string
 	if includePassword {
-		query = `
-			SELECT id, name, ip_address, ssh_port, ssh_user, ssh_password, country_code, status, load_metrics, COALESCE(updated_at, CURRENT_TIMESTAMP)
-			FROM servers
-			WHERE id = $1
+		query := `
+			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.ssh_password,
+			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+			       s.ssh_key_id, COALESCE(sk.name, '')
+			FROM servers s
+			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
+			WHERE s.id = $1
 		`
-		err := db.DB.QueryRow(query, serverID).Scan(&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser, &server.SSHPassword, &server.CountryCode, &server.Status, &server.LoadMetrics, &updatedAt)
+		err := db.DB.QueryRow(query, serverID).Scan(
+			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
+			&server.SSHPassword, &server.CountryCode, &server.Status, &server.LoadMetrics,
+			&updatedAt, &server.SshKeyID, &sshKeyName)
 		if err != nil {
 			return server, err
 		}
 	} else {
-		err := db.DB.QueryRow(query, serverID).Scan(&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser, &server.CountryCode, &server.Status, &server.LoadMetrics, &updatedAt)
+		query := `
+			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
+			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+			       s.ssh_key_id, COALESCE(sk.name, '')
+			FROM servers s
+			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
+			WHERE s.id = $1
+		`
+		err := db.DB.QueryRow(query, serverID).Scan(
+			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
+			&server.CountryCode, &server.Status, &server.LoadMetrics,
+			&updatedAt, &server.SshKeyID, &sshKeyName)
 		if err != nil {
 			return server, err
 		}
+	}
+	if sshKeyName != "" {
+		server.SshKeyName = sshKeyName
 	}
 	server.GroupIDs, _ = listServerGroupIDs(server.ID)
 	server.UpdatedAt = updatedAt.Format(time.RFC3339)
@@ -1001,22 +1090,8 @@ func syncServerMetrics(server serverResponse) error {
 }
 
 func restartNodeAgent(server serverResponse) error {
-	if strings.TrimSpace(server.SSHPassword) == "" {
-		return fmt.Errorf("ssh_password is required for restart_agent")
-	}
-	sshpassPath, err := resolveExecutablePath("sshpass", "/usr/bin/sshpass", "/bin/sshpass")
-	if err != nil {
+	if err := runSSHCommand(server, "systemctl restart node-agent"); err != nil {
 		return fmt.Errorf("restart node-agent: %w", err)
-	}
-	sshPath, err := resolveExecutablePath("ssh", "/usr/bin/ssh", "/bin/ssh")
-	if err != nil {
-		return fmt.Errorf("restart node-agent: %w", err)
-	}
-	cmd := exec.Command(sshpassPath, "-p", server.SSHPassword, sshPath, "-o", "StrictHostKeyChecking=no", "-p", fmt.Sprintf("%d", server.SSHPort), fmt.Sprintf("%s@%s", server.SSHUser, server.IPAddress), "systemctl restart node-agent")
-	cmd.Env = append(os.Environ(), "SSHPASS="+server.SSHPassword)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("restart node-agent: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 	if _, err := db.DB.Exec(`UPDATE servers SET status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, server.ID); err != nil {
 		return err
@@ -1024,28 +1099,109 @@ func restartNodeAgent(server serverResponse) error {
 	return nil
 }
 
-func reprovisionServer(server serverResponse) error {
-	if strings.TrimSpace(server.SSHPassword) == "" {
-		return fmt.Errorf("ssh_password is required for reprovision")
+// runSSHCommand connects to the server via SSH (key-based if ssh_key_id is set,
+// password-based otherwise) and runs a single command.
+func runSSHCommand(server serverResponse, command string) error {
+	authMethods, err := sshAuthMethods(server)
+	if err != nil {
+		return err
 	}
+	cfg := &ssh.ClientConfig{
+		User:            server.SSHUser,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+		Timeout:         30 * time.Second,
+	}
+	addr := net.JoinHostPort(server.IPAddress, fmt.Sprintf("%d", server.SSHPort))
+	client, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return fmt.Errorf("ssh dial %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	var errBuf bytes.Buffer
+	sess.Stderr = &errBuf
+	if err := sess.Run(command); err != nil {
+		return fmt.Errorf("command %q: %v: %s", command, err, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
+}
+
+func sshAuthMethods(server serverResponse) ([]ssh.AuthMethod, error) {
+	if server.SshKeyID != nil && *server.SshKeyID > 0 {
+		key, err := biz.GetSshKeyByID(*server.SshKeyID)
+		if err != nil {
+			return nil, fmt.Errorf("load ssh key %d: %w", *server.SshKeyID, err)
+		}
+		signer, err := ssh.ParsePrivateKey([]byte(key.PrivateKey))
+		if err != nil {
+			return nil, fmt.Errorf("parse ssh key: %w", err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	}
+	if strings.TrimSpace(server.SSHPassword) == "" {
+		return nil, fmt.Errorf("neither ssh_key_id nor ssh_password is set for this server")
+	}
+	return []ssh.AuthMethod{ssh.Password(server.SSHPassword)}, nil
+}
+
+func reprovisionServer(server serverResponse) error {
 	ansiblePlaybookPath, err := resolveExecutablePath("ansible-playbook", "/usr/bin/ansible-playbook", "/bin/ansible-playbook")
 	if err != nil {
 		return fmt.Errorf("ansible reprovision: %w", err)
 	}
 	playbook := filepath.Join(config.AppDir(), "ansible", "playbook.yml")
-	cmd := exec.Command(ansiblePlaybookPath,
+
+	args := []string{
 		"-i", fmt.Sprintf("%s,", server.IPAddress),
 		playbook,
 		"-u", server.SSHUser,
 		"-e", fmt.Sprintf("ansible_port=%d", server.SSHPort),
-		"-e", fmt.Sprintf("ansible_password=%s", server.SSHPassword),
 		"-e", fmt.Sprintf("ansible_host=%s", server.IPAddress),
 		"-e", fmt.Sprintf("ss_public_host=%s", server.IPAddress),
-	)
-	cmd.Env = append(os.Environ(),
+	}
+
+	env := append(os.Environ(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 		"ANSIBLE_STDOUT_CALLBACK=minimal",
 	)
+
+	// Prefer key-based auth; fall back to password.
+	var keyTmpFile string
+	if server.SshKeyID != nil && *server.SshKeyID > 0 {
+		key, err := biz.GetSshKeyByID(*server.SshKeyID)
+		if err != nil {
+			return fmt.Errorf("load ssh key: %w", err)
+		}
+		// Write private key to a temp file for ansible --private-key.
+		f, err := os.CreateTemp("", "ansible-key-*.pem")
+		if err != nil {
+			return fmt.Errorf("create temp key file: %w", err)
+		}
+		keyTmpFile = f.Name()
+		if _, err := f.WriteString(key.PrivateKey); err != nil {
+			f.Close()
+			os.Remove(keyTmpFile)
+			return fmt.Errorf("write temp key file: %w", err)
+		}
+		f.Close()
+		os.Chmod(keyTmpFile, 0600)
+		defer os.Remove(keyTmpFile)
+		args = append(args, "--private-key", keyTmpFile)
+	} else if strings.TrimSpace(server.SSHPassword) != "" {
+		args = append(args, "-e", fmt.Sprintf("ansible_password=%s", server.SSHPassword))
+	} else {
+		return fmt.Errorf("neither ssh_key_id nor ssh_password is set for reprovision")
+	}
+
+	cmd := exec.Command(ansiblePlaybookPath, args...)
+	cmd.Env = env
 	cmd.Dir = config.AppDir()
 	output, err := cmd.CombinedOutput()
 	if err != nil {

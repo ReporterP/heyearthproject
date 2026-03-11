@@ -415,7 +415,7 @@ func buildAdminWeb(repoRoot string) string {
 		log.Fatalf("flutter pub get in admin_web: %v", err)
 	}
 
-	build := exec.Command("flutter", "build", "web", "--release", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
+	build := exec.Command("flutter", "build", "web", "--release", "--no-tree-shake-icons", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
 	build.Dir = adminWebRoot
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -581,9 +581,17 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		log.Fatalf("upload migrations: %v", err)
 	}
 
+	// Ensure postgres has a known password so the API can connect without peer auth issues.
+	_, _ = runSSH(client, `sudo -u postgres psql -tAc "ALTER USER postgres PASSWORD 'HeYearthDB1';" 2>/dev/null || true`, false)
+
+	dbURL := cfg.env.get("DATABASE_URL", "")
+	if dbURL == "" || dbURL == "postgres://postgres@localhost:5432/heyearth?sslmode=disable" {
+		dbURL = "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable"
+	}
+
 	apiEnv := map[string]string{
 		"APP_DIR":              appDir,
-		"DATABASE_URL":         cfg.env.get("DATABASE_URL", "postgres://postgres@localhost:5432/heyearth?sslmode=disable"),
+		"DATABASE_URL":         dbURL,
 		"ADMIN_USER":           cfg.env.get("ADMIN_USER", ""),
 		"ADMIN_PASS":           cfg.env.get("ADMIN_PASS", ""),
 		"JWT_SECRET":           cfg.env.get("JWT_SECRET", ""),
@@ -676,6 +684,17 @@ func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
     location /heyearth.v1.ConfigApi/ {
         grpc_pass 127.0.0.1:50051;
+        grpc_set_header Host $host;
+    }
+
+    location /heyearth.v1.ClientApi/ {
+        grpc_pass 127.0.0.1:50051;
+        grpc_set_header Host $host;
+    }
+
+    location /heyearth.v1.BotApi/ {
+        grpc_pass 127.0.0.1:50051;
+        grpc_set_header Host $host;
     }
 
     location /api/ {
@@ -712,6 +731,17 @@ func doSSL(client *ssh.Client, cfg *deployConfig) {
 	cmd := fmt.Sprintf("apt-get install -y -qq certbot python3-certbot-nginx && certbot --nginx -d %s -d www.%s --non-interactive --agree-tos -m %s --redirect",
 		cfg.siteDomain, cfg.siteDomain, cfg.letsEncryptEmail)
 	_, _ = runSSH(client, cmd, false)
+	// Ensure http2 is enabled on the SSL listener that certbot creates/modifies.
+	// certbot adds "listen 443 ssl" (without http2); gRPC requires h2 in ALPN.
+	// nginx >= 1.25: use "http2 on;" standalone directive.
+	// nginx 1.24 and below: patch the listen line to "listen 443 ssl http2;".
+	patchHTTP2 := `set -e
+sed -i 's/listen \[\:\:\]\:443 ssl ipv6only=on;/listen [::]:443 ssl http2 ipv6only=on;/' /etc/nginx/conf.d/heyearth.conf
+sed -i 's/listen \[\:\:\]\:443 ssl;/listen [::]:443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
+sed -i 's/listen 443 ssl http2 http2;/listen 443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
+sed -i 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
+nginx -t && systemctl reload nginx && echo "nginx reloaded with http2"`
+	_, _ = runSSH(client, patchHTTP2, false)
 }
 
 func restartServices(client *ssh.Client) {

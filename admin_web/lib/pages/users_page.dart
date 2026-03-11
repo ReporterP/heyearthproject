@@ -13,6 +13,15 @@ class UsersPage extends StatefulWidget {
 }
 
 class _UsersPageState extends State<UsersPage> {
+  static const _platformOptions = <String>[
+    '',
+    'android',
+    'windows',
+    'ios',
+    'macos',
+    'linux',
+  ];
+
   List<ManagedUser> _users = const [];
   bool _loading = true;
 
@@ -43,6 +52,15 @@ class _UsersPageState extends State<UsersPage> {
     final roleController =
         TextEditingController(text: existing?.role ?? 'user');
     bool isBlocked = existing?.isBlocked ?? false;
+    String selectedPlatform = existing?.preferredPlatform ?? '';
+
+    List<UserDevice> devices = const [];
+    if (existing != null) {
+      try {
+        devices = await const AdminApiClient()
+            .fetchUserDevices(widget.token, existing.id);
+      } catch (_) {}
+    }
 
     final payload = await showDialog<Map<String, dynamic>>(
       context: context,
@@ -50,30 +68,88 @@ class _UsersPageState extends State<UsersPage> {
         builder: (context, setStateDialog) => AlertDialog(
           title: Text(existing == null ? 'Create user' : 'Edit user'),
           content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                    controller: userIdController,
-                    decoration: const InputDecoration(labelText: 'User ID')),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: telegramController,
-                    decoration:
-                        const InputDecoration(labelText: 'Telegram ID')),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: roleController,
-                    decoration: const InputDecoration(labelText: 'Role')),
-                CheckboxListTile(
-                  value: isBlocked,
-                  onChanged: (value) =>
-                      setStateDialog(() => isBlocked = value ?? false),
-                  title: const Text('Blocked'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ],
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                      controller: userIdController,
+                      decoration:
+                          const InputDecoration(labelText: 'User ID')),
+                  const SizedBox(height: 12),
+                  TextField(
+                      controller: telegramController,
+                      decoration:
+                          const InputDecoration(labelText: 'Telegram ID')),
+                  const SizedBox(height: 12),
+                  TextField(
+                      controller: roleController,
+                      decoration: const InputDecoration(labelText: 'Role')),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: _platformOptions.contains(selectedPlatform)
+                        ? selectedPlatform
+                        : '',
+                    decoration: const InputDecoration(
+                        labelText: 'Preferred platform (legacy/bot)'),
+                    items: _platformOptions
+                        .map((p) => DropdownMenuItem(
+                              value: p,
+                              child: Text(p.isEmpty ? '— not set —' : p),
+                            ))
+                        .toList(),
+                    onChanged: (v) =>
+                        setStateDialog(() => selectedPlatform = v ?? ''),
+                  ),
+                  CheckboxListTile(
+                    value: isBlocked,
+                    onChanged: (value) =>
+                        setStateDialog(() => isBlocked = value ?? false),
+                    title: const Text('Blocked'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  if (devices.isNotEmpty) ...[
+                    const Divider(height: 24),
+                    Text('Registered devices (${devices.length})',
+                        style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 8),
+                    for (final d in devices)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            _platformIcon(d.platform),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${d.platform}${d.deviceLabel.isNotEmpty ? " · ${d.deviceLabel}" : ""}',
+                                    style:
+                                        Theme.of(context).textTheme.bodyMedium,
+                                  ),
+                                  Text(
+                                    'ID: ${d.deviceId}${d.linkedVia.isNotEmpty ? " · via ${d.linkedVia}" : ""}',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  Text(
+                                    'Last seen: ${_fmtDate(d.lastSeenAt)}',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ],
+              ),
             ),
           ),
           actions: [
@@ -86,6 +162,7 @@ class _UsersPageState extends State<UsersPage> {
                 'telegram_id': int.tryParse(telegramController.text.trim()),
                 'role': roleController.text.trim(),
                 'is_blocked': isBlocked,
+                'preferred_platform': selectedPlatform,
               }),
               child: const Text('Save'),
             ),
@@ -113,6 +190,35 @@ class _UsersPageState extends State<UsersPage> {
       _showMessage(e.message);
     }
   }
+
+  Widget _platformIcon(String platform) {
+    IconData icon;
+    switch (platform) {
+      case 'android':
+        icon = Icons.android;
+      case 'windows':
+        icon = Icons.laptop_windows;
+      case 'ios':
+      case 'macos':
+        icon = Icons.apple;
+      case 'linux':
+        icon = Icons.computer;
+      default:
+        icon = Icons.devices_other;
+    }
+    return Icon(icon, size: 18);
+  }
+
+  String _fmtDate(String iso) {
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      return '${dt.year}-${_p(dt.month)}-${_p(dt.day)} ${_p(dt.hour)}:${_p(dt.minute)}';
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  String _p(int v) => v.toString().padLeft(2, '0');
 
   void _showMessage(String message) {
     ScaffoldMessenger.of(context)
@@ -154,8 +260,12 @@ class _UsersPageState extends State<UsersPage> {
               child: ListTile(
                 title: Text(user.userId),
                 subtitle: Text(
-                    'Role: ${user.role} | Plan: ${user.currentPlan}${user.telegramId == null ? '' : '\nTelegram: ${user.telegramId}'}'),
-                isThreeLine: user.telegramId != null,
+                  'Role: ${user.role} | Plan: ${user.currentPlan}'
+                  '${user.telegramId == null ? '' : '\nTelegram: ${user.telegramId}'}'
+                  '${user.preferredPlatform.isEmpty ? '' : '\nPlatform: ${user.preferredPlatform}'}',
+                ),
+                isThreeLine: user.telegramId != null ||
+                    user.preferredPlatform.isNotEmpty,
                 trailing: Wrap(
                   spacing: 8,
                   crossAxisAlignment: WrapCrossAlignment.center,

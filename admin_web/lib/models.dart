@@ -168,6 +168,7 @@ class ManagedUser {
     required this.telegramId,
     required this.role,
     required this.isBlocked,
+    required this.preferredPlatform,
     required this.currentPlan,
     required this.validUntil,
     required this.createdAt,
@@ -179,6 +180,7 @@ class ManagedUser {
   final int? telegramId;
   final String role;
   final bool isBlocked;
+  final String preferredPlatform;
   final String currentPlan;
   final String validUntil;
   final String createdAt;
@@ -191,10 +193,43 @@ class ManagedUser {
       telegramId: (json['telegram_id'] as num?)?.toInt(),
       role: (json['role'] as String? ?? '').trim(),
       isBlocked: json['is_blocked'] as bool? ?? false,
+      preferredPlatform: (json['preferred_platform'] as String? ?? '').trim(),
       currentPlan: (json['current_plan'] as String? ?? '').trim(),
       validUntil: (json['valid_until'] as String? ?? '').trim(),
       createdAt: (json['created_at'] as String? ?? '').trim(),
       updatedAt: (json['updated_at'] as String? ?? '').trim(),
+    );
+  }
+}
+
+class UserDevice {
+  const UserDevice({
+    required this.id,
+    required this.platform,
+    required this.deviceId,
+    required this.deviceLabel,
+    required this.linkedVia,
+    required this.createdAt,
+    required this.lastSeenAt,
+  });
+
+  final int id;
+  final String platform;
+  final String deviceId;
+  final String deviceLabel;
+  final String linkedVia;
+  final String createdAt;
+  final String lastSeenAt;
+
+  factory UserDevice.fromJson(Map<String, dynamic> json) {
+    return UserDevice(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      platform: (json['platform'] as String? ?? '').trim(),
+      deviceId: (json['device_id'] as String? ?? '').trim(),
+      deviceLabel: (json['device_label'] as String? ?? '').trim(),
+      linkedVia: (json['linked_via'] as String? ?? '').trim(),
+      createdAt: (json['created_at'] as String? ?? '').trim(),
+      lastSeenAt: (json['last_seen_at'] as String? ?? '').trim(),
     );
   }
 }
@@ -346,6 +381,35 @@ class PaymentModel {
   }
 }
 
+class SshKey {
+  const SshKey({
+    required this.id,
+    required this.name,
+    required this.publicKey,
+    required this.fingerprint,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final int id;
+  final String name;
+  final String publicKey;
+  final String fingerprint;
+  final String createdAt;
+  final String updatedAt;
+
+  factory SshKey.fromJson(Map<String, dynamic> json) {
+    return SshKey(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      name: (json['name'] as String? ?? '').trim(),
+      publicKey: (json['public_key'] as String? ?? '').trim(),
+      fingerprint: (json['fingerprint'] as String? ?? '').trim(),
+      createdAt: (json['created_at'] as String? ?? '').trim(),
+      updatedAt: (json['updated_at'] as String? ?? '').trim(),
+    );
+  }
+}
+
 class AdminServer {
   const AdminServer({
     required this.id,
@@ -354,6 +418,8 @@ class AdminServer {
     required this.sshPort,
     required this.sshUser,
     required this.sshPassword,
+    this.sshKeyId,
+    required this.sshKeyName,
     required this.countryCode,
     required this.status,
     required this.loadMetrics,
@@ -367,6 +433,8 @@ class AdminServer {
   final int sshPort;
   final String sshUser;
   final String sshPassword;
+  final int? sshKeyId;
+  final String sshKeyName;
   final String countryCode;
   final String status;
   final Map<String, dynamic> loadMetrics;
@@ -381,6 +449,8 @@ class AdminServer {
       sshPort: (json['ssh_port'] as num?)?.toInt() ?? 22,
       sshUser: (json['ssh_user'] as String? ?? '').trim(),
       sshPassword: (json['ssh_password'] as String? ?? '').trim(),
+      sshKeyId: (json['ssh_key_id'] as num?)?.toInt(),
+      sshKeyName: (json['ssh_key_name'] as String? ?? '').trim(),
       countryCode: (json['country_code'] as String? ?? '').trim(),
       status: (json['status'] as String? ?? '').trim(),
       loadMetrics: ((json['load_metrics'] as Map?) ?? const <String, dynamic>{})
@@ -401,6 +471,7 @@ class ServerPayload {
     required this.sshPort,
     required this.sshUser,
     required this.sshPassword,
+    this.sshKeyId,
     required this.countryCode,
     required this.status,
     required this.groupIds,
@@ -411,6 +482,7 @@ class ServerPayload {
   final int sshPort;
   final String sshUser;
   final String sshPassword;
+  final int? sshKeyId;
   final String countryCode;
   final String status;
   final List<int> groupIds;
@@ -422,6 +494,7 @@ class ServerPayload {
       'ssh_port': sshPort,
       'ssh_user': sshUser,
       'ssh_password': sshPassword,
+      if (sshKeyId != null) 'ssh_key_id': sshKeyId,
       'country_code': countryCode,
       'status': status,
       'group_ids': groupIds,

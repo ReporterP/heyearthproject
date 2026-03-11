@@ -15,6 +15,7 @@ class ServersPage extends StatefulWidget {
 class _ServersPageState extends State<ServersPage> {
   List<AdminServer> _servers = const [];
   List<GroupModel> _groups = const [];
+  List<SshKey> _sshKeys = const [];
   bool _loading = true;
 
   @override
@@ -27,14 +28,18 @@ class _ServersPageState extends State<ServersPage> {
     setState(() => _loading = true);
     try {
       final client = const AdminApiClient();
-      _servers = await client.fetchServers(widget.token);
-      _groups = await client.fetchGroups(widget.token);
+      final results = await Future.wait([
+        client.fetchServers(widget.token),
+        client.fetchGroups(widget.token),
+        client.fetchSshKeys(widget.token),
+      ]);
+      _servers = results[0] as List<AdminServer>;
+      _groups = results[1] as List<GroupModel>;
+      _sshKeys = results[2] as List<SshKey>;
     } on AdminApiException catch (e) {
       _showMessage(e.message);
     } finally {
-      if (mounted) {
-        setState(() => _loading = false);
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -63,6 +68,7 @@ class _ServersPageState extends State<ServersPage> {
     final statusController =
         TextEditingController(text: detail?.status ?? 'provisioning');
     final selectedGroupIds = <int>{...(detail?.groupIds ?? const <int>[])};
+    int? selectedSshKeyId = detail?.sshKeyId;
 
     final payload = await showDialog<ServerPayload>(
       context: context,
@@ -86,16 +92,41 @@ class _ServersPageState extends State<ServersPage> {
                   const SizedBox(height: 12),
                   TextField(
                       controller: portController,
-                      decoration: const InputDecoration(labelText: 'SSH port')),
+                      decoration:
+                          const InputDecoration(labelText: 'SSH port')),
                   const SizedBox(height: 12),
                   TextField(
                       controller: userController,
-                      decoration: const InputDecoration(labelText: 'SSH user')),
+                      decoration:
+                          const InputDecoration(labelText: 'SSH user')),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<int?>(
+                    initialValue: selectedSshKeyId,
+                    decoration: const InputDecoration(
+                      labelText: 'SSH key (preferred over password)',
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('— use password —'),
+                      ),
+                      ..._sshKeys.map((k) => DropdownMenuItem(
+                            value: k.id,
+                            child: Text('${k.name}  (${k.fingerprint.isNotEmpty ? k.fingerprint.substring(0, 20) : ""}…)'),
+                          )),
+                    ],
+                    onChanged: (v) =>
+                        setStateDialog(() => selectedSshKeyId = v),
+                  ),
                   const SizedBox(height: 12),
                   TextField(
                       controller: passwordController,
-                      decoration:
-                          const InputDecoration(labelText: 'SSH password')),
+                      decoration: InputDecoration(
+                        labelText: 'SSH password',
+                        helperText: selectedSshKeyId != null
+                            ? 'Password ignored when a key is selected'
+                            : null,
+                      )),
                   const SizedBox(height: 12),
                   TextField(
                       controller: countryController,
@@ -104,7 +135,8 @@ class _ServersPageState extends State<ServersPage> {
                   const SizedBox(height: 12),
                   TextField(
                       controller: statusController,
-                      decoration: const InputDecoration(labelText: 'Status')),
+                      decoration:
+                          const InputDecoration(labelText: 'Status')),
                   const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
@@ -143,6 +175,7 @@ class _ServersPageState extends State<ServersPage> {
                   sshPort: int.tryParse(portController.text.trim()) ?? 22,
                   sshUser: userController.text.trim(),
                   sshPassword: passwordController.text.trim(),
+                  sshKeyId: selectedSshKeyId,
                   countryCode: countryController.text.trim(),
                   status: statusController.text.trim(),
                   groupIds: selectedGroupIds.toList()..sort(),
@@ -245,7 +278,20 @@ class _ServersPageState extends State<ServersPage> {
                     const SizedBox(height: 4),
                     Text(
                         '${item.ipAddress}:${item.sshPort} • ${item.countryCode} • ${item.status}'),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
+                    if (item.sshKeyName.isNotEmpty)
+                      Row(
+                        children: [
+                          const Icon(Icons.key, size: 14),
+                          const SizedBox(width: 4),
+                          Text('SSH key: ${item.sshKeyName}',
+                              style: Theme.of(context).textTheme.bodySmall),
+                        ],
+                      )
+                    else
+                      Text('Auth: password',
+                          style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 4),
                     Text('Groups: ${item.groupIds.join(', ')}'),
                     if (item.loadMetrics.isNotEmpty)
                       Text('Metrics: ${item.loadMetrics}'),

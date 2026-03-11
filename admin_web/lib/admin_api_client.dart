@@ -67,6 +67,11 @@ class AdminApiClient {
     await _patch('/users/$id', token, payload);
   }
 
+  Future<List<UserDevice>> fetchUserDevices(String token, int userId) async {
+    final body = await _getList('/users/$userId/devices', token);
+    return body.map(UserDevice.fromJson).toList(growable: false);
+  }
+
   Future<List<GroupModel>> fetchGroups(String token) async {
     final body = await _getList('/groups', token);
     return body.map(GroupModel.fromJson).toList(growable: false);
@@ -131,6 +136,30 @@ class AdminApiClient {
   Future<void> updatePayment(
       String token, int id, Map<String, dynamic> payload) async {
     await _patch('/payments/$id', token, payload);
+  }
+
+  Future<List<SshKey>> fetchSshKeys(String token) async {
+    final body = await _getList('/ssh-keys', token);
+    return body.map(SshKey.fromJson).toList(growable: false);
+  }
+
+  Future<SshKey> createSshKey(
+      String token, String name, String privateKey) async {
+    final body = await _post(
+        '/ssh-keys', token, {'name': name, 'private_key': privateKey},
+        expectedStatus: 201);
+    return SshKey.fromJson(body);
+  }
+
+  Future<SshKey> updateSshKey(
+      String token, int id, String name, String privateKey) async {
+    final body = await _patch(
+        '/ssh-keys/$id', token, {'name': name, 'private_key': privateKey});
+    return SshKey.fromJson(body);
+  }
+
+  Future<void> deleteSshKey(String token, int id) async {
+    await _delete('/ssh-keys/$id', token);
   }
 
   Future<List<AdminServer>> fetchServers(String token) async {

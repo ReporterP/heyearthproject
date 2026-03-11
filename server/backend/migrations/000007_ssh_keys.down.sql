@@ -1,0 +1,7 @@
+ALTER TABLE servers
+    DROP CONSTRAINT IF EXISTS fk_servers_ssh_key;
+
+ALTER TABLE servers
+    ALTER COLUMN ssh_key_id TYPE VARCHAR(255) USING NULL;
+
+DROP TABLE IF EXISTS ssh_keys;

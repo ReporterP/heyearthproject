@@ -42,3 +42,10 @@ func parseLastPathInt(path string) (int, bool) {
 	}
 	return value, true
 }
+
+// parseLastPathSegmentBeforeFinal parses URLs like /prefix/123/suffix and returns 123.
+func parseLastPathSegmentBeforeFinal(path, suffix string) (int, bool) {
+	path = strings.Trim(path, "/")
+	path = strings.TrimSuffix(path, "/"+suffix)
+	return parseLastPathInt(path)
+}

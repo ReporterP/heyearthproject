@@ -11,6 +11,7 @@ import 'pages/promocodes_page.dart';
 import 'pages/releases_page.dart';
 import 'pages/servers_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/ssh_keys_page.dart';
 import 'pages/subscriptions_page.dart';
 import 'pages/users_page.dart';
 import 'session_store.dart';
@@ -27,6 +28,7 @@ enum AdminSection {
   promocodes,
   payments,
   servers,
+  sshKeys,
   releases,
   admins,
   settings,
@@ -279,6 +281,9 @@ class _AdminShellState extends State<AdminShell> {
         if (_can('servers.read'))
           const _SectionItem(
               AdminSection.servers, 'Servers', Icons.dns_outlined),
+        if (_can('servers.read'))
+          const _SectionItem(
+              AdminSection.sshKeys, 'SSH Keys', Icons.key_outlined),
         if (_can('releases.read'))
           const _SectionItem(AdminSection.releases, 'Releases',
               Icons.system_update_alt_outlined),
@@ -306,6 +311,8 @@ class _AdminShellState extends State<AdminShell> {
         return PaymentsPage(token: token);
       case AdminSection.servers:
         return ServersPage(token: token);
+      case AdminSection.sshKeys:
+        return SshKeysPage(token: token);
       case AdminSection.releases:
         return ReleasesPage(token: token);
       case AdminSection.admins:

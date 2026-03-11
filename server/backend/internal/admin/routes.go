@@ -19,7 +19,18 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
-	http.HandleFunc("/api/admin/users/", withMethod(http.MethodPatch, RequirePermission("users.write", UpdateUserHandler)))
+	http.HandleFunc("/api/admin/users/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/devices") {
+			RequirePermission("users.read", ListUserDevicesHandler).ServeHTTP(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			RequirePermission("users.write", UpdateUserHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 
 	http.HandleFunc("/api/admin/groups", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -150,6 +161,27 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/admin-roles/", withMethod(http.MethodPatch, RequirePermission("admins.write", UpdateAdminRoleHandler)))
 	http.HandleFunc("/api/admin/admin-permissions", withMethod(http.MethodGet, RequirePermission("admins.read", ListAdminPermissionsHandler)))
+
+	http.HandleFunc("/api/admin/ssh-keys", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("servers.read", ListSshKeysHandler).ServeHTTP(w, r)
+		case http.MethodPost:
+			RequirePermission("servers.write", CreateSshKeyHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+	http.HandleFunc("/api/admin/ssh-keys/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			RequirePermission("servers.write", UpdateSshKeyHandler).ServeHTTP(w, r)
+		case http.MethodDelete:
+			RequirePermission("servers.write", DeleteSshKeyHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 }
 
 func withMethod(method string, next http.HandlerFunc) http.HandlerFunc {
