@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -13,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+var lastBotMessageID sync.Map // chatID (int64) -> messageID (int)
 
 const (
 	cbGetSS           = "getss"
@@ -28,6 +31,7 @@ const (
 	cbOpenInApp       = "open_in_app"
 	cbGetLoginCode    = "get_login_code"
 	cbProfile         = "profile"
+	cbChangeDevice    = "change_device"
 )
 
 const (
@@ -182,7 +186,7 @@ func main() {
 			continue
 		}
 
-		sendMsg(bot, msg.Chat.ID, reply, keyboard)
+		sendOrEditMsg(bot, msg.Chat.ID, reply, keyboard)
 	}
 }
 
@@ -335,7 +339,7 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 		}
 		reply = downloadMessageForProfile(backend, profile)
 		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
-	case cbOpenInApp, cbGetLoginCode:
+	case cbOpenInApp:
 		profile, err := backend.ensureTelegramUser(userID, "", "ru")
 		if err != nil {
 			reply = "Не удалось загрузить профиль. Попробуй позже."
@@ -346,7 +350,20 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 			reply = "Не удалось подготовить вход в приложение. Попробуй позже."
 			break
 		}
-		reply = pairingMessage(pairing)
+		reply = "🚀 *Открыть в приложении*\n\nНажми кнопку ниже — откроется приложение и устройство привяжется к твоему HeYearth ID.\n\nКод действителен до `" + pairing.GetExpiresAt() + "`."
+		keyboard = mainKeyboardWithDeeplink(profile.GetPreferredPlatform(), pairing.GetDeeplinkUrl())
+	case cbGetLoginCode:
+		profile, err := backend.ensureTelegramUser(userID, "", "ru")
+		if err != nil {
+			reply = "Не удалось загрузить профиль. Попробуй позже."
+			break
+		}
+		pairing, err := backend.createPairingCode(userID, profile.GetPreferredPlatform())
+		if err != nil {
+			reply = "Не удалось подготовить вход в приложение. Попробуй позже."
+			break
+		}
+		reply = "🔑 *Код входа*\n\nВведи этот код в приложении HeYearth:\n\n`" + pairing.GetCode() + "`\n\nДействует до `" + pairing.GetExpiresAt() + "`."
 		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
 	case cbProfile:
 		profile, err := backend.ensureTelegramUser(userID, "", "ru")
@@ -356,6 +373,9 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 		}
 		reply = profileSummary(profile)
 		keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
+	case cbChangeDevice:
+		reply = "С какого устройства будешь подключаться?"
+		keyboard = deviceChoiceKeyboard()
 	default:
 		return
 	}
@@ -368,14 +388,33 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 	}
 }
 
+// sendOrEditMsg tries to edit the last bot message in the chat to avoid clutter; falls back to sending new.
+func sendOrEditMsg(bot *tgbotapi.BotAPI, chatID int64, text string, keyboard *tgbotapi.InlineKeyboardMarkup) {
+	if v, ok := lastBotMessageID.Load(chatID); ok {
+		if msgID, ok := v.(int); ok && msgID > 0 {
+			edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
+			edit.ParseMode = "Markdown"
+			if keyboard != nil {
+				edit.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{InlineKeyboard: keyboard.InlineKeyboard}
+			}
+			if _, err := bot.Send(edit); err == nil {
+				return
+			}
+		}
+	}
+	sendMsg(bot, chatID, text, keyboard)
+}
+
 func sendMsg(bot *tgbotapi.BotAPI, chatID int64, text string, keyboard *tgbotapi.InlineKeyboardMarkup) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = "Markdown"
 	if keyboard != nil {
 		msg.ReplyMarkup = *keyboard
 	}
-	if _, err := bot.Send(msg); err != nil {
+	if sent, err := bot.Send(msg); err != nil {
 		log.Printf("Send error: %v", err)
+	} else if sent.MessageID != 0 {
+		lastBotMessageID.Store(chatID, sent.MessageID)
 	}
 }
 
@@ -402,8 +441,24 @@ func deviceKeyboard() tgbotapi.InlineKeyboardMarkup {
 }
 
 func mainKeyboardForPlatform(platform string) tgbotapi.InlineKeyboardMarkup {
+	return mainKeyboardForPlatformWithExtra(platform, nil)
+}
+
+// mainKeyboardWithDeeplink returns main keyboard with a first row: URL button to open the app.
+func mainKeyboardWithDeeplink(platform, deeplinkURL string) tgbotapi.InlineKeyboardMarkup {
+	urlRow := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonURL("🚀 Открыть HeYearth", deeplinkURL),
+	)
+	return mainKeyboardForPlatformWithExtra(platform, &urlRow)
+}
+
+func mainKeyboardForPlatformWithExtra(platform string, firstRow *[]tgbotapi.InlineKeyboardButton) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	if firstRow != nil {
+		rows = append(rows, *firstRow)
+	}
 	if platform == "android" || platform == "windows" {
-		return tgbotapi.NewInlineKeyboardMarkup(
+		rows = append(rows,
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("📲 Скачать приложение", cbDownloadApp),
 				tgbotapi.NewInlineKeyboardButtonData("🚀 Открыть в приложении", cbOpenInApp),
@@ -415,22 +470,30 @@ func mainKeyboardForPlatform(platform string) tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
 			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Сменить устройство", cbChangeDevice),
+			),
+		)
+	} else {
+		rows = append(rows,
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔗 Получить ссылку", cbGetSS),
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Новая ссылка", cbNewSS),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🚀 Открыть в приложении", cbOpenInApp),
+				tgbotapi.NewInlineKeyboardButtonData("🔑 Код входа", cbGetLoginCode),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("👤 Мой профиль", cbProfile),
+				tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Сменить устройство", cbChangeDevice),
+			),
 		)
 	}
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔗 Получить ссылку", cbGetSS),
-			tgbotapi.NewInlineKeyboardButtonData("🔄 Новая ссылка", cbNewSS),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🚀 Открыть в приложении", cbOpenInApp),
-			tgbotapi.NewInlineKeyboardButtonData("🔑 Код входа", cbGetLoginCode),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("👤 Мой профиль", cbProfile),
-			tgbotapi.NewInlineKeyboardButtonData("📖 Инструкция", cbInstruction),
-		),
-	)
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func firstMessageForProfile(profile *heyearth_v1.UserProfileResponse) string {
@@ -469,6 +532,12 @@ func handleLegacyConfigCommand(backend *backendClient, telegramID int64, forceNe
 		return "Legacy ss:// ссылка сейчас доступна только для iOS/macOS через Happ. Для Android/Windows используй pairing и приложение HeYearth.", &k
 	}
 	resp, err := backend.issueLegacyAppleConfig(telegramID, forceNew)
+	if err != nil && !forceNew {
+		// Первое нажатие «Получить ссылку» иногда падает (нода ещё не готова); повторяем с forceNew
+		time.Sleep(1 * time.Second)
+		resp, err = backend.issueLegacyAppleConfig(telegramID, true)
+		forceNew = true
+	}
 	if err != nil {
 		k := mainKeyboardForPlatform(platform)
 		return "Не удалось выдать ss:// ссылку: " + err.Error(), &k

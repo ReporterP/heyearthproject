@@ -95,6 +95,15 @@ func (s *server) IssueLegacyAppleConfig(ctx context.Context, req *heyearth_v1.Is
 	}
 	resp, err := s.GetConfig(ctx, &heyearth_v1.GetConfigRequest{UserId: user.UserID})
 	if err != nil {
+		// Первый запрос ссылки для iOS иногда падает (нода не готова); один retry через секунду
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		resp, err = s.GetConfig(ctx, &heyearth_v1.GetConfigRequest{UserId: user.UserID})
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &heyearth_v1.ConnectionBundleResponse{
