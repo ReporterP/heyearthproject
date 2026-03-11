@@ -27,6 +27,8 @@ func RegisterRoutes() {
 		switch r.Method {
 		case http.MethodPatch:
 			RequirePermission("users.write", UpdateUserHandler).ServeHTTP(w, r)
+		case http.MethodDelete:
+			RequirePermission("users.write", DeleteUserHandler).ServeHTTP(w, r)
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}

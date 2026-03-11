@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class DashboardPage extends StatefulWidget {
@@ -42,6 +43,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AdminL10n.of(context);
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -50,21 +52,20 @@ class _DashboardPageState extends State<DashboardPage> {
       return Center(
         child: FilledButton(
           onPressed: _load,
-          child: const Text('Retry'),
+          child: Text(l10n.retry),
         ),
       );
     }
-
     final items = <({String label, int value})>[
-      (label: 'Users', value: overview.usersCount),
-      (label: 'Active users', value: overview.activeUsersCount),
-      (label: 'Servers', value: overview.serversCount),
-      (label: 'Online servers', value: overview.onlineServersCount),
-      (label: 'Groups', value: overview.groupsCount),
-      (label: 'Promocodes', value: overview.promocodesCount),
-      (label: 'Payments', value: overview.paymentsCount),
-      (label: 'Active releases', value: overview.activeReleases),
-      (label: 'Admins', value: overview.adminsCount),
+      (label: l10n.dashUsers, value: overview.usersCount),
+      (label: l10n.dashActiveUsers, value: overview.activeUsersCount),
+      (label: l10n.dashServers, value: overview.serversCount),
+      (label: l10n.dashOnlineServers, value: overview.onlineServersCount),
+      (label: l10n.dashGroups, value: overview.groupsCount),
+      (label: l10n.dashPromocodes, value: overview.promocodesCount),
+      (label: l10n.dashPayments, value: overview.paymentsCount),
+      (label: l10n.dashActiveReleases, value: overview.activeReleases),
+      (label: l10n.dashAdmins, value: overview.adminsCount),
     ];
 
     return RefreshIndicator(
@@ -72,7 +73,8 @@ class _DashboardPageState extends State<DashboardPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text('Dashboard', style: Theme.of(context).textTheme.headlineMedium),
+          Text(l10n.dashboardTitle,
+              style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 16),
           Wrap(
             spacing: 16,

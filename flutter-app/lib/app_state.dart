@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import 'generated/heyearth/v1/config.pb.dart' as pb;
 import 'grpc_client.dart';
+import 'l10n.dart';
 import 'update_service.dart';
 import 'vpn_service_interface.dart';
 
@@ -199,13 +200,13 @@ class AppState extends ChangeNotifier {
         device: _deviceContext(linkedVia: 'claim_code'),
       ).timeout(const Duration(seconds: 15));
       if (resp == null || resp.profile.userId.trim().isEmpty) {
-        _error = 'Не удалось привязать приложение к аккаунту.';
+        _error = _l10n.claimFailed;
         notifyListeners();
         return false;
       }
       return await _acceptClaim(resp);
     } catch (e) {
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
+      _error = _l10n.grpcErrorToMessage(e);
       notifyListeners();
       return false;
     }
@@ -223,13 +224,13 @@ class AppState extends ChangeNotifier {
         device: _deviceContext(linkedVia: 'claim_token'),
       ).timeout(const Duration(seconds: 15));
       if (resp == null || resp.profile.userId.trim().isEmpty) {
-        _error = 'Не удалось открыть вход по ссылке.';
+        _error = _l10n.claimByTokenFailed;
         notifyListeners();
         return false;
       }
       return await _acceptClaim(resp);
     } catch (e) {
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
+      _error = _l10n.grpcErrorToMessage(e);
       notifyListeners();
       return false;
     }
@@ -291,7 +292,7 @@ class AppState extends ChangeNotifier {
       }
       return true;
     } catch (e) {
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
+      _error = _l10n.grpcErrorToMessage(e);
       return false;
     } finally {
       _accountLoading = false;
@@ -310,7 +311,8 @@ class AppState extends ChangeNotifier {
       final resp = await applyPromocodeGrpc(_apiBase, _userId!, clean)
           .timeout(const Duration(seconds: 15));
       if (resp == null || !resp.success) {
-        _error = resp?.message ?? 'Не удалось применить промокод.';
+        final serverMsg = resp?.message.trim() ?? '';
+        _error = serverMsg.isNotEmpty ? serverMsg : _l10n.promoFailed;
         notifyListeners();
         return false;
       }
@@ -320,7 +322,7 @@ class AppState extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
+      _error = _l10n.grpcErrorToMessage(e);
       notifyListeners();
       return false;
     }
@@ -338,23 +340,21 @@ class AppState extends ChangeNotifier {
         forceRefresh: forceRefresh,
       ).timeout(const Duration(seconds: 15));
       if (resp == null) {
-        _error = 'Сервер не ответил.';
+        _error = _l10n.serverNoResponse;
         notifyListeners();
         return false;
       }
       if (resp.legacyHappFallback) {
-        _error = resp.fallbackInstruction.isNotEmpty
-            ? resp.fallbackInstruction
-            : 'Для этой платформы пока используется fallback через Happ.';
+        final instr = resp.fallbackInstruction.trim();
+        _error = instr.isNotEmpty ? instr : _l10n.legacyHappFallback;
         await _invalidateConnectionBundle();
         notifyListeners();
         return false;
       }
       final ssUri = resp.ssUri.trim();
       if (ssUri.isEmpty) {
-        _error = resp.statusMessage.isNotEmpty
-            ? resp.statusMessage
-            : 'Сервер не вернул конфиг подключения.';
+        final statusMsg = resp.statusMessage.trim();
+        _error = statusMsg.isNotEmpty ? statusMsg : _l10n.serverNoConfig;
         notifyListeners();
         return false;
       }
@@ -365,7 +365,7 @@ class AppState extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
+      _error = _l10n.grpcErrorToMessage(e);
       notifyListeners();
       return false;
     }
@@ -373,7 +373,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> setVpnOn(bool on) async {
     if (!_vpn.isSupported && on) {
-      _error = 'HeYearth доступен только на Android, iOS и Windows.';
+      _error = _l10n.vpnUnsupported;
       notifyListeners();
       return;
     }
@@ -397,8 +397,8 @@ class AppState extends ChangeNotifier {
       final update = await checkForUpdate(_apiBase);
       if (update.update?.requiredByPolicy == true) {
         _error = update.update!.mandatory
-            ? 'Требуется обязательное обновление до ${update.update!.latestVersion}.'
-            : 'Текущая версия больше не поддерживается. Обнови приложение.';
+            ? _l10n.mandatoryUpdateRequiredMsg(update.update!.latestVersion)
+            : _l10n.versionUnsupported;
         _vpnConnecting = false;
         notifyListeners();
         return;
@@ -410,22 +410,20 @@ class AppState extends ChangeNotifier {
         return;
       }
       if (isBlocked) {
-        _error = 'Доступ заблокирован. Обратись в поддержку.';
+        _error = _l10n.accessBlocked;
         _vpnConnecting = false;
         notifyListeners();
         return;
       }
       if (legacyHappFallback) {
-        _error =
-            'Для этой платформы пока используется fallback через Happ/бот.';
+        _error = _l10n.legacyFallbackVpn;
         _vpnConnecting = false;
         notifyListeners();
         return;
       }
       if (!canConnect) {
-        _error = _accessState?.reason.isNotEmpty == true
-            ? _accessState!.reason
-            : 'Сейчас подключение недоступно.';
+        final reason = _accessState?.reason.trim() ?? '';
+        _error = reason.isNotEmpty ? reason : _l10n.currentConnectionUnavailable;
         _vpnConnecting = false;
         notifyListeners();
         return;
@@ -444,10 +442,8 @@ class AppState extends ChangeNotifier {
       await prefs.setBool(_keyVpnOn, true);
     } catch (e) {
       _vpnOn = false;
-      _error = e.toString().replaceFirst(RegExp(r'Exception:?\s*'), '');
-      if (_error!.length > 160) {
-        _error = '${_error!.substring(0, 157)}...';
-      }
+      final msg = _l10n.grpcErrorToMessage(e);
+      _error = msg.length > 160 ? '${msg.substring(0, 157)}...' : msg;
     } finally {
       _vpnConnecting = false;
       notifyListeners();
@@ -458,6 +454,8 @@ class AppState extends ChangeNotifier {
     _error = e;
     notifyListeners();
   }
+
+  L10n get _l10n => L10n(Locale(_locale));
 
   Future<bool> _acceptClaim(pb.ClaimResponse response) async {
     final userId = response.profile.userId.trim();

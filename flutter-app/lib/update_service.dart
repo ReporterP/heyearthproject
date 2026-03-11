@@ -89,7 +89,7 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
     final minSupportedVersion = resp.minSupportedVersion.trim();
     final belowMinSupported = minSupportedVersion.isNotEmpty &&
         isNewerVersion(current, minSupportedVersion);
-    final requiredByPolicy = resp.mandatory || belowMinSupported;
+    final requiredByPolicy = (newer && resp.mandatory) || belowMinSupported;
 
     String downloadUrl = '';
     if (kIsWeb) {

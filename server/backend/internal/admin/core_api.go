@@ -321,6 +321,25 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User updated"})
 }
 
+func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
+	userID, ok := parseLastPathInt(r.URL.Path)
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
+		return
+	}
+	result, err := db.DB.Exec(`DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to delete user")
+		return
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		writeAdminError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User deleted"})
+}
+
 func ListUserDevicesHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "devices")
 	if !ok {

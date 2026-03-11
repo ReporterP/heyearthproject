@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class GroupsPage extends StatefulWidget {
@@ -43,11 +44,12 @@ class _GroupsPageState extends State<GroupsPage> {
         TextEditingController(text: existing?.companyId?.toString() ?? '');
     bool isPremium = existing?.isPremium ?? false;
 
+    final l10n = AdminL10n.of(context);
     final payload = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text(existing == null ? 'Create group' : 'Edit group'),
+          title: Text(existing == null ? l10n.createGroup : l10n.editGroup),
           content: SizedBox(
             width: 420,
             child: Column(
@@ -55,21 +57,21 @@ class _GroupsPageState extends State<GroupsPage> {
               children: [
                 TextField(
                     controller: nameController,
-                    decoration: const InputDecoration(labelText: 'Name')),
+                    decoration: InputDecoration(labelText: l10n.fieldGroupName)),
                 const SizedBox(height: 12),
                 TextField(
                     controller: descriptionController,
                     decoration:
-                        const InputDecoration(labelText: 'Description')),
+                        InputDecoration(labelText: l10n.fieldDescription)),
                 const SizedBox(height: 12),
                 TextField(
                     controller: companyController,
-                    decoration: const InputDecoration(labelText: 'Company ID')),
+                    decoration: InputDecoration(labelText: l10n.fieldCompanyId)),
                 CheckboxListTile(
                   value: isPremium,
                   onChanged: (value) =>
                       setStateDialog(() => isPremium = value ?? false),
-                  title: const Text('Premium'),
+                  title: Text(l10n.fieldIsPremium),
                   contentPadding: EdgeInsets.zero,
                 ),
               ],
@@ -78,7 +80,7 @@ class _GroupsPageState extends State<GroupsPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(l10n.cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(<String, dynamic>{
                 'name': nameController.text.trim(),
@@ -86,7 +88,7 @@ class _GroupsPageState extends State<GroupsPage> {
                 'company_id': int.tryParse(companyController.text.trim()),
                 'is_premium': isPremium,
               }),
-              child: const Text('Save'),
+              child: Text(l10n.save),
             ),
           ],
         ),
@@ -137,47 +139,58 @@ class _GroupsPageState extends State<GroupsPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Groups',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                onPressed: () => _editGroup(),
-                icon: const Icon(Icons.add),
-                label: const Text('Create'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (_groups.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No groups found'),
-              ),
-            ),
-          for (final group in _groups)
-            Card(
-              child: ListTile(
-                title: Text(group.name),
-                subtitle: Text(group.description.isEmpty
-                    ? 'No description'
-                    : group.description),
-                trailing: Wrap(
-                  spacing: 8,
-                  children: [
-                    if (group.isPremium) const Chip(label: Text('Premium')),
-                    OutlinedButton(
-                        onPressed: () => _editGroup(existing: group),
-                        child: const Text('Edit')),
-                    OutlinedButton(
-                        onPressed: () => _deleteGroup(group),
-                        child: const Text('Delete')),
-                  ],
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(
+              children: [
+                Expanded(
+                    child: Text(l10n.groupsTitle,
+                        style: Theme.of(context).textTheme.headlineMedium)),
+                FilledButton.icon(
+                  onPressed: () => _editGroup(),
+                  icon: const Icon(Icons.add),
+                  label: Text(l10n.create),
                 ),
-              ),
-            ),
+              ],
+            );
+          }),
+          const SizedBox(height: 16),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_groups.isEmpty) {
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(l10n.noGroups),
+                ),
+              );
+            }
+            return Column(
+              children: [
+                for (final group in _groups)
+                  Card(
+                    child: ListTile(
+                      title: Text(group.name),
+                      subtitle: Text(group.description.isEmpty
+                          ? (l10n.isEn ? 'No description' : 'Без описания')
+                          : group.description),
+                      trailing: Wrap(
+                        spacing: 8,
+                        children: [
+                          if (group.isPremium) Chip(label: Text(l10n.fieldIsPremium)),
+                          OutlinedButton(
+                              onPressed: () => _editGroup(existing: group),
+                              child: Text(l10n.edit)),
+                          OutlinedButton(
+                              onPressed: () => _deleteGroup(group),
+                              child: Text(l10n.delete)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          }),
         ],
       ),
     );

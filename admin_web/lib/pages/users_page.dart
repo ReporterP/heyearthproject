@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class UsersPage extends StatefulWidget {
@@ -62,11 +63,12 @@ class _UsersPageState extends State<UsersPage> {
       } catch (_) {}
     }
 
+    final l10n = AdminL10n.of(context);
     final payload = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text(existing == null ? 'Create user' : 'Edit user'),
+          title: Text(existing == null ? l10n.createUser : l10n.editUser),
           content: SizedBox(
             width: 480,
             child: SingleChildScrollView(
@@ -77,27 +79,27 @@ class _UsersPageState extends State<UsersPage> {
                   TextField(
                       controller: userIdController,
                       decoration:
-                          const InputDecoration(labelText: 'User ID')),
+                          InputDecoration(labelText: l10n.fieldUserId)),
                   const SizedBox(height: 12),
                   TextField(
                       controller: telegramController,
                       decoration:
-                          const InputDecoration(labelText: 'Telegram ID')),
+                          InputDecoration(labelText: l10n.fieldTelegramId)),
                   const SizedBox(height: 12),
                   TextField(
                       controller: roleController,
-                      decoration: const InputDecoration(labelText: 'Role')),
+                      decoration: InputDecoration(labelText: l10n.fieldRole)),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: _platformOptions.contains(selectedPlatform)
                         ? selectedPlatform
                         : '',
-                    decoration: const InputDecoration(
-                        labelText: 'Preferred platform (legacy/bot)'),
+                    decoration: InputDecoration(
+                        labelText: l10n.fieldPreferredPlatform),
                     items: _platformOptions
                         .map((p) => DropdownMenuItem(
                               value: p,
-                              child: Text(p.isEmpty ? '— not set —' : p),
+                              child: Text(p.isEmpty ? l10n.fieldPlatformNotSet : p),
                             ))
                         .toList(),
                     onChanged: (v) =>
@@ -107,12 +109,12 @@ class _UsersPageState extends State<UsersPage> {
                     value: isBlocked,
                     onChanged: (value) =>
                         setStateDialog(() => isBlocked = value ?? false),
-                    title: const Text('Blocked'),
+                    title: Text(l10n.fieldBlocked),
                     contentPadding: EdgeInsets.zero,
                   ),
                   if (devices.isNotEmpty) ...[
                     const Divider(height: 24),
-                    Text('Registered devices (${devices.length})',
+                    Text(l10n.registeredDevicesLabel(devices.length),
                         style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 8),
                     for (final d in devices)
@@ -137,7 +139,7 @@ class _UsersPageState extends State<UsersPage> {
                                         Theme.of(context).textTheme.bodySmall,
                                   ),
                                   Text(
-                                    'Last seen: ${_fmtDate(d.lastSeenAt)}',
+                                    '${l10n.deviceLastSeen}: ${_fmtDate(d.lastSeenAt)}',
                                     style:
                                         Theme.of(context).textTheme.bodySmall,
                                   ),
@@ -155,7 +157,7 @@ class _UsersPageState extends State<UsersPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(l10n.cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(<String, dynamic>{
                 'user_id': userIdController.text.trim(),
@@ -164,7 +166,7 @@ class _UsersPageState extends State<UsersPage> {
                 'is_blocked': isBlocked,
                 'preferred_platform': selectedPlatform,
               }),
-              child: const Text('Save'),
+              child: Text(l10n.save),
             ),
           ],
         ),
@@ -185,6 +187,35 @@ class _UsersPageState extends State<UsersPage> {
         await const AdminApiClient()
             .updateUser(widget.token, existing.id, payload);
       }
+      await _load();
+    } on AdminApiException catch (e) {
+      _showMessage(e.message);
+    }
+  }
+
+  Future<void> _deleteUser(ManagedUser user) async {
+    final l10n = AdminL10n.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.deleteUser),
+        content: Text(l10n.deleteUserConfirm(user.userId)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(l10n.cancel)),
+          FilledButton(
+            style:
+                FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await const AdminApiClient().deleteUser(widget.token, user.id);
       await _load();
     } on AdminApiException catch (e) {
       _showMessage(e.message);
@@ -235,50 +266,67 @@ class _UsersPageState extends State<UsersPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Users',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                onPressed: () => _editUser(),
-                icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Create'),
-              ),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(
+              children: [
+                Expanded(
+                    child: Text(l10n.usersTitle,
+                        style: Theme.of(context).textTheme.headlineMedium)),
+                FilledButton.icon(
+                  onPressed: () => _editUser(),
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: Text(l10n.create),
+                ),
+              ],
+            );
+          }),
           const SizedBox(height: 16),
-          if (_users.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No users found'),
-              ),
-            ),
-          for (final user in _users)
-            Card(
-              child: ListTile(
-                title: Text(user.userId),
-                subtitle: Text(
-                  'Role: ${user.role} | Plan: ${user.currentPlan}'
-                  '${user.telegramId == null ? '' : '\nTelegram: ${user.telegramId}'}'
-                  '${user.preferredPlatform.isEmpty ? '' : '\nPlatform: ${user.preferredPlatform}'}',
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_users.isEmpty) {
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(l10n.noUsers),
                 ),
-                isThreeLine: user.telegramId != null ||
-                    user.preferredPlatform.isNotEmpty,
-                trailing: Wrap(
-                  spacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (user.isBlocked) const Chip(label: Text('Blocked')),
-                    OutlinedButton(
-                      onPressed: () => _editUser(existing: user),
-                      child: const Text('Edit'),
+              );
+            }
+            return Column(
+              children: [
+                for (final user in _users)
+                  Card(
+                    child: ListTile(
+                      title: Text(user.userId),
+                      subtitle: Text(
+                        '${l10n.userRolePlan}: ${user.role} | ${l10n.userPlan}: ${user.currentPlan}'
+                        '${user.telegramId == null ? '' : '\nTelegram: ${user.telegramId}'}'
+                        '${user.preferredPlatform.isEmpty ? '' : '\nPlatform: ${user.preferredPlatform}'}',
+                      ),
+                      isThreeLine: user.telegramId != null ||
+                          user.preferredPlatform.isNotEmpty,
+                      trailing: Wrap(
+                        spacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (user.isBlocked) Chip(label: Text(l10n.blockedChip)),
+                          OutlinedButton(
+                            onPressed: () => _editUser(existing: user),
+                            child: Text(l10n.edit),
+                          ),
+                          OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.red),
+                            onPressed: () => _deleteUser(user),
+                            child: Text(l10n.delete),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
-                ),
-              ),
-            ),
+                  ),
+              ],
+            );
+          }),
         ],
       ),
     );

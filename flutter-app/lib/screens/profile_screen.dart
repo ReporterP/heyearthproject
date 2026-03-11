@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../l10n.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -31,11 +32,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
     setState(() => _promoLoading = false);
+    final l10n = L10n.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
           content: Text(ok
-              ? 'Промокод применён.'
-              : (state.error ?? 'Не удалось применить промокод.'))),
+              ? l10n.promoApplied
+              : l10n.translateError(state.error).isNotEmpty
+                  ? l10n.translateError(state.error)
+                  : l10n.promoFailed)),
     );
     if (ok) {
       _promoController.clear();
@@ -46,10 +50,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     return Consumer<AppState>(
       builder: (context, state, _) {
+        final l10n = L10n.of(context);
         final profile = state.profile;
         final access = state.accessState;
+
+        String _linked(bool v) =>
+            v ? (l10n.isEn ? 'linked' : 'привязан') : (l10n.isEn ? 'not linked' : 'не привязан');
+        String _notSet() => l10n.isEn ? 'not set' : 'не выбрана';
+        String _notLimited() => l10n.isEn ? 'unlimited' : 'не ограничен';
+        String _allowed(bool v) =>
+            v ? (l10n.isEn ? 'allowed' : 'разрешено') : (l10n.isEn ? 'unavailable' : 'недоступно');
+
         return Scaffold(
-          appBar: AppBar(title: const Text('Профиль и доступ')),
+          appBar: AppBar(title: Text(l10n.profileScreenTitle)),
           body: RefreshIndicator(
             onRefresh: () => state.refreshAccountData(),
             child: ListView(
@@ -67,11 +80,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Card(
                     child: ListTile(
                       leading: const Icon(Icons.person_outline),
-                      title: const Text('Профиль'),
+                      title: Text(l10n.profileSection),
                       subtitle: Text(
-                        'Платформа: ${profile.preferredPlatform.isEmpty ? 'не выбрана' : profile.preferredPlatform}\n'
-                        'Telegram: ${profile.telegramLinked ? 'привязан' : 'не привязан'}\n'
-                        'Статус: ${profile.accessStatus.isEmpty ? 'active' : profile.accessStatus}',
+                        '${l10n.platformLabel}: ${profile.preferredPlatform.isEmpty ? _notSet() : profile.preferredPlatform}\n'
+                        '${l10n.telegramLabel}: ${_linked(profile.telegramLinked)}\n'
+                        '${l10n.statusLabel}: ${profile.accessStatus.isEmpty ? (l10n.isEn ? 'active' : 'активен') : profile.accessStatus}',
                       ),
                     ),
                   ),
@@ -81,24 +94,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Card(
                     child: ListTile(
                       leading: const Icon(Icons.workspace_premium_outlined),
-                      title: const Text('Доступ'),
+                      title: Text(l10n.accessSection),
                       subtitle: Text(
-                        'План: ${access.currentPlan.isEmpty ? 'Free' : access.currentPlan}\n'
-                        'Действует до: ${access.validUntil.isEmpty ? 'не ограничен' : access.validUntil}\n'
-                        'Подключение: ${access.canConnect ? 'разрешено' : 'недоступно'}',
+                        '${l10n.accessPlan}: ${access.currentPlan.isEmpty ? 'Free' : access.currentPlan}\n'
+                        '${l10n.accessValidUntil}: ${access.validUntil.isEmpty ? _notLimited() : access.validUntil}\n'
+                        '${l10n.accessConnection}: ${_allowed(access.canConnect)}',
                       ),
                     ),
                   ),
                 ],
                 const SizedBox(height: 16),
-                Text('Подписки',
+                Text(l10n.subscriptionsSection,
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 if (state.subscriptions.isEmpty)
-                  const Card(
+                  Card(
                     child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text('Подписки пока не найдены.'),
+                      padding: const EdgeInsets.all(16),
+                      child: Text(l10n.noSubscriptions),
                     ),
                   ),
                 for (final item in state.subscriptions)
@@ -106,7 +119,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: ListTile(
                       title: Text(item.groupName),
                       subtitle: Text(
-                        'До: ${item.validUntil.isEmpty ? 'не ограничен' : item.validUntil}\n'
+                        '${l10n.untilLabel}: ${item.validUntil.isEmpty ? _notLimited() : item.validUntil}\n'
                         'Auto renew: ${item.autoRenew ? 'yes' : 'no'}\n'
                         'Active: ${item.active ? 'yes' : 'no'}',
                       ),
@@ -114,13 +127,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                 const SizedBox(height: 16),
-                Text('Платежи', style: Theme.of(context).textTheme.titleMedium),
+                Text(l10n.paymentsSection,
+                    style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 if (state.payments.isEmpty)
-                  const Card(
+                  Card(
                     child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text('Платежей пока нет.'),
+                      padding: const EdgeInsets.all(16),
+                      child: Text(l10n.noPayments),
                     ),
                   ),
                 for (final item in state.payments)
@@ -128,15 +142,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: ListTile(
                       title: Text('${item.amount} ${item.currency}'),
                       subtitle: Text(
-                        'Статус: ${item.status}\n'
+                        '${l10n.paymentStatus}: ${item.status}\n'
                         'Provider: ${item.provider}\n'
-                        'Дата: ${item.createdAt}',
+                        '${l10n.paymentDate}: ${item.createdAt}',
                       ),
                       isThreeLine: true,
                     ),
                   ),
                 const SizedBox(height: 16),
-                Text('Промокод',
+                Text(l10n.promoCodeSection,
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 Row(
@@ -144,9 +158,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Expanded(
                       child: TextField(
                         controller: _promoController,
-                        decoration: const InputDecoration(
-                          hintText: 'Введите код',
-                          border: OutlineInputBorder(),
+                        decoration: InputDecoration(
+                          hintText: l10n.promoCodeHint,
+                          border: const OutlineInputBorder(),
                         ),
                       ),
                     ),
@@ -160,7 +174,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Применить'),
+                          : Text(l10n.applyButton),
                     ),
                   ],
                 ),
@@ -171,7 +185,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Text(
-                        state.error!,
+                        l10n.translateError(state.error),
                         style: TextStyle(
                             color:
                                 Theme.of(context).colorScheme.onErrorContainer),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class PromocodesPage extends StatefulWidget {
@@ -52,7 +53,7 @@ class _PromocodesPageState extends State<PromocodesPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text(existing == null ? 'Create promocode' : 'Edit promocode'),
+          title: Text(existing == null ? AdminL10n.of(context).createPromocode : AdminL10n.of(context).editPromocode),
           content: SizedBox(
             width: 460,
             child: Column(
@@ -92,7 +93,7 @@ class _PromocodesPageState extends State<PromocodesPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: groupId == null
                   ? null
@@ -105,7 +106,7 @@ class _PromocodesPageState extends State<PromocodesPage> {
                             int.tryParse(maxUsesController.text.trim()) ?? 1,
                         'expires_at': expiresAtController.text.trim(),
                       }),
-              child: const Text('Save'),
+              child: Text(AdminL10n.of(context).save),
             ),
           ],
         ),
@@ -156,45 +157,32 @@ class _PromocodesPageState extends State<PromocodesPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Promocodes',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                  onPressed: () => _editPromocode(),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create')),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(children: [
+              Expanded(child: Text(l10n.promocodesTitle, style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(onPressed: () => _editPromocode(), icon: const Icon(Icons.add), label: Text(l10n.create)),
+            ]);
+          }),
           const SizedBox(height: 16),
-          if (_promocodes.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No promocodes found'),
-              ),
-            ),
-          for (final item in _promocodes)
-            Card(
-              child: ListTile(
-                title: Text(item.code),
-                subtitle: Text(
-                    'Group: ${item.groupName} | ${item.currentUses}/${item.maxUses} uses\nDuration: ${item.durationDays} days'),
-                isThreeLine: true,
-                trailing: Wrap(
-                  spacing: 8,
-                  children: [
-                    OutlinedButton(
-                        onPressed: () => _editPromocode(existing: item),
-                        child: const Text('Edit')),
-                    OutlinedButton(
-                        onPressed: () => _deletePromocode(item),
-                        child: const Text('Delete')),
-                  ],
-                ),
-              ),
-            ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_promocodes.isEmpty) {
+              return Card(child: Padding(padding: const EdgeInsets.all(24), child: Text(l10n.noPromocodes)));
+            }
+            return Column(children: [
+              for (final item in _promocodes)
+                Card(child: ListTile(
+                  title: Text(item.code),
+                  subtitle: Text('Group: ${item.groupName} | ${item.currentUses}/${item.maxUses}\nDuration: ${item.durationDays} days'),
+                  isThreeLine: true,
+                  trailing: Wrap(spacing: 8, children: [
+                    OutlinedButton(onPressed: () => _editPromocode(existing: item), child: Text(l10n.edit)),
+                    OutlinedButton(onPressed: () => _deletePromocode(item), child: Text(l10n.delete)),
+                  ]),
+                )),
+            ]);
+          }),
         ],
       ),
     );

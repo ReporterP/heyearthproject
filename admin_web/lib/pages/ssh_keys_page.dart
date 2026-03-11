@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class SshKeysPage extends StatefulWidget {
@@ -42,7 +43,7 @@ class _SshKeysPageState extends State<SshKeysPage> {
     final result = await showDialog<Map<String, String>>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(existing == null ? 'Add SSH Key' : 'Update SSH Key'),
+        title: Text(existing == null ? AdminL10n.of(context).addSshKey : AdminL10n.of(context).editSshKey),
         content: SizedBox(
           width: 520,
           child: Column(
@@ -51,18 +52,16 @@ class _SshKeysPageState extends State<SshKeysPage> {
             children: [
               TextField(
                 controller: nameController,
-                decoration:
-                    const InputDecoration(labelText: 'Name (e.g. prod-vps-1)'),
+                decoration: InputDecoration(labelText: AdminL10n.of(context).fieldKeyName),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: privateKeyController,
                 decoration: InputDecoration(
-                  labelText: 'Private key (PEM)',
+                  labelText: existing != null
+                      ? AdminL10n.of(context).fieldPrivateKeyOptional
+                      : AdminL10n.of(context).fieldPrivateKey,
                   hintText: '-----BEGIN OPENSSH PRIVATE KEY-----\n...',
-                  helperText: existing != null
-                      ? 'Leave empty to keep existing key'
-                      : null,
                 ),
                 maxLines: 8,
                 style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
@@ -73,13 +72,13 @@ class _SshKeysPageState extends State<SshKeysPage> {
         actions: [
           TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel')),
+              child: Text(AdminL10n.of(context).cancel)),
           FilledButton(
             onPressed: () => Navigator.of(context).pop({
               'name': nameController.text.trim(),
               'private_key': privateKeyController.text.trim(),
             }),
-            child: const Text('Save'),
+            child: Text(AdminL10n.of(context).save),
           ),
         ],
       ),
@@ -120,16 +119,15 @@ class _SshKeysPageState extends State<SshKeysPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete SSH Key'),
-        content: Text(
-            'Delete "${key.name}"? This will fail if the key is assigned to any server.'),
+        title: Text(AdminL10n.of(context).deleteSshKey),
+        content: Text(AdminL10n.of(context).deleteSshKeyConfirm(key.name)),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel')),
+              child: Text(AdminL10n.of(context).cancel)),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
+            child: Text(AdminL10n.of(context).delete),
           ),
         ],
       ),
@@ -174,31 +172,26 @@ class _SshKeysPageState extends State<SshKeysPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text('SSH Keys',
-                    style: Theme.of(context).textTheme.headlineMedium),
-              ),
-              FilledButton.icon(
-                onPressed: () => _showKeyDialog(),
-                icon: const Icon(Icons.add),
-                label: const Text('Add Key'),
-              ),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(children: [
+              Expanded(child: Text(l10n.sshKeysTitle, style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(onPressed: () => _showKeyDialog(), icon: const Icon(Icons.add), label: Text(l10n.addSshKey)),
+            ]);
+          }),
           const SizedBox(height: 8),
           Text(
-            'SSH keys are used for server operations (restart agent, reprovision). '
-            'Add a key here, then assign it to a server.',
+            AdminL10n.of(context).isEn
+                ? 'SSH keys are used for server operations (restart agent, reprovision). Add a key here, then assign it to a server.'
+                : 'SSH ключи используются для операций с серверами (перезапуск агента, перенастройка). Добавьте ключ и назначьте его серверу.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
           if (_keys.isEmpty)
-            const Card(
+            Card(
               child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No SSH keys found. Add one to get started.'),
+                padding: const EdgeInsets.all(24),
+                child: Text(AdminL10n.of(context).noSshKeys),
               ),
             ),
           for (final key in _keys)
@@ -290,12 +283,12 @@ class _SshKeysPageState extends State<SshKeysPage> {
                       children: [
                         OutlinedButton(
                           onPressed: () => _showKeyDialog(existing: key),
-                          child: const Text('Edit'),
+                          child: Text(AdminL10n.of(context).edit),
                         ),
                         const SizedBox(height: 6),
                         OutlinedButton(
                           onPressed: () => _deleteKey(key),
-                          child: const Text('Delete'),
+                          child: Text(AdminL10n.of(context).delete),
                         ),
                       ],
                     ),

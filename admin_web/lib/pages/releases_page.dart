@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class ReleasesPage extends StatefulWidget {
@@ -68,13 +69,13 @@ class _ReleasesPageState extends State<ReleasesPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: const Text('Upload release'),
+          title: Text(AdminL10n.of(context).uploadRelease),
           content: SizedBox(
             width: 480,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('File: ${file.name}'),
+                Text('${AdminL10n.of(context).fieldApkFile}: ${file.name}'),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: platform,
@@ -84,23 +85,22 @@ class _ReleasesPageState extends State<ReleasesPage> {
                       .toList(growable: false),
                   onChanged: (value) =>
                       setStateDialog(() => platform = value ?? platform),
-                  decoration: const InputDecoration(labelText: 'Platform'),
+                  decoration: InputDecoration(labelText: AdminL10n.of(context).fieldPlatform),
                 ),
                 const SizedBox(height: 12),
                 TextField(
                     controller: versionController,
-                    decoration: const InputDecoration(labelText: 'Version')),
+                    decoration: InputDecoration(labelText: AdminL10n.of(context).fieldVersion)),
                 const SizedBox(height: 12),
                 TextField(
                     controller: notesController,
                     maxLines: 4,
-                    decoration:
-                        const InputDecoration(labelText: 'Release notes')),
+                    decoration: InputDecoration(labelText: AdminL10n.of(context).fieldReleaseNotes)),
                 const SizedBox(height: 12),
                 TextField(
                   controller: minSupportedController,
-                  decoration: const InputDecoration(
-                    labelText: 'Min supported version',
+                  decoration: InputDecoration(
+                    labelText: AdminL10n.of(context).fieldMinSupportedVersion,
                     hintText: 'Optional, e.g. 1.0.5',
                   ),
                 ),
@@ -108,14 +108,14 @@ class _ReleasesPageState extends State<ReleasesPage> {
                   value: mandatory,
                   onChanged: (value) =>
                       setStateDialog(() => mandatory = value ?? false),
-                  title: const Text('Mandatory update'),
+                  title: Text(AdminL10n.of(context).fieldMandatory),
                   contentPadding: EdgeInsets.zero,
                 ),
                 CheckboxListTile(
                   value: activate,
                   onChanged: (value) =>
                       setStateDialog(() => activate = value ?? false),
-                  title: const Text('Activate immediately'),
+                  title: Text(AdminL10n.of(context).isEn ? 'Activate immediately' : 'Активировать сразу'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ],
@@ -124,7 +124,7 @@ class _ReleasesPageState extends State<ReleasesPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(
                 _ReleaseUploadData(
@@ -192,46 +192,35 @@ class _ReleasesPageState extends State<ReleasesPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Releases',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                onPressed: _upload,
-                icon: const Icon(Icons.upload_file),
-                label: const Text('Upload'),
-              ),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(children: [
+              Expanded(child: Text(l10n.releasesTitle, style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(onPressed: _upload, icon: const Icon(Icons.upload_file), label: Text(l10n.upload)),
+            ]);
+          }),
           const SizedBox(height: 16),
-          if (_releases.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No releases uploaded'),
-              ),
-            ),
-          for (final release in _releases)
-            Card(
-              child: ListTile(
-                leading: Icon(release.isActive
-                    ? Icons.verified
-                    : Icons.inventory_2_outlined),
-                title: Text('${release.platform} ${release.version}'),
-                subtitle: Text('${release.fileName}\n${release.publicPath}'
-                    '${release.mandatory ? '\nMandatory update' : ''}'
-                    '${release.minSupportedVersion.isEmpty ? '' : '\nMin supported: ${release.minSupportedVersion}'}'
-                    '${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}'),
-                isThreeLine: true,
-                trailing: release.isActive
-                    ? const Chip(label: Text('Active'))
-                    : OutlinedButton(
-                        onPressed: () => _activate(release),
-                        child: const Text('Activate'),
-                      ),
-              ),
-            ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_releases.isEmpty) {
+              return Card(child: Padding(padding: const EdgeInsets.all(24), child: Text(l10n.noReleases)));
+            }
+            return Column(children: [
+              for (final release in _releases)
+                Card(child: ListTile(
+                  leading: Icon(release.isActive ? Icons.verified : Icons.inventory_2_outlined),
+                  title: Text('${release.platform} ${release.version}'),
+                  subtitle: Text('${release.fileName}\n${release.publicPath}'
+                      '${release.mandatory ? '\n${l10n.fieldMandatory}' : ''}'
+                      '${release.minSupportedVersion.isEmpty ? '' : '\n${l10n.fieldMinSupportedVersion}: ${release.minSupportedVersion}'}'
+                      '${release.releaseNotes.isEmpty ? '' : '\n${release.releaseNotes}'}'),
+                  isThreeLine: true,
+                  trailing: release.isActive
+                      ? Chip(label: Text(l10n.releaseActive))
+                      : OutlinedButton(onPressed: () => _activate(release), child: Text(l10n.activate)),
+                )),
+            ]);
+          }),
         ],
       ),
     );

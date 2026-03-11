@@ -23,6 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Consumer<AppState>(
       builder: (context, state, _) {
         final showNav = !state.loading && state.vpnSupported;
+        final l10n = L10n.of(context);
         return Stack(
           children: [
             Scaffold(
@@ -51,12 +52,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         NavigationDestination(
                           icon: const Icon(Icons.home_outlined),
                           selectedIcon: const Icon(Icons.home_rounded),
-                          label: L10n.of(context).navHome,
+                          label: l10n.navHome,
                         ),
                         NavigationDestination(
                           icon: const Icon(Icons.settings_outlined),
                           selectedIcon: const Icon(Icons.settings_rounded),
-                          label: L10n.of(context).navSettings,
+                          label: l10n.navSettings,
                         ),
                       ],
                     )
@@ -105,10 +106,9 @@ class _HomeScreenState extends State<HomeScreen> {
         title: Text(l10n.updateAvailable),
         content: Text(
           [
-            if (update.mandatory)
-              'Это обновление обязательно для продолжения работы.',
+            if (update.mandatory) l10n.updateRequired,
             if (update.minSupportedVersion.isNotEmpty)
-              'Минимально поддерживаемая версия: ${update.minSupportedVersion}',
+              l10n.minSupportedVersionLabel(update.minSupportedVersion),
             update.releaseNotes?.isNotEmpty == true
                 ? '${l10n.versionAvailable(update.latestVersion)}\n\n${update.releaseNotes}'
                 : l10n.versionAvailable(update.latestVersion),
@@ -133,22 +133,23 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showRestoreDialog(BuildContext context, AppState state) {
+    final l10n = L10n(Locale(state.locale));
     final controller = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Войти по HeYearth ID'),
+        title: Text(l10n.signInWithHeyearthId),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Вставьте ваш HeYearth ID',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            hintText: l10n.pasteHeyearthId,
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Отмена')),
+              child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
               final ok = await state.restoreUserId(controller.text);
@@ -159,11 +160,13 @@ class _HomeScreenState extends State<HomeScreen> {
               ScaffoldMessenger.of(ctx).showSnackBar(
                 SnackBar(
                     content: Text(ok
-                        ? 'Аккаунт восстановлен.'
-                        : (state.error ?? 'Не удалось войти.'))),
+                        ? l10n.accountRestored
+                        : l10n.translateError(state.error) .isNotEmpty
+                            ? l10n.translateError(state.error)
+                            : l10n.loginFailed)),
               );
             },
-            child: const Text('Войти'),
+            child: Text(l10n.login),
           ),
         ],
       ),
@@ -171,23 +174,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showClaimCodeDialog(BuildContext context, AppState state) {
+    final l10n = L10n(Locale(state.locale));
     final controller = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Ввести код из бота'),
+        title: Text(l10n.enterCodeFromBot),
         content: TextField(
           controller: controller,
           textCapitalization: TextCapitalization.characters,
-          decoration: const InputDecoration(
-            hintText: 'Например ABCD2345',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            hintText: l10n.enterCodeHint,
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Отмена')),
+              child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
               final ok = await state.claimByCode(controller.text);
@@ -198,11 +202,13 @@ class _HomeScreenState extends State<HomeScreen> {
               ScaffoldMessenger.of(ctx).showSnackBar(
                 SnackBar(
                     content: Text(ok
-                        ? 'Устройство привязано к аккаунту.'
-                        : (state.error ?? 'Не удалось выполнить pairing.'))),
+                        ? l10n.deviceLinked
+                        : l10n.translateError(state.error).isNotEmpty
+                            ? l10n.translateError(state.error)
+                            : l10n.pairingFailed)),
               );
             },
-            child: const Text('Привязать'),
+            child: Text(l10n.link),
           ),
         ],
       ),
@@ -221,8 +227,15 @@ class _HomeTab extends StatelessWidget {
       return _WelcomeScreen(state: state);
     }
 
+    final l10n = L10n.of(context);
     final profile = state.profile;
     final access = state.accessState;
+
+    String _linked(bool v) => v
+        ? (l10n.isEn ? 'linked' : 'привязан')
+        : (l10n.isEn ? 'not linked' : 'не привязан');
+    String _notSet() => l10n.isEn ? 'not set' : 'не выбрана';
+    String _notLimited() => l10n.isEn ? 'unlimited' : 'не ограничен';
 
     return RefreshIndicator(
       onRefresh: () => state.refreshAccountData(),
@@ -230,7 +243,7 @@ class _HomeTab extends StatelessWidget {
         padding: const EdgeInsets.all(24),
         children: [
           Text(
-            L10n.of(context).appTitle,
+            l10n.appTitle,
             style: Theme.of(context)
                 .textTheme
                 .headlineMedium
@@ -238,7 +251,7 @@ class _HomeTab extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Аккаунт, доступ и подключение теперь управляются через Main Server.',
+            l10n.accountManagedByServer,
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),
@@ -248,8 +261,8 @@ class _HomeTab extends StatelessWidget {
             trailing: IconButton(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: state.userId ?? ''));
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('ID скопирован')));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(l10n.idCopied)));
               },
               icon: const Icon(Icons.copy_outlined),
             ),
@@ -257,17 +270,20 @@ class _HomeTab extends StatelessWidget {
           if (profile != null) ...[
             const SizedBox(height: 12),
             _InfoCard(
-              title: 'Профиль',
+              title: l10n.profileLabel,
               subtitle:
-                  'План: ${profile.currentPlan.isEmpty ? 'Free' : profile.currentPlan}\nПлатформа: ${profile.preferredPlatform.isEmpty ? 'не выбрана' : profile.preferredPlatform}\nTelegram: ${profile.telegramLinked ? 'привязан' : 'не привязан'}',
+                  '${l10n.planLabel}: ${profile.currentPlan.isEmpty ? 'Free' : profile.currentPlan}'
+                  '\n${l10n.platformLabel}: ${profile.preferredPlatform.isEmpty ? _notSet() : profile.preferredPlatform}'
+                  '\n${l10n.telegramLabel}: ${_linked(profile.telegramLinked)}',
             ),
           ],
           if (access != null) ...[
             const SizedBox(height: 12),
             _InfoCard(
-              title: 'Доступ',
+              title: l10n.accessSection,
               subtitle:
-                  'Статус: ${access.isBlocked ? 'blocked' : access.canConnect ? 'active' : access.reason}\nДо: ${access.validUntil.isEmpty ? 'не ограничен' : access.validUntil}',
+                  '${l10n.statusLabel}: ${access.isBlocked ? (l10n.isEn ? 'blocked' : 'заблокирован') : access.canConnect ? (l10n.isEn ? 'active' : 'активен') : access.reason}'
+                  '\n${l10n.validUntilLabel}: ${access.validUntil.isEmpty ? _notLimited() : access.validUntil}',
             ),
           ],
           const SizedBox(height: 12),
@@ -283,8 +299,7 @@ class _HomeTab extends StatelessWidget {
                     Text('Apple fallback',
                         style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 8),
-                    const Text(
-                        'Для этой платформы пока используется pairing через бот и подключение через Happ.'),
+                    Text(l10n.legacyPairingNote),
                   ],
                 ),
               ),
@@ -299,12 +314,12 @@ class _HomeTab extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               state.vpnConnecting
-                  ? 'Подключение...'
+                  ? l10n.connecting
                   : state.vpnOn
-                      ? 'Подключено.'
+                      ? l10n.connectedTraffic
                       : state.canConnect
-                          ? 'Нажми, чтобы подключиться.'
-                          : 'Подключение сейчас недоступно.',
+                          ? l10n.tapToEnable
+                          : l10n.connectionUnavailable,
               textAlign: TextAlign.center,
             ),
           ],
@@ -313,9 +328,8 @@ class _HomeTab extends StatelessWidget {
             value: state.selectedOnlyMode,
             onChanged: (_) =>
                 state.setSelectedOnlyMode(!state.selectedOnlyMode),
-            title: const Text('Только для выбранных сервисов'),
-            subtitle: const Text(
-                'Через HeYearth идёт только трафик выбранных сервисов.'),
+            title: Text(l10n.onlyForSelectedServices),
+            subtitle: Text(l10n.onlyForSelectedHint),
           ),
           const SizedBox(height: 12),
           Row(
@@ -327,8 +341,8 @@ class _HomeTab extends StatelessWidget {
                       : () => state.refreshAccountData(),
                   icon: const Icon(Icons.refresh),
                   label: Text(state.accountLoading
-                      ? 'Обновление...'
-                      : 'Обновить аккаунт'),
+                      ? l10n.updatingAccount
+                      : l10n.updateAccount),
                 ),
               ),
               const SizedBox(width: 12),
@@ -340,7 +354,7 @@ class _HomeTab extends StatelessWidget {
                     );
                   },
                   icon: const Icon(Icons.person_outline),
-                  label: const Text('Профиль'),
+                  label: Text(l10n.profileLabel),
                 ),
               ),
             ],
@@ -366,11 +380,12 @@ class _SettingsTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         Text(
-          L10n.of(context).navSettings,
+          l10n.navSettings,
           style: Theme.of(context)
               .textTheme
               .headlineSmall
@@ -385,26 +400,26 @@ class _SettingsTab extends StatelessWidget {
         FilledButton.icon(
           onPressed: onClaimCode,
           icon: const Icon(Icons.link),
-          label: const Text('Ввести код из бота'),
+          label: Text(l10n.enterCodeFromBot),
         ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: onRestoreById,
           icon: const Icon(Icons.badge_outlined),
-          label: const Text('Войти по HeYearth ID'),
+          label: Text(l10n.signInWithHeyearthId),
         ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: onCheckUpdate,
           icon: const Icon(Icons.system_update_alt),
-          label: Text(L10n.of(context).checkForUpdates),
+          label: Text(l10n.checkForUpdates),
         ),
         if (state.hasUserId) ...[
           const SizedBox(height: 12),
           OutlinedButton.icon(
             onPressed: state.signOut,
             icon: const Icon(Icons.logout),
-            label: const Text('Выйти'),
+            label: Text(l10n.signOut),
           ),
         ],
         const SizedBox(height: 24),
@@ -421,31 +436,30 @@ class _WelcomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         Text(
-          'Вход в HeYearth',
+          l10n.welcomeTitle,
           style: Theme.of(context)
               .textTheme
               .headlineMedium
               ?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Основной вход теперь идёт через Telegram-бот: открой бота, получи код или deep-link и привяжи устройство к своему HeYearth ID.',
-        ),
+        Text(l10n.welcomeDesc),
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: () => _showClaimCodeDialog(context, state),
           icon: const Icon(Icons.key_outlined),
-          label: const Text('У меня есть код из бота'),
+          label: Text(l10n.haveCodeFromBot),
         ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: () => _showRestoreDialog(context, state),
           icon: const Icon(Icons.badge_outlined),
-          label: const Text('У меня уже есть HeYearth ID'),
+          label: Text(l10n.haveHeyearthId),
         ),
         const SizedBox(height: 16),
         Card(
@@ -454,11 +468,10 @@ class _WelcomeScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Как это работает',
+                Text(l10n.howItWorks,
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
-                const Text(
-                    '1. Открой бот HeYearth.\n2. Нажми «Открыть в приложении» или «Получить код входа».\n3. Привяжи устройство здесь.\n4. После pairing приложение получит профиль, доступ и конфиг подключения.'),
+                Text(l10n.howItWorksSteps),
               ],
             ),
           ),
@@ -472,22 +485,23 @@ class _WelcomeScreen extends StatelessWidget {
   }
 
   void _showRestoreDialog(BuildContext context, AppState state) {
+    final l10n = L10n(Locale(state.locale));
     final controller = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Войти по HeYearth ID'),
+        title: Text(l10n.signInWithHeyearthId),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Вставьте ваш HeYearth ID',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            hintText: l10n.pasteHeyearthId,
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Отмена')),
+              child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
               final ok = await state.restoreUserId(controller.text);
@@ -498,11 +512,13 @@ class _WelcomeScreen extends StatelessWidget {
               ScaffoldMessenger.of(ctx).showSnackBar(
                 SnackBar(
                     content: Text(ok
-                        ? 'Аккаунт восстановлен.'
-                        : (state.error ?? 'Не удалось войти.'))),
+                        ? l10n.accountRestored
+                        : l10n.translateError(state.error).isNotEmpty
+                            ? l10n.translateError(state.error)
+                            : l10n.loginFailed)),
               );
             },
-            child: const Text('Войти'),
+            child: Text(l10n.login),
           ),
         ],
       ),
@@ -510,23 +526,24 @@ class _WelcomeScreen extends StatelessWidget {
   }
 
   void _showClaimCodeDialog(BuildContext context, AppState state) {
+    final l10n = L10n(Locale(state.locale));
     final controller = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Ввести код из бота'),
+        title: Text(l10n.enterCodeFromBot),
         content: TextField(
           controller: controller,
           textCapitalization: TextCapitalization.characters,
-          decoration: const InputDecoration(
-            hintText: 'Например ABCD2345',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            hintText: l10n.enterCodeHint,
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Отмена')),
+              child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
               final ok = await state.claimByCode(controller.text);
@@ -537,11 +554,13 @@ class _WelcomeScreen extends StatelessWidget {
               ScaffoldMessenger.of(ctx).showSnackBar(
                 SnackBar(
                     content: Text(ok
-                        ? 'Устройство привязано.'
-                        : (state.error ?? 'Не удалось выполнить pairing.'))),
+                        ? l10n.deviceLinkedShort
+                        : l10n.translateError(state.error).isNotEmpty
+                            ? l10n.translateError(state.error)
+                            : l10n.pairingFailed)),
               );
             },
-            child: const Text('Привязать'),
+            child: Text(l10n.link),
           ),
         ],
       ),
@@ -587,6 +606,7 @@ class _MainVpnButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
     return Card(
       child: InkWell(
         onTap: connecting || !enabled ? null : onToggle,
@@ -612,12 +632,12 @@ class _MainVpnButton extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 connecting
-                    ? 'Подключение...'
+                    ? l10n.connecting
                     : vpnOn
-                        ? 'Выключить HeYearth'
+                        ? l10n.turnOffHeyearth
                         : enabled
-                            ? 'Включить HeYearth'
-                            : 'Подключение недоступно',
+                            ? l10n.turnOnHeyearth
+                            : l10n.connectionUnavailable,
                 style: Theme.of(context).textTheme.titleLarge,
               ),
             ],
@@ -723,6 +743,7 @@ class _ErrorBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final translated = L10n.of(context).translateError(message);
     return Material(
       color: Theme.of(context).colorScheme.errorContainer,
       borderRadius: BorderRadius.circular(12),
@@ -735,7 +756,7 @@ class _ErrorBanner extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                message,
+                translated.isNotEmpty ? translated : message,
                 style: TextStyle(
                     color: Theme.of(context).colorScheme.onErrorContainer),
               ),
@@ -796,16 +817,17 @@ class _UpdateCheckerState extends State<_UpdateChecker> {
       return;
     }
     _done = true;
+    final l10n = L10n.of(context);
     showDialog<void>(
       context: context,
       barrierDismissible: !update.mandatory,
       builder: (ctx) => AlertDialog(
-        title: const Text('Доступно обновление'),
+        title: Text(l10n.updateAvailable),
         content: Text(
           [
-            if (update.mandatory) 'Это обновление обязательно.',
+            if (update.mandatory) l10n.updateIsMandatory,
             if (update.minSupportedVersion.isNotEmpty)
-              'Минимально поддерживаемая версия: ${update.minSupportedVersion}',
+              l10n.minSupportedVersionLabel(update.minSupportedVersion),
             update.releaseNotes?.isNotEmpty == true
                 ? update.releaseNotes!
                 : update.latestVersion,
@@ -815,14 +837,14 @@ class _UpdateCheckerState extends State<_UpdateChecker> {
           if (!update.mandatory)
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Позже'),
+              child: Text(l10n.later),
             ),
           FilledButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
               await openDownloadUrl(update.downloadUrl);
             },
-            child: const Text('Скачать'),
+            child: Text(l10n.download),
           ),
         ],
       ),

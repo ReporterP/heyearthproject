@@ -19,6 +19,7 @@ class SessionStore {
   static const _tokenKey = 'admin_token';
   static const _loginResultKey = 'admin_login_result';
   static const _themeModeKey = 'admin_theme_mode';
+  static const _localeKey = 'admin_locale';
 
   Future<AdminSession?> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -84,6 +85,17 @@ class SessionStore {
       default:
         return ThemeMode.system;
     }
+  }
+
+  Future<String> loadLocale() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getString(_localeKey);
+    return (v == 'ru' || v == 'en') ? v! : 'en';
+  }
+
+  Future<void> saveLocale(String locale) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_localeKey, locale);
   }
 
   Future<void> saveThemeMode(ThemeMode mode) async {

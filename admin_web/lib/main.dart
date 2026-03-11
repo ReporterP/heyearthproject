@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'admin_api_client.dart';
 import 'app_theme.dart';
+import 'l10n.dart';
 import 'models.dart';
 import 'pages/admins_page.dart';
 import 'pages/dashboard_page.dart';
@@ -46,6 +47,7 @@ class _AdminAppState extends State<AdminApp> {
   AdminSession? _session;
   LoginResult? _loginResult;
   ThemeMode _themeMode = ThemeMode.system;
+  String _locale = 'en';
   bool _loading = true;
 
   @override
@@ -56,12 +58,14 @@ class _AdminAppState extends State<AdminApp> {
 
   Future<void> _restoreSession() async {
     final themeMode = await _sessionStore.loadThemeMode();
+    final locale = await _sessionStore.loadLocale();
     final session = await _sessionStore.load();
     if (!mounted) {
       return;
     }
     setState(() {
       _themeMode = themeMode;
+      _locale = locale;
       _session = session;
       _loginResult = session?.loginResult;
       _loading = false;
@@ -99,24 +103,37 @@ class _AdminAppState extends State<AdminApp> {
     setState(() => _themeMode = mode);
   }
 
+  Future<void> _handleLocaleChanged(String locale) async {
+    await _sessionStore.saveLocale(locale);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _locale = locale);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'HeYearth Admin',
-      theme: buildLightTheme(),
-      darkTheme: buildDarkTheme(),
-      themeMode: _themeMode,
-      home: _loading
-          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
-          : _session == null
-              ? LoginScreen(onLoggedIn: _handleLogin)
-              : AdminShell(
-                  session: _session!,
-                  initialLoginResult: _loginResult,
-                  themeMode: _themeMode,
-                  onThemeChanged: _handleThemeChanged,
-                  onLogout: _handleLogout,
-                ),
+    return AdminLocaleProvider(
+      locale: _locale,
+      child: MaterialApp(
+        title: 'HeYearth Admin',
+        theme: buildLightTheme(),
+        darkTheme: buildDarkTheme(),
+        themeMode: _themeMode,
+        home: _loading
+            ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+            : _session == null
+                ? LoginScreen(onLoggedIn: _handleLogin)
+                : AdminShell(
+                    session: _session!,
+                    initialLoginResult: _loginResult,
+                    themeMode: _themeMode,
+                    locale: _locale,
+                    onThemeChanged: _handleThemeChanged,
+                    onLocaleChanged: _handleLocaleChanged,
+                    onLogout: _handleLogout,
+                  ),
+      ),
     );
   }
 }
@@ -168,6 +185,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AdminL10n.of(context);
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
@@ -182,26 +200,26 @@ class _LoginScreenState extends State<LoginScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'HeYearth Admin',
+                      l10n.appTitle,
                       style: Theme.of(context).textTheme.headlineMedium,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Same-origin admin console',
+                      l10n.loginSubtitle,
                       style: Theme.of(context).textTheme.bodyMedium,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
                     TextField(
                       controller: _userController,
-                      decoration: const InputDecoration(labelText: 'Username'),
+                      decoration: InputDecoration(labelText: l10n.username),
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       controller: _passController,
                       obscureText: true,
-                      decoration: const InputDecoration(labelText: 'Password'),
+                      decoration: InputDecoration(labelText: l10n.password),
                     ),
                     const SizedBox(height: 24),
                     FilledButton(
@@ -212,7 +230,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Login'),
+                          : Text(l10n.login),
                     ),
                   ],
                 ),
@@ -231,14 +249,18 @@ class AdminShell extends StatefulWidget {
     required this.session,
     required this.initialLoginResult,
     required this.themeMode,
+    required this.locale,
     required this.onThemeChanged,
+    required this.onLocaleChanged,
     required this.onLogout,
   });
 
   final AdminSession session;
   final LoginResult? initialLoginResult;
   final ThemeMode themeMode;
+  final String locale;
   final Future<void> Function(ThemeMode mode) onThemeChanged;
+  final Future<void> Function(String locale) onLocaleChanged;
   final Future<void> Function() onLogout;
 
   @override
@@ -260,38 +282,38 @@ class _AdminShellState extends State<AdminShell> {
     return permissions.contains(permission);
   }
 
-  List<_SectionItem> get _items => <_SectionItem>[
+  List<_SectionItem> _buildItems(AdminL10n l10n) => <_SectionItem>[
         if (_can('dashboard.read'))
-          const _SectionItem(
-              AdminSection.dashboard, 'Dashboard', Icons.dashboard_outlined),
+          _SectionItem(
+              AdminSection.dashboard, l10n.navDashboard, Icons.dashboard_outlined),
         if (_can('users.read'))
-          const _SectionItem(AdminSection.users, 'Users', Icons.people_outline),
+          _SectionItem(AdminSection.users, l10n.navUsers, Icons.people_outline),
         if (_can('groups.read'))
-          const _SectionItem(
-              AdminSection.groups, 'Groups', Icons.layers_outlined),
+          _SectionItem(
+              AdminSection.groups, l10n.navGroups, Icons.layers_outlined),
         if (_can('subscriptions.read'))
-          const _SectionItem(AdminSection.subscriptions, 'Subscriptions',
+          _SectionItem(AdminSection.subscriptions, l10n.navSubscriptions,
               Icons.workspace_premium_outlined),
         if (_can('promocodes.read'))
-          const _SectionItem(AdminSection.promocodes, 'Promocodes',
+          _SectionItem(AdminSection.promocodes, l10n.navPromocodes,
               Icons.confirmation_number_outlined),
         if (_can('payments.read'))
-          const _SectionItem(
-              AdminSection.payments, 'Payments', Icons.payments_outlined),
+          _SectionItem(
+              AdminSection.payments, l10n.navPayments, Icons.payments_outlined),
         if (_can('servers.read'))
-          const _SectionItem(
-              AdminSection.servers, 'Servers', Icons.dns_outlined),
+          _SectionItem(
+              AdminSection.servers, l10n.navServers, Icons.dns_outlined),
         if (_can('servers.read'))
-          const _SectionItem(
-              AdminSection.sshKeys, 'SSH Keys', Icons.key_outlined),
+          _SectionItem(
+              AdminSection.sshKeys, l10n.navSshKeys, Icons.key_outlined),
         if (_can('releases.read'))
-          const _SectionItem(AdminSection.releases, 'Releases',
+          _SectionItem(AdminSection.releases, l10n.navReleases,
               Icons.system_update_alt_outlined),
         if (_can('admins.read'))
-          const _SectionItem(AdminSection.admins, 'Admins',
+          _SectionItem(AdminSection.admins, l10n.navAdmins,
               Icons.admin_panel_settings_outlined),
-        const _SectionItem(
-            AdminSection.settings, 'Settings', Icons.settings_outlined),
+        _SectionItem(
+            AdminSection.settings, l10n.navSettings, Icons.settings_outlined),
       ];
 
   Widget _buildSection() {
@@ -321,7 +343,9 @@ class _AdminShellState extends State<AdminShell> {
         return SettingsPage(
           loginResult: _loginResult,
           themeMode: widget.themeMode,
+          locale: widget.locale,
           onThemeChanged: widget.onThemeChanged,
+          onLocaleChanged: widget.onLocaleChanged,
           onLogout: widget.onLogout,
         );
     }
@@ -329,7 +353,8 @@ class _AdminShellState extends State<AdminShell> {
 
   @override
   Widget build(BuildContext context) {
-    final items = _items;
+    final l10n = AdminL10n.of(context);
+    final items = _buildItems(l10n);
     final currentIndex = items
         .indexWhere((item) => item.section == _section)
         .clamp(0, items.length - 1);
@@ -338,10 +363,19 @@ class _AdminShellState extends State<AdminShell> {
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text('HeYearth Admin'),
+        title: Text(l10n.appTitle),
         actions: [
+          // Language switcher
+          TextButton(
+            onPressed: () => widget
+                .onLocaleChanged(widget.locale == 'en' ? 'ru' : 'en'),
+            child: Text(
+              widget.locale == 'en' ? 'RU' : 'EN',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
           IconButton(
-            tooltip: 'Logout',
+            tooltip: l10n.logout,
             onPressed: widget.onLogout,
             icon: const Icon(Icons.logout),
           ),

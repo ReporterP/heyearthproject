@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class ServersPage extends StatefulWidget {
@@ -74,7 +75,7 @@ class _ServersPageState extends State<ServersPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text(existing == null ? 'Create server' : 'Edit server'),
+          title: Text(existing == null ? AdminL10n.of(context).createServer : AdminL10n.of(context).editServer),
           content: SizedBox(
             width: 560,
             child: SingleChildScrollView(
@@ -166,7 +167,7 @@ class _ServersPageState extends State<ServersPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(
                 ServerPayload(
@@ -181,7 +182,7 @@ class _ServersPageState extends State<ServersPage> {
                   groupIds: selectedGroupIds.toList()..sort(),
                 ),
               ),
-              child: const Text('Save'),
+              child: Text(AdminL10n.of(context).save),
             ),
           ],
         ),
@@ -247,80 +248,54 @@ class _ServersPageState extends State<ServersPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Servers',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                  onPressed: () => _editServer(),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create')),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(children: [
+              Expanded(child: Text(l10n.serversTitle, style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(onPressed: () => _editServer(), icon: const Icon(Icons.add), label: Text(l10n.create)),
+            ]);
+          }),
           const SizedBox(height: 16),
-          if (_servers.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No servers found'),
-              ),
-            ),
-          for (final item in _servers)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(item.name,
-                        style: Theme.of(context).textTheme.titleLarge),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_servers.isEmpty) {
+              return Card(child: Padding(padding: const EdgeInsets.all(24), child: Text(l10n.noServers)));
+            }
+            return Column(children: [
+              for (final item in _servers)
+                Card(child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(item.name, style: Theme.of(context).textTheme.titleLarge),
                     const SizedBox(height: 4),
-                    Text(
-                        '${item.ipAddress}:${item.sshPort} • ${item.countryCode} • ${item.status}'),
+                    Text('${item.ipAddress}:${item.sshPort} • ${item.countryCode} • ${item.status}'),
                     const SizedBox(height: 4),
                     if (item.sshKeyName.isNotEmpty)
-                      Row(
-                        children: [
-                          const Icon(Icons.key, size: 14),
-                          const SizedBox(width: 4),
-                          Text('SSH key: ${item.sshKeyName}',
-                              style: Theme.of(context).textTheme.bodySmall),
-                        ],
-                      )
+                      Row(children: [
+                        const Icon(Icons.key, size: 14),
+                        const SizedBox(width: 4),
+                        Text('${l10n.fieldSshKey}: ${item.sshKeyName}',
+                            style: Theme.of(context).textTheme.bodySmall),
+                      ])
                     else
-                      Text('Auth: password',
+                      Text('${l10n.isEn ? 'Auth' : 'Авторизация'}: ${l10n.serverAuthPassword}',
                           style: Theme.of(context).textTheme.bodySmall),
                     const SizedBox(height: 4),
-                    Text('Groups: ${item.groupIds.join(', ')}'),
+                    Text('${l10n.navGroups}: ${item.groupIds.join(', ')}'),
                     if (item.loadMetrics.isNotEmpty)
                       Text('Metrics: ${item.loadMetrics}'),
                     const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton(
-                            onPressed: () => _editServer(existing: item),
-                            child: const Text('Edit')),
-                        OutlinedButton(
-                            onPressed: () => _deleteServer(item),
-                            child: const Text('Delete')),
-                        OutlinedButton(
-                            onPressed: () => _runAction(item, 'sync_metrics'),
-                            child: const Text('Sync metrics')),
-                        OutlinedButton(
-                            onPressed: () => _runAction(item, 'restart_agent'),
-                            child: const Text('Restart agent')),
-                        OutlinedButton(
-                            onPressed: () => _runAction(item, 'reprovision'),
-                            child: const Text('Reprovision')),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      OutlinedButton(onPressed: () => _editServer(existing: item), child: Text(l10n.edit)),
+                      OutlinedButton(onPressed: () => _deleteServer(item), child: Text(l10n.delete)),
+                      OutlinedButton(onPressed: () => _runAction(item, 'sync_metrics'), child: Text(l10n.serverSyncMetrics)),
+                      OutlinedButton(onPressed: () => _runAction(item, 'restart_agent'), child: Text(l10n.serverRestartAgent)),
+                      OutlinedButton(onPressed: () => _runAction(item, 'reprovision'), child: Text(l10n.serverReprovision)),
+                    ]),
+                  ]),
+                )),
+            ]);
+          }),
         ],
       ),
     );

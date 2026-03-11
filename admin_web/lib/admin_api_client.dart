@@ -67,6 +67,10 @@ class AdminApiClient {
     await _patch('/users/$id', token, payload);
   }
 
+  Future<void> deleteUser(String token, int id) async {
+    await _delete('/users/$id', token);
+  }
+
   Future<List<UserDevice>> fetchUserDevices(String token, int userId) async {
     final body = await _getList('/users/$userId/devices', token);
     return body.map(UserDevice.fromJson).toList(growable: false);

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class AdminsPage extends StatefulWidget {
@@ -113,7 +114,7 @@ class _AdminsPageState extends State<AdminsPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(<String, dynamic>{
                 'username': usernameController.text.trim(),
@@ -220,7 +221,7 @@ class _AdminsPageState extends State<AdminsPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(<String, dynamic>{
                 'role_key': roleKeyController.text.trim(),
@@ -270,53 +271,38 @@ class _AdminsPageState extends State<AdminsPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text('Admins', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              FilledButton.icon(
-                  onPressed: () => _editAdmin(),
-                  icon: const Icon(Icons.person_add),
-                  label: const Text('Create admin')),
-              const SizedBox(width: 12),
-              FilledButton.icon(
-                  onPressed: () => _editRole(),
-                  icon: const Icon(Icons.security),
-                  label: const Text('Create role')),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text('Admin users', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          for (final admin in _admins)
-            Card(
-              child: ListTile(
-                title: Text(admin.username),
-                subtitle: Text(
-                    '${admin.displayName}\nRoles: ${admin.roles.join(', ')}'),
-                isThreeLine: true,
-                trailing: OutlinedButton(
-                  onPressed: () => _editAdmin(existing: admin),
-                  child: const Text('Edit'),
-                ),
-              ),
-            ),
-          const SizedBox(height: 24),
-          Text('Roles', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          for (final role in _roles)
-            Card(
-              child: ListTile(
-                title: Text(role.roleKey),
-                subtitle: Text(
-                    '${role.name}\nPermissions: ${role.permissions.join(', ')}'),
-                isThreeLine: true,
-                trailing: OutlinedButton(
-                  onPressed: () => _editRole(existing: role),
-                  child: const Text('Edit'),
-                ),
-              ),
-            ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(l10n.adminsTitle, style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 16),
+              Row(children: [
+                FilledButton.icon(onPressed: () => _editAdmin(), icon: const Icon(Icons.person_add), label: Text(l10n.createAdmin)),
+                const SizedBox(width: 12),
+                FilledButton.icon(onPressed: () => _editRole(), icon: const Icon(Icons.security), label: Text(l10n.createRole)),
+              ]),
+              const SizedBox(height: 16),
+              Text(l10n.sectionAdminUsers, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              for (final admin in _admins)
+                Card(child: ListTile(
+                  title: Text(admin.username),
+                  subtitle: Text('${admin.displayName}\n${l10n.fieldRoles}: ${admin.roles.join(', ')}'),
+                  isThreeLine: true,
+                  trailing: OutlinedButton(onPressed: () => _editAdmin(existing: admin), child: Text(l10n.edit)),
+                )),
+              const SizedBox(height: 24),
+              Text(l10n.sectionRoles, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              for (final role in _roles)
+                Card(child: ListTile(
+                  title: Text(role.roleKey),
+                  subtitle: Text('${role.name}\n${l10n.fieldPermissions}: ${role.permissions.join(', ')}'),
+                  isThreeLine: true,
+                  trailing: OutlinedButton(onPressed: () => _editRole(existing: role), child: Text(l10n.edit)),
+                )),
+            ]);
+          }),
         ],
       ),
     );

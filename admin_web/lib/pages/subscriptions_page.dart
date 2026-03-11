@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class SubscriptionsPage extends StatefulWidget {
@@ -50,12 +51,12 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
     );
     bool autoRenew = existing?.autoRenew ?? false;
 
+    final l10n = AdminL10n.of(context);
     final payload = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text(
-              existing == null ? 'Save subscription' : 'Edit subscription'),
+          title: Text(existing == null ? l10n.saveSubscription : l10n.editSubscription),
           content: SizedBox(
             width: 460,
             child: Column(
@@ -69,7 +70,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                           child: Text('${user.userId} (${user.id})')))
                       .toList(growable: false),
                   onChanged: (value) => setStateDialog(() => userDbId = value),
-                  decoration: const InputDecoration(labelText: 'User'),
+                  decoration: InputDecoration(labelText: l10n.fieldUserDbId),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<int>(
@@ -79,18 +80,17 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                           value: group.id, child: Text(group.name)))
                       .toList(growable: false),
                   onChanged: (value) => setStateDialog(() => groupId = value),
-                  decoration: const InputDecoration(labelText: 'Group'),
+                  decoration: InputDecoration(labelText: l10n.fieldGroupId),
                 ),
                 const SizedBox(height: 12),
                 TextField(
                     controller: validUntilController,
-                    decoration: const InputDecoration(
-                        labelText: 'Valid until (RFC3339)')),
+                    decoration: InputDecoration(labelText: l10n.fieldValidUntil)),
                 CheckboxListTile(
                   value: autoRenew,
                   onChanged: (value) =>
                       setStateDialog(() => autoRenew = value ?? false),
-                  title: const Text('Auto renew'),
+                  title: Text(l10n.fieldAutoRenew),
                   contentPadding: EdgeInsets.zero,
                 ),
               ],
@@ -99,7 +99,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(l10n.cancel)),
             FilledButton(
               onPressed: userDbId == null || groupId == null
                   ? null
@@ -109,7 +109,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                         'valid_until': validUntilController.text.trim(),
                         'auto_renew': autoRenew,
                       }),
-              child: const Text('Save'),
+              child: Text(l10n.save),
             ),
           ],
         ),
@@ -153,46 +153,49 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Subscriptions',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                onPressed: () => _saveSubscription(),
-                icon: const Icon(Icons.add),
-                label: const Text('Save'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (_subscriptions.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No subscriptions found'),
-              ),
-            ),
-          for (final item in _subscriptions)
-            Card(
-              child: ListTile(
-                title: Text('${item.userId} -> ${item.groupName}'),
-                subtitle: Text(
-                    'Valid until: ${item.validUntil}\nAuto renew: ${item.autoRenew ? 'Yes' : 'No'}'),
-                isThreeLine: true,
-                trailing: Wrap(
-                  spacing: 8,
-                  children: [
-                    OutlinedButton(
-                        onPressed: () => _saveSubscription(existing: item),
-                        child: const Text('Edit')),
-                    OutlinedButton(
-                        onPressed: () => _deleteSubscription(item),
-                        child: const Text('Delete')),
-                  ],
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(
+              children: [
+                Expanded(child: Text(l10n.subscriptionsTitle,
+                    style: Theme.of(context).textTheme.headlineMedium)),
+                FilledButton.icon(
+                  onPressed: () => _saveSubscription(),
+                  icon: const Icon(Icons.add),
+                  label: Text(l10n.save),
                 ),
-              ),
-            ),
+              ],
+            );
+          }),
+          const SizedBox(height: 16),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_subscriptions.isEmpty) {
+              return Card(child: Padding(padding: const EdgeInsets.all(24), child: Text(l10n.noSubscriptions)));
+            }
+            return Column(children: [
+              for (final item in _subscriptions)
+                Card(
+                  child: ListTile(
+                    title: Text('${item.userId} → ${item.groupName}'),
+                    subtitle: Text(
+                        '${l10n.fieldValidUntil}: ${item.validUntil}\n${l10n.fieldAutoRenew}: ${item.autoRenew ? (l10n.isEn ? 'Yes' : 'Да') : (l10n.isEn ? 'No' : 'Нет')}'),
+                    isThreeLine: true,
+                    trailing: Wrap(
+                      spacing: 8,
+                      children: [
+                        OutlinedButton(
+                            onPressed: () => _saveSubscription(existing: item),
+                            child: Text(l10n.edit)),
+                        OutlinedButton(
+                            onPressed: () => _deleteSubscription(item),
+                            child: Text(l10n.delete)),
+                      ],
+                    ),
+                  ),
+                ),
+            ]);
+          }),
         ],
       ),
     );

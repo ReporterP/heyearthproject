@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../admin_api_client.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 class PaymentsPage extends StatefulWidget {
@@ -114,7 +115,7 @@ class _PaymentsPageState extends State<PaymentsPage> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel')),
+                child: Text(AdminL10n.of(context).cancel)),
             FilledButton(
               onPressed: userDbId == null
                   ? null
@@ -177,38 +178,29 @@ class _PaymentsPageState extends State<PaymentsPage> {
       child: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text('Payments',
-                      style: Theme.of(context).textTheme.headlineMedium)),
-              FilledButton.icon(
-                  onPressed: () => _editPayment(),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create')),
-            ],
-          ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            return Row(children: [
+              Expanded(child: Text(l10n.paymentsTitle, style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(onPressed: () => _editPayment(), icon: const Icon(Icons.add), label: Text(l10n.create)),
+            ]);
+          }),
           const SizedBox(height: 16),
-          if (_payments.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No payments found'),
-              ),
-            ),
-          for (final item in _payments)
-            Card(
-              child: ListTile(
-                title: Text('${item.amount} ${item.currency} • ${item.status}'),
-                subtitle: Text(
-                    '${item.userId}\nProvider: ${item.provider.isEmpty ? 'manual' : item.provider}${item.externalId.isEmpty ? '' : '\nExternal ID: ${item.externalId}'}'),
-                isThreeLine: true,
-                trailing: OutlinedButton(
-                  onPressed: () => _editPayment(existing: item),
-                  child: const Text('Edit'),
-                ),
-              ),
-            ),
+          Builder(builder: (context) {
+            final l10n = AdminL10n.of(context);
+            if (_payments.isEmpty) {
+              return Card(child: Padding(padding: const EdgeInsets.all(24), child: Text(l10n.noPayments)));
+            }
+            return Column(children: [
+              for (final item in _payments)
+                Card(child: ListTile(
+                  title: Text('${item.amount} ${item.currency} • ${item.status}'),
+                  subtitle: Text('${item.userId}\nProvider: ${item.provider.isEmpty ? 'manual' : item.provider}${item.externalId.isEmpty ? '' : '\nExternal ID: ${item.externalId}'}'),
+                  isThreeLine: true,
+                  trailing: OutlinedButton(onPressed: () => _editPayment(existing: item), child: Text(l10n.edit)),
+                )),
+            ]);
+          }),
         ],
       ),
     );
