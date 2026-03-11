@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/http"
@@ -114,7 +115,8 @@ func publicBaseURL() string {
 	return ""
 }
 
-// handleGoClaimRedirect redirects /go/claim?token=XXX to heyearth://claim?token=XXX so Telegram URL buttons (https-only) can open the app.
+// handleGoClaimRedirect serves a minimal HTML page that opens heyearth://claim?token=XXX.
+// Telegram opens URL buttons in a browser; many mobile browsers don't follow 302 to custom schemes, so we use a page with meta refresh + clickable link.
 func handleGoClaimRedirect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -126,8 +128,11 @@ func handleGoClaimRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dest := "heyearth://claim?token=" + url.QueryEscape(token)
-	w.Header().Set("Location", dest)
-	w.WriteHeader(http.StatusFound)
+	destEsc := html.EscapeString(dest)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=%s"></head><body><p>Открытие приложения…</p><p><a href="%s">Нажмите, если приложение не открылось</a></p></body></html>`,
+		destEsc, destEsc)
 }
 
 func absoluteReleaseURL(publicPath string) string {

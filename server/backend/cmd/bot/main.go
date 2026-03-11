@@ -369,11 +369,20 @@ func handleCallback(bot *tgbotapi.BotAPI, backend *backendClient, update *tgbota
 			break
 		}
 		reply = "🚀 *Открыть в приложении*\n\nНажми кнопку ниже — откроется приложение и устройство привяжется к твоему HeYearth ID.\n\nКод действителен до `" + pairing.GetExpiresAt() + "`."
-		openURL := pairing.GetDeeplinkUrl()
-		if base := botPublicBaseURL(); base != "" {
+		base := botPublicBaseURL()
+		openURL := ""
+		if base != "" {
 			openURL = base + "/go/claim?token=" + url.QueryEscape(pairing.GetClaimToken())
 		}
-		keyboard = mainKeyboardWithDeeplink(profile.GetPreferredPlatform(), openURL)
+		if openURL != "" && strings.HasPrefix(openURL, "https://") {
+			keyboard = mainKeyboardWithDeeplink(profile.GetPreferredPlatform(), openURL)
+		} else {
+			if base == "" {
+				log.Printf("HEYEARTH_PUBLIC_URL / SITE_DOMAIN not set: URL button for open-in-app disabled")
+			}
+			reply += "\n\n_Ссылка для открытия:_ `" + pairing.GetDeeplinkUrl() + "`"
+			keyboard = mainKeyboardForPlatform(profile.GetPreferredPlatform())
+		}
 	case cbGetLoginCode:
 		profile, err := backend.ensureTelegramUser(userID, "", "ru")
 		if err != nil {
