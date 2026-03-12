@@ -100,6 +100,16 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         _buildServerSettingsSection(l10n),
         const SizedBox(height: 24),
+        Text(l10n.settingsB2bTariffsSection,
+            style: Theme.of(context).textTheme.headlineMedium),
+        const SizedBox(height: 16),
+        _buildB2bTariffsSection(l10n),
+        const SizedBox(height: 24),
+        Text(l10n.settingsAppBuildSection,
+            style: Theme.of(context).textTheme.headlineMedium),
+        const SizedBox(height: 16),
+        _buildAppBuildSection(l10n),
+        const SizedBox(height: 24),
         Align(
           alignment: Alignment.centerLeft,
           child: FilledButton.icon(
@@ -246,6 +256,135 @@ class _SettingsPageState extends State<SettingsPage> {
       ],
     );
   }
+
+  Widget _buildB2bTariffsSection(AdminL10n l10n) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return const SizedBox.shrink();
+    }
+    final settings = _serverSettings ?? {};
+    final getInt = (String key, int def) =>
+        (int.tryParse(settings[key] ?? '') ?? def).toString();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ServerSettingCard(
+          title: l10n.settingsB2bPricePerUser,
+          subtitle: l10n.settingsB2bPricePerUserHint,
+          value: getInt('b2b_price_per_user', 250),
+          saving: _savingKey == 'b2b_price_per_user',
+          onSave: (v) => _saveSetting('b2b_price_per_user', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsB2bPriceOurServers,
+          subtitle: l10n.settingsB2bPriceOurServersHint,
+          value: getInt('b2b_price_our_servers', 1000),
+          saving: _savingKey == 'b2b_price_our_servers',
+          onSave: (v) => _saveSetting('b2b_price_our_servers', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsB2bBaseOwnServers,
+          subtitle: l10n.settingsB2bBaseOwnServersHint,
+          value: getInt('b2b_base_own_servers', 5),
+          saving: _savingKey == 'b2b_base_own_servers',
+          onSave: (v) => _saveSetting('b2b_base_own_servers', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsB2bPriceExtraServer,
+          subtitle: l10n.settingsB2bPriceExtraServerHint,
+          value: getInt('b2b_price_extra_server', 100),
+          saving: _savingKey == 'b2b_price_extra_server',
+          onSave: (v) => _saveSetting('b2b_price_extra_server', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsB2bPricePremiumUser,
+          subtitle: l10n.settingsB2bPricePremiumUserHint,
+          value: getInt('b2b_price_premium_user', 50),
+          saving: _savingKey == 'b2b_price_premium_user',
+          onSave: (v) => _saveSetting('b2b_price_premium_user', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsB2bPriceUnlimited,
+          subtitle: l10n.settingsB2bPriceUnlimitedHint,
+          value: getInt('b2b_price_unlimited', 20000),
+          saving: _savingKey == 'b2b_price_unlimited',
+          onSave: (v) => _saveSetting('b2b_price_unlimited', v),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAppBuildSection(AdminL10n l10n) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return const SizedBox.shrink();
+    }
+    final settings = _serverSettings ?? {};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ServerSettingCard(
+          title: l10n.settingsAppBuildRepoUrl,
+          subtitle: l10n.settingsAppBuildRepoUrlHint,
+          value: settings['app_build_repo_url'] ?? '',
+          saving: _savingKey == 'app_build_repo_url',
+          onSave: (v) => _saveSetting('app_build_repo_url', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsAppBuildRepoBranch,
+          subtitle: l10n.settingsAppBuildRepoBranchHint,
+          value: settings['app_build_repo_branch'] ?? 'main',
+          saving: _savingKey == 'app_build_repo_branch',
+          onSave: (v) => _saveSetting('app_build_repo_branch', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsAppBuildSiteUrl,
+          subtitle: l10n.settingsAppBuildSiteUrlHint,
+          value: settings['app_build_site_url'] ?? '',
+          saving: _savingKey == 'app_build_site_url',
+          onSave: (v) => _saveSetting('app_build_site_url', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsAppBuildApiBase,
+          subtitle: l10n.settingsAppBuildApiBaseHint,
+          value: settings['app_build_api_base'] ?? '',
+          saving: _savingKey == 'app_build_api_base',
+          onSave: (v) => _saveSetting('app_build_api_base', v),
+        ),
+        const SizedBox(height: 16),
+        Text(l10n.settingsAppBuildPlatforms,
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        _AppBuildPlatformCheckboxes(
+          settings: _serverSettings ?? {},
+          savingKey: _savingKey,
+          onChanged: _saveSetting,
+        ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(l10n.settingsAppBuildNotAvailable)),
+            );
+          },
+          icon: const Icon(Icons.build),
+          label: Text(l10n.settingsAppBuildNow),
+        ),
+      ],
+    );
+  }
 }
 
 class _ServerSettingCard extends StatefulWidget {
@@ -371,6 +510,47 @@ class _ServerSettingToggle extends StatelessWidget {
         value: value,
         onChanged: saving ? null : onChanged,
       ),
+    );
+  }
+}
+
+class _AppBuildPlatformCheckboxes extends StatelessWidget {
+  const _AppBuildPlatformCheckboxes({
+    required this.settings,
+    required this.savingKey,
+    required this.onChanged,
+  });
+
+  final Map<String, String> settings;
+  final String? savingKey;
+  final void Function(String key, String value) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AdminL10n.of(context);
+    final platforms = <String, String>{
+      'app_build_platform_android': l10n.settingsAppBuildPlatformAndroid,
+      'app_build_platform_linux': l10n.settingsAppBuildPlatformLinux,
+      'app_build_platform_windows': l10n.settingsAppBuildPlatformWindows,
+      'app_build_platform_ios': l10n.settingsAppBuildPlatformIos,
+      'app_build_platform_macos': l10n.settingsAppBuildPlatformMacos,
+    };
+    return Wrap(
+      spacing: 16,
+      runSpacing: 8,
+      children: platforms.entries.map((e) {
+        final key = e.key;
+        final checked = settings[key] == 'true';
+        return FilterChip(
+          label: Text(e.value),
+          selected: checked,
+          onSelected: savingKey != null
+              ? null
+              : (selected) {
+                  onChanged(key, selected ? 'true' : 'false');
+                },
+        );
+      }).toList(),
     );
   }
 }

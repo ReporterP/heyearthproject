@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,7 @@ const _keyThemeMode = 'heyearth_theme_mode';
 const _keyLocale = 'heyearth_locale';
 const _keyDeviceId = 'heyearth_device_id';
 const _keyApiEndpoints = 'heyearth_api_endpoints';
+const _keySavedAccounts = 'heyearth_saved_accounts';
 const _defaultApiBase = String.fromEnvironment(
   'API_BASE',
   defaultValue: 'https://quizgame.pro',
@@ -56,8 +58,10 @@ class AppState extends ChangeNotifier {
   pb.AccessStateResponse? _accessState;
   List<pb.SubscriptionItem> _subscriptions = const [];
   List<pb.PaymentItem> _payments = const [];
+  List<String> _savedAccounts = const [];
 
   String? get userId => _userId;
+  List<String> get savedAccounts => _savedAccounts;
   String? get ssUri => _ssUri;
   String? get vlessUri => _vlessUri;
   String? get preferredUri => _activeOption?.uri ?? _vlessUri ?? _ssUri;
@@ -122,6 +126,24 @@ class AppState extends ChangeNotifier {
       final savedEndpoints = prefs.getStringList(_keyApiEndpoints);
       if (savedEndpoints != null && savedEndpoints.isNotEmpty) {
         _apiEndpoints = savedEndpoints;
+      }
+      final savedJson = prefs.getString(_keySavedAccounts);
+      if (savedJson != null && savedJson.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(savedJson) as List<dynamic>?;
+          _savedAccounts = decoded != null
+              ? List<String>.from(decoded.map((e) => e.toString()))
+              : const [];
+        } catch (_) {
+          _savedAccounts = const [];
+        }
+      }
+      if (_userId != null &&
+          _userId!.trim().isNotEmpty &&
+          !_savedAccounts.contains(_userId)) {
+        _savedAccounts = [..._savedAccounts, _userId!];
+        await prefs.setString(
+            _keySavedAccounts, jsonEncode(_savedAccounts));
       }
       if (hasUserId) {
         await refreshAccountData(notify: false);
@@ -202,6 +224,53 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> addAccount(String id) async {
+    final clean = id.trim();
+    if (clean.isEmpty || _savedAccounts.contains(clean)) return;
+    _savedAccounts = [..._savedAccounts, clean];
+    final prefs = await _prefs();
+    await prefs.setString(_keySavedAccounts, jsonEncode(_savedAccounts));
+    notifyListeners();
+  }
+
+  Future<void> removeAccount(String id) async {
+    final clean = id.trim();
+    if (clean.isEmpty) return;
+    _savedAccounts = _savedAccounts.where((a) => a != clean).toList();
+    final prefs = await _prefs();
+    await prefs.setString(_keySavedAccounts, jsonEncode(_savedAccounts));
+    if (_userId == clean) {
+      if (_savedAccounts.isNotEmpty) {
+        await switchAccount(_savedAccounts.first);
+      } else {
+        await signOut();
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> switchAccount(String id) async {
+    final clean = id.trim();
+    if (clean.isEmpty || clean == _userId) return;
+    final wasVpnOn = _vpnOn;
+    if (_vpnOn) {
+      await setVpnOn(false);
+    }
+    _userId = clean;
+    final prefs = await _prefs();
+    await prefs.setString(_keyUserId, clean);
+    await _invalidateConnectionBundle();
+    final ok = await refreshAccountData(notify: false);
+    if (!ok) {
+      _userId = null;
+      await prefs.remove(_keyUserId);
+    }
+    if (wasVpnOn && ok && canConnect) {
+      await setVpnOn(true);
+    }
+    notifyListeners();
+  }
+
   Future<bool> restoreUserId(String id) async {
     final clean = id.trim();
     if (clean.isEmpty) {
@@ -215,6 +284,7 @@ class AppState extends ChangeNotifier {
     await prefs.setString(_keyUserId, clean);
     await _invalidateConnectionBundle();
     final ok = await refreshAccountData(notify: false);
+    if (ok) await addAccount(clean);
     notifyListeners();
     return ok;
   }
@@ -590,6 +660,7 @@ class AppState extends ChangeNotifier {
     await prefs.setString(_keyUserId, userId);
     await _invalidateConnectionBundle();
     await refreshAccountData(notify: false);
+    await addAccount(userId);
     _error = null;
     notifyListeners();
     return true;

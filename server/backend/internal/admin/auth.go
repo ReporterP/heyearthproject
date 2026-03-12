@@ -31,6 +31,7 @@ type AdminUser struct {
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	TenantID    *int     `json:"tenant_id,omitempty"`
+	TenantName  string   `json:"tenant_name,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 }
@@ -838,6 +839,11 @@ func buildAdminUser(record adminRecord) (AdminUser, []AdminRole, error) {
 	slices.Sort(roleKeys)
 	slices.Sort(permissions)
 
+	var tenantName string
+	if record.TenantID != nil {
+		_ = db.DB.QueryRow(`SELECT COALESCE(name,'') FROM tenants WHERE id=$1`, *record.TenantID).Scan(&tenantName)
+	}
+
 	admin := AdminUser{
 		ID:          record.ID,
 		Username:    record.Username,
@@ -846,6 +852,7 @@ func buildAdminUser(record adminRecord) (AdminUser, []AdminRole, error) {
 		Roles:       roleKeys,
 		Permissions: permissions,
 		TenantID:    record.TenantID,
+		TenantName:  tenantName,
 		CreatedAt:   record.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   record.UpdatedAt.Format(time.RFC3339),
 	}

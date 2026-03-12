@@ -105,6 +105,15 @@ class L10n {
   String get updateAccount => isEn ? 'Update account' : 'Обновить аккаунт';
   String get updatingAccount => isEn ? 'Updating...' : 'Обновление...';
   String get myHeyearthId => isEn ? 'My HeYearth ID' : 'Мой HeYearth ID';
+  String get accountsSection => isEn ? 'Accounts' : 'Аккаунты';
+  String get addAccount => isEn ? 'Add Account' : 'Добавить аккаунт';
+  String get addAccountHint =>
+      isEn
+          ? 'HeYearth ID or code from bot'
+          : 'HeYearth ID или код из бота';
+  String get currentAccount => isEn ? 'Current' : 'Текущий';
+  String get switchAccount => isEn ? 'Switch' : 'Переключить';
+  String get removeAccount => isEn ? 'Remove' : 'Удалить';
 
   // ── Profile screen ──────────────────────────────────────────────────────────
 

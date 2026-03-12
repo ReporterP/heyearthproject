@@ -37,9 +37,28 @@ class AdminApiClient {
 
   final String apiBase;
 
-  Uri _uri(String path) {
+  Uri _uri(String path, {Map<String, String>? queryParameters}) {
     final base = apiBase.trim().replaceFirst(RegExp(r'/$'), '');
-    return Uri.parse('$base$path');
+    final uri = Uri.parse('$base$path');
+    if (queryParameters != null && queryParameters.isNotEmpty) {
+      return uri.replace(queryParameters: queryParameters);
+    }
+    return uri;
+  }
+
+  Map<String, String> _paginationParams({
+    int page = 1,
+    int pageSize = 20,
+    String search = '',
+    String status = '',
+  }) {
+    final params = <String, String>{
+      'page': '$page',
+      'page_size': '$pageSize',
+    };
+    if (search.isNotEmpty) params['search'] = search;
+    if (status.isNotEmpty) params['status'] = status;
+    return params;
   }
 
   Future<LoginResult> login({
@@ -69,9 +88,23 @@ class AdminApiClient {
     return DashboardOverview.fromJson(body);
   }
 
-  Future<List<ManagedUser>> fetchUsers(String token) async {
-    final body = await _getList('/users', token);
+  Future<List<ManagedUser>> fetchUsers(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/users', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(ManagedUser.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<ManagedUser>> fetchUsersPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult('/users', token, ManagedUser.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<void> createUser(String token, Map<String, dynamic> payload) async {
@@ -92,9 +125,23 @@ class AdminApiClient {
     return body.map(UserDevice.fromJson).toList(growable: false);
   }
 
-  Future<List<GroupModel>> fetchGroups(String token) async {
-    final body = await _getList('/groups', token);
+  Future<List<GroupModel>> fetchGroups(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/groups', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(GroupModel.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<GroupModel>> fetchGroupsPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult('/groups', token, GroupModel.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<void> createGroup(String token, Map<String, dynamic> payload) async {
@@ -110,9 +157,24 @@ class AdminApiClient {
     await _delete('/groups/$id', token);
   }
 
-  Future<List<SubscriptionModel>> fetchSubscriptions(String token) async {
-    final body = await _getList('/subscriptions', token);
+  Future<List<SubscriptionModel>> fetchSubscriptions(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/subscriptions', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(SubscriptionModel.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<SubscriptionModel>> fetchSubscriptionsPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult(
+        '/subscriptions', token, SubscriptionModel.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<void> saveSubscription(
@@ -125,9 +187,23 @@ class AdminApiClient {
     await _delete('/subscriptions/$userDbId/$groupId', token);
   }
 
-  Future<List<PromocodeModel>> fetchPromocodes(String token) async {
-    final body = await _getList('/promocodes', token);
+  Future<List<PromocodeModel>> fetchPromocodes(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/promocodes', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(PromocodeModel.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<PromocodeModel>> fetchPromocodesPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult('/promocodes', token, PromocodeModel.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<void> createPromocode(
@@ -144,9 +220,23 @@ class AdminApiClient {
     await _delete('/promocodes/$code', token);
   }
 
-  Future<List<PaymentModel>> fetchPayments(String token) async {
-    final body = await _getList('/payments', token);
+  Future<List<PaymentModel>> fetchPayments(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/payments', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(PaymentModel.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<PaymentModel>> fetchPaymentsPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult('/payments', token, PaymentModel.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<void> createPayment(String token, Map<String, dynamic> payload) async {
@@ -182,9 +272,23 @@ class AdminApiClient {
     await _delete('/ssh-keys/$id', token);
   }
 
-  Future<List<AdminServer>> fetchServers(String token) async {
-    final body = await _getList('/servers', token);
+  Future<List<AdminServer>> fetchServers(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getList('/servers', token,
+        page: page, pageSize: pageSize, search: search, status: status);
     return body.map(AdminServer.fromJson).toList(growable: false);
+  }
+
+  Future<PagedResult<AdminServer>> fetchServersPaged(String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    return fetchPagedResult('/servers', token, AdminServer.fromJson,
+        page: page, pageSize: pageSize, search: search, status: status);
   }
 
   Future<AdminServer> fetchServerDetail(String token, int id) async {
@@ -207,6 +311,34 @@ class AdminApiClient {
   Future<void> runServerAction(String token, int id, String action) async {
     await _post(
         '/servers/$id/actions', token, <String, dynamic>{'action': action});
+  }
+
+  Future<String> fetchServerLogs(
+    String token,
+    int serverId, {
+    String service = 'node-agent',
+    int tail = 100,
+  }) async {
+    final uri = _uri('/servers/$serverId/logs')
+        .replace(queryParameters: {'service': service, 'tail': '$tail'});
+    final response = await http.get(uri, headers: _authHeaders(token));
+    final body = _expectBody(response, fallback: 'Failed to fetch logs');
+    return body['logs'] as String? ?? '';
+  }
+
+  Future<Map<String, String>> fetchServerFiles(
+    String token,
+    int serverId,
+    String path,
+  ) async {
+    final uri = _uri('/servers/$serverId/files')
+        .replace(queryParameters: {'path': path});
+    final response = await http.get(uri, headers: _authHeaders(token));
+    final body = _expectBody(response, fallback: 'Failed to fetch files');
+    return <String, String>{
+      'listing': body['listing'] as String? ?? '',
+      'path': body['path'] as String? ?? path,
+    };
   }
 
   Future<List<AppRelease>> fetchReleases(String token) async {
@@ -295,8 +427,16 @@ class AdminApiClient {
     return _expectBody(response, fallback: 'Request failed');
   }
 
-  Future<List<Map<String, dynamic>>> _getList(String path, String token) async {
-    final response = await http.get(_uri(path), headers: _authHeaders(token));
+  Future<List<Map<String, dynamic>>> _getList(String path, String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final params = _paginationParams(
+        page: page, pageSize: pageSize, search: search, status: status);
+    final response = await http.get(
+        _uri(path, queryParameters: params),
+        headers: _authHeaders(token));
     if (response.statusCode == 401 || response.statusCode == 403) {
       throw const AdminApiException('Unauthorized', statusCode: 401);
     }
@@ -306,6 +446,45 @@ class AdminApiClient {
           statusCode: response.statusCode);
     }
     return decoded;
+  }
+
+  Future<Map<String, dynamic>> _getPaged(String path, String token,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final params = _paginationParams(
+        page: page, pageSize: pageSize, search: search, status: status);
+    final response = await http.get(
+        _uri(path, queryParameters: params),
+        headers: _authHeaders(token));
+    return _expectBody(response, fallback: 'Request failed');
+  }
+
+  Future<PagedResult<T>> fetchPagedResult<T>(String path, String token,
+      T Function(Map<String, dynamic>) fromJson,
+      {int page = 1,
+      int pageSize = 20,
+      String search = '',
+      String status = ''}) async {
+    final body = await _getPaged(path, token,
+        page: page, pageSize: pageSize, search: search, status: status);
+    final rawItems = body['items'];
+    final items = (rawItems is List
+            ? rawItems.whereType<Map>().map((e) => e.cast<String, dynamic>())
+            : const <Map<String, dynamic>>[])
+        .map(fromJson)
+        .toList(growable: false);
+    final total = (body['total'] as num?)?.toInt() ?? items.length;
+    final respPage = (body['page'] as num?)?.toInt() ?? page;
+    final respPageSize =
+        (body['page_size'] as num?)?.toInt() ?? pageSize;
+    return PagedResult<T>(
+      items: items,
+      total: total,
+      page: respPage,
+      pageSize: respPageSize,
+    );
   }
 
   Future<Map<String, dynamic>> _post(
@@ -377,15 +556,15 @@ class AdminApiClient {
     final uri = _uri('/tenants').replace(queryParameters: params);
     final response = await http.get(uri, headers: _authHeaders(token));
     final body = _expectBody(response, fallback: 'Failed to load tenants');
-    final items = ((body['Items'] as List?) ?? const [])
+    final items = ((body['items'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => TenantModel.fromJson(e.cast<String, dynamic>()))
         .toList(growable: false);
     return PagedResult<TenantModel>(
       items: items,
-      total: (body['Total'] as num?)?.toInt() ?? items.length,
-      page: (body['Page'] as num?)?.toInt() ?? page,
-      pageSize: (body['PageSize'] as num?)?.toInt() ?? pageSize,
+      total: (body['total'] as num?)?.toInt() ?? items.length,
+      page: (body['page'] as num?)?.toInt() ?? page,
+      pageSize: (body['page_size'] as num?)?.toInt() ?? pageSize,
     );
   }
 

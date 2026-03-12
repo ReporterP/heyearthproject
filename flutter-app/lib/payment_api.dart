@@ -6,7 +6,7 @@ class PaymentApi {
 
   final String apiBase;
 
-  Uri _uri(String path) => Uri.parse('${apiBase.replaceFirst(RegExp(r'/\$'), '')}$path');
+  Uri _uri(String path) => Uri.parse('${apiBase.replaceFirst(RegExp(r'/$'), '')}$path');
 
   Future<Map<String, dynamic>> createPayment({
     required String userId,

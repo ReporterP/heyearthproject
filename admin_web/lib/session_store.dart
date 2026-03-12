@@ -53,6 +53,10 @@ class SessionStore {
               'permissions': session.loginResult!.admin.permissions,
               'created_at': session.loginResult!.admin.createdAt,
               'updated_at': session.loginResult!.admin.updatedAt,
+              if (session.loginResult!.admin.tenantId != null)
+                'tenant_id': session.loginResult!.admin.tenantId,
+              if (session.loginResult!.admin.tenantName != null)
+                'tenant_name': session.loginResult!.admin.tenantName,
             },
             'roles': session.loginResult!.roles
                 .map((role) => <String, dynamic>{

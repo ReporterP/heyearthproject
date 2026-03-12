@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../admin_api_client.dart';
 import '../l10n.dart';
 import '../models.dart';
+import '../widgets/search_pagination_bar.dart';
 
 class UsersPage extends StatefulWidget {
   const UsersPage({super.key, required this.token});
@@ -22,8 +23,12 @@ class _UsersPageState extends State<UsersPage> {
     'macos',
     'linux',
   ];
+  static const _pageSize = 20;
 
+  final _searchController = TextEditingController();
   List<ManagedUser> _users = const [];
+  int _page = 1;
+  int _total = 0;
   bool _loading = true;
 
   @override
@@ -32,16 +37,30 @@ class _UsersPageState extends State<UsersPage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  int get _totalPages => (_total / _pageSize).ceil().clamp(1, 999999);
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      _users = await const AdminApiClient().fetchUsers(widget.token);
+      final result = await const AdminApiClient().fetchUsersPaged(
+        widget.token,
+        page: _page,
+        pageSize: _pageSize,
+        search: _searchController.text.trim(),
+        status: '',
+      );
+      _users = result.items;
+      _total = result.total;
     } on AdminApiException catch (e) {
       _showMessage(e.message);
     } finally {
-      if (mounted) {
-        setState(() => _loading = false);
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -99,7 +118,9 @@ class _UsersPageState extends State<UsersPage> {
                     items: _platformOptions
                         .map((p) => DropdownMenuItem(
                               value: p,
-                              child: Text(p.isEmpty ? l10n.fieldPlatformNotSet : p),
+                              child: Text(p.isEmpty
+                                  ? l10n.fieldPlatformNotSet
+                                  : p),
                             ))
                         .toList(),
                     onChanged: (v) =>
@@ -176,9 +197,7 @@ class _UsersPageState extends State<UsersPage> {
     userIdController.dispose();
     telegramController.dispose();
     roleController.dispose();
-    if (payload == null) {
-      return;
-    }
+    if (payload == null) return;
 
     try {
       if (existing == null) {
@@ -205,8 +224,7 @@ class _UsersPageState extends State<UsersPage> {
               onPressed: () => Navigator.of(ctx).pop(false),
               child: Text(l10n.cancel)),
           FilledButton(
-            style:
-                FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(l10n.delete),
           ),
@@ -258,44 +276,57 @@ class _UsersPageState extends State<UsersPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        padding: const EdgeInsets.all(24),
+    final l10n = AdminL10n.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Builder(builder: (context) {
-            final l10n = AdminL10n.of(context);
-            return Row(
-              children: [
-                Expanded(
-                    child: Text(l10n.usersTitle,
-                        style: Theme.of(context).textTheme.headlineMedium)),
-                FilledButton.icon(
-                  onPressed: () => _editUser(),
-                  icon: const Icon(Icons.person_add_alt_1),
-                  label: Text(l10n.create),
-                ),
-              ],
-            );
-          }),
+          Row(
+            children: [
+              Expanded(
+                  child: Text(l10n.usersTitle,
+                      style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(
+                onPressed: () => _editUser(),
+                icon: const Icon(Icons.person_add_alt_1),
+                label: Text(l10n.create),
+              ),
+            ],
+          ),
           const SizedBox(height: 16),
-          Builder(builder: (context) {
-            final l10n = AdminL10n.of(context);
-            if (_users.isEmpty) {
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(l10n.noUsers),
-                ),
-              );
-            }
-            return Column(
-              children: [
-                for (final user in _users)
-                  Card(
+          SearchPaginationBar(
+            searchController: _searchController,
+            onSearch: () {
+              _page = 1;
+              _load();
+            },
+            page: _page,
+            totalPages: _totalPages,
+            total: _total,
+            onPageChanged: (p) {
+              _page = p;
+              _load();
+            },
+            searchHint: isEn(l10n) ? 'Search by ID, role…' : 'Поиск по ID, роли…',
+          ),
+          const SizedBox(height: 8),
+          if (_loading)
+            const Expanded(child: Center(child: CircularProgressIndicator()))
+          else if (_users.isEmpty)
+            Expanded(
+              child: Center(
+                child: Text(l10n.noUsers,
+                    style: Theme.of(context).textTheme.bodyLarge),
+              ),
+            )
+          else
+            Expanded(
+              child: ListView.builder(
+                itemCount: _users.length,
+                itemBuilder: (context, index) {
+                  final user = _users[index];
+                  return Card(
                     child: ListTile(
                       title: Text(user.userId),
                       subtitle: Text(
@@ -309,7 +340,8 @@ class _UsersPageState extends State<UsersPage> {
                         spacing: 8,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          if (user.isBlocked) Chip(label: Text(l10n.blockedChip)),
+                          if (user.isBlocked)
+                            Chip(label: Text(l10n.blockedChip)),
                           OutlinedButton(
                             onPressed: () => _editUser(existing: user),
                             child: Text(l10n.edit),
@@ -323,12 +355,14 @@ class _UsersPageState extends State<UsersPage> {
                         ],
                       ),
                     ),
-                  ),
-              ],
-            );
-          }),
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );
   }
 }
+
+bool isEn(AdminL10n l10n) => l10n.isEn;

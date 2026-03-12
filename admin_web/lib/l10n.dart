@@ -175,6 +175,14 @@ class AdminL10n {
   String get serverSyncMetrics => isEn ? 'Sync metrics' : 'Синхронизировать метрики';
   String get serverAuthKey => isEn ? 'key' : 'ключ';
   String get serverAuthPassword => isEn ? 'password' : 'пароль';
+  String get serverLogs => isEn ? 'Logs' : 'Логи';
+  String get serverFiles => isEn ? 'Files' : 'Файлы';
+  String get serverLogsTitle => isEn ? 'Server logs' : 'Логи сервера';
+  String get serverFilesTitle => isEn ? 'File browser' : 'Файловый браузер';
+  String get serverLogsService => isEn ? 'Service' : 'Сервис';
+  String get serverLogsRefresh => isEn ? 'Refresh' : 'Обновить';
+  String get serverFilesBrowse => isEn ? 'Browse' : 'Перейти';
+  String get serverFilesPath => isEn ? 'Path' : 'Путь';
 
   // ── SSH Keys ─────────────────────────────────────────────────────────────────
 
@@ -260,4 +268,80 @@ class AdminL10n {
   String get settingsYukassaTestModeHint => isEn
       ? 'Enable test mode to process payments in sandbox'
       : 'Включить тестовый режим для обработки платежей в песочнице';
+
+  // ── B2B Tariffs ─────────────────────────────────────────────────────────────
+
+  String get settingsB2bTariffsSection =>
+      isEn ? 'B2B Tariffs' : 'Тарифы B2B';
+  String get settingsB2bPricePerUser =>
+      isEn ? 'Price per user/month' : 'Цена за пользователя/мес';
+  String get settingsB2bPricePerUserHint => isEn
+      ? 'Base price per user per month'
+      : 'Базовая цена за пользователя в месяц';
+  String get settingsB2bPriceOurServers =>
+      isEn ? 'Price for provider servers' : 'Цена за серверы провайдера';
+  String get settingsB2bPriceOurServersHint => isEn
+      ? 'Price for using provider-hosted servers'
+      : 'Цена за использование серверов провайдера';
+  String get settingsB2bBaseOwnServers =>
+      isEn ? 'Base included own servers' : 'Базовое кол-во своих серверов';
+  String get settingsB2bBaseOwnServersHint => isEn
+      ? 'Number of own servers included in base plan'
+      : 'Количество своих серверов, входящих в базовый план';
+  String get settingsB2bPriceExtraServer =>
+      isEn ? 'Price per extra server' : 'Цена за доп. сервер';
+  String get settingsB2bPriceExtraServerHint => isEn
+      ? 'Price for each server beyond base'
+      : 'Цена за каждый сервер сверх базы';
+  String get settingsB2bPricePremiumUser =>
+      isEn ? 'Premium app price per user' : 'Цена премиум-приложения за пользователя';
+  String get settingsB2bPricePremiumUserHint => isEn
+      ? 'Price for premium app access per user'
+      : 'Цена доступа к премиум-приложению за пользователя';
+  String get settingsB2bPriceUnlimited =>
+      isEn ? 'Unlimited plan price' : 'Цена безлимитного плана';
+  String get settingsB2bPriceUnlimitedHint => isEn
+      ? 'Price for unlimited plan'
+      : 'Цена безлимитного плана';
+
+  // ── App Build ──────────────────────────────────────────────────────────────
+
+  String get settingsAppBuildSection =>
+      isEn ? 'App Build' : 'Сборка приложения';
+  String get settingsAppBuildRepoUrl =>
+      isEn ? 'Repository URL' : 'URL репозитория';
+  String get settingsAppBuildRepoUrlHint => isEn
+      ? 'GitHub repository URL'
+      : 'URL репозитория GitHub';
+  String get settingsAppBuildRepoBranch =>
+      isEn ? 'Branch' : 'Ветка';
+  String get settingsAppBuildRepoBranchHint => isEn
+      ? 'Git branch to build from'
+      : 'Ветка Git для сборки';
+  String get settingsAppBuildSiteUrl =>
+      isEn ? 'Public site URL' : 'Публичный URL сайта';
+  String get settingsAppBuildSiteUrlHint => isEn
+      ? 'Public site base URL'
+      : 'Базовый URL публичного сайта';
+  String get settingsAppBuildApiBase =>
+      isEn ? 'API base URL' : 'Базовый URL API';
+  String get settingsAppBuildApiBaseHint => isEn
+      ? 'API base URL for the app'
+      : 'Базовый URL API для приложения';
+  String get settingsAppBuildPlatforms =>
+      isEn ? 'Platforms' : 'Платформы';
+  String get settingsAppBuildPlatformAndroid =>
+      isEn ? 'Android' : 'Android';
+  String get settingsAppBuildPlatformLinux =>
+      isEn ? 'Linux' : 'Linux';
+  String get settingsAppBuildPlatformWindows =>
+      isEn ? 'Windows' : 'Windows';
+  String get settingsAppBuildPlatformIos =>
+      isEn ? 'iOS' : 'iOS';
+  String get settingsAppBuildPlatformMacos =>
+      isEn ? 'macOS' : 'macOS';
+  String get settingsAppBuildNow =>
+      isEn ? 'Build Now' : 'Собрать';
+  String get settingsAppBuildNotAvailable =>
+      isEn ? 'Not yet available' : 'Пока недоступно';
 }

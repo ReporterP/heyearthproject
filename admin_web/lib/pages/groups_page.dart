@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../admin_api_client.dart';
 import '../l10n.dart';
 import '../models.dart';
+import '../widgets/search_pagination_bar.dart';
 
 class GroupsPage extends StatefulWidget {
   const GroupsPage({super.key, required this.token});
@@ -14,7 +15,12 @@ class GroupsPage extends StatefulWidget {
 }
 
 class _GroupsPageState extends State<GroupsPage> {
+  static const _pageSize = 20;
+
+  final _searchController = TextEditingController();
   List<GroupModel> _groups = const [];
+  int _page = 1;
+  int _total = 0;
   bool _loading = true;
 
   @override
@@ -23,10 +29,26 @@ class _GroupsPageState extends State<GroupsPage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  int get _totalPages => (_total / _pageSize).ceil().clamp(1, 999999);
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      _groups = await const AdminApiClient().fetchGroups(widget.token);
+      final result = await const AdminApiClient().fetchGroupsPaged(
+        widget.token,
+        page: _page,
+        pageSize: _pageSize,
+        search: _searchController.text.trim(),
+        status: '',
+      );
+      _groups = result.items;
+      _total = result.total;
     } on AdminApiException catch (e) {
       _showMessage(e.message);
     } finally {
@@ -131,44 +153,57 @@ class _GroupsPageState extends State<GroupsPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        padding: const EdgeInsets.all(24),
+    final l10n = AdminL10n.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Builder(builder: (context) {
-            final l10n = AdminL10n.of(context);
-            return Row(
-              children: [
-                Expanded(
-                    child: Text(l10n.groupsTitle,
-                        style: Theme.of(context).textTheme.headlineMedium)),
-                FilledButton.icon(
-                  onPressed: () => _editGroup(),
-                  icon: const Icon(Icons.add),
-                  label: Text(l10n.create),
-                ),
-              ],
-            );
-          }),
+          Row(
+            children: [
+              Expanded(
+                  child: Text(l10n.groupsTitle,
+                      style: Theme.of(context).textTheme.headlineMedium)),
+              FilledButton.icon(
+                onPressed: () => _editGroup(),
+                icon: const Icon(Icons.add),
+                label: Text(l10n.create),
+              ),
+            ],
+          ),
           const SizedBox(height: 16),
-          Builder(builder: (context) {
-            final l10n = AdminL10n.of(context);
-            if (_groups.isEmpty) {
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(l10n.noGroups),
-                ),
-              );
-            }
-            return Column(
-              children: [
-                for (final group in _groups)
-                  Card(
+          SearchPaginationBar(
+            searchController: _searchController,
+            onSearch: () {
+              _page = 1;
+              _load();
+            },
+            page: _page,
+            totalPages: _totalPages,
+            total: _total,
+            onPageChanged: (p) {
+              _page = p;
+              _load();
+            },
+            searchHint: l10n.isEn ? 'Search by group name…' : 'Поиск по названию…',
+          ),
+          const SizedBox(height: 8),
+          if (_loading)
+            const Expanded(child: Center(child: CircularProgressIndicator()))
+          else if (_groups.isEmpty)
+            Expanded(
+              child: Center(
+                child: Text(l10n.noGroups,
+                    style: Theme.of(context).textTheme.bodyLarge),
+              ),
+            )
+          else
+            Expanded(
+              child: ListView.builder(
+                itemCount: _groups.length,
+                itemBuilder: (context, index) {
+                  final group = _groups[index];
+                  return Card(
                     child: ListTile(
                       title: Text(group.name),
                       subtitle: Text(group.description.isEmpty
@@ -177,7 +212,8 @@ class _GroupsPageState extends State<GroupsPage> {
                       trailing: Wrap(
                         spacing: 8,
                         children: [
-                          if (group.isPremium) Chip(label: Text(l10n.fieldIsPremium)),
+                          if (group.isPremium)
+                            Chip(label: Text(l10n.fieldIsPremium)),
                           OutlinedButton(
                               onPressed: () => _editGroup(existing: group),
                               child: Text(l10n.edit)),
@@ -187,10 +223,10 @@ class _GroupsPageState extends State<GroupsPage> {
                         ],
                       ),
                     ),
-                  ),
-              ],
-            );
-          }),
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );

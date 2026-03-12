@@ -222,6 +222,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       controller: _passController,
                       obscureText: true,
                       decoration: InputDecoration(labelText: l10n.password),
+                      onSubmitted: (_) => _login(),
                     ),
                     const SizedBox(height: 24),
                     FilledButton(
@@ -284,42 +285,48 @@ class _AdminShellState extends State<AdminShell> {
     return permissions.contains(permission);
   }
 
-  List<_SectionItem> _buildItems(AdminL10n l10n) => <_SectionItem>[
-        if (_can('dashboard.read'))
-          _SectionItem(
-              AdminSection.dashboard, l10n.navDashboard, Icons.dashboard_outlined),
-        if (_can('tenants.read'))
-          _SectionItem(
-              AdminSection.tenants, l10n.navTenants, Icons.business_outlined),
-        if (_can('users.read'))
-          _SectionItem(AdminSection.users, l10n.navUsers, Icons.people_outline),
-        if (_can('groups.read'))
-          _SectionItem(
-              AdminSection.groups, l10n.navGroups, Icons.layers_outlined),
-        if (_can('subscriptions.read'))
-          _SectionItem(AdminSection.subscriptions, l10n.navSubscriptions,
-              Icons.workspace_premium_outlined),
-        if (_can('promocodes.read'))
-          _SectionItem(AdminSection.promocodes, l10n.navPromocodes,
-              Icons.confirmation_number_outlined),
-        if (_can('payments.read'))
-          _SectionItem(
-              AdminSection.payments, l10n.navPayments, Icons.payments_outlined),
-        if (_can('servers.read'))
-          _SectionItem(
-              AdminSection.servers, l10n.navServers, Icons.dns_outlined),
-        if (_can('servers.read'))
-          _SectionItem(
-              AdminSection.sshKeys, l10n.navSshKeys, Icons.key_outlined),
-        if (_can('releases.read'))
-          _SectionItem(AdminSection.releases, l10n.navReleases,
-              Icons.system_update_alt_outlined),
-        if (_can('admins.read'))
-          _SectionItem(AdminSection.admins, l10n.navAdmins,
-              Icons.admin_panel_settings_outlined),
+  bool get _isTenantAdmin =>
+      _loginResult?.admin.tenantId != null;
+
+  List<_SectionItem> _buildItems(AdminL10n l10n) {
+    return <_SectionItem>[
+      if (_can('dashboard.read'))
+        _SectionItem(
+            AdminSection.dashboard, l10n.navDashboard, Icons.dashboard_outlined),
+      if (!_isTenantAdmin && _can('tenants.read'))
+        _SectionItem(
+            AdminSection.tenants, l10n.navTenants, Icons.business_outlined),
+      if (_can('users.read'))
+        _SectionItem(AdminSection.users, l10n.navUsers, Icons.people_outline),
+      if (_can('groups.read'))
+        _SectionItem(
+            AdminSection.groups, l10n.navGroups, Icons.layers_outlined),
+      if (_can('subscriptions.read'))
+        _SectionItem(AdminSection.subscriptions, l10n.navSubscriptions,
+            Icons.workspace_premium_outlined),
+      if (_can('promocodes.read'))
+        _SectionItem(AdminSection.promocodes, l10n.navPromocodes,
+            Icons.confirmation_number_outlined),
+      if (_can('payments.read'))
+        _SectionItem(
+            AdminSection.payments, l10n.navPayments, Icons.payments_outlined),
+      if (_can('servers.read'))
+        _SectionItem(
+            AdminSection.servers, l10n.navServers, Icons.dns_outlined),
+      if (!_isTenantAdmin && _can('servers.read'))
+        _SectionItem(
+            AdminSection.sshKeys, l10n.navSshKeys, Icons.key_outlined),
+      if (!_isTenantAdmin && _can('releases.read'))
+        _SectionItem(AdminSection.releases, l10n.navReleases,
+            Icons.system_update_alt_outlined),
+      if (!_isTenantAdmin && _can('admins.read'))
+        _SectionItem(AdminSection.admins, l10n.navAdmins,
+            Icons.admin_panel_settings_outlined),
+      if (!_isTenantAdmin)
         _SectionItem(
             AdminSection.settings, l10n.navSettings, Icons.settings_outlined),
-      ];
+    ];
+  }
 
   Widget _buildSection() {
     final token = widget.session.token;
@@ -369,9 +376,13 @@ class _AdminShellState extends State<AdminShell> {
     if (!items.any((item) => item.section == _section) && items.isNotEmpty) {
       _section = items.first.section;
     }
+    final tenantName = _loginResult?.admin.tenantName;
+    final appBarTitle = tenantName != null && tenantName.isNotEmpty
+        ? '${l10n.appTitle} — $tenantName'
+        : l10n.appTitle;
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.appTitle),
+        title: Text(appBarTitle),
         actions: [
           // Language switcher
           TextButton(

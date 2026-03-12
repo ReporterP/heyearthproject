@@ -40,6 +40,8 @@ class AdminProfile {
     required this.permissions,
     required this.createdAt,
     required this.updatedAt,
+    this.tenantId,
+    this.tenantName,
   });
 
   final int id;
@@ -50,8 +52,11 @@ class AdminProfile {
   final List<String> permissions;
   final String createdAt;
   final String updatedAt;
+  final int? tenantId;
+  final String? tenantName;
 
   factory AdminProfile.fromJson(Map<String, dynamic> json) {
+    final tenantIdRaw = json['tenant_id'];
     return AdminProfile(
       id: (json['id'] as num?)?.toInt() ?? 0,
       username: (json['username'] as String? ?? '').trim(),
@@ -67,6 +72,10 @@ class AdminProfile {
           .toList(growable: false),
       createdAt: (json['created_at'] as String? ?? '').trim(),
       updatedAt: (json['updated_at'] as String? ?? '').trim(),
+      tenantId: tenantIdRaw != null ? (tenantIdRaw as num?)?.toInt() : null,
+      tenantName: (json['tenant_name'] as String?)?.trim().isNotEmpty == true
+          ? (json['tenant_name'] as String?)?.trim()
+          : null,
     );
   }
 }
