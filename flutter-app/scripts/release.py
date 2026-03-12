@@ -43,14 +43,14 @@ def get_version_from_pubspec() -> str:
 
 
 def ensure_flutter_ready() -> None:
-    out, err, code = run(["flutter", "--version"])
+    out, err, code = run(["fvm", "flutter", "--version"])
     if code != 0:
         raise SystemExit(f"Flutter не найден: {err or out}")
 
 
 def build_android(version: str) -> Path:
     out, err, code = run(
-        ["flutter", "build", "apk", "--release", "--split-per-abi", "--no-tree-shake-icons"]
+        ["fvm", "flutter", "build", "apk", "--release", "--split-per-abi", "--no-tree-shake-icons"]
     )
     if code != 0:
         raise SystemExit(f"flutter build apk failed: {err or out}")
@@ -66,7 +66,7 @@ def build_android(version: str) -> Path:
 
 
 def build_windows(version: str) -> Path:
-    out, err, code = run(["flutter", "build", "windows", "--release"])
+    out, err, code = run(["fvm", "flutter", "build", "windows", "--release"])
     if code != 0:
         raise SystemExit(f"flutter build windows failed: {err or out}")
 
@@ -84,7 +84,7 @@ def build_windows(version: str) -> Path:
 
 
 def build_ios(version: str) -> Path:
-    out, err, code = run(["flutter", "build", "ipa", "--release"])
+    out, err, code = run(["fvm", "flutter", "build", "ipa", "--release"])
     if code != 0:
         if "darwin" not in sys.platform:
             raise SystemExit("Сборка iOS возможна только на macOS с Xcode")

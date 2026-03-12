@@ -20,3 +20,6 @@ __pycache__/
 
 # ── Backups ────────────────────────────────────────────
 backups/
+
+# FVM Version Cache
+.fvm/
