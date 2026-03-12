@@ -108,4 +108,7 @@ class VpnServiceIo implements VpnService {
       await (_v2ray ?? FlutterV2ray()).stopVless();
     } catch (_) {}
   }
+
+  @override
+  Future<bool> isTrafficFlowing() async => true;
 }

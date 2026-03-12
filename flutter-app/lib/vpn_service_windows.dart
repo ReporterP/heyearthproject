@@ -175,4 +175,7 @@ class VpnServiceWindows implements VpnService {
     } catch (_) {}
     _configFile = null;
   }
+
+  @override
+  Future<bool> isTrafficFlowing() async => true;
 }

@@ -321,9 +321,10 @@ class _AccountsSection extends StatelessWidget {
                     style: TextStyle(
                       fontWeight:
                           isCurrent ? FontWeight.w600 : FontWeight.normal,
-                    color: isCurrent
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
+                      color: isCurrent
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
                     overflow: TextOverflow.ellipsis,
                     maxLines: 1,
                   ),
