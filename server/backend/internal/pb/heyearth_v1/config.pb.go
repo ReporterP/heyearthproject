@@ -69,6 +69,7 @@ type GetConfigResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	SsUri         string                 `protobuf:"bytes,2,opt,name=ss_uri,json=ssUri,proto3" json:"ss_uri,omitempty"`
+	VlessUri      string                 `protobuf:"bytes,3,opt,name=vless_uri,json=vlessUri,proto3" json:"vless_uri,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,6 +114,13 @@ func (x *GetConfigResponse) GetUserId() string {
 func (x *GetConfigResponse) GetSsUri() string {
 	if x != nil {
 		return x.SsUri
+	}
+	return ""
+}
+
+func (x *GetConfigResponse) GetVlessUri() string {
+	if x != nil {
+		return x.VlessUri
 	}
 	return ""
 }
@@ -328,6 +336,7 @@ type CheckAppUpdateResponse struct {
 	ReleaseNotes        string                 `protobuf:"bytes,7,opt,name=release_notes,json=releaseNotes,proto3" json:"release_notes,omitempty"`
 	Mandatory           bool                   `protobuf:"varint,8,opt,name=mandatory,proto3" json:"mandatory,omitempty"`
 	MinSupportedVersion string                 `protobuf:"bytes,9,opt,name=min_supported_version,json=minSupportedVersion,proto3" json:"min_supported_version,omitempty"`
+	ApiEndpoints        []string               `protobuf:"bytes,10,rep,name=api_endpoints,json=apiEndpoints,proto3" json:"api_endpoints,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -423,6 +432,13 @@ func (x *CheckAppUpdateResponse) GetMinSupportedVersion() string {
 		return x.MinSupportedVersion
 	}
 	return ""
+}
+
+func (x *CheckAppUpdateResponse) GetApiEndpoints() []string {
+	if x != nil {
+		return x.ApiEndpoints
+	}
+	return nil
 }
 
 type ApplyPromocodeRequest struct {
@@ -1462,17 +1478,18 @@ func (x *GetAccessStateRequest) GetPlatform() string {
 }
 
 type AccessStateResponse struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	UserId             string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	CurrentPlan        string                 `protobuf:"bytes,2,opt,name=current_plan,json=currentPlan,proto3" json:"current_plan,omitempty"`
-	ValidUntil         string                 `protobuf:"bytes,3,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
-	PreferredPlatform  string                 `protobuf:"bytes,4,opt,name=preferred_platform,json=preferredPlatform,proto3" json:"preferred_platform,omitempty"`
-	IsBlocked          bool                   `protobuf:"varint,5,opt,name=is_blocked,json=isBlocked,proto3" json:"is_blocked,omitempty"`
-	CanConnect         bool                   `protobuf:"varint,6,opt,name=can_connect,json=canConnect,proto3" json:"can_connect,omitempty"`
-	LegacyHappFallback bool                   `protobuf:"varint,7,opt,name=legacy_happ_fallback,json=legacyHappFallback,proto3" json:"legacy_happ_fallback,omitempty"`
-	Reason             string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	UserId                      string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	CurrentPlan                 string                 `protobuf:"bytes,2,opt,name=current_plan,json=currentPlan,proto3" json:"current_plan,omitempty"`
+	ValidUntil                  string                 `protobuf:"bytes,3,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	PreferredPlatform           string                 `protobuf:"bytes,4,opt,name=preferred_platform,json=preferredPlatform,proto3" json:"preferred_platform,omitempty"`
+	IsBlocked                   bool                   `protobuf:"varint,5,opt,name=is_blocked,json=isBlocked,proto3" json:"is_blocked,omitempty"`
+	CanConnect                  bool                   `protobuf:"varint,6,opt,name=can_connect,json=canConnect,proto3" json:"can_connect,omitempty"`
+	LegacyHappFallback          bool                   `protobuf:"varint,7,opt,name=legacy_happ_fallback,json=legacyHappFallback,proto3" json:"legacy_happ_fallback,omitempty"`
+	Reason                      string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
+	AllowManualConnectionChoice bool                   `protobuf:"varint,9,opt,name=allow_manual_connection_choice,json=allowManualConnectionChoice,proto3" json:"allow_manual_connection_choice,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *AccessStateResponse) Reset() {
@@ -1561,6 +1578,13 @@ func (x *AccessStateResponse) GetReason() string {
 	return ""
 }
 
+func (x *AccessStateResponse) GetAllowManualConnectionChoice() bool {
+	if x != nil {
+		return x.AllowManualConnectionChoice
+	}
+	return false
+}
+
 type GetConnectionBundleRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -1621,6 +1645,74 @@ func (x *GetConnectionBundleRequest) GetForceRefresh() bool {
 	return false
 }
 
+type ConnectionOption struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Uri                 string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	Protocol            string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	RecommendedNetworks []string               `protobuf:"bytes,3,rep,name=recommended_networks,json=recommendedNetworks,proto3" json:"recommended_networks,omitempty"`
+	Priority            int32                  `protobuf:"varint,4,opt,name=priority,proto3" json:"priority,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *ConnectionOption) Reset() {
+	*x = ConnectionOption{}
+	mi := &file_heyearth_v1_config_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectionOption) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectionOption) ProtoMessage() {}
+
+func (x *ConnectionOption) ProtoReflect() protoreflect.Message {
+	mi := &file_heyearth_v1_config_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectionOption.ProtoReflect.Descriptor instead.
+func (*ConnectionOption) Descriptor() ([]byte, []int) {
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ConnectionOption) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *ConnectionOption) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *ConnectionOption) GetRecommendedNetworks() []string {
+	if x != nil {
+		return x.RecommendedNetworks
+	}
+	return nil
+}
+
+func (x *ConnectionOption) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
 type ConnectionBundleResponse struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	UserId              string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -1629,13 +1721,15 @@ type ConnectionBundleResponse struct {
 	StatusMessage       string                 `protobuf:"bytes,4,opt,name=status_message,json=statusMessage,proto3" json:"status_message,omitempty"`
 	LegacyHappFallback  bool                   `protobuf:"varint,5,opt,name=legacy_happ_fallback,json=legacyHappFallback,proto3" json:"legacy_happ_fallback,omitempty"`
 	FallbackInstruction string                 `protobuf:"bytes,6,opt,name=fallback_instruction,json=fallbackInstruction,proto3" json:"fallback_instruction,omitempty"`
+	VlessUri            string                 `protobuf:"bytes,7,opt,name=vless_uri,json=vlessUri,proto3" json:"vless_uri,omitempty"`
+	ConnectionOptions   []*ConnectionOption    `protobuf:"bytes,8,rep,name=connection_options,json=connectionOptions,proto3" json:"connection_options,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ConnectionBundleResponse) Reset() {
 	*x = ConnectionBundleResponse{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[26]
+	mi := &file_heyearth_v1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1647,7 +1741,7 @@ func (x *ConnectionBundleResponse) String() string {
 func (*ConnectionBundleResponse) ProtoMessage() {}
 
 func (x *ConnectionBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[26]
+	mi := &file_heyearth_v1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1660,7 +1754,7 @@ func (x *ConnectionBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectionBundleResponse.ProtoReflect.Descriptor instead.
 func (*ConnectionBundleResponse) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{26}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ConnectionBundleResponse) GetUserId() string {
@@ -1705,6 +1799,20 @@ func (x *ConnectionBundleResponse) GetFallbackInstruction() string {
 	return ""
 }
 
+func (x *ConnectionBundleResponse) GetVlessUri() string {
+	if x != nil {
+		return x.VlessUri
+	}
+	return ""
+}
+
+func (x *ConnectionBundleResponse) GetConnectionOptions() []*ConnectionOption {
+	if x != nil {
+		return x.ConnectionOptions
+	}
+	return nil
+}
+
 type ListSubscriptionsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -1714,7 +1822,7 @@ type ListSubscriptionsRequest struct {
 
 func (x *ListSubscriptionsRequest) Reset() {
 	*x = ListSubscriptionsRequest{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[27]
+	mi := &file_heyearth_v1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1726,7 +1834,7 @@ func (x *ListSubscriptionsRequest) String() string {
 func (*ListSubscriptionsRequest) ProtoMessage() {}
 
 func (x *ListSubscriptionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[27]
+	mi := &file_heyearth_v1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1739,7 +1847,7 @@ func (x *ListSubscriptionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSubscriptionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSubscriptionsRequest) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{27}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListSubscriptionsRequest) GetUserId() string {
@@ -1762,7 +1870,7 @@ type SubscriptionItem struct {
 
 func (x *SubscriptionItem) Reset() {
 	*x = SubscriptionItem{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[28]
+	mi := &file_heyearth_v1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1774,7 +1882,7 @@ func (x *SubscriptionItem) String() string {
 func (*SubscriptionItem) ProtoMessage() {}
 
 func (x *SubscriptionItem) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[28]
+	mi := &file_heyearth_v1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1787,7 +1895,7 @@ func (x *SubscriptionItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionItem.ProtoReflect.Descriptor instead.
 func (*SubscriptionItem) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{28}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SubscriptionItem) GetGroupId() int32 {
@@ -1834,7 +1942,7 @@ type ListSubscriptionsResponse struct {
 
 func (x *ListSubscriptionsResponse) Reset() {
 	*x = ListSubscriptionsResponse{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[29]
+	mi := &file_heyearth_v1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1846,7 +1954,7 @@ func (x *ListSubscriptionsResponse) String() string {
 func (*ListSubscriptionsResponse) ProtoMessage() {}
 
 func (x *ListSubscriptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[29]
+	mi := &file_heyearth_v1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1859,7 +1967,7 @@ func (x *ListSubscriptionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSubscriptionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSubscriptionsResponse) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{29}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListSubscriptionsResponse) GetItems() []*SubscriptionItem {
@@ -1878,7 +1986,7 @@ type ListPaymentsRequest struct {
 
 func (x *ListPaymentsRequest) Reset() {
 	*x = ListPaymentsRequest{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[30]
+	mi := &file_heyearth_v1_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +1998,7 @@ func (x *ListPaymentsRequest) String() string {
 func (*ListPaymentsRequest) ProtoMessage() {}
 
 func (x *ListPaymentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[30]
+	mi := &file_heyearth_v1_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +2011,7 @@ func (x *ListPaymentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPaymentsRequest.ProtoReflect.Descriptor instead.
 func (*ListPaymentsRequest) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{30}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListPaymentsRequest) GetUserId() string {
@@ -1930,7 +2038,7 @@ type PaymentItem struct {
 
 func (x *PaymentItem) Reset() {
 	*x = PaymentItem{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[31]
+	mi := &file_heyearth_v1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1942,7 +2050,7 @@ func (x *PaymentItem) String() string {
 func (*PaymentItem) ProtoMessage() {}
 
 func (x *PaymentItem) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[31]
+	mi := &file_heyearth_v1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1955,7 +2063,7 @@ func (x *PaymentItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PaymentItem.ProtoReflect.Descriptor instead.
 func (*PaymentItem) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{31}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *PaymentItem) GetId() int32 {
@@ -2030,7 +2138,7 @@ type ListPaymentsResponse struct {
 
 func (x *ListPaymentsResponse) Reset() {
 	*x = ListPaymentsResponse{}
-	mi := &file_heyearth_v1_config_proto_msgTypes[32]
+	mi := &file_heyearth_v1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2042,7 +2150,7 @@ func (x *ListPaymentsResponse) String() string {
 func (*ListPaymentsResponse) ProtoMessage() {}
 
 func (x *ListPaymentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_heyearth_v1_config_proto_msgTypes[32]
+	mi := &file_heyearth_v1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2055,7 +2163,7 @@ func (x *ListPaymentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPaymentsResponse.ProtoReflect.Descriptor instead.
 func (*ListPaymentsResponse) Descriptor() ([]byte, []int) {
-	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{32}
+	return file_heyearth_v1_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListPaymentsResponse) GetItems() []*PaymentItem {
@@ -2071,10 +2179,11 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\n" +
 	"\x18heyearth/v1/config.proto\x12\vheyearth.v1\"+\n" +
 	"\x10GetConfigRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\"C\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"`\n" +
 	"\x11GetConfigResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x15\n" +
-	"\x06ss_uri\x18\x02 \x01(\tR\x05ssUri\"\xa2\x01\n" +
+	"\x06ss_uri\x18\x02 \x01(\tR\x05ssUri\x12\x1b\n" +
+	"\tvless_uri\x18\x03 \x01(\tR\bvlessUri\"\xa2\x01\n" +
 	"\rDeviceContext\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1a\n" +
 	"\bplatform\x18\x02 \x01(\tR\bplatform\x12!\n" +
@@ -2086,7 +2195,7 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\x0eHealthResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\"3\n" +
 	"\x15CheckAppUpdateRequest\x12\x1a\n" +
-	"\bplatform\x18\x01 \x01(\tR\bplatform\"\xbe\x02\n" +
+	"\bplatform\x18\x01 \x01(\tR\bplatform\"\xe3\x02\n" +
 	"\x16CheckAppUpdateResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1f\n" +
 	"\vandroid_url\x18\x02 \x01(\tR\n" +
@@ -2098,7 +2207,9 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\aios_url\x18\x06 \x01(\tR\x06iosUrl\x12#\n" +
 	"\rrelease_notes\x18\a \x01(\tR\freleaseNotes\x12\x1c\n" +
 	"\tmandatory\x18\b \x01(\bR\tmandatory\x122\n" +
-	"\x15min_supported_version\x18\t \x01(\tR\x13minSupportedVersion\"D\n" +
+	"\x15min_supported_version\x18\t \x01(\tR\x13minSupportedVersion\x12#\n" +
+	"\rapi_endpoints\x18\n" +
+	" \x03(\tR\fapiEndpoints\"D\n" +
 	"\x15ApplyPromocodeRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x12\n" +
 	"\x04code\x18\x02 \x01(\tR\x04code\"L\n" +
@@ -2182,7 +2293,7 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\rstatus_reason\x18\v \x01(\tR\fstatusReason\"L\n" +
 	"\x15GetAccessStateRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
-	"\bplatform\x18\x02 \x01(\tR\bplatform\"\xab\x02\n" +
+	"\bplatform\x18\x02 \x01(\tR\bplatform\"\xf0\x02\n" +
 	"\x13AccessStateResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12!\n" +
 	"\fcurrent_plan\x18\x02 \x01(\tR\vcurrentPlan\x12\x1f\n" +
@@ -2194,18 +2305,26 @@ const file_heyearth_v1_config_proto_rawDesc = "" +
 	"\vcan_connect\x18\x06 \x01(\bR\n" +
 	"canConnect\x120\n" +
 	"\x14legacy_happ_fallback\x18\a \x01(\bR\x12legacyHappFallback\x12\x16\n" +
-	"\x06reason\x18\b \x01(\tR\x06reason\"v\n" +
+	"\x06reason\x18\b \x01(\tR\x06reason\x12C\n" +
+	"\x1eallow_manual_connection_choice\x18\t \x01(\bR\x1ballowManualConnectionChoice\"v\n" +
 	"\x1aGetConnectionBundleRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\bplatform\x18\x02 \x01(\tR\bplatform\x12#\n" +
-	"\rforce_refresh\x18\x03 \x01(\bR\fforceRefresh\"\xf9\x01\n" +
+	"\rforce_refresh\x18\x03 \x01(\bR\fforceRefresh\"\x8f\x01\n" +
+	"\x10ConnectionOption\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n" +
+	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x121\n" +
+	"\x14recommended_networks\x18\x03 \x03(\tR\x13recommendedNetworks\x12\x1a\n" +
+	"\bpriority\x18\x04 \x01(\x05R\bpriority\"\xe4\x02\n" +
 	"\x18ConnectionBundleResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x15\n" +
 	"\x06ss_uri\x18\x02 \x01(\tR\x05ssUri\x12!\n" +
 	"\fconnect_mode\x18\x03 \x01(\tR\vconnectMode\x12%\n" +
 	"\x0estatus_message\x18\x04 \x01(\tR\rstatusMessage\x120\n" +
 	"\x14legacy_happ_fallback\x18\x05 \x01(\bR\x12legacyHappFallback\x121\n" +
-	"\x14fallback_instruction\x18\x06 \x01(\tR\x13fallbackInstruction\"3\n" +
+	"\x14fallback_instruction\x18\x06 \x01(\tR\x13fallbackInstruction\x12\x1b\n" +
+	"\tvless_uri\x18\a \x01(\tR\bvlessUri\x12L\n" +
+	"\x12connection_options\x18\b \x03(\v2\x1d.heyearth.v1.ConnectionOptionR\x11connectionOptions\"3\n" +
 	"\x18ListSubscriptionsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"\xa4\x01\n" +
 	"\x10SubscriptionItem\x12\x19\n" +
@@ -2271,7 +2390,7 @@ func file_heyearth_v1_config_proto_rawDescGZIP() []byte {
 	return file_heyearth_v1_config_proto_rawDescData
 }
 
-var file_heyearth_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_heyearth_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_heyearth_v1_config_proto_goTypes = []any{
 	(*GetConfigRequest)(nil),              // 0: heyearth.v1.GetConfigRequest
 	(*GetConfigResponse)(nil),             // 1: heyearth.v1.GetConfigResponse
@@ -2299,13 +2418,14 @@ var file_heyearth_v1_config_proto_goTypes = []any{
 	(*GetAccessStateRequest)(nil),         // 23: heyearth.v1.GetAccessStateRequest
 	(*AccessStateResponse)(nil),           // 24: heyearth.v1.AccessStateResponse
 	(*GetConnectionBundleRequest)(nil),    // 25: heyearth.v1.GetConnectionBundleRequest
-	(*ConnectionBundleResponse)(nil),      // 26: heyearth.v1.ConnectionBundleResponse
-	(*ListSubscriptionsRequest)(nil),      // 27: heyearth.v1.ListSubscriptionsRequest
-	(*SubscriptionItem)(nil),              // 28: heyearth.v1.SubscriptionItem
-	(*ListSubscriptionsResponse)(nil),     // 29: heyearth.v1.ListSubscriptionsResponse
-	(*ListPaymentsRequest)(nil),           // 30: heyearth.v1.ListPaymentsRequest
-	(*PaymentItem)(nil),                   // 31: heyearth.v1.PaymentItem
-	(*ListPaymentsResponse)(nil),          // 32: heyearth.v1.ListPaymentsResponse
+	(*ConnectionOption)(nil),              // 26: heyearth.v1.ConnectionOption
+	(*ConnectionBundleResponse)(nil),      // 27: heyearth.v1.ConnectionBundleResponse
+	(*ListSubscriptionsRequest)(nil),      // 28: heyearth.v1.ListSubscriptionsRequest
+	(*SubscriptionItem)(nil),              // 29: heyearth.v1.SubscriptionItem
+	(*ListSubscriptionsResponse)(nil),     // 30: heyearth.v1.ListSubscriptionsResponse
+	(*ListPaymentsRequest)(nil),           // 31: heyearth.v1.ListPaymentsRequest
+	(*PaymentItem)(nil),                   // 32: heyearth.v1.PaymentItem
+	(*ListPaymentsResponse)(nil),          // 33: heyearth.v1.ListPaymentsResponse
 }
 var file_heyearth_v1_config_proto_depIdxs = []int32{
 	22, // 0: heyearth.v1.CreatePairingCodeResponse.profile:type_name -> heyearth.v1.UserProfileResponse
@@ -2314,51 +2434,52 @@ var file_heyearth_v1_config_proto_depIdxs = []int32{
 	22, // 3: heyearth.v1.ClaimResponse.profile:type_name -> heyearth.v1.UserProfileResponse
 	24, // 4: heyearth.v1.ClaimResponse.access_state:type_name -> heyearth.v1.AccessStateResponse
 	2,  // 5: heyearth.v1.GetMeRequest.device:type_name -> heyearth.v1.DeviceContext
-	28, // 6: heyearth.v1.ListSubscriptionsResponse.items:type_name -> heyearth.v1.SubscriptionItem
-	31, // 7: heyearth.v1.ListPaymentsResponse.items:type_name -> heyearth.v1.PaymentItem
-	0,  // 8: heyearth.v1.ConfigApi.GetConfig:input_type -> heyearth.v1.GetConfigRequest
-	3,  // 9: heyearth.v1.ConfigApi.Health:input_type -> heyearth.v1.HealthRequest
-	5,  // 10: heyearth.v1.ConfigApi.CheckAppUpdate:input_type -> heyearth.v1.CheckAppUpdateRequest
-	7,  // 11: heyearth.v1.ConfigApi.ApplyPromocode:input_type -> heyearth.v1.ApplyPromocodeRequest
-	9,  // 12: heyearth.v1.ConfigApi.GetProfile:input_type -> heyearth.v1.GetProfileRequest
-	11, // 13: heyearth.v1.BotApi.EnsureTelegramUser:input_type -> heyearth.v1.EnsureTelegramUserRequest
-	12, // 14: heyearth.v1.BotApi.SetPreferredPlatform:input_type -> heyearth.v1.SetPreferredPlatformRequest
-	13, // 15: heyearth.v1.BotApi.CreatePairingCode:input_type -> heyearth.v1.CreatePairingCodeRequest
-	15, // 16: heyearth.v1.BotApi.GetClientDistribution:input_type -> heyearth.v1.GetClientDistributionRequest
-	17, // 17: heyearth.v1.BotApi.IssueLegacyAppleConfig:input_type -> heyearth.v1.IssueLegacyAppleConfigRequest
-	18, // 18: heyearth.v1.ClientApi.ClaimByCode:input_type -> heyearth.v1.ClaimByCodeRequest
-	19, // 19: heyearth.v1.ClientApi.ClaimByToken:input_type -> heyearth.v1.ClaimByTokenRequest
-	21, // 20: heyearth.v1.ClientApi.GetMe:input_type -> heyearth.v1.GetMeRequest
-	23, // 21: heyearth.v1.ClientApi.GetAccessState:input_type -> heyearth.v1.GetAccessStateRequest
-	25, // 22: heyearth.v1.ClientApi.GetConnectionBundle:input_type -> heyearth.v1.GetConnectionBundleRequest
-	27, // 23: heyearth.v1.ClientApi.ListSubscriptions:input_type -> heyearth.v1.ListSubscriptionsRequest
-	30, // 24: heyearth.v1.ClientApi.ListPayments:input_type -> heyearth.v1.ListPaymentsRequest
-	7,  // 25: heyearth.v1.ClientApi.ApplyPromocode:input_type -> heyearth.v1.ApplyPromocodeRequest
-	5,  // 26: heyearth.v1.ClientApi.CheckAppUpdate:input_type -> heyearth.v1.CheckAppUpdateRequest
-	1,  // 27: heyearth.v1.ConfigApi.GetConfig:output_type -> heyearth.v1.GetConfigResponse
-	4,  // 28: heyearth.v1.ConfigApi.Health:output_type -> heyearth.v1.HealthResponse
-	6,  // 29: heyearth.v1.ConfigApi.CheckAppUpdate:output_type -> heyearth.v1.CheckAppUpdateResponse
-	8,  // 30: heyearth.v1.ConfigApi.ApplyPromocode:output_type -> heyearth.v1.ApplyPromocodeResponse
-	10, // 31: heyearth.v1.ConfigApi.GetProfile:output_type -> heyearth.v1.GetProfileResponse
-	22, // 32: heyearth.v1.BotApi.EnsureTelegramUser:output_type -> heyearth.v1.UserProfileResponse
-	22, // 33: heyearth.v1.BotApi.SetPreferredPlatform:output_type -> heyearth.v1.UserProfileResponse
-	14, // 34: heyearth.v1.BotApi.CreatePairingCode:output_type -> heyearth.v1.CreatePairingCodeResponse
-	16, // 35: heyearth.v1.BotApi.GetClientDistribution:output_type -> heyearth.v1.GetClientDistributionResponse
-	26, // 36: heyearth.v1.BotApi.IssueLegacyAppleConfig:output_type -> heyearth.v1.ConnectionBundleResponse
-	20, // 37: heyearth.v1.ClientApi.ClaimByCode:output_type -> heyearth.v1.ClaimResponse
-	20, // 38: heyearth.v1.ClientApi.ClaimByToken:output_type -> heyearth.v1.ClaimResponse
-	22, // 39: heyearth.v1.ClientApi.GetMe:output_type -> heyearth.v1.UserProfileResponse
-	24, // 40: heyearth.v1.ClientApi.GetAccessState:output_type -> heyearth.v1.AccessStateResponse
-	26, // 41: heyearth.v1.ClientApi.GetConnectionBundle:output_type -> heyearth.v1.ConnectionBundleResponse
-	29, // 42: heyearth.v1.ClientApi.ListSubscriptions:output_type -> heyearth.v1.ListSubscriptionsResponse
-	32, // 43: heyearth.v1.ClientApi.ListPayments:output_type -> heyearth.v1.ListPaymentsResponse
-	8,  // 44: heyearth.v1.ClientApi.ApplyPromocode:output_type -> heyearth.v1.ApplyPromocodeResponse
-	6,  // 45: heyearth.v1.ClientApi.CheckAppUpdate:output_type -> heyearth.v1.CheckAppUpdateResponse
-	27, // [27:46] is the sub-list for method output_type
-	8,  // [8:27] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	26, // 6: heyearth.v1.ConnectionBundleResponse.connection_options:type_name -> heyearth.v1.ConnectionOption
+	29, // 7: heyearth.v1.ListSubscriptionsResponse.items:type_name -> heyearth.v1.SubscriptionItem
+	32, // 8: heyearth.v1.ListPaymentsResponse.items:type_name -> heyearth.v1.PaymentItem
+	0,  // 9: heyearth.v1.ConfigApi.GetConfig:input_type -> heyearth.v1.GetConfigRequest
+	3,  // 10: heyearth.v1.ConfigApi.Health:input_type -> heyearth.v1.HealthRequest
+	5,  // 11: heyearth.v1.ConfigApi.CheckAppUpdate:input_type -> heyearth.v1.CheckAppUpdateRequest
+	7,  // 12: heyearth.v1.ConfigApi.ApplyPromocode:input_type -> heyearth.v1.ApplyPromocodeRequest
+	9,  // 13: heyearth.v1.ConfigApi.GetProfile:input_type -> heyearth.v1.GetProfileRequest
+	11, // 14: heyearth.v1.BotApi.EnsureTelegramUser:input_type -> heyearth.v1.EnsureTelegramUserRequest
+	12, // 15: heyearth.v1.BotApi.SetPreferredPlatform:input_type -> heyearth.v1.SetPreferredPlatformRequest
+	13, // 16: heyearth.v1.BotApi.CreatePairingCode:input_type -> heyearth.v1.CreatePairingCodeRequest
+	15, // 17: heyearth.v1.BotApi.GetClientDistribution:input_type -> heyearth.v1.GetClientDistributionRequest
+	17, // 18: heyearth.v1.BotApi.IssueLegacyAppleConfig:input_type -> heyearth.v1.IssueLegacyAppleConfigRequest
+	18, // 19: heyearth.v1.ClientApi.ClaimByCode:input_type -> heyearth.v1.ClaimByCodeRequest
+	19, // 20: heyearth.v1.ClientApi.ClaimByToken:input_type -> heyearth.v1.ClaimByTokenRequest
+	21, // 21: heyearth.v1.ClientApi.GetMe:input_type -> heyearth.v1.GetMeRequest
+	23, // 22: heyearth.v1.ClientApi.GetAccessState:input_type -> heyearth.v1.GetAccessStateRequest
+	25, // 23: heyearth.v1.ClientApi.GetConnectionBundle:input_type -> heyearth.v1.GetConnectionBundleRequest
+	28, // 24: heyearth.v1.ClientApi.ListSubscriptions:input_type -> heyearth.v1.ListSubscriptionsRequest
+	31, // 25: heyearth.v1.ClientApi.ListPayments:input_type -> heyearth.v1.ListPaymentsRequest
+	7,  // 26: heyearth.v1.ClientApi.ApplyPromocode:input_type -> heyearth.v1.ApplyPromocodeRequest
+	5,  // 27: heyearth.v1.ClientApi.CheckAppUpdate:input_type -> heyearth.v1.CheckAppUpdateRequest
+	1,  // 28: heyearth.v1.ConfigApi.GetConfig:output_type -> heyearth.v1.GetConfigResponse
+	4,  // 29: heyearth.v1.ConfigApi.Health:output_type -> heyearth.v1.HealthResponse
+	6,  // 30: heyearth.v1.ConfigApi.CheckAppUpdate:output_type -> heyearth.v1.CheckAppUpdateResponse
+	8,  // 31: heyearth.v1.ConfigApi.ApplyPromocode:output_type -> heyearth.v1.ApplyPromocodeResponse
+	10, // 32: heyearth.v1.ConfigApi.GetProfile:output_type -> heyearth.v1.GetProfileResponse
+	22, // 33: heyearth.v1.BotApi.EnsureTelegramUser:output_type -> heyearth.v1.UserProfileResponse
+	22, // 34: heyearth.v1.BotApi.SetPreferredPlatform:output_type -> heyearth.v1.UserProfileResponse
+	14, // 35: heyearth.v1.BotApi.CreatePairingCode:output_type -> heyearth.v1.CreatePairingCodeResponse
+	16, // 36: heyearth.v1.BotApi.GetClientDistribution:output_type -> heyearth.v1.GetClientDistributionResponse
+	27, // 37: heyearth.v1.BotApi.IssueLegacyAppleConfig:output_type -> heyearth.v1.ConnectionBundleResponse
+	20, // 38: heyearth.v1.ClientApi.ClaimByCode:output_type -> heyearth.v1.ClaimResponse
+	20, // 39: heyearth.v1.ClientApi.ClaimByToken:output_type -> heyearth.v1.ClaimResponse
+	22, // 40: heyearth.v1.ClientApi.GetMe:output_type -> heyearth.v1.UserProfileResponse
+	24, // 41: heyearth.v1.ClientApi.GetAccessState:output_type -> heyearth.v1.AccessStateResponse
+	27, // 42: heyearth.v1.ClientApi.GetConnectionBundle:output_type -> heyearth.v1.ConnectionBundleResponse
+	30, // 43: heyearth.v1.ClientApi.ListSubscriptions:output_type -> heyearth.v1.ListSubscriptionsResponse
+	33, // 44: heyearth.v1.ClientApi.ListPayments:output_type -> heyearth.v1.ListPaymentsResponse
+	8,  // 45: heyearth.v1.ClientApi.ApplyPromocode:output_type -> heyearth.v1.ApplyPromocodeResponse
+	6,  // 46: heyearth.v1.ClientApi.CheckAppUpdate:output_type -> heyearth.v1.CheckAppUpdateResponse
+	28, // [28:47] is the sub-list for method output_type
+	9,  // [9:28] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_heyearth_v1_config_proto_init() }
@@ -2372,7 +2493,7 @@ func file_heyearth_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_heyearth_v1_config_proto_rawDesc), len(file_heyearth_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

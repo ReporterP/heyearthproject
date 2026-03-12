@@ -1,0 +1,6 @@
+SS_PUBLIC_HOST={{ ss_public_host | default(ansible_default_ipv4.address) }}
+XRAY_REALITY_PORT={{ xray_reality_port | default(443) }}
+XRAY_REALITY_SNI={{ xray_reality_sni | default('microsoft.com') }}
+XRAY_REALITY_FINGERPRINT={{ xray_reality_fingerprint | default('chrome') }}
+SS_METHOD={{ ss_method | default('chacha20-ietf-poly1305') }}
+SS_BASE_PORT={{ ss_base_port | default(20000) }}

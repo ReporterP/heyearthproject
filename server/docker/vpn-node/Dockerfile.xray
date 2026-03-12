@@ -1,0 +1,20 @@
+FROM alpine:3.19
+
+ARG XRAY_VERSION=1.8.8
+
+RUN apk add --no-cache bash jq curl unzip xxd && \
+    curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip" -o /tmp/xray.zip && \
+    mkdir -p /opt/heyearth/xray && \
+    unzip /tmp/xray.zip -d /opt/heyearth/xray && \
+    chmod +x /opt/heyearth/xray/xray && \
+    rm /tmp/xray.zip
+
+COPY docker/vpn-node/scripts/generate-reality-keys.sh /opt/heyearth/generate-reality-keys.sh
+RUN chmod +x /opt/heyearth/generate-reality-keys.sh
+
+COPY docker/vpn-node/xray-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 443
+
+ENTRYPOINT ["/entrypoint.sh"]

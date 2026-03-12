@@ -1,0 +1,36 @@
+# ── Environment & secrets ──────────────────────────────
+.env
+*.env.local
+
+# ── Go build artifacts ─────────────────────────────────
+backend/.build/
+backend/heyearth-api
+backend/heyearth-api.exe
+backend/heyearth-bot
+backend/heyearth-bot.exe
+backend/node-agent
+backend/node-agent.exe
+backend/bot
+backend/deploy
+backend/deploy.exe
+backend/migrate
+backend/migrate.exe
+
+# ── TLS certificates (generated locally) ──────────────
+backend/certs/*.pem
+backend/certs/*.key
+
+# ── Protoc toolchain (downloaded locally) ─────────────
+backend/.tools/
+
+# ── Test / coverage artifacts ─────────────────────────
+*.test.log
+coverage.out
+coverage.html
+
+# ── Misc ──────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib

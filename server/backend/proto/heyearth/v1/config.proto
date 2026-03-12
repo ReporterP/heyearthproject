@@ -40,6 +40,7 @@ message GetConfigRequest {
 message GetConfigResponse {
   string user_id = 1;
   string ss_uri = 2;
+  string vless_uri = 3;
 }
 
 message DeviceContext {
@@ -70,6 +71,7 @@ message CheckAppUpdateResponse {
   string release_notes = 7;
   bool mandatory = 8;
   string min_supported_version = 9;
+  repeated string api_endpoints = 10;
 }
 
 message ApplyPromocodeRequest {
@@ -185,12 +187,20 @@ message AccessStateResponse {
   bool can_connect = 6;
   bool legacy_happ_fallback = 7;
   string reason = 8;
+  bool allow_manual_connection_choice = 9;
 }
 
 message GetConnectionBundleRequest {
   string user_id = 1;
   string platform = 2;
   bool force_refresh = 3;
+}
+
+message ConnectionOption {
+  string uri = 1;
+  string protocol = 2;
+  repeated string recommended_networks = 3;
+  int32 priority = 4;
 }
 
 message ConnectionBundleResponse {
@@ -200,6 +210,8 @@ message ConnectionBundleResponse {
   string status_message = 4;
   bool legacy_happ_fallback = 5;
   string fallback_instruction = 6;
+  string vless_uri = 7;
+  repeated ConnectionOption connection_options = 8;
 }
 
 message ListSubscriptionsRequest {

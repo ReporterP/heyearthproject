@@ -22,10 +22,13 @@ const (
 )
 
 type CreateUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// For multi-hop: vless URI of the next node in the chain.
+	// When set, the node's Xray outbound routes traffic to this upstream instead of the internet.
+	UpstreamVlessUri string `protobuf:"bytes,2,opt,name=upstream_vless_uri,json=upstreamVlessUri,proto3" json:"upstream_vless_uri,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CreateUserRequest) Reset() {
@@ -65,9 +68,17 @@ func (x *CreateUserRequest) GetUserId() string {
 	return ""
 }
 
+func (x *CreateUserRequest) GetUpstreamVlessUri() string {
+	if x != nil {
+		return x.UpstreamVlessUri
+	}
+	return ""
+}
+
 type CreateUserResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SsLink        string                 `protobuf:"bytes,1,opt,name=ss_link,json=ssLink,proto3" json:"ss_link,omitempty"`
+	VlessUri      string                 `protobuf:"bytes,2,opt,name=vless_uri,json=vlessUri,proto3" json:"vless_uri,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -105,6 +116,13 @@ func (*CreateUserResponse) Descriptor() ([]byte, []int) {
 func (x *CreateUserResponse) GetSsLink() string {
 	if x != nil {
 		return x.SsLink
+	}
+	return ""
+}
+
+func (x *CreateUserResponse) GetVlessUri() string {
+	if x != nil {
+		return x.VlessUri
 	}
 	return ""
 }
@@ -297,11 +315,13 @@ var File_node_agent_v1_node_agent_proto protoreflect.FileDescriptor
 
 const file_node_agent_v1_node_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1enode_agent/v1/node_agent.proto\x12\rnode_agent.v1\",\n" +
+	"\x1enode_agent/v1/node_agent.proto\x12\rnode_agent.v1\"Z\n" +
 	"\x11CreateUserRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\"-\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12,\n" +
+	"\x12upstream_vless_uri\x18\x02 \x01(\tR\x10upstreamVlessUri\"J\n" +
 	"\x12CreateUserResponse\x12\x17\n" +
-	"\ass_link\x18\x01 \x01(\tR\x06ssLink\",\n" +
+	"\ass_link\x18\x01 \x01(\tR\x06ssLink\x12\x1b\n" +
+	"\tvless_uri\x18\x02 \x01(\tR\bvlessUri\",\n" +
 	"\x11DeleteUserRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\".\n" +
 	"\x12DeleteUserResponse\x12\x18\n" +

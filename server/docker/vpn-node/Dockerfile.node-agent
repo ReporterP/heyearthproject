@@ -1,0 +1,20 @@
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /node-agent ./cmd/node-agent
+
+FROM alpine:3.19
+RUN apk add --no-cache bash jq
+
+COPY --from=builder /node-agent /usr/local/bin/node-agent
+
+COPY docker/vpn-node/scripts/add-ss-user.sh /opt/heyearth/add-ss-user.sh
+COPY docker/vpn-node/scripts/add-xray-user.sh /opt/heyearth/add-xray-user.sh
+RUN chmod +x /opt/heyearth/add-ss-user.sh /opt/heyearth/add-xray-user.sh
+
+EXPOSE 50052
+
+ENTRYPOINT ["node-agent"]

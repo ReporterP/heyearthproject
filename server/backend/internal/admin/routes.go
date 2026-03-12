@@ -115,6 +115,18 @@ func RegisterRoutes() {
 			withMethod(http.MethodPost, RequirePermission("server_ops.execute", ServerActionHandler)).ServeHTTP(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/metrics") {
+			withMethod(http.MethodGet, RequirePermission("servers.read", GetServerMetricsHandler)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/logs") {
+			withMethod(http.MethodGet, RequirePermission("servers.logs", GetServerLogsHandler)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/files") || strings.Contains(r.URL.Path, "/files/") {
+			RequirePermission("servers.files", ServerFileBrowserHandler).ServeHTTP(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			RequirePermission("servers.read", GetServerDetailHandler).ServeHTTP(w, r)
@@ -184,6 +196,41 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
+
+	http.HandleFunc("/api/admin/settings", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("settings.read", ListSettingsHandler).ServeHTTP(w, r)
+		case http.MethodPost:
+			RequirePermission("settings.write", UpdateSettingHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
+	http.HandleFunc("/api/admin/tenants", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("tenants.read", ListTenantsHandler).ServeHTTP(w, r)
+		case http.MethodPost:
+			RequirePermission("tenants.write", CreateTenantHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+	http.HandleFunc("/api/admin/tenants/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			RequirePermission("tenants.write", UpdateTenantHandler).ServeHTTP(w, r)
+		case http.MethodDelete:
+			RequirePermission("tenants.write", DeleteTenantHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
+	http.HandleFunc("/api/public/create-tenant", PublicCreateTenantHandler)
+	http.HandleFunc("/api/public/tariff/calculate", PublicTariffCalculateHandler)
 }
 
 func withMethod(method string, next http.HandlerFunc) http.HandlerFunc {

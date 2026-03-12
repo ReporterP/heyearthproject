@@ -21,6 +21,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  void _showAddAccountDialog(BuildContext context, AppState state) {
+    final l10n = L10n.of(context);
+    final controller = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.addAccount),
+        content: TextField(
+          controller: controller,
+          textCapitalization: TextCapitalization.characters,
+          decoration: InputDecoration(
+            hintText: l10n.addAccountHint,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final input = controller.text.trim();
+              if (input.isEmpty) return;
+              Navigator.of(ctx).pop();
+              final ok = input.length <= 12 &&
+                      RegExp(r'^[A-Za-z0-9]+$').hasMatch(input)
+                  ? await state.claimByCode(input)
+                  : await state.restoreUserId(input);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok
+                        ? l10n.accountRestored
+                        : l10n.translateError(state.error).isNotEmpty
+                            ? l10n.translateError(state.error)
+                            : l10n.loginFailed,
+                  ),
+                ),
+              );
+            },
+            child: Text(l10n.login),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _applyPromo(AppState state) async {
     final code = _promoController.text.trim();
     if (code.isEmpty) {
@@ -68,6 +117,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                _AccountsSection(
+                  savedAccounts: state.savedAccounts,
+                  currentUserId: state.userId,
+                  onSwitchAccount: state.switchAccount,
+                  onRemoveAccount: state.removeAccount,
+                  onAddAccount: () => _showAddAccountDialog(context, state),
+                ),
+                const SizedBox(height: 12),
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.badge_outlined),
@@ -197,6 +254,100 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+class _AccountsSection extends StatelessWidget {
+  const _AccountsSection({
+    required this.savedAccounts,
+    required this.currentUserId,
+    required this.onSwitchAccount,
+    required this.onRemoveAccount,
+    required this.onAddAccount,
+  });
+
+  final List<String> savedAccounts;
+  final String? currentUserId;
+  final void Function(String) onSwitchAccount;
+  final void Function(String) onRemoveAccount;
+  final VoidCallback onAddAccount;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  l10n.accountsSection,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                FilledButton.icon(
+                  onPressed: onAddAccount,
+                  icon: const Icon(Icons.add, size: 20),
+                  label: Text(l10n.addAccount),
+                ),
+              ],
+            ),
+            if (savedAccounts.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  l10n.isEn
+                      ? 'No saved accounts. Add one above.'
+                      : 'Нет сохранённых аккаунтов. Добавьте выше.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              )
+            else
+              ...savedAccounts.map((id) {
+                final isCurrent = id == currentUserId;
+                return ListTile(
+                  leading: Icon(
+                    isCurrent ? Icons.person : Icons.person_outline,
+                    color: isCurrent
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                  ),
+                  title: Text(
+                    id,
+                    style: TextStyle(
+                      fontWeight:
+                          isCurrent ? FontWeight.w600 : FontWeight.normal,
+                    color: isCurrent
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                  subtitle: isCurrent ? Text(l10n.currentAccount) : null,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!isCurrent)
+                        TextButton(
+                          onPressed: () => onSwitchAccount(id),
+                          child: Text(l10n.switchAccount),
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                        onPressed: () => onRemoveAccount(id),
+                        tooltip: l10n.removeAccount,
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
     );
   }
 }

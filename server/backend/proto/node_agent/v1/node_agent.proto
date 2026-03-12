@@ -17,10 +17,14 @@ service NodeAgent {
 
 message CreateUserRequest {
   string user_id = 1;
+  // For multi-hop: vless URI of the next node in the chain.
+  // When set, the node's Xray outbound routes traffic to this upstream instead of the internet.
+  string upstream_vless_uri = 2;
 }
 
 message CreateUserResponse {
   string ss_link = 1;
+  string vless_uri = 2;
 }
 
 message DeleteUserRequest {

@@ -6,4 +6,8 @@ abstract class VpnService {
   Future<void> connect(String ssUri,
       {bool proxyOnly = false, bool selectedOnly = false});
   Future<void> disconnect();
+
+  /// Returns true if traffic is currently flowing through the VPN tunnel.
+  /// Used by auto-failover to detect dead connections.
+  Future<bool> isTrafficFlowing() async => true;
 }

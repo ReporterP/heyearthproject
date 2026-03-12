@@ -109,6 +109,7 @@ func (s *server) IssueLegacyAppleConfig(ctx context.Context, req *heyearth_v1.Is
 	return &heyearth_v1.ConnectionBundleResponse{
 		UserId:              user.UserID,
 		SsUri:               resp.GetSsUri(),
+		VlessUri:            resp.GetVlessUri(),
 		ConnectMode:         "legacy_happ",
 		StatusMessage:       "Use Happ to import this ss:// link",
 		LegacyHappFallback:  true,
@@ -187,12 +188,21 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 	if err != nil {
 		return nil, err
 	}
+
+	connectMode := "native_app"
+	if resp.GetVlessUri() != "" {
+		connectMode = "vless_reality"
+	}
+
+	options := buildConnectionOptions(resp.GetSsUri(), resp.GetVlessUri())
+
 	return &heyearth_v1.ConnectionBundleResponse{
-		UserId:             resp.GetUserId(),
-		SsUri:              resp.GetSsUri(),
-		ConnectMode:        "native_app",
-		StatusMessage:      "Connection bundle is ready.",
-		LegacyHappFallback: false,
+		UserId:            resp.GetUserId(),
+		SsUri:             resp.GetSsUri(),
+		VlessUri:          resp.GetVlessUri(),
+		ConnectMode:       connectMode,
+		StatusMessage:     "Connection bundle is ready.",
+		ConnectionOptions: options,
 	}, nil
 }
 
@@ -283,14 +293,15 @@ func accessToProto(access *biz.UserAccessState) *heyearth_v1.AccessStateResponse
 		return &heyearth_v1.AccessStateResponse{}
 	}
 	return &heyearth_v1.AccessStateResponse{
-		UserId:             access.UserID,
-		CurrentPlan:        access.CurrentPlan,
-		ValidUntil:         access.ValidUntil,
-		PreferredPlatform:  access.PreferredPlatform,
-		IsBlocked:          access.IsBlocked,
-		CanConnect:         access.CanConnect,
-		LegacyHappFallback: access.LegacyHappFallback,
-		Reason:             access.Reason,
+		UserId:                     access.UserID,
+		CurrentPlan:                access.CurrentPlan,
+		ValidUntil:                 access.ValidUntil,
+		PreferredPlatform:          access.PreferredPlatform,
+		IsBlocked:                  access.IsBlocked,
+		CanConnect:                 access.CanConnect,
+		LegacyHappFallback:         access.LegacyHappFallback,
+		Reason:                     access.Reason,
+		AllowManualConnectionChoice: access.AllowManualConnectionChoice,
 	}
 }
 
@@ -316,6 +327,29 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func buildConnectionOptions(ssUri, vlessUri string) []*heyearth_v1.ConnectionOption {
+	var opts []*heyearth_v1.ConnectionOption
+	priority := int32(1)
+	if vlessUri != "" {
+		opts = append(opts, &heyearth_v1.ConnectionOption{
+			Uri:                 vlessUri,
+			Protocol:            "vless_reality",
+			RecommendedNetworks: []string{"cellular", "any"},
+			Priority:            priority,
+		})
+		priority++
+	}
+	if ssUri != "" {
+		opts = append(opts, &heyearth_v1.ConnectionOption{
+			Uri:                 ssUri,
+			Protocol:            "shadowsocks",
+			RecommendedNetworks: []string{"wifi", "any"},
+			Priority:            priority,
+		})
+	}
+	return opts
+}
+
 func (s *server) issueNodeConfig(ctx context.Context, userID string) (*heyearth_v1.GetConfigResponse, error) {
 	user, err := biz.GetOrCreateUser(userID)
 	if err != nil {
@@ -334,24 +368,90 @@ func (s *server) issueNodeConfig(ctx context.Context, userID string) (*heyearth_
 		groupID = sub.GroupID
 	}
 
+	// Try multi-hop (2 nodes) first; fall back to single-node if chain unavailable
+	chain, chainErr := biz.GetBestServerChainForGroup(groupID, 2)
+	if chainErr == nil && len(chain) >= 2 {
+		return s.issueMultiHopConfig(ctx, userID, chain)
+	}
+
 	bestServer, err := biz.GetBestServerForGroup(groupID)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "no available VPN nodes: %v", err)
 	}
 
-	agentClient, conn, err := connectToNodeAgent(ctx, bestServer.IPAddress)
+	return s.issueSingleNodeConfig(ctx, userID, bestServer)
+}
+
+func (s *server) issueSingleNodeConfig(ctx context.Context, userID string, node *biz.ServerNode) (*heyearth_v1.GetConfigResponse, error) {
+	agentClient, conn, err := connectToNodeAgent(ctx, node.IPAddress)
 	if err != nil {
+		biz.RecordFailedConnection(node.ID)
 		return nil, status.Errorf(codes.Unavailable, "connect node-agent: %v", err)
 	}
 	defer conn.Close()
 
 	resp, err := agentClient.CreateUser(ctx, &pbnode.CreateUserRequest{UserId: userID})
 	if err != nil {
+		biz.RecordFailedConnection(node.ID)
 		return nil, status.Errorf(codes.Unavailable, "create config on node-agent: %v", err)
 	}
 
+	biz.RecordSuccessfulConnection(node.ID)
+
 	return &heyearth_v1.GetConfigResponse{
-		UserId: userID,
-		SsUri:  resp.GetSsLink(),
+		UserId:   userID,
+		SsUri:    resp.GetSsLink(),
+		VlessUri: resp.GetVlessUri(),
+	}, nil
+}
+
+// issueMultiHopConfig sets up a chain: client → node1 → node2 → internet.
+// Creates the user on the exit node first (node2), then on the entry node (node1) with upstream.
+func (s *server) issueMultiHopConfig(ctx context.Context, userID string, chain []*biz.ServerNode) (*heyearth_v1.GetConfigResponse, error) {
+	exitNode := chain[len(chain)-1]
+	entryNode := chain[0]
+
+	// 1. Create user on exit node (node2) — direct connection, no upstream
+	exitAgent, exitConn, err := connectToNodeAgent(ctx, exitNode.IPAddress)
+	if err != nil {
+		biz.RecordFailedConnection(exitNode.ID)
+		return s.issueSingleNodeConfig(ctx, userID, entryNode)
+	}
+	defer exitConn.Close()
+
+	exitResp, err := exitAgent.CreateUser(ctx, &pbnode.CreateUserRequest{UserId: userID})
+	if err != nil {
+		biz.RecordFailedConnection(exitNode.ID)
+		return s.issueSingleNodeConfig(ctx, userID, entryNode)
+	}
+	biz.RecordSuccessfulConnection(exitNode.ID)
+
+	upstreamVlessUri := exitResp.GetVlessUri()
+	if upstreamVlessUri == "" {
+		return s.issueSingleNodeConfig(ctx, userID, entryNode)
+	}
+
+	// 2. Create user on entry node (node1) with upstream pointing to node2
+	entryAgent, entryConn, err := connectToNodeAgent(ctx, entryNode.IPAddress)
+	if err != nil {
+		biz.RecordFailedConnection(entryNode.ID)
+		return nil, status.Errorf(codes.Unavailable, "connect entry node-agent: %v", err)
+	}
+	defer entryConn.Close()
+
+	entryResp, err := entryAgent.CreateUser(ctx, &pbnode.CreateUserRequest{
+		UserId:           userID,
+		UpstreamVlessUri: upstreamVlessUri,
+	})
+	if err != nil {
+		biz.RecordFailedConnection(entryNode.ID)
+		return nil, status.Errorf(codes.Unavailable, "create config on entry node-agent: %v", err)
+	}
+	biz.RecordSuccessfulConnection(entryNode.ID)
+
+	return &heyearth_v1.GetConfigResponse{
+		UserId:   userID,
+		SsUri:    entryResp.GetSsLink(),
+		VlessUri: entryResp.GetVlessUri(),
 	}, nil
 }

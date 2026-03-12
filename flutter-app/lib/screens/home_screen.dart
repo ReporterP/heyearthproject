@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:heyearth_vpn/generated/heyearth/v1/config.pb.dart' as pb;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../l10n.dart';
 import '../update_service.dart';
+import 'payment_screen.dart';
 import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -227,9 +229,30 @@ class _HomeTab extends StatelessWidget {
       return _WelcomeScreen(state: state);
     }
 
+    final access = state.accessState;
+    final needsPayment = access != null &&
+        !access.canConnect &&
+        (access.reason == 'no_active_subscription' ||
+            access.reason == 'subscription_required' ||
+            access.reason == 'payment_overdue');
+    if (needsPayment) {
+      return PaymentScreen(
+        userId: state.userId!,
+        apiBase: state.apiBase,
+        onPaymentComplete: () => state.refreshAccountData(),
+        onApplyPromocode: (code) async {
+          try {
+            await state.applyPromocode(code);
+            return true;
+          } catch (_) {
+            return false;
+          }
+        },
+      );
+    }
+
     final l10n = L10n.of(context);
     final profile = state.profile;
-    final access = state.accessState;
 
     String _linked(bool v) => v
         ? (l10n.isEn ? 'linked' : 'привязан')
@@ -310,6 +333,15 @@ class _HomeTab extends StatelessWidget {
               connecting: state.vpnConnecting,
               enabled: state.canConnect && !state.isBlocked,
               onToggle: () => state.setVpnOn(!state.vpnOn),
+            ),
+            _ConnectionProtocolSection(
+              activeOption: state.activeOption,
+              connectionOptions: state.connectionOptions,
+              allowManualChoice: state.allowManualChoice,
+              vlessUri: state.vlessUri,
+              ssUri: state.ssUri,
+              vpnOn: state.vpnOn,
+              onSelectOption: state.selectConnectionOption,
             ),
             const SizedBox(height: 12),
             Text(
@@ -644,6 +676,89 @@ class _MainVpnButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ConnectionProtocolSection extends StatelessWidget {
+  const _ConnectionProtocolSection({
+    required this.activeOption,
+    required this.connectionOptions,
+    required this.allowManualChoice,
+    required this.vlessUri,
+    required this.ssUri,
+    required this.vpnOn,
+    required this.onSelectOption,
+  });
+
+  final pb.ConnectionOption? activeOption;
+  final List<pb.ConnectionOption> connectionOptions;
+  final bool allowManualChoice;
+  final String? vlessUri;
+  final String? ssUri;
+  final bool vpnOn;
+  final void Function(pb.ConnectionOption) onSelectOption;
+
+  String _protocolName() {
+    if (activeOption != null && activeOption!.protocol.isNotEmpty) {
+      return activeOption!.protocol;
+    }
+    if (vlessUri != null) return 'VLESS';
+    if (ssUri != null) return 'Shadowsocks';
+    return '';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final proto = _protocolName();
+    if (proto.isEmpty) return const SizedBox.shrink();
+
+    pb.ConnectionOption? dropdownValue;
+    for (final o in connectionOptions) {
+      if (activeOption != null && o.uri == activeOption!.uri) {
+        dropdownValue = o;
+        break;
+      }
+    }
+    dropdownValue ??= connectionOptions.isNotEmpty ? connectionOptions.first : null;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: allowManualChoice && connectionOptions.length > 1
+          ? DropdownButtonFormField<pb.ConnectionOption>(
+              value: dropdownValue,
+              decoration: InputDecoration(
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              isExpanded: true,
+              hint: Text(proto),
+              items: connectionOptions
+                  .map((opt) => DropdownMenuItem<pb.ConnectionOption>(
+                        value: opt,
+                        child: Text(opt.protocol.isNotEmpty
+                            ? opt.protocol
+                            : 'Protocol'),
+                      ))
+                  .toList(),
+              onChanged: vpnOn
+                  ? (opt) {
+                      if (opt != null) onSelectOption(opt);
+                    }
+                  : null,
+            )
+          : Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                proto,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
+                textAlign: TextAlign.center,
+              ),
+            ),
     );
   }
 }
