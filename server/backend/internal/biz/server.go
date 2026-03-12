@@ -10,9 +10,11 @@ import (
 )
 
 type ServerNode struct {
-	ID        int
-	IPAddress string
-	Name      string
+	ID              int
+	IPAddress       string
+	Name            string
+	ReputationScore float64
+	UptimeRatio     float64
 }
 
 type LoadMetrics struct {
@@ -21,71 +23,143 @@ type LoadMetrics struct {
 	ActiveConnections int     `json:"active_connections"`
 }
 
-func GetBestServerForGroup(groupID int) (*ServerNode, error) {
-	// Query all online servers for the group
+const reputationWeight = 5.0
+
+func serverLoadScore(metrics LoadMetrics, reputation, uptime float64) float64 {
+	score := metrics.CPUUsage + (float64(metrics.ActiveConnections) * 0.1)
+	score -= reputation * reputationWeight
+	if uptime > 0 && uptime < 1 {
+		score += (1 - uptime) * 10
+	}
+	return score
+}
+
+type candidateServer struct {
+	node  ServerNode
+	score float64
+}
+
+func queryGroupCandidates(groupID int) ([]candidateServer, error) {
 	rows, err := db.DB.Query(`
-		SELECT s.id, s.ip_address, s.name, s.load_metrics 
+		SELECT s.id, s.ip_address, s.name, s.load_metrics,
+		       COALESCE(s.reputation_score, 0), COALESCE(s.uptime_ratio, 1)
 		FROM servers s
 		JOIN server_groups sg ON s.id = sg.server_id
 		WHERE sg.group_id = $1 AND s.status != 'offline'
 	`, groupID)
-
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var bestServer *ServerNode
-	var lowestLoad float64 = -1
-
+	var candidates []candidateServer
 	for rows.Next() {
 		var srv ServerNode
 		var metricsJSON []byte
-		if err := rows.Scan(&srv.ID, &srv.IPAddress, &srv.Name, &metricsJSON); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.IPAddress, &srv.Name, &metricsJSON, &srv.ReputationScore, &srv.UptimeRatio); err != nil {
 			log.Printf("Error scanning server: %v", err)
 			continue
 		}
-
 		var metrics LoadMetrics
 		if len(metricsJSON) > 0 {
 			if err := json.Unmarshal(metricsJSON, &metrics); err != nil {
 				log.Printf("Error parsing metrics for server %d: %v", srv.ID, err)
 			}
 		}
+		candidates = append(candidates, candidateServer{
+			node:  srv,
+			score: serverLoadScore(metrics, srv.ReputationScore, srv.UptimeRatio),
+		})
+	}
+	return candidates, rows.Err()
+}
 
-		// Calculate a simple load score (can be adjusted based on priority)
-		// For example: CPU dominates, but connections also matter
-		loadScore := metrics.CPUUsage + (float64(metrics.ActiveConnections) * 0.1)
+func GetBestServerForGroup(groupID int) (*ServerNode, error) {
+	candidates, err := queryGroupCandidates(groupID)
+	if err != nil {
+		return nil, err
+	}
 
-		if bestServer == nil || loadScore < lowestLoad {
-			bestServer = &ServerNode{
-				ID:        srv.ID,
-				IPAddress: srv.IPAddress,
-				Name:      srv.Name,
-			}
-			lowestLoad = loadScore
+	var best *candidateServer
+	for i := range candidates {
+		if best == nil || candidates[i].score < best.score {
+			best = &candidates[i]
 		}
 	}
-
-	if bestServer != nil {
-		return bestServer, nil
+	if best != nil {
+		return &best.node, nil
 	}
 
-	// Fallback to any server if none in group
-	bestServer = &ServerNode{}
+	var srv ServerNode
 	err = db.DB.QueryRow(`
-		SELECT id, ip_address, name 
-		FROM servers 
+		SELECT id, ip_address, name
+		FROM servers
 		WHERE status != 'offline'
 		ORDER BY RANDOM()
 		LIMIT 1
-	`).Scan(&bestServer.ID, &bestServer.IPAddress, &bestServer.Name)
-
+	`).Scan(&srv.ID, &srv.IPAddress, &srv.Name)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("no available servers found")
 	} else if err != nil {
 		return nil, err
 	}
+	return &srv, nil
+}
 
-	return bestServer, nil
+// GetBestServerChainForGroup picks numHops distinct nodes by load+reputation.
+func GetBestServerChainForGroup(groupID int, numHops int) ([]*ServerNode, error) {
+	if numHops < 1 {
+		numHops = 2
+	}
+
+	candidates, err := queryGroupCandidates(groupID)
+	if err != nil {
+		return nil, err
+	}
+
+	// sort by score ascending
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].score < candidates[i].score {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+
+	var chain []*ServerNode
+	for i := 0; i < len(candidates) && len(chain) < numHops; i++ {
+		chain = append(chain, &candidates[i].node)
+	}
+
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("no available servers for multi-hop chain")
+	}
+
+	return chain, nil
+}
+
+// RecordSuccessfulConnection bumps the reputation of a server.
+func RecordSuccessfulConnection(serverID int) {
+	_, err := db.DB.Exec(`
+		UPDATE servers
+		SET reputation_score = LEAST(reputation_score + 0.01, 1),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, serverID)
+	if err != nil {
+		log.Printf("RecordSuccessfulConnection(%d): %v", serverID, err)
+	}
+}
+
+// RecordFailedConnection degrades the reputation of a server.
+func RecordFailedConnection(serverID int) {
+	_, err := db.DB.Exec(`
+		UPDATE servers
+		SET reputation_score = GREATEST(reputation_score - 0.05, 0),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, serverID)
+	if err != nil {
+		log.Printf("RecordFailedConnection(%d): %v", serverID, err)
+	}
 }

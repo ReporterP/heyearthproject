@@ -10,6 +10,7 @@
 // ignore_for_file: deprecated_member_use_from_same_package, library_prefixes
 // ignore_for_file: non_constant_identifier_names, prefer_relative_imports
 
+import 'dart:async' as $async;
 import 'dart:core' as $core;
 
 import 'package:fixnum/fixnum.dart' as $fixnum;
@@ -75,10 +76,12 @@ class GetConfigResponse extends $pb.GeneratedMessage {
   factory GetConfigResponse({
     $core.String? userId,
     $core.String? ssUri,
+    $core.String? vlessUri,
   }) {
     final result = create();
     if (userId != null) result.userId = userId;
     if (ssUri != null) result.ssUri = ssUri;
+    if (vlessUri != null) result.vlessUri = vlessUri;
     return result;
   }
 
@@ -97,6 +100,7 @@ class GetConfigResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'userId')
     ..aOS(2, _omitFieldNames ? '' : 'ssUri')
+    ..aOS(3, _omitFieldNames ? '' : 'vlessUri')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -135,6 +139,15 @@ class GetConfigResponse extends $pb.GeneratedMessage {
   $core.bool hasSsUri() => $_has(1);
   @$pb.TagNumber(2)
   void clearSsUri() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get vlessUri => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set vlessUri($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVlessUri() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVlessUri() => $_clearField(3);
 }
 
 class DeviceContext extends $pb.GeneratedMessage {
@@ -397,6 +410,7 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
     $core.String? releaseNotes,
     $core.bool? mandatory,
     $core.String? minSupportedVersion,
+    $core.Iterable<$core.String>? apiEndpoints,
   }) {
     final result = create();
     if (version != null) result.version = version;
@@ -409,6 +423,7 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
     if (mandatory != null) result.mandatory = mandatory;
     if (minSupportedVersion != null)
       result.minSupportedVersion = minSupportedVersion;
+    if (apiEndpoints != null) result.apiEndpoints.addAll(apiEndpoints);
     return result;
   }
 
@@ -434,6 +449,7 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
     ..aOS(7, _omitFieldNames ? '' : 'releaseNotes')
     ..aOB(8, _omitFieldNames ? '' : 'mandatory')
     ..aOS(9, _omitFieldNames ? '' : 'minSupportedVersion')
+    ..pPS(10, _omitFieldNames ? '' : 'apiEndpoints')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -536,6 +552,9 @@ class CheckAppUpdateResponse extends $pb.GeneratedMessage {
   $core.bool hasMinSupportedVersion() => $_has(8);
   @$pb.TagNumber(9)
   void clearMinSupportedVersion() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $pb.PbList<$core.String> get apiEndpoints => $_getList(9);
 }
 
 class ApplyPromocodeRequest extends $pb.GeneratedMessage {
@@ -1936,6 +1955,7 @@ class AccessStateResponse extends $pb.GeneratedMessage {
     $core.bool? canConnect,
     $core.bool? legacyHappFallback,
     $core.String? reason,
+    $core.bool? allowManualConnectionChoice,
   }) {
     final result = create();
     if (userId != null) result.userId = userId;
@@ -1947,6 +1967,8 @@ class AccessStateResponse extends $pb.GeneratedMessage {
     if (legacyHappFallback != null)
       result.legacyHappFallback = legacyHappFallback;
     if (reason != null) result.reason = reason;
+    if (allowManualConnectionChoice != null)
+      result.allowManualConnectionChoice = allowManualConnectionChoice;
     return result;
   }
 
@@ -1971,6 +1993,7 @@ class AccessStateResponse extends $pb.GeneratedMessage {
     ..aOB(6, _omitFieldNames ? '' : 'canConnect')
     ..aOB(7, _omitFieldNames ? '' : 'legacyHappFallback')
     ..aOS(8, _omitFieldNames ? '' : 'reason')
+    ..aOB(9, _omitFieldNames ? '' : 'allowManualConnectionChoice')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2063,6 +2086,15 @@ class AccessStateResponse extends $pb.GeneratedMessage {
   $core.bool hasReason() => $_has(7);
   @$pb.TagNumber(8)
   void clearReason() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.bool get allowManualConnectionChoice => $_getBF(8);
+  @$pb.TagNumber(9)
+  set allowManualConnectionChoice($core.bool value) => $_setBool(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasAllowManualConnectionChoice() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearAllowManualConnectionChoice() => $_clearField(9);
 }
 
 class GetConnectionBundleRequest extends $pb.GeneratedMessage {
@@ -2145,6 +2177,91 @@ class GetConnectionBundleRequest extends $pb.GeneratedMessage {
   void clearForceRefresh() => $_clearField(3);
 }
 
+class ConnectionOption extends $pb.GeneratedMessage {
+  factory ConnectionOption({
+    $core.String? uri,
+    $core.String? protocol,
+    $core.Iterable<$core.String>? recommendedNetworks,
+    $core.int? priority,
+  }) {
+    final result = create();
+    if (uri != null) result.uri = uri;
+    if (protocol != null) result.protocol = protocol;
+    if (recommendedNetworks != null)
+      result.recommendedNetworks.addAll(recommendedNetworks);
+    if (priority != null) result.priority = priority;
+    return result;
+  }
+
+  ConnectionOption._();
+
+  factory ConnectionOption.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ConnectionOption.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ConnectionOption',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'heyearth.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'uri')
+    ..aOS(2, _omitFieldNames ? '' : 'protocol')
+    ..pPS(3, _omitFieldNames ? '' : 'recommendedNetworks')
+    ..aI(4, _omitFieldNames ? '' : 'priority')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ConnectionOption clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ConnectionOption copyWith(void Function(ConnectionOption) updates) =>
+      super.copyWith((message) => updates(message as ConnectionOption))
+          as ConnectionOption;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ConnectionOption create() => ConnectionOption._();
+  @$core.override
+  ConnectionOption createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ConnectionOption getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ConnectionOption>(create);
+  static ConnectionOption? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get uri => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set uri($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasUri() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearUri() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get protocol => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set protocol($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasProtocol() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearProtocol() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<$core.String> get recommendedNetworks => $_getList(2);
+
+  @$pb.TagNumber(4)
+  $core.int get priority => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set priority($core.int value) => $_setSignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasPriority() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearPriority() => $_clearField(4);
+}
+
 class ConnectionBundleResponse extends $pb.GeneratedMessage {
   factory ConnectionBundleResponse({
     $core.String? userId,
@@ -2153,6 +2270,8 @@ class ConnectionBundleResponse extends $pb.GeneratedMessage {
     $core.String? statusMessage,
     $core.bool? legacyHappFallback,
     $core.String? fallbackInstruction,
+    $core.String? vlessUri,
+    $core.Iterable<ConnectionOption>? connectionOptions,
   }) {
     final result = create();
     if (userId != null) result.userId = userId;
@@ -2163,6 +2282,9 @@ class ConnectionBundleResponse extends $pb.GeneratedMessage {
       result.legacyHappFallback = legacyHappFallback;
     if (fallbackInstruction != null)
       result.fallbackInstruction = fallbackInstruction;
+    if (vlessUri != null) result.vlessUri = vlessUri;
+    if (connectionOptions != null)
+      result.connectionOptions.addAll(connectionOptions);
     return result;
   }
 
@@ -2185,6 +2307,9 @@ class ConnectionBundleResponse extends $pb.GeneratedMessage {
     ..aOS(4, _omitFieldNames ? '' : 'statusMessage')
     ..aOB(5, _omitFieldNames ? '' : 'legacyHappFallback')
     ..aOS(6, _omitFieldNames ? '' : 'fallbackInstruction')
+    ..aOS(7, _omitFieldNames ? '' : 'vlessUri')
+    ..pPM<ConnectionOption>(8, _omitFieldNames ? '' : 'connectionOptions',
+        subBuilder: ConnectionOption.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2260,6 +2385,18 @@ class ConnectionBundleResponse extends $pb.GeneratedMessage {
   $core.bool hasFallbackInstruction() => $_has(5);
   @$pb.TagNumber(6)
   void clearFallbackInstruction() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get vlessUri => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set vlessUri($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasVlessUri() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearVlessUri() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $pb.PbList<ConnectionOption> get connectionOptions => $_getList(7);
 }
 
 class ListSubscriptionsRequest extends $pb.GeneratedMessage {
@@ -2720,6 +2857,104 @@ class ListPaymentsResponse extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(1)
   $pb.PbList<PaymentItem> get items => $_getList(0);
+}
+
+/// ConfigApi — legacy service kept for backward compatibility.
+class ConfigApiApi {
+  final $pb.RpcClient _client;
+
+  ConfigApiApi(this._client);
+
+  $async.Future<GetConfigResponse> getConfig(
+          $pb.ClientContext? ctx, GetConfigRequest request) =>
+      _client.invoke<GetConfigResponse>(
+          ctx, 'ConfigApi', 'GetConfig', request, GetConfigResponse());
+  $async.Future<HealthResponse> health(
+          $pb.ClientContext? ctx, HealthRequest request) =>
+      _client.invoke<HealthResponse>(
+          ctx, 'ConfigApi', 'Health', request, HealthResponse());
+  $async.Future<CheckAppUpdateResponse> checkAppUpdate(
+          $pb.ClientContext? ctx, CheckAppUpdateRequest request) =>
+      _client.invoke<CheckAppUpdateResponse>(ctx, 'ConfigApi', 'CheckAppUpdate',
+          request, CheckAppUpdateResponse());
+  $async.Future<ApplyPromocodeResponse> applyPromocode(
+          $pb.ClientContext? ctx, ApplyPromocodeRequest request) =>
+      _client.invoke<ApplyPromocodeResponse>(ctx, 'ConfigApi', 'ApplyPromocode',
+          request, ApplyPromocodeResponse());
+  $async.Future<GetProfileResponse> getProfile(
+          $pb.ClientContext? ctx, GetProfileRequest request) =>
+      _client.invoke<GetProfileResponse>(
+          ctx, 'ConfigApi', 'GetProfile', request, GetProfileResponse());
+}
+
+class BotApiApi {
+  final $pb.RpcClient _client;
+
+  BotApiApi(this._client);
+
+  $async.Future<UserProfileResponse> ensureTelegramUser(
+          $pb.ClientContext? ctx, EnsureTelegramUserRequest request) =>
+      _client.invoke<UserProfileResponse>(
+          ctx, 'BotApi', 'EnsureTelegramUser', request, UserProfileResponse());
+  $async.Future<UserProfileResponse> setPreferredPlatform(
+          $pb.ClientContext? ctx, SetPreferredPlatformRequest request) =>
+      _client.invoke<UserProfileResponse>(ctx, 'BotApi', 'SetPreferredPlatform',
+          request, UserProfileResponse());
+  $async.Future<CreatePairingCodeResponse> createPairingCode(
+          $pb.ClientContext? ctx, CreatePairingCodeRequest request) =>
+      _client.invoke<CreatePairingCodeResponse>(ctx, 'BotApi',
+          'CreatePairingCode', request, CreatePairingCodeResponse());
+  $async.Future<GetClientDistributionResponse> getClientDistribution(
+          $pb.ClientContext? ctx, GetClientDistributionRequest request) =>
+      _client.invoke<GetClientDistributionResponse>(ctx, 'BotApi',
+          'GetClientDistribution', request, GetClientDistributionResponse());
+  $async.Future<ConnectionBundleResponse> issueLegacyAppleConfig(
+          $pb.ClientContext? ctx, IssueLegacyAppleConfigRequest request) =>
+      _client.invoke<ConnectionBundleResponse>(ctx, 'BotApi',
+          'IssueLegacyAppleConfig', request, ConnectionBundleResponse());
+}
+
+class ClientApiApi {
+  final $pb.RpcClient _client;
+
+  ClientApiApi(this._client);
+
+  $async.Future<ClaimResponse> claimByCode(
+          $pb.ClientContext? ctx, ClaimByCodeRequest request) =>
+      _client.invoke<ClaimResponse>(
+          ctx, 'ClientApi', 'ClaimByCode', request, ClaimResponse());
+  $async.Future<ClaimResponse> claimByToken(
+          $pb.ClientContext? ctx, ClaimByTokenRequest request) =>
+      _client.invoke<ClaimResponse>(
+          ctx, 'ClientApi', 'ClaimByToken', request, ClaimResponse());
+  $async.Future<UserProfileResponse> getMe(
+          $pb.ClientContext? ctx, GetMeRequest request) =>
+      _client.invoke<UserProfileResponse>(
+          ctx, 'ClientApi', 'GetMe', request, UserProfileResponse());
+  $async.Future<AccessStateResponse> getAccessState(
+          $pb.ClientContext? ctx, GetAccessStateRequest request) =>
+      _client.invoke<AccessStateResponse>(
+          ctx, 'ClientApi', 'GetAccessState', request, AccessStateResponse());
+  $async.Future<ConnectionBundleResponse> getConnectionBundle(
+          $pb.ClientContext? ctx, GetConnectionBundleRequest request) =>
+      _client.invoke<ConnectionBundleResponse>(ctx, 'ClientApi',
+          'GetConnectionBundle', request, ConnectionBundleResponse());
+  $async.Future<ListSubscriptionsResponse> listSubscriptions(
+          $pb.ClientContext? ctx, ListSubscriptionsRequest request) =>
+      _client.invoke<ListSubscriptionsResponse>(ctx, 'ClientApi',
+          'ListSubscriptions', request, ListSubscriptionsResponse());
+  $async.Future<ListPaymentsResponse> listPayments(
+          $pb.ClientContext? ctx, ListPaymentsRequest request) =>
+      _client.invoke<ListPaymentsResponse>(
+          ctx, 'ClientApi', 'ListPayments', request, ListPaymentsResponse());
+  $async.Future<ApplyPromocodeResponse> applyPromocode(
+          $pb.ClientContext? ctx, ApplyPromocodeRequest request) =>
+      _client.invoke<ApplyPromocodeResponse>(ctx, 'ClientApi', 'ApplyPromocode',
+          request, ApplyPromocodeResponse());
+  $async.Future<CheckAppUpdateResponse> checkAppUpdate(
+          $pb.ClientContext? ctx, CheckAppUpdateRequest request) =>
+      _client.invoke<CheckAppUpdateResponse>(ctx, 'ClientApi', 'CheckAppUpdate',
+          request, CheckAppUpdateResponse());
 }
 
 const $core.bool _omitFieldNames =

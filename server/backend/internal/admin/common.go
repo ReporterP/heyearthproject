@@ -7,6 +7,41 @@ import (
 	"strings"
 )
 
+type PaginationParams struct {
+	Page     int
+	PageSize int
+	Search   string
+	Status   string
+}
+
+type PagedResponse struct {
+	Items    any `json:"items"`
+	Total    int `json:"total"`
+	Page     int `json:"page"`
+	PageSize int `json:"page_size"`
+}
+
+func parsePagination(r *http.Request) PaginationParams {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	return PaginationParams{
+		Page:     page,
+		PageSize: pageSize,
+		Search:   strings.TrimSpace(r.URL.Query().Get("search")),
+		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
+	}
+}
+
+func (p PaginationParams) Offset() int {
+	return (p.Page - 1) * p.PageSize
+}
+
 func withAdminCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

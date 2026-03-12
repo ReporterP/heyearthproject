@@ -25,9 +25,10 @@ class UpdateInfo {
 
 /// Результат запроса проверки: версия с сервера (если есть) и данные обновления (если версия новее).
 class UpdateCheckResult {
-  const UpdateCheckResult({this.serverVersion, this.update});
+  const UpdateCheckResult({this.serverVersion, this.update, this.apiEndpoints});
   final String? serverVersion;
   final UpdateInfo? update;
+  final List<String>? apiEndpoints;
 }
 
 /// Сравнение версий вида "1.0.0" или "1.0.0+1" (игнорируем build number).
@@ -124,7 +125,17 @@ Future<UpdateCheckResult> checkForUpdate(String apiBase) async {
         requiredByPolicy: requiredByPolicy,
       );
     }
-    return UpdateCheckResult(serverVersion: version, update: update);
+
+    final apiEndpoints = resp.apiEndpoints
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList(growable: false);
+
+    return UpdateCheckResult(
+      serverVersion: version,
+      update: update,
+      apiEndpoints: apiEndpoints.isNotEmpty ? apiEndpoints : null,
+    );
   } catch (_) {
     return const UpdateCheckResult();
   }

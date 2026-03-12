@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../l10n.dart';
 import '../update_service.dart';
+import 'payment_screen.dart';
 import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -227,9 +228,20 @@ class _HomeTab extends StatelessWidget {
       return _WelcomeScreen(state: state);
     }
 
+    final access = state.accessState;
+    final needsPayment = access != null &&
+        !access.canConnect &&
+        access.reason == 'no_active_subscription';
+    if (needsPayment) {
+      return PaymentScreen(
+        userId: state.userId!,
+        apiBase: state.apiBase,
+        onPaymentComplete: () => state.refreshAccountData(),
+      );
+    }
+
     final l10n = L10n.of(context);
     final profile = state.profile;
-    final access = state.accessState;
 
     String _linked(bool v) => v
         ? (l10n.isEn ? 'linked' : 'привязан')

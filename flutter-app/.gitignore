@@ -1,0 +1,40 @@
+# ── Dart / Flutter ─────────────────────────────────────
+.dart_tool/
+.packages
+build/
+*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+pubspec.lock
+
+# ── Platform caches ───────────────────────────────────
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+macos/Pods/
+macos/Flutter/ephemeral/
+linux/flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# ── Xray binary (heavy, downloaded locally) ───────────
+windows/xray/xray.exe
+
+# ── Signing & secrets ─────────────────────────────────
+*.jks
+*.keystore
+key.properties
+.env
+.env.local
+
+# ── Generated (keep proto generated, ignore rest) ─────
+# lib/generated/ is tracked (proto output)
+
+# ── Release artifacts ─────────────────────────────────
+releases/

@@ -30,6 +30,7 @@ type AdminUser struct {
 	IsActive    bool     `json:"is_active"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
+	TenantID    *int     `json:"tenant_id,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 }
@@ -49,7 +50,17 @@ type Claims struct {
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
+	TenantID    *int     `json:"tenant_id,omitempty"`
 	jwt.RegisteredClaims
+}
+
+func (c *Claims) IsSuperAdmin() bool {
+	for _, r := range c.Roles {
+		if r == superAdminRoleKey {
+			return true
+		}
+	}
+	return false
 }
 
 type LoginRequest struct {
@@ -70,6 +81,7 @@ type adminRecord struct {
 	DisplayName  string
 	PasswordHash string
 	IsActive     bool
+	TenantID     *int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -115,6 +127,12 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "releases.write", Name: "Releases Write", Description: "Upload and activate releases"},
 	{Key: "admins.read", Name: "Admins Read", Description: "View admins and roles"},
 	{Key: "admins.write", Name: "Admins Write", Description: "Manage admins and roles"},
+	{Key: "settings.read", Name: "Settings Read", Description: "View application settings"},
+	{Key: "settings.write", Name: "Settings Write", Description: "Update application settings"},
+	{Key: "tenants.read", Name: "Tenants Read", Description: "View B2B tenants"},
+	{Key: "tenants.write", Name: "Tenants Write", Description: "Manage B2B tenants"},
+	{Key: "servers.logs", Name: "Server Logs", Description: "View server logs"},
+	{Key: "servers.files", Name: "Server Files", Description: "Browse server files"},
 }
 
 func ValidateConfig() error {
@@ -148,6 +166,7 @@ func GenerateToken(admin AdminUser) (string, error) {
 		DisplayName: admin.DisplayName,
 		Roles:       admin.Roles,
 		Permissions: admin.Permissions,
+		TenantID:    admin.TenantID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 		},
@@ -269,7 +288,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 func ListAdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(`
-		SELECT id, username, display_name, is_active, created_at, updated_at
+		SELECT id, username, display_name, is_active, tenant_id, created_at, updated_at
 		FROM admin_users
 		ORDER BY username ASC
 	`)
@@ -282,7 +301,7 @@ func ListAdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var admins []AdminUser
 	for rows.Next() {
 		var record adminRecord
-		if err := rows.Scan(&record.ID, &record.Username, &record.DisplayName, &record.IsActive, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.Username, &record.DisplayName, &record.IsActive, &record.TenantID, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan admin")
 			return
 		}
@@ -755,7 +774,7 @@ func assignPermissionsToRoleTx(tx *sql.Tx, roleID int, permissionKeys []string) 
 func loadAdminRecordByUsername(username string) (adminRecord, error) {
 	var record adminRecord
 	err := db.DB.QueryRow(`
-		SELECT id, username, display_name, password_hash, is_active, created_at, updated_at
+		SELECT id, username, display_name, password_hash, is_active, tenant_id, created_at, updated_at
 		FROM admin_users
 		WHERE username = $1
 	`, username).Scan(
@@ -764,6 +783,7 @@ func loadAdminRecordByUsername(username string) (adminRecord, error) {
 		&record.DisplayName,
 		&record.PasswordHash,
 		&record.IsActive,
+		&record.TenantID,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -781,7 +801,7 @@ type queryRower interface {
 func loadAdminRecordByIDTx(q queryRower, id int) (adminRecord, error) {
 	var record adminRecord
 	err := q.QueryRow(`
-		SELECT id, username, display_name, password_hash, is_active, created_at, updated_at
+		SELECT id, username, display_name, password_hash, is_active, tenant_id, created_at, updated_at
 		FROM admin_users
 		WHERE id = $1
 	`, id).Scan(
@@ -790,6 +810,7 @@ func loadAdminRecordByIDTx(q queryRower, id int) (adminRecord, error) {
 		&record.DisplayName,
 		&record.PasswordHash,
 		&record.IsActive,
+		&record.TenantID,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -824,6 +845,7 @@ func buildAdminUser(record adminRecord) (AdminUser, []AdminRole, error) {
 		IsActive:    record.IsActive,
 		Roles:       roleKeys,
 		Permissions: permissions,
+		TenantID:    record.TenantID,
 		CreatedAt:   record.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   record.UpdatedAt.Format(time.RFC3339),
 	}

@@ -72,6 +72,7 @@ func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      certPool,
 		ServerName:   "node-agent",
+		MinVersion:   tls.VersionTLS13,
 	}), nil
 }
 
@@ -164,7 +165,9 @@ func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpda
 		return nil, status.Errorf(codes.Internal, "load active releases: %v", err)
 	}
 
-	response := &heyearth_v1.CheckAppUpdateResponse{}
+	response := &heyearth_v1.CheckAppUpdateResponse{
+		ApiEndpoints: biz.GetAPIEndpoints(),
+	}
 	if release, ok := activeReleases["android"]; ok {
 		response.AndroidUrl = absoluteReleaseURL(release.PublicPath)
 	}
@@ -372,10 +375,21 @@ func main() {
 		_ = grpcServer.Serve(lis)
 	}()
 
+	http.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	})
 	http.HandleFunc("/go/claim", handleGoClaimRedirect)
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
 	http.HandleFunc("/api/v1/config", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
+
+	http.HandleFunc("/api/v1/payment/create", handleCreatePayment)
+	http.HandleFunc("/api/v1/payment/check-access", handleCheckAccess)
+	http.HandleFunc("/api/v1/payment/redeem-code", handleRedeemCode)
+	http.HandleFunc("/api/v1/payment/tenant-topup", handleTenantTopup)
+	http.HandleFunc("/api/webhooks/yookassa", handleYookassaWebhook)
+
 	admin.RegisterRoutes()
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)

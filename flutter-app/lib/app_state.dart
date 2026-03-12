@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'connection_manager.dart';
 import 'generated/heyearth/v1/config.pb.dart' as pb;
 import 'grpc_client.dart';
 import 'l10n.dart';
@@ -11,21 +14,33 @@ import 'vpn_service_interface.dart';
 
 const _keyUserId = 'heyearth_user_id';
 const _keySsUri = 'heyearth_ss_uri';
+const _keyVlessUri = 'heyearth_vless_uri';
 const _keyVpnOn = 'heyearth_vpn_on';
 const _keyApiBase = 'heyearth_api_base';
 const _keySelectedOnly = 'heyearth_selected_only';
 const _keyThemeMode = 'heyearth_theme_mode';
 const _keyLocale = 'heyearth_locale';
 const _keyDeviceId = 'heyearth_device_id';
-const _defaultApiBase = 'https://quizgame.pro';
+const _keyApiEndpoints = 'heyearth_api_endpoints';
+const _defaultApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://quizgame.pro',
+);
 
 class AppState extends ChangeNotifier {
   AppState({required VpnService vpn}) : _vpn = vpn;
 
   final VpnService _vpn;
+  final ConnectionManager _connMgr = ConnectionManager();
 
   String? _userId;
   String? _ssUri;
+  String? _vlessUri;
+  List<pb.ConnectionOption> _connectionOptions = const [];
+  pb.ConnectionOption? _activeOption;
+  Timer? _healthTimer;
+  int _failoverAttempts = 0;
+  bool _allowManualChoice = false;
   String _deviceId = '';
   bool _vpnOn = false;
   bool _vpnConnecting = false;
@@ -34,6 +49,7 @@ class AppState extends ChangeNotifier {
   bool _accountLoading = false;
   String? _error;
   String _apiBase = _defaultApiBase;
+  List<String> _apiEndpoints = const [];
   ThemeMode _themeMode = ThemeMode.system;
   String _locale = 'ru';
   pb.UserProfileResponse? _profile;
@@ -43,6 +59,12 @@ class AppState extends ChangeNotifier {
 
   String? get userId => _userId;
   String? get ssUri => _ssUri;
+  String? get vlessUri => _vlessUri;
+  String? get preferredUri => _activeOption?.uri ?? _vlessUri ?? _ssUri;
+  List<pb.ConnectionOption> get connectionOptions => _connectionOptions;
+  pb.ConnectionOption? get activeOption => _activeOption;
+  bool get allowManualChoice => _allowManualChoice;
+  NetworkType get currentNetwork => _connMgr.currentNetwork;
   String get deviceId => _deviceId;
   bool get vpnOn => _vpnOn;
   bool get vpnConnecting => _vpnConnecting;
@@ -70,9 +92,12 @@ class AppState extends ChangeNotifier {
     _loading = true;
     notifyListeners();
     try {
+      await _connMgr.init();
+      _connMgr.onNetworkChanged = _onNetworkChanged;
       final prefs = await _prefs();
       _userId = prefs.getString(_keyUserId)?.trim();
       _ssUri = prefs.getString(_keySsUri)?.trim();
+      _vlessUri = prefs.getString(_keyVlessUri)?.trim();
       _vpnOn = false;
       _selectedOnlyMode = prefs.getBool(_keySelectedOnly) ?? false;
       final savedApi = prefs.getString(_keyApiBase);
@@ -93,6 +118,10 @@ class AppState extends ChangeNotifier {
       if (_deviceId.isEmpty) {
         _deviceId = const Uuid().v4();
         await prefs.setString(_keyDeviceId, _deviceId);
+      }
+      final savedEndpoints = prefs.getStringList(_keyApiEndpoints);
+      if (savedEndpoints != null && savedEndpoints.isNotEmpty) {
+        _apiEndpoints = savedEndpoints;
       }
       if (hasUserId) {
         await refreshAccountData(notify: false);
@@ -161,8 +190,10 @@ class AppState extends ChangeNotifier {
     final prefs = await _prefs();
     await prefs.remove(_keyUserId);
     await prefs.remove(_keySsUri);
+    await prefs.remove(_keyVlessUri);
     _userId = null;
     _ssUri = null;
+    _vlessUri = null;
     _profile = null;
     _accessState = null;
     _subscriptions = const [];
@@ -283,6 +314,7 @@ class AppState extends ChangeNotifier {
 
       _profile = me;
       _accessState = access;
+      _allowManualChoice = access?.allowManualConnectionChoice ?? false;
       _subscriptions = subs?.items ?? const [];
       _payments = pays?.items ?? const [];
       _error = null;
@@ -352,15 +384,28 @@ class AppState extends ChangeNotifier {
         return false;
       }
       final ssUri = resp.ssUri.trim();
-      if (ssUri.isEmpty) {
+      final vlessUri = resp.vlessUri.trim();
+      _connectionOptions = List.unmodifiable(resp.connectionOptions);
+      if (ssUri.isEmpty && vlessUri.isEmpty && _connectionOptions.isEmpty) {
         final statusMsg = resp.statusMessage.trim();
         _error = statusMsg.isNotEmpty ? statusMsg : _l10n.serverNoConfig;
         notifyListeners();
         return false;
       }
-      _ssUri = ssUri;
+      _ssUri = ssUri.isNotEmpty ? ssUri : null;
+      _vlessUri = vlessUri.isNotEmpty ? vlessUri : null;
+      _activeOption = _connMgr.pickBest(_connectionOptions);
       final prefs = await _prefs();
-      await prefs.setString(_keySsUri, ssUri);
+      if (_ssUri != null) {
+        await prefs.setString(_keySsUri, _ssUri!);
+      } else {
+        await prefs.remove(_keySsUri);
+      }
+      if (_vlessUri != null) {
+        await prefs.setString(_keyVlessUri, _vlessUri!);
+      } else {
+        await prefs.remove(_keyVlessUri);
+      }
       _error = null;
       notifyListeners();
       return true;
@@ -381,6 +426,9 @@ class AppState extends ChangeNotifier {
       _vpnConnecting = false;
       _vpnOn = false;
       _error = null;
+      _healthTimer?.cancel();
+      _healthTimer = null;
+      _failoverAttempts = 0;
       try {
         await _vpn.disconnect();
       } catch (_) {}
@@ -395,6 +443,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       final update = await checkForUpdate(_apiBase);
+      if (update.apiEndpoints != null && update.apiEndpoints!.isNotEmpty) {
+        _apiEndpoints = update.apiEndpoints!;
+        final prefs = await _prefs();
+        await prefs.setStringList(_keyApiEndpoints, _apiEndpoints);
+      }
       if (update.update?.requiredByPolicy == true) {
         _error = update.update!.mandatory
             ? _l10n.mandatoryUpdateRequiredMsg(update.update!.latestVersion)
@@ -428,16 +481,18 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      if (_ssUri == null || _ssUri!.trim().isEmpty) {
+      if (preferredUri == null || preferredUri!.trim().isEmpty) {
         final ok = await fetchConnectionBundle(forceRefresh: true);
-        if (!ok || _ssUri == null) {
+        if (!ok || preferredUri == null) {
           _vpnConnecting = false;
           notifyListeners();
           return;
         }
       }
-      await _vpn.connect(_ssUri!, selectedOnly: _selectedOnlyMode);
+      await _vpn.connect(preferredUri!, selectedOnly: _selectedOnlyMode);
       _vpnOn = true;
+      _failoverAttempts = 0;
+      _startHealthMonitor();
       final prefs = await _prefs();
       await prefs.setBool(_keyVpnOn, true);
     } catch (e) {
@@ -448,6 +503,69 @@ class AppState extends ChangeNotifier {
       _vpnConnecting = false;
       notifyListeners();
     }
+  }
+
+  void _startHealthMonitor() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _checkConnectionHealth();
+    });
+  }
+
+  Future<void> _checkConnectionHealth() async {
+    if (!_vpnOn || _vpnConnecting) return;
+    if (_connectionOptions.length <= 1) return;
+    if (_failoverAttempts >= _connectionOptions.length) return;
+
+    final healthy = await _vpn.isTrafficFlowing();
+    if (healthy) {
+      _failoverAttempts = 0;
+      return;
+    }
+
+    if (_activeOption == null) return;
+    final next = _connMgr.nextFallback(_connectionOptions, _activeOption!);
+    if (next == null) return;
+
+    _failoverAttempts++;
+    debugPrint('Auto-failover: switching from ${_activeOption!.protocol} to ${next.protocol}');
+    _activeOption = next;
+    try {
+      await _vpn.disconnect();
+      await _vpn.connect(next.uri, selectedOnly: _selectedOnlyMode);
+    } catch (e) {
+      debugPrint('Failover connect error: $e');
+    }
+    notifyListeners();
+  }
+
+  void _onNetworkChanged(NetworkType newType) {
+    if (!_vpnOn || _connectionOptions.isEmpty) return;
+    final best = _connMgr.pickBest(_connectionOptions);
+    if (best != null && best.uri != _activeOption?.uri) {
+      _activeOption = best;
+      _reconnectWithCurrentOption();
+    }
+  }
+
+  Future<void> _reconnectWithCurrentOption() async {
+    if (!_vpnOn || _activeOption == null) return;
+    try {
+      await _vpn.disconnect();
+      await _vpn.connect(_activeOption!.uri, selectedOnly: _selectedOnlyMode);
+    } catch (e) {
+      debugPrint('Reconnect on network change error: $e');
+    }
+    notifyListeners();
+  }
+
+  void selectConnectionOption(pb.ConnectionOption option) {
+    if (!_allowManualChoice) return;
+    _activeOption = option;
+    if (_vpnOn) {
+      _reconnectWithCurrentOption();
+    }
+    notifyListeners();
   }
 
   void setError(String? e) {
@@ -479,8 +597,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> _invalidateConnectionBundle() async {
     _ssUri = null;
+    _vlessUri = null;
+    _connectionOptions = const [];
+    _activeOption = null;
     final prefs = await _prefs();
     await prefs.remove(_keySsUri);
+    await prefs.remove(_keyVlessUri);
   }
 
   String _currentPlatform() {

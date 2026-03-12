@@ -26,14 +26,15 @@ type UserProfile struct {
 }
 
 type UserAccessState struct {
-	UserID             string
-	CurrentPlan        string
-	ValidUntil         string
-	PreferredPlatform  string
-	IsBlocked          bool
-	CanConnect         bool
-	LegacyHappFallback bool
-	Reason             string
+	UserID                     string
+	CurrentPlan                string
+	ValidUntil                 string
+	PreferredPlatform          string
+	IsBlocked                  bool
+	CanConnect                 bool
+	LegacyHappFallback         bool
+	Reason                     string
+	AllowManualConnectionChoice bool
 }
 
 type PairingCode struct {
@@ -292,11 +293,49 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		state.Reason = "user_blocked"
 		return state, nil
 	}
+
+	hasSub, _ := HasActiveSubscription(userID)
+	isTenantUser := isMemberOfTenant(userID)
+	if !hasSub && !isTenantUser {
+		state.CanConnect = false
+		state.Reason = "no_active_subscription"
+	}
+
 	if state.LegacyHappFallback {
 		state.CanConnect = false
 		state.Reason = "legacy_happ_fallback"
 	}
+
+	state.AllowManualConnectionChoice = isUserPremium(userID)
 	return state, nil
+}
+
+func isMemberOfTenant(userID string) bool {
+	var tenantID int
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(tenant_id, 0) FROM users WHERE user_id = $1
+	`, strings.TrimSpace(userID)).Scan(&tenantID)
+	if err != nil {
+		return false
+	}
+	return tenantID > 0
+}
+
+func isUserPremium(userID string) bool {
+	var premium bool
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(ug.is_premium, FALSE)
+		FROM users u
+		JOIN user_subscriptions us ON us.user_id = u.id
+		JOIN user_groups ug ON ug.id = us.group_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY ug.is_premium DESC
+		LIMIT 1
+	`, strings.TrimSpace(userID)).Scan(&premium)
+	if err != nil {
+		return false
+	}
+	return premium
 }
 
 func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {

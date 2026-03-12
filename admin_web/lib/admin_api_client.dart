@@ -6,6 +6,22 @@ import 'package:http/http.dart' as http;
 import 'app_config.dart';
 import 'models.dart';
 
+class PagedResult<T> {
+  const PagedResult({
+    required this.items,
+    required this.total,
+    required this.page,
+    required this.pageSize,
+  });
+
+  final List<T> items;
+  final int total;
+  final int page;
+  final int pageSize;
+
+  int get totalPages => (total / pageSize).ceil().clamp(1, 999999);
+}
+
 class AdminApiException implements Exception {
   const AdminApiException(this.message, {this.statusCode});
 
@@ -343,6 +359,86 @@ class AdminApiClient {
     return body;
   }
 
+  // ── Tenants ──────────────────────────────────────────
+
+  Future<PagedResult<TenantModel>> fetchTenants(
+    String token, {
+    int page = 1,
+    int pageSize = 20,
+    String? search,
+    String? status,
+  }) async {
+    final params = <String, String>{
+      'page': '$page',
+      'page_size': '$pageSize',
+    };
+    if (search != null && search.isNotEmpty) params['search'] = search;
+    if (status != null && status.isNotEmpty) params['status'] = status;
+    final uri = _uri('/tenants').replace(queryParameters: params);
+    final response = await http.get(uri, headers: _authHeaders(token));
+    final body = _expectBody(response, fallback: 'Failed to load tenants');
+    final items = ((body['Items'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => TenantModel.fromJson(e.cast<String, dynamic>()))
+        .toList(growable: false);
+    return PagedResult<TenantModel>(
+      items: items,
+      total: (body['Total'] as num?)?.toInt() ?? items.length,
+      page: (body['Page'] as num?)?.toInt() ?? page,
+      pageSize: (body['PageSize'] as num?)?.toInt() ?? pageSize,
+    );
+  }
+
+  Future<void> createTenant(
+      String token, Map<String, dynamic> payload) async {
+    await _post('/tenants', token, payload, expectedStatus: 201);
+  }
+
+  Future<void> updateTenant(
+      String token, int id, Map<String, dynamic> payload) async {
+    await _patch('/tenants/$id', token, payload);
+  }
+
+  Future<void> deleteTenant(String token, int id) async {
+    await _delete('/tenants/$id', token);
+  }
+
+  // ── Settings ──────────────────────────────────────────
+
+  Future<Map<String, String>> getSettings(String token) async {
+    final response = await http.get(
+      _uri('/settings'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    _ensureJsonResponse(response);
+    if (response.statusCode != 200) {
+      throw AdminApiException('Failed to load settings',
+          statusCode: response.statusCode);
+    }
+    final decoded = jsonDecode(response.body.trim());
+    if (decoded is Map) {
+      return decoded.cast<String, dynamic>().map(
+            (k, v) => MapEntry(k, v?.toString() ?? ''),
+          );
+    }
+    return const <String, String>{};
+  }
+
+  Future<void> updateSetting(String token, String key, String value) async {
+    final response = await http.post(
+      _uri('/settings'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'key': key, 'value': value}),
+    );
+    if (response.statusCode != 200) {
+      throw AdminApiException('Failed to save setting',
+          statusCode: response.statusCode);
+    }
+  }
+
   void _ensureJsonResponse(http.Response response) {
     final raw = response.body.trim();
     if (raw.isEmpty) {
@@ -383,6 +479,15 @@ class AdminApiClient {
           .whereType<Map>()
           .map((item) => item.cast<String, dynamic>())
           .toList(growable: false);
+    }
+    if (decoded is Map) {
+      final items = decoded['items'];
+      if (items is List) {
+        return items
+            .whereType<Map>()
+            .map((item) => item.cast<String, dynamic>())
+            .toList(growable: false);
+      }
     }
     return const <Map<String, dynamic>>[];
   }

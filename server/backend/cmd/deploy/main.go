@@ -52,14 +52,22 @@ type envMap map[string]string
 
 func main() {
 	mainMode := flag.Bool("main", false, "установить Главный сервер (Go, PostgreSQL, API, бот, Nginx)")
-	updateMain := flag.Bool("update-main", false, "обновить код Главного сервера и provisioning assets")
+	updateMain := flag.Bool("update-main", false, "обновить код Главного сервера и provisioning assets (без фронтов)")
 	restart := flag.Bool("restart", false, "перезапустить сервисы Главного сервера")
-	site := flag.Bool("site", false, "обновить только веб-слой и Nginx")
+	site := flag.Bool("site", false, "обновить admin_web + Vue site + Nginx")
+	adminWeb := flag.Bool("admin-web", false, "обновить только admin_web")
+	vueSite := flag.Bool("vue-site", false, "обновить только Vue маркетинговый сайт")
+	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
+	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
+	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
+	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перегенерировать листовые mTLS-сертификаты (client, server) без замены CA")
 	flag.Parse()
 
 	var mode string
 	switch {
+	case *rotateCerts:
+		mode = "rotate-certs"
 	case *mainMode:
 		mode = "main"
 	case *updateMain:
@@ -68,14 +76,22 @@ func main() {
 		mode = "restart"
 	case *site:
 		mode = "site"
+	case *adminWeb:
+		mode = "admin-web"
+	case *vueSite || *deploySite:
+		mode = "vue-site"
 	case *statusMode:
 		mode = "status"
+	case *backupMode:
+		mode = "backup"
+	case *restoreMode:
+		mode = "restore"
 	case flag.NArg() == 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --status. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -105,6 +121,12 @@ func main() {
 		ensureLocalMTLSAssets(cfg)
 	}
 
+	if mode == "rotate-certs" {
+		rotateNodeAgentCerts(cfg)
+		log.Println("Листовые сертификаты перегенерированы локально. Запусти --update-main для загрузки на сервер.")
+		return
+	}
+
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.deployPort)
 	client, err := sshDial(addr, cfg.deployUser, cfg.deployPassword, cfg.hostKeyFingerprint)
 	if err != nil {
@@ -114,6 +136,10 @@ func main() {
 
 	if mode == "status" {
 		doStatus(client, cfg)
+		return
+	}
+	if mode == "backup" {
+		doBackup(client, cfg)
 		return
 	}
 	if mode == "fix-db" {
@@ -135,7 +161,9 @@ func main() {
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doBot(sftpClient, client, cfg)
-		doSite(sftpClient, client, cfg)
+		doAdminWeb(sftpClient, client, cfg)
+		doVueSite(sftpClient, client, cfg)
+		doNginx(sftpClient, client, cfg)
 		doSSL(client, cfg)
 		verifyServices(client)
 	case "update-main":
@@ -143,7 +171,6 @@ func main() {
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doBot(sftpClient, client, cfg)
-		doSite(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
 			doSSL(client, cfg)
 		}
@@ -152,8 +179,20 @@ func main() {
 		restartServices(client)
 		verifyServices(client)
 	case "site":
-		doSite(sftpClient, client, cfg)
+		doAdminWeb(sftpClient, client, cfg)
+		doVueSite(sftpClient, client, cfg)
+		doNginx(sftpClient, client, cfg)
 		doSSL(client, cfg)
+	case "admin-web":
+		doAdminWeb(sftpClient, client, cfg)
+		_, _ = runSSH(client, "nginx -t && systemctl reload nginx", false)
+	case "vue-site":
+		doVueSite(sftpClient, client, cfg)
+		_, _ = runSSH(client, "nginx -t && systemctl reload nginx", false)
+	case "backup":
+		doBackup(client, cfg)
+	case "restore":
+		doRestore(client, sftpClient, cfg)
 	}
 }
 
@@ -176,9 +215,14 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 		}
 	}
 
-	if mode == "main" || mode == "update-main" || mode == "site" {
+	if mode == "main" || mode == "site" || mode == "admin-web" {
 		if _, err := exec.LookPath("flutter"); err != nil {
 			log.Fatal("flutter is required locally to build admin_web during deploy")
+		}
+	}
+	if mode == "main" || mode == "site" || mode == "vue-site" {
+		if _, err := exec.LookPath("npm"); err != nil {
+			log.Fatal("npm is required locally to build the Vue site during deploy")
 		}
 	}
 	if mode == "status" || mode == "fix-db" {
@@ -415,7 +459,7 @@ func buildAdminWeb(repoRoot string) string {
 		log.Fatalf("flutter pub get in admin_web: %v", err)
 	}
 
-	build := exec.Command("flutter", "build", "web", "--release", "--no-tree-shake-icons", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
+	build := exec.Command("flutter", "build", "web", "--release", "--no-tree-shake-icons", "--base-href=/admin/", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
 	build.Dir = adminWebRoot
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -473,6 +517,7 @@ func ensureLocalMTLSAssets(cfg *deployConfig) {
 		}
 	}
 	if !missing {
+		checkLeafCertExpiry(certDir)
 		return
 	}
 
@@ -486,7 +531,7 @@ func ensureLocalMTLSAssets(cfg *deployConfig) {
 	}
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "HeYearth Root CA", Organization: []string{"HeYearth"}},
+		Subject:               pkix.Name{CommonName: "HeYearth Node-Agent CA", Organization: []string{"HeYearth"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
@@ -509,6 +554,8 @@ func ensureLocalMTLSAssets(cfg *deployConfig) {
 	generateSignedCert(certDir, "server", pkix.Name{CommonName: "node-agent", Organization: []string{"HeYearth"}}, []string{"node-agent", "localhost"}, nil, x509.ExtKeyUsageServerAuth, caCert, caKey, 3)
 }
 
+const leafCertValidityYears = 1
+
 func generateSignedCert(certDir, prefix string, subject pkix.Name, dnsNames []string, ipAddresses []net.IP, usage x509.ExtKeyUsage, caCert *x509.Certificate, caKey *rsa.PrivateKey, serial int64) {
 	key, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
@@ -518,7 +565,7 @@ func generateSignedCert(certDir, prefix string, subject pkix.Name, dnsNames []st
 		SerialNumber: big.NewInt(serial),
 		Subject:      subject,
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(5, 0, 0),
+		NotAfter:     time.Now().AddDate(leafCertValidityYears, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{usage},
 		DNSNames:     dnsNames,
@@ -530,6 +577,66 @@ func generateSignedCert(certDir, prefix string, subject pkix.Name, dnsNames []st
 	}
 	writePEM(filepath.Join(certDir, prefix+"-cert.pem"), "CERTIFICATE", der)
 	writePrivateKey(filepath.Join(certDir, prefix+"-key.pem"), key)
+}
+
+func checkLeafCertExpiry(certDir string) {
+	certPath := filepath.Join(certDir, "client-cert.pem")
+	pemData, err := os.ReadFile(certPath)
+	if err != nil {
+		return
+	}
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return
+	}
+	daysLeft := time.Until(cert.NotAfter).Hours() / 24
+	if daysLeft < 30 {
+		log.Printf("ВНИМАНИЕ: листовой сертификат client-cert.pem истекает через %.0f дней! Запусти --rotate-node-agent-certs", daysLeft)
+	}
+}
+
+func loadCAFromDisk(certDir string) (*x509.Certificate, *rsa.PrivateKey) {
+	caPEM, err := os.ReadFile(filepath.Join(certDir, "ca-cert.pem"))
+	if err != nil {
+		log.Fatalf("read CA cert: %v", err)
+	}
+	block, _ := pem.Decode(caPEM)
+	if block == nil {
+		log.Fatal("ca-cert.pem: no PEM block found")
+	}
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		log.Fatalf("parse CA cert: %v", err)
+	}
+
+	keyPEM, err := os.ReadFile(filepath.Join(certDir, "ca-key.pem"))
+	if err != nil {
+		log.Fatalf("read CA key: %v", err)
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		log.Fatal("ca-key.pem: no PEM block found")
+	}
+	caKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		log.Fatalf("parse CA key: %v", err)
+	}
+	return caCert, caKey
+}
+
+func rotateNodeAgentCerts(cfg *deployConfig) {
+	certDir := filepath.Join(cfg.backendRoot, "certs")
+	caCert, caKey := loadCAFromDisk(certDir)
+
+	log.Println("Ротация: перегенерация листовых сертификатов (client, server) тем же Node-Agent CA…")
+	serial := time.Now().Unix()
+	generateSignedCert(certDir, "client", pkix.Name{CommonName: "main-api", Organization: []string{"HeYearth"}}, []string{"main-api"}, nil, x509.ExtKeyUsageClientAuth, caCert, caKey, serial)
+	generateSignedCert(certDir, "server", pkix.Name{CommonName: "node-agent", Organization: []string{"HeYearth"}}, []string{"node-agent", "localhost"}, nil, x509.ExtKeyUsageServerAuth, caCert, caKey, serial+1)
+	log.Println("Новые client-cert.pem, client-key.pem, server-cert.pem, server-key.pem сгенерированы.")
 }
 
 func writePEM(path, blockType string, der []byte) {
@@ -671,21 +778,65 @@ WantedBy=multi-user.target
 	_, _ = runSSH(client, "systemctl daemon-reload && systemctl enable telegram-bot && systemctl restart telegram-bot", true)
 }
 
-func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
-	_, _ = runSSH(client, "mkdir -p /var/www/heyearth "+appDir+"/releases", true)
-
+func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
+	_, _ = runSSH(client, "mkdir -p /var/www/heyearth", true)
 	adminBuildDir := buildAdminWeb(cfg.repoRoot)
 	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
 		log.Fatalf("upload admin_web build: %v", err)
 	}
+	fmt.Println("[admin-web] uploaded to /var/www/heyearth")
+}
+
+func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
+	_, _ = runSSH(client, "mkdir -p /var/www/heyearth-site", true)
+	vueBuildDir := buildVueSite(cfg.repoRoot, cfg)
+	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
+		log.Fatalf("upload vue site build: %v", err)
+	}
+	fmt.Println("[vue-site] uploaded to /var/www/heyearth-site")
+}
+
+func buildVueSite(repoRoot string, cfg *deployConfig) string {
+	siteRoot := filepath.Join(repoRoot, "site")
+
+	npmPath, err := exec.LookPath("npm")
+	if err != nil {
+		log.Fatal("npm is required locally to build the Vue site")
+	}
+
+	install := exec.Command(npmPath, "install")
+	install.Dir = siteRoot
+	install.Stdout = os.Stdout
+	install.Stderr = os.Stderr
+	if err := install.Run(); err != nil {
+		log.Fatalf("npm install in site: %v", err)
+	}
+
+	build := exec.Command(npmPath, "run", "build")
+	build.Dir = siteRoot
+	build.Env = append(os.Environ(),
+		"VITE_API_BASE="+publicBaseURL(cfg),
+		"VITE_TELEGRAM_BOT_URL=https://t.me/"+strings.TrimSpace(cfg.env.get("TELEGRAM_BOT_USERNAME", "heyearth_bot")),
+	)
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		log.Fatalf("npm run build in site: %v", err)
+	}
+
+	return filepath.Join(siteRoot, "dist")
+}
+
+func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
+	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
+	_, _ = runSSH(client, "mkdir -p "+appDir+"/releases", true)
 
 	nginxConf := fmt.Sprintf(`server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name %s www.%s _;
-    root /var/www/heyearth;
-    index index.html;
+
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     location /heyearth.v1.ConfigApi/ {
         grpc_pass 127.0.0.1:50051;
@@ -700,6 +851,11 @@ func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
     location /heyearth.v1.BotApi/ {
         grpc_pass 127.0.0.1:50051;
         grpc_set_header Host $host;
+    }
+
+    location = /robots.txt {
+        default_type text/plain;
+        return 200 "User-agent: *\nDisallow: /\n";
     }
 
     location /go/ {
@@ -726,8 +882,24 @@ func doSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
         try_files $uri =404;
     }
 
+    location /admin/ {
+        alias /var/www/heyearth/;
+        try_files $uri $uri/ /admin/index.html;
+    }
+    location = /admin {
+        return 301 /admin/;
+    }
+
+    location /promo/ {
+        alias /var/www/heyearth-site/;
+        try_files $uri $uri/ /promo/index.html;
+    }
+    location = /promo {
+        return 301 /promo/;
+    }
+
     location / {
-        try_files $uri $uri/ /index.html;
+        return 301 /admin/;
     }
 }
 `, cfg.siteDomain, cfg.siteDomain, appDir)
@@ -829,6 +1001,7 @@ func serializeEnv(values map[string]string) string {
 		"SITE_DOMAIN",
 		"PUBLIC_BASE_URL",
 		"TELEGRAM_BOT_TOKEN",
+		"HEYEARTH_PUBLIC_URL",
 		"TLS_CLIENT_CERT_FILE",
 		"TLS_CLIENT_KEY_FILE",
 		"TLS_CA_FILE",
@@ -843,4 +1016,56 @@ func serializeEnv(values map[string]string) string {
 		}
 	}
 	return b.String()
+}
+
+func doBackup(client *ssh.Client, cfg *deployConfig) {
+	timestamp := time.Now().Format("20060102-150405")
+	backupDir := fmt.Sprintf("/opt/heyearth/backups/%s", timestamp)
+
+	fmt.Printf("=== Creating backup at %s ===\n", backupDir)
+
+	cmds := []string{
+		fmt.Sprintf("mkdir -p %s", backupDir),
+		fmt.Sprintf("sudo -u postgres pg_dump heyearth > %s/db.sql 2>/dev/null || pg_dump -h 127.0.0.1 -U heyearth heyearth > %s/db.sql", backupDir, backupDir),
+		fmt.Sprintf("cp -r %s/certs %s/certs 2>/dev/null || true", appDir, backupDir),
+		fmt.Sprintf("cp %s/.env %s/dot-env 2>/dev/null || true", appDir, backupDir),
+		fmt.Sprintf("cp -r /var/www/heyearth %s/admin-web 2>/dev/null || true", backupDir),
+		fmt.Sprintf("cp -r /var/www/heyearth-site %s/site 2>/dev/null || true", backupDir),
+		fmt.Sprintf("cp /etc/nginx/conf.d/heyearth.conf %s/nginx.conf 2>/dev/null || true", backupDir),
+		fmt.Sprintf("tar czf /opt/heyearth/backups/backup-%s.tar.gz -C /opt/heyearth/backups %s", timestamp, timestamp),
+		fmt.Sprintf("rm -rf %s", backupDir),
+		"ls -lah /opt/heyearth/backups/",
+	}
+
+	for _, cmd := range cmds {
+		out, err := runSSH(client, cmd, false)
+		if err != nil {
+			log.Printf("  cmd failed: %s → %v", cmd, err)
+		}
+		if strings.TrimSpace(out) != "" {
+			fmt.Println(out)
+		}
+	}
+
+	fmt.Printf("=== Backup complete: /opt/heyearth/backups/backup-%s.tar.gz ===\n", timestamp)
+}
+
+func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
+	fmt.Println("=== Available backups ===")
+	out, _ := runSSH(client, "ls -lt /opt/heyearth/backups/*.tar.gz 2>/dev/null | head -10", false)
+	fmt.Println(out)
+
+	fmt.Println("To restore, run on the server:")
+	fmt.Println("  cd /opt/heyearth/backups")
+	fmt.Println("  tar xzf backup-XXXXXXXX-XXXXXX.tar.gz")
+	fmt.Println("  sudo -u postgres psql heyearth < XXXXXXXX-XXXXXX/db.sql")
+	fmt.Println("  cp XXXXXXXX-XXXXXX/dot-env /opt/heyearth/mainserver/.env")
+	fmt.Println("  cp -r XXXXXXXX-XXXXXX/certs /opt/heyearth/mainserver/certs")
+	fmt.Println("  systemctl restart heyearth-api telegram-bot")
+	fmt.Println("")
+	fmt.Println("For migration to a new server:")
+	fmt.Println("  1. Run --backup on the old server")
+	fmt.Println("  2. scp /opt/heyearth/backups/backup-*.tar.gz newhost:/opt/heyearth/backups/")
+	fmt.Println("  3. On the new server: run deploy --main first")
+	fmt.Println("  4. Then restore the DB and config from the backup")
 }

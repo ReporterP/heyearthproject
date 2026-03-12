@@ -41,16 +41,21 @@ const (
 	instructionPhone = `🔶 *Подключение с телефона (iOS) — через Happ*
 
 • Скачай приложение *Happ*: App Store или https://www.happ.su/main/ru
-• Нажми «Получить ссылку» в боте, скопируй ss:// и вставь в Happ.
-• Включи *глобальный режим* и *«DNS через прокси»* в настройках Happ.
-⚠ Ссылка — личная, никому не передавай.`
+• Нажми «Получить ссылку» в боте — получишь две ссылки:
+  — *ss://*  для Wi-Fi (стабильнее на домашней сети)
+  — *vless://*  для мобильного интернета (обходит блокировки)
+• Вставь нужную ссылку в Happ и включи *глобальный режим* + *«DNS через прокси»*.
+⚠ Ссылки — личные, никому не передавай.
+💡 Если по мобильному интернету не подключается — попробуй ссылку vless://.`
 
 	instructionPC = `🔶 *Подключение с ПК (macOS / Linux) — через Happ*
 
 • Скачай *Happ*: https://www.happ.su/main/ru (macOS: .dmg, Linux: .deb / .rpm)
-• Нажми «Получить ссылку» в боте, скопируй ss:// и вставь в Happ.
-• Включи *глобальный режим* и *«DNS через прокси»* в настройках Happ.
-⚠ Ссылка — личная, никому не передавай.`
+• Нажми «Получить ссылку» в боте — получишь две ссылки:
+  — *ss://*  для Wi-Fi
+  — *vless://*  для мобильного интернета / при блокировках
+• Вставь нужную ссылку в Happ и включи *глобальный режим* + *«DNS через прокси»*.
+⚠ Ссылки — личные, никому не передавай.`
 
 	instructionAppAndroid = `📲 *Приложение HeYearth для Android*
 
@@ -573,10 +578,7 @@ func handleLegacyConfigCommand(backend *backendClient, telegramID int64, forceNe
 		k := mainKeyboardForPlatform(platform)
 		return "Не удалось выдать ss:// ссылку: " + err.Error(), &k
 	}
-	text := fmt.Sprintf("Твоя персональная ссылка:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nИмпортируй её в Happ и включи глобальный режим с DNS через прокси.", resp.GetSsUri(), resp.GetUserId())
-	if forceNew {
-		text = fmt.Sprintf("Ссылка обновлена:\n\n`%s`\n\nТвой HeYearth ID:\n`%s`\n\nИмпортируй её в Happ и включи глобальный режим с DNS через прокси.", resp.GetSsUri(), resp.GetUserId())
-	}
+	text := formatConfigLinks(resp.GetSsUri(), resp.GetVlessUri(), resp.GetUserId(), forceNew)
 	k := mainKeyboardForPlatform(platform)
 	return text, &k
 }
@@ -639,6 +641,28 @@ func pairingMessage(resp *heyearth_v1.CreatePairingCodeResponse) string {
 		resp.GetCode(),
 		resp.GetExpiresAt(),
 	)
+}
+
+func formatConfigLinks(ssUri, vlessUri, userID string, forceNew bool) string {
+	header := "Твои персональные ссылки:"
+	if forceNew {
+		header = "Ссылки обновлены:"
+	}
+	var b strings.Builder
+	b.WriteString(header + "\n\n")
+	if ssUri != "" {
+		b.WriteString("📶 *Для Wi-Fi (Shadowsocks):*\n`" + ssUri + "`\n\n")
+	}
+	if vlessUri != "" {
+		b.WriteString("📱 *Для мобильного интернета (VLESS Reality):*\n`" + vlessUri + "`\n\n")
+	}
+	if ssUri == "" && vlessUri == "" {
+		b.WriteString("⚠ Ссылки не удалось получить. Попробуй позже.\n\n")
+	}
+	b.WriteString("Твой HeYearth ID:\n`" + userID + "`\n\n")
+	b.WriteString("Импортируй нужную ссылку в Happ и включи глобальный режим с DNS через прокси.\n")
+	b.WriteString("💡 В приложении HeYearth выбор способа происходит автоматически.")
+	return b.String()
 }
 
 func firstNonEmpty(values ...string) string {

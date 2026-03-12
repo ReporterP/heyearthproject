@@ -14,6 +14,7 @@ import 'pages/servers_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/ssh_keys_page.dart';
 import 'pages/subscriptions_page.dart';
+import 'pages/tenants_page.dart';
 import 'pages/users_page.dart';
 import 'session_store.dart';
 
@@ -23,6 +24,7 @@ void main() {
 
 enum AdminSection {
   dashboard,
+  tenants,
   users,
   groups,
   subscriptions,
@@ -286,6 +288,9 @@ class _AdminShellState extends State<AdminShell> {
         if (_can('dashboard.read'))
           _SectionItem(
               AdminSection.dashboard, l10n.navDashboard, Icons.dashboard_outlined),
+        if (_can('tenants.read'))
+          _SectionItem(
+              AdminSection.tenants, l10n.navTenants, Icons.business_outlined),
         if (_can('users.read'))
           _SectionItem(AdminSection.users, l10n.navUsers, Icons.people_outline),
         if (_can('groups.read'))
@@ -321,6 +326,8 @@ class _AdminShellState extends State<AdminShell> {
     switch (_section) {
       case AdminSection.dashboard:
         return DashboardPage(token: token);
+      case AdminSection.tenants:
+        return TenantsPage(token: token);
       case AdminSection.users:
         return UsersPage(token: token);
       case AdminSection.groups:
@@ -341,6 +348,7 @@ class _AdminShellState extends State<AdminShell> {
         return AdminsPage(token: token);
       case AdminSection.settings:
         return SettingsPage(
+          token: token,
           loginResult: _loginResult,
           themeMode: widget.themeMode,
           locale: widget.locale,

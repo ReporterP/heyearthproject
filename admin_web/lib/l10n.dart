@@ -72,6 +72,7 @@ class AdminL10n {
   String get navSshKeys => isEn ? 'SSH Keys' : 'SSH Ключи';
   String get navReleases => isEn ? 'Releases' : 'Релизы';
   String get navAdmins => isEn ? 'Admins' : 'Администраторы';
+  String get navTenants => isEn ? 'Tenants' : 'Тенанты';
   String get navSettings => isEn ? 'Settings' : 'Настройки';
 
   // ── Dashboard ──────────────────────────────────────────────────────────────────
@@ -237,4 +238,26 @@ class AdminL10n {
   String get settingsTheme => isEn ? 'Theme' : 'Тема';
   String get settingsLanguage => isEn ? 'Interface language' : 'Язык интерфейса';
   String get settingsLogout => isEn ? 'Logout' : 'Выйти';
+  String get settingsServerSection =>
+      isEn ? 'Server Settings' : 'Серверные настройки';
+  String get settingsApiEndpoints =>
+      isEn ? 'API Endpoints' : 'API-эндпоинты';
+  String get settingsApiEndpointsHint => isEn
+      ? 'JSON array of fallback API base URLs for the client app'
+      : 'JSON-массив резервных API-адресов для клиентского приложения';
+  String get settingsYukassaShopId =>
+      isEn ? 'YooKassa Shop ID' : 'YooKassa Shop ID';
+  String get settingsYukassaShopIdHint => isEn
+      ? 'Your YooKassa shop identifier for payment processing'
+      : 'Идентификатор магазина YooKassa для обработки платежей';
+  String get settingsYukassaSecretKey =>
+      isEn ? 'YooKassa Secret Key' : 'YooKassa Секретный ключ';
+  String get settingsYukassaSecretKeyHint => isEn
+      ? 'Secret key used for API authentication with YooKassa'
+      : 'Секретный ключ для аутентификации в API YooKassa';
+  String get settingsYukassaTestMode =>
+      isEn ? 'YooKassa Test Mode' : 'YooKassa тестовый режим';
+  String get settingsYukassaTestModeHint => isEn
+      ? 'Enable test mode to process payments in sandbox'
+      : 'Включить тестовый режим для обработки платежей в песочнице';
 }

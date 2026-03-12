@@ -33,13 +33,14 @@ const GetConfigResponse$json = {
   '2': [
     {'1': 'user_id', '3': 1, '4': 1, '5': 9, '10': 'userId'},
     {'1': 'ss_uri', '3': 2, '4': 1, '5': 9, '10': 'ssUri'},
+    {'1': 'vless_uri', '3': 3, '4': 1, '5': 9, '10': 'vlessUri'},
   ],
 };
 
 /// Descriptor for `GetConfigResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List getConfigResponseDescriptor = $convert.base64Decode(
     'ChFHZXRDb25maWdSZXNwb25zZRIXCgd1c2VyX2lkGAEgASgJUgZ1c2VySWQSFQoGc3NfdXJpGA'
-    'IgASgJUgVzc1VyaQ==');
+    'IgASgJUgVzc1VyaRIbCgl2bGVzc191cmkYAyABKAlSCHZsZXNzVXJp');
 
 @$core.Deprecated('Use deviceContextDescriptor instead')
 const DeviceContext$json = {
@@ -112,6 +113,7 @@ const CheckAppUpdateResponse$json = {
       '5': 9,
       '10': 'minSupportedVersion'
     },
+    {'1': 'api_endpoints', '3': 10, '4': 3, '5': 9, '10': 'apiEndpoints'},
   ],
 };
 
@@ -122,7 +124,8 @@ final $typed_data.Uint8List checkAppUpdateResponseDescriptor = $convert.base64De
     'd3NVcmwSGwoJbWFjb3NfdXJsGAQgASgJUghtYWNvc1VybBIbCglsaW51eF91cmwYBSABKAlSCG'
     'xpbnV4VXJsEhcKB2lvc191cmwYBiABKAlSBmlvc1VybBIjCg1yZWxlYXNlX25vdGVzGAcgASgJ'
     'UgxyZWxlYXNlTm90ZXMSHAoJbWFuZGF0b3J5GAggASgIUgltYW5kYXRvcnkSMgoVbWluX3N1cH'
-    'BvcnRlZF92ZXJzaW9uGAkgASgJUhNtaW5TdXBwb3J0ZWRWZXJzaW9u');
+    'BvcnRlZF92ZXJzaW9uGAkgASgJUhNtaW5TdXBwb3J0ZWRWZXJzaW9uEiMKDWFwaV9lbmRwb2lu'
+    'dHMYCiADKAlSDGFwaUVuZHBvaW50cw==');
 
 @$core.Deprecated('Use applyPromocodeRequestDescriptor instead')
 const ApplyPromocodeRequest$json = {
@@ -501,6 +504,13 @@ const AccessStateResponse$json = {
       '10': 'legacyHappFallback'
     },
     {'1': 'reason', '3': 8, '4': 1, '5': 9, '10': 'reason'},
+    {
+      '1': 'allow_manual_connection_choice',
+      '3': 9,
+      '4': 1,
+      '5': 8,
+      '10': 'allowManualConnectionChoice'
+    },
   ],
 };
 
@@ -511,7 +521,8 @@ final $typed_data.Uint8List accessStateResponseDescriptor = $convert.base64Decod
     'dGlsEi0KEnByZWZlcnJlZF9wbGF0Zm9ybRgEIAEoCVIRcHJlZmVycmVkUGxhdGZvcm0SHQoKaX'
     'NfYmxvY2tlZBgFIAEoCFIJaXNCbG9ja2VkEh8KC2Nhbl9jb25uZWN0GAYgASgIUgpjYW5Db25u'
     'ZWN0EjAKFGxlZ2FjeV9oYXBwX2ZhbGxiYWNrGAcgASgIUhJsZWdhY3lIYXBwRmFsbGJhY2sSFg'
-    'oGcmVhc29uGAggASgJUgZyZWFzb24=');
+    'oGcmVhc29uGAggASgJUgZyZWFzb24SQwoeYWxsb3dfbWFudWFsX2Nvbm5lY3Rpb25fY2hvaWNl'
+    'GAkgASgIUhthbGxvd01hbnVhbENvbm5lY3Rpb25DaG9pY2U=');
 
 @$core.Deprecated('Use getConnectionBundleRequestDescriptor instead')
 const GetConnectionBundleRequest$json = {
@@ -529,6 +540,29 @@ final $typed_data.Uint8List getConnectionBundleRequestDescriptor =
         'ChpHZXRDb25uZWN0aW9uQnVuZGxlUmVxdWVzdBIXCgd1c2VyX2lkGAEgASgJUgZ1c2VySWQSGg'
         'oIcGxhdGZvcm0YAiABKAlSCHBsYXRmb3JtEiMKDWZvcmNlX3JlZnJlc2gYAyABKAhSDGZvcmNl'
         'UmVmcmVzaA==');
+
+@$core.Deprecated('Use connectionOptionDescriptor instead')
+const ConnectionOption$json = {
+  '1': 'ConnectionOption',
+  '2': [
+    {'1': 'uri', '3': 1, '4': 1, '5': 9, '10': 'uri'},
+    {'1': 'protocol', '3': 2, '4': 1, '5': 9, '10': 'protocol'},
+    {
+      '1': 'recommended_networks',
+      '3': 3,
+      '4': 3,
+      '5': 9,
+      '10': 'recommendedNetworks'
+    },
+    {'1': 'priority', '3': 4, '4': 1, '5': 5, '10': 'priority'},
+  ],
+};
+
+/// Descriptor for `ConnectionOption`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List connectionOptionDescriptor = $convert.base64Decode(
+    'ChBDb25uZWN0aW9uT3B0aW9uEhAKA3VyaRgBIAEoCVIDdXJpEhoKCHByb3RvY29sGAIgASgJUg'
+    'hwcm90b2NvbBIxChRyZWNvbW1lbmRlZF9uZXR3b3JrcxgDIAMoCVITcmVjb21tZW5kZWROZXR3'
+    'b3JrcxIaCghwcmlvcml0eRgEIAEoBVIIcHJpb3JpdHk=');
 
 @$core.Deprecated('Use connectionBundleResponseDescriptor instead')
 const ConnectionBundleResponse$json = {
@@ -552,6 +586,15 @@ const ConnectionBundleResponse$json = {
       '5': 9,
       '10': 'fallbackInstruction'
     },
+    {'1': 'vless_uri', '3': 7, '4': 1, '5': 9, '10': 'vlessUri'},
+    {
+      '1': 'connection_options',
+      '3': 8,
+      '4': 3,
+      '5': 11,
+      '6': '.heyearth.v1.ConnectionOption',
+      '10': 'connectionOptions'
+    },
   ],
 };
 
@@ -561,7 +604,9 @@ final $typed_data.Uint8List connectionBundleResponseDescriptor = $convert.base64
     'NzX3VyaRgCIAEoCVIFc3NVcmkSIQoMY29ubmVjdF9tb2RlGAMgASgJUgtjb25uZWN0TW9kZRIl'
     'Cg5zdGF0dXNfbWVzc2FnZRgEIAEoCVINc3RhdHVzTWVzc2FnZRIwChRsZWdhY3lfaGFwcF9mYW'
     'xsYmFjaxgFIAEoCFISbGVnYWN5SGFwcEZhbGxiYWNrEjEKFGZhbGxiYWNrX2luc3RydWN0aW9u'
-    'GAYgASgJUhNmYWxsYmFja0luc3RydWN0aW9u');
+    'GAYgASgJUhNmYWxsYmFja0luc3RydWN0aW9uEhsKCXZsZXNzX3VyaRgHIAEoCVIIdmxlc3NVcm'
+    'kSTAoSY29ubmVjdGlvbl9vcHRpb25zGAggAygLMh0uaGV5ZWFydGgudjEuQ29ubmVjdGlvbk9w'
+    'dGlvblIRY29ubmVjdGlvbk9wdGlvbnM=');
 
 @$core.Deprecated('Use listSubscriptionsRequestDescriptor instead')
 const ListSubscriptionsRequest$json = {
@@ -671,3 +716,217 @@ const ListPaymentsResponse$json = {
 final $typed_data.Uint8List listPaymentsResponseDescriptor = $convert.base64Decode(
     'ChRMaXN0UGF5bWVudHNSZXNwb25zZRIuCgVpdGVtcxgBIAMoCzIYLmhleWVhcnRoLnYxLlBheW'
     '1lbnRJdGVtUgVpdGVtcw==');
+
+const $core.Map<$core.String, $core.dynamic> ConfigApiServiceBase$json = {
+  '1': 'ConfigApi',
+  '2': [
+    {
+      '1': 'GetConfig',
+      '2': '.heyearth.v1.GetConfigRequest',
+      '3': '.heyearth.v1.GetConfigResponse'
+    },
+    {
+      '1': 'Health',
+      '2': '.heyearth.v1.HealthRequest',
+      '3': '.heyearth.v1.HealthResponse'
+    },
+    {
+      '1': 'CheckAppUpdate',
+      '2': '.heyearth.v1.CheckAppUpdateRequest',
+      '3': '.heyearth.v1.CheckAppUpdateResponse'
+    },
+    {
+      '1': 'ApplyPromocode',
+      '2': '.heyearth.v1.ApplyPromocodeRequest',
+      '3': '.heyearth.v1.ApplyPromocodeResponse'
+    },
+    {
+      '1': 'GetProfile',
+      '2': '.heyearth.v1.GetProfileRequest',
+      '3': '.heyearth.v1.GetProfileResponse'
+    },
+  ],
+};
+
+@$core.Deprecated('Use configApiServiceDescriptor instead')
+const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
+    ConfigApiServiceBase$messageJson = {
+  '.heyearth.v1.GetConfigRequest': GetConfigRequest$json,
+  '.heyearth.v1.GetConfigResponse': GetConfigResponse$json,
+  '.heyearth.v1.HealthRequest': HealthRequest$json,
+  '.heyearth.v1.HealthResponse': HealthResponse$json,
+  '.heyearth.v1.CheckAppUpdateRequest': CheckAppUpdateRequest$json,
+  '.heyearth.v1.CheckAppUpdateResponse': CheckAppUpdateResponse$json,
+  '.heyearth.v1.ApplyPromocodeRequest': ApplyPromocodeRequest$json,
+  '.heyearth.v1.ApplyPromocodeResponse': ApplyPromocodeResponse$json,
+  '.heyearth.v1.GetProfileRequest': GetProfileRequest$json,
+  '.heyearth.v1.GetProfileResponse': GetProfileResponse$json,
+};
+
+/// Descriptor for `ConfigApi`. Decode as a `google.protobuf.ServiceDescriptorProto`.
+final $typed_data.Uint8List configApiServiceDescriptor = $convert.base64Decode(
+    'CglDb25maWdBcGkSSgoJR2V0Q29uZmlnEh0uaGV5ZWFydGgudjEuR2V0Q29uZmlnUmVxdWVzdB'
+    'oeLmhleWVhcnRoLnYxLkdldENvbmZpZ1Jlc3BvbnNlEkEKBkhlYWx0aBIaLmhleWVhcnRoLnYx'
+    'LkhlYWx0aFJlcXVlc3QaGy5oZXllYXJ0aC52MS5IZWFsdGhSZXNwb25zZRJZCg5DaGVja0FwcF'
+    'VwZGF0ZRIiLmhleWVhcnRoLnYxLkNoZWNrQXBwVXBkYXRlUmVxdWVzdBojLmhleWVhcnRoLnYx'
+    'LkNoZWNrQXBwVXBkYXRlUmVzcG9uc2USWQoOQXBwbHlQcm9tb2NvZGUSIi5oZXllYXJ0aC52MS'
+    '5BcHBseVByb21vY29kZVJlcXVlc3QaIy5oZXllYXJ0aC52MS5BcHBseVByb21vY29kZVJlc3Bv'
+    'bnNlEk0KCkdldFByb2ZpbGUSHi5oZXllYXJ0aC52MS5HZXRQcm9maWxlUmVxdWVzdBofLmhleW'
+    'VhcnRoLnYxLkdldFByb2ZpbGVSZXNwb25zZQ==');
+
+const $core.Map<$core.String, $core.dynamic> BotApiServiceBase$json = {
+  '1': 'BotApi',
+  '2': [
+    {
+      '1': 'EnsureTelegramUser',
+      '2': '.heyearth.v1.EnsureTelegramUserRequest',
+      '3': '.heyearth.v1.UserProfileResponse'
+    },
+    {
+      '1': 'SetPreferredPlatform',
+      '2': '.heyearth.v1.SetPreferredPlatformRequest',
+      '3': '.heyearth.v1.UserProfileResponse'
+    },
+    {
+      '1': 'CreatePairingCode',
+      '2': '.heyearth.v1.CreatePairingCodeRequest',
+      '3': '.heyearth.v1.CreatePairingCodeResponse'
+    },
+    {
+      '1': 'GetClientDistribution',
+      '2': '.heyearth.v1.GetClientDistributionRequest',
+      '3': '.heyearth.v1.GetClientDistributionResponse'
+    },
+    {
+      '1': 'IssueLegacyAppleConfig',
+      '2': '.heyearth.v1.IssueLegacyAppleConfigRequest',
+      '3': '.heyearth.v1.ConnectionBundleResponse'
+    },
+  ],
+};
+
+@$core.Deprecated('Use botApiServiceDescriptor instead')
+const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
+    BotApiServiceBase$messageJson = {
+  '.heyearth.v1.EnsureTelegramUserRequest': EnsureTelegramUserRequest$json,
+  '.heyearth.v1.UserProfileResponse': UserProfileResponse$json,
+  '.heyearth.v1.SetPreferredPlatformRequest': SetPreferredPlatformRequest$json,
+  '.heyearth.v1.CreatePairingCodeRequest': CreatePairingCodeRequest$json,
+  '.heyearth.v1.CreatePairingCodeResponse': CreatePairingCodeResponse$json,
+  '.heyearth.v1.GetClientDistributionRequest':
+      GetClientDistributionRequest$json,
+  '.heyearth.v1.GetClientDistributionResponse':
+      GetClientDistributionResponse$json,
+  '.heyearth.v1.IssueLegacyAppleConfigRequest':
+      IssueLegacyAppleConfigRequest$json,
+  '.heyearth.v1.ConnectionBundleResponse': ConnectionBundleResponse$json,
+  '.heyearth.v1.ConnectionOption': ConnectionOption$json,
+};
+
+/// Descriptor for `BotApi`. Decode as a `google.protobuf.ServiceDescriptorProto`.
+final $typed_data.Uint8List botApiServiceDescriptor = $convert.base64Decode(
+    'CgZCb3RBcGkSXgoSRW5zdXJlVGVsZWdyYW1Vc2VyEiYuaGV5ZWFydGgudjEuRW5zdXJlVGVsZW'
+    'dyYW1Vc2VyUmVxdWVzdBogLmhleWVhcnRoLnYxLlVzZXJQcm9maWxlUmVzcG9uc2USYgoUU2V0'
+    'UHJlZmVycmVkUGxhdGZvcm0SKC5oZXllYXJ0aC52MS5TZXRQcmVmZXJyZWRQbGF0Zm9ybVJlcX'
+    'Vlc3QaIC5oZXllYXJ0aC52MS5Vc2VyUHJvZmlsZVJlc3BvbnNlEmIKEUNyZWF0ZVBhaXJpbmdD'
+    'b2RlEiUuaGV5ZWFydGgudjEuQ3JlYXRlUGFpcmluZ0NvZGVSZXF1ZXN0GiYuaGV5ZWFydGgudj'
+    'EuQ3JlYXRlUGFpcmluZ0NvZGVSZXNwb25zZRJuChVHZXRDbGllbnREaXN0cmlidXRpb24SKS5o'
+    'ZXllYXJ0aC52MS5HZXRDbGllbnREaXN0cmlidXRpb25SZXF1ZXN0GiouaGV5ZWFydGgudjEuR2'
+    'V0Q2xpZW50RGlzdHJpYnV0aW9uUmVzcG9uc2USawoWSXNzdWVMZWdhY3lBcHBsZUNvbmZpZxIq'
+    'LmhleWVhcnRoLnYxLklzc3VlTGVnYWN5QXBwbGVDb25maWdSZXF1ZXN0GiUuaGV5ZWFydGgudj'
+    'EuQ29ubmVjdGlvbkJ1bmRsZVJlc3BvbnNl');
+
+const $core.Map<$core.String, $core.dynamic> ClientApiServiceBase$json = {
+  '1': 'ClientApi',
+  '2': [
+    {
+      '1': 'ClaimByCode',
+      '2': '.heyearth.v1.ClaimByCodeRequest',
+      '3': '.heyearth.v1.ClaimResponse'
+    },
+    {
+      '1': 'ClaimByToken',
+      '2': '.heyearth.v1.ClaimByTokenRequest',
+      '3': '.heyearth.v1.ClaimResponse'
+    },
+    {
+      '1': 'GetMe',
+      '2': '.heyearth.v1.GetMeRequest',
+      '3': '.heyearth.v1.UserProfileResponse'
+    },
+    {
+      '1': 'GetAccessState',
+      '2': '.heyearth.v1.GetAccessStateRequest',
+      '3': '.heyearth.v1.AccessStateResponse'
+    },
+    {
+      '1': 'GetConnectionBundle',
+      '2': '.heyearth.v1.GetConnectionBundleRequest',
+      '3': '.heyearth.v1.ConnectionBundleResponse'
+    },
+    {
+      '1': 'ListSubscriptions',
+      '2': '.heyearth.v1.ListSubscriptionsRequest',
+      '3': '.heyearth.v1.ListSubscriptionsResponse'
+    },
+    {
+      '1': 'ListPayments',
+      '2': '.heyearth.v1.ListPaymentsRequest',
+      '3': '.heyearth.v1.ListPaymentsResponse'
+    },
+    {
+      '1': 'ApplyPromocode',
+      '2': '.heyearth.v1.ApplyPromocodeRequest',
+      '3': '.heyearth.v1.ApplyPromocodeResponse'
+    },
+    {
+      '1': 'CheckAppUpdate',
+      '2': '.heyearth.v1.CheckAppUpdateRequest',
+      '3': '.heyearth.v1.CheckAppUpdateResponse'
+    },
+  ],
+};
+
+@$core.Deprecated('Use clientApiServiceDescriptor instead')
+const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
+    ClientApiServiceBase$messageJson = {
+  '.heyearth.v1.ClaimByCodeRequest': ClaimByCodeRequest$json,
+  '.heyearth.v1.DeviceContext': DeviceContext$json,
+  '.heyearth.v1.ClaimResponse': ClaimResponse$json,
+  '.heyearth.v1.UserProfileResponse': UserProfileResponse$json,
+  '.heyearth.v1.AccessStateResponse': AccessStateResponse$json,
+  '.heyearth.v1.ClaimByTokenRequest': ClaimByTokenRequest$json,
+  '.heyearth.v1.GetMeRequest': GetMeRequest$json,
+  '.heyearth.v1.GetAccessStateRequest': GetAccessStateRequest$json,
+  '.heyearth.v1.GetConnectionBundleRequest': GetConnectionBundleRequest$json,
+  '.heyearth.v1.ConnectionBundleResponse': ConnectionBundleResponse$json,
+  '.heyearth.v1.ConnectionOption': ConnectionOption$json,
+  '.heyearth.v1.ListSubscriptionsRequest': ListSubscriptionsRequest$json,
+  '.heyearth.v1.ListSubscriptionsResponse': ListSubscriptionsResponse$json,
+  '.heyearth.v1.SubscriptionItem': SubscriptionItem$json,
+  '.heyearth.v1.ListPaymentsRequest': ListPaymentsRequest$json,
+  '.heyearth.v1.ListPaymentsResponse': ListPaymentsResponse$json,
+  '.heyearth.v1.PaymentItem': PaymentItem$json,
+  '.heyearth.v1.ApplyPromocodeRequest': ApplyPromocodeRequest$json,
+  '.heyearth.v1.ApplyPromocodeResponse': ApplyPromocodeResponse$json,
+  '.heyearth.v1.CheckAppUpdateRequest': CheckAppUpdateRequest$json,
+  '.heyearth.v1.CheckAppUpdateResponse': CheckAppUpdateResponse$json,
+};
+
+/// Descriptor for `ClientApi`. Decode as a `google.protobuf.ServiceDescriptorProto`.
+final $typed_data.Uint8List clientApiServiceDescriptor = $convert.base64Decode(
+    'CglDbGllbnRBcGkSSgoLQ2xhaW1CeUNvZGUSHy5oZXllYXJ0aC52MS5DbGFpbUJ5Q29kZVJlcX'
+    'Vlc3QaGi5oZXllYXJ0aC52MS5DbGFpbVJlc3BvbnNlEkwKDENsYWltQnlUb2tlbhIgLmhleWVh'
+    'cnRoLnYxLkNsYWltQnlUb2tlblJlcXVlc3QaGi5oZXllYXJ0aC52MS5DbGFpbVJlc3BvbnNlEk'
+    'QKBUdldE1lEhkuaGV5ZWFydGgudjEuR2V0TWVSZXF1ZXN0GiAuaGV5ZWFydGgudjEuVXNlclBy'
+    'b2ZpbGVSZXNwb25zZRJWCg5HZXRBY2Nlc3NTdGF0ZRIiLmhleWVhcnRoLnYxLkdldEFjY2Vzc1'
+    'N0YXRlUmVxdWVzdBogLmhleWVhcnRoLnYxLkFjY2Vzc1N0YXRlUmVzcG9uc2USZQoTR2V0Q29u'
+    'bmVjdGlvbkJ1bmRsZRInLmhleWVhcnRoLnYxLkdldENvbm5lY3Rpb25CdW5kbGVSZXF1ZXN0Gi'
+    'UuaGV5ZWFydGgudjEuQ29ubmVjdGlvbkJ1bmRsZVJlc3BvbnNlEmIKEUxpc3RTdWJzY3JpcHRp'
+    'b25zEiUuaGV5ZWFydGgudjEuTGlzdFN1YnNjcmlwdGlvbnNSZXF1ZXN0GiYuaGV5ZWFydGgudj'
+    'EuTGlzdFN1YnNjcmlwdGlvbnNSZXNwb25zZRJTCgxMaXN0UGF5bWVudHMSIC5oZXllYXJ0aC52'
+    'MS5MaXN0UGF5bWVudHNSZXF1ZXN0GiEuaGV5ZWFydGgudjEuTGlzdFBheW1lbnRzUmVzcG9uc2'
+    'USWQoOQXBwbHlQcm9tb2NvZGUSIi5oZXllYXJ0aC52MS5BcHBseVByb21vY29kZVJlcXVlc3Qa'
+    'Iy5oZXllYXJ0aC52MS5BcHBseVByb21vY29kZVJlc3BvbnNlElkKDkNoZWNrQXBwVXBkYXRlEi'
+    'IuaGV5ZWFydGgudjEuQ2hlY2tBcHBVcGRhdGVSZXF1ZXN0GiMuaGV5ZWFydGgudjEuQ2hlY2tB'
+    'cHBVcGRhdGVSZXNwb25zZQ==');
