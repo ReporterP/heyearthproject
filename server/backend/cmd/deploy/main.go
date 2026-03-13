@@ -809,21 +809,35 @@ func uncToWSLPath(unc string) string {
 func buildVueSite(repoRoot string, cfg *deployConfig) string {
 	siteRoot := filepath.Join(repoRoot, "site")
 
-	// On Windows, when repo is on WSL (UNC path), npm postinstall scripts (e.g. esbuild) fail because CMD doesn't support UNC. Run inside WSL.
-	wslPath := ""
-	if runtime.GOOS == "windows" && (strings.HasPrefix(siteRoot, `\\`) || strings.HasPrefix(siteRoot, "\\\\")) {
+	// When repo is on WSL (UNC on Windows, or /home/... on Linux), run npm inside a clean environment so we don't use Windows npm (which breaks on UNC in postinstall). Use WSL explicitly on Windows; on Linux (WSL) run via bash with explicit /usr/bin/npm to avoid Windows npm in PATH.
+	useWSL := false
+	var wslPath string
+	if runtime.GOOS == "windows" && (strings.HasPrefix(siteRoot, "\\\\") || strings.HasPrefix(siteRoot, `\\`)) {
 		wslPath = uncToWSLPath(siteRoot)
+		if wslPath != "" {
+			useWSL = true
+		}
 	}
-	if wslPath != "" {
+	if runtime.GOOS == "linux" && strings.HasPrefix(filepath.ToSlash(siteRoot), "/home/") {
+		wslPath = filepath.ToSlash(siteRoot)
+		useWSL = true
+	}
+	if useWSL && wslPath != "" {
 		apiBase := strings.ReplaceAll(publicBaseURL(cfg), "'", "'\"'\"'")
 		telegramBot := strings.TrimSpace(cfg.env.get("TELEGRAM_BOT_USERNAME", "heyearth_bot"))
-		script := fmt.Sprintf("cd %s && export VITE_API_BASE='%s' && export VITE_TELEGRAM_BOT_URL='https://t.me/%s' && npm install && npm run build",
+		// Use /usr/bin/npm so we don't pick up Windows npm from PATH. Clean install avoids @tailwindcss/oxide "Cannot find native binding" (npm optional deps bug).
+		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='%s' && export VITE_TELEGRAM_BOT_URL='https://t.me/%s' && /usr/bin/npm install && /usr/bin/npm run build",
 			strings.ReplaceAll(wslPath, "'", "'\"'\"'"), apiBase, telegramBot)
-		cmd := exec.Command("wsl", "-e", "bash", "-c", script)
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("wsl", "-e", "bash", "-c", script)
+		} else {
+			cmd = exec.Command("bash", "-c", script)
+		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			log.Fatalf("npm install/build in site (via WSL): %v", err)
+			log.Fatalf("npm install/build in site (via WSL/bash): %v", err)
 		}
 		return filepath.Join(siteRoot, "dist")
 	}
