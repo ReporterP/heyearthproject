@@ -3,19 +3,9 @@ const botUrl = import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/heyearth_b
 
 const features = [
   {
-    icon: '🔒',
-    title: 'Шифрование',
-    desc: 'Военный уровень шифрования трафика. Ваши данные защищены от перехвата.',
-  },
-  {
     icon: '⚡',
     title: 'Скорость',
     desc: 'Серверы на быстрых каналах. Стриминг, игры и работа без задержек.',
-  },
-  {
-    icon: '🌍',
-    title: 'Обход блокировок',
-    desc: 'VLESS + Reality маскирует трафик. Работает даже в самых строгих сетях.',
   },
   {
     icon: '📱',
@@ -29,14 +19,14 @@ const plans = [
     name: 'Стандарт',
     price: '200',
     period: 'мес',
-    features: ['Автоматический выбор сервера', 'Умное переключение протоколов', 'Без ограничений по трафику', 'Все устройства'],
+    features: ['Без ограничений по трафику', 'Все устройства'],
     highlighted: false,
   },
   {
     name: 'Премиум',
     price: '250',
     period: 'мес',
-    features: ['Всё из «Стандарт»', 'Ручной выбор протокола и сервера', 'Мульти-хоп (цепочка серверов)', 'Приоритетная поддержка'],
+    features: ['Всё из «Стандарт»', 'Приоритетная поддержка'],
     highlighted: true,
   },
 ]
@@ -47,11 +37,11 @@ const plans = [
     <div class="absolute inset-0 bg-gradient-to-br from-brand/10 via-transparent to-accent/5 pointer-events-none" />
     <div class="relative max-w-4xl mx-auto px-6 text-center">
       <h1 class="text-5xl md:text-6xl font-extrabold tracking-tight leading-tight">
-        Безопасный интернет <br class="hidden md:block" />
+        Экологичный. <br class="hidden md:block" />
         <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-light to-accent">без границ</span>
       </h1>
       <p class="mt-6 text-lg text-text-secondary max-w-2xl mx-auto">
-        HeYearth защищает ваш трафик и обходит блокировки. Один аккаунт на все устройства. Работает там, где не работают другие.
+        HeYearth. Один аккаунт на все устройства. Работает там, где не работают другие.
       </p>
       <div class="mt-10 flex flex-wrap justify-center gap-4">
         <a

@@ -96,11 +96,6 @@ async function submit() {
         </div>
 
         <div v-if="step === 1" class="space-y-6">
-          <label class="flex items-center gap-3 cursor-pointer">
-            <input v-model="specs.unlimited" type="checkbox" class="accent-brand w-5 h-5" />
-            <span>Безлимит (20 000 ₽/мес — без ограничений)</span>
-          </label>
-
           <template v-if="!specs.unlimited">
             <div>
               <label class="block text-sm text-text-secondary mb-2">Количество пользователей</label>

@@ -70,10 +70,6 @@ const advantages = [
           <span class="text-text-secondary">Премиум для пользователя</span>
           <span class="font-semibold">+50 ₽ / мес</span>
         </div>
-        <div class="flex justify-between p-4 rounded-xl bg-gradient-to-r from-brand/10 to-transparent border border-brand/30">
-          <span class="text-text-primary font-medium">Безлимит (супер-тариф)</span>
-          <span class="font-bold text-brand-light">20 000 ₽ / мес</span>
-        </div>
       </div>
       <p class="text-xs text-text-secondary text-center mt-4">Цены настраиваются индивидуально. Указаны базовые значения.</p>
     </div>
