@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -796,8 +797,36 @@ func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[vue-site] uploaded to /var/www/heyearth-site")
 }
 
+// uncToWSLPath converts a Windows UNC path (\\wsl.localhost\Distro\home\...) to WSL Linux path (/home/...).
+func uncToWSLPath(unc string) string {
+	normalized := filepath.ToSlash(unc)
+	if i := strings.Index(normalized, "/home/"); i >= 0 {
+		return normalized[i:]
+	}
+	return ""
+}
+
 func buildVueSite(repoRoot string, cfg *deployConfig) string {
 	siteRoot := filepath.Join(repoRoot, "site")
+
+	// On Windows, when repo is on WSL (UNC path), npm postinstall scripts (e.g. esbuild) fail because CMD doesn't support UNC. Run inside WSL.
+	wslPath := ""
+	if runtime.GOOS == "windows" && (strings.HasPrefix(siteRoot, `\\`) || strings.HasPrefix(siteRoot, "\\\\")) {
+		wslPath = uncToWSLPath(siteRoot)
+	}
+	if wslPath != "" {
+		apiBase := strings.ReplaceAll(publicBaseURL(cfg), "'", "'\"'\"'")
+		telegramBot := strings.TrimSpace(cfg.env.get("TELEGRAM_BOT_USERNAME", "heyearth_bot"))
+		script := fmt.Sprintf("cd %s && export VITE_API_BASE='%s' && export VITE_TELEGRAM_BOT_URL='https://t.me/%s' && npm install && npm run build",
+			strings.ReplaceAll(wslPath, "'", "'\"'\"'"), apiBase, telegramBot)
+		cmd := exec.Command("wsl", "-e", "bash", "-c", script)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Fatalf("npm install/build in site (via WSL): %v", err)
+		}
+		return filepath.Join(siteRoot, "dist")
+	}
 
 	npmPath, err := exec.LookPath("npm")
 	if err != nil {
