@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -type f \\\\\\(-name *.gradle -o -name *.properties -o -name CMakeLists.txt \\\\\\))",
+      "Bash(grep -E \"\\\\.\\(dart|js|ts\\)$\")",
+      "Bash(wc -l /c/Users/alex/Documents/heyearthproject/server/backend/internal/biz/*.go)",
+      "Bash(find ./server/backend -type f -name *.proto)",
+      "Bash(find ./site -type f \\\\\\(-name *.html -o -name *.vue \\\\\\))",
+      "Bash(find ./flutter-app -type f -name *.xcconfig)",
+      "Bash(find ./site -type f -name *.config.* -o -name *.json)",
+      "Bash(find ./flutter-app -type f \\\\\\(-name *.gradle -o -name *.kts \\\\\\))",
+      "Bash(xargs grep:*)",
+      "Bash(xargs -I {} ls -la {}/app/src/main/)",
+      "Bash(find /c/Users/alex/Documents/heyearthproject -maxdepth 2 -type f \\\\\\(-name .github -o -name *.yml -o -name *.yaml -o -name Makefile -o -name *.toml \\\\\\))"
+    ]
+  }
+}
