@@ -100,6 +100,11 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         _buildServerSettingsSection(l10n),
         const SizedBox(height: 24),
+        Text(l10n.settingsHubServerSection,
+            style: Theme.of(context).textTheme.headlineMedium),
+        const SizedBox(height: 16),
+        _buildHubServerSection(l10n),
+        const SizedBox(height: 24),
         Text(l10n.settingsB2bTariffsSection,
             style: Theme.of(context).textTheme.headlineMedium),
         const SizedBox(height: 16),
@@ -252,6 +257,52 @@ class _SettingsPageState extends State<SettingsPage> {
           value: settings['yookassa_test_mode'] == 'true',
           saving: _savingKey == 'yookassa_test_mode',
           onChanged: (v) => _saveSetting('yookassa_test_mode', v ? 'true' : 'false'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHubServerSection(AdminL10n l10n) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return const SizedBox.shrink();
+    }
+    final settings = _serverSettings ?? {};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ServerSettingCard(
+          title: l10n.settingsHubMainServerHost,
+          subtitle: l10n.settingsHubMainServerHostHint,
+          value: settings['main_server_host'] ?? '',
+          saving: _savingKey == 'main_server_host',
+          onSave: (v) => _saveSetting('main_server_host', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsHubVlessPort,
+          subtitle: l10n.settingsHubVlessPortHint,
+          value: settings['vless_port'] ?? '443',
+          saving: _savingKey == 'vless_port',
+          onSave: (v) => _saveSetting('vless_port', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsHubSocks5Port,
+          subtitle: l10n.settingsHubSocks5PortHint,
+          value: settings['socks5_port'] ?? '1080',
+          saving: _savingKey == 'socks5_port',
+          onSave: (v) => _saveSetting('socks5_port', v),
+        ),
+        const SizedBox(height: 12),
+        _ServerSettingCard(
+          title: l10n.settingsHubHttpProxyPort,
+          subtitle: l10n.settingsHubHttpProxyPortHint,
+          value: settings['http_proxy_port'] ?? '8080',
+          saving: _savingKey == 'http_proxy_port',
+          onSave: (v) => _saveSetting('http_proxy_port', v),
         ),
       ],
     );

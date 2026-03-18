@@ -20,347 +20,7 @@ import 'config.pb.dart' as $0;
 
 export 'config.pb.dart';
 
-/// ConfigApi — legacy service kept for backward compatibility.
-@$pb.GrpcServiceName('heyearth.v1.ConfigApi')
-class ConfigApiClient extends $grpc.Client {
-  /// The hostname for this service.
-  static const $core.String defaultHost = '';
-
-  /// OAuth scopes needed for the client.
-  static const $core.List<$core.String> oauthScopes = [
-    '',
-  ];
-
-  ConfigApiClient(super.channel, {super.options, super.interceptors});
-
-  $grpc.ResponseFuture<$0.GetConfigResponse> getConfig(
-    $0.GetConfigRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$getConfig, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.HealthResponse> health(
-    $0.HealthRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$health, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.CheckAppUpdateResponse> checkAppUpdate(
-    $0.CheckAppUpdateRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$checkAppUpdate, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.ApplyPromocodeResponse> applyPromocode(
-    $0.ApplyPromocodeRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$applyPromocode, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.GetProfileResponse> getProfile(
-    $0.GetProfileRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$getProfile, request, options: options);
-  }
-
-  // method descriptors
-
-  static final _$getConfig =
-      $grpc.ClientMethod<$0.GetConfigRequest, $0.GetConfigResponse>(
-          '/heyearth.v1.ConfigApi/GetConfig',
-          ($0.GetConfigRequest value) => value.writeToBuffer(),
-          $0.GetConfigResponse.fromBuffer);
-  static final _$health =
-      $grpc.ClientMethod<$0.HealthRequest, $0.HealthResponse>(
-          '/heyearth.v1.ConfigApi/Health',
-          ($0.HealthRequest value) => value.writeToBuffer(),
-          $0.HealthResponse.fromBuffer);
-  static final _$checkAppUpdate =
-      $grpc.ClientMethod<$0.CheckAppUpdateRequest, $0.CheckAppUpdateResponse>(
-          '/heyearth.v1.ConfigApi/CheckAppUpdate',
-          ($0.CheckAppUpdateRequest value) => value.writeToBuffer(),
-          $0.CheckAppUpdateResponse.fromBuffer);
-  static final _$applyPromocode =
-      $grpc.ClientMethod<$0.ApplyPromocodeRequest, $0.ApplyPromocodeResponse>(
-          '/heyearth.v1.ConfigApi/ApplyPromocode',
-          ($0.ApplyPromocodeRequest value) => value.writeToBuffer(),
-          $0.ApplyPromocodeResponse.fromBuffer);
-  static final _$getProfile =
-      $grpc.ClientMethod<$0.GetProfileRequest, $0.GetProfileResponse>(
-          '/heyearth.v1.ConfigApi/GetProfile',
-          ($0.GetProfileRequest value) => value.writeToBuffer(),
-          $0.GetProfileResponse.fromBuffer);
-}
-
-@$pb.GrpcServiceName('heyearth.v1.ConfigApi')
-abstract class ConfigApiServiceBase extends $grpc.Service {
-  $core.String get $name => 'heyearth.v1.ConfigApi';
-
-  ConfigApiServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.GetConfigRequest, $0.GetConfigResponse>(
-        'GetConfig',
-        getConfig_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) => $0.GetConfigRequest.fromBuffer(value),
-        ($0.GetConfigResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.HealthRequest, $0.HealthResponse>(
-        'Health',
-        health_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) => $0.HealthRequest.fromBuffer(value),
-        ($0.HealthResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.CheckAppUpdateRequest,
-            $0.CheckAppUpdateResponse>(
-        'CheckAppUpdate',
-        checkAppUpdate_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.CheckAppUpdateRequest.fromBuffer(value),
-        ($0.CheckAppUpdateResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.ApplyPromocodeRequest,
-            $0.ApplyPromocodeResponse>(
-        'ApplyPromocode',
-        applyPromocode_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.ApplyPromocodeRequest.fromBuffer(value),
-        ($0.ApplyPromocodeResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.GetProfileRequest, $0.GetProfileResponse>(
-        'GetProfile',
-        getProfile_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) => $0.GetProfileRequest.fromBuffer(value),
-        ($0.GetProfileResponse value) => value.writeToBuffer()));
-  }
-
-  $async.Future<$0.GetConfigResponse> getConfig_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.GetConfigRequest> $request) async {
-    return getConfig($call, await $request);
-  }
-
-  $async.Future<$0.GetConfigResponse> getConfig(
-      $grpc.ServiceCall call, $0.GetConfigRequest request);
-
-  $async.Future<$0.HealthResponse> health_Pre(
-      $grpc.ServiceCall $call, $async.Future<$0.HealthRequest> $request) async {
-    return health($call, await $request);
-  }
-
-  $async.Future<$0.HealthResponse> health(
-      $grpc.ServiceCall call, $0.HealthRequest request);
-
-  $async.Future<$0.CheckAppUpdateResponse> checkAppUpdate_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.CheckAppUpdateRequest> $request) async {
-    return checkAppUpdate($call, await $request);
-  }
-
-  $async.Future<$0.CheckAppUpdateResponse> checkAppUpdate(
-      $grpc.ServiceCall call, $0.CheckAppUpdateRequest request);
-
-  $async.Future<$0.ApplyPromocodeResponse> applyPromocode_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.ApplyPromocodeRequest> $request) async {
-    return applyPromocode($call, await $request);
-  }
-
-  $async.Future<$0.ApplyPromocodeResponse> applyPromocode(
-      $grpc.ServiceCall call, $0.ApplyPromocodeRequest request);
-
-  $async.Future<$0.GetProfileResponse> getProfile_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.GetProfileRequest> $request) async {
-    return getProfile($call, await $request);
-  }
-
-  $async.Future<$0.GetProfileResponse> getProfile(
-      $grpc.ServiceCall call, $0.GetProfileRequest request);
-}
-
-@$pb.GrpcServiceName('heyearth.v1.BotApi')
-class BotApiClient extends $grpc.Client {
-  /// The hostname for this service.
-  static const $core.String defaultHost = '';
-
-  /// OAuth scopes needed for the client.
-  static const $core.List<$core.String> oauthScopes = [
-    '',
-  ];
-
-  BotApiClient(super.channel, {super.options, super.interceptors});
-
-  $grpc.ResponseFuture<$0.UserProfileResponse> ensureTelegramUser(
-    $0.EnsureTelegramUserRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$ensureTelegramUser, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.UserProfileResponse> setPreferredPlatform(
-    $0.SetPreferredPlatformRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$setPreferredPlatform, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.CreatePairingCodeResponse> createPairingCode(
-    $0.CreatePairingCodeRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$createPairingCode, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.GetClientDistributionResponse> getClientDistribution(
-    $0.GetClientDistributionRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$getClientDistribution, request, options: options);
-  }
-
-  $grpc.ResponseFuture<$0.ConnectionBundleResponse> issueLegacyAppleConfig(
-    $0.IssueLegacyAppleConfigRequest request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createUnaryCall(_$issueLegacyAppleConfig, request,
-        options: options);
-  }
-
-  // method descriptors
-
-  static final _$ensureTelegramUser =
-      $grpc.ClientMethod<$0.EnsureTelegramUserRequest, $0.UserProfileResponse>(
-          '/heyearth.v1.BotApi/EnsureTelegramUser',
-          ($0.EnsureTelegramUserRequest value) => value.writeToBuffer(),
-          $0.UserProfileResponse.fromBuffer);
-  static final _$setPreferredPlatform = $grpc.ClientMethod<
-          $0.SetPreferredPlatformRequest, $0.UserProfileResponse>(
-      '/heyearth.v1.BotApi/SetPreferredPlatform',
-      ($0.SetPreferredPlatformRequest value) => value.writeToBuffer(),
-      $0.UserProfileResponse.fromBuffer);
-  static final _$createPairingCode = $grpc.ClientMethod<
-          $0.CreatePairingCodeRequest, $0.CreatePairingCodeResponse>(
-      '/heyearth.v1.BotApi/CreatePairingCode',
-      ($0.CreatePairingCodeRequest value) => value.writeToBuffer(),
-      $0.CreatePairingCodeResponse.fromBuffer);
-  static final _$getClientDistribution = $grpc.ClientMethod<
-          $0.GetClientDistributionRequest, $0.GetClientDistributionResponse>(
-      '/heyearth.v1.BotApi/GetClientDistribution',
-      ($0.GetClientDistributionRequest value) => value.writeToBuffer(),
-      $0.GetClientDistributionResponse.fromBuffer);
-  static final _$issueLegacyAppleConfig = $grpc.ClientMethod<
-          $0.IssueLegacyAppleConfigRequest, $0.ConnectionBundleResponse>(
-      '/heyearth.v1.BotApi/IssueLegacyAppleConfig',
-      ($0.IssueLegacyAppleConfigRequest value) => value.writeToBuffer(),
-      $0.ConnectionBundleResponse.fromBuffer);
-}
-
-@$pb.GrpcServiceName('heyearth.v1.BotApi')
-abstract class BotApiServiceBase extends $grpc.Service {
-  $core.String get $name => 'heyearth.v1.BotApi';
-
-  BotApiServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.EnsureTelegramUserRequest,
-            $0.UserProfileResponse>(
-        'EnsureTelegramUser',
-        ensureTelegramUser_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.EnsureTelegramUserRequest.fromBuffer(value),
-        ($0.UserProfileResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.SetPreferredPlatformRequest,
-            $0.UserProfileResponse>(
-        'SetPreferredPlatform',
-        setPreferredPlatform_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.SetPreferredPlatformRequest.fromBuffer(value),
-        ($0.UserProfileResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.CreatePairingCodeRequest,
-            $0.CreatePairingCodeResponse>(
-        'CreatePairingCode',
-        createPairingCode_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.CreatePairingCodeRequest.fromBuffer(value),
-        ($0.CreatePairingCodeResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.GetClientDistributionRequest,
-            $0.GetClientDistributionResponse>(
-        'GetClientDistribution',
-        getClientDistribution_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.GetClientDistributionRequest.fromBuffer(value),
-        ($0.GetClientDistributionResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.IssueLegacyAppleConfigRequest,
-            $0.ConnectionBundleResponse>(
-        'IssueLegacyAppleConfig',
-        issueLegacyAppleConfig_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) =>
-            $0.IssueLegacyAppleConfigRequest.fromBuffer(value),
-        ($0.ConnectionBundleResponse value) => value.writeToBuffer()));
-  }
-
-  $async.Future<$0.UserProfileResponse> ensureTelegramUser_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.EnsureTelegramUserRequest> $request) async {
-    return ensureTelegramUser($call, await $request);
-  }
-
-  $async.Future<$0.UserProfileResponse> ensureTelegramUser(
-      $grpc.ServiceCall call, $0.EnsureTelegramUserRequest request);
-
-  $async.Future<$0.UserProfileResponse> setPreferredPlatform_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.SetPreferredPlatformRequest> $request) async {
-    return setPreferredPlatform($call, await $request);
-  }
-
-  $async.Future<$0.UserProfileResponse> setPreferredPlatform(
-      $grpc.ServiceCall call, $0.SetPreferredPlatformRequest request);
-
-  $async.Future<$0.CreatePairingCodeResponse> createPairingCode_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.CreatePairingCodeRequest> $request) async {
-    return createPairingCode($call, await $request);
-  }
-
-  $async.Future<$0.CreatePairingCodeResponse> createPairingCode(
-      $grpc.ServiceCall call, $0.CreatePairingCodeRequest request);
-
-  $async.Future<$0.GetClientDistributionResponse> getClientDistribution_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.GetClientDistributionRequest> $request) async {
-    return getClientDistribution($call, await $request);
-  }
-
-  $async.Future<$0.GetClientDistributionResponse> getClientDistribution(
-      $grpc.ServiceCall call, $0.GetClientDistributionRequest request);
-
-  $async.Future<$0.ConnectionBundleResponse> issueLegacyAppleConfig_Pre(
-      $grpc.ServiceCall $call,
-      $async.Future<$0.IssueLegacyAppleConfigRequest> $request) async {
-    return issueLegacyAppleConfig($call, await $request);
-  }
-
-  $async.Future<$0.ConnectionBundleResponse> issueLegacyAppleConfig(
-      $grpc.ServiceCall call, $0.IssueLegacyAppleConfigRequest request);
-}
-
+/// ClientApi — main service for client applications (mobile, desktop, web).
 @$pb.GrpcServiceName('heyearth.v1.ClientApi')
 class ClientApiClient extends $grpc.Client {
   /// The hostname for this service.
@@ -373,20 +33,29 @@ class ClientApiClient extends $grpc.Client {
 
   ClientApiClient(super.channel, {super.options, super.interceptors});
 
-  $grpc.ResponseFuture<$0.ClaimResponse> claimByCode(
-    $0.ClaimByCodeRequest request, {
+  /// Auth
+  $grpc.ResponseFuture<$0.AuthResponse> register(
+    $0.RegisterRequest request, {
     $grpc.CallOptions? options,
   }) {
-    return $createUnaryCall(_$claimByCode, request, options: options);
+    return $createUnaryCall(_$register, request, options: options);
   }
 
-  $grpc.ResponseFuture<$0.ClaimResponse> claimByToken(
-    $0.ClaimByTokenRequest request, {
+  $grpc.ResponseFuture<$0.AuthResponse> login(
+    $0.LoginRequest request, {
     $grpc.CallOptions? options,
   }) {
-    return $createUnaryCall(_$claimByToken, request, options: options);
+    return $createUnaryCall(_$login, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.UserProfileResponse> updateProfile(
+    $0.UpdateProfileRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$updateProfile, request, options: options);
+  }
+
+  /// User info
   $grpc.ResponseFuture<$0.UserProfileResponse> getMe(
     $0.GetMeRequest request, {
     $grpc.CallOptions? options,
@@ -401,6 +70,7 @@ class ClientApiClient extends $grpc.Client {
     return $createUnaryCall(_$getAccessState, request, options: options);
   }
 
+  /// Connections
   $grpc.ResponseFuture<$0.ConnectionBundleResponse> getConnectionBundle(
     $0.GetConnectionBundleRequest request, {
     $grpc.CallOptions? options,
@@ -408,6 +78,7 @@ class ClientApiClient extends $grpc.Client {
     return $createUnaryCall(_$getConnectionBundle, request, options: options);
   }
 
+  /// Subscriptions & Payments
   $grpc.ResponseFuture<$0.ListSubscriptionsResponse> listSubscriptions(
     $0.ListSubscriptionsRequest request, {
     $grpc.CallOptions? options,
@@ -429,6 +100,7 @@ class ClientApiClient extends $grpc.Client {
     return $createUnaryCall(_$applyPromocode, request, options: options);
   }
 
+  /// App updates
   $grpc.ResponseFuture<$0.CheckAppUpdateResponse> checkAppUpdate(
     $0.CheckAppUpdateRequest request, {
     $grpc.CallOptions? options,
@@ -436,18 +108,30 @@ class ClientApiClient extends $grpc.Client {
     return $createUnaryCall(_$checkAppUpdate, request, options: options);
   }
 
+  /// Health
+  $grpc.ResponseFuture<$0.HealthResponse> health(
+    $0.HealthRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$health, request, options: options);
+  }
+
   // method descriptors
 
-  static final _$claimByCode =
-      $grpc.ClientMethod<$0.ClaimByCodeRequest, $0.ClaimResponse>(
-          '/heyearth.v1.ClientApi/ClaimByCode',
-          ($0.ClaimByCodeRequest value) => value.writeToBuffer(),
-          $0.ClaimResponse.fromBuffer);
-  static final _$claimByToken =
-      $grpc.ClientMethod<$0.ClaimByTokenRequest, $0.ClaimResponse>(
-          '/heyearth.v1.ClientApi/ClaimByToken',
-          ($0.ClaimByTokenRequest value) => value.writeToBuffer(),
-          $0.ClaimResponse.fromBuffer);
+  static final _$register =
+      $grpc.ClientMethod<$0.RegisterRequest, $0.AuthResponse>(
+          '/heyearth.v1.ClientApi/Register',
+          ($0.RegisterRequest value) => value.writeToBuffer(),
+          $0.AuthResponse.fromBuffer);
+  static final _$login = $grpc.ClientMethod<$0.LoginRequest, $0.AuthResponse>(
+      '/heyearth.v1.ClientApi/Login',
+      ($0.LoginRequest value) => value.writeToBuffer(),
+      $0.AuthResponse.fromBuffer);
+  static final _$updateProfile =
+      $grpc.ClientMethod<$0.UpdateProfileRequest, $0.UserProfileResponse>(
+          '/heyearth.v1.ClientApi/UpdateProfile',
+          ($0.UpdateProfileRequest value) => value.writeToBuffer(),
+          $0.UserProfileResponse.fromBuffer);
   static final _$getMe =
       $grpc.ClientMethod<$0.GetMeRequest, $0.UserProfileResponse>(
           '/heyearth.v1.ClientApi/GetMe',
@@ -483,6 +167,11 @@ class ClientApiClient extends $grpc.Client {
           '/heyearth.v1.ClientApi/CheckAppUpdate',
           ($0.CheckAppUpdateRequest value) => value.writeToBuffer(),
           $0.CheckAppUpdateResponse.fromBuffer);
+  static final _$health =
+      $grpc.ClientMethod<$0.HealthRequest, $0.HealthResponse>(
+          '/heyearth.v1.ClientApi/Health',
+          ($0.HealthRequest value) => value.writeToBuffer(),
+          $0.HealthResponse.fromBuffer);
 }
 
 @$pb.GrpcServiceName('heyearth.v1.ClientApi')
@@ -490,22 +179,29 @@ abstract class ClientApiServiceBase extends $grpc.Service {
   $core.String get $name => 'heyearth.v1.ClientApi';
 
   ClientApiServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.ClaimByCodeRequest, $0.ClaimResponse>(
-        'ClaimByCode',
-        claimByCode_Pre,
+    $addMethod($grpc.ServiceMethod<$0.RegisterRequest, $0.AuthResponse>(
+        'Register',
+        register_Pre,
         false,
         false,
-        ($core.List<$core.int> value) =>
-            $0.ClaimByCodeRequest.fromBuffer(value),
-        ($0.ClaimResponse value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.ClaimByTokenRequest, $0.ClaimResponse>(
-        'ClaimByToken',
-        claimByToken_Pre,
+        ($core.List<$core.int> value) => $0.RegisterRequest.fromBuffer(value),
+        ($0.AuthResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.LoginRequest, $0.AuthResponse>(
+        'Login',
+        login_Pre,
         false,
         false,
-        ($core.List<$core.int> value) =>
-            $0.ClaimByTokenRequest.fromBuffer(value),
-        ($0.ClaimResponse value) => value.writeToBuffer()));
+        ($core.List<$core.int> value) => $0.LoginRequest.fromBuffer(value),
+        ($0.AuthResponse value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.UpdateProfileRequest, $0.UserProfileResponse>(
+            'UpdateProfile',
+            updateProfile_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.UpdateProfileRequest.fromBuffer(value),
+            ($0.UserProfileResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.GetMeRequest, $0.UserProfileResponse>(
         'GetMe',
         getMe_Pre,
@@ -567,23 +263,39 @@ abstract class ClientApiServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.CheckAppUpdateRequest.fromBuffer(value),
         ($0.CheckAppUpdateResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.HealthRequest, $0.HealthResponse>(
+        'Health',
+        health_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.HealthRequest.fromBuffer(value),
+        ($0.HealthResponse value) => value.writeToBuffer()));
   }
 
-  $async.Future<$0.ClaimResponse> claimByCode_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.ClaimByCodeRequest> $request) async {
-    return claimByCode($call, await $request);
+  $async.Future<$0.AuthResponse> register_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.RegisterRequest> $request) async {
+    return register($call, await $request);
   }
 
-  $async.Future<$0.ClaimResponse> claimByCode(
-      $grpc.ServiceCall call, $0.ClaimByCodeRequest request);
+  $async.Future<$0.AuthResponse> register(
+      $grpc.ServiceCall call, $0.RegisterRequest request);
 
-  $async.Future<$0.ClaimResponse> claimByToken_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.ClaimByTokenRequest> $request) async {
-    return claimByToken($call, await $request);
+  $async.Future<$0.AuthResponse> login_Pre(
+      $grpc.ServiceCall $call, $async.Future<$0.LoginRequest> $request) async {
+    return login($call, await $request);
   }
 
-  $async.Future<$0.ClaimResponse> claimByToken(
-      $grpc.ServiceCall call, $0.ClaimByTokenRequest request);
+  $async.Future<$0.AuthResponse> login(
+      $grpc.ServiceCall call, $0.LoginRequest request);
+
+  $async.Future<$0.UserProfileResponse> updateProfile_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.UpdateProfileRequest> $request) async {
+    return updateProfile($call, await $request);
+  }
+
+  $async.Future<$0.UserProfileResponse> updateProfile(
+      $grpc.ServiceCall call, $0.UpdateProfileRequest request);
 
   $async.Future<$0.UserProfileResponse> getMe_Pre(
       $grpc.ServiceCall $call, $async.Future<$0.GetMeRequest> $request) async {
@@ -646,4 +358,12 @@ abstract class ClientApiServiceBase extends $grpc.Service {
 
   $async.Future<$0.CheckAppUpdateResponse> checkAppUpdate(
       $grpc.ServiceCall call, $0.CheckAppUpdateRequest request);
+
+  $async.Future<$0.HealthResponse> health_Pre(
+      $grpc.ServiceCall $call, $async.Future<$0.HealthRequest> $request) async {
+    return health($call, await $request);
+  }
+
+  $async.Future<$0.HealthResponse> health(
+      $grpc.ServiceCall call, $0.HealthRequest request);
 }

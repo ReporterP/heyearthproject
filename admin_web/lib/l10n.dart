@@ -255,6 +255,30 @@ class AdminL10n {
   String get settingsLogout => isEn ? 'Logout' : 'Выйти';
   String get settingsServerSection =>
       isEn ? 'Server Settings' : 'Серверные настройки';
+
+  // Hub Server Settings
+  String get settingsHubServerSection =>
+      isEn ? 'Hub Server (Connection Endpoints)' : 'Hub-сервер (точки подключения)';
+  String get settingsHubMainServerHost =>
+      isEn ? 'Main Server Host' : 'Хост главного сервера';
+  String get settingsHubMainServerHostHint => isEn
+      ? 'IP address or domain of the main (hub) server for user connections'
+      : 'IP-адрес или домен главного (hub) сервера для подключения пользователей';
+  String get settingsHubVlessPort =>
+      isEn ? 'VLESS Port' : 'Порт VLESS';
+  String get settingsHubVlessPortHint => isEn
+      ? 'Port for VLESS Reality VPN connections (default: 443)'
+      : 'Порт для VPN-подключений VLESS Reality (по умолчанию: 443)';
+  String get settingsHubSocks5Port =>
+      isEn ? 'SOCKS5 Port' : 'Порт SOCKS5';
+  String get settingsHubSocks5PortHint => isEn
+      ? 'Port for SOCKS5 proxy connections (default: 1080)'
+      : 'Порт для SOCKS5-прокси подключений (по умолчанию: 1080)';
+  String get settingsHubHttpProxyPort =>
+      isEn ? 'HTTP Proxy Port' : 'Порт HTTP-прокси';
+  String get settingsHubHttpProxyPortHint => isEn
+      ? 'Port for HTTP proxy connections (default: 8080)'
+      : 'Порт для HTTP-прокси подключений (по умолчанию: 8080)';
   String get settingsApiEndpoints =>
       isEn ? 'API Endpoints' : 'API-эндпоинты';
   String get settingsApiEndpointsHint => isEn
