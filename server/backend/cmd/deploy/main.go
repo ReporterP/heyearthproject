@@ -481,11 +481,10 @@ func buildAdminWeb(repoRoot string, cfg *deployConfig) string {
 	}
 
 	// admin_web is served from admin.heyearth.ru root, so base-href=/
-	// API base points to the main domain /api/admin
-	apiBase := publicBaseURL(cfg) + "/api/admin"
+	// API base is relative — nginx on admin.heyearth.ru proxies /api/admin/ to backend
 	buildArgs := append(prefix, "build", "web", "--release", "--no-tree-shake-icons",
 		"--base-href=/",
-		"--dart-define=HEYEARTH_ADMIN_API_BASE="+apiBase)
+		"--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
 	build := exec.Command(exe, buildArgs...)
 	build.Dir = adminWebRoot
 	build.Stdout = os.Stdout
@@ -808,10 +807,9 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 		useWSL = true
 	}
 	if useWSL && wslPath != "" {
-		apiBase := strings.ReplaceAll(publicBaseURL(cfg), "'", "'\"'\"'")
-		// Use /usr/bin/npm so we don't pick up Windows npm from PATH. Clean install avoids @tailwindcss/oxide "Cannot find native binding" (npm optional deps bug).
-		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='%s' && /usr/bin/npm install && /usr/bin/npm run build",
-			strings.ReplaceAll(wslPath, "'", "'\"'\"'"), apiBase)
+		// VITE_API_BASE is empty — nginx on site.heyearth.ru proxies /api/ to backend
+		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='' && /usr/bin/npm install && /usr/bin/npm run build",
+			strings.ReplaceAll(wslPath, "'", "'\"'\"'"))
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
 			cmd = exec.Command("wsl", "-e", "bash", "-c", script)
@@ -841,8 +839,9 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 
 	build := exec.Command(npmPath, "run", "build")
 	build.Dir = siteRoot
+	// VITE_API_BASE is empty — nginx on site.heyearth.ru proxies /api/ to backend
 	build.Env = append(os.Environ(),
-		"VITE_API_BASE="+publicBaseURL(cfg),
+		"VITE_API_BASE=",
 	)
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr

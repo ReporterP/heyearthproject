@@ -43959,7 +43959,7 @@ A.bH.prototype={
 k(a){return this.a},
 $icV:1}
 A.a0z.prototype={
-IA(a,b){var s=A.iH(B.c.tg(B.c.X("https://heyearth.ru/api/admin"),A.co("/$",!0,!1),"")+a)
+IA(a,b){var s=A.iH(B.c.tg(B.c.X("/api/admin"),A.co("/$",!0,!1),"")+a)
 if(b!=null&&b.a!==0)return s.wR(b)
 return s},
 jT(a){return this.IA(a,null)},
