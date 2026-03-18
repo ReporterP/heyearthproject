@@ -16,7 +16,7 @@ DROP TABLE IF EXISTS pairing_codes;
 -- 4. Make telegram_id nullable (it already is) and drop its UNIQUE constraint
 -- so old records are preserved but new ones don't require it
 ALTER TABLE users ALTER COLUMN telegram_id DROP NOT NULL;
-DROP INDEX IF EXISTS users_telegram_id_key;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_telegram_id_key;
 
 -- 5. Traffic masking rules (admin-configurable, premium only)
 CREATE TABLE IF NOT EXISTS traffic_masking_rules (

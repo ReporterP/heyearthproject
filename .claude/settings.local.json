@@ -49,7 +49,23 @@
       "Bash(where fvm:*)",
       "Bash(fvm flutter:*)",
       "Bash(xargs wc:*)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(export DEPLOY_HOST=45.150.39.236 DEPLOY_SSH_PASSWORD='diU-~=cXpf23cE2:hzqZ' go run /tmp/fix_migration.go)",
+      "Bash(curl -s http://45.150.39.236/api/v1/health)",
+      "Bash(curl -s -X POST http://45.150.39.236/api/admin/login -H \"Content-Type: application/json\" -d '{\"\"username\"\":\"\"admin\"\",\"\"password\"\":\"\"HeYearth2024!\"\"}')",
+      "Bash(curl -s -X POST http://45.150.39.236/api/v1/auth/register -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}, size: %{size_download}\" -H \"Host: admin.heyearth.ru\" http://45.150.39.236/)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}, size: %{size_download}\" -H \"Host: site.heyearth.ru\" http://45.150.39.236/)",
+      "Bash(curl -s -X POST -H \"Host: admin.heyearth.ru\" -H \"Content-Type: application/json\" http://45.150.39.236/api/admin/login -d '{\"\"username\"\":\"\"admin\"\",\"\"password\"\":\"\"HeYearth2024!\"\"}')",
+      "Bash(curl -s -X POST -H \"Host: site.heyearth.ru\" -H \"Content-Type: application/json\" http://45.150.39.236/api/v1/auth/register -d '{}')",
+      "Bash(curl -s -I -H \"Host: admin.heyearth.ru\" http://45.150.39.236/)",
+      "Bash(curl -s -I -H \"Host: site.heyearth.ru\" http://45.150.39.236/)",
+      "Bash(curl -s -I -H \"Host: heyearth.ru\" http://45.150.39.236/api/v1/health)",
+      "Bash(curl -s -L -H \"Host: heyearth.ru\" http://45.150.39.236/api/v1/health)",
+      "Bash(export DEPLOY_HOST=45.150.39.236 DEPLOY_SSH_PASSWORD='diU-~=cXpf23cE2:hzqZ')",
+      "Bash(find C:UsersalexDocumentsheyearthprojectsite -name *.env* -o -name vite.config.*)",
+      "Bash(find C:UsersalexDocumentsheyearthprojectadmin_web -name *.env* -o -name *.toml)",
+      "Bash(find C:UsersalexDocumentsheyearthprojectsitesrc -type f -name *.vue)"
     ]
   }
 }

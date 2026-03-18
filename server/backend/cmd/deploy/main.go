@@ -764,7 +764,7 @@ WantedBy=multi-user.target
 // doBot removed — Telegram bot is no longer part of the project.
 
 func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "mkdir -p /var/www/heyearth", true)
+	_, _ = runSSH(client, "rm -rf /var/www/heyearth && mkdir -p /var/www/heyearth", true)
 	adminBuildDir := buildAdminWeb(cfg.repoRoot, cfg)
 	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
 		log.Fatalf("upload admin_web build: %v", err)
@@ -773,7 +773,7 @@ func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 }
 
 func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "mkdir -p /var/www/heyearth-site", true)
+	_, _ = runSSH(client, "rm -rf /var/www/heyearth-site && mkdir -p /var/www/heyearth-site", true)
 	vueBuildDir := buildVueSite(cfg.repoRoot, cfg)
 	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
 		log.Fatalf("upload vue site build: %v", err)
@@ -807,8 +807,8 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 		useWSL = true
 	}
 	if useWSL && wslPath != "" {
-		// VITE_API_BASE is empty — nginx on site.heyearth.ru proxies /api/ to backend
-		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='' && /usr/bin/npm install && /usr/bin/npm run build",
+		// Unset VITE_API_BASE — nginx on site.heyearth.ru proxies /api/ to backend
+		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && unset VITE_API_BASE && /usr/bin/npm install && /usr/bin/npm run build",
 			strings.ReplaceAll(wslPath, "'", "'\"'\"'"))
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
@@ -839,10 +839,9 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 
 	build := exec.Command(npmPath, "run", "build")
 	build.Dir = siteRoot
-	// VITE_API_BASE is empty — nginx on site.heyearth.ru proxies /api/ to backend
-	build.Env = append(os.Environ(),
-		"VITE_API_BASE=",
-	)
+	// Remove VITE_API_BASE entirely — nginx on site.heyearth.ru proxies /api/ to backend.
+	// Empty or absent VITE_API_BASE means relative paths (same-origin).
+	build.Env = filterEnv(os.Environ(), "VITE_API_BASE")
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
@@ -915,7 +914,7 @@ server {
     }
 
     location / {
-        return 301 https://site.%[1]s$request_uri;
+        return 301 http://site.%[1]s$request_uri;
     }
 }
 
@@ -941,6 +940,10 @@ server {
         root /var/www/heyearth;
         try_files $uri $uri/ /index.html;
     }
+    location = /index.html {
+        root /var/www/heyearth;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
 }
 
 # ── Marketing site + user portal (site.%[1]s) ──────────────────
@@ -963,6 +966,10 @@ server {
     location / {
         root /var/www/heyearth-site;
         try_files $uri $uri/ /index.html;
+    }
+    location = /index.html {
+        root /var/www/heyearth-site;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
     }
 }
 
@@ -1062,6 +1069,18 @@ sleep 3
 	_, _ = runSSH(client, script, false)
 	fmt.Println("Проверка:")
 	doStatus(client, cfg)
+}
+
+// filterEnv removes all entries with the given key from an environment slice.
+func filterEnv(env []string, removeKey string) []string {
+	prefix := removeKey + "="
+	var out []string
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func serializeEnv(values map[string]string) string {

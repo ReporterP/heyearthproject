@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = ''
 
 export async function createTenant({ email, companyName, specs }) {
   const resp = await fetch(`${API_BASE}/api/public/create-tenant`, {
@@ -13,6 +13,10 @@ export async function createTenant({ email, companyName, specs }) {
     }),
   })
   if (!resp.ok) {
+    const ct = resp.headers.get('content-type') || ''
+    if (!ct.includes('application/json')) {
+      throw new Error('Сервер вернул некорректный ответ. Попробуйте позже.')
+    }
     const data = await resp.json().catch(() => null)
     throw new Error(data?.error || 'Ошибка создания аккаунта')
   }

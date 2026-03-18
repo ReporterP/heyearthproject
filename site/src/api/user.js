@@ -1,4 +1,14 @@
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = ''
+
+async function jsonOrThrow(res, fallbackMsg) {
+  const ct = res.headers.get('content-type') || ''
+  if (!ct.includes('application/json')) {
+    throw new Error('Сервер вернул некорректный ответ. Попробуйте обновить страницу.')
+  }
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || fallbackMsg)
+  return data
+}
 
 export async function registerUser(platform = '', deviceId = '') {
   const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
@@ -6,8 +16,7 @@ export async function registerUser(platform = '', deviceId = '') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ platform, device_id: deviceId }),
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Registration failed')
-  return res.json()
+  return jsonOrThrow(res, 'Registration failed')
 }
 
 export async function loginUser(idOrUsername, password = '') {
@@ -16,16 +25,14 @@ export async function loginUser(idOrUsername, password = '') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id_or_username: idOrUsername, password }),
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Login failed')
-  return res.json()
+  return jsonOrThrow(res, 'Login failed')
 }
 
 export async function getProfile(token) {
   const res = await fetch(`${API_BASE}/api/v1/user/profile`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to load profile')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to load profile')
 }
 
 export async function updateProfile(token, { username, newPassword, currentPassword }) {
@@ -41,24 +48,21 @@ export async function updateProfile(token, { username, newPassword, currentPassw
       current_password: currentPassword || undefined,
     }),
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to update profile')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to update profile')
 }
 
 export async function getSubscription(token) {
   const res = await fetch(`${API_BASE}/api/v1/user/subscription`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to load subscription')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to load subscription')
 }
 
 export async function getPayments(token) {
   const res = await fetch(`${API_BASE}/api/v1/user/payments`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to load payments')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to load payments')
 }
 
 export async function getConnections(token, platform) {
@@ -67,14 +71,12 @@ export async function getConnections(token, platform) {
   const res = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to load connections')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to load connections')
 }
 
 export async function getDownloads() {
   const res = await fetch(`${API_BASE}/api/v1/user/downloads`)
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to load downloads')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to load downloads')
 }
 
 export async function createPayment(token, plan, returnUrl) {
@@ -86,6 +88,5 @@ export async function createPayment(token, plan, returnUrl) {
     },
     body: JSON.stringify({ plan, return_url: returnUrl }),
   })
-  if (!res.ok) throw new Error((await res.json()).error || 'Failed to create payment')
-  return res.json()
+  return jsonOrThrow(res, 'Failed to create payment')
 }
