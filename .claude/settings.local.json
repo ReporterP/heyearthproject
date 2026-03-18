@@ -47,7 +47,9 @@
       "Bash(dart run:*)",
       "Bash(flutter pub:*)",
       "Bash(where fvm:*)",
-      "Bash(fvm flutter:*)"
+      "Bash(fvm flutter:*)",
+      "Bash(xargs wc:*)",
+      "Bash(go run:*)"
     ]
   }
 }

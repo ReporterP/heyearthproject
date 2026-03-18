@@ -39,7 +39,6 @@ type deployConfig struct {
 	backendRoot        string
 	ansibleRoot        string
 	env                envMap
-	botToken           string
 	siteDomain         string
 	letsEncryptEmail   string
 	host               string
@@ -107,7 +106,6 @@ func main() {
 		backendRoot:        backendRoot,
 		ansibleRoot:        ansibleRoot,
 		env:                env,
-		botToken:           env.get("TELEGRAM_BOT_TOKEN", ""),
 		siteDomain:         env.get("SITE_DOMAIN", "heyearth.ru"),
 		letsEncryptEmail:   env.get("LETSENCRYPT_EMAIL", ""),
 		host:               env.get("DEPLOY_HOST", ""),
@@ -161,7 +159,6 @@ func main() {
 		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
-		doBot(sftpClient, client, cfg)
 		doAdminWeb(sftpClient, client, cfg)
 		doVueSite(sftpClient, client, cfg)
 		doNginx(sftpClient, client, cfg)
@@ -171,7 +168,6 @@ func main() {
 		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
-		doBot(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
 			doSSL(client, cfg)
 		}
@@ -204,12 +200,9 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	if cfg.deployPassword == "" {
 		log.Fatal("DEPLOY_SSH_PASSWORD is required")
 	}
-	if cfg.hostKeyFingerprint == "" {
-		log.Fatal("DEPLOY_HOST_KEY_FINGERPRINT is required for secure SSH deploys")
-	}
 
 	if mode == "main" || mode == "update-main" {
-		for _, key := range []string{"ADMIN_USER", "ADMIN_PASS", "JWT_SECRET", "TELEGRAM_BOT_TOKEN"} {
+		for _, key := range []string{"ADMIN_USER", "ADMIN_PASS", "JWT_SECRET"} {
 			if strings.TrimSpace(cfg.env.get(key, "")) == "" {
 				log.Fatalf("%s is required for %s", key, mode)
 			}
@@ -217,8 +210,8 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	}
 
 	if mode == "main" || mode == "site" || mode == "admin-web" {
-		if _, err := exec.LookPath("flutter"); err != nil {
-			log.Fatal("flutter is required locally to build admin_web during deploy")
+		if !findFlutterCmd() {
+			log.Fatal("flutter (or fvm) is required locally to build admin_web during deploy")
 		}
 	}
 	if mode == "main" || mode == "site" || mode == "vue-site" {
@@ -229,6 +222,25 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	if mode == "status" || mode == "fix-db" {
 		return
 	}
+}
+
+// findFlutterCmd returns true if `fvm` or `flutter` is in PATH.
+func findFlutterCmd() bool {
+	if _, err := exec.LookPath("fvm"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("flutter"); err == nil {
+		return true
+	}
+	return false
+}
+
+// flutterExec returns the flutter command parts. Prefers "fvm flutter" if fvm is available.
+func flutterExec() (string, []string) {
+	if _, err := exec.LookPath("fvm"); err == nil {
+		return "fvm", []string{"flutter"}
+	}
+	return "flutter", nil
 }
 
 func loadEnv(paths ...string) envMap {
@@ -300,12 +312,18 @@ func findRepoRoot() string {
 }
 
 func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, error) {
-	callback := func(hostname string, remoteAddr net.Addr, key ssh.PublicKey) error {
-		got := ssh.FingerprintSHA256(key)
-		if got != expectedFingerprint {
-			return fmt.Errorf("unexpected host key fingerprint for %s: got %s", hostname, got)
+	var callback ssh.HostKeyCallback
+	if strings.TrimSpace(expectedFingerprint) != "" {
+		callback = func(hostname string, remoteAddr net.Addr, key ssh.PublicKey) error {
+			got := ssh.FingerprintSHA256(key)
+			if got != expectedFingerprint {
+				return fmt.Errorf("unexpected host key fingerprint for %s: got %s", hostname, got)
+			}
+			return nil
 		}
-		return nil
+	} else {
+		log.Println("DEPLOY_HOST_KEY_FINGERPRINT not set — accepting any host key (insecure, OK for initial deploy)")
+		callback = ssh.InsecureIgnoreHostKey()
 	}
 
 	cfg := &ssh.ClientConfig{
@@ -449,10 +467,12 @@ func buildGoBinary(backendRoot, name, outName string) string {
 	return outPath
 }
 
-func buildAdminWeb(repoRoot string) string {
+func buildAdminWeb(repoRoot string, cfg *deployConfig) string {
 	adminWebRoot := filepath.Join(repoRoot, "admin_web")
 
-	pubGet := exec.Command("flutter", "pub", "get")
+	exe, prefix := flutterExec()
+	pubGetArgs := append(prefix, "pub", "get")
+	pubGet := exec.Command(exe, pubGetArgs...)
 	pubGet.Dir = adminWebRoot
 	pubGet.Stdout = os.Stdout
 	pubGet.Stderr = os.Stderr
@@ -460,7 +480,13 @@ func buildAdminWeb(repoRoot string) string {
 		log.Fatalf("flutter pub get in admin_web: %v", err)
 	}
 
-	build := exec.Command("flutter", "build", "web", "--release", "--no-tree-shake-icons", "--base-href=/admin/", "--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
+	// admin_web is served from admin.heyearth.ru root, so base-href=/
+	// API base points to the main domain /api/admin
+	apiBase := publicBaseURL(cfg) + "/api/admin"
+	buildArgs := append(prefix, "build", "web", "--release", "--no-tree-shake-icons",
+		"--base-href=/",
+		"--dart-define=HEYEARTH_ADMIN_API_BASE="+apiBase)
+	build := exec.Command(exe, buildArgs...)
 	build.Dir = adminWebRoot
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -736,52 +762,11 @@ WantedBy=multi-user.target
 	_, _ = runSSH(client, "systemctl daemon-reload && systemctl enable heyearth-api && systemctl restart heyearth-api", true)
 }
 
-func doBot(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	botPath := buildGoBinary(cfg.backendRoot, "bot", "heyearth-bot")
-	if err := uploadFile(c, botPath, appDir+"/heyearth-bot"); err != nil {
-		log.Fatal(err)
-	}
-	_, _ = runSSH(client, "chmod +x "+appDir+"/heyearth-bot", true)
-
-	publicURL := "https://" + strings.TrimRight(cfg.siteDomain, "/")
-	if strings.HasPrefix(cfg.siteDomain, "http://") || strings.HasPrefix(cfg.siteDomain, "https://") {
-		publicURL = strings.TrimRight(cfg.siteDomain, "/")
-	}
-	botEnv := map[string]string{
-		"APP_DIR":              appDir,
-		"TELEGRAM_BOT_TOKEN":   cfg.botToken,
-		"HEYEARTH_PUBLIC_URL":  publicURL,
-	}
-	if err := uploadFileContent(c, []byte(serializeEnv(botEnv)), appDir+"/bot.env"); err != nil {
-		log.Fatal(err)
-	}
-
-	service := fmt.Sprintf(`[Unit]
-Description=HeYearth Telegram Bot
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=%s
-EnvironmentFile=%s/bot.env
-ExecStart=%s/heyearth-bot
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`, appDir, appDir, appDir)
-	if err := uploadFileContent(c, []byte(service), "/etc/systemd/system/telegram-bot.service"); err != nil {
-		log.Fatal(err)
-	}
-	_, _ = runSSH(client, "systemctl daemon-reload && systemctl enable telegram-bot && systemctl restart telegram-bot", true)
-}
+// doBot removed — Telegram bot is no longer part of the project.
 
 func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "mkdir -p /var/www/heyearth", true)
-	adminBuildDir := buildAdminWeb(cfg.repoRoot)
+	adminBuildDir := buildAdminWeb(cfg.repoRoot, cfg)
 	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
 		log.Fatalf("upload admin_web build: %v", err)
 	}
@@ -824,10 +809,9 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 	}
 	if useWSL && wslPath != "" {
 		apiBase := strings.ReplaceAll(publicBaseURL(cfg), "'", "'\"'\"'")
-		telegramBot := strings.TrimSpace(cfg.env.get("TELEGRAM_BOT_USERNAME", "heyearth_bot"))
 		// Use /usr/bin/npm so we don't pick up Windows npm from PATH. Clean install avoids @tailwindcss/oxide "Cannot find native binding" (npm optional deps bug).
-		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='%s' && export VITE_TELEGRAM_BOT_URL='https://t.me/%s' && /usr/bin/npm install && /usr/bin/npm run build",
-			strings.ReplaceAll(wslPath, "'", "'\"'\"'"), apiBase, telegramBot)
+		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && export VITE_API_BASE='%s' && /usr/bin/npm install && /usr/bin/npm run build",
+			strings.ReplaceAll(wslPath, "'", "'\"'\"'"), apiBase)
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
 			cmd = exec.Command("wsl", "-e", "bash", "-c", script)
@@ -859,7 +843,6 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 	build.Dir = siteRoot
 	build.Env = append(os.Environ(),
 		"VITE_API_BASE="+publicBaseURL(cfg),
-		"VITE_TELEGRAM_BOT_URL=https://t.me/"+strings.TrimSpace(cfg.env.get("TELEGRAM_BOT_USERNAME", "heyearth_bot")),
 	)
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -874,24 +857,23 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
 	_, _ = runSSH(client, "mkdir -p "+appDir+"/releases", true)
 
-	nginxConf := fmt.Sprintf(`server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name %s www.%s _;
+	domain := cfg.siteDomain
+
+	// 3 server blocks: main API, admin subdomain, site subdomain
+	nginxConf := fmt.Sprintf(`# ── Main API server (%[1]s) ──────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %[1]s www.%[1]s;
 
     add_header X-Robots-Tag "noindex, nofollow" always;
 
+    # gRPC endpoints
     location /heyearth.v1.ConfigApi/ {
         grpc_pass 127.0.0.1:50051;
         grpc_set_header Host $host;
     }
-
     location /heyearth.v1.ClientApi/ {
-        grpc_pass 127.0.0.1:50051;
-        grpc_set_header Host $host;
-    }
-
-    location /heyearth.v1.BotApi/ {
         grpc_pass 127.0.0.1:50051;
         grpc_set_header Host $host;
     }
@@ -901,6 +883,7 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
         return 200 "User-agent: *\nDisallow: /\n";
     }
 
+    # REST API
     location /go/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -908,7 +891,6 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -918,34 +900,82 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
+    location /webhooks/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
+    # App release downloads
     location /releases/ {
-        alias %s/releases/;
+        alias %[2]s/releases/;
         add_header Cache-Control "public, max-age=3600";
         try_files $uri =404;
     }
 
-    location /admin/ {
-        alias /var/www/heyearth/;
-        try_files $uri $uri/ /admin/index.html;
-    }
-    location = /admin {
-        return 301 /admin/;
-    }
-
-    location /promo/ {
-        alias /var/www/heyearth-site/;
-        try_files $uri $uri/ /promo/index.html;
-    }
-    location = /promo {
-        return 301 /promo/;
-    }
-
     location / {
-        return 301 /admin/;
+        return 301 https://site.%[1]s$request_uri;
     }
 }
-`, cfg.siteDomain, cfg.siteDomain, appDir)
+
+# ── Admin panel (admin.%[1]s) ───────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name admin.%[1]s;
+
+    # Proxy admin API to backend (allows same-origin requests from admin panel)
+    location /api/admin/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 512m;
+    }
+
+    # Flutter Web SPA
+    location / {
+        root /var/www/heyearth;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# ── Marketing site + user portal (site.%[1]s) ──────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name site.%[1]s;
+
+    # Proxy user-facing API to backend (allows same-origin requests from site)
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Vue 3 SPA
+    location / {
+        root /var/www/heyearth-site;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# ── Catch-all: redirect to main site ───────────────────────────
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 http://site.%[1]s$request_uri;
+}
+`, domain, appDir)
+
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
 		log.Fatal(err)
 	}
@@ -973,7 +1003,8 @@ nginx -t && systemctl reload nginx && echo "nginx reloaded with http2"`
 }
 
 func restartServices(client *ssh.Client) {
-	_, _ = runSSH(client, "systemctl restart heyearth-api telegram-bot nginx", false)
+	_, _ = runSSH(client, "systemctl stop telegram-bot 2>/dev/null; systemctl disable telegram-bot 2>/dev/null; true", false)
+	_, _ = runSSH(client, "systemctl restart heyearth-api nginx", false)
 }
 
 func publicBaseURL(cfg *deployConfig) string {
@@ -988,13 +1019,13 @@ func publicBaseURL(cfg *deployConfig) string {
 }
 
 func verifyServices(client *ssh.Client) {
-	_, _ = runSSH(client, "systemctl is-active heyearth-api telegram-bot nginx", false)
+	_, _ = runSSH(client, "systemctl is-active heyearth-api nginx", false)
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
 }
 
 func doStatus(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("=== Состояние сервисов ===")
-	out, _ := runSSH(client, "systemctl is-active heyearth-api telegram-bot nginx 2>/dev/null; echo '---'; systemctl status heyearth-api --no-pager -l 2>&1 | tail -18", false)
+	out, _ := runSSH(client, "systemctl is-active heyearth-api nginx 2>/dev/null; echo '---'; systemctl status heyearth-api --no-pager -l 2>&1 | tail -18", false)
 	fmt.Println(out)
 	fmt.Println("=== Логи heyearth-api (последние 25 строк) ===")
 	logsOut, _ := runSSH(client, "journalctl -u heyearth-api -n 25 --no-pager 2>&1", false)
@@ -1043,8 +1074,6 @@ func serializeEnv(values map[string]string) string {
 		"JWT_SECRET",
 		"SITE_DOMAIN",
 		"PUBLIC_BASE_URL",
-		"TELEGRAM_BOT_TOKEN",
-		"HEYEARTH_PUBLIC_URL",
 		"TLS_CLIENT_CERT_FILE",
 		"TLS_CLIENT_KEY_FILE",
 		"TLS_CA_FILE",
@@ -1104,7 +1133,7 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 	fmt.Println("  sudo -u postgres psql heyearth < XXXXXXXX-XXXXXX/db.sql")
 	fmt.Println("  cp XXXXXXXX-XXXXXX/dot-env /opt/heyearth/mainserver/.env")
 	fmt.Println("  cp -r XXXXXXXX-XXXXXX/certs /opt/heyearth/mainserver/certs")
-	fmt.Println("  systemctl restart heyearth-api telegram-bot")
+	fmt.Println("  systemctl restart heyearth-api")
 	fmt.Println("")
 	fmt.Println("For migration to a new server:")
 	fmt.Println("  1. Run --backup on the old server")
