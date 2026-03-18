@@ -67,8 +67,6 @@ class _UsersPageState extends State<UsersPage> {
   Future<void> _editUser({ManagedUser? existing}) async {
     final userIdController =
         TextEditingController(text: existing?.userId ?? '');
-    final telegramController =
-        TextEditingController(text: existing?.telegramId?.toString() ?? '');
     final roleController =
         TextEditingController(text: existing?.role ?? 'user');
     bool isBlocked = existing?.isBlocked ?? false;
@@ -100,11 +98,18 @@ class _UsersPageState extends State<UsersPage> {
                       decoration:
                           InputDecoration(labelText: l10n.fieldUserId)),
                   const SizedBox(height: 12),
-                  TextField(
-                      controller: telegramController,
-                      decoration:
-                          InputDecoration(labelText: l10n.fieldTelegramId)),
-                  const SizedBox(height: 12),
+                  if (existing != null && existing.username.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: TextField(
+                        controller: TextEditingController(text: existing.username),
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: l10n.fieldUsername,
+                          filled: true,
+                        ),
+                      ),
+                    ),
                   TextField(
                       controller: roleController,
                       decoration: InputDecoration(labelText: l10n.fieldRole)),
@@ -182,7 +187,6 @@ class _UsersPageState extends State<UsersPage> {
             FilledButton(
               onPressed: () => Navigator.of(context).pop(<String, dynamic>{
                 'user_id': userIdController.text.trim(),
-                'telegram_id': int.tryParse(telegramController.text.trim()),
                 'role': roleController.text.trim(),
                 'is_blocked': isBlocked,
                 'preferred_platform': selectedPlatform,
@@ -195,7 +199,6 @@ class _UsersPageState extends State<UsersPage> {
     );
 
     userIdController.dispose();
-    telegramController.dispose();
     roleController.dispose();
     if (payload == null) return;
 
@@ -331,10 +334,10 @@ class _UsersPageState extends State<UsersPage> {
                       title: Text(user.userId),
                       subtitle: Text(
                         '${l10n.userRolePlan}: ${user.role} | ${l10n.userPlan}: ${user.currentPlan}'
-                        '${user.telegramId == null ? '' : '\nTelegram: ${user.telegramId}'}'
+                        '${user.username.isEmpty ? '' : '\n${l10n.fieldUsername}: ${user.username}'}'
                         '${user.preferredPlatform.isEmpty ? '' : '\nPlatform: ${user.preferredPlatform}'}',
                       ),
-                      isThreeLine: user.telegramId != null ||
+                      isThreeLine: user.username.isNotEmpty ||
                           user.preferredPlatform.isNotEmpty,
                       trailing: Wrap(
                         spacing: 8,

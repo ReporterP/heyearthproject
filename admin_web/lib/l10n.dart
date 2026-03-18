@@ -73,6 +73,7 @@ class AdminL10n {
   String get navReleases => isEn ? 'Releases' : 'Релизы';
   String get navAdmins => isEn ? 'Admins' : 'Администраторы';
   String get navTenants => isEn ? 'Tenants' : 'Тенанты';
+  String get navTrafficMasking => isEn ? 'Traffic Masking' : 'Маскировка трафика';
   String get navSettings => isEn ? 'Settings' : 'Настройки';
 
   // ── Dashboard ──────────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ class AdminL10n {
       : 'Удалить пользователя "$userId"? Это действие нельзя отменить. Платёжные записи сохранятся, но будут отвязаны.';
   String get noUsers => isEn ? 'No users found' : 'Пользователи не найдены';
   String get fieldUserId => isEn ? 'User ID' : 'User ID';
+  String get fieldUsername => isEn ? 'Username' : 'Имя пользователя';
   String get fieldTelegramId => isEn ? 'Telegram ID' : 'Telegram ID';
   String get fieldRole => isEn ? 'Role' : 'Роль';
   String get fieldPreferredPlatform =>
@@ -183,6 +185,11 @@ class AdminL10n {
   String get serverLogsRefresh => isEn ? 'Refresh' : 'Обновить';
   String get serverFilesBrowse => isEn ? 'Browse' : 'Перейти';
   String get serverFilesPath => isEn ? 'Path' : 'Путь';
+  String get serverExitNode => isEn ? 'Exit Node' : 'Выходной узел';
+  String get serverSyncTunnel => isEn ? 'Sync Tunnel' : 'Синхронизировать туннель';
+  String get tunnelStatusHealthy => isEn ? 'Healthy' : 'Работает';
+  String get tunnelStatusConfiguring => isEn ? 'Configuring' : 'Настройка';
+  String get tunnelStatusUnknown => isEn ? 'Unknown' : 'Неизвестно';
 
   // ── SSH Keys ─────────────────────────────────────────────────────────────────
 
@@ -344,4 +351,25 @@ class AdminL10n {
       isEn ? 'Build Now' : 'Собрать';
   String get settingsAppBuildNotAvailable =>
       isEn ? 'Not yet available' : 'Пока недоступно';
+
+  // ── Traffic Masking ──────────────────────────────────────────────────────────
+
+  String get trafficMaskingTitle =>
+      isEn ? 'Traffic Masking' : 'Маскировка трафика';
+  String get trafficMaskingCreate =>
+      isEn ? 'Create rule' : 'Создать правило';
+  String get trafficMaskingEdit =>
+      isEn ? 'Edit rule' : 'Редактировать правило';
+  String get trafficMaskingDelete =>
+      isEn ? 'Delete rule' : 'Удалить правило';
+  String trafficMaskingDeleteConfirm(String domain) => isEn
+      ? 'Delete masking rule for "$domain"? This action cannot be undone.'
+      : 'Удалить правило маскировки для "$domain"? Это действие нельзя отменить.';
+  String get trafficMaskingNoRules =>
+      isEn ? 'No masking rules found' : 'Правила маскировки не найдены';
+  String get trafficMaskingSourceDomain =>
+      isEn ? 'Source Domain' : 'Исходный домен';
+  String get trafficMaskingMaskDomain =>
+      isEn ? 'Mask Domain' : 'Маскирующий домен';
+  String get trafficMaskingActive => isEn ? 'Active' : 'Активно';
 }

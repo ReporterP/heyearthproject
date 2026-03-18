@@ -387,6 +387,45 @@ class AdminApiClient {
         '/releases/activate', token, <String, dynamic>{'id': releaseId});
   }
 
+  // ── Traffic Masking ──────────────────────────────────────────
+
+  Future<List<TrafficMaskingRule>> fetchTrafficMaskingRules(
+      String token) async {
+    final body = await _getList('/traffic-masking', token);
+    return body.map(TrafficMaskingRule.fromJson).toList(growable: false);
+  }
+
+  Future<void> createTrafficMaskingRule(
+    String token, {
+    required String sourceDomain,
+    required String maskDomain,
+    required bool isActive,
+  }) async {
+    await _post('/traffic-masking', token, <String, dynamic>{
+      'source_domain': sourceDomain,
+      'mask_domain': maskDomain,
+      'is_active': isActive,
+    }, expectedStatus: 201);
+  }
+
+  Future<void> updateTrafficMaskingRule(
+    String token,
+    int id, {
+    String? sourceDomain,
+    String? maskDomain,
+    bool? isActive,
+  }) async {
+    final payload = <String, dynamic>{};
+    if (sourceDomain != null) payload['source_domain'] = sourceDomain;
+    if (maskDomain != null) payload['mask_domain'] = maskDomain;
+    if (isActive != null) payload['is_active'] = isActive;
+    await _patch('/traffic-masking/$id', token, payload);
+  }
+
+  Future<void> deleteTrafficMaskingRule(String token, int id) async {
+    await _delete('/traffic-masking/$id', token);
+  }
+
   Future<List<AdminProfile>> fetchAdminUsers(String token) async {
     final body = await _getList('/admin-users', token);
     return body.map(AdminProfile.fromJson).toList(growable: false);

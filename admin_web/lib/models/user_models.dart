@@ -3,6 +3,7 @@ class ManagedUser {
     required this.id,
     required this.userId,
     required this.telegramId,
+    required this.username,
     required this.role,
     required this.isBlocked,
     required this.preferredPlatform,
@@ -15,6 +16,7 @@ class ManagedUser {
   final int id;
   final String userId;
   final int? telegramId;
+  final String username;
   final String role;
   final bool isBlocked;
   final String preferredPlatform;
@@ -28,6 +30,7 @@ class ManagedUser {
       id: (json['id'] as num?)?.toInt() ?? 0,
       userId: (json['user_id'] as String? ?? '').trim(),
       telegramId: (json['telegram_id'] as num?)?.toInt(),
+      username: (json['username'] as String? ?? '').trim(),
       role: (json['role'] as String? ?? '').trim(),
       isBlocked: json['is_blocked'] as bool? ?? false,
       preferredPlatform: (json['preferred_platform'] as String? ?? '').trim(),

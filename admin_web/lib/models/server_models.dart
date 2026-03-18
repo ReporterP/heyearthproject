@@ -42,6 +42,9 @@ class AdminServer {
     required this.loadMetrics,
     required this.groupIds,
     required this.updatedAt,
+    this.isExitNode = false,
+    this.tunnelStatus = 'unknown',
+    this.lastTunnelCheck,
   });
 
   final int id;
@@ -57,6 +60,9 @@ class AdminServer {
   final Map<String, dynamic> loadMetrics;
   final List<int> groupIds;
   final String updatedAt;
+  final bool isExitNode;
+  final String tunnelStatus;
+  final String? lastTunnelCheck;
 
   factory AdminServer.fromJson(Map<String, dynamic> json) {
     return AdminServer(
@@ -77,6 +83,9 @@ class AdminServer {
           .map((item) => item.toInt())
           .toList(growable: false),
       updatedAt: (json['updated_at'] as String? ?? '').trim(),
+      isExitNode: json['is_exit_node'] as bool? ?? false,
+      tunnelStatus: (json['tunnel_status'] as String? ?? 'unknown').trim(),
+      lastTunnelCheck: (json['last_tunnel_check'] as String?)?.trim(),
     );
   }
 }
@@ -92,6 +101,7 @@ class ServerPayload {
     required this.countryCode,
     required this.status,
     required this.groupIds,
+    this.isExitNode = false,
   });
 
   final String name;
@@ -103,6 +113,7 @@ class ServerPayload {
   final String countryCode;
   final String status;
   final List<int> groupIds;
+  final bool isExitNode;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -115,6 +126,7 @@ class ServerPayload {
       'country_code': countryCode,
       'status': status,
       'group_ids': groupIds,
+      'is_exit_node': isExitNode,
     };
   }
 }

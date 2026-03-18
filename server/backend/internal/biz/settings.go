@@ -42,6 +42,15 @@ func GetAllSettings() (map[string]string, error) {
 	return result, rows.Err()
 }
 
+// GetSettingOrDefault returns a setting value or the default if not found.
+func GetSettingOrDefault(key, defaultValue string) string {
+	value, err := GetSetting(key)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return defaultValue
+	}
+	return value
+}
+
 func GetAPIEndpoints() []string {
 	raw, err := GetSetting("api_endpoints")
 	if err != nil || strings.TrimSpace(raw) == "" {

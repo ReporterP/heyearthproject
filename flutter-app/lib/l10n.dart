@@ -52,55 +52,82 @@ class L10n {
   String get loginFailed =>
       isEn ? 'Failed to log in.' : 'Не удалось войти.';
   String get login => isEn ? 'Sign in' : 'Войти';
+  String get registerFailed =>
+      isEn ? 'Failed to register.' : 'Не удалось зарегистрироваться.';
 
-  // ── Bot code pairing ────────────────────────────────────────────────────────
+  // ── Welcome screen (new anonymous auth flow) ──────────────────────────────
 
-  String get enterCodeFromBot =>
-      isEn ? 'Enter code from bot' : 'Ввести код из бота';
-  String get enterCodeHint => isEn ? 'e.g. ABCD2345' : 'Например ABCD2345';
-  String get deviceLinked =>
-      isEn ? 'Device linked to account.' : 'Устройство привязано к аккаунту.';
-  String get deviceLinkedShort =>
-      isEn ? 'Device linked.' : 'Устройство привязано.';
-  String get pairingFailed =>
-      isEn ? 'Failed to complete pairing.' : 'Не удалось выполнить pairing.';
-  String get link => isEn ? 'Link' : 'Привязать';
-
-  // ── Welcome screen ──────────────────────────────────────────────────────────
-
-  String get welcomeTitle =>
-      isEn ? 'Sign in to HeYearth' : 'Вход в HeYearth';
+  String get welcomeTitle => 'HeYearth';
   String get welcomeDesc => isEn
-      ? 'Sign in goes through Telegram bot. Open the bot, get a code and enter it here.'
-      : 'Основной вход теперь идёт через Telegram-бот. Откройте бот, получите код и введите его здесь.';
-  String get haveCodeFromBot =>
-      isEn ? 'I have a code from the bot' : 'У меня есть код из бота';
-  String get haveHeyearthId =>
-      isEn ? 'I already have a HeYearth ID' : 'У меня уже есть HeYearth ID';
-  String get howItWorks => isEn ? 'How it works' : 'Как это работает';
-  String get howItWorksSteps => isEn
-      ? '1. Open the HeYearth bot in Telegram.\n'
-          '2. Get a pairing code.\n'
-          '3. Enter the code here.'
-      : '1. Открой бот HeYearth в Telegram.\n'
-          '2. Получи код подключения.\n'
-          '3. Введи код здесь.';
+      ? 'Secure VPN for all your devices. Get your HeYearth ID to start.'
+      : 'Безопасный VPN для всех ваших устройств. Получите HeYearth ID, чтобы начать.';
+  String get getHeyearthId =>
+      isEn ? 'Get HeYearth ID' : 'Получить HeYearth ID';
+  String get alreadyHaveId =>
+      isEn ? 'I already have an ID' : 'У меня уже есть ID';
+  String get saveYourIdWarning => isEn
+      ? 'Save your ID! Without it you will lose access to your account.'
+      : 'Сохраните ваш ID! Без него вы потеряете доступ к аккаунту.';
+  String get idOrUsername =>
+      isEn ? 'ID or username' : 'ID или имя пользователя';
+  String get passwordOptional =>
+      isEn ? 'Password (optional)' : 'Пароль (необязательно)';
+  String get registering =>
+      isEn ? 'Registering...' : 'Регистрация...';
+
+  // ── Account screen ────────────────────────────────────────────────────────
+
+  String get accountScreenTitle =>
+      isEn ? 'Account' : 'Аккаунт';
+  String get yourHeyearthId =>
+      isEn ? 'Your HeYearth ID' : 'Ваш HeYearth ID';
+  String get usernameLabel =>
+      isEn ? 'Username' : 'Имя пользователя';
+  String get usernameHint =>
+      isEn ? 'Set a username' : 'Задайте имя пользователя';
+  String get saveButton =>
+      isEn ? 'Save' : 'Сохранить';
+  String get usernameSaved =>
+      isEn ? 'Username saved.' : 'Имя пользователя сохранено.';
+  String get cloudPasswordLabel =>
+      isEn ? 'Cloud Password' : 'Облачный пароль';
+  String get newPasswordHint =>
+      isEn ? 'New password' : 'Новый пароль';
+  String get confirmPasswordHint =>
+      isEn ? 'Confirm password' : 'Подтвердите пароль';
+  String get currentPasswordHint =>
+      isEn ? 'Current password' : 'Текущий пароль';
+  String get passwordMismatch =>
+      isEn ? 'Passwords do not match.' : 'Пароли не совпадают.';
+  String get passwordSaved =>
+      isEn ? 'Password saved.' : 'Пароль сохранён.';
+  String get subscriptionSection =>
+      isEn ? 'Subscription' : 'Подписка';
+  String get noActiveSubscription =>
+      isEn ? 'No active subscription.' : 'Нет активной подписки.';
+  String get payButton =>
+      isEn ? 'Pay' : 'Оплатить';
+  String get connectionModesSection =>
+      isEn ? 'Connection Modes' : 'Режимы подключения';
+  String get vpnMode => 'VPN';
+  String get socks5Mode => 'SOCKS5';
+  String get httpMode => 'HTTP';
+  String get copyUri =>
+      isEn ? 'Copy URI' : 'Скопировать URI';
+  String get uriCopied =>
+      isEn ? 'URI copied to clipboard.' : 'URI скопирован в буфер обмена.';
 
   // ── Account / profile panel ─────────────────────────────────────────────────
 
   String get accountManagedByServer => isEn
-      ? 'Account, access and connection are now managed through Main Server.'
-      : 'Аккаунт, доступ и подключение теперь управляются через Main Server.';
+      ? 'Account, access and connection are managed by HeYearth Server.'
+      : 'Аккаунт, доступ и подключение управляются через HeYearth Server.';
   String get idCopied => isEn ? 'ID copied' : 'ID скопирован';
   String get profileLabel => isEn ? 'Profile' : 'Профиль';
   String get planLabel => isEn ? 'Plan' : 'План';
   String get platformLabel => isEn ? 'Platform' : 'Платформа';
-  String get telegramLabel => isEn ? 'Telegram' : 'Telegram';
   String get statusLabel => isEn ? 'Status' : 'Статус';
   String get validUntilLabel => isEn ? 'Until' : 'До';
-  String get legacyPairingNote => isEn
-      ? 'For this platform, pairing is through the bot and connection through Happ.'
-      : 'Для этой платформы пока используется pairing через бот и подключение через Happ.';
   String get signOut => isEn ? 'Sign out' : 'Выйти';
   String get updateAccount => isEn ? 'Update account' : 'Обновить аккаунт';
   String get updatingAccount => isEn ? 'Updating...' : 'Обновление...';
@@ -108,9 +135,7 @@ class L10n {
   String get accountsSection => isEn ? 'Accounts' : 'Аккаунты';
   String get addAccount => isEn ? 'Add Account' : 'Добавить аккаунт';
   String get addAccountHint =>
-      isEn
-          ? 'HeYearth ID or code from bot'
-          : 'HeYearth ID или код из бота';
+      isEn ? 'HeYearth ID or username' : 'HeYearth ID или имя пользователя';
   String get currentAccount => isEn ? 'Current' : 'Текущий';
   String get switchAccount => isEn ? 'Switch' : 'Переключить';
   String get removeAccount => isEn ? 'Remove' : 'Удалить';
@@ -142,7 +167,7 @@ class L10n {
 
   // ── VPN / connection ─────────────────────────────────────────────────────────
 
-  String get connecting => isEn ? 'Connecting…' : 'Подключение...';
+  String get connecting => isEn ? 'Connecting...' : 'Подключение...';
   String get connectedTraffic => isEn
       ? 'Connected. Traffic goes through HeYearth.'
       : 'Подключено. Трафик идёт через HeYearth.';
@@ -160,7 +185,7 @@ class L10n {
   String get checkForUpdates =>
       isEn ? 'Check for updates' : 'Проверить обновления';
   String get checkingUpdates =>
-      isEn ? 'Checking for updates…' : 'Проверка обновлений…';
+      isEn ? 'Checking for updates...' : 'Проверка обновлений...';
   String get youHaveLatestVersion =>
       isEn ? 'You have the latest version.' : 'У вас последняя версия.';
   String latestOnServer(String ver) => isEn
@@ -189,12 +214,6 @@ class L10n {
   String get pasteHeyearthIdHint =>
       isEn ? 'Paste your HeYearth ID' : 'Вставьте ваш HeYearth ID';
 
-  String get onlyForSelectedServices =>
-      isEn ? 'Only for selected services' : 'Только для выбранных сервисов';
-  String get onlyForSelectedHint => isEn
-      ? 'In this mode only traffic to selected services goes through HeYearth; the rest is direct.'
-      : 'В этом режиме через HeYearth идёт только трафик к выбранным сервисам; остальное — напрямую.';
-
   String get theme => isEn ? 'Theme' : 'Тема';
   String get system => isEn ? 'System' : 'Система';
   String get light => isEn ? 'Light' : 'Светлая';
@@ -216,22 +235,14 @@ class L10n {
       ? 'On phone or tablet open the app — there is a single "Turn on HeYearth" button.'
       : 'На телефоне или планшете откройте приложение — там одна кнопка «Включить HeYearth».';
 
-  String get initXray => isEn ? 'Initializing Xray…' : 'Инициализация Xray…';
+  String get initXray => isEn ? 'Initializing Xray...' : 'Инициализация Xray...';
   String get waitLaunchHeyearth =>
       isEn ? 'Please wait, launching HeYearth.' : 'Подождите, запуск HeYearth.';
-  String get modeSelectedOnly =>
-      isEn ? '"Selected only" mode' : 'Режим «только выбранные»';
 
   // ── Error messages (app_state) ───────────────────────────────────────────────
 
-  String get claimFailed =>
-      isEn ? 'Failed to link device to account.' : 'Не удалось привязать приложение к аккаунту.';
-  String get claimByTokenFailed =>
-      isEn ? 'Failed to open login link.' : 'Не удалось открыть вход по ссылке.';
   String get serverNoResponse =>
       isEn ? 'Server did not respond.' : 'Сервер не ответил.';
-  String get legacyHappFallback =>
-      isEn ? 'This platform currently uses a fallback via Happ.' : 'Для этой платформы пока используется fallback через Happ.';
   String get serverNoConfig =>
       isEn ? 'Server did not return connection config.' : 'Сервер не вернул конфиг подключения.';
   String get vpnUnsupported =>
@@ -243,32 +254,23 @@ class L10n {
       isEn ? 'Current version is no longer supported. Update the app.' : 'Текущая версия больше не поддерживается. Обнови приложение.';
   String get accessBlocked =>
       isEn ? 'Access blocked. Contact support.' : 'Доступ заблокирован. Обратись в поддержку.';
-  String get legacyFallbackVpn => isEn
-      ? 'This platform currently uses a fallback via Happ/bot.'
-      : 'Для этой платформы пока используется fallback через Happ/бот.';
   String get currentConnectionUnavailable =>
       isEn ? 'Connection is not available right now.' : 'Сейчас подключение недоступно.';
 
   // ── gRPC error → user-friendly message ──────────────────────────────────────
 
-  /// Converts a caught gRPC exception (or any exception) to a user-friendly
-  /// message in the current locale.
   String grpcErrorToMessage(dynamic e) {
     final raw = e.toString();
-    // Strip leading "Exception:" prefix from non-gRPC errors.
     final clean = raw.replaceFirst(RegExp(r'^Exception:?\s*'), '');
 
-    // gRPC NOT_FOUND (5) — expired / invalid claim codes
     if (clean.contains('NOT_FOUND') ||
         clean.contains('code: 5,') ||
-        clean.contains('code not found') ||
         clean.contains('not found')) {
       return isEn
-          ? 'Code not found or already used. Get a new code from the bot.'
-          : 'Код не найден или уже использован. Получи новый код в боте.';
+          ? 'Account not found. Check the entered data.'
+          : 'Аккаунт не найден. Проверьте введённые данные.';
     }
 
-    // gRPC UNAVAILABLE (14) or connectivity
     if (clean.contains('UNAVAILABLE') ||
         clean.contains('code: 14,') ||
         clean.contains('HandshakeException') ||
@@ -281,7 +283,6 @@ class L10n {
           : 'Сервер недоступен. Проверь подключение к интернету.';
     }
 
-    // gRPC DEADLINE_EXCEEDED (4) / timeout
     if (clean.contains('DEADLINE_EXCEEDED') ||
         clean.contains('code: 4,') ||
         clean.contains('TimeoutException') ||
@@ -291,7 +292,6 @@ class L10n {
           : 'Таймаут запроса. Проверь соединение и попробуй снова.';
     }
 
-    // gRPC PERMISSION_DENIED (7) / UNAUTHENTICATED (16)
     if (clean.contains('PERMISSION_DENIED') ||
         clean.contains('code: 7,') ||
         clean.contains('UNAUTHENTICATED') ||
@@ -299,28 +299,24 @@ class L10n {
       return isEn ? 'Access denied.' : 'Доступ запрещён.';
     }
 
-    // gRPC INVALID_ARGUMENT (3)
     if (clean.contains('INVALID_ARGUMENT') || clean.contains('code: 3,')) {
       return isEn
           ? 'Invalid request. Check the entered data.'
           : 'Неверный запрос. Проверь введённые данные.';
     }
 
-    // gRPC RESOURCE_EXHAUSTED (8) — rate limit
     if (clean.contains('RESOURCE_EXHAUSTED') || clean.contains('code: 8,')) {
       return isEn
           ? 'Too many requests. Try again later.'
           : 'Слишком много запросов. Попробуй позже.';
     }
 
-    // gRPC ALREADY_EXISTS (6)
     if (clean.contains('ALREADY_EXISTS') || clean.contains('code: 6,')) {
       return isEn
           ? 'This item already exists.'
           : 'Такой объект уже существует.';
     }
 
-    // TLS / certificate error
     if (clean.contains('TLSV1') ||
         clean.contains('certificate') ||
         clean.contains('TLS') ||
@@ -330,23 +326,17 @@ class L10n {
           : 'Ошибка защищённого соединения. Проверь адрес сервера.';
     }
 
-    // Generic gRPC error — strip technical parts for display
     if (clean.contains('gRPC Error') || clean.contains('GrpcError')) {
       return isEn
           ? 'Server error. Try again.'
           : 'Ошибка сервера. Попробуй снова.';
     }
 
-    // Fallback: return the cleaned message as-is (already in user locale
-    // when it comes from app_state hardcoded strings).
     return clean;
   }
 
-  /// Translates known error strings from [app_state] to the current locale.
-  /// Call this when displaying [AppState.error] in the UI.
   String translateError(String? msg) {
     if (msg == null || msg.isEmpty) return '';
-    // Let grpcErrorToMessage handle gRPC-specific errors.
     if (msg.contains('gRPC Error') ||
         msg.contains('GrpcError') ||
         msg.contains('HandshakeException') ||
@@ -361,7 +351,6 @@ class L10n {
         msg.contains('SSL')) {
       return grpcErrorToMessage(msg);
     }
-    // Known Russian strings → English translation when locale is EN.
     if (!isEn) return msg;
     if (msg.contains('HeYearth доступен только на Android'))
       return vpnUnsupported;
@@ -370,12 +359,8 @@ class L10n {
     if (msg.contains('Таймаут') && msg.contains('Сервер не отвечает'))
       return 'Timeout. Server is not responding.';
     if (msg.contains('Сервер не вернул конфиг')) return serverNoConfig;
-    if (msg.contains('Не удалось привязать')) return claimFailed;
-    if (msg.contains('Не удалось открыть вход')) return claimByTokenFailed;
     if (msg.contains('Не удалось применить промокод')) return promoFailed;
     if (msg.contains('Сервер не ответил')) return serverNoResponse;
-    if (msg.contains('fallback через Happ/бот')) return legacyFallbackVpn;
-    if (msg.contains('fallback через Happ')) return legacyHappFallback;
     if (msg.contains('Доступ заблокирован')) return accessBlocked;
     if (msg.contains('Сейчас подключение недоступно'))
       return currentConnectionUnavailable;
@@ -386,6 +371,10 @@ class L10n {
     }
     if (msg.contains('Текущая версия больше не поддерживается'))
       return versionUnsupported;
+    if (msg.contains('Не удалось зарегистрироваться'))
+      return registerFailed;
+    if (msg.contains('Не удалось войти'))
+      return loginFailed;
     return msg;
   }
 }

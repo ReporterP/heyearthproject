@@ -154,23 +154,3 @@ Future<pb.ApplyPromocodeResponse?> applyPromocodeGrpc(
     pb.ApplyPromocodeRequest(userId: userId, code: code),
   );
 }
-
-Future<pb.ClaimResponse?> claimByCodeGrpc({
-  required String apiBase,
-  required String code,
-  required pb.DeviceContext device,
-}) async {
-  final client = getClientApi(apiBase);
-  return client.claimByCode(pb.ClaimByCodeRequest(code: code, device: device));
-}
-
-Future<pb.ClaimResponse?> claimByTokenGrpc({
-  required String apiBase,
-  required String token,
-  required pb.DeviceContext device,
-}) async {
-  final client = getClientApi(apiBase);
-  return client.claimByToken(
-    pb.ClaimByTokenRequest(claimToken: token, device: device),
-  );
-}

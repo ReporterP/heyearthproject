@@ -1,8 +1,10 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 
 const mobileOpen = ref(false)
+
+const isLoggedIn = computed(() => !!localStorage.getItem('token'))
 </script>
 
 <template>
@@ -18,13 +20,20 @@ const mobileOpen = ref(false)
       </nav>
 
       <div class="hidden md:flex items-center gap-3">
-        <a
-          :href="$botUrl"
-          target="_blank"
+        <RouterLink
+          v-if="isLoggedIn"
+          to="/dashboard"
           class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-medium transition"
         >
-          Начать
-        </a>
+          Кабинет
+        </RouterLink>
+        <RouterLink
+          v-else
+          to="/login"
+          class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-medium transition"
+        >
+          Войти
+        </RouterLink>
       </div>
 
       <button
@@ -41,17 +50,22 @@ const mobileOpen = ref(false)
     <div v-if="mobileOpen" class="md:hidden border-t border-white/5 bg-surface px-6 py-4 space-y-3">
       <RouterLink to="/" class="block text-text-secondary hover:text-text-primary" @click="mobileOpen = false">Для пользователей</RouterLink>
       <RouterLink to="/business" class="block text-text-secondary hover:text-text-primary" @click="mobileOpen = false">Для бизнеса</RouterLink>
-      <a :href="$botUrl" target="_blank" class="block px-4 py-2 rounded-lg bg-brand text-white text-center text-sm font-medium">Начать</a>
+      <RouterLink
+        v-if="isLoggedIn"
+        to="/dashboard"
+        class="block px-4 py-2 rounded-lg bg-brand text-white text-center text-sm font-medium"
+        @click="mobileOpen = false"
+      >
+        Кабинет
+      </RouterLink>
+      <RouterLink
+        v-else
+        to="/login"
+        class="block px-4 py-2 rounded-lg bg-brand text-white text-center text-sm font-medium"
+        @click="mobileOpen = false"
+      >
+        Войти
+      </RouterLink>
     </div>
   </header>
 </template>
-
-<script>
-export default {
-  computed: {
-    $botUrl() {
-      return import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/heyearth_bot'
-    },
-  },
-}
-</script>

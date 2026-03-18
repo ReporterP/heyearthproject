@@ -1,14 +1,16 @@
 <script setup>
+import { RouterLink } from 'vue-router'
+
 const advantages = [
   {
     icon: '🏢',
-    title: 'Своя админ-панель',
-    desc: 'Управляйте только своими пользователями и серверами. Полный контроль.',
+    title: 'Своя панель управления',
+    desc: 'Управляйте эко-маршрутизацией для всех сотрудников. Полный контроль и аналитика.',
   },
   {
     icon: '🔧',
     title: 'Свои или наши серверы',
-    desc: 'Подключите собственные серверы или используйте нашу инфраструктуру.',
+    desc: 'Подключите собственную инфраструктуру или используйте наши оптимизированные узлы.',
   },
   {
     icon: '💰',
@@ -16,9 +18,9 @@ const advantages = [
     desc: 'Кошелёк с ежемесячным списанием. Платите только за то, что используете.',
   },
   {
-    icon: '🔐',
-    title: 'Коды для сотрудников',
-    desc: 'Раздайте коды компании — сотрудники получат доступ без регистрации.',
+    icon: '🌱',
+    title: 'Корпоративная устойчивость',
+    desc: 'Снизьте цифровой углеродный след компании. Коды доступа для сотрудников без регистрации.',
   },
 ]
 </script>
@@ -27,11 +29,11 @@ const advantages = [
   <section class="pt-24 pb-16">
     <div class="max-w-4xl mx-auto px-6 text-center">
       <h1 class="text-4xl md:text-5xl font-extrabold tracking-tight">
-        VPN <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-light to-accent">для бизнеса</span>
+        Устойчивый доступ <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-light to-accent">для бизнеса</span>
       </h1>
       <p class="mt-6 text-lg text-text-secondary max-w-2xl mx-auto">
-        Защитите корпоративный трафик. Управляйте доступом сотрудников из удобной панели.
-        По договорённой цене — без скрытых платежей.
+        Оптимизируйте корпоративный трафик с заботой об экологии. Управляйте доступом сотрудников из удобной панели.
+        Прозрачные тарифы — без скрытых платежей.
       </p>
     </div>
   </section>
@@ -56,19 +58,19 @@ const advantages = [
       <div class="space-y-4 text-sm">
         <div class="flex justify-between p-4 rounded-xl bg-surface-card border border-white/5">
           <span class="text-text-secondary">Пользователь</span>
-          <span class="font-semibold">250 ₽ / мес</span>
+          <span class="font-semibold">250 &#8381; / мес</span>
         </div>
         <div class="flex justify-between p-4 rounded-xl bg-surface-card border border-white/5">
           <span class="text-text-secondary">Использование наших серверов</span>
-          <span class="font-semibold">1 000 ₽ / мес</span>
+          <span class="font-semibold">1 000 &#8381; / мес</span>
         </div>
         <div class="flex justify-between p-4 rounded-xl bg-surface-card border border-white/5">
           <span class="text-text-secondary">Свои серверы (до 5 включены)</span>
-          <span class="font-semibold">+100 ₽ / доп. сервер</span>
+          <span class="font-semibold">+100 &#8381; / доп. сервер</span>
         </div>
         <div class="flex justify-between p-4 rounded-xl bg-surface-card border border-white/5">
           <span class="text-text-secondary">Премиум для пользователя</span>
-          <span class="font-semibold">+50 ₽ / мес</span>
+          <span class="font-semibold">+50 &#8381; / мес</span>
         </div>
       </div>
       <p class="text-xs text-text-secondary text-center mt-4">Цены настраиваются индивидуально. Указаны базовые значения.</p>

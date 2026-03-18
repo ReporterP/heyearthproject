@@ -4,44 +4,58 @@ package heyearth.v1;
 
 option go_package = "github.com/heyearth/backend/internal/pb/heyearth_v1";
 
-// ConfigApi — legacy service kept for backward compatibility.
-service ConfigApi {
-  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
-  rpc Health(HealthRequest) returns (HealthResponse);
-  rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
-  rpc ApplyPromocode(ApplyPromocodeRequest) returns (ApplyPromocodeResponse);
-  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
-}
-
-service BotApi {
-  rpc EnsureTelegramUser(EnsureTelegramUserRequest) returns (UserProfileResponse);
-  rpc SetPreferredPlatform(SetPreferredPlatformRequest) returns (UserProfileResponse);
-  rpc CreatePairingCode(CreatePairingCodeRequest) returns (CreatePairingCodeResponse);
-  rpc GetClientDistribution(GetClientDistributionRequest) returns (GetClientDistributionResponse);
-  rpc IssueLegacyAppleConfig(IssueLegacyAppleConfigRequest) returns (ConnectionBundleResponse);
-}
-
+// ClientApi — main service for client applications (mobile, desktop, web).
 service ClientApi {
-  rpc ClaimByCode(ClaimByCodeRequest) returns (ClaimResponse);
-  rpc ClaimByToken(ClaimByTokenRequest) returns (ClaimResponse);
+  // Auth
+  rpc Register(RegisterRequest) returns (AuthResponse);
+  rpc Login(LoginRequest) returns (AuthResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (UserProfileResponse);
+
+  // User info
   rpc GetMe(GetMeRequest) returns (UserProfileResponse);
   rpc GetAccessState(GetAccessStateRequest) returns (AccessStateResponse);
+
+  // Connections
   rpc GetConnectionBundle(GetConnectionBundleRequest) returns (ConnectionBundleResponse);
+
+  // Subscriptions & Payments
   rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
   rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
   rpc ApplyPromocode(ApplyPromocodeRequest) returns (ApplyPromocodeResponse);
+
+  // App updates
   rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse);
+
+  // Health
+  rpc Health(HealthRequest) returns (HealthResponse);
 }
 
-message GetConfigRequest {
-  string user_id = 1;
+// ──────────────────── Auth ────────────────────
+
+message RegisterRequest {
+  DeviceContext device = 1;
 }
 
-message GetConfigResponse {
-  string user_id = 1;
-  string ss_uri = 2;
-  string vless_uri = 3;
+message LoginRequest {
+  string id_or_username = 1;   // HeYearth ID or username
+  string password = 2;         // optional cloud password
+  DeviceContext device = 3;
 }
+
+message AuthResponse {
+  string user_id = 1;          // canonical HeYearth ID
+  string token = 2;            // JWT session token
+  UserProfileResponse profile = 3;
+}
+
+message UpdateProfileRequest {
+  string user_id = 1;
+  string username = 2;         // set/change username (empty = no change)
+  string new_password = 3;     // set/change cloud password (empty = no change)
+  string current_password = 4; // required if changing password when one is already set
+}
+
+// ──────────────────── Device ────────────────────
 
 message DeviceContext {
   string device_id = 1;
@@ -51,11 +65,15 @@ message DeviceContext {
   string linked_via = 5;
 }
 
+// ──────────────────── Health ────────────────────
+
 message HealthRequest {}
 
 message HealthResponse {
-  string status = 1;  // e.g. "ok"
+  string status = 1;
 }
+
+// ──────────────────── App Updates ────────────────────
 
 message CheckAppUpdateRequest {
   string platform = 1;
@@ -74,6 +92,8 @@ message CheckAppUpdateResponse {
   repeated string api_endpoints = 10;
 }
 
+// ──────────────────── Promocodes ────────────────────
+
 message ApplyPromocodeRequest {
   string user_id = 1;
   string code = 2;
@@ -84,75 +104,7 @@ message ApplyPromocodeResponse {
   string message = 2;
 }
 
-message GetProfileRequest {
-  string user_id = 1;
-}
-
-message GetProfileResponse {
-  string current_plan = 1;
-  string valid_until = 2; // ISO8601 string
-}
-
-message EnsureTelegramUserRequest {
-  int64 telegram_id = 1;
-  string preferred_platform = 2;
-  string locale = 3;
-}
-
-message SetPreferredPlatformRequest {
-  int64 telegram_id = 1;
-  string preferred_platform = 2;
-}
-
-message CreatePairingCodeRequest {
-  int64 telegram_id = 1;
-  string preferred_platform = 2;
-  string locale = 3;
-}
-
-message CreatePairingCodeResponse {
-  UserProfileResponse profile = 1;
-  string code = 2;
-  string claim_token = 3;
-  string expires_at = 4;
-  string deeplink_url = 5;
-}
-
-message GetClientDistributionRequest {
-  string platform = 1;
-}
-
-message GetClientDistributionResponse {
-  string version = 1;
-  string android_url = 2;
-  string windows_url = 3;
-  string macos_url = 4;
-  string linux_url = 5;
-  string ios_url = 6;
-  string release_notes = 7;
-  bool mandatory = 8;
-  string min_supported_version = 9;
-}
-
-message IssueLegacyAppleConfigRequest {
-  int64 telegram_id = 1;
-  bool force_new = 2;
-}
-
-message ClaimByCodeRequest {
-  string code = 1;
-  DeviceContext device = 2;
-}
-
-message ClaimByTokenRequest {
-  string claim_token = 1;
-  DeviceContext device = 2;
-}
-
-message ClaimResponse {
-  UserProfileResponse profile = 1;
-  AccessStateResponse access_state = 2;
-}
+// ──────────────────── User Profile ────────────────────
 
 message GetMeRequest {
   string user_id = 1;
@@ -161,17 +113,18 @@ message GetMeRequest {
 
 message UserProfileResponse {
   string user_id = 1;
-  int64 telegram_id = 2;
-  bool telegram_linked = 3;
+  string username = 2;
+  bool has_password = 3;
   string preferred_platform = 4;
   string locale = 5;
   bool is_blocked = 6;
   string current_plan = 7;
   string valid_until = 8;
-  bool legacy_happ_fallback = 9;
-  string access_status = 10;
-  string status_reason = 11;
+  string access_status = 9;
+  string status_reason = 10;
 }
+
+// ──────────────────── Access State ────────────────────
 
 message GetAccessStateRequest {
   string user_id = 1;
@@ -185,10 +138,12 @@ message AccessStateResponse {
   string preferred_platform = 4;
   bool is_blocked = 5;
   bool can_connect = 6;
-  bool legacy_happ_fallback = 7;
-  string reason = 8;
-  bool allow_manual_connection_choice = 9;
+  string reason = 7;
+  bool is_premium = 8;
+  bool traffic_masking_available = 9;
 }
+
+// ──────────────────── Connections (Hub-and-Spoke) ────────────────────
 
 message GetConnectionBundleRequest {
   string user_id = 1;
@@ -197,22 +152,21 @@ message GetConnectionBundleRequest {
 }
 
 message ConnectionOption {
-  string uri = 1;
-  string protocol = 2;
-  repeated string recommended_networks = 3;
-  int32 priority = 4;
+  string uri = 1;                            // connection URI (vless://, socks5://, http://)
+  string protocol = 2;                       // "vless", "socks5", "http"
+  string label = 3;                          // human-readable label
+  repeated string recommended_networks = 4;  // "wifi", "cellular", "ethernet"
+  int32 priority = 5;
 }
 
 message ConnectionBundleResponse {
   string user_id = 1;
-  string ss_uri = 2;
-  string connect_mode = 3;
-  string status_message = 4;
-  bool legacy_happ_fallback = 5;
-  string fallback_instruction = 6;
-  string vless_uri = 7;
-  repeated ConnectionOption connection_options = 8;
+  repeated ConnectionOption connection_options = 2;
+  string status_message = 3;
+  bool traffic_masking_enabled = 4;
 }
+
+// ──────────────────── Subscriptions ────────────────────
 
 message ListSubscriptionsRequest {
   string user_id = 1;
@@ -224,11 +178,15 @@ message SubscriptionItem {
   string valid_until = 3;
   bool auto_renew = 4;
   bool active = 5;
+  string plan = 6;
+  int32 price_rub = 7;
 }
 
 message ListSubscriptionsResponse {
   repeated SubscriptionItem items = 1;
 }
+
+// ──────────────────── Payments ────────────────────
 
 message ListPaymentsRequest {
   string user_id = 1;

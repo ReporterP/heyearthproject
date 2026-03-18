@@ -23,18 +23,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   void _showAddAccountDialog(BuildContext context, AppState state) {
     final l10n = L10n.of(context);
-    final controller = TextEditingController();
+    final idController = TextEditingController();
+    final pwController = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(l10n.addAccount),
-        content: TextField(
-          controller: controller,
-          textCapitalization: TextCapitalization.characters,
-          decoration: InputDecoration(
-            hintText: l10n.addAccountHint,
-            border: const OutlineInputBorder(),
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: idController,
+              decoration: InputDecoration(
+                hintText: l10n.idOrUsername,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pwController,
+              obscureText: true,
+              decoration: InputDecoration(
+                hintText: l10n.passwordOptional,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -43,13 +57,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           FilledButton(
             onPressed: () async {
-              final input = controller.text.trim();
+              final input = idController.text.trim();
               if (input.isEmpty) return;
               Navigator.of(ctx).pop();
-              final ok = input.length <= 12 &&
-                      RegExp(r'^[A-Za-z0-9]+$').hasMatch(input)
-                  ? await state.claimByCode(input)
-                  : await state.restoreUserId(input);
+              final pw = pwController.text.trim();
+              final ok = await state.login(
+                input,
+                pw.isNotEmpty ? pw : null,
+              );
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -103,8 +118,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final profile = state.profile;
         final access = state.accessState;
 
-        String _linked(bool v) =>
-            v ? (l10n.isEn ? 'linked' : 'привязан') : (l10n.isEn ? 'not linked' : 'не привязан');
         String _notSet() => l10n.isEn ? 'not set' : 'не выбрана';
         String _notLimited() => l10n.isEn ? 'unlimited' : 'не ограничен';
         String _allowed(bool v) =>
@@ -140,7 +153,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       title: Text(l10n.profileSection),
                       subtitle: Text(
                         '${l10n.platformLabel}: ${profile.preferredPlatform.isEmpty ? _notSet() : profile.preferredPlatform}\n'
-                        '${l10n.telegramLabel}: ${_linked(profile.telegramLinked)}\n'
+                        '${l10n.usernameLabel}: ${state.username?.isNotEmpty == true ? state.username : _notSet()}\n'
                         '${l10n.statusLabel}: ${profile.accessStatus.isEmpty ? (l10n.isEn ? 'active' : 'активен') : profile.accessStatus}',
                       ),
                     ),

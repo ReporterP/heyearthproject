@@ -15,6 +15,7 @@ import 'pages/settings_page.dart';
 import 'pages/ssh_keys_page.dart';
 import 'pages/subscriptions_page.dart';
 import 'pages/tenants_page.dart';
+import 'pages/traffic_masking_page.dart';
 import 'pages/users_page.dart';
 import 'session_store.dart';
 
@@ -31,6 +32,7 @@ enum AdminSection {
   promocodes,
   payments,
   servers,
+  trafficMasking,
   sshKeys,
   releases,
   admins,
@@ -313,6 +315,9 @@ class _AdminShellState extends State<AdminShell> {
       if (_can('servers.read'))
         _SectionItem(
             AdminSection.servers, l10n.navServers, Icons.dns_outlined),
+      if (_can('traffic_masking.read'))
+        _SectionItem(AdminSection.trafficMasking, l10n.navTrafficMasking,
+            Icons.vpn_lock_outlined),
       if (!_isTenantAdmin && _can('servers.read'))
         _SectionItem(
             AdminSection.sshKeys, l10n.navSshKeys, Icons.key_outlined),
@@ -347,6 +352,8 @@ class _AdminShellState extends State<AdminShell> {
         return PaymentsPage(token: token);
       case AdminSection.servers:
         return ServersPage(token: token);
+      case AdminSection.trafficMasking:
+        return TrafficMaskingPage(token: token);
       case AdminSection.sshKeys:
         return SshKeysPage(token: token);
       case AdminSection.releases:

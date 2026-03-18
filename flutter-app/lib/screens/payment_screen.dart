@@ -11,12 +11,14 @@ class PaymentScreen extends StatefulWidget {
     required this.apiBase,
     required this.onPaymentComplete,
     this.onApplyPromocode,
+    this.jwtToken,
   });
 
   final String userId;
   final String apiBase;
   final VoidCallback onPaymentComplete;
   final Future<bool> Function(String code)? onApplyPromocode;
+  final String? jwtToken;
 
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
@@ -41,7 +43,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
       _error = null;
     });
     try {
-      final api = PaymentApi(widget.apiBase);
+      final api = PaymentApi(widget.apiBase, jwtToken: widget.jwtToken);
       final result = await api.createPayment(
         userId: widget.userId,
         plan: _selectedPlan,
@@ -75,7 +77,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           return;
         }
       }
-      final api = PaymentApi(widget.apiBase);
+      final api = PaymentApi(widget.apiBase, jwtToken: widget.jwtToken);
       await api.redeemCode(userId: widget.userId, code: code);
       if (mounted) widget.onPaymentComplete();
     } catch (e) {

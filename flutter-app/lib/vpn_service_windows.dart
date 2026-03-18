@@ -11,24 +11,7 @@ import 'package:heyearth_vpn/vpn_service_interface.dart';
 /// Порт SOCKS по умолчанию в конфиге Xray (из flutter_v2ray_plus url.dart).
 const int _defaultSocksPort = 10807;
 
-/// Домены для режима «только для выбранных» (как на Android).
-const List<String> _selectedOnlyDomains = [
-  'youtube.com',
-  'googlevideo.com',
-  'ytimg.com',
-  'google.com',
-  'instagram.com',
-  'cdninstagram.com',
-  'fbcdn.net',
-  'linkedin.com',
-  'spotify.com',
-  'openai.com',
-  'telegram.org',
-  't.me',
-  'telegram.me',
-];
-
-/// Реализация VPN на Windows: системный прокси + локальный Xray (тот же конфиг, что и на Android).
+/// Реализация VPN на Windows: системный прокси + локальный Xray.
 class VpnServiceWindows implements VpnService {
   Process? _process;
   File? _configFile;
@@ -60,34 +43,6 @@ class VpnServiceWindows implements VpnService {
     return null;
   }
 
-  void _enableSniffingOnInbounds(Map<String, dynamic> map) {
-    final inbounds = map['inbounds'];
-    if (inbounds is! List) return;
-    for (final e in inbounds) {
-      if (e is Map<String, dynamic>) {
-        e['sniffing'] = {
-          'enabled': true,
-          'destOverride': ['http', 'tls'],
-          'metadataOnly': false,
-        };
-      }
-    }
-  }
-
-  String _configWithSelectedOnlyRouting(String configJson) {
-    final map = jsonDecode(configJson) as Map<String, dynamic>;
-    _enableSniffingOnInbounds(map);
-    final routing = map['routing'] as Map<String, dynamic>? ?? {};
-    final domainList = _selectedOnlyDomains.map((d) => 'domain:$d').toList();
-    routing['domainStrategy'] = 'IPIfNonMatch';
-    routing['rules'] = [
-      {'type': 'field', 'domain': domainList, 'outboundTag': 'proxy'},
-      {'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'direct'},
-    ];
-    map['routing'] = routing;
-    return const JsonEncoder().convert(map);
-  }
-
   int _socksPortFromConfig(String configJson) {
     try {
       final map = jsonDecode(configJson) as Map<String, dynamic>;
@@ -104,10 +59,9 @@ class VpnServiceWindows implements VpnService {
   }
 
   @override
-  Future<void> connect(String ssUri,
-      {bool proxyOnly = false, bool selectedOnly = false}) async {
+  Future<void> connect(String uri, {bool proxyOnly = false}) async {
     if (!isSupported) return;
-    if (ssUri.trim().isEmpty) return;
+    if (uri.trim().isEmpty) return;
 
     final xrayPath = await _findXrayPath();
     if (xrayPath == null) {
@@ -118,11 +72,8 @@ class VpnServiceWindows implements VpnService {
       );
     }
 
-    final parsed = FlutterV2ray.parseFromURL(ssUri.trim());
-    String config = parsed.getFullConfiguration();
-    if (selectedOnly) {
-      config = _configWithSelectedOnlyRouting(config);
-    }
+    final parsed = FlutterV2ray.parseFromURL(uri.trim());
+    final config = parsed.getFullConfiguration();
     final socksPort = _socksPortFromConfig(config);
 
     final tempDir = await getTemporaryDirectory();

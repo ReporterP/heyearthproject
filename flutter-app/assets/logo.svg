@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="leafGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4ADE80"/>
+      <stop offset="100%" stop-color="#16A34A"/>
+    </linearGradient>
+    <linearGradient id="trunkGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#78350F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Tree trunk -->
+  <rect x="236" y="320" width="40" height="120" rx="6" fill="url(#trunkGrad)"/>
+
+  <!-- Tree roots (small) -->
+  <path d="M236 430 Q220 445 200 450" stroke="#78350F" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M276 430 Q292 445 312 450" stroke="#78350F" stroke-width="8" stroke-linecap="round" fill="none"/>
+
+  <!-- Tree canopy - three overlapping circles forming a stylized crown -->
+  <!-- Bottom left leaf cluster -->
+  <ellipse cx="200" cy="260" rx="90" ry="85" fill="url(#leafGrad)" opacity="0.9"/>
+  <!-- Bottom right leaf cluster -->
+  <ellipse cx="312" cy="260" rx="90" ry="85" fill="url(#leafGrad)" opacity="0.9"/>
+  <!-- Top center leaf cluster -->
+  <ellipse cx="256" cy="180" rx="100" ry="95" fill="url(#leafGrad)"/>
+
+  <!-- Subtle branch lines inside canopy -->
+  <path d="M256 320 L256 180" stroke="#15803D" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+  <path d="M256 260 L200 220" stroke="#15803D" stroke-width="3" stroke-linecap="round" opacity="0.3"/>
+  <path d="M256 260 L312 220" stroke="#15803D" stroke-width="3" stroke-linecap="round" opacity="0.3"/>
+  <path d="M256 220 L210 170" stroke="#15803D" stroke-width="2.5" stroke-linecap="round" opacity="0.25"/>
+  <path d="M256 220 L302 170" stroke="#15803D" stroke-width="2.5" stroke-linecap="round" opacity="0.25"/>
+
+  <!-- Small leaf accents -->
+  <circle cx="180" cy="210" r="6" fill="#86EFAC" opacity="0.6"/>
+  <circle cx="330" cy="210" r="6" fill="#86EFAC" opacity="0.6"/>
+  <circle cx="256" cy="120" r="7" fill="#86EFAC" opacity="0.5"/>
+  <circle cx="220" cy="150" r="5" fill="#86EFAC" opacity="0.4"/>
+  <circle cx="290" cy="150" r="5" fill="#86EFAC" opacity="0.4"/>
+</svg>

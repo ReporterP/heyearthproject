@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Simplified tree logo for favicon -->
+  <rect x="28" y="42" width="8" height="16" rx="2" fill="#78350F"/>
+  <ellipse cx="24" cy="30" rx="14" ry="13" fill="#16A34A" opacity="0.9"/>
+  <ellipse cx="40" cy="30" rx="14" ry="13" fill="#16A34A" opacity="0.9"/>
+  <ellipse cx="32" cy="20" rx="16" ry="15" fill="#22C55E"/>
+</svg>

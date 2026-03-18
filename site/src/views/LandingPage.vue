@@ -1,16 +1,16 @@
 <script setup>
-const botUrl = import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/heyearth_bot'
+import { RouterLink } from 'vue-router'
 
 const features = [
   {
-    icon: '⚡',
-    title: 'Скорость',
-    desc: 'Серверы на быстрых каналах. Стриминг, игры и работа без задержек.',
+    icon: '🌿',
+    title: 'Эко-маршрутизация',
+    desc: 'Оптимизированные маршруты трафика снижают энергопотребление и ускоряют доступ к ресурсам.',
   },
   {
     icon: '📱',
     title: 'Все устройства',
-    desc: 'Android, Windows, iOS, macOS, Linux. Один аккаунт — все платформы.',
+    desc: 'Android, Windows, iOS, macOS, Linux. Один аккаунт — все платформы. Устойчивый доступ повсюду.',
   },
 ]
 
@@ -19,14 +19,14 @@ const plans = [
     name: 'Стандарт',
     price: '200',
     period: 'мес',
-    features: ['Без ограничений по трафику', 'Все устройства'],
+    features: ['Эко-маршрутизация трафика', 'Без ограничений по объёму', 'Все устройства'],
     highlighted: false,
   },
   {
     name: 'Премиум',
     price: '250',
     period: 'мес',
-    features: ['Всё из «Стандарт»', 'Приоритетная поддержка'],
+    features: ['Всё из Стандарт', 'Приоритетная поддержка', 'Максимальная оптимизация маршрутов'],
     highlighted: true,
   },
 ]
@@ -37,20 +37,19 @@ const plans = [
     <div class="absolute inset-0 bg-gradient-to-br from-brand/10 via-transparent to-accent/5 pointer-events-none" />
     <div class="relative max-w-4xl mx-auto px-6 text-center">
       <h1 class="text-5xl md:text-6xl font-extrabold tracking-tight leading-tight">
-        Экологичный. <br class="hidden md:block" />
-        <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-light to-accent">без границ</span>
+        Уменьшите свой <br class="hidden md:block" />
+        <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-light to-accent">цифровой углеродный след</span>
       </h1>
       <p class="mt-6 text-lg text-text-secondary max-w-2xl mx-auto">
-        HeYearth. Один аккаунт на все устройства. Работает там, где не работают другие.
+        HeYearth — устойчивый интернет-доступ с эко-маршрутизацией. Оптимизируйте трафик, снижайте энергопотребление и пользуйтесь быстрым доступом к ресурсам на всех устройствах.
       </p>
       <div class="mt-10 flex flex-wrap justify-center gap-4">
-        <a
-          :href="botUrl"
-          target="_blank"
+        <RouterLink
+          to="/register"
           class="px-8 py-3 rounded-xl bg-brand hover:bg-brand-dark text-white font-semibold transition shadow-lg shadow-brand/25"
         >
-          Начать в Telegram
-        </a>
+          Начать
+        </RouterLink>
         <a
           href="#plans"
           class="px-8 py-3 rounded-xl border border-white/10 hover:border-white/20 text-text-secondary hover:text-text-primary transition"
@@ -96,7 +95,7 @@ const plans = [
           <h3 class="text-xl font-bold mb-1">{{ p.name }}</h3>
           <div class="flex items-baseline gap-1 mb-6">
             <span class="text-4xl font-extrabold">{{ p.price }}</span>
-            <span class="text-text-secondary">₽ / {{ p.period }}</span>
+            <span class="text-text-secondary">&thinsp;&#8381; / {{ p.period }}</span>
           </div>
           <ul class="space-y-3 mb-8">
             <li v-for="feat in p.features" :key="feat" class="flex items-start gap-2 text-sm text-text-secondary">
@@ -106,16 +105,15 @@ const plans = [
               <span>{{ feat }}</span>
             </li>
           </ul>
-          <a
-            :href="botUrl"
-            target="_blank"
+          <RouterLink
+            to="/register"
             class="block text-center px-6 py-3 rounded-xl font-semibold transition"
             :class="p.highlighted
               ? 'bg-brand hover:bg-brand-dark text-white'
               : 'border border-white/10 hover:border-white/20 text-text-primary'"
           >
             Выбрать
-          </a>
+          </RouterLink>
         </div>
       </div>
     </div>
@@ -125,7 +123,7 @@ const plans = [
     <div class="max-w-3xl mx-auto px-6 text-center">
       <h2 class="text-3xl font-bold mb-4">Для бизнеса</h2>
       <p class="text-text-secondary mb-8">
-        Своя админ-панель, управление сотрудниками, свои или наши серверы. Гибкие тарифы по потреблению.
+        Корпоративная эко-оптимизация трафика. Своя панель управления, контроль сотрудников, гибкие тарифы.
       </p>
       <router-link
         to="/business"

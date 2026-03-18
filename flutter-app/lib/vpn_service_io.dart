@@ -1,26 +1,8 @@
-import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:heyearth_vpn/vpn_service_interface.dart';
-
-/// Домены для режима «VPN только для выбранных» (через туннель; остальное — direct).
-const List<String> _selectedOnlyDomains = [
-  'youtube.com',
-  'googlevideo.com',
-  'ytimg.com',
-  'google.com',
-  'instagram.com',
-  'cdninstagram.com',
-  'fbcdn.net',
-  'linkedin.com',
-  'spotify.com',
-  'openai.com',
-  'telegram.org',
-  't.me',
-  'telegram.me',
-];
 
 /// Реализация VPN на Android/iOS через flutter_v2ray_plus.
 class VpnServiceIo implements VpnService {
@@ -50,48 +32,16 @@ class VpnServiceIo implements VpnService {
     }
   }
 
-  void _enableSniffingOnInbounds(Map<String, dynamic> map) {
-    final inbounds = map['inbounds'];
-    if (inbounds is! List) return;
-    for (final e in inbounds) {
-      if (e is Map<String, dynamic>) {
-        e['sniffing'] = {
-          'enabled': true,
-          'destOverride': ['http', 'tls'],
-          'metadataOnly': false,
-        };
-      }
-    }
-  }
-
-  String _configWithSelectedOnlyRouting(String configJson) {
-    final map = jsonDecode(configJson) as Map<String, dynamic>;
-    _enableSniffingOnInbounds(map);
-    final routing = map['routing'] as Map<String, dynamic>? ?? {};
-    final domainList = _selectedOnlyDomains.map((d) => 'domain:$d').toList();
-    routing['domainStrategy'] = 'IPIfNonMatch';
-    routing['rules'] = [
-      {'type': 'field', 'domain': domainList, 'outboundTag': 'proxy'},
-      {'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'direct'},
-    ];
-    map['routing'] = routing;
-    return const JsonEncoder().convert(map);
-  }
-
   @override
-  Future<void> connect(String ssUri,
-      {bool proxyOnly = false, bool selectedOnly = false}) async {
+  Future<void> connect(String uri, {bool proxyOnly = false}) async {
     if (!isSupported) return;
-    if (ssUri.trim().isEmpty) return;
+    if (uri.trim().isEmpty) return;
     final v2 = _v2ray ?? FlutterV2ray();
     if (!await _ensureInitialized()) {
       return;
     }
-    final parsed = FlutterV2ray.parseFromURL(ssUri.trim());
-    String config = parsed.getFullConfiguration();
-    if (selectedOnly) {
-      config = _configWithSelectedOnlyRouting(config);
-    }
+    final parsed = FlutterV2ray.parseFromURL(uri.trim());
+    final config = parsed.getFullConfiguration();
     final allowed = await v2.requestPermission();
     if (!allowed) return;
     await v2.startVless(

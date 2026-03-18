@@ -153,6 +153,41 @@ class _ServersPageState extends State<ServersPage> {
     );
   }
 
+  Widget _tunnelStatusBadge(String tunnelStatus) {
+    Color color;
+    switch (tunnelStatus) {
+      case 'healthy':
+        color = Colors.green;
+      case 'configuring':
+        color = Colors.orange;
+      case 'unknown':
+      default:
+        color = Colors.red;
+    }
+    final l10n = AdminL10n.of(context);
+    final label = switch (tunnelStatus) {
+      'healthy' => l10n.tunnelStatusHealthy,
+      'configuring' => l10n.tunnelStatusConfiguring,
+      _ => l10n.tunnelStatusUnknown,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withAlpha(120)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.vpn_lock, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _editServer({AdminServer? existing}) async {
     AdminServer? detail = existing;
     if (existing != null) {
@@ -173,6 +208,7 @@ class _ServersPageState extends State<ServersPage> {
     final statusController = TextEditingController(text: detail?.status ?? 'provisioning');
     final selectedGroupIds = <int>{...(detail?.groupIds ?? const <int>[])};
     int? selectedSshKeyId = detail?.sshKeyId;
+    bool isExitNode = detail?.isExitNode ?? false;
 
     final payload = await showDialog<ServerPayload>(
       context: context,
@@ -212,6 +248,13 @@ class _ServersPageState extends State<ServersPage> {
                   const SizedBox(height: 12),
                   TextField(controller: statusController, decoration: const InputDecoration(labelText: 'Status')),
                   const SizedBox(height: 12),
+                  SwitchListTile(
+                    value: isExitNode,
+                    onChanged: (v) => setStateDialog(() => isExitNode = v),
+                    title: Text(AdminL10n.of(context).serverExitNode),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -242,6 +285,7 @@ class _ServersPageState extends State<ServersPage> {
                 countryCode: countryController.text.trim(),
                 status: statusController.text.trim(),
                 groupIds: selectedGroupIds.toList()..sort(),
+                isExitNode: isExitNode,
               )),
               child: Text(AdminL10n.of(context).save),
             ),
@@ -378,7 +422,23 @@ class _ServersPageState extends State<ServersPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(children: [
-                            Expanded(child: Text(item.name, style: Theme.of(context).textTheme.titleLarge)),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Text(item.name, style: Theme.of(context).textTheme.titleLarge),
+                                  const SizedBox(width: 8),
+                                  _tunnelStatusBadge(item.tunnelStatus),
+                                  if (item.isExitNode) ...[
+                                    const SizedBox(width: 8),
+                                    Chip(
+                                      label: Text(AdminL10n.of(context).serverExitNode, style: const TextStyle(fontSize: 11)),
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
                             _statusBadge(item.status),
                           ]),
                           const SizedBox(height: 8),
@@ -411,6 +471,7 @@ class _ServersPageState extends State<ServersPage> {
                             OutlinedButton.icon(icon: const Icon(Icons.sync, size: 16), onPressed: () => _runAction(item, 'sync_metrics'), label: Text(l10n.serverSyncMetrics)),
                             OutlinedButton.icon(icon: const Icon(Icons.restart_alt, size: 16), onPressed: () => _runAction(item, 'restart_agent'), label: Text(l10n.serverRestartAgent)),
                             OutlinedButton.icon(icon: const Icon(Icons.build, size: 16), onPressed: () => _runAction(item, 'reprovision'), label: Text(l10n.serverReprovision)),
+                            OutlinedButton.icon(icon: const Icon(Icons.vpn_lock, size: 16), onPressed: () => _runAction(item, 'sync_tunnel'), label: Text(l10n.serverSyncTunnel)),
                             OutlinedButton.icon(icon: const Icon(Icons.description, size: 16), onPressed: () => _showLogsDialog(item), label: Text(l10n.serverLogs)),
                             OutlinedButton.icon(icon: const Icon(Icons.folder_open, size: 16), onPressed: () => _showFilesDialog(item), label: Text(l10n.serverFiles)),
                             OutlinedButton.icon(

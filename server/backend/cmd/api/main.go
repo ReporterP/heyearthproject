@@ -7,11 +7,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"html"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,10 +31,10 @@ import (
 var openAPIFS embed.FS
 
 type server struct {
-	heyearth_v1.UnimplementedConfigApiServer
-	heyearth_v1.UnimplementedBotApiServer
 	heyearth_v1.UnimplementedClientApiServer
 }
+
+// ─────────────────────── TLS / Node Agent ───────────────────────
 
 func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
 	certFile := strings.TrimSpace(os.Getenv("TLS_CLIENT_CERT_FILE"))
@@ -91,13 +89,7 @@ func connectToNodeAgent(ctx context.Context, ip string) (pbnode.NodeAgentClient,
 	return pbnode.NewNodeAgentClient(conn), conn, nil
 }
 
-func (s *server) GetConfig(ctx context.Context, req *heyearth_v1.GetConfigRequest) (*heyearth_v1.GetConfigResponse, error) {
-	userID := strings.TrimSpace(req.GetUserId())
-	if userID == "" || len(userID) > 256 {
-		return nil, status.Error(codes.InvalidArgument, "user_id required (max 256 chars)")
-	}
-	return s.issueNodeConfig(ctx, userID)
-}
+// ─────────────────────── gRPC Implementations ───────────────────────
 
 func (s *server) Health(context.Context, *heyearth_v1.HealthRequest) (*heyearth_v1.HealthResponse, error) {
 	return &heyearth_v1.HealthResponse{Status: "ok"}, nil
@@ -114,26 +106,6 @@ func publicBaseURL() string {
 		return "https://" + strings.TrimRight(v, "/")
 	}
 	return ""
-}
-
-// handleGoClaimRedirect serves a minimal HTML page that opens heyearth://claim?token=XXX.
-// Telegram opens URL buttons in a browser; many mobile browsers don't follow 302 to custom schemes, so we use a page with meta refresh + clickable link.
-func handleGoClaimRedirect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
-		return
-	}
-	dest := "heyearth://claim?token=" + url.QueryEscape(token)
-	destEsc := html.EscapeString(dest)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=%s"></head><body><p>Открытие приложения…</p><p><a href="%s">Нажмите, если приложение не открылось</a></p></body></html>`,
-		destEsc, destEsc)
 }
 
 func absoluteReleaseURL(publicPath string) string {
@@ -230,21 +202,7 @@ func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromo
 	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: "Promocode applied successfully"}, nil
 }
 
-func (s *server) GetProfile(ctx context.Context, req *heyearth_v1.GetProfileRequest) (*heyearth_v1.GetProfileResponse, error) {
-	userID := strings.TrimSpace(req.GetUserId())
-	if userID == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
-	}
-
-	profile, err := biz.GetUserProfile(userID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get user profile: %v", err)
-	}
-	return &heyearth_v1.GetProfileResponse{
-		CurrentPlan: profile.CurrentPlan,
-		ValidUntil:  profile.ValidUntil,
-	}, nil
-}
+// ─────────────────────── HTTP Helpers ───────────────────────
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -252,11 +210,284 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func setCORS(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+}
+
+func grpcCodeToHTTP(code codes.Code) int {
+	switch code {
+	case codes.InvalidArgument:
+		return http.StatusBadRequest
+	case codes.Unauthenticated:
+		return http.StatusUnauthorized
+	case codes.PermissionDenied:
+		return http.StatusForbidden
+	case codes.NotFound:
+		return http.StatusNotFound
+	case codes.Unavailable:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// ─────────────────────── User Portal REST Handlers ───────────────────────
+
+func handleUserRegister(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Platform    string `json:"platform"`
+		DeviceID    string `json:"device_id"`
+		DeviceLabel string `json:"device_label"`
+		Locale      string `json:"locale"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
+
+	device := biz.DeviceRegistration{
+		DeviceID:    req.DeviceID,
+		Platform:    req.Platform,
+		DeviceLabel: req.DeviceLabel,
+		Locale:      req.Locale,
+		LinkedVia:   "register",
+	}
+
+	user, err := biz.RegisterAnonymousUser(device)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
+		return
+	}
+
+	profile, _ := biz.GetUserProfile(user.UserID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": user.UserID,
+		"token":   token,
+		"profile": profile,
+	})
+}
+
+func handleUserLogin(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IDOrUsername string `json:"id_or_username"`
+		Password    string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if req.IDOrUsername == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id_or_username required"})
+		return
+	}
+
+	user, err := biz.LoginByIDOrUsername(req.IDOrUsername, req.Password)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
+		return
+	}
+
+	profile, _ := biz.GetUserProfile(user.UserID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": user.UserID,
+		"token":   token,
+		"profile": profile,
+	})
+}
+
+// extractUserFromToken reads JWT from Authorization header and returns user_id.
+func extractUserFromToken(r *http.Request) (string, error) {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return "", fmt.Errorf("missing Authorization header")
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	claims, err := biz.ValidateUserToken(token)
+	if err != nil {
+		return "", err
+	}
+	return claims.UserID, nil
+}
+
+func handleUserProfile(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		profile, err := biz.GetUserProfile(userID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
+
+	case http.MethodPatch:
+		var req struct {
+			Username        string `json:"username"`
+			NewPassword     string `json:"new_password"`
+			CurrentPassword string `json:"current_password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+			return
+		}
+		if req.Username != "" {
+			if err := biz.SetUsername(userID, req.Username); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		if req.NewPassword != "" {
+			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		profile, _ := biz.GetUserProfile(userID)
+		writeJSON(w, http.StatusOK, profile)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleUserSubscription(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	items, err := biz.ListUserSubscriptions(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func handleUserPayments(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	items, err := biz.ListUserPayments(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func handleUserConnections(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	platform := r.URL.Query().Get("platform")
+	access, err := biz.GetUserAccessState(userID, platform)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	options := buildHubConnectionOptions()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":                 userID,
+		"can_connect":             access.CanConnect,
+		"is_premium":              access.IsPremium,
+		"traffic_masking_available": access.TrafficMaskingAvailable,
+		"connection_options":      options,
+	})
+}
+
+func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// No auth required for downloads
+	activeReleases, err := biz.GetAllActiveAppReleases()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	downloads := make(map[string]map[string]string)
+	for platform, release := range activeReleases {
+		downloads[platform] = map[string]string{
+			"version":       release.Version,
+			"url":           absoluteReleaseURL(release.PublicPath),
+			"release_notes": release.ReleaseNotes,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"downloads": downloads})
+}
+
+// ─────────────────────── Legacy HTTP Gateway ───────────────────────
+
 func httpGateway(srv *server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		setCORS(w)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -268,30 +499,7 @@ func httpGateway(srv *server) http.HandlerFunc {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			resp, err := srv.Health(r.Context(), &heyearth_v1.HealthRequest{})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]string{"status": resp.GetStatus()})
-		case "/api/v1/config":
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			var req struct {
-				UserID string `json:"user_id"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			resp, err := srv.GetConfig(r.Context(), &heyearth_v1.GetConfigRequest{UserId: req.UserID})
-			if err != nil {
-				http.Error(w, status.Convert(err).Message(), grpcCodeToHTTP(status.Code(err)))
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]string{"user_id": resp.GetUserId(), "ss_uri": resp.GetSsUri()})
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		case "/api/v1/app/update":
 			if r.Method != http.MethodGet {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -321,22 +529,7 @@ func httpGateway(srv *server) http.HandlerFunc {
 	}
 }
 
-func grpcCodeToHTTP(code codes.Code) int {
-	switch code {
-	case codes.InvalidArgument:
-		return http.StatusBadRequest
-	case codes.Unauthenticated:
-		return http.StatusUnauthorized
-	case codes.PermissionDenied:
-		return http.StatusForbidden
-	case codes.NotFound:
-		return http.StatusNotFound
-	case codes.Unavailable:
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
-	}
-}
+// ─────────────────────── Main ───────────────────────
 
 func main() {
 	if err := db.InitDB(); err != nil {
@@ -345,15 +538,6 @@ func main() {
 	defer db.CloseDB()
 	if err := admin.ValidateConfig(); err != nil {
 		log.Fatalf("invalid admin configuration: %v", err)
-	}
-	if importResult, err := biz.ImportLegacyBotState(); err != nil {
-		log.Printf("legacy bot import skipped: %v", err)
-	} else if importResult != nil && (importResult.ImportedMappings > 0 || importResult.ImportedUsers > 0) {
-		log.Printf(
-			"legacy bot import completed: mappings=%d users=%d",
-			importResult.ImportedMappings,
-			importResult.ImportedUsers,
-		)
 	}
 
 	grpcAddr := "127.0.0.1:50051"
@@ -366,8 +550,6 @@ func main() {
 
 	srv := &server{}
 	grpcServer := grpc.NewServer()
-	heyearth_v1.RegisterConfigApiServer(grpcServer, srv)
-	heyearth_v1.RegisterBotApiServer(grpcServer, srv)
 	heyearth_v1.RegisterClientApiServer(grpcServer, srv)
 	reflection.Register(grpcServer)
 	go func() {
@@ -375,21 +557,33 @@ func main() {
 		_ = grpcServer.Serve(lis)
 	}()
 
+	// Robots.txt
 	http.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
-	http.HandleFunc("/go/claim", handleGoClaimRedirect)
+
+	// Legacy HTTP gateway
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
-	http.HandleFunc("/api/v1/config", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
 
+	// User portal REST endpoints (new)
+	http.HandleFunc("/api/v1/auth/register", handleUserRegister)
+	http.HandleFunc("/api/v1/auth/login", handleUserLogin)
+	http.HandleFunc("/api/v1/user/profile", handleUserProfile)
+	http.HandleFunc("/api/v1/user/subscription", handleUserSubscription)
+	http.HandleFunc("/api/v1/user/payments", handleUserPayments)
+	http.HandleFunc("/api/v1/user/connections", handleUserConnections)
+	http.HandleFunc("/api/v1/user/downloads", handleUserDownloads)
+
+	// Payments
 	http.HandleFunc("/api/v1/payment/create", handleCreatePayment)
 	http.HandleFunc("/api/v1/payment/check-access", handleCheckAccess)
 	http.HandleFunc("/api/v1/payment/redeem-code", handleRedeemCode)
 	http.HandleFunc("/api/v1/payment/tenant-topup", handleTenantTopup)
 	http.HandleFunc("/api/webhooks/yookassa", handleYookassaWebhook)
 
+	// Admin panel
 	admin.RegisterRoutes()
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)

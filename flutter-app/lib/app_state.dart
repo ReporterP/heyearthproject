@@ -11,14 +11,13 @@ import 'generated/heyearth/v1/config.pb.dart' as pb;
 import 'grpc_client.dart';
 import 'l10n.dart';
 import 'update_service.dart';
+import 'user_api.dart';
 import 'vpn_service_interface.dart';
 
 const _keyUserId = 'heyearth_user_id';
-const _keySsUri = 'heyearth_ss_uri';
-const _keyVlessUri = 'heyearth_vless_uri';
+const _keyJwtToken = 'jwt_token';
 const _keyVpnOn = 'heyearth_vpn_on';
 const _keyApiBase = 'heyearth_api_base';
-const _keySelectedOnly = 'heyearth_selected_only';
 const _keyThemeMode = 'heyearth_theme_mode';
 const _keyLocale = 'heyearth_locale';
 const _keyDeviceId = 'heyearth_device_id';
@@ -36,17 +35,16 @@ class AppState extends ChangeNotifier {
   final ConnectionManager _connMgr = ConnectionManager();
 
   String? _userId;
-  String? _ssUri;
-  String? _vlessUri;
+  String? _jwtToken;
+  String? _username;
+  bool _hasPassword = false;
   List<pb.ConnectionOption> _connectionOptions = const [];
   pb.ConnectionOption? _activeOption;
   Timer? _healthTimer;
   int _failoverAttempts = 0;
-  bool _allowManualChoice = false;
   String _deviceId = '';
   bool _vpnOn = false;
   bool _vpnConnecting = false;
-  bool _selectedOnlyMode = false;
   bool _loading = true;
   bool _accountLoading = false;
   String? _error;
@@ -61,21 +59,21 @@ class AppState extends ChangeNotifier {
   List<String> _savedAccounts = const [];
 
   String? get userId => _userId;
+  String? get jwtToken => _jwtToken;
+  String? get username => _username;
+  bool get hasPassword => _hasPassword;
   List<String> get savedAccounts => _savedAccounts;
-  String? get ssUri => _ssUri;
-  String? get vlessUri => _vlessUri;
-  String? get preferredUri => _activeOption?.uri ?? _vlessUri ?? _ssUri;
+  String? get preferredUri => _activeOption?.uri;
   List<pb.ConnectionOption> get connectionOptions => _connectionOptions;
   pb.ConnectionOption? get activeOption => _activeOption;
-  bool get allowManualChoice => _allowManualChoice;
   NetworkType get currentNetwork => _connMgr.currentNetwork;
   String get deviceId => _deviceId;
   bool get vpnOn => _vpnOn;
   bool get vpnConnecting => _vpnConnecting;
-  bool get selectedOnlyMode => _selectedOnlyMode;
   bool get loading => _loading;
   bool get accountLoading => _accountLoading;
   bool get hasUserId => _userId != null && _userId!.trim().isNotEmpty;
+  bool get hasJwt => _jwtToken != null && _jwtToken!.trim().isNotEmpty;
   String? get error => _error;
   String get apiBase => _apiBase;
   bool get vpnSupported => _vpn.isSupported;
@@ -86,11 +84,28 @@ class AppState extends ChangeNotifier {
   List<pb.SubscriptionItem> get subscriptions => _subscriptions;
   List<pb.PaymentItem> get payments => _payments;
   bool get isBlocked => _accessState?.isBlocked ?? _profile?.isBlocked ?? false;
-  bool get legacyHappFallback =>
-      _accessState?.legacyHappFallback ?? _profile?.legacyHappFallback ?? false;
+  // These fields will be available after proto regeneration.
+  // For now, access them safely via try-catch until the generated code is updated.
+  bool get isPremium {
+    try {
+      return (_accessState as dynamic).isPremium as bool? ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool get trafficMaskingAvailable {
+    try {
+      return (_accessState as dynamic).trafficMaskingAvailable as bool? ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
   bool get canConnect => _accessState?.canConnect ?? false;
 
   Future<SharedPreferences> _prefs() => SharedPreferences.getInstance();
+
+  UserApi get _userApi => UserApi(_apiBase);
 
   Future<void> load() async {
     _loading = true;
@@ -100,10 +115,8 @@ class AppState extends ChangeNotifier {
       _connMgr.onNetworkChanged = _onNetworkChanged;
       final prefs = await _prefs();
       _userId = prefs.getString(_keyUserId)?.trim();
-      _ssUri = prefs.getString(_keySsUri)?.trim();
-      _vlessUri = prefs.getString(_keyVlessUri)?.trim();
+      _jwtToken = prefs.getString(_keyJwtToken)?.trim();
       _vpnOn = false;
-      _selectedOnlyMode = prefs.getBool(_keySelectedOnly) ?? false;
       final savedApi = prefs.getString(_keyApiBase);
       if (savedApi != null && savedApi.isNotEmpty) {
         _apiBase = savedApi.replaceFirst(RegExp(r'/$'), '');
@@ -170,17 +183,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setSelectedOnlyMode(bool value) async {
-    _selectedOnlyMode = value;
-    final prefs = await _prefs();
-    await prefs.setBool(_keySelectedOnly, value);
-    if (_vpnOn) {
-      await setVpnOn(false);
-      await setVpnOn(true);
-    }
-    notifyListeners();
-  }
-
   Future<void> setThemeMode(ThemeMode mode) async {
     _themeMode = mode;
     final prefs = await _prefs();
@@ -205,24 +207,180 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Auth: register ────────────────────────────────────────────────────────
+
+  /// Register a new anonymous account via REST API.
+  Future<bool> register() async {
+    try {
+      _accountLoading = true;
+      _error = null;
+      notifyListeners();
+
+      final resp = await _userApi
+          .register(
+            platform: _currentPlatform(),
+            deviceId: _deviceId,
+          )
+          .timeout(const Duration(seconds: 15));
+
+      final newUserId = (resp['user_id'] as String?)?.trim() ?? '';
+      final token = (resp['token'] as String?)?.trim() ?? '';
+      if (newUserId.isEmpty || token.isEmpty) {
+        _error = _l10n.registerFailed;
+        return false;
+      }
+
+      if (_vpnOn) {
+        await setVpnOn(false);
+      }
+      _userId = newUserId;
+      _jwtToken = token;
+      final prefs = await _prefs();
+      await prefs.setString(_keyUserId, newUserId);
+      await prefs.setString(_keyJwtToken, token);
+      await _invalidateConnectionBundle();
+      await addAccount(newUserId);
+      await refreshAccountData(notify: false);
+      _error = null;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = _l10n.grpcErrorToMessage(e);
+      notifyListeners();
+      return false;
+    } finally {
+      _accountLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // ── Auth: login ───────────────────────────────────────────────────────────
+
+  /// Login by HeYearth ID or username, with optional password.
+  Future<bool> login(String idOrUsername, String? password) async {
+    final clean = idOrUsername.trim();
+    if (clean.isEmpty) {
+      return false;
+    }
+    try {
+      _accountLoading = true;
+      _error = null;
+      notifyListeners();
+
+      final resp = await _userApi
+          .login(
+            idOrUsername: clean,
+            password: password,
+          )
+          .timeout(const Duration(seconds: 15));
+
+      final newUserId = (resp['user_id'] as String?)?.trim() ?? '';
+      final token = (resp['token'] as String?)?.trim() ?? '';
+      if (newUserId.isEmpty) {
+        _error = _l10n.loginFailed;
+        return false;
+      }
+
+      if (_vpnOn) {
+        await setVpnOn(false);
+      }
+      _userId = newUserId;
+      _jwtToken = token.isNotEmpty ? token : _jwtToken;
+      final prefs = await _prefs();
+      await prefs.setString(_keyUserId, newUserId);
+      if (token.isNotEmpty) {
+        await prefs.setString(_keyJwtToken, token);
+      }
+      await _invalidateConnectionBundle();
+      await addAccount(newUserId);
+      await refreshAccountData(notify: false);
+      _error = null;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = _l10n.grpcErrorToMessage(e);
+      notifyListeners();
+      return false;
+    } finally {
+      _accountLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // ── Profile: set username ─────────────────────────────────────────────────
+
+  /// Set or change the username via REST API.
+  Future<bool> setUsername(String username) async {
+    final clean = username.trim();
+    if (clean.isEmpty || !hasJwt) {
+      return false;
+    }
+    try {
+      _error = null;
+      await _userApi
+          .updateProfile(token: _jwtToken!, username: clean)
+          .timeout(const Duration(seconds: 15));
+      _username = clean;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = _l10n.grpcErrorToMessage(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // ── Profile: set cloud password ───────────────────────────────────────────
+
+  /// Set or change the cloud password via REST API.
+  Future<bool> setCloudPassword(
+      String newPassword, String? currentPassword) async {
+    if (newPassword.trim().isEmpty || !hasJwt) {
+      return false;
+    }
+    try {
+      _error = null;
+      await _userApi
+          .updateProfile(
+            token: _jwtToken!,
+            newPassword: newPassword,
+            currentPassword: currentPassword,
+          )
+          .timeout(const Duration(seconds: 15));
+      _hasPassword = true;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = _l10n.grpcErrorToMessage(e);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // ── Sign out ──────────────────────────────────────────────────────────────
+
   Future<void> signOut() async {
     if (_vpnOn) {
       await setVpnOn(false);
     }
     final prefs = await _prefs();
     await prefs.remove(_keyUserId);
-    await prefs.remove(_keySsUri);
-    await prefs.remove(_keyVlessUri);
+    await prefs.remove(_keyJwtToken);
     _userId = null;
-    _ssUri = null;
-    _vlessUri = null;
+    _jwtToken = null;
+    _username = null;
+    _hasPassword = false;
     _profile = null;
     _accessState = null;
     _subscriptions = const [];
     _payments = const [];
+    _connectionOptions = const [];
+    _activeOption = null;
     _error = null;
     notifyListeners();
   }
+
+  // ── Multi-account management ──────────────────────────────────────────────
 
   Future<void> addAccount(String id) async {
     final clean = id.trim();
@@ -257,8 +415,11 @@ class AppState extends ChangeNotifier {
       await setVpnOn(false);
     }
     _userId = clean;
+    // JWT may not be available for a switched account; user must login again
+    _jwtToken = null;
     final prefs = await _prefs();
     await prefs.setString(_keyUserId, clean);
+    await prefs.remove(_keyJwtToken);
     await _invalidateConnectionBundle();
     final ok = await refreshAccountData(notify: false);
     if (!ok) {
@@ -271,6 +432,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Restore a user ID directly (used for backwards-compatible login by ID).
   Future<bool> restoreUserId(String id) async {
     final clean = id.trim();
     if (clean.isEmpty) {
@@ -289,70 +451,16 @@ class AppState extends ChangeNotifier {
     return ok;
   }
 
-  Future<bool> claimByCode(String code) async {
-    final clean = code.trim().toUpperCase();
-    if (clean.isEmpty) {
-      return false;
-    }
-    try {
-      final resp = await claimByCodeGrpc(
-        apiBase: _apiBase,
-        code: clean,
-        device: _deviceContext(linkedVia: 'claim_code'),
-      ).timeout(const Duration(seconds: 15));
-      if (resp == null || resp.profile.userId.trim().isEmpty) {
-        _error = _l10n.claimFailed;
-        notifyListeners();
-        return false;
-      }
-      return await _acceptClaim(resp);
-    } catch (e) {
-      _error = _l10n.grpcErrorToMessage(e);
-      notifyListeners();
-      return false;
-    }
-  }
-
-  Future<bool> claimByToken(String token) async {
-    final clean = token.trim();
-    if (clean.isEmpty) {
-      return false;
-    }
-    try {
-      final resp = await claimByTokenGrpc(
-        apiBase: _apiBase,
-        token: clean,
-        device: _deviceContext(linkedVia: 'claim_token'),
-      ).timeout(const Duration(seconds: 15));
-      if (resp == null || resp.profile.userId.trim().isEmpty) {
-        _error = _l10n.claimByTokenFailed;
-        notifyListeners();
-        return false;
-      }
-      return await _acceptClaim(resp);
-    } catch (e) {
-      _error = _l10n.grpcErrorToMessage(e);
-      notifyListeners();
-      return false;
-    }
-  }
+  // ── Deep link handling ────────────────────────────────────────────────────
 
   Future<void> handleIncomingUri(Uri uri) async {
-    final token = uri.queryParameters['token']?.trim() ?? '';
-    final code = uri.queryParameters['code']?.trim() ?? '';
     final userId = uri.queryParameters['user_id']?.trim() ?? '';
-    if (token.isNotEmpty) {
-      await claimByToken(token);
-      return;
-    }
-    if (code.isNotEmpty) {
-      await claimByCode(code);
-      return;
-    }
     if (userId.isNotEmpty) {
-      await restoreUserId(userId);
+      await login(userId, null);
     }
   }
+
+  // ── Account data refresh ──────────────────────────────────────────────────
 
   Future<bool> refreshAccountData({bool notify = true}) async {
     if (!hasUserId) {
@@ -384,12 +492,19 @@ class AppState extends ChangeNotifier {
 
       _profile = me;
       _accessState = access;
-      _allowManualChoice = access?.allowManualConnectionChoice ?? false;
+      // New proto fields — access safely until proto is regenerated.
+      try {
+        final u = (me as dynamic).username as String?;
+        if (u != null && u.isNotEmpty) _username = u;
+      } catch (_) {}
+      try {
+        _hasPassword = (me as dynamic).hasPassword as bool? ?? _hasPassword;
+      } catch (_) {}
       _subscriptions = subs?.items ?? const [];
       _payments = pays?.items ?? const [];
       _error = null;
 
-      if (isBlocked || legacyHappFallback || !canConnect) {
+      if (isBlocked || !canConnect) {
         await _invalidateConnectionBundle();
       }
       return true;
@@ -446,36 +561,14 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return false;
       }
-      if (resp.legacyHappFallback) {
-        final instr = resp.fallbackInstruction.trim();
-        _error = instr.isNotEmpty ? instr : _l10n.legacyHappFallback;
-        await _invalidateConnectionBundle();
-        notifyListeners();
-        return false;
-      }
-      final ssUri = resp.ssUri.trim();
-      final vlessUri = resp.vlessUri.trim();
       _connectionOptions = List.unmodifiable(resp.connectionOptions);
-      if (ssUri.isEmpty && vlessUri.isEmpty && _connectionOptions.isEmpty) {
+      if (_connectionOptions.isEmpty) {
         final statusMsg = resp.statusMessage.trim();
         _error = statusMsg.isNotEmpty ? statusMsg : _l10n.serverNoConfig;
         notifyListeners();
         return false;
       }
-      _ssUri = ssUri.isNotEmpty ? ssUri : null;
-      _vlessUri = vlessUri.isNotEmpty ? vlessUri : null;
       _activeOption = _connMgr.pickBest(_connectionOptions);
-      final prefs = await _prefs();
-      if (_ssUri != null) {
-        await prefs.setString(_keySsUri, _ssUri!);
-      } else {
-        await prefs.remove(_keySsUri);
-      }
-      if (_vlessUri != null) {
-        await prefs.setString(_keyVlessUri, _vlessUri!);
-      } else {
-        await prefs.remove(_keyVlessUri);
-      }
       _error = null;
       notifyListeners();
       return true;
@@ -538,12 +631,6 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      if (legacyHappFallback) {
-        _error = _l10n.legacyFallbackVpn;
-        _vpnConnecting = false;
-        notifyListeners();
-        return;
-      }
       if (!canConnect) {
         final reason = _accessState?.reason.trim() ?? '';
         _error = reason.isNotEmpty ? reason : _l10n.currentConnectionUnavailable;
@@ -559,7 +646,7 @@ class AppState extends ChangeNotifier {
           return;
         }
       }
-      await _vpn.connect(preferredUri!, selectedOnly: _selectedOnlyMode);
+      await _vpn.connect(preferredUri!);
       _vpnOn = true;
       _failoverAttempts = 0;
       _startHealthMonitor();
@@ -602,7 +689,7 @@ class AppState extends ChangeNotifier {
     _activeOption = next;
     try {
       await _vpn.disconnect();
-      await _vpn.connect(next.uri, selectedOnly: _selectedOnlyMode);
+      await _vpn.connect(next.uri);
     } catch (e) {
       debugPrint('Failover connect error: $e');
     }
@@ -622,7 +709,7 @@ class AppState extends ChangeNotifier {
     if (!_vpnOn || _activeOption == null) return;
     try {
       await _vpn.disconnect();
-      await _vpn.connect(_activeOption!.uri, selectedOnly: _selectedOnlyMode);
+      await _vpn.connect(_activeOption!.uri);
     } catch (e) {
       debugPrint('Reconnect on network change error: $e');
     }
@@ -630,7 +717,6 @@ class AppState extends ChangeNotifier {
   }
 
   void selectConnectionOption(pb.ConnectionOption option) {
-    if (!_allowManualChoice) return;
     _activeOption = option;
     if (_vpnOn) {
       _reconnectWithCurrentOption();
@@ -645,35 +731,9 @@ class AppState extends ChangeNotifier {
 
   L10n get _l10n => L10n(Locale(_locale));
 
-  Future<bool> _acceptClaim(pb.ClaimResponse response) async {
-    final userId = response.profile.userId.trim();
-    if (userId.isEmpty) {
-      return false;
-    }
-    if (_vpnOn) {
-      await setVpnOn(false);
-    }
-    _userId = userId;
-    _profile = response.profile;
-    _accessState = response.accessState;
-    final prefs = await _prefs();
-    await prefs.setString(_keyUserId, userId);
-    await _invalidateConnectionBundle();
-    await refreshAccountData(notify: false);
-    await addAccount(userId);
-    _error = null;
-    notifyListeners();
-    return true;
-  }
-
   Future<void> _invalidateConnectionBundle() async {
-    _ssUri = null;
-    _vlessUri = null;
     _connectionOptions = const [];
     _activeOption = null;
-    final prefs = await _prefs();
-    await prefs.remove(_keySsUri);
-    await prefs.remove(_keyVlessUri);
   }
 
   String _currentPlatform() {

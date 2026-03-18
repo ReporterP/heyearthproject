@@ -7,8 +7,8 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../l10n.dart';
 import '../update_service.dart';
+import 'account_screen.dart';
 import 'payment_screen.dart';
-import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -39,10 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               state: state,
                               onCheckUpdate: () =>
                                   _checkForUpdate(context, state),
-                              onRestoreById: () =>
-                                  _showRestoreDialog(context, state),
-                              onClaimCode: () =>
-                                  _showClaimCodeDialog(context, state),
+                              onLoginById: () =>
+                                  _showLoginDialog(context, state),
                             ),
               bottomNavigationBar: showNav
                   ? NavigationBar(
@@ -134,19 +132,34 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showRestoreDialog(BuildContext context, AppState state) {
+  void _showLoginDialog(BuildContext context, AppState state) {
     final l10n = L10n(Locale(state.locale));
-    final controller = TextEditingController();
+    final idController = TextEditingController();
+    final pwController = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(l10n.signInWithHeyearthId),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: l10n.pasteHeyearthId,
-            border: const OutlineInputBorder(),
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: idController,
+              decoration: InputDecoration(
+                hintText: l10n.idOrUsername,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pwController,
+              obscureText: true,
+              decoration: InputDecoration(
+                hintText: l10n.passwordOptional,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -154,7 +167,11 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
-              final ok = await state.restoreUserId(controller.text);
+              final pw = pwController.text.trim();
+              final ok = await state.login(
+                idController.text,
+                pw.isNotEmpty ? pw : null,
+              );
               if (!ctx.mounted) {
                 return;
               }
@@ -163,54 +180,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 SnackBar(
                     content: Text(ok
                         ? l10n.accountRestored
-                        : l10n.translateError(state.error) .isNotEmpty
+                        : l10n.translateError(state.error).isNotEmpty
                             ? l10n.translateError(state.error)
                             : l10n.loginFailed)),
               );
             },
             child: Text(l10n.login),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showClaimCodeDialog(BuildContext context, AppState state) {
-    final l10n = L10n(Locale(state.locale));
-    final controller = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(l10n.enterCodeFromBot),
-        content: TextField(
-          controller: controller,
-          textCapitalization: TextCapitalization.characters,
-          decoration: InputDecoration(
-            hintText: l10n.enterCodeHint,
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: Text(l10n.cancel)),
-          FilledButton(
-            onPressed: () async {
-              final ok = await state.claimByCode(controller.text);
-              if (!ctx.mounted) {
-                return;
-              }
-              Navigator.of(ctx).pop();
-              ScaffoldMessenger.of(ctx).showSnackBar(
-                SnackBar(
-                    content: Text(ok
-                        ? l10n.deviceLinked
-                        : l10n.translateError(state.error).isNotEmpty
-                            ? l10n.translateError(state.error)
-                            : l10n.pairingFailed)),
-              );
-            },
-            child: Text(l10n.link),
           ),
         ],
       ),
@@ -239,6 +214,7 @@ class _HomeTab extends StatelessWidget {
       return PaymentScreen(
         userId: state.userId!,
         apiBase: state.apiBase,
+        jwtToken: state.jwtToken,
         onPaymentComplete: () => state.refreshAccountData(),
         onApplyPromocode: (code) async {
           try {
@@ -254,9 +230,6 @@ class _HomeTab extends StatelessWidget {
     final l10n = L10n.of(context);
     final profile = state.profile;
 
-    String _linked(bool v) => v
-        ? (l10n.isEn ? 'linked' : 'привязан')
-        : (l10n.isEn ? 'not linked' : 'не привязан');
     String _notSet() => l10n.isEn ? 'not set' : 'не выбрана';
     String _notLimited() => l10n.isEn ? 'unlimited' : 'не ограничен';
 
@@ -297,7 +270,7 @@ class _HomeTab extends StatelessWidget {
               subtitle:
                   '${l10n.planLabel}: ${profile.currentPlan.isEmpty ? 'Free' : profile.currentPlan}'
                   '\n${l10n.platformLabel}: ${profile.preferredPlatform.isEmpty ? _notSet() : profile.preferredPlatform}'
-                  '\n${l10n.telegramLabel}: ${_linked(profile.telegramLinked)}',
+                  '\n${l10n.usernameLabel}: ${state.username?.isNotEmpty == true ? state.username : _notSet()}',
             ),
           ],
           if (access != null) ...[
@@ -312,58 +285,30 @@ class _HomeTab extends StatelessWidget {
           const SizedBox(height: 12),
           if (state.error != null) _ErrorBanner(message: state.error!),
           if (state.error != null) const SizedBox(height: 12),
-          if (state.legacyHappFallback)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Apple fallback',
-                        style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    Text(l10n.legacyPairingNote),
-                  ],
-                ),
-              ),
-            )
-          else ...[
-            _MainVpnButton(
-              vpnOn: state.vpnOn,
-              connecting: state.vpnConnecting,
-              enabled: state.canConnect && !state.isBlocked,
-              onToggle: () => state.setVpnOn(!state.vpnOn),
-            ),
-            _ConnectionProtocolSection(
-              activeOption: state.activeOption,
-              connectionOptions: state.connectionOptions,
-              allowManualChoice: state.allowManualChoice,
-              vlessUri: state.vlessUri,
-              ssUri: state.ssUri,
-              vpnOn: state.vpnOn,
-              onSelectOption: state.selectConnectionOption,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              state.vpnConnecting
-                  ? l10n.connecting
-                  : state.vpnOn
-                      ? l10n.connectedTraffic
-                      : state.canConnect
-                          ? l10n.tapToEnable
-                          : l10n.connectionUnavailable,
-              textAlign: TextAlign.center,
-            ),
-          ],
-          const SizedBox(height: 16),
-          SwitchListTile(
-            value: state.selectedOnlyMode,
-            onChanged: (_) =>
-                state.setSelectedOnlyMode(!state.selectedOnlyMode),
-            title: Text(l10n.onlyForSelectedServices),
-            subtitle: Text(l10n.onlyForSelectedHint),
+          _MainVpnButton(
+            vpnOn: state.vpnOn,
+            connecting: state.vpnConnecting,
+            enabled: state.canConnect && !state.isBlocked,
+            onToggle: () => state.setVpnOn(!state.vpnOn),
+          ),
+          _ConnectionModeCards(
+            activeOption: state.activeOption,
+            connectionOptions: state.connectionOptions,
+            vpnOn: state.vpnOn,
+            onSelectOption: state.selectConnectionOption,
           ),
           const SizedBox(height: 12),
+          Text(
+            state.vpnConnecting
+                ? l10n.connecting
+                : state.vpnOn
+                    ? l10n.connectedTraffic
+                    : state.canConnect
+                        ? l10n.tapToEnable
+                        : l10n.connectionUnavailable,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
           Row(
             children: [
               Expanded(
@@ -382,11 +327,11 @@ class _HomeTab extends StatelessWidget {
                 child: FilledButton.icon(
                   onPressed: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                      MaterialPageRoute(builder: (_) => const AccountScreen()),
                     );
                   },
                   icon: const Icon(Icons.person_outline),
-                  label: Text(l10n.profileLabel),
+                  label: Text(l10n.accountScreenTitle),
                 ),
               ),
             ],
@@ -401,14 +346,12 @@ class _SettingsTab extends StatelessWidget {
   const _SettingsTab({
     required this.state,
     required this.onCheckUpdate,
-    required this.onRestoreById,
-    required this.onClaimCode,
+    required this.onLoginById,
   });
 
   final AppState state;
   final VoidCallback onCheckUpdate;
-  final VoidCallback onRestoreById;
-  final VoidCallback onClaimCode;
+  final VoidCallback onLoginById;
 
   @override
   Widget build(BuildContext context) {
@@ -429,14 +372,8 @@ class _SettingsTab extends StatelessWidget {
         const SizedBox(height: 16),
         _LanguageCard(locale: state.locale, onLocaleChanged: state.setLocale),
         const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: onClaimCode,
-          icon: const Icon(Icons.link),
-          label: Text(l10n.enterCodeFromBot),
-        ),
-        const SizedBox(height: 12),
         OutlinedButton.icon(
-          onPressed: onRestoreById,
+          onPressed: onLoginById,
           icon: const Icon(Icons.badge_outlined),
           label: Text(l10n.signInWithHeyearthId),
         ),
@@ -461,74 +398,59 @@ class _SettingsTab extends StatelessWidget {
   }
 }
 
-class _WelcomeScreen extends StatelessWidget {
+class _WelcomeScreen extends StatefulWidget {
   const _WelcomeScreen({required this.state});
 
   final AppState state;
 
   @override
-  Widget build(BuildContext context) {
-    final l10n = L10n.of(context);
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Text(
-          l10n.welcomeTitle,
-          style: Theme.of(context)
-              .textTheme
-              .headlineMedium
-              ?.copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        Text(l10n.welcomeDesc),
-        const SizedBox(height: 24),
-        FilledButton.icon(
-          onPressed: () => _showClaimCodeDialog(context, state),
-          icon: const Icon(Icons.key_outlined),
-          label: Text(l10n.haveCodeFromBot),
-        ),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () => _showRestoreDialog(context, state),
-          icon: const Icon(Icons.badge_outlined),
-          label: Text(l10n.haveHeyearthId),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(l10n.howItWorks,
-                    style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Text(l10n.howItWorksSteps),
-              ],
-            ),
-          ),
-        ),
-        if (state.error != null) ...[
-          const SizedBox(height: 12),
-          _ErrorBanner(message: state.error!),
-        ],
-      ],
-    );
+  State<_WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<_WelcomeScreen> {
+  bool _registering = false;
+
+  Future<void> _doRegister() async {
+    setState(() => _registering = true);
+    final ok = await widget.state.register();
+    if (!mounted) return;
+    setState(() => _registering = false);
+    if (ok) {
+      final l10n = L10n.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.accountRestored)),
+      );
+    }
   }
 
-  void _showRestoreDialog(BuildContext context, AppState state) {
-    final l10n = L10n(Locale(state.locale));
-    final controller = TextEditingController();
+  void _showLoginDialog() {
+    final l10n = L10n(Locale(widget.state.locale));
+    final idController = TextEditingController();
+    final pwController = TextEditingController();
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(l10n.signInWithHeyearthId),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: l10n.pasteHeyearthId,
-            border: const OutlineInputBorder(),
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: idController,
+              decoration: InputDecoration(
+                hintText: l10n.idOrUsername,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pwController,
+              obscureText: true,
+              decoration: InputDecoration(
+                hintText: l10n.passwordOptional,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -536,17 +458,19 @@ class _WelcomeScreen extends StatelessWidget {
               child: Text(l10n.cancel)),
           FilledButton(
             onPressed: () async {
-              final ok = await state.restoreUserId(controller.text);
-              if (!ctx.mounted) {
-                return;
-              }
+              final pw = pwController.text.trim();
+              final ok = await widget.state.login(
+                idController.text,
+                pw.isNotEmpty ? pw : null,
+              );
+              if (!ctx.mounted) return;
               Navigator.of(ctx).pop();
               ScaffoldMessenger.of(ctx).showSnackBar(
                 SnackBar(
                     content: Text(ok
                         ? l10n.accountRestored
-                        : l10n.translateError(state.error).isNotEmpty
-                            ? l10n.translateError(state.error)
+                        : l10n.translateError(widget.state.error).isNotEmpty
+                            ? l10n.translateError(widget.state.error)
                             : l10n.loginFailed)),
               );
             },
@@ -557,45 +481,70 @@ class _WelcomeScreen extends StatelessWidget {
     );
   }
 
-  void _showClaimCodeDialog(BuildContext context, AppState state) {
-    final l10n = L10n(Locale(state.locale));
-    final controller = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(l10n.enterCodeFromBot),
-        content: TextField(
-          controller: controller,
-          textCapitalization: TextCapitalization.characters,
-          decoration: InputDecoration(
-            hintText: l10n.enterCodeHint,
-            border: const OutlineInputBorder(),
+  @override
+  Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        const SizedBox(height: 48),
+        Text(
+          l10n.welcomeTitle,
+          style: Theme.of(context)
+              .textTheme
+              .displaySmall
+              ?.copyWith(fontWeight: FontWeight.w700),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          l10n.welcomeDesc,
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodyLarge,
+        ),
+        const SizedBox(height: 32),
+        FilledButton.icon(
+          onPressed: _registering ? null : _doRegister,
+          icon: _registering
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.person_add_outlined),
+          label: Text(_registering ? l10n.registering : l10n.getHeyearthId),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: _showLoginDialog,
+          icon: const Icon(Icons.badge_outlined),
+          label: Text(l10n.alreadyHaveId),
+        ),
+        const SizedBox(height: 24),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    color: Theme.of(context).colorScheme.error),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    l10n.saveYourIdWarning,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: Text(l10n.cancel)),
-          FilledButton(
-            onPressed: () async {
-              final ok = await state.claimByCode(controller.text);
-              if (!ctx.mounted) {
-                return;
-              }
-              Navigator.of(ctx).pop();
-              ScaffoldMessenger.of(ctx).showSnackBar(
-                SnackBar(
-                    content: Text(ok
-                        ? l10n.deviceLinkedShort
-                        : l10n.translateError(state.error).isNotEmpty
-                            ? l10n.translateError(state.error)
-                            : l10n.pairingFailed)),
-              );
-            },
-            child: Text(l10n.link),
-          ),
+        if (widget.state.error != null) ...[
+          const SizedBox(height: 12),
+          _ErrorBanner(message: widget.state.error!),
         ],
-      ),
+      ],
     );
   }
 }
@@ -680,85 +629,51 @@ class _MainVpnButton extends StatelessWidget {
   }
 }
 
-class _ConnectionProtocolSection extends StatelessWidget {
-  const _ConnectionProtocolSection({
+/// Displays connection mode cards (VPN / SOCKS5 / HTTP).
+class _ConnectionModeCards extends StatelessWidget {
+  const _ConnectionModeCards({
     required this.activeOption,
     required this.connectionOptions,
-    required this.allowManualChoice,
-    required this.vlessUri,
-    required this.ssUri,
     required this.vpnOn,
     required this.onSelectOption,
   });
 
   final pb.ConnectionOption? activeOption;
   final List<pb.ConnectionOption> connectionOptions;
-  final bool allowManualChoice;
-  final String? vlessUri;
-  final String? ssUri;
   final bool vpnOn;
   final void Function(pb.ConnectionOption) onSelectOption;
 
-  String _protocolName() {
-    if (activeOption != null && activeOption!.protocol.isNotEmpty) {
-      return activeOption!.protocol;
-    }
-    if (vlessUri != null) return 'VLESS';
-    if (ssUri != null) return 'Shadowsocks';
-    return '';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final proto = _protocolName();
-    if (proto.isEmpty) return const SizedBox.shrink();
-
-    pb.ConnectionOption? dropdownValue;
-    for (final o in connectionOptions) {
-      if (activeOption != null && o.uri == activeOption!.uri) {
-        dropdownValue = o;
-        break;
-      }
-    }
-    dropdownValue ??= connectionOptions.isNotEmpty ? connectionOptions.first : null;
+    if (connectionOptions.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: allowManualChoice && connectionOptions.length > 1
-          ? DropdownButtonFormField<pb.ConnectionOption>(
-              value: dropdownValue,
-              decoration: InputDecoration(
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 12),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              isExpanded: true,
-              hint: Text(proto),
-              items: connectionOptions
-                  .map((opt) => DropdownMenuItem<pb.ConnectionOption>(
-                        value: opt,
-                        child: Text(opt.protocol.isNotEmpty
-                            ? opt.protocol
-                            : 'Protocol'),
-                      ))
-                  .toList(),
-              onChanged: vpnOn
-                  ? (opt) {
-                      if (opt != null) onSelectOption(opt);
-                    }
-                  : null,
-            )
-          : Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                proto,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant),
-                textAlign: TextAlign.center,
-              ),
-            ),
+      padding: const EdgeInsets.only(top: 12),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: connectionOptions.map((opt) {
+          final isActive = activeOption != null && opt.uri == activeOption!.uri;
+          // label field will be available after proto regeneration
+          String optLabel;
+          try {
+            final l = (opt as dynamic).label as String?;
+            optLabel = (l != null && l.isNotEmpty) ? l : '';
+          } catch (_) {
+            optLabel = '';
+          }
+          final label = optLabel.isNotEmpty
+              ? optLabel
+              : opt.protocol.isNotEmpty
+                  ? opt.protocol
+                  : 'Connection';
+          return ChoiceChip(
+            label: Text(label),
+            selected: isActive,
+            onSelected: (_) => onSelectOption(opt),
+          );
+        }).toList(),
+      ),
     );
   }
 }

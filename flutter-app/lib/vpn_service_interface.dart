@@ -2,9 +2,8 @@
 abstract class VpnService {
   bool get isSupported;
 
-  /// [selectedOnly]: если true, VPN остаётся включённым, но через туннель идёт только трафик к выбранным доменам (routing в конфиге).
-  Future<void> connect(String ssUri,
-      {bool proxyOnly = false, bool selectedOnly = false});
+  /// Connect to the VPN using the provided URI (VLESS, Shadowsocks, etc.).
+  Future<void> connect(String uri, {bool proxyOnly = false});
   Future<void> disconnect();
 
   /// Returns true if traffic is currently flowing through the VPN tunnel.
