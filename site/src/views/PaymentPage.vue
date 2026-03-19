@@ -51,7 +51,7 @@ async function handlePayment() {
   error.value = ''
   try {
     const returnUrl = window.location.origin + '/dashboard'
-    const data = await createPayment(token, selectedPlan.value, returnUrl)
+    const data = await createPayment(token, selectedPlan.value, returnUrl, promoCode.value.trim())
     if (data.payment_url || data.confirmation_url) {
       window.location.href = data.payment_url || data.confirmation_url
     } else {

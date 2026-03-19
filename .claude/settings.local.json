@@ -65,7 +65,13 @@
       "Bash(export DEPLOY_HOST=45.150.39.236 DEPLOY_SSH_PASSWORD='diU-~=cXpf23cE2:hzqZ')",
       "Bash(find C:UsersalexDocumentsheyearthprojectsite -name *.env* -o -name vite.config.*)",
       "Bash(find C:UsersalexDocumentsheyearthprojectadmin_web -name *.env* -o -name *.toml)",
-      "Bash(find C:UsersalexDocumentsheyearthprojectsitesrc -type f -name *.vue)"
+      "Bash(find C:UsersalexDocumentsheyearthprojectsitesrc -type f -name *.vue)",
+      "Bash(find /c/Users/alex/Documents/heyearthproject/site/src -type f \\\\\\(-name *.js -o -name *.vue -o -name *.json \\\\\\))",
+      "Bash(find . -name \"*.go\" -exec grep -l \"return nil\\\\|return errors.New\\\\|// TODO\\\\|// FIXME\" {})",
+      "Bash(wc -l \"/c/Users/alex/Documents/heyearthproject/server/backend/internal/admin\"/*.go)",
+      "Bash(find /c/Users/alex/Documents/heyearthproject/site -name package.json -o -name vite.config.js -o -name *service* -o -name *sw.js)",
+      "Bash(grep -A 10 \"activeTab === ''other''\" /c/Users/alex/Documents/heyearthproject/site/src/views/DashboardPage.vue)",
+      "Bash(grep -n \"innerHTML\\\\|dangerouslySetInnerHTML\\\\|v-html\" /c/Users/alex/Documents/heyearthproject/site/src/views/*.vue /c/Users/alex/Documents/heyearthproject/site/src/components/*.vue)"
     ]
   },
   "enabledPlugins": {

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
-import { getProfile, getSubscription, getConnections, getPayments } from '../api/user.js'
+import { getProfile, getSubscription, getConnections, getPayments, getDownloads } from '../api/user.js'
 
 const router = useRouter()
 const token = localStorage.getItem('token')
@@ -10,6 +10,7 @@ const profile = ref(null)
 const subscription = ref(null)
 const connections = ref(null)
 const payments = ref([])
+const downloads = ref([])
 const loading = ref(true)
 const error = ref('')
 const copiedField = ref('')
@@ -26,16 +27,18 @@ onMounted(async () => {
     return
   }
   try {
-    const [profileData, subData, connData, payData] = await Promise.all([
+    const [profileData, subData, connData, payData, dlData] = await Promise.all([
       getProfile(token),
       getSubscription(token).catch(() => null),
       getConnections(token).catch(() => null),
       getPayments(token).catch(() => []),
+      getDownloads().catch(() => []),
     ])
     profile.value = profileData
     subscription.value = subData
     connections.value = connData
     payments.value = Array.isArray(payData) ? payData : payData?.payments || []
+    downloads.value = Array.isArray(dlData) ? dlData : dlData?.downloads || []
   } catch (e) {
     if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
       localStorage.removeItem('token')
@@ -197,12 +200,20 @@ function formatAmount(amount) {
             <p class="text-text-secondary text-sm mb-4">
               Скачайте приложение HeYearth для вашей платформы:
             </p>
-            <RouterLink
-              to="/payment"
-              class="inline-block px-6 py-3 rounded-xl bg-brand hover:bg-brand-dark text-white font-semibold transition"
-            >
-              Скачать приложение
-            </RouterLink>
+            <div v-if="downloads.length" class="flex flex-wrap gap-3">
+              <a
+                v-for="dl in downloads"
+                :key="dl.platform || dl.name"
+                :href="dl.url || dl.download_url"
+                target="_blank"
+                class="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-brand hover:bg-brand-dark text-white font-semibold transition"
+              >
+                {{ dl.platform || dl.name || 'Скачать' }}
+              </a>
+            </div>
+            <p v-else class="text-text-secondary text-sm">
+              Загрузки пока недоступны. Скоро добавим.
+            </p>
           </div>
 
           <!-- Common: proxy addresses -->

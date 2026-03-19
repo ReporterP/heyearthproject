@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
@@ -313,8 +312,6 @@ func firstNonEmpty(values ...string) string {
 // ─────────────────────── JWT ───────────────────────
 
 func issueUserJWT(userID string, userDBID int) (string, error) {
-	_ = time.Now() // placeholder — will use real JWT in Phase 1.3
-	// TODO: implement proper JWT signing
 	token, err := biz.GenerateUserSessionToken(userID, userDBID)
 	if err != nil {
 		return "", err

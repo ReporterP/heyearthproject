@@ -1,1 +1,0 @@
- /home/alexadmin/heyearthproject/admin_web/build/web/manifest.json:  /home/alexadmin/heyearthproject/admin_web/web/index.html /home/alexadmin/heyearthproject/admin_web/web/manifest.json

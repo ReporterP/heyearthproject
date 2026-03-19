@@ -181,12 +181,10 @@ func extractPathID(path, prefix string) string {
 }
 
 func getAdminIDFromContext(r *http.Request) *int {
-	// Extract admin ID from JWT context (set by AuthMiddleware)
-	adminIDVal := r.Context().Value("admin_id")
-	if adminIDVal != nil {
-		if id, ok := adminIDVal.(int); ok {
-			return &id
-		}
+	claims, ok := ClaimsFromContext(r.Context())
+	if ok && claims != nil {
+		id := claims.AdminID
+		return &id
 	}
 	return nil
 }

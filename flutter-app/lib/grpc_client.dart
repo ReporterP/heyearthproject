@@ -4,7 +4,6 @@ import 'generated/heyearth/v1/config.pb.dart' as pb;
 import 'generated/heyearth/v1/config.pbgrpc.dart';
 
 ClientChannel? _cachedChannel;
-ConfigApiClient? _cachedConfigClient;
 ClientApiClient? _cachedClientApi;
 String? _cachedApiBase;
 
@@ -41,14 +40,8 @@ void _ensureClients(String apiBase) {
     _cachedChannel!.shutdown();
   }
   _cachedChannel = createGrpcChannel(apiBase);
-  _cachedConfigClient = ConfigApiClient(_cachedChannel!);
   _cachedClientApi = ClientApiClient(_cachedChannel!);
   _cachedApiBase = apiBase;
-}
-
-ConfigApiClient getConfigClient(String apiBase) {
-  _ensureClients(apiBase);
-  return _cachedConfigClient!;
 }
 
 ClientApiClient getClientApi(String apiBase) {
@@ -72,24 +65,12 @@ pb.DeviceContext buildDeviceContext({
   );
 }
 
-Future<pb.GetConfigResponse?> getConfigGrpc(
-    String apiBase, String userId) async {
-  final client = getConfigClient(apiBase);
-  return client.getConfig(pb.GetConfigRequest(userId: userId));
-}
-
 Future<pb.CheckAppUpdateResponse?> checkAppUpdateGrpc(
   String apiBase,
   String platform,
 ) async {
   final client = getClientApi(apiBase);
   return client.checkAppUpdate(pb.CheckAppUpdateRequest(platform: platform));
-}
-
-Future<pb.GetProfileResponse?> getProfileGrpc(
-    String apiBase, String userId) async {
-  final client = getConfigClient(apiBase);
-  return client.getProfile(pb.GetProfileRequest(userId: userId));
 }
 
 Future<pb.UserProfileResponse?> getMeGrpc({

@@ -1,9 +1,10 @@
 <script setup>
 import { ref } from 'vue'
-import { useRouter, RouterLink } from 'vue-router'
+import { useRouter, useRoute, RouterLink } from 'vue-router'
 import { loginUser } from '../api/user.js'
 
 const router = useRouter()
+const route = useRoute()
 
 const idOrUsername = ref('')
 const password = ref('')
@@ -21,7 +22,7 @@ async function handleLogin() {
   try {
     const data = await loginUser(idOrUsername.value.trim(), password.value)
     localStorage.setItem('token', data.token)
-    router.push('/dashboard')
+    router.push(route.query.redirect || '/dashboard')
   } catch (e) {
     error.value = e.message || 'Ошибка входа. Попробуйте позже.'
   } finally {

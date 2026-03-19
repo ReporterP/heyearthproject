@@ -3,6 +3,7 @@ package xray
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"sync"
@@ -80,9 +81,15 @@ func (tm *TunnelManager) CheckTunnelHealth() {
 	}
 
 	for _, node := range exitNodes {
-		// Simple health check: try TCP connect to the exit node
 		status := "healthy"
-		// TODO: implement actual health check via Xray API or TCP ping
+		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.Port)
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			status = "unhealthy"
+			log.Printf("[xray] health check failed for node %d (%s): %v", node.ID, addr, err)
+		} else {
+			conn.Close()
+		}
 		updateTunnelStatus(node.ID, status)
 	}
 }

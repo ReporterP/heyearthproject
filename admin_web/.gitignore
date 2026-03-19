@@ -1,16 +1,4 @@
-# ── Dart / Flutter ─────────────────────────────────────
-.dart_tool/
-.packages
-build/
-*.iml
-.flutter-plugins
-.flutter-plugins-dependencies
-.pub-cache/
-pubspec.lock
-
-# ── Secrets ────────────────────────────────────────────
+node_modules
+dist
 .env
 .env.local
-
-# ── Web build output ──────────────────────────────────
-web/.dart_tool/

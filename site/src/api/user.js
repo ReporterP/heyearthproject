@@ -79,14 +79,16 @@ export async function getDownloads() {
   return jsonOrThrow(res, 'Failed to load downloads')
 }
 
-export async function createPayment(token, plan, returnUrl) {
+export async function createPayment(token, plan, returnUrl, promoCode) {
+  const body = { plan, return_url: returnUrl }
+  if (promoCode) body.promo_code = promoCode
   const res = await fetch(`${API_BASE}/api/v1/payment/create`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ plan, return_url: returnUrl }),
+    body: JSON.stringify(body),
   })
   return jsonOrThrow(res, 'Failed to create payment')
 }

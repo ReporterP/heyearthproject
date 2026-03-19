@@ -209,14 +209,9 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 		}
 	}
 
-	if mode == "main" || mode == "site" || mode == "admin-web" {
-		if !findFlutterCmd() {
-			log.Fatal("flutter (or fvm) is required locally to build admin_web during deploy")
-		}
-	}
-	if mode == "main" || mode == "site" || mode == "vue-site" {
+	if mode == "main" || mode == "site" || mode == "admin-web" || mode == "vue-site" {
 		if _, err := exec.LookPath("npm"); err != nil {
-			log.Fatal("npm is required locally to build the Vue site during deploy")
+			log.Fatal("npm is required locally to build admin_web / Vue site during deploy")
 		}
 	}
 	if mode == "status" || mode == "fix-db" {
@@ -470,30 +465,24 @@ func buildGoBinary(backendRoot, name, outName string) string {
 func buildAdminWeb(repoRoot string, cfg *deployConfig) string {
 	adminWebRoot := filepath.Join(repoRoot, "admin_web")
 
-	exe, prefix := flutterExec()
-	pubGetArgs := append(prefix, "pub", "get")
-	pubGet := exec.Command(exe, pubGetArgs...)
-	pubGet.Dir = adminWebRoot
-	pubGet.Stdout = os.Stdout
-	pubGet.Stderr = os.Stderr
-	if err := pubGet.Run(); err != nil {
-		log.Fatalf("flutter pub get in admin_web: %v", err)
+	// React admin panel: npm ci + npm run build
+	npmCi := exec.Command("npm", "ci")
+	npmCi.Dir = adminWebRoot
+	npmCi.Stdout = os.Stdout
+	npmCi.Stderr = os.Stderr
+	if err := npmCi.Run(); err != nil {
+		log.Fatalf("npm ci in admin_web: %v", err)
 	}
 
-	// admin_web is served from admin.heyearth.ru root, so base-href=/
-	// API base is relative — nginx on admin.heyearth.ru proxies /api/admin/ to backend
-	buildArgs := append(prefix, "build", "web", "--release", "--no-tree-shake-icons",
-		"--base-href=/",
-		"--dart-define=HEYEARTH_ADMIN_API_BASE=/api/admin")
-	build := exec.Command(exe, buildArgs...)
+	build := exec.Command("npm", "run", "build")
 	build.Dir = adminWebRoot
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
-		log.Fatalf("flutter build web in admin_web: %v", err)
+		log.Fatalf("npm run build in admin_web: %v", err)
 	}
 
-	return filepath.Join(adminWebRoot, "build", "web")
+	return filepath.Join(adminWebRoot, "dist")
 }
 
 func installGoOnServer(client *ssh.Client) {

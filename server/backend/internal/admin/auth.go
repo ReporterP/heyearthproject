@@ -419,7 +419,7 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		username = strings.TrimSpace(payload.Username)
 	}
 	displayName := record.DisplayName
-	if payload.DisplayName != "" || strings.TrimSpace(payload.DisplayName) == "" {
+	if strings.TrimSpace(payload.DisplayName) != "" {
 		displayName = strings.TrimSpace(payload.DisplayName)
 	}
 	isActive := record.IsActive
