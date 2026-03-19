@@ -1,70 +1,56 @@
 # HeYearth
 
-Проект HeYearth — VPN-администрирование с B2B-мультитенантностью, платежами, мульти-хоп маршрутизацией и обходом блокировок (VLESS Reality).
+Платформа для снижения углеродного следа с B2B-мультитенантностью, платежами и обходом блокировок (VLESS Reality).
 
-Состоит из четырёх независимых проектов:
+Состоит из четырёх компонентов:
 
 | Проект | Стек | Описание |
 |--------|------|----------|
-| `server/backend` | Go, gRPC, PostgreSQL | API, Telegram-бот, deploy, node-agent |
-| `flutter-app` | Flutter (Android, Windows, iOS, macOS, Linux) | Клиентское приложение |
+| `server/backend` | Go 1.24, gRPC, PostgreSQL | API, deploy, node-agent |
+| `flutter-app` | Flutter 3.41.4 (Android, Windows, iOS) | Клиентское приложение |
 | `admin_web` | Flutter Web | Админ-панель (супер-админ + тенант-админ) |
-| `site` | Vue 3, Vite | Рекламный сайт |
+| `site` | Vue 3, Vite, Tailwind CSS v4 | Маркетинговый сайт + пользовательский портал |
 
 ---
 
-## Архитектура
+## Архитектура (Hub-and-Spoke)
 
 ```
 ┌──────────────┐     gRPC/mTLS      ┌─────────────────┐
-│  Main Server │◄───────────────────►│  VPN Node Agent  │
-│  (API+Bot)   │                     │  (SS + Xray)     │
+│  Main Server │◄───────────────────►│  Exit Node       │
+│  (API)       │                     │  (Xray + Agent)  │
 └──────┬───────┘                     └─────────────────┘
-       │ HTTP/gRPC                          ▲
-       ▼                                    │ (multi-hop)
-┌──────────────┐                     ┌──────┴──────────┐
-│  Admin Web   │                     │  VPN Node 2      │
-│  Flutter Web │                     │  (exit)          │
-└──────────────┘                     └─────────────────┘
-       │
-┌──────┴───────┐    ┌──────────────┐
-│  Vue Site    │    │  Flutter App  │
-│  (promo)     │    │  (client)     │
-└──────────────┘    └──────────────┘
+       │ HTTP/gRPC
+       ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│  Admin Web   │  │  Vue Site    │  │  Flutter App  │
+│  Flutter Web │  │  (портал)    │  │  (клиент)     │
+└──────────────┘  └──────────────┘  └──────────────┘
 ```
 
-### Ключевые возможности
+Пользователи подключаются ТОЛЬКО к главному серверу. Главный сервер маршрутизирует трафик через exit-ноды.
 
-- **mTLS**: отдельный Node-Agent CA, листовые сертификаты на 1 год с ротацией (`--rotate-node-agent-certs`), TLS 1.3
-- **VLESS + Reality**: обход DPI, маскировка под обычный TLS к реальному сайту
-- **Shadowsocks**: fallback для Wi-Fi-подключений
-- **Мульти-хоп**: трафик через 2 ноды (клиент → нода1 → нода2 → интернет), конфигурируется бэкендом автоматически
-- **Умный выбор протокола**: по типу сети (WiFi → SS, Cellular → VLESS Reality) с авто-переключением при плохом трафике
-- **Репутация нод**: выбор серверов по нагрузке и reputation_score
-- **B2B мультитенантность**: тенанты со своей админкой, пользователями, серверами, кошельком
-- **Платежи ЮKassa**: подписки 200/250 ₽, B2B-тарифы с кошельком, промокоды
-- **Docker на нодах**: единообразное развёртывание через docker-compose (опционально)
-- **Скрытие от поисковиков**: robots.txt + meta noindex на всех сайтах
+### Режимы подключения
+- **VLESS Reality** (порт 443) — VPN-режим
+- **SOCKS5** (порт 1080) — прокси
+- **HTTP proxy** (порт 8080) — прокси
+
+### Ключевые возможности
+- **mTLS**: Node-Agent CA, листовые сертификаты на 1 год с ротацией
+- **VLESS + Reality**: обход DPI, маскировка под обычный TLS
+- **Traffic masking** (премиум): админ настраивает домен→SNI маппинги
+- **B2B мультитенантность**: тенанты со своей админкой, пользователями, серверами
+- **Платежи ЮKassa**: подписки 200/250 ₽, промокоды
+- **Анонимная регистрация**: пользователь получает HeYearth ID без привязки к контактным данным
 
 ---
 
-## Main Server
+## Быстрый старт
 
-### Локальный запуск
+### Backend
 
 1. PostgreSQL — создайте БД `heyearth`.
-2. Скопируйте `server/.env.example` → `server/.env`, заполните:
-
-```env
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/heyearth?sslmode=disable
-ADMIN_USER=admin
-ADMIN_PASS=change_me
-JWT_SECRET=change_me
-TELEGRAM_BOT_TOKEN=123456:token
-SITE_DOMAIN=heyearth.ru
-PUBLIC_BASE_URL=https://heyearth.ru
-```
-
+2. Скопируйте `server/.env.example` → `server/.env`, заполните переменные.
 3. Миграции и запуск:
 
 ```bash
@@ -74,115 +60,29 @@ go run ./cmd/migrate
 go run ./cmd/api
 ```
 
-API: `127.0.0.1:8000` (HTTP) + `127.0.0.1:50051` (gRPC).
+API: `:8000` (HTTP/REST) + `:50051` (gRPC).
 
-### Деплой
-
-```bash
-cd server/backend
-go run ./cmd/deploy --main          # первичная настройка сервера
-go run ./cmd/deploy --update-main   # обновление кода
-go run ./cmd/deploy --status        # статус сервисов
-go run ./cmd/deploy --backup        # бэкап (БД + certs + env + releases)
-go run ./cmd/deploy --restore       # инструкции по восстановлению
-go run ./cmd/deploy --rotate-node-agent-certs  # ротация mTLS-сертификатов
-```
-
-### Миграция на другой сервер
-
-1. `go run ./cmd/deploy --backup` — скачивает дамп БД, certs, env, releases
-2. На новом сервере: `go run ./cmd/deploy --main` с обновлённым `DEPLOY_HOST`
-3. Восстановить дамп: `pg_restore -U postgres -d heyearth heyearth.dump`
-4. Развернуть certs и env в `APP_DIR/`
-5. `go run ./cmd/deploy --update-main`
-6. Обновить DNS (A-запись домена → новый IP)
-7. Reprovision VPN-нод при перегенерации сертов
-
----
-
-## VPN Nodes
-
-### Bare-metal (Ansible)
-
-Роль `server/ansible/roles/vpn-node/` устанавливает:
-- **Xray** (VLESS Reality на порту 443)
-- **Shadowsocks** (per-user сервисы)
-- **Node-agent** (gRPC с mTLS на порту 50052)
-
-Ноды автоматически разворачиваются через `go run ./cmd/deploy --provision-node`.
-
-### Docker (опционально)
-
-```bash
-cd server/docker/vpn-node
-cp .env.example .env  # задать SS_PUBLIC_HOST и параметры Reality
-docker compose up -d --build
-```
-
-Ansible-роль `tasks/docker.yml` — развёртывание через Docker на ноде:
-
-```bash
-ansible-playbook -i inventory playbook.yml -e deploy_mode=docker
-```
-
-Docker-стек: `node-agent` + `xray` + `shadowsocks` в одном compose, общие volumes для certs/state/configs.
-
----
-
-## Flutter App
+### Flutter App
 
 ```bash
 cd flutter-app
-flutter pub get
-flutter run
+fvm flutter pub get
+fvm flutter run
 ```
 
-### Ключевые фичи клиента
+> Используйте `fvm flutter`, не `flutter`. Версия зафиксирована в `.fvmrc`.
 
-- **Авто-выбор протокола**: WiFi → Shadowsocks, Cellular → VLESS Reality
-- **Авто-переключение**: мониторинг трафика каждые 20 сек, при проблемах — fallback на следующий протокол
-- **Тарифы**: стандарт (200 ₽) — только авто-режим; премиум (250 ₽) — ручной выбор протокола, сервера, мульти-хопа
-- **Платежи**: экран оплаты через ЮKassa + ввод промокода
-- **Множество аккаунтов**: переключение между личным и корпоративным HeYearth ID
-
-Переменные среды при сборке: `--dart-define=API_BASE=https://heyearth.ru`
-
----
-
-## Admin Web
-
-### Локальный запуск
+### Admin Web
 
 ```bash
 cd admin_web
-flutter pub get
-flutter run -d chrome --dart-define=HEYEARTH_ADMIN_API_BASE=http://127.0.0.1:8000/api/admin
+fvm flutter pub get
+fvm flutter run -d chrome
 ```
 
-### Разделы
+Для локального бэкенда: `--dart-define=HEYEARTH_ADMIN_API_BASE=http://127.0.0.1:8000/api/admin`
 
-| Раздел | Описание |
-|--------|----------|
-| Dashboard | Обзор |
-| Users | Пользователи (пагинация, фильтры, tenant_id) |
-| Groups | Группы пользователей |
-| Servers | Серверы (метрики, логи, файлы, консоль) |
-| Subscriptions | Подписки |
-| Payments | Платежи |
-| Promocodes | Промокоды |
-| Releases | Управление релизами приложения |
-| Tenants | B2B-клиенты (только супер-админ) |
-| Admins | Управление админами и правами |
-| Settings | YooKassa, общие настройки, сборка приложений |
-
-### Тенант-админ vs Супер-админ
-
-- **Тенант-админ**: видит только данные своего тенанта (пользователей, серверов, групп)
-- **Супер-админ**: видит всё + раздел «Тенанты», управление всеми серверами, расширение лимитов
-
----
-
-## Рекламный сайт (site/)
+### Маркетинговый сайт
 
 ```bash
 cd site
@@ -191,37 +91,79 @@ npm run dev      # разработка
 npm run build    # сборка в dist/
 ```
 
-Стек: Vue 3 + Vite. Страницы:
-- Главная (для обычных пользователей — тарифы, скачать приложение, перейти в бота)
-- Для бизнеса (описание B2B, тарифы)
-- Регистрация бизнеса (выбор спецификаций + email → доступ в админку → пополнение кошелька → активация)
-
-API: публичные эндпоинты `/api/public/create-tenant` и `/api/public/tariff/calculate`.
+Node.js >=18.20.0.
 
 ---
 
-## Переменные окружения (.env)
+## Деплой
 
-Все проекты используют `.env` для конфигурации. См. `.env.example` в каждом каталоге:
-- `server/.env.example` — API, бот, деплой
-- `flutter-app/.env.example` — API_BASE
-- `admin_web/.env.example` — HEYEARTH_ADMIN_API_BASE
-- `site/.env.example` — VITE_API_BASE, VITE_TELEGRAM_BOT_URL
+```bash
+cd server/backend
+go run ./cmd/deploy --main          # первичная настройка сервера
+go run ./cmd/deploy --update-main   # обновление бэкенда
+go run ./cmd/deploy --site          # пересборка и деплой admin_web + Vue site
+go run ./cmd/deploy --status        # статус сервисов
+go run ./cmd/deploy --backup        # бэкап (БД + certs + env + releases)
+go run ./cmd/deploy --rotate-node-agent-certs  # ротация mTLS-сертификатов
+```
+
+Текущий сервер: `45.150.39.236`, домен `heyearth.ru`.
+- `admin.heyearth.ru` — админ-панель
+- `site.heyearth.ru` — пользовательский портал
+
+---
+
+## VPN Nodes
+
+### Bare-metal (Ansible)
+
+Роль `server/ansible/roles/vpn-node/` устанавливает Xray + Node-agent.
+Деплой: `go run ./cmd/deploy --provision-node`.
+
+### Docker (опционально)
+
+```bash
+cd server/docker/vpn-node
+cp .env.example .env
+docker compose up -d --build
+```
+
+---
+
+## Админ-панель
+
+| Раздел | Описание |
+|--------|----------|
+| Dashboard | Обзор (статистика, графики) |
+| Users | Пользователи (CRUD, блокировка) |
+| Groups | Группы подписок |
+| Servers | Серверы (метрики, логи, консоль, файлы) |
+| Subscriptions | Подписки |
+| Payments | Платежи |
+| Promocodes | Промокоды |
+| Releases | Управление релизами |
+| Tenants | B2B-клиенты (только супер-админ) |
+| Admins | Управление админами и правами |
+| Settings | YooKassa, hub-сервер, системные настройки |
+
+**Тенант-админ** видит только данные своего тенанта. **Супер-админ** видит всё.
 
 ---
 
 ## Миграции БД
 
-Файлы: `server/backend/migrations/000001_*.sql` — `000013_*.sql`
+14 миграций в `server/backend/migrations/`.
 
 ```bash
-cd server/backend
-go run ./cmd/migrate
+cd server/backend && go run ./cmd/migrate
 ```
 
-Ключевые миграции:
-- `000009` — app_settings (настройки ЮKassa)
-- `000010` — is_premium, reputation_score, enabled_protocols
-- `000011` — маркетплейс нод (задел)
-- `000012` — мультитенантность (tenants, tenant_id)
-- `000013` — платежи ЮKassa, кошелёк тенантов, telegram_linked_users
+---
+
+## Переменные окружения
+
+Все проекты используют `.env`. См. `.env.example` в каждом каталоге:
+- `server/.env.example` — API, деплой, платежи
+- `site/.env.example` — VITE_API_BASE (не использовать в коде!)
+
+> **Важно**: Vue site использует относительные пути для API (`const API_BASE = ''`). Не используйте `import.meta.env.VITE_API_BASE` — Vite запекает значение в бандл.

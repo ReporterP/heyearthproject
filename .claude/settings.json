@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "autofix-bot@claude-plugins-official": true,
+    "anthropic-agent-skills@claude-plugins-official": true
+  }
+}

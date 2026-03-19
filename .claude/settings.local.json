@@ -67,5 +67,8 @@
       "Bash(find C:UsersalexDocumentsheyearthprojectadmin_web -name *.env* -o -name *.toml)",
       "Bash(find C:UsersalexDocumentsheyearthprojectsitesrc -type f -name *.vue)"
     ]
+  },
+  "enabledPlugins": {
+    "autofix-bot@claude-plugins-official": true
   }
 }

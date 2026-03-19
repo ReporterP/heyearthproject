@@ -1,0 +1,89 @@
+# HeYearth
+
+B2B VPN/proxy platform. Go backend + Flutter client + Flutter Web admin + Vue 3 site.
+
+## Language
+
+User communicates in Russian. Use Russian for UI strings, comments in user-facing code, and commit messages.
+
+## Quick Start
+
+```bash
+# Backend (requires PostgreSQL with DB "heyearth")
+cd server/backend && go run ./cmd/api
+# Runs on :8000 (HTTP/REST) + :50051 (gRPC)
+
+# Flutter App (requires fvm — flutter version manager)
+cd flutter-app && fvm flutter pub get && fvm flutter run
+
+# Admin Web
+cd admin_web && fvm flutter pub get && fvm flutter run -d chrome
+
+# Marketing Site (Node >=18.20)
+cd site && npm install && npm run dev
+```
+
+## Architecture
+
+Hub-and-spoke: users connect ONLY to main server, which routes to exit nodes.
+- VLESS Reality (port 443) — VPN mode
+- SOCKS5 (port 1080) — proxy mode
+- HTTP proxy (port 8080) — proxy mode
+
+No Telegram bot. No Shadowsocks. No multi-hop. These were removed.
+
+## Key Ports
+
+| Port | Service |
+|------|---------|
+| 8000 | HTTP/REST gateway (admin + user portal + public API) |
+| 50051 | gRPC (ClientApi — Flutter app) |
+| 50052 | Node-agent gRPC (mTLS, on exit nodes) |
+| 443 | Xray VLESS Reality (main server) |
+
+## Deploy
+
+```bash
+cd server/backend
+go run ./cmd/deploy --main          # full server setup
+go run ./cmd/deploy --update-main   # update backend only
+go run ./cmd/deploy --site          # rebuild & deploy admin_web + Vue site
+go run ./cmd/deploy --status        # check services
+go run ./cmd/deploy --backup        # backup DB + certs + env
+```
+
+Credentials in `server/.env` (DEPLOY_HOST, DEPLOY_SSH_PASSWORD, etc). Never commit this file.
+
+Current server: `45.150.39.236`, domain `heyearth.ru`, subdomains `admin.heyearth.ru` / `site.heyearth.ru`. No HTTPS yet.
+
+## Database
+
+PostgreSQL. 14 migrations in `server/backend/migrations/`.
+
+```bash
+cd server/backend && go run ./cmd/migrate
+```
+
+## Gotchas
+
+- **Flutter**: use `fvm flutter` not bare `flutter`. Version pinned in `.fvmrc` (3.41.4).
+- **VITE_API_BASE**: Vue site API files (`site/src/api/user.js`, `tenant.js`) use `const API_BASE = ''` (relative paths). Do NOT use `import.meta.env.VITE_API_BASE` — Vite bakes it into the bundle and it breaks when deployed behind nginx reverse proxy.
+- **Deploy on Windows**: The deploy tool runs npm/flutter builds locally, then uploads via SFTP. It handles WSL detection. `filterEnv()` strips VITE_API_BASE from env to prevent leaking into Vite builds.
+- **Protobuf regen**: Requires protoc 29.3. Proto files in `server/proto/`. Generated Go code goes to `server/backend/internal/pb/heyearth_v1/`, Dart to `flutter-app/lib/generated/heyearth/v1/`.
+- **Admin web API base**: Configurable via `--dart-define=HEYEARTH_ADMIN_API_BASE=...`. Default is relative `/api/admin`.
+- **No tests**: Project has no automated test suite currently.
+
+## Code Style
+
+- Go: standard `gofmt`, module path `github.com/heyearth/backend`
+- Dart/Flutter: default `dart format`, Provider for state management
+- Vue: Composition API, `<script setup>`, Tailwind CSS v4
+- API errors: always return `{"error": "message"}` JSON, never HTML
+
+## API Structure
+
+- `/api/v1/auth/*` — user registration/login (anonymous HeYearth ID)
+- `/api/v1/user/*` — user portal (JWT auth)
+- `/api/v1/payment/*` — YooKassa payments
+- `/api/admin/*` — admin panel (JWT + RBAC)
+- `/api/public/*` — public endpoints (B2B tenant signup)
