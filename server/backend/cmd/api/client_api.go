@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -157,19 +158,23 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 // buildHubConnectionOptions returns connection options pointing to the main server.
 // In hub-and-spoke model, all users connect to the main server only.
 func buildHubConnectionOptions() []*heyearth_v1.ConnectionOption {
-	// TODO: Phase 2 — read main server Xray inbound config and generate proper URIs
-	// For now, return placeholder options that will be populated from server config
 	mainServerHost := biz.GetSettingOrDefault("main_server_host", "")
 	vlessPort := biz.GetSettingOrDefault("vless_port", "443")
 	socks5Port := biz.GetSettingOrDefault("socks5_port", "1080")
 	httpProxyPort := biz.GetSettingOrDefault("http_proxy_port", "8080")
+	vlessUUID := biz.GetSettingOrDefault("vless_uuid", "")
+	realityPublicKey := biz.GetSettingOrDefault("reality_public_key", "")
+	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
+	realitySNI := biz.GetSettingOrDefault("reality_sni", mainServerHost)
 
 	var opts []*heyearth_v1.ConnectionOption
 
 	if mainServerHost != "" {
 		// VPN mode (VLESS Reality) — full tunnel
+		vlessURI := fmt.Sprintf("vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#HeyEarth%%20VPN",
+			vlessUUID, mainServerHost, vlessPort, realitySNI, realityPublicKey, realityShortID)
 		opts = append(opts, &heyearth_v1.ConnectionOption{
-			Uri:                 "vless://" + mainServerHost + ":" + vlessPort,
+			Uri:                 vlessURI,
 			Protocol:            "vless",
 			Label:               "VPN (полный туннель)",
 			RecommendedNetworks: []string{"cellular", "ethernet", "any"},

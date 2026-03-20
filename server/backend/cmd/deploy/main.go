@@ -327,7 +327,22 @@ func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, err
 		HostKeyCallback: callback,
 		Timeout:         15 * time.Second,
 	}
-	return ssh.Dial("tcp", addr, cfg)
+	client, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// SSH keepalive: prevent server from dropping idle connections during local operations
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return client, nil
 }
 
 func runSSH(client *ssh.Client, cmd string, check bool) (string, error) {
@@ -763,7 +778,7 @@ func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "rm -rf /var/www/heyearth-site && mkdir -p /var/www/heyearth-site", true)
-	vueBuildDir := buildVueSite(cfg.repoRoot, cfg)
+	vueBuildDir := buildSite(cfg.repoRoot, cfg)
 	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
 		log.Fatalf("upload vue site build: %v", err)
 	}
@@ -779,7 +794,7 @@ func uncToWSLPath(unc string) string {
 	return ""
 }
 
-func buildVueSite(repoRoot string, cfg *deployConfig) string {
+func buildSite(repoRoot string, cfg *deployConfig) string {
 	siteRoot := filepath.Join(repoRoot, "site")
 
 	// When repo is on WSL (UNC on Windows, or /home/... on Linux), run npm inside a clean environment so we don't use Windows npm (which breaks on UNC in postinstall). Use WSL explicitly on Windows; on Linux (WSL) run via bash with explicit /usr/bin/npm to avoid Windows npm in PATH.
@@ -815,7 +830,7 @@ func buildVueSite(repoRoot string, cfg *deployConfig) string {
 
 	npmPath, err := exec.LookPath("npm")
 	if err != nil {
-		log.Fatal("npm is required locally to build the Vue site")
+		log.Fatal("npm is required locally to build the site")
 	}
 
 	install := exec.Command(npmPath, "install")

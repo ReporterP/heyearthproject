@@ -450,13 +450,26 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	options := buildHubConnectionOptions()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id":                 userID,
-		"can_connect":             access.CanConnect,
-		"is_premium":              access.IsPremium,
+
+	// Build flat fields for backward compatibility with site/app
+	resp := map[string]any{
+		"user_id":                   userID,
+		"can_connect":               access.CanConnect,
+		"is_premium":                access.IsPremium,
 		"traffic_masking_available": access.TrafficMaskingAvailable,
-		"connection_options":      options,
-	})
+		"connection_options":        options,
+	}
+	for _, opt := range options {
+		switch opt.Protocol {
+		case "vless":
+			resp["vless_uri"] = opt.Uri
+		case "socks5":
+			resp["socks5"] = opt.Uri
+		case "http":
+			resp["http_proxy"] = opt.Uri
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {

@@ -139,12 +139,23 @@ func GenerateHubConfig(opts HubConfigOptions) (*XrayConfig, error) {
 		DomainStrategy: "AsIs",
 	}
 
-	// Traffic masking rules (SNI override for premium users)
+	// Traffic masking: create outbounds and routing rules for SNI override (premium users)
 	for _, rule := range opts.MaskingRules {
+		tag := "masked-" + rule.MaskDomain
+		// Create a freedom outbound that overrides the destination domain (SNI masking)
+		maskSettings, _ := json.Marshal(map[string]any{
+			"domainStrategy": "AsIs",
+			"redirect":       rule.MaskDomain + ":443",
+		})
+		cfg.Outbounds = append(cfg.Outbounds, Outbound{
+			Tag:      tag,
+			Protocol: "freedom",
+			Settings: maskSettings,
+		})
 		routing.Rules = append(routing.Rules, RoutingRule{
 			Type:        "field",
 			Domain:      []string{"domain:" + rule.SourceDomain},
-			OutboundTag: "masked-" + rule.MaskDomain,
+			OutboundTag: tag,
 		})
 	}
 
