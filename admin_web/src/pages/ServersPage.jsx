@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
@@ -272,7 +272,11 @@ export default function ServersPage() {
   const [isExitNode, setIsExitNode] = useState(false)
 
   async function loadSshKeys() {
-    try { const data = await fetchSshKeys(); setSshKeys(data.keys || data || []) } catch {}
+    try {
+      const data = await fetchSshKeys()
+      const keys = Array.isArray(data) ? data : (Array.isArray(data?.keys) ? data.keys : [])
+      setSshKeys(keys)
+    } catch {}
   }
 
   // Filtered items
@@ -319,10 +323,10 @@ export default function ServersPage() {
     setSaving(true)
     try {
       const payload = {
-        name, host, port: parseInt(port), ssh_user: sshUser,
+        name, ip_address: host, host, port: parseInt(port), ssh_user: sshUser,
         location, country_code: countryCode, status: serverStatus,
         is_exit_node: isExitNode,
-        tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+        tags: tags.split(',').map(s => s.trim()).filter(Boolean),
       }
       if (sshPassword) payload.ssh_password = sshPassword
       if (sshKeyId) payload.ssh_key_id = parseInt(sshKeyId)
@@ -385,18 +389,22 @@ export default function ServersPage() {
     }
   }
 
-  const toggleMetrics = useCallback(async (serverId) => {
-    if (expandedMetrics[serverId]) {
-      setExpandedMetrics(prev => { const n = { ...prev }; delete n[serverId]; return n })
-      return
-    }
+  async function toggleMetrics(serverId) {
+    setExpandedMetrics(prev => {
+      if (prev[serverId]) {
+        const n = { ...prev }; delete n[serverId]; return n
+      }
+      return prev
+    })
+    // If collapsing, the state update above handles it; check current state
+    if (expandedMetrics[serverId]) return
     try {
       const detail = await fetchServerDetail(serverId)
       setExpandedMetrics(prev => ({ ...prev, [serverId]: detail }))
     } catch (err) {
       toast.error(err.message)
     }
-  }, [expandedMetrics, toast])
+  }
 
   const actions = [
     { key: 'restart_agent', label: t.serverRestartAgent, icon: <IconRestart /> },

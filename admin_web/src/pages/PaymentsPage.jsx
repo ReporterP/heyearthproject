@@ -158,7 +158,11 @@ export default function PaymentsPage() {
         notes: notes || undefined,
       }
       if (metadata) {
-        try { payload.metadata = JSON.parse(metadata) } catch {}
+        try { payload.metadata = JSON.parse(metadata) } catch {
+          toast.error(t.paymentMetadataInvalidJson || 'Metadata: невалидный JSON')
+          setSaving(false)
+          return
+        }
       }
       if (dialog.mode === 'create') {
         await createPayment(payload)

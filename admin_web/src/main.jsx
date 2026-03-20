@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import { I18nProvider } from './i18n/index.jsx'
 import { ToastProvider } from './components/Toast.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import RequireAuth from './auth/RequireAuth.jsx'
 import LoginPage from './auth/LoginPage.jsx'
 import Layout from './components/Layout.jsx'
@@ -24,11 +25,12 @@ import './style.css'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <BrowserRouter>
-      <I18nProvider>
-        <AuthProvider>
-          <ToastProvider>
-            <Routes>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <I18nProvider>
+          <AuthProvider>
+            <ToastProvider>
+              <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route element={<RequireAuth />}>
                 <Route element={<Layout />}>
@@ -49,9 +51,10 @@ createRoot(document.getElementById('root')).render(
                 </Route>
               </Route>
             </Routes>
-          </ToastProvider>
-        </AuthProvider>
-      </I18nProvider>
-    </BrowserRouter>
+            </ToastProvider>
+          </AuthProvider>
+        </I18nProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </StrictMode>
 )

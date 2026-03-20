@@ -135,7 +135,8 @@ export default function UsersPage() {
   async function showDevices(user) {
     try {
       const devs = await fetchUserDevices(user.id)
-      setDevices({ user, items: devs.devices || devs || [] })
+      const items = Array.isArray(devs) ? devs : (Array.isArray(devs?.devices) ? devs.devices : [])
+      setDevices({ user, items })
     } catch (err) {
       toast.error(err.message)
     }

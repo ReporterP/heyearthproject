@@ -21,12 +21,12 @@ export function ToastProvider({ children }) {
     return id
   }, [removeToast])
 
-  const toast = useCallback({
+  const toast = {
     info: (msg) => addToast(msg, 'info'),
     success: (msg) => addToast(msg, 'success'),
     error: (msg) => addToast(msg, 'error'),
     warn: (msg) => addToast(msg, 'warn'),
-  }, [addToast])
+  }
 
   return (
     <ToastContext.Provider value={toast}>

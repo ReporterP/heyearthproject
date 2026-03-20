@@ -32,57 +32,130 @@ export default function LoginPage() {
   }
 
   return (
-    <section className="py-24">
-      <div className="max-w-md mx-auto px-6">
-        <h1 className="text-3xl font-bold text-center mb-2">Вход</h1>
-        <p className="text-text-secondary text-center mb-10">Войдите в свой аккаунт HeYearth</p>
+    <section className="relative min-h-[calc(100vh-8rem)] flex items-center justify-center py-16 overflow-hidden">
+      {/* Background effects */}
+      <div className="absolute inset-0">
+        <div className="absolute top-1/3 -left-32 w-80 h-80 rounded-full bg-brand/8 blur-[100px]" />
+        <div className="absolute bottom-1/3 -right-32 w-80 h-80 rounded-full bg-accent/8 blur-[100px]" />
+      </div>
 
-        <form onSubmit={handleLogin} className="space-y-5">
-          <div>
-            <label className="block text-sm text-text-secondary mb-2">HeYearth ID или имя пользователя</label>
-            <input
-              type="text"
-              value={idOrUsername}
-              onChange={e => setIdOrUsername(e.target.value)}
-              placeholder="Введите ваш ID или username"
-              className="w-full px-4 py-3 rounded-xl bg-surface-card border border-white/10 focus:border-brand/50 focus:outline-none transition"
-            />
+      <div className="relative w-full max-w-md mx-auto px-6">
+        {/* Card */}
+        <div className="glass-strong rounded-2xl p-8 md:p-10 shadow-2xl shadow-black/20 animate-fade-in-scale">
+          {/* Logo */}
+          <div className="flex justify-center mb-8">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-brand to-brand-dark flex items-center justify-center shadow-lg shadow-brand/25">
+              <span className="text-xl font-black text-white">H</span>
+            </div>
           </div>
 
-          <div>
-            {!showPassword ? (
-              <button type="button" className="text-sm text-brand-light hover:text-brand transition" onClick={() => setShowPassword(true)}>
-                У меня есть облачный пароль
-              </button>
-            ) : (
-              <>
-                <label className="block text-sm text-text-secondary mb-2">Облачный пароль</label>
+          <h1 className="text-2xl font-bold text-center mb-1">Добро пожаловать</h1>
+          <p className="text-text-secondary text-center text-sm mb-8">Войдите в свой аккаунт HeYearth</p>
+
+          <form onSubmit={handleLogin} className="space-y-5">
+            {/* ID / Username input */}
+            <div className="group">
+              <label className="block text-xs font-medium text-text-secondary mb-2 group-focus-within:text-brand-light transition-colors">
+                HeYearth ID или имя пользователя
+              </label>
+              <div className="relative">
+                <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-secondary group-focus-within:text-brand-light transition-colors">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                  </svg>
+                </div>
                 <input
-                  type="password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Введите пароль"
-                  className="w-full px-4 py-3 rounded-xl bg-surface-card border border-white/10 focus:border-brand/50 focus:outline-none transition"
+                  type="text"
+                  value={idOrUsername}
+                  onChange={e => setIdOrUsername(e.target.value)}
+                  placeholder="Введите ваш ID или username"
+                  className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50"
                 />
-              </>
+              </div>
+            </div>
+
+            {/* Password toggle / field */}
+            <div>
+              {!showPassword ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 text-sm text-brand-light hover:text-accent transition-colors duration-200"
+                  onClick={() => setShowPassword(true)}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                  </svg>
+                  У меня есть облачный пароль
+                </button>
+              ) : (
+                <div className="group animate-fade-in">
+                  <label className="block text-xs font-medium text-text-secondary mb-2 group-focus-within:text-brand-light transition-colors">
+                    Облачный пароль
+                  </label>
+                  <div className="relative">
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-secondary group-focus-within:text-brand-light transition-colors">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                      </svg>
+                    </div>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      placeholder="Введите пароль"
+                      className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Error */}
+            {error && (
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 animate-fade-in">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+                <p className="text-red-400 text-sm">{error}</p>
+              </div>
             )}
+
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="group relative w-full py-3.5 rounded-xl font-semibold text-white overflow-hidden transition-all duration-300 disabled:opacity-50 hover:shadow-lg hover:shadow-brand/25"
+            >
+              <span className="absolute inset-0 bg-gradient-to-r from-brand to-brand-dark" />
+              <span className="absolute inset-0 bg-gradient-to-r from-brand-light to-accent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+              <span className="relative z-10 flex items-center justify-center gap-2">
+                {loading ? (
+                  <>
+                    <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Вход...
+                  </>
+                ) : 'Войти'}
+              </span>
+            </button>
+          </form>
+
+          {/* Divider */}
+          <div className="relative my-8">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+            </div>
           </div>
 
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 rounded-xl bg-brand hover:bg-brand-dark text-white font-semibold transition disabled:opacity-50"
-          >
-            {loading ? 'Вход...' : 'Войти'}
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-text-secondary mt-8">
-          Нет аккаунта?{' '}
-          <Link to="/register" className="text-brand-light hover:text-brand transition">Зарегистрироваться</Link>
-        </p>
+          <p className="text-center text-sm text-text-secondary">
+            Нет аккаунта?{' '}
+            <Link to="/register" className="text-brand-light hover:text-accent font-medium transition-colors duration-200">
+              Зарегистрироваться
+            </Link>
+          </p>
+        </div>
       </div>
     </section>
   )

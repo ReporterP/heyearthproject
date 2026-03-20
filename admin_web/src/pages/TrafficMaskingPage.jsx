@@ -82,13 +82,18 @@ export default function TrafficMaskingPage() {
     }
   }
 
+  const [togglingId, setTogglingId] = useState(null)
+
   async function toggleActive(rule) {
+    setTogglingId(rule.id)
     try {
-      await updateTrafficMaskingRule(rule.id, { ...rule, is_active: !rule.is_active })
+      await updateTrafficMaskingRule(rule.id, { is_active: !rule.is_active })
       toast.success('OK')
       load()
     } catch (err) {
       toast.error(err.message)
+    } finally {
+      setTogglingId(null)
     }
   }
 
@@ -128,8 +133,9 @@ export default function TrafficMaskingPage() {
                   <td className="py-2 px-3 font-mono text-xs">{r.mask_domain}</td>
                   <td className="py-2 px-3">
                     <button
-                      onClick={() => can('traffic_masking.write') && toggleActive(r)}
-                      className={`w-10 h-6 rounded-full transition relative ${r.is_active ? 'bg-brand' : 'bg-white/20'}`}
+                      onClick={() => can('traffic_masking.write') && !togglingId && toggleActive(r)}
+                      disabled={togglingId === r.id}
+                      className={`w-10 h-6 rounded-full transition relative ${togglingId === r.id ? 'opacity-50 cursor-wait' : ''} ${r.is_active ? 'bg-brand' : 'bg-white/20'}`}
                     >
                       <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${r.is_active ? 'left-[18px]' : 'left-0.5'}`} />
                     </button>
