@@ -594,6 +594,8 @@ func main() {
 	http.HandleFunc("/api/v1/payment/check-access", handleCheckAccess)
 	http.HandleFunc("/api/v1/payment/redeem-code", handleRedeemCode)
 	http.HandleFunc("/api/v1/payment/tenant-topup", handleTenantTopup)
+	http.HandleFunc("/api/v1/payment/apply-promocode", handleApplyPromocode)
+	http.HandleFunc("/api/v1/payment/donate", handleCreateDonation)
 	http.HandleFunc("/api/webhooks/yookassa", handleYookassaWebhook)
 
 	// Admin panel

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, getConnections, getPayments, getDownloads } from '../api/user.js'
+import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation } from '../api/user.js'
 
 function formatDate(d) {
   if (!d) return '---'
@@ -12,13 +12,37 @@ function formatAmount(amount) {
   return Number(amount).toLocaleString('ru-RU') + ' \u20BD'
 }
 
-/* ─── Reusable icon components ─── */
+/* ─── Copy helper with fallback for HTTP ─── */
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text)
+    return true
+  }
+  // Fallback для HTTP
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    document.execCommand('copy')
+    return true
+  } catch {
+    return false
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+/* ─── Icons ─── */
 const CopyIcon = () => (
   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
   </svg>
 )
-
 const CheckIcon = () => (
   <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -33,24 +57,20 @@ export default function DashboardPage() {
   const [subscription, setSubscription] = useState(null)
   const [connections, setConnections] = useState(null)
   const [payments, setPayments] = useState([])
-  const [downloads, setDownloads] = useState([])
+  const [downloads, setDownloads] = useState({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [copiedField, setCopiedField] = useState('')
-  const [activeTab, setActiveTab] = useState('apple')
 
-  const tabs = [
-    { id: 'apple', label: 'iOS / macOS', icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3" />
-      </svg>
-    )},
-    { id: 'other', label: 'Windows / Android / Linux', icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />
-      </svg>
-    )},
-  ]
+  // Промокод
+  const [promoCode, setPromoCode] = useState('')
+  const [promoLoading, setPromoLoading] = useState(false)
+  const [promoMsg, setPromoMsg] = useState('')
+  const [promoError, setPromoError] = useState('')
+
+  // Донат
+  const [donationAmount, setDonationAmount] = useState(500)
+  const [donationLoading, setDonationLoading] = useState(false)
 
   useEffect(() => {
     if (!token) { navigate('/login'); return }
@@ -58,14 +78,18 @@ export default function DashboardPage() {
       getProfile(token),
       getSubscription(token).catch(() => null),
       getConnections(token).catch(() => null),
-      getPayments(token).catch(() => []),
-      getDownloads().catch(() => []),
+      getPayments(token).catch(() => ({ items: [] })),
+      getDownloads().catch(() => ({ downloads: {} })),
     ]).then(([profileData, subData, connData, payData, dlData]) => {
       setProfile(profileData)
-      setSubscription(subData)
+      // subData = { items: [...] } — берём первую активную
+      if (subData?.items?.length > 0) {
+        const active = subData.items.find(s => s.active) || subData.items[0]
+        setSubscription(active)
+      }
       setConnections(connData)
-      setPayments(Array.isArray(payData) ? payData : payData?.payments || [])
-      setDownloads(Array.isArray(dlData) ? dlData : dlData?.downloads || [])
+      setPayments(payData?.items || [])
+      setDownloads(dlData?.downloads || {})
     }).catch(e => {
       if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
         localStorage.removeItem('token')
@@ -76,20 +100,24 @@ export default function DashboardPage() {
     }).finally(() => setLoading(false))
   }, [])
 
-  const userId = profile?.id || profile?.heyearth_id || '...'
-  const subPlan = subscription?.plan || 'Нет подписки'
-  const subValidUntil = subscription?.valid_until ? new Date(subscription.valid_until).toLocaleDateString('ru-RU') : null
-  const hasActiveSub = !!subscription
+  const userId = profile?.user_id || '...'
+  const username = profile?.username || ''
+  const currentPlan = profile?.current_plan || subscription?.group_name || subscription?.plan || ''
+  const validUntil = profile?.valid_until || subscription?.valid_until
+  const isPremium = profile?.is_premium || subscription?.plan === 'premium'
+  const hasActiveSub = !!currentPlan && currentPlan !== ''
+  const canConnect = connections?.can_connect
+
   const vlessUri = connections?.vless_uri || ''
   const socks5Addr = connections?.socks5 || ''
   const httpProxy = connections?.http_proxy || ''
 
   async function copyText(text, field) {
-    try {
-      await navigator.clipboard.writeText(text)
+    const ok = await copyToClipboard(text)
+    if (ok) {
       setCopiedField(field)
       setTimeout(() => setCopiedField(''), 2000)
-    } catch { /* clipboard unavailable */ }
+    }
   }
 
   function CopyButton({ field, text }) {
@@ -99,12 +127,54 @@ export default function DashboardPage() {
         onClick={() => copyText(text, field)}
       >
         {copiedField === field ? <CheckIcon /> : <CopyIcon />}
-        {copiedField === field ? 'OK' : 'Копировать'}
+        {copiedField === field ? 'Скопировано!' : 'Копировать'}
       </button>
     )
   }
 
-  /* ─── Loading state ─── */
+  async function handleApplyPromo() {
+    if (!promoCode.trim()) return
+    setPromoLoading(true)
+    setPromoMsg('')
+    setPromoError('')
+    try {
+      const data = await applyPromocode(token, promoCode.trim())
+      setPromoMsg(data.message || 'Промокод активирован!')
+      setPromoCode('')
+      if (data.profile) setProfile(data.profile)
+      // Перезагрузим подписку
+      const subData = await getSubscription(token).catch(() => null)
+      if (subData?.items?.length > 0) {
+        const active = subData.items.find(s => s.active) || subData.items[0]
+        setSubscription(active)
+      }
+      // Перезагрузим подключения
+      const connData = await getConnections(token).catch(() => null)
+      if (connData) setConnections(connData)
+    } catch (e) {
+      setPromoError(e.message || 'Ошибка применения промокода')
+    } finally {
+      setPromoLoading(false)
+    }
+  }
+
+  async function handleDonate() {
+    if (!donationAmount || donationAmount < 50) return
+    setDonationLoading(true)
+    try {
+      const returnUrl = window.location.origin + '/dashboard'
+      const data = await createDonation(token, donationAmount, returnUrl)
+      if (data.confirmation_url) {
+        window.location.href = data.confirmation_url
+      }
+    } catch (e) {
+      alert(e.message || 'Ошибка создания доната')
+    } finally {
+      setDonationLoading(false)
+    }
+  }
+
+  /* ─── Loading ─── */
   if (loading) return (
     <div className="flex items-center justify-center py-32">
       <div className="text-center">
@@ -114,7 +184,7 @@ export default function DashboardPage() {
     </div>
   )
 
-  /* ─── Error state ─── */
+  /* ─── Error ─── */
   if (error) return (
     <div className="flex items-center justify-center py-32">
       <div className="text-center glass-strong rounded-2xl p-8 max-w-sm mx-6">
@@ -136,7 +206,6 @@ export default function DashboardPage() {
 
   return (
     <section className="relative py-10 md:py-16">
-      {/* Background effects */}
       <div className="absolute top-0 left-1/4 w-96 h-96 bg-brand/5 rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-accent/5 rounded-full blur-[120px] pointer-events-none" />
 
@@ -145,7 +214,9 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-8 animate-fade-in">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Личный кабинет</h1>
-            <p className="text-sm text-text-secondary mt-1">Управление аккаунтом и подключениями</p>
+            <p className="text-sm text-text-secondary mt-1">
+              {username ? `@${username}` : 'Управление аккаунтом и подключениями'}
+            </p>
           </div>
           <Link
             to="/settings"
@@ -159,9 +230,9 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* Top cards grid */}
+        {/* ─── Top cards: ID + Subscription ─── */}
         <div className="grid md:grid-cols-2 gap-4 md:gap-6 mb-6">
-          {/* HeYearth ID card */}
+          {/* HeYearth ID */}
           <div className="glass-card rounded-2xl p-6 animate-fade-in-up delay-100">
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-3">
@@ -174,14 +245,17 @@ export default function DashboardPage() {
               </div>
               <CopyButton field="id" text={userId} />
             </div>
-            <p className="text-xl md:text-2xl font-mono font-bold text-brand-light break-all">{userId}</p>
+            <p className="text-lg md:text-xl font-mono font-bold text-brand-light break-all leading-tight">{userId}</p>
+            {username && (
+              <p className="text-sm text-text-secondary mt-1.5">@{username}</p>
+            )}
           </div>
 
-          {/* Subscription card */}
+          {/* Subscription */}
           <div className={`relative rounded-2xl p-6 overflow-hidden animate-fade-in-up delay-200 ${
             hasActiveSub
               ? 'glass-card border border-green-500/20'
-              : 'glass-card'
+              : 'glass-card border border-amber-500/20'
           }`}>
             {hasActiveSub && (
               <div className="absolute top-0 right-0 w-32 h-32 bg-green-500/5 rounded-bl-full pointer-events-none" />
@@ -189,40 +263,110 @@ export default function DashboardPage() {
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                  hasActiveSub ? 'bg-green-500/15' : 'bg-white/5'
+                  hasActiveSub ? 'bg-green-500/15' : 'bg-amber-500/15'
                 }`}>
-                  <svg className={`w-5 h-5 ${hasActiveSub ? 'text-green-400' : 'text-text-secondary'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <svg className={`w-5 h-5 ${hasActiveSub ? 'text-green-400' : 'text-amber-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" />
                   </svg>
                 </div>
                 <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">Подписка</p>
               </div>
-              <Link
-                to="/payment"
-                className="text-xs font-medium text-brand-light hover:text-accent transition-colors"
-              >
-                {subscription ? 'Продлить' : 'Оформить'}
-              </Link>
+              {hasActiveSub && isPremium && (
+                <span className="px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-orange-500/20 text-amber-400 text-xs font-bold">
+                  Premium
+                </span>
+              )}
             </div>
-            <p className="text-lg font-semibold">{subPlan}</p>
-            {subValidUntil && (
-              <div className="flex items-center gap-1.5 mt-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                <p className="text-sm text-text-secondary">Действует до {subValidUntil}</p>
-              </div>
-            )}
-            {!hasActiveSub && (
-              <Link
-                to="/payment"
-                className="inline-flex items-center gap-1.5 mt-3 text-sm text-brand-light hover:text-accent transition-colors"
-              >
-                Оформить подписку
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                </svg>
-              </Link>
+
+            {hasActiveSub ? (
+              <>
+                <p className="text-lg font-semibold">{currentPlan}</p>
+                {validUntil && (
+                  <div className="flex items-center gap-1.5 mt-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                    <p className="text-sm text-text-secondary">Действует до {formatDate(validUntil)}</p>
+                  </div>
+                )}
+                <Link
+                  to="/payment"
+                  className="inline-flex items-center gap-1.5 mt-3 text-sm text-brand-light hover:text-accent transition-colors"
+                >
+                  Продлить подписку
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                  </svg>
+                </Link>
+              </>
+            ) : (
+              <>
+                <p className="text-lg font-semibold text-amber-400">Нет активной подписки</p>
+                <p className="text-sm text-text-secondary mt-1">Оформите подписку или введите промокод для доступа</p>
+                <Link
+                  to="/payment"
+                  className="inline-flex items-center gap-2 mt-3 px-5 py-2.5 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white text-sm font-semibold hover:shadow-lg hover:shadow-brand/25 transition-all duration-300"
+                >
+                  Оформить подписку
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                  </svg>
+                </Link>
+              </>
             )}
           </div>
+        </div>
+
+        {/* ─── Promo code ─── */}
+        <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/10 flex items-center justify-center">
+              <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">Промокод</h2>
+              <p className="text-xs text-text-secondary">Введите промокод для активации подписки</p>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              value={promoCode}
+              onChange={e => setPromoCode(e.target.value.toUpperCase())}
+              placeholder="Введите промокод"
+              onKeyDown={e => e.key === 'Enter' && handleApplyPromo()}
+              className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50 font-mono uppercase tracking-wider"
+            />
+            <button
+              disabled={promoLoading || !promoCode.trim()}
+              onClick={handleApplyPromo}
+              className="px-6 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white text-sm font-semibold hover:shadow-lg hover:shadow-purple-500/25 transition-all duration-300 disabled:opacity-50 whitespace-nowrap"
+            >
+              {promoLoading ? (
+                <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : 'Активировать'}
+            </button>
+          </div>
+          {promoMsg && (
+            <div className="flex items-center gap-2 mt-3 animate-fade-in">
+              <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
+              <p className="text-green-400 text-sm">{promoMsg}</p>
+            </div>
+          )}
+          {promoError && (
+            <div className="flex items-center gap-2 mt-3 animate-fade-in">
+              <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              <p className="text-red-400 text-sm">{promoError}</p>
+            </div>
+          )}
         </div>
 
         {/* ─── Connections ─── */}
@@ -236,119 +380,159 @@ export default function DashboardPage() {
             <h2 className="text-lg font-semibold">Подключение</h2>
           </div>
 
-          {/* Platform tabs */}
-          <div className="flex gap-2 mb-6">
-            {tabs.map(tab => (
+          {!canConnect && !vlessUri ? (
+            <div className="flex items-center gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+              <svg className="w-5 h-5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+              <div>
+                <p className="text-amber-400 text-sm font-medium">Нет активной подписки</p>
+                <p className="text-text-secondary text-xs mt-0.5">Оформите подписку или введите промокод, чтобы получить данные для подключения.</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* VPN (VLESS) */}
+              {vlessUri && (
+                <div className="mb-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="px-2 py-0.5 rounded-md bg-brand/15 text-brand-light text-xs font-bold">VPN</span>
+                    <span className="text-xs text-text-secondary">VLESS Reality — полный туннель</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{vlessUri}</code>
+                    <CopyButton field="vless" text={vlessUri} />
+                  </div>
+                  <p className="text-xs text-text-secondary mt-2">
+                    Используйте в приложениях: <span className="text-text-primary">Shadowrocket</span> (iOS), <span className="text-text-primary">Happ</span> (macOS), <span className="text-text-primary">v2rayN</span> (Windows), <span className="text-text-primary">v2rayNG</span> (Android)
+                  </p>
+                </div>
+              )}
+
+              {/* SOCKS5 + HTTP proxy */}
+              {(socks5Addr || httpProxy) && (
+                <div className="grid sm:grid-cols-2 gap-4 mt-4">
+                  {socks5Addr && (
+                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS5</span>
+                        <CopyButton field="socks5" text={socks5Addr} />
+                      </div>
+                      <code className="text-sm font-mono text-text-primary break-all select-all">{socks5Addr}</code>
+                      <p className="text-xs text-text-secondary mt-1.5">Прокси для браузера и приложений</p>
+                    </div>
+                  )}
+                  {httpProxy && (
+                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-xs font-bold">HTTP</span>
+                        <CopyButton field="http" text={httpProxy} />
+                      </div>
+                      <code className="text-sm font-mono text-text-primary break-all select-all">{httpProxy}</code>
+                      <p className="text-xs text-text-secondary mt-1.5">HTTP прокси</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ─── Downloads ─── */}
+        {Object.keys(downloads).length > 0 && (
+          <div className="glass-card rounded-2xl p-6 md:p-8 mb-6 animate-fade-in-up delay-350">
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-indigo-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+              </div>
+              <h2 className="text-base font-semibold">Скачать приложение</h2>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {Object.entries(downloads).map(([platform, info]) => (
+                <a
+                  key={platform}
+                  href={info.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group inline-flex items-center gap-2.5 px-5 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold text-sm transition-all duration-300 hover:shadow-lg hover:shadow-brand/25 hover:-translate-y-0.5"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                  </svg>
+                  {platform.charAt(0).toUpperCase() + platform.slice(1)}
+                  {info.version && <span className="opacity-60 text-xs">v{info.version}</span>}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── iOS/macOS Donation ─── */}
+        <div className="glass-card rounded-2xl p-6 md:p-8 mb-6 animate-fade-in-up delay-400 border border-pink-500/10">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500/20 to-rose-500/10 flex items-center justify-center">
+              <svg className="w-5 h-5 text-pink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">Поддержать разработчика</h2>
+              <p className="text-xs text-text-secondary">Помогите нам выпустить приложение для iOS и macOS</p>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-gradient-to-r from-pink-500/5 to-rose-500/5 border border-pink-500/10 mb-4">
+            <p className="text-sm text-text-secondary leading-relaxed">
+              Мы очень хотим выпустить нативное приложение для <strong className="text-text-primary">iOS</strong> и <strong className="text-text-primary">macOS</strong>,
+              но у нашего разработчика пока нет MacBook для разработки.
+              Ваш донат поможет приобрести оборудование и ускорить выпуск приложения.
+              А пока вы можете использовать <strong className="text-text-primary">VLESS-ссылку</strong> в приложении Shadowrocket (iOS) или Happ (macOS).
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            {[100, 300, 500, 1000, 2000, 5000].map(amt => (
               <button
-                key={tab.id}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 ${
-                  activeTab === tab.id
-                    ? 'bg-gradient-to-r from-brand to-brand-dark text-white shadow-lg shadow-brand/15'
+                key={amt}
+                onClick={() => setDonationAmount(amt)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
+                  donationAmount === amt
+                    ? 'bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-lg shadow-pink-500/20'
                     : 'glass hover:bg-white/10 text-text-secondary hover:text-text-primary'
                 }`}
-                onClick={() => setActiveTab(tab.id)}
               >
-                {tab.icon}
-                <span className="hidden sm:inline">{tab.label}</span>
+                {amt} &#8381;
               </button>
             ))}
           </div>
 
-          {/* iOS / macOS */}
-          {activeTab === 'apple' && (
-            <div className="animate-fade-in">
-              {vlessUri ? (
-                <div className="mb-5">
-                  <p className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-2">VLESS URI</p>
-                  <div className="flex items-start gap-3">
-                    <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed">{vlessUri}</code>
-                    <CopyButton field="vless" text={vlessUri} />
-                  </div>
-                </div>
+          <button
+            disabled={donationLoading}
+            onClick={handleDonate}
+            className="group relative px-8 py-3 rounded-xl font-semibold text-sm text-white overflow-hidden transition-all duration-300 disabled:opacity-50 hover:shadow-lg hover:shadow-pink-500/20"
+          >
+            <span className="absolute inset-0 bg-gradient-to-r from-pink-600 to-rose-600" />
+            <span className="absolute inset-0 bg-gradient-to-r from-pink-500 to-rose-500 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <span className="relative z-10 flex items-center gap-2">
+              {donationLoading ? (
+                <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
               ) : (
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-white/5 border border-white/5 mb-5">
-                  <svg className="w-5 h-5 text-text-secondary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-                  </svg>
-                  <p className="text-text-secondary text-sm">Данные подключения появятся после оформления подписки.</p>
-                </div>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                </svg>
               )}
-              <div className="text-sm text-text-secondary">
-                <p className="font-medium text-text-primary mb-2">Поддерживаемые приложения:</p>
-                <div className="flex flex-wrap gap-3">
-                  {['Shadowrocket (iOS)', 'Happ (macOS)'].map(app => (
-                    <span key={app} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg glass text-xs">
-                      <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-                      {app}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Windows / Android / Linux */}
-          {activeTab === 'other' && (
-            <div className="animate-fade-in">
-              <p className="text-text-secondary text-sm mb-4">Скачайте приложение HeYearth для вашей платформы:</p>
-              {downloads.length > 0 ? (
-                <div className="flex flex-wrap gap-3">
-                  {downloads.map(dl => (
-                    <a
-                      key={dl.platform || dl.name}
-                      href={dl.url || dl.download_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="group inline-flex items-center gap-2.5 px-5 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold transition-all duration-300 hover:shadow-lg hover:shadow-brand/25 hover:-translate-y-0.5"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                      </svg>
-                      {dl.platform || dl.name || 'Скачать'}
-                    </a>
-                  ))}
-                </div>
-              ) : (
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-white/5 border border-white/5">
-                  <svg className="w-5 h-5 text-text-secondary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <p className="text-text-secondary text-sm">Загрузки пока недоступны. Скоро добавим.</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Proxy addresses */}
-          {(socks5Addr || httpProxy) && (
-            <div className="mt-6 pt-6 border-t border-white/5">
-              <p className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-4">Прокси-адреса</p>
-              <div className="grid sm:grid-cols-2 gap-4">
-                {socks5Addr && (
-                  <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-accent">SOCKS5</span>
-                      <CopyButton field="socks5" text={socks5Addr} />
-                    </div>
-                    <code className="text-xs font-mono text-text-secondary break-all">{socks5Addr}</code>
-                  </div>
-                )}
-                {httpProxy && (
-                  <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-accent">HTTP</span>
-                      <CopyButton field="http" text={httpProxy} />
-                    </div>
-                    <code className="text-xs font-mono text-text-secondary break-all">{httpProxy}</code>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+              Поддержать — {donationAmount} &#8381;
+            </span>
+          </button>
         </div>
 
         {/* ─── Payment history ─── */}
-        <div className="glass-card rounded-2xl p-6 md:p-8 animate-fade-in-up delay-400">
+        <div className="glass-card rounded-2xl p-6 md:p-8 animate-fade-in-up delay-500">
           <div className="flex items-center gap-3 mb-6">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-green-500/20 to-emerald-500/10 flex items-center justify-center">
               <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -366,12 +550,6 @@ export default function DashboardPage() {
                 </svg>
               </div>
               <p className="text-text-secondary text-sm">Платежей пока нет</p>
-              <Link to="/payment" className="inline-flex items-center gap-1.5 mt-2 text-sm text-brand-light hover:text-accent transition-colors">
-                Оформить подписку
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                </svg>
-              </Link>
             </div>
           ) : (
             <div className="overflow-x-auto -mx-6 md:-mx-8 px-6 md:px-8">
@@ -379,27 +557,29 @@ export default function DashboardPage() {
                 <thead>
                   <tr className="text-left text-xs text-text-secondary uppercase tracking-wider border-b border-white/5">
                     <th className="pb-3 pr-4 font-medium">Дата</th>
-                    <th className="pb-3 pr-4 font-medium">Тариф</th>
+                    <th className="pb-3 pr-4 font-medium">Описание</th>
                     <th className="pb-3 pr-4 font-medium">Сумма</th>
                     <th className="pb-3 font-medium">Статус</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {payments.map(pay => (
-                    <tr key={pay.id} className="border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors">
-                      <td className="py-3.5 pr-4 text-text-secondary">{formatDate(pay.created_at || pay.date)}</td>
-                      <td className="py-3.5 pr-4 font-medium">{pay.plan || '---'}</td>
-                      <td className="py-3.5 pr-4 font-medium">{formatAmount(pay.amount)}</td>
+                  {payments.map((pay, i) => (
+                    <tr key={pay.id || i} className="border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors">
+                      <td className="py-3.5 pr-4 text-text-secondary whitespace-nowrap">{formatDate(pay.created_at || pay.date)}</td>
+                      <td className="py-3.5 pr-4 font-medium">{pay.notes || pay.description || pay.plan || '---'}</td>
+                      <td className="py-3.5 pr-4 font-medium whitespace-nowrap">{formatAmount(pay.amount)}</td>
                       <td className="py-3.5">
                         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
                           pay.status === 'succeeded' || pay.status === 'paid'
                             ? 'bg-green-500/15 text-green-400'
-                            : 'bg-amber-500/15 text-amber-400'
+                            : pay.status === 'pending'
+                              ? 'bg-amber-500/15 text-amber-400'
+                              : 'bg-gray-500/15 text-gray-400'
                         }`}>
                           <span className={`w-1.5 h-1.5 rounded-full ${
-                            pay.status === 'succeeded' || pay.status === 'paid' ? 'bg-green-400' : 'bg-amber-400'
+                            pay.status === 'succeeded' || pay.status === 'paid' ? 'bg-green-400' : pay.status === 'pending' ? 'bg-amber-400' : 'bg-gray-400'
                           }`} />
-                          {pay.status === 'succeeded' || pay.status === 'paid' ? 'Оплачен' : pay.status || '---'}
+                          {pay.status === 'succeeded' || pay.status === 'paid' ? 'Оплачен' : pay.status === 'pending' ? 'Ожидание' : pay.status || '---'}
                         </span>
                       </td>
                     </tr>

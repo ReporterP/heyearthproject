@@ -861,14 +861,12 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	domain := cfg.siteDomain
 
-	// 3 server blocks: main API, admin subdomain, site subdomain
-	nginxConf := fmt.Sprintf(`# ── Main API server (%[1]s) ──────────────────────────────────────
+	// 3 server blocks: main site + API (heyearth.ru), admin panel, site.* redirect
+	nginxConf := fmt.Sprintf(`# ── Main site + API (%[1]s) ──────────────────────────────────────
 server {
     listen 80;
     listen [::]:80;
     server_name %[1]s www.%[1]s;
-
-    add_header X-Robots-Tag "noindex, nofollow" always;
 
     # gRPC endpoints
     location /heyearth.v1.ConfigApi/ {
@@ -882,17 +880,10 @@ server {
 
     location = /robots.txt {
         default_type text/plain;
-        return 200 "User-agent: *\nDisallow: /\n";
+        return 200 "User-agent: *\nDisallow: /api/\n";
     }
 
-    # REST API
-    location /go/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+    # REST API (admin + user portal + payments + webhooks)
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -902,13 +893,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
-    location /webhooks/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
 
     # App release downloads
     location /releases/ {
@@ -917,8 +901,14 @@ server {
         try_files $uri =404;
     }
 
+    # Vue 3 SPA — основной сайт + пользовательский портал
     location / {
-        return 301 http://site.%[1]s$request_uri;
+        root /var/www/heyearth-site;
+        try_files $uri $uri/ /index.html;
+    }
+    location = /index.html {
+        root /var/www/heyearth-site;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
     }
 }
 
@@ -928,7 +918,7 @@ server {
     listen [::]:80;
     server_name admin.%[1]s;
 
-    # Proxy admin API to backend (allows same-origin requests from admin panel)
+    # Proxy admin API to backend
     location /api/admin/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -939,7 +929,7 @@ server {
         client_max_body_size 512m;
     }
 
-    # Flutter Web SPA
+    # Admin Web SPA
     location / {
         root /var/www/heyearth;
         try_files $uri $uri/ /index.html;
@@ -950,31 +940,12 @@ server {
     }
 }
 
-# ── Marketing site + user portal (site.%[1]s) ──────────────────
+# ── Redirect site.%[1]s → %[1]s ────────────────────────────────
 server {
     listen 80;
     listen [::]:80;
     server_name site.%[1]s;
-
-    # Proxy user-facing API to backend (allows same-origin requests from site)
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Vue 3 SPA
-    location / {
-        root /var/www/heyearth-site;
-        try_files $uri $uri/ /index.html;
-    }
-    location = /index.html {
-        root /var/www/heyearth-site;
-        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
-    }
+    return 301 $scheme://%[1]s$request_uri;
 }
 
 # ── Catch-all: redirect to main site ───────────────────────────
@@ -982,7 +953,7 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-    return 301 http://site.%[1]s$request_uri;
+    return 301 http://%[1]s$request_uri;
 }
 `, domain, appDir)
 
@@ -996,8 +967,8 @@ func doSSL(client *ssh.Client, cfg *deployConfig) {
 	if strings.TrimSpace(cfg.letsEncryptEmail) == "" {
 		return
 	}
-	cmd := fmt.Sprintf("apt-get install -y -qq certbot python3-certbot-nginx && certbot --nginx -d %s -d www.%s --non-interactive --agree-tos -m %s --redirect",
-		cfg.siteDomain, cfg.siteDomain, cfg.letsEncryptEmail)
+	cmd := fmt.Sprintf("apt-get install -y -qq certbot python3-certbot-nginx && certbot --nginx -d %s -d www.%s -d admin.%s -d site.%s --non-interactive --agree-tos -m %s --redirect",
+		cfg.siteDomain, cfg.siteDomain, cfg.siteDomain, cfg.siteDomain, cfg.letsEncryptEmail)
 	_, _ = runSSH(client, cmd, false)
 	// Ensure http2 is enabled on the SSL listener that certbot creates/modifies.
 	// certbot adds "listen 443 ssl" (without http2); gRPC requires h2 in ALPN.

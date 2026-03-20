@@ -79,16 +79,38 @@ export async function getDownloads() {
   return jsonOrThrow(res, 'Failed to load downloads')
 }
 
-export async function createPayment(token, plan, returnUrl, promoCode) {
-  const body = { plan, return_url: returnUrl }
-  if (promoCode) body.promo_code = promoCode
+export async function createPayment(token, plan, returnUrl) {
   const res = await fetch(`${API_BASE}/api/v1/payment/create`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ plan, return_url: returnUrl }),
   })
   return jsonOrThrow(res, 'Failed to create payment')
+}
+
+export async function applyPromocode(token, code) {
+  const res = await fetch(`${API_BASE}/api/v1/payment/apply-promocode`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ code }),
+  })
+  return jsonOrThrow(res, 'Failed to apply promocode')
+}
+
+export async function createDonation(token, amount, returnUrl) {
+  const res = await fetch(`${API_BASE}/api/v1/payment/donate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ amount, return_url: returnUrl }),
+  })
+  return jsonOrThrow(res, 'Failed to create donation')
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { createPayment } from '../api/user.js'
 
 const CheckIcon = () => (
@@ -20,7 +20,7 @@ const plans = [
   },
   {
     id: 'premium', name: 'Премиум', price: '250', period: 'мес', highlighted: true,
-    features: ['Все из Стандарт', 'Приоритетная поддержка', 'Максимальная оптимизация маршрутов', 'Расширенная аналитика'],
+    features: ['Все из Стандарт', 'Приоритетная поддержка', 'Маскировка трафика', 'Расширенная аналитика'],
     icon: (
       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
@@ -34,7 +34,6 @@ export default function PaymentPage() {
   const token = localStorage.getItem('token')
 
   const [selectedPlan, setSelectedPlan] = useState('')
-  const [promoCode, setPromoCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -45,9 +44,9 @@ export default function PaymentPage() {
     setError('')
     try {
       const returnUrl = window.location.origin + '/dashboard'
-      const data = await createPayment(token, selectedPlan, returnUrl, promoCode.trim())
-      if (data.payment_url || data.confirmation_url) {
-        window.location.href = data.payment_url || data.confirmation_url
+      const data = await createPayment(token, selectedPlan, returnUrl)
+      if (data.confirmation_url) {
+        window.location.href = data.confirmation_url
       } else {
         setError('Не удалось получить ссылку на оплату')
       }
@@ -60,11 +59,21 @@ export default function PaymentPage() {
 
   return (
     <section className="relative py-16 md:py-24 overflow-hidden">
-      {/* Background effects */}
       <div className="absolute top-1/3 -left-32 w-80 h-80 rounded-full bg-brand/8 blur-[100px]" />
       <div className="absolute bottom-1/3 -right-32 w-80 h-80 rounded-full bg-accent/8 blur-[100px]" />
 
       <div className="relative max-w-3xl mx-auto px-6">
+        {/* Back link */}
+        <Link
+          to="/dashboard"
+          className="inline-flex items-center gap-2 mb-6 text-sm text-text-secondary hover:text-text-primary transition-colors animate-fade-in"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+          </svg>
+          Назад в кабинет
+        </Link>
+
         {/* Header */}
         <div className="text-center mb-12 animate-fade-in">
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass text-xs font-medium text-text-secondary mb-6">
@@ -84,7 +93,7 @@ export default function PaymentPage() {
             return (
               <div
                 key={p.id}
-                className={`group relative p-7 rounded-2xl cursor-pointer transition-all duration-500 hover:-translate-y-1 animate-fade-in-up delay-${(i + 1) * 200} ${
+                className={`group relative p-7 rounded-2xl cursor-pointer transition-all duration-500 hover:-translate-y-1 animate-fade-in-up ${
                   p.highlighted
                     ? 'glass-strong border border-brand/30 glow-brand'
                     : 'glass-card hover:bg-white/[0.06]'
@@ -99,7 +108,6 @@ export default function PaymentPage() {
                   </div>
                 )}
 
-                {/* Selection indicator */}
                 <div className="absolute top-6 right-6">
                   <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
                     isSelected
@@ -114,7 +122,6 @@ export default function PaymentPage() {
                   </div>
                 </div>
 
-                {/* Plan icon */}
                 <div className={`w-12 h-12 rounded-xl flex items-center justify-center mb-4 ${
                   p.highlighted
                     ? 'bg-gradient-to-br from-brand/20 to-accent/10 text-brand-light'
@@ -142,23 +149,17 @@ export default function PaymentPage() {
           })}
         </div>
 
-        {/* Promo code */}
-        <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-500">
-          <div className="flex items-center gap-3 mb-4">
-            <svg className="w-5 h-5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        {/* Info: promo code on dashboard */}
+        <div className="glass-card rounded-2xl p-4 mb-6 animate-fade-in-up">
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
             </svg>
-            <label className="text-sm font-medium">Промокод</label>
-            <span className="text-xs text-text-secondary">(необязательно)</span>
+            <p className="text-sm text-text-secondary">
+              Есть промокод? Активируйте его в <Link to="/dashboard" className="text-brand-light hover:text-accent transition-colors">Личном кабинете</Link>
+            </p>
           </div>
-          <input
-            type="text"
-            value={promoCode}
-            onChange={e => setPromoCode(e.target.value)}
-            placeholder="Введите промокод"
-            className="w-full px-4 py-3.5 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50"
-          />
         </div>
 
         {/* Error */}
@@ -174,7 +175,7 @@ export default function PaymentPage() {
         {/* Pay button */}
         <button
           disabled={loading || !selectedPlan}
-          className="group relative w-full py-4 rounded-xl font-bold text-white text-lg overflow-hidden transition-all duration-300 disabled:opacity-50 hover:shadow-xl hover:shadow-brand/25 hover:-translate-y-0.5 animate-fade-in-up delay-600"
+          className="group relative w-full py-4 rounded-xl font-bold text-white text-lg overflow-hidden transition-all duration-300 disabled:opacity-50 hover:shadow-xl hover:shadow-brand/25 hover:-translate-y-0.5 animate-fade-in-up"
           onClick={handlePayment}
         >
           <span className="absolute inset-0 bg-gradient-to-r from-brand to-brand-dark" />
@@ -199,7 +200,6 @@ export default function PaymentPage() {
           </span>
         </button>
 
-        {/* Security note */}
         <div className="flex items-center justify-center gap-2 mt-4 text-xs text-text-secondary/60">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />

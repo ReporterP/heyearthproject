@@ -5,33 +5,39 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
 func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	setCORS(w)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	var req struct {
+	// Читаем тело один раз
+	var body struct {
 		UserID    string `json:"user_id"`
 		Plan      string `json:"plan"`
 		ReturnURL string `json:"return_url"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	// Извлекаем user_id из JWT-токена; fallback на body.UserID (совместимость)
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		if body.UserID != "" {
+			userID = body.UserID
+		} else {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+			return
+		}
 	}
-	if req.UserID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id required"})
-		return
-	}
+
+	req := body
 
 	var priceRub int
 	switch req.Plan {
@@ -42,9 +48,9 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		priceRub = 200
 	}
 
-	description := fmt.Sprintf("HeYearth VPN %s — 1 month", req.Plan)
+	description := fmt.Sprintf("HeYearth VPN %s — 1 месяц", req.Plan)
 
-	paymentDBID, err := biz.CreatePaymentRecord(req.UserID, float64(priceRub), "RUB", "yookassa", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(priceRub), "RUB", "yookassa", description)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create payment: " + err.Error()})
 		return
@@ -58,7 +64,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = "https://heyearth.com/payment/success"
+		returnURL = "https://heyearth.ru/dashboard"
 	}
 
 	ykResp, err := ykClient.CreatePayment(yookassa.CreatePaymentRequest{
@@ -73,7 +79,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		Description: description,
 		Metadata: map[string]string{
 			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-			"user_id":       req.UserID,
+			"user_id":       userID,
 			"plan":          req.Plan,
 		},
 		Capture: true,
@@ -120,6 +126,27 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 	log.Printf("yookassa webhook: event=%s payment_id=%s status=%s", notification.Event, notification.Object.ID, notification.Object.Status)
 
 	if notification.Event == "payment.succeeded" && notification.Object.Status == "succeeded" {
+		paymentType := notification.Object.Metadata["type"]
+
+		// Донаты не создают подписку
+		if paymentType == "donation" {
+			existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
+			if err == nil && existing != nil {
+				_ = biz.MarkPaymentCompleted(existing.ID)
+				log.Printf("yookassa webhook: donation %s completed", notification.Object.ID)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Пополнение кошелька тенанта
+		if paymentType == "tenant_topup" {
+			// TODO: credit tenant wallet
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Обычная оплата подписки
 		existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
 		if err != nil {
 			log.Printf("yookassa webhook: find payment: %v", err)
@@ -153,10 +180,152 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleApplyPromocode — REST-эндпоинт для применения промокода (JWT auth).
+func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code required"})
+		return
+	}
+
+	user, err := biz.GetOrCreateUser(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "user not found"})
+		return
+	}
+	if user.IsBlocked {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "user is blocked"})
+		return
+	}
+
+	if err := biz.ApplyPromocode(user.ID, code); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Возвращаем обновлённый профиль
+	profile, _ := biz.GetUserProfile(userID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Промокод активирован",
+		"profile": profile,
+	})
+}
+
+// handleCreateDonation — создание доната (поддержка разработчика).
+func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var req struct {
+		Amount    int    `json:"amount"`
+		ReturnURL string `json:"return_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if req.Amount < 50 || req.Amount > 100000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "amount must be 50-100000 RUB"})
+		return
+	}
+
+	description := fmt.Sprintf("HeYearth — донат разработчику (%d ₽)", req.Amount)
+
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "yookassa", description)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create payment: " + err.Error()})
+		return
+	}
+
+	ykClient, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "payments not configured: " + err.Error()})
+		return
+	}
+
+	returnURL := req.ReturnURL
+	if returnURL == "" {
+		returnURL = "https://heyearth.ru/dashboard"
+	}
+
+	ykResp, err := ykClient.CreatePayment(yookassa.CreatePaymentRequest{
+		Amount: yookassa.Amount{
+			Value:    fmt.Sprintf("%d.00", req.Amount),
+			Currency: "RUB",
+		},
+		Confirmation: yookassa.Confirmation{
+			Type:      "redirect",
+			ReturnURL: returnURL,
+		},
+		Description: description,
+		Metadata: map[string]string{
+			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
+			"user_id":       userID,
+			"type":          "donation",
+		},
+		Capture: true,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+		return
+	}
+
+	confirmURL := ""
+	if ykResp.Confirmation != nil {
+		confirmURL = ykResp.Confirmation.ConfirmationURL
+	}
+
+	if err := biz.UpdatePaymentYookassa(paymentDBID, ykResp.ID, ykResp.Status, confirmURL); err != nil {
+		log.Printf("WARNING: failed to update donation record %d: %v", paymentDBID, err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"payment_id":       paymentDBID,
+		"confirmation_url": confirmURL,
+		"yookassa_id":      ykResp.ID,
+		"status":           ykResp.Status,
+	})
+}
+
 func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	setCORS(w)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -189,9 +358,7 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	setCORS(w)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -212,9 +379,7 @@ func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	setCORS(w)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -242,7 +407,7 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = "https://heyearth.com/admin/"
+		returnURL = "https://heyearth.ru/admin/"
 	}
 
 	description := fmt.Sprintf("HeYearth B2B wallet top-up: %.0f RUB", req.Amount)

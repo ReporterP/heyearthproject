@@ -16,17 +16,17 @@ import (
 
 // UserProfile is the full user profile returned to clients.
 type UserProfile struct {
-	UserID            string
-	Username          string
-	HasPassword       bool
-	PreferredPlatform string
-	Locale            string
-	IsBlocked         bool
-	CurrentPlan       string
-	ValidUntil        string
-	IsPremium         bool
-	AccessStatus      string
-	StatusReason      string
+	UserID            string `json:"user_id"`
+	Username          string `json:"username"`
+	HasPassword       bool   `json:"has_password"`
+	PreferredPlatform string `json:"preferred_platform,omitempty"`
+	Locale            string `json:"locale,omitempty"`
+	IsBlocked         bool   `json:"is_blocked"`
+	CurrentPlan       string `json:"current_plan,omitempty"`
+	ValidUntil        string `json:"valid_until,omitempty"`
+	IsPremium         bool   `json:"is_premium"`
+	AccessStatus      string `json:"access_status"`
+	StatusReason      string `json:"status_reason,omitempty"`
 }
 
 // UserAccessState describes whether a user can connect.
@@ -53,26 +53,26 @@ type DeviceRegistration struct {
 
 // UserSubscriptionDetail is returned in subscription lists.
 type UserSubscriptionDetail struct {
-	GroupID    int
-	GroupName  string
-	ValidUntil string
-	AutoRenew  bool
-	Active     bool
-	Plan       string
-	PriceRub   int
+	GroupID    int    `json:"group_id"`
+	GroupName  string `json:"group_name"`
+	ValidUntil string `json:"valid_until"`
+	AutoRenew  bool   `json:"auto_renew"`
+	Active     bool   `json:"active"`
+	Plan       string `json:"plan"`
+	PriceRub   int    `json:"price_rub"`
 }
 
 // UserPaymentDetail is returned in payment lists.
 type UserPaymentDetail struct {
-	ID          int
-	Amount      float64
-	Currency    string
-	Status      string
-	Provider    string
-	ExternalID  string
-	Notes       string
-	CreatedAt   string
-	ConfirmedAt string
+	ID          int     `json:"id"`
+	Amount      float64 `json:"amount"`
+	Currency    string  `json:"currency"`
+	Status      string  `json:"status"`
+	Provider    string  `json:"provider,omitempty"`
+	ExternalID  string  `json:"external_id,omitempty"`
+	Notes       string  `json:"notes,omitempty"`
+	CreatedAt   string  `json:"created_at"`
+	ConfirmedAt string  `json:"confirmed_at,omitempty"`
 }
 
 // ─────────────────────── Anonymous Auth ───────────────────────
@@ -227,7 +227,7 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 	}
 
 	if sub == nil {
-		profile.CurrentPlan = "Free"
+		profile.CurrentPlan = ""
 	} else {
 		profile.CurrentPlan = sub.GroupName
 		profile.ValidUntil = sub.ValidUntil.Format(time.RFC3339)
@@ -429,9 +429,8 @@ func createUserRecord(userID, preferredPlatform, locale string) (*User, error) {
 	if passwordHash != "" {
 		user.PasswordHash = sql.NullString{String: passwordHash, Valid: true}
 	}
-	if err := ensureFreeSubscription(user.ID); err != nil {
-		return nil, err
-	}
+	// Бесплатная подписка больше не выдаётся при регистрации.
+	// Пользователь должен оплатить или ввести промокод.
 	return &user, nil
 }
 
