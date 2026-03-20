@@ -20,7 +20,6 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/xray"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
@@ -420,13 +419,22 @@ func restartNodeAgent(server serverResponse) error {
 }
 
 func syncTunnel(server serverResponse) error {
-	// Regenerate Xray config on the main server with all exit nodes
-	xrayConfigPath := filepath.Join(config.AppDir(), "xray", "config.json")
-	if err := xray.SyncTunnelsOnce(xrayConfigPath); err != nil {
-		return fmt.Errorf("sync tunnels: %w", err)
+	// Check tunnel health: try TCP connect to Xray port (443) on the exit node
+	addr := fmt.Sprintf("%s:443", server.IPAddress)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	status := "healthy"
+	if err != nil {
+		status = "unhealthy"
+	} else {
+		conn.Close()
 	}
-	// Run health check to update tunnel_status
-	xray.CheckTunnelHealthOnce()
+	// Update tunnel_status in DB
+	if _, dbErr := db.DB.Exec(`UPDATE servers SET tunnel_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, status, server.ID); dbErr != nil {
+		return fmt.Errorf("update tunnel status: %w", dbErr)
+	}
+	if err != nil {
+		return fmt.Errorf("tunnel check failed (%s): %w", addr, err)
+	}
 	return nil
 }
 
