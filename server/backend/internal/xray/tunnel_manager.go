@@ -105,6 +105,19 @@ func (tm *TunnelManager) StartPeriodicHealthCheck(interval time.Duration) {
 	}()
 }
 
+// SyncTunnelsOnce is a standalone function that regenerates Xray config and updates tunnel statuses.
+// Used by admin API to trigger tunnel sync without needing a TunnelManager instance.
+func SyncTunnelsOnce(configPath string) error {
+	tm := NewTunnelManager(configPath)
+	return tm.SyncTunnels()
+}
+
+// CheckTunnelHealthOnce runs a one-time health check on all exit nodes.
+func CheckTunnelHealthOnce() {
+	tm := &TunnelManager{}
+	tm.CheckTunnelHealth()
+}
+
 // ─────────────────────── DB Helpers ───────────────────────
 
 func loadExitNodesFromDB() ([]ExitNode, error) {

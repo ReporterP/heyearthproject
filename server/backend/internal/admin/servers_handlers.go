@@ -20,6 +20,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/xray"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
@@ -291,6 +292,11 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+	case "sync_tunnel":
+		if err := syncTunnel(server); err != nil {
+			writeAdminError(w, http.StatusBadGateway, err.Error())
+			return
+		}
 	default:
 		writeAdminError(w, http.StatusBadRequest, "Unsupported server action")
 		return
@@ -410,6 +416,17 @@ func restartNodeAgent(server serverResponse) error {
 	if _, err := db.DB.Exec(`UPDATE servers SET status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, server.ID); err != nil {
 		return err
 	}
+	return nil
+}
+
+func syncTunnel(server serverResponse) error {
+	// Regenerate Xray config on the main server with all exit nodes
+	xrayConfigPath := filepath.Join(config.AppDir(), "xray", "config.json")
+	if err := xray.SyncTunnelsOnce(xrayConfigPath); err != nil {
+		return fmt.Errorf("sync tunnels: %w", err)
+	}
+	// Run health check to update tunnel_status
+	xray.CheckTunnelHealthOnce()
 	return nil
 }
 
