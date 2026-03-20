@@ -521,10 +521,11 @@ func sshAuthMethods(server serverResponse) ([]ssh.AuthMethod, error) {
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	}
-	if strings.TrimSpace(server.SSHPassword) == "" {
+	pw := strings.TrimSpace(server.SSHPassword)
+	if pw == "" {
 		return nil, fmt.Errorf("neither ssh_key_id nor ssh_password is set for this server")
 	}
-	return []ssh.AuthMethod{ssh.Password(server.SSHPassword)}, nil
+	return []ssh.AuthMethod{ssh.Password(pw)}, nil
 }
 
 // ── mTLS connection to node-agent ────────────────────────
@@ -711,7 +712,42 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 
 	cmd := fmt.Sprintf("ls -la %s 2>&1", dirPath)
 	output, _ := session.CombinedOutput(cmd)
-	writeAdminJSON(w, http.StatusOK, map[string]string{"listing": string(output), "path": dirPath})
+	entries := parseLsOutput(string(output))
+	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
+}
+
+// parseLsOutput parses `ls -la` output into structured file entries.
+func parseLsOutput(output string) []map[string]any {
+	var entries []map[string]any
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "total ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 9 {
+			continue
+		}
+		perms := fields[0]
+		sizeStr := fields[4]
+		name := strings.Join(fields[8:], " ")
+		if name == "." || name == ".." {
+			continue
+		}
+		isDir := len(perms) > 0 && perms[0] == 'd'
+		size, _ := strconv.ParseInt(sizeStr, 10, 64)
+		entries = append(entries, map[string]any{
+			"name":   name,
+			"is_dir": isDir,
+			"size":   size,
+			"perms":  perms,
+		})
+	}
+	if entries == nil {
+		entries = []map[string]any{}
+	}
+	return entries
 }
 
 func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {

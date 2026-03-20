@@ -317,7 +317,7 @@ export default function ServersPage() {
     setPort(String(item.port || item.ssh_port || 22)); setSshUser(item.ssh_user || 'root')
     setSshPassword(''); setSshKeyId(item.ssh_key_id != null ? String(item.ssh_key_id) : '')
     setLocation(item.location || ''); setTags((item.tags || []).join(', '))
-    setCountryCode(item.country_code || ''); setServerStatus(item.status || 'active')
+    setCountryCode(item.country_code || ''); setServerStatus(item.status || 'online')
     setIsExitNode(item.is_exit_node || false)
     loadSshKeys()
     setDialog({ mode: 'edit', item })
@@ -385,7 +385,12 @@ export default function ServersPage() {
   async function showFiles(server, path = '/opt/heyearth') {
     try {
       const data = await fetchServerFiles(server.id, path)
-      setFilesModal({ server, path, entries: data.entries || data || [] })
+      let entries = data.entries || []
+      // Fallback: parse raw listing if entries not provided
+      if (entries.length === 0 && data.listing) {
+        entries = parseLsListing(data.listing)
+      }
+      setFilesModal({ server, path, entries })
     } catch (err) {
       toast.error(err.message)
     }
@@ -745,6 +750,22 @@ function formatUptime(seconds) {
   if (d > 0) return `${d}d ${h}h`
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
+}
+
+function parseLsListing(text) {
+  const entries = []
+  for (const line of (text || '').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('total ')) continue
+    const parts = trimmed.split(/\s+/)
+    if (parts.length < 9) continue
+    const perms = parts[0]
+    const size = parseInt(parts[4]) || 0
+    const name = parts.slice(8).join(' ')
+    if (name === '.' || name === '..') continue
+    entries.push({ name, is_dir: perms[0] === 'd', size, perms })
+  }
+  return entries
 }
 
 function formatRelativeTime(isoString) {
