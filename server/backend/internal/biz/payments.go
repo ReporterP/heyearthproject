@@ -27,9 +27,9 @@ func CreatePaymentRecord(userID string, amount float64, currency, provider, desc
 	var id int
 	err := db.DB.QueryRow(`
 		INSERT INTO payments (user_id_text, amount, currency, status, provider, payment_method, description, created_at, updated_at)
-		VALUES ($1, $2, $3, 'pending', $4, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, 'pending', $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		RETURNING id
-	`, userID, amount, currency, provider, description).Scan(&id)
+	`, userID, amount, currency, provider, provider, description).Scan(&id)
 	return id, err
 }
 

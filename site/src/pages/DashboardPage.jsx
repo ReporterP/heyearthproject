@@ -469,6 +469,29 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* ─── iOS PWA Install Hint ─── */}
+        {/iPhone|iPad|iPod/.test(navigator.userAgent) && !window.navigator.standalone && (
+          <div className="glass-card rounded-2xl p-5 mb-6 animate-fade-in-up delay-350 border border-brand/15">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand/20 to-accent/10 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-brand-light" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold mb-1">Установите как приложение</p>
+                <p className="text-xs text-text-secondary leading-relaxed">
+                  Нажмите <span className="inline-flex items-center gap-0.5 text-brand-light font-medium">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25H15M12 1.5v13.5m0 0l-3-3m3 3l3-3" />
+                    </svg>
+                    Поделиться</span> → <span className="text-text-primary font-medium">На экран «Домой»</span> для быстрого доступа
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ─── iOS/macOS Donation ─── */}
         <div className="glass-card rounded-2xl p-6 md:p-8 mb-6 animate-fade-in-up delay-400 border border-pink-500/10">
           <div className="flex items-center gap-3 mb-4">

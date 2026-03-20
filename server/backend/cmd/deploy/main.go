@@ -163,6 +163,7 @@ func main() {
 		doVueSite(sftpClient, client, cfg)
 		doNginx(sftpClient, client, cfg)
 		doSSL(client, cfg)
+		seedConnectionSettings(client, cfg)
 		verifyServices(client)
 	case "update-main":
 		installAnsibleOnServer(client)
@@ -171,6 +172,7 @@ func main() {
 		if cfg.letsEncryptEmail != "" {
 			doSSL(client, cfg)
 		}
+		seedConnectionSettings(client, cfg)
 		verifyServices(client)
 	case "restart":
 		restartServices(client)
@@ -1002,6 +1004,95 @@ func publicBaseURL(cfg *deployConfig) string {
 func verifyServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl is-active heyearth-api nginx", false)
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
+}
+
+// seedConnectionSettings читает Xray-конфиг и reality-ключи с сервера,
+// затем вставляет настройки подключения в app_settings через SQL.
+func seedConnectionSettings(client *ssh.Client, cfg *deployConfig) {
+	fmt.Println("[seed] Автозаполнение настроек подключения...")
+
+	dbURL := cfg.env.get("DATABASE_URL", "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable")
+
+	// Скрипт читает reality-keys.json и xray config, затем вставляет в БД
+	script := fmt.Sprintf(`set -e
+MAIN_HOST="%s"
+
+# Читаем Reality-ключи
+KEYS_FILE="/opt/heyearth/state/reality-keys.json"
+if [ -f "$KEYS_FILE" ]; then
+  PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])" 2>/dev/null || echo "")
+  SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])" 2>/dev/null || echo "")
+else
+  PUB_KEY=""
+  SHORT_ID=""
+fi
+
+# Ищем VLESS UUID из xray конфига
+XRAY_CONF="/opt/heyearth/xray/config.json"
+if [ -f "$XRAY_CONF" ]; then
+  VLESS_UUID=$(python3 -c "
+import json
+cfg = json.load(open('$XRAY_CONF'))
+for inb in cfg.get('inbounds', []):
+    for client in inb.get('settings', {}).get('clients', []):
+        print(client.get('id', ''))
+        break
+    break
+" 2>/dev/null || echo "")
+else
+  VLESS_UUID=""
+fi
+
+# Читаем SNI из xray конфига
+if [ -f "$XRAY_CONF" ]; then
+  REALITY_SNI=$(python3 -c "
+import json
+cfg = json.load(open('$XRAY_CONF'))
+for inb in cfg.get('inbounds', []):
+    sn = inb.get('streamSettings', {}).get('realitySettings', {}).get('serverNames', [])
+    if sn:
+        print(sn[0])
+        break
+" 2>/dev/null || echo "")
+else
+  REALITY_SNI=""
+fi
+
+echo "  main_server_host=$MAIN_HOST"
+echo "  vless_uuid=$VLESS_UUID"
+echo "  reality_public_key=$PUB_KEY"
+echo "  reality_short_id=$SHORT_ID"
+echo "  reality_sni=$REALITY_SNI"
+
+# Вставляем в БД (только если значение непустое, не перезаписываем уже заполненные)
+psql "%s" -c "
+INSERT INTO app_settings (key, value, updated_at) VALUES
+  ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP),
+  ('vless_port', '443', CURRENT_TIMESTAMP),
+  ('socks5_port', '1080', CURRENT_TIMESTAMP),
+  ('http_proxy_port', '8080', CURRENT_TIMESTAMP)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+WHERE app_settings.value = '' OR app_settings.value IS NULL;
+" 2>/dev/null || true
+
+# Вставляем ключи xray (только если получены)
+if [ -n "$VLESS_UUID" ]; then
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_uuid', '$VLESS_UUID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+fi
+if [ -n "$PUB_KEY" ]; then
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_public_key', '$PUB_KEY', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+fi
+if [ -n "$SHORT_ID" ]; then
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+fi
+if [ -n "$REALITY_SNI" ]; then
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+fi
+
+echo "[seed] Готово"
+`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL)
+
+	_, _ = runSSH(client, script, false)
 }
 
 func doStatus(client *ssh.Client, cfg *deployConfig) {
