@@ -163,6 +163,7 @@ func main() {
 		doVueSite(sftpClient, client, cfg)
 		doNginx(sftpClient, client, cfg)
 		doSSL(client, cfg)
+		doNginx(sftpClient, client, cfg) // перезаписать конфиг с учётом SSL
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
 	case "update-main":
@@ -182,6 +183,7 @@ func main() {
 		doVueSite(sftpClient, client, cfg)
 		doNginx(sftpClient, client, cfg)
 		doSSL(client, cfg)
+		doNginx(sftpClient, client, cfg) // перезаписать конфиг с учётом SSL
 	case "admin-web":
 		doAdminWeb(sftpClient, client, cfg)
 		_, _ = runSSH(client, "nginx -t && systemctl reload nginx", false)
@@ -862,30 +864,36 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "mkdir -p "+appDir+"/releases", true)
 
 	domain := cfg.siteDomain
+	certPath := "/etc/letsencrypt/live/" + domain
 
-	// 3 server blocks: main site + API (heyearth.ru), admin panel, site.* redirect
-	nginxConf := fmt.Sprintf(`# ── Main site + API (%[1]s) ──────────────────────────────────────
+	// Проверяем наличие SSL-сертификата
+	hasCert, _ := runSSH(client, fmt.Sprintf("test -f %s/fullchain.pem && echo yes || echo no", certPath), false)
+	ssl := strings.TrimSpace(hasCert) == "yes"
+
+	var nginxConf string
+	if ssl {
+		nginxConf = buildNginxConfSSL(domain, appDir, certPath)
+	} else {
+		nginxConf = buildNginxConfHTTP(domain, appDir)
+	}
+
+	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
+		log.Fatal(err)
+	}
+	_, _ = runSSH(client, "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && systemctl restart nginx", true)
+}
+
+func buildNginxConfHTTP(domain, appDir string) string {
+	return fmt.Sprintf(`# ── Main site + API (%[1]s) ──────────────────────────────────────
 server {
     listen 80;
     listen [::]:80;
     server_name %[1]s www.%[1]s;
 
-    # gRPC endpoints
-    location /heyearth.v1.ConfigApi/ {
-        grpc_pass 127.0.0.1:50051;
-        grpc_set_header Host $host;
-    }
-    location /heyearth.v1.ClientApi/ {
-        grpc_pass 127.0.0.1:50051;
-        grpc_set_header Host $host;
-    }
+    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
+    location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
+    location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
 
-    location = /robots.txt {
-        default_type text/plain;
-        return 200 "User-agent: *\nDisallow: /api/\n";
-    }
-
-    # REST API (admin + user portal + payments + webhooks)
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -896,22 +904,10 @@ server {
         client_max_body_size 512m;
     }
 
-    # App release downloads
-    location /releases/ {
-        alias %[2]s/releases/;
-        add_header Cache-Control "public, max-age=3600";
-        try_files $uri =404;
-    }
+    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
-    # Vue 3 SPA — основной сайт + пользовательский портал
-    location / {
-        root /var/www/heyearth-site;
-        try_files $uri $uri/ /index.html;
-    }
-    location = /index.html {
-        root /var/www/heyearth-site;
-        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
-    }
+    location / { root /var/www/heyearth-site; try_files $uri $uri/ /index.html; }
+    location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
 }
 
 # ── Admin panel (admin.%[1]s) ───────────────────────────────────
@@ -920,7 +916,6 @@ server {
     listen [::]:80;
     server_name admin.%[1]s;
 
-    # Proxy admin API to backend
     location /api/admin/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -931,15 +926,8 @@ server {
         client_max_body_size 512m;
     }
 
-    # Admin Web SPA
-    location / {
-        root /var/www/heyearth;
-        try_files $uri $uri/ /index.html;
-    }
-    location = /index.html {
-        root /var/www/heyearth;
-        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
-    }
+    location / { root /var/www/heyearth; try_files $uri $uri/ /index.html; }
+    location = /index.html { root /var/www/heyearth; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
 }
 
 # ── Redirect site.%[1]s → %[1]s ────────────────────────────────
@@ -950,7 +938,7 @@ server {
     return 301 $scheme://%[1]s$request_uri;
 }
 
-# ── Catch-all: redirect to main site ───────────────────────────
+# ── Catch-all ───────────────────────────────────────────────────
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -958,31 +946,105 @@ server {
     return 301 http://%[1]s$request_uri;
 }
 `, domain, appDir)
+}
 
-	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
-		log.Fatal(err)
-	}
-	_, _ = runSSH(client, "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && systemctl restart nginx", true)
+func buildNginxConfSSL(domain, appDir, certPath string) string {
+	return fmt.Sprintf(`# ── HTTP → HTTPS redirect ────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s;
+    return 301 https://%[1]s$request_uri;
+}
+
+# ── Main site + API (%[1]s) — HTTPS ─────────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name %[1]s www.%[1]s;
+
+    ssl_certificate %[3]s/fullchain.pem;
+    ssl_certificate_key %[3]s/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
+    location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
+    location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 512m;
+    }
+
+    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
+
+    location / { root /var/www/heyearth-site; try_files $uri $uri/ /index.html; }
+    location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
+}
+
+# ── Admin panel (admin.%[1]s) — HTTPS ───────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name admin.%[1]s;
+
+    ssl_certificate %[3]s/fullchain.pem;
+    ssl_certificate_key %[3]s/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location /api/admin/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 512m;
+    }
+
+    location / { root /var/www/heyearth; try_files $uri $uri/ /index.html; }
+    location = /index.html { root /var/www/heyearth; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
+}
+
+# ── Redirect site.%[1]s → %[1]s (HTTPS) ────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name site.%[1]s;
+
+    ssl_certificate %[3]s/fullchain.pem;
+    ssl_certificate_key %[3]s/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    return 301 https://%[1]s$request_uri;
+}
+
+# ── Catch-all HTTP ──────────────────────────────────────────────
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 https://%[1]s$request_uri;
+}
+`, domain, appDir, certPath)
 }
 
 func doSSL(client *ssh.Client, cfg *deployConfig) {
 	if strings.TrimSpace(cfg.letsEncryptEmail) == "" {
 		return
 	}
-	cmd := fmt.Sprintf("apt-get install -y -qq certbot python3-certbot-nginx && certbot --nginx -d %s -d www.%s -d admin.%s -d site.%s --non-interactive --agree-tos -m %s --redirect",
+	// Устанавливаем certbot и получаем сертификат (certonly — без изменения nginx-конфига)
+	cmd := fmt.Sprintf("apt-get install -y -qq certbot python3-certbot-nginx && certbot certonly --nginx -d %s -d www.%s -d admin.%s -d site.%s --non-interactive --agree-tos -m %s",
 		cfg.siteDomain, cfg.siteDomain, cfg.siteDomain, cfg.siteDomain, cfg.letsEncryptEmail)
 	_, _ = runSSH(client, cmd, false)
-	// Ensure http2 is enabled on the SSL listener that certbot creates/modifies.
-	// certbot adds "listen 443 ssl" (without http2); gRPC requires h2 in ALPN.
-	// nginx >= 1.25: use "http2 on;" standalone directive.
-	// nginx 1.24 and below: patch the listen line to "listen 443 ssl http2;".
-	patchHTTP2 := `set -e
-sed -i 's/listen \[\:\:\]\:443 ssl ipv6only=on;/listen [::]:443 ssl http2 ipv6only=on;/' /etc/nginx/conf.d/heyearth.conf
-sed -i 's/listen \[\:\:\]\:443 ssl;/listen [::]:443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
-sed -i 's/listen 443 ssl http2 http2;/listen 443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
-sed -i 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/conf.d/heyearth.conf
-nginx -t && systemctl reload nginx && echo "nginx reloaded with http2"`
-	_, _ = runSSH(client, patchHTTP2, false)
 }
 
 func restartServices(client *ssh.Client) {
