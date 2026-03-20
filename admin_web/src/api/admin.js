@@ -101,7 +101,7 @@ export function runServerAction(id, action) {
 }
 export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 } = {}) {
   const params = new URLSearchParams({ service, tail })
-  return apiFetch(`/servers/${serverId}/logs?${params}`, { raw: true }).then(r => r.text())
+  return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')
 }
 export function fetchServerFiles(serverId, path) {
   const params = new URLSearchParams({ path })
