@@ -41,7 +41,9 @@ export default function AdminsPage() {
       const [u, r, p] = await Promise.all([fetchAdminUsers(), fetchAdminRoles(), fetchAdminPermissions()])
       setUsers(u.admins || u || [])
       setRoles(r.roles || r || [])
-      setAllPerms(p.permissions || p || [])
+      // permissions come as objects {Key, Name, Description} or strings — normalize to strings
+      const rawPerms = p.permissions || p || []
+      setAllPerms(rawPerms.map(x => typeof x === 'object' ? (x.Key || x.key || x.name) : x))
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -92,7 +94,8 @@ export default function AdminsPage() {
 
   function openEditRole(r) {
     setRoleKey(r.key || ''); setRoleName(r.name || '')
-    setRolePerms(r.permissions || [])
+    // normalize role permissions to string keys
+    setRolePerms((r.permissions || []).map(x => typeof x === 'object' ? (x.Key || x.key) : x))
     setRoleDialog({ mode: 'edit', item: r })
   }
 
@@ -195,9 +198,12 @@ export default function AdminsPage() {
               </div>
               <p className="text-xs text-text-secondary font-mono mb-2">{r.key}</p>
               <div className="flex flex-wrap gap-1">
-                {(r.permissions || []).map(p => (
-                  <span key={p} className="text-xs bg-surface-alt text-text-secondary px-2 py-0.5 rounded">{p}</span>
-                ))}
+                {(r.permissions || []).map((p, i) => {
+                  const label = typeof p === 'object' ? (p.Key || p.key || p.name) : p
+                  return (
+                    <span key={label || i} className="text-xs bg-surface-alt text-text-secondary px-2 py-0.5 rounded">{label}</span>
+                  )
+                })}
               </div>
               {can('admins.write') && !r.is_system && (
                 <button onClick={() => openEditRole(r)} className="mt-3 text-xs text-brand hover:underline">{t.edit}</button>

@@ -21,6 +21,7 @@ type dashboardOverview struct {
 type adminUserRow struct {
 	ID                int           `json:"id"`
 	UserID            string        `json:"user_id"`
+	Username          string        `json:"username"`
 	TelegramID        sql.NullInt64 `json:"-"`
 	Role              string        `json:"role"`
 	IsBlocked         bool          `json:"is_blocked"`

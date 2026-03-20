@@ -71,7 +71,9 @@
       "Bash(wc -l \"/c/Users/alex/Documents/heyearthproject/server/backend/internal/admin\"/*.go)",
       "Bash(find /c/Users/alex/Documents/heyearthproject/site -name package.json -o -name vite.config.js -o -name *service* -o -name *sw.js)",
       "Bash(grep -A 10 \"activeTab === ''other''\" /c/Users/alex/Documents/heyearthproject/site/src/views/DashboardPage.vue)",
-      "Bash(grep -n \"innerHTML\\\\|dangerouslySetInnerHTML\\\\|v-html\" /c/Users/alex/Documents/heyearthproject/site/src/views/*.vue /c/Users/alex/Documents/heyearthproject/site/src/components/*.vue)"
+      "Bash(grep -n \"innerHTML\\\\|dangerouslySetInnerHTML\\\\|v-html\" /c/Users/alex/Documents/heyearthproject/site/src/views/*.vue /c/Users/alex/Documents/heyearthproject/site/src/components/*.vue)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(ls C:/Users/alex/Documents/heyearthproject/site/node_modules/.bin/vite*)"
     ]
   },
   "enabledPlugins": {

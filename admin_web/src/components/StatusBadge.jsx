@@ -11,6 +11,8 @@ const colors = {
   failed: 'bg-red-500/20 text-red-400',
   pending: 'bg-yellow-500/20 text-yellow-400',
   configuring: 'bg-yellow-500/20 text-yellow-400',
+  provisioning: 'bg-yellow-500/20 text-yellow-400',
+  maintenance: 'bg-orange-500/20 text-orange-400',
   waiting_for_capture: 'bg-yellow-500/20 text-yellow-400',
 }
 

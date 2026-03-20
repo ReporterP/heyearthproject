@@ -20,12 +20,14 @@ export default function PromocodesPage() {
 
   const [code, setCode] = useState('')
   const [groupId, setGroupId] = useState('')
+  const [durationDays, setDurationDays] = useState('')
   const [maxUses, setMaxUses] = useState('')
   const [isActive, setIsActive] = useState(true)
 
   function openCreate() {
     setCode('')
     setGroupId('')
+    setDurationDays('30')
     setMaxUses('')
     setIsActive(true)
     setDialog({ mode: 'create' })
@@ -33,7 +35,8 @@ export default function PromocodesPage() {
 
   function openEdit(item) {
     setCode(item.code || '')
-    setGroupId(item.group_id != null ? String(item.group_id) : '')
+    setGroupId(item.group_id_granted != null ? String(item.group_id_granted) : (item.group_id != null ? String(item.group_id) : ''))
+    setDurationDays(item.duration_days != null ? String(item.duration_days) : '30')
     setMaxUses(item.max_uses != null ? String(item.max_uses) : '')
     setIsActive(item.is_active !== false)
     setDialog({ mode: 'edit', item })
@@ -45,7 +48,8 @@ export default function PromocodesPage() {
       const payload = {
         code,
         is_active: isActive,
-        ...(groupId ? { group_id: parseInt(groupId) } : {}),
+        ...(groupId ? { group_id_granted: parseInt(groupId) } : {}),
+        ...(durationDays ? { duration_days: parseInt(durationDays) } : {}),
         ...(maxUses ? { max_uses: parseInt(maxUses) } : {}),
       }
       if (dialog.mode === 'create') {
@@ -106,6 +110,7 @@ export default function PromocodesPage() {
               <tr className="border-b border-white/10 text-text-secondary text-left">
                 <th className="py-2 px-3">{t.fieldCode}</th>
                 <th className="py-2 px-3">{t.fieldGroupId}</th>
+                <th className="py-2 px-3">{t.fieldDurationDays || 'Дней'}</th>
                 <th className="py-2 px-3">{t.fieldMaxUses}</th>
                 <th className="py-2 px-3">Uses</th>
                 <th className="py-2 px-3">{t.fieldIsActive}</th>
@@ -116,7 +121,8 @@ export default function PromocodesPage() {
               {paged.items.map(p => (
                 <tr key={p.code} className="border-b border-white/5 hover:bg-white/5 transition">
                   <td className="py-2 px-3 font-mono">{p.code}</td>
-                  <td className="py-2 px-3">{p.group_id ?? '\u2014'}</td>
+                  <td className="py-2 px-3">{p.group_id_granted ?? p.group_id ?? '\u2014'}</td>
+                  <td className="py-2 px-3">{p.duration_days ?? '\u2014'}</td>
                   <td className="py-2 px-3">{p.max_uses ?? '\u221e'}</td>
                   <td className="py-2 px-3">{p.use_count ?? 0}</td>
                   <td className="py-2 px-3">{p.is_active ? '\u2713' : '\u2717'}</td>
@@ -142,6 +148,9 @@ export default function PromocodesPage() {
         </FormField>
         <FormField label={t.fieldGroupIdOptional}>
           <TextInput value={groupId} onChange={setGroupId} type="number" />
+        </FormField>
+        <FormField label={t.fieldDurationDays || 'Длительность (дней)'}>
+          <TextInput value={durationDays} onChange={setDurationDays} type="number" placeholder="30" />
         </FormField>
         <FormField label={t.fieldMaxUses}>
           <TextInput value={maxUses} onChange={setMaxUses} type="number" />

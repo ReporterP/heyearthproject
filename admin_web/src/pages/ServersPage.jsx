@@ -101,14 +101,17 @@ function CopyButton({ text, toast }) {
 /* ── Metrics mini-panel (shown in detail) ── */
 function MetricsPanel({ metrics }) {
   if (!metrics) return null
+  // Backend returns: cpu_usage, memory_usage, active_connections, synced_at
   const items = [
-    { label: 'CPU', value: metrics.cpu_percent != null ? `${metrics.cpu_percent.toFixed(1)}%` : null },
-    { label: 'RAM', value: metrics.memory_percent != null ? `${metrics.memory_percent.toFixed(1)}%` : null },
-    { label: 'Disk', value: metrics.disk_percent != null ? `${metrics.disk_percent.toFixed(1)}%` : null },
+    { label: 'CPU', value: metrics.cpu_usage != null ? `${Number(metrics.cpu_usage).toFixed(1)}%` : (metrics.cpu_percent != null ? `${Number(metrics.cpu_percent).toFixed(1)}%` : null) },
+    { label: 'RAM', value: metrics.memory_usage != null ? `${Number(metrics.memory_usage).toFixed(1)}%` : (metrics.memory_percent != null ? `${Number(metrics.memory_percent).toFixed(1)}%` : null) },
+    { label: 'Disk', value: metrics.disk_usage != null ? `${Number(metrics.disk_usage).toFixed(1)}%` : (metrics.disk_percent != null ? `${Number(metrics.disk_percent).toFixed(1)}%` : null) },
+    { label: 'Connections', value: metrics.active_connections != null ? String(metrics.active_connections) : null },
+    { label: 'Synced', value: metrics.synced_at ? formatRelativeTime(metrics.synced_at) : null },
     { label: 'Uptime', value: metrics.uptime ? formatUptime(metrics.uptime) : null },
     { label: 'Load', value: metrics.load_avg != null ? String(metrics.load_avg) : null },
   ].filter(i => i.value != null)
-  if (items.length === 0) return null
+  if (items.length === 0) return <p className="text-xs text-text-secondary mt-2">No metrics data available</p>
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 p-3 rounded-lg bg-surface-alt/50">
       {items.map(i => (
@@ -122,15 +125,16 @@ function MetricsPanel({ metrics }) {
 }
 
 /* ── Status filter tabs ── */
-const STATUS_FILTERS = ['all', 'active', 'inactive', 'maintenance']
+const STATUS_FILTERS = ['all', 'online', 'provisioning', 'offline', 'maintenance']
 
 function StatusFilterBar({ value, onChange, counts }) {
   const { t } = useT()
   const labels = {
-    all: t.serverFilterAll || 'All',
-    active: t.serverFilterActive || 'Active',
-    inactive: t.serverFilterInactive || 'Inactive',
-    maintenance: t.serverFilterMaintenance || 'Maintenance',
+    all: t.serverFilterAll || 'Все',
+    online: t.serverFilterOnline || 'Онлайн',
+    provisioning: t.serverFilterProvisioning || 'Настройка',
+    offline: t.serverFilterOffline || 'Оффлайн',
+    maintenance: t.serverFilterMaintenance || 'Обслуживание',
   }
   return (
     <div className="flex items-center gap-1 mb-4 flex-wrap">
@@ -287,7 +291,7 @@ export default function ServersPage() {
 
   // Status counts
   const statusCounts = useMemo(() => {
-    const counts = { all: paged.items.length, active: 0, inactive: 0, maintenance: 0 }
+    const counts = { all: paged.items.length, online: 0, provisioning: 0, offline: 0, maintenance: 0 }
     paged.items.forEach(srv => {
       const s = (srv.status || '').toLowerCase()
       if (counts[s] != null) counts[s]++
@@ -296,14 +300,14 @@ export default function ServersPage() {
   }, [paged.items])
 
   const onlineCount = useMemo(() =>
-    paged.items.filter(s => (s.status || '').toLowerCase() === 'active').length,
+    paged.items.filter(s => (s.status || '').toLowerCase() === 'online').length,
     [paged.items]
   )
 
   function openCreate() {
     setName(''); setHost(''); setPort('22'); setSshUser('root')
     setSshPassword(''); setSshKeyId(''); setLocation(''); setTags('')
-    setCountryCode(''); setServerStatus('active'); setIsExitNode(false)
+    setCountryCode(''); setServerStatus('online'); setIsExitNode(false)
     loadSshKeys()
     setDialog({ mode: 'create' })
   }
@@ -323,10 +327,8 @@ export default function ServersPage() {
     setSaving(true)
     try {
       const payload = {
-        name, ip_address: host, host, port: parseInt(port), ssh_user: sshUser,
-        location, country_code: countryCode, status: serverStatus,
-        is_exit_node: isExitNode,
-        tags: tags.split(',').map(s => s.trim()).filter(Boolean),
+        name, ip_address: host, ssh_port: parseInt(port), ssh_user: sshUser,
+        country_code: countryCode, status: serverStatus,
       }
       if (sshPassword) payload.ssh_password = sshPassword
       if (sshKeyId) payload.ssh_key_id = parseInt(sshKeyId)
@@ -390,18 +392,22 @@ export default function ServersPage() {
   }
 
   async function toggleMetrics(serverId) {
-    setExpandedMetrics(prev => {
-      if (prev[serverId]) {
+    // If already expanded — collapse
+    if (expandedMetrics[serverId]) {
+      setExpandedMetrics(prev => {
         const n = { ...prev }; delete n[serverId]; return n
-      }
-      return prev
-    })
-    // If collapsing, the state update above handles it; check current state
-    if (expandedMetrics[serverId]) return
+      })
+      return
+    }
+    // Expand — fetch detail
     try {
+      setExpandedMetrics(prev => ({ ...prev, [serverId]: 'loading' }))
       const detail = await fetchServerDetail(serverId)
       setExpandedMetrics(prev => ({ ...prev, [serverId]: detail }))
     } catch (err) {
+      setExpandedMetrics(prev => {
+        const n = { ...prev }; delete n[serverId]; return n
+      })
       toast.error(err.message)
     }
   }
@@ -480,7 +486,8 @@ export default function ServersPage() {
           <IconChart />
           {detail ? (t.serverHideMetrics || 'Hide metrics') : (t.serverShowMetrics || 'Show metrics')}
         </button>
-        {detail && <MetricsPanel metrics={detail.metrics || detail} />}
+        {detail === 'loading' && <p className="text-xs text-text-secondary mt-2">{t.loading || 'Loading...'}</p>}
+        {detail && detail !== 'loading' && <MetricsPanel metrics={detail.load_metrics || detail.metrics || detail} />}
 
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
@@ -704,9 +711,10 @@ export default function ServersPage() {
         <FormField label={t.fieldTags}><TextInput value={tags} onChange={setTags} /></FormField>
         <FormField label={t.fieldServerStatus}>
           <SelectInput value={serverStatus} onChange={setServerStatus} options={[
-            { value: 'active', label: 'Active' },
-            { value: 'inactive', label: 'Inactive' },
-            { value: 'maintenance', label: 'Maintenance' },
+            { value: 'online', label: 'Онлайн' },
+            { value: 'provisioning', label: 'Настройка' },
+            { value: 'offline', label: 'Оффлайн' },
+            { value: 'maintenance', label: 'Обслуживание' },
           ]} />
         </FormField>
         <Checkbox label={t.serverExitNode} checked={isExitNode} onChange={setIsExitNode} />

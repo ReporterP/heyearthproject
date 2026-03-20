@@ -17,9 +17,15 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	args := []any{}
 	argN := 1
 	if p.Search != "" {
-		where += fmt.Sprintf(" AND (u.user_id ILIKE $%d OR COALESCE(u.role,'') ILIKE $%d)", argN, argN)
+		where += fmt.Sprintf(" AND (u.user_id ILIKE $%d OR COALESCE(u.username,'') ILIKE $%d OR COALESCE(u.role,'') ILIKE $%d)", argN, argN, argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
+	}
+	// Status filter: "active" = not blocked, "blocked" = blocked
+	if p.Status == "active" {
+		where += " AND COALESCE(u.is_blocked, FALSE) = FALSE"
+	} else if p.Status == "blocked" {
+		where += " AND u.is_blocked = TRUE"
 	}
 
 	var total int
@@ -30,7 +36,7 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT u.id, u.user_id, u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE),
+		SELECT u.id, u.user_id, COALESCE(u.username, ''), u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE),
 		       COALESCE(u.preferred_platform, ''),
 		       u.created_at, COALESCE(u.updated_at, u.created_at),
 		       COALESCE(ug.name, 'Free') AS current_plan,
@@ -60,13 +66,14 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var users []map[string]any
 	for rows.Next() {
 		var row adminUserRow
-		if err := rows.Scan(&row.ID, &row.UserID, &row.TelegramID, &row.Role, &row.IsBlocked, &row.PreferredPlatform, &row.CreatedAt, &row.UpdatedAt, &row.CurrentPlan, &row.ValidUntil); err != nil {
+		if err := rows.Scan(&row.ID, &row.UserID, &row.Username, &row.TelegramID, &row.Role, &row.IsBlocked, &row.PreferredPlatform, &row.CreatedAt, &row.UpdatedAt, &row.CurrentPlan, &row.ValidUntil); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan user")
 			return
 		}
 		payload := map[string]any{
 			"id":                 row.ID,
 			"user_id":            row.UserID,
+			"username":           row.Username,
 			"role":               row.Role,
 			"is_blocked":         row.IsBlocked,
 			"preferred_platform": row.PreferredPlatform,

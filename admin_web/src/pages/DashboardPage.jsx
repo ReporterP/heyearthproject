@@ -20,13 +20,13 @@ export default function DashboardPage() {
   if (error) return <p className="text-red-400">{error}</p>
 
   const cards = [
-    { label: t.dashUsers, value: data?.total_users, sub: `${data?.active_users ?? 0} ${t.dashActiveUsers}` },
-    { label: t.dashServers, value: data?.total_servers, sub: `${data?.online_servers ?? 0} ${t.dashOnlineServers}` },
-    { label: t.dashGroups, value: data?.total_groups },
-    { label: t.dashPromocodes, value: data?.total_promocodes },
-    { label: t.dashPayments, value: data?.total_payments },
+    { label: t.dashUsers, value: data?.users_count, sub: `${data?.active_users_count ?? 0} ${t.dashActiveUsers}` },
+    { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}` },
+    { label: t.dashGroups, value: data?.groups_count },
+    { label: t.dashPromocodes, value: data?.promocodes_count },
+    { label: t.dashPayments, value: data?.payments_count },
     { label: t.dashActiveReleases, value: data?.active_releases },
-    { label: t.dashAdmins, value: data?.total_admins },
+    { label: t.dashAdmins, value: data?.admins_count },
   ]
 
   return (
