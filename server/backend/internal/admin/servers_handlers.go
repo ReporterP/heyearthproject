@@ -52,7 +52,8 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`
 		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
-		       s.ssh_key_id, COALESCE(sk.name, '')
+		       s.ssh_key_id, COALESCE(sk.name, ''),
+		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port
 		FROM servers s
 		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 		WHERE %s
@@ -73,7 +74,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		var s serverResponse
 		var updatedAt time.Time
 		var sshKeyName string
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
 			return
 		}
@@ -136,12 +137,22 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	isExitNode := false
+	if req.IsExitNode != nil {
+		isExitNode = *req.IsExitNode
+	}
+
 	var serverID int
 	err = tx.QueryRow(`
-		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key_id, country_code, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key_id, country_code, status,
+		                     is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
+		                     tunnel_short_id, tunnel_sni, tunnel_ss_method, tunnel_ss_password, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, CURRENT_TIMESTAMP)
 		RETURNING id
-	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser), req.SSHPassword, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue).Scan(&serverID)
+	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser),
+		req.SSHPassword, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue,
+		isExitNode, req.TunnelProtocol, req.TunnelPort, req.TunnelUUID, req.TunnelPublicKey,
+		req.TunnelShortID, req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass).Scan(&serverID)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to insert server")
 		return
@@ -207,6 +218,36 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		req.GroupIDs = existing.GroupIDs
 	}
 
+	// Merge exit-node / tunnel fields
+	isExitNode := existing.IsExitNode
+	if req.IsExitNode != nil {
+		isExitNode = *req.IsExitNode
+	}
+	if req.TunnelProtocol == "" {
+		req.TunnelProtocol = existing.TunnelProtocol
+	}
+	if req.TunnelPort == 0 {
+		req.TunnelPort = existing.TunnelPort
+	}
+	if req.TunnelUUID == "" {
+		req.TunnelUUID = existing.TunnelUUID
+	}
+	if req.TunnelPublicKey == "" {
+		req.TunnelPublicKey = existing.TunnelPublicKey
+	}
+	if req.TunnelShortID == "" {
+		req.TunnelShortID = existing.TunnelShortID
+	}
+	if req.TunnelSNI == "" {
+		req.TunnelSNI = existing.TunnelSNI
+	}
+	if req.TunnelSSMethod == "" {
+		req.TunnelSSMethod = existing.TunnelSSMethod
+	}
+	if req.TunnelSSPass == "" {
+		req.TunnelSSPass = existing.TunnelSSPass
+	}
+
 	tx, err := db.DB.Begin()
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
@@ -217,9 +258,16 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.Exec(`
 		UPDATE servers
 		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5,
-		    ssh_key_id = $6, country_code = $7, status = $8, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $9
-	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.SshKeyID, req.CountryCode, req.Status, serverID); err != nil {
+		    ssh_key_id = $6, country_code = $7, status = $8,
+		    is_exit_node = $9, tunnel_protocol = $10, tunnel_port = $11,
+		    tunnel_uuid = $12, tunnel_public_key = $13, tunnel_short_id = $14,
+		    tunnel_sni = $15, tunnel_ss_method = $16, tunnel_ss_password = $17,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $18
+	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.SshKeyID, req.CountryCode, req.Status,
+		isExitNode, req.TunnelProtocol, req.TunnelPort,
+		req.TunnelUUID, req.TunnelPublicKey, req.TunnelShortID,
+		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, serverID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
 		return
 	}
@@ -313,7 +361,11 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		query := `
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.ssh_password,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
-			       s.ssh_key_id, COALESCE(sk.name, '')
+			       s.ssh_key_id, COALESCE(sk.name, ''),
+			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
+			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
+			       COALESCE(s.tunnel_short_id, ''), COALESCE(s.tunnel_sni, ''),
+			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
@@ -321,7 +373,11 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		err := db.DB.QueryRow(query, serverID).Scan(
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.SSHPassword, &server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &server.SshKeyID, &sshKeyName)
+			&updatedAt, &server.SshKeyID, &sshKeyName,
+			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
+			&server.TunnelUUID, &server.TunnelPublicKey,
+			&server.TunnelShortID, &server.TunnelSNI,
+			&server.TunnelSSMethod, &server.TunnelSSPass)
 		if err != nil {
 			return server, err
 		}
@@ -329,7 +385,11 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		query := `
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
-			       s.ssh_key_id, COALESCE(sk.name, '')
+			       s.ssh_key_id, COALESCE(sk.name, ''),
+			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
+			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
+			       COALESCE(s.tunnel_short_id, ''), COALESCE(s.tunnel_sni, ''),
+			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
@@ -337,7 +397,11 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		err := db.DB.QueryRow(query, serverID).Scan(
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &server.SshKeyID, &sshKeyName)
+			&updatedAt, &server.SshKeyID, &sshKeyName,
+			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
+			&server.TunnelUUID, &server.TunnelPublicKey,
+			&server.TunnelShortID, &server.TunnelSNI,
+			&server.TunnelSSMethod, &server.TunnelSSPass)
 		if err != nil {
 			return server, err
 		}
@@ -419,8 +483,12 @@ func restartNodeAgent(server serverResponse) error {
 }
 
 func syncTunnel(server serverResponse) error {
-	// Check tunnel health: try TCP connect to Xray port (443) on the exit node
-	addr := fmt.Sprintf("%s:443", server.IPAddress)
+	// Check tunnel health: try TCP connect to tunnel port on the exit node
+	port := server.TunnelPort
+	if port == 0 {
+		port = 443
+	}
+	addr := fmt.Sprintf("%s:%d", server.IPAddress, port)
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	status := "healthy"
 	if err != nil {

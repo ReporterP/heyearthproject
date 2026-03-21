@@ -133,6 +133,17 @@ type serverResponse struct {
 	LoadMetrics json.RawMessage `json:"load_metrics"`
 	GroupIDs    []int           `json:"group_ids"`
 	UpdatedAt   string          `json:"updated_at"`
+	// Exit-node / tunnel
+	IsExitNode      bool   `json:"is_exit_node"`
+	TunnelStatus    string `json:"tunnel_status"`
+	TunnelProtocol  string `json:"tunnel_protocol"`
+	TunnelPort      int    `json:"tunnel_port"`
+	TunnelUUID      string `json:"tunnel_uuid,omitempty"`
+	TunnelPublicKey string `json:"tunnel_public_key,omitempty"`
+	TunnelShortID   string `json:"tunnel_short_id,omitempty"`
+	TunnelSNI       string `json:"tunnel_sni,omitempty"`
+	TunnelSSMethod  string `json:"tunnel_ss_method,omitempty"`
+	TunnelSSPass    string `json:"tunnel_ss_password,omitempty"`
 }
 
 type serverPayload struct {
@@ -145,6 +156,16 @@ type serverPayload struct {
 	CountryCode string `json:"country_code"`
 	Status      string `json:"status"`
 	GroupIDs    []int  `json:"group_ids"`
+	// Exit-node / tunnel
+	IsExitNode      *bool  `json:"is_exit_node"`
+	TunnelProtocol  string `json:"tunnel_protocol"`
+	TunnelPort      int    `json:"tunnel_port"`
+	TunnelUUID      string `json:"tunnel_uuid"`
+	TunnelPublicKey string `json:"tunnel_public_key"`
+	TunnelShortID   string `json:"tunnel_short_id"`
+	TunnelSNI       string `json:"tunnel_sni"`
+	TunnelSSMethod  string `json:"tunnel_ss_method"`
+	TunnelSSPass    string `json:"tunnel_ss_password"`
 }
 
 type serverActionPayload struct {

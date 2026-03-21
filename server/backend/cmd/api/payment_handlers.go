@@ -141,7 +141,45 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 
 		// Пополнение кошелька тенанта
 		if paymentType == "tenant_topup" {
-			// TODO: credit tenant wallet
+			tenantIDStr := notification.Object.Metadata["tenant_id"]
+			if tenantIDStr == "" {
+				log.Printf("yookassa webhook: tenant_topup без tenant_id в metadata")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			var tenantID int
+			if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil {
+				log.Printf("yookassa webhook: невалидный tenant_id %q: %v", tenantIDStr, err)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			// Парсим сумму из объекта платежа
+			var amount float64
+			if _, err := fmt.Sscanf(notification.Object.Amount.Value, "%f", &amount); err != nil {
+				log.Printf("yookassa webhook: невалидная сумма %q: %v", notification.Object.Amount.Value, err)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			// Создаём запись платежа если её ещё нет
+			existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
+			if err == nil && existing != nil {
+				_ = biz.MarkPaymentCompleted(existing.ID)
+			}
+
+			// Кредитуем кошелёк тенанта
+			description := fmt.Sprintf("Пополнение кошелька (YooKassa %s)", notification.Object.ID)
+			var paymentIDPtr *int
+			if existing != nil {
+				paymentIDPtr = &existing.ID
+			}
+			if err := biz.CreditTenantWallet(tenantID, amount, description, paymentIDPtr); err != nil {
+				log.Printf("yookassa webhook: ошибка кредитования кошелька тенанта %d: %v", tenantID, err)
+			} else {
+				log.Printf("yookassa webhook: тенант %d пополнен на %.2f RUB", tenantID, amount)
+			}
+
 			w.WriteHeader(http.StatusOK)
 			return
 		}
