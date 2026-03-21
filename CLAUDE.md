@@ -27,10 +27,13 @@ cd site && npm install && npm run dev
 
 Hub-and-spoke: users connect ONLY to main server, which routes to exit nodes.
 - VLESS Reality (port 443) — VPN mode
+- Shadowsocks (port 8388) — encrypted proxy mode
 - SOCKS5 (port 1080) — proxy mode
 - HTTP proxy (port 8080) — proxy mode
 
-No Telegram bot. No Shadowsocks. No multi-hop. These were removed.
+Port 443 shared: nginx stream SNI-routes our domains → nginx HTTPS (8443), VPN SNI → Xray (10443).
+
+No Telegram bot. No multi-hop. These were removed.
 
 ## Key Ports
 
@@ -39,7 +42,10 @@ No Telegram bot. No Shadowsocks. No multi-hop. These were removed.
 | 8000 | HTTP/REST gateway (admin + user portal + public API) |
 | 50051 | gRPC (ClientApi — Flutter app) |
 | 50052 | Node-agent gRPC (mTLS, on exit nodes) |
-| 443 | Xray VLESS Reality (main server) |
+| 443 | nginx stream SNI router (→ 8443 or 10443) |
+| 8443 | nginx HTTPS (internal, behind stream) |
+| 10443 | Xray VLESS Reality (internal, behind stream) |
+| 8388 | Xray Shadowsocks |
 
 ## Deploy
 

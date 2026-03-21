@@ -8,6 +8,18 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
+// OnSubscriptionChange — колбэк, вызываемый при изменении подписок.
+// Устанавливается из cmd/api для синхронизации Xray конфига.
+var OnSubscriptionChange func()
+
+// NotifySubscriptionChange вызывает колбэк если он установлен.
+// Экспортируется для использования из admin-пакета.
+func NotifySubscriptionChange() {
+	if OnSubscriptionChange != nil {
+		go OnSubscriptionChange()
+	}
+}
+
 type PaymentRecord struct {
 	ID               int
 	UserID           string
@@ -93,6 +105,9 @@ func ActivateSubscription(userID string, groupID int, plan string, durationDays 
 		SET valid_until = GREATEST(user_subscriptions.valid_until, $3),
 		    plan = $4, price_rub = $5, auto_renew = true
 	`, dbUserID, groupID, validUntil, plan, priceRub)
+	if err == nil {
+		NotifySubscriptionChange()
+	}
 	return err
 }
 

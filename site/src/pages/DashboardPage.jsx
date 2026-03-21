@@ -109,6 +109,7 @@ export default function DashboardPage() {
   const canConnect = connections?.can_connect
 
   const vlessUri = connections?.vless_uri || ''
+  const ssUri = connections?.ss_uri || ''
   const socks5Addr = connections?.socks5 || ''
   const httpProxy = connections?.http_proxy || ''
 
@@ -405,6 +406,23 @@ export default function DashboardPage() {
                   </div>
                   <p className="text-xs text-text-secondary mt-2">
                     Используйте в приложениях: <span className="text-text-primary">Shadowrocket</span> (iOS), <span className="text-text-primary">Happ</span> (macOS), <span className="text-text-primary">v2rayN</span> (Windows), <span className="text-text-primary">v2rayNG</span> (Android)
+                  </p>
+                </div>
+              )}
+
+              {/* Shadowsocks */}
+              {ssUri && (
+                <div className="mb-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-bold">Shadowsocks</span>
+                    <span className="text-xs text-text-secondary">Зашифрованный прокси</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{ssUri}</code>
+                    <CopyButton field="ss" text={ssUri} />
+                  </div>
+                  <p className="text-xs text-text-secondary mt-2">
+                    Используйте в: <span className="text-text-primary">Shadowrocket</span>, <span className="text-text-primary">Outline</span>, <span className="text-text-primary">v2rayN</span>, <span className="text-text-primary">Clash</span>
                   </p>
                 </div>
               )}

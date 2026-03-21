@@ -175,6 +175,7 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 		if err := biz.ActivateSubscription(existing.UserID, 1, plan, 30, priceRub); err != nil {
 			log.Printf("yookassa webhook: activate subscription: %v", err)
 		}
+		// Xray sync вызовется автоматически через biz.OnSubscriptionChange
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -225,6 +226,8 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Xray sync вызовется автоматически через biz.OnSubscriptionChange
 
 	// Возвращаем обновлённый профиль
 	profile, _ := biz.GetUserProfile(userID)

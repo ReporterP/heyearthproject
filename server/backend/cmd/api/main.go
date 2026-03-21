@@ -457,14 +457,16 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"traffic_masking_available": access.TrafficMaskingAvailable,
 	}
 
-	// Подключения доступны только при активной подписке
+	// Подключения доступны только при активной подписке (per-user UUID)
 	if access.CanConnect {
-		options := buildHubConnectionOptions()
+		options := buildHubConnectionOptions(userID)
 		resp["connection_options"] = options
 		for _, opt := range options {
 			switch opt.Protocol {
 			case "vless":
 				resp["vless_uri"] = opt.Uri
+			case "shadowsocks":
+				resp["ss_uri"] = opt.Uri
 			case "socks5":
 				resp["socks5"] = opt.Uri
 			case "http":
@@ -555,6 +557,16 @@ func main() {
 	if err := admin.ValidateConfig(); err != nil {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
+
+	// Устанавливаем хук для синхронизации Xray при изменении подписок
+	biz.OnSubscriptionChange = func() {
+		if err := SyncXrayConfig(); err != nil {
+			log.Printf("[xray-sync] subscription change hook: %v", err)
+		}
+	}
+
+	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
+	StartXraySyncLoop()
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"

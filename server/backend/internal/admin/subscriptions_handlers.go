@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -85,6 +86,7 @@ func UpsertSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save subscription")
 		return
 	}
+	biz.NotifySubscriptionChange()
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Subscription saved"})
 }
 
@@ -105,5 +107,6 @@ func DeleteSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to delete subscription")
 		return
 	}
+	biz.NotifySubscriptionChange()
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Subscription deleted"})
 }

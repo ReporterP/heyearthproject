@@ -19,6 +19,7 @@ type User struct {
 	IsBlocked         bool
 	PreferredPlatform string
 	Locale            string
+	VlessUUID         string // per-user UUID для VLESS подключения
 }
 
 // Subscription represents an active user subscription.
@@ -73,17 +74,94 @@ func GetUserByIDOrUsername(idOrUsername string) (*User, error) {
 	return user, err
 }
 
+// GetUserVlessUUID возвращает per-user VLESS UUID. Если нет — генерирует.
+func GetUserVlessUUID(userID string) (string, error) {
+	user, err := GetOrCreateUser(userID)
+	if err != nil {
+		return "", err
+	}
+	if user.VlessUUID != "" {
+		return user.VlessUUID, nil
+	}
+	// Генерируем UUID если ещё нет
+	var uuid string
+	err = db.DB.QueryRow(`UPDATE users SET vless_uuid = gen_random_uuid() WHERE id = $1 RETURNING vless_uuid::text`, user.ID).Scan(&uuid)
+	if err != nil {
+		return "", fmt.Errorf("generate vless_uuid: %w", err)
+	}
+	return uuid, nil
+}
+
+// ListActiveVlessUUIDs возвращает VLESS UUID всех пользователей с активной подпиской.
+func ListActiveVlessUUIDs() ([]string, error) {
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT u.vless_uuid::text
+		FROM users u
+		JOIN user_subscriptions us ON us.user_id = u.id
+		WHERE u.vless_uuid IS NOT NULL
+		  AND u.is_blocked = FALSE
+		  AND us.valid_until > CURRENT_TIMESTAMP
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var uuids []string
+	for rows.Next() {
+		var uuid string
+		if err := rows.Scan(&uuid); err != nil {
+			return nil, err
+		}
+		uuids = append(uuids, uuid)
+	}
+	return uuids, rows.Err()
+}
+
+// ActiveUserWithUUID — пара user_id + vless_uuid для активного пользователя.
+type ActiveUserWithUUID struct {
+	UserID    string
+	VlessUUID string
+}
+
+// ListActiveUsersWithUUIDs возвращает user_id и vless_uuid всех пользователей с активной подпиской.
+// Используется для генерации SOCKS5/HTTP аккаунтов в Xray конфиге.
+func ListActiveUsersWithUUIDs() ([]ActiveUserWithUUID, error) {
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT u.user_id, u.vless_uuid::text
+		FROM users u
+		JOIN user_subscriptions us ON us.user_id = u.id
+		WHERE u.vless_uuid IS NOT NULL
+		  AND u.is_blocked = FALSE
+		  AND us.valid_until > CURRENT_TIMESTAMP
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ActiveUserWithUUID
+	for rows.Next() {
+		var u ActiveUserWithUUID
+		if err := rows.Scan(&u.UserID, &u.VlessUUID); err != nil {
+			return nil, err
+		}
+		result = append(result, u)
+	}
+	return result, rows.Err()
+}
+
 func getUserByField(field, value string) (*User, error) {
 	var user User
 	query := fmt.Sprintf(`
 		SELECT id, user_id, telegram_id, COALESCE(username, ''), COALESCE(password_hash, ''),
-		       role, COALESCE(is_blocked, FALSE), COALESCE(preferred_platform, ''), COALESCE(locale, 'ru')
+		       role, COALESCE(is_blocked, FALSE), COALESCE(preferred_platform, ''), COALESCE(locale, 'ru'),
+		       COALESCE(vless_uuid::text, '')
 		FROM users WHERE %s = $1
 	`, field)
 	var username, passwordHash string
 	err := db.DB.QueryRow(query, value).Scan(
 		&user.ID, &user.UserID, &user.TelegramID, &username, &passwordHash,
 		&user.Role, &user.IsBlocked, &user.PreferredPlatform, &user.Locale,
+		&user.VlessUUID,
 	)
 	if err != nil {
 		return nil, err
@@ -175,5 +253,9 @@ func ApplyPromocode(userID int, code string) error {
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	NotifySubscriptionChange()
+	return nil
 }

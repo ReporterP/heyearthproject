@@ -73,7 +73,12 @@
       "Bash(grep -A 10 \"activeTab === ''other''\" /c/Users/alex/Documents/heyearthproject/site/src/views/DashboardPage.vue)",
       "Bash(grep -n \"innerHTML\\\\|dangerouslySetInnerHTML\\\\|v-html\" /c/Users/alex/Documents/heyearthproject/site/src/views/*.vue /c/Users/alex/Documents/heyearthproject/site/src/components/*.vue)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(ls C:/Users/alex/Documents/heyearthproject/site/node_modules/.bin/vite*)"
+      "Bash(ls C:/Users/alex/Documents/heyearthproject/site/node_modules/.bin/vite*)",
+      "Bash(curl -s http://localhost:5174/)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 41588 //F)",
+      "Bash(taskkill //PID 18272 //F)",
+      "Bash(find /c/Users/alex/Documents/heyearthproject -type f -name *.j2 -o -name *.yml -o -name *xray*)"
     ]
   },
   "enabledPlugins": {

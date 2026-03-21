@@ -58,6 +58,8 @@ func main() {
 	adminWeb := flag.Bool("admin-web", false, "обновить только admin_web")
 	vueSite := flag.Bool("vue-site", false, "обновить только Vue маркетинговый сайт")
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
+	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
+	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality + SOCKS5 + HTTP proxy) на главный сервер")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
 	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
@@ -80,6 +82,10 @@ func main() {
 		mode = "admin-web"
 	case *vueSite || *deploySite:
 		mode = "vue-site"
+	case *nginxOnly:
+		mode = "nginx"
+	case *setupXrayFlag:
+		mode = "setup-xray"
 	case *statusMode:
 		mode = "status"
 	case *backupMode:
@@ -91,7 +97,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -167,7 +173,7 @@ func main() {
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
 	case "update-main":
-		installAnsibleOnServer(client)
+		// installAnsibleOnServer пропускаем — apt-get update может зависать
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
@@ -190,6 +196,15 @@ func main() {
 	case "vue-site":
 		doVueSite(sftpClient, client, cfg)
 		_, _ = runSSH(client, "nginx -t && systemctl reload nginx", false)
+	case "nginx":
+		doNginx(sftpClient, client, cfg)
+		doSSL(client, cfg)
+		doNginx(sftpClient, client, cfg) // перезаписать с SSL
+	case "setup-xray":
+		setupXray(client, cfg)
+		doNginx(sftpClient, client, cfg)
+		seedConnectionSettings(client, cfg)
+		verifyServices(client)
 	case "backup":
 		doBackup(client, cfg)
 	case "restore":
@@ -777,6 +792,7 @@ func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
 		log.Fatalf("upload admin_web build: %v", err)
 	}
+	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth", true)
 	fmt.Println("[admin-web] uploaded to /var/www/heyearth")
 }
 
@@ -786,6 +802,7 @@ func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
 		log.Fatalf("upload vue site build: %v", err)
 	}
+	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth-site", true)
 	fmt.Println("[vue-site] uploaded to /var/www/heyearth-site")
 }
 
@@ -870,9 +887,12 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	hasCert, _ := runSSH(client, fmt.Sprintf("test -f %s/fullchain.pem && echo yes || echo no", certPath), false)
 	ssl := strings.TrimSpace(hasCert) == "yes"
 
+	// Проверяем наличие Xray — если установлен, используем stream для SNI routing на 443
+	xrayActive := isXrayInstalled(client)
+
 	var nginxConf string
 	if ssl {
-		nginxConf = buildNginxConfSSL(domain, appDir, certPath)
+		nginxConf = buildNginxConfSSL(domain, appDir, certPath, xrayActive)
 	} else {
 		nginxConf = buildNginxConfHTTP(domain, appDir)
 	}
@@ -880,6 +900,20 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
 		log.Fatal(err)
 	}
+
+	// Если Xray активен — настраиваем nginx stream для SNI routing на 443
+	if xrayActive && ssl {
+		streamConf := buildNginxStreamConf(domain)
+		_, _ = runSSH(client, "apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true", true)
+		_, _ = runSSH(client, "mkdir -p /etc/nginx/stream.d", true)
+		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
+			log.Fatal(err)
+		}
+		// Добавить include stream.d в nginx.conf если ещё нет
+		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)
+		fmt.Println("nginx stream SNI routing настроен (443 → 8443/10443)")
+	}
+
 	_, _ = runSSH(client, "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && systemctl restart nginx", true)
 }
 
@@ -948,19 +982,26 @@ server {
 `, domain, appDir)
 }
 
-func buildNginxConfSSL(domain, appDir, certPath string) string {
+func buildNginxConfSSL(domain, appDir, certPath string, xrayActive bool) string {
+	// Когда Xray активен, порт 443 занят nginx stream для SNI routing.
+	// HTTPS server blocks слушают на 8443 (внутренний), трафик приходит через stream.
+	httpsPort := "443"
+	if xrayActive {
+		httpsPort = "8443"
+	}
+
 	return fmt.Sprintf(`# ── HTTP → HTTPS redirect ────────────────────────────────────────
 server {
     listen 80;
     listen [::]:80;
     server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s;
-    return 301 https://%[1]s$request_uri;
+    return 301 https://$host$request_uri;
 }
 
 # ── Main site + API (%[1]s) — HTTPS ─────────────────────────────
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen %[4]s ssl http2;
+    listen [::]:%[4]s ssl http2;
     server_name %[1]s www.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
@@ -990,8 +1031,8 @@ server {
 
 # ── Admin panel (admin.%[1]s) — HTTPS ───────────────────────────
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen %[4]s ssl http2;
+    listen [::]:%[4]s ssl http2;
     server_name admin.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
@@ -1015,8 +1056,8 @@ server {
 
 # ── Redirect site.%[1]s → %[1]s (HTTPS) ────────────────────────
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen %[4]s ssl http2;
+    listen [::]:%[4]s ssl http2;
     server_name site.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
@@ -1034,7 +1075,36 @@ server {
     server_name _;
     return 301 https://%[1]s$request_uri;
 }
-`, domain, appDir, certPath)
+`, domain, appDir, certPath, httpsPort)
+}
+
+// buildNginxStreamConf создаёт конфиг nginx stream для SNI routing на порту 443:
+// наши домены → nginx HTTPS (8443), остальное → Xray VLESS Reality (10443)
+func buildNginxStreamConf(domain string) string {
+	return fmt.Sprintf(`# SNI-based routing: наши домены → nginx HTTPS, VPN-трафик → Xray
+map $ssl_preread_server_name $backend {
+    %[1]s          nginx_https;
+    www.%[1]s      nginx_https;
+    admin.%[1]s    nginx_https;
+    site.%[1]s     nginx_https;
+    default        xray_vless;
+}
+
+upstream nginx_https {
+    server 127.0.0.1:8443;
+}
+
+upstream xray_vless {
+    server 127.0.0.1:10443;
+}
+
+server {
+    listen 443;
+    listen [::]:443;
+    ssl_preread on;
+    proxy_pass $backend;
+}
+`, domain)
 }
 
 func doSSL(client *ssh.Client, cfg *deployConfig) {
@@ -1050,6 +1120,7 @@ func doSSL(client *ssh.Client, cfg *deployConfig) {
 func restartServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl stop telegram-bot 2>/dev/null; systemctl disable telegram-bot 2>/dev/null; true", false)
 	_, _ = runSSH(client, "systemctl restart heyearth-api nginx", false)
+	_, _ = runSSH(client, "systemctl restart xray 2>/dev/null || true", false)
 }
 
 func publicBaseURL(cfg *deployConfig) string {
@@ -1065,7 +1136,223 @@ func publicBaseURL(cfg *deployConfig) string {
 
 func verifyServices(client *ssh.Client) {
 	_, _ = runSSH(client, "systemctl is-active heyearth-api nginx", false)
+	_, _ = runSSH(client, "systemctl is-active xray 2>/dev/null || echo 'xray: not installed'", false)
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
+}
+
+// setupXray устанавливает Xray-core на сервер: VLESS Reality (10443), SOCKS5 (1080), HTTP proxy (8080).
+// Порт 443 обслуживается через nginx stream → SNI routing.
+func setupXray(client *ssh.Client, cfg *deployConfig) {
+	fmt.Println("[xray] Установка Xray-core на сервер...")
+
+	script := `set -e
+mkdir -p /opt/heyearth/xray /opt/heyearth/state
+
+# ── 1. Скачать Xray если нет ──
+if [ ! -f /opt/heyearth/xray/xray ]; then
+  apt-get install -y -qq wget unzip 2>/dev/null
+  cd /tmp
+  wget -q https://github.com/XTLS/Xray-core/releases/download/v25.1.1/Xray-linux-64.zip -O xray.zip
+  unzip -o xray.zip -d /opt/heyearth/xray
+  chmod +x /opt/heyearth/xray/xray
+  rm -f xray.zip
+  echo "[xray] Binary v25.1.1 установлен"
+else
+  echo "[xray] Binary уже существует: $(/opt/heyearth/xray/xray version 2>&1 | head -1)"
+fi
+
+# ── 2. Сгенерировать ключи если нет ──
+KEYS_FILE="/opt/heyearth/state/reality-keys.json"
+if [ ! -f "$KEYS_FILE" ]; then
+  KEYS=$(/opt/heyearth/xray/xray x25519 2>&1)
+  PRIV_KEY=$(echo "$KEYS" | grep 'Private key:' | awk '{print $3}')
+  PUB_KEY=$(echo "$KEYS" | grep 'Public key:' | awk '{print $3}')
+  SHORT_ID=$(head -c 8 /dev/urandom | xxd -p)
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  SS_PASSWORD=$(openssl rand -base64 16)
+
+  cat > "$KEYS_FILE" <<KEYSEOF
+{
+  "privateKey": "$PRIV_KEY",
+  "publicKey": "$PUB_KEY",
+  "shortId": "$SHORT_ID",
+  "uuid": "$UUID",
+  "ssPassword": "$SS_PASSWORD"
+}
+KEYSEOF
+  echo "[xray] Ключи сгенерированы: UUID=$UUID"
+else
+  echo "[xray] Ключи уже существуют"
+  PRIV_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['privateKey'])")
+  PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])")
+  SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])")
+  UUID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('uuid', ''))" 2>/dev/null)
+  SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))" 2>/dev/null)
+  # Добавить UUID если нет
+  if [ -z "$UUID" ]; then
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+    python3 -c "
+import json
+d = json.load(open('$KEYS_FILE'))
+d['uuid'] = '$UUID'
+json.dump(d, open('$KEYS_FILE', 'w'), indent=2)
+"
+    echo "[xray] UUID добавлен: $UUID"
+  fi
+  # Добавить Shadowsocks пароль если нет
+  if [ -z "$SS_PASSWORD" ]; then
+    SS_PASSWORD=$(openssl rand -base64 16)
+    python3 -c "
+import json
+d = json.load(open('$KEYS_FILE'))
+d['ssPassword'] = '$SS_PASSWORD'
+json.dump(d, open('$KEYS_FILE', 'w'), indent=2)
+"
+    echo "[xray] SS пароль добавлен"
+  fi
+fi
+
+# ── 3. Записать Xray конфиг (4 протокола) ──
+cat > /opt/heyearth/xray/config.json <<XRAYEOF
+{
+  "log": {"loglevel": "warning"},
+  "dns": {
+    "servers": ["8.8.8.8", "1.1.1.1"]
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality",
+      "listen": "127.0.0.1",
+      "port": 10443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "microsoft.com:443",
+          "xver": 0,
+          "serverNames": ["microsoft.com", "www.microsoft.com"],
+          "privateKey": "$PRIV_KEY",
+          "shortIds": ["$SHORT_ID"]
+        }
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "shadowsocks",
+      "listen": "0.0.0.0",
+      "port": 8388,
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-128-gcm",
+        "password": "$SS_PASSWORD",
+        "network": "tcp,udp"
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "socks5-proxy",
+      "listen": "0.0.0.0",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": {"auth": "password", "accounts": [{"user": "heyearth", "pass": "$UUID"}], "udp": true},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "http-proxy",
+      "listen": "0.0.0.0",
+      "port": 8080,
+      "protocol": "http",
+      "settings": {"allowTransparent": false, "accounts": [{"user": "heyearth", "pass": "$UUID"}]},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}},
+    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
+    ]
+  }
+}
+XRAYEOF
+echo "[xray] Конфиг записан (VLESS:10443, SS:8388, SOCKS5:1080, HTTP:8080)"
+
+# ── 4. systemd-сервис ──
+cat > /etc/systemd/system/xray.service <<'SVCEOF'
+[Unit]
+Description=Xray Service (VLESS Reality + Shadowsocks + Proxy)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/heyearth/xray
+ExecStart=/opt/heyearth/xray/xray run -config /opt/heyearth/xray/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable xray
+systemctl restart xray
+sleep 1
+echo "[xray] Сервис запущен"
+systemctl status xray --no-pager -l 2>&1 | head -15 || true
+
+# ── 5. Открыть порты в firewall ──
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 22/tcp 2>/dev/null || true
+  ufw allow 80/tcp 2>/dev/null || true
+  ufw allow 443/tcp 2>/dev/null || true
+  ufw allow 1080/tcp 2>/dev/null || true
+  ufw allow 1080/udp 2>/dev/null || true
+  ufw allow 8080/tcp 2>/dev/null || true
+  ufw allow 8388/tcp 2>/dev/null || true
+  ufw allow 8388/udp 2>/dev/null || true
+  ufw --force enable 2>/dev/null || true
+  echo "[xray] UFW правила добавлены"
+  ufw status numbered 2>/dev/null || true
+else
+  # Если UFW нет — убедимся что iptables не блокирует
+  iptables -I INPUT -p tcp --dport 1080 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport 1080 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 8080 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null || true
+  echo "[xray] iptables правила добавлены"
+fi
+
+# ── 6. nginx stream модуль ──
+apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true
+echo "[xray] nginx stream модуль установлен"
+
+# ── 7. Проверить что порты слушаются ──
+echo "--- Проверка портов ---"
+ss -tlnp | grep -E ':(10443|8388|1080|8080)\s' || echo "ВНИМАНИЕ: не все порты слушаются!"
+`
+	_, _ = runSSH(client, script, false)
+	fmt.Println("[xray] Установка завершена")
+}
+
+// isXrayInstalled проверяет наличие Xray на сервере
+func isXrayInstalled(client *ssh.Client) bool {
+	out, _ := runSSH(client, "test -f /opt/heyearth/xray/xray && systemctl is-active xray 2>/dev/null || echo no", false)
+	return strings.TrimSpace(out) == "active"
 }
 
 // seedConnectionSettings читает Xray-конфиг и reality-ключи с сервера,
@@ -1079,14 +1366,16 @@ func seedConnectionSettings(client *ssh.Client, cfg *deployConfig) {
 	script := fmt.Sprintf(`set -e
 MAIN_HOST="%s"
 
-# Читаем Reality-ключи
+# Читаем Reality-ключи и Shadowsocks пароль
 KEYS_FILE="/opt/heyearth/state/reality-keys.json"
 if [ -f "$KEYS_FILE" ]; then
   PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])" 2>/dev/null || echo "")
   SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])" 2>/dev/null || echo "")
+  SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))" 2>/dev/null || echo "")
 else
   PUB_KEY=""
   SHORT_ID=""
+  SS_PASSWORD=""
 fi
 
 # Ищем VLESS UUID из xray конфига
@@ -1096,10 +1385,11 @@ if [ -f "$XRAY_CONF" ]; then
 import json
 cfg = json.load(open('$XRAY_CONF'))
 for inb in cfg.get('inbounds', []):
-    for client in inb.get('settings', {}).get('clients', []):
-        print(client.get('id', ''))
+    if inb.get('protocol') == 'vless':
+        for client in inb.get('settings', {}).get('clients', []):
+            print(client.get('id', ''))
+            break
         break
-    break
 " 2>/dev/null || echo "")
 else
   VLESS_UUID=""
@@ -1125,34 +1415,39 @@ echo "  vless_uuid=$VLESS_UUID"
 echo "  reality_public_key=$PUB_KEY"
 echo "  reality_short_id=$SHORT_ID"
 echo "  reality_sni=$REALITY_SNI"
+echo "  ss_password=$SS_PASSWORD"
 
-# Вставляем в БД (только если значение непустое, не перезаписываем уже заполненные)
+# Вставляем основные настройки (всегда перезаписываем)
 psql "%s" -c "
 INSERT INTO app_settings (key, value, updated_at) VALUES
   ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP),
   ('vless_port', '443', CURRENT_TIMESTAMP),
   ('socks5_port', '1080', CURRENT_TIMESTAMP),
-  ('http_proxy_port', '8080', CURRENT_TIMESTAMP)
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
-WHERE app_settings.value = '' OR app_settings.value IS NULL;
+  ('http_proxy_port', '8080', CURRENT_TIMESTAMP),
+  ('ss_port', '8388', CURRENT_TIMESTAMP),
+  ('ss_method', '2022-blake3-aes-128-gcm', CURRENT_TIMESTAMP)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
 " 2>/dev/null || true
 
-# Вставляем ключи xray (только если получены)
+# Вставляем ключи xray (перезаписываем)
 if [ -n "$VLESS_UUID" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_uuid', '$VLESS_UUID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_uuid', '$VLESS_UUID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$PUB_KEY" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_public_key', '$PUB_KEY', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_public_key', '$PUB_KEY', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$SHORT_ID" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$REALITY_SNI" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP WHERE app_settings.value = '' OR app_settings.value IS NULL;" 2>/dev/null || true
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+fi
+if [ -n "$SS_PASSWORD" ]; then
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('ss_password', '$SS_PASSWORD', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 
 echo "[seed] Готово"
-`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL)
+`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL, dbURL)
 
 	_, _ = runSSH(client, script, false)
 }

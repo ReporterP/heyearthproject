@@ -89,9 +89,9 @@ export default function SettingsPage() {
             <h3 className="text-lg font-semibold mb-3">{t.settingsServerSection}</h3>
             {loading ? <p className="text-text-secondary">{t.loading}</p> : (
               <div className="divide-y divide-white/5">
-                <SettingCard label={t.settingsYukassaShopId} hint={t.settingsYukassaShopIdHint} value={settings.yukassa_shop_id} onSave={v => saveSetting('yukassa_shop_id', v)} />
-                <SettingCard label={t.settingsYukassaSecretKey} hint={t.settingsYukassaSecretKeyHint} value={settings.yukassa_secret_key} onSave={v => saveSetting('yukassa_secret_key', v)} type="password" />
-                <SettingCard label={t.settingsYukassaTestMode} hint={t.settingsYukassaTestModeHint} value={settings.yukassa_test_mode} onSave={v => saveSetting('yukassa_test_mode', v)} type="toggle" />
+                <SettingCard label={t.settingsYukassaShopId} hint={t.settingsYukassaShopIdHint} value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
+                <SettingCard label={t.settingsYukassaSecretKey} hint={t.settingsYukassaSecretKeyHint} value={settings.yookassa_secret_key} onSave={v => saveSetting('yookassa_secret_key', v)} type="password" />
+                <SettingCard label={t.settingsYukassaTestMode} hint={t.settingsYukassaTestModeHint} value={settings.yookassa_test_mode} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
               </div>
             )}
           </section>

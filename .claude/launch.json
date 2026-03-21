@@ -9,21 +9,16 @@
     },
     {
       "name": "Admin Web (React + Vite)",
-      "runtimeExecutable": "cmd.exe",
-      "runtimeArgs": ["/c", "cd admin_web && npx vite --port 5173"],
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "admin_web", "vite", "--port", "5173"],
       "port": 5173
     },
     {
       "name": "Site (React + Vite)",
-      "runtimeExecutable": "cmd.exe",
-      "runtimeArgs": ["/c", "cd site && npx vite --port 5174"],
-      "port": 5174
-    },
-    {
-      "name": "Site Vue (Vue 3 + Vite)",
-      "runtimeExecutable": "cmd.exe",
-      "runtimeArgs": ["/c", "cd site_vue && npx vite --port 5175"],
-      "port": 5175
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/vite/bin/vite.js", "dev", "--port", "5174"],
+      "port": 5174,
+      "cwd": "site"
     }
   ]
 }
