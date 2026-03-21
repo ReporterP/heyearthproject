@@ -90,6 +90,9 @@ export function fetchServerDetail(id) {
 export function createServer(payload) {
   return apiFetch('/servers', { method: 'POST', body: payload })
 }
+export function generateTunnelCreds() {
+  return apiFetch('/servers/generate-tunnel-creds')
+}
 export function updateServer(id, payload) {
   return apiFetch(`/servers/${id}`, { method: 'PATCH', body: payload })
 }

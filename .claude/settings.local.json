@@ -78,7 +78,16 @@
       "Bash(netstat -ano)",
       "Bash(taskkill //PID 41588 //F)",
       "Bash(taskkill //PID 18272 //F)",
-      "Bash(find /c/Users/alex/Documents/heyearthproject -type f -name *.j2 -o -name *.yml -o -name *xray*)"
+      "Bash(find /c/Users/alex/Documents/heyearthproject -type f -name *.j2 -o -name *.yml -o -name *xray*)",
+      "Bash(where npm:*)",
+      "Bash(where node:*)",
+      "WebFetch(domain:admin.heyearth.ru)",
+      "Bash(rm -rf dist)",
+      "Bash(npm run:*)",
+      "Bash(grep -ri tag /c/Users/alex/Documents/heyearthproject/server/backend/migrations/ --include=*.sql)",
+      "Bash(grep -n servers /c/Users/alex/Documents/heyearthproject/server/backend/migrations/*.up.sql)",
+      "Bash(cat /c/Users/alex/Documents/heyearthproject/server/backend/migrations/*.up.sql)",
+      "Bash(go version:*)"
     ]
   },
   "enabledPlugins": {

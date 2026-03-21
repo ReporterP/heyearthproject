@@ -9,9 +9,10 @@
     },
     {
       "name": "Admin Web (React + Vite)",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["--prefix", "admin_web", "vite", "--port", "5173"],
-      "port": 5173
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "5173"],
+      "port": 5173,
+      "cwd": "admin_web"
     },
     {
       "name": "Site (React + Vite)",

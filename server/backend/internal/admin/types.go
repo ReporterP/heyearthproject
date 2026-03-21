@@ -139,8 +139,9 @@ type serverResponse struct {
 	TunnelProtocol  string `json:"tunnel_protocol"`
 	TunnelPort      int    `json:"tunnel_port"`
 	TunnelUUID      string `json:"tunnel_uuid,omitempty"`
-	TunnelPublicKey string `json:"tunnel_public_key,omitempty"`
-	TunnelShortID   string `json:"tunnel_short_id,omitempty"`
+	TunnelPublicKey  string `json:"tunnel_public_key,omitempty"`
+	TunnelPrivateKey string `json:"tunnel_private_key,omitempty"`
+	TunnelShortID    string `json:"tunnel_short_id,omitempty"`
 	TunnelSNI       string `json:"tunnel_sni,omitempty"`
 	TunnelSSMethod  string `json:"tunnel_ss_method,omitempty"`
 	TunnelSSPass    string `json:"tunnel_ss_password,omitempty"`
@@ -161,8 +162,9 @@ type serverPayload struct {
 	TunnelProtocol  string `json:"tunnel_protocol"`
 	TunnelPort      int    `json:"tunnel_port"`
 	TunnelUUID      string `json:"tunnel_uuid"`
-	TunnelPublicKey string `json:"tunnel_public_key"`
-	TunnelShortID   string `json:"tunnel_short_id"`
+	TunnelPublicKey  string `json:"tunnel_public_key"`
+	TunnelPrivateKey string `json:"tunnel_private_key"`
+	TunnelShortID    string `json:"tunnel_short_id"`
 	TunnelSNI       string `json:"tunnel_sni"`
 	TunnelSSMethod  string `json:"tunnel_ss_method"`
 	TunnelSSPass    string `json:"tunnel_ss_password"`

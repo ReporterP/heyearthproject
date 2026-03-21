@@ -137,22 +137,20 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	isExitNode := false
-	if req.IsExitNode != nil {
-		isExitNode = *req.IsExitNode
-	}
+	// Все серверы, добавляемые через админку — exit nodes
+	isExitNode := true
 
 	var serverID int
 	err = tx.QueryRow(`
 		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key_id, country_code, status,
 		                     is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
-		                     tunnel_short_id, tunnel_sni, tunnel_ss_method, tunnel_ss_password, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, CURRENT_TIMESTAMP)
+		                     tunnel_private_key, tunnel_short_id, tunnel_sni, tunnel_ss_method, tunnel_ss_password, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, CURRENT_TIMESTAMP)
 		RETURNING id
 	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser),
 		req.SSHPassword, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue,
 		isExitNode, req.TunnelProtocol, req.TunnelPort, req.TunnelUUID, req.TunnelPublicKey,
-		req.TunnelShortID, req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass).Scan(&serverID)
+		req.TunnelPrivateKey, req.TunnelShortID, req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass).Scan(&serverID)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to insert server")
 		return
@@ -218,11 +216,8 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		req.GroupIDs = existing.GroupIDs
 	}
 
-	// Merge exit-node / tunnel fields
-	isExitNode := existing.IsExitNode
-	if req.IsExitNode != nil {
-		isExitNode = *req.IsExitNode
-	}
+	// Все серверы — exit nodes
+	isExitNode := true
 	if req.TunnelProtocol == "" {
 		req.TunnelProtocol = existing.TunnelProtocol
 	}
@@ -234,6 +229,9 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TunnelPublicKey == "" {
 		req.TunnelPublicKey = existing.TunnelPublicKey
+	}
+	if req.TunnelPrivateKey == "" {
+		req.TunnelPrivateKey = existing.TunnelPrivateKey
 	}
 	if req.TunnelShortID == "" {
 		req.TunnelShortID = existing.TunnelShortID
@@ -260,13 +258,13 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5,
 		    ssh_key_id = $6, country_code = $7, status = $8,
 		    is_exit_node = $9, tunnel_protocol = $10, tunnel_port = $11,
-		    tunnel_uuid = $12, tunnel_public_key = $13, tunnel_short_id = $14,
-		    tunnel_sni = $15, tunnel_ss_method = $16, tunnel_ss_password = $17,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $18
+		    tunnel_uuid = $12, tunnel_public_key = $13, tunnel_private_key = $14,
+		    tunnel_short_id = $15, tunnel_sni = $16, tunnel_ss_method = $17,
+		    tunnel_ss_password = $18, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $19
 	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.SshKeyID, req.CountryCode, req.Status,
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
-		req.TunnelUUID, req.TunnelPublicKey, req.TunnelShortID,
+		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, serverID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
 		return
@@ -364,7 +362,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
-			       COALESCE(s.tunnel_short_id, ''), COALESCE(s.tunnel_sni, ''),
+			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
+			       COALESCE(s.tunnel_sni, ''),
 			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
@@ -375,7 +374,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.SSHPassword, &server.CountryCode, &server.Status, &server.LoadMetrics,
 			&updatedAt, &server.SshKeyID, &sshKeyName,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
-			&server.TunnelUUID, &server.TunnelPublicKey,
+			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
 			&server.TunnelSSMethod, &server.TunnelSSPass)
 		if err != nil {
@@ -388,7 +387,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
-			       COALESCE(s.tunnel_short_id, ''), COALESCE(s.tunnel_sni, ''),
+			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
+			       COALESCE(s.tunnel_sni, ''),
 			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
@@ -399,7 +399,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
 			&updatedAt, &server.SshKeyID, &sshKeyName,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
-			&server.TunnelUUID, &server.TunnelPublicKey,
+			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
 			&server.TunnelSSMethod, &server.TunnelSSPass)
 		if err != nil {

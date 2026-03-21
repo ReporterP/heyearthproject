@@ -100,6 +100,7 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/payments/", withMethod(http.MethodPatch, RequirePermission("payments.write", UpdatePaymentHandler)))
 
+	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(RequirePermission("servers.write", GenerateTunnelCredsHandler))))
 	http.HandleFunc("/api/admin/servers", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

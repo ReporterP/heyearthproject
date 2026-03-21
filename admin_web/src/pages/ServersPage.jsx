@@ -6,7 +6,7 @@ import usePagedData from '../hooks/usePagedData.js'
 import {
   fetchServersPaged, createServer, updateServer, deleteServer,
   runServerAction, fetchServerLogs, fetchServerFiles, fetchSshKeys,
-  fetchServerDetail,
+  fetchServerDetail, generateTunnelCreds,
 } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
@@ -273,12 +273,13 @@ export default function ServersPage() {
   const [tags, setTags] = useState('')
   const [countryCode, setCountryCode] = useState('')
   const [serverStatus, setServerStatus] = useState('active')
-  const [isExitNode, setIsExitNode] = useState(false)
-  // Tunnel config (exit-node)
+  // Tunnel config (все серверы в админке — exit nodes)
+  const isExitNode = true
   const [tunnelProtocol, setTunnelProtocol] = useState('vless')
   const [tunnelPort, setTunnelPort] = useState('443')
   const [tunnelUuid, setTunnelUuid] = useState('')
   const [tunnelPublicKey, setTunnelPublicKey] = useState('')
+  const [tunnelPrivateKey, setTunnelPrivateKey] = useState('')
   const [tunnelShortId, setTunnelShortId] = useState('')
   const [tunnelSni, setTunnelSni] = useState('')
   const [tunnelSsMethod, setTunnelSsMethod] = useState('2022-blake3-aes-128-gcm')
@@ -313,13 +314,25 @@ export default function ServersPage() {
     [paged.items]
   )
 
-  function openCreate() {
+  async function openCreate() {
     setName(''); setHost(''); setPort('22'); setSshUser('root')
     setSshPassword(''); setSshKeyId(''); setLocation(''); setTags('')
-    setCountryCode(''); setServerStatus('online'); setIsExitNode(false)
-    setTunnelProtocol('vless'); setTunnelPort('443'); setTunnelUuid('')
-    setTunnelPublicKey(''); setTunnelShortId(''); setTunnelSni('')
-    setTunnelSsMethod('2022-blake3-aes-128-gcm'); setTunnelSsPassword('')
+    setCountryCode(''); setServerStatus('online')
+    setTunnelProtocol('vless'); setTunnelPort('443')
+    setTunnelSni('microsoft.com')
+    setTunnelSsMethod('2022-blake3-aes-128-gcm')
+    // Автогенерация credentials
+    try {
+      const creds = await generateTunnelCreds()
+      setTunnelUuid(creds.vless_uuid || '')
+      setTunnelPublicKey(creds.reality_public_key || '')
+      setTunnelPrivateKey(creds.reality_private_key || '')
+      setTunnelShortId(creds.reality_short_id || '')
+      setTunnelSsPassword(creds.ss_password || '')
+    } catch {
+      setTunnelUuid(''); setTunnelPublicKey(''); setTunnelPrivateKey('')
+      setTunnelShortId(''); setTunnelSsPassword('')
+    }
     loadSshKeys()
     setDialog({ mode: 'create' })
   }
@@ -330,11 +343,11 @@ export default function ServersPage() {
     setSshPassword(''); setSshKeyId(item.ssh_key_id != null ? String(item.ssh_key_id) : '')
     setLocation(item.location || ''); setTags((item.tags || []).join(', '))
     setCountryCode(item.country_code || ''); setServerStatus(item.status || 'online')
-    setIsExitNode(item.is_exit_node || false)
     setTunnelProtocol(item.tunnel_protocol || 'vless')
     setTunnelPort(String(item.tunnel_port || 443))
     setTunnelUuid(item.tunnel_uuid || '')
     setTunnelPublicKey(item.tunnel_public_key || '')
+    setTunnelPrivateKey(item.tunnel_private_key || '')
     setTunnelShortId(item.tunnel_short_id || '')
     setTunnelSni(item.tunnel_sni || '')
     setTunnelSsMethod(item.tunnel_ss_method || '2022-blake3-aes-128-gcm')
@@ -357,6 +370,7 @@ export default function ServersPage() {
       if (sshKeyId) payload.ssh_key_id = parseInt(sshKeyId)
       if (tunnelUuid) payload.tunnel_uuid = tunnelUuid
       if (tunnelPublicKey) payload.tunnel_public_key = tunnelPublicKey
+      if (tunnelPrivateKey) payload.tunnel_private_key = tunnelPrivateKey
       if (tunnelShortId) payload.tunnel_short_id = tunnelShortId
       if (tunnelSni) payload.tunnel_sni = tunnelSni
       if (tunnelSsMethod) payload.tunnel_ss_method = tunnelSsMethod
@@ -471,9 +485,6 @@ export default function ServersPage() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h3 className="font-semibold truncate">{srv.name || ip}</h3>
-              {srv.is_exit_node && (
-                <span className="shrink-0 text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">{t.serverExitNode}</span>
-              )}
             </div>
             {/* IP address prominent */}
             <div className="flex items-center gap-1.5 mt-1">
@@ -593,9 +604,6 @@ export default function ServersPage() {
         <td className="py-3 px-3">
           <div className="flex flex-wrap gap-1">
             {(srv.tags || []).map(tag => <TagChip key={tag} tag={tag} />)}
-            {srv.is_exit_node && (
-              <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">{t.serverExitNode}</span>
-            )}
           </div>
         </td>
         <td className="py-3 px-3">
@@ -742,7 +750,6 @@ export default function ServersPage() {
         </FormField>
         <FormField label={t.fieldLocation}><TextInput value={location} onChange={setLocation} /></FormField>
         <FormField label={t.fieldCountryCode}><TextInput value={countryCode} onChange={setCountryCode} /></FormField>
-        <FormField label={t.fieldTags}><TextInput value={tags} onChange={setTags} /></FormField>
         <FormField label={t.fieldServerStatus}>
           <SelectInput value={serverStatus} onChange={setServerStatus} options={[
             { value: 'online', label: 'Онлайн' },
@@ -751,41 +758,36 @@ export default function ServersPage() {
             { value: 'maintenance', label: 'Обслуживание' },
           ]} />
         </FormField>
-        <Checkbox label={t.serverExitNode || 'Exit Node'} checked={isExitNode} onChange={setIsExitNode} />
+        <div className="mt-3 mb-1 text-xs font-semibold text-text-secondary uppercase tracking-wider">Настройка туннеля</div>
+        <FormField label="Протокол туннеля">
+          <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
+            { value: 'vless', label: 'VLESS Reality' },
+            { value: 'shadowsocks', label: 'Shadowsocks' },
+            { value: 'socks5', label: 'SOCKS5' },
+            { value: 'http', label: 'HTTP Proxy' },
+          ]} />
+        </FormField>
+        <FormField label="Порт туннеля"><TextInput value={tunnelPort} onChange={setTunnelPort} type="number" /></FormField>
 
-        {isExitNode && (
+        {(tunnelProtocol === 'vless') && (
           <>
-            <div className="mt-3 mb-1 text-xs font-semibold text-text-secondary uppercase tracking-wider">Tunnel Config</div>
-            <FormField label="Протокол туннеля">
-              <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
-                { value: 'vless', label: 'VLESS Reality' },
-                { value: 'shadowsocks', label: 'Shadowsocks' },
-                { value: 'socks5', label: 'SOCKS5' },
-                { value: 'http', label: 'HTTP Proxy' },
-              ]} />
-            </FormField>
-            <FormField label="Порт туннеля"><TextInput value={tunnelPort} onChange={setTunnelPort} type="number" /></FormField>
-
-            {(tunnelProtocol === 'vless') && (
-              <>
-                <FormField label="VLESS UUID"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="UUID для аутентификации" /></FormField>
-                <FormField label="Reality Public Key"><TextInput value={tunnelPublicKey} onChange={setTunnelPublicKey} /></FormField>
-                <FormField label="Reality Short ID"><TextInput value={tunnelShortId} onChange={setTunnelShortId} /></FormField>
-                <FormField label="SNI"><TextInput value={tunnelSni} onChange={setTunnelSni} placeholder="например microsoft.com" /></FormField>
-              </>
-            )}
-
-            {(tunnelProtocol === 'shadowsocks') && (
-              <>
-                <FormField label="SS Method"><TextInput value={tunnelSsMethod} onChange={setTunnelSsMethod} /></FormField>
-                <FormField label="SS Password"><TextInput value={tunnelSsPassword} onChange={setTunnelSsPassword} type="password" /></FormField>
-              </>
-            )}
-
-            {(tunnelProtocol === 'socks5' || tunnelProtocol === 'http') && (
-              <FormField label="Auth Password (опционально)"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="Пароль для авторизации" /></FormField>
-            )}
+            <FormField label="VLESS UUID"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="Сгенерировано автоматически" /></FormField>
+            <FormField label="Reality Public Key"><TextInput value={tunnelPublicKey} onChange={setTunnelPublicKey} placeholder="Сгенерировано автоматически" /></FormField>
+            <FormField label="Reality Private Key"><TextInput value={tunnelPrivateKey} onChange={setTunnelPrivateKey} placeholder="Сгенерировано автоматически" /></FormField>
+            <FormField label="Reality Short ID"><TextInput value={tunnelShortId} onChange={setTunnelShortId} placeholder="Сгенерировано автоматически" /></FormField>
+            <FormField label="SNI"><TextInput value={tunnelSni} onChange={setTunnelSni} placeholder="например microsoft.com" /></FormField>
           </>
+        )}
+
+        {(tunnelProtocol === 'shadowsocks') && (
+          <>
+            <FormField label="SS Method"><TextInput value={tunnelSsMethod} onChange={setTunnelSsMethod} /></FormField>
+            <FormField label="SS Password"><TextInput value={tunnelSsPassword} onChange={setTunnelSsPassword} placeholder="Сгенерировано автоматически" /></FormField>
+          </>
+        )}
+
+        {(tunnelProtocol === 'socks5' || tunnelProtocol === 'http') && (
+          <FormField label="Auth Password (опционально)"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="Пароль для авторизации" /></FormField>
         )}
       </CrudDialog>
 
