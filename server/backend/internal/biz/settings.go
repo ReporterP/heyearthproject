@@ -2,6 +2,7 @@ package biz
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/heyearth/backend/internal/db"
@@ -49,6 +50,21 @@ func GetSettingOrDefault(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+// GetPriceRub возвращает цену плана из app_settings.
+// Ключи: price_standard, price_premium. Если нет — используется defaultPrice.
+func GetPriceRub(plan string, defaultPrice int) int {
+	key := "price_" + plan
+	val, err := GetSetting(key)
+	if err != nil || val == "" {
+		return defaultPrice
+	}
+	var price int
+	if _, err := fmt.Sscanf(val, "%d", &price); err != nil || price <= 0 {
+		return defaultPrice
+	}
+	return price
 }
 
 func GetAPIEndpoints() []string {

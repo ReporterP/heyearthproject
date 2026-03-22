@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:heyearth_vpn/generated/heyearth/v1/config.pb.dart' as pb;
@@ -281,6 +283,25 @@ class _HomeTab extends StatelessWidget {
                   '${l10n.statusLabel}: ${access.isBlocked ? (l10n.isEn ? 'blocked' : 'заблокирован') : access.canConnect ? (l10n.isEn ? 'active' : 'активен') : access.reason}'
                   '\n${l10n.validUntilLabel}: ${access.validUntil.isEmpty ? _notLimited() : access.validUntil}',
             ),
+          ],
+          // Отображение трафика
+          if (access != null) ...[
+            const SizedBox(height: 12),
+            Builder(builder: (context) {
+              int trafficUsed = 0;
+              int trafficLimit = 0;
+              try {
+                trafficUsed = (access as dynamic).trafficUsed as int? ?? 0;
+                trafficLimit = (access as dynamic).trafficLimit as int? ?? 0;
+              } catch (_) {}
+              if (trafficUsed > 0 || trafficLimit > 0) {
+                return _TrafficCard(
+                  trafficUsed: trafficUsed,
+                  trafficLimit: trafficLimit,
+                );
+              }
+              return const SizedBox.shrink();
+            }),
           ],
           const SizedBox(height: 12),
           if (state.error != null) _ErrorBanner(message: state.error!),
@@ -673,6 +694,66 @@ class _ConnectionModeCards extends StatelessWidget {
             onSelected: (_) => onSelectOption(opt),
           );
         }).toList(),
+      ),
+    );
+  }
+}
+
+class _TrafficCard extends StatelessWidget {
+  const _TrafficCard({required this.trafficUsed, required this.trafficLimit});
+
+  final int trafficUsed;
+  final int trafficLimit;
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    final i = (bytes > 0) ? (log(bytes) / log(1024)).floor() : 0;
+    final val = bytes / pow(1024, i);
+    return '${val.toStringAsFixed(1)} ${sizes[i]}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = L10n.of(context);
+    final pct = trafficLimit > 0
+        ? (trafficUsed / trafficLimit).clamp(0.0, 1.0)
+        : 0.0;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.data_usage_rounded,
+                    color: Theme.of(context).colorScheme.primary, size: 20),
+                const SizedBox(width: 8),
+                Text(l10n.isEn ? 'Traffic' : 'Трафик',
+                    style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (trafficLimit > 0) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: pct,
+                  minHeight: 8,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Text(
+              '${_formatBytes(trafficUsed)}${trafficLimit > 0 ? ' / ${_formatBytes(trafficLimit)}' : ''}',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
       ),
     );
   }

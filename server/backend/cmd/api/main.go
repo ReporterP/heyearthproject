@@ -13,11 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"google.golang.org/grpc"
@@ -211,8 +213,10 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 }
 
 func setCORS(w http.ResponseWriter) {
+	// Разрешаем запросы с наших доменов и localhost (dev)
+	// В production nginx подставляет правильный Origin
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
 
@@ -501,6 +505,72 @@ func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"downloads": downloads})
 }
 
+func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Получаем текущие лимиты из подписки
+	var trafficUsed int64
+	var trafficLimit *int64
+	err = db.DB.QueryRow(`
+		SELECT COALESCE(us.traffic_used, 0), us.traffic_limit
+		FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(&trafficUsed, &trafficLimit)
+	if err != nil {
+		trafficUsed = 0
+		trafficLimit = nil
+	}
+
+	// Получаем историю за последние 30 дней (агрегировано по дням)
+	rows, err := db.DB.Query(`
+		SELECT DATE(recorded_at) as day,
+		       SUM(upload_bytes) as upload,
+		       SUM(download_bytes) as download
+		FROM traffic_stats
+		WHERE user_id = $1 AND recorded_at > NOW() - INTERVAL '30 days'
+		GROUP BY DATE(recorded_at)
+		ORDER BY day DESC
+	`, userID)
+
+	var history []map[string]interface{}
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var up, down int64
+			if err := rows.Scan(&day, &up, &down); err == nil {
+				history = append(history, map[string]interface{}{
+					"date":     day,
+					"upload":   up,
+					"download": down,
+					"total":    up + down,
+				})
+			}
+		}
+	}
+
+	resp := map[string]interface{}{
+		"traffic_used": trafficUsed,
+		"history":      history,
+	}
+	if trafficLimit != nil {
+		resp["traffic_limit"] = *trafficLimit
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // ─────────────────────── Legacy HTTP Gateway ───────────────────────
 
 func httpGateway(srv *server) http.HandlerFunc {
@@ -568,6 +638,17 @@ func main() {
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
 
+	// Запускаем сборщик трафика (Xray Stats API)
+	StartTrafficStatsCollector()
+
+	// Запускаем cron для подписок и B2B биллинга
+	StartSubscriptionCron()
+
+	// Rate limiters
+	authLimiter := middleware.NewRateLimiter(10, time.Minute)   // 10 req/min per IP (auth)
+	apiLimiter := middleware.NewRateLimiter(100, time.Minute)   // 100 req/min per IP (general API)
+	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)
+
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
 
@@ -595,23 +676,28 @@ func main() {
 	http.HandleFunc("/api/v1/health", httpGateway(srv))
 	http.HandleFunc("/api/v1/app/update", httpGateway(srv))
 
-	// User portal REST endpoints (new)
-	http.HandleFunc("/api/v1/auth/register", handleUserRegister)
-	http.HandleFunc("/api/v1/auth/login", handleUserLogin)
-	http.HandleFunc("/api/v1/user/profile", handleUserProfile)
-	http.HandleFunc("/api/v1/user/subscription", handleUserSubscription)
-	http.HandleFunc("/api/v1/user/payments", handleUserPayments)
-	http.HandleFunc("/api/v1/user/connections", handleUserConnections)
-	http.HandleFunc("/api/v1/user/downloads", handleUserDownloads)
+	// User portal REST endpoints (rate limited)
+	http.HandleFunc("/api/v1/auth/register", authLimiter.Middleware(handleUserRegister))
+	http.HandleFunc("/api/v1/auth/login", authLimiter.Middleware(handleUserLogin))
+	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
+	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
+	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))
+	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
+	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
+	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))
+	http.HandleFunc("/api/v1/user/subscribe-token", apiLimiter.Middleware(handleGetSubscribeToken))
+
+	// Subscription links (без auth — по subscribe_token)
+	http.HandleFunc("/api/v1/user/subscribe/", apiLimiter.Middleware(handleSubscriptionLink))
 
 	// Payments
-	http.HandleFunc("/api/v1/payment/create", handleCreatePayment)
-	http.HandleFunc("/api/v1/payment/check-access", handleCheckAccess)
-	http.HandleFunc("/api/v1/payment/redeem-code", handleRedeemCode)
-	http.HandleFunc("/api/v1/payment/tenant-topup", handleTenantTopup)
-	http.HandleFunc("/api/v1/payment/apply-promocode", handleApplyPromocode)
-	http.HandleFunc("/api/v1/payment/donate", handleCreateDonation)
-	http.HandleFunc("/api/webhooks/yookassa", handleYookassaWebhook)
+	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
+	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess))
+	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(handleRedeemCode))
+	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
+	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
+	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
+	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
 	// Admin panel
 	admin.RegisterRoutes()

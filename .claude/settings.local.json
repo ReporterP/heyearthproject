@@ -87,7 +87,12 @@
       "Bash(grep -ri tag /c/Users/alex/Documents/heyearthproject/server/backend/migrations/ --include=*.sql)",
       "Bash(grep -n servers /c/Users/alex/Documents/heyearthproject/server/backend/migrations/*.up.sql)",
       "Bash(cat /c/Users/alex/Documents/heyearthproject/server/backend/migrations/*.up.sql)",
-      "Bash(go version:*)"
+      "Bash(go version:*)",
+      "Bash(gh repo:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(grep -r \"websocket\\\\|ws://\\\\|real.time\\\\|live.stats\" /c/Users/alex/Documents/heyearthproject/server/backend --include=*.go)"
     ]
   },
   "enabledPlugins": {

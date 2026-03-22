@@ -129,6 +129,7 @@ func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to create user")
 		return
 	}
+	WriteAuditLog(r, "create_user", "user", fmt.Sprintf("%d", id), map[string]string{"user_id": payload.UserID})
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -163,6 +164,7 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update user")
 		return
 	}
+	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User updated"})
 }
 
@@ -182,6 +184,7 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusNotFound, "User not found")
 		return
 	}
+	WriteAuditLog(r, "delete_user", "user", fmt.Sprintf("%d", userID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User deleted"})
 }
 

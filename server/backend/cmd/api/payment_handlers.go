@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 
@@ -42,10 +43,10 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	var priceRub int
 	switch req.Plan {
 	case "premium":
-		priceRub = 250
+		priceRub = biz.GetPriceRub("premium", 250)
 	default:
 		req.Plan = "standard"
-		priceRub = 200
+		priceRub = biz.GetPriceRub("standard", 200)
 	}
 
 	description := fmt.Sprintf("HeYearth VPN %s — 1 месяц", req.Plan)
@@ -106,9 +107,63 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// yookassaIPNets — белый список IP-адресов YooKassa для вебхуков.
+// Источник: https://yookassa.ru/developers/using-api/webhooks#ip
+var yookassaIPNets []*net.IPNet
+
+func init() {
+	cidrs := []string{
+		"185.71.76.0/27",
+		"185.71.77.0/27",
+		"77.75.153.0/25",
+		"77.75.156.11/32",
+		"77.75.156.35/32",
+	}
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Fatalf("invalid YooKassa CIDR %s: %v", cidr, err)
+		}
+		yookassaIPNets = append(yookassaIPNets, ipNet)
+	}
+}
+
+// isYookassaIP проверяет что IP-адрес принадлежит YooKassa.
+func isYookassaIP(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range yookassaIPNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// ── Верификация IP-адреса (YooKassa whitelist) ──
+	// Проверяем X-Forwarded-For (за nginx) или RemoteAddr
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP != "" {
+		// X-Forwarded-For может содержать цепочку: "client, proxy1, proxy2"
+		clientIP = strings.TrimSpace(strings.Split(clientIP, ",")[0])
+	} else {
+		clientIP = r.RemoteAddr
+	}
+	if !isYookassaIP(clientIP) {
+		log.Printf("yookassa webhook: ОТКЛОНЕНО — IP %s не в белом списке YooKassa", clientIP)
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -123,15 +178,35 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("yookassa webhook: event=%s payment_id=%s status=%s", notification.Event, notification.Object.ID, notification.Object.Status)
+	// Проверяем тип уведомления
+	if notification.Type != "notification" {
+		log.Printf("yookassa webhook: неизвестный тип %q, игнорируем", notification.Type)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	log.Printf("yookassa webhook: event=%s payment_id=%s status=%s ip=%s",
+		notification.Event, notification.Object.ID, notification.Object.Status, clientIP)
 
 	if notification.Event == "payment.succeeded" && notification.Object.Status == "succeeded" {
+		// ── Идемпотентность: проверяем что платёж ещё не обработан ──
+		existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
+		if err != nil {
+			log.Printf("yookassa webhook: find payment: %v", err)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if existing != nil && existing.Status == "completed" {
+			log.Printf("yookassa webhook: платёж %s уже обработан (idempotent skip)", notification.Object.ID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		paymentType := notification.Object.Metadata["type"]
 
 		// Донаты не создают подписку
 		if paymentType == "donation" {
-			existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
-			if err == nil && existing != nil {
+			if existing != nil {
 				_ = biz.MarkPaymentCompleted(existing.ID)
 				log.Printf("yookassa webhook: donation %s completed", notification.Object.ID)
 			}
@@ -185,12 +260,6 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Обычная оплата подписки
-		existing, err := biz.GetPaymentByYookassaID(notification.Object.ID)
-		if err != nil {
-			log.Printf("yookassa webhook: find payment: %v", err)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
 		if existing == nil {
 			log.Printf("yookassa webhook: payment %s not found in DB", notification.Object.ID)
 			w.WriteHeader(http.StatusOK)
@@ -205,10 +274,7 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 		if plan == "" {
 			plan = "standard"
 		}
-		priceRub := 200
-		if plan == "premium" {
-			priceRub = 250
-		}
+		priceRub := biz.GetPriceRub(plan, 200)
 
 		if err := biz.ActivateSubscription(existing.UserID, 1, plan, 30, priceRub); err != nil {
 			log.Printf("yookassa webhook: activate subscription: %v", err)

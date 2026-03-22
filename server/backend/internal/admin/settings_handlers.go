@@ -36,5 +36,6 @@ func UpdateSettingHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save setting")
 		return
 	}
+	WriteAuditLog(r, "update_setting", "setting", payload.Key, map[string]string{"value": payload.Value})
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Setting saved"})
 }

@@ -47,11 +47,15 @@ export async function apiFetch(path, { method = 'GET', body, headers = {}, raw =
   return data
 }
 
-export async function pagedFetch(path, { page = 1, pageSize = 20, search = '', status = '' } = {}) {
+export async function pagedFetch(path, { page = 1, pageSize = 20, search = '', status = '', ...extra } = {}) {
   const params = new URLSearchParams()
   params.set('page', page)
   params.set('page_size', pageSize)
   if (search) params.set('search', search)
   if (status) params.set('status', status)
+  // Дополнительные параметры (period и т.д.)
+  for (const [k, v] of Object.entries(extra)) {
+    if (v !== undefined && v !== null && v !== '') params.set(k, v)
+  }
   return apiFetch(`${path}?${params}`)
 }

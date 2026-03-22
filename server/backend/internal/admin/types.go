@@ -16,6 +16,51 @@ type dashboardOverview struct {
 	PaymentsCount      int64 `json:"payments_count"`
 	ActiveReleases     int64 `json:"active_releases"`
 	AdminsCount        int64 `json:"admins_count"`
+
+	// Трафик
+	TrafficToday int64 `json:"traffic_today"` // bytes
+	TrafficWeek  int64 `json:"traffic_week"`
+	TrafficMonth int64 `json:"traffic_month"`
+
+	// Доход
+	RevenueMonth float64 `json:"revenue_month"` // RUB
+
+	// Топ пользователей по трафику (за месяц)
+	TopUsers []topUserTraffic `json:"top_users"`
+
+	// Здоровье серверов
+	ServerHealth []serverHealthInfo `json:"server_health"`
+}
+
+type topUserTraffic struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Upload   int64  `json:"upload"`
+	Download int64  `json:"download"`
+	Total    int64  `json:"total"`
+}
+
+type serverHealthInfo struct {
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	IPAddress     string `json:"ip_address"`
+	Status        string `json:"status"`
+	TunnelStatus  string `json:"tunnel_status"`
+	CountryCode   string `json:"country_code"`
+}
+
+type trafficUserRow struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Upload   int64  `json:"upload"`
+	Download int64  `json:"download"`
+	Total    int64  `json:"total"`
+}
+
+type trafficDailyRow struct {
+	Date     string `json:"date"`
+	Upload   int64  `json:"upload"`
+	Download int64  `json:"download"`
 }
 
 type adminUserRow struct {

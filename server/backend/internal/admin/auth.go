@@ -136,6 +136,7 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "servers.files", Name: "Server Files", Description: "Browse server files"},
 	{Key: "traffic_masking.read", Name: "Traffic Masking Read", Description: "View traffic masking rules"},
 	{Key: "traffic_masking.write", Name: "Traffic Masking Write", Description: "Manage traffic masking rules"},
+	{Key: "audit.read", Name: "Audit Log Read", Description: "View admin audit log"},
 }
 
 func ValidateConfig() error {

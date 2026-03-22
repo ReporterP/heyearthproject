@@ -195,6 +195,22 @@ export function deleteTenant(id) {
   return apiFetch(`/tenants/${id}`, { method: 'DELETE' })
 }
 
+// ── Audit Log ──
+export function fetchAuditLog(params) {
+  return pagedFetch('/audit-log', params)
+}
+
+// ── Traffic ──
+export function fetchTrafficUsers(params) {
+  return pagedFetch('/traffic', params)
+}
+export function fetchTrafficUserDetail(userId, period = 'month') {
+  return apiFetch(`/traffic/${encodeURIComponent(userId)}?period=${period}`)
+}
+export function fetchTrafficChart(days = 30) {
+  return apiFetch(`/traffic-chart?days=${days}`)
+}
+
 // ── Settings ──
 export function getSettings() {
   return apiFetch('/settings')

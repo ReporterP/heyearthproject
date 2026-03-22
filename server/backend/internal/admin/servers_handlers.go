@@ -164,6 +164,7 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	WriteAuditLog(r, "create_server", "server", fmt.Sprintf("%d", serverID), map[string]string{"name": req.Name, "ip": req.IPAddress})
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": serverID, "message": "Server added successfully"})
 }
 
@@ -277,6 +278,7 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save server")
 		return
 	}
+	WriteAuditLog(r, "update_server", "server", fmt.Sprintf("%d", serverID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server updated"})
 }
 
@@ -290,6 +292,7 @@ func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to delete server")
 		return
 	}
+	WriteAuditLog(r, "delete_server", "server", fmt.Sprintf("%d", serverID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server deleted"})
 }
 

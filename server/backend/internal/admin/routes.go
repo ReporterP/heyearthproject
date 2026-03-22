@@ -252,6 +252,20 @@ func RegisterRoutes() {
 		}
 	}))
 
+	// Audit Log
+	http.HandleFunc("/api/admin/audit-log", withMethod(http.MethodGet, RequirePermission("audit.read", ListAuditLogHandler)))
+
+	// Traffic
+	http.HandleFunc("/api/admin/traffic-chart", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficChartHandler)))
+	http.HandleFunc("/api/admin/traffic", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			RequirePermission("dashboard.read", TrafficUsersHandler).ServeHTTP(w, r)
+		} else {
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+	http.HandleFunc("/api/admin/traffic/", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficUserDetailHandler)))
+
 	http.HandleFunc("/api/public/create-tenant", PublicCreateTenantHandler)
 	http.HandleFunc("/api/public/tariff/calculate", PublicTariffCalculateHandler)
 }

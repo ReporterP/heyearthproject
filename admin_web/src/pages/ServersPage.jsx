@@ -319,7 +319,7 @@ export default function ServersPage() {
     setSshPassword(''); setSshKeyId(''); setLocation(''); setTags('')
     setCountryCode(''); setServerStatus('online')
     setTunnelProtocol('vless'); setTunnelPort('443')
-    setTunnelSni('microsoft.com')
+    setTunnelSni('nltimes.nl')
     setTunnelSsMethod('2022-blake3-aes-128-gcm')
     // Автогенерация credentials
     try {
@@ -750,6 +750,7 @@ export default function ServersPage() {
         </FormField>
         <FormField label={t.fieldLocation}><TextInput value={location} onChange={setLocation} /></FormField>
         <FormField label={t.fieldCountryCode}><TextInput value={countryCode} onChange={setCountryCode} /></FormField>
+        <FormField label={t.fieldTags}><TextInput value={tags} onChange={setTags} placeholder="EU, premium, fast" /></FormField>
         <FormField label={t.fieldServerStatus}>
           <SelectInput value={serverStatus} onChange={setServerStatus} options={[
             { value: 'online', label: 'Онлайн' },

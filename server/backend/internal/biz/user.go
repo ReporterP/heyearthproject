@@ -93,6 +93,7 @@ func GetUserVlessUUID(userID string) (string, error) {
 }
 
 // ListActiveVlessUUIDs возвращает VLESS UUID всех пользователей с активной подпиской.
+// Исключает заблокированных и превысивших лимит трафика.
 func ListActiveVlessUUIDs() ([]string, error) {
 	rows, err := db.DB.Query(`
 		SELECT DISTINCT u.vless_uuid::text
@@ -101,6 +102,7 @@ func ListActiveVlessUUIDs() ([]string, error) {
 		WHERE u.vless_uuid IS NOT NULL
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 	`)
 	if err != nil {
 		return nil, err
@@ -115,6 +117,43 @@ func ListActiveVlessUUIDs() ([]string, error) {
 		uuids = append(uuids, uuid)
 	}
 	return uuids, rows.Err()
+}
+
+// ActiveVlessClient — VLESS клиент с информацией о premium для Xray policy level.
+type ActiveVlessClient struct {
+	UUID      string
+	UserID    string
+	IsPremium bool
+}
+
+// ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о premium.
+// Используется для установки правильного policy level в Xray конфиге.
+func ListActiveVlessClients() ([]ActiveVlessClient, error) {
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT u.vless_uuid::text, u.user_id,
+		       COALESCE(bool_or(ug.is_premium), FALSE) AS is_premium
+		FROM users u
+		JOIN user_subscriptions us ON us.user_id = u.id
+		JOIN user_groups ug ON ug.id = us.group_id
+		WHERE u.vless_uuid IS NOT NULL
+		  AND u.is_blocked = FALSE
+		  AND us.valid_until > CURRENT_TIMESTAMP
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
+		GROUP BY u.vless_uuid, u.user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ActiveVlessClient
+	for rows.Next() {
+		var c ActiveVlessClient
+		if err := rows.Scan(&c.UUID, &c.UserID, &c.IsPremium); err != nil {
+			return nil, err
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
 }
 
 // ActiveUserWithUUID — пара user_id + vless_uuid для активного пользователя.

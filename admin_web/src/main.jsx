@@ -20,6 +20,8 @@ import ReleasesPage from './pages/ReleasesPage.jsx'
 import AdminsPage from './pages/AdminsPage.jsx'
 import TenantsPage from './pages/TenantsPage.jsx'
 import TrafficMaskingPage from './pages/TrafficMaskingPage.jsx'
+import TrafficPage from './pages/TrafficPage.jsx'
+import AuditLogPage from './pages/AuditLogPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import './style.css'
 
@@ -40,12 +42,14 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/promocodes" element={<PromocodesPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />
+                  <Route path="/traffic" element={<TrafficPage />} />
                   <Route path="/servers" element={<ServersPage />} />
                   <Route path="/ssh-keys" element={<SshKeysPage />} />
                   <Route path="/releases" element={<ReleasesPage />} />
                   <Route path="/admins" element={<AdminsPage />} />
                   <Route path="/tenants" element={<TenantsPage />} />
                   <Route path="/traffic-masking" element={<TrafficMaskingPage />} />
+                  <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>

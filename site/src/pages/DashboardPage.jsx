@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation } from '../api/user.js'
+import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation, getTrafficStats, getSubscribeLink } from '../api/user.js'
 
 function formatDate(d) {
   if (!d) return '---'
@@ -10,6 +10,14 @@ function formatDate(d) {
 function formatAmount(amount) {
   if (!amount && amount !== 0) return '---'
   return Number(amount).toLocaleString('ru-RU') + ' \u20BD'
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
 /* ─── Copy helper with fallback for HTTP ─── */
@@ -72,6 +80,11 @@ export default function DashboardPage() {
   const [donationAmount, setDonationAmount] = useState(500)
   const [donationLoading, setDonationLoading] = useState(false)
 
+  // Трафик
+  const [trafficStats, setTrafficStats] = useState(null)
+  // Ссылка подписки
+  const [subscribeLink, setSubscribeLink] = useState(null)
+
   useEffect(() => {
     if (!token) { navigate('/login'); return }
     Promise.all([
@@ -80,7 +93,9 @@ export default function DashboardPage() {
       getConnections(token).catch(() => null),
       getPayments(token).catch(() => ({ items: [] })),
       getDownloads().catch(() => ({ downloads: {} })),
-    ]).then(([profileData, subData, connData, payData, dlData]) => {
+      getTrafficStats(token).catch(() => null),
+      getSubscribeLink(token).catch(() => null),
+    ]).then(([profileData, subData, connData, payData, dlData, trafficData, subLinkData]) => {
       setProfile(profileData)
       // subData = { items: [...] } — берём первую активную
       if (subData?.items?.length > 0) {
@@ -90,6 +105,8 @@ export default function DashboardPage() {
       setConnections(connData)
       setPayments(payData?.items || [])
       setDownloads(dlData?.downloads || {})
+      setTrafficStats(trafficData)
+      setSubscribeLink(subLinkData)
     }).catch(e => {
       if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
         localStorage.removeItem('token')
@@ -315,6 +332,83 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* ─── Traffic Stats ─── */}
+        {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (
+          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Трафик</h2>
+                <p className="text-xs text-text-secondary">Использование за текущий период</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Использовано</span>
+                <span className="font-medium">{formatBytes(trafficStats.traffic_used)}</span>
+              </div>
+              {trafficStats.traffic_limit && (
+                <>
+                  <div className="w-full bg-white/10 rounded-full h-2.5">
+                    <div
+                      className="bg-gradient-to-r from-brand to-accent h-2.5 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, (trafficStats.traffic_used / trafficStats.traffic_limit) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs text-text-secondary">
+                    <span>{Math.round((trafficStats.traffic_used / trafficStats.traffic_limit) * 100)}%</span>
+                    <span>Лимит: {formatBytes(trafficStats.traffic_limit)}</span>
+                  </div>
+                </>
+              )}
+              {trafficStats.upload_bytes > 0 && (
+                <div className="flex gap-4 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+                    <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                    </svg>
+                    {formatBytes(trafficStats.upload_bytes)}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+                    <svg className="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15m0 0h11.25m-11.25 0V8.25" />
+                    </svg>
+                    {formatBytes(trafficStats.download_bytes)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Subscription Link ─── */}
+        {subscribeLink && subscribeLink.subscribe_url && (
+          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500/20 to-amber-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Ссылка подписки</h2>
+                <p className="text-xs text-text-secondary">Для V2RayNG, Shadowrocket, Clash и других клиентов</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 mb-3">
+              <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{subscribeLink.subscribe_url}</code>
+              <CopyButton field="sublink" text={subscribeLink.subscribe_url} />
+            </div>
+            <p className="text-xs text-text-secondary">
+              Добавьте эту ссылку в ваш VPN-клиент как подписку — конфигурация будет обновляться автоматически.
+            </p>
+          </div>
+        )}
 
         {/* ─── Promo code ─── */}
         <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">

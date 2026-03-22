@@ -64,12 +64,17 @@ func main() {
 	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
 	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
 	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перегенерировать листовые mTLS-сертификаты (client, server) без замены CA")
+	setupExitNode := flag.String("setup-exit-node", "", "развернуть exit-ноду (IP:порт_туннеля, напр. 1.2.3.4:443)")
+	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль для exit-ноды")
+	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды")
 	flag.Parse()
 
 	var mode string
 	switch {
 	case *rotateCerts:
 		mode = "rotate-certs"
+	case *setupExitNode != "":
+		mode = "setup-exit-node"
 	case *mainMode:
 		mode = "main"
 	case *updateMain:
@@ -97,7 +102,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -152,6 +157,11 @@ func main() {
 		return
 	}
 
+	if mode == "setup-exit-node" {
+		setupExitNodeDeploy(*setupExitNode, *exitNodePassword, *exitNodeSSHPort, client, cfg)
+		return
+	}
+
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		log.Fatalf("sftp: %v", err)
@@ -161,6 +171,7 @@ func main() {
 	switch mode {
 	case "main":
 		installGoOnServer(client)
+		optimizeNetworkStack(client)
 		installPostgresOnServer(client)
 		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
@@ -517,6 +528,35 @@ func buildAdminWeb(repoRoot string, cfg *deployConfig) string {
 	}
 
 	return filepath.Join(adminWebRoot, "dist")
+}
+
+// optimizeNetworkStack включает BBR congestion control и отключает IPv6.
+// BBR значительно улучшает пропускную способность, а отключение IPv6 исключает утечки маршрутов.
+func optimizeNetworkStack(client *ssh.Client) {
+	script := `set -e
+# BBR congestion control
+if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+  echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+  echo "[+] BBR enabled"
+else
+  echo "[=] BBR already enabled"
+fi
+
+# Отключение IPv6
+if ! sysctl net.ipv6.conf.all.disable_ipv6 2>/dev/null | grep -q 1; then
+  echo "net.ipv6.conf.all.disable_ipv6=1" >> /etc/sysctl.conf
+  echo "net.ipv6.conf.default.disable_ipv6=1" >> /etc/sysctl.conf
+  echo "net.ipv6.conf.lo.disable_ipv6=1" >> /etc/sysctl.conf
+  echo "[+] IPv6 disabled"
+else
+  echo "[=] IPv6 already disabled"
+fi
+
+sysctl -p 2>/dev/null || true
+echo "[OK] Network stack optimized"
+`
+	_, _ = runSSH(client, script, true)
 }
 
 func installGoOnServer(client *ssh.Client) {
@@ -1581,4 +1621,197 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 	fmt.Println("  2. scp /opt/heyearth/backups/backup-*.tar.gz newhost:/opt/heyearth/backups/")
 	fmt.Println("  3. On the new server: run deploy --main first")
 	fmt.Println("  4. Then restore the DB and config from the backup")
+}
+
+// setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
+// Формат addr: "IP:TUNNEL_PORT" (напр. "1.2.3.4:443")
+func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
+	parts := strings.SplitN(addr, ":", 2)
+	if len(parts) != 2 {
+		log.Fatalf("--setup-exit-node формат: IP:TUNNEL_PORT (напр. 1.2.3.4:443)")
+	}
+	exitIP := parts[0]
+	tunnelPort := parts[1]
+
+	if password == "" {
+		password = cfg.deployPassword // fallback на пароль основного сервера
+	}
+
+	fmt.Printf("[exit-node] Подключение к %s:%d...\n", exitIP, sshPort)
+	exitClient, err := sshDial(fmt.Sprintf("%s:%d", exitIP, sshPort), "root", password, "")
+	if err != nil {
+		log.Fatalf("[exit-node] SSH: %v", err)
+	}
+	defer exitClient.Close()
+
+	// Оптимизация сетевого стека (BBR, IPv6)
+	fmt.Println("[exit-node] Оптимизация сетевого стека...")
+	optimizeNetworkStack(exitClient)
+
+	// Установка Xray и настройка как exit-node
+	fmt.Println("[exit-node] Установка Xray...")
+	script := fmt.Sprintf(`set -e
+mkdir -p /opt/heyearth/xray /opt/heyearth/state
+
+# ── 1. Скачать Xray если нет ──
+if [ ! -f /opt/heyearth/xray/xray ]; then
+  apt-get update -qq
+  apt-get install -y -qq wget unzip 2>/dev/null
+  cd /tmp
+  wget -q https://github.com/XTLS/Xray-core/releases/download/v25.1.1/Xray-linux-64.zip -O xray.zip
+  unzip -o xray.zip -d /opt/heyearth/xray
+  chmod +x /opt/heyearth/xray/xray
+  rm -f xray.zip
+  echo "[xray] Binary v25.1.1 установлен"
+else
+  echo "[xray] Binary уже существует: $(/opt/heyearth/xray/xray version 2>&1 | head -1)"
+fi
+
+# ── 2. Сгенерировать ключи ──
+KEYS_FILE="/opt/heyearth/state/reality-keys.json"
+if [ ! -f "$KEYS_FILE" ]; then
+  KEYS=$(/opt/heyearth/xray/xray x25519 2>&1)
+  PRIV_KEY=$(echo "$KEYS" | grep 'Private key:' | awk '{print $3}')
+  PUB_KEY=$(echo "$KEYS" | grep 'Public key:' | awk '{print $3}')
+  SHORT_ID=$(head -c 8 /dev/urandom | xxd -p)
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  SS_PASSWORD=$(openssl rand -base64 16)
+
+  cat > "$KEYS_FILE" <<KEYSEOF
+{
+  "privateKey": "$PRIV_KEY",
+  "publicKey": "$PUB_KEY",
+  "shortId": "$SHORT_ID",
+  "uuid": "$UUID",
+  "ssPassword": "$SS_PASSWORD"
+}
+KEYSEOF
+  echo "[xray] Ключи сгенерированы"
+else
+  echo "[xray] Ключи уже существуют"
+fi
+
+# Читаем ключи
+PRIV_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['privateKey'])")
+PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])")
+SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])")
+UUID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['uuid'])")
+SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))")
+
+# ── 3. Конфиг exit-ноды (принимает входящие от Hub) ──
+# Exit-нода принимает VLESS Reality на порту %s
+# и перенаправляет трафик в интернет (freedom)
+cat > /opt/heyearth/xray/config.json <<XRAYEOF
+{
+  "log": {"loglevel": "warning"},
+  "dns": {"servers": ["8.8.8.8", "1.1.1.1"]},
+  "inbounds": [
+    {
+      "tag": "vless-reality",
+      "listen": "0.0.0.0",
+      "port": %s,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "nltimes.nl:443",
+          "xver": 0,
+          "serverNames": ["nltimes.nl", "www.nltimes.nl"],
+          "privateKey": "$PRIV_KEY",
+          "shortIds": ["$SHORT_ID"]
+        }
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "shadowsocks",
+      "listen": "0.0.0.0",
+      "port": 8388,
+      "protocol": "shadowsocks",
+      "settings": {"method": "2022-blake3-aes-128-gcm", "password": "$SS_PASSWORD", "network": "tcp,udp"},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}},
+    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
+    ]
+  }
+}
+XRAYEOF
+echo "[xray] Exit-node конфиг записан (VLESS:%s, SS:8388)"
+
+# ── 4. systemd-сервис ──
+cat > /etc/systemd/system/xray.service <<'SVCEOF'
+[Unit]
+Description=Xray Exit Node (HeYearth)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/heyearth/xray
+ExecStart=/opt/heyearth/xray/xray run -config /opt/heyearth/xray/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable xray
+systemctl restart xray
+sleep 1
+echo "[xray] Сервис запущен"
+systemctl status xray --no-pager -l 2>&1 | head -15 || true
+
+# ── 5. Firewall ──
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 22/tcp 2>/dev/null || true
+  ufw allow %s/tcp 2>/dev/null || true
+  ufw allow 8388/tcp 2>/dev/null || true
+  ufw allow 8388/udp 2>/dev/null || true
+  ufw --force enable 2>/dev/null || true
+  echo "[xray] UFW правила добавлены"
+else
+  iptables -I INPUT -p tcp --dport %s -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null || true
+  echo "[xray] iptables правила добавлены"
+fi
+
+# ── 6. Вывод credentials для добавления в админку ──
+echo ""
+echo "===== EXIT NODE CREDENTIALS ====="
+echo "IP: %s"
+echo "Tunnel Port: %s"
+echo "Protocol: vless"
+echo "UUID: $UUID"
+echo "Public Key: $PUB_KEY"
+echo "Short ID: $SHORT_ID"
+echo "SS Password: $SS_PASSWORD"
+echo "SNI: nltimes.nl"
+echo "================================="
+echo ""
+echo "Добавьте эти данные в админку: Серверы → Добавить сервер"
+`, tunnelPort, tunnelPort, tunnelPort, tunnelPort, tunnelPort, exitIP, tunnelPort)
+
+	_, _ = runSSH(exitClient, script, false)
+	fmt.Println("[exit-node] Развёртывание завершено")
+	fmt.Println("[exit-node] Не забудьте добавить сервер в админку с выведенными credentials!")
 }

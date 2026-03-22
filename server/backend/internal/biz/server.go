@@ -244,3 +244,13 @@ func UpdateTunnelStatus(serverID int, status string) error {
 	`, status, serverID)
 	return err
 }
+
+// UpdateTunnelStatusWithLatency обновляет статус и latency для ноды.
+func UpdateTunnelStatusWithLatency(serverID int, status string, latencyMs int) error {
+	_, err := db.DB.Exec(`
+		UPDATE servers
+		SET tunnel_status = $1, latency_ms = $2, last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $3
+	`, status, latencyMs, serverID)
+	return err
+}

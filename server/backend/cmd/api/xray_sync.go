@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -85,38 +86,58 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("load reality keys: %w", err)
 	}
 
-	// ── Per-user клиенты ──
-	activeUUIDs, err := biz.ListActiveVlessUUIDs()
+	// ── Per-user клиенты с premium-уровнями ──
+	activeClients, err := biz.ListActiveVlessClients()
 	if err != nil {
-		return fmt.Errorf("list active uuids: %w", err)
+		return fmt.Errorf("list active clients: %w", err)
 	}
 
 	// Серверный UUID — для обратной совместимости и админ-доступа
 	serverUUID := keys.UUID
 	if serverUUID != "" {
 		found := false
-		for _, u := range activeUUIDs {
-			if u == serverUUID {
+		for _, c := range activeClients {
+			if c.UUID == serverUUID {
 				found = true
 				break
 			}
 		}
 		if !found {
-			activeUUIDs = append([]string{serverUUID}, activeUUIDs...)
+			activeClients = append([]biz.ActiveVlessClient{{UUID: serverUUID, UserID: "server@heyearth", IsPremium: true}}, activeClients...)
 		}
 	}
 
-	vlessClients := make([]map[string]interface{}, 0, len(activeUUIDs))
-	for _, uuid := range activeUUIDs {
+	// Маппинг UUID → user_id для email (Xray Stats API)
+	uuidToUserID := make(map[string]string)
+	for _, c := range activeClients {
+		uuidToUserID[c.UUID] = c.UserID
+	}
+
+	// Policy levels: 0 = standard, 1 = premium
+	vlessClients := make([]map[string]interface{}, 0, len(activeClients))
+	for _, c := range activeClients {
+		email := c.UserID
+		if email == "" {
+			email = "server@heyearth"
+		}
+		level := 0
+		if c.IsPremium {
+			level = 1
+		}
 		vlessClients = append(vlessClients, map[string]interface{}{
-			"id":   uuid,
-			"flow": "xtls-rprx-vision",
+			"id":    c.UUID,
+			"flow":  "xtls-rprx-vision",
+			"email": email,
+			"level": level,
 		})
 	}
+
+	// (activeClients уже использованы для заполнения vlessClients и uuidToUserID)
 	if len(vlessClients) == 0 && serverUUID != "" {
 		vlessClients = append(vlessClients, map[string]interface{}{
-			"id":   serverUUID,
-			"flow": "xtls-rprx-vision",
+			"id":    serverUUID,
+			"flow":  "xtls-rprx-vision",
+			"email": "server@heyearth",
 		})
 	}
 
@@ -127,6 +148,12 @@ func SyncXrayConfig() error {
 		httpAccounts = append(httpAccounts, map[string]string{"user": "heyearth", "pass": serverUUID})
 	}
 
+	// ── Reality SNI (настраивается через app_settings, по умолчанию — nltimes.nl) ──
+	realitySNI := "nltimes.nl"
+	if v, err := biz.GetSetting("reality_sni_domain"); err == nil && v != "" {
+		realitySNI = v
+	}
+
 	// ── Inbounds ──
 	inbounds := []map[string]interface{}{
 		{
@@ -135,8 +162,8 @@ func SyncXrayConfig() error {
 			"streamSettings": map[string]interface{}{
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
-					"show": false, "dest": "microsoft.com:443", "xver": 0,
-					"serverNames": []string{"microsoft.com", "www.microsoft.com"},
+					"show": false, "dest": realitySNI + ":443", "xver": 0,
+					"serverNames": []string{realitySNI, "www." + realitySNI},
 					"privateKey": keys.PrivateKey, "shortIds": []string{keys.ShortID},
 				},
 			},
@@ -181,6 +208,34 @@ func SyncXrayConfig() error {
 		}
 	}
 
+	// ── Traffic Masking Rules (premium only) ──
+	maskingRules, err := biz.ListActiveTrafficMaskingRules()
+	if err != nil {
+		log.Printf("[xray-sync] Ошибка загрузки правил маскировки: %v", err)
+		maskingRules = nil
+	}
+
+	// Для каждого правила маскировки создаём freedom outbound с нужным SNI
+	type maskRouteEntry struct {
+		sourceDomain string
+		outboundTag  string
+	}
+	var maskRouteEntries []maskRouteEntry
+	for _, rule := range maskingRules {
+		tag := fmt.Sprintf("mask-%d", rule.ID)
+		outbound := map[string]interface{}{
+			"tag": tag, "protocol": "freedom",
+			"settings": map[string]interface{}{
+				"domainStrategy": "UseIP",
+			},
+		}
+		outbounds = append(outbounds, outbound)
+		maskRouteEntries = append(maskRouteEntries, maskRouteEntry{
+			sourceDomain: rule.SourceDomain,
+			outboundTag:  tag,
+		})
+	}
+
 	// ── Routing (политики безопасности) ──
 	rules := []map[string]interface{}{
 		// 1. Блокировка приватных IP — inter-spoke изоляция
@@ -190,6 +245,15 @@ func SyncXrayConfig() error {
 		{"type": "field", "protocol": []string{"bittorrent"}, "outboundTag": "block"},
 		// 3. Блокировка DNS-over-HTTPS для предотвращения утечки DNS
 		{"type": "field", "domain": []string{"domain:dns.google", "domain:cloudflare-dns.com", "domain:dns.quad9.net"}, "outboundTag": "block"},
+	}
+
+	// Traffic masking routing rules (только для premium пользователей)
+	for _, entry := range maskRouteEntries {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"domain":      []string{"domain:" + entry.sourceDomain},
+			"outboundTag": entry.outboundTag,
+		})
 	}
 
 	routing := map[string]interface{}{
@@ -221,12 +285,62 @@ func SyncXrayConfig() error {
 		// Xray автоматически пингует exit-ноды и выбирает с наименьшей задержкой
 	}
 
+	// ── Xray Stats API ──
+	// dokodemo-door inbound для gRPC API доступа к статистике
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag": "api-in", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door",
+		"settings": map[string]interface{}{"address": "127.0.0.1"},
+	})
+
+	// API routing rule: перенаправляем трафик api-in → api handler
+	apiRule := map[string]interface{}{
+		"type": "field", "inboundTag": []string{"api-in"}, "outboundTag": "api",
+	}
+	// Вставляем api rule первым в routing rules
+	existingRules := routing["rules"].([]map[string]interface{})
+	routing["rules"] = append([]map[string]interface{}{apiRule}, existingRules...)
+
+	// API outbound (handler для StatsService)
+	outbounds = append(outbounds, map[string]interface{}{
+		"protocol": "freedom", "tag": "api",
+	})
+
 	config := map[string]interface{}{
 		"log":       map[string]string{"loglevel": "warning"},
 		"dns":       map[string]interface{}{"servers": []string{"8.8.8.8", "1.1.1.1"}},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"routing":   routing,
+		// Stats API: включаем сбор статистики
+		"stats": map[string]interface{}{},
+		// API handler для доступа к статистике
+		"api": map[string]interface{}{
+			"tag": "api",
+			"services": []string{
+				"StatsService",
+			},
+		},
+		// Policy: учёт трафика + лимиты подключений per-user
+		// Level 0 = standard (до 3 одновременных подключений)
+		// Level 1 = premium (до 10 одновременных подключений)
+		"policy": map[string]interface{}{
+			"levels": map[string]interface{}{
+				"0": map[string]interface{}{
+					"statsUserUplink":   true,
+					"statsUserDownlink": true,
+				},
+				"1": map[string]interface{}{
+					"statsUserUplink":   true,
+					"statsUserDownlink": true,
+				},
+			},
+			"system": map[string]interface{}{
+				"statsInboundUplink":    true,
+				"statsInboundDownlink":  true,
+				"statsOutboundUplink":   true,
+				"statsOutboundDownlink": true,
+			},
+		},
 	}
 
 	// Сериализуем и записываем конфиг
@@ -246,8 +360,8 @@ func SyncXrayConfig() error {
 	}
 
 	xraySyncLast = time.Now()
-	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d SOCKS5/HTTP аккаунтов, %d exit-нод",
-		len(vlessClients), len(socksAccounts), len(exitTags))
+	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d SOCKS5/HTTP аккаунтов, %d exit-нод, %d правил маскировки",
+		len(vlessClients), len(socksAccounts), len(exitTags), len(maskRouteEntries))
 
 	return nil
 }
@@ -418,11 +532,11 @@ func checkAllTunnels() {
 
 	statusChanged := false
 	for _, node := range nodes {
-		newStatus := checkTunnelHealth(node)
+		newStatus, latencyMs := checkTunnelHealth(node)
 		oldStatus := node.TunnelStatus
 
 		if newStatus != oldStatus {
-			if err := biz.UpdateTunnelStatus(node.ID, newStatus); err != nil {
+			if err := biz.UpdateTunnelStatusWithLatency(node.ID, newStatus, latencyMs); err != nil {
 				log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
 				continue
 			}
@@ -443,8 +557,8 @@ func checkAllTunnels() {
 					node.ID, node.Name, oldStatus, newStatus)
 			}
 		} else if newStatus == "healthy" {
-			// Обновляем last_tunnel_check даже без смены статуса
-			_ = biz.UpdateTunnelStatus(node.ID, newStatus)
+			// Обновляем last_tunnel_check и latency даже без смены статуса
+			_ = biz.UpdateTunnelStatusWithLatency(node.ID, newStatus, latencyMs)
 		}
 	}
 
@@ -462,15 +576,44 @@ func checkAllTunnels() {
 	}
 }
 
-// checkTunnelHealth проверяет доступность exit-ноды через TCP.
-func checkTunnelHealth(node biz.ExitNodeTunnel) string {
+// checkTunnelHealth проверяет доступность exit-ноды.
+// Для VLESS: TCP connect + TLS handshake (проверка Reality endpoint).
+// Для остальных: TCP connect.
+// Возвращает статус и latency в миллисекундах.
+func checkTunnelHealth(node biz.ExitNodeTunnel) (string, int) {
 	addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
+	start := time.Now()
+
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		return "unhealthy"
+		return "unhealthy", 0
 	}
-	conn.Close()
-	return "healthy"
+
+	// Для VLESS Reality — проверяем TLS handshake
+	if node.TunnelProtocol == "vless" {
+		sni := node.TunnelSNI
+		if sni == "" {
+			sni = node.IPAddress
+		}
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true, // Reality использует самоподписанные сертификаты
+		})
+		tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			// TLS handshake failed — порт открыт, но не Reality
+			log.Printf("[tunnel-monitor] exit-нода %d (%s): TCP OK, TLS handshake failed: %v",
+				node.ID, node.Name, err)
+			return "unhealthy", 0
+		}
+		tlsConn.Close()
+	} else {
+		conn.Close()
+	}
+
+	latencyMs := int(time.Since(start).Milliseconds())
+	return "healthy", latencyMs
 }
 
 // ─────────────────────── Sync Loop ───────────────────────

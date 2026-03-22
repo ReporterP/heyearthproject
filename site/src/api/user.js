@@ -114,3 +114,17 @@ export async function createDonation(token, amount, returnUrl) {
   })
   return jsonOrThrow(res, 'Failed to create donation')
 }
+
+export async function getTrafficStats(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/traffic`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to load traffic stats')
+}
+
+export async function getSubscribeLink(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/subscribe-token`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to load subscribe link')
+}
