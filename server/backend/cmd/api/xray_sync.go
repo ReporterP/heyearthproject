@@ -452,6 +452,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
 		}
 
 	case "socks5":
@@ -465,8 +466,8 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
 		}
-		// Добавляем авторизацию если есть
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
 			servers[0]["users"] = []map[string]interface{}{
@@ -486,6 +487,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
 		}
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})

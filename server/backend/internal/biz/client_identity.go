@@ -122,14 +122,21 @@ func SetUsername(userID, username string) error {
 	if username == "" {
 		return fmt.Errorf("username cannot be empty")
 	}
-	if len(username) < 3 || len(username) > 64 {
-		return fmt.Errorf("username must be 3-64 characters")
+	if len(username) < 5 || len(username) > 64 {
+		return fmt.Errorf("имя пользователя должно быть от 5 до 64 символов")
 	}
 	// Only allow alphanumeric, underscore, hyphen
 	for _, c := range username {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
 			return fmt.Errorf("username can only contain letters, numbers, underscore and hyphen")
 		}
+	}
+
+	// Для установки username необходим облачный пароль
+	var hasPassword bool
+	_ = db.DB.QueryRow(`SELECT password_hash IS NOT NULL AND password_hash != '' FROM users WHERE user_id = $1`, userID).Scan(&hasPassword)
+	if !hasPassword {
+		return fmt.Errorf("для установки username необходимо сначала задать облачный пароль")
 	}
 
 	_, err := db.DB.Exec(`

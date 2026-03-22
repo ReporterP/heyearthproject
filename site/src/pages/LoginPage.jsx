@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { loginUser } from '../api/user.js'
+import PasswordInput from '../components/PasswordInput.jsx'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -88,24 +89,13 @@ export default function LoginPage() {
                   У меня есть облачный пароль
                 </button>
               ) : (
-                <div className="group animate-fade-in">
-                  <label className="block text-xs font-medium text-text-secondary mb-2 group-focus-within:text-brand-light transition-colors">
-                    Облачный пароль
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-secondary group-focus-within:text-brand-light transition-colors">
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                      </svg>
-                    </div>
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      placeholder="Введите пароль"
-                      className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50"
-                    />
-                  </div>
+                <div className="animate-fade-in">
+                  <PasswordInput
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    placeholder="Введите пароль"
+                    label="Облачный пароль"
+                  />
                 </div>
               )}
             </div>

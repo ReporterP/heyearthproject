@@ -125,10 +125,22 @@ export default function DashboardPage() {
   const hasActiveSub = !!currentPlan && currentPlan !== ''
   const canConnect = connections?.can_connect
 
-  const vlessUri = connections?.vless_uri || ''
-  const ssUri = connections?.ss_uri || ''
   const socks5Addr = connections?.socks5 || ''
   const httpProxy = connections?.http_proxy || ''
+
+  // Парсим SOCKS5 URI на составные части для карточек сервисов
+  const socks5Parts = socks5Addr ? (() => {
+    try {
+      const url = new URL(socks5Addr)
+      return { host: url.hostname, port: url.port || '1080', user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) }
+    } catch { return null }
+  })() : null
+  const httpParts = httpProxy ? (() => {
+    try {
+      const url = new URL(httpProxy)
+      return { host: url.hostname, port: url.port || '8080', user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) }
+    } catch { return null }
+  })() : null
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -227,7 +239,7 @@ export default function DashboardPage() {
       <div className="absolute top-0 left-1/4 w-96 h-96 bg-brand/5 rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-accent/5 rounded-full blur-[120px] pointer-events-none" />
 
-      <div className="relative max-w-5xl mx-auto px-6">
+      <div className="relative max-w-5xl mx-auto px-4 sm:px-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-8 animate-fade-in">
           <div>
@@ -386,29 +398,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ─── Subscription Link ─── */}
-        {subscribeLink && subscribeLink.subscribe_url && (
-          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500/20 to-amber-500/10 flex items-center justify-center">
-                <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-                </svg>
-              </div>
-              <div>
-                <h2 className="text-base font-semibold">Ссылка подписки</h2>
-                <p className="text-xs text-text-secondary">Для V2RayNG, Shadowrocket, Clash и других клиентов</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 mb-3">
-              <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{subscribeLink.subscribe_url}</code>
-              <CopyButton field="sublink" text={subscribeLink.subscribe_url} />
-            </div>
-            <p className="text-xs text-text-secondary">
-              Добавьте эту ссылку в ваш VPN-клиент как подписку — конфигурация будет обновляться автоматически.
-            </p>
-          </div>
-        )}
+        {/* Subscription Link removed — users use SOCKS5/HTTP proxy directly */}
 
         {/* ─── Promo code ─── */}
         <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
@@ -424,7 +414,7 @@ export default function DashboardPage() {
               <p className="text-xs text-text-secondary">Введите промокод для активации подписки</p>
             </div>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
             <input
               type="text"
               value={promoCode}
@@ -475,7 +465,7 @@ export default function DashboardPage() {
             <h2 className="text-lg font-semibold">Подключение</h2>
           </div>
 
-          {!canConnect && !vlessUri ? (
+          {!canConnect ? (
             <div className="flex items-center gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
               <svg className="w-5 h-5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
@@ -487,51 +477,20 @@ export default function DashboardPage() {
             </div>
           ) : (
             <>
-              {/* VPN (VLESS) */}
-              {vlessUri && (
-                <div className="mb-5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="px-2 py-0.5 rounded-md bg-brand/15 text-brand-light text-xs font-bold">VPN</span>
-                    <span className="text-xs text-text-secondary">VLESS Reality — полный туннель</span>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{vlessUri}</code>
-                    <CopyButton field="vless" text={vlessUri} />
-                  </div>
-                  <p className="text-xs text-text-secondary mt-2">
-                    Используйте в приложениях: <span className="text-text-primary">Shadowrocket</span> (iOS), <span className="text-text-primary">Happ</span> (macOS), <span className="text-text-primary">v2rayN</span> (Windows), <span className="text-text-primary">v2rayNG</span> (Android)
-                  </p>
-                </div>
-              )}
-
-              {/* Shadowsocks */}
-              {ssUri && (
-                <div className="mb-5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-bold">Shadowsocks</span>
-                    <span className="text-xs text-text-secondary">Зашифрованный прокси</span>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <code className="flex-1 text-xs bg-white/5 rounded-xl px-4 py-3 break-all border border-white/5 font-mono text-text-secondary leading-relaxed select-all">{ssUri}</code>
-                    <CopyButton field="ss" text={ssUri} />
-                  </div>
-                  <p className="text-xs text-text-secondary mt-2">
-                    Используйте в: <span className="text-text-primary">Shadowrocket</span>, <span className="text-text-primary">Outline</span>, <span className="text-text-primary">v2rayN</span>, <span className="text-text-primary">Clash</span>
-                  </p>
-                </div>
-              )}
-
               {/* SOCKS5 + HTTP proxy */}
               {(socks5Addr || httpProxy) && (
-                <div className="grid sm:grid-cols-2 gap-4 mt-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {socks5Addr && (
                     <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS5</span>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS5</span>
+                          <span className="text-[10px] text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">рекомендуемый</span>
+                        </div>
                         <CopyButton field="socks5" text={socks5Addr} />
                       </div>
                       <code className="text-sm font-mono text-text-primary break-all select-all">{socks5Addr}</code>
-                      <p className="text-xs text-text-secondary mt-1.5">Прокси для браузера и приложений</p>
+                      <p className="text-xs text-text-secondary mt-1.5">Универсальный прокси для Telegram, браузера и приложений</p>
                     </div>
                   )}
                   {httpProxy && (
@@ -541,9 +500,108 @@ export default function DashboardPage() {
                         <CopyButton field="http" text={httpProxy} />
                       </div>
                       <code className="text-sm font-mono text-text-primary break-all select-all">{httpProxy}</code>
-                      <p className="text-xs text-text-secondary mt-1.5">HTTP прокси</p>
+                      <p className="text-xs text-text-secondary mt-1.5">HTTP прокси для системных настроек</p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* ─── Proxy credentials (отдельные поля) ─── */}
+              {socks5Parts && (
+                <div className="mt-5 p-4 rounded-xl bg-white/[0.02] border border-white/5">
+                  <p className="text-xs font-medium text-text-secondary mb-3 uppercase tracking-wider">Данные для подключения</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { label: 'Сервер', value: socks5Parts.host, field: 'proxy-host' },
+                      { label: 'Порт SOCKS5', value: socks5Parts.port, field: 'proxy-port' },
+                      { label: 'Логин', value: socks5Parts.user, field: 'proxy-user' },
+                      { label: 'Пароль', value: socks5Parts.pass, field: 'proxy-pass' },
+                    ].map(item => (
+                      <div key={item.field}>
+                        <p className="text-[10px] text-text-secondary mb-1">{item.label}</p>
+                        <div className="flex items-center gap-1">
+                          <code className="text-xs font-mono text-text-primary truncate flex-1">{item.value}</code>
+                          <button onClick={() => copyText(item.value, item.field)} className="p-1 rounded hover:bg-white/10 transition-colors flex-shrink-0">
+                            {copiedField === item.field ? <CheckIcon /> : <CopyIcon />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {httpParts && (
+                    <p className="text-[10px] text-text-secondary mt-2">HTTP порт: <span className="text-text-primary font-mono">{httpParts.port}</span> (логин и пароль такие же)</p>
+                  )}
+                </div>
+              )}
+
+              {/* ─── Настройка для сервисов ─── */}
+              {socks5Parts && (
+                <div className="mt-5">
+                  <p className="text-xs font-medium text-text-secondary mb-3 uppercase tracking-wider">Настройка прокси для сервисов</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Telegram */}
+                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-lg">&#9992;&#65039;</span>
+                        <span className="text-sm font-medium">Telegram</span>
+                      </div>
+                      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+                        <li>Настройки → Данные и хранилище</li>
+                        <li>Использовать прокси → Добавить прокси</li>
+                        <li>Тип: <span className="text-cyan-400">SOCKS5</span></li>
+                        <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
+                        <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
+                        <li>Логин: <code className="text-text-primary">{socks5Parts.user}</code></li>
+                        <li>Пароль: <code className="text-text-primary">{socks5Parts.pass}</code></li>
+                      </ol>
+                    </div>
+
+                    {/* Browser */}
+                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-lg">&#127760;</span>
+                        <span className="text-sm font-medium">Браузер (Chrome / Firefox)</span>
+                      </div>
+                      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+                        <li>Установите расширение <span className="text-text-primary">Proxy SwitchyOmega</span></li>
+                        <li>Создайте профиль → тип SOCKS5</li>
+                        <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
+                        <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
+                        <li>Авторизация: логин и пароль выше</li>
+                      </ol>
+                    </div>
+
+                    {/* Windows */}
+                    {httpParts && (
+                      <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-lg">&#128187;</span>
+                          <span className="text-sm font-medium">Windows (системный прокси)</span>
+                        </div>
+                        <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+                          <li>Параметры → Сеть → Прокси</li>
+                          <li>Ручная настройка прокси → Вкл</li>
+                          <li>Адрес: <code className="text-text-primary">{httpParts.host}</code></li>
+                          <li>Порт: <code className="text-text-primary">{httpParts.port}</code></li>
+                        </ol>
+                      </div>
+                    )}
+
+                    {/* macOS */}
+                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-lg">&#63743;</span>
+                        <span className="text-sm font-medium">macOS (системный прокси)</span>
+                      </div>
+                      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+                        <li>Системные настройки → Сеть</li>
+                        <li>Wi-Fi → Подробнее → Прокси</li>
+                        <li>SOCKS-прокси → Вкл</li>
+                        <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
+                        <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
+                      </ol>
+                    </div>
+                  </div>
                 </div>
               )}
             </>
@@ -581,24 +639,49 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ─── iOS PWA Install Hint ─── */}
-        {/iPhone|iPad|iPod/.test(navigator.userAgent) && !window.navigator.standalone && (
-          <div className="glass-card rounded-2xl p-5 mb-6 animate-fade-in-up delay-350 border border-brand/15">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand/20 to-accent/10 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-brand-light" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        {/* ─── Для iPhone ─── */}
+        {canConnect && (
+          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-350">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-indigo-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" />
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold mb-1">Установите как приложение</p>
-                <p className="text-xs text-text-secondary leading-relaxed">
-                  Нажмите <span className="inline-flex items-center gap-0.5 text-brand-light font-medium">
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25H15M12 1.5v13.5m0 0l-3-3m3 3l3-3" />
-                    </svg>
-                    Поделиться</span> → <span className="text-text-primary font-medium">На экран «Домой»</span> для быстрого доступа
-                </p>
+                <h2 className="text-base font-semibold">Для iPhone / iPad</h2>
+                <p className="text-xs text-text-secondary">Прокси-приложения для iOS</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <a href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/15 flex items-center justify-center flex-shrink-0">
+                  <span className="text-lg">&#128640;</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Shadowrocket</p>
+                  <p className="text-[10px] text-text-secondary">Лучший клиент (платный)</p>
+                </div>
+              </a>
+              <a href="https://apps.apple.com/app/potatso-lite/id1239860606" target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors">
+                <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center flex-shrink-0">
+                  <span className="text-lg">&#127819;</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Potatso Lite</p>
+                  <p className="text-[10px] text-text-secondary">Бесплатный</p>
+                </div>
+              </a>
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                <div className="w-10 h-10 rounded-xl bg-gray-500/15 flex items-center justify-center flex-shrink-0">
+                  <span className="text-lg">&#9881;&#65039;</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Без приложения</p>
+                  <p className="text-[10px] text-text-secondary">Настройки → Wi-Fi → Прокси → HTTP</p>
+                </div>
               </div>
             </div>
           </div>
@@ -623,7 +706,7 @@ export default function DashboardPage() {
               Мы очень хотим выпустить нативное приложение для <strong className="text-text-primary">iOS</strong> и <strong className="text-text-primary">macOS</strong>,
               но у нашего разработчика пока нет MacBook для разработки.
               Ваш донат поможет приобрести оборудование и ускорить выпуск приложения.
-              А пока вы можете использовать <strong className="text-text-primary">VLESS-ссылку</strong> в приложении Shadowrocket (iOS) или Happ (macOS).
+              А пока вы можете использовать <strong className="text-text-primary">прокси</strong> через Shadowrocket (iOS) или системные настройки.
             </p>
           </div>
 

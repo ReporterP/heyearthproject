@@ -95,32 +95,12 @@ func buildClashConfig(userID string) string {
 		return "# error: no vless uuid"
 	}
 
-	pubKey := biz.GetSettingOrDefault("reality_public_key", "")
-	shortID := biz.GetSettingOrDefault("reality_short_id", "")
-	sni := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
-	ssPassword := biz.GetSettingOrDefault("ss_password", "")
-
 	var proxies []string
 	var proxyNames []string
 
-	// Приоритет: SS → SOCKS5 → VLESS Reality
-	// SS первый — оптимальный для подключения внутри страны
+	// Только SOCKS5 и HTTP proxy для пользователей
 
-	// 1. Shadowsocks (рекомендуемый)
-	if ssPassword != "" {
-		name := "HeYearth-SS"
-		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: ss
-    server: %s
-    port: 8388
-    cipher: "2022-blake3-aes-128-gcm"
-    password: "%s"
-    udp: true`, name, host, ssPassword))
-	}
-
-	// 2. SOCKS5
+	// 1. SOCKS5 (рекомендуемый)
 	if vlessUUID != "" {
 		name := "HeYearth-SOCKS5"
 		proxyNames = append(proxyNames, name)
@@ -133,25 +113,17 @@ func buildClashConfig(userID string) string {
     password: "%s"`, name, host, userID, vlessUUID))
 	}
 
-	// 3. VLESS Reality (резервный — для обхода DPI если SS заблокируют)
-	if pubKey != "" {
-		name := "HeYearth-VPN"
+	// 2. HTTP proxy
+	if vlessUUID != "" {
+		name := "HeYearth-HTTP"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, fmt.Sprintf(
 			`  - name: "%s"
-    type: vless
+    type: http
     server: %s
-    port: 443
-    uuid: "%s"
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: "%s"
-    reality-opts:
-      public-key: "%s"
-      short-id: "%s"
-    client-fingerprint: chrome`, name, host, vlessUUID, sni, pubKey, shortID))
+    port: 8080
+    username: "%s"
+    password: "%s"`, name, host, userID, vlessUUID))
 	}
 
 	namesList := ""

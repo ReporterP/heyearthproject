@@ -467,10 +467,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		resp["connection_options"] = options
 		for _, opt := range options {
 			switch opt.Protocol {
-			case "vless":
-				resp["vless_uri"] = opt.Uri
-			case "shadowsocks":
-				resp["ss_uri"] = opt.Uri
 			case "socks5":
 				resp["socks5"] = opt.Uri
 			case "http":
