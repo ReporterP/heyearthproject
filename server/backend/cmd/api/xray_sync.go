@@ -180,17 +180,40 @@ func SyncXrayConfig() error {
 			"tag": "socks5-proxy", "listen": "0.0.0.0", "port": 1080, "protocol": "socks",
 			"settings": map[string]interface{}{"auth": "password", "accounts": socksAccounts, "udp": true},
 			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+			"streamSettings": map[string]interface{}{
+				"sockopt": map[string]interface{}{
+					"tcpFastOpen":          true, // Быстрый TCP handshake от клиента
+					"tcpNoDelay":           true, // Без задержки Nagle
+					"tcpKeepAliveInterval": 30,
+				},
+			},
 		},
 		{
 			"tag": "http-proxy", "listen": "0.0.0.0", "port": 8080, "protocol": "http",
 			"settings": map[string]interface{}{"allowTransparent": false, "accounts": httpAccounts},
 			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls"}},
+			"streamSettings": map[string]interface{}{
+				"sockopt": map[string]interface{}{
+					"tcpFastOpen":          true,
+					"tcpNoDelay":           true,
+					"tcpKeepAliveInterval": 30,
+				},
+			},
 		},
 	}
 
 	// ── Outbounds ──
 	outbounds := []map[string]interface{}{
-		{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{"domainStrategy": "UseIP"}},
+		{
+			"protocol": "freedom", "tag": "direct",
+			"settings": map[string]interface{}{"domainStrategy": "UseIP"},
+			"streamSettings": map[string]interface{}{
+				"sockopt": map[string]interface{}{
+					"tcpFastOpen": true,
+					"tcpNoDelay":  true,
+				},
+			},
+		},
 		{"protocol": "blackhole", "tag": "block", "settings": map[string]interface{}{"response": map[string]string{"type": "none"}}},
 	}
 
@@ -316,8 +339,14 @@ func SyncXrayConfig() error {
 	})
 
 	config := map[string]interface{}{
-		"log":       map[string]string{"loglevel": "warning"},
-		"dns":       map[string]interface{}{"servers": []string{"8.8.8.8", "1.1.1.1"}},
+		"log": map[string]string{"loglevel": "warning"},
+		// DNS: только IPv4 (IPv6 сломан у многих РФ-провайдеров — убираем задержку на AAAA)
+		"dns": map[string]interface{}{
+			"servers":       []string{"8.8.8.8", "1.1.1.1"},
+			"queryStrategy": "UseIPv4", // Не запрашиваем AAAA записи
+			"disableCache":  false,     // Кэш DNS включён (ускоряет повторные запросы)
+			"tag":           "dns-out",
+		},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"routing":   routing,
@@ -330,18 +359,27 @@ func SyncXrayConfig() error {
 				"StatsService",
 			},
 		},
-		// Policy: учёт трафика + лимиты подключений per-user
-		// Level 0 = standard (до 3 одновременных подключений)
-		// Level 1 = premium (до 10 одновременных подключений)
+		// Policy: учёт трафика + буферы + таймауты
+		// Level 0 = standard, Level 1 = premium
 		"policy": map[string]interface{}{
 			"levels": map[string]interface{}{
 				"0": map[string]interface{}{
 					"statsUserUplink":   true,
 					"statsUserDownlink": true,
+					"handshake":         4,   // Таймаут handshake (сек)
+					"connIdle":          300, // Idle timeout (сек) — 5 мин
+					"uplinkOnly":        2,   // Ждать 2 сек после закрытия download перед закрытием upload
+					"downlinkOnly":      5,   // Ждать 5 сек после закрытия upload перед закрытием download
+					"bufferSize":        64,  // 64KB буфер на соединение (дефолт 10KB — мало для видео)
 				},
 				"1": map[string]interface{}{
 					"statsUserUplink":   true,
 					"statsUserDownlink": true,
+					"handshake":         4,
+					"connIdle":          600, // Premium: 10 мин idle
+					"uplinkOnly":        2,
+					"downlinkOnly":      5,
+					"bufferSize":        128, // Premium: 128KB буфер (стриминг видео)
 				},
 			},
 			"system": map[string]interface{}{
@@ -401,6 +439,9 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 		if sni == "" {
 			sni = node.IPAddress
 		}
+		// Без flow: "xtls-rprx-vision" — чтобы работал mux (мультиплексирование).
+		// Vision хорош для single-stream, но mux критичен для скорости
+		// при множестве мелких подключений (Telegram, Instagram, YouTube).
 		outbound := map[string]interface{}{
 			"tag": tag, "protocol": "vless",
 			"settings": map[string]interface{}{
@@ -408,7 +449,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					{
 						"address": node.IPAddress, "port": node.TunnelPort,
 						"users": []map[string]interface{}{
-							{"id": node.TunnelUUID, "encryption": "none", "flow": "xtls-rprx-vision"},
+							{"id": node.TunnelUUID, "encryption": "none"},
 						},
 					},
 				},
@@ -419,6 +460,19 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					"fingerprint": "chrome",
 					"serverName":  sni,
 				},
+				"sockopt": map[string]interface{}{
+					"tcpFastOpen": true,  // Экономия 1 RTT на новых подключениях
+					"tcpNoDelay":  true,  // Без буферизации Nagle — снижает задержку
+					"tcpKeepAliveInterval": 30, // Keepalive каждые 30 сек (не даёт DPI убить idle)
+				},
+			},
+			// Мультиплексирование: несколько стримов по одному VLESS соединению.
+			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
+			"mux": map[string]interface{}{
+				"enabled":          true,
+				"concurrency":      8,   // До 8 стримов на одно TCP соединение
+				"xudpConcurrency":  16,  // UDP мультиплексирование (DNS, QUIC)
+				"xudpProxyUDP443":  "reject", // QUIC/443 не через mux (лучше TCP fallback)
 			},
 		}
 		// Добавляем publicKey и shortId если заданы
