@@ -506,7 +506,20 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
+			"streamSettings": map[string]interface{}{
+				"sockopt": map[string]interface{}{
+					"tcpFastOpen":          true,  // Экономия 1 RTT
+					"tcpNoDelay":           true,  // Без буферизации Nagle
+					"tcpKeepAliveInterval": 30,    // Keepalive от DPI
+				},
+			},
+			// Мультиплексирование: много стримов по одному SS соединению
+			"mux": map[string]interface{}{
+				"enabled":         true,
+				"concurrency":     8,
+				"xudpConcurrency": 16,
+				"xudpProxyUDP443": "reject",
+			},
 		}
 
 	case "socks5":

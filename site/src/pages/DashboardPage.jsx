@@ -128,7 +128,7 @@ export default function DashboardPage() {
   const socks5Addr = connections?.socks5 || ''
   const httpProxy = connections?.http_proxy || ''
 
-  // Парсим SOCKS5 URI на составные части для карточек сервисов
+  // Парсим SOCKS URI на составные части для карточек сервисов
   const socks5Parts = socks5Addr ? (() => {
     try {
       const url = new URL(socks5Addr)
@@ -398,7 +398,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Subscription Link removed — users use SOCKS5/HTTP proxy directly */}
+        {/* Subscription Link removed — users use SOCKS/HTTP proxy directly */}
 
         {/* ─── Promo code ─── */}
         <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
@@ -477,14 +477,14 @@ export default function DashboardPage() {
             </div>
           ) : (
             <>
-              {/* SOCKS5 + HTTP proxy */}
+              {/* SOCKS + HTTP proxy */}
               {(socks5Addr || httpProxy) && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {socks5Addr && (
                     <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS5</span>
+                          <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS</span>
                           <span className="text-[10px] text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">рекомендуемый</span>
                         </div>
                         <CopyButton field="socks5" text={socks5Addr} />
@@ -513,7 +513,7 @@ export default function DashboardPage() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {[
                       { label: 'Сервер', value: socks5Parts.host, field: 'proxy-host' },
-                      { label: 'Порт SOCKS5', value: socks5Parts.port, field: 'proxy-port' },
+                      { label: 'Порт SOCKS', value: socks5Parts.port, field: 'proxy-port' },
                       { label: 'Логин', value: socks5Parts.user, field: 'proxy-user' },
                       { label: 'Пароль', value: socks5Parts.pass, field: 'proxy-pass' },
                     ].map(item => (
@@ -548,7 +548,7 @@ export default function DashboardPage() {
                       <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
                         <li>Настройки → Данные и хранилище</li>
                         <li>Использовать прокси → Добавить прокси</li>
-                        <li>Тип: <span className="text-cyan-400">SOCKS5</span></li>
+                        <li>Тип: <span className="text-cyan-400">SOCKS</span></li>
                         <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
                         <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
                         <li>Логин: <code className="text-text-primary">{socks5Parts.user}</code></li>
@@ -564,7 +564,7 @@ export default function DashboardPage() {
                       </div>
                       <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
                         <li>Установите расширение <span className="text-text-primary">Proxy SwitchyOmega</span></li>
-                        <li>Создайте профиль → тип SOCKS5</li>
+                        <li>Создайте профиль → тип SOCKS</li>
                         <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
                         <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
                         <li>Авторизация: логин и пароль выше</li>
@@ -639,7 +639,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ─── Для iPhone ─── */}
+        {/* ─── Для iPhone / macOS ─── */}
         {canConnect && (
           <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-350">
             <div className="flex items-center gap-3 mb-4">
@@ -649,41 +649,23 @@ export default function DashboardPage() {
                 </svg>
               </div>
               <div>
-                <h2 className="text-base font-semibold">Для iPhone / iPad</h2>
-                <p className="text-xs text-text-secondary">Прокси-приложения для iOS</p>
+                <h2 className="text-base font-semibold">Для iPhone / iPad / macOS</h2>
+                <p className="text-xs text-text-secondary">Скачайте Happ для Apple устройств</p>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <a href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors">
-                <div className="w-10 h-10 rounded-xl bg-blue-500/15 flex items-center justify-center flex-shrink-0">
-                  <span className="text-lg">&#128640;</span>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Shadowrocket</p>
-                  <p className="text-[10px] text-text-secondary">Лучший клиент (платный)</p>
-                </div>
-              </a>
-              <a href="https://apps.apple.com/app/potatso-lite/id1239860606" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors">
-                <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center flex-shrink-0">
-                  <span className="text-lg">&#127819;</span>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Potatso Lite</p>
-                  <p className="text-[10px] text-text-secondary">Бесплатный</p>
-                </div>
-              </a>
-              <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <div className="w-10 h-10 rounded-xl bg-gray-500/15 flex items-center justify-center flex-shrink-0">
-                  <span className="text-lg">&#9881;&#65039;</span>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Без приложения</p>
-                  <p className="text-[10px] text-text-secondary">Настройки → Wi-Fi → Прокси → HTTP</p>
-                </div>
+            <a href={downloads?.ios?.url || downloads?.macos?.url || '/downloads'}
+              className="flex items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-brand/10 to-accent/5 border border-brand/20 hover:border-brand/40 transition-all duration-300 hover:-translate-y-0.5 group">
+              <div className="w-12 h-12 rounded-xl bg-brand/20 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
+                <span className="text-2xl">🌿</span>
               </div>
-            </div>
+              <div className="flex-1">
+                <p className="text-base font-semibold">Happ</p>
+                <p className="text-xs text-text-secondary">Эко-маршрутизация для iOS и macOS — одно приложение для всех Apple устройств</p>
+              </div>
+              <svg className="w-5 h-5 text-brand-light flex-shrink-0 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+            </a>
           </div>
         )}
 
@@ -706,7 +688,7 @@ export default function DashboardPage() {
               Мы очень хотим выпустить нативное приложение для <strong className="text-text-primary">iOS</strong> и <strong className="text-text-primary">macOS</strong>,
               но у нашего разработчика пока нет MacBook для разработки.
               Ваш донат поможет приобрести оборудование и ускорить выпуск приложения.
-              А пока вы можете использовать <strong className="text-text-primary">прокси</strong> через Shadowrocket (iOS) или системные настройки.
+              А пока вы можете использовать <strong className="text-text-primary">Happ</strong> для подключения с Apple устройств.
             </p>
           </div>
 

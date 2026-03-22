@@ -41,4 +41,11 @@ message GetMetricsResponse {
   double cpu_usage = 1;
   double memory_usage = 2;
   int32 active_connections = 3;
+
+  // Tunnel credentials (из /opt/heyearth/state/reality-keys.json)
+  // Позволяют Hub автоматически настроить outbound к exit-ноде
+  string tunnel_uuid = 4;         // VLESS UUID
+  string tunnel_public_key = 5;   // Reality public key
+  string tunnel_short_id = 6;     // Reality short ID
+  string tunnel_ss_password = 7;  // Shadowsocks password
 }

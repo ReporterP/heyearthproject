@@ -467,8 +467,8 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		resp["connection_options"] = options
 		for _, opt := range options {
 			switch opt.Protocol {
-			case "socks5":
-				resp["socks5"] = opt.Uri
+			case "socks":
+				resp["socks5"] = opt.Uri // ключ оставляем для обратной совместимости
 			case "http":
 				resp["http_proxy"] = opt.Uri
 			}

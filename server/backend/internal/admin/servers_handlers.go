@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -345,6 +346,11 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+	case "fetch_tunnel_creds":
+		if err := fetchTunnelCreds(server); err != nil {
+			writeAdminError(w, http.StatusBadGateway, err.Error())
+			return
+		}
 	default:
 		writeAdminError(w, http.StatusBadRequest, "Unsupported server action")
 		return
@@ -472,7 +478,37 @@ func syncServerMetrics(server serverResponse) error {
 		"synced_at":          time.Now().Format(time.RFC3339),
 	})
 	_, err = db.DB.Exec(`UPDATE servers SET load_metrics = $1::jsonb, status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metricsBytes), server.ID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Если exit-нода вернула tunnel credentials — автоматически обновляем в БД
+	// и переключаем протокол на shadowsocks (быстрее VLESS для Hub→Exit)
+	if server.IsExitNode && resp.GetTunnelSsPassword() != "" {
+		ssPass := resp.GetTunnelSsPassword()
+		tunnelUUID := resp.GetTunnelUuid()
+		pubKey := resp.GetTunnelPublicKey()
+		shortID := resp.GetTunnelShortId()
+
+		_, err = db.DB.Exec(`
+			UPDATE servers SET
+				tunnel_protocol = 'shadowsocks',
+				tunnel_port = 8388,
+				tunnel_ss_method = '2022-blake3-aes-128-gcm',
+				tunnel_ss_password = $1,
+				tunnel_uuid = COALESCE(NULLIF($2, ''), tunnel_uuid),
+				tunnel_public_key = COALESCE(NULLIF($3, ''), tunnel_public_key),
+				tunnel_short_id = COALESCE(NULLIF($4, ''), tunnel_short_id),
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $5
+		`, ssPass, tunnelUUID, pubKey, shortID, server.ID)
+		if err != nil {
+			log.Printf("[sync-metrics] Ошибка обновления tunnel creds для сервера %d: %v", server.ID, err)
+		} else {
+			log.Printf("[sync-metrics] Сервер %d: tunnel credentials обновлены, протокол → shadowsocks:8388", server.ID)
+		}
+	}
+	return nil
 }
 
 func restartNodeAgent(server serverResponse) error {
@@ -483,6 +519,86 @@ func restartNodeAgent(server serverResponse) error {
 		return err
 	}
 	return nil
+}
+
+// fetchTunnelCreds читает tunnel credentials с exit-ноды по SSH
+// и автоматически переключает протокол на Shadowsocks
+func fetchTunnelCreds(server serverResponse) error {
+	if !server.IsExitNode {
+		return fmt.Errorf("сервер не является exit-нодой")
+	}
+	// Читаем reality-keys.json с exit-ноды
+	output, err := runSSHCommandOutput(server, "cat /opt/heyearth/state/reality-keys.json")
+	if err != nil {
+		return fmt.Errorf("чтение ключей: %w", err)
+	}
+	var keys struct {
+		PrivateKey string `json:"privateKey"`
+		PublicKey  string `json:"publicKey"`
+		ShortID    string `json:"shortId"`
+		UUID       string `json:"uuid"`
+		SSPassword string `json:"ssPassword"`
+	}
+	if err := json.Unmarshal([]byte(output), &keys); err != nil {
+		return fmt.Errorf("парсинг ключей: %w", err)
+	}
+	if keys.SSPassword == "" {
+		return fmt.Errorf("SS пароль не найден в reality-keys.json")
+	}
+
+	// Обновляем в БД: переключаем на Shadowsocks
+	_, err = db.DB.Exec(`
+		UPDATE servers SET
+			tunnel_protocol = 'shadowsocks',
+			tunnel_port = 8388,
+			tunnel_ss_method = '2022-blake3-aes-128-gcm',
+			tunnel_ss_password = $1,
+			tunnel_uuid = $2,
+			tunnel_public_key = $3,
+			tunnel_short_id = $4,
+			tunnel_private_key = $5,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $6
+	`, keys.SSPassword, keys.UUID, keys.PublicKey, keys.ShortID, keys.PrivateKey, server.ID)
+	if err != nil {
+		return fmt.Errorf("обновление БД: %w", err)
+	}
+	log.Printf("[fetch-creds] Сервер %d: tunnel credentials получены, протокол → shadowsocks:8388", server.ID)
+	return nil
+}
+
+// runSSHCommandOutput выполняет SSH команду и возвращает stdout
+func runSSHCommandOutput(server serverResponse, command string) (string, error) {
+	authMethods, err := sshAuthMethods(server)
+	if err != nil {
+		return "", err
+	}
+	cfg := &ssh.ClientConfig{
+		User:            server.SSHUser,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+		Timeout:         30 * time.Second,
+	}
+	addr := net.JoinHostPort(server.IPAddress, fmt.Sprintf("%d", server.SSHPort))
+	client, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return "", fmt.Errorf("ssh dial %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	var outBuf, errBuf bytes.Buffer
+	sess.Stdout = &outBuf
+	sess.Stderr = &errBuf
+	if err := sess.Run(command); err != nil {
+		return "", fmt.Errorf("command %q: %v: %s", command, err, strings.TrimSpace(errBuf.String()))
+	}
+	return strings.TrimSpace(outBuf.String()), nil
 }
 
 func syncTunnel(server serverResponse) error {

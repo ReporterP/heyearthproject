@@ -98,11 +98,11 @@ func buildClashConfig(userID string) string {
 	var proxies []string
 	var proxyNames []string
 
-	// Только SOCKS5 и HTTP proxy для пользователей
+	// Только SOCKS и HTTP proxy для пользователей
 
-	// 1. SOCKS5 (рекомендуемый)
+	// 1. SOCKS (рекомендуемый)
 	if vlessUUID != "" {
-		name := "HeYearth-SOCKS5"
+		name := "HeYearth-SOCKS"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, fmt.Sprintf(
 			`  - name: "%s"

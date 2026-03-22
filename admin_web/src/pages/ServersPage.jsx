@@ -465,6 +465,7 @@ export default function ServersPage() {
     { key: 'reprovision', label: t.serverReprovision, icon: <IconProvision /> },
     { key: 'sync_metrics', label: t.serverSyncMetrics, icon: <IconSync /> },
     { key: 'sync_tunnel', label: t.serverSyncTunnel, icon: <IconTunnel /> },
+    { key: 'fetch_tunnel_creds', label: t.serverFetchCreds || 'Получить tunnel creds', icon: <IconTunnel />, exitOnly: true },
   ]
 
   const ipAddress = (srv) => srv.ip_address || srv.host || ''
@@ -536,7 +537,7 @@ export default function ServersPage() {
 
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
-          {can('servers.write') && actions.map(a => (
+          {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
             <button key={a.key} onClick={() => doAction(srv, a.key)}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary hover:bg-surface-alt/80 transition"
               title={a.label}>
@@ -764,7 +765,7 @@ export default function ServersPage() {
           <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
             { value: 'vless', label: 'VLESS Reality' },
             { value: 'shadowsocks', label: 'Shadowsocks' },
-            { value: 'socks5', label: 'SOCKS5' },
+            { value: 'socks5', label: 'SOCKS' },
             { value: 'http', label: 'HTTP Proxy' },
           ]} />
         </FormField>

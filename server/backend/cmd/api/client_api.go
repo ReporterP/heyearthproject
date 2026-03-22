@@ -177,12 +177,12 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		// SS и VLESS Reality остаются на сервере (Hub→Exit-нода туннели),
 		// но пользователям не отдаются — они избыточны для внутристранового подключения.
 
-		// 1. SOCKS5 proxy (рекомендуемый, per-user авторизация)
+		// 1. SOCKS proxy (рекомендуемый, per-user авторизация)
 		if userVlessUUID != "" {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("socks5://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
-				Protocol:            "socks5",
-				Label:               "SOCKS5 прокси (рекомендуемый)",
+				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
+				Protocol:            "socks",
+				Label:               "SOCKS прокси (рекомендуемый)",
 				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
 				Priority:            1,
 			})

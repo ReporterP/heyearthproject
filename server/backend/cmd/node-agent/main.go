@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -155,7 +156,36 @@ func (s *server) GetMetrics(ctx context.Context, req *pb.GetMetricsRequest) (*pb
 		resp.ActiveConnections = int32(count)
 	}
 
+	// Tunnel credentials — позволяют Hub автоматически настроить outbound
+	if tunnelKeys, err := loadTunnelKeys(); err == nil {
+		resp.TunnelUuid = tunnelKeys.UUID
+		resp.TunnelPublicKey = tunnelKeys.PublicKey
+		resp.TunnelShortId = tunnelKeys.ShortID
+		resp.TunnelSsPassword = tunnelKeys.SSPassword
+	}
+
 	return resp, nil
+}
+
+// tunnelKeys — ключи из /opt/heyearth/state/reality-keys.json
+type tunnelKeys struct {
+	PrivateKey string `json:"privateKey"`
+	PublicKey  string `json:"publicKey"`
+	ShortID    string `json:"shortId"`
+	UUID       string `json:"uuid"`
+	SSPassword string `json:"ssPassword"`
+}
+
+func loadTunnelKeys() (*tunnelKeys, error) {
+	data, err := os.ReadFile("/opt/heyearth/state/reality-keys.json")
+	if err != nil {
+		return nil, err
+	}
+	var keys tunnelKeys
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return nil, err
+	}
+	return &keys, nil
 }
 
 func parseFloat(s string) (float64, error) {

@@ -33,7 +33,7 @@ const features = [
 
 const steps = [
   { num: '01', title: 'Регистрация', desc: 'Получите уникальный HeYearth ID за один клик. Без email, без номера телефона.' },
-  { num: '02', title: 'Подключение', desc: 'Скопируйте VLESS-ссылку или настройте SOCKS5/HTTP прокси на любом устройстве.' },
+  { num: '02', title: 'Подключение', desc: 'Установите приложение или настройте эко-маршрутизацию на любом устройстве за пару кликов.' },
   { num: '03', title: 'Готово', desc: 'Пользуйтесь быстрым и оптимизированным доступом к интернету без ограничений.' },
 ]
 
@@ -290,7 +290,7 @@ export default function LandingPage() {
             <p className="text-sm font-semibold text-accent uppercase tracking-wider mb-3">Приложения</p>
             <h2 className="text-3xl md:text-4xl font-bold mb-4">Доступно на всех платформах</h2>
             <p className="text-text-secondary max-w-lg mx-auto mb-12">
-              Скачайте приложение HeYearth или подключитесь через стандартные клиенты VLESS/SOCKS5.
+              Скачайте приложение HeYearth для вашей платформы и подключитесь за пару минут.
             </p>
           </div>
 
