@@ -97,13 +97,43 @@ func buildClashConfig(userID string) string {
 
 	pubKey := biz.GetSettingOrDefault("reality_public_key", "")
 	shortID := biz.GetSettingOrDefault("reality_short_id", "")
-	sni := biz.GetSettingOrDefault("reality_sni_domain", "nltimes.nl")
+	sni := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 	ssPassword := biz.GetSettingOrDefault("ss_password", "")
 
 	var proxies []string
 	var proxyNames []string
 
-	// VLESS Reality
+	// Приоритет: SS → SOCKS5 → VLESS Reality
+	// SS первый — оптимальный для подключения внутри страны
+
+	// 1. Shadowsocks (рекомендуемый)
+	if ssPassword != "" {
+		name := "HeYearth-SS"
+		proxyNames = append(proxyNames, name)
+		proxies = append(proxies, fmt.Sprintf(
+			`  - name: "%s"
+    type: ss
+    server: %s
+    port: 8388
+    cipher: "2022-blake3-aes-128-gcm"
+    password: "%s"
+    udp: true`, name, host, ssPassword))
+	}
+
+	// 2. SOCKS5
+	if vlessUUID != "" {
+		name := "HeYearth-SOCKS5"
+		proxyNames = append(proxyNames, name)
+		proxies = append(proxies, fmt.Sprintf(
+			`  - name: "%s"
+    type: socks5
+    server: %s
+    port: 1080
+    username: "%s"
+    password: "%s"`, name, host, userID, vlessUUID))
+	}
+
+	// 3. VLESS Reality (резервный — для обхода DPI если SS заблокируют)
 	if pubKey != "" {
 		name := "HeYearth-VPN"
 		proxyNames = append(proxyNames, name)
@@ -122,33 +152,6 @@ func buildClashConfig(userID string) string {
       public-key: "%s"
       short-id: "%s"
     client-fingerprint: chrome`, name, host, vlessUUID, sni, pubKey, shortID))
-	}
-
-	// Shadowsocks
-	if ssPassword != "" {
-		name := "HeYearth-SS"
-		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: ss
-    server: %s
-    port: 8388
-    cipher: "2022-blake3-aes-128-gcm"
-    password: "%s"
-    udp: true`, name, host, ssPassword))
-	}
-
-	// SOCKS5
-	if vlessUUID != "" {
-		name := "HeYearth-SOCKS5"
-		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: socks5
-    server: %s
-    port: 1080
-    username: "%s"
-    password: "%s"`, name, host, userID, vlessUUID))
 	}
 
 	namesList := ""

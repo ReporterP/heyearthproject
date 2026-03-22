@@ -67,6 +67,7 @@ func main() {
 	setupExitNode := flag.String("setup-exit-node", "", "развернуть exit-ноду (IP:порт_туннеля, напр. 1.2.3.4:443)")
 	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль для exit-ноды")
 	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды")
+	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
 	flag.Parse()
 
 	var mode string
@@ -91,6 +92,8 @@ func main() {
 		mode = "nginx"
 	case *setupXrayFlag:
 		mode = "setup-xray"
+	case *sshCmd != "":
+		mode = "ssh"
 	case *statusMode:
 		mode = "status"
 	case *backupMode:
@@ -144,6 +147,14 @@ func main() {
 	}
 	defer client.Close()
 
+	if mode == "ssh" {
+		out, err := runSSH(client, *sshCmd, false)
+		if err != nil {
+			log.Fatalf("SSH error: %v", err)
+		}
+		fmt.Print(out)
+		return
+	}
 	if mode == "status" {
 		doStatus(client, cfg)
 		return
@@ -244,7 +255,7 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 			log.Fatal("npm is required locally to build admin_web / Vue site during deploy")
 		}
 	}
-	if mode == "status" || mode == "fix-db" {
+	if mode == "status" || mode == "fix-db" || mode == "ssh" {
 		return
 	}
 }
@@ -952,6 +963,10 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		// Добавить include stream.d в nginx.conf если ещё нет
 		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)
 		fmt.Println("nginx stream SNI routing настроен (443 → 8443/10443)")
+	} else {
+		// Xray не установлен — убираем stream-конфиг, чтобы не было конфликта портов
+		// (conf.d слушает 443 напрямую, stream тоже хотел бы 443)
+		_, _ = runSSH(client, "rm -f /etc/nginx/stream.d/heyearth.conf", true)
 	}
 
 	_, _ = runSSH(client, "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && systemctl restart nginx", true)
@@ -1274,9 +1289,9 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "microsoft.com:443",
+          "dest": "apple.com:443",
           "xver": 0,
-          "serverNames": ["microsoft.com", "www.microsoft.com"],
+          "serverNames": ["apple.com", "www.apple.com"],
           "privateKey": "$PRIV_KEY",
           "shortIds": ["$SHORT_ID"]
         }
@@ -1391,8 +1406,11 @@ ss -tlnp | grep -E ':(10443|8388|1080|8080)\s' || echo "ВНИМАНИЕ: не �
 
 // isXrayInstalled проверяет наличие Xray на сервере
 func isXrayInstalled(client *ssh.Client) bool {
-	out, _ := runSSH(client, "test -f /opt/heyearth/xray/xray && systemctl is-active xray 2>/dev/null || echo no", false)
-	return strings.TrimSpace(out) == "active"
+	// Проверяем наличие бинарника Xray И наличие systemd-юнита.
+	// Не проверяем is-active — Xray может быть в состоянии "activating" при старте,
+	// но stream-конфиг nginx всё равно нужен для SNI routing.
+	out, _ := runSSH(client, "test -f /opt/heyearth/xray/xray && systemctl is-enabled xray 2>/dev/null || echo no", false)
+	return strings.TrimSpace(out) == "enabled"
 }
 
 // seedConnectionSettings читает Xray-конфиг и reality-ключи с сервера,
@@ -1480,7 +1498,7 @@ if [ -n "$SHORT_ID" ]; then
   psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$REALITY_SNI" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$SS_PASSWORD" ]; then
   psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('ss_password', '$SS_PASSWORD', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
@@ -1496,6 +1514,34 @@ func doStatus(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("=== Состояние сервисов ===")
 	out, _ := runSSH(client, "systemctl is-active heyearth-api nginx 2>/dev/null; echo '---'; systemctl status heyearth-api --no-pager -l 2>&1 | tail -18", false)
 	fmt.Println(out)
+
+	// Xray
+	fmt.Println("=== Xray ===")
+	xrayOut, _ := runSSH(client, `systemctl is-active xray 2>/dev/null || echo 'NOT RUNNING'
+if [ -f /opt/heyearth/xray/config.json ]; then
+  python3 -c "
+import json, sys
+c=json.load(open('/opt/heyearth/xray/config.json'))
+rs=c['inbounds'][0].get('streamSettings',{}).get('realitySettings',{})
+print('  dest:', rs.get('dest'))
+print('  serverNames:', rs.get('serverNames'))
+print('  shortIds:', rs.get('shortIds'))
+print('  clients:', len(c['inbounds'][0]['settings']['clients']))
+print('  inbounds:', len(c['inbounds']))
+print('  outbounds:', len(c['outbounds']))
+" 2>&1
+else
+  echo 'Xray config not found'
+fi
+echo '--- ports ---'
+ss -tlnp 2>/dev/null | grep -E '10443|:443 |8388|1080|8080' || echo 'no matching ports'`, false)
+	fmt.Println(xrayOut)
+
+	// nginx stream
+	fmt.Println("=== Nginx stream config ===")
+	nginxOut, _ := runSSH(client, "cat /etc/nginx/stream.d/heyearth.conf 2>/dev/null || echo 'NO STREAM CONFIG'", false)
+	fmt.Println(nginxOut)
+
 	fmt.Println("=== Логи heyearth-api (последние 25 строк) ===")
 	logsOut, _ := runSSH(client, "journalctl -u heyearth-api -n 25 --no-pager 2>&1", false)
 	fmt.Println(logsOut)
@@ -1667,7 +1713,7 @@ else
   echo "[xray] Binary уже существует: $(/opt/heyearth/xray/xray version 2>&1 | head -1)"
 fi
 
-# ── 2. Сгенерировать ключи ──
+# ── 2. Сгенерировать/обновить ключи ──
 KEYS_FILE="/opt/heyearth/state/reality-keys.json"
 if [ ! -f "$KEYS_FILE" ]; then
   KEYS=$(/opt/heyearth/xray/xray x25519 2>&1)
@@ -1688,7 +1734,26 @@ if [ ! -f "$KEYS_FILE" ]; then
 KEYSEOF
   echo "[xray] Ключи сгенерированы"
 else
-  echo "[xray] Ключи уже существуют"
+  echo "[xray] Ключи уже существуют, проверяю полноту..."
+  # Дополняем недостающие поля (uuid, ssPassword) если их нет
+  python3 -c "
+import json, subprocess, os
+with open('$KEYS_FILE') as f:
+    k = json.load(f)
+changed = False
+if 'uuid' not in k or not k['uuid']:
+    k['uuid'] = open('/proc/sys/kernel/random/uuid').read().strip()
+    changed = True
+if 'ssPassword' not in k or not k['ssPassword']:
+    import base64; k['ssPassword'] = base64.b64encode(os.urandom(16)).decode()
+    changed = True
+if changed:
+    with open('$KEYS_FILE', 'w') as f:
+        json.dump(k, f, indent=2)
+    print('[xray] Ключи дополнены (uuid/ssPassword)')
+else:
+    print('[xray] Все поля присутствуют')
+"
 fi
 
 # Читаем ключи
@@ -1698,9 +1763,15 @@ SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId
 UUID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['uuid'])")
 SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))")
 
-# ── 3. Конфиг exit-ноды (принимает входящие от Hub) ──
+# ── 3. Остановить конфликтующие сервисы ──
+systemctl stop ss-server 2>/dev/null || true
+systemctl disable ss-server 2>/dev/null || true
+echo "[xray] Конфликтующие сервисы остановлены"
+
+# ── 4. Конфиг exit-ноды (принимает входящие от Hub) ──
 # Exit-нода принимает VLESS Reality на порту %s
 # и перенаправляет трафик в интернет (freedom)
+# Shadowsocks НЕ нужен на exit-ноде — он обрабатывается Hub-сервером
 cat > /opt/heyearth/xray/config.json <<XRAYEOF
 {
   "log": {"loglevel": "warning"},
@@ -1720,21 +1791,13 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "nltimes.nl:443",
+          "dest": "apple.com:443",
           "xver": 0,
-          "serverNames": ["nltimes.nl", "www.nltimes.nl"],
+          "serverNames": ["apple.com", "www.apple.com"],
           "privateKey": "$PRIV_KEY",
           "shortIds": ["$SHORT_ID"]
         }
       },
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    },
-    {
-      "tag": "shadowsocks",
-      "listen": "0.0.0.0",
-      "port": 8388,
-      "protocol": "shadowsocks",
-      "settings": {"method": "2022-blake3-aes-128-gcm", "password": "$SS_PASSWORD", "network": "tcp,udp"},
       "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
     }
   ],
@@ -1751,7 +1814,7 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
   }
 }
 XRAYEOF
-echo "[xray] Exit-node конфиг записан (VLESS:%s, SS:8388)"
+echo "[xray] Exit-node конфиг записан (VLESS:%s)"
 
 # ── 4. systemd-сервис ──
 cat > /etc/systemd/system/xray.service <<'SVCEOF'
@@ -1784,14 +1847,10 @@ systemctl status xray --no-pager -l 2>&1 | head -15 || true
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 22/tcp 2>/dev/null || true
   ufw allow %s/tcp 2>/dev/null || true
-  ufw allow 8388/tcp 2>/dev/null || true
-  ufw allow 8388/udp 2>/dev/null || true
   ufw --force enable 2>/dev/null || true
   echo "[xray] UFW правила добавлены"
 else
   iptables -I INPUT -p tcp --dport %s -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null || true
   echo "[xray] iptables правила добавлены"
 fi
 
@@ -1805,13 +1864,82 @@ echo "UUID: $UUID"
 echo "Public Key: $PUB_KEY"
 echo "Short ID: $SHORT_ID"
 echo "SS Password: $SS_PASSWORD"
-echo "SNI: nltimes.nl"
+echo "SNI: apple.com"
 echo "================================="
-echo ""
-echo "Добавьте эти данные в админку: Серверы → Добавить сервер"
 `, tunnelPort, tunnelPort, tunnelPort, tunnelPort, tunnelPort, exitIP, tunnelPort)
 
-	_, _ = runSSH(exitClient, script, false)
+	out, _ := runSSH(exitClient, script, false)
+	fmt.Println(out)
 	fmt.Println("[exit-node] Развёртывание завершено")
-	fmt.Println("[exit-node] Не забудьте добавить сервер в админку с выведенными credentials!")
+
+	// ── Автоматическое обновление credentials в БД основного сервера ──
+	fmt.Println("[exit-node] Читаю credentials с exit-ноды...")
+	credsScript := `python3 -c "
+import json
+k = json.load(open('/opt/heyearth/state/reality-keys.json'))
+print(k['uuid'])
+print(k['publicKey'])
+print(k['shortId'])
+print(k.get('ssPassword', ''))
+"`
+	credsOut, err := runSSH(exitClient, credsScript, true)
+	if err != nil {
+		fmt.Printf("[exit-node] Не удалось прочитать credentials: %v\n", err)
+		fmt.Println("[exit-node] Добавьте данные в админку вручную")
+		return
+	}
+
+	lines := strings.Split(strings.TrimSpace(credsOut), "\n")
+	if len(lines) < 3 {
+		fmt.Println("[exit-node] Неожиданный формат credentials, обновите вручную")
+		return
+	}
+	tunnelUUID := strings.TrimSpace(lines[0])
+	tunnelPubKey := strings.TrimSpace(lines[1])
+	tunnelShortID := strings.TrimSpace(lines[2])
+	tunnelSSPass := ""
+	if len(lines) > 3 {
+		tunnelSSPass = strings.TrimSpace(lines[3])
+	}
+
+	dbURL := cfg.env.get("DATABASE_URL", "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable")
+	updateSQL := fmt.Sprintf(`psql '%s' -c "
+UPDATE servers SET
+  tunnel_uuid = '%s',
+  tunnel_public_key = '%s',
+  tunnel_short_id = '%s',
+  tunnel_ss_password = '%s',
+  tunnel_sni = 'apple.com',
+  tunnel_protocol = 'vless',
+  tunnel_port = %s,
+  tunnel_status = 'unknown',
+  status = 'active'
+WHERE ip_address = '%s';
+
+-- Если записи нет — создаём
+INSERT INTO servers (name, ip_address, country_code, is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key, tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
+SELECT 'Exit Latvia', '%s', 'LV', true, 'vless', %s, '%s', '%s', '%s', '%s', 'apple.com', 'unknown', 'active'
+WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = '%s');
+"`, dbURL,
+		tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, tunnelPort, exitIP,
+		exitIP, tunnelPort, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
+
+	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
+	dbOut, err := runSSH(mainClient, updateSQL, true)
+	if err != nil {
+		fmt.Printf("[exit-node] Ошибка обновления БД: %v\n%s\n", err, dbOut)
+	} else {
+		fmt.Printf("[exit-node] БД обновлена: %s\n", strings.TrimSpace(dbOut))
+	}
+
+	// Проверяем статус Xray на exit-ноде
+	fmt.Println("[exit-node] Проверяю Xray на exit-ноде...")
+	xrayCheck, _ := runSSH(exitClient, "sleep 2; systemctl is-active xray 2>/dev/null; echo '---'; ss -tlnp | grep -E '"+tunnelPort+"|8388'; echo '---'; journalctl -u xray -n 5 --no-pager 2>&1 | tail -5", true)
+	fmt.Println(xrayCheck)
+
+	fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")
+	_, _ = runSSH(mainClient, "systemctl restart heyearth-api", false)
+
+	fmt.Printf("\n[exit-node] Готово! Exit-нода %s настроена.\n", exitIP)
+	fmt.Printf("UUID: %s\nPublic Key: %s\nShort ID: %s\n", tunnelUUID, tunnelPubKey, tunnelShortID)
 }

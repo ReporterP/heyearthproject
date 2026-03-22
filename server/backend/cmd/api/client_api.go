@@ -169,7 +169,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 	ssPassword := biz.GetSettingOrDefault("ss_password", "")
 	realityPublicKey := biz.GetSettingOrDefault("reality_public_key", "")
 	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
-	realitySNI := biz.GetSettingOrDefault("reality_sni", mainServerHost)
+	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 
 	// Получаем per-user UUID для VLESS и прокси-авторизации
 	userVlessUUID, err := biz.GetUserVlessUUID(userID)
@@ -181,51 +181,54 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 	var opts []*heyearth_v1.ConnectionOption
 
 	if mainServerHost != "" {
-		// 1. VPN mode (VLESS Reality) — полный туннель, per-user UUID
-		if userVlessUUID != "" && realityPublicKey != "" {
-			vlessURI := fmt.Sprintf("vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#HeyEarth%%20VPN",
-				userVlessUUID, mainServerHost, vlessPort, realitySNI, realityPublicKey, realityShortID)
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 vlessURI,
-				Protocol:            "vless",
-				Label:               "VPN (полный туннель)",
-				RecommendedNetworks: []string{"cellular", "ethernet", "any"},
-				Priority:            1,
-			})
-		}
+		// Приоритет: SS → SOCKS5 → HTTP → VLESS Reality
+		// Для подключения внутри страны (Россия→Россия) простые протоколы быстрее и надёжнее.
+		// VLESS Reality нужен только для международных туннелей (Hub→Exit-нода).
 
-		// 2. Shadowsocks — зашифрованный прокси (общий пароль — ограничение протокола)
+		// 1. Shadowsocks — шифрованный, быстрый, поддерживается всеми клиентами
 		if ssPassword != "" {
-			// SIP002 формат: ss://base64(method:password)@host:port#label
 			userInfo := base64.URLEncoding.EncodeToString([]byte(ssMethod + ":" + ssPassword))
 			ssURI := fmt.Sprintf("ss://%s@%s:%s#HeyEarth%%20SS", userInfo, mainServerHost, ssPort)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 ssURI,
 				Protocol:            "shadowsocks",
-				Label:               "Shadowsocks (зашифрованный прокси)",
-				RecommendedNetworks: []string{"cellular", "wifi", "any"},
-				Priority:            2,
+				Label:               "Shadowsocks (рекомендуемый)",
+				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
+				Priority:            1,
 			})
 		}
 
-		// 3. SOCKS5 proxy (per-user авторизация: user=<userID>, pass=<vless_uuid>)
+		// 2. SOCKS5 proxy (per-user авторизация: user=<userID>, pass=<vless_uuid>)
 		if userVlessUUID != "" {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 fmt.Sprintf("socks5://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
 				Protocol:            "socks5",
 				Label:               "SOCKS5 прокси",
 				RecommendedNetworks: []string{"wifi", "ethernet", "any"},
-				Priority:            3,
+				Priority:            2,
 			})
 		}
 
-		// 4. HTTP proxy (per-user авторизация: user=<userID>, pass=<vless_uuid>)
+		// 3. HTTP proxy (per-user авторизация: user=<userID>, pass=<vless_uuid>)
 		if userVlessUUID != "" {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
 				Protocol:            "http",
 				Label:               "HTTP прокси",
 				RecommendedNetworks: []string{"wifi", "ethernet", "any"},
+				Priority:            3,
+			})
+		}
+
+		// 4. VLESS Reality — полный туннель с маскировкой (для обхода DPI, если SS заблокируют)
+		if userVlessUUID != "" && realityPublicKey != "" {
+			vlessURI := fmt.Sprintf("vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#HeyEarth%%20VPN",
+				userVlessUUID, mainServerHost, vlessPort, realitySNI, realityPublicKey, realityShortID)
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 vlessURI,
+				Protocol:            "vless",
+				Label:               "VLESS Reality (резервный)",
+				RecommendedNetworks: []string{"cellular", "ethernet", "any"},
 				Priority:            4,
 			})
 		}

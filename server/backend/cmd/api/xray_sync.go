@@ -148,8 +148,9 @@ func SyncXrayConfig() error {
 		httpAccounts = append(httpAccounts, map[string]string{"user": "heyearth", "pass": serverUUID})
 	}
 
-	// ── Reality SNI (настраивается через app_settings, по умолчанию — nltimes.nl) ──
-	realitySNI := "nltimes.nl"
+	// ── Reality SNI (настраивается через app_settings, по умолчанию — apple.com) ──
+	// apple.com — оптимальный SNI для обхода DPI в России (массовый трафик, нельзя заблокировать)
+	realitySNI := "apple.com"
 	if v, err := biz.GetSetting("reality_sni_domain"); err == nil && v != "" {
 		realitySNI = v
 	}
@@ -164,7 +165,8 @@ func SyncXrayConfig() error {
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
 					"serverNames": []string{realitySNI, "www." + realitySNI},
-					"privateKey": keys.PrivateKey, "shortIds": []string{keys.ShortID},
+					"privateKey": keys.PrivateKey,
+					"shortIds":   []string{keys.ShortID, ""}, // "" = принимать без shortId (совместимость)
 				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
@@ -281,8 +283,16 @@ func SyncXrayConfig() error {
 		})
 		routing["rules"] = rules
 
-		// Добавляем observatory для мониторинга задержки до exit-нод
-		// Xray автоматически пингует exit-ноды и выбирает с наименьшей задержкой
+	}
+
+	// Observatory: мониторинг задержки до exit-нод для leastPing
+	var observatory map[string]interface{}
+	if len(exitTags) > 0 {
+		observatory = map[string]interface{}{
+			"subjectSelector": []string{"exit-"},
+			"probeInterval":   "30s",
+			"probeURL":        "https://www.google.com/generate_204",
+		}
 	}
 
 	// ── Xray Stats API ──
@@ -343,6 +353,11 @@ func SyncXrayConfig() error {
 		},
 	}
 
+	// Observatory для leastPing балансировки exit-нод
+	if observatory != nil {
+		config["observatory"] = observatory
+	}
+
 	// Сериализуем и записываем конфиг
 	configJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -373,8 +388,13 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 
 	switch node.TunnelProtocol {
 	case "vless":
-		if node.TunnelUUID == "" {
-			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — нет tunnel_uuid", node.ID, node.Name)
+		if node.TunnelUUID == "" || len(node.TunnelUUID) < 32 {
+			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — невалидный tunnel_uuid", node.ID, node.Name)
+			return nil
+		}
+		// Валидация: publicKey должен быть base64-строкой длиной ~43 символа (x25519)
+		if node.TunnelPubKey != "" && len(node.TunnelPubKey) < 40 {
+			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — невалидный tunnel_public_key %q", node.ID, node.Name, node.TunnelPubKey)
 			return nil
 		}
 		sni := node.TunnelSNI
@@ -406,7 +426,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			rs := outbound["streamSettings"].(map[string]interface{})["realitySettings"].(map[string]interface{})
 			rs["publicKey"] = node.TunnelPubKey
 			if node.TunnelShortID != "" {
-				rs["shortIds"] = []string{node.TunnelShortID}
+				rs["shortId"] = node.TunnelShortID // singular — клиентская сторона Reality
 			}
 		}
 		return outbound
