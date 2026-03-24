@@ -4,7 +4,7 @@
 #define MyAppName "HeYearth"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "HeYearth"
-#define MyAppURL "https://heyearth.ru"
+#define MyAppURL "https://hiearth.ru"
 #define MyAppExeName "heyearth_vpn.exe"
 
 [Setup]

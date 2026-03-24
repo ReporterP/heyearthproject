@@ -65,7 +65,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = "https://heyearth.ru/dashboard"
+		returnURL = "https://hiearth.ru/dashboard"
 	}
 
 	ykResp, err := ykClient.CreatePayment(yookassa.CreatePaymentRequest{
@@ -389,7 +389,7 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = "https://heyearth.ru/dashboard"
+		returnURL = "https://hiearth.ru/dashboard"
 	}
 
 	ykResp, err := ykClient.CreatePayment(yookassa.CreatePaymentRequest{
@@ -514,7 +514,7 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = "https://heyearth.ru/admin/"
+		returnURL = "https://hiearth.ru/admin/"
 	}
 
 	description := fmt.Sprintf("HeYearth B2B wallet top-up: %.0f RUB", req.Amount)

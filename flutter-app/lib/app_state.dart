@@ -25,7 +25,7 @@ const _keyApiEndpoints = 'heyearth_api_endpoints';
 const _keySavedAccounts = 'heyearth_saved_accounts';
 const _defaultApiBase = String.fromEnvironment(
   'API_BASE',
-  defaultValue: 'https://heyearth.ru',
+  defaultValue: 'https://hiearth.ru',
 );
 
 class AppState extends ChangeNotifier {

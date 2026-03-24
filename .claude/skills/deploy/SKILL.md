@@ -36,5 +36,5 @@ All deploy commands run from `server/backend/` directory via `go run ./cmd/deplo
 - `--site` builds Flutter Web and Vue site locally, then uploads via SFTP. Requires `fvm flutter` and `npm`.
 - Vue site uses `const API_BASE = ''` (relative paths). The deploy tool strips VITE_API_BASE from env via `filterEnv()`.
 - Admin web uses relative `/api/admin` by default.
-- Current server: `45.150.39.236`, domain: `heyearth.ru`
+- Current server: `45.150.39.236`, domain: `hiearth.ru`
 - No HTTPS yet — all redirects use `http://`

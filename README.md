@@ -107,9 +107,9 @@ go run ./cmd/deploy --backup        # бэкап (БД + certs + env + releases)
 go run ./cmd/deploy --rotate-node-agent-certs  # ротация mTLS-сертификатов
 ```
 
-Текущий сервер: `45.150.39.236`, домен `heyearth.ru`.
-- `admin.heyearth.ru` — админ-панель
-- `site.heyearth.ru` — пользовательский портал
+Текущий сервер: `45.150.39.236`, домен `hiearth.ru`.
+- `admin.hiearth.ru` — админ-панель
+- `site.hiearth.ru` — пользовательский портал
 
 ---
 

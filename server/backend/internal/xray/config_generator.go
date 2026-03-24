@@ -182,7 +182,7 @@ func GenerateHubConfig(opts HubConfigOptions) (*XrayConfig, error) {
 // HubConfigOptions holds all parameters needed to generate the hub config.
 type HubConfigOptions struct {
 	// Server identity
-	ServerDomain   string // e.g., "heyearth.ru"
+	ServerDomain   string // e.g., "hiearth.ru"
 	PrivateKey     string // X25519 private key for Reality
 	ShortIDs       []string
 

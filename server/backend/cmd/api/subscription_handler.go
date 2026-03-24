@@ -88,7 +88,7 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 // buildClashConfig генерирует Clash/ClashMeta YAML конфиг.
 func buildClashConfig(userID string) string {
-	host := biz.GetSettingOrDefault("main_server_host", "heyearth.ru")
+	host := biz.GetSettingOrDefault("main_server_host", "hiearth.ru")
 	vlessUUID, err := biz.GetUserVlessUUID(userID)
 	if err != nil {
 		log.Printf("[subscribe] vless uuid error: %v", err)

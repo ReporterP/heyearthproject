@@ -120,7 +120,7 @@ func main() {
 		backendRoot:        backendRoot,
 		ansibleRoot:        ansibleRoot,
 		env:                env,
-		siteDomain:         env.get("SITE_DOMAIN", "heyearth.ru"),
+		siteDomain:         env.get("SITE_DOMAIN", "hiearth.ru"),
 		letsEncryptEmail:   env.get("LETSENCRYPT_EMAIL", ""),
 		host:               env.get("DEPLOY_HOST", ""),
 		deployUser:         env.get("DEPLOY_USER", "root"),
@@ -883,7 +883,7 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 		useWSL = true
 	}
 	if useWSL && wslPath != "" {
-		// Unset VITE_API_BASE — nginx on site.heyearth.ru proxies /api/ to backend
+		// Unset VITE_API_BASE — nginx on site.hiearth.ru proxies /api/ to backend
 		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && unset VITE_API_BASE && /usr/bin/npm install && /usr/bin/npm run build",
 			strings.ReplaceAll(wslPath, "'", "'\"'\"'"))
 		var cmd *exec.Cmd
@@ -915,7 +915,7 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 
 	build := exec.Command(npmPath, "run", "build")
 	build.Dir = siteRoot
-	// Remove VITE_API_BASE entirely — nginx on site.heyearth.ru proxies /api/ to backend.
+	// Remove VITE_API_BASE entirely — nginx on site.hiearth.ru proxies /api/ to backend.
 	// Empty or absent VITE_API_BASE means relative paths (same-origin).
 	build.Env = filterEnv(os.Environ(), "VITE_API_BASE")
 	build.Stdout = os.Stdout
@@ -1672,12 +1672,8 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 // setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
 // Формат addr: "IP:TUNNEL_PORT" (напр. "1.2.3.4:443")
 func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
-	parts := strings.SplitN(addr, ":", 2)
-	if len(parts) != 2 {
-		log.Fatalf("--setup-exit-node формат: IP:TUNNEL_PORT (напр. 1.2.3.4:443)")
-	}
-	exitIP := parts[0]
-	tunnelPort := parts[1]
+	// Формат: IP или IP:PORT (порт игнорируется — используются стандартные 443/10443/50443)
+	exitIP := strings.SplitN(addr, ":", 2)[0]
 
 	if password == "" {
 		password = cfg.deployPassword // fallback на пароль основного сервера
@@ -1768,19 +1764,37 @@ systemctl stop ss-server 2>/dev/null || true
 systemctl disable ss-server 2>/dev/null || true
 echo "[xray] Конфликтующие сервисы остановлены"
 
-# ── 4. Конфиг exit-ноды (принимает входящие от Hub) ──
-# Exit-нода принимает VLESS Reality на порту %s
-# и перенаправляет трафик в интернет (freedom)
-# Shadowsocks НЕ нужен на exit-ноде — он обрабатывается Hub-сервером
+# ── 4. Xray конфиг: SS+WebSocket (TCP:443) + VLESS Reality (10443) ──
 cat > /opt/heyearth/xray/config.json <<XRAYEOF
 {
   "log": {"loglevel": "warning"},
-  "dns": {"servers": ["8.8.8.8", "1.1.1.1"]},
+  "dns": {
+    "servers": ["8.8.8.8", "1.1.1.1"],
+    "queryStrategy": "UseIPv4",
+    "disableCache": false
+  },
   "inbounds": [
+    {
+      "tag": "shadowsocks-ws",
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-128-gcm",
+        "password": "$SS_PASSWORD",
+        "network": "tcp,udp"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {"path": "/stream"},
+        "sockopt": {"tcpFastOpen": true, "tcpNoDelay": true, "tcpKeepAliveInterval": 30}
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
     {
       "tag": "vless-reality",
       "listen": "0.0.0.0",
-      "port": %s,
+      "port": 10443,
       "protocol": "vless",
       "settings": {
         "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
@@ -1790,10 +1804,8 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
         "network": "tcp",
         "security": "reality",
         "realitySettings": {
-          "show": false,
-          "dest": "apple.com:443",
-          "xver": 0,
-          "serverNames": ["apple.com", "www.apple.com"],
+          "show": false, "dest": "microsoft.com:443", "xver": 0,
+          "serverNames": ["microsoft.com", "www.microsoft.com"],
           "privateKey": "$PRIV_KEY",
           "shortIds": ["$SHORT_ID"]
         }
@@ -1802,7 +1814,11 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
     }
   ],
   "outbounds": [
-    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}},
+    {
+      "protocol": "freedom", "tag": "direct",
+      "settings": {"domainStrategy": "UseIPv4"},
+      "streamSettings": {"sockopt": {"tcpFastOpen": true, "tcpNoDelay": true, "tcpKeepAliveInterval": 30}}
+    },
     {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
   ],
   "routing": {
@@ -1811,12 +1827,13 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
       {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
       {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
     ]
-  }
+  },
+  "policy": {"levels": {"0": {"handshake": 4, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5, "bufferSize": 512}}}
 }
 XRAYEOF
-echo "[xray] Exit-node конфиг записан (VLESS:%s)"
+echo "[xray] Exit-node конфиг записан (SS+WS:443, VLESS:10443)"
 
-# ── 4. systemd-сервис ──
+# ── 4b. Xray systemd ──
 cat > /etc/systemd/system/xray.service <<'SVCEOF'
 [Unit]
 Description=Xray Exit Node (HeYearth)
@@ -1841,32 +1858,117 @@ systemctl enable xray
 systemctl restart xray
 sleep 1
 echo "[xray] Сервис запущен"
-systemctl status xray --no-pager -l 2>&1 | head -15 || true
+systemctl status xray --no-pager -l 2>&1 | head -10 || true
 
-# ── 5. Firewall ──
-if command -v ufw >/dev/null 2>&1; then
-  ufw allow 22/tcp 2>/dev/null || true
-  ufw allow %s/tcp 2>/dev/null || true
-  ufw --force enable 2>/dev/null || true
-  echo "[xray] UFW правила добавлены"
+# ── 5. Hysteria2 сервер (QUIC/UDP — нет head-of-line blocking) ──
+echo "[hy2] Установка Hysteria2..."
+if [ ! -f /usr/local/bin/hysteria ]; then
+  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
+  chmod +x /usr/local/bin/hysteria
+  echo "[hy2] Binary установлен"
 else
-  iptables -I INPUT -p tcp --dport %s -j ACCEPT 2>/dev/null || true
-  echo "[xray] iptables правила добавлены"
+  echo "[hy2] Binary уже существует"
 fi
 
-# ── 6. Вывод credentials для добавления в админку ──
+# Самоподписанный TLS-сертификат для Hysteria2
+mkdir -p /opt/heyearth/certs
+if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -days 3650 -nodes \
+    -keyout /opt/heyearth/certs/hy2.key \
+    -out /opt/heyearth/certs/hy2.crt \
+    -subj "/CN=www.microsoft.com" 2>/dev/null
+  echo "[hy2] TLS-сертификат сгенерирован"
+else
+  echo "[hy2] TLS-сертификат уже существует"
+fi
+
+mkdir -p /opt/heyearth/hysteria
+cat > /opt/heyearth/hysteria/server.yaml <<'HYEOF'
+listen: :50443
+
+tls:
+  cert: /opt/heyearth/certs/hy2.crt
+  key: /opt/heyearth/certs/hy2.key
+
+auth:
+  type: password
+  password: PLACEHOLDER_SS_PASSWORD
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.microsoft.com
+    rewriteHost: true
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+HYEOF
+# Подставляем пароль
+sed -i "s|PLACEHOLDER_SS_PASSWORD|$SS_PASSWORD|g" /opt/heyearth/hysteria/server.yaml
+
+cat > /etc/systemd/system/hysteria2.service <<'SVCEOF'
+[Unit]
+Description=Hysteria2 VPN Server (HeYearth)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable hysteria2
+systemctl restart hysteria2
+sleep 2
+echo "[hy2] Hysteria2 сервис запущен"
+systemctl status hysteria2 --no-pager | head -5 || true
+
+# ── 6. Firewall: все протоколы ──
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 22/tcp 2>/dev/null || true
+  ufw allow 443/tcp 2>/dev/null || true
+  ufw allow 443/udp 2>/dev/null || true
+  ufw allow 10443/tcp 2>/dev/null || true
+  ufw allow 50443/udp 2>/dev/null || true
+  ufw --force enable 2>/dev/null || true
+  echo "[fw] UFW правила добавлены"
+else
+  iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 10443 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport 50443 -j ACCEPT 2>/dev/null || true
+  echo "[fw] iptables правила добавлены"
+fi
+
+# ── 7. Итоги ──
 echo ""
 echo "===== EXIT NODE CREDENTIALS ====="
 echo "IP: %s"
-echo "Tunnel Port: %s"
-echo "Protocol: vless"
+echo "Tunnel Port: 50443 (Hysteria2 UDP)"
+echo "Fallback SS+WS: 443 (TCP)"
+echo "Fallback VLESS: 10443 (TCP)"
+echo "Protocol: hysteria2"
 echo "UUID: $UUID"
 echo "Public Key: $PUB_KEY"
 echo "Short ID: $SHORT_ID"
 echo "SS Password: $SS_PASSWORD"
-echo "SNI: apple.com"
+echo "SNI: microsoft.com"
 echo "================================="
-`, tunnelPort, tunnelPort, tunnelPort, tunnelPort, tunnelPort, exitIP, tunnelPort)
+`, exitIP)
 
 	out, _ := runSSH(exitClient, script, false)
 	fmt.Println(out)
@@ -1909,20 +2011,20 @@ UPDATE servers SET
   tunnel_public_key = '%s',
   tunnel_short_id = '%s',
   tunnel_ss_password = '%s',
-  tunnel_sni = 'apple.com',
-  tunnel_protocol = 'vless',
-  tunnel_port = %s,
+  tunnel_sni = 'microsoft.com',
+  tunnel_protocol = 'hysteria2',
+  tunnel_port = 50443,
   tunnel_status = 'unknown',
   status = 'active'
 WHERE ip_address = '%s';
 
 -- Если записи нет — создаём
 INSERT INTO servers (name, ip_address, country_code, is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key, tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
-SELECT 'Exit Latvia', '%s', 'LV', true, 'vless', %s, '%s', '%s', '%s', '%s', 'apple.com', 'unknown', 'active'
+SELECT 'Exit Node', '%s', 'NL', true, 'hysteria2', 50443, '%s', '%s', '%s', '%s', 'microsoft.com', 'unknown', 'active'
 WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = '%s');
 "`, dbURL,
-		tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, tunnelPort, exitIP,
-		exitIP, tunnelPort, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
+		tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP,
+		exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
 
 	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
 	dbOut, err := runSSH(mainClient, updateSQL, true)
@@ -1932,14 +2034,91 @@ WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = '%s');
 		fmt.Printf("[exit-node] БД обновлена: %s\n", strings.TrimSpace(dbOut))
 	}
 
-	// Проверяем статус Xray на exit-ноде
-	fmt.Println("[exit-node] Проверяю Xray на exit-ноде...")
-	xrayCheck, _ := runSSH(exitClient, "sleep 2; systemctl is-active xray 2>/dev/null; echo '---'; ss -tlnp | grep -E '"+tunnelPort+"|8388'; echo '---'; journalctl -u xray -n 5 --no-pager 2>&1 | tail -5", true)
+	// Проверяем статус Xray + Hysteria2 на exit-ноде
+	fmt.Println("[exit-node] Проверяю сервисы на exit-ноде...")
+	xrayCheck, _ := runSSH(exitClient, "systemctl is-active xray; systemctl is-active hysteria2; echo '---'; ss -tulnp | grep -E '443|10443|50443'", true)
 	fmt.Println(xrayCheck)
+
+	// ── Автонастройка Hysteria2 клиента на Hub ──
+	fmt.Println("[exit-node] Настраиваю Hysteria2 клиент на Hub...")
+
+	// Получаем ID сервера из БД для вычисления порта
+	getIDScript := fmt.Sprintf(`PGPASSWORD=HeYearthDB1 psql -h 127.0.0.1 -U postgres -d heyearth -t -A -c "SELECT id FROM servers WHERE ip_address = '%s' LIMIT 1"`, exitIP)
+	idOut, _ := runSSH(mainClient, getIDScript, true)
+	serverID := strings.TrimSpace(idOut)
+	if serverID == "" {
+		serverID = "2" // fallback
+	}
+
+	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
+	hy2ClientScript := fmt.Sprintf(`
+mkdir -p /opt/heyearth/hysteria
+
+# Установка Hysteria2 binary если нет
+if [ ! -f /usr/local/bin/hysteria ]; then
+  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
+  chmod +x /usr/local/bin/hysteria
+fi
+
+# Конфиг клиента для exit-ноды %s (порт 1088+%s)
+cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
+server: %s:50443
+
+auth: %s
+
+tls:
+  insecure: true
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+
+socks5:
+  listen: 127.0.0.1:PLACEHOLDER_PORT
+HYEOF
+
+# Подставляем порт (1088 + server_id)
+PORT=$((1088 + %s))
+sed -i "s|PLACEHOLDER_PORT|$PORT|g" /opt/heyearth/hysteria/client-%s.yaml
+
+# systemd сервис
+cat > /etc/systemd/system/hysteria2-client-%s.service <<SVCEOF
+[Unit]
+Description=Hysteria2 Client for %s (HeYearth)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%s.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable hysteria2-client-%s
+systemctl restart hysteria2-client-%s
+sleep 2
+systemctl status hysteria2-client-%s --no-pager | head -5
+echo "Hysteria2 client for %s: port $PORT"
+`, exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
+
+	hy2Out, err := runSSH(mainClient, hy2ClientScript, false)
+	if err != nil {
+		fmt.Printf("[exit-node] Ошибка настройки Hysteria2 клиента: %v\n", err)
+	} else {
+		fmt.Println(hy2Out)
+	}
 
 	fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")
 	_, _ = runSSH(mainClient, "systemctl restart heyearth-api", false)
 
-	fmt.Printf("\n[exit-node] Готово! Exit-нода %s настроена.\n", exitIP)
+	fmt.Printf("\n[exit-node] ✅ Готово! Exit-нода %s полностью настроена.\n", exitIP)
+	fmt.Printf("Протоколы: Hysteria2 (UDP:50443) + SS+WS (TCP:443) + VLESS (TCP:10443)\n")
 	fmt.Printf("UUID: %s\nPublic Key: %s\nShort ID: %s\n", tunnelUUID, tunnelPubKey, tunnelShortID)
 }

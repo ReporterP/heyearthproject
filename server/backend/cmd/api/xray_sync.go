@@ -268,8 +268,8 @@ func SyncXrayConfig() error {
 		{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
 		// 2. Блокировка BitTorrent
 		{"type": "field", "protocol": []string{"bittorrent"}, "outboundTag": "block"},
-		// 3. Блокировка DNS-over-HTTPS для предотвращения утечки DNS
-		{"type": "field", "domain": []string{"domain:dns.google", "domain:cloudflare-dns.com", "domain:dns.quad9.net"}, "outboundTag": "block"},
+		// 3. DNS-over-HTTPS: НЕ блокируем, пусть идёт через exit-ноды
+		// Chrome/Edge используют DoH (chrome.cloudflare-dns.com), блокировка ломает DNS резолвинг
 	}
 
 	// Traffic masking routing rules (только для premium пользователей)
@@ -370,7 +370,7 @@ func SyncXrayConfig() error {
 					"connIdle":          300, // Idle timeout (сек) — 5 мин
 					"uplinkOnly":        2,   // Ждать 2 сек после закрытия download перед закрытием upload
 					"downlinkOnly":      5,   // Ждать 5 сек после закрытия upload перед закрытием download
-					"bufferSize":        64,  // 64KB буфер на соединение (дефолт 10KB — мало для видео)
+					"bufferSize":        256, // 256KB буфер на соединение (для видеостриминга)
 				},
 				"1": map[string]interface{}{
 					"statsUserUplink":   true,
@@ -379,7 +379,7 @@ func SyncXrayConfig() error {
 					"connIdle":          600, // Premium: 10 мин idle
 					"uplinkOnly":        2,
 					"downlinkOnly":      5,
-					"bufferSize":        128, // Premium: 128KB буфер (стриминг видео)
+					"bufferSize":        512, // Premium: 512KB буфер (стриминг HD видео)
 				},
 			},
 			"system": map[string]interface{}{
@@ -472,7 +472,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 				"enabled":          true,
 				"concurrency":      8,   // До 8 стримов на одно TCP соединение
 				"xudpConcurrency":  16,  // UDP мультиплексирование (DNS, QUIC)
-				"xudpProxyUDP443":  "reject", // QUIC/443 не через mux (лучше TCP fallback)
+				"xudpProxyUDP443":  "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
 			},
 		}
 		// Добавляем publicKey и shortId если заданы
@@ -507,18 +507,43 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 				},
 			},
 			"streamSettings": map[string]interface{}{
+				// WebSocket transport: трафик выглядит как обычный HTTPS-вебсокет,
+				// DPI не может отличить от обычного сайта. Значительно ускоряет
+				// международные соединения, т.к. DPI не throttle'ит WS-трафик.
+				"network": "ws",
+				"wsSettings": map[string]interface{}{
+					"path": "/stream",
+				},
 				"sockopt": map[string]interface{}{
 					"tcpFastOpen":          true,  // Экономия 1 RTT
 					"tcpNoDelay":           true,  // Без буферизации Nagle
 					"tcpKeepAliveInterval": 30,    // Keepalive от DPI
 				},
 			},
-			// Мультиплексирование: много стримов по одному SS соединению
+			// Мультиплексирование: много стримов по одному SS+WS соединению
 			"mux": map[string]interface{}{
 				"enabled":         true,
 				"concurrency":     8,
 				"xudpConcurrency": 16,
-				"xudpProxyUDP443": "reject",
+				"xudpProxyUDP443": "allow",
+			},
+		}
+
+	case "hysteria2":
+		// Hysteria2: UDP/QUIC — нет head-of-line blocking, стабильный пинг.
+		// Hysteria2 клиент бежит отдельным сервисом (hysteria2-client.service)
+		// и предоставляет локальный SOCKS5 на 127.0.0.1:1090.
+		// Xray просто маршрутизирует через этот SOCKS5.
+		hy2Port := 1088 + node.ID // ID=2 → 1090, ID=3 → 1091, etc
+		return map[string]interface{}{
+			"tag": tag, "protocol": "socks",
+			"settings": map[string]interface{}{
+				"servers": []map[string]interface{}{
+					{
+						"address": "127.0.0.1",
+						"port":    hy2Port,
+					},
+				},
 			},
 		}
 
