@@ -102,6 +102,9 @@ export function deleteServer(id) {
 export function runServerAction(id, action) {
   return apiFetch(`/servers/${id}/actions`, { method: 'POST', body: { action } })
 }
+export function fetchActionProgress(serverId) {
+  return apiFetch(`/servers/${serverId}/actions/progress`)
+}
 export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 } = {}) {
   const params = new URLSearchParams({ service, tail })
   return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')

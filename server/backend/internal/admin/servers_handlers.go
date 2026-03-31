@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -26,6 +27,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
+
+// provisionProgress хранит текущий прогресс провижининга серверов (in-memory)
+var provisionProgress sync.Map // map[int]*ProvisionProgress
 
 func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	p := parsePagination(r)
@@ -336,11 +340,19 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-	case "reprovision":
-		if err := reprovisionServer(server); err != nil {
-			writeAdminError(w, http.StatusBadGateway, err.Error())
-			return
+	case "setup_exit_node", "reprovision":
+		// Проверка: не запущен ли уже провижининг для этого сервера
+		if v, ok := provisionProgress.Load(serverID); ok {
+			pp := v.(*ProvisionProgress)
+			if !pp.Finished {
+				writeAdminError(w, http.StatusConflict, "Provisioning already in progress")
+				return
+			}
 		}
+		// Запускаем асинхронно
+		go runSetupExitNode(server)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Provisioning started"})
+		return
 	case "sync_tunnel":
 		if err := syncTunnel(server); err != nil {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
@@ -492,8 +504,8 @@ func syncServerMetrics(server serverResponse) error {
 
 		_, err = db.DB.Exec(`
 			UPDATE servers SET
-				tunnel_protocol = 'shadowsocks',
-				tunnel_port = 8388,
+				tunnel_protocol = 'hysteria2',
+				tunnel_port = 50443,
 				tunnel_ss_method = '2022-blake3-aes-128-gcm',
 				tunnel_ss_password = $1,
 				tunnel_uuid = COALESCE(NULLIF($2, ''), tunnel_uuid),
@@ -988,4 +1000,439 @@ func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {
 		return srv, nil, fmt.Errorf("ssh dial: %w", err)
 	}
 	return srv, client, nil
+}
+
+// ── Provision progress endpoint ──
+
+func ServerActionProgressHandler(w http.ResponseWriter, r *http.Request) {
+	// Извлекаем server ID из пути: /api/admin/servers/{id}/actions/progress
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/servers/"), "/")
+	serverIDText := strings.SplitN(path, "/", 2)[0]
+	serverID, err := strconv.Atoi(serverIDText)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		return
+	}
+	v, ok := provisionProgress.Load(serverID)
+	if !ok {
+		writeAdminJSON(w, http.StatusOK, map[string]interface{}{"server_id": serverID, "active": false})
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, v)
+}
+
+// ── Setup exit node (async, 7 steps) ──
+
+func runSetupExitNode(server serverResponse) {
+	steps := []ProvisionStep{
+		{Name: "optimize_network", Description: "Оптимизация сетевого стека (BBR, TCP буферы)", Status: "pending"},
+		{Name: "install_xray", Description: "Установка Xray (SS+WS:443, VLESS:10443)", Status: "pending"},
+		{Name: "install_hysteria2", Description: "Установка Hysteria2 (UDP:50443)", Status: "pending"},
+		{Name: "port_hopping", Description: "Настройка port hopping (nftables)", Status: "pending"},
+		{Name: "configure_firewall", Description: "Настройка файрвола", Status: "pending"},
+		{Name: "update_credentials", Description: "Обновление credentials в БД", Status: "pending"},
+		{Name: "setup_hub_client", Description: "Настройка Hysteria2 клиента на Hub", Status: "pending"},
+	}
+	progress := &ProvisionProgress{
+		ServerID: server.ID,
+		Action:   "setup_exit_node",
+		Steps:    steps,
+		Started:  time.Now(),
+	}
+	provisionProgress.Store(server.ID, progress)
+
+	setStep := func(idx int, status, errMsg string) {
+		progress.Steps[idx].Status = status
+		if errMsg != "" {
+			progress.Steps[idx].Error = errMsg
+		}
+		provisionProgress.Store(server.ID, progress)
+	}
+
+	finishWithError := func(stepIdx int, err error) {
+		setStep(stepIdx, "error", err.Error())
+		progress.Finished = true
+		provisionProgress.Store(server.ID, progress)
+		log.Printf("[provision] Сервер %d (%s): ошибка на шаге %s: %v", server.ID, server.Name, progress.Steps[stepIdx].Name, err)
+	}
+
+	// SSH подключение к exit-ноде
+	client, err := sshDialForServer(server)
+	if err != nil {
+		finishWithError(0, fmt.Errorf("SSH: %v", err))
+		return
+	}
+	defer client.Close()
+
+	runCmd := func(c *ssh.Client, cmd string) (string, error) {
+		session, err := c.NewSession()
+		if err != nil {
+			return "", err
+		}
+		defer session.Close()
+		var stdout, stderr bytes.Buffer
+		session.Stdout = &stdout
+		session.Stderr = &stderr
+		if err := session.Run(cmd); err != nil {
+			return stdout.String(), fmt.Errorf("%s: %s", err, stderr.String())
+		}
+		return stdout.String(), nil
+	}
+
+	// ── Шаг 1: BBR + TCP ──
+	setStep(0, "running", "")
+	_, err = runCmd(client, `cat > /etc/sysctl.d/99-bbr.conf << 'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 131072 16777216
+net.ipv4.tcp_wmem = 4096 131072 16777216
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_mtu_probing = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+EOF
+sysctl -p /etc/sysctl.d/99-bbr.conf 2>/dev/null || true`)
+	if err != nil {
+		finishWithError(0, err)
+		return
+	}
+	setStep(0, "done", "")
+
+	// ── Шаг 2: Xray ──
+	setStep(1, "running", "")
+	_, err = runCmd(client, `set -e
+mkdir -p /opt/heyearth/xray /opt/heyearth/state
+if [ ! -f /opt/heyearth/xray/xray ]; then
+  apt-get update -qq 2>/dev/null
+  apt-get install -y -qq wget unzip 2>/dev/null
+  cd /tmp && wget -q https://github.com/XTLS/Xray-core/releases/download/v25.1.1/Xray-linux-64.zip -O xray.zip
+  unzip -o xray.zip -d /opt/heyearth/xray && chmod +x /opt/heyearth/xray/xray && rm -f xray.zip
+fi
+
+# Генерируем ключи если нет
+KEYS_FILE="/opt/heyearth/state/reality-keys.json"
+if [ ! -f "$KEYS_FILE" ]; then
+  KEYS=$(/opt/heyearth/xray/xray x25519 2>&1)
+  PRIV_KEY=$(echo "$KEYS" | grep 'Private key:' | awk '{print $3}')
+  PUB_KEY=$(echo "$KEYS" | grep 'Public key:' | awk '{print $3}')
+  SHORT_ID=$(head -c 8 /dev/urandom | xxd -p)
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  SS_PASSWORD=$(openssl rand -base64 16)
+  python3 -c "
+import json
+d={'privateKey':'$PRIV_KEY','publicKey':'$PUB_KEY','shortId':'$SHORT_ID','uuid':'$UUID','ssPassword':'$SS_PASSWORD'}
+json.dump(d, open('$KEYS_FILE','w'), indent=2)
+"
+else
+  python3 -c "
+import json, os, base64
+with open('$KEYS_FILE') as f: k=json.load(f)
+changed=False
+if 'uuid' not in k or not k['uuid']: k['uuid']=open('/proc/sys/kernel/random/uuid').read().strip(); changed=True
+if 'ssPassword' not in k or not k['ssPassword']: k['ssPassword']=base64.b64encode(os.urandom(16)).decode(); changed=True
+if changed: json.dump(k, open('$KEYS_FILE','w'), indent=2)
+"
+fi
+
+# Читаем ключи
+eval $(python3 -c "
+import json
+k=json.load(open('/opt/heyearth/state/reality-keys.json'))
+print(f'PRIV_KEY={k[\"privateKey\"]}')
+print(f'PUB_KEY={k[\"publicKey\"]}')
+print(f'SHORT_ID={k[\"shortId\"]}')
+print(f'UUID={k[\"uuid\"]}')
+print(f'SS_PASSWORD={k.get(\"ssPassword\",\"\")}')
+")
+
+# Конфиг Xray: SS+WS на 443, VLESS Reality на 10443
+cat > /opt/heyearth/xray/config.json << XEOF
+{
+  "log":{"loglevel":"warning"},
+  "dns":{"servers":["8.8.8.8","1.1.1.1"],"queryStrategy":"UseIPv4","disableCache":false},
+  "inbounds":[
+    {"tag":"shadowsocks-ws","listen":"0.0.0.0","port":443,"protocol":"shadowsocks",
+     "settings":{"method":"2022-blake3-aes-128-gcm","password":"$SS_PASSWORD","network":"tcp,udp"},
+     "streamSettings":{"network":"ws","wsSettings":{"path":"/stream"},"sockopt":{"tcpFastOpen":true,"tcpNoDelay":true,"tcpKeepAliveInterval":30}},
+     "sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}},
+    {"tag":"vless-reality","listen":"0.0.0.0","port":10443,"protocol":"vless",
+     "settings":{"clients":[{"id":"$UUID","flow":"xtls-rprx-vision"}],"decryption":"none"},
+     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"microsoft.com:443","xver":0,"serverNames":["microsoft.com","www.microsoft.com"],"privateKey":"$PRIV_KEY","shortIds":["$SHORT_ID"]}},
+     "sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}
+  ],
+  "outbounds":[
+    {"protocol":"freedom","tag":"direct","settings":{"domainStrategy":"UseIPv4"},"streamSettings":{"sockopt":{"tcpFastOpen":true,"tcpNoDelay":true,"tcpKeepAliveInterval":30}}},
+    {"protocol":"blackhole","tag":"block","settings":{"response":{"type":"none"}}}
+  ],
+  "routing":{"domainStrategy":"IPIfNonMatch","rules":[
+    {"type":"field","ip":["geoip:private"],"outboundTag":"block"},
+    {"type":"field","protocol":["bittorrent"],"outboundTag":"block"}
+  ]},
+  "policy":{"levels":{"0":{"handshake":4,"connIdle":300,"uplinkOnly":2,"downlinkOnly":5,"bufferSize":512}}}
+}
+XEOF
+
+cat > /etc/systemd/system/xray.service << 'SEOF'
+[Unit]
+Description=Xray Exit Node (HeYearth)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/opt/heyearth/xray/xray run -config /opt/heyearth/xray/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+SEOF
+systemctl daemon-reload && systemctl enable xray && systemctl restart xray`)
+	if err != nil {
+		finishWithError(1, err)
+		return
+	}
+	setStep(1, "done", "")
+
+	// ── Шаг 3: Hysteria2 ──
+	setStep(2, "running", "")
+	_, err = runCmd(client, `set -e
+if [ ! -f /usr/local/bin/hysteria ]; then
+  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-linux-amd64
+  chmod +x /usr/local/bin/hysteria
+fi
+mkdir -p /opt/heyearth/certs /opt/heyearth/hysteria
+if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
+    -keyout /opt/heyearth/certs/hy2.key -out /opt/heyearth/certs/hy2.crt -subj "/CN=www.microsoft.com" 2>/dev/null
+fi
+SS_PASSWORD=$(python3 -c "import json; print(json.load(open('/opt/heyearth/state/reality-keys.json')).get('ssPassword',''))")
+cat > /opt/heyearth/hysteria/server.yaml << HEOF
+listen: :50443
+tls:
+  cert: /opt/heyearth/certs/hy2.crt
+  key: /opt/heyearth/certs/hy2.key
+auth:
+  type: password
+  password: $SS_PASSWORD
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com
+    rewriteHost: true
+quic:
+  initStreamReceiveWindow: 26843545
+  maxStreamReceiveWindow: 26843545
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+bandwidth:
+  up: 100 mbps
+  down: 100 mbps
+HEOF
+cat > /etc/systemd/system/hysteria2.service << 'SEOF'
+[Unit]
+Description=Hysteria2 VPN Server (HeYearth)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+SEOF
+systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2`)
+	if err != nil {
+		finishWithError(2, err)
+		return
+	}
+	setStep(2, "done", "")
+
+	// ── Шаг 4: Port hopping ──
+	setStep(3, "running", "")
+	_, err = runCmd(client, `set -e
+apt-get install -y -qq nftables 2>/dev/null || true
+cat > /etc/nftables-hysteria.conf << 'NEOF'
+table inet hysteria_porthopping {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    udp dport 20000-50000 counter redirect to :50443
+  }
+}
+NEOF
+nft -f /etc/nftables-hysteria.conf 2>/dev/null || true
+cat > /etc/systemd/system/nftables-hysteria.service << 'SEOF'
+[Unit]
+Description=nftables port hopping for Hysteria2
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables-hysteria.conf
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+SEOF
+systemctl daemon-reload && systemctl enable nftables-hysteria 2>/dev/null || true`)
+	if err != nil {
+		finishWithError(3, err)
+		return
+	}
+	setStep(3, "done", "")
+
+	// ── Шаг 5: Firewall ──
+	setStep(4, "running", "")
+	_, err = runCmd(client, `
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 22/tcp 2>/dev/null; ufw allow 443/tcp 2>/dev/null; ufw allow 443/udp 2>/dev/null
+  ufw allow 10443/tcp 2>/dev/null; ufw allow 50443/udp 2>/dev/null
+  ufw allow 20000:50000/udp 2>/dev/null; ufw --force enable 2>/dev/null
+else
+  iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null
+  iptables -I INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null
+  iptables -I INPUT -p tcp --dport 10443 -j ACCEPT 2>/dev/null
+  iptables -I INPUT -p udp --dport 50443 -j ACCEPT 2>/dev/null
+  iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT 2>/dev/null
+fi
+true`)
+	if err != nil {
+		finishWithError(4, err)
+		return
+	}
+	setStep(4, "done", "")
+
+	// ── Шаг 6: Credentials → DB ──
+	setStep(5, "running", "")
+	credsOut, err := runCmd(client, `python3 -c "
+import json
+k=json.load(open('/opt/heyearth/state/reality-keys.json'))
+print(k.get('uuid',''))
+print(k.get('publicKey',''))
+print(k.get('shortId',''))
+print(k.get('ssPassword',''))
+print(k.get('privateKey',''))
+"`)
+	if err != nil {
+		finishWithError(5, err)
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(credsOut), "\n")
+	if len(lines) < 4 {
+		finishWithError(5, fmt.Errorf("unexpected credentials format: %d lines", len(lines)))
+		return
+	}
+	tunnelUUID := strings.TrimSpace(lines[0])
+	tunnelPubKey := strings.TrimSpace(lines[1])
+	tunnelShortID := strings.TrimSpace(lines[2])
+	tunnelSSPass := strings.TrimSpace(lines[3])
+	tunnelPrivKey := ""
+	if len(lines) > 4 {
+		tunnelPrivKey = strings.TrimSpace(lines[4])
+	}
+
+	_, err = db.DB.Exec(`UPDATE servers SET
+		tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
+		tunnel_ss_password = $4, tunnel_private_key = $5,
+		tunnel_sni = 'microsoft.com', tunnel_protocol = 'hysteria2',
+		tunnel_port = 50443, tunnel_status = 'unknown', status = 'active',
+		updated_at = CURRENT_TIMESTAMP
+		WHERE id = $6`,
+		tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, tunnelPrivKey, server.ID)
+	if err != nil {
+		finishWithError(5, err)
+		return
+	}
+	setStep(5, "done", "")
+
+	// ── Шаг 7: Hysteria2 клиент на Hub ──
+	setStep(6, "running", "")
+	hy2Port := 1088 + server.ID
+	hy2ClientScript := fmt.Sprintf(`set -e
+mkdir -p /opt/heyearth/hysteria
+if [ ! -f /usr/local/bin/hysteria ]; then
+  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
+  chmod +x /usr/local/bin/hysteria
+fi
+cat > /opt/heyearth/hysteria/client-%d.yaml << 'HEOF'
+server: %s:20000-50000
+auth: %s
+tls:
+  insecure: true
+transport:
+  udp:
+    hopInterval: 30s
+quic:
+  initStreamReceiveWindow: 26843545
+  maxStreamReceiveWindow: 26843545
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+bandwidth:
+  up: 100 mbps
+  down: 100 mbps
+socks5:
+  listen: 127.0.0.1:%d
+HEOF
+cat > /etc/systemd/system/hysteria2-client-%d.service << SEOF
+[Unit]
+Description=Hysteria2 Client for %s (HeYearth)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%d.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+SEOF
+systemctl daemon-reload
+systemctl enable hysteria2-client-%d
+systemctl restart hysteria2-client-%d
+`, server.ID, server.IPAddress, tunnelSSPass, hy2Port, server.ID, server.IPAddress, server.ID, server.ID, server.ID)
+
+	// Выполняем на Hub (localhost) через exec.Command
+	cmd := exec.Command("bash", "-c", hy2ClientScript)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		finishWithError(6, fmt.Errorf("%v: %s", err, string(out)))
+		return
+	}
+	setStep(6, "done", "")
+
+	// Перезапускаем API для пересинхронизации Xray
+	exec.Command("systemctl", "restart", "heyearth-api").Run()
+
+	progress.Finished = true
+	provisionProgress.Store(server.ID, progress)
+	log.Printf("[provision] Сервер %d (%s): провижининг завершён успешно", server.ID, server.Name)
+}
+
+// sshDialForServer создаёт SSH-соединение к серверу по его credentials из БД
+func sshDialForServer(srv serverResponse) (*ssh.Client, error) {
+	var auths []ssh.AuthMethod
+	if srv.SSHPassword != "" {
+		auths = append(auths, ssh.Password(srv.SSHPassword))
+	}
+	if srv.SshKeyID != nil && *srv.SshKeyID > 0 {
+		var privKeyPEM string
+		err := db.DB.QueryRow("SELECT private_key FROM ssh_keys WHERE id = $1", *srv.SshKeyID).Scan(&privKeyPEM)
+		if err == nil {
+			signer, err := ssh.ParsePrivateKey([]byte(privKeyPEM))
+			if err == nil {
+				auths = append(auths, ssh.PublicKeys(signer))
+			}
+		}
+	}
+	if len(auths) == 0 {
+		return nil, fmt.Errorf("no SSH credentials for server %d", srv.ID)
+	}
+	sshConfig := &ssh.ClientConfig{
+		User:            srv.SSHUser,
+		Auth:            auths,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         15 * time.Second,
+	}
+	addr := fmt.Sprintf("%s:%d", srv.IPAddress, srv.SSHPort)
+	return ssh.Dial("tcp", addr, sshConfig)
 }

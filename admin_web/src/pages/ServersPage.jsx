@@ -12,6 +12,7 @@ import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 
 /* ── SVG icon helpers ── */
 const Icon = ({ d, className = 'w-4 h-4' }) => (
@@ -261,6 +262,8 @@ export default function ServersPage() {
   const [viewMode, setViewMode] = useState('cards') // 'cards' | 'list'
   const [statusFilter, setStatusFilter] = useState('all')
   const [expandedMetrics, setExpandedMetrics] = useState({}) // serverId -> detail data
+  const [progressModal, setProgressModal] = useState(null) // { id, name }
+  const [actionConfirm, setActionConfirm] = useState(null) // { server, action }
 
   // form
   const [name, setName] = useState('')
@@ -405,14 +408,31 @@ export default function ServersPage() {
     }
   }
 
-  async function doAction(server, action) {
-    try {
-      toast.info(`${action}...`)
-      await runServerAction(server.id, action)
-      toast.success(`${action} OK`)
-      paged.reload()
-    } catch (err) {
-      toast.error(err.message)
+  async function doAction(srv, actionDef) {
+    if (actionDef.confirm) {
+      setActionConfirm({ server: srv, action: actionDef })
+      return
+    }
+    executeAction(srv, actionDef)
+  }
+
+  async function executeAction(srv, actionDef) {
+    if (actionDef.async) {
+      try {
+        await runServerAction(srv.id, actionDef.key)
+        setProgressModal({ id: srv.id, name: srv.name })
+      } catch (err) {
+        toast.error(err.message)
+      }
+    } else {
+      try {
+        toast.info(`${actionDef.label}...`)
+        await runServerAction(srv.id, actionDef.key)
+        toast.success(`${actionDef.label} OK`)
+        paged.reload()
+      } catch (err) {
+        toast.error(err.message)
+      }
     }
   }
 
@@ -461,11 +481,11 @@ export default function ServersPage() {
   }
 
   const actions = [
-    { key: 'restart_agent', label: t.serverRestartAgent, icon: <IconRestart /> },
-    { key: 'reprovision', label: t.serverReprovision, icon: <IconProvision /> },
-    { key: 'sync_metrics', label: t.serverSyncMetrics, icon: <IconSync /> },
-    { key: 'sync_tunnel', label: t.serverSyncTunnel, icon: <IconTunnel /> },
-    { key: 'fetch_tunnel_creds', label: t.serverFetchCreds || 'Получить tunnel creds', icon: <IconTunnel />, exitOnly: true },
+    { key: 'setup_exit_node', label: t.serverSetupExitNode, desc: t.serverSetupExitNodeDesc, icon: <IconProvision />, exitOnly: true, async: true, confirm: true },
+    { key: 'restart_agent', label: t.serverRestartAgent, desc: t.serverRestartAgentDesc, icon: <IconRestart />, confirm: true },
+    { key: 'sync_metrics', label: t.serverSyncMetrics, desc: t.serverSyncMetricsDesc, icon: <IconSync /> },
+    { key: 'sync_tunnel', label: t.serverSyncTunnel, desc: t.serverSyncTunnelDesc, icon: <IconTunnel /> },
+    { key: 'fetch_tunnel_creds', label: t.serverFetchCreds, desc: t.serverFetchCredsDesc, icon: <IconTunnel />, exitOnly: true },
   ]
 
   const ipAddress = (srv) => srv.ip_address || srv.host || ''
@@ -538,9 +558,9 @@ export default function ServersPage() {
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
           {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
-            <button key={a.key} onClick={() => doAction(srv, a.key)}
+            <button key={a.key} onClick={() => doAction(srv, a)}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary hover:bg-surface-alt/80 transition"
-              title={a.label}>
+              title={a.desc || a.label}>
               {a.icon}
               <span className="hidden sm:inline">{a.label}</span>
             </button>
@@ -763,6 +783,7 @@ export default function ServersPage() {
         <div className="mt-3 mb-1 text-xs font-semibold text-text-secondary uppercase tracking-wider">Настройка туннеля</div>
         <FormField label="Протокол туннеля">
           <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
+            { value: 'hysteria2', label: 'Hysteria2 (UDP, recommended)' },
             { value: 'vless', label: 'VLESS Reality' },
             { value: 'shadowsocks', label: 'Shadowsocks' },
             { value: 'socks5', label: 'SOCKS' },
@@ -798,6 +819,23 @@ export default function ServersPage() {
         message={`Delete server "${confirm?.name}"?`}
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} loading={saving}
       />
+
+      {/* Action confirm dialog */}
+      {actionConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setActionConfirm(null)}>
+          <div className="bg-surface rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-text-primary mb-2">{actionConfirm.action.label}</h3>
+            <p className="text-text-secondary text-sm mb-6">{actionConfirm.action.desc}<br/>Сервер: <b>{actionConfirm.server.name}</b></p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setActionConfirm(null)} className="px-4 py-2 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary">Отмена</button>
+              <button onClick={() => { executeAction(actionConfirm.server, actionConfirm.action); setActionConfirm(null) }} className="px-4 py-2 rounded-lg bg-brand text-white hover:bg-brand/80">Выполнить</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Provision progress */}
+      {progressModal && <ProvisionProgressDialog open={true} server={progressModal} onClose={() => { setProgressModal(null); paged.reload() }} />}
     </div>
   )
 }

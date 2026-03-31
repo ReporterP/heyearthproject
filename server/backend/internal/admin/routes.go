@@ -112,6 +112,10 @@ func RegisterRoutes() {
 		}
 	}))
 	http.HandleFunc("/api/admin/servers/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/actions/progress") {
+			withMethod(http.MethodGet, RequirePermission("server_ops.execute", ServerActionProgressHandler)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/actions") {
 			withMethod(http.MethodPost, RequirePermission("server_ops.execute", ServerActionHandler)).ServeHTTP(w, r)
 			return
