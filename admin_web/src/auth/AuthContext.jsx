@@ -38,6 +38,16 @@ export function AuthProvider({ children }) {
     setLogoutCallback(logoutAction)
   }, [logoutAction])
 
+  // Validate token on mount — auto-logout if expired/revoked
+  useEffect(() => {
+    if (!token) return
+    fetch('/api/admin/overview', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    }).then(res => {
+      if (res.status === 401) logoutAction()
+    }).catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <AuthContext.Provider value={{ token, admin, permissions, can, isTenantAdmin, login: loginAction, logout: logoutAction, isLoggedIn: !!token }}>
       {children}

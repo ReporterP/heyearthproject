@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext.jsx'
 
 export default function SiteHeader() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
-  const isLoggedIn = !!localStorage.getItem('token')
+  const { isLoggedIn } = useAuth()
   const location = useLocation()
 
   useEffect(() => {

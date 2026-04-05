@@ -88,10 +88,7 @@ func checkExpiringSubscriptions() {
 
 	if justExpired > 0 {
 		log.Printf("[subscription-cron] %d подписок только что истекли, пересинхронизация Xray...", justExpired)
-		xraySyncMu.Lock()
-		xraySyncLast = time.Time{}
-		xraySyncMu.Unlock()
-		_ = SyncXrayConfig()
+		RequestXraySync()
 	}
 }
 

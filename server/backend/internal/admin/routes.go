@@ -3,10 +3,15 @@ package admin
 import (
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/heyearth/backend/internal/middleware"
 )
 
+var adminLoginLimiter = middleware.NewRateLimiter(5, time.Minute)
+
 func RegisterRoutes() {
-	http.HandleFunc("/api/admin/login", withMethod(http.MethodPost, LoginHandler))
+	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
 	http.HandleFunc("/api/admin/overview", withMethod(http.MethodGet, RequirePermission("dashboard.read", OverviewHandler)))
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +135,17 @@ func RegisterRoutes() {
 		}
 		if strings.HasSuffix(r.URL.Path, "/files") || strings.Contains(r.URL.Path, "/files/") {
 			RequirePermission("servers.files", ServerFileBrowserHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/file-content") {
+			switch r.Method {
+			case http.MethodGet:
+				RequirePermission("servers.files", ServerFileReadHandler).ServeHTTP(w, r)
+			case http.MethodPut:
+				RequirePermission("servers.write", ServerFileWriteHandler).ServeHTTP(w, r)
+			default:
+				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
 			return
 		}
 		switch r.Method {

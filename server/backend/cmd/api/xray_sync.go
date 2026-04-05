@@ -2,17 +2,21 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 )
 
 // ─────────────────────── Xray Config Sync (Hub-and-Spoke) ───────────────────────
@@ -37,8 +41,11 @@ const (
 )
 
 var (
-	xraySyncMu   sync.Mutex
-	xraySyncLast time.Time
+	xraySyncMu sync.Mutex
+
+	// Debounce: timer-based coalescing of sync requests.
+	debounceMu    sync.Mutex
+	debounceTimer *time.Timer
 )
 
 // xrayRealityKeys — ключи Reality из /opt/heyearth/state/reality-keys.json
@@ -67,14 +74,25 @@ func loadRealityKeys() (*xrayRealityKeys, error) {
 
 // SyncXrayConfig генерирует Xray конфиг со всеми активными пользователями,
 // exit-нодами и политиками безопасности, и перезапускает Xray.
+// RequestXraySync запрашивает синхронизацию с debounce (2 секунды тишины).
+// Множественные вызовы за 2 сек сливаются в один SyncXrayConfig.
+func RequestXraySync() {
+	debounceMu.Lock()
+	defer debounceMu.Unlock()
+	if debounceTimer != nil {
+		debounceTimer.Stop()
+	}
+	debounceTimer = time.AfterFunc(2*time.Second, func() {
+		if err := SyncXrayConfig(); err != nil {
+			log.Printf("[xray-sync] debounced sync error: %v", err)
+		}
+	})
+}
+
+// SyncXrayConfig немедленно синхронизирует конфиг (для startup/periodic/forced).
 func SyncXrayConfig() error {
 	xraySyncMu.Lock()
 	defer xraySyncMu.Unlock()
-
-	// Дебаунс — не чаще раза в 5 секунд
-	if time.Since(xraySyncLast) < 5*time.Second {
-		return nil
-	}
 
 	// Проверяем что Xray установлен
 	if _, err := os.Stat(xrayConfigPath); os.IsNotExist(err) {
@@ -112,6 +130,10 @@ func SyncXrayConfig() error {
 	for _, c := range activeClients {
 		uuidToUserID[c.UUID] = c.UserID
 	}
+
+	// Persist Reality public key info to app_settings for client consumption
+	_ = biz.SetSetting("reality_public_key", keys.PublicKey)
+	_ = biz.SetSetting("reality_short_id", keys.ShortID)
 
 	// Policy levels: 0 = standard, 1 = premium
 	vlessClients := make([]map[string]interface{}, 0, len(activeClients))
@@ -229,7 +251,15 @@ func SyncXrayConfig() error {
 		outbound := buildExitNodeOutbound(node)
 		if outbound != nil {
 			outbounds = append(outbounds, outbound)
-			exitTags = append(exitTags, fmt.Sprintf("exit-%d", node.ID))
+			tag := fmt.Sprintf("exit-%d", node.ID)
+			// Weighted: duplicate tag by load_weight for proportional distribution.
+			w := node.LoadWeight
+			if w < 1 {
+				w = 1
+			}
+			for i := 0; i < w; i++ {
+				exitTags = append(exitTags, tag)
+			}
 		}
 	}
 
@@ -288,12 +318,14 @@ func SyncXrayConfig() error {
 
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
 	if len(exitTags) > 0 {
-		// Балансировщик: leastPing распределяет трафик по exit-нодам с наименьшим пингом
+		// Стратегия: random — работает с взвешенными тегами (дублированные теги = больше веса).
+		// leastPing игнорирует дубли, а random корректно распределяет пропорционально.
+		balancerStrategy := biz.GetSettingOrDefault("balancer_strategy", "random")
 		balancers := []map[string]interface{}{
 			{
 				"tag":      "exit-balancer",
 				"selector": exitTags,
-				"strategy": map[string]string{"type": "leastPing"},
+				"strategy": map[string]string{"type": balancerStrategy},
 			},
 		}
 		routing["balancers"] = balancers
@@ -306,6 +338,16 @@ func SyncXrayConfig() error {
 		})
 		routing["rules"] = rules
 
+	} else {
+		// Нет здоровых exit-нод: блокируем пользовательский прокси-трафик.
+		// Без exit-нод трафик пошёл бы direct (без шифрования) — это недопустимо.
+		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, пользовательский трафик блокируется")
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"inboundTag":  []string{"socks5-proxy", "http-proxy"},
+			"outboundTag": "block",
+		})
+		routing["rules"] = rules
 	}
 
 	// Observatory: мониторинг задержки до exit-нод для leastPing
@@ -396,23 +438,42 @@ func SyncXrayConfig() error {
 		config["observatory"] = observatory
 	}
 
-	// Сериализуем и записываем конфиг
+	// Сериализуем конфиг
 	configJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal xray config: %w", err)
 	}
 
-	if err := os.WriteFile(xrayConfigPath, configJSON, 0644); err != nil {
-		return fmt.Errorf("write xray config: %w", err)
+	// Atomic write: tmp file → rename (prevents partial writes on crash/power loss)
+	// Xray requires .json extension for config format detection
+	tmpPath := strings.TrimSuffix(xrayConfigPath, ".json") + ".tmp.json"
+	if err := os.WriteFile(tmpPath, configJSON, 0600); err != nil {
+		return fmt.Errorf("write xray config (tmp): %w", err)
 	}
 
-	// Перезапускаем Xray
+	// Validate config before applying
+	xrayBin := "/opt/heyearth/xray/xray"
+	if p, err := exec.LookPath("xray"); err == nil {
+		xrayBin = p
+	}
+	validateCmd := exec.Command(xrayBin, "run", "-test", "-config", tmpPath)
+	if output, err := validateCmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpPath, xrayConfigPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename xray config: %w", err)
+	}
+
+	// Restart Xray (Xray-core не поддерживает reload — только restart)
 	cmd := exec.Command("systemctl", "restart", "xray")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restart xray: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
-	xraySyncLast = time.Now()
 	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d SOCKS5/HTTP аккаунтов, %d exit-нод, %d правил маскировки",
 		len(vlessClients), len(socksAccounts), len(exitTags), len(maskRouteEntries))
 
@@ -614,7 +675,21 @@ func buildProxyAccounts() (socksAccounts []map[string]string, httpAccounts []map
 //
 // Фоновый мониторинг состояния туннелей до exit-нод.
 // Каждые 30 секунд проверяет TCP-подключение к каждой exit-ноде.
+// Hysteresis: нужно 3 consecutive неудачи → unhealthy, 2 consecutive успеха → healthy.
 // При изменении статуса — пересинхронизирует Xray конфиг.
+
+const (
+	hysteresisUnhealthy = 3 // consecutive failures before marking unhealthy
+	hysteresisHealthy   = 2 // consecutive successes before marking healthy
+)
+
+// healthCounter tracks consecutive check results per node for hysteresis.
+var healthCounter sync.Map // map[int]*nodeHealthCounter
+
+type nodeHealthCounter struct {
+	consecutiveOK   int
+	consecutiveFail int
+}
 
 // StartTunnelHealthMonitor запускает фоновый мониторинг exit-нод.
 func StartTunnelHealthMonitor() {
@@ -629,7 +704,13 @@ func StartTunnelHealthMonitor() {
 			checkAllTunnels()
 		}
 	}()
-	log.Println("[tunnel-monitor] Фоновый мониторинг exit-нод запущен (каждые 30 сек)")
+	log.Printf("[tunnel-monitor] Фоновый мониторинг exit-нод запущен (каждые 30 сек, hysteresis %d/%d)",
+		hysteresisUnhealthy, hysteresisHealthy)
+}
+
+func getHealthCounter(nodeID int) *nodeHealthCounter {
+	val, _ := healthCounter.LoadOrStore(nodeID, &nodeHealthCounter{})
+	return val.(*nodeHealthCounter)
 }
 
 // checkAllTunnels проверяет все exit-ноды и обновляет их статус.
@@ -646,28 +727,59 @@ func checkAllTunnels() {
 
 	statusChanged := false
 	for _, node := range nodes {
-		newStatus, latencyMs := checkTunnelHealth(node)
+		probeResult, latencyMs := checkTunnelHealth(node)
 		oldStatus := node.TunnelStatus
+		hc := getHealthCounter(node.ID)
+
+		// Update hysteresis counters.
+		if probeResult == "healthy" {
+			hc.consecutiveOK++
+			hc.consecutiveFail = 0
+		} else {
+			hc.consecutiveFail++
+			hc.consecutiveOK = 0
+		}
+
+		// Determine effective status with hysteresis.
+		var newStatus string
+		switch oldStatus {
+		case "healthy":
+			if hc.consecutiveFail >= hysteresisUnhealthy {
+				newStatus = "unhealthy"
+			} else {
+				newStatus = "healthy"
+			}
+		case "unhealthy":
+			if hc.consecutiveOK >= hysteresisHealthy {
+				newStatus = "healthy"
+			} else {
+				newStatus = "unhealthy"
+			}
+		default: // "unknown" or empty — use probe result directly
+			newStatus = probeResult
+		}
 
 		if newStatus != oldStatus {
 			if err := biz.UpdateTunnelStatusWithLatency(node.ID, newStatus, latencyMs); err != nil {
 				log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
 				continue
 			}
+			// Reset counters after status flip.
+			hc.consecutiveOK = 0
+			hc.consecutiveFail = 0
 
 			statusChanged = true
 
-			// Алерт при изменении статуса
 			if newStatus == "unhealthy" {
-				log.Printf("[tunnel-monitor] ⚠ ALERT: Exit-нода %d (%s, %s) — туннель НЕДОСТУПЕН",
-					node.ID, node.Name, node.IPAddress)
+				log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — туннель НЕДОСТУПЕН (после %d проверок)",
+					node.ID, node.Name, node.IPAddress, hysteresisUnhealthy)
 				biz.RecordFailedConnection(node.ID)
 			} else if newStatus == "healthy" && oldStatus == "unhealthy" {
-				log.Printf("[tunnel-monitor] ✓ Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН",
+				log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН",
 					node.ID, node.Name, node.IPAddress)
 				biz.RecordSuccessfulConnection(node.ID)
 			} else {
-				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s → %s",
+				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s",
 					node.ID, node.Name, oldStatus, newStatus)
 			}
 		} else if newStatus == "healthy" {
@@ -676,35 +788,30 @@ func checkAllTunnels() {
 		}
 	}
 
-	// Если статус какой-то ноды изменился — пересинхронизируем Xray
+	// Если статус какой-то ноды изменился — пересинхронизируем Xray (debounced)
 	if statusChanged {
-		log.Printf("[tunnel-monitor] Статус exit-нод изменился, пересинхронизация Xray...")
-		// Сбрасываем дебаунс чтобы SyncXrayConfig сработал немедленно
-		xraySyncMu.Lock()
-		xraySyncLast = time.Time{}
-		xraySyncMu.Unlock()
-
-		if err := SyncXrayConfig(); err != nil {
-			log.Printf("[tunnel-monitor] Ошибка синхронизации Xray: %v", err)
-		}
+		log.Printf("[tunnel-monitor] Статус exit-нод изменился, запрос на пересинхронизацию Xray...")
+		RequestXraySync()
 	}
 }
 
-// checkTunnelHealth проверяет доступность exit-ноды.
-// Для VLESS: TCP connect + TLS handshake (проверка Reality endpoint).
-// Для остальных: TCP connect.
+// checkTunnelHealth проверяет доступность exit-ноды по протоколу.
+// - VLESS: TCP + TLS handshake (Reality endpoint)
+// - Shadowsocks: TCP connect (WS порт 443)
+// - Hysteria2: проверка локального SOCKS5 порта Hysteria2-клиента на Hub
+// - Остальные: TCP connect
 // Возвращает статус и latency в миллисекундах.
 func checkTunnelHealth(node biz.ExitNodeTunnel) (string, int) {
-	addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
 	start := time.Now()
 
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		return "unhealthy", 0
-	}
-
-	// Для VLESS Reality — проверяем TLS handshake
-	if node.TunnelProtocol == "vless" {
+	switch node.TunnelProtocol {
+	case "vless":
+		// TCP + TLS handshake к Reality endpoint
+		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			return "unhealthy", 0
+		}
 		sni := node.TunnelSNI
 		if sni == "" {
 			sni = node.IPAddress
@@ -716,13 +823,36 @@ func checkTunnelHealth(node biz.ExitNodeTunnel) (string, int) {
 		tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
 		if err := tlsConn.Handshake(); err != nil {
 			conn.Close()
-			// TLS handshake failed — порт открыт, но не Reality
-			log.Printf("[tunnel-monitor] exit-нода %d (%s): TCP OK, TLS handshake failed: %v",
-				node.ID, node.Name, err)
 			return "unhealthy", 0
 		}
 		tlsConn.Close()
-	} else {
+
+	case "hysteria2":
+		// Hysteria2 client runs locally on Hub, check its SOCKS5 port.
+		hy2Port := 1088 + node.ID
+		localAddr := fmt.Sprintf("127.0.0.1:%d", hy2Port)
+		conn, err := net.DialTimeout("tcp", localAddr, 3*time.Second)
+		if err != nil {
+			return "unhealthy", 0
+		}
+		conn.Close()
+
+	case "shadowsocks":
+		// TCP connect to SS+WS port (typically 443)
+		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			return "unhealthy", 0
+		}
+		conn.Close()
+
+	default:
+		// Generic TCP connect
+		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			return "unhealthy", 0
+		}
 		conn.Close()
 	}
 
@@ -760,5 +890,54 @@ func StartXraySyncLoop() {
 
 	// Запускаем мониторинг туннелей до exit-нод
 	StartTunnelHealthMonitor()
+
+	// Запускаем мониторинг истечения mTLS сертификатов
+	StartCertExpiryMonitor()
+}
+
+// ─────────────────────── mTLS Certificate Expiry Monitor ───────────────────────
+
+// StartCertExpiryMonitor проверяет mTLS сертификаты при старте и каждые 24 часа.
+// Логирует WARNING если сертификат истекает в течение 30 дней.
+func StartCertExpiryMonitor() {
+	go func() {
+		checkCertExpiry()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			checkCertExpiry()
+		}
+	}()
+}
+
+func checkCertExpiry() {
+	certsDir := filepath.Join(config.AppDir(), "certs")
+	certFiles := []string{"ca-cert.pem", "client-cert.pem", "server-cert.pem"}
+
+	for _, name := range certFiles {
+		path := filepath.Join(certsDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // файл не существует — OK, может быть не настроен
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			log.Printf("[cert-monitor] %s: не удалось прочитать PEM", name)
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			log.Printf("[cert-monitor] %s: ошибка парсинга: %v", name, err)
+			continue
+		}
+		daysLeft := int(time.Until(cert.NotAfter).Hours() / 24)
+		if daysLeft < 0 {
+			log.Printf("[cert-monitor] CRITICAL: %s ИСТЁК %d дней назад!", name, -daysLeft)
+		} else if daysLeft < 7 {
+			log.Printf("[cert-monitor] CRITICAL: %s истекает через %d дней!", name, daysLeft)
+		} else if daysLeft < 30 {
+			log.Printf("[cert-monitor] WARNING: %s истекает через %d дней", name, daysLeft)
+		}
+	}
 }
 

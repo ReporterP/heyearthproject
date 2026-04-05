@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation, getTrafficStats, getSubscribeLink } from '../api/user.js'
+import { useAuth } from '../auth/AuthContext.jsx'
 
 function formatDate(d) {
   if (!d) return '---'
@@ -59,7 +60,7 @@ const CheckIcon = () => (
 
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const token = localStorage.getItem('token')
+  const { token, logout } = useAuth()
 
   const [profile, setProfile] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -109,7 +110,7 @@ export default function DashboardPage() {
       setSubscribeLink(subLinkData)
     }).catch(e => {
       if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
-        localStorage.removeItem('token')
+        logout()
         navigate('/login')
         return
       }

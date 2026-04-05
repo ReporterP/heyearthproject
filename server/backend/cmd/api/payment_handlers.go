@@ -13,7 +13,7 @@ import (
 )
 
 func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -287,7 +287,7 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleApplyPromocode — REST-эндпоинт для применения промокода (JWT auth).
 func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -344,7 +344,7 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateDonation — создание доната (поддержка разработчика).
 func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -432,7 +432,7 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -465,7 +465,7 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -486,7 +486,7 @@ func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return

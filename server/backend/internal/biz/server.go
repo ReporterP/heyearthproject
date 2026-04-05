@@ -181,6 +181,7 @@ type ExitNodeTunnel struct {
 	TunnelSSMethod string // Shadowsocks cipher
 	TunnelSSPass   string // Shadowsocks password
 	TunnelStatus   string // healthy, unhealthy, unknown
+	LoadWeight     int    // 1-10 для weighted load balancing
 }
 
 // ListHealthyExitNodes возвращает все exit-ноды со статусом healthy.
@@ -201,16 +202,18 @@ func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
 		       COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''),
 		       COALESCE(tunnel_short_id, ''), COALESCE(tunnel_sni, ''),
 		       COALESCE(tunnel_ss_method, ''), COALESCE(tunnel_ss_password, ''),
-		       tunnel_status
+		       tunnel_status, COALESCE(load_weight, 1)
 		FROM servers
 		WHERE is_exit_node = TRUE
 	`
+	var args []any
 	if statusFilter != "" {
-		query += ` AND tunnel_status = '` + statusFilter + `'`
+		query += ` AND tunnel_status = $1`
+		args = append(args, statusFilter)
 	}
 	query += ` ORDER BY id`
 
-	rows, err := db.DB.Query(query)
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list exit nodes: %w", err)
 	}
@@ -225,7 +228,7 @@ func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
 			&n.TunnelUUID, &n.TunnelPubKey,
 			&n.TunnelShortID, &n.TunnelSNI,
 			&n.TunnelSSMethod, &n.TunnelSSPass,
-			&n.TunnelStatus,
+			&n.TunnelStatus, &n.LoadWeight,
 		); err != nil {
 			log.Printf("scan exit node: %v", err)
 			continue

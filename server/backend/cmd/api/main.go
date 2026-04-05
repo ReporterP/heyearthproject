@@ -212,10 +212,20 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func setCORS(w http.ResponseWriter) {
-	// Разрешаем запросы с наших доменов и localhost (dev)
-	// В production nginx подставляет правильный Origin
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+func setCORS(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if corsOrigins == "" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	} else {
+		for _, allowed := range strings.Split(corsOrigins, ",") {
+			if strings.TrimSpace(allowed) == origin {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				break
+			}
+		}
+	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
@@ -240,7 +250,7 @@ func grpcCodeToHTTP(code codes.Code) int {
 // ─────────────────────── User Portal REST Handlers ───────────────────────
 
 func handleUserRegister(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -287,7 +297,7 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserLogin(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -345,7 +355,7 @@ func extractUserFromToken(r *http.Request) (string, error) {
 }
 
 func handleUserProfile(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -397,7 +407,7 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserSubscription(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -416,7 +426,7 @@ func handleUserSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserPayments(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -435,7 +445,7 @@ func handleUserPayments(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserConnections(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -468,9 +478,11 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		for _, opt := range options {
 			switch opt.Protocol {
 			case "socks":
-				resp["socks5"] = opt.Uri // ключ оставляем для обратной совместимости
+				resp["socks5"] = opt.Uri
 			case "http":
 				resp["http_proxy"] = opt.Uri
+			case "vless":
+				resp["vless_reality"] = opt.Uri
 			}
 		}
 	}
@@ -478,7 +490,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -502,7 +514,7 @@ func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -571,7 +583,7 @@ func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 
 func httpGateway(srv *server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
+		setCORS(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -623,12 +635,11 @@ func main() {
 	if err := admin.ValidateConfig(); err != nil {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
+	admin.InitCORS()
 
-	// Устанавливаем хук для синхронизации Xray при изменении подписок
+	// Устанавливаем хук для синхронизации Xray при изменении подписок (debounced)
 	biz.OnSubscriptionChange = func() {
-		if err := SyncXrayConfig(); err != nil {
-			log.Printf("[xray-sync] subscription change hook: %v", err)
-		}
+		RequestXraySync()
 	}
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)

@@ -23,3 +23,8 @@ backups/
 
 # FVM Version Cache
 .fvm/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

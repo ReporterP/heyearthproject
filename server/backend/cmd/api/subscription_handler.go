@@ -98,9 +98,30 @@ func buildClashConfig(userID string) string {
 	var proxies []string
 	var proxyNames []string
 
-	// Только SOCKS и HTTP proxy для пользователей
+	// 1. VLESS Reality (Clash.Meta / mihomo)
+	realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
+	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
+	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	if realityPubKey != "" && vlessUUID != "" {
+		name := "HeYearth-VLESS"
+		proxyNames = append(proxyNames, name)
+		proxies = append(proxies, fmt.Sprintf(
+			`  - name: "%s"
+    type: vless
+    server: %s
+    port: 10443
+    uuid: "%s"
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: chrome
+    servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+	}
 
-	// 1. SOCKS (рекомендуемый)
+	// 2. SOCKS
 	if vlessUUID != "" {
 		name := "HeYearth-SOCKS"
 		proxyNames = append(proxyNames, name)
@@ -113,7 +134,7 @@ func buildClashConfig(userID string) string {
     password: "%s"`, name, host, userID, vlessUUID))
 	}
 
-	// 2. HTTP proxy
+	// 3. HTTP proxy
 	if vlessUUID != "" {
 		name := "HeYearth-HTTP"
 		proxyNames = append(proxyNames, name)
@@ -175,7 +196,7 @@ func buildSubscriptionUserinfo(userID string) string {
 
 // handleGetSubscribeToken — REST endpoint для получения subscribe token текущего пользователя.
 func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return

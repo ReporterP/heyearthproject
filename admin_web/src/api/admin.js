@@ -113,6 +113,13 @@ export function fetchServerFiles(serverId, path) {
   const params = new URLSearchParams({ path })
   return apiFetch(`/servers/${serverId}/files?${params}`)
 }
+export function fetchFileContent(serverId, path) {
+  const params = new URLSearchParams({ path })
+  return apiFetch(`/servers/${serverId}/file-content?${params}`)
+}
+export function saveFileContent(serverId, path, content) {
+  return apiFetch(`/servers/${serverId}/file-content`, { method: 'PUT', body: { path, content } })
+}
 
 // ── SSH Keys ──
 export function fetchSshKeys() {

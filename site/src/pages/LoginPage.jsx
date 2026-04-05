@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { loginUser } from '../api/user.js'
+import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 
 export default function LoginPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const { login } = useAuth()
 
   const [idOrUsername, setIdOrUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -23,7 +25,7 @@ export default function LoginPage() {
     setError('')
     try {
       const data = await loginUser(idOrUsername.trim(), password)
-      localStorage.setItem('token', data.token)
+      login(data.token)
       navigate(searchParams.get('redirect') || '/dashboard')
     } catch (e) {
       setError(e.message || 'Ошибка входа. Попробуйте позже.')

@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -2004,34 +2007,43 @@ print(k.get('ssPassword', ''))
 		tunnelSSPass = strings.TrimSpace(lines[3])
 	}
 
-	dbURL := cfg.env.get("DATABASE_URL", "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable")
-	updateSQL := fmt.Sprintf(`psql '%s' -c "
-UPDATE servers SET
-  tunnel_uuid = '%s',
-  tunnel_public_key = '%s',
-  tunnel_short_id = '%s',
-  tunnel_ss_password = '%s',
-  tunnel_sni = 'microsoft.com',
-  tunnel_protocol = 'hysteria2',
-  tunnel_port = 50443,
-  tunnel_status = 'unknown',
-  status = 'active'
-WHERE ip_address = '%s';
-
--- Если записи нет — создаём
-INSERT INTO servers (name, ip_address, country_code, is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key, tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
-SELECT 'Exit Node', '%s', 'NL', true, 'hysteria2', 50443, '%s', '%s', '%s', '%s', 'microsoft.com', 'unknown', 'active'
-WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = '%s');
-"`, dbURL,
-		tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP,
-		exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
+	dbURL := cfg.env.get("DATABASE_URL", "")
+	if dbURL == "" {
+		fmt.Println("[exit-node] ОШИБКА: DATABASE_URL not set — required for exit node provisioning")
+		return
+	}
 
 	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
-	dbOut, err := runSSH(mainClient, updateSQL, true)
+	dbConn, closeDB, err := openDBTunnel(mainClient, dbURL)
 	if err != nil {
-		fmt.Printf("[exit-node] Ошибка обновления БД: %v\n%s\n", err, dbOut)
+		fmt.Printf("[exit-node] Ошибка подключения к БД через SSH-туннель: %v\n", err)
+		fmt.Println("[exit-node] Добавьте данные в админку вручную")
 	} else {
-		fmt.Printf("[exit-node] БД обновлена: %s\n", strings.TrimSpace(dbOut))
+		defer closeDB()
+		// Upsert: update if exists, insert if not.
+		_, err = dbConn.Exec(`
+			UPDATE servers SET
+			  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
+			  tunnel_ss_password = $4, tunnel_sni = 'microsoft.com',
+			  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
+			  tunnel_status = 'unknown', status = 'active'
+			WHERE ip_address = $5`,
+			tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
+		if err != nil {
+			fmt.Printf("[exit-node] Ошибка UPDATE: %v\n", err)
+		}
+		_, err = dbConn.Exec(`
+			INSERT INTO servers (name, ip_address, country_code, is_exit_node,
+			                     tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
+			                     tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
+			SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, 'microsoft.com', 'unknown', 'active'
+			WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = $1)`,
+			exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass)
+		if err != nil {
+			fmt.Printf("[exit-node] Ошибка INSERT: %v\n", err)
+		} else {
+			fmt.Println("[exit-node] БД обновлена")
+		}
 	}
 
 	// Проверяем статус Xray + Hysteria2 на exit-ноде
@@ -2042,12 +2054,14 @@ WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = '%s');
 	// ── Автонастройка Hysteria2 клиента на Hub ──
 	fmt.Println("[exit-node] Настраиваю Hysteria2 клиент на Hub...")
 
-	// Получаем ID сервера из БД для вычисления порта
-	getIDScript := fmt.Sprintf(`PGPASSWORD=HeYearthDB1 psql -h 127.0.0.1 -U postgres -d heyearth -t -A -c "SELECT id FROM servers WHERE ip_address = '%s' LIMIT 1"`, exitIP)
-	idOut, _ := runSSH(mainClient, getIDScript, true)
-	serverID := strings.TrimSpace(idOut)
-	if serverID == "" {
-		serverID = "2" // fallback
+	// Получаем ID сервера из БД для вычисления порта (через тот же туннель или fallback).
+	serverID := "2"
+	if dbConn != nil {
+		var id int
+		row := dbConn.QueryRow(`SELECT id FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP)
+		if row.Scan(&id) == nil {
+			serverID = fmt.Sprintf("%d", id)
+		}
 	}
 
 	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
@@ -2121,4 +2135,70 @@ echo "Hysteria2 client for %s: port $PORT"
 	fmt.Printf("\n[exit-node] ✅ Готово! Exit-нода %s полностью настроена.\n", exitIP)
 	fmt.Printf("Протоколы: Hysteria2 (UDP:50443) + SS+WS (TCP:443) + VLESS (TCP:10443)\n")
 	fmt.Printf("UUID: %s\nPublic Key: %s\nShort ID: %s\n", tunnelUUID, tunnelPubKey, tunnelShortID)
+}
+
+// openDBTunnel creates an SSH port-forward from a random local port to the
+// PostgreSQL server on the Hub (127.0.0.1:5432). It returns a *sql.DB connected
+// through the tunnel and a cleanup function.
+//
+// The DATABASE_URL host/port is replaced with the local tunnel endpoint so that
+// parameterized queries run without touching psql or constructing SQL strings.
+func openDBTunnel(sshClient *ssh.Client, dbURL string) (*sql.DB, func(), error) {
+	// Listen on a random local port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, fmt.Errorf("openDBTunnel listen: %w", err)
+	}
+	localAddr := ln.Addr().String()
+
+	// Forward accepted connections to Hub's local PostgreSQL.
+	go func() {
+		for {
+			local, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			go func(local net.Conn) {
+				defer local.Close()
+				remote, err := sshClient.Dial("tcp", "127.0.0.1:5432")
+				if err != nil {
+					return
+				}
+				defer remote.Close()
+				done := make(chan struct{}, 2)
+				go func() { io.Copy(remote, local); done <- struct{}{} }()
+				go func() { io.Copy(local, remote); done <- struct{}{} }()
+				<-done
+			}(local)
+		}
+	}()
+
+	// Rewrite DATABASE_URL host to our tunnel endpoint.
+	u, err := url.Parse(dbURL)
+	if err != nil {
+		ln.Close()
+		return nil, nil, fmt.Errorf("openDBTunnel parse url: %w", err)
+	}
+	u.Host = localAddr
+	// Disable SSL — connection is over the SSH tunnel.
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	u.RawQuery = q.Encode()
+
+	db, err := sql.Open("postgres", u.String())
+	if err != nil {
+		ln.Close()
+		return nil, nil, fmt.Errorf("openDBTunnel sql.Open: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		ln.Close()
+		return nil, nil, fmt.Errorf("openDBTunnel ping: %w", err)
+	}
+
+	cleanup := func() {
+		db.Close()
+		ln.Close()
+	}
+	return db, cleanup, nil
 }

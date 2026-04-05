@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { registerUser } from '../api/user.js'
+import { useAuth } from '../auth/AuthContext.jsx'
 
 export default function RegisterPage() {
   const navigate = useNavigate()
+  const { login } = useAuth()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [generatedId, setGeneratedId] = useState('')
@@ -15,7 +17,7 @@ export default function RegisterPage() {
     try {
       const data = await registerUser('web', '')
       setGeneratedId(data.id || data.user_id || data.heyearth_id || '')
-      if (data.token) localStorage.setItem('token', data.token)
+      if (data.token) login(data.token)
     } catch (e) {
       setError(e.message || 'Ошибка регистрации. Попробуйте позже.')
     } finally {

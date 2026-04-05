@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -42,9 +43,36 @@ func (p PaginationParams) Offset() int {
 	return (p.Page - 1) * p.PageSize
 }
 
+// corsAllowedOrigins is loaded from env CORS_ALLOWED_ORIGINS (comma-separated).
+// Empty → allow all (dev mode, wildcard).
+var corsAllowedOrigins []string
+
+func InitCORS() {
+	origins := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				corsAllowedOrigins = append(corsAllowedOrigins, o)
+			}
+		}
+	}
+}
+
 func withAdminCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if len(corsAllowedOrigins) == 0 {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			for _, allowed := range corsAllowedOrigins {
+				if origin == allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					break
+				}
+			}
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {

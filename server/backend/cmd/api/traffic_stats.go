@@ -145,10 +145,6 @@ func checkTrafficLimits() {
 	}
 
 	if exceeded > 0 {
-		// Пересинхронизируем Xray
-		xraySyncMu.Lock()
-		xraySyncLast = time.Time{}
-		xraySyncMu.Unlock()
-		_ = SyncXrayConfig()
+		RequestXraySync()
 	}
 }

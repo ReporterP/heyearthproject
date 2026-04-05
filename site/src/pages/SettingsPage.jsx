@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, updateProfile } from '../api/user.js'
+import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 
 export default function SettingsPage() {
   const navigate = useNavigate()
-  const token = localStorage.getItem('token')
+  const { token, logout } = useAuth()
 
   const [loading, setLoading] = useState(true)
   const [profile, setProfile] = useState(null)
@@ -29,7 +30,7 @@ export default function SettingsPage() {
       })
       .catch(e => {
         if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
-          localStorage.removeItem('token')
+          logout()
           navigate('/login')
         }
       })
@@ -70,8 +71,8 @@ export default function SettingsPage() {
     }
   }
 
-  function logout() {
-    localStorage.removeItem('token')
+  function handleLogout() {
+    logout()
     navigate('/')
   }
 
@@ -276,7 +277,7 @@ export default function SettingsPage() {
             {/* ─── Logout ─── */}
             <button
               className="w-full mt-2 py-3.5 rounded-xl glass hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/30 text-red-400 text-sm font-medium transition-all duration-300 flex items-center justify-center gap-2 animate-fade-in-up delay-400"
-              onClick={logout}
+              onClick={handleLogout}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />

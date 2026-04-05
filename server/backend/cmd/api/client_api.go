@@ -172,32 +172,41 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 	var opts []*heyearth_v1.ConnectionOption
 
-	if mainServerHost != "" {
-		// Только SOCKS5 и HTTP proxy для пользователей.
-		// SS и VLESS Reality остаются на сервере (Hub→Exit-нода туннели),
-		// но пользователям не отдаются — они избыточны для внутристранового подключения.
-
-		// 1. SOCKS proxy (рекомендуемый, per-user авторизация)
-		if userVlessUUID != "" {
+	if mainServerHost != "" && userVlessUUID != "" {
+		// 1. VLESS Reality (максимальная защита от DPI)
+		realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
+		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
+		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+		if realityPubKey != "" {
+			vlessURI := fmt.Sprintf(
+				"vless://%s@%s:10443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&flow=xtls-rprx-vision#HeYearth-VLESS",
+				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
-				Protocol:            "socks",
-				Label:               "SOCKS прокси (рекомендуемый)",
+				Uri:                 vlessURI,
+				Protocol:            "vless",
+				Label:               "VLESS Reality (защита от DPI)",
 				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-				Priority:            1,
+				Priority:            0,
 			})
 		}
 
-		// 2. HTTP proxy (per-user авторизация)
-		if userVlessUUID != "" {
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
-				Protocol:            "http",
-				Label:               "HTTP прокси",
-				RecommendedNetworks: []string{"wifi", "ethernet", "any"},
-				Priority:            2,
-			})
-		}
+		// 2. SOCKS proxy (per-user авторизация)
+		opts = append(opts, &heyearth_v1.ConnectionOption{
+			Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
+			Protocol:            "socks",
+			Label:               "SOCKS прокси",
+			RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
+			Priority:            1,
+		})
+
+		// 3. HTTP proxy (per-user авторизация)
+		opts = append(opts, &heyearth_v1.ConnectionOption{
+			Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
+			Protocol:            "http",
+			Label:               "HTTP прокси",
+			RecommendedNetworks: []string{"wifi", "ethernet", "any"},
+			Priority:            2,
+		})
 	}
 
 	return opts

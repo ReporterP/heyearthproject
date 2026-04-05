@@ -1,0 +1,2 @@
+ALTER TABLE servers DROP CONSTRAINT IF EXISTS chk_load_weight;
+ALTER TABLE servers DROP COLUMN IF EXISTS load_weight;

@@ -21,6 +21,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"golang.org/x/crypto/ssh"
@@ -145,15 +146,18 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 	// Все серверы, добавляемые через админку — exit nodes
 	isExitNode := true
 
+	// Encrypt SSH password if encryption key is configured.
+	sshPwPlain, sshPwEnc := encryptSSHPassword(req.SSHPassword)
+
 	var serverID int
 	err = tx.QueryRow(`
-		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key_id, country_code, status,
+		INSERT INTO servers (name, ip_address, ssh_port, ssh_user, ssh_password, ssh_password_enc, ssh_key_id, country_code, status,
 		                     is_exit_node, tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
 		                     tunnel_private_key, tunnel_short_id, tunnel_sni, tunnel_ss_method, tunnel_ss_password, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CURRENT_TIMESTAMP)
 		RETURNING id
 	`, strings.TrimSpace(req.Name), strings.TrimSpace(req.IPAddress), req.SSHPort, strings.TrimSpace(req.SSHUser),
-		req.SSHPassword, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue,
+		sshPwPlain, sshPwEnc, req.SshKeyID, strings.TrimSpace(req.CountryCode), statusValue,
 		isExitNode, req.TunnelProtocol, req.TunnelPort, req.TunnelUUID, req.TunnelPublicKey,
 		req.TunnelPrivateKey, req.TunnelShortID, req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass).Scan(&serverID)
 	if err != nil {
@@ -259,16 +263,20 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// Encrypt SSH password if encryption key is configured.
+	updSshPwPlain, updSshPwEnc := encryptSSHPassword(req.SSHPassword)
+
 	if _, err := tx.Exec(`
 		UPDATE servers
 		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5,
-		    ssh_key_id = $6, country_code = $7, status = $8,
-		    is_exit_node = $9, tunnel_protocol = $10, tunnel_port = $11,
-		    tunnel_uuid = $12, tunnel_public_key = $13, tunnel_private_key = $14,
-		    tunnel_short_id = $15, tunnel_sni = $16, tunnel_ss_method = $17,
-		    tunnel_ss_password = $18, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $19
-	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, req.SSHPassword, req.SshKeyID, req.CountryCode, req.Status,
+		    ssh_password_enc = $6, ssh_key_id = $7, country_code = $8, status = $9,
+		    is_exit_node = $10, tunnel_protocol = $11, tunnel_port = $12,
+		    tunnel_uuid = $13, tunnel_public_key = $14, tunnel_private_key = $15,
+		    tunnel_short_id = $16, tunnel_sni = $17, tunnel_ss_method = $18,
+		    tunnel_ss_password = $19, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $20
+	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, updSshPwPlain,
+		updSshPwEnc, req.SshKeyID, req.CountryCode, req.Status,
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, serverID); err != nil {
@@ -378,7 +386,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 	var sshKeyName string
 	if includePassword {
 		query := `
-			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.ssh_password,
+			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
+			       COALESCE(s.ssh_password, ''), s.ssh_password_enc,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
@@ -390,9 +399,11 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
 		`
+		var sshPwEnc []byte
 		err := db.DB.QueryRow(query, serverID).Scan(
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
-			&server.SSHPassword, &server.CountryCode, &server.Status, &server.LoadMetrics,
+			&server.SSHPassword, &sshPwEnc,
+			&server.CountryCode, &server.Status, &server.LoadMetrics,
 			&updatedAt, &server.SshKeyID, &sshKeyName,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
@@ -400,6 +411,12 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.TunnelSSMethod, &server.TunnelSSPass)
 		if err != nil {
 			return server, err
+		}
+		// Prefer decrypted password if available.
+		if len(sshPwEnc) > 0 {
+			if dec, err := crypto.Decrypt(sshPwEnc); err == nil {
+				server.SSHPassword = dec
+			}
 		}
 	} else {
 		query := `
@@ -588,7 +605,7 @@ func runSSHCommandOutput(server serverResponse, command string) (string, error) 
 	cfg := &ssh.ClientConfig{
 		User:            server.SSHUser,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+		HostKeyCallback: toFUHostKeyCallback(server.ID),
 		Timeout:         30 * time.Second,
 	}
 	addr := net.JoinHostPort(server.IPAddress, fmt.Sprintf("%d", server.SSHPort))
@@ -709,7 +726,7 @@ func runSSHCommand(server serverResponse, command string) error {
 	cfg := &ssh.ClientConfig{
 		User:            server.SSHUser,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+		HostKeyCallback: toFUHostKeyCallback(server.ID),
 		Timeout:         30 * time.Second,
 	}
 	addr := net.JoinHostPort(server.IPAddress, fmt.Sprintf("%d", server.SSHPort))
@@ -731,6 +748,24 @@ func runSSHCommand(server serverResponse, command string) error {
 		return fmt.Errorf("command %q: %v: %s", command, err, strings.TrimSpace(errBuf.String()))
 	}
 	return nil
+}
+
+// encryptSSHPassword encrypts the password with AES-256-GCM if SSH_ENCRYPTION_KEY is set.
+// Returns (plaintext, nil) when key is not configured (backward-compatible).
+// Returns (nil, ciphertext) when encryption succeeds (plaintext cleared from DB).
+func encryptSSHPassword(password string) (plain *string, enc []byte) {
+	if strings.TrimSpace(password) == "" {
+		return nil, nil
+	}
+	ciphertext, err := crypto.Encrypt(password)
+	if err != nil {
+		// Key not set or error — store plaintext for backward compatibility.
+		log.Printf("[warn] SSH password encryption skipped: %v", err)
+		s := password
+		return &s, nil
+	}
+	// Encryption succeeded: clear plaintext, store ciphertext.
+	return nil, ciphertext
 }
 
 func sshAuthMethods(server serverResponse) ([]ssh.AuthMethod, error) {
@@ -861,12 +896,17 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	service := r.URL.Query().Get("service")
-	if service == "" {
+	allowedServices := map[string]bool{
+		"node-agent": true, "xray": true, "hysteria2": true,
+		"nginx": true, "heyearth-api": true,
+	}
+	if !allowedServices[service] {
 		service = "node-agent"
 	}
-	tail := r.URL.Query().Get("tail")
-	if tail == "" {
-		tail = "100"
+	tailStr := r.URL.Query().Get("tail")
+	tailN, err := strconv.Atoi(tailStr)
+	if err != nil || tailN < 1 || tailN > 5000 {
+		tailN = 100
 	}
 
 	server, sshClient, err := sshToServer(serverID)
@@ -884,7 +924,7 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf("journalctl -u %s --no-pager -n %s --output=short-iso 2>&1", service, tail)
+	cmd := fmt.Sprintf("journalctl -u %s --no-pager -n %d --output=short-iso 2>&1", service, tailN)
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
 		writeAdminJSON(w, http.StatusOK, map[string]string{
@@ -907,10 +947,12 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 	if dirPath == "" {
 		dirPath = "/opt/heyearth"
 	}
+	// Canonicalize to prevent traversal attacks (../../)
+	dirPath = filepath.Clean(dirPath)
 	allowedPrefixes := []string{"/opt/heyearth", "/var/log", "/etc/shadowsocks-libev"}
 	allowed := false
 	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(dirPath, prefix) {
+		if dirPath == prefix || strings.HasPrefix(dirPath, prefix+"/") {
 			allowed = true
 			break
 		}
@@ -934,7 +976,7 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf("ls -la %s 2>&1", dirPath)
+	cmd := fmt.Sprintf("ls -la -- %q 2>&1", dirPath)
 	output, _ := session.CombinedOutput(cmd)
 	entries := parseLsOutput(string(output))
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
@@ -974,14 +1016,136 @@ func parseLsOutput(output string) []map[string]any {
 	return entries
 }
 
+// ServerFileReadHandler reads file content from a server via SSH.
+// GET /api/admin/servers/{id}/file-content?path=/opt/heyearth/xray/config.json
+func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
+	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "file-content")
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		return
+	}
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		writeAdminError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	filePath = filepath.Clean(filePath)
+	if !isAllowedPath(filePath) {
+		writeAdminError(w, http.StatusForbidden, "path not allowed")
+		return
+	}
+
+	_, sshClient, err := sshToServer(serverID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH failed: %v", err))
+		return
+	}
+	defer sshClient.Close()
+
+	session, err := sshClient.NewSession()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "SSH session failed")
+		return
+	}
+	defer session.Close()
+
+	// Read file (limit 1MB for safety)
+	cmd := fmt.Sprintf("head -c 1048576 -- %q 2>&1", filePath)
+	output, err := session.CombinedOutput(cmd)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("read file: %s", strings.TrimSpace(string(output))))
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": string(output)})
+}
+
+// ServerFileWriteHandler writes file content to a server via SSH.
+// PUT /api/admin/servers/{id}/file-content  body: {"path": "...", "content": "..."}
+func ServerFileWriteHandler(w http.ResponseWriter, r *http.Request) {
+	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "file-content")
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		return
+	}
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Path = filepath.Clean(strings.TrimSpace(req.Path))
+	if req.Path == "" {
+		writeAdminError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if !isAllowedPath(req.Path) {
+		writeAdminError(w, http.StatusForbidden, "path not allowed")
+		return
+	}
+	if len(req.Content) > 1<<20 { // 1MB limit
+		writeAdminError(w, http.StatusBadRequest, "content too large (max 1MB)")
+		return
+	}
+
+	_, sshClient, err := sshToServer(serverID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH failed: %v", err))
+		return
+	}
+	defer sshClient.Close()
+
+	// Create backup before writing
+	backupSession, err := sshClient.NewSession()
+	if err == nil {
+		backupCmd := fmt.Sprintf("cp -- %q %q.bak 2>/dev/null || true", req.Path, req.Path)
+		backupSession.Run(backupCmd)
+		backupSession.Close()
+	}
+
+	// Write content via stdin pipe to cat
+	session, err := sshClient.NewSession()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "SSH session failed")
+		return
+	}
+	defer session.Close()
+
+	session.Stdin = strings.NewReader(req.Content)
+	cmd := fmt.Sprintf("cat > %q", req.Path)
+	if output, err := session.CombinedOutput(cmd); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("write file: %s", strings.TrimSpace(string(output))))
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{"path": req.Path, "ok": true})
+}
+
+// isAllowedPath checks if a file path is within allowed directories.
+func isAllowedPath(p string) bool {
+	allowedPrefixes := []string{"/opt/heyearth", "/var/log", "/etc/shadowsocks-libev"}
+	for _, prefix := range allowedPrefixes {
+		if p == prefix || strings.HasPrefix(p, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {
 	var srv serverResponse
+	var sshPwEnc []byte
 	err := db.DB.QueryRow(`
-		SELECT id, ip_address, ssh_port, ssh_user, COALESCE(ssh_password, ''), ssh_key_id
+		SELECT id, ip_address, ssh_port, ssh_user, COALESCE(ssh_password, ''), ssh_password_enc, ssh_key_id
 		FROM servers WHERE id = $1
-	`, serverID).Scan(&srv.ID, &srv.IPAddress, &srv.SSHPort, &srv.SSHUser, &srv.SSHPassword, &srv.SshKeyID)
+	`, serverID).Scan(&srv.ID, &srv.IPAddress, &srv.SSHPort, &srv.SSHUser, &srv.SSHPassword, &sshPwEnc, &srv.SshKeyID)
 	if err != nil {
 		return srv, nil, fmt.Errorf("server not found: %w", err)
+	}
+	if len(sshPwEnc) > 0 {
+		if dec, decErr := crypto.Decrypt(sshPwEnc); decErr == nil {
+			srv.SSHPassword = dec
+		}
 	}
 
 	auths, err := sshAuthMethods(srv)
@@ -991,7 +1155,7 @@ func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {
 	sshConfig := &ssh.ClientConfig{
 		User:            srv.SSHUser,
 		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: toFUHostKeyCallback(srv.ID),
 		Timeout:         10 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", srv.IPAddress, srv.SSHPort)
@@ -1430,7 +1594,7 @@ func sshDialForServer(srv serverResponse) (*ssh.Client, error) {
 	sshConfig := &ssh.ClientConfig{
 		User:            srv.SSHUser,
 		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: toFUHostKeyCallback(srv.ID),
 		Timeout:         15 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", srv.IPAddress, srv.SSHPort)

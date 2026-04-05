@@ -31,7 +31,9 @@ type userJWTClaims struct {
 func userJWTSecret() []byte {
 	secret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
 	if secret == "" {
-		secret = "heyearth-default-jwt-secret-change-me"
+		// CRITICAL: never use a default secret in production.
+		// During initial development without .env, return a marker that will fail signature checks.
+		panic("JWT_SECRET env is required — set it in .env or environment")
 	}
 	return []byte(secret)
 }
@@ -73,7 +75,8 @@ func GenerateUserSessionToken(userID string, userDBID int) (string, error) {
 	return token, nil
 }
 
-// ValidateUserToken validates a JWT token and returns the claims.
+// ValidateUserToken validates a JWT token signature, expiry, AND checks
+// that the session exists in user_sessions (so tokens can be revoked).
 func ValidateUserToken(token string) (*userJWTClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -103,7 +106,31 @@ func ValidateUserToken(token string) (*userJWTClaims, error) {
 		return nil, fmt.Errorf("token expired")
 	}
 
+	// Verify session exists in DB (enables revocation without rotating secret).
+	tokenHash := hashToken(token)
+	var sessionID int
+	err = db.DB.QueryRow(`
+		SELECT id FROM user_sessions
+		WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW()
+	`, tokenHash, claims.UserDBID).Scan(&sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session revoked or not found")
+	}
+
 	return &claims, nil
+}
+
+// RevokeUserSession deletes a user session by token (for logout).
+func RevokeUserSession(token string) error {
+	tokenHash := hashToken(token)
+	_, err := db.DB.Exec(`DELETE FROM user_sessions WHERE token_hash = $1`, tokenHash)
+	return err
+}
+
+// RevokeAllUserSessions deletes all sessions for a user (password change, etc.).
+func RevokeAllUserSessions(userDBID int) error {
+	_, err := db.DB.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userDBID)
+	return err
 }
 
 func hashToken(token string) string {

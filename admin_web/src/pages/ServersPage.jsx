@@ -13,6 +13,7 @@ import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../comp
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
+import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
 
 /* ── SVG icon helpers ── */
 const Icon = ({ d, className = 'w-4 h-4' }) => (
@@ -35,6 +36,7 @@ const IconGrid     = () => <Icon d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 
 const IconServer   = () => <Icon d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-7-4h.01M12 16h.01" />
 const IconClose    = () => <Icon className="w-5 h-5" d="M6 18L18 6M6 6l12 12" />
 const IconChart    = () => <Icon d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+const IconConfig   = () => <Icon d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
 
 /* ── Tunnel status badge (colored) ── */
 function TunnelBadge({ status }) {
@@ -261,6 +263,7 @@ export default function ServersPage() {
   const [sshKeys, setSshKeys] = useState([])
   const [viewMode, setViewMode] = useState('cards') // 'cards' | 'list'
   const [statusFilter, setStatusFilter] = useState('all')
+  const [configServer, setConfigServer] = useState(null) // server for config editor
   const [expandedMetrics, setExpandedMetrics] = useState({}) // serverId -> detail data
   const [progressModal, setProgressModal] = useState(null) // { id, name }
   const [actionConfirm, setActionConfirm] = useState(null) // { server, action }
@@ -534,9 +537,15 @@ export default function ServersPage() {
           )}
         </div>
 
-        {/* Tunnel status */}
+        {/* Tunnel status + protocol */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <TunnelBadge status={srv.tunnel_status} />
+          {srv.tunnel_protocol && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
+          )}
+          {srv.tunnel_port > 0 && (
+            <span className="text-[10px] text-text-secondary">:{srv.tunnel_port}</span>
+          )}
         </div>
 
         {/* Tags */}
@@ -577,6 +586,12 @@ export default function ServersPage() {
             <IconFolder />
             <span className="hidden sm:inline">{t.serverFiles}</span>
           </button>
+          <button onClick={() => setConfigServer(srv)}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition"
+            title="Config Editor">
+            <IconConfig />
+            <span className="hidden sm:inline">Config</span>
+          </button>
           {can('servers.write') && (
             <>
               <button onClick={() => openEdit(srv)}
@@ -608,7 +623,10 @@ export default function ServersPage() {
       <tr className="border-b border-white/5 hover:bg-surface-alt/30 transition">
         <td className="py-3 px-3">
           <div className="font-semibold text-sm">{srv.name || ip}</div>
-          {srv.location && <div className="text-xs text-text-secondary">{srv.location}</div>}
+          <div className="flex items-center gap-2 mt-0.5">
+            {srv.location && <span className="text-xs text-text-secondary">{srv.location}</span>}
+            {srv.country_code && <span className="text-xs text-text-secondary">{srv.country_code.toUpperCase()}</span>}
+          </div>
         </td>
         <td className="py-3 px-3">
           <div className="flex items-center gap-1.5">
@@ -617,7 +635,14 @@ export default function ServersPage() {
           </div>
         </td>
         <td className="py-3 px-3"><StatusBadge status={srv.status} /></td>
-        <td className="py-3 px-3"><TunnelBadge status={srv.tunnel_status} /></td>
+        <td className="py-3 px-3">
+          <div className="flex items-center gap-1.5">
+            <TunnelBadge status={srv.tunnel_status} />
+            {srv.tunnel_protocol && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
+            )}
+          </div>
+        </td>
         <td className="py-3 px-3 text-sm text-center">{conns ?? '—'}</td>
         <td className="py-3 px-3 text-xs text-text-secondary">
           {healthTime ? formatRelativeTime(healthTime) : '—'}
@@ -629,8 +654,16 @@ export default function ServersPage() {
         </td>
         <td className="py-3 px-3">
           <div className="flex items-center gap-1">
+            {/* Server actions */}
+            {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
+              <button key={a.key} onClick={() => doAction(srv, a)}
+                className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary"
+                title={a.desc || a.label}>{a.icon}</button>
+            ))}
+            <span className="w-px h-4 bg-white/10 mx-0.5" />
             <button onClick={() => showLogs(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverLogs}><IconLogs /></button>
             <button onClick={() => showFiles(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverFiles}><IconFolder /></button>
+            <button onClick={() => setConfigServer(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title="Config Editor"><IconConfig /></button>
             <button onClick={() => toggleMetrics(srv.id)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverShowMetrics || 'Metrics'}><IconChart /></button>
             {can('servers.write') && (
               <>
@@ -836,6 +869,9 @@ export default function ServersPage() {
 
       {/* Provision progress */}
       {progressModal && <ProvisionProgressDialog open={true} server={progressModal} onClose={() => { setProgressModal(null); paged.reload() }} />}
+
+      {/* Config editor */}
+      {configServer && <ConfigEditorDialog serverId={configServer.id} serverName={configServer.name || configServer.ip_address} onClose={() => setConfigServer(null)} />}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { createPayment } from '../api/user.js'
+import { useAuth } from '../auth/AuthContext.jsx'
 
 const CheckIcon = () => (
   <svg className="w-4 h-4 mt-0.5 text-accent flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -31,7 +32,7 @@ const plans = [
 
 export default function PaymentPage() {
   const navigate = useNavigate()
-  const token = localStorage.getItem('token')
+  const { token } = useAuth()
 
   const [selectedPlan, setSelectedPlan] = useState('')
   const [loading, setLoading] = useState(false)
