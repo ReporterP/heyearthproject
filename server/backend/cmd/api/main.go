@@ -469,6 +469,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"can_connect":               access.CanConnect,
 		"is_premium":                access.IsPremium,
 		"traffic_masking_available": access.TrafficMaskingAvailable,
+		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
 	}
 
 	// Подключения доступны только при активной подписке (per-user UUID)

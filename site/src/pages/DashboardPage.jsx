@@ -85,6 +85,8 @@ export default function DashboardPage() {
   const [trafficStats, setTrafficStats] = useState(null)
   // Ссылка подписки
   const [subscribeLink, setSubscribeLink] = useState(null)
+  // Config version update notification
+  const [configUpdated, setConfigUpdated] = useState(false)
 
   useEffect(() => {
     if (!token) { navigate('/login'); return }
@@ -104,6 +106,14 @@ export default function DashboardPage() {
         setSubscription(active)
       }
       setConnections(connData)
+      // Check if config_version changed → user needs to refresh subscription
+      if (connData?.config_version) {
+        const savedVersion = localStorage.getItem('heyearth_config_version')
+        if (savedVersion && savedVersion !== String(connData.config_version)) {
+          setConfigUpdated(true)
+        }
+        localStorage.setItem('heyearth_config_version', String(connData.config_version))
+      }
       setPayments(payData?.items || [])
       setDownloads(dlData?.downloads || {})
       setTrafficStats(trafficData)
@@ -487,6 +497,31 @@ export default function DashboardPage() {
             </div>
           ) : (
             <>
+              {/* Config update notification */}
+              {configUpdated && subscribeLink?.subscribe_url && (
+                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-5 animate-fade-in">
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                    </svg>
+                    <div className="flex-1">
+                      <p className="text-amber-400 text-sm font-medium">Конфигурация обновилась</p>
+                      <p className="text-xs text-text-secondary mt-1">Параметры подключения были автоматически оптимизированы. Обновите подписку в вашем приложении (Happ, v2rayNG, Streisand) для применения новых настроек.</p>
+                      <div className="flex items-center gap-3 mt-3">
+                        <button onClick={() => { copyText(subscribeLink.subscribe_url, 'sub-update'); setConfigUpdated(false); }}
+                          className="px-4 py-2 rounded-lg bg-amber-500/20 text-amber-300 text-sm font-medium hover:bg-amber-500/30 transition">
+                          Скопировать ссылку подписки
+                        </button>
+                        <button onClick={() => setConfigUpdated(false)}
+                          className="text-xs text-text-secondary hover:text-text-primary transition">
+                          Скрыть
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ─── Quick Actions: Telegram + Happ ─── */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
                 {tgSocksLink && (

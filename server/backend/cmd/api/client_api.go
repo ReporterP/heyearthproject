@@ -178,9 +178,16 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 		if realityPubKey != "" {
+			fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
+			transport := biz.GetSettingOrDefault("reality_transport", "tcp")
+			flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
+			flowParam := ""
+			if flow != "" {
+				flowParam = "&flow=" + flow
+			}
 			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&flow=xtls-rprx-vision#HeYearth-VLESS",
-				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
+				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=%s%s#HeYearth-VLESS",
+				userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, transport, flowParam)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
 				Protocol:            "vless",

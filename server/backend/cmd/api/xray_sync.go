@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -384,9 +385,9 @@ func SyncXrayConfig() error {
 		"log": map[string]string{"loglevel": "warning"},
 		// DNS: только IPv4 (IPv6 сломан у многих РФ-провайдеров — убираем задержку на AAAA)
 		"dns": map[string]interface{}{
-			"servers":       []string{"8.8.8.8", "1.1.1.1"},
-			"queryStrategy": "UseIPv4", // Не запрашиваем AAAA записи
-			"disableCache":  false,     // Кэш DNS включён (ускоряет повторные запросы)
+			"servers":       getDNSServers(),
+			"queryStrategy": "UseIPv4",
+			"disableCache":  false,
 			"tag":           "dns-out",
 		},
 		"inbounds":  inbounds,
@@ -518,7 +519,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			"streamSettings": map[string]interface{}{
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
-					"fingerprint": "chrome",
+					"fingerprint": getFingerprint(),
 					"serverName":  sni,
 				},
 				"sockopt": map[string]interface{}{
@@ -531,7 +532,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
 			"mux": map[string]interface{}{
 				"enabled":          true,
-				"concurrency":      8,   // До 8 стримов на одно TCP соединение
+				"concurrency":      getMuxConcurrency(),
 				"xudpConcurrency":  16,  // UDP мультиплексирование (DNS, QUIC)
 				"xudpProxyUDP443":  "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
 			},
@@ -584,7 +585,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			// Мультиплексирование: много стримов по одному SS+WS соединению
 			"mux": map[string]interface{}{
 				"enabled":         true,
-				"concurrency":     8,
+				"concurrency":     getMuxConcurrency(),
 				"xudpConcurrency": 16,
 				"xudpProxyUDP443": "allow",
 			},
@@ -619,7 +620,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": getMuxConcurrency()},
 		}
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
@@ -640,7 +641,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": 8},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": getMuxConcurrency()},
 		}
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
@@ -938,5 +939,40 @@ func checkCertExpiry() {
 			log.Printf("[cert-monitor] WARNING: %s истекает через %d дней", name, daysLeft)
 		}
 	}
+}
+
+// ─── Dynamic config helpers (read from app_settings, auto-tuner writes) ───
+
+func getDNSServers() []string {
+	s := biz.GetSettingOrDefault("dns_servers", "8.8.8.8,1.1.1.1")
+	parts := strings.Split(s, ",")
+	var servers []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			servers = append(servers, p)
+		}
+	}
+	if len(servers) == 0 {
+		return []string{"8.8.8.8", "1.1.1.1"}
+	}
+	return servers
+}
+
+func getFingerprint() string {
+	fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
+	if fp == "" {
+		return "chrome"
+	}
+	return fp
+}
+
+func getMuxConcurrency() int {
+	s := biz.GetSettingOrDefault("mux_concurrency", "8")
+	v, _ := strconv.Atoi(s)
+	if v < 1 || v > 64 {
+		return 8
+	}
+	return v
 }
 

@@ -63,6 +63,10 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	format := r.URL.Query().Get("format")
 
+	// Config version header — clients can detect when params change
+	configVersion := biz.GetSettingOrDefault("config_version", "1")
+	w.Header().Set("X-Config-Version", configVersion)
+
 	switch format {
 	case "clash":
 		clashConfig := buildClashConfig(userID)
@@ -103,22 +107,28 @@ func buildClashConfig(userID string) string {
 	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 	if realityPubKey != "" && vlessUUID != "" {
+		fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
+		transport := biz.GetSettingOrDefault("reality_transport", "tcp")
+		flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 		name := "HeYearth-VLESS"
 		proxyNames = append(proxyNames, name)
+		flowLine := ""
+		if flow != "" {
+			flowLine = fmt.Sprintf("\n    flow: %s", flow)
+		}
 		proxies = append(proxies, fmt.Sprintf(
 			`  - name: "%s"
     type: vless
     server: %s
     port: 443
-    uuid: "%s"
-    flow: xtls-rprx-vision
-    network: tcp
+    uuid: "%s"%s
+    network: %s
     tls: true
     reality-opts:
       public-key: "%s"
       short-id: "%s"
-    client-fingerprint: chrome
-    servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+    client-fingerprint: %s
+    servername: %s`, name, host, vlessUUID, flowLine, transport, realityPubKey, realityShortID, fp, realitySNI))
 	}
 
 	// 2. SOCKS
