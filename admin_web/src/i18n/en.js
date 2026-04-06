@@ -26,6 +26,7 @@ export default {
   navUsers: 'Users',
   navGroups: 'Groups',
   navSubscriptions: 'Subscriptions',
+  navPlans: 'Plans',
   navPromocodes: 'Promocodes',
   navPayments: 'Payments',
   navServers: 'Servers',

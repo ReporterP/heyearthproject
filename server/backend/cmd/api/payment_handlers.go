@@ -19,15 +19,15 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Читаем тело один раз
 	var body struct {
 		UserID    string `json:"user_id"`
-		Plan      string `json:"plan"`
+		Plan      string `json:"plan"`      // legacy: "standard"/"premium"
+		PlanID    int    `json:"plan_id"`    // new: plan ID from plans table
+		Promocode string `json:"promocode"`
 		ReturnURL string `json:"return_url"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	// Извлекаем user_id из JWT-токена; fallback на body.UserID (совместимость)
 	userID, err := extractUserFromToken(r)
 	if err != nil {
 		if body.UserID != "" {
@@ -38,18 +38,54 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	req := body
-
-	var priceRub int
-	switch req.Plan {
-	case "premium":
-		priceRub = biz.GetPriceRub("premium", 250)
-	default:
-		req.Plan = "standard"
-		priceRub = biz.GetPriceRub("standard", 200)
+	// Resolve plan: prefer plan_id, fallback to legacy plan name
+	var plan *biz.Plan
+	if body.PlanID > 0 {
+		plan, err = biz.GetPlanByID(body.PlanID)
+	} else if body.Plan != "" {
+		plan, err = biz.GetPlanBySlug(body.Plan)
+	} else {
+		// Default: cheapest active plan
+		plans, _ := biz.ListActivePlans()
+		if len(plans) > 0 {
+			plan = &plans[0]
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no plans available"})
+			return
+		}
+	}
+	if err != nil || plan == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan not found"})
+		return
 	}
 
-	description := fmt.Sprintf("HeYearth VPN %s — 1 месяц", req.Plan)
+	priceRub := plan.PriceRub
+
+	// Apply promocode if provided
+	promoUsed := ""
+	if body.Promocode != "" {
+		finalPrice, _, _, promoErr := biz.ApplyPromoToPrice(priceRub, body.Promocode)
+		if promoErr == nil {
+			priceRub = finalPrice
+			promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
+		}
+	}
+
+	// Free plan — activate immediately without payment
+	if priceRub <= 0 {
+		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, promoUsed); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "activate: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "activated",
+			"plan":   plan.Name,
+			"message": fmt.Sprintf("Подписка '%s' активирована на %d дней", plan.Name, plan.DurationDays),
+		})
+		return
+	}
+
+	description := fmt.Sprintf("HiEarth %s — %d дн.", plan.Name, plan.DurationDays)
 
 	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(priceRub), "RUB", "yookassa", description)
 	if err != nil {
@@ -63,7 +99,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	returnURL := req.ReturnURL
+	returnURL := body.ReturnURL
 	if returnURL == "" {
 		returnURL = "https://hiearth.ru/dashboard"
 	}
@@ -81,8 +117,11 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		Metadata: map[string]string{
 			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
 			"user_id":       userID,
-			"plan":          req.Plan,
+			"plan_id":       fmt.Sprintf("%d", plan.ID),
+			"plan_slug":     plan.Slug,
+			"promocode":     promoUsed,
 		},
+		SavePaymentMethod: true, // for auto-renew recurring payments
 		Capture: true,
 	})
 	if err != nil {

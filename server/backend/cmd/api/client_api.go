@@ -170,14 +170,19 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		userVlessUUID = biz.GetSettingOrDefault("vless_uuid", "")
 	}
 
+	// Check user's plan for protocol restrictions
+	canVLESS := biz.IsProtocolAllowed(userID, "vless")
+	canSOCKS := biz.IsProtocolAllowed(userID, "socks")
+	canHTTP := biz.IsProtocolAllowed(userID, "http")
+
 	var opts []*heyearth_v1.ConnectionOption
 
 	if mainServerHost != "" && userVlessUUID != "" {
-		// 1. VLESS Reality (максимальная защита от DPI)
+		// 1. VLESS Reality (максимальная защита от DPI) — only if plan allows vless
 		realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
 		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
-		if realityPubKey != "" {
+		if realityPubKey != "" && canVLESS {
 			flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 			flowParam := ""
 			if flow != "" {
@@ -213,7 +218,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		}
 
 		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
-		if realityPubKey != "" {
+		if realityPubKey != "" && canVLESS {
 			xhttpURI := fmt.Sprintf(
 				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp&flow=xtls-rprx-vision#HeYearth-XHTTP",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
@@ -226,23 +231,27 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			})
 		}
 
-		// 2. SOCKS proxy (per-user авторизация)
-		opts = append(opts, &heyearth_v1.ConnectionOption{
-			Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
-			Protocol:            "socks",
-			Label:               "SOCKS прокси",
-			RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-			Priority:            1,
-		})
+		// 2. SOCKS proxy (per-user авторизация) — only if plan allows
+		if canSOCKS {
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
+				Protocol:            "socks",
+				Label:               "SOCKS прокси",
+				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
+				Priority:            1,
+			})
+		}
 
-		// 3. HTTP proxy (per-user авторизация)
-		opts = append(opts, &heyearth_v1.ConnectionOption{
-			Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
-			Protocol:            "http",
-			Label:               "HTTP прокси",
-			RecommendedNetworks: []string{"wifi", "ethernet", "any"},
-			Priority:            2,
-		})
+		// 3. HTTP proxy (per-user авторизация) — only if plan allows
+		if canHTTP {
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
+				Protocol:            "http",
+				Label:               "HTTP прокси",
+				RecommendedNetworks: []string{"wifi", "ethernet", "any"},
+				Priority:            2,
+			})
+		}
 	}
 
 	return opts

@@ -25,6 +25,7 @@ import TrafficPage from './pages/TrafficPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import AutoTunerPage from './pages/AutoTunerPage.jsx'
+import PlansPage from './pages/PlansPage.jsx'
 import './style.css'
 
 createRoot(document.getElementById('root')).render(
@@ -55,6 +56,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/auto-tuner" element={<AutoTunerPage />} />
+                  <Route path="/plans" element={<PlansPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
               </Route>

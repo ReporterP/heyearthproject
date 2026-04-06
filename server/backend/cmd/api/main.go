@@ -490,6 +490,23 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func handlePublicPlans(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	plans, err := biz.ListActivePlans()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if plans == nil {
+		plans = []biz.Plan{}
+	}
+	writeJSON(w, http.StatusOK, plans)
+}
+
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -706,6 +723,9 @@ func main() {
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
 	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
 	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
+
+	// Public API (no auth)
+	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 
 	// Admin panel
 	admin.RegisterRoutes()

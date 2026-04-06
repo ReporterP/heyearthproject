@@ -1,0 +1,281 @@
+package biz
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/heyearth/backend/internal/db"
+	"github.com/lib/pq"
+)
+
+// Plan represents a subscription plan configured by admin.
+type Plan struct {
+	ID               int      `json:"id"`
+	Slug             string   `json:"slug"`
+	Name             string   `json:"name"`
+	Description      string   `json:"description"`
+	PriceRub         int      `json:"price_rub"`
+	DurationDays     int      `json:"duration_days"`
+	TrafficLimitBytes *int64  `json:"traffic_limit_bytes"`
+	AllowedProtocols []string `json:"allowed_protocols"`
+	Features         string   `json:"features"` // JSON string
+	IsActive         bool     `json:"is_active"`
+	SortOrder        int      `json:"sort_order"`
+	AutoRenewDefault bool     `json:"auto_renew_default"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
+	// Computed
+	ServerIDs []int `json:"server_ids,omitempty"`
+}
+
+// ListActivePlans returns all active plans for display on the site.
+func ListActivePlans() ([]Plan, error) {
+	rows, err := db.DB.Query(`
+		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       created_at, updated_at
+		FROM plans WHERE is_active = TRUE
+		ORDER BY sort_order, price_rub
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var plans []Plan
+	for rows.Next() {
+		var p Plan
+		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
+			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+			&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			continue
+		}
+		p.ServerIDs = getPlanServerIDs(p.ID)
+		plans = append(plans, p)
+	}
+	return plans, nil
+}
+
+// ListAllPlans returns all plans (for admin).
+func ListAllPlans() ([]Plan, error) {
+	rows, err := db.DB.Query(`
+		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       created_at, updated_at
+		FROM plans ORDER BY sort_order, id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var plans []Plan
+	for rows.Next() {
+		var p Plan
+		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
+			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+			&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			continue
+		}
+		p.ServerIDs = getPlanServerIDs(p.ID)
+		plans = append(plans, p)
+	}
+	return plans, nil
+}
+
+// GetPlanByID returns a single plan.
+func GetPlanByID(id int) (*Plan, error) {
+	var p Plan
+	err := db.DB.QueryRow(`
+		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       created_at, updated_at
+		FROM plans WHERE id = $1
+	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
+		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+		&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	p.ServerIDs = getPlanServerIDs(p.ID)
+	return &p, nil
+}
+
+// GetPlanBySlug returns plan by slug.
+func GetPlanBySlug(slug string) (*Plan, error) {
+	var p Plan
+	err := db.DB.QueryRow(`
+		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       created_at, updated_at
+		FROM plans WHERE slug = $1
+	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
+		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+		&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	p.ServerIDs = getPlanServerIDs(p.ID)
+	return &p, nil
+}
+
+func getPlanServerIDs(planID int) []int {
+	rows, err := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1 ORDER BY server_id", planID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// CreatePlan creates a new plan.
+func CreatePlan(p *Plan) (int, error) {
+	var id int
+	err := db.DB.QueryRow(`
+		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
+		                   allowed_protocols, features, is_active, sort_order, auto_renew_default)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+		RETURNING id
+	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	if len(p.ServerIDs) > 0 {
+		replacePlanServers(id, p.ServerIDs)
+	}
+	return id, nil
+}
+
+// UpdatePlan updates an existing plan.
+func UpdatePlan(id int, p *Plan) error {
+	_, err := db.DB.Exec(`
+		UPDATE plans SET slug=$1, name=$2, description=$3, price_rub=$4, duration_days=$5,
+		       traffic_limit_bytes=$6, allowed_protocols=$7, features=$8::jsonb, is_active=$9,
+		       sort_order=$10, auto_renew_default=$11, updated_at=CURRENT_TIMESTAMP
+		WHERE id = $12
+	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, id)
+	if err != nil {
+		return err
+	}
+	replacePlanServers(id, p.ServerIDs)
+	return nil
+}
+
+// DeletePlan removes a plan.
+func DeletePlan(id int) error {
+	_, err := db.DB.Exec("DELETE FROM plans WHERE id = $1", id)
+	return err
+}
+
+func replacePlanServers(planID int, serverIDs []int) {
+	db.DB.Exec("DELETE FROM plan_servers WHERE plan_id = $1", planID)
+	for _, sid := range serverIDs {
+		db.DB.Exec("INSERT INTO plan_servers (plan_id, server_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", planID, sid)
+	}
+}
+
+// GetUserPlan returns the active plan for a user.
+func GetUserPlan(userID string) (*Plan, error) {
+	var planID sql.NullInt64
+	err := db.DB.QueryRow(`
+		SELECT us.plan_id FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(&planID)
+	if err != nil || !planID.Valid {
+		return nil, fmt.Errorf("no active plan")
+	}
+	return GetPlanByID(int(planID.Int64))
+}
+
+// IsProtocolAllowed checks if a protocol is available in the user's plan.
+func IsProtocolAllowed(userID, protocol string) bool {
+	plan, err := GetUserPlan(userID)
+	if err != nil {
+		return true // no plan = free tier = allow all (backward compat)
+	}
+	for _, p := range plan.AllowedProtocols {
+		if p == "all" || strings.EqualFold(p, protocol) {
+			return true
+		}
+	}
+	return false
+}
+
+// ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
+func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
+	var dbUserID int
+	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
+	if err != nil {
+		return fmt.Errorf("resolve user %s: %w", userID, err)
+	}
+
+	// Use group_id=1 (Free) as default for backward compat with old schema
+	groupID := 1
+	validUntil := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
+
+	_, err = db.DB.Exec(fmt.Sprintf(`
+		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
+		VALUES ($1, $2, %s, true, $3, $4, $5, 'active', NOW())
+		ON CONFLICT (user_id, group_id) DO UPDATE
+		SET valid_until = GREATEST(user_subscriptions.valid_until, %s),
+		    plan_id = $3, price_paid = $4, promocode_used = $5, status = 'active', auto_renew = true
+	`, validUntil, validUntil), dbUserID, groupID, planID, pricePaid, promocodeUsed)
+	if err == nil {
+		NotifySubscriptionChange()
+	}
+	return err
+}
+
+// ApplyPromoToPrice calculates final price after applying a promocode.
+func ApplyPromoToPrice(basePrice int, code string) (finalPrice int, freeTrialDays int, trafficGiftBytes int64, err error) {
+	var promoType string
+	var discountPercent, discountFixed, freeDays int
+	var trafficGift int64
+	var isActive bool
+
+	err = db.DB.QueryRow(`
+		SELECT promo_type, COALESCE(discount_percent,0), COALESCE(discount_fixed_rub,0),
+		       COALESCE(free_days,0), COALESCE(traffic_gift_bytes,0), is_active
+		FROM promocodes WHERE code = $1
+	`, strings.ToUpper(strings.TrimSpace(code))).Scan(&promoType, &discountPercent, &discountFixed, &freeDays, &trafficGift, &isActive)
+	if err != nil {
+		return basePrice, 0, 0, fmt.Errorf("invalid promocode")
+	}
+	if !isActive {
+		return basePrice, 0, 0, fmt.Errorf("promocode expired")
+	}
+
+	switch promoType {
+	case "discount_percent":
+		finalPrice = basePrice - (basePrice * discountPercent / 100)
+		if finalPrice < 0 {
+			finalPrice = 0
+		}
+	case "discount_fixed":
+		finalPrice = basePrice - discountFixed
+		if finalPrice < 0 {
+			finalPrice = 0
+		}
+	case "free_trial":
+		finalPrice = 0
+		freeTrialDays = freeDays
+	case "traffic_gift":
+		finalPrice = basePrice
+		trafficGiftBytes = trafficGift
+	default:
+		finalPrice = basePrice
+	}
+	return
+}

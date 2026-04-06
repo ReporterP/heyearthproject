@@ -52,11 +52,12 @@ type ConfirmationResponse struct {
 }
 
 type CreatePaymentRequest struct {
-	Amount       Amount            `json:"amount"`
-	Confirmation Confirmation      `json:"confirmation"`
-	Description  string            `json:"description,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	Capture      bool              `json:"capture"`
+	Amount            Amount            `json:"amount"`
+	Confirmation      Confirmation      `json:"confirmation"`
+	Description       string            `json:"description,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	Capture           bool              `json:"capture"`
+	SavePaymentMethod bool              `json:"save_payment_method,omitempty"` // for recurring auto-renew
 }
 
 type PaymentResponse struct {

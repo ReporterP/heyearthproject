@@ -248,3 +248,17 @@ export function runAutoTunerNow() {
 export function cleanupAutoTunerHistory(days = 7) {
   return apiFetch('/auto-tuner/cleanup', { method: 'POST', body: { days } })
 }
+
+// ── Plans (subscription tariffs) ──
+export function fetchPlans() {
+  return apiFetch('/plans')
+}
+export function createPlan(payload) {
+  return apiFetch('/plans', { method: 'POST', body: payload })
+}
+export function updatePlan(id, payload) {
+  return apiFetch(`/plans/${id}`, { method: 'PATCH', body: payload })
+}
+export function deletePlan(id) {
+  return apiFetch(`/plans/${id}`, { method: 'DELETE' })
+}

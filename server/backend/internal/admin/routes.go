@@ -168,6 +168,28 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/auto-tuner/run-now", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerRunNowHandler)))
 	http.HandleFunc("/api/admin/auto-tuner/cleanup", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerCleanupHandler)))
 
+	// Plans (subscription tariffs)
+	http.HandleFunc("/api/admin/plans", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("settings.read", ListPlansHandler).ServeHTTP(w, r)
+		case http.MethodPost:
+			RequirePermission("settings.write", CreatePlanHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+	http.HandleFunc("/api/admin/plans/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			RequirePermission("settings.write", UpdatePlanHandler).ServeHTTP(w, r)
+		case http.MethodDelete:
+			RequirePermission("settings.write", DeletePlanHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
 	http.HandleFunc("/api/admin/releases", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
