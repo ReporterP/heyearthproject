@@ -58,8 +58,8 @@ var candidateSNIs = []string{
 }
 
 var candidateFingerprints = []string{"chrome", "firefox", "safari", "edge"}
-var candidateTransports = []string{"tcp", "ws", "grpc"}
-var candidateFlows = []string{"xtls-rprx-vision", ""}
+// NOTE: transport and flow are FIXED for VLESS Reality (tcp + xtls-rprx-vision).
+// ws/grpc/empty-flow break Reality. Only fingerprint is tunable client-side.
 var candidateDNS = [][]string{
 	{"8.8.8.8", "1.1.1.1"},
 	{"1.1.1.1", "8.8.8.8"},
@@ -135,8 +135,8 @@ func StartAutoTuner() {
 		}
 	}()
 
-	log.Printf("[auto-tuner] Started v2 (interval: %dh, params: SNI×%d, FP×%d, Transport×%d, Flow×%d)",
-		intervalHours, len(candidateSNIs), len(candidateFingerprints), len(candidateTransports), len(candidateFlows))
+	log.Printf("[auto-tuner] Started v2 (interval: %dh, params: SNI×%d, Fingerprint×%d, DNS×%d, MuxAdaptive)",
+		intervalHours, len(candidateSNIs), len(candidateFingerprints), len(candidateDNS))
 }
 
 // ─── Main run ───
@@ -302,82 +302,48 @@ func optimizeMux() bool {
 	return false
 }
 
-// ─── Phase 4: Client-side params (fingerprint + transport + flow) ───
+// ─── Phase 4: Client-side params (fingerprint only) ───
+//
+// CRITICAL: VLESS Reality REQUIRES tcp transport + xtls-rprx-vision flow.
+// These are FIXED by Xray-core architecture. Only TLS fingerprint is tunable
+// for client-side Reality connections. Transport ws/grpc and flow="" break Reality.
 
 func optimizeClientParams() bool {
 	currentFP := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
-	currentTransport := biz.GetSettingOrDefault("reality_transport", "tcp")
-	currentFlow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 
-	// Get best SNI for testing
+	// Enforce Reality-safe defaults (never allow ws/grpc/empty-flow for Reality)
+	_ = biz.SetSetting("reality_transport", "tcp")
+	_ = biz.SetSetting("reality_flow", "xtls-rprx-vision")
+
 	testSNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 
-	type combo struct {
-		fp, transport, flow string
-		result              testResult
-	}
-	var combos []combo
-
-	// Test fingerprint × transport × flow combos
-	// Limit: only test meaningful combinations to avoid O(n³) explosion
+	var results []testResult
 	for _, fp := range candidateFingerprints {
-		for _, transport := range candidateTransports {
-			for _, flow := range candidateFlows {
-				// Skip invalid combos: flow=xtls-rprx-vision requires tcp transport
-				if flow == "xtls-rprx-vision" && transport != "tcp" {
-					continue
-				}
-
-				r := testTLSWithParams(testSNI, fp)
-				r.Fingerprint = fp
-				r.Transport = transport
-				r.Flow = flow
-				r.Category = "combined"
-				saveTestResult("client_params", 0, r)
-
-				combos = append(combos, combo{fp: fp, transport: transport, flow: flow, result: r})
-			}
-		}
+		r := testTLSWithParams(testSNI, fp)
+		r.Fingerprint = fp
+		r.Transport = "tcp"           // FIXED for Reality
+		r.Flow = "xtls-rprx-vision"   // FIXED for Reality
+		r.Category = "fingerprint"
+		results = append(results, r)
+		saveTestResult("client_fingerprint", 0, r)
 	}
 
-	// Pick best stable combo
-	var bestCombo *combo
-	for i := range combos {
-		if !combos[i].result.IsStable {
-			continue
-		}
-		if bestCombo == nil || combos[i].result.AvgLatency < bestCombo.result.AvgLatency {
-			bestCombo = &combos[i]
-		}
-	}
-
-	if bestCombo == nil {
-		log.Println("[auto-tuner] Client params: no stable combo found, keeping current")
+	best := pickBestResult(results)
+	if best == nil {
+		log.Println("[auto-tuner] Fingerprint: no stable option found, keeping", currentFP)
 		return false
 	}
 
-	changed := false
-	if bestCombo.fp != currentFP {
-		log.Printf("[auto-tuner] Fingerprint: %s → %s", currentFP, bestCombo.fp)
-		_ = biz.SetSetting("reality_fingerprint", bestCombo.fp)
-		changed = true
-	}
-	if bestCombo.transport != currentTransport {
-		log.Printf("[auto-tuner] Transport: %s → %s", currentTransport, bestCombo.transport)
-		_ = biz.SetSetting("reality_transport", bestCombo.transport)
-		changed = true
-	}
-	if bestCombo.flow != currentFlow {
-		log.Printf("[auto-tuner] Flow: %s → %s", currentFlow, bestCombo.flow)
-		_ = biz.SetSetting("reality_flow", bestCombo.flow)
-		changed = true
+	// Pick by fingerprint field (results share same SNI)
+	bestFP := best.Fingerprint
+	if bestFP == currentFP {
+		log.Printf("[auto-tuner] Fingerprint: %s still optimal (avg %dms)", currentFP, best.AvgLatency)
+		return false
 	}
 
-	if !changed {
-		log.Printf("[auto-tuner] Client params: %s/%s/%s still optimal (avg %dms)",
-			currentFP, currentTransport, currentFlow, bestCombo.result.AvgLatency)
-	}
-	return changed
+	log.Printf("[auto-tuner] Fingerprint: %s → %s (avg %dms)", currentFP, bestFP, best.AvgLatency)
+	_ = biz.SetSetting("reality_fingerprint", bestFP)
+	return true
 }
 
 // ─── Phase 5: Exit node SNI (server-side) ───

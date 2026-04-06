@@ -16,14 +16,21 @@ func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	enabled := biz.GetSettingOrDefault("auto_tuner_enabled", "true")
 	lastRun := biz.GetSettingOrDefault("auto_tuner_last_run", "")
 	interval := biz.GetSettingOrDefault("auto_tuner_interval_hours", "4")
-	currentSNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 
+	// All tunable parameters — current active values
 	writeAdminJSON(w, http.StatusOK, map[string]any{
 		"status":         status,
 		"enabled":        enabled == "true",
 		"last_run":       lastRun,
 		"interval_hours": interval,
-		"current_sni":    currentSNI,
+		"config_version": biz.GetSettingOrDefault("config_version", "1"),
+		// Active params
+		"current_sni":         biz.GetSettingOrDefault("reality_sni_domain", "apple.com"),
+		"current_fingerprint": biz.GetSettingOrDefault("reality_fingerprint", "chrome"),
+		"current_transport":   biz.GetSettingOrDefault("reality_transport", "tcp"),
+		"current_flow":        biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision"),
+		"current_dns":         biz.GetSettingOrDefault("dns_servers", "8.8.8.8,1.1.1.1"),
+		"current_mux":         biz.GetSettingOrDefault("mux_concurrency", "8"),
 	})
 }
 

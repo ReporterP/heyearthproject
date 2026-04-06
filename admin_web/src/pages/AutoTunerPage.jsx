@@ -76,16 +76,12 @@ export default function AutoTunerPage() {
 
       {/* Status cards */}
       {status && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
           <div className="bg-surface-card rounded-xl border border-white/10 p-4">
             <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Статус</p>
             <p className={`text-lg font-bold ${status.status === 'running' ? 'text-amber-400 animate-pulse' : 'text-green-400'}`}>
               {status.status === 'running' ? 'Тестирование...' : 'Ожидание'}
             </p>
-          </div>
-          <div className="bg-surface-card rounded-xl border border-white/10 p-4">
-            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Активный SNI (Hub)</p>
-            <p className="text-lg font-bold font-mono text-brand">{status.current_sni || '—'}</p>
           </div>
           <div className="bg-surface-card rounded-xl border border-white/10 p-4">
             <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Интервал</p>
@@ -99,6 +95,42 @@ export default function AutoTunerPage() {
             <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Всего тестов</p>
             <p className="text-lg font-bold">{history.length} <span className="text-sm font-normal text-text-secondary">({stableResults.length} стабильных)</span></p>
           </div>
+        </div>
+      )}
+
+      {/* Active parameters — ALL tunable params */}
+      {status && (
+        <div className="bg-surface-card rounded-xl border border-white/10 p-5 mb-6">
+          <h3 className="text-base font-semibold mb-3">Активные параметры подключения</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">SNI домен</p>
+              <p className="text-sm font-bold font-mono text-brand">{status.current_sni || '—'}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">TLS Fingerprint</p>
+              <p className="text-sm font-bold font-mono text-violet-400">{status.current_fingerprint || '—'}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">Transport</p>
+              <p className="text-sm font-bold font-mono">{status.current_transport || '—'}</p>
+              <p className="text-[9px] text-text-secondary">фиксирован для Reality</p>
+            </div>
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">Flow</p>
+              <p className="text-sm font-bold font-mono">{status.current_flow || 'none'}</p>
+              <p className="text-[9px] text-text-secondary">фиксирован для Reality</p>
+            </div>
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">DNS серверы</p>
+              <p className="text-xs font-mono">{status.current_dns || '—'}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-surface-alt/50">
+              <p className="text-[10px] uppercase tracking-wider text-text-secondary">Mux Concurrency</p>
+              <p className="text-sm font-bold">{status.current_mux || '8'}</p>
+            </div>
+          </div>
+          <p className="text-[10px] text-text-secondary mt-2">Config version: {status.config_version || '1'} • Transport и Flow фиксированы (tcp + xtls-rprx-vision) — требование VLESS Reality</p>
         </div>
       )}
 
