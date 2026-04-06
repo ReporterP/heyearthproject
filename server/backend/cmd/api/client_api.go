@@ -178,22 +178,51 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 		if realityPubKey != "" {
-			fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
-			transport := biz.GetSettingOrDefault("reality_transport", "tcp")
 			flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 			flowParam := ""
 			if flow != "" {
 				flowParam = "&flow=" + flow
 			}
-			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=%s%s#HeYearth-VLESS",
-				userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, transport, flowParam)
+
+			// Multi-profile: 3 VLESS URIs optimized for different ISP types.
+			// Client (Happ/v2rayNG) tests all and auto-picks the fastest working one.
+			profiles := []struct {
+				fp       string
+				label    string
+				tag      string
+				networks []string
+				priority int32
+			}{
+				{"chrome", "Домашний интернет", "HeYearth-Home", []string{"wifi", "ethernet", "any"}, 0},
+				{"safari", "Мобильный интернет", "HeYearth-Mobile", []string{"cellular", "wifi"}, 1},
+				{"edge", "Строгий режим", "HeYearth-Strict", []string{"cellular", "wifi", "ethernet", "any"}, 2},
+			}
+
+			for _, p := range profiles {
+				vlessURI := fmt.Sprintf(
+					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp%s#%s",
+					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam, p.tag)
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 vlessURI,
+					Protocol:            "vless",
+					Label:               p.label,
+					RecommendedNetworks: p.networks,
+					Priority:            p.priority,
+				})
+			}
+		}
+
+		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
+		if realityPubKey != "" {
+			xhttpURI := fmt.Sprintf(
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp&flow=xtls-rprx-vision#HeYearth-XHTTP",
+				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 vlessURI,
+				Uri:                 xhttpURI,
 				Protocol:            "vless",
-				Label:               "VLESS Reality (защита от DPI)",
+				Label:               "XHTTP Reality (максимальная защита)",
 				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-				Priority:            0,
+				Priority:            -1, // highest priority — most DPI-resistant
 			})
 		}
 

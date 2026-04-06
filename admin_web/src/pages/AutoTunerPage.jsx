@@ -1,24 +1,27 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useT } from '../i18n/index.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchAutoTunerStatus, fetchAutoTunerHistory, toggleAutoTuner } from '../api/admin.js'
+import { fetchAutoTunerStatus, fetchAutoTunerHistory, toggleAutoTuner, setAutoTunerInterval, runAutoTunerNow, cleanupAutoTunerHistory } from '../api/admin.js'
 
 export default function AutoTunerPage() {
   const { t } = useT()
   const toast = useToast()
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
   const [loading, setLoading] = useState(true)
 
   const loadData = useCallback(() => {
     Promise.all([
       fetchAutoTunerStatus().catch(() => null),
-      fetchAutoTunerHistory(100).catch(() => ({ items: [] })),
+      fetchAutoTunerHistory(historyPage, 30).catch(() => ({ items: [], total: 0 })),
     ]).then(([st, hist]) => {
       setStatus(st)
       setHistory(hist?.items || [])
+      setHistoryTotal(hist?.total || 0)
     }).finally(() => setLoading(false))
-  }, [])
+  }, [historyPage])
 
   useEffect(() => {
     loadData()
@@ -58,18 +61,26 @@ export default function AutoTunerPage() {
             Автоматический подбор оптимальных VPN параметров — SNI домены, fingerprint, транспорт
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <button onClick={() => { runAutoTunerNow().then(() => { toast.success('Запуск!'); setTimeout(loadData, 2000) }).catch(e => toast.error(e.message)) }}
+            className="px-4 py-2 rounded-lg bg-brand/20 text-brand hover:bg-brand/30 text-sm font-medium border border-brand/30 transition">
+            ▶ Запустить сейчас
+          </button>
+          <button onClick={() => { cleanupAutoTunerHistory(7).then(d => { toast.success(`Удалено: ${d.deleted}`); loadData() }).catch(e => toast.error(e.message)) }}
+            className="px-3 py-2 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary text-sm transition" title="Очистить историю старше 7 дней">
+            🗑 Очистить
+          </button>
           <button onClick={loadData}
-            className="px-3 py-1.5 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary text-sm transition">
-            Обновить
+            className="px-3 py-2 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary text-sm transition">
+            ↻
           </button>
           <button onClick={handleToggle}
-            className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
               status?.enabled
                 ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30 border border-green-500/30'
                 : 'bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30'
             }`}>
-            {status?.enabled ? '● Включён' : '○ Выключен'}
+            {status?.enabled ? '● Вкл' : '○ Выкл'}
           </button>
         </div>
       </div>
@@ -84,16 +95,24 @@ export default function AutoTunerPage() {
             </p>
           </div>
           <div className="bg-surface-card rounded-xl border border-white/10 p-4">
-            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Интервал</p>
-            <p className="text-lg font-bold">{status.interval_hours} ч</p>
+            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Интервал (часы)</p>
+            <select value={status.interval_hours} onChange={e => {
+              const h = parseInt(e.target.value)
+              setAutoTunerInterval(h).then(() => { toast.success(`Интервал: ${h}ч`); loadData() }).catch(e => toast.error(e.message))
+            }} className="text-lg font-bold bg-transparent border-none outline-none cursor-pointer text-text-primary">
+              {[1,2,4,6,8,12,24].map(h => <option key={h} value={h}>{h} ч</option>)}
+            </select>
           </div>
           <div className="bg-surface-card rounded-xl border border-white/10 p-4">
-            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Последний запуск</p>
-            <p className="text-sm font-semibold">{status.last_run ? new Date(status.last_run).toLocaleString('ru-RU') : '—'}</p>
+            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Последний / Следующий</p>
+            <p className="text-xs font-semibold">{status.last_run ? new Date(status.last_run).toLocaleString('ru-RU') : '—'}</p>
+            {status.next_run && (
+              <p className="text-[10px] text-brand mt-0.5">→ {new Date(status.next_run).toLocaleString('ru-RU')}</p>
+            )}
           </div>
           <div className="bg-surface-card rounded-xl border border-white/10 p-4">
-            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Всего тестов</p>
-            <p className="text-lg font-bold">{history.length} <span className="text-sm font-normal text-text-secondary">({stableResults.length} стабильных)</span></p>
+            <p className="text-[10px] uppercase tracking-wider text-text-secondary mb-1">Тестов сегодня</p>
+            <p className="text-lg font-bold">{status.today_tests || 0} <span className="text-sm font-normal text-text-secondary">({status.today_stable || 0} стабильных)</span></p>
           </div>
         </div>
       )}
@@ -231,6 +250,18 @@ export default function AutoTunerPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {historyTotal > 30 && (
+        <div className="flex items-center justify-center gap-3 mb-6">
+          <button disabled={historyPage <= 1} onClick={() => setHistoryPage(p => p - 1)}
+            className="px-3 py-1.5 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary text-sm disabled:opacity-30 transition">←</button>
+          <span className="text-sm text-text-secondary">{historyPage} / {Math.ceil(historyTotal / 30)}</span>
+          <button disabled={historyPage >= Math.ceil(historyTotal / 30)} onClick={() => setHistoryPage(p => p + 1)}
+            className="px-3 py-1.5 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary text-sm disabled:opacity-30 transition">→</button>
+          <span className="text-xs text-text-secondary">({historyTotal} всего)</span>
         </div>
       )}
 

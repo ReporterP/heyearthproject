@@ -2,14 +2,16 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
-// AutoTunerStatusHandler returns current auto-tuner state.
+// AutoTunerStatusHandler returns current auto-tuner state with ALL params.
 // GET /api/admin/auto-tuner/status
 func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	status := biz.GetSettingOrDefault("auto_tuner_status", "idle")
@@ -17,13 +19,33 @@ func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	lastRun := biz.GetSettingOrDefault("auto_tuner_last_run", "")
 	interval := biz.GetSettingOrDefault("auto_tuner_interval_hours", "4")
 
-	// All tunable parameters — current active values
+	// Calculate next run time
+	nextRun := ""
+	if lastRun != "" {
+		if t, err := time.Parse(time.RFC3339, lastRun); err == nil {
+			hours, _ := strconv.Atoi(interval)
+			if hours < 1 {
+				hours = 4
+			}
+			nextRun = t.Add(time.Duration(hours) * time.Hour).Format(time.RFC3339)
+		}
+	}
+
+	// Count today's tests
+	var todayTests int
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM config_test_results WHERE tested_at > CURRENT_DATE`).Scan(&todayTests)
+	var todayStable int
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM config_test_results WHERE tested_at > CURRENT_DATE AND is_stable = TRUE`).Scan(&todayStable)
+
 	writeAdminJSON(w, http.StatusOK, map[string]any{
 		"status":         status,
 		"enabled":        enabled == "true",
 		"last_run":       lastRun,
+		"next_run":       nextRun,
 		"interval_hours": interval,
 		"config_version": biz.GetSettingOrDefault("config_version", "1"),
+		"today_tests":    todayTests,
+		"today_stable":   todayStable,
 		// Active params
 		"current_sni":         biz.GetSettingOrDefault("reality_sni_domain", "apple.com"),
 		"current_fingerprint": biz.GetSettingOrDefault("reality_fingerprint", "chrome"),
@@ -34,21 +56,43 @@ func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// AutoTunerHistoryHandler returns recent test results.
-// GET /api/admin/auto-tuner/history?limit=50
+// AutoTunerHistoryHandler returns paginated test results.
+// GET /api/admin/auto-tuner/history?page=1&page_size=20&date=2026-04-06
 func AutoTunerHistoryHandler(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 500 {
-		limit = 50
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 30
+	}
+	offset := (page - 1) * pageSize
+	dateFilter := r.URL.Query().Get("date") // YYYY-MM-DD
+
+	where := "1=1"
+	args := []any{}
+	argN := 1
+	if dateFilter != "" {
+		where += fmt.Sprintf(" AND tested_at::date = $%d", argN)
+		args = append(args, dateFilter)
+		argN++
 	}
 
-	rows, err := db.DB.Query(`
+	var total int
+	_ = db.DB.QueryRow("SELECT COUNT(*) FROM config_test_results WHERE "+where, args...).Scan(&total)
+
+	query := fmt.Sprintf(`
 		SELECT id, tested_at, target_type, COALESCE(server_id, 0), sni_domain, fingerprint,
 		       ping_results, avg_latency_ms, success_count, is_stable, was_applied, error_msg
 		FROM config_test_results
+		WHERE %s
 		ORDER BY tested_at DESC
-		LIMIT $1
-	`, limit)
+		LIMIT $%d OFFSET $%d
+	`, where, argN, argN+1)
+	args = append(args, pageSize, offset)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to query test results")
 		return
@@ -68,24 +112,29 @@ func AutoTunerHistoryHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		results = append(results, map[string]any{
-			"id":            id,
-			"tested_at":     testedAt,
-			"target_type":   targetType,
-			"server_id":     serverID,
-			"sni_domain":    sni,
-			"fingerprint":   fp,
-			"ping_results":  pingResults,
+			"id":             id,
+			"tested_at":      testedAt,
+			"target_type":    targetType,
+			"server_id":      serverID,
+			"sni_domain":     sni,
+			"fingerprint":    fp,
+			"ping_results":   pingResults,
 			"avg_latency_ms": avgLatency,
-			"success_count": successCount,
-			"is_stable":     isStable,
-			"was_applied":   wasApplied,
-			"error_msg":     errMsg,
+			"success_count":  successCount,
+			"is_stable":      isStable,
+			"was_applied":    wasApplied,
+			"error_msg":      errMsg,
 		})
 	}
 	if results == nil {
 		results = []map[string]any{}
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]any{"items": results, "total": len(results)})
+	writeAdminJSON(w, http.StatusOK, map[string]any{
+		"items":     results,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 // AutoTunerToggleHandler enables/disables the auto-tuner.
@@ -104,6 +153,56 @@ func AutoTunerToggleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = biz.SetSetting("auto_tuner_enabled", val)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner " + val})
+}
+
+// AutoTunerIntervalHandler changes the run interval.
+// POST /api/admin/auto-tuner/interval  body: {"hours": 4}
+func AutoTunerIntervalHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Hours int `json:"hours"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Hours < 1 || req.Hours > 168 {
+		writeAdminError(w, http.StatusBadRequest, "Interval must be 1-168 hours")
+		return
+	}
+	_ = biz.SetSetting("auto_tuner_interval_hours", strconv.Itoa(req.Hours))
+	writeAdminJSON(w, http.StatusOK, map[string]any{"message": "Interval set", "hours": req.Hours})
+}
+
+// AutoTunerRunNowHandler triggers immediate auto-tuner run.
+// POST /api/admin/auto-tuner/run-now
+// The actual run happens in auto_tuner.go via a channel.
+var AutoTunerRunChan = make(chan struct{}, 1)
+
+func AutoTunerRunNowHandler(w http.ResponseWriter, r *http.Request) {
+	select {
+	case AutoTunerRunChan <- struct{}{}:
+		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner run triggered"})
+	default:
+		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner already running or pending"})
+	}
+}
+
+// AutoTunerCleanupHandler removes old test results.
+// POST /api/admin/auto-tuner/cleanup  body: {"days": 7}
+func AutoTunerCleanupHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Days int `json:"days"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Days < 1 {
+		req.Days = 7
+	}
+	result, err := db.DB.Exec(`DELETE FROM config_test_results WHERE tested_at < CURRENT_TIMESTAMP - ($1 || ' days')::interval`, req.Days)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Cleanup failed")
+		return
+	}
+	deleted, _ := result.RowsAffected()
+	writeAdminJSON(w, http.StatusOK, map[string]any{"message": "Cleanup done", "deleted": deleted})
 }
 
 func decodeJSON(r *http.Request, v any) error {

@@ -233,9 +233,18 @@ export function updateSetting(key, value) {
 export function fetchAutoTunerStatus() {
   return apiFetch('/auto-tuner/status')
 }
-export function fetchAutoTunerHistory(limit = 50) {
-  return apiFetch(`/auto-tuner/history?limit=${limit}`)
+export function fetchAutoTunerHistory(page = 1, pageSize = 30) {
+  return apiFetch(`/auto-tuner/history?page=${page}&page_size=${pageSize}`)
 }
 export function toggleAutoTuner(enabled) {
   return apiFetch('/auto-tuner/toggle', { method: 'POST', body: { enabled } })
+}
+export function setAutoTunerInterval(hours) {
+  return apiFetch('/auto-tuner/interval', { method: 'POST', body: { hours } })
+}
+export function runAutoTunerNow() {
+  return apiFetch('/auto-tuner/run-now', { method: 'POST' })
+}
+export function cleanupAutoTunerHistory(days = 7) {
+  return apiFetch('/auto-tuner/cleanup', { method: 'POST', body: { days } })
 }

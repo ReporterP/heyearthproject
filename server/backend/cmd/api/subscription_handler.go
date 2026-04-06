@@ -63,29 +63,35 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	format := r.URL.Query().Get("format")
 
-	// Config version header — clients can detect when params change
+	// Common headers for all formats
 	configVersion := biz.GetSettingOrDefault("config_version", "1")
 	w.Header().Set("X-Config-Version", configVersion)
+	w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(userID))
+	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
+	w.Header().Set("Profile-Title", "HiEarth")
+	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+
+	// Build URI list
+	var uris []string
+	for _, opt := range options {
+		if opt.Uri != "" {
+			uris = append(uris, opt.Uri)
+		}
+	}
 
 	switch format {
 	case "clash":
 		clashConfig := buildClashConfig(userID)
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=heyearth.yaml")
-		w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(userID))
 		w.Write([]byte(clashConfig))
 
 	default:
-		// V2Ray/SingBox формат: base64 encoded list of URIs
-		var uris []string
-		for _, opt := range options {
-			if opt.Uri != "" {
-				uris = append(uris, opt.Uri)
-			}
-		}
+		// V2Ray/Happ/SingBox subscription format: base64 encoded URIs
 		encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(uris, "\n")))
+		// Happ requires specific content-type; standard V2Ray clients accept both
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(userID))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
 		w.Write([]byte(encoded))
 	}
 }
@@ -107,28 +113,54 @@ func buildClashConfig(userID string) string {
 	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 	if realityPubKey != "" && vlessUUID != "" {
-		fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
-		transport := biz.GetSettingOrDefault("reality_transport", "tcp")
 		flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
-		name := "HeYearth-VLESS"
-		proxyNames = append(proxyNames, name)
 		flowLine := ""
 		if flow != "" {
 			flowLine = fmt.Sprintf("\n    flow: %s", flow)
 		}
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
+
+		// Multi-profile: 3 VLESS configs for different ISP aggressiveness
+		profiles := []struct{ name, fp string }{
+			{"HeYearth-Home", "chrome"},
+			{"HeYearth-Mobile", "safari"},
+			{"HeYearth-Strict", "edge"},
+		}
+		for _, p := range profiles {
+			proxyNames = append(proxyNames, p.name)
+			proxies = append(proxies, fmt.Sprintf(
+				`  - name: "%s"
     type: vless
     server: %s
     port: 443
     uuid: "%s"%s
-    network: %s
+    network: tcp
     tls: true
     reality-opts:
       public-key: "%s"
       short-id: "%s"
     client-fingerprint: %s
-    servername: %s`, name, host, vlessUUID, flowLine, transport, realityPubKey, realityShortID, fp, realitySNI))
+    servername: %s`, p.name, host, vlessUUID, flowLine, realityPubKey, realityShortID, p.fp, realitySNI))
+		}
+	}
+
+	// 1b. VLESS Reality + XHTTP (port 2443)
+	if realityPubKey != "" && vlessUUID != "" {
+		name := "HeYearth-XHTTP"
+		proxyNames = append(proxyNames, name)
+		proxies = append(proxies, fmt.Sprintf(
+			`  - name: "%s"
+    type: vless
+    server: %s
+    port: 2443
+    uuid: "%s"
+    flow: xtls-rprx-vision
+    network: xhttp
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: chrome
+    servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
 	}
 
 	// 2. SOCKS

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
@@ -39,22 +40,82 @@ import (
 
 // ─── Candidate parameters ───
 
-var candidateSNIs = []string{
-	"apple.com",
-	"www.apple.com",
-	"microsoft.com",
-	"www.microsoft.com",
-	"cdn.jsdelivr.net",
-	"ajax.googleapis.com",
-	"fonts.googleapis.com",
-	"cloudflare.com",
-	"github.com",
-	"www.google.com",
-	"vk.com",
-	"mail.ru",
-	"yandex.ru",
-	"static.cloudflareinsights.com",
-	"cdnjs.cloudflare.com",
+// Per-country SNI candidates.
+// Key = 2-letter country code of the server (Hub or Exit node).
+// Good SNI = domain hosted on same/similar ASN, high traffic, not blocked.
+// Bad SNI = ASN mismatch obvious to DPI (e.g. apple.com from non-Apple IP).
+var sniByCountry = map[string][]string{
+	// Russia — for Hub in Russia. Russian domains are OK because server is also in RU.
+	// Avoid: apple.com (ASN mismatch), google.com (actively monitored)
+	"RU": {
+		"yandex.ru",
+		"mail.ru",
+		"vk.com",
+		"cdn.jsdelivr.net",    // CDN, works from any IP
+		"cdnjs.cloudflare.com",
+		"static.cloudflareinsights.com",
+		"fonts.googleapis.com", // Google CDN — less scrutinized than google.com
+		"ajax.googleapis.com",
+	},
+	// Netherlands — for exit nodes in NL (Amsterdam)
+	"NL": {
+		"github.com",          // Microsoft Azure, stable, no RU servers since 2022
+		"www.twitch.tv",       // AWS, high traffic, no Russian PoP
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"static.cloudflareinsights.com",
+		"www.microsoft.com",
+		"cloudflare.com",
+		"fonts.googleapis.com",
+	},
+	// Latvia — for exit nodes in LV
+	"LV": {
+		"github.com",
+		"www.twitch.tv",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"cloudflare.com",
+		"www.microsoft.com",
+		"static.cloudflareinsights.com",
+	},
+	// Germany — common VPS location
+	"DE": {
+		"github.com",
+		"www.twitch.tv",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"www.microsoft.com",
+		"cloudflare.com",
+		"fonts.googleapis.com",
+	},
+	// Finland
+	"FI": {
+		"github.com",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"www.microsoft.com",
+		"cloudflare.com",
+	},
+	// Default — for any country not listed above
+	"DEFAULT": {
+		"github.com",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"static.cloudflareinsights.com",
+		"cloudflare.com",
+		"www.twitch.tv",
+		"www.microsoft.com",
+		"fonts.googleapis.com",
+	},
+}
+
+// candidateSNIsForCountry returns SNI list for a given country code.
+func candidateSNIsForCountry(countryCode string) []string {
+	cc := strings.ToUpper(strings.TrimSpace(countryCode))
+	if list, ok := sniByCountry[cc]; ok {
+		return list
+	}
+	return sniByCountry["DEFAULT"]
 }
 
 var candidateFingerprints = []string{"chrome", "firefox", "safari", "edge"}
@@ -70,7 +131,8 @@ var candidateMuxConcurrency = []int{4, 8, 16}
 const (
 	tunerPingsPerTest = 5
 	tunerMaxLatencyMs = 500
-	tunerTimeout      = 5 * time.Second
+	tunerTimeout      = 8 * time.Second  // increased from 5s for unstable networks
+	tunerRetries      = 2                // retry failed pings up to 2 times
 )
 
 // testResult stores one parameter combination test.
@@ -127,16 +189,28 @@ func StartAutoTuner() {
 
 		ticker := time.NewTicker(time.Duration(intervalHours) * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			if biz.GetSettingOrDefault("auto_tuner_enabled", "true") != "true" {
-				continue
+		for {
+			select {
+			case <-ticker.C:
+				// Re-read interval in case it changed
+				if h, _ := strconv.Atoi(biz.GetSettingOrDefault("auto_tuner_interval_hours", "4")); h > 0 && h != intervalHours {
+					intervalHours = h
+					ticker.Reset(time.Duration(h) * time.Hour)
+				}
+				if biz.GetSettingOrDefault("auto_tuner_enabled", "true") != "true" {
+					continue
+				}
+				runFullTuner()
+			case <-admin.AutoTunerRunChan:
+				// Manual trigger from admin UI
+				log.Println("[auto-tuner] Manual run triggered from admin")
+				runFullTuner()
 			}
-			runFullTuner()
 		}
 	}()
 
-	log.Printf("[auto-tuner] Started v2 (interval: %dh, params: SNI×%d, Fingerprint×%d, DNS×%d, MuxAdaptive)",
-		intervalHours, len(candidateSNIs), len(candidateFingerprints), len(candidateDNS))
+	log.Printf("[auto-tuner] Started v2 (interval: %dh, params: SNI per-country, Fingerprint×%d, DNS×%d, MuxAdaptive, xPaddingBytes)",
+		intervalHours, len(candidateFingerprints), len(candidateDNS))
 }
 
 // ─── Main run ───
@@ -205,9 +279,12 @@ func runFullTuner() {
 
 func tuneSNI() string {
 	currentSNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	// Hub is in Russia — use RU-specific SNI list
+	hubCountry := biz.GetSettingOrDefault("hub_country", "RU")
+	candidates := candidateSNIsForCountry(hubCountry)
 	var results []testResult
 
-	for _, sni := range candidateSNIs {
+	for _, sni := range candidates {
 		r := testSNIReachability(sni)
 		r.Category = "sni"
 		results = append(results, r)
@@ -358,8 +435,12 @@ func tuneExitNodeSNI(node biz.ExitNodeTunnel) bool {
 		currentSNI = node.IPAddress
 	}
 
+	// Get country code for this exit node from DB
+	nodeCountry := getServerCountry(node.ID)
+	candidates := candidateSNIsForCountry(nodeCountry)
+
 	var results []testResult
-	for _, sni := range candidateSNIs {
+	for _, sni := range candidates {
 		r := testTLSHandshake(node.IPAddress, node.TunnelPort, sni)
 		r.Category = "exit_sni"
 		results = append(results, r)
@@ -395,34 +476,48 @@ func testSNIReachability(sni string) testResult {
 	var pings []int
 
 	for i := 0; i < tunerPingsPerTest; i++ {
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", sni+":443", tunerTimeout)
-		if err != nil {
-			result.ErrorMsg = fmt.Sprintf("dial %s:443: %v", sni, err)
-			pings = append(pings, 0)
-			continue
+		latency := singleTLSPing(sni+":443", sni)
+		if latency <= 0 {
+			// Retry once on failure (network jitter)
+			time.Sleep(500 * time.Millisecond)
+			latency = singleTLSPing(sni+":443", sni)
 		}
-		tlsConn := tls.Client(conn, &tls.Config{
-			ServerName:         sni,
-			InsecureSkipVerify: true,
-		})
-		tlsConn.SetDeadline(time.Now().Add(tunerTimeout))
-		if err := tlsConn.Handshake(); err != nil {
-			conn.Close()
-			result.ErrorMsg = fmt.Sprintf("TLS %s: %v", sni, err)
+		if latency > 0 {
+			pings = append(pings, latency)
+			result.SuccessRate++
+		} else {
 			pings = append(pings, 0)
-			continue
+			result.ErrorMsg = fmt.Sprintf("TLS %s: failed after retry", sni)
 		}
-		latency := int(time.Since(start).Milliseconds())
-		pings = append(pings, latency)
-		result.SuccessRate++
-		tlsConn.Close()
+		// Small delay between pings to avoid rate limiting
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	result.Pings = pings
-	result.AvgLatency = avgNonZero(pings)
+	result.AvgLatency = medianNonZero(pings)
 	result.IsStable = result.SuccessRate == tunerPingsPerTest && allBelow(pings, tunerMaxLatencyMs)
 	return result
+}
+
+// singleTLSPing does one TLS handshake and returns latency in ms, or 0 on failure.
+func singleTLSPing(addr, sni string) int {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", addr, tunerTimeout)
+	if err != nil {
+		return 0
+	}
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName:         sni,
+		InsecureSkipVerify: true,
+	})
+	tlsConn.SetDeadline(time.Now().Add(tunerTimeout))
+	if err := tlsConn.Handshake(); err != nil {
+		conn.Close()
+		return 0
+	}
+	latency := int(time.Since(start).Milliseconds())
+	tlsConn.Close()
+	return latency
 }
 
 func testTLSWithParams(sni, fingerprint string) testResult {
@@ -465,12 +560,35 @@ func testTLSHandshake(host string, port int, sni string) testResult {
 	}
 
 	result.Pings = pings
-	result.AvgLatency = avgNonZero(pings)
+	result.AvgLatency = medianNonZero(pings)
 	result.IsStable = result.SuccessRate == tunerPingsPerTest && allBelow(pings, tunerMaxLatencyMs)
 	return result
 }
 
 // ─── Helpers ───
+
+func getServerCountry(serverID int) string {
+	var cc string
+	_ = db.DB.QueryRow("SELECT COALESCE(country_code, '') FROM servers WHERE id = $1", serverID).Scan(&cc)
+	// Normalize: "Амстердам" → "NL", "Латвия" → "LV", etc.
+	ccUpper := strings.ToUpper(strings.TrimSpace(cc))
+	// Map common Russian-language country names to ISO codes
+	nameToCode := map[string]string{
+		"АМСТЕРДАМ": "NL", "НИДЕРЛАНДЫ": "NL", "NL": "NL",
+		"ЛАТВИЯ": "LV", "LV": "LV",
+		"ГЕРМАНИЯ": "DE", "DE": "DE",
+		"ФИНЛЯНДИЯ": "FI", "FI": "FI",
+		"РОССИЯ": "RU", "RU": "RU",
+		"США": "US", "US": "US",
+	}
+	if code, ok := nameToCode[ccUpper]; ok {
+		return code
+	}
+	if len(ccUpper) == 2 {
+		return ccUpper // already ISO code
+	}
+	return "DEFAULT"
+}
 
 func isAutoTuneEnabled(serverID int) bool {
 	var autoTune bool
@@ -532,18 +650,23 @@ func markApplied(targetType string, serverID int, r *testResult) {
 	`, targetType, srvID)
 }
 
-func avgNonZero(vals []int) int {
-	sum, count := 0, 0
+// medianNonZero returns the median of non-zero values (more stable than avg with network jitter).
+func medianNonZero(vals []int) int {
+	var nonZero []int
 	for _, v := range vals {
 		if v > 0 {
-			sum += v
-			count++
+			nonZero = append(nonZero, v)
 		}
 	}
-	if count == 0 {
+	if len(nonZero) == 0 {
 		return 0
 	}
-	return sum / count
+	sort.Ints(nonZero)
+	mid := len(nonZero) / 2
+	if len(nonZero)%2 == 0 {
+		return (nonZero[mid-1] + nonZero[mid]) / 2
+	}
+	return nonZero[mid]
 }
 
 func allBelow(vals []int, threshold int) bool {

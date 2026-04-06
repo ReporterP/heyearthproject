@@ -187,9 +187,33 @@ func SyncXrayConfig() error {
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
-					"serverNames": []string{realitySNI, "www." + realitySNI},
-					"privateKey": keys.PrivateKey,
-					"shortIds":   []string{keys.ShortID, ""}, // "" = принимать без shortId (совместимость)
+					"serverNames":  []string{realitySNI, "www." + realitySNI},
+					"privateKey":   keys.PrivateKey,
+					"shortIds":     []string{keys.ShortID, ""},
+					"xPaddingBytes": "100-1000", // Anti-DPI: normalize packet sizes
+				},
+			},
+			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+		},
+		{
+			// VLESS Reality + XHTTP (splithttp) — anti-behavioral-DPI transport
+			// XHTTP splits upload/download into separate HTTP transactions,
+			// making traffic statistically indistinguishable from normal web browsing.
+			// Port 2443 direct (no nginx stream needed).
+			"tag": "vless-xhttp", "listen": "0.0.0.0", "port": 2443, "protocol": "vless",
+			"settings": map[string]interface{}{"clients": vlessClients, "decryption": "none"},
+			"streamSettings": map[string]interface{}{
+				"network": "xhttp", "security": "reality",
+				"xhttpSettings": map[string]interface{}{
+					"mode":          "auto",
+					"xPaddingBytes": "100-1000",
+				},
+				"realitySettings": map[string]interface{}{
+					"show": false, "dest": realitySNI + ":443", "xver": 0,
+					"serverNames":   []string{realitySNI, "www." + realitySNI},
+					"privateKey":    keys.PrivateKey,
+					"shortIds":      []string{keys.ShortID, ""},
+					"xPaddingBytes": "100-1000",
 				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
@@ -519,13 +543,14 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			"streamSettings": map[string]interface{}{
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
-					"fingerprint": getFingerprint(),
-					"serverName":  sni,
+					"fingerprint":   getFingerprint(),
+					"serverName":    sni,
+					"xPaddingBytes": "100-1000", // Normalize packet sizes — anti-DPI behavioral analysis
 				},
 				"sockopt": map[string]interface{}{
-					"tcpFastOpen": true,  // Экономия 1 RTT на новых подключениях
-					"tcpNoDelay":  true,  // Без буферизации Nagle — снижает задержку
-					"tcpKeepAliveInterval": 30, // Keepalive каждые 30 сек (не даёт DPI убить idle)
+					"tcpFastOpen":          true,
+					"tcpNoDelay":           true,
+					"tcpKeepAliveInterval": 30,
 				},
 			},
 			// Мультиплексирование: несколько стримов по одному VLESS соединению.
