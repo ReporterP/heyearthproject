@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -309,16 +310,41 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 			log.Printf("yookassa webhook: mark completed: %v", err)
 		}
 
-		plan := notification.Object.Metadata["plan"]
-		if plan == "" {
-			plan = "standard"
+		// Save payment method for auto-renew
+		if notification.Object.PaymentMethod != nil && notification.Object.PaymentMethod.Saved {
+			pmID := notification.Object.PaymentMethod.ID
+			db.DB.Exec("UPDATE payments SET payment_method_id = $1 WHERE id = $2", pmID, existing.ID)
+			db.DB.Exec("UPDATE users SET saved_payment_method = $1 WHERE user_id = $2", pmID, existing.UserID)
+			log.Printf("yookassa webhook: saved payment method %s for user %s", pmID[:8]+"...", existing.UserID)
 		}
-		priceRub := biz.GetPriceRub(plan, 200)
 
-		if err := biz.ActivateSubscription(existing.UserID, 1, plan, 30, priceRub); err != nil {
-			log.Printf("yookassa webhook: activate subscription: %v", err)
+		// Activate subscription using plan from metadata
+		planIDStr := notification.Object.Metadata["plan_id"]
+		planSlug := notification.Object.Metadata["plan_slug"]
+		promocode := notification.Object.Metadata["promocode"]
+
+		if planIDStr != "" {
+			var planID int
+			fmt.Sscanf(planIDStr, "%d", &planID)
+			if p, err := biz.GetPlanByID(planID); err == nil {
+				if err := biz.ActivateSubscriptionWithPlan(existing.UserID, p.ID, p.DurationDays, int(existing.Amount), promocode); err != nil {
+					log.Printf("yookassa webhook: activate plan %d: %v", p.ID, err)
+				} else {
+					log.Printf("yookassa webhook: activated plan '%s' for user %s", p.Name, existing.UserID)
+				}
+			}
+		} else if planSlug != "" {
+			if p, err := biz.GetPlanBySlug(planSlug); err == nil {
+				biz.ActivateSubscriptionWithPlan(existing.UserID, p.ID, p.DurationDays, int(existing.Amount), promocode)
+			}
+		} else {
+			// Legacy fallback
+			plan := notification.Object.Metadata["plan"]
+			if plan == "" {
+				plan = "standard"
+			}
+			biz.ActivateSubscription(existing.UserID, 1, plan, 30, biz.GetPriceRub(plan, 200))
 		}
-		// Xray sync вызовется автоматически через biz.OnSubscriptionChange
 	}
 
 	w.WriteHeader(http.StatusOK)

@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
 const features = [
@@ -37,22 +38,7 @@ const steps = [
   { num: '03', title: 'Готово', desc: 'Пользуйтесь быстрым и оптимизированным доступом к интернету без ограничений.' },
 ]
 
-const plans = [
-  {
-    name: 'Стандарт',
-    price: '200',
-    period: 'мес',
-    highlighted: false,
-    features: ['Эко-маршрутизация трафика', 'Без ограничений по объёму', 'Все устройства', 'Базовая поддержка'],
-  },
-  {
-    name: 'Премиум',
-    price: '250',
-    period: 'мес',
-    highlighted: true,
-    features: ['Всё из Стандарт', 'Приоритетная поддержка', 'Максимальная оптимизация маршрутов', 'Маскировка трафика'],
-  },
-]
+// Plans loaded dynamically from API in component
 
 const CheckIcon = () => (
   <svg className="w-4 h-4 mt-0.5 text-accent flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -66,7 +52,23 @@ const stats = [
   { value: '50+', label: 'Локаций', icon: '🌍' },
 ]
 
+function formatTraffic(bytes) {
+  if (!bytes) return 'Безлимит'
+  const gb = bytes / (1024 * 1024 * 1024)
+  return gb >= 1 ? `${gb.toFixed(0)} ГБ` : `${(bytes / (1024 * 1024)).toFixed(0)} МБ`
+}
+
+function formatDuration(days) {
+  if (days >= 365) return `${Math.round(days / 365)} год`
+  if (days >= 30) return `${Math.round(days / 30)} мес.`
+  return `${days} дн.`
+}
+
 export default function LandingPage() {
+  const [plans, setPlans] = useState([])
+  useEffect(() => {
+    fetch('/api/v1/plans').then(r => r.json()).then(d => setPlans(Array.isArray(d) ? d.filter(p => p.price_rub > 0) : [])).catch(() => {})
+  }, [])
   return (
     <>
       {/* ─── Hero ─── */}
@@ -232,32 +234,42 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6 md:gap-8">
-            {plans.map((p, i) => (
+          <div className={`grid gap-6 md:gap-8 ${plans.length >= 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+            {plans.map((p, i) => {
+              const highlighted = i === Math.min(Math.floor(plans.length / 2), plans.length - 1)
+              const planFeatures = []
+              planFeatures.push(p.description)
+              planFeatures.push(`Трафик: ${formatTraffic(p.traffic_limit_bytes)}`)
+              planFeatures.push(`Срок: ${formatDuration(p.duration_days)}`)
+              const pf = typeof p.features === 'string' ? JSON.parse(p.features || '{}') : (p.features || {})
+              if (pf.traffic_masking) planFeatures.push('Маскировка трафика')
+              if (pf.priority_support) planFeatures.push('Приоритетная поддержка')
+              return (
               <div
-                key={p.name}
-                className={`group relative p-8 rounded-2xl transition-all duration-500 hover:-translate-y-1 animate-fade-in-up delay-${(i + 1) * 200} ${
-                  p.highlighted
+                key={p.id}
+                className={`group relative p-8 rounded-2xl transition-all duration-500 hover:-translate-y-1 animate-fade-in-up ${
+                  highlighted
                     ? 'glass-strong border border-brand/30 shadow-xl shadow-brand/10 glow-brand'
                     : 'glass-card hover:bg-white/[0.06]'
                 }`}
+                style={{ animationDelay: `${(i + 1) * 200}ms` }}
               >
-                {p.highlighted && (
+                {highlighted && (
                   <div className="absolute -top-3.5 left-1/2 -translate-x-1/2">
                     <span className="px-4 py-1 rounded-full bg-gradient-to-r from-brand to-brand-light text-xs font-bold text-white shadow-lg shadow-brand/25">
-                      Рекомендуем
+                      Популярный
                     </span>
                   </div>
                 )}
 
                 <h3 className="text-xl font-bold mb-1">{p.name}</h3>
                 <div className="flex items-baseline gap-1 mb-6">
-                  <span className="text-5xl font-extrabold tracking-tight">{p.price}</span>
-                  <span className="text-text-secondary text-sm">&thinsp;&#8381; / {p.period}</span>
+                  <span className="text-5xl font-extrabold tracking-tight">{p.price_rub}</span>
+                  <span className="text-text-secondary text-sm">&thinsp;&#8381; / {formatDuration(p.duration_days)}</span>
                 </div>
 
                 <ul className="space-y-3 mb-8">
-                  {p.features.map(feat => (
+                  {planFeatures.map(feat => (
                     <li key={feat} className="flex items-start gap-3 text-sm text-text-secondary">
                       <CheckIcon />
                       <span>{feat}</span>
@@ -266,9 +278,9 @@ export default function LandingPage() {
                 </ul>
 
                 <Link
-                  to="/register"
+                  to="/payment"
                   className={`block text-center px-6 py-3.5 rounded-xl font-semibold transition-all duration-300 ${
-                    p.highlighted
+                    highlighted
                       ? 'bg-gradient-to-r from-brand to-brand-dark text-white hover:shadow-lg hover:shadow-brand/25 hover:-translate-y-0.5'
                       : 'glass hover:bg-white/10 text-text-primary'
                   }`}
@@ -276,7 +288,7 @@ export default function LandingPage() {
                   Выбрать
                 </Link>
               </div>
-            ))}
+            )})}
           </div>
         </div>
       </section>

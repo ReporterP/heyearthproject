@@ -61,14 +61,59 @@ type CreatePaymentRequest struct {
 }
 
 type PaymentResponse struct {
-	ID           string                `json:"id"`
-	Status       string                `json:"status"`
-	Amount       Amount                `json:"amount"`
-	Description  string                `json:"description"`
-	Confirmation *ConfirmationResponse `json:"confirmation,omitempty"`
-	CreatedAt    time.Time             `json:"created_at"`
-	Paid         bool                  `json:"paid"`
-	Metadata     map[string]string     `json:"metadata"`
+	ID              string                `json:"id"`
+	Status          string                `json:"status"`
+	Amount          Amount                `json:"amount"`
+	Description     string                `json:"description"`
+	Confirmation    *ConfirmationResponse `json:"confirmation,omitempty"`
+	PaymentMethod   *PaymentMethodInfo    `json:"payment_method,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
+	Paid            bool                  `json:"paid"`
+	Metadata        map[string]string     `json:"metadata"`
+}
+
+type PaymentMethodInfo struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Saved bool   `json:"saved"`
+	Title string `json:"title"` // e.g. "Visa **** 4242"
+}
+
+// CreateRecurringPayment charges a saved payment method (auto-renew).
+func (c *Client) CreateRecurringPayment(paymentMethodID string, amount int, currency, description string, metadata map[string]string) (*PaymentResponse, error) {
+	req := map[string]interface{}{
+		"amount": map[string]string{
+			"value":    fmt.Sprintf("%d.00", amount),
+			"currency": currency,
+		},
+		"payment_method_id": paymentMethodID,
+		"description":       description,
+		"metadata":          metadata,
+		"capture":           true,
+	}
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequest("POST", apiBase+"/payments", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.SetBasicAuth(c.ShopID, c.SecretKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Idempotence-Key", fmt.Sprintf("renew-%d", time.Now().UnixNano()))
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var pr PaymentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("yookassa %d: %s", resp.StatusCode, pr.Status)
+	}
+	return &pr, nil
 }
 
 func (c *Client) CreatePayment(req CreatePaymentRequest) (*PaymentResponse, error) {
