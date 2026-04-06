@@ -35,6 +35,7 @@ export default {
   navTenants: 'Tenants',
   navTrafficMasking: 'Traffic Masking',
   navAuditLog: 'Audit Log',
+  navAutoTuner: 'Auto-Tuner',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',
   dashUsers: 'Users',

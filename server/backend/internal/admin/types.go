@@ -192,6 +192,7 @@ type serverResponse struct {
 	TunnelSSPass    string `json:"tunnel_ss_password,omitempty"`
 	TunnelError     string `json:"tunnel_error,omitempty"`
 	LoadWeight      int    `json:"load_weight"`
+	AutoTune        bool   `json:"auto_tune"`
 }
 
 type serverPayload struct {

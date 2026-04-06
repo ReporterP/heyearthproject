@@ -160,6 +160,11 @@ func RegisterRoutes() {
 		}
 	}))
 
+	// Auto-tuner
+	http.HandleFunc("/api/admin/auto-tuner/status", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerStatusHandler)))
+	http.HandleFunc("/api/admin/auto-tuner/history", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerHistoryHandler)))
+	http.HandleFunc("/api/admin/auto-tuner/toggle", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerToggleHandler)))
+
 	http.HandleFunc("/api/admin/releases", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

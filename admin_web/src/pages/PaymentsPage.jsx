@@ -261,7 +261,7 @@ export default function PaymentsPage() {
                 return (
                   <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 transition">
                     <td className="py-2 px-3">{p.id}</td>
-                    <td className="py-2 px-3">{p.user_db_id}</td>
+                    <td className="py-2 px-3 font-mono text-xs">{p.user_id || p.user_db_id || '—'}</td>
                     <td className={`py-2 px-3 font-medium ${amountColor}`}>
                       {parseFloat(p.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {p.currency}
                     </td>

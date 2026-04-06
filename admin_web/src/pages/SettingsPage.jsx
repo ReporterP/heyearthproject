@@ -135,8 +135,11 @@ export default function SettingsPage() {
               </div>
             )}
           </section>
+
+          {/* Auto-Tuner moved to separate page /auto-tuner */}
         </>
       )}
     </div>
   )
 }
+

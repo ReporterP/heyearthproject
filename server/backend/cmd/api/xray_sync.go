@@ -889,6 +889,9 @@ func StartXraySyncLoop() {
 
 	// Запускаем мониторинг истечения mTLS сертификатов
 	StartCertExpiryMonitor()
+
+	// Запускаем auto-tuner для оптимизации VPN конфигов
+	StartAutoTuner()
 }
 
 // ─────────────────────── mTLS Certificate Expiry Monitor ───────────────────────

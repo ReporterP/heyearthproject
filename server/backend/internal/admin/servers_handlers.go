@@ -60,7 +60,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 		       s.ssh_key_id, COALESCE(sk.name, ''),
 		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
-		       COALESCE(s.tunnel_error, '')
+		       COALESCE(s.tunnel_error, ''), COALESCE(s.load_weight, 1)
 		FROM servers s
 		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 		WHERE %s
@@ -81,7 +81,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		var s serverResponse
 		var updatedAt time.Time
 		var sshKeyName string
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
 			return
 		}

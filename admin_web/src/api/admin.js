@@ -228,3 +228,14 @@ export function getSettings() {
 export function updateSetting(key, value) {
   return apiFetch('/settings', { method: 'POST', body: { key, value } })
 }
+
+// ── Auto-Tuner ──
+export function fetchAutoTunerStatus() {
+  return apiFetch('/auto-tuner/status')
+}
+export function fetchAutoTunerHistory(limit = 50) {
+  return apiFetch(`/auto-tuner/history?limit=${limit}`)
+}
+export function toggleAutoTuner(enabled) {
+  return apiFetch('/auto-tuner/toggle', { method: 'POST', body: { enabled } })
+}
