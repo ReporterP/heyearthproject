@@ -109,7 +109,7 @@ func buildClashConfig(userID string) string {
 			`  - name: "%s"
     type: vless
     server: %s
-    port: 10443
+    port: 443
     uuid: "%s"
     flow: xtls-rprx-vision
     network: tcp

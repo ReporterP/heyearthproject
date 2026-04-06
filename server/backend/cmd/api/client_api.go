@@ -179,7 +179,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
 		if realityPubKey != "" {
 			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:10443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&flow=xtls-rprx-vision#HeYearth-VLESS",
+				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&flow=xtls-rprx-vision#HeYearth-VLESS",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
