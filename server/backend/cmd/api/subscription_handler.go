@@ -87,12 +87,21 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(clashConfig))
 
 	default:
-		// V2Ray/Happ/SingBox subscription format: base64 encoded URIs
-		encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(uris, "\n")))
-		// Happ requires specific content-type; standard V2Ray clients accept both
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
-		w.Write([]byte(encoded))
+		ua := strings.ToLower(r.Header.Get("User-Agent"))
+		plainURIs := strings.Join(uris, "\n")
+
+		if strings.Contains(ua, "happ") || r.URL.Query().Get("raw") == "1" {
+			// Happ and raw mode: plain text URIs without base64
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
+			w.Write([]byte(plainURIs))
+		} else {
+			// V2Ray/SingBox: standard base64 encoded
+			encoded := base64.StdEncoding.EncodeToString([]byte(plainURIs))
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
+			w.Write([]byte(encoded))
+		}
 	}
 }
 
