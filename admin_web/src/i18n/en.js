@@ -151,6 +151,7 @@ export default {
   serverSyncTunnelDesc: 'TCP connect test to tunnel port',
   serverFetchCreds: 'Fetch tunnel creds',
   serverFetchCredsDesc: 'Fetch credentials from exit-node and update DB',
+  serverTunnelError: 'Reason',
   serverLogs: 'Logs',
   serverFiles: 'Files',
   serverLogsTitle: 'Server logs',

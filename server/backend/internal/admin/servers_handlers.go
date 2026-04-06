@@ -59,7 +59,8 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 		       s.ssh_key_id, COALESCE(sk.name, ''),
-		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port
+		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
+		       COALESCE(s.tunnel_error, '')
 		FROM servers s
 		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 		WHERE %s
@@ -80,7 +81,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		var s serverResponse
 		var updatedAt time.Time
 		var sshKeyName string
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
 			return
 		}
@@ -394,7 +395,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
 			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
 			       COALESCE(s.tunnel_sni, ''),
-			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
+			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, ''),
+			       COALESCE(s.tunnel_error, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
@@ -408,7 +410,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
-			&server.TunnelSSMethod, &server.TunnelSSPass)
+			&server.TunnelSSMethod, &server.TunnelSSPass, &server.TunnelError)
 		if err != nil {
 			return server, err
 		}
@@ -427,7 +429,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
 			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
 			       COALESCE(s.tunnel_sni, ''),
-			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, '')
+			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, ''),
+			       COALESCE(s.tunnel_error, '')
 			FROM servers s
 			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
@@ -439,7 +442,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
-			&server.TunnelSSMethod, &server.TunnelSSPass)
+			&server.TunnelSSMethod, &server.TunnelSSPass, &server.TunnelError)
 		if err != nil {
 			return server, err
 		}

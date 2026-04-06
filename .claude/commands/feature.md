@@ -11,25 +11,17 @@ argument-hint: <описание фичи одной фразой>
 
 Оцени сложность задачи. Если это **тривиальная правка** (одно место, очевидное решение, <30 мин) — предложи пользователю использовать `/fix` вместо `/feature` и останови workflow. Иначе продолжай.
 
-## Шаг 2: Получить ID эпика
+## Шаг 2: Создать Beads epic
 
-**Проверка Beads:** `bd list 2>&1 | head -3`
-- Если работает (возвращает список/пустой результат) → Beads-режим
-- Если ошибка `no beads database found` или `dolt is not installed` → markdown-режим
-
-### Beads-режим
 ```bash
-bd create -t epic "<название на английском>"
+bd create -t epic "<название на английском>" --description "<одна строка>"
 ```
-Запомни возвращённый ID (например `hiearth-42`).
 
-### Markdown-режим (текущий в этом проекте)
-1. Прочитай `docs/tasklist/_next_id.txt` — там следующий свободный номер
-2. Используй его как ID (например `hiearth-001`)
-3. Обнови `_next_id.txt` с инкрементом (`002`)
-4. Добавь строку в `docs/tasklist/INDEX.md` в секцию Active с ссылками на PRD/plan/tasklist
+Beads вернёт ID формата `heyearthproject-<hash>` (например `heyearthproject-c3m`). Запомни его — он идёт во frontmatter всех артефактов.
 
-**Slug** для имён файлов: kebab-case английский от названия (например `jwt-refresh-tokens`).
+**Slug для имён файлов:** kebab-case английский от названия (например `jwt-refresh-tokens`). Не путать с Beads ID — slug короче и человекочитаем.
+
+Если `bd` падает с `command not found` — напомни пользователю что Dolt должен быть в PATH (автоматически через `~/.bashrc`, но новая сессия bash может не подхватить сразу).
 
 ## Шаг 3: Brainstorming
 
@@ -66,9 +58,8 @@ bd create -t epic "<название на английском>"
 - Test/verification strategy
 - Rollback plan
 
-## Шаг 7: Создать подзадачи
+## Шаг 7: Создать подзадачи в Beads
 
-### Beads-режим
 Для каждой подзадачи из плана:
 ```bash
 bd create "<описание>" -t task
@@ -77,10 +68,15 @@ bd dep add <new-id> <epic-id> --type parent-child
 bd dep add <later-id> <earlier-id> --type blocks
 ```
 
-### Markdown-режим
-Создай `docs/tasklist/<slug>.md` по шаблону `docs/tasklist/_template.md`. Подзадачи нумеруй как `hiearth-001.1`, `hiearth-001.2` и т.д. Зависимости обозначай словом `(blocks: 001.1)` в конце задачи.
+Типы зависимостей:
+- `parent-child` — связь эпик↔подзадача (не влияет на ready-front)
+- `blocks` — последовательность (блокирует ready-front)
+- `related` — связанные но независимые
+- `discovered-from` — side-quest найденный по пути
 
-В `docs/tasklist/INDEX.md` обнови ссылку на tasklist в соответствующей строке Active таблицы.
+Также создай `docs/tasklist/<slug>.md` по шаблону — он содержит человекочитаемый обзор с конкретными файлами и evidence-командами (Beads хранит только метаданные задач).
+
+Обнови `docs/tasklist/INDEX.md` — добавь строку эпика с ссылками на PRD/plan/tasklist.
 
 ## Шаг 8: Отчитаться и ждать
 

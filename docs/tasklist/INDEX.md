@@ -1,29 +1,50 @@
 # Tasklist Index
 
-Единый реестр всех активных и завершённых эпиков. Когда Beads недоступен — это source of truth для статуса работ.
+**Primary source of truth: Beads (`bd list`)**. Этот файл — человекочитаемое зеркало + навигация к артефактам.
 
-## Формат ID
+## Быстрые команды
 
-- `hiearth-001`, `hiearth-002`, ... — эпики
-- Подзадачи внутри эпика: `hiearth-001.1`, `hiearth-001.2`, ...
-- Баги-сайдквесты: `hiearth-bug-NNN`
+```bash
+bd stats                           # сводка по статусам
+bd list                            # все задачи с иерархией
+bd ready                           # задачи без блокеров (что брать в работу)
+bd show <id>                       # детали конкретной задачи
+bd list --status in_progress       # что сейчас в работе
+```
 
-Следующий свободный ID эпика: **hiearth-001** (см. `_next_id.txt`)
+**Prefix:** `heyearthproject-<hash>` (например `heyearthproject-c3m`, `heyearthproject-eia`)
 
-## Active
+## Эпики и артефакты
 
-| ID | Title | Status | PRD | Plan | Tasklist |
-|----|-------|--------|-----|------|----------|
-| — | — | — | — | — | — |
+Таблица показывает эпики с ссылками на их AIDD артефакты. Обновляется вручную при создании/закрытии эпика.
 
-## Done
+| Beads ID | Title | Status | PRD | Plan | Tasklist | QA |
+|----------|-------|--------|-----|------|----------|----|
+| — | — | — | — | — | — | — |
 
-| ID | Title | Completed | QA Report |
-|----|-------|-----------|-----------|
-| — | — | — | — |
+## Как добавить новый эпик
 
-## Bugs (open side quests)
+```bash
+# 1. Создать в Beads
+bd create -t epic "Feature title"
+# → запоминаем возвращённый id, например heyearthproject-xyz
 
-| ID | Title | Discovered from | Severity |
-|----|-------|-----------------|----------|
-| — | — | — | — |
+# 2. Создать AIDD артефакты (slug — kebab-case от названия)
+# docs/prd/<slug>.prd.md          (frontmatter: beads_id: heyearthproject-xyz)
+# docs/plan/<slug>.md
+# docs/tasklist/<slug>.md
+
+# 3. Добавить строку в таблицу выше
+
+# 4. Создать подзадачи:
+bd create "subtask 1" -t task
+bd dep add <subtask-id> heyearthproject-xyz --type parent-child
+bd dep add <subtask-2-id> <subtask-1-id> --type blocks  # если последовательно
+```
+
+## Closed epics (last 10)
+
+Можно получить через:
+```bash
+bd list --status closed --limit 10
+```

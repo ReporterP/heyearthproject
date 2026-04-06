@@ -257,3 +257,14 @@ func UpdateTunnelStatusWithLatency(serverID int, status string, latencyMs int) e
 	`, status, latencyMs, serverID)
 	return err
 }
+
+// UpdateTunnelStatusWithError updates tunnel status + stores a human-readable error reason.
+func UpdateTunnelStatusWithError(serverID int, status string, latencyMs int, tunnelError string) error {
+	_, err := db.DB.Exec(`
+		UPDATE servers
+		SET tunnel_status = $1, latency_ms = $2, tunnel_error = $3,
+		    last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $4
+	`, status, latencyMs, tunnelError, serverID)
+	return err
+}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
@@ -253,6 +254,7 @@ export default function ServersPage() {
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
+  const navigate = useNavigate()
   const paged = usePagedData(fetchServersPaged)
 
   const [dialog, setDialog] = useState(null)
@@ -508,7 +510,7 @@ export default function ServersPage() {
         <div className="flex items-start justify-between mb-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="font-semibold truncate">{srv.name || ip}</h3>
+              <h3 className="font-semibold truncate cursor-pointer hover:text-brand transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</h3>
             </div>
             {/* IP address prominent */}
             <div className="flex items-center gap-1.5 mt-1">
@@ -547,6 +549,9 @@ export default function ServersPage() {
             <span className="text-[10px] text-text-secondary">:{srv.tunnel_port}</span>
           )}
         </div>
+        {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
+          <p className="text-xs text-red-400 mb-2">{t.serverTunnelError}: {srv.tunnel_error}</p>
+        )}
 
         {/* Tags */}
         {srv.tags && srv.tags.length > 0 && (
@@ -622,7 +627,7 @@ export default function ServersPage() {
     return (
       <tr className="border-b border-white/5 hover:bg-surface-alt/30 transition">
         <td className="py-3 px-3">
-          <div className="font-semibold text-sm">{srv.name || ip}</div>
+          <div className="font-semibold text-sm cursor-pointer hover:text-brand transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</div>
           <div className="flex items-center gap-2 mt-0.5">
             {srv.location && <span className="text-xs text-text-secondary">{srv.location}</span>}
             {srv.country_code && <span className="text-xs text-text-secondary">{srv.country_code.toUpperCase()}</span>}
@@ -640,6 +645,9 @@ export default function ServersPage() {
             <TunnelBadge status={srv.tunnel_status} />
             {srv.tunnel_protocol && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
+            )}
+            {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
+              <span className="text-xs text-red-400 ml-1 truncate max-w-[200px]" title={srv.tunnel_error}>{srv.tunnel_error}</span>
             )}
           </div>
         </td>

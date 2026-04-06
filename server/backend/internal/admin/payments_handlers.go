@@ -35,8 +35,8 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT p.id, p.user_id, COALESCE(u.user_id, ''), p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
-		       COALESCE(p.external_id, ''), COALESCE(p.notes, ''), p.metadata,
+		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(u.user_id, ''), p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
+		       COALESCE(p.external_id, ''), COALESCE(p.notes, ''), COALESCE(p.metadata, '{}'::jsonb),
 		       p.created_at, COALESCE(p.updated_at, p.created_at), p.confirmed_at
 		FROM payments p
 		LEFT JOIN users u ON u.id = p.user_id

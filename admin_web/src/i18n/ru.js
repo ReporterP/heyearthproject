@@ -151,6 +151,7 @@ export default {
   serverSyncTunnelDesc: 'Проверка TCP-соединения к порту туннеля',
   serverFetchCreds: 'Получить tunnel creds',
   serverFetchCredsDesc: 'Считать ключи с exit-ноды и обновить в БД',
+  serverTunnelError: 'Причина',
   serverLogs: '\u041B\u043E\u0433\u0438',
   serverFiles: '\u0424\u0430\u0439\u043B\u044B',
   serverLogsTitle: '\u041B\u043E\u0433\u0438 \u0441\u0435\u0440\u0432\u0435\u0440\u0430',

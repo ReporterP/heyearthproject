@@ -64,11 +64,19 @@ reports/
 
 ### Интеграция с плагинами
 
-- **Superpowers** (встроен в Claude Code): `brainstorming`, `writing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `finishing-a-development-branch` — используются на конкретных этапах workflow, не как отдельные команды пользователя.
-- **Beads** (если установлен Dolt): `bd create`, `bd ready`, `bd update --claim`, `bd close`, `bd dep add` — трекинг задач с зависимостями. Если Dolt не установлен, используй `docs/tasklist/*.md` как единственный источник истины.
+- **Superpowers** (встроен в Claude Code): `brainstorming`, `writing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `finishing-a-development-branch` — используются на конкретных этапах workflow.
+- **Beads** (активен, server mode на `127.0.0.1:49275`): `bd create`, `bd ready`, `bd update --claim`, `bd close`, `bd dep add` — трекинг задач с зависимостями. Issue prefix: `heyearthproject-<hash>` (например `heyearthproject-c3m`). Dolt CLI в `/c/Program Files/Dolt/bin/dolt.exe`, подключён через `~/.bashrc`. **Это primary source of truth для задач.**
 - **Template Bridge**: `template-bridge:template-catalog` — когда нужен специалист, которого нет в `.claude/agents/`. Устанавливай через `npx claude-code-templates@latest --agent <cat>/<name> --yes` только по просьбе или явной необходимости.
 - **Context7** (`mcp__context7__query-docs`): **обязательно** перед написанием кода, использующего внешние библиотеки (Go модули, npm пакеты, Flutter пакеты). Не полагайся на память — API меняется.
 - **Sequential Thinking** (`mcp__sequential-thinking__sequentialthinking`): для сложных архитектурных раздумий, когда нужно разложить задачу пошагово.
+
+### Beads operational notes
+
+- **Dolt server** запускается автоматически при первом `bd` вызове (lock-файл в `.beads/dolt-server.pid`). Порт динамический, сохранён в `.beads/dolt-server.port`.
+- **Markdown files в `docs/` остаются** — они хранят содержимое артефактов (PRD, plan, research, QA), Beads хранит только метаданные задач и зависимости. Это не дублирование: Beads = "что и когда", docs = "как и почему".
+- **Связь:** в каждом AIDD артефакте (`docs/prd/<slug>.prd.md` и т.д.) YAML frontmatter содержит `beads_id: heyearthproject-<hash>`. При `bd show <id>` добавляй ссылку на файлы через `bd update <id> --notes "..."`.
+- **Без remote:** Dolt remote `origin` намеренно удалён (push в github падал с TLS). Беды это не пушит в git repo — только локальный Dolt DB в `.beads/dolt/`. Для синхронизации между машинами настрой Dolt remote отдельно (`bd dolt remote add origin ...`).
+- **Git hooks** установлены в `.beads/hooks/` — следи за auto-commit Dolt данных при git operations.
 
 ### Верификация в проекте без тестов
 

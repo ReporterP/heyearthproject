@@ -190,6 +190,7 @@ type serverResponse struct {
 	TunnelSNI       string `json:"tunnel_sni,omitempty"`
 	TunnelSSMethod  string `json:"tunnel_ss_method,omitempty"`
 	TunnelSSPass    string `json:"tunnel_ss_password,omitempty"`
+	TunnelError     string `json:"tunnel_error,omitempty"`
 	LoadWeight      int    `json:"load_weight"`
 }
 

@@ -7,26 +7,23 @@ argument-hint: [slug или id задачи, опционально]
 
 ## Шаг 1: Определить что делать
 
-**Проверь Beads:** `bd list 2>&1 | head -3`
-
 **Если аргумент пустой:**
-- Beads-режим: `bd ready` — покажет задачи без блокеров
-- Markdown-режим: найди в `docs/tasklist/INDEX.md` эпики со статусом Active. Открой их `docs/tasklist/<slug>.md` и покажи первую незакрытую `- [ ]` задачу, учитывая `(blocks: ...)` зависимости
-- Покажи список, попроси пользователя выбрать
+```bash
+bd ready
+```
+Покажет задачи без блокеров. Если пусто — `bd list --status in_progress` (возможно задача уже claimed с прошлой сессии). Попроси пользователя выбрать из списка.
 
 **Если аргумент указан:**
-- Если это slug эпика (`<slug>`) — открой `docs/plan/<slug>.md` и `docs/tasklist/<slug>.md`, предложи следующую незакрытую подзадачу
-- Если это ID задачи (`hiearth-XX` или `hiearth-XX.Y`) — найди её в соответствующем tasklist
+- Если это Beads ID (`heyearthproject-<hash>`) → `bd show <id>` для деталей
+- Если это slug эпика → открой `docs/plan/<slug>.md` и `docs/tasklist/<slug>.md`, предложи следующую незакрытую подзадачу (или найди соответствующий эпик через `bd list` grep'ом по названию)
 
 ## Шаг 2: Claim задачу
 
-### Beads-режим
 ```bash
 bd update <id> --claim
 ```
 
-### Markdown-режим
-В `docs/tasklist/<slug>.md` добавь к задаче `⏳` маркер и строчку "claimed: YYYY-MM-DD HH:MM" в Verification log. Это сигнализирует "взял в работу".
+Атомарно помечает задачу как `in_progress` и блокирует от параллельной работы в другом терминале/сессии.
 
 ## Шаг 3: Прочитать контекст
 
@@ -64,15 +61,15 @@ bd update <id> --claim
 
 ## Шаг 7: Закрыть задачу
 
-### Beads-режим
 ```bash
 bd close <id> --reason "<что сделано> | verified: <команда + вкратце результат>"
 ```
 
-### Markdown-режим
-- В `docs/tasklist/<slug>.md` замени `- [ ]` на `- [x]` для задачи, убери `⏳`
+Если это последняя подзадача эпика — Beads автоматически закроет эпик (auto-close completed molecule). Эта функция уже проверена.
+
+Также обнови `docs/tasklist/<slug>.md`:
+- Замени `- [ ]` на `- [x]` для задачи
 - В секцию Verification log добавь строку: `**<id>**: [YYYY-MM-DD HH:MM] <команда> ✓ <краткий результат>`
-- Если это последняя задача эпика — обнови статус в `docs/tasklist/INDEX.md`
 
 ## Шаг 8: Что дальше
 
@@ -82,14 +79,9 @@ bd close <id> --reason "<что сделано> | verified: <команда + в
 ## Side quests
 
 Если во время работы обнаружил баг/TODO/рефакторинг, не относящийся напрямую к задаче:
-
-### Beads-режим
 ```bash
 bd create "<описание>" -t bug
 bd dep add <new-id> <current-id> --type discovered-from
 ```
 
-### Markdown-режим
-Добавь строку в `docs/tasklist/INDEX.md` в секцию Bugs с ID `hiearth-bug-NNN` (инкремент от последнего bug-id), ссылкой на текущий эпик в колонке "Discovered from", severity.
-
-Не отвлекайся на side quest сразу — продолжай текущую задачу.
+Не отвлекайся на side quest сразу — продолжай текущую задачу. После её закрытия `bd ready` покажет новый bug как доступный для работы.

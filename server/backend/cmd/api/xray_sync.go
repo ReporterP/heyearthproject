@@ -727,7 +727,7 @@ func checkAllTunnels() {
 
 	statusChanged := false
 	for _, node := range nodes {
-		probeResult, latencyMs := checkTunnelHealth(node)
+		probeResult, latencyMs, probeError := checkTunnelHealth(node)
 		oldStatus := node.TunnelStatus
 		hc := getHealthCounter(node.ID)
 
@@ -760,7 +760,7 @@ func checkAllTunnels() {
 		}
 
 		if newStatus != oldStatus {
-			if err := biz.UpdateTunnelStatusWithLatency(node.ID, newStatus, latencyMs); err != nil {
+			if err := biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError); err != nil {
 				log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
 				continue
 			}
@@ -782,9 +782,9 @@ func checkAllTunnels() {
 				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s",
 					node.ID, node.Name, oldStatus, newStatus)
 			}
-		} else if newStatus == "healthy" {
-			// Обновляем last_tunnel_check и latency даже без смены статуса
-			_ = biz.UpdateTunnelStatusWithLatency(node.ID, newStatus, latencyMs)
+		} else {
+			// Обновляем last_tunnel_check при КАЖДОЙ проверке, независимо от статуса
+			_ = biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError)
 		}
 	}
 
@@ -801,16 +801,15 @@ func checkAllTunnels() {
 // - Hysteria2: проверка локального SOCKS5 порта Hysteria2-клиента на Hub
 // - Остальные: TCP connect
 // Возвращает статус и latency в миллисекундах.
-func checkTunnelHealth(node biz.ExitNodeTunnel) (string, int) {
+func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, errMsg string) {
 	start := time.Now()
 
 	switch node.TunnelProtocol {
 	case "vless":
-		// TCP + TLS handshake к Reality endpoint
 		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
-			return "unhealthy", 0
+			return "unhealthy", 0, fmt.Sprintf("vless %s: %v", addr, err)
 		}
 		sni := node.TunnelSNI
 		if sni == "" {
@@ -818,46 +817,43 @@ func checkTunnelHealth(node biz.ExitNodeTunnel) (string, int) {
 		}
 		tlsConn := tls.Client(conn, &tls.Config{
 			ServerName:         sni,
-			InsecureSkipVerify: true, // Reality использует самоподписанные сертификаты
+			InsecureSkipVerify: true,
 		})
 		tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
 		if err := tlsConn.Handshake(); err != nil {
 			conn.Close()
-			return "unhealthy", 0
+			return "unhealthy", 0, fmt.Sprintf("vless %s: TLS handshake failed: %v", addr, err)
 		}
 		tlsConn.Close()
 
 	case "hysteria2":
-		// Hysteria2 client runs locally on Hub, check its SOCKS5 port.
 		hy2Port := 1088 + node.ID
 		localAddr := fmt.Sprintf("127.0.0.1:%d", hy2Port)
 		conn, err := net.DialTimeout("tcp", localAddr, 3*time.Second)
 		if err != nil {
-			return "unhealthy", 0
+			return "unhealthy", 0, fmt.Sprintf("hysteria2 local SOCKS %s: %v", localAddr, err)
 		}
 		conn.Close()
 
 	case "shadowsocks":
-		// TCP connect to SS+WS port (typically 443)
 		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
-			return "unhealthy", 0
+			return "unhealthy", 0, fmt.Sprintf("shadowsocks %s: %v", addr, err)
 		}
 		conn.Close()
 
 	default:
-		// Generic TCP connect
 		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
-			return "unhealthy", 0
+			return "unhealthy", 0, fmt.Sprintf("%s %s: %v", node.TunnelProtocol, addr, err)
 		}
 		conn.Close()
 	}
 
-	latencyMs := int(time.Since(start).Milliseconds())
-	return "healthy", latencyMs
+	latencyMs = int(time.Since(start).Milliseconds())
+	return "healthy", latencyMs, ""
 }
 
 // ─────────────────────── Sync Loop ───────────────────────
