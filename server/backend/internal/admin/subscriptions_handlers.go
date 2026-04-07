@@ -31,10 +31,13 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT us.user_id, u.user_id, us.group_id, ug.name, us.valid_until, us.auto_renew
+		SELECT us.user_id, u.user_id, us.group_id, ug.name, us.valid_until, us.auto_renew,
+		       COALESCE(us.plan_id, 0), COALESCE(p.name, ''), COALESCE(us.status, 'active'),
+		       COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, '')
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		JOIN user_groups ug ON ug.id = us.group_id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE %s
 		ORDER BY us.valid_until DESC
 		LIMIT $%d OFFSET $%d
@@ -48,12 +51,21 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var items []subscriptionResponse
+	type subRow struct {
+		subscriptionResponse
+		PlanID       int    `json:"plan_id"`
+		PlanName     string `json:"plan_name"`
+		Status       string `json:"status"`
+		PricePaid    int    `json:"price_paid"`
+		PromocodeUsed string `json:"promocode_used"`
+	}
+	var items []subRow
 	for rows.Next() {
-		var item subscriptionResponse
+		var item subRow
 		var validUntil time.Time
-		if err := rows.Scan(&item.UserID, &item.UserKey, &item.GroupID, &item.GroupName, &validUntil, &item.AutoRenew); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, "Failed to scan subscription")
+		if err := rows.Scan(&item.UserID, &item.UserKey, &item.GroupID, &item.GroupName, &validUntil, &item.AutoRenew,
+			&item.PlanID, &item.PlanName, &item.Status, &item.PricePaid, &item.PromocodeUsed); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to scan subscription: "+err.Error())
 			return
 		}
 		item.ValidUntil = validUntil.Format(time.RFC3339)

@@ -65,11 +65,18 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	// Apply promocode if provided
 	promoUsed := ""
 	if body.Promocode != "" {
-		finalPrice, _, _, promoErr := biz.ApplyPromoToPrice(priceRub, body.Promocode)
-		if promoErr == nil {
-			priceRub = finalPrice
-			promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
+		// Check per-user limit first
+		if err := biz.CheckPromoPerUserLimit(userID, body.Promocode); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
 		}
+		finalPrice, _, _, promoErr := biz.ApplyPromoToPrice(priceRub, body.Promocode, plan.ID)
+		if promoErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": promoErr.Error()})
+			return
+		}
+		priceRub = finalPrice
+		promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
 	}
 
 	// Free plan — activate immediately without payment

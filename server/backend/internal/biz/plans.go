@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/db"
 	"github.com/lib/pq"
@@ -238,23 +239,49 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 	return err
 }
 
-// ApplyPromoToPrice calculates final price after applying a promocode.
-func ApplyPromoToPrice(basePrice int, code string) (finalPrice int, freeTrialDays int, trafficGiftBytes int64, err error) {
+// ApplyPromoToPrice validates and applies a promocode for a specific plan and user.
+func ApplyPromoToPrice(basePrice int, code string, planID ...int) (finalPrice int, freeTrialDays int, trafficGiftBytes int64, err error) {
+	codeNorm := strings.ToUpper(strings.TrimSpace(code))
+
 	var promoType string
-	var discountPercent, discountFixed, freeDays int
+	var discountPercent, discountFixed, freeDays, maxUses, currentUses int
 	var trafficGift int64
 	var isActive bool
+	var expiresAt sql.NullTime
+	var appliesToPlans pq.Int64Array
 
 	err = db.DB.QueryRow(`
 		SELECT promo_type, COALESCE(discount_percent,0), COALESCE(discount_fixed_rub,0),
-		       COALESCE(free_days,0), COALESCE(traffic_gift_bytes,0), is_active
+		       COALESCE(free_days,0), COALESCE(traffic_gift_bytes,0), is_active,
+		       max_uses, current_uses, expires_at, applies_to_plans
 		FROM promocodes WHERE code = $1
-	`, strings.ToUpper(strings.TrimSpace(code))).Scan(&promoType, &discountPercent, &discountFixed, &freeDays, &trafficGift, &isActive)
+	`, codeNorm).Scan(&promoType, &discountPercent, &discountFixed, &freeDays, &trafficGift,
+		&isActive, &maxUses, &currentUses, &expiresAt, &appliesToPlans)
 	if err != nil {
-		return basePrice, 0, 0, fmt.Errorf("invalid promocode")
+		return basePrice, 0, 0, fmt.Errorf("промокод не найден")
 	}
 	if !isActive {
-		return basePrice, 0, 0, fmt.Errorf("promocode expired")
+		return basePrice, 0, 0, fmt.Errorf("промокод деактивирован")
+	}
+	if maxUses > 0 && currentUses >= maxUses {
+		return basePrice, 0, 0, fmt.Errorf("промокод исчерпан")
+	}
+	if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
+		return basePrice, 0, 0, fmt.Errorf("промокод истёк")
+	}
+
+	// Check applies_to_plans
+	if len(appliesToPlans) > 0 && len(planID) > 0 {
+		found := false
+		for _, pid := range appliesToPlans {
+			if int(pid) == planID[0] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return basePrice, 0, 0, fmt.Errorf("промокод не действует на этот план")
+		}
 	}
 
 	switch promoType {
@@ -277,5 +304,28 @@ func ApplyPromoToPrice(basePrice int, code string) (finalPrice int, freeTrialDay
 	default:
 		finalPrice = basePrice
 	}
+
+	// Increment usage counter
+	db.DB.Exec("UPDATE promocodes SET current_uses = current_uses + 1, updated_at = NOW() WHERE code = $1", codeNorm)
+
 	return
+}
+
+// CheckPromoPerUserLimit checks if user has already used this promo.
+func CheckPromoPerUserLimit(userID, code string) error {
+	codeNorm := strings.ToUpper(strings.TrimSpace(code))
+	var perUserLimit int
+	err := db.DB.QueryRow("SELECT COALESCE(per_user_limit, 1) FROM promocodes WHERE code = $1", codeNorm).Scan(&perUserLimit)
+	if err != nil {
+		return nil // no promo or no limit
+	}
+	if perUserLimit <= 0 {
+		return nil // unlimited
+	}
+	var usedCount int
+	db.DB.QueryRow("SELECT COUNT(*) FROM user_subscriptions us JOIN users u ON u.id = us.user_id WHERE u.user_id = $1 AND us.promocode_used = $2", userID, codeNorm).Scan(&usedCount)
+	if usedCount >= perUserLimit {
+		return fmt.Errorf("промокод уже использован (лимит %d на пользователя)", perUserLimit)
+	}
+	return nil
 }

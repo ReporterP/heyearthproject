@@ -130,7 +130,7 @@ export default function DashboardPage() {
 
   const userId = profile?.user_id || '...'
   const username = profile?.username || ''
-  const currentPlan = profile?.current_plan || subscription?.group_name || subscription?.plan || ''
+  const currentPlan = connections?.plan?.name || profile?.current_plan || subscription?.group_name || subscription?.plan || ''
   const validUntil = profile?.valid_until || subscription?.valid_until
   const isPremium = profile?.is_premium || subscription?.plan === 'premium'
   const hasActiveSub = !!currentPlan && currentPlan !== ''

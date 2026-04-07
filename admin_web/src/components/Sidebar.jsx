@@ -5,9 +5,9 @@ import { useT } from '../i18n/index.jsx'
 const navItems = [
   { to: '/dashboard', label: 'navDashboard', perm: 'dashboard.read', icon: DashboardIcon },
   { to: '/users', label: 'navUsers', perm: 'users.read', icon: UsersIcon },
-  { to: '/groups', label: 'navGroups', perm: 'groups.read', icon: GroupsIcon },
-  { to: '/subscriptions', label: 'navSubscriptions', perm: 'subscriptions.read', icon: SubsIcon },
   { to: '/plans', label: 'navPlans', perm: 'settings.read', icon: PlansIcon },
+  { to: '/subscriptions', label: 'navSubscriptions', perm: 'subscriptions.read', icon: SubsIcon },
+  // Groups hidden — replaced by Plans. Route still works at /groups for direct access.
   { to: '/promocodes', label: 'navPromocodes', perm: 'promocodes.read', icon: PromoIcon },
   { to: '/payments', label: 'navPayments', perm: 'payments.read', icon: PaymentsIcon },
   { to: '/traffic', label: 'navTraffic', perm: 'dashboard.read', icon: TrafficIcon },

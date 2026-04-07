@@ -343,9 +343,9 @@ func SyncXrayConfig() error {
 
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
 	if len(exitTags) > 0 {
-		// Стратегия: random — работает с взвешенными тегами (дублированные теги = больше веса).
-		// leastPing игнорирует дубли, а random корректно распределяет пропорционально.
 		balancerStrategy := biz.GetSettingOrDefault("balancer_strategy", "random")
+
+		// Default balancer with all exit nodes
 		balancers := []map[string]interface{}{
 			{
 				"tag":      "exit-balancer",
@@ -353,9 +353,53 @@ func SyncXrayConfig() error {
 				"strategy": map[string]string{"type": balancerStrategy},
 			},
 		}
+
+		// Per-plan balancers: create a balancer for each unique set of allowed servers
+		planBalancers := map[int]string{} // planID → balancer tag
+		for _, client := range activeClients {
+			if client.PlanID == 0 || len(client.AllowedServerIDs) == 0 {
+				continue // no plan or all servers → default balancer
+			}
+			if _, exists := planBalancers[client.PlanID]; exists {
+				continue // already created for this plan
+			}
+			// Build tag list for this plan's servers
+			var planTags []string
+			for _, serverID := range client.AllowedServerIDs {
+				tag := fmt.Sprintf("exit-%d", serverID)
+				// Check if this exit node is actually in our healthy list
+				for _, et := range exitTags {
+					if et == tag {
+						planTags = append(planTags, tag)
+						break
+					}
+				}
+			}
+			if len(planTags) == 0 {
+				continue // no healthy servers for this plan → use default
+			}
+			balancerTag := fmt.Sprintf("plan-%d-balancer", client.PlanID)
+			planBalancers[client.PlanID] = balancerTag
+			balancers = append(balancers, map[string]interface{}{
+				"tag":      balancerTag,
+				"selector": planTags,
+				"strategy": map[string]string{"type": balancerStrategy},
+			})
+		}
 		routing["balancers"] = balancers
 
-		// Финальное правило: весь оставшийся трафик — через балансировщик exit-нод
+		// Per-plan routing rules: match user email → plan-specific balancer
+		for _, client := range activeClients {
+			if balancerTag, ok := planBalancers[client.PlanID]; ok {
+				rules = append(rules, map[string]interface{}{
+					"type":        "field",
+					"user":        []string{client.UserID},
+					"balancerTag": balancerTag,
+				})
+			}
+		}
+
+		// Default rule: all remaining traffic → default balancer with all exit nodes
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"network":     "tcp,udp",

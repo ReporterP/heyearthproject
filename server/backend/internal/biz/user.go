@@ -121,17 +121,19 @@ func ListActiveVlessUUIDs() ([]string, error) {
 
 // ActiveVlessClient — VLESS клиент с информацией о premium для Xray policy level.
 type ActiveVlessClient struct {
-	UUID      string
-	UserID    string
-	IsPremium bool
+	UUID             string
+	UserID           string
+	IsPremium        bool
+	PlanID           int
+	AllowedServerIDs []int // from plan_servers; empty = all servers
 }
 
-// ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о premium.
-// Используется для установки правильного policy level в Xray конфиге.
+// ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 	rows, err := db.DB.Query(`
 		SELECT DISTINCT u.vless_uuid::text, u.user_id,
-		       COALESCE(bool_or(ug.is_premium), FALSE) AS is_premium
+		       COALESCE(bool_or(ug.is_premium), FALSE) AS is_premium,
+		       COALESCE(us.plan_id, 0)
 		FROM users u
 		JOIN user_subscriptions us ON us.user_id = u.id
 		JOIN user_groups ug ON ug.id = us.group_id
@@ -139,7 +141,7 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
 		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-		GROUP BY u.vless_uuid, u.user_id
+		GROUP BY u.vless_uuid, u.user_id, us.plan_id
 	`)
 	if err != nil {
 		return nil, err
@@ -148,8 +150,21 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 	var result []ActiveVlessClient
 	for rows.Next() {
 		var c ActiveVlessClient
-		if err := rows.Scan(&c.UUID, &c.UserID, &c.IsPremium); err != nil {
+		if err := rows.Scan(&c.UUID, &c.UserID, &c.IsPremium, &c.PlanID); err != nil {
 			return nil, err
+		}
+		// Load allowed server IDs from plan_servers
+		if c.PlanID > 0 {
+			srvRows, srvErr := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1", c.PlanID)
+			if srvErr == nil {
+				for srvRows.Next() {
+					var sid int
+					if srvRows.Scan(&sid) == nil {
+						c.AllowedServerIDs = append(c.AllowedServerIDs, sid)
+					}
+				}
+				srvRows.Close() // close immediately, not defer (inside loop)
+			}
 		}
 		result = append(result, c)
 	}

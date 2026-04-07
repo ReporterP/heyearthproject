@@ -472,6 +472,19 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
 	}
 
+	// Add plan info to response
+	if plan, err := biz.GetUserPlan(userID); err == nil && plan != nil {
+		resp["plan"] = map[string]any{
+			"id":                plan.ID,
+			"slug":              plan.Slug,
+			"name":              plan.Name,
+			"allowed_protocols": plan.AllowedProtocols,
+			"server_ids":        plan.ServerIDs,
+			"traffic_limit":     plan.TrafficLimitBytes,
+			"duration_days":     plan.DurationDays,
+		}
+	}
+
 	// Подключения доступны только при активной подписке (per-user UUID)
 	if access.CanConnect {
 		options := buildHubConnectionOptions(userID)
