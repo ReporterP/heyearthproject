@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { createPayment } from '../api/user.js'
+import { createPayment, getProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 
 const CheckIcon = () => (
@@ -33,24 +33,34 @@ export default function PaymentPage() {
   const [plans, setPlans] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPlan, setSelectedPlan] = useState(null)
+  const [currentPlanSlug, setCurrentPlanSlug] = useState(null)
+  const [validUntil, setValidUntil] = useState(null)
   const [promocode, setPromocode] = useState('')
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/v1/plans')
-      .then(r => r.json())
-      .then(data => {
-        setPlans(Array.isArray(data) ? data : [])
-        // Auto-select most popular (highest sort_order that isn't most expensive)
-        if (data.length > 0) {
-          const mid = data[Math.min(Math.floor(data.length / 2), data.length - 1)]
-          setSelectedPlan(mid?.id || data[0]?.id)
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
+    const promises = [
+      fetch('/api/v1/plans').then(r => r.json()).catch(() => []),
+    ]
+    // Fetch user profile to show current plan
+    if (token) {
+      promises.push(getProfile(token).catch(() => null))
+    }
+    Promise.all(promises).then(([plansData, profile]) => {
+      setPlans(Array.isArray(plansData) ? plansData : [])
+      if (profile?.current_plan_slug) {
+        setCurrentPlanSlug(profile.current_plan_slug)
+      } else if (profile?.current_plan) {
+        // Fallback: match by name
+        const match = (Array.isArray(plansData) ? plansData : []).find(
+          p => p.name === profile.current_plan || p.slug === profile.current_plan
+        )
+        if (match) setCurrentPlanSlug(match.slug)
+      }
+      if (profile?.valid_until) setValidUntil(profile.valid_until)
+    }).finally(() => setLoading(false))
+  }, [token])
 
   async function handlePay(planId) {
     if (!token) {
@@ -118,6 +128,7 @@ export default function PaymentPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-8">
           {plans.map((plan, idx) => {
             const isSelected = selectedPlan === plan.id
+            const isCurrent = currentPlanSlug === plan.slug
             const isFree = plan.price_rub === 0
             const features = []
             features.push(protocolLabel(plan.allowed_protocols))
@@ -133,13 +144,20 @@ export default function PaymentPage() {
                 key={plan.id}
                 onClick={() => setSelectedPlan(plan.id)}
                 className={`relative glass-card rounded-2xl p-6 cursor-pointer transition-all duration-300 animate-fade-in-up ${
-                  isSelected
-                    ? 'border-brand/50 shadow-lg shadow-brand/10 -translate-y-1'
-                    : 'border-white/10 hover:border-white/20'
+                  isCurrent
+                    ? 'border-green-500/50 shadow-lg shadow-green-500/10'
+                    : isSelected
+                      ? 'border-brand/50 shadow-lg shadow-brand/10 -translate-y-1'
+                      : 'border-white/10 hover:border-white/20'
                 }`}
                 style={{ animationDelay: `${idx * 100}ms` }}
               >
-                {isSelected && (
+                {isCurrent && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-green-500 text-white text-[10px] font-bold uppercase tracking-wider">
+                    Текущий план
+                  </div>
+                )}
+                {isSelected && !isCurrent && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-brand text-white text-[10px] font-bold uppercase tracking-wider">
                     Выбрано
                   </div>
@@ -171,7 +189,7 @@ export default function PaymentPage() {
                       : 'bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary'
                   } disabled:opacity-50`}
                 >
-                  {paying ? 'Обработка...' : isFree ? 'Активировать' : 'Оформить'}
+                  {paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}
                 </button>
               </div>
             )

@@ -752,12 +752,34 @@ func main() {
 	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
 	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
+	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
+
+	// Cards management
+	http.HandleFunc("/api/v1/user/cards", apiLimiter.Middleware(handleUserCards))
+	http.HandleFunc("/api/v1/user/cards/", apiLimiter.Middleware(handleDeleteCard))
+
+	// Auto-renew toggle
+	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
 	http.HandleFunc("/api/webhooks/tbank", webhookLimiter.Middleware(handleTBankWebhook))
 	// Legacy YooKassa webhook redirect — logs deprecation, forwards to T-Bank handler
 	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[DEPRECATION] /api/webhooks/yookassa called from %s — use /api/webhooks/tbank instead", r.RemoteAddr)
 		handleTBankWebhook(w, r)
 	}))
+
+	// Admin payment actions — registered via admin.PaymentActionHandler to avoid route conflicts
+	admin.PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/cancel") {
+			handleAdminPaymentCancel(w, r)
+		} else if strings.HasSuffix(path, "/check-status") {
+			handleAdminPaymentCheckStatus(w, r)
+		} else if path == "/api/admin/payments/resend" {
+			handleAdminPaymentResend(w, r)
+		} else {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		}
+	}
 
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))

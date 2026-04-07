@@ -23,9 +23,10 @@ type Plan struct {
 	Features         string   `json:"features"` // JSON string
 	IsActive         bool     `json:"is_active"`
 	SortOrder        int      `json:"sort_order"`
-	AutoRenewDefault bool     `json:"auto_renew_default"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
+	AutoRenewDefault      bool   `json:"auto_renew_default"`
+	MaxActivationsPerUser *int  `json:"max_activations_per_user,omitempty"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
 	// Computed
 	ServerIDs []int `json:"server_ids,omitempty"`
 }
@@ -35,7 +36,7 @@ func ListActivePlans() ([]Plan, error) {
 	rows, err := db.DB.Query(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
-		       created_at, updated_at
+		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE is_active = TRUE
 		ORDER BY sort_order, price_rub
 	`)
@@ -49,7 +50,7 @@ func ListActivePlans() ([]Plan, error) {
 		var p Plan
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
-			&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		p.ServerIDs = getPlanServerIDs(p.ID)
@@ -63,7 +64,7 @@ func ListAllPlans() ([]Plan, error) {
 	rows, err := db.DB.Query(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
-		       created_at, updated_at
+		       max_activations_per_user, created_at, updated_at
 		FROM plans ORDER BY sort_order, id
 	`)
 	if err != nil {
@@ -76,7 +77,7 @@ func ListAllPlans() ([]Plan, error) {
 		var p Plan
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
-			&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		p.ServerIDs = getPlanServerIDs(p.ID)
@@ -91,11 +92,11 @@ func GetPlanByID(id int) (*Plan, error) {
 	err := db.DB.QueryRow(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
-		       created_at, updated_at
+		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE id = $1
 	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
-		&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt)
+		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -109,11 +110,11 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 	err := db.DB.QueryRow(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
-		       created_at, updated_at
+		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE slug = $1
 	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
-		&p.AutoRenewDefault, &p.CreatedAt, &p.UpdatedAt)
+		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +143,11 @@ func CreatePlan(p *Plan) (int, error) {
 	var id int
 	err := db.DB.QueryRow(`
 		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		                   allowed_protocols, features, is_active, sort_order, auto_renew_default)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+		                   allowed_protocols, features, is_active, sort_order, auto_renew_default, max_activations_per_user)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
 		RETURNING id
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
-		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault).Scan(&id)
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -161,10 +162,10 @@ func UpdatePlan(id int, p *Plan) error {
 	_, err := db.DB.Exec(`
 		UPDATE plans SET slug=$1, name=$2, description=$3, price_rub=$4, duration_days=$5,
 		       traffic_limit_bytes=$6, allowed_protocols=$7, features=$8::jsonb, is_active=$9,
-		       sort_order=$10, auto_renew_default=$11, updated_at=CURRENT_TIMESTAMP
-		WHERE id = $12
+		       sort_order=$10, auto_renew_default=$11, max_activations_per_user=$12, updated_at=CURRENT_TIMESTAMP
+		WHERE id = $13
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
-		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, id)
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser, id)
 	if err != nil {
 		return err
 	}
@@ -215,6 +216,7 @@ func IsProtocolAllowed(userID, protocol string) bool {
 }
 
 // ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
+// Uses group_id=1 as the single-subscription slot (one active plan per user).
 func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
 	var dbUserID int
 	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
@@ -222,17 +224,19 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		return fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
-	// Use group_id=1 (Free) as default for backward compat with old schema
-	groupID := 1
+	// Ensure legacy group 1 exists (required for FK constraint).
+	// All plan-based subscriptions use group_id=1 as a single-slot key.
+	db.DB.Exec(`INSERT INTO user_groups (id, name, is_premium) VALUES (1, 'default', false) ON CONFLICT DO NOTHING`)
+
 	validUntil := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
 
 	_, err = db.DB.Exec(fmt.Sprintf(`
 		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
-		VALUES ($1, $2, %s, true, $3, $4, $5, 'active', NOW())
+		VALUES ($1, 1, %s, true, $2, $3, $4, 'active', NOW())
 		ON CONFLICT (user_id, group_id) DO UPDATE
 		SET valid_until = GREATEST(user_subscriptions.valid_until, %s),
-		    plan_id = $3, price_paid = $4, promocode_used = $5, status = 'active', auto_renew = true
-	`, validUntil, validUntil), dbUserID, groupID, planID, pricePaid, promocodeUsed)
+		    plan_id = $2, price_paid = $3, promocode_used = $4, status = 'active', auto_renew = true
+	`, validUntil, validUntil), dbUserID, planID, pricePaid, promocodeUsed)
 	if err == nil {
 		NotifySubscriptionChange()
 	}
@@ -340,6 +344,33 @@ func CheckPromoPerUserLimit(userID, code string) error {
 	db.DB.QueryRow("SELECT COUNT(*) FROM user_subscriptions us JOIN users u ON u.id = us.user_id WHERE u.user_id = $1 AND us.promocode_used = $2", userID, codeNorm).Scan(&usedCount)
 	if usedCount >= perUserLimit {
 		return fmt.Errorf("промокод уже использован (лимит %d на пользователя)", perUserLimit)
+	}
+	return nil
+}
+
+// CheckPlanActivationLimit checks if a plan has max_activations_per_user and if the user has exceeded it.
+// Used for trial plans that can only be activated once per user lifetime.
+func CheckPlanActivationLimit(userID string, planID int) error {
+	var maxActivations sql.NullInt64
+	err := db.DB.QueryRow("SELECT max_activations_per_user FROM plans WHERE id = $1", planID).Scan(&maxActivations)
+	if err != nil || !maxActivations.Valid {
+		return nil // no limit or plan not found
+	}
+	limit := int(maxActivations.Int64)
+	if limit <= 0 {
+		return nil // unlimited
+	}
+
+	// Count ALL historical activations (including expired) for this plan+user
+	var count int
+	db.DB.QueryRow(`
+		SELECT COUNT(*) FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.plan_id = $2
+	`, userID, planID).Scan(&count)
+
+	if count >= limit {
+		return fmt.Errorf("этот тариф можно активировать только %d раз", limit)
 	}
 	return nil
 }

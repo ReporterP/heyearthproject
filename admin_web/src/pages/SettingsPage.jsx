@@ -89,9 +89,9 @@ export default function SettingsPage() {
             <h3 className="text-lg font-semibold mb-3">{t.settingsServerSection}</h3>
             {loading ? <p className="text-text-secondary">{t.loading}</p> : (
               <div className="divide-y divide-white/5">
-                <SettingCard label={t.settingsYukassaShopId} hint={t.settingsYukassaShopIdHint} value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
-                <SettingCard label={t.settingsYukassaSecretKey} hint={t.settingsYukassaSecretKeyHint} value={settings.yookassa_secret_key} onSave={v => saveSetting('yookassa_secret_key', v)} type="password" />
-                <SettingCard label={t.settingsYukassaTestMode} hint={t.settingsYukassaTestModeHint} value={settings.yookassa_test_mode} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
+                <SettingCard label="T-Bank Terminal Key" hint="Идентификатор терминала из Т-Бизнес (например 1775468793904DEMO)" value={settings.tbank_terminal_key} onSave={v => saveSetting('tbank_terminal_key', v)} />
+                <SettingCard label="T-Bank Password" hint="Пароль терминала для генерации Token (SHA-256)" value={settings.tbank_password} onSave={v => saveSetting('tbank_password', v)} type="password" />
+                <SettingCard label="T-Bank Webhook URL" hint="URL для POST-уведомлений о статусах платежей. Настройте также в личном кабинете Т-Бизнес." value={settings.tbank_notification_url || 'https://hiearth.ru/api/webhooks/tbank'} onSave={v => saveSetting('tbank_notification_url', v)} />
               </div>
             )}
           </section>

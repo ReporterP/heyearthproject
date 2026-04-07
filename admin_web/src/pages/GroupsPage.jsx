@@ -14,6 +14,24 @@ export default function GroupsPage() {
   const toast = useToast()
   const paged = usePagedData(fetchGroupsPaged)
 
+  // Deprecation banner
+  return (
+    <div>
+      <div className="p-4 mb-6 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
+        <p className="font-semibold mb-1">Устаревшая страница</p>
+        <p>Группы заменены на <a href="/plans" className="text-brand underline hover:text-brand-light">Тарифные планы</a>. Управляйте подписками через страницу Планов. Группы сохранены для обратной совместимости.</p>
+      </div>
+      <GroupsPageContent />
+    </div>
+  )
+}
+
+function GroupsPageContent() {
+  const { t } = useT()
+  const { can } = useAuth()
+  const toast = useToast()
+  const paged = usePagedData(fetchGroupsPaged)
+
   const [dialog, setDialog] = useState(null) // { mode: 'create'|'edit', item }
   const [confirm, setConfirm] = useState(null)
   const [saving, setSaving] = useState(false)

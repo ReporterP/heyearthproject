@@ -79,6 +79,15 @@ export function createPayment(payload) {
 export function updatePayment(id, payload) {
   return apiFetch(`/payments/${id}`, { method: 'PATCH', body: payload })
 }
+export function cancelPayment(id, reason = '', amount = 0) {
+  return apiFetch(`/payments/${id}/cancel`, { method: 'POST', body: { reason, amount } })
+}
+export function checkPaymentStatus(id) {
+  return apiFetch(`/payments/${id}/check-status`, { method: 'POST' })
+}
+export function resendPaymentNotifications() {
+  return apiFetch('/payments/resend', { method: 'POST' })
+}
 
 // ── Servers ──
 export function fetchServersPaged(params) {

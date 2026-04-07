@@ -28,6 +28,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		Promocode string `json:"promocode"`
 		ReturnURL string `json:"return_url"`
 		Email     string `json:"email"`
+		SaveCard  *bool  `json:"save_card"` // nil = use plan default, true/false = explicit
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -51,6 +52,12 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil || plan == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "план не найден"})
+		return
+	}
+
+	// Check per-user activation limit (e.g., trial = 1 activation per user lifetime)
+	if err := biz.CheckPlanActivationLimit(userID, plan.ID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -121,7 +128,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		email,
 		returnURL,
 		notificationURL,
-		plan.AutoRenewDefault,
+		body.SaveCard != nil && *body.SaveCard, // Only save card if user explicitly opted in
 	)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tbank: " + err.Error()})
@@ -171,10 +178,17 @@ func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
 		notification.OrderID, notification.PaymentID, notification.Status, notification.Success, notification.Amount)
 
 	if !notification.Success {
-		log.Printf("[tbank-webhook] payment failed: code=%s", notification.ErrorCode)
-		w.Header().Set("Content-Type", "application/json")
+		log.Printf("[tbank-webhook] payment failed: code=%s status=%s", notification.ErrorCode, notification.Status)
+		// Update payment status in DB
+		if _, err := fmt.Sscanf(notification.OrderID, "hiearth-%d", new(int)); err == nil {
+			var pid int
+			fmt.Sscanf(notification.OrderID, "hiearth-%d", &pid)
+			db.DB.Exec("UPDATE payments SET status = 'failed', notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+				fmt.Sprintf("T-Bank: %s (code: %s)", notification.Status, notification.ErrorCode), pid)
+		}
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(tbClient.GetNotificationSuccessResponse()))
+		w.Write([]byte("OK"))
 		return
 	}
 
@@ -187,12 +201,11 @@ func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get payment from DB
+	// Get payment from DB — use user_id_text (canonical user_id string), not user_id (legacy INT FK)
 	var userID, metadata string
 	err = db.DB.QueryRow(`
-		SELECT COALESCE(u.user_id, ''), COALESCE(p.metadata::text, '{}')
+		SELECT COALESCE(p.user_id_text, ''), COALESCE(p.metadata::text, '{}')
 		FROM payments p
-		LEFT JOIN users u ON u.id = p.user_id
 		WHERE p.id = $1
 	`, paymentDBID).Scan(&userID, &metadata)
 	if err != nil {
@@ -247,9 +260,10 @@ func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// T-Bank expects plain "OK" response (not JSON)
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(tbClient.GetNotificationSuccessResponse()))
+	w.Write([]byte("OK"))
 }
 
 // ─────────────────────── Other Payment Endpoints ───────────────────────

@@ -23,6 +23,7 @@ type UserProfile struct {
 	Locale            string `json:"locale,omitempty"`
 	IsBlocked         bool   `json:"is_blocked"`
 	CurrentPlan       string `json:"current_plan,omitempty"`
+	CurrentPlanSlug   string `json:"current_plan_slug,omitempty"`
 	ValidUntil        string `json:"valid_until,omitempty"`
 	IsPremium         bool   `json:"is_premium"`
 	AccessStatus      string `json:"access_status"`
@@ -236,7 +237,8 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 	if sub == nil {
 		profile.CurrentPlan = ""
 	} else {
-		profile.CurrentPlan = sub.GroupName
+		profile.CurrentPlan = sub.GroupName  // plan name (from plans.name)
+		profile.CurrentPlanSlug = sub.Plan   // plan slug (from plans.slug)
 		profile.ValidUntil = sub.ValidUntil.Format(time.RFC3339)
 		profile.IsPremium = sub.IsPremium
 	}
@@ -301,10 +303,11 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 		return nil, err
 	}
 	rows, err := db.DB.Query(`
-		SELECT us.group_id, ug.name, us.valid_until, us.auto_renew, us.valid_until > NOW(),
-		       COALESCE(us.plan, 'standard'), COALESCE(us.price_rub, 0)
+		SELECT us.group_id, COALESCE(p.name, ug.name, 'standard'), us.valid_until, us.auto_renew, us.valid_until > NOW(),
+		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0)
 		FROM user_subscriptions us
 		JOIN user_groups ug ON ug.id = us.group_id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1
 		ORDER BY us.valid_until DESC
 	`, user.ID)

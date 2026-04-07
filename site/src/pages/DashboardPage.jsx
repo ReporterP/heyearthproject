@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation, getTrafficStats, getSubscribeLink } from '../api/user.js'
+import { getProfile, getSubscription, getConnections, getPayments, getDownloads, applyPromocode, createDonation, getTrafficStats, getSubscribeLink, getUserCards, deleteUserCard, toggleAutoRenew } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 
 function formatDate(d) {
@@ -88,6 +88,12 @@ export default function DashboardPage() {
   // Config version update notification
   const [configUpdated, setConfigUpdated] = useState(false)
 
+  // Cards
+  const [cards, setCards] = useState([])
+  // Auto-renew
+  const [autoRenew, setAutoRenew] = useState(true)
+  const [autoRenewLoading, setAutoRenewLoading] = useState(false)
+
   useEffect(() => {
     if (!token) { navigate('/login'); return }
     Promise.all([
@@ -98,14 +104,17 @@ export default function DashboardPage() {
       getDownloads().catch(() => ({ downloads: {} })),
       getTrafficStats(token).catch(() => null),
       getSubscribeLink(token).catch(() => null),
-    ]).then(([profileData, subData, connData, payData, dlData, trafficData, subLinkData]) => {
+      getUserCards(token).catch(() => ({ cards: [] })),
+    ]).then(([profileData, subData, connData, payData, dlData, trafficData, subLinkData, cardsData]) => {
       setProfile(profileData)
       // subData = { items: [...] } — берём первую активную
       if (subData?.items?.length > 0) {
         const active = subData.items.find(s => s.active) || subData.items[0]
         setSubscription(active)
+        setAutoRenew(active?.auto_renew ?? true)
       }
       setConnections(connData)
+      setCards(cardsData?.cards || [])
       // Check if config_version changed → user needs to refresh subscription
       if (connData?.config_version) {
         const savedVersion = localStorage.getItem('heyearth_config_version')
@@ -130,9 +139,9 @@ export default function DashboardPage() {
 
   const userId = profile?.user_id || '...'
   const username = profile?.username || ''
-  const currentPlan = connections?.plan?.name || profile?.current_plan || subscription?.group_name || subscription?.plan || ''
+  const currentPlan = profile?.current_plan || subscription?.plan_name || subscription?.group_name || ''
   const validUntil = profile?.valid_until || subscription?.valid_until
-  const isPremium = profile?.is_premium || subscription?.plan === 'premium'
+  const isPremium = profile?.is_premium
   const hasActiveSub = !!currentPlan && currentPlan !== ''
   const canConnect = connections?.can_connect
 
@@ -321,11 +330,7 @@ export default function DashboardPage() {
                 </div>
                 <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">Подписка</p>
               </div>
-              {hasActiveSub && isPremium && (
-                <span className="px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-orange-500/20 text-amber-400 text-xs font-bold">
-                  Premium
-                </span>
-              )}
+              {/* Plan name shown below — no separate premium badge needed */}
             </div>
 
             {hasActiveSub ? (
@@ -364,6 +369,65 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* ─── Auto-renew + Cards ─── */}
+        {hasActiveSub && (
+          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Оплата и продление</h3>
+            </div>
+            <div className="flex flex-wrap gap-6">
+              {/* Auto-renew toggle */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-text-secondary">Автопродление:</span>
+                <button
+                  onClick={async () => {
+                    setAutoRenewLoading(true)
+                    try {
+                      await toggleAutoRenew(token, !autoRenew)
+                      setAutoRenew(!autoRenew)
+                    } catch (e) { console.error(e) }
+                    finally { setAutoRenewLoading(false) }
+                  }}
+                  disabled={autoRenewLoading}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${autoRenew ? 'bg-green-500' : 'bg-white/20'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${autoRenew ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+                <span className={`text-sm ${autoRenew ? 'text-green-400' : 'text-text-secondary'}`}>
+                  {autoRenew ? 'Включено' : 'Выключено'}
+                </span>
+              </div>
+
+              {/* Saved cards */}
+              {cards.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-text-secondary">Карты:</span>
+                  {cards.map(card => (
+                    <div key={card.card_id} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-sm">
+                      <span className="font-mono text-xs">{card.pan}</span>
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Удалить карту ${card.pan}?`)) return
+                          try {
+                            await deleteUserCard(token, card.card_id)
+                            setCards(cards.filter(c => c.card_id !== card.card_id))
+                          } catch (e) { console.error(e) }
+                        }}
+                        className="text-red-400 hover:text-red-300 ml-1"
+                        title="Удалить карту"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ─── Traffic Stats ─── */}
         {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (

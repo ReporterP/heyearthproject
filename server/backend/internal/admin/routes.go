@@ -11,6 +11,10 @@ import (
 var adminLoginLimiter = middleware.NewRateLimiter(5, time.Minute)
 var publicLimiter = middleware.NewRateLimiter(10, time.Minute) // public endpoints: 10/min per IP
 
+// PaymentActionHandler is set by main package to handle T-Bank payment actions
+// (cancel, check-status, resend). Registered in routes to avoid pattern conflicts.
+var PaymentActionHandler http.HandlerFunc
+
 func RegisterRoutes() {
 	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
 	http.HandleFunc("/api/admin/overview", withMethod(http.MethodGet, RequirePermission("dashboard.read", OverviewHandler)))
@@ -104,7 +108,24 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
-	http.HandleFunc("/api/admin/payments/", withMethod(http.MethodPatch, RequirePermission("payments.write", UpdatePaymentHandler)))
+	http.HandleFunc("/api/admin/payments/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/check-status") || path == "/api/admin/payments/resend" {
+			// Delegate to payment action handlers registered externally
+			if PaymentActionHandler != nil {
+				PaymentActionHandler(w, r)
+			} else {
+				writeAdminError(w, http.StatusNotImplemented, "Payment actions not configured")
+			}
+			return
+		}
+		// Default: PATCH for update
+		if r.Method == http.MethodPatch {
+			RequirePermission("payments.write", UpdatePaymentHandler).ServeHTTP(w, r)
+		} else {
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 
 	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(RequirePermission("servers.write", GenerateTunnelCredsHandler))))
 	http.HandleFunc("/api/admin/servers", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {

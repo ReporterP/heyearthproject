@@ -129,11 +129,19 @@ type ActiveVlessClient struct {
 }
 
 // ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
+// Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
+// plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 	rows, err := db.DB.Query(`
-		SELECT DISTINCT u.vless_uuid::text, u.user_id,
+		SELECT u.vless_uuid::text, u.user_id,
 		       COALESCE(bool_or(ug.is_premium), FALSE) AS is_premium,
-		       COALESCE(us.plan_id, 0)
+		       COALESCE(
+		         (SELECT sub.plan_id FROM user_subscriptions sub
+		          WHERE sub.user_id = u.id AND sub.plan_id IS NOT NULL
+		            AND sub.valid_until > CURRENT_TIMESTAMP
+		          ORDER BY sub.valid_until DESC LIMIT 1),
+		         0
+		       ) AS best_plan_id
 		FROM users u
 		JOIN user_subscriptions us ON us.user_id = u.id
 		JOIN user_groups ug ON ug.id = us.group_id
@@ -141,7 +149,7 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
 		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-		GROUP BY u.vless_uuid, u.user_id, us.plan_id
+		GROUP BY u.vless_uuid, u.user_id, u.id
 	`)
 	if err != nil {
 		return nil, err
@@ -235,15 +243,22 @@ func touchLastSeen(userDBID int) {
 	`, userDBID)
 }
 
-// GetUserSubscription returns the highest-tier active subscription for a user.
+// GetUserSubscription returns the best active subscription for a user.
+// Prefers plan-based subscriptions over legacy group-based ones.
 func GetUserSubscription(userID int) (*Subscription, error) {
 	var sub Subscription
+	// Try plan-based subscription first (new system)
 	err := db.DB.QueryRow(`
-		SELECT us.group_id, ug.name, ug.is_premium, COALESCE(us.plan, 'standard'), COALESCE(us.price_rub, 0), us.valid_until
+		SELECT us.group_id, COALESCE(p.name, ug.name, 'standard'),
+		       COALESCE(p.price_rub > 200, ug.is_premium, FALSE),
+		       COALESCE(p.slug, us.plan, 'standard'),
+		       COALESCE(us.price_paid, p.price_rub, us.price_rub, 0),
+		       us.valid_until
 		FROM user_subscriptions us
 		JOIN user_groups ug ON us.group_id = ug.id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY ug.is_premium DESC, us.valid_until DESC
+		ORDER BY us.valid_until DESC
 		LIMIT 1
 	`, userID).Scan(&sub.GroupID, &sub.GroupName, &sub.IsPremium, &sub.Plan, &sub.PriceRub, &sub.ValidUntil)
 
@@ -257,6 +272,7 @@ func GetUserSubscription(userID int) (*Subscription, error) {
 }
 
 // ApplyPromocode applies a promocode to a user, extending their subscription.
+// Supports both legacy (group_id_granted) and new (free_trial/traffic_gift) promo types.
 func ApplyPromocode(userID int, code string) error {
 	tx, err := db.DB.Begin()
 	if err != nil {
@@ -264,26 +280,29 @@ func ApplyPromocode(userID int, code string) error {
 	}
 	defer tx.Rollback()
 
-	var groupID, durationDays, maxUses, currentUses int
+	var groupID, durationDays, maxUses, currentUses, freeDays int
+	var promoType string
 	var expiresAt sql.NullTime
 
 	err = tx.QueryRow(`
-		SELECT group_id_granted, duration_days, max_uses, current_uses, expires_at
+		SELECT COALESCE(group_id_granted, 1), COALESCE(duration_days, 30),
+		       max_uses, current_uses, expires_at, COALESCE(promo_type, 'free_trial'),
+		       COALESCE(free_days, duration_days, 30)
 		FROM promocodes WHERE code = $1 FOR UPDATE
-	`, code).Scan(&groupID, &durationDays, &maxUses, &currentUses, &expiresAt)
+	`, code).Scan(&groupID, &durationDays, &maxUses, &currentUses, &expiresAt, &promoType, &freeDays)
 
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("invalid promocode")
+		return fmt.Errorf("промокод не найден")
 	}
 	if err != nil {
 		return err
 	}
 
 	if maxUses > 0 && currentUses >= maxUses {
-		return fmt.Errorf("promocode usage limit reached")
+		return fmt.Errorf("промокод исчерпан")
 	}
 	if expiresAt.Valid && time.Now().After(expiresAt.Time) {
-		return fmt.Errorf("promocode expired")
+		return fmt.Errorf("промокод истёк")
 	}
 
 	_, err = tx.Exec("UPDATE promocodes SET current_uses = current_uses + 1 WHERE code = $1", code)
@@ -291,18 +310,26 @@ func ApplyPromocode(userID int, code string) error {
 		return err
 	}
 
-	baseValidUntil := time.Now().AddDate(0, 0, durationDays)
+	// Determine duration from promo type
+	days := durationDays
+	if promoType == "free_trial" && freeDays > 0 {
+		days = freeDays
+	}
+
+	// Activate subscription using group_id=1 slot (standard single-plan model)
+	baseValidUntil := time.Now().AddDate(0, 0, days)
 	_, err = tx.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until)
-		VALUES ($1, $2, $3)
+		INSERT INTO user_subscriptions (user_id, group_id, valid_until, status, promocode_used)
+		VALUES ($1, 1, $2, 'active', $3)
 		ON CONFLICT (user_id, group_id)
 		DO UPDATE SET valid_until =
 			CASE
 				WHEN user_subscriptions.valid_until > NOW()
 					THEN user_subscriptions.valid_until + ($4 * INTERVAL '1 day')
 				ELSE NOW() + ($4 * INTERVAL '1 day')
-			END
-	`, userID, groupID, baseValidUntil, durationDays)
+			END,
+			status = 'active', promocode_used = $3
+	`, userID, baseValidUntil, code, days)
 	if err != nil {
 		return err
 	}

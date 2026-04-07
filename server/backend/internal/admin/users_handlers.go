@@ -39,17 +39,18 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		SELECT u.id, u.user_id, COALESCE(u.username, ''), u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE),
 		       COALESCE(u.preferred_platform, ''),
 		       u.created_at, COALESCE(u.updated_at, u.created_at),
-		       COALESCE(ug.name, 'Free') AS current_plan,
+		       COALESCE(p.name, ug.name, 'Нет подписки') AS current_plan,
 		       us.valid_until
 		FROM users u
 		LEFT JOIN LATERAL (
-			SELECT us2.group_id, us2.valid_until
+			SELECT us2.group_id, us2.plan_id, us2.valid_until
 			FROM user_subscriptions us2
-			WHERE us2.user_id = u.id
+			WHERE us2.user_id = u.id AND us2.valid_until > NOW()
 			ORDER BY us2.valid_until DESC
 			LIMIT 1
 		) us ON TRUE
 		LEFT JOIN user_groups ug ON ug.id = us.group_id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE %s
 		ORDER BY u.created_at DESC, u.id DESC
 		LIMIT $%d OFFSET $%d

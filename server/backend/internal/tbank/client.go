@@ -112,7 +112,12 @@ func (c *Client) InitPayment(orderID string, amountKopecks uint64, description, 
 	}
 	if returnURL != "" {
 		params["SuccessURL"] = returnURL
-		params["FailURL"] = returnURL
+		// FailURL should go back to payment page, not dashboard
+		failURL := strings.Replace(returnURL, "/dashboard", "/payment", 1)
+		if failURL == returnURL {
+			failURL = returnURL // fallback to same URL
+		}
+		params["FailURL"] = failURL
 	}
 	if notificationURL != "" {
 		params["NotificationURL"] = notificationURL
@@ -238,15 +243,124 @@ func (c *Client) GetNotificationSuccessResponse() string {
 	return "OK"
 }
 
-// GetState checks payment status.
-func (c *Client) GetState(paymentID string) (string, error) {
+// GetState returns full payment status details.
+func (c *Client) GetState(paymentID string) (*StateResult, error) {
 	result, err := c.post("GetState", map[string]interface{}{
 		"PaymentId": paymentID,
 	})
 	if err != nil {
+		return nil, err
+	}
+	sr := &StateResult{
+		Status:    fmt.Sprintf("%v", result["Status"]),
+		PaymentID: paymentID,
+		Amount:    uint64(numVal(result["Amount"])),
+		OrderID:   strVal(result["OrderId"]),
+	}
+	return sr, nil
+}
+
+// Cancel cancels or refunds a payment. If amountKopecks=0, cancels full amount.
+// Works on payments in statuses: NEW, AUTHORIZED, CONFIRMED.
+// For CONFIRMED → creates a refund. Supports partial refunds (amount < original).
+func (c *Client) Cancel(paymentID string, amountKopecks uint64) (*CancelResult, error) {
+	params := map[string]interface{}{
+		"PaymentId": paymentID,
+	}
+	if amountKopecks > 0 {
+		params["Amount"] = amountKopecks
+	}
+	result, err := c.post("Cancel", params)
+	if err != nil {
+		return nil, err
+	}
+	return &CancelResult{
+		Status:        strVal(result["Status"]),
+		PaymentID:     paymentID,
+		OriginalAmount: uint64(numVal(result["OriginalAmount"])),
+		NewAmount:     uint64(numVal(result["NewAmount"])),
+	}, nil
+}
+
+// Confirm confirms a two-stage payment (AUTHORIZED → CONFIRMED).
+// Not used for one-stage payments (PayType="O"), but available for completeness.
+func (c *Client) Confirm(paymentID string, amountKopecks uint64) (string, error) {
+	params := map[string]interface{}{
+		"PaymentId": paymentID,
+	}
+	if amountKopecks > 0 {
+		params["Amount"] = amountKopecks
+	}
+	result, err := c.post("Confirm", params)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%v", result["Status"]), nil
+	return strVal(result["Status"]), nil
+}
+
+// GetCardList returns all saved cards for a customer.
+// T-Bank returns array, not object — uses raw handling instead of post().
+func (c *Client) GetCardList(customerKey string) ([]SavedCard, error) {
+	return c.getCardListRaw(customerKey)
+}
+
+// getCardListRaw fetches card list with raw response handling (array, not object).
+func (c *Client) getCardListRaw(customerKey string) ([]SavedCard, error) {
+	params := map[string]interface{}{
+		"CustomerKey": customerKey,
+	}
+	params["TerminalKey"] = c.TerminalKey
+	scalarParams := make(map[string]interface{})
+	for k, v := range params {
+		scalarParams[k] = v
+	}
+	params["Token"] = c.generateToken(scalarParams)
+
+	body, _ := json.Marshal(params)
+	resp, err := httpClient.Post(apiURL+"/GetCardList", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("http: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	// T-Bank returns array of cards directly
+	var cards []SavedCard
+	if err := json.Unmarshal(respBody, &cards); err != nil {
+		// May return error object
+		var errResp map[string]interface{}
+		if json.Unmarshal(respBody, &errResp) == nil {
+			if success, _ := errResp["Success"].(bool); !success {
+				code, _ := errResp["ErrorCode"].(string)
+				msg, _ := errResp["Message"].(string)
+				return nil, fmt.Errorf("T-Bank error %s: %s", code, msg)
+			}
+		}
+		return nil, fmt.Errorf("parse cards: %w", err)
+	}
+	// Filter: only active cards
+	var active []SavedCard
+	for _, card := range cards {
+		if card.Status == "A" { // Active
+			active = append(active, card)
+		}
+	}
+	return active, nil
+}
+
+// RemoveCard removes a saved card for a customer.
+func (c *Client) RemoveCard(customerKey, cardID string) error {
+	_, err := c.post("RemoveCard", map[string]interface{}{
+		"CustomerKey": customerKey,
+		"CardId":      cardID,
+	})
+	return err
+}
+
+// Resend re-sends undelivered webhook notifications.
+func (c *Client) Resend() error {
+	_, err := c.post("Resend", map[string]interface{}{})
+	return err
 }
 
 // ─── Types ───
@@ -263,17 +377,61 @@ type ChargeResult struct {
 	Status    string
 }
 
+type StateResult struct {
+	PaymentID string `json:"payment_id"`
+	Status    string `json:"status"`
+	Amount    uint64 `json:"amount"`
+	OrderID   string `json:"order_id"`
+}
+
+type CancelResult struct {
+	Status         string `json:"status"`
+	PaymentID      string `json:"payment_id"`
+	OriginalAmount uint64 `json:"original_amount"`
+	NewAmount      uint64 `json:"new_amount"`
+}
+
+type SavedCard struct {
+	CardID   string `json:"CardId"`
+	PAN      string `json:"Pan"`
+	Status   string `json:"Status"` // A=Active, I=Inactive, D=Deleted
+	RebillID string `json:"RebillId"`
+	CardType uint   `json:"CardType"` // 0=debit, 1=credit, 2=corporate
+	ExpDate  string `json:"ExpDate"`
+}
+
 type Notification struct {
-	TerminalKey string `json:"TerminalKey"`
-	OrderID     string `json:"OrderId"`
-	Success     bool   `json:"Success"`
-	Status      string `json:"Status"`
-	PaymentID   uint64 `json:"PaymentId"`
-	ErrorCode   string `json:"ErrorCode"`
-	Amount      uint64 `json:"Amount"`
-	RebillID    uint64 `json:"RebillId"`
-	PAN         string `json:"Pan"`
+	TerminalKey string            `json:"TerminalKey"`
+	OrderID     string            `json:"OrderId"`
+	Success     bool              `json:"Success"`
+	Status      string            `json:"Status"`
+	PaymentID   uint64            `json:"PaymentId"`
+	ErrorCode   string            `json:"ErrorCode"`
+	Amount      uint64            `json:"Amount"`
+	RebillID    uint64            `json:"RebillId"`
+	PAN         string            `json:"Pan"`
+	ExpDate     string            `json:"ExpDate"`
+	CardID      uint64            `json:"CardId"`
 	Data        map[string]string `json:"DATA"`
+}
+
+// ─── Helpers ───
+
+func strVal(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func numVal(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
 }
 
 func min(a, b int) int {

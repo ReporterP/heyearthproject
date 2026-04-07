@@ -79,8 +79,8 @@ export async function getDownloads() {
   return jsonOrThrow(res, 'Failed to load downloads')
 }
 
-export async function createPayment(token, plan, returnUrl, planId, promocode) {
-  const body = { return_url: returnUrl }
+export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false) {
+  const body = { return_url: returnUrl, save_card: saveCard }
   if (planId) body.plan_id = planId
   else if (plan) body.plan = plan
   if (promocode) body.promocode = promocode
@@ -131,4 +131,40 @@ export async function getSubscribeLink(token) {
     headers: { Authorization: `Bearer ${token}` },
   })
   return jsonOrThrow(res, 'Failed to load subscribe link')
+}
+
+// ── Cards ──
+export async function getUserCards(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/cards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to load cards')
+}
+
+export async function deleteUserCard(token, cardId) {
+  const res = await fetch(`${API_BASE}/api/v1/user/cards/${cardId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to delete card')
+}
+
+// ── Refund ──
+export async function requestRefund(token, paymentId, reason) {
+  const res = await fetch(`${API_BASE}/api/v1/payment/refund`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ payment_id: paymentId, reason }),
+  })
+  return jsonOrThrow(res, 'Failed to request refund')
+}
+
+// ── Auto-renew ──
+export async function toggleAutoRenew(token, enabled) {
+  const res = await fetch(`${API_BASE}/api/v1/user/auto-renew`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ auto_renew: enabled }),
+  })
+  return jsonOrThrow(res, 'Failed to toggle auto-renew')
 }

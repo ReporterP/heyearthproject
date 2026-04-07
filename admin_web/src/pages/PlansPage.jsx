@@ -230,7 +230,7 @@ export default function PlansPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={editing.is_active} onChange={e => setEditing({...editing, is_active: e.target.checked})} className="rounded" />
                 <span className="text-sm">Активен</span>
@@ -242,6 +242,15 @@ export default function PlansPage() {
               <div>
                 <label className="text-xs text-text-secondary">Порядок</label>
                 <input type="number" value={editing.sort_order} onChange={e => setEditing({...editing, sort_order: parseInt(e.target.value) || 0})}
+                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary">Макс. активаций/юзер</label>
+                <input type="number" value={editing.max_activations_per_user ?? ''} placeholder="без лимита"
+                  onChange={e => {
+                    const v = e.target.value === '' ? null : parseInt(e.target.value) || null
+                    setEditing({...editing, max_activations_per_user: v})
+                  }}
                   className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
               </div>
             </div>

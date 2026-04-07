@@ -3,7 +3,7 @@ import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import usePagedData from '../hooks/usePagedData.js'
-import { fetchPaymentsPaged, createPayment, updatePayment } from '../api/admin.js'
+import { fetchPaymentsPaged, createPayment, updatePayment, cancelPayment, checkPaymentStatus, resendPaymentNotifications } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../components/CrudDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
@@ -188,11 +188,19 @@ export default function PaymentsPage() {
           {t.paymentsTitle}
           <span className="ml-2 text-base font-normal text-text-secondary">({paged.total})</span>
         </h2>
-        {can('payments.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.createPayment}
-          </button>
-        )}
+        <div className="flex gap-2">
+          {can('payments.write') && (
+            <>
+              <button onClick={async () => { try { await resendPaymentNotifications(); toast.success('Уведомления переотправлены') } catch(e) { toast.error(e.message) } }}
+                className="px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-secondary text-sm hover:text-text-primary transition" title="Переотправить пропущенные webhook">
+                Resend
+              </button>
+              <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
+                + {t.createPayment}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Сумма видимых платежей */}
@@ -279,7 +287,34 @@ export default function PaymentsPage() {
                     </td>
                     {can('payments.write') && (
                       <td className="py-2 px-3">
-                        <button onClick={() => openEdit(p)} className="text-brand hover:underline">{t.edit}</button>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => openEdit(p)} className="text-brand text-xs hover:underline">{t.edit}</button>
+                          {p.external_id && (
+                            <>
+                              <button onClick={async () => {
+                                try {
+                                  const res = await checkPaymentStatus(p.id)
+                                  toast.success(`T-Bank: ${res.tbank_status}`)
+                                  paged.reload()
+                                } catch(e) { toast.error(e.message) }
+                              }} className="text-text-secondary text-xs hover:text-text-primary" title="Проверить статус в T-Bank">
+                                Status
+                              </button>
+                              {(p.status === 'completed' || p.status === 'succeeded') && (
+                                <button onClick={async () => {
+                                  if (!confirm('Отменить/вернуть платёж?')) return
+                                  try {
+                                    const res = await cancelPayment(p.id, 'Admin cancel')
+                                    toast.success(`Отменён: ${res.status}`)
+                                    paged.reload()
+                                  } catch(e) { toast.error(e.message) }
+                                }} className="text-red-400 text-xs hover:underline">
+                                  Refund
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
                       </td>
                     )}
                   </tr>
