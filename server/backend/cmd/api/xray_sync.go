@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -408,12 +409,13 @@ func SyncXrayConfig() error {
 		routing["rules"] = rules
 
 	} else {
-		// Нет здоровых exit-нод: блокируем пользовательский прокси-трафик.
-		// Без exit-нод трафик пошёл бы direct (без шифрования) — это недопустимо.
-		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, пользовательский трафик блокируется")
+		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик.
+		// Без exit-нод трафик пошёл бы direct (без шифрования, с IP хаба) — недопустимо.
+		// Блокируем ВСЕ inbound-ы: SOCKS5, HTTP, VLESS Reality, VLESS XHTTP.
+		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
-			"inboundTag":  []string{"socks5-proxy", "http-proxy"},
+			"inboundTag":  []string{"socks5-proxy", "http-proxy", "vless-reality", "vless-xhttp"},
 			"outboundTag": "block",
 		})
 		routing["rules"] = rules
@@ -529,6 +531,15 @@ func SyncXrayConfig() error {
 	if output, err := validateCmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+
+	// Skip restart if config hasn't actually changed (avoids dropping active connections)
+	if existingConfig, err := os.ReadFile(xrayConfigPath); err == nil {
+		if bytes.Equal(existingConfig, configJSON) {
+			_ = os.Remove(tmpPath)
+			log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
+			return nil
+		}
 	}
 
 	// Atomic rename

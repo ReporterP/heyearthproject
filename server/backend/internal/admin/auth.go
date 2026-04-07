@@ -210,6 +210,14 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Verify admin is still active in DB (enables revocation without waiting for token expiry)
+		var isActive bool
+		err = db.DB.QueryRow("SELECT is_active FROM admin_users WHERE id = $1", claims.AdminID).Scan(&isActive)
+		if err != nil || !isActive {
+			writeAdminError(w, http.StatusUnauthorized, "Admin account deactivated")
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), adminClaimsContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}

@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io' show File, Platform, Process;
+import 'dart:io' show File, Platform, Process, Socket;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
@@ -15,6 +15,7 @@ const int _defaultSocksPort = 10807;
 class VpnServiceWindows implements VpnService {
   Process? _process;
   File? _configFile;
+  int _activeSocksPort = _defaultSocksPort;
   final ProxyManager _proxyManager = ProxyManager();
 
   @override
@@ -75,6 +76,7 @@ class VpnServiceWindows implements VpnService {
     final parsed = FlutterV2ray.parseFromURL(uri.trim());
     final config = parsed.getFullConfiguration();
     final socksPort = _socksPortFromConfig(config);
+    _activeSocksPort = socksPort;
 
     final tempDir = await getTemporaryDirectory();
     _configFile = File(path.join(tempDir.path,
@@ -128,5 +130,19 @@ class VpnServiceWindows implements VpnService {
   }
 
   @override
-  Future<bool> isTrafficFlowing() async => true;
+  Future<bool> isTrafficFlowing() async {
+    if (_process == null) return false;
+    // Verify Xray process is still alive and SOCKS port is accepting connections
+    try {
+      final socket = await Socket.connect(
+        '127.0.0.1',
+        _activeSocksPort,
+        timeout: const Duration(seconds: 3),
+      );
+      await socket.close();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 }

@@ -72,15 +72,10 @@ func (rl *RateLimiter) cleanup() {
 }
 
 // ExtractIP извлекает реальный IP из запроса (за nginx).
+// Trusts X-Real-IP set by nginx, then falls back to RemoteAddr.
+// X-Forwarded-For is NOT trusted as it can be spoofed by clients.
 func ExtractIP(r *http.Request) string {
-	// X-Forwarded-For: client, proxy1, proxy2
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ip := strings.TrimSpace(strings.Split(xff, ",")[0])
-		if ip != "" {
-			return ip
-		}
-	}
-	// X-Real-IP
+	// X-Real-IP — set by nginx, trustworthy (nginx overwrites this header)
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return strings.TrimSpace(xri)
 	}
@@ -89,6 +84,14 @@ func ExtractIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// MaxBodySize wraps a handler to limit request body size (prevents OOM).
+func MaxBodySize(maxBytes int64, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		next(w, r)
+	}
 }
 
 // Middleware возвращает HTTP middleware для rate limiting.

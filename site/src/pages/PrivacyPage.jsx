@@ -1,0 +1,78 @@
+import { useState, useEffect } from 'react'
+
+export default function PrivacyPage() {
+  const [s, setS] = useState({})
+  useEffect(() => { fetch('/api/v1/legal-info').then(r => r.json()).then(setS).catch(() => {}) }, [])
+  const company = s.legal_company_name || 'ИП Степанов Александр Владимирович'
+  const email = s.legal_email || 'alex_step04@mail.ru'
+  const address = s.legal_address || 'Указывается по запросу'
+
+  return (
+    <section className="py-10 md:py-16">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6">
+        <h1 className="text-3xl font-bold mb-8">Политика конфиденциальности</h1>
+
+        <div className="prose prose-invert prose-sm max-w-none space-y-6 text-text-secondary">
+          <p className="text-sm text-text-secondary">Дата последнего обновления: 07 апреля 2026 г.</p>
+
+          <h2 className="text-lg font-semibold text-text-primary">1. Общие положения</h2>
+          <p>Настоящая Политика конфиденциальности (далее — Политика) определяет порядок обработки и защиты персональных данных пользователей сервиса HiEarth (hiearth.ru), предоставляемого {company} (далее — Оператор).</p>
+          <p>Используя сервис, вы соглашаетесь с условиями настоящей Политики. Если вы не согласны с условиями, пожалуйста, не используйте сервис.</p>
+
+          <h2 className="text-lg font-semibold text-text-primary">2. Какие данные мы собираем</h2>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Идентификатор пользователя (HeYearth ID) — генерируется автоматически при регистрации</li>
+            <li>Адрес электронной почты — при оплате и обращении в поддержку</li>
+            <li>Платёжные данные — обрабатываются исключительно платёжным провайдером (Т-Банк), мы не храним данные банковских карт</li>
+            <li>Техническая информация — тип устройства, платформа, язык, для улучшения качества сервиса</li>
+            <li>Данные об использовании трафика — объём загруженных/скачанных данных (без содержимого)</li>
+          </ul>
+
+          <h2 className="text-lg font-semibold text-text-primary">3. Цели обработки данных</h2>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Предоставление услуг прокси-маршрутизации трафика</li>
+            <li>Обработка платежей и управление подписками</li>
+            <li>Техническая поддержка пользователей</li>
+            <li>Улучшение качества сервиса</li>
+            <li>Выполнение требований законодательства РФ</li>
+          </ul>
+
+          <h2 className="text-lg font-semibold text-text-primary">4. Безопасность данных</h2>
+          <p>Мы применяем следующие меры для защиты ваших данных:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Шифрование передачи данных (TLS 1.3) между клиентом и сервером</li>
+            <li>Шифрование паролей SSH с использованием AES-256-GCM</li>
+            <li>Хеширование пользовательских паролей (bcrypt)</li>
+            <li>Платёжные данные обрабатываются через сертифицированного провайдера (Т-Банк), соответствующего стандарту PCI DSS</li>
+            <li>Доступ к серверной инфраструктуре защищён mTLS-сертификатами</li>
+          </ul>
+
+          <h2 className="text-lg font-semibold text-text-primary">5. Передача данных третьим лицам</h2>
+          <p>Мы не продаём и не передаём персональные данные пользователей третьим лицам, за исключением:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Платёжный провайдер (АО «Тинькофф Банк») — для обработки платежей</li>
+            <li>По требованию уполномоченных государственных органов в соответствии с законодательством РФ</li>
+          </ul>
+
+          <h2 className="text-lg font-semibold text-text-primary">6. Хранение данных</h2>
+          <p>Персональные данные хранятся на серверах, расположенных на территории Российской Федерации. Данные хранятся в течение срока действия подписки и 30 дней после её окончания, после чего могут быть удалены.</p>
+
+          <h2 className="text-lg font-semibold text-text-primary">7. Права пользователя</h2>
+          <p>Вы имеете право:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Запросить информацию о хранимых данных</li>
+            <li>Потребовать удаления своих данных</li>
+            <li>Отозвать согласие на обработку данных</li>
+            <li>Обратиться с жалобой в Роскомнадзор</li>
+          </ul>
+          <p>Для реализации своих прав обратитесь по адресу: <a href="mailto:alex_step04@mail.ru" className="text-brand hover:underline">alex_step04@mail.ru</a></p>
+
+          <h2 className="text-lg font-semibold text-text-primary">8. Контактная информация</h2>
+          <p>{company}</p>
+          {address && <p>Адрес: {address}</p>}
+          <p>Email: <a href={`mailto:${email}`} className="text-brand hover:underline">{email}</a></p>
+        </div>
+      </div>
+    </section>
+  )
+}

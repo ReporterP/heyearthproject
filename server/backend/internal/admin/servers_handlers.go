@@ -762,10 +762,9 @@ func encryptSSHPassword(password string) (plain *string, enc []byte) {
 	}
 	ciphertext, err := crypto.Encrypt(password)
 	if err != nil {
-		// Key not set or error — store plaintext for backward compatibility.
-		log.Printf("[warn] SSH password encryption skipped: %v", err)
-		s := password
-		return &s, nil
+		// Key not set or error — refuse to store plaintext in production.
+		log.Printf("[ERROR] SSH_ENCRYPTION_KEY not set or invalid: %v — refusing to store plaintext password", err)
+		return nil, nil
 	}
 	// Encryption succeeded: clear plaintext, store ciphertext.
 	return nil, ciphertext
@@ -1515,14 +1514,11 @@ print(k.get('privateKey',''))
 	// ── Шаг 7: Hysteria2 клиент на Hub ──
 	setStep(6, "running", "")
 	hy2Port := 1088 + server.ID
-	hy2ClientScript := fmt.Sprintf(`set -e
-mkdir -p /opt/heyearth/hysteria
-if [ ! -f /usr/local/bin/hysteria ]; then
-  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
-fi
-cat > /opt/heyearth/hysteria/client-%d.yaml << 'HEOF'
-server: %s:20000-50000
+
+	// Write config files via Go (no shell interpolation — safe from injection)
+	_ = os.MkdirAll("/opt/heyearth/hysteria", 0755)
+	hy2ConfigPath := fmt.Sprintf("/opt/heyearth/hysteria/client-%d.yaml", server.ID)
+	hy2Config := fmt.Sprintf(`server: %s:20000-50000
 auth: %s
 tls:
   insecure: true
@@ -1539,27 +1535,42 @@ bandwidth:
   down: 100 mbps
 socks5:
   listen: 127.0.0.1:%d
-HEOF
-cat > /etc/systemd/system/hysteria2-client-%d.service << SEOF
-[Unit]
+`, server.IPAddress, tunnelSSPass, hy2Port)
+	if err := os.WriteFile(hy2ConfigPath, []byte(hy2Config), 0600); err != nil {
+		finishWithError(6, fmt.Errorf("write hy2 config: %w", err))
+		return
+	}
+
+	serviceName := fmt.Sprintf("hysteria2-client-%d", server.ID)
+	serviceContent := fmt.Sprintf(`[Unit]
 Description=Hysteria2 Client for %s (HeYearth)
 After=network.target
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%d.yaml
+ExecStart=/usr/local/bin/hysteria client -c %s
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
-SEOF
-systemctl daemon-reload
-systemctl enable hysteria2-client-%d
-systemctl restart hysteria2-client-%d
-`, server.ID, server.IPAddress, tunnelSSPass, hy2Port, server.ID, server.IPAddress, server.ID, server.ID, server.ID)
+`, server.IPAddress, hy2ConfigPath)
+	servicePath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName)
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+		finishWithError(6, fmt.Errorf("write hy2 service: %w", err))
+		return
+	}
 
-	// Выполняем на Hub (localhost) через exec.Command
-	cmd := exec.Command("bash", "-c", hy2ClientScript)
+	// Download hysteria binary + enable/restart service (no user data in shell commands)
+	hy2Setup := fmt.Sprintf(`set -e
+if [ ! -f /usr/local/bin/hysteria ]; then
+  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
+  chmod +x /usr/local/bin/hysteria
+fi
+systemctl daemon-reload
+systemctl enable %s
+systemctl restart %s
+`, serviceName, serviceName)
+	cmd := exec.Command("bash", "-c", hy2Setup)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		finishWithError(6, fmt.Errorf("%v: %s", err, string(out)))

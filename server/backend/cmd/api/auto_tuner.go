@@ -129,10 +129,11 @@ var candidateDNS = [][]string{
 var candidateMuxConcurrency = []int{4, 8, 16}
 
 const (
-	tunerPingsPerTest = 5
-	tunerMaxLatencyMs = 500
-	tunerTimeout      = 8 * time.Second  // increased from 5s for unstable networks
-	tunerRetries      = 2                // retry failed pings up to 2 times
+	tunerPingsPerTest          = 5
+	tunerMaxLatencyMs          = 500
+	tunerTimeout               = 8 * time.Second // increased from 5s for unstable networks
+	tunerRetries               = 2               // retry failed pings up to 2 times
+	tunerSignificanceThreshold = 20              // minimum improvement % to switch (avoid flapping)
 )
 
 // testResult stores one parameter combination test.
@@ -299,7 +300,15 @@ func tuneSNI() string {
 		return ""
 	}
 
-	log.Printf("[auto-tuner] SNI: %s → %s (avg %dms → %dms)", currentSNI, best.SNI, getLatencyForSNI(results, currentSNI), best.AvgLatency)
+	// Check significance threshold — don't switch for marginal improvement
+	currentLatency := getLatencyForSNI(results, currentSNI)
+	if currentLatency > 0 && !isSignificantImprovement(currentLatency, best.AvgLatency) {
+		log.Printf("[auto-tuner] SNI: %s → %s skipped (improvement %dms → %dms < %d%% threshold)",
+			currentSNI, best.SNI, currentLatency, best.AvgLatency, tunerSignificanceThreshold)
+		return ""
+	}
+
+	log.Printf("[auto-tuner] SNI: %s → %s (avg %dms → %dms)", currentSNI, best.SNI, currentLatency, best.AvgLatency)
 	_ = biz.SetSetting("reality_sni_domain", best.SNI)
 	markApplied("hub_inbound", 0, best)
 	return best.SNI
@@ -418,7 +427,15 @@ func optimizeClientParams() bool {
 		return false
 	}
 
-	log.Printf("[auto-tuner] Fingerprint: %s → %s (avg %dms)", currentFP, bestFP, best.AvgLatency)
+	// Check significance threshold — fingerprint changes bump config_version
+	currentLatency := getLatencyForFingerprint(results, currentFP)
+	if currentLatency > 0 && !isSignificantImprovement(currentLatency, best.AvgLatency) {
+		log.Printf("[auto-tuner] Fingerprint: %s → %s skipped (improvement %dms → %dms < %d%% threshold)",
+			currentFP, bestFP, currentLatency, best.AvgLatency, tunerSignificanceThreshold)
+		return false
+	}
+
+	log.Printf("[auto-tuner] Fingerprint: %s → %s (avg %dms → %dms)", currentFP, bestFP, currentLatency, best.AvgLatency)
 	_ = biz.SetSetting("reality_fingerprint", bestFP)
 	return true
 }
@@ -452,7 +469,14 @@ func tuneExitNodeSNI(node biz.ExitNodeTunnel) bool {
 		return false
 	}
 
-	log.Printf("[auto-tuner] Exit %d SNI: %s → %s (avg %dms)", node.ID, currentSNI, best.SNI, best.AvgLatency)
+	// Check significance threshold
+	currentLatency := getLatencyForSNI(results, currentSNI)
+	if currentLatency > 0 && !isSignificantImprovement(currentLatency, best.AvgLatency) {
+		log.Printf("[auto-tuner] Exit %d SNI: %s → %s skipped (improvement < %d%%)", node.ID, currentSNI, best.SNI, tunerSignificanceThreshold)
+		return false
+	}
+
+	log.Printf("[auto-tuner] Exit %d SNI: %s → %s (avg %dms → %dms)", node.ID, currentSNI, best.SNI, currentLatency, best.AvgLatency)
 	_, _ = db.DB.Exec("UPDATE servers SET tunnel_sni = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", best.SNI, node.ID)
 	markApplied(fmt.Sprintf("exit_%d", node.ID), node.ID, best)
 	return true
@@ -667,6 +691,26 @@ func medianNonZero(vals []int) int {
 		return (nonZero[mid-1] + nonZero[mid]) / 2
 	}
 	return nonZero[mid]
+}
+
+// isSignificantImprovement returns true if newLatency is at least tunerSignificanceThreshold% better than currentLatency.
+// This prevents flapping: switching on marginal 1-2ms differences wastes config_version bumps.
+func isSignificantImprovement(currentLatency, newLatency int) bool {
+	if currentLatency <= 0 {
+		return true // no baseline, any result is an improvement
+	}
+	improvementPct := float64(currentLatency-newLatency) / float64(currentLatency) * 100
+	return improvementPct >= float64(tunerSignificanceThreshold)
+}
+
+// getLatencyForFingerprint finds latency result for a given fingerprint.
+func getLatencyForFingerprint(results []testResult, fp string) int {
+	for _, r := range results {
+		if r.Fingerprint == fp {
+			return r.AvgLatency
+		}
+	}
+	return 0
 }
 
 func allBelow(vals []int, threshold int) bool {

@@ -10,8 +10,8 @@ class VpnServiceIo implements VpnService {
   bool _initialized = false;
 
   static const String _providerBundleId =
-      'com.example.heyearth_vpn.VPNProvider';
-  static const String _groupId = 'group.com.example.heyearth_vpn';
+      'ru.hiearth.app.VPNProvider';
+  static const String _groupId = 'group.ru.hiearth.app';
 
   @override
   bool get isSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
@@ -36,29 +36,37 @@ class VpnServiceIo implements VpnService {
   Future<void> connect(String uri, {bool proxyOnly = false}) async {
     if (!isSupported) return;
     if (uri.trim().isEmpty) return;
-    final v2 = _v2ray ?? FlutterV2ray();
     if (!await _ensureInitialized()) {
       return;
     }
     final parsed = FlutterV2ray.parseFromURL(uri.trim());
     final config = parsed.getFullConfiguration();
-    final allowed = await v2.requestPermission();
+    final allowed = await _v2ray!.requestPermission();
     if (!allowed) return;
-    await v2.startVless(
+    await _v2ray!.startVless(
       remark: parsed.remark.isNotEmpty ? parsed.remark : 'HeYearth',
       config: config,
-      proxyOnly: false,
+      proxyOnly: proxyOnly,
     );
   }
 
   @override
   Future<void> disconnect() async {
-    if (!isSupported) return;
+    if (!isSupported || _v2ray == null) return;
     try {
-      await (_v2ray ?? FlutterV2ray()).stopVless();
+      await _v2ray!.stopVless();
     } catch (_) {}
   }
 
   @override
-  Future<bool> isTrafficFlowing() async => true;
+  Future<bool> isTrafficFlowing() async {
+    if (!_initialized || _v2ray == null) return false;
+    try {
+      // Check V2Ray core status — returns connection state
+      final delay = await _v2ray!.getServerDelay(url: 'https://www.google.com/generate_204');
+      return delay > 0 && delay < 10000; // responsive within 10s
+    } catch (_) {
+      return false;
+    }
+  }
 }

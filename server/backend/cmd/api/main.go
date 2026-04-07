@@ -216,8 +216,10 @@ func setCORS(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	} else {
+		// Safe default: only production domains. Set CORS_ALLOWED_ORIGINS=* for dev.
+		corsOrigins = "https://hiearth.ru,https://admin.hiearth.ru,http://localhost:5173,http://localhost:5174"
+	}
+	{
 		for _, allowed := range strings.Split(corsOrigins, ",") {
 			if strings.TrimSpace(allowed) == origin {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -520,6 +522,21 @@ func handlePublicPlans(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plans)
 }
 
+func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", "ИП Степанов Александр Владимирович"),
+		"legal_address":      biz.GetSettingOrDefault("legal_address", ""),
+		"legal_email":        biz.GetSettingOrDefault("legal_email", "alex_step04@mail.ru"),
+		"legal_phone":        biz.GetSettingOrDefault("legal_phone", ""),
+		"legal_inn":          biz.GetSettingOrDefault("legal_inn", ""),
+	})
+}
+
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -735,10 +752,16 @@ func main() {
 	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
 	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
-	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
+	http.HandleFunc("/api/webhooks/tbank", webhookLimiter.Middleware(handleTBankWebhook))
+	// Legacy YooKassa webhook redirect — logs deprecation, forwards to T-Bank handler
+	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[DEPRECATION] /api/webhooks/yookassa called from %s — use /api/webhooks/tbank instead", r.RemoteAddr)
+		handleTBankWebhook(w, r)
+	}))
 
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
+	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
 
 	// Admin panel
 	admin.RegisterRoutes()

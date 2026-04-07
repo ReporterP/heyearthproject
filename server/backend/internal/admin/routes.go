@@ -9,6 +9,7 @@ import (
 )
 
 var adminLoginLimiter = middleware.NewRateLimiter(5, time.Minute)
+var publicLimiter = middleware.NewRateLimiter(10, time.Minute) // public endpoints: 10/min per IP
 
 func RegisterRoutes() {
 	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
@@ -316,8 +317,8 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/traffic/", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficUserDetailHandler)))
 
-	http.HandleFunc("/api/public/create-tenant", PublicCreateTenantHandler)
-	http.HandleFunc("/api/public/tariff/calculate", PublicTariffCalculateHandler)
+	http.HandleFunc("/api/public/create-tenant", publicLimiter.Middleware(PublicCreateTenantHandler))
+	http.HandleFunc("/api/public/tariff/calculate", publicLimiter.Middleware(PublicTariffCalculateHandler))
 }
 
 func withMethod(method string, next http.HandlerFunc) http.HandlerFunc {

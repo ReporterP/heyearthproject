@@ -7,7 +7,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/yookassa"
+	"github.com/heyearth/backend/internal/tbank"
 )
 
 // ─────────────────────── Subscription & Billing Cron ───────────────────────
@@ -41,13 +41,21 @@ func StartSubscriptionCron() {
 
 // checkExpiringSubscriptions находит подписки, истекающие в ближайшие 24 часа.
 func checkExpiringSubscriptions() {
-	// Логируем подписки, которые скоро истекут
+	// Логируем подписки, которые скоро истекут.
+	// IMPORTANT: исключаем подписки, для которых уже есть pending/completed платёж
+	// за последние 24 часа — чтобы не списывать повторно (cron каждый час).
 	rows, err := db.DB.Query(`
 		SELECT u.user_id, us.valid_until, us.plan, us.auto_renew
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM payments p
+		    WHERE p.user_id_text = u.user_id
+		      AND p.description LIKE '%автопродление%'
+		      AND p.created_at > NOW() - INTERVAL '24 hours'
+		  )
 	`)
 	if err != nil {
 		log.Printf("[subscription-cron] Ошибка проверки истекающих подписок: %v", err)
@@ -149,33 +157,39 @@ func processAutoRenew(userID string) error {
 		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
 	}
 
-	// Create recurring payment via YooKassa
-	ykClient, err := yookassa.NewClientFromSettings()
+	// Create recurring payment via T-Bank (Charge with saved RebillID)
+	tbClient, err := tbank.NewClientFromSettings()
 	if err != nil {
-		return fmt.Errorf("yookassa not configured: %w", err)
+		return fmt.Errorf("tbank not configured: %w", err)
 	}
 
 	description := fmt.Sprintf("HiEarth %s — автопродление", plan.Name)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "yookassa", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "tbank", description)
 	if err != nil {
 		return fmt.Errorf("create payment record: %w", err)
 	}
 
-	ykResp, err := ykClient.CreateRecurringPayment(savedPM, plan.PriceRub, "RUB", description, map[string]string{
-		"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-		"user_id":       userID,
-		"plan_id":       fmt.Sprintf("%d", plan.ID),
-		"plan_slug":     plan.Slug,
-		"type":          "auto_renew",
-	})
+	// Init + Charge using saved RebillID
+	orderID := fmt.Sprintf("renew-%d-%d", paymentDBID, time.Now().Unix())
+	chargeRes, err := tbClient.ChargeRecurring(orderID, uint64(plan.PriceRub)*100, savedPM, description, userID)
 	if err != nil {
-		return fmt.Errorf("yookassa recurring: %w", err)
+		return fmt.Errorf("tbank charge: %w", err)
 	}
 
-	// Update payment record with YooKassa ID
-	_ = biz.UpdatePaymentYookassa(paymentDBID, ykResp.ID, ykResp.Status, "")
-	log.Printf("[auto-renew] User %s: YooKassa payment %s created (status: %s, plan: %s, %d₽)",
-		userID, ykResp.ID, ykResp.Status, plan.Slug, plan.PriceRub)
+	_ = biz.UpdatePaymentYookassa(paymentDBID, chargeRes.PaymentID, chargeRes.Status, "")
+
+	// Activate subscription immediately after successful charge.
+	// Webhook is idempotent fallback — don't rely on it arriving.
+	if chargeRes.Status == "CONFIRMED" || chargeRes.Status == "AUTHORIZED" {
+		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
+			log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
+		} else {
+			log.Printf("[auto-renew] User %s: subscription renewed (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
+			RequestXraySync()
+		}
+	} else {
+		log.Printf("[auto-renew] User %s: T-Bank payment %s (status: %s, awaiting webhook)", userID, chargeRes.PaymentID, chargeRes.Status)
+	}
 
 	return nil
 }

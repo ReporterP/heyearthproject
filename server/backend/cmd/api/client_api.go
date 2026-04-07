@@ -219,8 +219,9 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
 		if realityPubKey != "" && canVLESS {
+			// NOTE: splithttp transport does NOT use flow=xtls-rprx-vision (flow is only for tcp+Reality)
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp&flow=xtls-rprx-vision#HeYearth-XHTTP",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp#HeYearth-XHTTP",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,

@@ -53,8 +53,10 @@ export default function SubscriptionsPage() {
       await saveSubscription({
         user_db_id: parseInt(editing.user_db_id) || 0,
         group_id: parseInt(editing.group_id) || 1,
+        plan_id: parseInt(editing.plan_id) || 0,
         valid_until: validUntil,
         auto_renew: editing.auto_renew,
+        status: editing.status || 'active',
       })
       toast.success('Сохранено')
       setEditing(null)

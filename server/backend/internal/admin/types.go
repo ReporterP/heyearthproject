@@ -113,8 +113,10 @@ type subscriptionResponse struct {
 type subscriptionPayload struct {
 	UserID     int    `json:"user_db_id"`
 	GroupID    int    `json:"group_id"`
+	PlanID     int    `json:"plan_id"`
 	ValidUntil string `json:"valid_until"`
 	AutoRenew  bool   `json:"auto_renew"`
+	Status     string `json:"status"`
 }
 
 // Promocode types moved to promocodes_handlers.go (promocodeFullResponse, promocodeFullPayload)

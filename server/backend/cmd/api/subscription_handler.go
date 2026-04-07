@@ -114,6 +114,11 @@ func buildClashConfig(userID string) string {
 		return "# error: no vless uuid"
 	}
 
+	// Check protocol permissions for this user's plan
+	canVLESS := biz.IsProtocolAllowed(userID, "vless")
+	canSOCKS := biz.IsProtocolAllowed(userID, "socks")
+	canHTTP := biz.IsProtocolAllowed(userID, "http")
+
 	var proxies []string
 	var proxyNames []string
 
@@ -121,7 +126,7 @@ func buildClashConfig(userID string) string {
 	realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
 	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
 	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
-	if realityPubKey != "" && vlessUUID != "" {
+	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 		flowLine := ""
 		if flow != "" {
@@ -153,7 +158,7 @@ func buildClashConfig(userID string) string {
 	}
 
 	// 1b. VLESS Reality + XHTTP (port 2443)
-	if realityPubKey != "" && vlessUUID != "" {
+	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		name := "HeYearth-XHTTP"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, fmt.Sprintf(
@@ -162,7 +167,6 @@ func buildClashConfig(userID string) string {
     server: %s
     port: 2443
     uuid: "%s"
-    flow: xtls-rprx-vision
     network: xhttp
     tls: true
     reality-opts:
@@ -173,7 +177,7 @@ func buildClashConfig(userID string) string {
 	}
 
 	// 2. SOCKS
-	if vlessUUID != "" {
+	if vlessUUID != "" && canSOCKS {
 		name := "HeYearth-SOCKS"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, fmt.Sprintf(
@@ -186,7 +190,7 @@ func buildClashConfig(userID string) string {
 	}
 
 	// 3. HTTP proxy
-	if vlessUUID != "" {
+	if vlessUUID != "" && canHTTP {
 		name := "HeYearth-HTTP"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, fmt.Sprintf(

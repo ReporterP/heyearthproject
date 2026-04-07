@@ -471,24 +471,17 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      final me = await getMeGrpc(
-        apiBase: _apiBase,
-        userId: _userId!,
-        device: _deviceContext(linkedVia: 'app_open'),
-      ).timeout(const Duration(seconds: 15));
-      final access = await getAccessStateGrpc(
-        apiBase: _apiBase,
-        userId: _userId!,
-        platform: _currentPlatform(),
-      ).timeout(const Duration(seconds: 15));
-      final subs = await listSubscriptionsGrpc(
-        apiBase: _apiBase,
-        userId: _userId!,
-      ).timeout(const Duration(seconds: 15));
-      final pays = await listPaymentsGrpc(
-        apiBase: _apiBase,
-        userId: _userId!,
-      ).timeout(const Duration(seconds: 15));
+      // Parallel gRPC calls (independent, no need to be sequential)
+      final results = await Future.wait([
+        getMeGrpc(apiBase: _apiBase, userId: _userId!, device: _deviceContext(linkedVia: 'app_open')).timeout(const Duration(seconds: 15)),
+        getAccessStateGrpc(apiBase: _apiBase, userId: _userId!, platform: _currentPlatform()).timeout(const Duration(seconds: 15)),
+        listSubscriptionsGrpc(apiBase: _apiBase, userId: _userId!).timeout(const Duration(seconds: 15)),
+        listPaymentsGrpc(apiBase: _apiBase, userId: _userId!).timeout(const Duration(seconds: 15)),
+      ]);
+      final me = results[0];
+      final access = results[1];
+      final subs = results[2];
+      final pays = results[3];
 
       _profile = me;
       _accessState = access;
@@ -672,7 +665,11 @@ class AppState extends ChangeNotifier {
   Future<void> _checkConnectionHealth() async {
     if (!_vpnOn || _vpnConnecting) return;
     if (_connectionOptions.length <= 1) return;
-    if (_failoverAttempts >= _connectionOptions.length) return;
+    if (_failoverAttempts >= _connectionOptions.length) {
+      // Reset after cooldown so failover can retry (previously-failed options may recover)
+      _failoverAttempts = 0;
+      return;
+    }
 
     final healthy = await _vpn.isTrafficFlowing();
     if (healthy) {
@@ -697,7 +694,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _onNetworkChanged(NetworkType newType) {
-    if (!_vpnOn || _connectionOptions.isEmpty) return;
+    if (!_vpnOn || _vpnConnecting || _connectionOptions.isEmpty) return;
     final best = _connMgr.pickBest(_connectionOptions);
     if (best != null && best.uri != _activeOption?.uri) {
       _activeOption = best;
@@ -764,5 +761,12 @@ class AppState extends ChangeNotifier {
       linkedVia: linkedVia,
       deviceLabel: defaultTargetPlatform.name,
     );
+  }
+
+  @override
+  void dispose() {
+    _healthTimer?.cancel();
+    _connMgr.dispose();
+    super.dispose();
   }
 }

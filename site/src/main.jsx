@@ -14,6 +14,9 @@ import PaymentPage from './pages/PaymentPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import BusinessPage from './pages/BusinessPage.jsx'
 import BusinessSignupPage from './pages/BusinessSignupPage.jsx'
+import PrivacyPage from './pages/PrivacyPage.jsx'
+import RefundPage from './pages/RefundPage.jsx'
+import OfferPage from './pages/OfferPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -40,6 +43,9 @@ function App() {
             <Route path="/business/signup" element={<BusinessSignupPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/refund" element={<RefundPage />} />
+            <Route path="/offer" element={<OfferPage />} />
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />

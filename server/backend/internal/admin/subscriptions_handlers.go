@@ -89,13 +89,27 @@ func UpsertSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "valid_until must be RFC3339")
 		return
 	}
+
+	// Default status to "active" if empty
+	status := strings.TrimSpace(payload.Status)
+	if status == "" {
+		status = "active"
+	}
+
+	// plan_id is optional (0 = no plan, legacy subscription)
+	var planID *int
+	if payload.PlanID > 0 {
+		planID = &payload.PlanID
+	}
+
 	if _, err := db.DB.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan_id, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_id, group_id)
-		DO UPDATE SET valid_until = EXCLUDED.valid_until, auto_renew = EXCLUDED.auto_renew
-	`, payload.UserID, payload.GroupID, validUntil, payload.AutoRenew); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to save subscription")
+		DO UPDATE SET valid_until = EXCLUDED.valid_until, auto_renew = EXCLUDED.auto_renew,
+		             plan_id = EXCLUDED.plan_id, status = EXCLUDED.status
+	`, payload.UserID, payload.GroupID, validUntil, payload.AutoRenew, planID, status); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to save subscription: "+err.Error())
 		return
 	}
 	biz.NotifySubscriptionChange()

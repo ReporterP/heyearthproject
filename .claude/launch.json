@@ -5,7 +5,8 @@
       "name": "Go Backend",
       "runtimeExecutable": "go",
       "runtimeArgs": ["run", "./cmd/api"],
-      "port": 8000
+      "port": 8000,
+      "cwd": "server/backend"
     },
     {
       "name": "Admin Web (React + Vite)",

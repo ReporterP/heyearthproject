@@ -2,7 +2,7 @@
 -keep class io.flutter.app.** { *; }
 -keep class io.flutter.plugin.** { *; }
 -keep class com.wisecodex.flutter_v2ray.** { *; }
--keep class com.example.heyearth_vpn.** { *; }
+-keep class ru.hiearth.app.** { *; }
 
 # Сохранить нативные методы
 -keepclasseswithmembernames class * {

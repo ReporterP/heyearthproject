@@ -1,4 +1,4 @@
-package com.example.heyearth_vpn
+package ru.hiearth.app
 
 import io.flutter.embedding.android.FlutterActivity
 
