@@ -117,25 +117,7 @@ type subscriptionPayload struct {
 	AutoRenew  bool   `json:"auto_renew"`
 }
 
-type promocodeResponse struct {
-	Code         string `json:"code"`
-	GroupID      int    `json:"group_id_granted"`
-	GroupName    string `json:"group_name"`
-	DurationDays int    `json:"duration_days"`
-	MaxUses      int    `json:"max_uses"`
-	CurrentUses  int    `json:"current_uses"`
-	ExpiresAt    string `json:"expires_at"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-}
-
-type promocodePayload struct {
-	Code         string `json:"code"`
-	GroupID      int    `json:"group_id_granted"`
-	DurationDays int    `json:"duration_days"`
-	MaxUses      int    `json:"max_uses"`
-	ExpiresAt    string `json:"expires_at"`
-}
+// Promocode types moved to promocodes_handlers.go (promocodeFullResponse, promocodeFullPayload)
 
 type paymentResponse struct {
 	ID          int             `json:"id"`
