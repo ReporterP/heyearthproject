@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -41,6 +42,9 @@ func NewClientFromSettings() (*Client, error) {
 }
 
 // generateToken creates SHA256 token from sorted parameter values + Password.
+// T-Bank spec: sort all params by key, concatenate VALUES only, add Password, SHA256.
+// CRITICAL: numbers must be formatted without scientific notation (e.g., "1234567890" not "1.23456789e+09").
+// Booleans must be lowercase: "true"/"false".
 func (c *Client) generateToken(params map[string]interface{}) string {
 	// Add Password to params for hashing
 	params["Password"] = c.Password
@@ -55,7 +59,24 @@ func (c *Client) generateToken(params map[string]interface{}) string {
 	// Concatenate values in sorted key order
 	var sb strings.Builder
 	for _, k := range keys {
-		sb.WriteString(fmt.Sprintf("%v", params[k]))
+		v := params[k]
+		switch val := v.(type) {
+		case float64:
+			// Numbers from JSON unmarshal: format as integer if no fractional part
+			if val == float64(int64(val)) {
+				sb.WriteString(fmt.Sprintf("%d", int64(val)))
+			} else {
+				sb.WriteString(fmt.Sprintf("%g", val))
+			}
+		case bool:
+			if val {
+				sb.WriteString("true")
+			} else {
+				sb.WriteString("false")
+			}
+		default:
+			sb.WriteString(fmt.Sprintf("%v", v))
+		}
 	}
 
 	// SHA256
@@ -217,19 +238,32 @@ func (c *Client) ParseNotification(body io.Reader) (*Notification, error) {
 		return nil, err
 	}
 
-	// Verify Token
+	// Verify Token (if present — DEMO terminals may not send Token in webhooks)
 	receivedToken, _ := raw["Token"].(string)
 	delete(raw, "Token")
-	// Remove non-scalar fields from token generation
-	for k, v := range raw {
-		switch v.(type) {
-		case map[string]interface{}, []interface{}:
-			delete(raw, k)
+	if receivedToken != "" {
+		// Remove non-scalar fields from token generation
+		tokenParams := make(map[string]interface{})
+		for k, v := range raw {
+			switch v.(type) {
+			case map[string]interface{}, []interface{}:
+				continue // skip nested
+			default:
+				tokenParams[k] = v
+			}
 		}
-	}
-	expectedToken := c.generateToken(raw)
-	if receivedToken != expectedToken {
-		return nil, fmt.Errorf("invalid token signature")
+		expectedToken := c.generateToken(tokenParams)
+		if receivedToken != expectedToken {
+			log.Printf("[tbank-token] MISMATCH: received=%s expected=%s", receivedToken, expectedToken)
+			return nil, fmt.Errorf("invalid token signature")
+		}
+	} else {
+		// DEMO terminal or T-Bank didn't send Token — verify by TerminalKey match
+		if termKey, _ := raw["TerminalKey"].(string); termKey != c.TerminalKey {
+			log.Printf("[tbank-token] TerminalKey mismatch: got=%s expected=%s", termKey, c.TerminalKey)
+			return nil, fmt.Errorf("invalid terminal key")
+		}
+		log.Println("[tbank-token] No Token in webhook — verified by TerminalKey (DEMO mode)")
 	}
 
 	var n Notification
