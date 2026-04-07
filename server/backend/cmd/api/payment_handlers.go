@@ -216,28 +216,33 @@ func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[tbank-webhook] saved RebillID %d for user %s", notification.RebillID, userID)
 		}
 
-		// Parse metadata for plan activation
-		var meta struct {
-			PlanID    string `json:"plan_id"`
-			PlanSlug  string `json:"plan_slug"`
-			Promocode string `json:"promocode"`
-		}
-		_ = json.Unmarshal([]byte(metadata), &meta)
+		// Parse metadata for plan activation.
+		// plan_id can be stored as int or string (mustJSON stores as int).
+		var metaRaw map[string]interface{}
+		_ = json.Unmarshal([]byte(metadata), &metaRaw)
 
-		if meta.PlanID != "" {
-			var planID int
-			fmt.Sscanf(meta.PlanID, "%d", &planID)
-			if p, err := biz.GetPlanByID(planID); err == nil {
+		var metaPlanID int
+		switch v := metaRaw["plan_id"].(type) {
+		case float64:
+			metaPlanID = int(v) // JSON numbers are float64
+		case string:
+			fmt.Sscanf(v, "%d", &metaPlanID)
+		}
+		metaPlanSlug, _ := metaRaw["plan_slug"].(string)
+		metaPromocode, _ := metaRaw["promocode"].(string)
+
+		if metaPlanID > 0 {
+			if p, err := biz.GetPlanByID(metaPlanID); err == nil {
 				pricePaid := int(notification.Amount / 100) // копейки → рубли
-				if err := biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, pricePaid, meta.Promocode); err != nil {
+				if err := biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, pricePaid, metaPromocode); err != nil {
 					log.Printf("[tbank-webhook] activate plan %d: %v", p.ID, err)
 				} else {
 					log.Printf("[tbank-webhook] ✓ activated plan '%s' for user %s (%d₽)", p.Name, userID, pricePaid)
 				}
 			}
-		} else if meta.PlanSlug != "" {
-			if p, err := biz.GetPlanBySlug(meta.PlanSlug); err == nil {
-				biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, int(notification.Amount/100), meta.Promocode)
+		} else if metaPlanSlug != "" {
+			if p, err := biz.GetPlanBySlug(metaPlanSlug); err == nil {
+				biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, int(notification.Amount/100), metaPromocode)
 			}
 		}
 	}

@@ -240,8 +240,16 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 }
 
 // ApplyPromoToPrice validates and applies a promocode for a specific plan and user.
+// Uses FOR UPDATE lock to prevent race conditions on usage counter.
 func ApplyPromoToPrice(basePrice int, code string, planID ...int) (finalPrice int, freeTrialDays int, trafficGiftBytes int64, err error) {
 	codeNorm := strings.ToUpper(strings.TrimSpace(code))
+
+	// Start transaction for atomic read-validate-increment
+	tx, txErr := db.DB.Begin()
+	if txErr != nil {
+		return basePrice, 0, 0, fmt.Errorf("db error")
+	}
+	defer tx.Rollback()
 
 	var promoType string
 	var discountPercent, discountFixed, freeDays, maxUses, currentUses int
@@ -250,11 +258,11 @@ func ApplyPromoToPrice(basePrice int, code string, planID ...int) (finalPrice in
 	var expiresAt sql.NullTime
 	var appliesToPlans pq.Int64Array
 
-	err = db.DB.QueryRow(`
+	err = tx.QueryRow(`
 		SELECT promo_type, COALESCE(discount_percent,0), COALESCE(discount_fixed_rub,0),
 		       COALESCE(free_days,0), COALESCE(traffic_gift_bytes,0), is_active,
 		       max_uses, current_uses, expires_at, applies_to_plans
-		FROM promocodes WHERE code = $1
+		FROM promocodes WHERE code = $1 FOR UPDATE
 	`, codeNorm).Scan(&promoType, &discountPercent, &discountFixed, &freeDays, &trafficGift,
 		&isActive, &maxUses, &currentUses, &expiresAt, &appliesToPlans)
 	if err != nil {
@@ -305,8 +313,14 @@ func ApplyPromoToPrice(basePrice int, code string, planID ...int) (finalPrice in
 		finalPrice = basePrice
 	}
 
-	// Increment usage counter
-	db.DB.Exec("UPDATE promocodes SET current_uses = current_uses + 1, updated_at = NOW() WHERE code = $1", codeNorm)
+	// Increment usage counter INSIDE transaction (atomic with validation)
+	if _, txErr := tx.Exec("UPDATE promocodes SET current_uses = current_uses + 1, updated_at = NOW() WHERE code = $1", codeNorm); txErr != nil {
+		return basePrice, 0, 0, fmt.Errorf("ошибка обновления промокода")
+	}
+
+	if txErr := tx.Commit(); txErr != nil {
+		return basePrice, 0, 0, fmt.Errorf("ошибка применения промокода")
+	}
 
 	return
 }

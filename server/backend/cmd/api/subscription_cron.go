@@ -45,16 +45,17 @@ func checkExpiringSubscriptions() {
 	// IMPORTANT: исключаем подписки, для которых уже есть pending/completed платёж
 	// за последние 24 часа — чтобы не списывать повторно (cron каждый час).
 	rows, err := db.DB.Query(`
-		SELECT u.user_id, us.valid_until, us.plan, us.auto_renew
+		SELECT u.user_id, us.valid_until, COALESCE(p.name, us.plan, 'unknown'), us.auto_renew
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
 		  AND NOT EXISTS (
-		    SELECT 1 FROM payments p
-		    WHERE p.user_id_text = u.user_id
-		      AND p.description LIKE '%автопродление%'
-		      AND p.created_at > NOW() - INTERVAL '24 hours'
+		    SELECT 1 FROM payments pay
+		    WHERE pay.user_id_text = u.user_id
+		      AND pay.description LIKE '%автопродление%'
+		      AND pay.created_at > NOW() - INTERVAL '24 hours'
 		  )
 	`)
 	if err != nil {
