@@ -57,28 +57,17 @@ export default function SiteFooter() {
             </ul>
           </div>
 
-          {/* Payment + Status */}
+          {/* Payment */}
           <div className="md:text-right">
             <p className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-3">Оплата</p>
-            {/* Payment system logos (text-based for now) */}
             <div className="flex flex-wrap gap-2 md:justify-end mb-4">
-              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">VISA</span>
-              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">MasterCard</span>
-              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">МИР</span>
+              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">Банковские карты</span>
               <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">СБП</span>
-              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">T-Pay</span>
             </div>
-            <a href="https://tbank.ru" target="_blank" rel="noopener noreferrer"
+            <a href="https://robokassa.com" target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition">
-              <span className="w-5 h-5 rounded bg-yellow-400 flex items-center justify-center text-[10px] font-black text-black">T</span>
-              Оплата через Т-Банк
+              Оплата через Robokassa
             </a>
-            <div className="mt-4">
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs text-text-secondary">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                Все системы работают
-              </div>
-            </div>
           </div>
         </div>
 

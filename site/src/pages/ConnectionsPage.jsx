@@ -218,13 +218,13 @@ export default function ConnectionsPage() {
                   <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-bold">VLESS Reality</span>
-                        <span className="text-[10px] text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">anti-DPI</span>
+                        <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-bold">Прокси</span>
+                        <span className="text-[10px] text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">оптимизированный</span>
                       </div>
                       <CopyButton text={vlessReality} />
                     </div>
                     <code className="text-[11px] font-mono text-text-primary break-all select-all line-clamp-2">{vlessReality}</code>
-                    <p className="text-xs text-text-secondary mt-1.5">Максимальная защита от блокировок. Для Happ, v2rayNG, Streisand</p>
+                    <p className="text-xs text-text-secondary mt-1.5">Оптимизированная маршрутизация. Для Happ, v2rayNG, Streisand</p>
                     <details className="mt-3">
                       <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код</summary>
                       <img src={qrUrl(vlessReality)} alt="QR" className="mt-2 rounded-lg bg-white p-2 w-[180px] h-[180px]" loading="lazy" />

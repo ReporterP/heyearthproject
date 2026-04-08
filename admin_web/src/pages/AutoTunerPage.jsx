@@ -58,7 +58,7 @@ export default function AutoTunerPage() {
         <div>
           <h2 className="text-2xl font-bold">Auto-Tuner</h2>
           <p className="text-sm text-text-secondary mt-1">
-            Автоматический подбор оптимальных VPN параметров — SNI домены, fingerprint, транспорт
+            Автоматический подбор оптимальных параметров прокси — SNI домены, fingerprint, транспорт
           </p>
         </div>
         <div className="flex items-center gap-2">

@@ -227,7 +227,7 @@ export default {
   settingsHubMainServerHost: 'Main Server Host',
   settingsHubMainServerHostHint: 'IP address or domain of the main server',
   settingsHubVlessPort: 'VLESS Port',
-  settingsHubVlessPortHint: 'Port for VLESS Reality VPN (default: 443)',
+  settingsHubVlessPortHint: 'Port for proxy (default: 443)',
   settingsHubSocks5Port: 'SOCKS Port',
   settingsHubSocks5PortHint: 'Port for SOCKS proxy (default: 1080)',
   settingsHubHttpProxyPort: 'HTTP Proxy Port',

@@ -230,6 +230,33 @@ export default function PlansPage() {
               </div>
             </div>
 
+            <div className="mb-4">
+              <label className="text-xs text-text-secondary mb-2 block">Возможности плана</label>
+              <div className="flex flex-wrap gap-3">
+                {[
+                  { key: 'traffic_masking', label: 'Маскировка трафика' },
+                  { key: 'priority_support', label: 'Приоритетная поддержка' },
+                ].map(feat => {
+                  const features = typeof editing.features === 'string'
+                    ? (() => { try { return JSON.parse(editing.features || '{}') } catch { return {} } })()
+                    : (editing.features || {})
+                  return (
+                    <label key={feat.key} className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox"
+                        checked={!!features[feat.key]}
+                        onChange={e => {
+                          const updated = { ...features, [feat.key]: e.target.checked || undefined }
+                          if (!e.target.checked) delete updated[feat.key]
+                          setEditing({...editing, features: JSON.stringify(updated)})
+                        }}
+                        className="rounded" />
+                      <span className="text-sm">{feat.label}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={editing.is_active} onChange={e => setEditing({...editing, is_active: e.target.checked})} className="rounded" />

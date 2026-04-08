@@ -100,6 +100,19 @@ export default function SettingsPage() {
           </section>
 
           <section className="bg-surface-card rounded-xl border border-white/10 p-5">
+            <h3 className="text-lg font-semibold mb-3">Юридические данные</h3>
+            {!loading && (
+              <div className="divide-y divide-white/5">
+                <SettingCard label="Название организации" hint="Полное наименование ИП или ООО" value={settings.legal_company_name} onSave={v => saveSetting('legal_company_name', v)} />
+                <SettingCard label="ИНН" hint="ИНН индивидуального предпринимателя или организации" value={settings.legal_inn} onSave={v => saveSetting('legal_inn', v)} />
+                <SettingCard label="Email" hint="Контактный email для связи" value={settings.legal_email} onSave={v => saveSetting('legal_email', v)} />
+                <SettingCard label="Телефон" hint="Контактный телефон" value={settings.legal_phone} onSave={v => saveSetting('legal_phone', v)} />
+                <SettingCard label="Юридический адрес" hint="Адрес регистрации ИП/ООО" value={settings.legal_address} onSave={v => saveSetting('legal_address', v)} />
+              </div>
+            )}
+          </section>
+
+          <section className="bg-surface-card rounded-xl border border-white/10 p-5">
             <h3 className="text-lg font-semibold mb-3">Блок «Поддержать разработчика»</h3>
             {!loading && (
               <div className="divide-y divide-white/5">
