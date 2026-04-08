@@ -537,6 +537,19 @@ func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleDonationSettings(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"donation_enabled": biz.GetSettingOrDefault("donation_enabled", "true"),
+		"donation_title":   biz.GetSettingOrDefault("donation_title", "Поддержать разработчика"),
+		"donation_text":    biz.GetSettingOrDefault("donation_text", ""),
+	})
+}
+
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -760,12 +773,11 @@ func main() {
 
 	// Auto-renew toggle
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
-	http.HandleFunc("/api/webhooks/tbank", webhookLimiter.Middleware(handleTBankWebhook))
-	// Legacy YooKassa webhook redirect — logs deprecation, forwards to T-Bank handler
-	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[DEPRECATION] /api/webhooks/yookassa called from %s — use /api/webhooks/tbank instead", r.RemoteAddr)
-		handleTBankWebhook(w, r)
-	}))
+	// Robokassa ResultURL webhook
+	http.HandleFunc("/api/webhooks/robokassa", webhookLimiter.Middleware(handleRobokassaResult))
+	// Legacy webhook routes — redirect to Robokassa
+	http.HandleFunc("/api/webhooks/tbank", webhookLimiter.Middleware(handleRobokassaResult))
+	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleRobokassaResult))
 
 	// Admin payment actions — registered via admin.PaymentActionHandler to avoid route conflicts
 	admin.PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) {
@@ -784,6 +796,7 @@ func main() {
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
+	http.HandleFunc("/api/v1/app/donation-settings", apiLimiter.Middleware(handleDonationSettings))
 
 	// Admin panel
 	admin.RegisterRoutes()

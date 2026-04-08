@@ -89,9 +89,23 @@ export default function SettingsPage() {
             <h3 className="text-lg font-semibold mb-3">{t.settingsServerSection}</h3>
             {loading ? <p className="text-text-secondary">{t.loading}</p> : (
               <div className="divide-y divide-white/5">
-                <SettingCard label="T-Bank Terminal Key" hint="Идентификатор терминала из Т-Бизнес (например 1775468793904DEMO)" value={settings.tbank_terminal_key} onSave={v => saveSetting('tbank_terminal_key', v)} />
-                <SettingCard label="T-Bank Password" hint="Пароль терминала для генерации Token (SHA-256)" value={settings.tbank_password} onSave={v => saveSetting('tbank_password', v)} type="password" />
-                <SettingCard label="T-Bank Webhook URL" hint="URL для POST-уведомлений о статусах платежей. Настройте также в личном кабинете Т-Бизнес." value={settings.tbank_notification_url || 'https://hiearth.ru/api/webhooks/tbank'} onSave={v => saveSetting('tbank_notification_url', v)} />
+                <SettingCard label="Robokassa Login" hint="MerchantLogin — идентификатор магазина в Robokassa" value={settings.robokassa_login} onSave={v => saveSetting('robokassa_login', v)} />
+                <SettingCard label="Robokassa Password #1" hint="Пароль для подписи платежей (используется при создании ссылки оплаты)" value={settings.robokassa_password1} onSave={v => saveSetting('robokassa_password1', v)} type="password" />
+                <SettingCard label="Robokassa Password #2" hint="Пароль для проверки webhook (ResultURL). Настройте ResultURL в Robokassa: https://hiearth.ru/api/webhooks/robokassa" value={settings.robokassa_password2} onSave={v => saveSetting('robokassa_password2', v)} type="password" />
+                <SettingCard label="Тестовый режим" hint="Включить тестовый режим Robokassa (IsTest=1)" value={settings.robokassa_test_mode || 'true'} onSave={v => saveSetting('robokassa_test_mode', v)} type="toggle" />
+                <SettingCard label="Robokassa Partner ID" hint="(Опционально) Для автоматических возвратов через API. Без него возвраты через панель Robokassa" value={settings.robokassa_partner_id} onSave={v => saveSetting('robokassa_partner_id', v)} />
+                <SettingCard label="Email для чеков (fallback)" hint="Если пользователь не указал email при оплате, чек придёт на этот адрес" value={settings.receipt_fallback_email} onSave={v => saveSetting('receipt_fallback_email', v)} />
+              </div>
+            )}
+          </section>
+
+          <section className="bg-surface-card rounded-xl border border-white/10 p-5">
+            <h3 className="text-lg font-semibold mb-3">Блок «Поддержать разработчика»</h3>
+            {!loading && (
+              <div className="divide-y divide-white/5">
+                <SettingCard label="Включить блок донатов" hint="Показывать блок «Поддержать разработчика» в личном кабинете пользователей" value={settings.donation_enabled || 'true'} onSave={v => saveSetting('donation_enabled', v)} type="toggle" />
+                <SettingCard label="Заголовок блока" hint="Заголовок для блока донатов" value={settings.donation_title} onSave={v => saveSetting('donation_title', v)} />
+                <SettingCard label="Текст блока" hint="Основной текст блока донатов (поддерживает простой текст)" value={settings.donation_text} onSave={v => saveSetting('donation_text', v)} />
               </div>
             )}
           </section>

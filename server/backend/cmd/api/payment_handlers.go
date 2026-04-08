@@ -9,10 +9,10 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/tbank"
+	"github.com/heyearth/backend/internal/robokassa"
 )
 
-// ─────────────────────── Create Payment (T-Bank) ───────────────────────
+// ─────────────────────── Create Payment (Robokassa) ───────────────────────
 
 func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
@@ -93,115 +93,84 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create T-Bank payment
-	tbClient, err := tbank.NewClientFromSettings()
+	// Create Robokassa payment
+	roboClient, err := robokassa.NewClientFromSettings()
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены: " + err.Error()})
 		return
 	}
 
 	description := fmt.Sprintf("HiEarth %s — %d дн.", plan.Name, plan.DurationDays)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(priceRub), "RUB", "tbank", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(priceRub), "RUB", "robokassa", description)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create payment: " + err.Error()})
 		return
 	}
 
-	returnURL := body.ReturnURL
-	if returnURL == "" {
-		returnURL = "https://hiearth.ru/dashboard"
-	}
-
 	email := body.Email
 	if email == "" {
-		email = "noreply@hiearth.ru"
+		email = biz.GetSettingOrDefault("receipt_fallback_email", "")
 	}
 
-	notificationURL := biz.GetSettingOrDefault("tbank_notification_url", "https://hiearth.ru/api/webhooks/tbank")
-	orderID := fmt.Sprintf("hiearth-%d", paymentDBID)
+	// Build receipt for fiscalization (54-FZ)
+	receipt := robokassa.BuildSubscriptionReceipt(description, float64(priceRub))
 
-	result, err := tbClient.InitPayment(
-		orderID,
-		uint64(priceRub)*100, // рубли → копейки
-		description,
-		userID,
-		email,
-		returnURL,
-		notificationURL,
-		body.SaveCard != nil && *body.SaveCard, // Only save card if user explicitly opted in
-	)
+	result, err := roboClient.CreatePayment(robokassa.PaymentParams{
+		InvID:       paymentDBID,
+		OutSum:      float64(priceRub),
+		Description: description,
+		Email:       email,
+		Receipt:     receipt,
+	})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tbank: " + err.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "robokassa: " + err.Error()})
 		return
 	}
 
-	// Update payment record
+	// Update payment record with metadata
 	_, _ = db.DB.Exec(`
-		UPDATE payments SET external_id = $1, yookassa_payment_id = $2, yookassa_status = $3,
-		       confirmation_url = $4, metadata = $5::jsonb, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $6
-	`, result.PaymentID, result.PaymentID, result.Status, result.PaymentURL,
-		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "promocode": promoUsed, "order_id": orderID}),
+		UPDATE payments SET external_id = $1, confirmation_url = $2,
+		       metadata = $3::jsonb, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $4
+	`, fmt.Sprintf("%d", paymentDBID), result.PaymentURL,
+		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "promocode": promoUsed}),
 		paymentDBID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_id":       paymentDBID,
 		"confirmation_url": result.PaymentURL,
-		"tbank_payment_id": result.PaymentID,
-		"status":           result.Status,
 	})
 }
 
-// ─────────────────────── T-Bank Webhook ───────────────────────
+// ─────────────────────── Robokassa Webhook (ResultURL) ───────────────────────
 
-func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+// handleRobokassaResult handles the ResultURL callback from Robokassa.
+// Robokassa sends POST with: OutSum, InvId, SignatureValue
+// We verify signature with Password2 and return "OK{InvId}".
+func handleRobokassaResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	tbClient, err := tbank.NewClientFromSettings()
+	roboClient, err := robokassa.NewClientFromSettings()
 	if err != nil {
-		log.Printf("[tbank-webhook] client error: %v", err)
+		log.Printf("[robokassa-webhook] client error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	notification, err := tbClient.ParseNotification(r.Body)
+	notification, err := roboClient.ParseResultRequest(r)
 	if err != nil {
-		log.Printf("[tbank-webhook] parse error: %v", err)
-		http.Error(w, "invalid notification", http.StatusBadRequest)
+		log.Printf("[robokassa-webhook] parse error: %v", err)
+		http.Error(w, "invalid notification: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[tbank-webhook] OrderID=%s PaymentID=%d Status=%s Success=%v Amount=%d",
-		notification.OrderID, notification.PaymentID, notification.Status, notification.Success, notification.Amount)
+	paymentDBID := notification.InvID
+	log.Printf("[robokassa-webhook] InvID=%d OutSum=%.2f", paymentDBID, notification.OutSum)
 
-	if !notification.Success {
-		log.Printf("[tbank-webhook] payment failed: code=%s status=%s", notification.ErrorCode, notification.Status)
-		// Update payment status in DB
-		if _, err := fmt.Sscanf(notification.OrderID, "hiearth-%d", new(int)); err == nil {
-			var pid int
-			fmt.Sscanf(notification.OrderID, "hiearth-%d", &pid)
-			db.DB.Exec("UPDATE payments SET status = 'failed', notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-				fmt.Sprintf("T-Bank: %s (code: %s)", notification.Status, notification.ErrorCode), pid)
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-		return
-	}
-
-	// Find payment by order_id (format: hiearth-{db_id})
-	var paymentDBID int
-	if _, err := fmt.Sscanf(notification.OrderID, "hiearth-%d", &paymentDBID); err != nil {
-		log.Printf("[tbank-webhook] unknown order format: %s", notification.OrderID)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(tbClient.GetNotificationSuccessResponse()))
-		return
-	}
-
-	// Get payment from DB — use user_id_text (canonical user_id string), not user_id (legacy INT FK)
+	// Get payment from DB
 	var userID, metadata string
 	err = db.DB.QueryRow(`
 		SELECT COALESCE(p.user_id_text, ''), COALESCE(p.metadata::text, '{}')
@@ -209,61 +178,53 @@ func handleTBankWebhook(w http.ResponseWriter, r *http.Request) {
 		WHERE p.id = $1
 	`, paymentDBID).Scan(&userID, &metadata)
 	if err != nil {
-		log.Printf("[tbank-webhook] payment %d not found: %v", paymentDBID, err)
+		log.Printf("[robokassa-webhook] payment %d not found: %v", paymentDBID, err)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(tbClient.GetNotificationSuccessResponse()))
+		fmt.Fprintf(w, "OK%d", paymentDBID)
 		return
 	}
 
-	if notification.Status == "CONFIRMED" || notification.Status == "AUTHORIZED" {
-		// Mark payment completed
-		if err := biz.MarkPaymentCompleted(paymentDBID); err != nil {
-			log.Printf("[tbank-webhook] mark completed: %v", err)
-		}
+	// Mark payment completed
+	if err := biz.MarkPaymentCompleted(paymentDBID); err != nil {
+		log.Printf("[robokassa-webhook] mark completed: %v", err)
+	}
 
-		// Save RebillID for recurring
-		if notification.RebillID > 0 {
-			rebillStr := fmt.Sprintf("%d", notification.RebillID)
-			db.DB.Exec("UPDATE payments SET payment_method_id = $1 WHERE id = $2", rebillStr, paymentDBID)
-			db.DB.Exec("UPDATE users SET saved_payment_method = $1 WHERE user_id = $2", rebillStr, userID)
-			log.Printf("[tbank-webhook] saved RebillID %d for user %s", notification.RebillID, userID)
-		}
+	// Save OpKey (card token) for recurring payments if present
+	if notification.OpKey != "" {
+		db.DB.Exec("UPDATE payments SET payment_method_id = $1 WHERE id = $2", notification.OpKey, paymentDBID)
+		db.DB.Exec("UPDATE users SET saved_payment_method = $1 WHERE user_id = $2", notification.OpKey, userID)
+		log.Printf("[robokassa-webhook] saved OpKey for user %s (recurring)", userID)
+	}
 
-		// Parse metadata for plan activation.
-		// plan_id can be stored as int or string (mustJSON stores as int).
-		var metaRaw map[string]interface{}
-		_ = json.Unmarshal([]byte(metadata), &metaRaw)
+	// Parse metadata for plan activation
+	var metaRaw map[string]interface{}
+	_ = json.Unmarshal([]byte(metadata), &metaRaw)
 
-		var metaPlanID int
-		switch v := metaRaw["plan_id"].(type) {
-		case float64:
-			metaPlanID = int(v) // JSON numbers are float64
-		case string:
-			fmt.Sscanf(v, "%d", &metaPlanID)
-		}
-		metaPlanSlug, _ := metaRaw["plan_slug"].(string)
-		metaPromocode, _ := metaRaw["promocode"].(string)
+	var metaPlanID int
+	switch v := metaRaw["plan_id"].(type) {
+	case float64:
+		metaPlanID = int(v)
+	case string:
+		fmt.Sscanf(v, "%d", &metaPlanID)
+	}
+	metaPromocode, _ := metaRaw["promocode"].(string)
 
-		if metaPlanID > 0 {
-			if p, err := biz.GetPlanByID(metaPlanID); err == nil {
-				pricePaid := int(notification.Amount / 100) // копейки → рубли
-				if err := biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, pricePaid, metaPromocode); err != nil {
-					log.Printf("[tbank-webhook] activate plan %d: %v", p.ID, err)
-				} else {
-					log.Printf("[tbank-webhook] ✓ activated plan '%s' for user %s (%d₽)", p.Name, userID, pricePaid)
-				}
-			}
-		} else if metaPlanSlug != "" {
-			if p, err := biz.GetPlanBySlug(metaPlanSlug); err == nil {
-				biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, int(notification.Amount/100), metaPromocode)
+	if metaPlanID > 0 {
+		if p, err := biz.GetPlanByID(metaPlanID); err == nil {
+			pricePaid := int(notification.OutSum)
+			if err := biz.ActivateSubscriptionWithPlan(userID, p.ID, p.DurationDays, pricePaid, metaPromocode); err != nil {
+				log.Printf("[robokassa-webhook] activate plan %d: %v", p.ID, err)
+			} else {
+				log.Printf("[robokassa-webhook] ✓ activated plan '%s' for user %s (%d₽)", p.Name, userID, pricePaid)
+				RequestXraySync()
 			}
 		}
 	}
 
-	// T-Bank expects plain "OK" response (not JSON)
+	// Robokassa expects "OK{InvId}" response
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	fmt.Fprintf(w, "OK%d", paymentDBID)
 }
 
 // ─────────────────────── Other Payment Endpoints ───────────────────────
@@ -350,34 +311,30 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tbClient, err := tbank.NewClientFromSettings()
+	roboClient, err := robokassa.NewClientFromSettings()
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "payments not configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены"})
 		return
 	}
 
-	description := fmt.Sprintf("HiEarth B2B — пополнение кошелька (%d ₽)", req.Amount)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "tbank", description)
+	description := fmt.Sprintf("HiEarth B2B — пополнение (%d ₽)", req.Amount)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "robokassa", description)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = "https://hiearth.ru/dashboard"
-	}
-
-	orderID := fmt.Sprintf("tenant-%d-%d", req.TenantID, paymentDBID)
-	result, err := tbClient.InitPayment(orderID, uint64(req.Amount)*100, description, fmt.Sprintf("tenant-%d", req.TenantID),
-		req.Email, returnURL, "", false)
+	result, err := roboClient.CreatePayment(robokassa.PaymentParams{
+		InvID: paymentDBID, OutSum: float64(req.Amount), Description: description, Email: req.Email,
+		Receipt: robokassa.BuildSubscriptionReceipt(description, float64(req.Amount)),
+	})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tbank: " + err.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "robokassa: " + err.Error()})
 		return
 	}
 
-	_, _ = db.DB.Exec("UPDATE payments SET external_id = $1, yookassa_payment_id = $2, metadata = $3::jsonb WHERE id = $4",
-		result.PaymentID, result.PaymentID,
+	_, _ = db.DB.Exec("UPDATE payments SET external_id = $1, metadata = $2::jsonb WHERE id = $3",
+		fmt.Sprintf("%d", paymentDBID),
 		mustJSON(map[string]interface{}{"tenant_id": req.TenantID, "type": "tenant_topup"}), paymentDBID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -442,34 +399,30 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tbClient, err := tbank.NewClientFromSettings()
+	roboClient, err := robokassa.NewClientFromSettings()
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "payments not configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены"})
 		return
 	}
 
 	description := fmt.Sprintf("HiEarth — донат (%d ₽)", req.Amount)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "tbank", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "robokassa", description)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = "https://hiearth.ru/dashboard"
-	}
-
-	orderID := fmt.Sprintf("donate-%d", paymentDBID)
-	result, err := tbClient.InitPayment(orderID, uint64(req.Amount)*100, description, userID,
-		"noreply@hiearth.ru", returnURL, "", false)
+	result, err := roboClient.CreatePayment(robokassa.PaymentParams{
+		InvID: paymentDBID, OutSum: float64(req.Amount), Description: description,
+		Receipt: robokassa.BuildSubscriptionReceipt(description, float64(req.Amount)),
+	})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tbank: " + err.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "robokassa: " + err.Error()})
 		return
 	}
 
-	_, _ = db.DB.Exec("UPDATE payments SET external_id = $1, yookassa_payment_id = $2, metadata = $3::jsonb WHERE id = $4",
-		result.PaymentID, result.PaymentID, `{"type":"donation"}`, paymentDBID)
+	_, _ = db.DB.Exec("UPDATE payments SET external_id = $1, metadata = $2::jsonb WHERE id = $3",
+		fmt.Sprintf("%d", paymentDBID), `{"type":"donation"}`, paymentDBID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_id":       paymentDBID,

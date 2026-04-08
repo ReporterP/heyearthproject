@@ -1,6 +1,15 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
 export default function SiteFooter() {
+  const [legal, setLegal] = useState({})
+  useEffect(() => {
+    fetch('/api/v1/legal-info').then(r => r.json()).then(setLegal).catch(() => {})
+  }, [])
+  const companyShort = legal.legal_company_name ? legal.legal_company_name.replace(/^ИП\s+/, 'ИП ').replace(/\s+\S+$/, ' ' + (legal.legal_company_name.split(' ').pop()?.[0] || '') + '.') : 'ИП Степанов А.В.'
+  const legalEmail = legal.legal_email || 'alex_step04@mail.ru'
+  const legalInn = legal.legal_inn || ''
+
   return (
     <footer className="relative border-t border-white/5 overflow-hidden">
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-px bg-gradient-to-r from-transparent via-brand/40 to-transparent" />
@@ -20,10 +29,11 @@ export default function SiteFooter() {
             <p className="text-sm text-text-secondary leading-relaxed max-w-xs">
               Устойчивый интернет-доступ с эко-маршрутизацией трафика.
             </p>
-            <p className="text-xs text-text-secondary mt-3">ИП Степанов А.В.</p>
+            <p className="text-xs text-text-secondary mt-3">{legal.legal_company_name || 'ИП Степанов А.В.'}</p>
             <p className="text-xs text-text-secondary">
-              <a href="mailto:alex_step04@mail.ru" className="hover:text-brand transition">alex_step04@mail.ru</a>
+              <a href={`mailto:${legalEmail}`} className="hover:text-brand transition">{legalEmail}</a>
             </p>
+            {legalInn && <p className="text-xs text-text-secondary">ИНН: {legalInn}</p>}
           </div>
 
           {/* Product links */}
@@ -75,7 +85,7 @@ export default function SiteFooter() {
         {/* Bottom bar */}
         <div className="mt-10 pt-6 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-3">
           <p className="text-xs text-text-secondary">
-            &copy; {new Date().getFullYear()} HiEarth. ИП Степанов А.В. Все права защищены.
+            &copy; {new Date().getFullYear()} HiEarth. {legal.legal_company_name || 'ИП Степанов А.В.'} Все права защищены.
           </p>
           <div className="flex gap-4">
             <Link to="/privacy" className="text-xs text-text-secondary/50 hover:text-text-secondary transition">Конфиденциальность</Link>

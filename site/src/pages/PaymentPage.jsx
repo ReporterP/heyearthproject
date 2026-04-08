@@ -34,8 +34,11 @@ export default function PaymentPage() {
   const [loading, setLoading] = useState(true)
   const [selectedPlan, setSelectedPlan] = useState(null)
   const [currentPlanSlug, setCurrentPlanSlug] = useState(null)
+  const [currentSortOrder, setCurrentSortOrder] = useState(-1)
   const [validUntil, setValidUntil] = useState(null)
   const [promocode, setPromocode] = useState('')
+  const [email, setEmail] = useState('')
+  const [saveCard, setSaveCard] = useState(false)
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState('')
 
@@ -51,12 +54,16 @@ export default function PaymentPage() {
       setPlans(Array.isArray(plansData) ? plansData : [])
       if (profile?.current_plan_slug) {
         setCurrentPlanSlug(profile.current_plan_slug)
+        const match = (Array.isArray(plansData) ? plansData : []).find(p => p.slug === profile.current_plan_slug)
+        if (match) setCurrentSortOrder(match.sort_order ?? -1)
       } else if (profile?.current_plan) {
-        // Fallback: match by name
         const match = (Array.isArray(plansData) ? plansData : []).find(
           p => p.name === profile.current_plan || p.slug === profile.current_plan
         )
-        if (match) setCurrentPlanSlug(match.slug)
+        if (match) {
+          setCurrentPlanSlug(match.slug)
+          setCurrentSortOrder(match.sort_order ?? -1)
+        }
       }
       if (profile?.valid_until) setValidUntil(profile.valid_until)
     }).finally(() => setLoading(false))
@@ -70,13 +77,18 @@ export default function PaymentPage() {
     setPaying(true)
     setError('')
     try {
-      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, promocode)
+      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, promocode, saveCard, email)
       if (data.status === 'activated') {
         // Free plan activated immediately
         navigate('/dashboard')
         return
       }
       if (data.confirmation_url) {
+        // Save pending payment info so DashboardPage can show result popup
+        const plan = plans.find(p => p.id === planId)
+        if (plan) {
+          sessionStorage.setItem('payment_pending', JSON.stringify({ name: plan.name, price: plan.price_rub }))
+        }
         window.location.href = data.confirmation_url
       } else {
         setError('Не удалось создать платёж. Попробуйте позже.')
@@ -107,8 +119,8 @@ export default function PaymentPage() {
           </p>
         </div>
 
-        {/* Promocode */}
-        <div className="max-w-md mx-auto mb-8 animate-fade-in-up delay-100">
+        {/* Promocode + Email + Save card */}
+        <div className="max-w-lg mx-auto mb-8 animate-fade-in-up delay-100 space-y-3">
           <div className="flex gap-2">
             <input
               value={promocode}
@@ -122,6 +134,25 @@ export default function PaymentPage() {
               </button>
             )}
           </div>
+          <div>
+            <input
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              type="email"
+              placeholder="Email для чека (необязательно)"
+              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm placeholder-text-secondary focus:border-brand/50 focus:outline-none"
+            />
+            <p className="text-[11px] text-text-secondary mt-1 ml-1">Мы не храним вашу почту — она используется только для отправки чека</p>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              checked={saveCard}
+              onChange={e => setSaveCard(e.target.checked)}
+              className="rounded border-white/20"
+            />
+            Сохранить карту для автопродления
+          </label>
         </div>
 
         {/* Plans grid */}
@@ -130,6 +161,9 @@ export default function PaymentPage() {
             const isSelected = selectedPlan === plan.id
             const isCurrent = currentPlanSlug === plan.slug
             const isFree = plan.price_rub === 0
+            // Block downgrade: can't buy a plan with lower sort_order than current
+            // Same sort_order = allowed (horizontal switch between equal plans)
+            const isDowngrade = currentSortOrder >= 0 && !isCurrent && (plan.sort_order ?? 0) < currentSortOrder
             const features = []
             features.push(protocolLabel(plan.allowed_protocols))
             features.push(`Трафик: ${formatTraffic(plan.traffic_limit_bytes)}`)
@@ -142,13 +176,15 @@ export default function PaymentPage() {
             return (
               <div
                 key={plan.id}
-                onClick={() => setSelectedPlan(plan.id)}
-                className={`relative glass-card rounded-2xl p-6 cursor-pointer transition-all duration-300 animate-fade-in-up ${
-                  isCurrent
-                    ? 'border-green-500/50 shadow-lg shadow-green-500/10'
-                    : isSelected
-                      ? 'border-brand/50 shadow-lg shadow-brand/10 -translate-y-1'
-                      : 'border-white/10 hover:border-white/20'
+                onClick={() => !isDowngrade && !isCurrent && setSelectedPlan(plan.id)}
+                className={`relative glass-card rounded-2xl p-6 transition-all duration-300 animate-fade-in-up ${
+                  isDowngrade
+                    ? 'border-white/5 opacity-40 cursor-not-allowed'
+                    : isCurrent
+                      ? 'border-green-500/50 shadow-lg shadow-green-500/10 cursor-default'
+                      : isSelected
+                        ? 'border-brand/50 shadow-lg shadow-brand/10 -translate-y-1 cursor-pointer'
+                        : 'border-white/10 hover:border-white/20 cursor-pointer'
                 }`}
                 style={{ animationDelay: `${idx * 100}ms` }}
               >
@@ -181,15 +217,25 @@ export default function PaymentPage() {
                 </ul>
 
                 <button
-                  onClick={e => { e.stopPropagation(); handlePay(plan.id) }}
-                  disabled={paying}
+                  onClick={e => {
+                    e.stopPropagation()
+                    if (isDowngrade || isCurrent) return
+                    // Warn about plan switch if user has active sub
+                    if (currentPlanSlug && !isCurrent) {
+                      if (!confirm('При оплате нового тарифа ваша текущая подписка будет заменена. Продолжить?')) return
+                    }
+                    handlePay(plan.id)
+                  }}
+                  disabled={paying || isDowngrade}
                   className={`w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300 ${
-                    isSelected
-                      ? 'bg-gradient-to-r from-brand to-brand-dark text-white hover:shadow-lg hover:shadow-brand/25'
-                      : 'bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary'
+                    isDowngrade
+                      ? 'bg-white/5 text-text-secondary/50 cursor-not-allowed'
+                      : isSelected
+                        ? 'bg-gradient-to-r from-brand to-brand-dark text-white hover:shadow-lg hover:shadow-brand/25'
+                        : 'bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary'
                   } disabled:opacity-50`}
                 >
-                  {paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}
+                  {isDowngrade ? 'Недоступно' : paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}
                 </button>
               </div>
             )

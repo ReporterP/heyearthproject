@@ -1,6 +1,6 @@
-import { StrictMode } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import './style.css'
 import SiteHeader from './components/SiteHeader.jsx'
@@ -17,6 +17,8 @@ import BusinessSignupPage from './pages/BusinessSignupPage.jsx'
 import PrivacyPage from './pages/PrivacyPage.jsx'
 import RefundPage from './pages/RefundPage.jsx'
 import OfferPage from './pages/OfferPage.jsx'
+import PaymentsHistoryPage from './pages/PaymentsHistoryPage.jsx'
+import ConnectionsPage from './pages/ConnectionsPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -30,10 +32,17 @@ function NotFoundPage() {
   )
 }
 
+function ScrollToTop() {
+  const { pathname } = useLocation()
+  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  return null
+}
+
 function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+      <ScrollToTop />
       <div className="min-h-screen flex flex-col">
         <SiteHeader />
         <main className="flex-1">
@@ -49,6 +58,8 @@ function App() {
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
+            <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
+            <Route path="/connections" element={<RequireAuth><ConnectionsPage /></RequireAuth>} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>

@@ -23,23 +23,24 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		argN++
 	}
 	if p.Search != "" {
-		where += fmt.Sprintf(" AND (COALESCE(u.user_id,'') ILIKE $%d OR COALESCE(p.external_id,'') ILIKE $%d)", argN, argN)
+		where += fmt.Sprintf(" AND (COALESCE(p.user_id_text,'') ILIKE $%d OR COALESCE(p.external_id,'') ILIKE $%d)", argN, argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
 
 	var total int
-	if err := db.DB.QueryRow("SELECT COUNT(*) FROM payments p LEFT JOIN users u ON u.id = p.user_id WHERE "+where, args...).Scan(&total); err != nil {
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM payments p LEFT JOIN users u ON u.user_id = p.user_id_text WHERE "+where, args...).Scan(&total); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to count payments")
 		return
 	}
 
 	query := fmt.Sprintf(`
-		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(u.user_id, ''), p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
+		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(p.user_id_text, COALESCE(u.user_id, '')),
+		       p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
 		       COALESCE(p.external_id, ''), COALESCE(p.notes, ''), COALESCE(p.metadata, '{}'::jsonb),
 		       p.created_at, COALESCE(p.updated_at, p.created_at), p.confirmed_at
 		FROM payments p
-		LEFT JOIN users u ON u.id = p.user_id
+		LEFT JOIN users u ON u.user_id = p.user_id_text
 		WHERE %s
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d

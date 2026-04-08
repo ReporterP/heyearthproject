@@ -331,17 +331,13 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 
 // ListUserPayments returns all payments for a user.
 func ListUserPayments(userID string) ([]UserPaymentDetail, error) {
-	user, err := GetOrCreateUser(userID)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.DB.Query(`
-		SELECT id, amount::float8, currency, status, COALESCE(provider, ''), COALESCE(yookassa_payment_id, ''),
+		SELECT id, amount::float8, currency, status, COALESCE(provider, ''), COALESCE(external_id, ''),
 		       COALESCE(description, ''), created_at, paid_at
 		FROM payments
-		WHERE user_id = $1
+		WHERE user_id_text = $1
 		ORDER BY created_at DESC
-	`, user.ID)
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list user payments: %w", err)
 	}

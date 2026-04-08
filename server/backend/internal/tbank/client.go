@@ -147,9 +147,20 @@ func (c *Client) InitPayment(orderID string, amountKopecks uint64, description, 
 		params["Recurrent"] = "Y"
 	}
 
-	// Receipt for fiscalization
-	params["Receipt"] = map[string]interface{}{
-		"Email":    email,
+	// Receipt for fiscalization (54-FZ requires Email OR Phone).
+	// If user didn't provide email, use admin fallback from settings.
+	receiptContact := map[string]interface{}{}
+	if email != "" {
+		receiptContact["Email"] = email
+	} else {
+		fallbackEmail := biz.GetSettingOrDefault("receipt_fallback_email", "")
+		if fallbackEmail != "" {
+			receiptContact["Email"] = fallbackEmail
+		} else {
+			receiptContact["Email"] = "receipts@hiearth.ru"
+		}
+	}
+	receipt := map[string]interface{}{
 		"Taxation": "usn_income",
 		"Items": []map[string]interface{}{
 			{
@@ -166,6 +177,11 @@ func (c *Client) InitPayment(orderID string, amountKopecks uint64, description, 
 			"Electronic": amountKopecks,
 		},
 	}
+	// Merge contact info into receipt
+	for k, v := range receiptContact {
+		receipt[k] = v
+	}
+	params["Receipt"] = receipt
 
 	result, err := c.post("Init", params)
 	if err != nil {

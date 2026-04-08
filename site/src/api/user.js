@@ -79,11 +79,12 @@ export async function getDownloads() {
   return jsonOrThrow(res, 'Failed to load downloads')
 }
 
-export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false) {
+export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false, email = '') {
   const body = { return_url: returnUrl, save_card: saveCard }
   if (planId) body.plan_id = planId
   else if (plan) body.plan = plan
   if (promocode) body.promocode = promocode
+  if (email) body.email = email
   const res = await fetch(`${API_BASE}/api/v1/payment/create`, {
     method: 'POST',
     headers: {
@@ -167,4 +168,17 @@ export async function toggleAutoRenew(token, enabled) {
     body: JSON.stringify({ auto_renew: enabled }),
   })
   return jsonOrThrow(res, 'Failed to toggle auto-renew')
+}
+
+// ── Donation settings ──
+export async function getDonationSettings() {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/app/donation-settings`)
+    if (!res.ok) return null
+    const ct = res.headers.get('content-type') || ''
+    if (!ct.includes('application/json')) return null
+    return await res.json()
+  } catch {
+    return null
+  }
 }

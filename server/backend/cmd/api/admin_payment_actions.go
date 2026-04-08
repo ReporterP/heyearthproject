@@ -9,13 +9,16 @@ import (
 	"strings"
 
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/tbank"
+	"github.com/heyearth/backend/internal/robokassa"
 )
 
 // ─────────────────────── Admin Payment Actions ───────────────────────
-// These handlers are registered in admin routes with RequirePermission("payments.write").
+// Robokassa doesn't have API for Cancel/GetState/Resend.
+// Refunds are processed through Robokassa admin panel.
+// These handlers manage local payment status only.
 
-// handleAdminPaymentCancel cancels/refunds a payment via T-Bank.
+// handleAdminPaymentCancel marks a payment as cancelled/refunded in our DB.
+// Actual refund must be processed in Robokassa admin panel.
 func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -30,53 +33,45 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Amount int    `json:"amount"` // kopecks, 0 = full refund
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	// ignore decode errors for optional body
+	_ = parseJSON(r, &req)
 
-	// Get external payment ID
-	var externalID, status string
-	err := db.DB.QueryRow("SELECT COALESCE(external_id, ''), status FROM payments WHERE id = $1", paymentID).Scan(&externalID, &status)
+	reason := req.Reason
+	if reason == "" {
+		reason = "Admin cancel"
+	}
+
+	// Try Robokassa API refund if partner ID is configured
+	var opKey string
+	db.DB.QueryRow("SELECT COALESCE(external_id, '') FROM payments WHERE id = $1", paymentID).Scan(&opKey)
+
+	refundMsg := "Платёж помечен как возврат."
+	roboClient, roboErr := robokassa.NewClientFromSettings()
+	if roboErr == nil && opKey != "" {
+		if err := roboClient.Refund(opKey, 0); err != nil {
+			log.Printf("[admin-cancel] Robokassa refund for payment %d failed: %v", paymentID, err)
+			refundMsg = fmt.Sprintf("Автовозврат не удался: %v. Оформите вручную в панели Robokassa.", err)
+		} else {
+			refundMsg = "Возврат через Robokassa API выполнен успешно."
+			log.Printf("[admin-cancel] Payment %d refunded via Robokassa API", paymentID)
+		}
+	} else {
+		refundMsg += " Оформите возврат в панели Robokassa."
+	}
+
+	_, err := db.DB.Exec("UPDATE payments SET status = 'refunded', notes = COALESCE(notes,'') || $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+		fmt.Sprintf("\n[ВОЗВРАТ admin] %s | %s", reason, refundMsg), paymentID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
-		return
-	}
-	if externalID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no external ID (not T-Bank payment)"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	tbClient, err := tbank.NewClientFromSettings()
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "T-Bank not configured"})
-		return
-	}
-
-	cancelResult, err := tbClient.Cancel(externalID, uint64(req.Amount))
-	if err != nil {
-		log.Printf("[admin-cancel] payment %d: %v", paymentID, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "T-Bank: " + err.Error()})
-		return
-	}
-
-	// Update payment status
-	newStatus := "cancelled"
-	if cancelResult.Status == "REFUNDED" || cancelResult.Status == "PARTIAL_REFUNDED" {
-		newStatus = "refunded"
-	}
-	db.DB.Exec("UPDATE payments SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
-		newStatus, fmt.Sprintf("Admin cancel: %s. T-Bank: %s", req.Reason, cancelResult.Status), paymentID)
-
-	log.Printf("[admin-cancel] Payment %d: %s (T-Bank: %s)", paymentID, newStatus, cancelResult.Status)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":    "Платёж отменён",
-		"status":     cancelResult.Status,
-		"new_amount": cancelResult.NewAmount,
-	})
+	writeJSON(w, http.StatusOK, map[string]string{"message": refundMsg})
 }
 
-// handleAdminPaymentCheckStatus checks current payment status via T-Bank GetState.
+// handleAdminPaymentCheckStatus returns the local status of a payment.
 func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -90,57 +85,27 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var externalID string
-	err := db.DB.QueryRow("SELECT COALESCE(external_id, '') FROM payments WHERE id = $1", paymentID).Scan(&externalID)
-	if err != nil || externalID == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found or no external ID"})
-		return
-	}
-
-	tbClient, err := tbank.NewClientFromSettings()
+	var status, provider string
+	var amount float64
+	err := db.DB.QueryRow("SELECT status, COALESCE(provider,''), amount FROM payments WHERE id = $1", paymentID).Scan(&status, &provider, &amount)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "T-Bank not configured"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
 		return
 	}
-
-	state, err := tbClient.GetState(externalID)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "T-Bank: " + err.Error()})
-		return
-	}
-
-	// Update local status to match T-Bank
-	localStatus := mapTBankStatus(state.Status)
-	db.DB.Exec("UPDATE payments SET yookassa_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", state.Status, paymentID)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"tbank_status": state.Status,
-		"local_status": localStatus,
-		"amount":       state.Amount,
-		"order_id":     state.OrderID,
+		"local_status": status,
+		"provider":     provider,
+		"amount":       amount,
 	})
 }
 
-// handleAdminPaymentResend re-sends webhook notifications from T-Bank.
+// handleAdminPaymentResend — not available for Robokassa.
 func handleAdminPaymentResend(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
-		return
-	}
-
-	tbClient, err := tbank.NewClientFromSettings()
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "T-Bank not configured"})
-		return
-	}
-
-	if err := tbClient.Resend(); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "T-Bank Resend: " + err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Уведомления переотправлены"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "Переотправка уведомлений недоступна для Robokassa. Проверьте статус в панели Robokassa.",
+	})
 }
 
 // ─── Helpers ───
@@ -153,25 +118,9 @@ func extractPathID(path, prefix, suffix string) int {
 	return id
 }
 
-func mapTBankStatus(tbankStatus string) string {
-	switch tbankStatus {
-	case "NEW", "FORM_SHOWED":
-		return "pending"
-	case "AUTHORIZING", "3DS_CHECKING", "3DS_CHECKED", "PREAUTHORIZING":
-		return "pending"
-	case "AUTHORIZED":
-		return "authorized"
-	case "CONFIRMING", "CONFIRMED":
-		return "completed"
-	case "REVERSED", "PARTIAL_REVERSED":
-		return "cancelled"
-	case "REFUNDED", "PARTIAL_REFUNDED", "REFUNDING":
-		return "refunded"
-	case "REJECTED", "AUTH_FAIL":
-		return "failed"
-	case "DEADLINE_EXPIRED", "CANCELED":
-		return "cancelled"
-	default:
-		return "unknown"
+func parseJSON(r *http.Request, v interface{}) error {
+	if r.Body == nil {
+		return nil
 	}
+	return json.NewDecoder(r.Body).Decode(v)
 }

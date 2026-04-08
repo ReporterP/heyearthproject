@@ -7,7 +7,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/tbank"
+	"github.com/heyearth/backend/internal/robokassa"
 )
 
 // ─────────────────────── Subscription & Billing Cron ───────────────────────
@@ -137,59 +137,53 @@ func checkMonthlyBilling() {
 	log.Printf("[subscription-cron] B2B биллинг за %s завершён", currentMonth)
 }
 
-// processAutoRenew creates a recurring payment for a user with saved payment method.
+// processAutoRenew handles auto-renewal for a user.
+// Free plans: extend automatically.
+// Paid plans with saved OpKey: charge via Robokassa CoFPayment.
+// Paid plans without OpKey: log expiry (user must re-pay manually).
 func processAutoRenew(userID string) error {
-	// Get user's saved payment method
-	var savedPM string
-	err := db.DB.QueryRow("SELECT COALESCE(saved_payment_method, '') FROM users WHERE user_id = $1", userID).Scan(&savedPM)
-	if err != nil || savedPM == "" {
-		return fmt.Errorf("no saved payment method for %s", userID)
-	}
-
-	// Get user's current plan
 	plan, err := biz.GetUserPlan(userID)
 	if err != nil || plan == nil {
 		return fmt.Errorf("no active plan for %s", userID)
 	}
 
-	// Free plans don't need payment
+	// Free plans: extend automatically
 	if plan.PriceRub <= 0 {
-		// Just extend the subscription
 		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
 	}
 
-	// Create recurring payment via T-Bank (Charge with saved RebillID)
-	tbClient, err := tbank.NewClientFromSettings()
+	// Check for saved payment token (OpKey from Robokassa)
+	var savedPM string
+	db.DB.QueryRow("SELECT COALESCE(saved_payment_method, '') FROM users WHERE user_id = $1", userID).Scan(&savedPM)
+	if savedPM == "" {
+		log.Printf("[auto-renew] User %s: no saved payment method, plan '%s' will expire", userID, plan.Slug)
+		return nil
+	}
+
+	// Create payment record and charge via CoFPayment
+	roboClient, err := robokassa.NewClientFromSettings()
 	if err != nil {
-		return fmt.Errorf("tbank not configured: %w", err)
+		return fmt.Errorf("robokassa not configured: %w", err)
 	}
 
 	description := fmt.Sprintf("HiEarth %s — автопродление", plan.Name)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "tbank", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "robokassa", description)
 	if err != nil {
 		return fmt.Errorf("create payment record: %w", err)
 	}
 
-	// Init + Charge using saved RebillID
-	orderID := fmt.Sprintf("renew-%d-%d", paymentDBID, time.Now().Unix())
-	chargeRes, err := tbClient.ChargeRecurring(orderID, uint64(plan.PriceRub)*100, savedPM, description, userID)
-	if err != nil {
-		return fmt.Errorf("tbank charge: %w", err)
+	if err := roboClient.ChargeRecurring(paymentDBID, float64(plan.PriceRub), savedPM, description); err != nil {
+		log.Printf("[auto-renew] User %s: CoFPayment failed: %v", userID, err)
+		return fmt.Errorf("robokassa charge: %w", err)
 	}
 
-	_ = biz.UpdatePaymentYookassa(paymentDBID, chargeRes.PaymentID, chargeRes.Status, "")
-
-	// Activate subscription immediately after successful charge.
-	// Webhook is idempotent fallback — don't rely on it arriving.
-	if chargeRes.Status == "CONFIRMED" || chargeRes.Status == "AUTHORIZED" {
-		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
-			log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
-		} else {
-			log.Printf("[auto-renew] User %s: subscription renewed (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
-			RequestXraySync()
-		}
+	// Activate subscription immediately
+	if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
+		log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
 	} else {
-		log.Printf("[auto-renew] User %s: T-Bank payment %s (status: %s, awaiting webhook)", userID, chargeRes.PaymentID, chargeRes.Status)
+		biz.MarkPaymentCompleted(paymentDBID)
+		log.Printf("[auto-renew] User %s: subscription renewed via CoFPayment (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
+		RequestXraySync()
 	}
 
 	return nil
