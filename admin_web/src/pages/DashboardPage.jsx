@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useT } from '../i18n/index.jsx'
 import { fetchOverview, fetchTrafficChart } from '../api/admin.js'
 import StatCard from '../components/StatCard.jsx'
+import StatusBadge from '../components/StatusBadge.jsx'
 import { formatBytes } from '../utils/format.js'
 
 function formatRub(amount) {
@@ -112,13 +113,7 @@ export default function DashboardPage() {
                     <p className="text-sm font-medium truncate">{s.name}</p>
                     <p className="text-xs text-text-secondary">{s.ip_address} {s.country_code && `(${s.country_code})`}</p>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    s.tunnel_status === 'connected' ? 'bg-green-500/20 text-green-400' :
-                    s.tunnel_status === 'error' ? 'bg-red-500/20 text-red-400' :
-                    'bg-yellow-500/20 text-yellow-400'
-                  }`}>
-                    {s.tunnel_status}
-                  </span>
+                  <StatusBadge status={s.tunnel_status} />
                 </div>
               ))}
             </div>

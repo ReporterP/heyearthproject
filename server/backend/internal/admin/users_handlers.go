@@ -21,9 +21,13 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
-	// Status filter: "active" = not blocked, "blocked" = blocked
+	// Status filter:
+	//   "active"  = not blocked AND has valid subscription (совпадает с Dashboard active_users)
+	//   "blocked" = blocked
 	if p.Status == "active" {
-		where += " AND COALESCE(u.is_blocked, FALSE) = FALSE"
+		where += ` AND COALESCE(u.is_blocked, FALSE) = FALSE
+			AND EXISTS (SELECT 1 FROM user_subscriptions us_f
+			            WHERE us_f.user_id = u.id AND us_f.valid_until > NOW())`
 	} else if p.Status == "blocked" {
 		where += " AND u.is_blocked = TRUE"
 	}

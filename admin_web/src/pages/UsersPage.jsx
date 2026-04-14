@@ -16,17 +16,8 @@ const STATUS_FILTERS = [
   { value: 'blocked', key: 'filterBlocked' },
 ]
 
-const PLATFORM_OPTIONS = [
-  { value: '', label: '\u2014' },
-  { value: 'windows', label: 'Windows' },
-  { value: 'android', label: 'Android' },
-  { value: 'ios', label: 'iOS' },
-  { value: 'linux', label: 'Linux' },
-  { value: 'macos', label: 'macOS' },
-]
-
 // Columns that support sorting (key must match item field)
-const SORTABLE_COLUMNS = ['id', 'user_id', 'username', 'role', 'plan', 'created_at', 'preferred_platform', 'telegram_id']
+const SORTABLE_COLUMNS = ['id', 'user_id', 'username', 'role', 'plan', 'created_at']
 
 function SortIcon({ column, sortKey, sortDir }) {
   if (column !== sortKey) {
@@ -101,16 +92,12 @@ export default function UsersPage() {
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('user')
   const [blocked, setBlocked] = useState(false)
-  const [telegramId, setTelegramId] = useState('')
-  const [preferredPlatform, setPreferredPlatform] = useState('')
 
   function openCreate() {
     setUsername('')
     setPassword('')
     setRole('user')
     setBlocked(false)
-    setTelegramId('')
-    setPreferredPlatform('')
     setDialog({ mode: 'create' })
   }
 
@@ -119,8 +106,6 @@ export default function UsersPage() {
     setPassword('')
     setRole(item.role || 'user')
     setBlocked(item.is_blocked || false)
-    setTelegramId(item.telegram_id || '')
-    setPreferredPlatform(item.preferred_platform || '')
     setDialog({ mode: 'edit', item })
   }
 
@@ -141,8 +126,6 @@ export default function UsersPage() {
         username,
         role,
         is_blocked: blocked,
-        telegram_id: telegramId || undefined,
-        preferred_platform: preferredPlatform || undefined,
       }
       if (password) payload.password = password
       if (dialog.mode === 'create') {
@@ -191,15 +174,13 @@ export default function UsersPage() {
     paged.setPage(1)
   }
 
-  // Column definitions
+  // Column definitions (Telegram ID и Preferred platform убраны — шум в UI)
   const columns = [
     { key: 'id', label: 'ID' },
     { key: 'user_id', label: t.fieldUserId },
     { key: 'username', label: t.fieldUsername },
     { key: 'role', label: t.fieldRole },
     { key: 'plan', label: t.userPlan },
-    { key: 'preferred_platform', label: t.fieldPreferredPlatform },
-    { key: 'telegram_id', label: t.fieldTelegramId },
     { key: 'created_at', label: t.fieldCreatedAt },
     { key: 'is_blocked', label: t.fieldBlocked, sortable: false },
   ]
@@ -292,8 +273,6 @@ export default function UsersPage() {
                   <td className="py-2 px-3">{u.username || '\u2014'}</td>
                   <td className="py-2 px-3">{u.role}</td>
                   <td className="py-2 px-3">{u.plan || '\u2014'}</td>
-                  <td className="py-2 px-3">{u.preferred_platform || '\u2014'}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{u.telegram_id || '\u2014'}</td>
                   <td className="py-2 px-3 whitespace-nowrap text-xs text-text-secondary">{formatDateShort(u.created_at)}</td>
                   <td className="py-2 px-3">
                     {u.is_blocked ? (
@@ -380,17 +359,6 @@ export default function UsersPage() {
         </FormField>
         <FormField label={t.fieldRole}>
           <SelectInput value={role} onChange={setRole} options={[{ value: 'user', label: 'User' }, { value: 'premium', label: 'Premium' }]} />
-        </FormField>
-        <FormField label={t.fieldTelegramId}>
-          <TextInput value={telegramId} onChange={setTelegramId} placeholder="123456789" />
-        </FormField>
-        <FormField label={t.fieldPreferredPlatform}>
-          <SelectInput
-            value={preferredPlatform}
-            onChange={setPreferredPlatform}
-            options={PLATFORM_OPTIONS}
-            placeholder={t.fieldPlatformNotSet}
-          />
         </FormField>
         <Checkbox label={t.fieldBlocked} checked={blocked} onChange={setBlocked} />
       </CrudDialog>

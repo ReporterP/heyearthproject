@@ -159,9 +159,10 @@ type serverResponse struct {
 	SshKeyName  string          `json:"ssh_key_name,omitempty"`
 	CountryCode string          `json:"country_code"`
 	Status      string          `json:"status"`
-	LoadMetrics json.RawMessage `json:"load_metrics"`
-	GroupIDs    []int           `json:"group_ids"`
-	UpdatedAt   string          `json:"updated_at"`
+	LoadMetrics      json.RawMessage `json:"load_metrics"`
+	MetricsSyncedAt  string          `json:"metrics_synced_at,omitempty"`
+	GroupIDs         []int           `json:"group_ids"`
+	UpdatedAt        string          `json:"updated_at"`
 	// Exit-node / tunnel
 	IsExitNode      bool   `json:"is_exit_node"`
 	TunnelStatus    string `json:"tunnel_status"`

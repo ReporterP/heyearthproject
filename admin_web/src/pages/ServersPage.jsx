@@ -302,6 +302,17 @@ export default function ServersPage() {
     } catch {}
   }
 
+  // Realtime polling — refresh servers list every 10s when tab is visible
+  // (backend StartServerMetricsCollector обновляет metrics_synced_at)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        paged.reload()
+      }
+    }, 10000)
+    return () => clearInterval(interval)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Filtered items
   const filteredItems = useMemo(() => {
     if (statusFilter === 'all') return paged.items
@@ -568,7 +579,7 @@ export default function ServersPage() {
           {detail ? (t.serverHideMetrics || 'Hide metrics') : (t.serverShowMetrics || 'Show metrics')}
         </button>
         {detail === 'loading' && <p className="text-xs text-text-secondary mt-2">{t.loading || 'Loading...'}</p>}
-        {detail && detail !== 'loading' && <MetricsPanel metrics={detail.load_metrics || detail.metrics || detail} />}
+        {detail && detail !== 'loading' && <MetricsPanel metrics={{ ...(detail.load_metrics || detail.metrics || detail), synced_at: srv.metrics_synced_at || (detail.load_metrics?.synced_at) }} />}
 
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">

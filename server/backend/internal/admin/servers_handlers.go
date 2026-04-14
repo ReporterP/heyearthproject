@@ -58,6 +58,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`
 		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+		       s.metrics_synced_at,
 		       s.ssh_key_id, COALESCE(sk.name, ''),
 		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 		       COALESCE(s.tunnel_error, ''), COALESCE(s.load_weight, 1)
@@ -80,8 +81,9 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s serverResponse
 		var updatedAt time.Time
+		var metricsSyncedAt sql.NullTime
 		var sshKeyName string
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &metricsSyncedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
 			return
 		}
@@ -93,6 +95,9 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.GroupIDs, _ = listServerGroupIDs(s.ID)
 		s.UpdatedAt = updatedAt.Format(time.RFC3339)
+		if metricsSyncedAt.Valid {
+			s.MetricsSyncedAt = metricsSyncedAt.Time.Format(time.RFC3339)
+		}
 		servers = append(servers, s)
 	}
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: servers, Total: total, Page: p.Page, PageSize: p.PageSize})
@@ -384,12 +389,14 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 func loadServerByID(serverID int, includePassword bool) (serverResponse, error) {
 	var server serverResponse
 	var updatedAt time.Time
+	var metricsSyncedAt sql.NullTime
 	var sshKeyName string
 	if includePassword {
 		query := `
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
 			       COALESCE(s.ssh_password, ''), s.ssh_password_enc,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+			       s.metrics_synced_at,
 			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
@@ -406,7 +413,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.SSHPassword, &sshPwEnc,
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &server.SshKeyID, &sshKeyName,
+			&updatedAt, &metricsSyncedAt, &server.SshKeyID, &sshKeyName,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
@@ -424,6 +431,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		query := `
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
+			       s.metrics_synced_at,
 			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
@@ -438,7 +446,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		err := db.DB.QueryRow(query, serverID).Scan(
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &server.SshKeyID, &sshKeyName,
+			&updatedAt, &metricsSyncedAt, &server.SshKeyID, &sshKeyName,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
@@ -452,6 +460,9 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 	}
 	server.GroupIDs, _ = listServerGroupIDs(server.ID)
 	server.UpdatedAt = updatedAt.Format(time.RFC3339)
+	if metricsSyncedAt.Valid {
+		server.MetricsSyncedAt = metricsSyncedAt.Time.Format(time.RFC3339)
+	}
 	if len(server.LoadMetrics) == 0 {
 		server.LoadMetrics = json.RawMessage(`{}`)
 	}
@@ -509,7 +520,7 @@ func syncServerMetrics(server serverResponse) error {
 		"active_connections": resp.GetActiveConnections(),
 		"synced_at":          time.Now().Format(time.RFC3339),
 	})
-	_, err = db.DB.Exec(`UPDATE servers SET load_metrics = $1::jsonb, status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metricsBytes), server.ID)
+	_, err = db.DB.Exec(`UPDATE servers SET load_metrics = $1::jsonb, status = 'online', metrics_synced_at = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metricsBytes), server.ID)
 	if err != nil {
 		return err
 	}

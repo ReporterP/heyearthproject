@@ -709,6 +709,9 @@ func main() {
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()
 
+	// Запускаем realtime-сборщик метрик серверов (CPU/RAM/connections каждые 10 сек)
+	admin.StartServerMetricsCollector()
+
 	// Запускаем cron для подписок и B2B биллинга
 	StartSubscriptionCron()
 
