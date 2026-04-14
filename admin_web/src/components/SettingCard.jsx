@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useT } from '../i18n/index.jsx'
 
 export default function SettingCard({ label, hint, value, onSave, type = 'text' }) {
   const { t } = useT()
   const [input, setInput] = useState(value ?? '')
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => { setInput(value ?? '') }, [value])
 
   async function handleSave() {
     setSaving(true)

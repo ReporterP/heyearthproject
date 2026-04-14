@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useT } from '../i18n/index.jsx'
+import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchAutoTunerStatus, fetchAutoTunerHistory, toggleAutoTuner, setAutoTunerInterval, runAutoTunerNow, cleanupAutoTunerHistory } from '../api/admin.js'
 
 export default function AutoTunerPage() {
   const { t } = useT()
+  const { can } = useAuth()
   const toast = useToast()
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState([])
@@ -25,7 +27,9 @@ export default function AutoTunerPage() {
 
   useEffect(() => {
     loadData()
-    const interval = setInterval(loadData, 15000) // auto-refresh every 15s
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') loadData()
+    }, 15000)
     return () => clearInterval(interval)
   }, [loadData])
 

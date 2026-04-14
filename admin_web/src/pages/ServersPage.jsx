@@ -15,6 +15,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
+import { formatRelativeTime } from '../utils/format.js'
 
 /* ── SVG icon helpers ── */
 const Icon = ({ d, className = 'w-4 h-4' }) => (
@@ -918,21 +919,4 @@ function parseLsListing(text) {
   return entries
 }
 
-function formatRelativeTime(isoString) {
-  if (!isoString) return ''
-  try {
-    const date = new Date(isoString)
-    const now = new Date()
-    const diffMs = now - date
-    const diffSec = Math.floor(diffMs / 1000)
-    if (diffSec < 60) return `${diffSec}s ago`
-    const diffMin = Math.floor(diffSec / 60)
-    if (diffMin < 60) return `${diffMin}m ago`
-    const diffH = Math.floor(diffMin / 60)
-    if (diffH < 24) return `${diffH}h ago`
-    const diffD = Math.floor(diffH / 24)
-    return `${diffD}d ago`
-  } catch {
-    return isoString
-  }
-}
+

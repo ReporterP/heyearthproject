@@ -2,13 +2,7 @@ import { useEffect, useState } from 'react'
 import { useT } from '../i18n/index.jsx'
 import { fetchOverview, fetchTrafficChart } from '../api/admin.js'
 import StatCard from '../components/StatCard.jsx'
-
-function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return '0 B'
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return (bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0) + ' ' + sizes[i]
-}
+import { formatBytes } from '../utils/format.js'
 
 function formatRub(amount) {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(amount)

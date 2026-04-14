@@ -7,6 +7,7 @@ import { fetchPaymentsPaged, createPayment, updatePayment, cancelPayment, checkP
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../components/CrudDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import { formatDate } from '../utils/format.js'
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Все' },
@@ -25,18 +26,6 @@ const AMOUNT_COLORS = {
   canceled: 'text-red-400',
 }
 
-function formatDate(iso) {
-  if (!iso) return '\u2014'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  return d.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
 
 function TruncatedId({ value }) {
   const [copied, setCopied] = useState(false)

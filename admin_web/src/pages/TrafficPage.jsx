@@ -1,13 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useT } from '../i18n/index.jsx'
 import { fetchTrafficUsers, fetchTrafficUserDetail } from '../api/admin.js'
-
-function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return '0 B'
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return (bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0) + ' ' + sizes[i]
-}
+import { formatBytes } from '../utils/format.js'
 
 const PERIODS = [
   { key: 'today', label: 'trafficPeriodToday' },

@@ -103,10 +103,12 @@ export default function ServerDetailPage() {
     }
   }, [id])
 
-  // Auto-refresh
+  // Auto-refresh (pauses when tab hidden)
   useEffect(() => {
     loadServer()
-    const interval = setInterval(loadServer, REFRESH_INTERVAL)
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') loadServer()
+    }, REFRESH_INTERVAL)
     return () => clearInterval(interval)
   }, [loadServer])
 

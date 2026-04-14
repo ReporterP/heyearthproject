@@ -8,6 +8,7 @@ import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import { formatDateShort } from '../utils/format.js'
 
 const STATUS_FILTERS = [
   { value: '', key: 'filterAll' },
@@ -44,15 +45,6 @@ function SortIcon({ column, sortKey, sortDir }) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
     </svg>
   )
-}
-
-function formatDate(val) {
-  if (!val) return '\u2014'
-  try {
-    return new Date(val).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-  } catch {
-    return val
-  }
 }
 
 export default function UsersPage() {
@@ -302,7 +294,7 @@ export default function UsersPage() {
                   <td className="py-2 px-3">{u.plan || '\u2014'}</td>
                   <td className="py-2 px-3">{u.preferred_platform || '\u2014'}</td>
                   <td className="py-2 px-3 font-mono text-xs">{u.telegram_id || '\u2014'}</td>
-                  <td className="py-2 px-3 whitespace-nowrap text-xs text-text-secondary">{formatDate(u.created_at)}</td>
+                  <td className="py-2 px-3 whitespace-nowrap text-xs text-text-secondary">{formatDateShort(u.created_at)}</td>
                   <td className="py-2 px-3">
                     {u.is_blocked ? (
                       <StatusBadge status="blocked" />

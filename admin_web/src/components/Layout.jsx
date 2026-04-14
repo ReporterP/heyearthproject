@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import Sidebar from './Sidebar.jsx'
+import ErrorBoundary from './ErrorBoundary.jsx'
 
 export default function Layout() {
   const { admin, logout } = useAuth()
@@ -35,7 +36,9 @@ export default function Layout() {
         </header>
         {/* Content */}
         <main className="flex-1 overflow-auto p-6">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

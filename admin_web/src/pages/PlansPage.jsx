@@ -4,14 +4,9 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchPlans, createPlan, updatePlan, deletePlan, fetchServersPaged } from '../api/admin.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import { formatBytes } from '../utils/format.js'
 
 const PROTOCOL_OPTIONS = ['all', 'vless', 'socks', 'http']
-
-function formatBytes(bytes) {
-  if (!bytes) return 'Безлимит'
-  const gb = bytes / (1024 * 1024 * 1024)
-  return gb >= 1 ? `${gb.toFixed(0)} ГБ` : `${(bytes / (1024 * 1024)).toFixed(0)} МБ`
-}
 
 export default function PlansPage() {
   const { t } = useT()
@@ -123,7 +118,7 @@ export default function PlansPage() {
             </div>
 
             <div className="text-xs text-text-secondary space-y-1 mb-3">
-              <p>Трафик: <span className="text-text-primary font-medium">{formatBytes(plan.traffic_limit_bytes)}</span></p>
+              <p>Трафик: <span className="text-text-primary font-medium">{plan.traffic_limit_bytes ? formatBytes(plan.traffic_limit_bytes) : 'Безлимит'}</span></p>
               <p>Серверов: <span className="text-text-primary font-medium">{plan.server_ids?.length || 0}</span></p>
               <p>Автопродление: <span className="text-text-primary">{plan.auto_renew_default ? 'Да' : 'Нет'}</span></p>
               {!plan.is_active && <p className="text-red-400 font-medium">Неактивен</p>}
@@ -293,6 +288,7 @@ export default function PlansPage() {
       {/* Delete confirm */}
       {confirm && (
         <ConfirmDialog
+          open={true}
           title="Удалить план?"
           message={`Удалить "${confirm.name}"? Пользователи с этим планом потеряют доступ.`}
           onConfirm={() => handleDelete(confirm)}

@@ -9,11 +9,6 @@ import CrudDialog, { FormField, TextInput, Checkbox } from '../components/CrudDi
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 
 export default function GroupsPage() {
-  const { t } = useT()
-  const { can } = useAuth()
-  const toast = useToast()
-  const paged = usePagedData(fetchGroupsPaged)
-
   // Deprecation banner
   return (
     <div>

@@ -7,11 +7,7 @@ import { fetchSubscriptionsPaged, saveSubscription, deleteSubscription, fetchPla
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
-
-function formatDate(iso) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
-}
+import { formatDateShort } from '../utils/format.js'
 
 export default function SubscriptionsPage() {
   const { t } = useT()
@@ -130,7 +126,7 @@ export default function SubscriptionsPage() {
                     <td className="py-2 px-3">
                       <StatusBadge status={isExpired ? 'expired' : (s.status || 'active')} />
                     </td>
-                    <td className="py-2 px-3">{formatDate(s.valid_until)}</td>
+                    <td className="py-2 px-3">{formatDateShort(s.valid_until)}</td>
                     <td className="py-2 px-3 text-center">
                       {s.price_paid > 0 ? <span className="text-green-400 font-medium">{s.price_paid}₽</span> : <span className="text-text-secondary">—</span>}
                     </td>

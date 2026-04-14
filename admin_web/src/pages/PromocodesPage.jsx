@@ -6,6 +6,7 @@ import usePagedData from '../hooks/usePagedData.js'
 import { fetchPromocodesPaged, createPromocode, updatePromocode, deletePromocode, fetchPlans } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import { formatBytes } from '../utils/format.js'
 
 const PROMO_TYPES = [
   { value: 'discount_percent', label: 'Скидка (%)' },
@@ -13,12 +14,6 @@ const PROMO_TYPES = [
   { value: 'free_trial', label: 'Бесплатный период' },
   { value: 'traffic_gift', label: 'Подарок трафика' },
 ]
-
-function formatBytes(bytes) {
-  if (!bytes) return '—'
-  const gb = bytes / (1024 * 1024 * 1024)
-  return gb >= 1 ? `${gb.toFixed(1)} ГБ` : `${(bytes / (1024 * 1024)).toFixed(0)} МБ`
-}
 
 export default function PromocodesPage() {
   const { t } = useT()
@@ -80,7 +75,7 @@ export default function PromocodesPage() {
   }
 
   function promoTypeLabel(type) {
-    return PROMO_TYPES.find(t => t.value === type)?.label || type
+    return PROMO_TYPES.find(pt => pt.value === type)?.label || type
   }
 
   function promoEffect(item) {
@@ -107,7 +102,8 @@ export default function PromocodesPage() {
         )}
       </div>
 
-      <SearchPaginationBar paged={paged} />
+      <SearchPaginationBar search={paged.search} onSearch={paged.doSearch}
+        page={paged.page} totalPages={paged.totalPages} onPageChange={paged.setPage} loading={paged.loading} />
 
       <div className="overflow-x-auto rounded-lg border border-white/5 mt-4">
         <table className="w-full text-sm">
@@ -168,7 +164,7 @@ export default function PromocodesPage() {
                 <label className="text-xs text-text-secondary">Тип промокода</label>
                 <select value={editing.promo_type} onChange={e => setEditing({...editing, promo_type: e.target.value})}
                   className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm">
-                  {PROMO_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  {PROMO_TYPES.map(pt => <option key={pt.value} value={pt.value}>{pt.label}</option>)}
                 </select>
               </div>
             </div>
@@ -274,7 +270,7 @@ export default function PromocodesPage() {
       )}
 
       {confirm && (
-        <ConfirmDialog title="Удалить промокод?" message={`Удалить "${confirm.code}"?`}
+        <ConfirmDialog open={true} title="Удалить промокод?" message={`Удалить "${confirm.code}"?`}
           onConfirm={() => handleDelete(confirm)} onCancel={() => setConfirm(null)} />
       )}
     </div>

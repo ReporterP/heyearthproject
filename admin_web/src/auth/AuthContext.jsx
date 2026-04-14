@@ -41,11 +41,12 @@ export function AuthProvider({ children }) {
   // Validate token on mount — auto-logout if expired/revoked
   useEffect(() => {
     if (!token) return
-    fetch('/api/admin/overview', {
+    const API_BASE = ''
+    fetch(`${API_BASE}/api/admin/overview`, {
       headers: { 'Authorization': `Bearer ${token}` },
     }).then(res => {
       if (res.status === 401) logoutAction()
-    }).catch(() => {})
+    }).catch(() => { /* network error — keep session, will fail on next API call */ })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
