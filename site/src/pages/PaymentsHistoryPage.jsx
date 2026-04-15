@@ -58,9 +58,9 @@ export default function PaymentsHistoryPage() {
       // 1. Disable auto-renew
       await toggleAutoRenew(token, false)
       setAutoRenew(false)
-      // 2. Remove all saved cards (unbind)
+      // 2. Remove all saved payment methods
       for (const card of cards) {
-        try { await deleteUserCard(token, card.card_id) } catch {}
+        try { await deleteUserCard(token, card.payment_method_id || card.card_id) } catch {}
       }
       setCards([])
       setCancelMsg('Подписка отменена. Доступ сохранится до ' + formatDate(validUntil))
@@ -137,34 +137,44 @@ export default function PaymentsHistoryPage() {
         <div className="glass-card rounded-2xl p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4">Способы оплаты</h2>
           {cards.length === 0 ? (
-            <p className="text-sm text-text-secondary">Нет сохранённых карт. Карта привяжется при следующей оплате.</p>
+            <p className="text-sm text-text-secondary">Нет сохранённых способов оплаты. Привяжутся автоматически, если при оплате отметить «Сохранить для автопродления».</p>
           ) : (
             <div className="space-y-3">
-              {cards.map(card => (
-                <div key={card.card_id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/10">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-7 rounded bg-gradient-to-br from-blue-500/30 to-purple-500/30 flex items-center justify-center text-[10px] font-bold text-text-secondary">
-                      {card.card_type === 'credit' ? 'CR' : 'DB'}
+              {cards.map(card => {
+                const LABELS = {
+                  bank_card: 'Карта', sbp: 'СБП', yoo_money: 'ЮMoney',
+                  tinkoff_bank: 'T-Pay', sberbank: 'Сбер', alfabank: 'Alfa',
+                }
+                const typeLabel = LABELS[card.type] || card.type || 'Метод'
+                const title = card.title || (card.last4 ? `•••• ${card.last4}` : typeLabel)
+                return (
+                  <div key={card.id || card.payment_method_id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-7 rounded bg-gradient-to-br from-blue-500/30 to-purple-500/30 flex items-center justify-center text-[10px] font-bold text-text-secondary">
+                        {typeLabel.slice(0, 4)}
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">{title}</p>
+                        <p className="text-xs text-text-secondary">
+                          {card.card_type || card.issuer || typeLabel}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-mono text-sm">{card.pan}</p>
-                      <p className="text-xs text-text-secondary">{card.exp_date || ''}</p>
-                    </div>
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`Удалить способ оплаты "${title}"? Автопродление будет отключено.`)) return
+                        try {
+                          await deleteUserCard(token, card.payment_method_id)
+                          setCards(cards.filter(c => (c.payment_method_id || c.id) !== (card.payment_method_id || card.id)))
+                        } catch (e) { alert(e.message) }
+                      }}
+                      className="text-xs text-red-400 hover:text-red-300 transition"
+                    >
+                      Удалить
+                    </button>
                   </div>
-                  <button
-                    onClick={async () => {
-                      if (!confirm(`Удалить карту ${card.pan}?`)) return
-                      try {
-                        await deleteUserCard(token, card.card_id)
-                        setCards(cards.filter(c => c.card_id !== card.card_id))
-                      } catch (e) { alert(e.message) }
-                    }}
-                    className="text-xs text-red-400 hover:text-red-300 transition"
-                  >
-                    Удалить
-                  </button>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

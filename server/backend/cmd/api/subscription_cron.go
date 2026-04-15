@@ -7,7 +7,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/robokassa"
+	"github.com/heyearth/backend/internal/yookassa"
 )
 
 // ─────────────────────── Subscription & Billing Cron ───────────────────────
@@ -139,8 +139,8 @@ func checkMonthlyBilling() {
 
 // processAutoRenew handles auto-renewal for a user.
 // Free plans: extend automatically.
-// Paid plans with saved OpKey: charge via Robokassa CoFPayment.
-// Paid plans without OpKey: log expiry (user must re-pay manually).
+// Paid plans with saved payment_method_id: charge via YooKassa (no confirmation).
+// Paid plans without saved method: log expiry (user must re-pay manually).
 func processAutoRenew(userID string) error {
 	plan, err := biz.GetUserPlan(userID)
 	if err != nil || plan == nil {
@@ -152,7 +152,7 @@ func processAutoRenew(userID string) error {
 		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
 	}
 
-	// Check for saved payment token (OpKey from Robokassa)
+	// Check for saved YooKassa payment_method_id
 	var savedPM string
 	db.DB.QueryRow("SELECT COALESCE(saved_payment_method, '') FROM users WHERE user_id = $1", userID).Scan(&savedPM)
 	if savedPM == "" {
@@ -160,31 +160,65 @@ func processAutoRenew(userID string) error {
 		return nil
 	}
 
-	// Create payment record and charge via CoFPayment
-	roboClient, err := robokassa.NewClientFromSettings()
+	client, err := yookassa.NewClientFromSettings()
 	if err != nil {
-		return fmt.Errorf("robokassa not configured: %w", err)
+		return fmt.Errorf("yookassa not configured: %w", err)
 	}
 
 	description := fmt.Sprintf("HiEarth %s — автопродление", plan.Name)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "robokassa", description)
+	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "yookassa", description)
 	if err != nil {
 		return fmt.Errorf("create payment record: %w", err)
 	}
 
-	if err := roboClient.ChargeRecurring(paymentDBID, float64(plan.PriceRub), savedPM, description); err != nil {
-		log.Printf("[auto-renew] User %s: CoFPayment failed: %v", userID, err)
-		return fmt.Errorf("robokassa charge: %w", err)
+	// Email для чека — берём payer_email из последнего платежа юзера или fallback
+	var email string
+	_ = db.DB.QueryRow(`
+		SELECT COALESCE(payer_email, '')
+		FROM payments
+		WHERE user_id_text = $1 AND payer_email IS NOT NULL AND payer_email != ''
+		ORDER BY created_at DESC LIMIT 1
+	`, userID).Scan(&email)
+
+	receipt := buildReceipt(description, float64(plan.PriceRub), email)
+	metadata := map[string]string{
+		"payment_db_id": fmt.Sprintf("%d", paymentDBID),
+		"plan_id":       fmt.Sprintf("%d", plan.ID),
+		"plan_slug":     plan.Slug,
+		"user_id":       userID,
+		"kind":          "subscription",
+		"auto_renew":    "true",
 	}
 
-	// Activate subscription immediately
-	if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
-		log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
-	} else {
-		biz.MarkPaymentCompleted(paymentDBID)
-		log.Printf("[auto-renew] User %s: subscription renewed via CoFPayment (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
-		RequestXraySync()
+	payment, err := client.ChargeRecurring(savedPM,
+		yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(plan.PriceRub)), Currency: "RUB"},
+		description, receipt, metadata)
+	if err != nil {
+		log.Printf("[auto-renew] User %s: recurring charge failed: %v", userID, err)
+		return fmt.Errorf("yookassa charge: %w", err)
 	}
 
+	// Сохраняем yookassa_payment_id, а активация произойдёт через webhook payment.succeeded
+	_, _ = db.DB.Exec(`
+		UPDATE payments SET
+			yookassa_payment_id = $1, yookassa_status = $2, external_id = $1,
+			test = $3, updated_at = CURRENT_TIMESTAMP,
+			metadata = $4::jsonb
+		WHERE id = $5
+	`, payment.ID, payment.Status, payment.Test,
+		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "kind": "subscription", "auto_renew": true}),
+		paymentDBID)
+
+	// YooKassa возвращает для recurring сразу status=succeeded (без confirmation)
+	// Но всё равно webhook придёт и активирует подписку. Для подстраховки активируем здесь,
+	// если статус уже succeeded.
+	if payment.Status == yookassa.PaymentStatusSucceeded {
+		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
+			log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
+		} else {
+			log.Printf("[auto-renew] User %s: subscription renewed via YooKassa (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
+			RequestXraySync()
+		}
+	}
 	return nil
 }

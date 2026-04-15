@@ -122,19 +122,28 @@ type subscriptionPayload struct {
 // Promocode types moved to promocodes_handlers.go (promocodeFullResponse, promocodeFullPayload)
 
 type paymentResponse struct {
-	ID          int             `json:"id"`
-	UserDBID    int             `json:"user_db_id"`
-	UserID      string          `json:"user_id"`
-	Amount      float64         `json:"amount"`
-	Currency    string          `json:"currency"`
-	Status      string          `json:"status"`
-	Provider    string          `json:"provider"`
-	ExternalID  string          `json:"external_id"`
-	Notes       string          `json:"notes"`
-	Metadata    json.RawMessage `json:"metadata"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	ConfirmedAt string          `json:"confirmed_at"`
+	ID                   int             `json:"id"`
+	UserDBID             int             `json:"user_db_id"`
+	UserID               string          `json:"user_id"`
+	Amount               float64         `json:"amount"`
+	Currency             string          `json:"currency"`
+	Status               string          `json:"status"`
+	Provider             string          `json:"provider"`
+	ExternalID           string          `json:"external_id"`
+	Notes                string          `json:"notes"`
+	Metadata             json.RawMessage `json:"metadata"`
+	CreatedAt            string          `json:"created_at"`
+	UpdatedAt            string          `json:"updated_at"`
+	ConfirmedAt          string          `json:"confirmed_at"`
+	YookassaPaymentID    string          `json:"yookassa_payment_id,omitempty"`
+	YookassaStatus       string          `json:"yookassa_status,omitempty"`
+	PaymentMethodType    string          `json:"payment_method_type,omitempty"`
+	PaymentMethodDetails json.RawMessage `json:"payment_method_details,omitempty"`
+	RefundedAmount       float64         `json:"refunded_amount"`
+	ReceiptRegistered    bool            `json:"receipt_registered"`
+	Test                 bool            `json:"test"`
+	Description          string          `json:"description,omitempty"`
+	PayerEmail           string          `json:"payer_email,omitempty"`
 }
 
 type paymentPayload struct {

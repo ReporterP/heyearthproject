@@ -776,11 +776,9 @@ func main() {
 
 	// Auto-renew toggle
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
-	// Robokassa ResultURL webhook
-	http.HandleFunc("/api/webhooks/robokassa", webhookLimiter.Middleware(handleRobokassaResult))
-	// Legacy webhook routes — redirect to Robokassa
-	http.HandleFunc("/api/webhooks/tbank", webhookLimiter.Middleware(handleRobokassaResult))
-	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleRobokassaResult))
+	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
+	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
+	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
 	// Admin payment actions — registered via admin.PaymentActionHandler to avoid route conflicts
 	admin.PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) {

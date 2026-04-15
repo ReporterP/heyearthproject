@@ -38,7 +38,15 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(p.user_id_text, COALESCE(u.user_id, '')),
 		       p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
 		       COALESCE(p.external_id, ''), COALESCE(p.notes, ''), COALESCE(p.metadata, '{}'::jsonb),
-		       p.created_at, COALESCE(p.updated_at, p.created_at), p.confirmed_at
+		       p.created_at, COALESCE(p.updated_at, p.created_at), p.confirmed_at,
+		       COALESCE(p.yookassa_payment_id, ''), COALESCE(p.yookassa_status, ''),
+		       COALESCE(p.payment_method_type, ''),
+		       COALESCE(p.payment_method_details, '{}'::jsonb),
+		       COALESCE(p.refunded_amount, 0)::float8,
+		       COALESCE(p.receipt_registered, FALSE),
+		       COALESCE(p.test, FALSE),
+		       COALESCE(p.description, ''),
+		       COALESCE(p.payer_email, '')
 		FROM payments p
 		LEFT JOIN users u ON u.user_id = p.user_id_text
 		WHERE %s
@@ -59,7 +67,13 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		var item paymentResponse
 		var createdAt, updatedAt time.Time
 		var confirmedAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.UserDBID, &item.UserID, &item.Amount, &item.Currency, &item.Status, &item.Provider, &item.ExternalID, &item.Notes, &item.Metadata, &createdAt, &updatedAt, &confirmedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.UserDBID, &item.UserID, &item.Amount, &item.Currency, &item.Status,
+			&item.Provider, &item.ExternalID, &item.Notes, &item.Metadata,
+			&createdAt, &updatedAt, &confirmedAt,
+			&item.YookassaPaymentID, &item.YookassaStatus,
+			&item.PaymentMethodType, &item.PaymentMethodDetails,
+			&item.RefundedAmount, &item.ReceiptRegistered, &item.Test,
+			&item.Description, &item.PayerEmail); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan payment")
 			return
 		}

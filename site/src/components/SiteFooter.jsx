@@ -61,12 +61,15 @@ export default function SiteFooter() {
           <div className="md:text-right">
             <p className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-3">Оплата</p>
             <div className="flex flex-wrap gap-2 md:justify-end mb-4">
-              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">Банковские карты</span>
+              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">Visa</span>
+              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">MasterCard</span>
+              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">МИР</span>
               <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">СБП</span>
+              <span className="px-2 py-1 rounded bg-white/5 text-[10px] text-text-secondary font-medium">ЮMoney</span>
             </div>
-            <a href="https://robokassa.com" target="_blank" rel="noopener noreferrer"
+            <a href="https://yookassa.ru" target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition">
-              Оплата через Robokassa
+              Оплата через ЮKassa
             </a>
           </div>
         </div>

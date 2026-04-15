@@ -9,16 +9,13 @@ import (
 	"strings"
 
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/robokassa"
+	"github.com/heyearth/backend/internal/yookassa"
 )
 
-// ─────────────────────── Admin Payment Actions ───────────────────────
-// Robokassa doesn't have API for Cancel/GetState/Resend.
-// Refunds are processed through Robokassa admin panel.
-// These handlers manage local payment status only.
+// ─────────────────────── Admin Payment Actions (YooKassa) ───────────────────────
 
-// handleAdminPaymentCancel marks a payment as cancelled/refunded in our DB.
-// Actual refund must be processed in Robokassa admin panel.
+// handleAdminPaymentCancel — полный или частичный возврат через YooKassa Refund API.
+// Принимает optional `amount` (в рублях) и `reason` в body. При пустом amount — полный возврат.
 func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -33,45 +30,79 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Reason string `json:"reason"`
+		Amount float64 `json:"amount"`
+		Reason string  `json:"reason"`
 	}
-	// ignore decode errors for optional body
 	_ = parseJSON(r, &req)
-
-	reason := req.Reason
+	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
-		reason = "Admin cancel"
+		reason = "Admin refund"
 	}
 
-	// Try Robokassa API refund if partner ID is configured
-	var opKey string
-	db.DB.QueryRow("SELECT COALESCE(external_id, '') FROM payments WHERE id = $1", paymentID).Scan(&opKey)
-
-	refundMsg := "Платёж помечен как возврат."
-	roboClient, roboErr := robokassa.NewClientFromSettings()
-	if roboErr == nil && opKey != "" {
-		if err := roboClient.Refund(opKey, 0); err != nil {
-			log.Printf("[admin-cancel] Robokassa refund for payment %d failed: %v", paymentID, err)
-			refundMsg = fmt.Sprintf("Автовозврат не удался: %v. Оформите вручную в панели Robokassa.", err)
-		} else {
-			refundMsg = "Возврат через Robokassa API выполнен успешно."
-			log.Printf("[admin-cancel] Payment %d refunded via Robokassa API", paymentID)
-		}
-	} else {
-		refundMsg += " Оформите возврат в панели Robokassa."
-	}
-
-	_, err := db.DB.Exec("UPDATE payments SET status = 'refunded', notes = COALESCE(notes,'') || $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-		fmt.Sprintf("\n[ВОЗВРАТ admin] %s | %s", reason, refundMsg), paymentID)
+	// Найти платёж
+	var yookassaID, status, description string
+	var amount float64
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, ''),
+		       COALESCE(description, ''), COALESCE(amount, 0)
+		FROM payments WHERE id = $1
+	`, paymentID).Scan(&yookassaID, &status, &description, &amount)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
+		return
+	}
+	if yookassaID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "нет yookassa_payment_id"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": refundMsg})
+	refundAmount := req.Amount
+	if refundAmount <= 0 {
+		refundAmount = amount
+	}
+	if refundAmount > amount {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "сумма возврата больше суммы платежа"})
+		return
+	}
+
+	client, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "yookassa not configured"})
+		return
+	}
+
+	refund, err := client.CreateRefund(yookassa.CreateRefundRequest{
+		PaymentID:   yookassaID,
+		Amount:      yookassa.Amount{Value: fmt.Sprintf("%.2f", refundAmount), Currency: "RUB"},
+		Description: reason,
+	})
+	if err != nil {
+		log.Printf("[admin-refund] YooKassa refund failed for payment %d: %v", paymentID, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+		return
+	}
+
+	// Запись в payment_refunds (и обновление refunded_amount) — произойдёт через webhook
+	// Но для мгновенного UI-отклика — записываем сразу pending
+	_, _ = db.DB.Exec(`
+		INSERT INTO payment_refunds (payment_id, yookassa_refund_id, amount, currency, status, description)
+		VALUES ($1, $2, $3::numeric, $4, $5, $6)
+		ON CONFLICT (yookassa_refund_id) DO UPDATE
+		SET status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP
+	`, paymentID, refund.ID, refund.Amount.Value, refund.Amount.Currency, refund.Status, reason)
+
+	log.Printf("[admin-refund] Created refund %s for payment %d (%s₽, status=%s)",
+		refund.ID, paymentID, refund.Amount.Value, refund.Status)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message":   "Возврат создан",
+		"refund_id": refund.ID,
+		"status":    refund.Status,
+		"amount":    refund.Amount.Value,
+	})
 }
 
-// handleAdminPaymentCheckStatus returns the local status of a payment.
+// handleAdminPaymentCheckStatus запрашивает актуальный статус из ЮKassa и обновляет локально.
 func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -85,26 +116,88 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var status, provider string
-	var amount float64
-	err := db.DB.QueryRow("SELECT status, COALESCE(provider,''), amount FROM payments WHERE id = $1", paymentID).Scan(&status, &provider, &amount)
+	var yookassaID, localStatus string
+	err := db.DB.QueryRow(`SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, '') FROM payments WHERE id = $1`,
+		paymentID).Scan(&yookassaID, &localStatus)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
 		return
 	}
+	if yookassaID == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"local_status":    localStatus,
+			"yookassa_status": "not_initiated",
+		})
+		return
+	}
+
+	client, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "yookassa not configured"})
+		return
+	}
+
+	payment, err := client.GetPayment(yookassaID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+		return
+	}
+
+	// Обновляем локально + прогоняем processPaymentEvent (активация подписки если succeeded)
+	if err := processPaymentEvent(payment); err != nil {
+		log.Printf("[admin-check-status] process failed: %v", err)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"local_status": status,
-		"provider":     provider,
-		"amount":       amount,
+		"local_status":    localStatus,
+		"yookassa_status": payment.Status,
+		"yookassa_id":     payment.ID,
+		"amount":          payment.Amount.Value,
+		"paid":            payment.Paid,
 	})
 }
 
-// handleAdminPaymentResend — not available for Robokassa.
+// handleAdminPaymentResend — у ЮKassa нет ручной переотправки webhook'ов,
+// но мы можем заново запустить processPaymentEvent для синхронизации.
 func handleAdminPaymentResend(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
-	writeJSON(w, http.StatusOK, map[string]string{
-		"message": "Переотправка уведомлений недоступна для Robokassa. Проверьте статус в панели Robokassa.",
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+		return
+	}
+
+	paymentID := extractPathID(r.URL.Path, "/api/admin/payments/", "/resend")
+	if paymentID == 0 {
+		// Массовый resend — пройтись по pending платежам и synchронизировать
+		writeJSON(w, http.StatusOK, map[string]string{
+			"message": "Используйте кнопку 'Проверить статус' для конкретного платежа — это пересинхронизирует его с ЮKassa.",
+		})
+		return
+	}
+
+	var yookassaID string
+	err := db.DB.QueryRow(`SELECT COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1`, paymentID).Scan(&yookassaID)
+	if err != nil || yookassaID == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found or no yookassa id"})
+		return
+	}
+
+	client, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "yookassa not configured"})
+		return
+	}
+	payment, err := client.GetPayment(yookassaID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := processPaymentEvent(payment); err != nil {
+		log.Printf("[admin-resend] process error: %v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Платёж пересинхронизирован с ЮKassa",
+		"status":  payment.Status,
 	})
 }
 

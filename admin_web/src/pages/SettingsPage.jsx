@@ -89,12 +89,10 @@ export default function SettingsPage() {
             <h3 className="text-lg font-semibold mb-3">{t.settingsServerSection}</h3>
             {loading ? <p className="text-text-secondary">{t.loading}</p> : (
               <div className="divide-y divide-white/5">
-                <SettingCard label="Robokassa Login" hint="MerchantLogin — идентификатор магазина в Robokassa" value={settings.robokassa_login} onSave={v => saveSetting('robokassa_login', v)} />
-                <SettingCard label="Robokassa Password #1" hint="Пароль для подписи платежей (используется при создании ссылки оплаты)" value={settings.robokassa_password1} onSave={v => saveSetting('robokassa_password1', v)} type="password" />
-                <SettingCard label="Robokassa Password #2" hint="Пароль для проверки webhook (ResultURL). Настройте ResultURL в Robokassa: https://hiearth.ru/api/webhooks/robokassa" value={settings.robokassa_password2} onSave={v => saveSetting('robokassa_password2', v)} type="password" />
-                <SettingCard label="Тестовый режим" hint="Включить тестовый режим Robokassa (IsTest=1)" value={settings.robokassa_test_mode || 'true'} onSave={v => saveSetting('robokassa_test_mode', v)} type="toggle" />
-                <SettingCard label="Robokassa Partner ID" hint="(Опционально) Для автоматических возвратов через API. Без него возвраты через панель Robokassa" value={settings.robokassa_partner_id} onSave={v => saveSetting('robokassa_partner_id', v)} />
-                <SettingCard label="Email для чеков (fallback)" hint="Если пользователь не указал email при оплате, чек придёт на этот адрес" value={settings.receipt_fallback_email} onSave={v => saveSetting('receipt_fallback_email', v)} />
+                <SettingCard label="ЮKassa Shop ID" hint="shopId — идентификатор магазина в личном кабинете ЮKassa" value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
+                <SettingCard label="ЮKassa Secret Key" hint="Секретный ключ API. Никогда не публикуйте его. ЛК ЮKassa → Интеграция → API ключ" value={settings.yookassa_secret_key} onSave={v => saveSetting('yookassa_secret_key', v)} type="password" />
+                <SettingCard label="Тестовый режим" hint="true — использовать тестовый магазин ЮKassa (реальные деньги не списываются). В ЛК тестового магазина настройте Webhook URL: https://hiearth.ru/api/v1/webhooks/yookassa" value={settings.yookassa_test_mode || 'true'} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
+                <SettingCard label="Email для чеков (fallback)" hint="Если пользователь не указал email при оплате, чек придёт на этот адрес. Фискализация по 54-ФЗ обязательна." value={settings.receipt_fallback_email} onSave={v => saveSetting('receipt_fallback_email', v)} />
               </div>
             )}
           </section>

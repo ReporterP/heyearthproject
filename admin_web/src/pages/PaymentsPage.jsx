@@ -27,6 +27,32 @@ const AMOUNT_COLORS = {
 }
 
 
+// Иконка способа оплаты ЮKassa
+function PaymentMethodIcon({ type, details }) {
+  const LABELS = {
+    bank_card: 'Карта',
+    sbp: 'СБП',
+    yoo_money: 'ЮMoney',
+    tinkoff_bank: 'T-Pay',
+    sberbank: 'Сбер',
+    alfabank: 'Alfa',
+    installments: 'Части',
+    apple_pay: 'Apple Pay',
+    google_pay: 'Google Pay',
+  }
+  const label = LABELS[type] || type || '—'
+  let last4 = ''
+  try {
+    if (details && typeof details === 'object' && details.last4) last4 = details.last4
+  } catch {}
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-alt border border-white/10 text-xs">
+      <span className="font-medium">{label}</span>
+      {last4 && <span className="text-text-secondary">•••• {last4}</span>}
+    </span>
+  )
+}
+
 function TruncatedId({ value }) {
   const [copied, setCopied] = useState(false)
   if (!value) return <span className="text-text-secondary">{'\u2014'}</span>
@@ -241,13 +267,14 @@ export default function PaymentsPage() {
             <thead>
               <tr className="border-b border-white/10 text-text-secondary text-left">
                 <th className="py-2 px-3">ID</th>
-                <th className="py-2 px-3">{t.fieldUserDbId}</th>
+                <th className="py-2 px-3">User</th>
                 <th className="py-2 px-3">{t.fieldAmount}</th>
                 <th className="py-2 px-3">{t.fieldStatus}</th>
-                <th className="py-2 px-3">{t.fieldProvider}</th>
+                <th className="py-2 px-3">Метод</th>
+                <th className="py-2 px-3">Возврат</th>
+                <th className="py-2 px-3">Чек</th>
                 <th className="py-2 px-3">{t.paymentsDate || 'Дата'}</th>
-                <th className="py-2 px-3">{t.fieldExternalId}</th>
-                <th className="py-2 px-3">{t.fieldNotes}</th>
+                <th className="py-2 px-3">ЮKassa ID</th>
                 <th className="py-2 px-3">{t.fieldMetadata}</th>
                 {can('payments.write') && <th className="py-2 px-3"></th>}
               </tr>
@@ -255,22 +282,34 @@ export default function PaymentsPage() {
             <tbody>
               {filteredItems.map(p => {
                 const amountColor = AMOUNT_COLORS[p.status] || 'text-text-primary'
+                const refunded = parseFloat(p.refunded_amount || 0)
                 return (
                   <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                    <td className="py-2 px-3">{p.id}</td>
+                    <td className="py-2 px-3">{p.id}{p.test && <span className="ml-1 text-[9px] text-yellow-400 align-super">TEST</span>}</td>
                     <td className="py-2 px-3 font-mono text-xs">{p.user_id || p.user_db_id || '—'}</td>
                     <td className={`py-2 px-3 font-medium ${amountColor}`}>
                       {parseFloat(p.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {p.currency}
                     </td>
                     <td className="py-2 px-3"><StatusBadge status={p.status} /></td>
-                    <td className="py-2 px-3">{p.provider}</td>
+                    <td className="py-2 px-3 text-xs">
+                      {p.payment_method_type ? <PaymentMethodIcon type={p.payment_method_type} details={p.payment_method_details} /> : <span className="text-text-secondary">—</span>}
+                    </td>
+                    <td className="py-2 px-3 text-xs">
+                      {refunded > 0 ? (
+                        <span className="text-orange-400">{refunded.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</span>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      {p.receipt_registered ? <span className="text-green-400" title="Чек зарегистрирован в ОФД">✓</span> : <span className="text-text-secondary">—</span>}
+                    </td>
                     <td className="py-2 px-3 text-text-secondary text-xs whitespace-nowrap">
                       {formatDate(p.created_at)}
                     </td>
                     <td className="py-2 px-3">
-                      <TruncatedId value={p.external_id} />
+                      <TruncatedId value={p.yookassa_payment_id || p.external_id} />
                     </td>
-                    <td className="py-2 px-3 text-text-secondary truncate max-w-[200px]">{p.notes || '\u2014'}</td>
                     <td className="py-2 px-3">
                       <MetadataPopover data={p.metadata} />
                     </td>
@@ -278,23 +317,24 @@ export default function PaymentsPage() {
                       <td className="py-2 px-3">
                         <div className="flex gap-1.5">
                           <button onClick={() => openEdit(p)} className="text-brand text-xs hover:underline">{t.edit}</button>
-                          {p.external_id && (
+                          {(p.yookassa_payment_id || p.external_id) && (
                             <>
                               <button onClick={async () => {
                                 try {
                                   const res = await checkPaymentStatus(p.id)
-                                  toast.success(`T-Bank: ${res.tbank_status}`)
+                                  toast.success(`ЮKassa: ${res.yookassa_status || res.local_status}`)
                                   paged.reload()
                                 } catch(e) { toast.error(e.message) }
-                              }} className="text-text-secondary text-xs hover:text-text-primary" title="Проверить статус в T-Bank">
+                              }} className="text-text-secondary text-xs hover:text-text-primary" title="Проверить статус в ЮKassa">
                                 Status
                               </button>
-                              {(p.status === 'completed' || p.status === 'succeeded') && (
+                              {(p.status === 'succeeded' || p.status === 'completed') && refunded < parseFloat(p.amount) && (
                                 <button onClick={async () => {
-                                  if (!confirm('Отменить/вернуть платёж?')) return
+                                  const reason = prompt('Причина возврата:', 'Admin refund')
+                                  if (reason === null) return
                                   try {
-                                    const res = await cancelPayment(p.id, 'Admin cancel')
-                                    toast.success(`Отменён: ${res.status}`)
+                                    const res = await cancelPayment(p.id, reason)
+                                    toast.success(`Возврат: ${res.status || 'создан'}`)
                                     paged.reload()
                                   } catch(e) { toast.error(e.message) }
                                 }} className="text-red-400 text-xs hover:underline">
