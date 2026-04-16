@@ -178,12 +178,12 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist YooKassa payment details
-	_, _ = db.DB.Exec(`
+	_, updErr := db.DB.Exec(`
 		UPDATE payments SET
-			yookassa_payment_id = $1,
+			yookassa_payment_id = $1::text,
 			yookassa_status = $2,
 			confirmation_url = $3,
-			external_id = $1,
+			external_id = $1::text,
 			return_url = $4,
 			save_payment_method = $5,
 			test = $6,
@@ -195,6 +195,9 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		saveCard, payment.Test, body.Email,
 		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "promocode": promoUsed, "kind": "subscription"}),
 		paymentDBID)
+	if updErr != nil {
+		log.Printf("[yookassa] payment %d UPDATE failed: %v (yookassa_id=%s)", paymentDBID, updErr, payment.ID)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_id":       paymentDBID,
@@ -331,15 +334,15 @@ func processPaymentEvent(p *yookassa.Payment) error {
 	localStatus := mapYookassaStatus(p.Status)
 	_, err = db.DB.Exec(`
 		UPDATE payments SET
-			yookassa_status = $1,
-			status = $2,
-			payment_method_id = COALESCE(NULLIF($3, ''), payment_method_id),
-			payment_method_type = $4,
+			yookassa_status = $1::text,
+			status = $2::text,
+			payment_method_id = COALESCE(NULLIF($3::text, ''), payment_method_id),
+			payment_method_type = $4::text,
 			payment_method_details = $5::jsonb,
 			receipt_registered = $6,
-			paid_at = CASE WHEN $2 = 'succeeded' THEN NOW() ELSE paid_at END,
-			confirmed_at = CASE WHEN $2 = 'succeeded' THEN NOW() ELSE confirmed_at END,
-			cancellation_reason = $7,
+			paid_at = CASE WHEN $2::text = 'succeeded' THEN NOW() ELSE paid_at END,
+			confirmed_at = CASE WHEN $2::text = 'succeeded' THEN NOW() ELSE confirmed_at END,
+			cancellation_reason = $7::text,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $8
 	`, p.Status, localStatus, paymentMethodID, methodType, methodDetails,
@@ -607,8 +610,8 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 		confirmationURL = payment.Confirmation.ConfirmationURL
 	}
 	_, _ = db.DB.Exec(`
-		UPDATE payments SET yookassa_payment_id = $1, yookassa_status = $2, confirmation_url = $3,
-			external_id = $1, metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
+		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2, confirmation_url = $3,
+			external_id = $1::text, metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $6
 	`, payment.ID, payment.Status, confirmationURL,
 		mustJSON(map[string]interface{}{"tenant_id": req.TenantID, "kind": "tenant_topup"}),
@@ -718,8 +721,8 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 		confirmationURL = payment.Confirmation.ConfirmationURL
 	}
 	_, _ = db.DB.Exec(`
-		UPDATE payments SET yookassa_payment_id = $1, yookassa_status = $2,
-			confirmation_url = $3, external_id = $1,
+		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2,
+			confirmation_url = $3, external_id = $1::text,
 			metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $6
 	`, payment.ID, payment.Status, confirmationURL,

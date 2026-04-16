@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -42,11 +43,16 @@ func init() {
 
 // IsFromYooKassa проверяет IP источника webhook по whitelist.
 // Использует X-Forwarded-For и X-Real-IP (для nginx reverse proxy) + r.RemoteAddr.
+// Если env YOOKASSA_WEBHOOK_ALLOW_LOCAL=true — также принимаем 127.0.0.1 (для тестов через curl/test shop).
 func IsFromYooKassa(r *http.Request) bool {
+	allowLocal := strings.EqualFold(os.Getenv("YOOKASSA_WEBHOOK_ALLOW_LOCAL"), "true")
 	for _, candidate := range extractClientIPs(r) {
 		ip := net.ParseIP(candidate)
 		if ip == nil {
 			continue
+		}
+		if allowLocal && ip.IsLoopback() {
+			return true
 		}
 		for _, ipnet := range parsedYookassaNets {
 			if ipnet.Contains(ip) {

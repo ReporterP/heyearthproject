@@ -780,6 +780,9 @@ func main() {
 	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
+	// Admin debug: force auto-renew for a user
+	http.HandleFunc("/api/admin/force-autorenew", admin.RequirePermission("payments.write", handleAdminForceAutoRenew))
+
 	// Admin payment actions — registered via admin.PaymentActionHandler to avoid route conflicts
 	admin.PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path

@@ -152,6 +152,21 @@ func processAutoRenew(userID string) error {
 		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
 	}
 
+	// Защита от двойного списания: если за последние 24 часа уже был
+	// auto-renew платёж (pending/succeeded) — пропускаем. Cron + endpoint
+	// могут сработать параллельно.
+	var recentCount int
+	_ = db.DB.QueryRow(`
+		SELECT COUNT(*) FROM payments
+		WHERE user_id_text = $1
+		  AND description LIKE '%автопродление%'
+		  AND created_at > NOW() - INTERVAL '24 hours'
+	`, userID).Scan(&recentCount)
+	if recentCount > 0 {
+		log.Printf("[auto-renew] User %s: skipped — already has auto-renew payment in last 24h", userID)
+		return nil
+	}
+
 	// Check for saved YooKassa payment_method_id
 	var savedPM string
 	db.DB.QueryRow("SELECT COALESCE(saved_payment_method, '') FROM users WHERE user_id = $1", userID).Scan(&savedPM)
@@ -198,25 +213,32 @@ func processAutoRenew(userID string) error {
 		return fmt.Errorf("yookassa charge: %w", err)
 	}
 
-	// Сохраняем yookassa_payment_id, а активация произойдёт через webhook payment.succeeded
-	_, _ = db.DB.Exec(`
+	// Сохраняем yookassa_payment_id + статусы
+	_, updErr := db.DB.Exec(`
 		UPDATE payments SET
-			yookassa_payment_id = $1, yookassa_status = $2, external_id = $1,
-			test = $3, updated_at = CURRENT_TIMESTAMP,
-			metadata = $4::jsonb
-		WHERE id = $5
-	`, payment.ID, payment.Status, payment.Test,
+			yookassa_payment_id = $1::text,
+			yookassa_status = $2::text,
+			external_id = $1::text,
+			status = $3::text,
+			test = $4,
+			paid_at = CASE WHEN $3::text = 'succeeded' THEN NOW() ELSE paid_at END,
+			updated_at = CURRENT_TIMESTAMP,
+			metadata = $5::jsonb
+		WHERE id = $6
+	`, payment.ID, payment.Status, mapYookassaStatus(payment.Status), payment.Test,
 		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "kind": "subscription", "auto_renew": true}),
 		paymentDBID)
+	if updErr != nil {
+		log.Printf("[auto-renew] UPDATE payments id=%d failed: %v", paymentDBID, updErr)
+	}
 
-	// YooKassa возвращает для recurring сразу status=succeeded (без confirmation)
-	// Но всё равно webhook придёт и активирует подписку. Для подстраховки активируем здесь,
-	// если статус уже succeeded.
+	// YooKassa возвращает для recurring сразу status=succeeded (без confirmation).
+	// Активируем подписку и тут, и в webhook'е (ActivateSubscriptionWithPlan идемпотентен).
 	if payment.Status == yookassa.PaymentStatusSucceeded {
 		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
 			log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
 		} else {
-			log.Printf("[auto-renew] User %s: subscription renewed via YooKassa (plan: %s, %d₽)", userID, plan.Slug, plan.PriceRub)
+			log.Printf("[auto-renew] User %s: subscription renewed via YooKassa (plan: %s, %d₽) yk_id=%s", userID, plan.Slug, plan.PriceRub, payment.ID)
 			RequestXraySync()
 		}
 	}

@@ -201,6 +201,29 @@ func handleAdminPaymentResend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminForceAutoRenew форсирует auto-renew для заданного user_id.
+// Debug/test endpoint. POST /api/admin/force-autorenew  body {"user_id": "uuid"}
+func handleAdminForceAutoRenew(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+		return
+	}
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	_ = parseJSON(r, &req)
+	if req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id required"})
+		return
+	}
+	if err := processAutoRenew(req.UserID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "auto-renew triggered for " + req.UserID})
+}
+
 // ─── Helpers ───
 
 func extractPathID(path, prefix, suffix string) int {
