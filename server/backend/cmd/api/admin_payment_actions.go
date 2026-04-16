@@ -201,6 +201,19 @@ func handleAdminPaymentResend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminSyncAllPending форсирует синхронизацию всех pending платежей сейчас
+// (не дожидаясь cron). Возвращает сколько было обновлено.
+func handleAdminSyncAllPending(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+		return
+	}
+	// Запускаем синхронно (небольшой batch)
+	syncPendingPayments()
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Синхронизация запущена. Проверьте список платежей."})
+}
+
 // handleAdminForceAutoRenew форсирует auto-renew для заданного user_id.
 // Debug/test endpoint. POST /api/admin/force-autorenew  body {"user_id": "uuid"}
 func handleAdminForceAutoRenew(w http.ResponseWriter, r *http.Request) {

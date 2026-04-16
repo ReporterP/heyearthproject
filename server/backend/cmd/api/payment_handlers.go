@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -299,6 +301,9 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // processPaymentEvent обновляет запись в БД и активирует подписку при succeeded.
+// Если платежа нет в БД, но в YooKassa metadata есть user_id+plan_id — создаёт
+// orphan-recovery запись. Это спасает случаи когда наш backend упал после CreatePayment
+// в YooKassa, но до INSERT INTO payments.
 func processPaymentEvent(p *yookassa.Payment) error {
 	// Найти локальный payment по yookassa_payment_id
 	var paymentDBID int
@@ -307,7 +312,21 @@ func processPaymentEvent(p *yookassa.Payment) error {
 		SELECT p.id, COALESCE(p.user_id_text, ''), COALESCE(p.metadata::text, '{}'), COALESCE(p.metadata->>'kind', '')
 		FROM payments p WHERE p.yookassa_payment_id = $1
 	`, p.ID).Scan(&paymentDBID, &userID, &metadata, &kind)
-	if err != nil {
+	if err == sql.ErrNoRows {
+		// Orphan recovery: создать запись из metadata
+		log.Printf("[yookassa] ORPHAN payment %s not in DB — attempting recovery from metadata", p.ID)
+		recoveredID, rerr := recoverOrphanPayment(p)
+		if rerr != nil {
+			return fmt.Errorf("orphan recovery failed for %s: %w", p.ID, rerr)
+		}
+		paymentDBID = recoveredID
+		if v, ok := p.Metadata["user_id"]; ok {
+			userID = v
+		}
+		// Повторное чтение чтобы получить metadata + kind
+		_ = db.DB.QueryRow(`SELECT COALESCE(metadata::text, '{}'), COALESCE(metadata->>'kind', '') FROM payments WHERE id = $1`,
+			paymentDBID).Scan(&metadata, &kind)
+	} else if err != nil {
 		return fmt.Errorf("find payment: %w", err)
 	}
 
@@ -732,6 +751,67 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 		"payment_id":       paymentDBID,
 		"confirmation_url": confirmationURL,
 	})
+}
+
+// recoverOrphanPayment создаёт запись в payments из YooKassa payment'а,
+// который по какой-то причине отсутствует в нашей БД (наш backend упал
+// между CreatePayment и INSERT). Восстанавливает по metadata: user_id, plan_id, kind.
+// Возвращает id созданной записи.
+func recoverOrphanPayment(p *yookassa.Payment) (int, error) {
+	userID := p.Metadata["user_id"]
+	if userID == "" {
+		userID = p.MerchantCustomerID
+	}
+	if userID == "" {
+		return 0, fmt.Errorf("no user_id in metadata")
+	}
+
+	// Парсим сумму
+	var amount float64
+	fmt.Sscanf(p.Amount.Value, "%f", &amount)
+
+	description := p.Description
+	if description == "" {
+		description = "HiEarth recovery"
+	}
+
+	kind := p.Metadata["kind"]
+	if kind == "" {
+		kind = "subscription"
+	}
+
+	// metadata JSON — из YooKassa + внутренние поля
+	metaMap := make(map[string]interface{})
+	for k, v := range p.Metadata {
+		metaMap[k] = v
+	}
+	metaMap["kind"] = kind
+	metaMap["recovered"] = true
+	if planIDStr, ok := p.Metadata["plan_id"]; ok {
+		if pid, err := strconv.Atoi(planIDStr); err == nil {
+			metaMap["plan_id"] = pid
+		}
+	}
+	metaJSON := mustJSON(metaMap)
+
+	var newID int
+	err := db.DB.QueryRow(`
+		INSERT INTO payments (
+			user_id_text, amount, currency, status, provider, payment_method,
+			yookassa_payment_id, external_id, description,
+			metadata, test, created_at, updated_at
+		) VALUES (
+			$1, $2::numeric, $3, $4, 'yookassa', 'yookassa',
+			$5, $5, $6, $7::jsonb, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+		)
+		RETURNING id
+	`, userID, amount, p.Amount.Currency, mapYookassaStatus(p.Status),
+		p.ID, description, metaJSON, p.Test).Scan(&newID)
+	if err != nil {
+		return 0, fmt.Errorf("insert orphan: %w", err)
+	}
+	log.Printf("[yookassa] ✓ Orphan recovered: created payment id=%d for user=%s (yk=%s)", newID, userID, p.ID)
+	return newID, nil
 }
 
 // mustJSON marshals a map to JSON string.

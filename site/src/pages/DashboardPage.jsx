@@ -196,7 +196,8 @@ export default function DashboardPage() {
   const username = profile?.username || ''
   const currentPlan = profile?.current_plan || subscription?.plan_name || subscription?.group_name || ''
   const validUntil = profile?.valid_until || subscription?.valid_until
-  const hasActiveSub = !!currentPlan && currentPlan !== ''
+  const isExpired = validUntil ? new Date(validUntil) < new Date() : false
+  const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired
 
   // Telegram deeplink from SOCKS credentials
   const socksHost = connections?.socks5_host || connections?.main_server_host || 'hiearth.ru'
@@ -418,6 +419,23 @@ export default function DashboardPage() {
                     </svg>
                   </Link>
                 </div>
+              </>
+            ) : isExpired && currentPlan ? (
+              <>
+                <p className="text-lg font-semibold text-red-400">Подписка истекла</p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                  <p className="text-sm text-text-secondary">Тариф «{currentPlan}» закончился {formatDate(validUntil)}</p>
+                </div>
+                <Link
+                  to="/payment"
+                  className="inline-flex items-center gap-2 mt-3 px-5 py-2.5 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white text-sm font-semibold hover:shadow-lg hover:shadow-brand/25 transition-all duration-300 min-h-[44px]"
+                >
+                  Продлить
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                  </svg>
+                </Link>
               </>
             ) : (
               <>

@@ -206,9 +206,17 @@ export default function PaymentsPage() {
         <div className="flex gap-2">
           {can('payments.write') && (
             <>
-              <button onClick={async () => { try { await resendPaymentNotifications(); toast.success('Уведомления переотправлены') } catch(e) { toast.error(e.message) } }}
-                className="px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-secondary text-sm hover:text-text-primary transition" title="Переотправить пропущенные webhook">
-                Resend
+              <button onClick={async () => {
+                try {
+                  const r = await fetch('/api/admin/sync-pending-payments', {method:'POST', headers:{Authorization:'Bearer '+localStorage.getItem('admin_token')}});
+                  const d = await r.json();
+                  if (r.ok) { toast.success(d.message || 'Синхронизация запущена'); paged.reload(); }
+                  else toast.error(d.error || 'Ошибка');
+                } catch(e) { toast.error(e.message) }
+              }}
+                className="px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-secondary text-sm hover:text-text-primary transition"
+                title="Проверить статус всех pending платежей в ЮKassa (на случай если webhook пропал)">
+                Sync pending
               </button>
               <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
                 + {t.createPayment}

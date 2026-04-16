@@ -715,6 +715,9 @@ func main() {
 	// Запускаем cron для подписок и B2B биллинга
 	StartSubscriptionCron()
 
+	// Запускаем cron синхронизации pending платежей (fallback если webhook не пришёл)
+	StartPaymentSyncCron()
+
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)   // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)   // 100 req/min per IP (general API)
@@ -782,6 +785,8 @@ func main() {
 
 	// Admin debug: force auto-renew for a user
 	http.HandleFunc("/api/admin/force-autorenew", admin.RequirePermission("payments.write", handleAdminForceAutoRenew))
+	// Admin: force sync всех pending платежей (не ждать cron)
+	http.HandleFunc("/api/admin/sync-pending-payments", admin.RequirePermission("payments.write", handleAdminSyncAllPending))
 
 	// Admin payment actions — registered via admin.PaymentActionHandler to avoid route conflicts
 	admin.PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) {

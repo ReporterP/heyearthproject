@@ -133,7 +133,7 @@ export default function RegisterPage() {
               </div>
 
               <h2 className="text-2xl font-bold mb-2">Ваш HeYearth ID</h2>
-              <p className="text-text-secondary text-sm mb-6">Сохраните этот ID -- он понадобится для входа</p>
+              <p className="text-text-secondary text-sm mb-6">Сохраните этот ID — он понадобится для входа</p>
 
               {/* ID display */}
               <div className="relative my-6 p-6 rounded-2xl glass border border-brand/30 glow-brand">
