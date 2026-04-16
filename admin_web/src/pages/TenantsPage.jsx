@@ -17,6 +17,14 @@ export default function TenantsPage() {
   const [dialog, setDialog] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [invoiceTenant, setInvoiceTenant] = useState(null)
+  const [invoiceInn, setInvoiceInn] = useState('')
+  const [invoiceCompany, setInvoiceCompany] = useState('')
+  const [invoiceAmount, setInvoiceAmount] = useState('')
+  const [invoiceEmail, setInvoiceEmail] = useState('')
+  const [invoiceDescription, setInvoiceDescription] = useState('')
+  const [invoiceLoading, setInvoiceLoading] = useState(false)
+  const [invoiceResult, setInvoiceResult] = useState(null)
 
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
@@ -130,8 +138,9 @@ export default function TenantsPage() {
                   <td className="py-2 px-3">{tn.max_users ?? '\u2014'}</td>
                   <td className="py-2 px-3 text-text-secondary">{tn.contact_email || '\u2014'}</td>
                   {can('tenants.write') && (
-                    <td className="py-2 px-3 flex gap-2">
+                    <td className="py-2 px-3 flex gap-2 flex-wrap">
                       <button onClick={() => openEdit(tn)} className="text-brand hover:underline">{t.edit}</button>
+                      <button onClick={() => setInvoiceTenant(tn)} className="text-green-400 hover:underline text-xs">Счёт</button>
                       <button onClick={() => setConfirm(tn)} className="text-red-400 hover:underline">{t.delete}</button>
                     </td>
                   )}
@@ -167,6 +176,84 @@ export default function TenantsPage() {
         message={t.deleteTenantConfirm(confirm?.name)}
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} loading={saving}
       />
+
+      {/* Invoice dialog (B2B) */}
+      {invoiceTenant && (
+        <div className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4" onClick={() => { if (!invoiceLoading && !invoiceResult) setInvoiceTenant(null) }}>
+          <div className="bg-surface-card rounded-xl border border-white/10 w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Счёт для {invoiceTenant.name}</h3>
+              <button onClick={() => { setInvoiceTenant(null); setInvoiceResult(null) }} className="text-text-secondary hover:text-text-primary">✕</button>
+            </div>
+
+            {invoiceResult ? (
+              <div>
+                <p className="text-sm text-green-400 mb-3">✓ Счёт создан на {invoiceResult.amount}₽</p>
+                <p className="text-xs text-text-secondary mb-3">Ссылка для оплаты отправлена на {invoiceResult.email}. Также можете скопировать её ниже:</p>
+                <div className="p-3 rounded-lg bg-surface-alt border border-white/10 text-xs font-mono break-all select-all">
+                  {invoiceResult.confirmation_url}
+                </div>
+                <button onClick={() => { setInvoiceTenant(null); setInvoiceResult(null) }} className="mt-4 px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium">Закрыть</button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-text-secondary mb-1 block">ИНН (10 или 12 цифр)</label>
+                  <input type="text" value={invoiceInn} onChange={e => setInvoiceInn(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                    className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm font-mono" placeholder="7707083893" />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary mb-1 block">Название организации</label>
+                  <input type="text" value={invoiceCompany} onChange={e => setInvoiceCompany(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="ООО Ромашка" />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary mb-1 block">Сумма (₽)</label>
+                  <input type="number" value={invoiceAmount} onChange={e => setInvoiceAmount(e.target.value)} min="100"
+                    className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="5000" />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary mb-1 block">Email для отправки счёта</label>
+                  <input type="email" value={invoiceEmail} onChange={e => setInvoiceEmail(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder={invoiceTenant.contact_email || 'buyer@company.ru'} />
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary mb-1 block">Описание (необязательно)</label>
+                  <textarea value={invoiceDescription} onChange={e => setInvoiceDescription(e.target.value)} rows={2}
+                    className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button onClick={() => setInvoiceTenant(null)} disabled={invoiceLoading}
+                    className="px-4 py-2 rounded-lg bg-surface-alt text-text-secondary text-sm">Отмена</button>
+                  <button onClick={async () => {
+                    setInvoiceLoading(true)
+                    try {
+                      const r = await fetch('/api/v1/business/create-invoice', {
+                        method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({
+                          inn: invoiceInn, company_name: invoiceCompany,
+                          amount: parseInt(invoiceAmount) || 0,
+                          email: invoiceEmail || invoiceTenant.contact_email || '',
+                          description: invoiceDescription,
+                        })
+                      })
+                      const data = await r.json()
+                      if (!r.ok) { toast.error(data.error || 'Ошибка'); return }
+                      setInvoiceResult(data)
+                      toast.success('Счёт создан')
+                    } catch(e) { toast.error(e.message) }
+                    finally { setInvoiceLoading(false) }
+                  }} disabled={invoiceLoading || !invoiceInn || !invoiceCompany || !invoiceAmount}
+                    className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium disabled:opacity-50">
+                    {invoiceLoading ? 'Создаём...' : 'Создать счёт'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

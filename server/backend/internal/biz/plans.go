@@ -374,3 +374,81 @@ func CheckPlanActivationLimit(userID string, planID int) error {
 	}
 	return nil
 }
+
+// ProrationResult — расчёт остатка текущей подписки в рублях.
+type ProrationResult struct {
+	CreditRub       int     // Кредит от текущей подписки (руб, округлён вниз)
+	DaysRemaining   int     // Дней до конца текущей подписки
+	CurrentPlanID   int     // Текущий план
+	CurrentPriceRub int     // Цена текущего плана
+	Applied         bool    // Применимо ли для нового plan (не даунгрейд с credit > new price)
+}
+
+// CalculateProrationCredit вычисляет credit для юзера при смене тарифа.
+// Формула: credit = current_plan_price * (days_remaining / duration_days)
+//
+// Правила:
+//   - Apply только если current_price > 0 (с free нет proration)
+//   - Credit не превышает 90% от new_plan цены (защита от zero-value оплат)
+//   - Для downgrade (new < current) — credit 0 (просто новая цена, но valid_until продлевается на больший из двух)
+func CalculateProrationCredit(userID string, newPlanID int) (*ProrationResult, error) {
+	res := &ProrationResult{}
+
+	// Текущая активная подписка
+	var currentPlanID int
+	var currentPrice int
+	var currentDuration int
+	var validUntil time.Time
+	err := db.DB.QueryRow(`
+		SELECT us.plan_id, p.price_rub, p.duration_days, us.valid_until
+		FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		JOIN plans p ON p.id = us.plan_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(&currentPlanID, &currentPrice, &currentDuration, &validUntil)
+	if err != nil {
+		return res, nil // нет активной — нет credit
+	}
+
+	if currentPrice <= 0 || currentDuration <= 0 {
+		return res, nil
+	}
+
+	daysRemaining := int(time.Until(validUntil).Hours() / 24)
+	if daysRemaining <= 0 {
+		return res, nil
+	}
+
+	// Pro-rata credit
+	credit := int(float64(currentPrice) * float64(daysRemaining) / float64(currentDuration))
+	if credit <= 0 {
+		return res, nil
+	}
+
+	res.CreditRub = credit
+	res.DaysRemaining = daysRemaining
+	res.CurrentPlanID = currentPlanID
+	res.CurrentPriceRub = currentPrice
+
+	// Ограничение: credit не больше 90% от new plan price (чтобы всегда был оплачиваемый остаток)
+	newPlan, err := GetPlanByID(newPlanID)
+	if err != nil || newPlan == nil {
+		res.Applied = false
+		return res, nil
+	}
+
+	// Даунгрейд с новой ценой меньше credit — не выдаём
+	if newPlan.PriceRub <= 0 {
+		res.Applied = false
+		return res, nil
+	}
+
+	maxCredit := int(float64(newPlan.PriceRub) * 0.9)
+	if credit > maxCredit {
+		res.CreditRub = maxCredit
+	}
+
+	res.Applied = true
+	return res, nil
+}

@@ -20,7 +20,8 @@ bd list --status in_progress       # что сейчас в работе
 
 | Beads ID | Title | Status | PRD | Plan | Tasklist | QA |
 |----------|-------|--------|-----|------|----------|----|
-| `heyearthproject-uys` | Complete YooKassa migration | open (P1) | [prd](../prd/yookassa-migration.prd.md) | [plan](../plan/yookassa-migration.md) | [tasks](yookassa-migration.md) | — |
+| `heyearthproject-uys` | Complete YooKassa migration | closed | [prd](../prd/yookassa-migration.prd.md) | [plan](../plan/yookassa-migration.md) | [tasks](yookassa-migration.md) | ✓ |
+| `heyearthproject-vq3` | YooKassa Phase 2: conversion + retention | open (P1) | [prd](../prd/yookassa-phase2.prd.md) | [plan](../plan/yookassa-phase2.md) | [tasks](yookassa-phase2.md) | — |
 
 ## Как добавить новый эпик
 

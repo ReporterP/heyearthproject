@@ -41,6 +41,7 @@ export default function PaymentPage() {
   const [saveCard, setSaveCard] = useState(false)
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState('')
+  const [prorations, setProrations] = useState({}) // planId → {original_price, proration_credit, final_price}
 
   useEffect(() => {
     const promises = [
@@ -69,6 +70,21 @@ export default function PaymentPage() {
     }).finally(() => setLoading(false))
   }, [token])
 
+  // Proration preview для каждого платного тарифа, когда есть активная подписка
+  useEffect(() => {
+    if (!token || !validUntil || plans.length === 0) return
+    const paid = plans.filter(p => p.price_rub > 0)
+    Promise.all(
+      paid.map(p => fetch(`/api/v1/payment/proration-preview?plan_id=${p.id}`, {
+        headers: { Authorization: 'Bearer ' + token }
+      }).then(r => r.ok ? r.json() : null).then(d => [p.id, d]).catch(() => [p.id, null]))
+    ).then(pairs => {
+      const map = {}
+      pairs.forEach(([id, d]) => { if (d) map[id] = d })
+      setProrations(map)
+    })
+  }, [token, validUntil, plans])
+
   async function handlePay(planId) {
     if (!token) {
       navigate('/login?redirect=/payment')
@@ -77,22 +93,34 @@ export default function PaymentPage() {
     setPaying(true)
     setError('')
     try {
-      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, promocode, saveCard, email)
+      // Для веба используем embedded widget (юзер не покидает hiearth.ru),
+      // для нестандартных клиентов (Flutter) — старый redirect flow.
+      const data = await createPayment(
+        token, null, window.location.origin + '/dashboard',
+        planId, promocode, saveCard, email, 'embedded'
+      )
       if (data.status === 'activated') {
         // Free plan activated immediately
         navigate('/dashboard')
         return
       }
-      if (data.confirmation_url) {
-        // Save pending payment info so DashboardPage can show result popup
-        const plan = plans.find(p => p.id === planId)
-        if (plan) {
-          sessionStorage.setItem('payment_pending', JSON.stringify({ name: plan.name, price: plan.price_rub }))
-        }
-        window.location.href = data.confirmation_url
-      } else {
-        setError('Не удалось создать платёж. Попробуйте позже.')
+      const plan = plans.find(p => p.id === planId)
+      if (plan) {
+        sessionStorage.setItem('payment_pending', JSON.stringify({ name: plan.name, price: plan.price_rub }))
       }
+      // Embedded flow: есть confirmation_token → /checkout страница с виджетом
+      if (data.confirmation_token) {
+        sessionStorage.setItem(`checkout_token_${data.payment_id}`, data.confirmation_token)
+        sessionStorage.setItem(`checkout_plan_${data.payment_id}`, plan?.name || '')
+        navigate(`/checkout/${data.payment_id}`)
+        return
+      }
+      // Fallback: redirect flow (старый путь для Flutter)
+      if (data.confirmation_url) {
+        window.location.href = data.confirmation_url
+        return
+      }
+      setError('Не удалось создать платёж. Попробуйте позже.')
     } catch (e) {
       setError(e.message || 'Ошибка создания платежа')
     } finally {
@@ -202,10 +230,19 @@ export default function PaymentPage() {
                 <h3 className="text-lg font-bold mb-1">{plan.name}</h3>
                 <p className="text-xs text-text-secondary mb-4">{plan.description}</p>
 
-                <div className="flex items-baseline gap-1 mb-5">
-                  <span className="text-3xl font-bold text-brand">{isFree ? 'Бесплатно' : `${plan.price_rub}₽`}</span>
+                <div className="flex items-baseline gap-1 mb-1">
+                  <span className="text-3xl font-bold text-brand">
+                    {isFree ? 'Бесплатно' : `${prorations[plan.id]?.final_price ?? plan.price_rub}₽`}
+                  </span>
                   {!isFree && <span className="text-sm text-text-secondary">/ {formatDuration(plan.duration_days)}</span>}
                 </div>
+                {!isFree && prorations[plan.id]?.proration_credit > 0 && (
+                  <div className="mb-4 text-xs text-amber-400 bg-amber-500/10 px-2 py-1 rounded-lg inline-flex items-center gap-1.5">
+                    <span className="text-text-secondary line-through">{plan.price_rub}₽</span>
+                    <span>−{prorations[plan.id].proration_credit}₽ (остаток текущего тарифа)</span>
+                  </div>
+                )}
+                {!isFree && !prorations[plan.id]?.proration_credit && <div className="mb-4" />}
 
                 <ul className="space-y-2 mb-6">
                   {features.map((f, i) => (

@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/email"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -20,9 +22,18 @@ import (
 // buildReceipt строит объект чека для передачи в ЮKassa.
 // ЮKassa автоматически отправит чек на customer.email / phone.
 // Используется УСН (tax_system_code=2), VAT=None (vat_code=1), service (услуга).
-func buildReceipt(description string, amountRub float64, email string) *yookassa.Receipt {
+//
+// paymentMode:
+//   - "full_prepayment" — для подписок (услуга оказывается в будущем — 30 дней)
+//   - "full_payment" — для донатов, tenant topup (моментальное получение)
+//
+// Если paymentMode пустой — используем full_payment (безопасный дефолт).
+func buildReceipt(description string, amountRub float64, email string, paymentMode string) *yookassa.Receipt {
 	if email == "" {
 		email = biz.GetSettingOrDefault("receipt_fallback_email", "")
+	}
+	if paymentMode == "" {
+		paymentMode = yookassa.PaymentModeFullPayment
 	}
 
 	receipt := &yookassa.Receipt{
@@ -34,7 +45,7 @@ func buildReceipt(description string, amountRub float64, email string) *yookassa
 				Amount:         yookassa.Amount{Value: fmt.Sprintf("%.2f", amountRub), Currency: "RUB"},
 				VATCode:        yookassa.VATCodeNone,
 				PaymentSubject: yookassa.PaymentSubjectService,
-				PaymentMode:    yookassa.PaymentModeFullPayment,
+				PaymentMode:    paymentMode,
 			},
 		},
 	}
@@ -54,13 +65,14 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		UserID    string `json:"user_id"`
-		Plan      string `json:"plan"`
-		PlanID    int    `json:"plan_id"`
-		Promocode string `json:"promocode"`
-		ReturnURL string `json:"return_url"`
-		Email     string `json:"email"`
-		SaveCard  *bool  `json:"save_card"` // nil = use plan default, true/false = explicit
+		UserID           string `json:"user_id"`
+		Plan             string `json:"plan"`
+		PlanID           int    `json:"plan_id"`
+		Promocode        string `json:"promocode"`
+		ReturnURL        string `json:"return_url"`
+		Email            string `json:"email"`
+		SaveCard         *bool  `json:"save_card"`           // nil = use plan default, true/false = explicit
+		ConfirmationType string `json:"confirmation_type"`   // "embedded" (widget) | "redirect" (default)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -93,6 +105,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	originalPrice := plan.PriceRub
 	priceRub := plan.PriceRub
 
 	// Apply promocode
@@ -110,6 +123,20 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		priceRub = finalPrice
 		promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
 	}
+
+	// Proration: если юзер меняет тариф при активной подписке — даём credit
+	prorationCredit := 0
+	if prorRes, prErr := biz.CalculateProrationCredit(userID, plan.ID); prErr == nil && prorRes.Applied {
+		// Применяем credit только если новый план != текущего (иначе просто продление)
+		if prorRes.CurrentPlanID != plan.ID && prorRes.CreditRub > 0 {
+			prorationCredit = prorRes.CreditRub
+			if prorationCredit >= priceRub {
+				prorationCredit = priceRub - 1 // оставляем минимум 1₽ чтобы платёж был > 0
+			}
+			priceRub -= prorationCredit
+		}
+	}
+	_ = originalPrice
 
 	// Free plan — activate immediately
 	if priceRub <= 0 {
@@ -149,13 +176,19 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/dashboard"
 	}
 
+	// Выбор типа confirmation: embedded (widget на нашем сайте) vs redirect (старый flow).
+	confirmation := &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL}
+	if body.ConfirmationType == "embedded" {
+		confirmation = &yookassa.Confirmation{Type: yookassa.ConfirmationTypeEmbedded}
+	}
+
 	req := yookassa.CreatePaymentRequest{
 		Amount:            yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(priceRub)), Currency: "RUB"},
 		Description:       description,
-		Confirmation:      &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
+		Confirmation:      confirmation,
 		Capture:           true,
 		SavePaymentMethod: saveCard,
-		Receipt:           buildReceipt(description, float64(priceRub), body.Email),
+		Receipt:           buildReceipt(description, float64(priceRub), body.Email, "full_prepayment"),
 		Metadata: map[string]string{
 			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
 			"plan_id":       fmt.Sprintf("%d", plan.ID),
@@ -175,8 +208,10 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	confirmationURL := ""
+	confirmationToken := ""
 	if payment.Confirmation != nil {
 		confirmationURL = payment.Confirmation.ConfirmationURL
+		confirmationToken = payment.Confirmation.ConfirmationToken
 	}
 
 	// Persist YooKassa payment details
@@ -202,11 +237,15 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"payment_id":       paymentDBID,
-		"yookassa_id":      payment.ID,
-		"status":           payment.Status,
-		"confirmation_url": confirmationURL,
-		"test":             payment.Test,
+		"payment_id":         paymentDBID,
+		"yookassa_id":        payment.ID,
+		"status":             payment.Status,
+		"confirmation_url":   confirmationURL,   // для redirect flow
+		"confirmation_token": confirmationToken, // для embedded widget
+		"test":               payment.Test,
+		"original_price":     originalPrice,
+		"proration_credit":   prorationCredit,
+		"final_price":        priceRub,
 	})
 }
 
@@ -391,6 +430,7 @@ func processPaymentEvent(p *yookassa.Payment) error {
 			fmt.Sscanf(v, "%d", &planID)
 		}
 		promocode, _ := metaRaw["promocode"].(string)
+		autoRenew, _ := metaRaw["auto_renew"].(bool)
 		if planID > 0 && userID != "" {
 			plan, err := biz.GetPlanByID(planID)
 			if err == nil && plan != nil {
@@ -401,10 +441,54 @@ func processPaymentEvent(p *yookassa.Payment) error {
 				}
 				log.Printf("[yookassa-webhook] ✓ activated plan '%s' for user %s (%s ₽)", plan.Name, userID, p.Amount.Value)
 				RequestXraySync()
+
+				// Email notification: активация или продление
+				go sendActivationEmail(userID, plan, pricePaidInt, autoRenew, paymentDBID)
 			}
 		}
 	}
 	return nil
+}
+
+// sendActivationEmail отправляет email о активации / продлении подписки.
+// Запускается в goroutine — не блокирует webhook response.
+func sendActivationEmail(userIDText string, plan *biz.Plan, priceRub int, isRenewal bool, paymentDBID int) {
+	to := email.GetUserEmail(userIDText)
+	if to == "" {
+		return
+	}
+	var dbUserID int
+	_ = db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userIDText).Scan(&dbUserID)
+
+	validUntil := time.Now().AddDate(0, 0, plan.DurationDays)
+	// Реально из БД
+	_ = db.DB.QueryRow(`
+		SELECT valid_until FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userIDText).Scan(&validUntil)
+
+	var subj, html, text string
+	var templ string
+	if isRenewal {
+		subj, html, text = email.SubscriptionRenewed(plan.Name, priceRub, validUntil)
+		templ = email.TemplateSubscriptionRenewed
+	} else {
+		subj, html, text = email.SubscriptionActivated(plan.Name, priceRub, validUntil)
+		templ = email.TemplateSubscriptionActivated
+	}
+
+	_ = email.Send(email.Message{
+		To:         to,
+		Subject:    subj,
+		HTMLBody:   html,
+		TextBody:   text,
+		Template:   templ,
+		UserID:     dbUserID,
+		UserIDText: userIDText,
+		PaymentID:  paymentDBID,
+	})
 }
 
 // processRefundEvent помечает платёж как возвращённый и вставляет запись в payment_refunds.
@@ -503,6 +587,50 @@ func cancellationReason(p *yookassa.Payment) string {
 	return party
 }
 
+// handleProrationPreview — GET /api/v1/payment/proration-preview?plan_id=X
+// Возвращает breakdown без создания платежа (для UI на странице выбора тарифа).
+func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		return
+	}
+	planIDStr := r.URL.Query().Get("plan_id")
+	planID, _ := strconv.Atoi(planIDStr)
+	if planID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id required"})
+		return
+	}
+	plan, err := biz.GetPlanByID(planID)
+	if err != nil || plan == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "plan not found"})
+		return
+	}
+	prorRes, _ := biz.CalculateProrationCredit(userID, planID)
+	credit := 0
+	daysRemaining := 0
+	if prorRes != nil {
+		daysRemaining = prorRes.DaysRemaining
+		if prorRes.Applied && prorRes.CurrentPlanID != planID {
+			credit = prorRes.CreditRub
+			if credit >= plan.PriceRub {
+				credit = plan.PriceRub - 1
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"original_price":   plan.PriceRub,
+		"proration_credit": credit,
+		"final_price":      plan.PriceRub - credit,
+		"days_remaining":   daysRemaining,
+	})
+}
+
 // ─────────────────────── Other Payment Endpoints ───────────────────────
 
 func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
@@ -521,9 +649,17 @@ func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Grace period: если подписка только что истекла но есть active retry — даём доступ
+	canConnect := access.CanConnect
+	gracePeriod := false
+	if !canConnect && biz.HasActiveGracePeriod(userID) {
+		canConnect = true
+		gracePeriod = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"can_connect": access.CanConnect,
-		"is_premium":  access.IsPremium,
+		"can_connect":  canConnect,
+		"is_premium":   access.IsPremium,
+		"grace_period": gracePeriod,
 	})
 }
 
@@ -610,7 +746,7 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 		Description:  description,
 		Confirmation: &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
 		Capture:      true,
-		Receipt:      buildReceipt(description, float64(req.Amount), req.Email),
+		Receipt:      buildReceipt(description, float64(req.Amount), req.Email, "full_payment"),
 		Metadata: map[string]string{
 			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
 			"tenant_id":     fmt.Sprintf("%d", req.TenantID),
@@ -722,7 +858,7 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 		Description:  description,
 		Confirmation: &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
 		Capture:      true,
-		Receipt:      buildReceipt(description, float64(req.Amount), req.Email),
+		Receipt:      buildReceipt(description, float64(req.Amount), req.Email, "full_payment"),
 		Metadata: map[string]string{
 			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
 			"user_id":       userID,

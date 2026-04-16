@@ -98,6 +98,22 @@ export default function SettingsPage() {
           </section>
 
           <section className="bg-surface-card rounded-xl border border-white/10 p-5">
+            <h3 className="text-lg font-semibold mb-3">SMTP (email уведомления)</h3>
+            {!loading && (
+              <div className="divide-y divide-white/5">
+                <SettingCard label="Отправка включена" hint="true/false — если false, email не отправляется (но логируется в email_log)" value={settings.smtp_enabled || 'false'} onSave={v => saveSetting('smtp_enabled', v)} type="toggle" />
+                <SettingCard label="SMTP Host" hint="Например smtp.yandex.ru или smtp.mail.ru" value={settings.smtp_host} onSave={v => saveSetting('smtp_host', v)} />
+                <SettingCard label="SMTP Port" hint="587 (STARTTLS) или 465 (implicit TLS)" value={settings.smtp_port || '587'} onSave={v => saveSetting('smtp_port', v)} />
+                <SettingCard label="SMTP User" hint="Обычно email-ящик полностью" value={settings.smtp_user} onSave={v => saveSetting('smtp_user', v)} />
+                <SettingCard label="SMTP Password" hint="Пароль приложения (app password). Для Gmail/Yandex — создать в настройках почты" value={settings.smtp_password} onSave={v => saveSetting('smtp_password', v)} type="password" />
+                <SettingCard label="From email" hint="Email отправителя (должен совпадать с SMTP User или быть в разрешённых)" value={settings.smtp_from_email} onSave={v => saveSetting('smtp_from_email', v)} />
+                <SettingCard label="From name" hint="Имя отправителя, например HiEarth" value={settings.smtp_from_name || 'HiEarth'} onSave={v => saveSetting('smtp_from_name', v)} />
+                <SettingCard label="Use TLS" hint="true для шифрования (рекомендуется)" value={settings.smtp_use_tls || 'true'} onSave={v => saveSetting('smtp_use_tls', v)} type="toggle" />
+              </div>
+            )}
+          </section>
+
+          <section className="bg-surface-card rounded-xl border border-white/10 p-5">
             <h3 className="text-lg font-semibold mb-3">Юридические данные</h3>
             {!loading && (
               <div className="divide-y divide-white/5">

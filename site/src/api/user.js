@@ -79,12 +79,13 @@ export async function getDownloads() {
   return jsonOrThrow(res, 'Failed to load downloads')
 }
 
-export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false, email = '') {
+export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false, email = '', confirmationType = 'redirect') {
   const body = { return_url: returnUrl, save_card: saveCard }
   if (planId) body.plan_id = planId
   else if (plan) body.plan = plan
   if (promocode) body.promocode = promocode
   if (email) body.email = email
+  if (confirmationType && confirmationType !== 'redirect') body.confirmation_type = confirmationType
   const res = await fetch(`${API_BASE}/api/v1/payment/create`, {
     method: 'POST',
     headers: {
@@ -168,6 +169,23 @@ export async function toggleAutoRenew(token, enabled) {
     body: JSON.stringify({ auto_renew: enabled }),
   })
   return jsonOrThrow(res, 'Failed to toggle auto-renew')
+}
+
+export async function pauseSubscription(token, months) {
+  const res = await fetch(`${API_BASE}/api/v1/user/pause-subscription`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ months }),
+  })
+  return jsonOrThrow(res, 'Failed to pause subscription')
+}
+
+export async function resumeSubscription(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/resume-subscription`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to resume subscription')
 }
 
 // ── Donation settings ──

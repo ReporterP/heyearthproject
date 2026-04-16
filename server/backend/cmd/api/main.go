@@ -718,6 +718,12 @@ func main() {
 	// Запускаем cron синхронизации pending платежей (fallback если webhook не пришёл)
 	StartPaymentSyncCron()
 
+	// Email reminders (за 3 дня до автопродления)
+	StartEmailReminderCron()
+
+	// Dunning — retry failed recurring платежей (1/2/3 попытки, grace period)
+	StartDunningCron()
+
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)   // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)   // 100 req/min per IP (general API)
@@ -779,6 +785,16 @@ func main() {
 
 	// Auto-renew toggle
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
+
+	// Subscription pause / resume
+	http.HandleFunc("/api/v1/user/pause-subscription", apiLimiter.Middleware(handlePauseSubscription))
+	http.HandleFunc("/api/v1/user/resume-subscription", apiLimiter.Middleware(handleResumeSubscription))
+
+	// Proration preview (для UI)
+	http.HandleFunc("/api/v1/payment/proration-preview", apiLimiter.Middleware(handleProrationPreview))
+
+	// B2B invoice — публичный endpoint, доступен без авторизации
+	http.HandleFunc("/api/v1/business/create-invoice", apiLimiter.Middleware(handleCreateInvoice))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
 	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))

@@ -291,14 +291,31 @@ export default function PaymentsPage() {
               {filteredItems.map(p => {
                 const amountColor = AMOUNT_COLORS[p.status] || 'text-text-primary'
                 const refunded = parseFloat(p.refunded_amount || 0)
+                const cancelReason = p.cancellation_reason || ''
+                let metaObj = {}
+                try { metaObj = typeof p.metadata === 'string' ? JSON.parse(p.metadata) : (p.metadata || {}) } catch {}
+                const isRecovered = metaObj.recovered === true || metaObj.recovered === 'true'
                 return (
                   <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                    <td className="py-2 px-3">{p.id}{p.test && <span className="ml-1 text-[9px] text-yellow-400 align-super">TEST</span>}</td>
+                    <td className="py-2 px-3">
+                      {p.id}
+                      {p.test && <span className="ml-1 text-[9px] text-yellow-400 align-super">TEST</span>}
+                      {isRecovered && <span className="ml-1 text-[9px] text-cyan-400 align-super" title="Платёж восстановлен через orphan recovery (webhook без исходной DB-записи)">RECOVERED</span>}
+                    </td>
                     <td className="py-2 px-3 font-mono text-xs">{p.user_id || p.user_db_id || '—'}</td>
                     <td className={`py-2 px-3 font-medium ${amountColor}`}>
                       {parseFloat(p.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {p.currency}
                     </td>
-                    <td className="py-2 px-3"><StatusBadge status={p.status} /></td>
+                    <td className="py-2 px-3">
+                      <span title={cancelReason ? `Причина отмены: ${cancelReason}` : undefined}>
+                        <StatusBadge status={p.status} />
+                      </span>
+                      {cancelReason && p.status === 'canceled' && (
+                        <div className="text-[10px] text-red-400/80 mt-0.5 max-w-[140px] truncate" title={cancelReason}>
+                          {cancelReason}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 px-3 text-xs">
                       {p.payment_method_type ? <PaymentMethodIcon type={p.payment_method_type} details={p.payment_method_details} /> : <span className="text-text-secondary">—</span>}
                     </td>

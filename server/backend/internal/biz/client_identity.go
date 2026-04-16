@@ -25,6 +25,7 @@ type UserProfile struct {
 	CurrentPlan       string `json:"current_plan,omitempty"`
 	CurrentPlanSlug   string `json:"current_plan_slug,omitempty"`
 	ValidUntil        string `json:"valid_until,omitempty"`
+	PausedUntil       string `json:"paused_until,omitempty"`
 	IsPremium         bool   `json:"is_premium"`
 	AccessStatus      string `json:"access_status"`
 	StatusReason      string `json:"status_reason,omitempty"`
@@ -242,6 +243,18 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 		profile.ValidUntil = sub.ValidUntil.Format(time.RFC3339)
 		profile.IsPremium = sub.IsPremium
 	}
+
+	// Pause state (активная подписка в паузе)
+	var pausedUntil sql.NullTime
+	_ = db.DB.QueryRow(`
+		SELECT us.paused_until FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.paused_until IS NOT NULL AND us.paused_until > NOW()
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(&pausedUntil)
+	if pausedUntil.Valid {
+		profile.PausedUntil = pausedUntil.Time.Format(time.RFC3339)
+	}
 	if profile.IsBlocked {
 		profile.AccessStatus = "blocked"
 		profile.StatusReason = "user_blocked"
@@ -277,6 +290,12 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		state.Reason = "no_active_subscription"
 	}
 
+	// Проверка паузы — если подписка на паузе, доступ закрыт
+	if hasSub && isSubscriptionPaused(userID) {
+		state.CanConnect = false
+		state.Reason = "subscription_paused"
+	}
+
 	// Traffic masking is available only for premium users
 	state.TrafficMaskingAvailable = profile.IsPremium
 
@@ -292,6 +311,17 @@ func isMemberOfTenant(userID string) bool {
 		return false
 	}
 	return tenantID > 0
+}
+
+// isSubscriptionPaused — есть ли активная подписка с paused_until > NOW().
+func isSubscriptionPaused(userID string) bool {
+	var count int
+	_ = db.DB.QueryRow(`
+		SELECT COUNT(*) FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.paused_until IS NOT NULL AND us.paused_until > NOW()
+	`, strings.TrimSpace(userID)).Scan(&count)
+	return count > 0
 }
 
 // ─────────────────────── Subscriptions & Payments Lists ───────────────────────

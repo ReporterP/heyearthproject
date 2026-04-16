@@ -46,7 +46,8 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(p.receipt_registered, FALSE),
 		       COALESCE(p.test, FALSE),
 		       COALESCE(p.description, ''),
-		       COALESCE(p.payer_email, '')
+		       COALESCE(p.payer_email, ''),
+		       COALESCE(p.cancellation_reason, '')
 		FROM payments p
 		LEFT JOIN users u ON u.user_id = p.user_id_text
 		WHERE %s
@@ -73,7 +74,7 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 			&item.YookassaPaymentID, &item.YookassaStatus,
 			&item.PaymentMethodType, &item.PaymentMethodDetails,
 			&item.RefundedAmount, &item.ReceiptRegistered, &item.Test,
-			&item.Description, &item.PayerEmail); err != nil {
+			&item.Description, &item.PayerEmail, &item.CancellationReason); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan payment")
 			return
 		}

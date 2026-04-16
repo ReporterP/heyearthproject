@@ -51,6 +51,7 @@ func checkExpiringSubscriptions() {
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
+		  AND (us.paused_until IS NULL OR us.paused_until < NOW())
 		  AND NOT EXISTS (
 		    SELECT 1 FROM payments pay
 		    WHERE pay.user_id_text = u.user_id
@@ -195,7 +196,8 @@ func processAutoRenew(userID string) error {
 		ORDER BY created_at DESC LIMIT 1
 	`, userID).Scan(&email)
 
-	receipt := buildReceipt(description, float64(plan.PriceRub), email)
+	// При auto-renewal услуга уже оказывается (продление активной подписки) — full_payment
+	receipt := buildReceipt(description, float64(plan.PriceRub), email, "full_payment")
 	metadata := map[string]string{
 		"payment_db_id": fmt.Sprintf("%d", paymentDBID),
 		"plan_id":       fmt.Sprintf("%d", plan.ID),
@@ -210,6 +212,12 @@ func processAutoRenew(userID string) error {
 		description, receipt, metadata)
 	if err != nil {
 		log.Printf("[auto-renew] User %s: recurring charge failed: %v", userID, err)
+		// Планируем retry через dunning (первая попытка через 24ч)
+		var dbUserID int
+		_ = db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
+		if dbUserID > 0 {
+			_, _ = biz.ScheduleRetry(dbUserID, plan.ID, paymentDBID, err.Error())
+		}
 		return fmt.Errorf("yookassa charge: %w", err)
 	}
 

@@ -19,6 +19,7 @@ import RefundPage from './pages/RefundPage.jsx'
 import OfferPage from './pages/OfferPage.jsx'
 import PaymentsHistoryPage from './pages/PaymentsHistoryPage.jsx'
 import ConnectionsPage from './pages/ConnectionsPage.jsx'
+import CheckoutPage from './pages/CheckoutPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -57,6 +58,7 @@ function App() {
             <Route path="/offer" element={<OfferPage />} />
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
+            <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
             <Route path="/connections" element={<RequireAuth><ConnectionsPage /></RequireAuth>} />

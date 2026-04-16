@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getPayments, getProfile, getUserCards, deleteUserCard, toggleAutoRenew, requestRefund } from '../api/user.js'
+import { getPayments, getProfile, getUserCards, deleteUserCard, toggleAutoRenew, requestRefund, pauseSubscription, resumeSubscription } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 
 function formatDate(d) {
@@ -49,7 +49,29 @@ export default function PaymentsHistoryPage() {
 
   const currentPlan = profile?.current_plan || ''
   const validUntil = profile?.valid_until
+  const pausedUntil = profile?.paused_until
+  const isPaused = pausedUntil ? new Date(pausedUntil) > new Date() : false
   const hasActiveSub = !!currentPlan
+
+  async function handlePause(months) {
+    if (!confirm(`Приостановить подписку на ${months} мес.? Доступ будет закрыт до окончания паузы, но подписка сохранится.`)) return
+    try {
+      await pauseSubscription(token, months)
+      const prof = await getProfile(token).catch(() => profile)
+      setProfile(prof)
+      setCancelMsg(`Подписка приостановлена на ${months} мес.`)
+    } catch (e) { alert(e.message) }
+  }
+
+  async function handleResume() {
+    if (!confirm('Возобновить подписку сейчас?')) return
+    try {
+      await resumeSubscription(token)
+      const prof = await getProfile(token).catch(() => profile)
+      setProfile(prof)
+      setCancelMsg('Подписка возобновлена')
+    } catch (e) { alert(e.message) }
+  }
 
   async function handleCancelSubscription() {
     if (!confirm('Отменить подписку? Автопродление будет выключено, но доступ сохранится до конца оплаченного периода.')) return
@@ -129,6 +151,47 @@ export default function PaymentsHistoryPage() {
             </div>
             {cancelMsg && (
               <p className="mt-3 text-sm text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg">{cancelMsg}</p>
+            )}
+          </div>
+        )}
+
+        {/* Pause subscription */}
+        {hasActiveSub && (
+          <div className="glass-card rounded-2xl p-6 mb-6">
+            {isPaused ? (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  <h2 className="text-lg font-semibold">Подписка приостановлена</h2>
+                </div>
+                <p className="text-sm text-text-secondary mb-4">
+                  Доступ закрыт до {formatDate(pausedUntil)}. Карта сохранена, автопродление продолжится после возобновления.
+                </p>
+                <button
+                  onClick={handleResume}
+                  className="px-4 py-2 rounded-xl bg-brand text-white text-sm font-medium hover:bg-brand-dark transition"
+                >
+                  Возобновить сейчас
+                </button>
+              </div>
+            ) : (
+              <div>
+                <h2 className="text-lg font-semibold mb-1">Приостановить подписку</h2>
+                <p className="text-sm text-text-secondary mb-4">
+                  Если сервис временно не нужен — приостановите на 1-3 мес. Карта сохранится, автопродление не сработает в этот период. Можно возобновить в любой момент.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {[1, 2, 3].map(m => (
+                    <button
+                      key={m}
+                      onClick={() => handlePause(m)}
+                      className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10 transition"
+                    >
+                      На {m} мес.
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         )}

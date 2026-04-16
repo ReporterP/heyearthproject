@@ -144,6 +144,7 @@ type paymentResponse struct {
 	Test                 bool            `json:"test"`
 	Description          string          `json:"description,omitempty"`
 	PayerEmail           string          `json:"payer_email,omitempty"`
+	CancellationReason   string          `json:"cancellation_reason,omitempty"`
 }
 
 type paymentPayload struct {
