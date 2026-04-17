@@ -250,26 +250,33 @@ export default function PaymentsHistoryPage() {
           ) : (
             <div className="space-y-3">
               {payments.map(p => (
-                <div key={p.id} className="flex items-center justify-between p-4 rounded-xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-1">
+                <Link
+                  key={p.id}
+                  to={`/payments/${p.id}`}
+                  className="group flex items-center justify-between p-4 rounded-xl bg-white/[0.03] border border-white/5 hover:border-brand/30 hover:bg-white/[0.05] transition"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-1 flex-wrap">
                       <span className="text-lg font-bold">{parseFloat(p.amount).toLocaleString('ru-RU')} {p.currency}</span>
                       {statusLabel(p.status)}
                     </div>
-                    <p className="text-sm text-text-secondary">{p.notes || p.description || 'Платёж'}</p>
+                    <p className="text-sm text-text-secondary truncate">{p.notes || p.description || 'Платёж'}</p>
                     <p className="text-xs text-text-secondary mt-0.5">{formatDate(p.created_at)}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                     {p.status === 'completed' && (
                       <button
-                        onClick={() => handleRefund(p.id)}
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); handleRefund(p.id) }}
                         className="text-xs text-amber-400 hover:text-amber-300 px-2 py-1 rounded-lg bg-amber-500/10 transition"
                       >
                         Запросить возврат
                       </button>
                     )}
+                    <svg className="w-5 h-5 text-text-secondary/40 group-hover:text-brand-light group-hover:translate-x-1 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}

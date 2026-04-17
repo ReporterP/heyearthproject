@@ -171,6 +171,13 @@ export async function toggleAutoRenew(token, enabled) {
   return jsonOrThrow(res, 'Failed to toggle auto-renew')
 }
 
+export async function getPaymentDetail(token, paymentId) {
+  const res = await fetch(`${API_BASE}/api/v1/user/payments/${paymentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to fetch payment detail')
+}
+
 export async function pauseSubscription(token, months) {
   const res = await fetch(`${API_BASE}/api/v1/user/pause-subscription`, {
     method: 'POST',

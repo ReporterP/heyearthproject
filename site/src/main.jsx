@@ -20,6 +20,7 @@ import OfferPage from './pages/OfferPage.jsx'
 import PaymentsHistoryPage from './pages/PaymentsHistoryPage.jsx'
 import ConnectionsPage from './pages/ConnectionsPage.jsx'
 import CheckoutPage from './pages/CheckoutPage.jsx'
+import PaymentDetailPage from './pages/PaymentDetailPage.jsx'
 import BusinessInvoicePage from './pages/BusinessInvoicePage.jsx'
 
 function NotFoundPage() {
@@ -63,6 +64,7 @@ function App() {
             <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
+            <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />
             <Route path="/connections" element={<RequireAuth><ConnectionsPage /></RequireAuth>} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

@@ -11,7 +11,6 @@ export default function LoginPage() {
 
   const [idOrUsername, setIdOrUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -77,29 +76,14 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* Password toggle / field */}
+            {/* Password field — сразу виден, опционален (для аккаунтов с паролем) */}
             <div>
-              {!showPassword ? (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 text-sm text-brand-light hover:text-accent transition-colors duration-200"
-                  onClick={() => setShowPassword(true)}
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                  </svg>
-                  У меня есть облачный пароль
-                </button>
-              ) : (
-                <div className="animate-fade-in">
-                  <PasswordInput
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    placeholder="Введите пароль"
-                    label="Облачный пароль"
-                  />
-                </div>
-              )}
+              <PasswordInput
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Оставьте пустым, если не задан"
+                label="Пароль (если установлен)"
+              />
             </div>
 
             {/* Error */}

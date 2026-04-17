@@ -209,9 +209,9 @@ export default function PaymentPage() {
                   isDowngrade
                     ? 'border-white/5 opacity-40 cursor-not-allowed'
                     : isCurrent
-                      ? 'border-green-500/50 shadow-lg shadow-green-500/10 cursor-default'
+                      ? 'border-green-500/40 cursor-default'
                       : isSelected
-                        ? 'border-brand/50 shadow-lg shadow-brand/10 -translate-y-1 cursor-pointer'
+                        ? 'border-brand/40 cursor-pointer'
                         : 'border-white/10 hover:border-white/20 cursor-pointer'
                 }`}
                 style={{ animationDelay: `${idx * 100}ms` }}
@@ -231,7 +231,7 @@ export default function PaymentPage() {
                 <p className="text-xs text-text-secondary mb-4">{plan.description}</p>
 
                 <div className="flex items-baseline gap-1 mb-1">
-                  <span className="text-3xl font-bold text-brand">
+                  <span className="text-2xl font-semibold text-text-primary">
                     {isFree ? 'Бесплатно' : `${prorations[plan.id]?.final_price ?? plan.price_rub}₽`}
                   </span>
                   {!isFree && <span className="text-sm text-text-secondary">/ {formatDuration(plan.duration_days)}</span>}
@@ -264,12 +264,12 @@ export default function PaymentPage() {
                     handlePay(plan.id)
                   }}
                   disabled={paying || isDowngrade}
-                  className={`w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300 ${
+                  className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
                     isDowngrade
                       ? 'bg-white/5 text-text-secondary/50 cursor-not-allowed'
-                      : isSelected
-                        ? 'bg-gradient-to-r from-brand to-brand-dark text-white hover:shadow-lg hover:shadow-brand/25'
-                        : 'bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary'
+                      : isCurrent
+                        ? 'bg-green-500/15 text-green-400 hover:bg-green-500/25'
+                        : 'bg-white/5 text-text-primary hover:bg-brand/20 hover:text-brand-light border border-white/5 hover:border-brand/30'
                   } disabled:opacity-50`}
                 >
                   {isDowngrade ? 'Недоступно' : paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}

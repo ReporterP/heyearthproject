@@ -334,17 +334,64 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* ─── Quick Actions ─── */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6 animate-fade-in-up delay-100">
-          <a
-            href={telegramLink || '/connections'}
-            target={telegramLink ? '_blank' : undefined}
-            rel={telegramLink ? 'noopener' : undefined}
-            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#2AABEE]/15 border border-[#2AABEE]/25 text-[#2AABEE] hover:bg-[#2AABEE]/25 transition-all duration-200 text-sm font-medium min-h-[44px] ${!hasActiveSub ? 'opacity-40 pointer-events-none' : ''}`}
-          >
-            <PaperPlaneIcon />
-            <span className="hidden sm:inline">Подключить</span> Telegram
-          </a>
+        {/* ═══ ПОДПИСКА URL — НАВЕРХ, КРУПНО ═══ */}
+        {subscribeLink?.subscribe_url && hasActiveSub && (
+          <div className="glass-card rounded-2xl p-6 md:p-7 mb-6 border-2 border-brand/30 shadow-lg shadow-brand/5 animate-fade-in-up delay-50">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-brand to-brand-dark flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg md:text-xl font-bold">Ваша ссылка для подключения</h2>
+                <p className="text-xs text-text-secondary mt-0.5">Скопируйте и вставьте в приложение — Happ / V2RayNG / Streisand / Clash</p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-black/30 border border-white/10 mb-4">
+              <code className="text-xs font-mono text-text-primary break-all select-all block leading-relaxed">{subscribeLink.subscribe_url}</code>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Открыть в Happ (deeplink) */}
+              <a
+                href={`happ://add/?url=${encodeURIComponent(subscribeLink.subscribe_url)}`}
+                className="group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold text-sm hover:shadow-lg hover:shadow-brand/25 transition-all min-h-[48px]"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                </svg>
+                Открыть в Happ
+              </a>
+
+              {/* Копировать */}
+              <button
+                onClick={() => { copyToClipboard(subscribeLink.subscribe_url); setCopiedField('sub-url'); setTimeout(() => setCopiedField(''), 2000) }}
+                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-medium transition-all min-h-[48px]"
+              >
+                {copiedField === 'sub-url' ? (
+                  <>
+                    <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    Скопировано
+                  </>
+                ) : (
+                  <>
+                    <CopyIcon />
+                    Копировать ссылку
+                  </>
+                )}
+              </button>
+            </div>
+
+            <p className="text-[11px] text-text-secondary mt-3 text-center">
+              Нет Happ? <button onClick={() => setShowAppsModal(true)} className="text-brand-light hover:text-accent underline">Скачать приложение</button>
+            </p>
+          </div>
+        )}
+
+        {/* ─── Quick Actions (без Telegram) ─── */}
+        <div className="grid grid-cols-2 gap-3 mb-6 animate-fade-in-up delay-100">
           <button
             onClick={() => hasActiveSub && setShowAppsModal(true)}
             className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/25 transition-all duration-200 text-sm font-medium min-h-[44px] ${!hasActiveSub ? 'opacity-40 pointer-events-none' : ''}`}
@@ -354,35 +401,15 @@ export default function DashboardPage() {
           </button>
           <button
             onClick={() => setShowHelpModal(true)}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500/15 border border-amber-500/25 text-amber-400 hover:bg-amber-500/25 transition-all duration-200 text-sm font-medium col-span-2 sm:col-span-1 min-h-[44px]"
+            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500/15 border border-amber-500/25 text-amber-400 hover:bg-amber-500/25 transition-all duration-200 text-sm font-medium min-h-[44px]"
           >
             <QuestionIcon />
             Помоги разобраться
           </button>
         </div>
 
-        {/* ─── Top cards: ID + Subscription ─── */}
-        <div className="grid md:grid-cols-2 gap-4 md:gap-6 mb-6">
-          {/* HeYearth ID */}
-          <div className="glass-card rounded-2xl p-6 animate-fade-in-up delay-100">
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand/20 to-accent/10 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-brand-light" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 9h3.75M15 12h3.75M15 15h3.75M4.5 19.5h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5zm6-10.125a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0zm1.294 6.336a6.721 6.721 0 01-3.17.789 6.721 6.721 0 01-3.168-.789 3.376 3.376 0 016.338 0z" />
-                  </svg>
-                </div>
-                <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">HeYearth ID</p>
-              </div>
-              <CopyButton field="id" text={userId} />
-            </div>
-            <p className="text-lg md:text-xl font-mono font-bold text-brand-light break-all leading-tight">{userId}</p>
-            {username && (
-              <p className="text-sm text-text-secondary mt-1.5">@{username}</p>
-            )}
-          </div>
-
-          {/* Subscription */}
+        {/* ─── Subscription status card (full width) ─── */}
+        <div className="mb-6">
           <div className={`relative rounded-2xl p-6 overflow-hidden animate-fade-in-up delay-200 ${
             hasActiveSub
               ? 'glass-card border border-green-500/20'
@@ -474,27 +501,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ─── Subscription URL ─── */}
-        {subscribeLink?.subscribe_url && hasActiveSub && (
-          <div className="glass-card rounded-2xl p-5 mb-6 animate-fade-in-up delay-200">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 text-xs font-bold">Подписка</span>
-                <span className="text-[10px] text-text-secondary">V2RayNG / Happ / Streisand / Clash</span>
-              </div>
-              <button
-                onClick={() => { copyToClipboard(subscribeLink.subscribe_url); setCopiedField('sub-url'); setTimeout(() => setCopiedField(''), 2000) }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 text-xs text-text-secondary hover:text-text-primary transition min-h-[44px]"
-              >
-                {copiedField === 'sub-url' ? <CheckIcon /> : <CopyIcon />}
-                {copiedField === 'sub-url' ? 'Скопировано' : 'Копировать'}
-              </button>
-            </div>
-            <code className="text-[11px] font-mono text-text-primary break-all select-all block">{subscribeLink.subscribe_url}</code>
-            <p className="text-xs text-text-secondary mt-1.5">Вставьте эту ссылку в приложение как подписку — настройки обновятся автоматически</p>
-          </div>
-        )}
-
         {/* ─── Navigation links: Payments + Connections ─── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 animate-fade-in-up delay-250">
           {/* Payments CTA */}
@@ -536,6 +542,33 @@ export default function DashboardPage() {
             </svg>
           </Link>
         </div>
+
+        {/* ─── Credentials card: создать/изменить логин-пароль ─── */}
+        <Link
+          to="/settings"
+          className="group flex items-center gap-4 p-4 rounded-2xl glass-card border border-white/5 hover:border-brand/30 transition-all duration-300 mb-6 animate-fade-in-up delay-300 min-h-[44px]"
+        >
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand/20 to-accent/10 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-brand-light" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold">
+              {profile?.username || profile?.has_password ? 'Логин и пароль' : 'Создать логин и пароль'}
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">
+              {profile?.username
+                ? <>@{profile.username}{profile?.has_password ? ' • пароль установлен' : ''} — изменить</>
+                : profile?.has_password
+                  ? 'Пароль установлен — изменить или задать username'
+                  : 'Удобнее входить по короткому username вместо длинного HeYearth ID'}
+            </p>
+          </div>
+          <svg className="w-5 h-5 text-text-secondary/50 flex-shrink-0 group-hover:translate-x-1 group-hover:text-brand-light transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+          </svg>
+        </Link>
 
         {/* ─── Traffic Stats ─── */}
         {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (
@@ -727,6 +760,27 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+
+        {/* ─── Компактный HeYearth ID в самом низу ─── */}
+        <div className="mt-8 mb-4 opacity-60 hover:opacity-100 transition-opacity animate-fade-in delay-500">
+          <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/5">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] text-text-secondary uppercase tracking-wider">HeYearth ID{username ? ` · @${username}` : ''}</p>
+              <p className="font-mono text-[11px] text-text-secondary break-all leading-tight">{userId}</p>
+            </div>
+            <button
+              onClick={() => { copyToClipboard(userId); setCopiedField('id-footer'); setTimeout(() => setCopiedField(''), 1500) }}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-secondary hover:text-text-primary transition flex-shrink-0"
+              title="Копировать"
+            >
+              {copiedField === 'id-footer' ? (
+                <svg className="w-3 h-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+              ) : (
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" /></svg>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* ─── Apps Modal ─── */}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -446,6 +448,118 @@ func handleUserPayments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleUserPaymentDetail — GET /api/v1/user/payments/{id}
+// Возвращает детали конкретного платежа пользователя (для страницы чека).
+// Также включает ссылку confirmation_url если она всё ещё актуальна (pending),
+// yookassa_payment_id, refunded_amount, payment_method_type и last4 для отображения.
+func handleUserPaymentDetail(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Извлекаем payment id из URL path /api/v1/user/payments/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/user/payments/")
+	paymentID, convErr := strconv.Atoi(path)
+	if convErr != nil || paymentID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payment id"})
+		return
+	}
+
+	var p struct {
+		ID                  int
+		Amount              float64
+		Currency            string
+		Status              string
+		PaymentMethodType   string
+		PaymentMethodDetail string
+		RefundedAmount      float64
+		ReceiptRegistered   bool
+		ReceiptID           string
+		YookassaPaymentID   string
+		ConfirmationURL     string
+		Description         string
+		PayerEmail          string
+		CreatedAt           string
+		PaidAt              string
+		Test                bool
+		CancellationReason  string
+	}
+	var paidAt, receiptID, cancelReason sql.NullString
+	err = db.DB.QueryRow(`
+		SELECT p.id, p.amount::float8, p.currency, COALESCE(p.status,''),
+		       COALESCE(p.payment_method_type,''),
+		       COALESCE(p.payment_method_details::text,'{}'),
+		       COALESCE(p.refunded_amount,0)::float8,
+		       COALESCE(p.receipt_registered,FALSE),
+		       p.receipt_id,
+		       COALESCE(p.yookassa_payment_id,''),
+		       COALESCE(p.confirmation_url,''),
+		       COALESCE(p.description,''),
+		       COALESCE(p.payer_email,''),
+		       COALESCE(to_char(p.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF'),''),
+		       p.paid_at,
+		       COALESCE(p.test,FALSE),
+		       p.cancellation_reason
+		FROM payments p WHERE p.id = $1 AND p.user_id_text = $2
+	`, paymentID, userID).Scan(
+		&p.ID, &p.Amount, &p.Currency, &p.Status,
+		&p.PaymentMethodType, &p.PaymentMethodDetail,
+		&p.RefundedAmount, &p.ReceiptRegistered, &receiptID,
+		&p.YookassaPaymentID, &p.ConfirmationURL, &p.Description,
+		&p.PayerEmail, &p.CreatedAt, &paidAt, &p.Test, &cancelReason,
+	)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out := map[string]any{
+		"id":                   p.ID,
+		"amount":               p.Amount,
+		"currency":             p.Currency,
+		"status":               p.Status,
+		"payment_method_type":  p.PaymentMethodType,
+		"refunded_amount":      p.RefundedAmount,
+		"receipt_registered":   p.ReceiptRegistered,
+		"yookassa_payment_id":  p.YookassaPaymentID,
+		"description":          p.Description,
+		"payer_email":          p.PayerEmail,
+		"created_at":           p.CreatedAt,
+		"test":                 p.Test,
+	}
+	if paidAt.Valid {
+		out["paid_at"] = paidAt.String
+	}
+	if receiptID.Valid && receiptID.String != "" {
+		out["receipt_id"] = receiptID.String
+	}
+	if cancelReason.Valid && cancelReason.String != "" {
+		out["cancellation_reason"] = cancelReason.String
+	}
+	// confirmation_url — возвращаем только если платёж ещё в pending (можно дооплатить)
+	if p.Status == "pending" && p.ConfirmationURL != "" {
+		out["confirmation_url"] = p.ConfirmationURL
+	}
+	// Парсим payment_method_details jsonb
+	var details map[string]any
+	if err := json.Unmarshal([]byte(p.PaymentMethodDetail), &details); err == nil {
+		out["payment_method_details"] = details
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
+
 func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -762,6 +876,8 @@ func main() {
 	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
 	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
 	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))
+	// Детали одного платежа: GET /api/v1/user/payments/{id}
+	http.HandleFunc("/api/v1/user/payments/", apiLimiter.Middleware(handleUserPaymentDetail))
 	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
 	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
 	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))
