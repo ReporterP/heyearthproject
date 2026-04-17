@@ -80,9 +80,7 @@ func handlePauseSubscription(w http.ResponseWriter, r *http.Request) {
 	result, err := db.DB.Exec(`
 		UPDATE user_subscriptions SET
 			paused_until = $1,
-			pause_requested_at = CURRENT_TIMESTAMP,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE user_id = $2 AND valid_until > NOW()
+			pause_requested_at = CURRENT_TIMESTAMP		WHERE user_id = $2 AND valid_until > NOW()
 	`, pausedUntil, dbUserID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -127,9 +125,7 @@ func handleResumeSubscription(w http.ResponseWriter, r *http.Request) {
 	result, err := db.DB.Exec(`
 		UPDATE user_subscriptions SET
 			paused_until = NULL,
-			pause_requested_at = NULL,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE user_id = $1 AND paused_until IS NOT NULL
+			pause_requested_at = NULL		WHERE user_id = $1 AND paused_until IS NOT NULL
 	`, dbUserID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
