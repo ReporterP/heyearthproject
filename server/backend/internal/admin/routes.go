@@ -327,6 +327,19 @@ func RegisterRoutes() {
 	// Audit Log
 	http.HandleFunc("/api/admin/audit-log", withMethod(http.MethodGet, RequirePermission("audit.read", ListAuditLogHandler)))
 
+	// Email log
+	http.HandleFunc("/api/admin/email-log", withMethod(http.MethodGet, RequirePermission("payments.read", ListEmailLogHandler)))
+
+	// Payment retry queue (dunning)
+	http.HandleFunc("/api/admin/payment-retries", withMethod(http.MethodGet, RequirePermission("payments.read", ListRetryQueueHandler)))
+	http.HandleFunc("/api/admin/payment-retries/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/cancel") && r.Method == http.MethodPost {
+			RequirePermission("payments.write", CancelRetryHandler).ServeHTTP(w, r)
+			return
+		}
+		writeAdminError(w, http.StatusNotFound, "not found")
+	}))
+
 	// Traffic
 	http.HandleFunc("/api/admin/traffic-chart", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficChartHandler)))
 	http.HandleFunc("/api/admin/traffic", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {

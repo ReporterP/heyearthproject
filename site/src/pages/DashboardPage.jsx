@@ -196,8 +196,10 @@ export default function DashboardPage() {
   const username = profile?.username || ''
   const currentPlan = profile?.current_plan || subscription?.plan_name || subscription?.group_name || ''
   const validUntil = profile?.valid_until || subscription?.valid_until
+  const pausedUntil = profile?.paused_until
+  const isPaused = pausedUntil ? new Date(pausedUntil) > new Date() : false
   const isExpired = validUntil ? new Date(validUntil) < new Date() : false
-  const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired
+  const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired && !isPaused
 
   // Telegram deeplink from SOCKS credentials
   const socksHost = connections?.socks5_host || connections?.main_server_host || 'hiearth.ru'
@@ -419,6 +421,23 @@ export default function DashboardPage() {
                     </svg>
                   </Link>
                 </div>
+              </>
+            ) : isPaused && currentPlan ? (
+              <>
+                <p className="text-lg font-semibold text-amber-400">На паузе</p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  <p className="text-sm text-text-secondary">Тариф «{currentPlan}» на паузе до {formatDate(pausedUntil)}</p>
+                </div>
+                <Link
+                  to="/payments"
+                  className="inline-flex items-center gap-2 mt-3 px-5 py-2.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-sm font-semibold hover:bg-amber-500/30 transition-all duration-300 min-h-[44px]"
+                >
+                  Возобновить
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </Link>
               </>
             ) : isExpired && currentPlan ? (
               <>

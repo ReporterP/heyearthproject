@@ -381,6 +381,8 @@ type ProrationResult struct {
 	DaysRemaining   int     // Дней до конца текущей подписки
 	CurrentPlanID   int     // Текущий план
 	CurrentPriceRub int     // Цена текущего плана
+	NewPlanPriceRub int     // Цена нового плана (для UI)
+	IsDowngrade     bool    // true если новый план дешевле текущего
 	Applied         bool    // Применимо ли для нового plan (не даунгрейд с credit > new price)
 }
 
@@ -438,12 +440,19 @@ func CalculateProrationCredit(userID string, newPlanID int) (*ProrationResult, e
 		return res, nil
 	}
 
-	// Даунгрейд с новой ценой меньше credit — не выдаём
+	res.NewPlanPriceRub = newPlan.PriceRub
+	res.IsDowngrade = newPlan.PriceRub < currentPrice
+
+	// Free newPlan — credit не применяем (платить нечего)
 	if newPlan.PriceRub <= 0 {
 		res.Applied = false
 		return res, nil
 	}
 
+	// Ограничение: credit не больше 90% от new plan price (чтобы всегда был оплачиваемый
+	// остаток больше 0 — иначе ЮKassa может не принять платёж на 0₽).
+	// При downgrade credit обычно больше new price — будет обрезан до 90%,
+	// а valid_until продлится через GREATEST в ActivateSubscriptionWithPlan.
 	maxCredit := int(float64(newPlan.PriceRub) * 0.9)
 	if credit > maxCredit {
 		res.CreditRub = maxCredit

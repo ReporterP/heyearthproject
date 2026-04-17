@@ -11,14 +11,31 @@ const YOOKASSA_SCRIPT = 'https://yookassa.ru/checkout-widget/v1/checkout-widget.
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      resolve()
+    const existing = document.querySelector(`script[src="${src}"]`)
+    if (existing) {
+      // Скрипт уже добавлен — если globals ещё не готовы, ждём
+      if (window.YooMoneyCheckoutWidget) { resolve(); return }
+      existing.addEventListener('load', () => resolve())
+      existing.addEventListener('error', () => reject(new Error('Не удалось загрузить виджет')))
+      // На случай если load уже произошёл до регистрации listener — полинг
+      const poll = setInterval(() => {
+        if (window.YooMoneyCheckoutWidget) {
+          clearInterval(poll); resolve()
+        }
+      }, 100)
+      setTimeout(() => { clearInterval(poll); if (!window.YooMoneyCheckoutWidget) reject(new Error('Таймаут загрузки виджета')) }, 10000)
       return
     }
     const s = document.createElement('script')
     s.src = src
     s.async = true
-    s.onload = resolve
+    s.onload = () => {
+      // Ждём пока YooMoneyCheckoutWidget появится в window
+      const poll = setInterval(() => {
+        if (window.YooMoneyCheckoutWidget) { clearInterval(poll); resolve() }
+      }, 50)
+      setTimeout(() => { clearInterval(poll); if (!window.YooMoneyCheckoutWidget) reject(new Error('Виджет не инициализировался')) }, 10000)
+    }
     s.onerror = () => reject(new Error('Не удалось загрузить виджет ЮKassa'))
     document.body.appendChild(s)
   })

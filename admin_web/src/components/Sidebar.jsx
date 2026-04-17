@@ -10,6 +10,7 @@ const navItems = [
   // Groups hidden — replaced by Plans. Route still works at /groups for direct access.
   { to: '/promocodes', label: 'navPromocodes', perm: 'promocodes.read', icon: PromoIcon },
   { to: '/payments', label: 'navPayments', perm: 'payments.read', icon: PaymentsIcon },
+  { to: '/payment-ops', label: 'navPaymentOps', perm: 'payments.read', icon: PaymentsIcon },
   { to: '/traffic', label: 'navTraffic', perm: 'dashboard.read', icon: TrafficIcon },
   { to: '/servers', label: 'navServers', perm: 'servers.read', icon: ServersIcon },
   { to: '/traffic-masking', label: 'navTrafficMasking', perm: 'traffic_masking.read', icon: MaskingIcon, hideForTenant: true },

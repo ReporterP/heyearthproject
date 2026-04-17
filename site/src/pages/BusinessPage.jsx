@@ -105,7 +105,7 @@ export default function BusinessPage() {
             Прозрачные тарифы -- без скрытых платежей.
           </p>
 
-          <div className="mt-10 animate-fade-in-up delay-300">
+          <div className="mt-10 animate-fade-in-up delay-300 flex flex-wrap items-center justify-center gap-3">
             <Link
               to="/business/signup"
               className="group relative inline-flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold text-white overflow-hidden transition-all duration-300 hover:shadow-xl hover:shadow-brand/25 hover:-translate-y-0.5"
@@ -118,6 +118,12 @@ export default function BusinessPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                 </svg>
               </span>
+            </Link>
+            <Link
+              to="/business/invoice"
+              className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl font-medium text-text-primary bg-white/5 border border-white/15 hover:bg-white/10 transition"
+            >
+              Получить счёт на оплату
             </Link>
           </div>
         </div>

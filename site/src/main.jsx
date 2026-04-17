@@ -20,6 +20,7 @@ import OfferPage from './pages/OfferPage.jsx'
 import PaymentsHistoryPage from './pages/PaymentsHistoryPage.jsx'
 import ConnectionsPage from './pages/ConnectionsPage.jsx'
 import CheckoutPage from './pages/CheckoutPage.jsx'
+import BusinessInvoicePage from './pages/BusinessInvoicePage.jsx'
 
 function NotFoundPage() {
   return (
@@ -51,6 +52,7 @@ function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/business" element={<BusinessPage />} />
             <Route path="/business/signup" element={<BusinessSignupPage />} />
+            <Route path="/business/invoice" element={<BusinessInvoicePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />

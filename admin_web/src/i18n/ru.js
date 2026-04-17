@@ -29,6 +29,7 @@ export default {
   navPlans: 'Тарифы',
   navPromocodes: '\u041F\u0440\u043E\u043C\u043E\u043A\u043E\u0434\u044B',
   navPayments: '\u041F\u043B\u0430\u0442\u0435\u0436\u0438',
+  navPaymentOps: 'Email & Retry',
   navServers: '\u0421\u0435\u0440\u0432\u0435\u0440\u044B',
   navSshKeys: 'SSH \u041A\u043B\u044E\u0447\u0438',
   navReleases: '\u0420\u0435\u043B\u0438\u0437\u044B',

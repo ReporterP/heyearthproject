@@ -29,6 +29,7 @@ export default {
   navPlans: 'Plans',
   navPromocodes: 'Promocodes',
   navPayments: 'Payments',
+  navPaymentOps: 'Email & Retry',
   navServers: 'Servers',
   navSshKeys: 'SSH Keys',
   navReleases: 'Releases',
