@@ -298,4 +298,9 @@ export default {
 
   // Users devices modal
   usersNoDevices: 'No devices',
+
+  // Payments page aggregate
+  paymentsRealRevenue: 'Real revenue',
+  paymentsSucceededNonTest: 'succeeded, non-test',
+  paymentsVisibleSum: 'Visible sum',
 }

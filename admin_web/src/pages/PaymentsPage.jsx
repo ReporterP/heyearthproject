@@ -131,7 +131,10 @@ export default function PaymentsPage() {
     return paged.items.filter(p => p.status === statusFilter)
   }, [paged.items, statusFilter])
 
-  // Сумма видимых платежей
+  // Реальный доход: сумма succeeded + НЕ тестовых платежей по текущему фильтру
+  // (считает сервер по всему result-set, а не по видимой странице).
+  const realTotal = paged.real_total_amount ?? 0
+  // Для справки — сумма видимых записей (любые статусы/test).
   const visibleSum = useMemo(() => {
     return filteredItems.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
   }, [filteredItems])
@@ -230,11 +233,20 @@ export default function PaymentsPage() {
         </div>
       </div>
 
-      {/* Сумма видимых платежей */}
-      <div className="mb-4 px-4 py-3 rounded-xl bg-surface-card border border-white/10 flex items-center gap-6">
+      {/* Суммы: реальный доход (succeeded + не test) и сумма видимых записей */}
+      <div className="mb-4 px-4 py-3 rounded-xl bg-surface-card border border-white/10 flex items-center gap-6 flex-wrap">
         <div>
-          <span className="text-sm text-text-secondary">{t.paymentsTotalSum || 'Сумма'}:</span>
-          <span className="ml-2 text-lg font-bold text-text-primary">
+          <span className="text-sm text-text-secondary">{t.paymentsRealRevenue || 'Реальный доход'}:</span>
+          <span className="ml-2 text-lg font-bold text-green-400">
+            {realTotal.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <span className="ml-1 text-sm text-text-secondary">RUB</span>
+          <span className="ml-2 text-xs text-text-secondary">({t.paymentsSucceededNonTest || 'succeeded, не test'})</span>
+        </div>
+        <div className="h-6 w-px bg-white/10" />
+        <div>
+          <span className="text-sm text-text-secondary">{t.paymentsVisibleSum || 'Сумма видимых'}:</span>
+          <span className="ml-2 text-base font-semibold text-text-primary">
             {visibleSum.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
           <span className="ml-1 text-sm text-text-secondary">

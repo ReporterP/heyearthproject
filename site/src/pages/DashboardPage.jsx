@@ -56,6 +56,20 @@ const CLIENT_APPS = [
   { name: 'Streisand', platforms: 'iOS, macOS', url: 'https://apps.apple.com/app/streisand/id6450534064' },
 ]
 
+/* ─── Import deeplink schemes per client ───
+ * Most clients accept a URL-encoded subscription URL; a few prefer base64.
+ * `build(url)` returns the full deeplink. Order roughly reflects popularity
+ * among RU users.
+ */
+const IMPORT_DEEPLINKS = [
+  { id: 'happ',         label: 'Happ',          build: (u) => `happ://add/?url=${encodeURIComponent(u)}` },
+  { id: 'v2raytun',     label: 'V2RayTun',      build: (u) => `v2raytun://import?url=${encodeURIComponent(u)}` },
+  { id: 'v2rayng',      label: 'V2RayNG',       build: (u) => `v2rayng://install-sub?url=${encodeURIComponent(u)}` },
+  { id: 'streisand',    label: 'Streisand',     build: (u) => `streisand://import/${btoa(u)}` },
+  { id: 'clash',        label: 'Clash / Meta',  build: (u) => `clash://install-config?url=${encodeURIComponent(u)}` },
+  { id: 'shadowrocket', label: 'Shadowrocket',  build: (u) => `sub://${btoa(u)}` },
+]
+
 /* ─── Modal Overlay ─── */
 function ModalOverlay({ open, onClose, children }) {
   useEffect(() => {
@@ -148,6 +162,7 @@ export default function DashboardPage() {
   // Modals
   const [showAppsModal, setShowAppsModal] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
+  const [showImportMenu, setShowImportMenu] = useState(false) // dropdown for "Add to app"
   const [paymentPopup, setPaymentPopup] = useState(null) // { name, price, activated }
 
   useEffect(() => {
@@ -353,19 +368,38 @@ export default function DashboardPage() {
               <code className="text-xs font-mono text-text-primary break-all select-all block leading-relaxed">{subscribeLink.subscribe_url}</code>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Открыть в Happ (deeplink) */}
-              <a
-                href={`happ://add/?url=${encodeURIComponent(subscribeLink.subscribe_url)}`}
-                className="group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold text-sm hover:shadow-lg hover:shadow-brand/25 transition-all min-h-[48px]"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                </svg>
-                Открыть в Happ
-              </a>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* «Добавить в приложение» → dropdown c 6 deeplink-ами */}
+              <div className="relative sm:col-span-1">
+                <button
+                  onClick={() => setShowImportMenu(v => !v)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold text-sm hover:shadow-lg hover:shadow-brand/25 transition-all min-h-[48px]"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  Добавить в приложение
+                </button>
+                {showImportMenu && (
+                  <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-xl glass-strong border border-white/10 shadow-2xl overflow-hidden">
+                    {IMPORT_DEEPLINKS.map(app => (
+                      <a
+                        key={app.id}
+                        href={app.build(subscribeLink.subscribe_url)}
+                        onClick={() => setShowImportMenu(false)}
+                        className="flex items-center justify-between px-4 py-2.5 hover:bg-white/10 border-b border-white/5 last:border-b-0 text-sm transition"
+                      >
+                        <span className="font-medium">{app.label}</span>
+                        <svg className="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                        </svg>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-              {/* Копировать */}
+              {/* Копировать (обычная ссылка) */}
               <button
                 onClick={() => { copyToClipboard(subscribeLink.subscribe_url); setCopiedField('sub-url'); setTimeout(() => setCopiedField(''), 2000) }}
                 className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-medium transition-all min-h-[48px]"
@@ -382,11 +416,105 @@ export default function DashboardPage() {
                   </>
                 )}
               </button>
+
+              {/* Обновить подписку: cache-buster query чтобы клиент перечитал */}
+              <button
+                onClick={() => {
+                  const bust = `${subscribeLink.subscribe_url}${subscribeLink.subscribe_url.includes('?') ? '&' : '?'}v=${Date.now()}`
+                  copyToClipboard(bust)
+                  setCopiedField('sub-refresh')
+                  setTimeout(() => setCopiedField(''), 2500)
+                }}
+                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-medium transition-all min-h-[48px]"
+                title="Скопировать ссылку с cache-buster — вставьте в приложение, чтобы перечитать подписку"
+              >
+                {copiedField === 'sub-refresh' ? (
+                  <>
+                    <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    Готово! Вставьте в приложение
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                    </svg>
+                    Обновить подписку
+                  </>
+                )}
+              </button>
             </div>
 
             <p className="text-[11px] text-text-secondary mt-3 text-center">
-              Нет Happ? <button onClick={() => setShowAppsModal(true)} className="text-brand-light hover:text-accent underline">Скачать приложение</button>
+              Нужно другое приложение? <button onClick={() => setShowAppsModal(true)} className="text-brand-light hover:text-accent underline">Список клиентов</button>
             </p>
+          </div>
+        )}
+
+        {/* ═══ SOCKS5 / HTTP proxy credentials — видны только тем, чей план их разрешает ═══ */}
+        {hasActiveSub && connections?.socks5_user && (
+          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-75">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent/20 to-cyan-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-base font-semibold">SOCKS5 прокси</h2>
+                <p className="text-xs text-text-secondary mt-0.5">Для браузеров, Telegram, десктопных приложений</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Сервер</p>
+                <div className="flex items-center justify-between gap-2">
+                  <code className="font-mono text-xs break-all">{connections.socks5_host}:{connections.socks5_port}</code>
+                  <button
+                    onClick={() => { copyToClipboard(`${connections.socks5_host}:${connections.socks5_port}`); setCopiedField('socks-host'); setTimeout(() => setCopiedField(''), 1500) }}
+                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
+                    title="Копировать host:port"
+                  >
+                    {copiedField === 'socks-host' ? <CheckIcon /> : <CopyIcon />}
+                  </button>
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Логин</p>
+                <div className="flex items-center justify-between gap-2">
+                  <code className="font-mono text-xs break-all">{connections.socks5_user}</code>
+                  <button
+                    onClick={() => { copyToClipboard(connections.socks5_user); setCopiedField('socks-user'); setTimeout(() => setCopiedField(''), 1500) }}
+                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
+                    title="Копировать логин"
+                  >
+                    {copiedField === 'socks-user' ? <CheckIcon /> : <CopyIcon />}
+                  </button>
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 sm:col-span-2">
+                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Пароль</p>
+                <div className="flex items-center justify-between gap-2">
+                  <code className="font-mono text-xs break-all">{connections.socks5_pass}</code>
+                  <button
+                    onClick={() => { copyToClipboard(connections.socks5_pass); setCopiedField('socks-pass'); setTimeout(() => setCopiedField(''), 1500) }}
+                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
+                    title="Копировать пароль"
+                  >
+                    {copiedField === 'socks-pass' ? <CheckIcon /> : <CopyIcon />}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {telegramLink && (
+              <a
+                href={telegramLink}
+                className="inline-flex items-center gap-2 mt-4 px-4 py-2.5 rounded-xl bg-blue-500/15 border border-blue-500/25 text-blue-400 hover:bg-blue-500/25 text-sm font-medium transition min-h-[44px]"
+              >
+                <PaperPlaneIcon />
+                Подключить в Telegram
+              </a>
+            )}
           </div>
         )}
 
@@ -571,7 +699,20 @@ export default function DashboardPage() {
         </Link>
 
         {/* ─── Traffic Stats ─── */}
-        {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (
+        {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (() => {
+          // Colored threshold logic: <80% green, 80-99% yellow, =100% red.
+          const ratio = trafficStats.traffic_limit
+            ? trafficStats.traffic_used / trafficStats.traffic_limit
+            : 0
+          const pct = Math.min(100, ratio * 100)
+          const exhausted = trafficStats.traffic_limit && trafficStats.traffic_used >= trafficStats.traffic_limit
+          const warning = !exhausted && ratio >= 0.8
+          const barClass = exhausted
+            ? 'bg-gradient-to-r from-red-500 to-rose-600'
+            : warning
+              ? 'bg-gradient-to-r from-amber-400 to-orange-500'
+              : 'bg-gradient-to-r from-brand to-accent'
+          return (
           <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/10 flex items-center justify-center">
@@ -584,6 +725,25 @@ export default function DashboardPage() {
                 <p className="text-xs text-text-secondary">Использование за текущий период</p>
               </div>
             </div>
+
+            {/* Exhausted / warning banner */}
+            {exhausted && (
+              <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30">
+                <p className="text-sm font-semibold text-red-300">Трафик закончился</p>
+                <p className="text-xs text-red-300/80 mt-1">Подключения заблокированы до начала нового периода или продления тарифа.</p>
+                <Link to="/payment" className="inline-flex items-center gap-1.5 mt-2 text-xs font-medium text-red-200 hover:text-white transition">
+                  Продлить тариф
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
+                </Link>
+              </div>
+            )}
+            {warning && (
+              <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                <p className="text-sm font-semibold text-amber-300">Трафик почти закончился</p>
+                <p className="text-xs text-amber-300/80 mt-1">Осталось меньше 20% — заранее продлите тариф, чтобы не остаться без связи.</p>
+              </div>
+            )}
+
             <div className="space-y-3">
               <div className="flex justify-between text-sm">
                 <span className="text-text-secondary">Использовано</span>
@@ -593,12 +753,12 @@ export default function DashboardPage() {
                 <>
                   <div className="w-full bg-white/10 rounded-full h-2.5">
                     <div
-                      className="bg-gradient-to-r from-brand to-accent h-2.5 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(100, (trafficStats.traffic_used / trafficStats.traffic_limit) * 100)}%` }}
+                      className={`${barClass} h-2.5 rounded-full transition-all duration-500`}
+                      style={{ width: `${pct}%` }}
                     />
                   </div>
                   <div className="flex justify-between text-xs text-text-secondary">
-                    <span>{Math.round((trafficStats.traffic_used / trafficStats.traffic_limit) * 100)}%</span>
+                    <span>{Math.round(pct)}%</span>
                     <span>Лимит: {formatBytes(trafficStats.traffic_limit)}</span>
                   </div>
                 </>
@@ -621,7 +781,8 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-        )}
+          )
+        })()}
 
         {/* ─── Promo code ─── */}
         <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">

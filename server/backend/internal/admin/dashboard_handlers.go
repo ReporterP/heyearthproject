@@ -14,7 +14,16 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		query  string
 	}{
 		{&overview.UsersCount, `SELECT COUNT(*) FROM users`},
-		{&overview.ActiveUsersCount, `SELECT COUNT(*) FROM user_subscriptions WHERE valid_until > NOW()`},
+		// "Active" = users who actually moved traffic in the last 24h.
+		// Previously counted valid subscriptions, which inflated the number with idle
+		// accounts that never connected. Traffic-based definition matches retention
+		// intuition and reflects real engagement.
+		{&overview.ActiveUsersCount, `
+			SELECT COUNT(DISTINCT user_id)
+			FROM traffic_stats
+			WHERE recorded_at > NOW() - INTERVAL '24 hours'
+			  AND (upload_bytes > 0 OR download_bytes > 0)
+		`},
 		{&overview.ServersCount, `SELECT COUNT(*) FROM servers`},
 		{&overview.OnlineServersCount, `SELECT COUNT(*) FROM servers WHERE status = 'online'`},
 		{&overview.GroupsCount, `SELECT COUNT(*) FROM user_groups`},
@@ -47,11 +56,12 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		`, tq.interval).Scan(tq.target)
 	}
 
-	// Доход за текущий месяц
+	// Доход за текущий месяц — только реальные (не тестовые) succeeded платежи.
 	_ = db.DB.QueryRow(`
 		SELECT COALESCE(SUM(amount), 0)
 		FROM payments
 		WHERE status = 'completed'
+		  AND COALESCE(test, FALSE) = FALSE
 		  AND confirmed_at IS NOT NULL
 		  AND confirmed_at >= date_trunc('month', NOW())
 	`).Scan(&overview.RevenueMonth)

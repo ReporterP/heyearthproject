@@ -232,10 +232,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			})
 		}
 
-		// 2. SOCKS proxy (per-user авторизация) — only if plan allows
+		// 2. SOCKS proxy (per-user авторизация) — only if plan allows.
+		// The #HeYearth-SOCKS5 fragment becomes the entry name in clients that
+		// import the subscription (V2RayNG, Happ, Clash, etc.) — without it the
+		// SOCKS entry is nameless and indistinguishable from untagged proxies.
 		if canSOCKS {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, socks5Port),
+				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s#HeYearth-SOCKS5", userID, userVlessUUID, mainServerHost, socks5Port),
 				Protocol:            "socks",
 				Label:               "SOCKS прокси",
 				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
@@ -243,10 +246,10 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			})
 		}
 
-		// 3. HTTP proxy (per-user авторизация) — only if plan allows
+		// 3. HTTP proxy (per-user авторизация) — only if plan allows.
 		if canHTTP {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s", userID, userVlessUUID, mainServerHost, httpProxyPort),
+				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s#HeYearth-HTTP", userID, userVlessUUID, mainServerHost, httpProxyPort),
 				Protocol:            "http",
 				Label:               "HTTP прокси",
 				RecommendedNetworks: []string{"wifi", "ethernet", "any"},

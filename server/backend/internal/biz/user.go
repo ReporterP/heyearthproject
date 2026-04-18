@@ -187,6 +187,11 @@ type ActiveUserWithUUID struct {
 
 // ListActiveUsersWithUUIDs возвращает user_id и vless_uuid всех пользователей с активной подпиской.
 // Используется для генерации SOCKS5/HTTP аккаунтов в Xray конфиге.
+//
+// IMPORTANT: Mirrors the traffic_limit enforcement that VLESS already applies
+// (see ListActiveVlessClients) — over-quota users must not receive SOCKS5/HTTP
+// credentials either. Without this filter, a user on a 10 GB plan could keep
+// using SOCKS5 indefinitely after exceeding the limit.
 func ListActiveUsersWithUUIDs() ([]ActiveUserWithUUID, error) {
 	rows, err := db.DB.Query(`
 		SELECT DISTINCT u.user_id, u.vless_uuid::text
@@ -195,6 +200,7 @@ func ListActiveUsersWithUUIDs() ([]ActiveUserWithUUID, error) {
 		WHERE u.vless_uuid IS NOT NULL
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 	`)
 	if err != nil {
 		return nil, err

@@ -34,6 +34,22 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Revenue aggregate for the current filter — only REAL (non-test) succeeded
+	// payments. This is what's shown in the page header so admins don't conflate
+	// YooKassa sandbox traffic with actual income.
+	var realTotal float64
+	if err := db.DB.QueryRow(`
+		SELECT COALESCE(SUM(p.amount), 0)::float8
+		FROM payments p
+		LEFT JOIN users u ON u.user_id = p.user_id_text
+		WHERE `+where+`
+		  AND p.status = 'completed'
+		  AND COALESCE(p.test, FALSE) = FALSE
+	`, args...).Scan(&realTotal); err != nil {
+		// Non-fatal — we'll return 0 rather than break the list endpoint.
+		realTotal = 0
+	}
+
 	query := fmt.Sprintf(`
 		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(p.user_id_text, COALESCE(u.user_id, '')),
 		       p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
@@ -85,7 +101,16 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize})
+	// Response extends PagedResponse with a `real_total_amount` field — the sum
+	// of amount across non-test succeeded payments matching the current filter.
+	// Frontend uses this instead of summing the visible page, which would undercount.
+	writeAdminJSON(w, http.StatusOK, struct {
+		Items           []paymentResponse `json:"items"`
+		Total           int               `json:"total"`
+		Page            int               `json:"page"`
+		PageSize        int               `json:"page_size"`
+		RealTotalAmount float64           `json:"real_total_amount"`
+	}{items, total, p.Page, p.PageSize, realTotal})
 }
 
 func CreatePaymentHandler(w http.ResponseWriter, r *http.Request) {

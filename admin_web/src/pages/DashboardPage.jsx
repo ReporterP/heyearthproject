@@ -18,8 +18,10 @@ function TrafficMiniChart({ data }) {
       {data.map((d, i) => {
         const total = d.upload + d.download
         const h = Math.max((total / maxVal) * 100, 2)
+        // Each column needs explicit h-full + items-end so the bar's height:%
+        // resolves against the 96px parent instead of collapsing to 0.
         return (
-          <div key={i} className="flex-1 flex flex-col items-center group relative">
+          <div key={i} className="flex-1 flex flex-col items-end h-full group relative">
             <div
               className="w-full rounded-t bg-brand/80 hover:bg-brand transition-colors min-w-[3px]"
               style={{ height: `${h}%` }}
@@ -70,9 +72,9 @@ export default function DashboardPage() {
     { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), to: '/traffic' },
     { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), to: '/payments' },
     { label: t.dashPayments, value: data?.payments_count, to: '/payments' },
-    // Groups is hidden from the sidebar but the /groups route still works:
-    // linking the card keeps the number useful without re-adding a nav entry.
-    { label: t.dashGroups, value: data?.groups_count, to: '/groups' },
+    // "Groups" card removed: the underlying user_groups table represents server
+    // tiers, not subscription tiers — it's meaningless on a revenue dashboard.
+    // The sidebar also hides Groups (replaced by Plans).
     { label: t.dashPromocodes, value: data?.promocodes_count, to: '/promocodes' },
     { label: t.dashActiveReleases, value: data?.active_releases, to: '/releases' },
     { label: t.dashAdmins, value: data?.admins_count, to: '/admins' },

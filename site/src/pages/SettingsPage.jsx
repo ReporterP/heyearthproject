@@ -55,11 +55,10 @@ export default function SettingsPage() {
       if (profile?.has_password && !currentPassword) { setErr('Введите текущий пароль'); return }
     }
 
-    // Если меняется только username но пароля нет — нужно ТРЕБОВАТЬ установить пароль
-    if (usernameChanged && !profile?.has_password && !changingPassword) {
-      setErr('Чтобы задать имя пользователя, также установите пароль')
-      return
-    }
+    // Namespaced validation removed: with the unified "login + password" form
+    // the user can save just the username, just a password, or both. The
+    // backend PATCH /api/v1/user/profile accepts any subset; there's no
+    // technical reason to force password when setting a username.
 
     setSaving(true)
     try {
