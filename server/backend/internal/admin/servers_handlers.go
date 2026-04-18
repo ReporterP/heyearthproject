@@ -121,6 +121,25 @@ func GetServerDetailHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, server)
 }
 
+// validateCountryCode allows empty (for legacy rows) or exactly two ASCII
+// letters (ISO 3166-1 alpha-2). Anything else is rejected so we don't end up
+// with city names or free-form text in the column.
+func validateCountryCode(code string) error {
+	c := strings.TrimSpace(code)
+	if c == "" {
+		return nil
+	}
+	if len(c) != 2 {
+		return fmt.Errorf("country_code must be empty or a 2-letter ISO code (e.g. NL, LV)")
+	}
+	for _, r := range c {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return fmt.Errorf("country_code must contain only letters")
+		}
+	}
+	return nil
+}
+
 func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 	var req serverPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -131,6 +150,12 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "name and ip_address are required")
 		return
 	}
+	if err := validateCountryCode(req.CountryCode); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Normalize to uppercase so the stored value is always canonical.
+	req.CountryCode = strings.ToUpper(strings.TrimSpace(req.CountryCode))
 	if req.SSHPort == 0 {
 		req.SSHPort = 22
 	}
@@ -224,6 +249,12 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.CountryCode) == "" {
 		req.CountryCode = existing.CountryCode
+	} else {
+		if err := validateCountryCode(req.CountryCode); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.CountryCode = strings.ToUpper(strings.TrimSpace(req.CountryCode))
 	}
 	if strings.TrimSpace(req.Status) == "" {
 		req.Status = existing.Status

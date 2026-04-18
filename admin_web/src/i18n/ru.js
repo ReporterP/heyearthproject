@@ -280,4 +280,22 @@ export default {
   fieldUseProviderServers: '\u0421\u0435\u0440\u0432\u0435\u0440\u044B \u043F\u0440\u043E\u0432\u0430\u0439\u0434\u0435\u0440\u0430',
   fieldBillingNotes: '\u0417\u0430\u043C\u0435\u0442\u043A\u0438 \u043F\u043E \u0431\u0438\u043B\u043B\u0438\u043D\u0433\u0443',
   fieldBalance: '\u0411\u0430\u043B\u0430\u043D\u0441',
+
+  // ServerDetailPage actions + logs
+  sdActions: 'Действия',
+  sdSyncMetrics: 'Синхр. метрики',
+  sdRestartAgent: 'Рестарт агента',
+  sdSyncTunnel: 'Синхр. туннель',
+  sdFetchCreds: 'Получить ключи',
+  sdReprovision: 'Переустановка',
+  sdReprovisionConfirm: 'Переустановить ноду? Все сервисы будут переустановлены.',
+  sdConfigEditor: 'Редактор конфига',
+  sdRefreshNow: 'Обновить',
+  sdAutoRefreshEvery: 'Автообновление каждые {s} сек',
+  sdLogs: 'Логи',
+  sdRefresh: 'Обновить',
+  sdLoading: 'Загрузка…',
+
+  // Users devices modal
+  usersNoDevices: 'Нет устройств',
 }

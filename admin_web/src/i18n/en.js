@@ -280,4 +280,22 @@ export default {
   fieldUseProviderServers: 'Use provider servers',
   fieldBillingNotes: 'Billing notes',
   fieldBalance: 'Balance',
+
+  // ServerDetailPage actions + logs
+  sdActions: 'Actions',
+  sdSyncMetrics: 'Sync Metrics',
+  sdRestartAgent: 'Restart Agent',
+  sdSyncTunnel: 'Sync Tunnel',
+  sdFetchCreds: 'Fetch Creds',
+  sdReprovision: 'Re-provision',
+  sdReprovisionConfirm: 'Re-provision this node? This will reinstall all services.',
+  sdConfigEditor: 'Config Editor',
+  sdRefreshNow: 'Refresh Now',
+  sdAutoRefreshEvery: 'Auto-refreshes every {s}s',
+  sdLogs: 'Logs',
+  sdRefresh: 'Refresh',
+  sdLoading: 'Loading...',
+
+  // Users devices modal
+  usersNoDevices: 'No devices',
 }

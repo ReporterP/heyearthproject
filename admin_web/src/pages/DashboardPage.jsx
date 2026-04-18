@@ -61,17 +61,21 @@ export default function DashboardPage() {
   if (loading) return <p className="text-text-secondary">{t.loading}</p>
   if (error) return <p className="text-red-400">{error}</p>
 
+  // Cards with `to` become clickable; sub-text in brand blue signals that.
+  // Cards without `to` keep sub-text muted so it doesn't masquerade as a link.
   const cards = [
-    { label: t.dashUsers, value: data?.users_count, sub: `${data?.active_users_count ?? 0} ${t.dashActiveUsers}` },
-    { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}` },
-    { label: t.dashTrafficToday, value: formatBytes(data?.traffic_today), color: 'text-cyan-400' },
-    { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), color: 'text-cyan-400' },
-    { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), color: 'text-green-400' },
-    { label: t.dashPayments, value: data?.payments_count },
-    { label: t.dashGroups, value: data?.groups_count },
-    { label: t.dashPromocodes, value: data?.promocodes_count },
-    { label: t.dashActiveReleases, value: data?.active_releases },
-    { label: t.dashAdmins, value: data?.admins_count },
+    { label: t.dashUsers, value: data?.users_count, sub: `${data?.active_users_count ?? 0} ${t.dashActiveUsers}`, to: '/users' },
+    { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}`, to: '/servers' },
+    { label: t.dashTrafficToday, value: formatBytes(data?.traffic_today), to: '/traffic' },
+    { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), to: '/traffic' },
+    { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), to: '/payments' },
+    { label: t.dashPayments, value: data?.payments_count, to: '/payments' },
+    // Groups is hidden from the sidebar but the /groups route still works:
+    // linking the card keeps the number useful without re-adding a nav entry.
+    { label: t.dashGroups, value: data?.groups_count, to: '/groups' },
+    { label: t.dashPromocodes, value: data?.promocodes_count, to: '/promocodes' },
+    { label: t.dashActiveReleases, value: data?.active_releases, to: '/releases' },
+    { label: t.dashAdmins, value: data?.admins_count, to: '/admins' },
   ]
 
   return (
@@ -81,7 +85,7 @@ export default function DashboardPage() {
       {/* Карточки */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {cards.map(c => (
-          <StatCard key={c.label} label={c.label} value={c.value} sub={c.sub} />
+          <StatCard key={c.label} label={c.label} value={c.value} sub={c.sub} to={c.to} />
         ))}
       </div>
 

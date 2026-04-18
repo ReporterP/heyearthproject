@@ -178,6 +178,7 @@ function LogsModal({ logsModal, setLogsModal, fetchLogs, toast }) {
   const services = [
     { value: 'node-agent', label: 'Node Agent' },
     { value: 'xray', label: 'Xray' },
+    { value: 'hysteria2', label: 'Hysteria2' },
     { value: 'nginx', label: 'Nginx' },
   ]
   const tailOptions = [50, 100, 200, 500, 1000]
@@ -792,12 +793,50 @@ export default function ServersPage() {
                 <IconClose />
               </button>
             </div>
-            <p className="px-5 py-2 text-xs text-text-secondary font-mono">{filesModal.path}</p>
+            <div className="px-5 py-2 flex items-center gap-2 border-b border-white/5">
+              {/* Breadcrumb: each segment is clickable to jump back */}
+              <div className="flex-1 text-xs font-mono text-text-secondary flex flex-wrap items-center gap-1">
+                {(() => {
+                  const parts = filesModal.path.replace(/^\/+|\/+$/g, '').split('/')
+                  return (
+                    <>
+                      <span
+                        className="cursor-pointer hover:text-brand"
+                        onClick={() => showFiles(filesModal.server, '/')}
+                      >/</span>
+                      {parts.map((seg, i) => {
+                        const subPath = '/' + parts.slice(0, i + 1).join('/')
+                        const isLast = i === parts.length - 1
+                        return (
+                          <span key={i}>
+                            <span
+                              className={isLast ? 'text-text-primary' : 'cursor-pointer hover:text-brand'}
+                              onClick={isLast ? undefined : () => showFiles(filesModal.server, subPath)}
+                            >{seg}</span>
+                            {!isLast && <span className="mx-0.5">/</span>}
+                          </span>
+                        )
+                      })}
+                    </>
+                  )
+                })()}
+              </div>
+              {filesModal.path !== '/' && (
+                <button
+                  onClick={() => {
+                    const parent = filesModal.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/'
+                    showFiles(filesModal.server, parent)
+                  }}
+                  className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-text-secondary hover:text-text-primary"
+                  title="Parent directory"
+                >↑ ..</button>
+              )}
+            </div>
             <div className="flex-1 overflow-auto px-5 pb-4">
               {filesModal.entries.map((e, i) => (
                 <div key={i}
                   className={`text-sm py-1 px-2 rounded cursor-pointer hover:bg-white/5 ${e.is_dir ? 'text-brand' : 'text-text-primary'}`}
-                  onClick={() => e.is_dir && showFiles(filesModal.server, filesModal.path + '/' + e.name)}
+                  onClick={() => e.is_dir && showFiles(filesModal.server, filesModal.path.replace(/\/+$/, '') + '/' + e.name)}
                 >
                   {e.is_dir ? '\uD83D\uDCC1 ' : '\uD83D\uDCC4 '}{e.name}
                   {!e.is_dir && e.size != null && <span className="text-text-secondary text-xs ml-2">({formatSize(e.size)})</span>}

@@ -64,7 +64,11 @@ export default function ServerDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [logs, setLogs] = useState('')
-  const [logsService, setLogsService] = useState('heyearth-api')
+  // Default logs service is chosen once after the first server load:
+  //   hub node          → heyearth-api (the API daemon)
+  //   exit / other node → node-agent   (heyearth-api is not installed there)
+  // Stays null until we know what kind of node this is.
+  const [logsService, setLogsService] = useState(null)
   const [configOpen, setConfigOpen] = useState(false)
 
   // In-memory history buffer for charts
@@ -79,6 +83,9 @@ export default function ServerDetailPage() {
       const data = await fetchServerDetail(id)
       setServer(data)
       setError(null)
+
+      // Pick a sensible default log service on first load.
+      setLogsService(prev => prev ?? (data.is_exit_node ? 'node-agent' : 'heyearth-api'))
 
       // Push to history
       const m = data.load_metrics || {}
@@ -113,6 +120,7 @@ export default function ServerDetailPage() {
   }, [loadServer])
 
   async function loadLogs() {
+    if (!logsService) return // service not chosen yet
     try {
       const text = await fetchServerLogs(id, { service: logsService, tail: 100 })
       setLogs(text)
@@ -121,7 +129,7 @@ export default function ServerDetailPage() {
     }
   }
 
-  useEffect(() => { if (server) loadLogs() }, [logsService])
+  useEffect(() => { if (server && logsService) loadLogs() }, [logsService])
 
   async function doAction(actionKey) {
     try {
@@ -213,7 +221,16 @@ export default function ServerDetailPage() {
         <GaugeCard label="CPU" value={cpu} color="#6366f1" icon={<svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25z" /></svg>} />
         <GaugeCard label="RAM" value={ram} color="#22d3ee" icon={<svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6z" /></svg>} />
         <GaugeCard label="Connections" value={conns} unit="" color="#f59e0b" icon={<svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>} />
-        <GaugeCard label={`Weight (1-10)`} value={server.load_weight} unit="" color="#a855f7" icon={<svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75M18.75 4.97A48.416 48.416 0 0012 4.5c-2.291 0-4.545.16-6.75.47m13.5 0c1.01.143 2.01.317 3 .52m-3-.52l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.988 5.988 0 01-2.031.352 5.988 5.988 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L18.75 4.97zm-16.5.52c.99-.203 1.99-.377 3-.52m0 0l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.989 5.989 0 01-2.031.352 5.989 5.989 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L5.25 4.97z" /></svg>} />
+        {/* Weight is an integer 1..10 — render without decimals, show — if unset */}
+        <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+          <div className="flex items-center gap-2 mb-2">
+            <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75" /></svg>
+            <span className="text-xs text-text-secondary uppercase tracking-wider">Weight (1-10)</span>
+          </div>
+          <div className="text-2xl font-bold font-mono" style={{ color: '#a855f7' }}>
+            {server.load_weight && server.load_weight > 0 ? Math.round(server.load_weight) : '—'}
+          </div>
+        </div>
       </div>
 
       {/* Mini charts (in-memory history) */}
@@ -227,32 +244,32 @@ export default function ServerDetailPage() {
 
       {/* Actions */}
       <div className="bg-surface-card rounded-xl border border-white/10 p-4 mb-6">
-        <h3 className="text-sm font-semibold mb-3">Actions</h3>
+        <h3 className="text-sm font-semibold mb-3">{t.sdActions || 'Actions'}</h3>
         <div className="flex flex-wrap gap-2">
           {can('servers.write') && (
             <>
-              <button onClick={() => doAction('sync_metrics')} className="px-3 py-1.5 text-xs rounded-lg bg-brand/20 text-brand hover:bg-brand/30 transition">Sync Metrics</button>
-              <button onClick={() => doAction('restart_agent')} className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition">Restart Agent</button>
-              <button onClick={() => doAction('sync_tunnel')} className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">Sync Tunnel</button>
+              <button onClick={() => doAction('sync_metrics')} className="px-3 py-1.5 text-xs rounded-lg bg-brand/20 text-brand hover:bg-brand/30 transition">{t.sdSyncMetrics || 'Sync Metrics'}</button>
+              <button onClick={() => doAction('restart_agent')} className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition">{t.sdRestartAgent || 'Restart Agent'}</button>
+              <button onClick={() => doAction('sync_tunnel')} className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">{t.sdSyncTunnel || 'Sync Tunnel'}</button>
               {server.is_exit_node && (
                 <>
-                  <button onClick={() => doAction('fetch_tunnel_creds')} className="px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition">Fetch Creds</button>
-                  <button onClick={() => { if (confirm('Re-provision this node? This will reinstall all services.')) doAction('setup_exit_node') }}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">Re-provision</button>
+                  <button onClick={() => doAction('fetch_tunnel_creds')} className="px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition">{t.sdFetchCreds || 'Fetch Creds'}</button>
+                  <button onClick={() => { if (confirm(t.sdReprovisionConfirm || 'Re-provision this node? This will reinstall all services.')) doAction('setup_exit_node') }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">{t.sdReprovision || 'Re-provision'}</button>
                 </>
               )}
             </>
           )}
-          <button onClick={() => setConfigOpen(true)} className="px-3 py-1.5 text-xs rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition">Config Editor</button>
-          <button onClick={loadServer} className="px-3 py-1.5 text-xs rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition">Refresh Now</button>
+          <button onClick={() => setConfigOpen(true)} className="px-3 py-1.5 text-xs rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition">{t.sdConfigEditor || 'Config Editor'}</button>
+          <button onClick={loadServer} className="px-3 py-1.5 text-xs rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition">{t.sdRefreshNow || 'Refresh Now'}</button>
         </div>
-        <p className="text-[10px] text-text-secondary mt-2">Auto-refreshes every {REFRESH_INTERVAL / 1000}s</p>
+        <p className="text-[10px] text-text-secondary mt-2">{(t.sdAutoRefreshEvery || 'Auto-refreshes every {s}s').replace('{s}', REFRESH_INTERVAL / 1000)}</p>
       </div>
 
       {/* Logs */}
       <div className="bg-surface-card rounded-xl border border-white/10 p-4 mb-6">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold">Logs</h3>
+          <h3 className="text-sm font-semibold">{t.sdLogs || 'Logs'}</h3>
           <div className="flex items-center gap-2">
             <select value={logsService} onChange={e => setLogsService(e.target.value)}
               className="px-2 py-1 text-xs rounded bg-surface-alt border border-white/10 text-text-primary">
@@ -262,11 +279,11 @@ export default function ServerDetailPage() {
               <option value="nginx">nginx</option>
               <option value="node-agent">node-agent</option>
             </select>
-            <button onClick={loadLogs} className="px-2 py-1 text-xs rounded bg-surface-alt text-text-secondary hover:text-text-primary transition">Refresh</button>
+            <button onClick={loadLogs} className="px-2 py-1 text-xs rounded bg-surface-alt text-text-secondary hover:text-text-primary transition">{t.sdRefresh || 'Refresh'}</button>
           </div>
         </div>
         <pre className="text-[11px] font-mono text-text-secondary bg-surface-bg rounded-lg p-3 max-h-[300px] overflow-auto whitespace-pre-wrap">
-          {logs || 'Loading...'}
+          {logs || (t.sdLoading || 'Loading...')}
         </pre>
       </div>
 

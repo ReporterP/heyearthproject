@@ -149,7 +149,11 @@ export default function PaymentsPage() {
   }
 
   function openEdit(item) {
-    setUserDbId(String(item.user_db_id || ''))
+    // Backend returns user_db_id (numeric, 0 if not set) and user_id (text GUID).
+    // Many payments from YooKassa have only user_id_text (GUID) and user_db_id=0.
+    // Prefer the non-zero numeric id; fall back to GUID so the field isn't blank.
+    const uid = item.user_db_id && item.user_db_id > 0 ? item.user_db_id : (item.user_id || '')
+    setUserDbId(String(uid))
     setAmount(String(item.amount || ''))
     setCurrency(item.currency || 'RUB')
     setStatus(item.status || 'pending')

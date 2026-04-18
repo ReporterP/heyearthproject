@@ -321,7 +321,7 @@ export default function UsersPage() {
           <div className="bg-surface-card rounded-xl border border-white/10 p-5 w-full max-w-md m-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold mb-3">{t.registeredDevicesLabel(devices.items.length)}</h3>
             {devices.items.length === 0 ? (
-              <p className="text-text-secondary text-sm">No devices</p>
+              <p className="text-text-secondary text-sm">{t.usersNoDevices || 'No devices'}</p>
             ) : (
               <div className="space-y-2 max-h-60 overflow-y-auto">
                 {devices.items.map((d, i) => (
