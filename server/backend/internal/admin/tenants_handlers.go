@@ -512,16 +512,40 @@ func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slug := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(req.CompanyName), " ", "-"))
+	// Build a unique slug. The naive `lowercase(company-name)` form collides
+	// the moment two companies share a name (or someone retries the same
+	// signup), which surfaces as `tenants_slug_key` 23505 to the user.
+	// Strategy: normalize → strip non-alphanumeric → if taken, append a
+	// short random suffix. We retry a few times to handle the (vanishingly
+	// rare) case of consecutive collisions.
+	slug := makeUniqueTenantSlug(req.CompanyName)
 	if req.MaxServers == 0 {
 		req.MaxServers = 5
 	}
 
+	// Belt-and-suspenders: the slug we built is guaranteed unique under our
+	// check, but a concurrent signup could race us between the EXISTS check
+	// and INSERT. If we hit unique_violation we re-generate the slug once
+	// and retry. After two failures we give up — a third collision is
+	// almost certainly a real problem, not a race.
 	var tenantID int
-	err := db.DB.QueryRow(`
-		INSERT INTO tenants (name, slug, status, plan, contact_email, max_users, max_servers, use_provider_servers)
-		VALUES ($1,$2,'inactive','basic',$3,$4,$5,$6) RETURNING id
-	`, req.CompanyName, slug, req.Email, req.MaxUsers, req.MaxServers, req.UsOurServers).Scan(&tenantID)
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = db.DB.QueryRow(`
+			INSERT INTO tenants (name, slug, status, plan, contact_email, max_users, max_servers, use_provider_servers)
+			VALUES ($1,$2,'inactive','basic',$3,$4,$5,$6) RETURNING id
+		`, req.CompanyName, slug, req.Email, req.MaxUsers, req.MaxServers, req.UsOurServers).Scan(&tenantID)
+		if err == nil {
+			break
+		}
+		// pq surfaces unique-violation as `unique_violation` (SQLSTATE 23505)
+		// inside the wrapped error text. We don't want to import lib/pq here
+		// to type-assert, so a substring check is good enough.
+		if !strings.Contains(err.Error(), "unique") && !strings.Contains(err.Error(), "23505") {
+			break
+		}
+		slug = makeUniqueTenantSlug(req.CompanyName)
+	}
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "create tenant: "+err.Error())
 		return
@@ -582,6 +606,71 @@ func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 		resp["claim_url"] = siteURL + "/claim/" + claimCode
 	}
 	writeAdminJSON(w, http.StatusCreated, resp)
+}
+
+// makeUniqueTenantSlug normalizes a company name into a URL-safe slug and
+// guarantees uniqueness in the `tenants` table. Sanitization is conservative
+// (only ASCII letters/digits/hyphen) so non-Latin names just collapse to "" —
+// in that case we fall back to a "company-XXX" prefix.
+//
+// We retry up to 8 times; in practice we converge in 1-2 iterations because
+// the random suffix is 6 base36 chars (≈10^9 keyspace).
+func makeUniqueTenantSlug(companyName string) string {
+	base := slugifyCompanyName(companyName)
+	if base == "" {
+		base = "company"
+	}
+	if isSlugAvailable(base) {
+		return base
+	}
+	for i := 0; i < 8; i++ {
+		candidate := base + "-" + randomSignupCode(6)
+		if isSlugAvailable(candidate) {
+			return candidate
+		}
+	}
+	// Last-resort, vanishingly unlikely: timestamp suffix.
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%1_000_000_000)
+}
+
+// slugifyCompanyName lowercases, replaces whitespace with '-', and drops any
+// character that isn't [a-z0-9-]. Multiple hyphens collapse to one; leading/
+// trailing hyphens get trimmed.
+func slugifyCompanyName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	prevDash := false
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevDash = false
+		case r == ' ' || r == '-' || r == '_':
+			if !prevDash && b.Len() > 0 {
+				b.WriteRune('-')
+				prevDash = true
+			}
+		default:
+			// Non-Latin and punctuation are dropped. If a name is fully
+			// non-Latin (e.g. "ООО Ромашка"), b stays empty and the caller
+			// falls back to "company".
+		}
+	}
+	out := b.String()
+	out = strings.TrimRight(out, "-")
+	return out
+}
+
+func isSlugAvailable(slug string) bool {
+	var exists bool
+	err := db.DB.QueryRow(`SELECT EXISTS (SELECT 1 FROM tenants WHERE slug = $1)`, slug).Scan(&exists)
+	if err != nil {
+		// On DB errors, conservatively treat the slug as taken so the caller
+		// retries with a random suffix instead of slamming into the unique
+		// constraint at INSERT time.
+		return false
+	}
+	return !exists
 }
 
 // randomSignupCode returns a short URL-safe code for tenant admin invitations
