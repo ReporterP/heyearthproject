@@ -33,10 +33,11 @@ func StartSubscriptionCron() {
 		time.Sleep(1 * time.Minute)
 		for {
 			checkMonthlyBilling()
+			checkTenantBalanceWarnings()
 			time.Sleep(1 * time.Hour)
 		}
 	}()
-	log.Println("[subscription-cron] B2B monthly billing cron запущен")
+	log.Println("[subscription-cron] B2B monthly billing + low-balance warnings cron запущен")
 }
 
 // checkExpiringSubscriptions находит подписки, истекающие в ближайшие 24 часа.
@@ -136,6 +137,31 @@ func checkMonthlyBilling() {
 	// Записываем что биллинг за этот месяц выполнен
 	_ = biz.SetSetting("last_billing_month", currentMonth)
 	log.Printf("[subscription-cron] B2B биллинг за %s завершён", currentMonth)
+}
+
+// checkTenantBalanceWarnings runs once per day; emails tenants whose balance
+// is below ~50% of next month's expected debit. Dedup is internal to
+// RunTenantBalanceWarnings (one notification per calendar month per tenant).
+func checkTenantBalanceWarnings() {
+	now := time.Now()
+	// Run once per day around 9:00 local time so the email arrives during
+	// working hours. Other ticks no-op.
+	if now.Hour() != 9 {
+		return
+	}
+	var lastDate string
+	_ = db.DB.QueryRow(`SELECT COALESCE(value, '') FROM app_settings WHERE key = 'last_tenant_warning_date'`).Scan(&lastDate)
+	today := now.Format("2006-01-02")
+	if lastDate == today {
+		return
+	}
+	log.Printf("[subscription-cron] Проверка низких балансов B2B-тенантов…")
+	if err := biz.RunTenantBalanceWarnings(); err != nil {
+		log.Printf("[subscription-cron] Ошибка проверки балансов: %v", err)
+		return
+	}
+	_ = biz.SetSetting("last_tenant_warning_date", today)
+	log.Printf("[subscription-cron] Проверка балансов завершена")
 }
 
 // processAutoRenew handles auto-renewal for a user.

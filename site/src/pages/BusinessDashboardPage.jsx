@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
-import { getBusinessMe, initBusinessTopup, createBusinessInvite, removeBusinessMember } from '../api/business.js'
+import { getBusinessMe, initBusinessTopup, createBusinessInvite, removeBusinessMember, changeBusinessMemberRole } from '../api/business.js'
 
 /*
  * B2B tenant self-service dashboard.
@@ -110,6 +110,17 @@ export default function BusinessDashboardPage() {
       await load()
     } catch (e) {
       alert(e.message || 'Не удалось удалить участника')
+    }
+  }
+
+  async function handleChangeRole(member, newRole) {
+    if (newRole === member.role) return
+    try {
+      await changeBusinessMemberRole(token, member.user_db_id, newRole)
+      await load()
+    } catch (e) {
+      alert(e.message || 'Не удалось изменить роль')
+      // The select element will snap back to the server-side role after load().
     }
   }
 
@@ -225,7 +236,21 @@ export default function BusinessDashboardPage() {
                       <p className="text-sm font-medium truncate">{m.username ? `@${m.username}` : (m.email || m.user_id)}</p>
                       <p className="text-[11px] text-text-secondary truncate font-mono">{m.user_id}</p>
                     </div>
-                    <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${rl.cls}`}>{rl.text}</span>
+                    {isAdmin ? (
+                      <select
+                        value={m.role}
+                        onChange={e => handleChangeRole(m, e.target.value)}
+                        className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-[11px] font-medium hover:bg-white/10 transition"
+                        title="Изменить роль"
+                      >
+                        <option value="admin">Админ</option>
+                        <option value="billing">Биллинг</option>
+                        <option value="viewer">Только чтение</option>
+                        <option value="user">Сотрудник</option>
+                      </select>
+                    ) : (
+                      <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${rl.cls}`}>{rl.text}</span>
+                    )}
                     {isAdmin && (
                       <button
                         onClick={() => handleRemoveMember(m)}
@@ -239,6 +264,35 @@ export default function BusinessDashboardPage() {
             </div>
           )}
         </div>
+
+        {/* Invoices */}
+        {data.invoices && data.invoices.length > 0 && (
+          <div className="glass-card rounded-2xl p-6 mb-6">
+            <h2 className="text-lg font-semibold mb-4">Счета</h2>
+            <div className="space-y-2">
+              {data.invoices.map(inv => (
+                <div key={inv.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5 flex-wrap">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">
+                      Счёт #{inv.id} · {formatMoney(inv.amount)}
+                      {' · '}<span className={`text-xs px-1.5 py-0.5 rounded ${
+                        inv.status === 'paid' ? 'bg-green-500/15 text-green-400' :
+                        inv.status === 'pending' ? 'bg-yellow-500/15 text-yellow-400' :
+                        'bg-gray-500/15 text-gray-400'}`}>
+                        {inv.status === 'paid' ? 'Оплачен' : inv.status === 'pending' ? 'Ожидание' : inv.status === 'cancelled' ? 'Отменён' : inv.status}
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-text-secondary mt-0.5 truncate">
+                      ИНН {inv.inn} · {inv.legal_name}
+                      {' · '}создан {formatDate(inv.created_at)}
+                      {inv.paid_at && <> · оплачен {formatDate(inv.paid_at)}</>}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Transactions */}
         <div className="glass-card rounded-2xl p-6">

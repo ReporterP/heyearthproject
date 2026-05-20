@@ -65,6 +65,12 @@ func ListTenantsHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, pg.Status)
 		idx++
 	}
+	// Row-level scoping: if the calling admin has assigned_tenants set,
+	// filter the result set to that list. Super-admins (NULL) see everything.
+	scopeWhere, args2, idx2 := applyTenantScopeToQuery(r, countQ, args, idx)
+	countQ += scopeWhere
+	args = args2
+	idx = idx2
 	if err := db.DB.QueryRow(countQ, args...).Scan(&total); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "count tenants: "+err.Error())
 		return
@@ -133,6 +139,10 @@ func UpdateTenantHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid tenant id")
 		return
 	}
+	if !adminCanAccessTenant(r, id) {
+		writeAdminError(w, http.StatusForbidden, "tenant not in your scope")
+		return
+	}
 	var payload tenantPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid body")
@@ -162,6 +172,10 @@ func DeleteTenantHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "invalid tenant id")
+		return
+	}
+	if !adminCanAccessTenant(r, id) {
+		writeAdminError(w, http.StatusForbidden, "tenant not in your scope")
 		return
 	}
 	_, err := db.DB.Exec(`DELETE FROM tenants WHERE id = $1`, id)
@@ -209,6 +223,133 @@ func PublicTariffCalculateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]int{"monthly": monthly})
+}
+
+// B2BAnalyticsHandler — aggregate KPIs for the B2B revenue stream.
+// Returns counts by status, MRR (monthly recurring revenue) computed from
+// debits in the last 30 days, top-N tenants by traffic and by spend.
+//
+// Used by admin_web /admin/b2b-analytics page (P2.2).
+func B2BAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
+	type tenantRow struct {
+		ID         int     `json:"id"`
+		Name       string  `json:"name"`
+		Status     string  `json:"status"`
+		Balance    float64 `json:"balance"`
+		Members    int     `json:"members"`
+		MetricBytes int64  `json:"metric_bytes,omitempty"`
+		MetricRub   float64 `json:"metric_rub,omitempty"`
+	}
+	type response struct {
+		Counts        map[string]int   `json:"counts"`        // active / inactive / suspended / total
+		MembersTotal  int              `json:"members_total"` // total B2B users
+		MRR30d        float64          `json:"mrr_30d"`       // sum of debits last 30 days
+		Credits30d    float64          `json:"credits_30d"`   // sum of credits last 30 days (revenue intake)
+		TopByTraffic  []tenantRow      `json:"top_by_traffic"`
+		TopBySpend    []tenantRow      `json:"top_by_spend"`
+		RecentTopups  []map[string]any `json:"recent_topups"` // for activity feed
+	}
+	resp := response{Counts: make(map[string]int)}
+
+	// Counts by status
+	rows, err := db.DB.Query(`SELECT status, COUNT(*) FROM tenants GROUP BY status`)
+	if err == nil {
+		for rows.Next() {
+			var s string; var n int
+			if rows.Scan(&s, &n) == nil { resp.Counts[s] = n }
+		}
+		rows.Close()
+	}
+	var total int
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM tenants`).Scan(&total)
+	resp.Counts["total"] = total
+
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM tenant_members`).Scan(&resp.MembersTotal)
+
+	// MRR = sum of debits in last 30 days. Captures actual revenue recognized
+	// from billing.RunMonthlyTenantBilling rather than just topups.
+	_ = db.DB.QueryRow(`
+		SELECT COALESCE(SUM(amount)::float8, 0) FROM tenant_wallet_transactions
+		WHERE direction = 'debit' AND created_at > NOW() - INTERVAL '30 days'
+	`).Scan(&resp.MRR30d)
+	_ = db.DB.QueryRow(`
+		SELECT COALESCE(SUM(amount)::float8, 0) FROM tenant_wallet_transactions
+		WHERE direction = 'credit' AND created_at > NOW() - INTERVAL '30 days'
+	`).Scan(&resp.Credits30d)
+
+	// Top by traffic (last 30 days, via users.tenant_id ↔ traffic_stats.user_id_text)
+	trafficRows, err := db.DB.Query(`
+		SELECT t.id, t.name, t.status, t.balance::float8,
+		       (SELECT COUNT(*) FROM tenant_members tm WHERE tm.tenant_id = t.id),
+		       COALESCE(SUM(ts.upload_bytes + ts.download_bytes), 0)::bigint
+		FROM tenants t
+		LEFT JOIN users u ON u.tenant_id = t.id
+		LEFT JOIN traffic_stats ts ON ts.user_id = u.user_id AND ts.recorded_at > NOW() - INTERVAL '30 days'
+		GROUP BY t.id
+		ORDER BY 6 DESC NULLS LAST
+		LIMIT 10
+	`)
+	if err == nil {
+		for trafficRows.Next() {
+			var r tenantRow
+			if err := trafficRows.Scan(&r.ID, &r.Name, &r.Status, &r.Balance, &r.Members, &r.MetricBytes); err == nil && r.MetricBytes > 0 {
+				resp.TopByTraffic = append(resp.TopByTraffic, r)
+			}
+		}
+		trafficRows.Close()
+	}
+
+	// Top by spend (debit amount last 30 days)
+	spendRows, err := db.DB.Query(`
+		SELECT t.id, t.name, t.status, t.balance::float8,
+		       (SELECT COUNT(*) FROM tenant_members tm WHERE tm.tenant_id = t.id),
+		       COALESCE(SUM(tx.amount), 0)::float8
+		FROM tenants t
+		LEFT JOIN tenant_wallet_transactions tx ON tx.tenant_id = t.id AND tx.direction = 'debit' AND tx.created_at > NOW() - INTERVAL '30 days'
+		GROUP BY t.id
+		ORDER BY 6 DESC NULLS LAST
+		LIMIT 10
+	`)
+	if err == nil {
+		for spendRows.Next() {
+			var r tenantRow
+			if err := spendRows.Scan(&r.ID, &r.Name, &r.Status, &r.Balance, &r.Members, &r.MetricRub); err == nil && r.MetricRub > 0 {
+				resp.TopBySpend = append(resp.TopBySpend, r)
+			}
+		}
+		spendRows.Close()
+	}
+
+	// Recent topups (last 10 credits)
+	topupRows, err := db.DB.Query(`
+		SELECT tx.id, tx.tenant_id, t.name, tx.amount::float8, tx.description, tx.created_at
+		FROM tenant_wallet_transactions tx
+		JOIN tenants t ON t.id = tx.tenant_id
+		WHERE tx.direction = 'credit'
+		ORDER BY tx.id DESC
+		LIMIT 10
+	`)
+	if err == nil {
+		for topupRows.Next() {
+			var id, tenantID int
+			var name, desc string
+			var amount float64
+			var createdAt time.Time
+			if err := topupRows.Scan(&id, &tenantID, &name, &amount, &desc, &createdAt); err == nil {
+				resp.RecentTopups = append(resp.RecentTopups, map[string]any{
+					"id":          id,
+					"tenant_id":   tenantID,
+					"tenant_name": name,
+					"amount":      amount,
+					"description": desc,
+					"created_at":  createdAt.Format(time.RFC3339),
+				})
+			}
+		}
+		topupRows.Close()
+	}
+
+	writeAdminJSON(w, http.StatusOK, resp)
 }
 
 // UnassignedB2BInvoicesHandler lists payments with kind='b2b_invoice' that have
@@ -282,6 +423,11 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.TenantID <= 0 {
 		writeAdminError(w, http.StatusBadRequest, "tenant_id required")
+		return
+	}
+	// Row-level scoping: scoped admins can only attach payments to their own tenants.
+	if !adminCanAccessTenant(r, req.TenantID) {
+		writeAdminError(w, http.StatusForbidden, "tenant not in your scope")
 		return
 	}
 

@@ -27,6 +27,7 @@ import AuditLogPage from './pages/AuditLogPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import AutoTunerPage from './pages/AutoTunerPage.jsx'
 import PlansPage from './pages/PlansPage.jsx'
+import B2BAnalyticsPage from './pages/B2BAnalyticsPage.jsx'
 import './style.css'
 
 createRoot(document.getElementById('root')).render(
@@ -54,6 +55,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/releases" element={<ReleasesPage />} />
                   <Route path="/admins" element={<AdminsPage />} />
                   <Route path="/tenants" element={<TenantsPage />} />
+                  <Route path="/b2b-analytics" element={<B2BAnalyticsPage />} />
                   <Route path="/traffic-masking" element={<TrafficMaskingPage />} />
                   <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />

@@ -178,6 +178,17 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		}),
 		payment.Test, paymentDBID)
 
+	// Persist a denormalized invoice record so the tenant's dashboard can list
+	// historic invoices without parsing payment JSONB metadata. Status here
+	// mirrors payment.status — webhook updates it to 'paid' on success.
+	_, _ = db.DB.Exec(`
+		INSERT INTO invoice_records (tenant_id, payment_id, inn, legal_name, amount, currency,
+		                              status, description, payer_email, yookassa_payment_id)
+		VALUES ($1, $2, $3, $4, $5, 'RUB', 'pending', $6, $7, $8)
+		ON CONFLICT DO NOTHING
+	`, tenant.ID, paymentDBID, req.INN, req.CompanyName, float64(req.Amount),
+		description, req.Email, payment.ID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_id":       paymentDBID,
 		"confirmation_url": confirmationURL,

@@ -18,6 +18,7 @@ const navItems = [
   { to: '/releases', label: 'navReleases', perm: 'releases.read', icon: ReleasesIcon, hideForTenant: true },
   { to: '/admins', label: 'navAdmins', perm: 'admins.read', icon: AdminsIcon, hideForTenant: true },
   { to: '/tenants', label: 'navTenants', perm: 'tenants.read', icon: TenantsIcon, hideForTenant: true },
+  { to: '/b2b-analytics', label: 'navB2BAnalytics', perm: 'tenants.read', icon: TenantsIcon, hideForTenant: true },
   { to: '/audit-log', label: 'navAuditLog', perm: 'audit.read', icon: AuditIcon, hideForTenant: true },
   { to: '/auto-tuner', label: 'navAutoTuner', perm: 'settings.read', icon: AutoTunerIcon, hideForTenant: true },
   { to: '/settings', label: 'navSettings', perm: null, icon: SettingsIcon, hideForTenant: true },

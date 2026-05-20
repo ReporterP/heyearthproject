@@ -497,6 +497,16 @@ func creditTenantFromPayment(p *yookassa.Payment, metadata string, paymentDBID i
 	log.Printf("[yookassa-webhook] ✓ %s tenant_id=%d credited %.2f ₽ (balance=%.2f, activated=%v)",
 		kind, tenantID, amount, res.NewBalance, res.Activated)
 
+	// Mark the matching invoice_records row as paid (no-op for tenant_topup
+	// which doesn't have one). Best-effort — not having the row isn't fatal.
+	if kind == "b2b_invoice" {
+		_, _ = db.DB.Exec(`
+			UPDATE invoice_records
+			SET status = 'paid', paid_at = NOW(), updated_at = NOW()
+			WHERE payment_id = $1 AND status != 'paid'
+		`, paymentDBID)
+	}
+
 	// Fire-and-forget email — don't let SMTP errors block webhook ack.
 	go sendTenantCreditEmail(tenantID, amount, res.NewBalance, res.Activated, kind, paymentDBID)
 	return nil

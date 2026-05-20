@@ -54,3 +54,14 @@ export async function removeBusinessMember(token, userDbId) {
   })
   return jsonOrThrow(res, 'Failed to remove member')
 }
+
+// PATCH /api/v1/business/members/{user_db_id} — change role (admin only).
+// Server refuses to demote the last admin (returns 409).
+export async function changeBusinessMemberRole(token, userDbId, role) {
+  const res = await fetch(`${API_BASE}/api/v1/business/members/${userDbId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ role }),
+  })
+  return jsonOrThrow(res, 'Failed to change role')
+}

@@ -303,4 +303,7 @@ export default {
   paymentsRealRevenue: 'Реальный доход',
   paymentsSucceededNonTest: 'succeeded, не тестовые',
   paymentsVisibleSum: 'Сумма видимых',
+
+  // B2B nav
+  navB2BAnalytics: 'B2B Аналитика',
 }

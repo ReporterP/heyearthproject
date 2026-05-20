@@ -316,6 +316,10 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/payments/unassigned-b2b-invoices",
 		AuthMiddleware(RequirePermission("tenants.read", UnassignedB2BInvoicesHandler).ServeHTTP))
 
+	// B2B analytics — aggregate KPIs (counts by status, MRR, top tenants).
+	http.HandleFunc("/api/admin/b2b-analytics",
+		AuthMiddleware(RequirePermission("tenants.read", B2BAnalyticsHandler).ServeHTTP))
+
 	// Traffic masking
 	http.HandleFunc("/api/admin/traffic-masking", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

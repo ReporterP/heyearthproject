@@ -40,6 +40,22 @@ type b2bMeResponse struct {
 	Role         string           `json:"role"`
 	Members      []b2bMember      `json:"members"`
 	Transactions []b2bTransaction `json:"transactions"`
+	Invoices     []b2bInvoice     `json:"invoices"`
+}
+
+type b2bInvoice struct {
+	ID                int     `json:"id"`
+	PaymentID         *int    `json:"payment_id,omitempty"`
+	INN               string  `json:"inn"`
+	LegalName         string  `json:"legal_name"`
+	Amount            float64 `json:"amount"`
+	Currency          string  `json:"currency"`
+	Status            string  `json:"status"`
+	Description       string  `json:"description"`
+	PayerEmail        string  `json:"payer_email"`
+	YookassaPaymentID string  `json:"yookassa_payment_id,omitempty"`
+	CreatedAt         string  `json:"created_at"`
+	PaidAt            string  `json:"paid_at,omitempty"`
 }
 
 type b2bTenantSummary struct {
@@ -156,6 +172,9 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invoice history (last 20). Denormalized table created in migration 000037.
+	invoices := loadTenantInvoices(tenantID, 20)
+
 	resp := b2bMeResponse{
 		Tenant: b2bTenantSummary{
 			ID:                 tenant.ID,
@@ -174,6 +193,7 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		Role:         role,
 		Members:      make([]b2bMember, 0, len(members)),
 		Transactions: make([]b2bTransaction, 0, len(txns)),
+		Invoices:     invoices,
 	}
 	for _, m := range members {
 		resp.Members = append(resp.Members, b2bMember{
@@ -378,16 +398,20 @@ func handleBusinessInvite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleBusinessMembers handles DELETE /api/v1/business/members/{user_db_id}.
-// Admin role only. Cannot remove the last admin (would orphan the tenant).
+// handleBusinessMembers handles both:
+//   DELETE /api/v1/business/members/{user_db_id} — remove member
+//   PATCH  /api/v1/business/members/{user_db_id} — change role (admin only)
+//
+// Both refuse to demote/remove the last admin so the tenant can never be
+// orphaned.
 func handleBusinessMembers(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "DELETE only"})
+	if r.Method != http.MethodDelete && r.Method != http.MethodPatch {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "DELETE or PATCH only"})
 		return
 	}
 
@@ -408,9 +432,10 @@ func handleBusinessMembers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
 		return
 	}
+	_ = callerDBID
 
-	// Safety: refuse to delete the last admin. Without this an admin could
-	// accidentally orphan the tenant and lose access to billing.
+	// Both PATCH and DELETE need to know the target's current role for the
+	// last-admin safety check.
 	targetRole, ok, err := biz.GetTenantMember(tenantID, target)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -420,6 +445,40 @@ func handleBusinessMembers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "member not found"})
 		return
 	}
+
+	if r.Method == http.MethodPatch {
+		var body struct{ Role string `json:"role"` }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		newRole := strings.TrimSpace(body.Role)
+		switch newRole {
+		case "admin", "billing", "viewer", "user":
+			// ok
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role"})
+			return
+		}
+		if newRole == targetRole {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": newRole, "noop": true})
+			return
+		}
+		// Demoting the last admin would lock the tenant. Refuse.
+		if targetRole == "admin" && newRole != "admin" {
+			var adminCount int
+			_ = db.DB.QueryRow(`SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1 AND role = 'admin'`, tenantID).Scan(&adminCount)
+			if adminCount <= 1 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "cannot demote the last admin"})
+				return
+			}
+		}
+		if err := biz.AddTenantMember(tenantID, target, newRole); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user_db_id": target, "role": newRole})
+		return
+	}
+
+	// DELETE
 	if targetRole == "admin" {
 		var adminCount int
 		_ = db.DB.QueryRow(`SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1 AND role = 'admin'`, tenantID).Scan(&adminCount)
@@ -428,13 +487,54 @@ func handleBusinessMembers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_ = callerDBID
-
 	if err := biz.RemoveTenantMember(tenantID, target); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_user_id": target})
+}
+
+// loadTenantInvoices reads the most recent N rows of invoice_records for the
+// given tenant. Tolerant of an empty table — invoice_records may not yet
+// exist if migration 000037 hasn't been applied (returns empty slice).
+func loadTenantInvoices(tenantID, limit int) []b2bInvoice {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := db.DB.Query(`
+		SELECT id, payment_id, inn, legal_name, amount::float8, currency, status,
+		       description, payer_email, COALESCE(yookassa_payment_id, ''),
+		       created_at, paid_at
+		FROM invoice_records
+		WHERE tenant_id = $1
+		ORDER BY id DESC
+		LIMIT $2
+	`, tenantID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []b2bInvoice
+	for rows.Next() {
+		var inv b2bInvoice
+		var paymentID sql.NullInt64
+		var paidAt sql.NullTime
+		var createdAt time.Time
+		if err := rows.Scan(&inv.ID, &paymentID, &inv.INN, &inv.LegalName, &inv.Amount, &inv.Currency, &inv.Status,
+			&inv.Description, &inv.PayerEmail, &inv.YookassaPaymentID, &createdAt, &paidAt); err != nil {
+			continue
+		}
+		if paymentID.Valid {
+			pid := int(paymentID.Int64)
+			inv.PaymentID = &pid
+		}
+		inv.CreatedAt = createdAt.Format(time.RFC3339)
+		if paidAt.Valid {
+			inv.PaidAt = paidAt.Time.Format(time.RFC3339)
+		}
+		out = append(out, inv)
+	}
+	return out
 }
 
 // generateInviteCode returns a short URL-safe code. 12 random base32 chars =
