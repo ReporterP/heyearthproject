@@ -110,6 +110,13 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/payments/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		// B2B reconciliation: /api/admin/payments/{id}/attach-tenant binds
+		// a previously orphaned b2b_invoice payment to a tenant + credits
+		// the wallet if the payment is already paid.
+		if strings.HasSuffix(path, "/attach-tenant") {
+			RequirePermission("tenants.write", AttachPaymentToTenantHandler).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/check-status") || path == "/api/admin/payments/resend" {
 			// Delegate to payment action handlers registered externally
 			if PaymentActionHandler != nil {
@@ -301,6 +308,13 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
+
+	// B2B reconciliation — list orphan b2b_invoice payments. Pre-fix payments
+	// (before migration 000036) lack tenant_id in metadata; this lets ops
+	// see them and attach to a tenant via the existing /api/admin/payments/
+	// dispatcher (which routes /{id}/attach-tenant to AttachPaymentToTenantHandler).
+	http.HandleFunc("/api/admin/payments/unassigned-b2b-invoices",
+		AuthMiddleware(RequirePermission("tenants.read", UnassignedB2BInvoicesHandler).ServeHTTP))
 
 	// Traffic masking
 	http.HandleFunc("/api/admin/traffic-masking", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {

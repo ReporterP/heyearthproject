@@ -445,6 +445,17 @@ func DebitTenantWallet(tenantID int, amount float64, description string) error {
 
 // Tenant claim codes
 
+// RedeemTenantClaimCode binds the calling user to a tenant via a one-shot
+// claim code (created by an admin or by the public signup flow). It writes
+// both `users.tenant_id` (the legacy primary-tenant field) AND a row in
+// `tenant_members` with a role parsed from the code's prefix.
+//
+// Code formats:
+//   tn-r-admin-XXX    → admin role
+//   tn-r-billing-XXX  → billing role
+//   tn-r-viewer-XXX   → viewer role
+//   tn-r-user-XXX     → user role (default)
+//   anything else     → user role
 func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err error) {
 	tx, err := db.DB.Begin()
 	if err != nil {
@@ -472,12 +483,44 @@ func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err err
 		return 0, err
 	}
 
-	_, err = tx.Exec(`UPDATE users SET tenant_id = $1 WHERE user_id = $2`, tenantID, userID)
-	if err != nil {
+	// Resolve user numeric id — needed for tenant_members FK.
+	var userDBID int
+	if err = tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+		return 0, fmt.Errorf("resolve user id: %w", err)
+	}
+
+	// Mirror primary tenant on users for legacy code paths that still filter on it.
+	if _, err = tx.Exec(`UPDATE users SET tenant_id = $1 WHERE id = $2`, tenantID, userDBID); err != nil {
 		return 0, err
 	}
 
+	// Add membership with role parsed from code prefix.
+	role := parseRoleFromCode(code)
+	if _, err = tx.Exec(`
+		INSERT INTO tenant_members (tenant_id, user_id, role)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role
+	`, tenantID, userDBID, role); err != nil {
+		return 0, fmt.Errorf("add membership: %w", err)
+	}
+
 	return tenantID, tx.Commit()
+}
+
+// parseRoleFromCode extracts the role hint embedded in the claim code by
+// b2b_handlers.go and PublicCreateTenantHandler. Falls back to 'user' on
+// unrecognized formats.
+func parseRoleFromCode(code string) string {
+	if !strings.HasPrefix(code, "tn-r-") {
+		return "user"
+	}
+	rest := strings.TrimPrefix(code, "tn-r-")
+	for _, role := range []string{"admin", "billing", "viewer", "user"} {
+		if strings.HasPrefix(rest, role+"-") {
+			return role
+		}
+	}
+	return "user"
 }
 
 // Multiple accounts per telegram user

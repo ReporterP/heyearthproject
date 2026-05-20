@@ -22,6 +22,8 @@ import ConnectionsPage from './pages/ConnectionsPage.jsx'
 import CheckoutPage from './pages/CheckoutPage.jsx'
 import PaymentDetailPage from './pages/PaymentDetailPage.jsx'
 import BusinessInvoicePage from './pages/BusinessInvoicePage.jsx'
+import BusinessDashboardPage from './pages/BusinessDashboardPage.jsx'
+import ClaimCodePage from './pages/ClaimCodePage.jsx'
 
 function NotFoundPage() {
   return (
@@ -54,6 +56,10 @@ function App() {
             <Route path="/business" element={<BusinessPage />} />
             <Route path="/business/signup" element={<BusinessSignupPage />} />
             <Route path="/business/invoice" element={<BusinessInvoicePage />} />
+            {/* B2B self-service dashboard — requires login + tenant membership */}
+            <Route path="/business/dashboard" element={<RequireAuth><BusinessDashboardPage /></RequireAuth>} />
+            {/* Claim a tenant invite code — auth-gated inside the page (it stashes intent and redirects to /login) */}
+            <Route path="/claim/:code" element={<ClaimCodePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />

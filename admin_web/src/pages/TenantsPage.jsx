@@ -26,6 +26,54 @@ export default function TenantsPage() {
   const [invoiceLoading, setInvoiceLoading] = useState(false)
   const [invoiceResult, setInvoiceResult] = useState(null)
 
+  // Unassigned-invoices reconciliation modal (P1.6).
+  // Lists b2b_invoice payments with no tenant_id in metadata so admin can
+  // link them retroactively. After fix the count should naturally drop to 0.
+  const [unassignedOpen, setUnassignedOpen] = useState(false)
+  const [unassignedItems, setUnassignedItems] = useState([])
+  const [unassignedLoading, setUnassignedLoading] = useState(false)
+  const [attachTargets, setAttachTargets] = useState({}) // {payment_id: tenant_id}
+  const [attachBusy, setAttachBusy] = useState({})       // {payment_id: bool}
+
+  async function openUnassigned() {
+    setUnassignedOpen(true)
+    setUnassignedLoading(true)
+    try {
+      const res = await fetch('/api/admin/payments/unassigned-b2b-invoices', {
+        headers: { Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'load failed')
+      setUnassignedItems(data.items || [])
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setUnassignedLoading(false)
+    }
+  }
+
+  async function attachPayment(paymentId) {
+    const tenantId = attachTargets[paymentId]
+    if (!tenantId) { toast.error('Выберите компанию'); return }
+    setAttachBusy(b => ({ ...b, [paymentId]: true }))
+    try {
+      const res = await fetch(`/api/admin/payments/${paymentId}/attach-tenant`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
+        body: JSON.stringify({ tenant_id: Number(tenantId) }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'attach failed')
+      toast.success(data.credited ? `Привязано и зачислено в «${data.tenant_name}»` : `Привязано к «${data.tenant_name}»`)
+      // Drop from list — done.
+      setUnassignedItems(items => items.filter(p => p.id !== paymentId))
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setAttachBusy(b => ({ ...b, [paymentId]: false }))
+    }
+  }
+
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [contactEmail, setContactEmail] = useState('')
@@ -95,13 +143,22 @@ export default function TenantsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 className="text-2xl font-bold">{t.tenantsTitle}</h2>
-        {can('tenants.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.createTenant}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {can('tenants.read') && (
+            <button
+              onClick={openUnassigned}
+              className="px-3 py-2 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 text-sm font-medium hover:bg-amber-500/25 transition"
+              title="Привязать осиротевшие платежи B2B к компаниям"
+            >Привязать платежи</button>
+          )}
+          {can('tenants.write') && (
+            <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
+              + {t.createTenant}
+            </button>
+          )}
+        </div>
       </div>
 
       <SearchPaginationBar
@@ -249,6 +306,67 @@ export default function TenantsPage() {
                     {invoiceLoading ? 'Создаём...' : 'Создать счёт'}
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Unassigned b2b_invoice reconciliation (P1.6) */}
+      {unassignedOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setUnassignedOpen(false)}>
+          <div onClick={e => e.stopPropagation()} className="w-full max-w-3xl max-h-[85vh] overflow-y-auto rounded-2xl bg-surface-card border border-white/10 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-bold">Привязать платежи B2B</h3>
+                <p className="text-xs text-text-secondary mt-0.5">Платежи b2b_invoice без tenant_id — выберите компанию для зачисления.</p>
+              </div>
+              <button onClick={() => setUnassignedOpen(false)} className="text-text-secondary hover:text-text-primary">✕</button>
+            </div>
+
+            {unassignedLoading ? (
+              <p className="text-sm text-text-secondary py-8 text-center">Загрузка…</p>
+            ) : unassignedItems.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-sm text-text-secondary">Все платежи привязаны 🎉</p>
+                <p className="text-xs text-text-secondary mt-1">Новые инвойсы автоматически получают tenant_id (либо по явному admin-выбору, либо по INN-lookup).</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {unassignedItems.map(p => (
+                  <div key={p.id} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">
+                          #{p.id} · {p.amount.toLocaleString('ru-RU')} {p.currency}
+                          {' · '}<span className={`text-xs px-1.5 py-0.5 rounded ${p.status === 'completed' ? 'bg-green-500/15 text-green-400' : 'bg-yellow-500/15 text-yellow-400'}`}>{p.status}</span>
+                        </p>
+                        <p className="text-[11px] text-text-secondary mt-0.5">
+                          {p.company_name && <>«{p.company_name}» · </>}
+                          {p.inn && <>ИНН {p.inn} · </>}
+                          {p.payer_email && <>{p.payer_email}</>}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={attachTargets[p.id] || ''}
+                          onChange={e => setAttachTargets(t => ({ ...t, [p.id]: e.target.value }))}
+                          className="px-2 py-1.5 rounded-lg bg-surface-alt border border-white/10 text-xs text-text-primary"
+                        >
+                          <option value="">— компания —</option>
+                          {(paged.items || []).map(t => (
+                            <option key={t.id} value={t.id}>{t.name} ({t.status})</option>
+                          ))}
+                        </select>
+                        <button
+                          disabled={!attachTargets[p.id] || attachBusy[p.id]}
+                          onClick={() => attachPayment(p.id)}
+                          className="px-3 py-1.5 rounded-lg bg-brand text-white text-xs font-medium hover:bg-brand-dark transition disabled:opacity-50"
+                        >{attachBusy[p.id] ? '…' : 'Привязать'}</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>

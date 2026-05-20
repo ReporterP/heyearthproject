@@ -935,6 +935,13 @@ func main() {
 
 	// B2B invoice — публичный endpoint, доступен без авторизации
 	http.HandleFunc("/api/v1/business/create-invoice", apiLimiter.Middleware(handleCreateInvoice))
+	// B2B self-service (Phase P1): tenant dashboard + topup + invite + member mgmt.
+	// All endpoints check tenant_members for role-based access.
+	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(handleBusinessMe))
+	http.HandleFunc("/api/v1/business/topup-init", apiLimiter.Middleware(handleBusinessTopupInit))
+	http.HandleFunc("/api/v1/business/invite", apiLimiter.Middleware(handleBusinessInvite))
+	// DELETE /api/v1/business/members/{user_db_id} — uses trailing slash routing.
+	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(handleBusinessMembers))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
 	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))

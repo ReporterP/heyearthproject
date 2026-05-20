@@ -26,12 +26,18 @@ export default function BusinessSignupPage() {
     setSpecs(prev => ({ ...prev, [key]: value }))
   }
 
+  // Holds backend response after a successful signup. Used to surface the
+  // claim URL to users who don't have a HiEarth account yet — they can copy
+  // it from the success card without waiting for email delivery.
+  const [signupResult, setSignupResult] = useState(null)
+
   async function submit() {
     if (!email.trim()) { setError('Укажите email'); return }
     if (!companyName.trim()) { setError('Укажите название компании'); return }
     setSubmitting(true); setError('')
     try {
-      await createTenant({ email, companyName, specs })
+      const res = await createTenant({ email, companyName, specs })
+      setSignupResult(res || null)
       setSubmitted(true)
     } catch (e) {
       setError(e.message || 'Ошибка. Попробуйте позже.')
@@ -67,12 +73,33 @@ export default function BusinessSignupPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <h2 className="text-2xl font-bold mb-2">Готово!</h2>
-            <p className="text-text-secondary leading-relaxed">
-              Данные для входа в панель управления отправлены на{' '}
+            <h2 className="text-2xl font-bold mb-2">Аккаунт компании создан</h2>
+            <p className="text-text-secondary leading-relaxed mb-6">
+              Письмо с инструкциями отправлено на{' '}
               <span className="text-text-primary font-medium">{email}</span>.
-              Пополните кошелёк и активируйте выбранные параметры.
+              Чтобы активировать аккаунт — войдите в кабинет компании и пополните кошелёк.
             </p>
+
+            {/* Claim URL (only when backend created a fresh user invite). Shown
+                so the new admin can act immediately without checking email. */}
+            {signupResult?.claim_url && (
+              <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10 text-left mb-6">
+                <p className="text-[11px] text-text-secondary uppercase tracking-wider mb-2">Ссылка для активации</p>
+                <code className="block font-mono text-xs break-all select-all text-text-primary">{signupResult.claim_url}</code>
+                <p className="text-[11px] text-text-secondary mt-2">
+                  Зарегистрируйтесь на сайте, затем откройте эту ссылку — мы привяжем ваш аккаунт к компании.
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <a href="/login" className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white text-sm font-semibold hover:shadow-lg hover:shadow-brand/25 transition">
+                Войти в аккаунт
+              </a>
+              <a href="/register" className="px-5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm font-medium hover:bg-white/10 transition">
+                Зарегистрироваться
+              </a>
+            </div>
           </div>
         ) : (
           <>
