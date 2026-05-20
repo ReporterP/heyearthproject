@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -18,8 +19,20 @@ import (
 // с правильной фискализацией.
 //
 // Endpoint: POST /api/v1/business/create-invoice
-// body: {"inn":"7707083893","company_name":"ООО ...","amount":5000,"description":"...","email":"..."}
-// return: confirmation_url (redirect на оплату)
+// body: {"inn":"7707083893","company_name":"ООО ...","amount":5000,"description":"...","email":"...","tenant_id":42 (optional)}
+// return: confirmation_url (redirect на оплату), tenant_id
+//
+// Tenant linkage:
+//   1. Explicit tenant_id wins (e.g. admin creating an invoice from the embed
+//      modal in TenantsPage).
+//   2. Otherwise we look up tenants.inn — keeps repeat customers connected to
+//      their previous tenant.
+//   3. Otherwise we create a NEW tenant with status='inactive'. The webhook
+//      auto-activates it on successful credit (see CreditTenantWallet).
+//
+// We ALWAYS write tenant_id into payment metadata so the webhook can credit
+// the right wallet. Before this fix, public invoices left tenant_id empty and
+// the webhook had no way to route the money.
 
 func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
@@ -39,6 +52,7 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		Email       string `json:"email"`
 		ReturnURL   string `json:"return_url"`
+		TenantID    int    `json:"tenant_id"` // optional: explicit linkage (admin form)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
@@ -65,6 +79,14 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email для отправки счёта обязателен"})
+		return
+	}
+
+	// Resolve the tenant *before* creating the YooKassa payment so the
+	// metadata is correct from the first message.
+	tenant, err := resolveTenantForInvoice(req.TenantID, req.INN, req.CompanyName, req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resolve tenant: " + err.Error()})
 		return
 	}
 
@@ -122,6 +144,7 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 			"kind":          "b2b_invoice",
 			"inn":           req.INN,
 			"company_name":  req.CompanyName,
+			"tenant_id":     fmt.Sprintf("%d", tenant.ID),
 		},
 	}
 
@@ -136,6 +159,9 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		confirmationURL = payment.Confirmation.ConfirmationURL
 	}
 
+	// Persist the full metadata (kind, inn, company_name, tenant_id) so the
+	// webhook can read it back deterministically. Without tenant_id in the
+	// DB row, the credit step would have nowhere to route money.
 	_, _ = db.DB.Exec(`
 		UPDATE payments SET
 			yookassa_payment_id = $1::text, yookassa_status = $2::text,
@@ -144,7 +170,12 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $7
 	`, payment.ID, payment.Status, confirmationURL, req.Email,
-		mustJSON(map[string]interface{}{"kind": "b2b_invoice", "inn": req.INN, "company_name": req.CompanyName}),
+		mustJSON(map[string]interface{}{
+			"kind":         "b2b_invoice",
+			"inn":          req.INN,
+			"company_name": req.CompanyName,
+			"tenant_id":    tenant.ID,
+		}),
 		payment.Test, paymentDBID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -153,5 +184,31 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		"amount":           req.Amount,
 		"email":            req.Email,
 		"company_name":     req.CompanyName,
+		"tenant_id":        tenant.ID,
+		"tenant_status":    tenant.Status,
 	})
+}
+
+// resolveTenantForInvoice picks (or creates) the tenant the invoice belongs to.
+// Priority: explicit tenantID → existing tenant by INN → new inactive tenant.
+func resolveTenantForInvoice(explicitID int, inn, legalName, email string) (*biz.Tenant, error) {
+	if explicitID > 0 {
+		t, err := biz.GetTenantByID(explicitID)
+		if err != nil {
+			return nil, err
+		}
+		if t != nil {
+			return t, nil
+		}
+		log.Printf("[invoice] explicit tenant_id=%d not found; falling back to INN lookup", explicitID)
+	}
+	if existing, err := biz.FindTenantByINN(inn); err == nil && existing != nil {
+		return existing, nil
+	}
+	created, err := biz.CreateInactiveTenantFromInvoice(inn, legalName, email)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[invoice] created inactive tenant id=%d for INN %s (%q)", created.ID, inn, legalName)
+	return created, nil
 }

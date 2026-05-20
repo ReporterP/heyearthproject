@@ -3,6 +3,7 @@ package biz
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
@@ -111,29 +112,304 @@ func ActivateSubscription(userID string, groupID int, plan string, durationDays 
 	return err
 }
 
+// Tenant — minimal B2B tenant record. Mirrors the columns used by the
+// public-API/webhook code paths; admin handlers have their own response
+// type with additional fields.
+type Tenant struct {
+	ID                 int
+	Name               string
+	Slug               string
+	Status             string
+	Plan               string
+	ContactEmail       string
+	BillingNotes       string
+	MaxUsers           int
+	MaxServers         int
+	UseProviderServers bool
+	Balance            float64
+	INN                string
+	CreatedAt          time.Time
+}
+
+// GetTenantByID returns a tenant by primary key (or nil if not found).
+func GetTenantByID(id int) (*Tenant, error) {
+	t := &Tenant{}
+	var inn sql.NullString
+	err := db.DB.QueryRow(`
+		SELECT id, name, slug, status, plan, COALESCE(contact_email,''), COALESCE(billing_notes,''),
+		       max_users, max_servers, use_provider_servers, balance::float8, COALESCE(inn,''), created_at
+		FROM tenants WHERE id = $1
+	`, id).Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.Plan, &t.ContactEmail, &t.BillingNotes,
+		&t.MaxUsers, &t.MaxServers, &t.UseProviderServers, &t.Balance, &inn, &t.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if inn.Valid {
+		t.INN = inn.String
+	}
+	return t, nil
+}
+
 // Tenant wallet
 
-func CreditTenantWallet(tenantID int, amount float64, description string, paymentID *int) error {
+// CreditTenantWalletResult tells the caller what happened so they can fire
+// downstream side-effects (welcome email, log entry) idempotently. Activated
+// is true iff this credit transitioned the tenant from 'inactive' to 'active'.
+type CreditTenantWalletResult struct {
+	NewBalance float64
+	Activated  bool
+}
+
+func CreditTenantWallet(tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
+	var res CreditTenantWalletResult
 	tx, err := db.DB.Begin()
 	if err != nil {
-		return err
+		return res, err
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`
+	// Capture the pre-credit status under FOR UPDATE so we can detect the
+	// inactive→active transition. Locking the row also serializes concurrent
+	// credits against the same tenant (e.g. two webhooks racing).
+	var oldStatus string
+	if err := tx.QueryRow(`SELECT status FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&oldStatus); err != nil {
+		return res, fmt.Errorf("lock tenant %d: %w", tenantID, err)
+	}
+
+	if _, err := tx.Exec(`
 		INSERT INTO tenant_wallet_transactions (tenant_id, amount, direction, description, payment_id)
 		VALUES ($1, $2, 'credit', $3, $4)
-	`, tenantID, amount, description, paymentID)
-	if err != nil {
-		return err
+	`, tenantID, amount, description, paymentID); err != nil {
+		return res, fmt.Errorf("insert wallet txn: %w", err)
 	}
 
-	_, err = tx.Exec(`UPDATE tenants SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, amount, tenantID)
-	if err != nil {
-		return err
+	// Apply credit; auto-activate if tenant was inactive (first payment unlocks
+	// the account). Status stays 'suspended' or 'active' otherwise.
+	if err := tx.QueryRow(`
+		UPDATE tenants
+		SET balance = balance + $1,
+		    status = CASE WHEN status = 'inactive' THEN 'active' ELSE status END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2
+		RETURNING balance::float8
+	`, amount, tenantID).Scan(&res.NewBalance); err != nil {
+		return res, fmt.Errorf("update tenant balance: %w", err)
 	}
 
-	return tx.Commit()
+	if oldStatus == "inactive" {
+		res.Activated = true
+	}
+	return res, tx.Commit()
+}
+
+// ── Tenant members (B2B many-to-many) ──────────────────────────────────────
+//
+// tenant_members holds the source-of-truth for "which users have what role
+// inside which tenant". A user can belong to multiple tenants. Roles:
+//   admin   — full control, including billing/topup and managing members
+//   billing — can top up the wallet, view transactions, but not invite users
+//   viewer  — read-only access to tenant dashboard
+//   user    — proxy access only, no dashboard rights
+//
+// Note: users.tenant_id is preserved as the "primary tenant" for legacy queries
+// that filter on it (servers, user_groups). New code should consult this table.
+
+type TenantMember struct {
+	TenantID int
+	UserID   int
+	UserGUID string
+	Username string
+	Email    string
+	Role     string
+	JoinedAt time.Time
+}
+
+func AddTenantMember(tenantID, userID int, role string) error {
+	if role == "" {
+		role = "user"
+	}
+	_, err := db.DB.Exec(`
+		INSERT INTO tenant_members (tenant_id, user_id, role)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = $3
+	`, tenantID, userID, role)
+	return err
+}
+
+func RemoveTenantMember(tenantID, userID int) error {
+	_, err := db.DB.Exec(`DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID)
+	return err
+}
+
+// GetTenantMember returns the role for (tenantID, userID), or ok=false if no
+// membership exists. Callers use this for permission checks.
+func GetTenantMember(tenantID, userID int) (role string, ok bool, err error) {
+	err = db.DB.QueryRow(`SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&role)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return role, true, nil
+}
+
+func ListTenantMembers(tenantID int) ([]TenantMember, error) {
+	rows, err := db.DB.Query(`
+		SELECT m.tenant_id, m.user_id, u.user_id, COALESCE(u.username, ''), COALESCE(u.email, ''), m.role, m.joined_at
+		FROM tenant_members m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.tenant_id = $1
+		ORDER BY m.role = 'admin' DESC, m.joined_at ASC
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []TenantMember
+	for rows.Next() {
+		var m TenantMember
+		if err := rows.Scan(&m.TenantID, &m.UserID, &m.UserGUID, &m.Username, &m.Email, &m.Role, &m.JoinedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, m)
+	}
+	return result, rows.Err()
+}
+
+// PrimaryTenantForUser returns the tenant_id the user is a member of with the
+// highest-priority role (admin > billing > viewer > user), or 0 if none.
+// Used by /api/v1/business/me to pick which tenant to show by default.
+func PrimaryTenantForUser(userID int) (tenantID int, role string, err error) {
+	err = db.DB.QueryRow(`
+		SELECT tenant_id, role FROM tenant_members
+		WHERE user_id = $1
+		ORDER BY CASE role
+		  WHEN 'admin'   THEN 1
+		  WHEN 'billing' THEN 2
+		  WHEN 'viewer'  THEN 3
+		  ELSE                4
+		END
+		LIMIT 1
+	`, userID).Scan(&tenantID, &role)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	return tenantID, role, err
+}
+
+// ListTenantTransactions returns the most recent N wallet entries (debit+credit
+// mixed, newest first). Used by /api/v1/business/me and admin TenantsPage.
+type TenantTransaction struct {
+	ID          int
+	TenantID    int
+	Amount      float64
+	Direction   string // "credit" or "debit"
+	Description string
+	PaymentID   *int
+	CreatedAt   time.Time
+}
+
+func ListTenantTransactions(tenantID, limit int) ([]TenantTransaction, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := db.DB.Query(`
+		SELECT id, tenant_id, amount::float8, direction, COALESCE(description, ''), payment_id, created_at
+		FROM tenant_wallet_transactions
+		WHERE tenant_id = $1
+		ORDER BY id DESC
+		LIMIT $2
+	`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []TenantTransaction
+	for rows.Next() {
+		var t TenantTransaction
+		var paymentID sql.NullInt64
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.Amount, &t.Direction, &t.Description, &paymentID, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		if paymentID.Valid {
+			pid := int(paymentID.Int64)
+			t.PaymentID = &pid
+		}
+		result = append(result, t)
+	}
+	return result, rows.Err()
+}
+
+// FindTenantByINN returns the tenant matching the given INN (or nil if absent).
+// Used by handleCreateInvoice to route public invoices to existing tenants.
+func FindTenantByINN(inn string) (*Tenant, error) {
+	inn = strings.TrimSpace(inn)
+	if inn == "" {
+		return nil, nil
+	}
+	t := &Tenant{}
+	var dbINN sql.NullString
+	err := db.DB.QueryRow(`
+		SELECT id, name, slug, status, plan, COALESCE(contact_email,''), COALESCE(billing_notes,''),
+		       max_users, max_servers, use_provider_servers, balance::float8, COALESCE(inn,''), created_at
+		FROM tenants
+		WHERE inn = $1
+	`, inn).Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.Plan, &t.ContactEmail, &t.BillingNotes,
+		&t.MaxUsers, &t.MaxServers, &t.UseProviderServers, &t.Balance, &dbINN, &t.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if dbINN.Valid {
+		t.INN = dbINN.String
+	}
+	return t, nil
+}
+
+// CreateInactiveTenantFromInvoice creates a tenant in 'inactive' status when
+// someone pays a B2B invoice for a company we haven't seen before. The tenant
+// becomes 'active' on the first successful payment credit (see CreditTenantWallet).
+// If a tenant with the same INN already exists, that one is returned (idempotent).
+func CreateInactiveTenantFromInvoice(inn, legalName, email string) (*Tenant, error) {
+	if found, err := FindTenantByINN(inn); err != nil {
+		return nil, err
+	} else if found != nil {
+		return found, nil
+	}
+
+	// Slug is a non-conflicting-by-construction value; we don't care about
+	// human readability for inactive auto-created tenants.
+	slug := slugifyINN(inn)
+	t := &Tenant{}
+	err := db.DB.QueryRow(`
+		INSERT INTO tenants (name, slug, status, plan, contact_email, inn, max_users, max_servers, use_provider_servers, balance)
+		VALUES ($1, $2, 'inactive', 'standard', $3, $4, 10, 0, TRUE, 0)
+		RETURNING id, name, slug, status, plan, COALESCE(contact_email,''), COALESCE(billing_notes,''),
+		         max_users, max_servers, use_provider_servers, balance::float8, created_at
+	`, legalName, slug, email, inn).Scan(
+		&t.ID, &t.Name, &t.Slug, &t.Status, &t.Plan, &t.ContactEmail, &t.BillingNotes,
+		&t.MaxUsers, &t.MaxServers, &t.UseProviderServers, &t.Balance, &t.CreatedAt,
+	)
+	if err != nil {
+		// Race: a concurrent caller may have inserted between our lookup and
+		// our insert. Fall back to fetching their row.
+		if found, _ := FindTenantByINN(inn); found != nil {
+			return found, nil
+		}
+		return nil, fmt.Errorf("create inactive tenant: %w", err)
+	}
+	t.INN = inn
+	return t, nil
+}
+
+func slugifyINN(inn string) string {
+	return "inn-" + strings.TrimSpace(inn)
 }
 
 func DebitTenantWallet(tenantID int, amount float64, description string) error {

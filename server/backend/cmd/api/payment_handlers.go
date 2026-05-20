@@ -447,7 +447,84 @@ func processPaymentEvent(p *yookassa.Payment) error {
 			}
 		}
 	}
+
+	// B2B kinds — credit the tenant's wallet. tenant_topup and b2b_invoice
+	// share the same shape: metadata.tenant_id + amount. Without this branch
+	// the company's money sits in YooKassa but `tenants.balance` never moves.
+	if kind == "tenant_topup" || kind == "b2b_invoice" {
+		if err := creditTenantFromPayment(p, metadata, paymentDBID, kind); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// creditTenantFromPayment runs the wallet-credit side-effect for B2B payments.
+// It is intentionally tolerant: tenant_id missing from metadata is a hard
+// configuration error (we log + return), not a silent skip — we want loud
+// telemetry when this happens because real money may be stranded.
+func creditTenantFromPayment(p *yookassa.Payment, metadata string, paymentDBID int, kind string) error {
+	var metaRaw map[string]interface{}
+	_ = json.Unmarshal([]byte(metadata), &metaRaw)
+
+	var tenantID int
+	switch v := metaRaw["tenant_id"].(type) {
+	case float64:
+		tenantID = int(v)
+	case string:
+		fmt.Sscanf(v, "%d", &tenantID)
+	}
+	if tenantID == 0 {
+		// Loud failure — admin needs to know to attach this payment manually.
+		log.Printf("[yookassa-webhook] ⚠ %s payment %s has NO tenant_id in metadata (payment_db=%d, amount=%s) — manual reconciliation required",
+			kind, p.ID, paymentDBID, p.Amount.Value)
+		return nil
+	}
+
+	// YooKassa amount.value is a decimal string like "1500.00". Parse to
+	// float64 — tenant_wallet_transactions stores NUMERIC.
+	amount, perr := strconv.ParseFloat(p.Amount.Value, 64)
+	if perr != nil || amount <= 0 {
+		log.Printf("[yookassa-webhook] ⚠ %s payment %s has invalid amount %q: %v", kind, p.ID, p.Amount.Value, perr)
+		return nil
+	}
+
+	desc := fmt.Sprintf("YooKassa %s #%s", kind, p.ID)
+	res, err := biz.CreditTenantWallet(tenantID, amount, desc, &paymentDBID)
+	if err != nil {
+		return fmt.Errorf("credit tenant %d for %s payment %s: %w", tenantID, kind, p.ID, err)
+	}
+	log.Printf("[yookassa-webhook] ✓ %s tenant_id=%d credited %.2f ₽ (balance=%.2f, activated=%v)",
+		kind, tenantID, amount, res.NewBalance, res.Activated)
+
+	// Fire-and-forget email — don't let SMTP errors block webhook ack.
+	go sendTenantCreditEmail(tenantID, amount, res.NewBalance, res.Activated, kind, paymentDBID)
+	return nil
+}
+
+// sendTenantCreditEmail informs the tenant's contact_email about a successful
+// wallet credit (topup or B2B invoice). Best-effort — silently skipped if SMTP
+// is disabled or the tenant has no contact email.
+func sendTenantCreditEmail(tenantID int, amount, newBalance float64, activated bool, kind string, paymentDBID int) {
+	t, err := biz.GetTenantByID(tenantID)
+	if err != nil || t == nil || t.ContactEmail == "" {
+		return
+	}
+	subj := fmt.Sprintf("[HiEarth] Кошелёк компании пополнен на %.2f ₽", amount)
+	if activated {
+		subj = "[HiEarth] Аккаунт компании активирован"
+	}
+	body := fmt.Sprintf(
+		"Здравствуйте!\n\nКошелёк компании «%s» пополнен на %.2f ₽.\nТекущий баланс: %.2f ₽.\n\nОснование: %s, платёж #%d.\n\n%s\n\n—\nHiEarth",
+		t.Name, amount, newBalance, kind, paymentDBID,
+		map[bool]string{true: "Это первое поступление — аккаунт переведён в статус Active.", false: "Спасибо за продолжение работы с нами."}[activated],
+	)
+	_ = email.Send(email.Message{
+		To:       t.ContactEmail,
+		Subject:  subj,
+		TextBody: body,
+		Template: "tenant_credit",
+	})
 }
 
 // sendActivationEmail отправляет email о активации / продлении подписки.
@@ -715,11 +792,25 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify user belongs to this tenant
-	var memberCount int
-	_ = db.DB.QueryRow("SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1 AND user_id = (SELECT id FROM users WHERE user_id = $2)", req.TenantID, userID).Scan(&memberCount)
-	if memberCount == 0 {
+	// Verify the caller has *billing-level* membership in this tenant. Plain
+	// 'user'/'viewer' members can use the proxy but cannot move the company
+	// wallet — that would be a trivial way to grief a coworker.
+	var userDBID int
+	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+	role, ok, err := biz.GetTenantMember(req.TenantID, userDBID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check membership: " + err.Error()})
+		return
+	}
+	if !ok {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "you are not a member of this tenant"})
+		return
+	}
+	if role != "admin" && role != "billing" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role does not allow billing actions"})
 		return
 	}
 
@@ -764,12 +855,19 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 	if payment.Confirmation != nil {
 		confirmationURL = payment.Confirmation.ConfirmationURL
 	}
+	// Persist tenant_id + kind so the YooKassa webhook can route the credit
+	// when the payment succeeds. user_id is also included to keep a trace of
+	// who initiated the top-up for audit purposes.
 	_, _ = db.DB.Exec(`
 		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2, confirmation_url = $3,
 			external_id = $1::text, metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $6
 	`, payment.ID, payment.Status, confirmationURL,
-		mustJSON(map[string]interface{}{"tenant_id": req.TenantID, "kind": "tenant_topup"}),
+		mustJSON(map[string]interface{}{
+			"tenant_id": req.TenantID,
+			"kind":      "tenant_topup",
+			"user_id":   userID,
+		}),
 		payment.Test, paymentDBID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
