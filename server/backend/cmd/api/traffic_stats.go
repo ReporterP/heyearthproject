@@ -4,11 +4,32 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/xraystats"
 )
+
+// estimatedBytesPerDial — груба оценка средних байт на одно SOCKS5/TCP dial:
+// TLS handshake + small request payload. Понимаемо завышает для лёгких dial'ов
+// (DNS) и занижает для тяжёлых (большие downloads), но для выявления abuser'ов
+// этого достаточно — они отличаются на порядок.
+const estimatedBytesPerDial = 50_000
+
+// lastDialRateCleanup — момент последней очистки старых сэмплов dial_rate_log.
+var lastDialRateCleanup struct {
+	sync.Mutex
+	t time.Time
+}
+
+// trafficDelta — per-user разница uplink/downlink за окно опроса.
+// Тип на пакет-уровне чтобы recordDialRateSamples() мог его принимать.
+type trafficDelta struct {
+	upload   int64
+	download int64
+}
 
 // ─────────────────────── Traffic Stats Collector ───────────────────────
 //
@@ -47,11 +68,7 @@ func collectTrafficStats() {
 		return
 	}
 
-	// Группируем по user_id
-	type trafficDelta struct {
-		upload   int64
-		download int64
-	}
+	// Группируем по user_id (тип trafficDelta — пакетный, см. выше)
 	deltas := make(map[string]*trafficDelta)
 
 	for _, stat := range stats {
@@ -112,8 +129,65 @@ func collectTrafficStats() {
 		log.Printf("[traffic-stats] Записано: %d пользователей", saved)
 	}
 
+	// ── Dial-rate observation (P1 fix B3) ──
+	// Используем те же deltas чтобы оценить per-user dial-rate.
+	// Это observation only — никакой автоматической блокировки.
+	recordDialRateSamples(deltas)
+
 	// Проверяем лимиты — логируем превышения
 	checkTrafficLimits()
+}
+
+// recordDialRateSamples оценивает per-user dials/min из дельт и записывает в dial_rate_log.
+// Окно = 60 сек (соответствует тикеру collectTrafficStats).
+// Раз в час чистит сэмплы старше 24 часов.
+func recordDialRateSamples(deltas map[string]*trafficDelta) {
+	if len(deltas) == 0 {
+		return
+	}
+
+	windowStart := time.Now().Truncate(time.Minute)
+	windowStartISO := windowStart.Format(time.RFC3339)
+	threshold := biz.GetDialRateThreshold()
+
+	samples := make([]biz.DialRateSample, 0, len(deltas))
+	for userID, d := range deltas {
+		if d == nil {
+			continue
+		}
+		// Оценка количества dial'ов в окне ≈ uplink_bytes / estimatedBytesPerDial.
+		// Только uplink — downlink включает payload-ответы которые накачивает не клиент.
+		estimatedDials := int(d.upload / estimatedBytesPerDial)
+		if estimatedDials > threshold {
+			log.Printf("[dial-rate] WARN user=%s dials≈%d/min (threshold=%d) up=%dKB down=%dKB",
+				userID, estimatedDials, threshold, d.upload/1024, d.download/1024)
+		}
+		samples = append(samples, biz.DialRateSample{
+			UserUUID:       userID,
+			WindowStartISO: windowStartISO,
+			Dials:          estimatedDials,
+			UpBytes:        d.upload,
+			DownBytes:      d.download,
+		})
+	}
+
+	if err := biz.PersistDialRateSamples(samples, threshold); err != nil {
+		log.Printf("[dial-rate] Ошибка сохранения: %v", err)
+		return
+	}
+
+	// Раз в час чистим старые сэмплы.
+	lastDialRateCleanup.Lock()
+	doCleanup := time.Since(lastDialRateCleanup.t) > time.Hour
+	if doCleanup {
+		lastDialRateCleanup.t = time.Now()
+	}
+	lastDialRateCleanup.Unlock()
+	if doCleanup {
+		if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
+			log.Printf("[dial-rate] Очистка: %d старых записей удалено", n)
+		}
+	}
 }
 
 // checkTrafficLimits логирует пользователей, превысивших лимит трафика.
