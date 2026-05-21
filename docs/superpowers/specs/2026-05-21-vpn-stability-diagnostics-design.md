@@ -122,6 +122,42 @@ Recovery:
   Until next burst → repeat
 ```
 
+## P1 evidence (2026-05-21 19:46 MSK)
+
+### Concentration — top-3 users = 67% of all xray dials
+```
+466 dials/5min — user a4ef01a9 (≈1.55 dial/sec sustained, 10× median)
+169 dials/5min — user 6b18ef35
+126 dials/5min — user a5b0c747
+... long tail
+TOTAL 1130 dials/5min
+```
+
+### Destination port mix
+```
+669 tcp:443  HTTPS (normal)
+211 udp:53   DNS (normal)
+153 tcp:80   HTTP (normal)
+ 47 tcp:5222 XMPP/Jabber (ANOMALY — see below)
+ 14 tcp:143  IMAP
+ 10 tcp:0    BitTorrent DHT
+  3 tcp:27020 Steam
+  2 tcp:27018 Steam
+```
+
+### SOCKS5 errors — concentrated dead-endpoint, not broad flood
+```
+26 reqAddr: "www.google.com:5222"   Google Talk — dead since 2017
+ 1 reqAddr: "stats.avito.ru:443"
+ 1 reqAddr: "91.105.192.100:5222"
+TOTAL 28 errors / 5min
+```
+
+Interpretation:
+* B1 — Chinese stock ROMs (OPPO/Realme/Vivo) infinite-retry dead Google Talk endpoint. Easily blocked at Xray routing layer (block `www.google.com:5222` destination → free SOCKS5 dial slot).
+* B2 — BitTorrent / P2P leakage (port 6881 + arbitrary high ports + RU IPs observed earlier). Block RU/private CIDR's in Hysteria2 outbound config.
+* B3 — top-3 user concentration. One user a4ef01a9 = 41% of top-3. Need per-user rate-limit + identify if this is abuse or normal heavy use.
+
 ## Recommended fixes (ordered by impact/cost)
 
 ### P0 — safe, immediate, high-leverage
