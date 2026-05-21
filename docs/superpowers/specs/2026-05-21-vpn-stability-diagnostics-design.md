@@ -1,9 +1,36 @@
 ---
 title: VPN connection stability diagnostics
-status: phase_0_1_complete
+status: p0_1_applied
 created: 2026-05-21
 type: operational / diagnostic (not feature)
 ---
+
+## P0.1 APPLIED (2026-05-21 19:37 MSK)
+
+Stopped + disabled + archived `hysteria2-client-1.service` (Latvia ghost, PID 470602, running since 6 Apr).
+
+Backup at `/opt/heyearth/state/zombie-backup-2026-05-21/`:
+* `hysteria2-client-1.service.bak`
+* `client-1.yaml.bak`
+
+### Measured before/after (sample sizes ~5s each, single observation — directional not statistical)
+
+| Metric | BEFORE | AFTER P0.1 | Δ |
+|---|---|---|---|
+| mpstat avg idle | 77.5% | 84.5% | +7% |
+| vmstat interrupts/sec | 4000+ | 1300-3100 | -30-65% |
+| vmstat ctx switches/sec | 5000+ | 1800-4100 | -20-65% |
+| Free RAM | 117 MB | 161 MB | +44 MB |
+| SOCKS5 errors/min | n/a (stream) | 7/min | ↓ significantly |
+
+### NEW finding during AFTER snapshot
+
+`top` showed `%Cpu(s): ... 9.1 st` — **hypervisor STEAL 9.1%**. First snapshot had st=0%. This indicates vdsina hypervisor noisy-neighbor pulses on the shared physical CPU. Adds Factor #D to root-cause list:
+* **D. Hypervisor steal pulses on vdsina shared CPU** — outside our control, but explains some of the "burst" timing. Confirmed by observation, magnitude varies.
+
+This was missed in Phase 0 (st=0% at that moment). Worth documenting in P1.
+
+
 
 # VPN Connection Stability — Diagnostic Design
 
