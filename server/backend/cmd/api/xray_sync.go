@@ -324,7 +324,12 @@ func SyncXrayConfig() error {
 		{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
 		// 2. Блокировка BitTorrent
 		{"type": "field", "protocol": []string{"bittorrent"}, "outboundTag": "block"},
-		// 3. DNS-over-HTTPS: НЕ блокируем, пусть идёт через exit-ноды
+		// 3. Блокировка XMPP (port 5222/5223) — китайские стоковые ROM (OPPO/Realme/Vivo)
+		//    бесконечно retry'ят отключённый Google Talk endpoint. Generates
+		//    SOCKS5 i/o timeout backlog в Hysteria2 client → замедляет всех юзеров.
+		//    Подтверждено: 26 из 28 SOCKS5 ошибок на www.google.com:5222.
+		{"type": "field", "port": "5222,5223", "outboundTag": "block"},
+		// 4. DNS-over-HTTPS: НЕ блокируем, пусть идёт через exit-ноды
 		// Chrome/Edge используют DoH (chrome.cloudflare-dns.com), блокировка ломает DNS резолвинг
 	}
 
