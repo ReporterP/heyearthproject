@@ -338,12 +338,137 @@ func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
 		return
 	}
-	if _, err := db.DB.Exec(`DELETE FROM servers WHERE id = $1`, serverID); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to delete server")
-		return
+	// Reject if another provision/deprovision is already in flight for this server.
+	if v, ok := provisionProgress.Load(serverID); ok {
+		pp := v.(*ProvisionProgress)
+		if !pp.Finished {
+			writeAdminError(w, http.StatusConflict, "Operation already in progress")
+			return
+		}
 	}
 	WriteAuditLog(r, "delete_server", "server", fmt.Sprintf("%d", serverID), nil)
-	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server deleted"})
+	// Async hard deprovision: hub-side cleanup + best-effort exit teardown +
+	// archive + DELETE FROM servers. Progress visible via /actions/progress.
+	go runDeprovision(serverID, biz.DeprovisionHard)
+	writeAdminJSON(w, http.StatusAccepted, map[string]string{
+		"message":   "Deprovisioning started",
+		"server_id": fmt.Sprintf("%d", serverID),
+	})
+}
+
+// runDeprovision wraps biz.Deprovision with the same ProvisionProgress reporting
+// pattern used by runSetupExitNode, so the existing /actions/progress endpoint
+// keeps working unchanged for the frontend.
+func runDeprovision(serverID int, mode biz.DeprovisionMode) {
+	steps := []ProvisionStep{
+		{Name: "transition_deprovisioning", Description: "Перевод в deprovisioning", Status: "pending"},
+		{Name: "subscription_bump", Description: "Bump subscription_version", Status: "pending"},
+		{Name: "drain", Description: "Drain 3 sec", Status: "pending"},
+		{Name: "hub_stop", Description: "Остановка hysteria2-client-N", Status: "pending"},
+		{Name: "archive", Description: "Архивирование .yaml + .service", Status: "pending"},
+		{Name: "remove_unit", Description: "Удаление systemd-юнита", Status: "pending"},
+		{Name: "exit_teardown", Description: "Лучшая попытка остановки на exit", Status: "pending"},
+		{Name: "delete_row", Description: "Удаление записи из БД (hard)", Status: "pending"},
+		{Name: "transition_offline", Description: "Переход в offline (soft)", Status: "pending"},
+		{Name: "done", Description: "Готово", Status: "pending"},
+	}
+	progress := &ProvisionProgress{
+		ServerID: serverID,
+		Action:   fmt.Sprintf("deprovision_%s", string(mode)),
+		Steps:    steps,
+		Started:  time.Now(),
+	}
+	provisionProgress.Store(serverID, progress)
+
+	stepIdx := map[string]int{}
+	for i, s := range steps {
+		stepIdx[s.Name] = i
+	}
+	ch := make(chan biz.ProvisionEvent, 32)
+
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range ch {
+			idx, ok := stepIdx[ev.Stage]
+			if !ok {
+				continue
+			}
+			progress.Steps[idx].Status = ev.Status
+			if ev.Message != "" {
+				progress.Steps[idx].Error = ev.Message
+			}
+			provisionProgress.Store(serverID, progress)
+		}
+	}()
+
+	err := biz.Deprovision(serverID, mode, ch)
+	close(ch)
+	<-doneCh
+
+	if err != nil {
+		log.Printf("[deprovision] server %d (%s): error: %v", serverID, mode, err)
+	} else {
+		log.Printf("[deprovision] server %d (%s): completed", serverID, mode)
+	}
+	progress.Finished = true
+	provisionProgress.Store(serverID, progress)
+}
+
+// runHubProvisionOnly is the async wrapper for biz.HubProvisionExisting.
+// Used by the admin "Provision" button when the exit-side has already been set up
+// (e.g. server row was created with credentials but hub-side wasn't synced, OR
+// after a soft deprovision when re-enabling the same server).
+func runHubProvisionOnly(serverID int) {
+	steps := []ProvisionStep{
+		{Name: "load_server", Description: "Загрузка данных сервера", Status: "pending"},
+		{Name: "write_config", Description: "Создание client-N.yaml", Status: "pending"},
+		{Name: "install_unit", Description: "Установка systemd-юнита", Status: "pending"},
+		{Name: "start_unit", Description: "Запуск туннеля", Status: "pending"},
+		{Name: "subscription_bump", Description: "Bump subscription_version", Status: "pending"},
+		{Name: "transition_online", Description: "Переход в online", Status: "pending"},
+		{Name: "done", Description: "Готово", Status: "pending"},
+	}
+	progress := &ProvisionProgress{
+		ServerID: serverID,
+		Action:   "hub_provision",
+		Steps:    steps,
+		Started:  time.Now(),
+	}
+	provisionProgress.Store(serverID, progress)
+
+	stepIdx := map[string]int{}
+	for i, s := range steps {
+		stepIdx[s.Name] = i
+	}
+	ch := make(chan biz.ProvisionEvent, 32)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range ch {
+			idx, ok := stepIdx[ev.Stage]
+			if !ok {
+				continue
+			}
+			progress.Steps[idx].Status = ev.Status
+			if ev.Message != "" {
+				progress.Steps[idx].Error = ev.Message
+			}
+			provisionProgress.Store(serverID, progress)
+		}
+	}()
+
+	err := biz.HubProvisionExisting(serverID, ch)
+	close(ch)
+	<-doneCh
+
+	if err != nil {
+		log.Printf("[hub-provision] server %d: %v", serverID, err)
+	} else {
+		log.Printf("[hub-provision] server %d: ok", serverID)
+	}
+	progress.Finished = true
+	provisionProgress.Store(serverID, progress)
 }
 
 func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
@@ -408,6 +533,39 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+	case "deprovision_soft":
+		if v, ok := provisionProgress.Load(serverID); ok {
+			pp := v.(*ProvisionProgress)
+			if !pp.Finished {
+				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				return
+			}
+		}
+		go runDeprovision(serverID, biz.DeprovisionSoft)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Deprovisioning (soft) started"})
+		return
+	case "deprovision_hard":
+		if v, ok := provisionProgress.Load(serverID); ok {
+			pp := v.(*ProvisionProgress)
+			if !pp.Finished {
+				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				return
+			}
+		}
+		go runDeprovision(serverID, biz.DeprovisionHard)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Deprovisioning (hard) started"})
+		return
+	case "hub_provision":
+		if v, ok := provisionProgress.Load(serverID); ok {
+			pp := v.(*ProvisionProgress)
+			if !pp.Finished {
+				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				return
+			}
+		}
+		go runHubProvisionOnly(serverID)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Hub provisioning started"})
+		return
 	default:
 		writeAdminError(w, http.StatusBadRequest, "Unsupported server action")
 		return

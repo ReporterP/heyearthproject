@@ -196,6 +196,9 @@ func ListAllExitNodes() ([]ExitNodeTunnel, error) {
 }
 
 func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
+	// Defense-in-depth: only return servers whose lifecycle is 'online'.
+	// tunnel_status alone is not enough — a server marked offline in the FSM
+	// must never appear in xray routing (otherwise we get ghosts).
 	query := `
 		SELECT id, COALESCE(name, ''), ip_address,
 		       tunnel_protocol, tunnel_port,
@@ -205,6 +208,7 @@ func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
 		       tunnel_status, COALESCE(load_weight, 1)
 		FROM servers
 		WHERE is_exit_node = TRUE
+		  AND lifecycle_state = 'online'
 	`
 	var args []any
 	if statusFilter != "" {
