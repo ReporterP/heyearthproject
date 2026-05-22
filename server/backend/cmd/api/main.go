@@ -651,6 +651,63 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleUserMTProto — GET /api/v1/user/mtproto
+// Returns the Telegram MTProto proxy deeplink if MTProto is enabled and
+// the user has an active subscription. Result is the same for everyone
+// (shared secret) — this is a convenience perk, not a privacy feature.
+func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	hasActive, err := biz.UserHasActiveSubscription(userID)
+	if err != nil {
+		log.Printf("[mtproto] UserHasActiveSubscription(%s): %v", userID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "subscription check failed"})
+		return
+	}
+	if !hasActive {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"reason":  "Доступно для активных подписчиков",
+		})
+		return
+	}
+
+	enabled := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true"
+	host := biz.GetSettingOrDefault("mtproto_host", "")
+	port := biz.GetSettingOrDefault("mtproto_port", "8443")
+	secret := biz.GetSettingOrDefault("mtproto_secret", "")
+
+	if !enabled || host == "" || secret == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": false})
+		return
+	}
+
+	tgDeeplink := fmt.Sprintf("tg://proxy?server=%s&port=%s&secret=%s", host, port, secret)
+	tMeLink := fmt.Sprintf("https://t.me/proxy?server=%s&port=%s&secret=%s", host, port, secret)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":     true,
+		"host":        host,
+		"port":        port,
+		"secret":      secret,
+		"tg_deeplink": tgDeeplink,
+		"t_me_link":   tMeLink,
+	})
+}
+
 func handlePublicPlans(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -915,6 +972,7 @@ func main() {
 	// Детали одного платежа: GET /api/v1/user/payments/{id}
 	http.HandleFunc("/api/v1/user/payments/", apiLimiter.Middleware(handleUserPaymentDetail))
 	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
+	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
 	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
 	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))
 	http.HandleFunc("/api/v1/user/subscribe-token", apiLimiter.Middleware(handleGetSubscribeToken))

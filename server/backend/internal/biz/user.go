@@ -346,3 +346,18 @@ func ApplyPromocode(userID int, code string) error {
 	NotifySubscriptionChange()
 	return nil
 }
+
+// UserHasActiveSubscription returns true if user has at least one
+// non-expired subscription, regardless of plan.
+func UserHasActiveSubscription(userID string) (bool, error) {
+	var count int
+	err := db.DB.QueryRow(`
+		SELECT COUNT(*) FROM user_subscriptions us
+		 JOIN users u ON u.id = us.user_id
+		 WHERE u.user_id = $1 AND us.valid_until > NOW()
+	`, userID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
