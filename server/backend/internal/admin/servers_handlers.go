@@ -523,6 +523,17 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		go runSetupExitNode(server)
 		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Provisioning started"})
 		return
+	case "reinstall_mtproxy":
+		if v, ok := provisionProgress.Load(serverID); ok {
+			pp := v.(*ProvisionProgress)
+			if !pp.Finished {
+				writeAdminError(w, http.StatusConflict, "Action already in progress")
+				return
+			}
+		}
+		go runReinstallMTProto(server)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "MTProto reinstall started"})
+		return
 	case "sync_tunnel":
 		if err := syncTunnel(server); err != nil {
 			writeAdminError(w, http.StatusBadGateway, err.Error())
@@ -1817,6 +1828,58 @@ systemctl restart %s
 	progress.Finished = true
 	provisionProgress.Store(server.ID, progress)
 	log.Printf("[provision] Сервер %d (%s): провижининг завершён успешно", server.ID, server.Name)
+}
+
+// runReinstallMTProto re-runs the install-mtproxy.sh on the exit's VPS.
+// Reuses provisionProgress with a single-step progress for UI continuity.
+func runReinstallMTProto(server serverResponse) {
+	progress := &ProvisionProgress{
+		ServerID: server.ID,
+		Action:   "reinstall_mtproxy",
+		Steps: []ProvisionStep{
+			{Name: "install_mtproxy", Description: "Переустановка MTProto-прокси", Status: "running"},
+		},
+		Started: time.Now(),
+	}
+	provisionProgress.Store(server.ID, progress)
+	finalize := func(status, msg string) {
+		progress.Steps[0].Status = status
+		if msg != "" {
+			progress.Steps[0].Error = msg
+		}
+		progress.Finished = true
+		provisionProgress.Store(server.ID, progress)
+	}
+
+	if err := biz.MarkMTProtoStatus(server.ID, "installing"); err != nil {
+		log.Printf("[reinstall-mtproxy] mark installing %d: %v", server.ID, err)
+	}
+	scriptBytes, scriptErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
+	if scriptErr != nil {
+		scriptBytes, scriptErr = os.ReadFile("server/backend/cmd/deploy/install-mtproxy.sh")
+	}
+	if scriptErr != nil {
+		_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
+		finalize("error", "install-mtproxy.sh not found on hub: "+scriptErr.Error())
+		return
+	}
+	sshPort := server.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+	sshUser := server.SSHUser
+	if sshUser == "" {
+		sshUser = "root"
+	}
+	if instErr := biz.InstallMTProtoOnExit(server.ID, server.IPAddress, sshUser, server.SSHPassword, sshPort, scriptBytes); instErr != nil {
+		_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
+		finalize("error", instErr.Error())
+		return
+	}
+	_ = biz.MarkMTProtoStatus(server.ID, "healthy")
+	biz.BumpSubscriptionVersion()
+	finalize("done", "")
+	log.Printf("[reinstall-mtproxy] %d (%s): success", server.ID, server.Name)
 }
 
 // sshDialForServer создаёт SSH-соединение к серверу по его credentials из БД
