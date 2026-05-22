@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -295,4 +296,78 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 		"subscribe_url":   subscribeURL,
 		"clash_url":       subscribeURL + "?format=clash",
 	})
+}
+
+// buildSubscriptionAnnounce builds the dynamic Announce + Announce-Url
+// headers shown in Happ as a single clickable line below the progress bar.
+//
+// Priority order:
+//   1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /checkout
+//   2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /checkout
+//   3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /checkout
+//   4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /checkout
+//   5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
+//   6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
+//
+// The dashboard / checkout URL roots are taken from publicBaseURL().
+// Returns empty strings if the user has no subscription record at all
+// (handler should not emit headers in that case).
+func buildSubscriptionAnnounce(userID string) (text, url string) {
+	var (
+		validUntil   time.Time
+		trafficUsed  int64
+		trafficLimit *int64
+		planSlug     sql.NullString
+	)
+	err := db.DB.QueryRow(`
+		SELECT us.valid_until,
+		       COALESCE(us.traffic_used, 0),
+		       us.traffic_limit,
+		       COALESCE(p.slug, '')
+		  FROM user_subscriptions us
+		  JOIN users u  ON u.id = us.user_id
+		  LEFT JOIN plans p ON p.id = us.plan_id
+		 WHERE u.user_id = $1
+		 ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug)
+	if err != nil {
+		return "", ""
+	}
+
+	base := publicBaseURL()
+	checkout := base + "/checkout"
+	dashboard := base + "/dashboard"
+	now := time.Now()
+
+	// 1. expired
+	if validUntil.Before(now) {
+		return "⚠️ Подписка истекла. Продлите →", checkout
+	}
+
+	daysLeft := int(validUntil.Sub(now).Hours() / 24)
+	isTrial := planSlug.Valid && planSlug.String == "free-trial"
+
+	// 2. ≤ 1 day
+	if daysLeft <= 1 {
+		return "⏰ Подписка истекает завтра!", checkout
+	}
+
+	// 3 / 4. ≤ 7 days
+	if daysLeft <= 7 {
+		if isTrial {
+			return fmt.Sprintf("⌛ Пробная подписка, осталось %dд", daysLeft), checkout
+		}
+		return fmt.Sprintf("⌛ Истекает через %dд", daysLeft), checkout
+	}
+
+	// 5. traffic ≥ 80%
+	if trafficLimit != nil && *trafficLimit > 0 {
+		pct := int(float64(trafficUsed) * 100.0 / float64(*trafficLimit))
+		if pct >= 80 {
+			return fmt.Sprintf("📊 Использовано %d%% трафика", pct), dashboard
+		}
+	}
+
+	// 6. healthy default — always include link to cabinet (per spec)
+	return "Личный кабинет ↗", dashboard
 }
