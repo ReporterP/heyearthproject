@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, getSubscription, getConnections, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
 
 function formatDate(d) {
   if (!d) return '---'
@@ -215,14 +216,6 @@ export default function DashboardPage() {
   const isPaused = pausedUntil ? new Date(pausedUntil) > new Date() : false
   const isExpired = validUntil ? new Date(validUntil) < new Date() : false
   const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired && !isPaused
-
-  // Telegram deeplink from VLESS Reality credentials
-  const socksHost = connections?.socks5_host || connections?.main_server_host || 'hiearth.ru'
-  const socksUser = connections?.socks5_user || userId
-  const socksPass = connections?.socks5_pass || ''
-  const telegramLink = socksPass
-    ? `tg://socks?server=${socksHost}&port=1080&user=${socksUser}&pass=${socksPass}`
-    : null
 
   // Donation visibility: enabled by default, disabled only if backend says so
   const donationEnabled = donationSettingsLoaded
@@ -450,73 +443,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ═══ VLESS Reality credentials — видны только тем, чей план их разрешает ═══ */}
-        {hasActiveSub && connections?.socks5_user && (
-          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-75">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent/20 to-cyan-500/10 flex items-center justify-center">
-                <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <h2 className="text-base font-semibold">VLESS Reality</h2>
-                <p className="text-xs text-text-secondary mt-0.5">Для браузеров, Telegram, десктопных приложений</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Сервер</p>
-                <div className="flex items-center justify-between gap-2">
-                  <code className="font-mono text-xs break-all">{connections.socks5_host}:{connections.socks5_port}</code>
-                  <button
-                    onClick={() => { copyToClipboard(`${connections.socks5_host}:${connections.socks5_port}`); setCopiedField('socks-host'); setTimeout(() => setCopiedField(''), 1500) }}
-                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
-                    title="Копировать host:port"
-                  >
-                    {copiedField === 'socks-host' ? <CheckIcon /> : <CopyIcon />}
-                  </button>
-                </div>
-              </div>
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Логин</p>
-                <div className="flex items-center justify-between gap-2">
-                  <code className="font-mono text-xs break-all">{connections.socks5_user}</code>
-                  <button
-                    onClick={() => { copyToClipboard(connections.socks5_user); setCopiedField('socks-user'); setTimeout(() => setCopiedField(''), 1500) }}
-                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
-                    title="Копировать логин"
-                  >
-                    {copiedField === 'socks-user' ? <CheckIcon /> : <CopyIcon />}
-                  </button>
-                </div>
-              </div>
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 sm:col-span-2">
-                <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Пароль</p>
-                <div className="flex items-center justify-between gap-2">
-                  <code className="font-mono text-xs break-all">{connections.socks5_pass}</code>
-                  <button
-                    onClick={() => { copyToClipboard(connections.socks5_pass); setCopiedField('socks-pass'); setTimeout(() => setCopiedField(''), 1500) }}
-                    className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition"
-                    title="Копировать пароль"
-                  >
-                    {copiedField === 'socks-pass' ? <CheckIcon /> : <CopyIcon />}
-                  </button>
-                </div>
-              </div>
-            </div>
-            {telegramLink && (
-              <a
-                href={telegramLink}
-                className="inline-flex items-center gap-2 mt-4 px-4 py-2.5 rounded-xl bg-blue-500/15 border border-blue-500/25 text-blue-400 hover:bg-blue-500/25 text-sm font-medium transition min-h-[44px]"
-              >
-                <PaperPlaneIcon />
-                Подключить в Telegram
-              </a>
-            )}
-          </div>
-        )}
+        {/* ═══ Telegram MTProto perk — только для активных подписчиков ═══ */}
+        {hasActiveSub && <TelegramProxyButton token={token} />}
 
         {/* ─── Quick Actions (без Telegram) ─── */}
         <div className="grid grid-cols-2 gap-3 mb-6 animate-fade-in-up delay-100">
