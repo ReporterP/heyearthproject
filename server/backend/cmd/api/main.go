@@ -862,6 +862,10 @@ func main() {
 	// Dunning — retry failed recurring платежей (1/2/3 попытки, grace period)
 	StartDunningCron()
 
+	// Ghost Reconciler: scan hub every 30 min for drift between systemd units
+	// and DB lifecycle state. Optional auto-cleanup / auto-repair via app_settings.
+	StartGhostReconciler()
+
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)   // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)   // 100 req/min per IP (general API)
