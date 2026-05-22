@@ -288,6 +288,19 @@ func RegisterRoutes() {
 		}
 	}))
 
+	// MTProto settings
+	http.HandleFunc("/api/admin/mtproto/generate-secret", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", GenerateMTProtoSecret))))
+	http.HandleFunc("/api/admin/mtproto", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("settings.read", GetMTProtoSettings).ServeHTTP(w, r)
+		case http.MethodPut:
+			RequirePermission("settings.write", UpdateMTProtoSettings).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
 	http.HandleFunc("/api/admin/tenants", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
