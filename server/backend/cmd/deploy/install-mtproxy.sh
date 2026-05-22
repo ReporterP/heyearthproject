@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-time install of Telegram official mtproto-proxy on this server.
-# Run as root. Usage: bash install-mtproxy.sh [PORT]
+# Run as root. Usage: bash install-mtproxy.sh [PORT] [SECRET]
+#   PORT defaults to 8443. SECRET defaults to existing file or fresh random.
 #
 # After install:
 #   - binary at /usr/local/bin/mtproto-proxy
@@ -41,11 +42,14 @@ echo "[install-mtproxy] fetching Telegram proxy config"
 curl -fsSL https://core.telegram.org/getProxySecret -o "$WORKDIR/proxy-secret"
 curl -fsSL https://core.telegram.org/getProxyConfig -o "$WORKDIR/proxy-multi.conf"
 
-if [[ ! -f "$WORKDIR/secret" ]]; then
+if [[ -n "${2:-}" ]]; then
+  echo "[install-mtproxy] using SECRET provided via arg"
+  printf '%s\n' "$2" > "$WORKDIR/secret"
+elif [[ ! -f "$WORKDIR/secret" ]]; then
   echo "[install-mtproxy] generating user secret"
   head -c 16 /dev/urandom | xxd -ps > "$WORKDIR/secret"
 fi
-SECRET="$(cat "$WORKDIR/secret")"
+SECRET="$(cat "$WORKDIR/secret" | tr -d '\n\r ')"
 
 echo "[install-mtproxy] /etc/default/mtproxy (env)"
 cat > /etc/default/mtproxy <<EOF
