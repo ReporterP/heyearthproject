@@ -19,6 +19,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/db"
 )
 
 // ─────────────────────── Xray Config Sync (Hub-and-Spoke) ───────────────────────
@@ -734,6 +735,14 @@ type nodeHealthCounter struct {
 	consecutiveFail int
 }
 
+// mtprotoFailCount / mtprotoSuccessCount track consecutive MTProto probe
+// results per server ID for 3-fail / 2-success hysteresis.
+var (
+	mtprotoFailCount    = map[int]int{}
+	mtprotoSuccessCount = map[int]int{}
+	mtprotoCountMu      sync.Mutex
+)
+
 // StartTunnelHealthMonitor запускает фоновый мониторинг exit-нод.
 func StartTunnelHealthMonitor() {
 	go func() {
@@ -835,6 +844,82 @@ func checkAllTunnels() {
 	if statusChanged {
 		log.Printf("[tunnel-monitor] Статус exit-нод изменился, запрос на пересинхронизацию Xray...")
 		RequestXraySync()
+	}
+
+	// ── MTProto :mtproto_port TCP probe ──
+	// Runs after the main tunnel loop every 30 s. Uses 3-fail / 2-success
+	// hysteresis independently of the general tunnel-health counters.
+	checkMTProtoHealth()
+}
+
+// checkMTProtoHealth probes the MTProto port on every online exit node that
+// has MTProto installed (mtproto_installed_at IS NOT NULL) and updates
+// mtproto_status via biz.MarkMTProtoStatus with 3-fail / 2-success hysteresis.
+func checkMTProtoHealth() {
+	mtprotoPort := biz.GetSettingOrDefault("mtproto_port", "8443")
+
+	rows, err := db.DB.Query(`
+		SELECT id, ip_address, mtproto_status
+		  FROM servers
+		 WHERE is_exit_node = TRUE
+		   AND lifecycle_state = 'online'
+		   AND mtproto_installed_at IS NOT NULL
+	`)
+	if err != nil {
+		log.Printf("[mtproto-health] query error: %v", err)
+		return
+	}
+
+	type probeRow struct {
+		ID     int
+		IP     string
+		Status string
+	}
+	var probes []probeRow
+	for rows.Next() {
+		var p probeRow
+		if scanErr := rows.Scan(&p.ID, &p.IP, &p.Status); scanErr == nil {
+			probes = append(probes, p)
+		}
+	}
+	rows.Close()
+
+	for _, p := range probes {
+		addr := fmt.Sprintf("%s:%s", p.IP, mtprotoPort)
+		conn, dialErr := net.DialTimeout("tcp", addr, 3*time.Second)
+		ok := dialErr == nil
+		if conn != nil {
+			_ = conn.Close()
+		}
+
+		mtprotoCountMu.Lock()
+		if ok {
+			mtprotoSuccessCount[p.ID]++
+			mtprotoFailCount[p.ID] = 0
+			if mtprotoSuccessCount[p.ID] >= 2 && p.Status != "healthy" {
+				if markErr := biz.MarkMTProtoStatus(p.ID, "healthy"); markErr != nil {
+					log.Printf("[mtproto-health] MarkMTProtoStatus(%d, healthy): %v", p.ID, markErr)
+				} else {
+					log.Printf("[mtproto-health] server %d (%s) → healthy after 2 successes", p.ID, p.IP)
+				}
+			} else {
+				// Always refresh mtproto_last_check even without a status change.
+				_ = biz.MarkMTProtoStatus(p.ID, p.Status)
+			}
+		} else {
+			mtprotoFailCount[p.ID]++
+			mtprotoSuccessCount[p.ID] = 0
+			if mtprotoFailCount[p.ID] >= 3 && p.Status != "unhealthy" {
+				if markErr := biz.MarkMTProtoStatus(p.ID, "unhealthy"); markErr != nil {
+					log.Printf("[mtproto-health] MarkMTProtoStatus(%d, unhealthy): %v", p.ID, markErr)
+				} else {
+					log.Printf("[mtproto-health] server %d (%s) → unhealthy after 3 fails: %v", p.ID, p.IP, dialErr)
+				}
+			} else {
+				_ = biz.MarkMTProtoStatus(p.ID, p.Status)
+			}
+		}
+		mtprotoCountMu.Unlock()
 	}
 }
 
