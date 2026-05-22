@@ -56,28 +56,7 @@ export default function ConnectionsPage() {
   }, [])
 
   const canConnect = connections?.can_connect
-  const socks5Addr = connections?.socks5 || ''
-  const httpProxy = connections?.http_proxy || ''
   const vlessReality = connections?.vless_reality || ''
-
-  // Parse SOCKS URI into parts for credentials display
-  const socks5Parts = socks5Addr ? (() => {
-    try {
-      const url = new URL(socks5Addr)
-      return { host: url.hostname, port: url.port || '1080', user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) }
-    } catch { return null }
-  })() : null
-  const httpParts = httpProxy ? (() => {
-    try {
-      const url = new URL(httpProxy)
-      return { host: url.hostname, port: url.port || '8080', user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) }
-    } catch { return null }
-  })() : null
-
-  // Telegram SOCKS deeplink
-  const tgSocksLink = socks5Parts
-    ? `https://t.me/socks?server=${socks5Parts.host}&port=${socks5Parts.port}&user=${encodeURIComponent(socks5Parts.user)}&pass=${encodeURIComponent(socks5Parts.pass)}`
-    : ''
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -194,26 +173,10 @@ export default function ConnectionsPage() {
                 </div>
               )}
 
-              {/* ─── Quick Actions: Telegram + Happ ─── */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-                {tgSocksLink && (
-                  <a href={tgSocksLink} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-blue-500/10 to-blue-600/5 border border-blue-500/20 hover:border-blue-500/40 transition-all duration-300 hover:-translate-y-0.5 group">
-                    <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
-                      <svg className="w-6 h-6 text-blue-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-blue-300">Подключить Telegram</p>
-                      <p className="text-xs text-text-secondary">Нажмите -- прокси настроится автоматически</p>
-                    </div>
-                    <svg className="w-5 h-5 text-blue-400/50 flex-shrink-0 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-                  </a>
-                )}
-                {/* Happ button removed — apps available from dashboard "Приложения" button */}
-              </div>
+              {/* ─── Telegram MTProto placeholder (Task 8 inserts TelegramProxyButton here) ─── */}
 
-              {/* ─── Connection cards: VLESS + SOCKS + HTTP ─── */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
+              {/* ─── Connection cards: VLESS ─── */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
                 {vlessReality && (
                   <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
                     <div className="flex items-center justify-between mb-2">
@@ -229,30 +192,6 @@ export default function ConnectionsPage() {
                       <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код</summary>
                       <img src={qrUrl(vlessReality)} alt="QR" className="mt-2 rounded-lg bg-white p-2 w-[180px] h-[180px]" loading="lazy" />
                     </details>
-                  </div>
-                )}
-                {socks5Addr && (
-                  <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-xs font-bold">SOCKS</span>
-                      <CopyButton text={socks5Addr} />
-                    </div>
-                    <code className="text-[11px] font-mono text-text-primary break-all select-all line-clamp-2">{socks5Addr}</code>
-                    <p className="text-xs text-text-secondary mt-1.5">Для Telegram, браузера, системных настроек</p>
-                    <details className="mt-3">
-                      <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код</summary>
-                      <img src={qrUrl(socks5Addr)} alt="QR" className="mt-2 rounded-lg bg-white p-2 w-[180px] h-[180px]" loading="lazy" />
-                    </details>
-                  </div>
-                )}
-                {httpProxy && (
-                  <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-xs font-bold">HTTP</span>
-                      <CopyButton text={httpProxy} />
-                    </div>
-                    <code className="text-[11px] font-mono text-text-primary break-all select-all line-clamp-2">{httpProxy}</code>
-                    <p className="text-xs text-text-secondary mt-1.5">HTTP прокси для системных настроек</p>
                   </div>
                 )}
               </div>
@@ -276,100 +215,6 @@ export default function ConnectionsPage() {
                 </div>
               )}
 
-              {/* ─── Proxy credentials (individual fields) ─── */}
-              {socks5Parts && (
-                <div className="mt-5 p-4 rounded-xl bg-white/[0.02] border border-white/5">
-                  <p className="text-xs font-medium text-text-secondary mb-3 uppercase tracking-wider">Данные для подключения</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {[
-                      { label: 'Сервер', value: socks5Parts.host, field: 'proxy-host' },
-                      { label: 'Порт SOCKS', value: socks5Parts.port, field: 'proxy-port' },
-                      { label: 'Логин', value: socks5Parts.user, field: 'proxy-user' },
-                      { label: 'Пароль', value: socks5Parts.pass, field: 'proxy-pass' },
-                    ].map(item => (
-                      <div key={item.field}>
-                        <p className="text-[10px] text-text-secondary mb-1">{item.label}</p>
-                        <div className="flex items-center gap-1">
-                          <code className="text-xs font-mono text-text-primary truncate flex-1">{item.value}</code>
-                          <CopyButton text={item.value} compact />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {httpParts && (
-                    <p className="text-[10px] text-text-secondary mt-2">HTTP порт: <span className="text-text-primary font-mono">{httpParts.port}</span> (логин и пароль такие же)</p>
-                  )}
-                </div>
-              )}
-
-              {/* ─── Setup instructions ─── */}
-              {socks5Parts && (
-                <div className="mt-5">
-                  <p className="text-xs font-medium text-text-secondary mb-3 uppercase tracking-wider">Настройка прокси для сервисов</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Telegram */}
-                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">&#9992;&#65039;</span>
-                        <span className="text-sm font-medium">Telegram</span>
-                      </div>
-                      {tgSocksLink ? (
-                        <a href={tgSocksLink} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/20 text-blue-300 text-sm font-medium hover:bg-blue-500/30 transition mb-2">
-                          Подключить автоматически
-                        </a>
-                      ) : null}
-                      <p className="text-xs text-text-secondary">Или ��ручную: Настройки &rarr; Данные &rarr; Прокс�� &rarr; SOCKS &rarr; сервер и порт выше</p>
-                    </div>
-
-                    {/* Browser */}
-                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">&#127760;</span>
-                        <span className="text-sm font-medium">Браузер (Chrome / Firefox)</span>
-                      </div>
-                      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
-                        <li>Установите расширение <span className="text-text-primary">Proxy SwitchyOmega</span></li>
-                        <li>Создайте профиль &rarr; тип SOCKS</li>
-                        <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
-                        <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
-                        <li>Авторизация: логин и пароль выше</li>
-                      </ol>
-                    </div>
-
-                    {/* Windows */}
-                    {httpParts && (
-                      <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-lg">&#128187;</span>
-                          <span className="text-sm font-medium">Windows (системный прокси)</span>
-                        </div>
-                        <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
-                          <li>Параметры &rarr; Сеть &rarr; Прокси</li>
-                          <li>Ручная настройка прокси &rarr; Вкл</li>
-                          <li>Адрес: <code className="text-text-primary">{httpParts.host}</code></li>
-                          <li>Порт: <code className="text-text-primary">{httpParts.port}</code></li>
-                        </ol>
-                      </div>
-                    )}
-
-                    {/* macOS */}
-                    <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">&#63743;</span>
-                        <span className="text-sm font-medium">macOS (системный прокси)</span>
-                      </div>
-                      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
-                        <li>Системные настройки &rarr; Сеть</li>
-                        <li>Wi-Fi &rarr; Подробнее &rarr; Прокси</li>
-                        <li>SOCKS-прокси &rarr; Вкл</li>
-                        <li>Сервер: <code className="text-text-primary">{socks5Parts.host}</code></li>
-                        <li>Порт: <code className="text-text-primary">{socks5Parts.port}</code></li>
-                      </ol>
-                    </div>
-                  </div>
-                </div>
-              )}
             </>
           )}
         </div>
