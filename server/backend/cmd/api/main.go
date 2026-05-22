@@ -579,6 +579,13 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// subscription_version: cheap counter bumped on every server lifecycle
+	// transition. Clients compare local-stored value to this; mismatch → toast
+	// "Подписка обновлена" + refetch. Also exposed as response header so a
+	// cheap HEAD/conditional GET can be used in future.
+	subVer := biz.GetSubscriptionVersion()
+	w.Header().Set("X-Subscription-Version", fmt.Sprintf("%d", subVer))
+
 	// Build flat fields for backward compatibility with site/app
 	resp := map[string]any{
 		"user_id":                   userID,
@@ -586,6 +593,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"is_premium":                access.IsPremium,
 		"traffic_masking_available": access.TrafficMaskingAvailable,
 		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
+		"subscription_version":      subVer,
 	}
 
 	// Add plan info to response
