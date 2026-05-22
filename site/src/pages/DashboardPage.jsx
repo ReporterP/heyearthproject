@@ -1,8 +1,75 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, getConnections, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink } from '../api/user.js'
+import { getProfile, getSubscription, getConnections, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink, getMtproto } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
-import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
+
+// Extracts the trailing token segment from a subscribe URL like
+// https://hiearth.ru/api/v1/user/subscribe/<token>
+function extractTokenFromUrl(url) {
+  if (!url) return ''
+  const parts = url.split('/')
+  return parts[parts.length - 1] || ''
+}
+
+function ConnectionActions({ token, subscribeUrl }) {
+  const [mtproto, setMtproto] = useState(null)
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    getMtproto(token).then((data) => {
+      if (!cancelled) setMtproto(data)
+    }).catch(() => {/* hide MTProto buttons on error */})
+    return () => { cancelled = true }
+  }, [token])
+
+  const happHref = subscribeUrl
+    ? `/connect?sub=${encodeURIComponent(extractTokenFromUrl(subscribeUrl))}`
+    : '#'
+
+  const mtprotoEnabled = mtproto && mtproto.enabled
+  const cols = mtprotoEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-1'
+
+  return (
+    <div className={`grid grid-cols-1 ${cols} gap-3 mb-6 animate-fade-in-up`}>
+      <a
+        href={happHref}
+        className="group flex items-center justify-center gap-3 px-5 py-5 rounded-2xl bg-gradient-to-br from-brand to-brand-dark text-white font-semibold shadow-lg shadow-brand/20 hover:shadow-brand/30 hover:scale-[1.02] transition-all duration-200 min-h-[64px]"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        <span>Добавить в приложение</span>
+      </a>
+
+      {mtprotoEnabled && (
+        <a
+          href={mtproto.tg_deeplink}
+          className="group flex items-center justify-center gap-3 px-5 py-5 rounded-2xl bg-blue-500 hover:bg-blue-400 text-white font-semibold shadow-lg shadow-blue-500/20 hover:shadow-blue-500/30 hover:scale-[1.02] transition-all duration-200 min-h-[64px]"
+        >
+          <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21.05 3.05 2.95 9.13c-.93.32-.92 1.6 0 1.92l4.62 1.55 1.55 4.62c.32.93 1.6.92 1.92 0l1.05-3.13 3.65 2.74c.7.52 1.7.13 1.86-.72L21.6 4.07c.17-.84-.6-1.55-1.55-1.02Z" />
+          </svg>
+          <span>Открыть в Telegram</span>
+        </a>
+      )}
+
+      {mtprotoEnabled && (
+        <a
+          href={mtproto.t_me_link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex items-center justify-center gap-3 px-5 py-5 rounded-2xl glass hover:bg-white/10 text-text-primary font-semibold transition-all duration-200 min-h-[64px]"
+        >
+          <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+          </svg>
+          <span>Открыть через t.me</span>
+        </a>
+      )}
+    </div>
+  )
+}
 
 function formatDate(d) {
   if (!d) return '---'
@@ -163,7 +230,7 @@ export default function DashboardPage() {
   // Modals
   const [showAppsModal, setShowAppsModal] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
-  const [showImportMenu, setShowImportMenu] = useState(false) // dropdown for "Add to app"
+
   const [paymentPopup, setPaymentPopup] = useState(null) // { name, price, activated }
 
   useEffect(() => {
@@ -357,83 +424,15 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="p-3 rounded-xl bg-black/30 border border-white/10 mb-4">
-              <code className="text-xs font-mono text-text-primary break-all select-all block leading-relaxed">{subscribeLink.subscribe_url}</code>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* «Добавить в приложение» → dropdown c 6 deeplink-ами */}
-              <div className="relative sm:col-span-1">
-                <button
-                  onClick={() => setShowImportMenu(v => !v)}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-brand to-brand-dark text-white font-semibold text-sm hover:shadow-lg hover:shadow-brand/25 transition-all min-h-[48px]"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                  </svg>
-                  Добавить в приложение
-                </button>
-                {showImportMenu && (
-                  <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-xl glass-strong border border-white/10 shadow-2xl overflow-hidden">
-                    {IMPORT_DEEPLINKS.map(app => (
-                      <a
-                        key={app.id}
-                        href={app.build(subscribeLink.subscribe_url)}
-                        onClick={() => setShowImportMenu(false)}
-                        className="flex items-center justify-between px-4 py-2.5 hover:bg-white/10 border-b border-white/5 last:border-b-0 text-sm transition"
-                      >
-                        <span className="font-medium">{app.label}</span>
-                        <svg className="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                        </svg>
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Копировать (обычная ссылка) */}
+            <div className="flex items-stretch gap-2 mt-3">
+              <code className="flex-1 px-3 py-2 rounded-lg bg-bg-app text-xs font-mono break-all overflow-hidden text-ellipsis whitespace-nowrap">
+                {subscribeLink.subscribe_url}
+              </code>
               <button
-                onClick={() => { copyToClipboard(subscribeLink.subscribe_url); setCopiedField('sub-url'); setTimeout(() => setCopiedField(''), 2000) }}
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-medium transition-all min-h-[48px]"
+                onClick={() => copyText(subscribeLink.subscribe_url, 'sub-url')}
+                className="px-3 py-2 rounded-lg bg-brand/20 text-brand hover:bg-brand/30 text-sm transition shrink-0"
               >
-                {copiedField === 'sub-url' ? (
-                  <>
-                    <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                    Скопировано
-                  </>
-                ) : (
-                  <>
-                    <CopyIcon />
-                    Копировать ссылку
-                  </>
-                )}
-              </button>
-
-              {/* Обновить подписку: cache-buster query чтобы клиент перечитал */}
-              <button
-                onClick={() => {
-                  const bust = `${subscribeLink.subscribe_url}${subscribeLink.subscribe_url.includes('?') ? '&' : '?'}v=${Date.now()}`
-                  copyToClipboard(bust)
-                  setCopiedField('sub-refresh')
-                  setTimeout(() => setCopiedField(''), 2500)
-                }}
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-medium transition-all min-h-[48px]"
-                title="Скопировать ссылку с cache-buster — вставьте в приложение, чтобы перечитать подписку"
-              >
-                {copiedField === 'sub-refresh' ? (
-                  <>
-                    <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                    Готово! Вставьте в приложение
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                    </svg>
-                    Обновить подписку
-                  </>
-                )}
+                {copiedField === 'sub-url' ? '✓ OK' : 'Копировать'}
               </button>
             </div>
 
@@ -443,8 +442,10 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ═══ Telegram MTProto perk — только для активных подписчиков ═══ */}
-        {hasActiveSub && <TelegramProxyButton token={token} />}
+        {/* ═══ ConnectionActions — 3 big buttons (Happ + MTProto) ═══ */}
+        {hasActiveSub && (
+          <ConnectionActions token={token} subscribeUrl={subscribeLink?.subscribe_url} />
+        )}
 
         {/* ─── Quick Actions (без Telegram) ─── */}
         <div className="grid grid-cols-2 gap-3 mb-6 animate-fade-in-up delay-100">
