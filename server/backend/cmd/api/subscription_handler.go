@@ -76,8 +76,11 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
 
 	// Dynamic announce shown in Happ as a clickable row below the progress bar.
+	// Happ requires `base64:` prefix for non-ASCII content per their docs
+	// https://www.happ.su/main/dev-docs/app-management — Cyrillic + emoji break
+	// the URL parser otherwise (manifesting as "URL подписки не валидна" on iOS).
 	if announceText, announceURL := buildSubscriptionAnnounce(userID); announceText != "" {
-		w.Header().Set("Announce", announceText)
+		w.Header().Set("Announce", "base64:"+base64.StdEncoding.EncodeToString([]byte(announceText)))
 		w.Header().Set("Announce-Url", announceURL)
 	}
 
