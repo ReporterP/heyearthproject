@@ -556,6 +556,15 @@ export default function ServersPage() {
         {/* Tunnel status + protocol + lifecycle */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <TunnelBadge status={srv.tunnel_status} />
+          {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
+            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+              srv.mtproto_status === 'healthy' ? 'bg-emerald-500/15 text-emerald-300' :
+              srv.mtproto_status === 'unhealthy' ? 'bg-red-500/15 text-red-300' :
+              'bg-blue-500/15 text-blue-300'
+            }`} title={`MTProto: ${srv.mtproto_status}`}>
+              MTP
+            </span>
+          )}
           {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
           {srv.tunnel_protocol && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
@@ -658,6 +667,15 @@ export default function ServersPage() {
         <td className="py-3 px-3">
           <div className="flex items-center gap-1.5 flex-wrap">
             <TunnelBadge status={srv.tunnel_status} />
+            {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+                srv.mtproto_status === 'healthy' ? 'bg-emerald-500/15 text-emerald-300' :
+                srv.mtproto_status === 'unhealthy' ? 'bg-red-500/15 text-red-300' :
+                'bg-blue-500/15 text-blue-300'
+              }`} title={`MTProto: ${srv.mtproto_status}`}>
+                MTP
+              </span>
+            )}
             {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
             {srv.tunnel_protocol && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
