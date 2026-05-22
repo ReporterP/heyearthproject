@@ -24,6 +24,7 @@ import PaymentDetailPage from './pages/PaymentDetailPage.jsx'
 import BusinessInvoicePage from './pages/BusinessInvoicePage.jsx'
 import BusinessDashboardPage from './pages/BusinessDashboardPage.jsx'
 import ClaimCodePage from './pages/ClaimCodePage.jsx'
+import ConnectPage from './pages/ConnectPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -60,6 +61,8 @@ function App() {
             <Route path="/business/dashboard" element={<RequireAuth><BusinessDashboardPage /></RequireAuth>} />
             {/* Claim a tenant invite code — auth-gated inside the page (it stashes intent and redirects to /login) */}
             <Route path="/claim/:code" element={<ClaimCodePage />} />
+            {/* Happ deeplink handler — public route (no auth) — token in ?sub= is itself the bearer */}
+            <Route path="/connect" element={<ConnectPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
