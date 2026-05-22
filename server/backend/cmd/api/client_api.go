@@ -159,10 +159,9 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 // buildHubConnectionOptions returns connection options pointing to the main server.
 // In hub-and-spoke model, all users connect to the main server only.
 // Каждый пользователь получает уникальные подключения (per-user VLESS UUID).
+// Only VLESS is exposed to users now. SOCKS/HTTP user-facing inbounds removed (see spec 2026-05-22-socks5-removal-mtproto-perk-design.md).
 func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 	mainServerHost := biz.GetSettingOrDefault("main_server_host", "")
-	socks5Port := biz.GetSettingOrDefault("socks5_port", "1080")
-	httpProxyPort := biz.GetSettingOrDefault("http_proxy_port", "8080")
 
 	// Per-user UUID используется как пароль для прокси-авторизации
 	userVlessUUID, err := biz.GetUserVlessUUID(userID)
@@ -172,8 +171,6 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 	// Check user's plan for protocol restrictions
 	canVLESS := biz.IsProtocolAllowed(userID, "vless")
-	canSOCKS := biz.IsProtocolAllowed(userID, "socks")
-	canHTTP := biz.IsProtocolAllowed(userID, "http")
 
 	var opts []*heyearth_v1.ConnectionOption
 
@@ -232,30 +229,6 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			})
 		}
 
-		// 2. SOCKS proxy (per-user авторизация) — only if plan allows.
-		// The #HeYearth-SOCKS5 fragment becomes the entry name in clients that
-		// import the subscription (V2RayNG, Happ, Clash, etc.) — without it the
-		// SOCKS entry is nameless and indistinguishable from untagged proxies.
-		if canSOCKS {
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("socks://%s:%s@%s:%s#HeYearth-SOCKS5", userID, userVlessUUID, mainServerHost, socks5Port),
-				Protocol:            "socks",
-				Label:               "SOCKS прокси",
-				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-				Priority:            1,
-			})
-		}
-
-		// 3. HTTP proxy (per-user авторизация) — only if plan allows.
-		if canHTTP {
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 fmt.Sprintf("http://%s:%s@%s:%s#HeYearth-HTTP", userID, userVlessUUID, mainServerHost, httpProxyPort),
-				Protocol:            "http",
-				Label:               "HTTP прокси",
-				RecommendedNetworks: []string{"wifi", "ethernet", "any"},
-				Priority:            2,
-			})
-		}
 	}
 
 	return opts
