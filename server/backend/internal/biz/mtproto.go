@@ -95,15 +95,16 @@ func ListExitsNeedingMTProto() ([]MTProtoExit, error) {
 }
 
 // MarkMTProtoStatus sets mtproto_status and updates last_check timestamp.
-// If status == 'healthy' or 'unhealthy', mtproto_installed_at is set to NOW()
-// when previously NULL (first successful install / first observation).
+// mtproto_installed_at is set to NOW() ONLY on first 'healthy' observation —
+// preserves retry semantics: if install never succeeded, installed_at stays
+// NULL and the reconciler keeps retrying until success.
 func MarkMTProtoStatus(serverID int, status string) error {
 	_, err := db.DB.Exec(`
 		UPDATE servers
 		   SET mtproto_status = $1,
 		       mtproto_last_check = NOW(),
 		       mtproto_installed_at = COALESCE(mtproto_installed_at,
-		                                       CASE WHEN $1 IN ('healthy','unhealthy') THEN NOW() END),
+		                                       CASE WHEN $1 = 'healthy' THEN NOW() END),
 		       updated_at = NOW()
 		 WHERE id = $2
 	`, status, serverID)
