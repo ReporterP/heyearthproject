@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
@@ -228,16 +229,22 @@ rules:
 }
 
 // buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.
+// buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.
+// Format per v2ray/Happ de-facto standard: "upload=N; download=N; total=N; expire=UNIX".
+// `total` omitted if traffic_limit is NULL (unlimited plan).
+// `expire` always present if there's an active subscription (Happ uses it for the
+// "Истекает: DATE" display below the progress bar).
 func buildSubscriptionUserinfo(userID string) string {
 	var trafficUsed int64
 	var trafficLimit *int64
+	var validUntil time.Time
 	err := db.DB.QueryRow(`
-		SELECT COALESCE(us.traffic_used, 0), us.traffic_limit
+		SELECT COALESCE(us.traffic_used, 0), us.traffic_limit, us.valid_until
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW()
 		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&trafficUsed, &trafficLimit)
+	`, userID).Scan(&trafficUsed, &trafficLimit, &validUntil)
 	if err != nil {
 		return ""
 	}
@@ -246,6 +253,7 @@ func buildSubscriptionUserinfo(userID string) string {
 	if trafficLimit != nil && *trafficLimit > 0 {
 		info += fmt.Sprintf("; total=%d", *trafficLimit)
 	}
+	info += fmt.Sprintf("; expire=%d", validUntil.Unix())
 	return info
 }
 
