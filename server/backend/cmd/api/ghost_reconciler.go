@@ -168,21 +168,25 @@ func runAutoRepair(serverID int) {
 // Runs asynchronously; errors are logged but don't crash the reconciler.
 func installMTProtoForExit(serverID int) {
 	var (
-		ipAddress      string
-		sshUser        string
-		sshPort        int
-		sshPasswordEnc []byte
+		ipAddress         string
+		sshUser           string
+		sshPort           int
+		sshPasswordPlain  string
+		sshPasswordEnc    []byte
 	)
 	err := db.DB.QueryRow(`
 		SELECT ip_address, COALESCE(ssh_user,'root'), COALESCE(ssh_port,22),
+		       COALESCE(ssh_password, ''),
 		       COALESCE(ssh_password_enc, ''::bytea)
 		  FROM servers WHERE id = $1
-	`, serverID).Scan(&ipAddress, &sshUser, &sshPort, &sshPasswordEnc)
+	`, serverID).Scan(&ipAddress, &sshUser, &sshPort, &sshPasswordPlain, &sshPasswordEnc)
 	if err != nil {
 		log.Printf("[ghost-reconciler] load server %d: %v", serverID, err)
 		return
 	}
 
+	// Prefer encrypted (newer servers), fall back to plaintext (legacy rows
+	// like the Amsterdam exit predating the AES-GCM migration).
 	sshPass := ""
 	if len(sshPasswordEnc) > 0 {
 		dec, derr := crypto.Decrypt(sshPasswordEnc)
@@ -191,6 +195,9 @@ func installMTProtoForExit(serverID int) {
 		} else {
 			log.Printf("[ghost-reconciler] decrypt password %d: %v", serverID, derr)
 		}
+	}
+	if sshPass == "" && sshPasswordPlain != "" {
+		sshPass = sshPasswordPlain
 	}
 
 	scriptBytes, sErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
