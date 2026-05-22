@@ -166,7 +166,9 @@ func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, 
 	var stdout, stderr bytes.Buffer
 	runSession.Stdout = &stdout
 	runSession.Stderr = &stderr
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// First-time install on a slow VPS = apt install + git clone + make on 2 vCPU,
+	// can take 8-10 min. Subsequent runs are seconds (script idempotently skips build).
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runSession.Run(fmt.Sprintf("bash /tmp/install-mtproxy.sh %s %s", port, secret)) }()
