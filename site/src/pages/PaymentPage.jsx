@@ -23,7 +23,7 @@ function formatDuration(days) {
 
 function protocolLabel(protocols) {
   if (!protocols || protocols.includes('all')) return 'Все протоколы'
-  return protocols.map(p => p === 'vless' ? 'Прокси' : p === 'socks' ? 'SOCKS' : p === 'http' ? 'HTTP' : p === 'all' ? 'Все протоколы' : p.toUpperCase()).join(' + ')
+  return protocols.map(p => p === 'vless' ? 'Прокси' : p === 'socks' ? '' : p === 'http' ? 'HTTP' : p === 'all' ? 'Все протоколы' : p.toUpperCase()).filter(Boolean).join(' + ')
 }
 
 export default function PaymentPage() {

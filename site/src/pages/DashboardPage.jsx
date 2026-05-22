@@ -216,7 +216,7 @@ export default function DashboardPage() {
   const isExpired = validUntil ? new Date(validUntil) < new Date() : false
   const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired && !isPaused
 
-  // Telegram deeplink from SOCKS credentials
+  // Telegram deeplink from VLESS Reality credentials
   const socksHost = connections?.socks5_host || connections?.main_server_host || 'hiearth.ru'
   const socksUser = connections?.socks5_user || userId
   const socksPass = connections?.socks5_pass || ''
@@ -450,7 +450,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ═══ SOCKS5 / HTTP proxy credentials — видны только тем, чей план их разрешает ═══ */}
+        {/* ═══ VLESS Reality credentials — видны только тем, чей план их разрешает ═══ */}
         {hasActiveSub && connections?.socks5_user && (
           <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-75">
             <div className="flex items-center gap-3 mb-4">
@@ -460,7 +460,7 @@ export default function DashboardPage() {
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-base font-semibold">SOCKS5 прокси</h2>
+                <h2 className="text-base font-semibold">VLESS Reality</h2>
                 <p className="text-xs text-text-secondary mt-0.5">Для браузеров, Telegram, десктопных приложений</p>
               </div>
             </div>
