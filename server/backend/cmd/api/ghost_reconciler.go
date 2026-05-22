@@ -2,10 +2,12 @@ package main
 
 import (
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -99,6 +101,21 @@ func runGhostReconciler() {
 
 	log.Printf("[ghost-reconciler] scan: %d units, %d rows, %d orphans, %d missing (auto_cleanup=%v auto_repair=%v)",
 		len(hubUnits), len(dbStates), orphans, missing, autoCleanup, autoRepair)
+
+	// ── MTProto backfill ──
+	// Auto-install mtproto-proxy on exits that don't have it yet.
+	// Rate-limited to 1 install per tick (30 min) to avoid hammering.
+	autoInstall := biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true"
+	if autoInstall {
+		needing, err := biz.ListExitsNeedingMTProto()
+		if err != nil {
+			log.Printf("[ghost-reconciler] mtproto list: %v", err)
+		} else if len(needing) > 0 {
+			log.Printf("[ghost-reconciler] %d exit(s) need mtproto-proxy install; firing 1 (rate-limit)", len(needing))
+			exit := needing[0]
+			go installMTProtoForExit(exit.ID)
+		}
+	}
 }
 
 func loadServerLifecycleMap() (map[int]string, error) {
@@ -144,4 +161,56 @@ func runAutoRepair(serverID int) {
 	if err := biz.HubProvisionExisting(serverID, nil); err != nil {
 		log.Printf("[ghost-reconciler] auto-repair server %d failed: %v", serverID, err)
 	}
+}
+
+// installMTProtoForExit fetches the full server row from DB, then invokes
+// the same SSH-based installer used by runSetupExitNode's Step 8.
+// Runs asynchronously; errors are logged but don't crash the reconciler.
+func installMTProtoForExit(serverID int) {
+	var (
+		ipAddress      string
+		sshUser        string
+		sshPort        int
+		sshPasswordEnc []byte
+	)
+	err := db.DB.QueryRow(`
+		SELECT ip_address, COALESCE(ssh_user,'root'), COALESCE(ssh_port,22),
+		       COALESCE(ssh_password_enc, ''::bytea)
+		  FROM servers WHERE id = $1
+	`, serverID).Scan(&ipAddress, &sshUser, &sshPort, &sshPasswordEnc)
+	if err != nil {
+		log.Printf("[ghost-reconciler] load server %d: %v", serverID, err)
+		return
+	}
+
+	sshPass := ""
+	if len(sshPasswordEnc) > 0 {
+		dec, derr := crypto.Decrypt(sshPasswordEnc)
+		if derr == nil {
+			sshPass = dec
+		} else {
+			log.Printf("[ghost-reconciler] decrypt password %d: %v", serverID, derr)
+		}
+	}
+
+	scriptBytes, sErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
+	if sErr != nil {
+		scriptBytes, sErr = os.ReadFile("server/backend/cmd/deploy/install-mtproxy.sh")
+	}
+	if sErr != nil {
+		log.Printf("[ghost-reconciler] script not found: %v", sErr)
+		return
+	}
+
+	if err := biz.MarkMTProtoStatus(serverID, "installing"); err != nil {
+		log.Printf("[ghost-reconciler] mark installing %d: %v", serverID, err)
+	}
+	if instErr := biz.InstallMTProtoOnExit(serverID, ipAddress, sshUser, sshPass, sshPort, scriptBytes); instErr != nil {
+		_ = biz.MarkMTProtoStatus(serverID, "unhealthy")
+		log.Printf("[ghost-reconciler] install mtproxy on %d (%s): %v", serverID, ipAddress, instErr)
+		return
+	}
+	_ = biz.MarkMTProtoStatus(serverID, "healthy")
+	biz.BumpSubscriptionVersion()
+	log.Printf("[ghost-reconciler] install mtproxy on %d (%s): success", serverID, ipAddress)
 }
