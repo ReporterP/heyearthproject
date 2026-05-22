@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# One-time install of Telegram official mtproto-proxy on this server.
-# Run as root. Usage: bash install-mtproxy.sh [PORT] [SECRET]
-#   PORT defaults to 8443. SECRET defaults to existing file or fresh random.
+# Install Telegram MTProto Proxy using 9seconds/mtg — modern, maintained,
+# statically-linked Go binary. Replaces unmaintained TelegramMessenger/MTProxy
+# which segfaults on Ubuntu 24+ even with CFLAGS=-fcommon workaround.
+#
+# Usage: bash install-mtproxy.sh [PORT] [SECRET]
+#   PORT defaults to 8443.
+#   SECRET (optional) — mtg-format hex string (starts with "ee" + 32 random
+#   hex + hex-encoded fake-TLS domain). If absent, mtg generates one.
+#
+# Last stdout line is `secret: <value>` (parsed by Go caller).
 #
 # After install:
-#   - binary at /usr/local/bin/mtproto-proxy
-#   - working dir /opt/mtproxy
-#   - systemd unit mtproxy.service
-#   - listens on TCP <PORT> (default 8443)
-#   - prints the generated secret to stdout
+#   - binary at /usr/local/bin/mtg
+#   - secret + state in /opt/mtproxy/
+#   - systemd unit mtproxy.service listening on TCP <PORT>
 
-set -euo pipefail
+set -euxo pipefail  # -x prints each command to stderr — verbose for diagnostics
 
 PORT="${1:-8443}"
+SECRET_ARG="${2:-}"
+MTG_VERSION="2.1.7"
 WORKDIR=/opt/mtproxy
-BIN=/usr/local/bin/mtproto-proxy
+BIN=/usr/local/bin/mtg
+FAKE_TLS_HOST="www.google.com"
 
 if [[ $EUID -ne 0 ]]; then
   echo "ERR: run as root" >&2
@@ -22,63 +30,57 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo "[install-mtproxy] dependencies"
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq build-essential libssl-dev zlib1g-dev git curl xxd
+apt-get install -y -qq curl ca-certificates tar iproute2
 
 mkdir -p "$WORKDIR"
-cd "$WORKDIR"
 
-if [[ ! -f "$BIN" ]]; then
-  echo "[install-mtproxy] cloning + building"
-  rm -rf MTProxy
-  git clone https://github.com/TelegramMessenger/MTProxy.git
-  cd MTProxy
-  # CFLAGS=-fcommon: required for GCC ≥10 (Ubuntu 22.04+) to allow MTProxy's
-  # legacy multiple-tentative-definition style to link. Without it, build fails
-  # with "multiple definition of ..." errors. The repo is unmaintained since 2020
-  # but still works once given this flag.
-  make CFLAGS=-fcommon -j"$(nproc)"
-  install -m 0755 objs/bin/mtproto-proxy "$BIN"
-  cd ..
+# Download mtg static binary if not present.
+if [[ ! -x "$BIN" ]]; then
+  echo "[install-mtproxy] downloading mtg v${MTG_VERSION}"
+  cd /tmp
+  curl -fsSL -o /tmp/mtg.tar.gz \
+    "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-amd64.tar.gz"
+  rm -rf /tmp/mtg-extract
+  mkdir -p /tmp/mtg-extract
+  tar -xzf /tmp/mtg.tar.gz -C /tmp/mtg-extract --strip-components=1
+  install -m 0755 /tmp/mtg-extract/mtg "$BIN"
+  rm -rf /tmp/mtg.tar.gz /tmp/mtg-extract
 fi
+"$BIN" --version >&2 || true
 
-echo "[install-mtproxy] fetching Telegram proxy config"
-curl -fsSL https://core.telegram.org/getProxySecret -o "$WORKDIR/proxy-secret"
-curl -fsSL https://core.telegram.org/getProxyConfig -o "$WORKDIR/proxy-multi.conf"
-
-if [[ -n "${2:-}" ]]; then
-  echo "[install-mtproxy] using SECRET provided via arg"
-  printf '%s\n' "$2" > "$WORKDIR/secret"
+# Determine secret.
+if [[ -n "$SECRET_ARG" ]]; then
+  # Validate: mtg secrets must be hex string starting with "ee" (or legacy "7g").
+  if [[ "$SECRET_ARG" =~ ^(ee|7g)[0-9a-fA-F]+$ ]]; then
+    echo "[install-mtproxy] using SECRET provided via arg (valid mtg format)"
+    printf '%s' "$SECRET_ARG" > "$WORKDIR/secret"
+  else
+    echo "[install-mtproxy] SECRET arg not in mtg format, regenerating via mtg"
+    "$BIN" generate-secret --hex "$FAKE_TLS_HOST" > "$WORKDIR/secret"
+  fi
 elif [[ ! -f "$WORKDIR/secret" ]]; then
-  echo "[install-mtproxy] generating user secret"
-  head -c 16 /dev/urandom | xxd -ps > "$WORKDIR/secret"
+  echo "[install-mtproxy] generating mtg secret"
+  "$BIN" generate-secret --hex "$FAKE_TLS_HOST" > "$WORKDIR/secret"
 fi
-SECRET="$(cat "$WORKDIR/secret" | tr -d '\n\r ')"
+SECRET=$(tr -d '\n\r ' < "$WORKDIR/secret")
 
-echo "[install-mtproxy] /etc/default/mtproxy (env)"
-cat > /etc/default/mtproxy <<EOF
-MTPROXY_PORT=$PORT
-MTPROXY_SECRET=$SECRET
-# Set MTPROXY_TAG=<tag-from-mtproxybot> to enable sponsor channel banner.
-MTPROXY_TAG=
+# mtg v2 uses a TOML config file (CLI flags removed in v2). Write it.
+cat > "$WORKDIR/config.toml" <<EOF
+secret = "$SECRET"
+bind-to = "0.0.0.0:$PORT"
 EOF
 
-echo "[install-mtproxy] systemd unit"
-cat > /etc/systemd/system/mtproxy.service <<'SVC'
+# Systemd unit — mtg loads config from TOML.
+cat > /etc/systemd/system/mtproxy.service <<SVC
 [Unit]
-Description=Telegram MTProto Proxy (HeYearth)
+Description=Telegram MTProto Proxy (HeYearth via mtg)
 After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/default/mtproxy
-WorkingDirectory=/opt/mtproxy
-ExecStart=/bin/bash -c '\
-  ARGS="-u nobody -p 2398 -H ${MTPROXY_PORT} -S ${MTPROXY_SECRET} \
-        --aes-pwd /opt/mtproxy/proxy-secret /opt/mtproxy/proxy-multi.conf \
-        -M $(nproc)"; \
-  if [ -n "${MTPROXY_TAG:-}" ]; then ARGS="$ARGS -P ${MTPROXY_TAG}"; fi; \
-  exec /usr/local/bin/mtproto-proxy $ARGS'
+ExecStart=/usr/local/bin/mtg run $WORKDIR/config.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -90,18 +92,43 @@ SVC
 systemctl daemon-reload
 systemctl enable mtproxy
 systemctl restart mtproxy
-sleep 2
-systemctl is-active mtproxy
 
+# Wait for active/failed verdict (up to 15s).
+STATUS="unknown"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  STATUS=$(systemctl is-active mtproxy 2>/dev/null || true)
+  if [[ "$STATUS" == "active" ]]; then break; fi
+  if [[ "$STATUS" == "failed" ]]; then
+    echo "[install-mtproxy] ERR: mtproxy.service entered failed state" >&2
+    journalctl -u mtproxy -n 40 --no-pager 1>&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "$STATUS" != "active" ]]; then
+  echo "[install-mtproxy] ERR: mtproxy.service did not become active in 15s, last=$STATUS" >&2
+  journalctl -u mtproxy -n 40 --no-pager 1>&2 || true
+  exit 1
+fi
+
+# Confirm daemon is actually listening (catches crashes between systemd's
+# "active" verdict and the actual bind).
+sleep 3
+if ! ss -tln 2>/dev/null | grep -qE ":${PORT}\b"; then
+  echo "[install-mtproxy] ERR: daemon NOT listening on :$PORT — likely crashed" >&2
+  systemctl status mtproxy --no-pager 1>&2 || true
+  journalctl -u mtproxy -n 60 --no-pager 1>&2 || true
+  exit 1
+fi
+
+# UFW open port.
 if command -v ufw >/dev/null 2>&1; then
   ufw allow "$PORT"/tcp || true
 fi
 
-PUBLIC_IP="$(curl -fsSL https://api.ipify.org || hostname -I | awk '{print $1}')"
+PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')"
 echo
 echo "[install-mtproxy] DONE"
-echo "  host:   $PUBLIC_IP"
-echo "  port:   $PORT"
-echo "  secret: $SECRET"
-echo
-echo "Set these via admin UI → MTProto page → Save."
+echo "  host: $PUBLIC_IP"
+echo "  port: $PORT"
+echo "secret: $SECRET"

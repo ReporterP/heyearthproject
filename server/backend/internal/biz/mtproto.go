@@ -175,10 +175,20 @@ func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, 
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("install-mtproxy script failed: %w; stderr=%s", err, stderr.String())
+			// Capture TAIL of each stream — the failure happens at the end, so
+			// last 4KB is what matters. set -x stderr is long; first lines are
+			// just dependency-install noise.
+			tail := func(s string, n int) string {
+				if len(s) > n {
+					return "...[head-truncated]" + s[len(s)-n:]
+				}
+				return s
+			}
+			return fmt.Errorf("install-mtproxy script failed: %w; stdout=%q stderr=%q",
+				err, tail(stdout.String(), 4000), tail(stderr.String(), 4000))
 		}
 	case <-ctx.Done():
-		return fmt.Errorf("install-mtproxy timeout after 5min")
+		return fmt.Errorf("install-mtproxy timeout after 12min")
 	}
 
 	log.Printf("[mtproto] InstallMTProtoOnExit server=%d (%s): success", serverID, ipAddress)
