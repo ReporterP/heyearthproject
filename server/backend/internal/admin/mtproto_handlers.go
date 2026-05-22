@@ -16,6 +16,7 @@ type MTProtoSettings struct {
 	Port           string `json:"port"`
 	Secret         string `json:"secret"`
 	SponsorChannel string `json:"sponsor_channel"`
+	AutoInstall    bool   `json:"auto_install"`
 }
 
 // GetMTProtoSettings — GET /api/admin/mtproto
@@ -26,6 +27,7 @@ func GetMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 		Port:           biz.GetSettingOrDefault("mtproto_port", "8443"),
 		Secret:         biz.GetSettingOrDefault("mtproto_secret", ""),
 		SponsorChannel: biz.GetSettingOrDefault("mtproto_sponsor_channel", ""),
+		AutoInstall:    biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true",
 	}
 	writeAdminJSON(w, http.StatusOK, s)
 }
@@ -42,12 +44,17 @@ func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 	if s.Enabled {
 		enabled = "true"
 	}
+	autoInstall := "false"
+	if s.AutoInstall {
+		autoInstall = "true"
+	}
 	for k, v := range map[string]string{
 		"mtproto_enabled":         enabled,
 		"mtproto_host":            s.Host,
 		"mtproto_port":            s.Port,
 		"mtproto_secret":          s.Secret,
 		"mtproto_sponsor_channel": s.SponsorChannel,
+		"mtproto_auto_install":    autoInstall,
 	} {
 		if err := biz.SetSetting(k, v); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to save: "+k)

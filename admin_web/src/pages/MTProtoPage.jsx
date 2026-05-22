@@ -21,10 +21,9 @@ export default function MTProtoPage() {
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     enabled: false,
-    host: '',
-    port: '8443',
     secret: '',
     sponsor_channel: '',
+    auto_install: true,
   })
 
   async function load() {
@@ -33,10 +32,9 @@ export default function MTProtoPage() {
       const data = await authedFetch('GET', API)
       setForm({
         enabled: !!data.enabled,
-        host: data.host || '',
-        port: data.port || '8443',
         secret: data.secret || '',
         sponsor_channel: data.sponsor_channel || '',
+        auto_install: data.auto_install !== false,
       })
     } catch (e) {
       toast.error(e.message)
@@ -78,8 +76,11 @@ export default function MTProtoPage() {
   return (
     <div className="p-4 md:p-6 max-w-2xl">
       <h1 className="text-xl md:text-2xl font-bold mb-1">MTProto Telegram Proxy</h1>
-      <p className="text-sm text-text-secondary mb-6">
+      <p className="text-sm text-text-secondary mb-1">
         Кнопка для добавления HeYearth MTProto-прокси в Telegram. Бонус-фича для активных подписчиков.
+      </p>
+      <p className="text-xs text-text-secondary mb-6">
+        Host и Port теперь управляются автоматически — балансировщик выбирает здоровый exit-сервер при каждом запросе пользователя.
       </p>
 
       <div className="space-y-4 bg-surface-card rounded-xl border border-white/10 p-5">
@@ -93,27 +94,15 @@ export default function MTProtoPage() {
           <span className="text-sm">Включить MTProto (виден ли deeplink в личном кабинете)</span>
         </label>
 
-        <div>
-          <label className="text-xs text-text-secondary block mb-1">Host (FQDN или IP exit-VPS)</label>
+        <label className="flex items-center gap-3 cursor-pointer">
           <input
-            type="text"
-            value={form.host}
-            onChange={(e) => setForm({ ...form, host: e.target.value })}
-            className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm font-mono"
-            placeholder="89.124.89.126"
+            type="checkbox"
+            checked={form.auto_install}
+            onChange={(e) => setForm({ ...form, auto_install: e.target.checked })}
+            className="w-4 h-4"
           />
-        </div>
-
-        <div>
-          <label className="text-xs text-text-secondary block mb-1">Port</label>
-          <input
-            type="text"
-            value={form.port}
-            onChange={(e) => setForm({ ...form, port: e.target.value })}
-            className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm font-mono"
-            placeholder="8443"
-          />
-        </div>
+          <span className="text-sm">Автоматически ставить mtproxy на новые/существующие exit-серверы</span>
+        </label>
 
         <div>
           <label className="text-xs text-text-secondary block mb-1">Secret (32 hex chars)</label>
