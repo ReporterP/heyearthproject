@@ -165,13 +165,6 @@ func SyncXrayConfig() error {
 		})
 	}
 
-	// Per-user аккаунты для SOCKS5/HTTP
-	socksAccounts, httpAccounts := buildProxyAccounts()
-	if serverUUID != "" {
-		socksAccounts = append(socksAccounts, map[string]string{"user": "heyearth", "pass": serverUUID})
-		httpAccounts = append(httpAccounts, map[string]string{"user": "heyearth", "pass": serverUUID})
-	}
-
 	// ── Reality SNI (настраивается через app_settings, по умолчанию — apple.com) ──
 	// apple.com — оптимальный SNI для обхода DPI в России (массовый трафик, нельзя заблокировать)
 	realitySNI := "apple.com"
@@ -223,30 +216,6 @@ func SyncXrayConfig() error {
 			"tag": "shadowsocks", "listen": "0.0.0.0", "port": 8388, "protocol": "shadowsocks",
 			"settings": map[string]interface{}{"method": "2022-blake3-aes-128-gcm", "password": keys.SSPassword, "network": "tcp,udp"},
 			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
-		},
-		{
-			"tag": "socks5-proxy", "listen": "0.0.0.0", "port": 1080, "protocol": "socks",
-			"settings": map[string]interface{}{"auth": "password", "accounts": socksAccounts, "udp": true},
-			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
-			"streamSettings": map[string]interface{}{
-				"sockopt": map[string]interface{}{
-					"tcpFastOpen":          true, // Быстрый TCP handshake от клиента
-					"tcpNoDelay":           true, // Без задержки Nagle
-					"tcpKeepAliveInterval": 30,
-				},
-			},
-		},
-		{
-			"tag": "http-proxy", "listen": "0.0.0.0", "port": 8080, "protocol": "http",
-			"settings": map[string]interface{}{"allowTransparent": false, "accounts": httpAccounts},
-			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls"}},
-			"streamSettings": map[string]interface{}{
-				"sockopt": map[string]interface{}{
-					"tcpFastOpen":          true,
-					"tcpNoDelay":           true,
-					"tcpKeepAliveInterval": 30,
-				},
-			},
 		},
 	}
 
@@ -420,7 +389,7 @@ func SyncXrayConfig() error {
 		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
-			"inboundTag":  []string{"socks5-proxy", "http-proxy", "vless-reality", "vless-xhttp"},
+			"inboundTag":  []string{"vless-reality", "vless-xhttp"},
 			"outboundTag": "block",
 		})
 		routing["rules"] = rules
@@ -559,8 +528,11 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("restart xray: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
-	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d SOCKS5/HTTP аккаунтов, %d exit-нод, %d правил маскировки",
-		len(vlessClients), len(socksAccounts), len(exitTags), len(maskRouteEntries))
+	// Notify clients that subscription config has changed.
+	biz.BumpSubscriptionVersion()
+
+	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d exit-нод, %d правил маскировки",
+		len(vlessClients), len(exitTags), len(maskRouteEntries))
 
 	return nil
 }
@@ -740,21 +712,6 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 		log.Printf("[xray-sync] exit-нода %d (%s): неизвестный протокол %q", node.ID, node.Name, node.TunnelProtocol)
 		return nil
 	}
-}
-
-// buildProxyAccounts формирует списки аккаунтов для SOCKS5 и HTTP proxy
-// из всех активных пользователей (user_id → vless_uuid).
-func buildProxyAccounts() (socksAccounts []map[string]string, httpAccounts []map[string]string) {
-	rows, err := biz.ListActiveUsersWithUUIDs()
-	if err != nil {
-		log.Printf("[xray-sync] Ошибка получения активных пользователей: %v", err)
-		return nil, nil
-	}
-	for _, u := range rows {
-		socksAccounts = append(socksAccounts, map[string]string{"user": u.UserID, "pass": u.VlessUUID})
-		httpAccounts = append(httpAccounts, map[string]string{"user": u.UserID, "pass": u.VlessUUID})
-	}
-	return
 }
 
 // ─────────────────────── Tunnel Health Monitoring ───────────────────────
