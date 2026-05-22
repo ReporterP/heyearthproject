@@ -100,7 +100,7 @@ export default function PlansPage() {
           <div key={plan.id} className={`bg-surface-card rounded-xl border p-5 transition ${plan.is_active ? 'border-white/10' : 'border-red-500/20 opacity-60'}`}>
             <div className="flex items-start justify-between mb-3">
               <div>
-                <h3 className="font-semibold text-lg">{plan.name}</h3>
+                <h3 className={`font-semibold text-lg ${plan.is_active ? '' : 'line-through text-text-secondary'}`}>{plan.name}</h3>
                 <p className="text-xs text-text-secondary font-mono">{plan.slug}</p>
               </div>
               <div className="text-right">
@@ -144,7 +144,7 @@ export default function PlansPage() {
               <div>
                 <label className="text-xs text-text-secondary">Slug (URL-ключ)</label>
                 <input value={editing.slug} onChange={e => setEditing({...editing, slug: e.target.value})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="socks-basic" />
+                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="vless-reality" />
               </div>
               <div>
                 <label className="text-xs text-text-secondary">Название</label>
