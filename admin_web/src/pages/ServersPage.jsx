@@ -12,6 +12,7 @@ import {
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
@@ -552,9 +553,10 @@ export default function ServersPage() {
           )}
         </div>
 
-        {/* Tunnel status + protocol */}
+        {/* Tunnel status + protocol + lifecycle */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <TunnelBadge status={srv.tunnel_status} />
+          {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
           {srv.tunnel_protocol && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
           )}
@@ -654,8 +656,9 @@ export default function ServersPage() {
         </td>
         <td className="py-3 px-3"><StatusBadge status={srv.status} /></td>
         <td className="py-3 px-3">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <TunnelBadge status={srv.tunnel_status} />
+            {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
             {srv.tunnel_protocol && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
             )}

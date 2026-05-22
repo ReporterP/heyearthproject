@@ -6,6 +6,8 @@ import { useToast } from '../components/Toast.jsx'
 import { fetchServerDetail, fetchServerLogs, runServerAction } from '../api/admin.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
+import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
+import DeleteServerDialog from '../components/DeleteServerDialog.jsx'
 
 const REFRESH_INTERVAL = 15000 // 15s
 const MAX_HISTORY = 20
@@ -70,6 +72,7 @@ export default function ServerDetailPage() {
   // Stays null until we know what kind of node this is.
   const [logsService, setLogsService] = useState(null)
   const [configOpen, setConfigOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   // In-memory history buffer for charts
   const cpuHistory = useRef([])
@@ -256,6 +259,12 @@ export default function ServerDetailPage() {
                   <button onClick={() => doAction('fetch_tunnel_creds')} className="px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition">{t.sdFetchCreds || 'Fetch Creds'}</button>
                   <button onClick={() => { if (confirm(t.sdReprovisionConfirm || 'Re-provision this node? This will reinstall all services.')) doAction('setup_exit_node') }}
                     className="px-3 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">{t.sdReprovision || 'Re-provision'}</button>
+                  <button onClick={() => doAction('hub_provision')}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">{t.sdHubProvision || 'Hub Provision'}</button>
+                  <button onClick={() => { if (confirm('Soft-disable: stop hub-side tunnel + archive + keep DB row?')) doAction('deprovision_soft') }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition">{t.sdDisable || 'Disable (soft)'}</button>
+                  <button onClick={() => setConfirmDelete(true)}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-300 hover:bg-red-600/30 transition border border-red-500/30">{t.sdDeleteHard || 'Delete (hard)'}</button>
                 </>
               )}
             </>
@@ -289,6 +298,31 @@ export default function ServerDetailPage() {
 
       {/* Config Editor */}
       {configOpen && <ConfigEditorDialog serverId={server.id} serverName={server.name || server.ip_address} onClose={() => setConfigOpen(false)} />}
+
+      {/* Hard delete confirmation */}
+      {confirmDelete && (
+        <DeleteServerDialog
+          serverId={server.id}
+          serverName={server.name || server.ip_address}
+          onConfirm={async () => {
+            setConfirmDelete(false)
+            try {
+              const adminToken = localStorage.getItem('admin_token') || ''
+              const res = await fetch(`/api/admin/servers/${server.id}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${adminToken}` },
+              })
+              if (!res.ok && res.status !== 202) {
+                throw new Error(`HTTP ${res.status}`)
+              }
+              toast.success('Deprovisioning started — watch progress')
+            } catch (e) {
+              toast.error(`Delete failed: ${e.message}`)
+            }
+          }}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   )
 }
