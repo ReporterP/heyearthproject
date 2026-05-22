@@ -65,13 +65,21 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	format := r.URL.Query().Get("format")
 
-	// Common headers for all formats
+	// Common headers for all formats — see spec
+	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
 	configVersion := biz.GetSettingOrDefault("config_version", "1")
 	w.Header().Set("X-Config-Version", configVersion)
 	w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(userID))
 	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
 	w.Header().Set("Profile-Title", "HiEarth")
+	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
 	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+
+	// Dynamic announce shown in Happ as a clickable row below the progress bar.
+	if announceText, announceURL := buildSubscriptionAnnounce(userID); announceText != "" {
+		w.Header().Set("Announce", announceText)
+		w.Header().Set("Announce-Url", announceURL)
+	}
 
 	// Build URI list
 	var uris []string
@@ -93,15 +101,16 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		plainURIs := strings.Join(uris, "\n")
 
 		if strings.Contains(ua, "happ") || r.URL.Query().Get("raw") == "1" {
-			// Happ and raw mode: plain text URIs without base64
+			// Happ and raw mode: plain text URIs, no base64.
+			// NO Content-Disposition: attachment — Happ treats attachment as file
+			// download and skips parsing metadata headers (bug verified 2026-05-23).
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
 			w.Write([]byte(plainURIs))
 		} else {
-			// V2Ray/SingBox: standard base64 encoded
+			// V2Ray/SingBox/Nekoray: standard base64-encoded list.
+			// NO Content-Disposition: attachment — same reason as Happ branch.
 			encoded := base64.StdEncoding.EncodeToString([]byte(plainURIs))
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"heyearth-%s\"", token[:8]))
 			w.Write([]byte(encoded))
 		}
 	}
