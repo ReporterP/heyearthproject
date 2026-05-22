@@ -1398,6 +1398,7 @@ func runSetupExitNode(server serverResponse) {
 		{Name: "configure_firewall", Description: "Настройка файрвола", Status: "pending"},
 		{Name: "update_credentials", Description: "Обновление credentials в БД", Status: "pending"},
 		{Name: "setup_hub_client", Description: "Настройка Hysteria2 клиента на Hub", Status: "pending"},
+		{Name: "install_mtproxy", Description: "Установка MTProto-прокси (Telegram бонус)", Status: "pending"},
 	}
 	progress := &ProvisionProgress{
 		ServerID: server.ID,
@@ -1780,6 +1781,38 @@ systemctl restart %s
 
 	// Перезапускаем API для пересинхронизации Xray
 	exec.Command("systemctl", "restart", "heyearth-api").Run()
+
+	// Step 8 (idx 7): install_mtproxy — Telegram MTProto bonus.
+	// Failure here is NON-FATAL: provisioning succeeds, mtproto stays unhealthy.
+	if err := biz.MarkMTProtoStatus(server.ID, "installing"); err != nil {
+		log.Printf("[provision] mark mtproto installing %d: %v", server.ID, err)
+	}
+	scriptBytes, scriptErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
+	if scriptErr != nil {
+		scriptBytes, scriptErr = os.ReadFile("server/backend/cmd/deploy/install-mtproxy.sh")
+	}
+	if scriptErr != nil {
+		setStep(7, "error", "install-mtproxy.sh not found on hub: "+scriptErr.Error())
+		_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
+	} else {
+		sshPort := server.SSHPort
+		if sshPort == 0 {
+			sshPort = 22
+		}
+		sshUser := server.SSHUser
+		if sshUser == "" {
+			sshUser = "root"
+		}
+		if instErr := biz.InstallMTProtoOnExit(server.ID, server.IPAddress, sshUser, server.SSHPassword, sshPort, scriptBytes); instErr != nil {
+			setStep(7, "error", instErr.Error())
+			_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
+			log.Printf("[provision] install_mtproxy %d (%s): %v", server.ID, server.Name, instErr)
+		} else {
+			setStep(7, "done", "")
+			_ = biz.MarkMTProtoStatus(server.ID, "healthy")
+			biz.BumpSubscriptionVersion()
+		}
+	}
 
 	progress.Finished = true
 	provisionProgress.Store(server.ID, progress)
