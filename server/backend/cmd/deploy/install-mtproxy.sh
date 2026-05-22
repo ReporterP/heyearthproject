@@ -33,7 +33,11 @@ if [[ ! -f "$BIN" ]]; then
   rm -rf MTProxy
   git clone https://github.com/TelegramMessenger/MTProxy.git
   cd MTProxy
-  make -j"$(nproc)"
+  # CFLAGS=-fcommon: required for GCC ≥10 (Ubuntu 22.04+) to allow MTProxy's
+  # legacy multiple-tentative-definition style to link. Without it, build fails
+  # with "multiple definition of ..." errors. The repo is unmaintained since 2020
+  # but still works once given this flag.
+  make CFLAGS=-fcommon -j"$(nproc)"
   install -m 0755 objs/bin/mtproto-proxy "$BIN"
   cd ..
 fi
