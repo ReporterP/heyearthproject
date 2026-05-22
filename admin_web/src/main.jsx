@@ -28,6 +28,7 @@ import SettingsPage from './pages/SettingsPage.jsx'
 import AutoTunerPage from './pages/AutoTunerPage.jsx'
 import PlansPage from './pages/PlansPage.jsx'
 import B2BAnalyticsPage from './pages/B2BAnalyticsPage.jsx'
+import MTProtoPage from './pages/MTProtoPage.jsx'
 import './style.css'
 
 createRoot(document.getElementById('root')).render(
@@ -61,6 +62,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/auto-tuner" element={<AutoTunerPage />} />
                   <Route path="/plans" element={<PlansPage />} />
+                  <Route path="/mtproto" element={<MTProtoPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
               </Route>

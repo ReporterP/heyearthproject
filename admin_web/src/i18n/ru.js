@@ -38,6 +38,7 @@ export default {
   navTrafficMasking: '\u041C\u0430\u0441\u043A\u0438\u0440\u043E\u0432\u043A\u0430 \u0442\u0440\u0430\u0444\u0438\u043A\u0430',
   navAuditLog: 'Журнал аудита',
   navAutoTuner: 'Auto-Tuner',
+  navMTProto: 'MTProto',
   navSettings: '\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438',
   dashboardTitle: '\u0414\u0430\u0448\u0431\u043E\u0440\u0434',
   dashUsers: '\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0438',

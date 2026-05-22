@@ -38,6 +38,7 @@ export default {
   navTrafficMasking: 'Traffic Masking',
   navAuditLog: 'Audit Log',
   navAutoTuner: 'Auto-Tuner',
+  navMTProto: 'MTProto',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',
   dashUsers: 'Users',
