@@ -71,11 +71,7 @@ export async function getConnections(token, platform) {
   const res = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${token}` },
   })
-  const data = await jsonOrThrow(res, 'Failed to load connections')
-  // X-Subscription-Version header is a cheap ETag for "did anything server-side change?".
-  // Body also has subscription_version field — they match. Header just saves parsing JSON if you only care about the counter.
-  data.__subscriptionVersionHeader = parseInt(res.headers.get('X-Subscription-Version') || '0', 10)
-  return data
+  return jsonOrThrow(res, 'Failed to load connections')
 }
 
 export async function getDownloads() {

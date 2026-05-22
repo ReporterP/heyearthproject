@@ -349,9 +349,6 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* ═══ Доступные локации + subscription_version polling ═══ */}
-        <AvailableLocations token={token} />
-
         {/* ═══ ПОДПИСКА URL — НАВЕРХ, КРУПНО ═══ */}
         {subscribeLink?.subscribe_url && hasActiveSub && (
           <div className="glass-card rounded-2xl p-6 md:p-7 mb-6 border-2 border-brand/30 shadow-lg shadow-brand/5 animate-fade-in-up delay-50">
