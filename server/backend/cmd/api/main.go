@@ -686,12 +686,19 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enabled := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true"
-	host := biz.GetSettingOrDefault("mtproto_host", "")
-	port := biz.GetSettingOrDefault("mtproto_port", "8443")
 	secret := biz.GetSettingOrDefault("mtproto_secret", "")
 
-	if !enabled || host == "" || secret == "" {
+	if !enabled || secret == "" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": false})
+		return
+	}
+
+	host, port, ok := biz.PickMTProtoExit()
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"reason":  "Временно недоступно",
+		})
 		return
 	}
 
