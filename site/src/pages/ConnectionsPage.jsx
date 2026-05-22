@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, getConnections, getDownloads, getSubscribeLink } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
+import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
 
 /* ─── Helpers ─── */
 
@@ -173,7 +174,7 @@ export default function ConnectionsPage() {
                 </div>
               )}
 
-              {/* ─── Telegram MTProto placeholder (Task 8 inserts TelegramProxyButton here) ─── */}
+              <TelegramProxyButton token={token} />
 
               {/* ─── Connection cards: VLESS ─── */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">

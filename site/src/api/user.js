@@ -195,6 +195,14 @@ export async function resumeSubscription(token) {
   return jsonOrThrow(res, 'Failed to resume subscription')
 }
 
+// ── MTProto ──
+export async function getMtproto(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/mtproto`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Failed to load MTProto info')
+}
+
 // ── Donation settings ──
 export async function getDonationSettings() {
   try {
