@@ -204,6 +204,20 @@ export default function ServerDetailPage() {
                   }`} />
                   {server.tunnel_status}
                 </span>
+                {server.is_exit_node && (
+                  <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs ml-2 ${
+                    server.mtproto_status === 'healthy' ? 'bg-emerald-500/15 text-emerald-300' :
+                    server.mtproto_status === 'unhealthy' ? 'bg-red-500/15 text-red-300' :
+                    server.mtproto_status === 'installing' ? 'bg-blue-500/15 text-blue-300' :
+                    'bg-gray-500/15 text-gray-300'
+                  }`} title={`MTProto: ${server.mtproto_status || 'unknown'}`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
+                    MTP: {server.mtproto_status === 'healthy' ? 'OK' :
+                           server.mtproto_status === 'unhealthy' ? 'Down' :
+                           server.mtproto_status === 'installing' ? 'Install…' :
+                           '—'}
+                  </span>
+                )}
                 {server.tunnel_protocol && (
                   <span className="text-xs px-2 py-1 rounded bg-brand/10 text-brand font-mono uppercase">{server.tunnel_protocol}:{server.tunnel_port}</span>
                 )}
@@ -259,6 +273,10 @@ export default function ServerDetailPage() {
                   <button onClick={() => doAction('fetch_tunnel_creds')} className="px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition">{t.sdFetchCreds || 'Fetch Creds'}</button>
                   <button onClick={() => { if (confirm(t.sdReprovisionConfirm || 'Re-provision this node? This will reinstall all services.')) doAction('setup_exit_node') }}
                     className="px-3 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">{t.sdReprovision || 'Re-provision'}</button>
+                  <button onClick={() => { if (confirm('Переустановить mtproto-proxy на этой ноде?')) doAction('reinstall_mtproxy') }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">
+                    Reinstall MTProxy
+                  </button>
                   <button onClick={() => doAction('hub_provision')}
                     className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">{t.sdHubProvision || 'Hub Provision'}</button>
                   <button onClick={() => { if (confirm('Soft-disable: stop hub-side tunnel + archive + keep DB row?')) doAction('deprovision_soft') }}
