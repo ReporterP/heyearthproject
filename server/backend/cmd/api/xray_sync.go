@@ -454,17 +454,17 @@ func SyncXrayConfig() error {
 				"0": map[string]interface{}{
 					"statsUserUplink":   true,
 					"statsUserDownlink": true,
-					"handshake":         4,   // Таймаут handshake (сек)
-					"connIdle":          300, // Idle timeout (сек) — 5 мин
-					"uplinkOnly":        2,   // Ждать 2 сек после закрытия download перед закрытием upload
-					"downlinkOnly":      5,   // Ждать 5 сек после закрытия upload перед закрытием download
-					"bufferSize":        256, // 256KB буфер на соединение (для видеостриминга)
+					"handshake":         4,    // Таймаут handshake (сек)
+					"connIdle":          3600, // Idle timeout (сек) — 1 час, не рвём long-lived (AI streaming, WebSocket, SSE)
+					"uplinkOnly":        2,    // Ждать 2 сек после закрытия download перед закрытием upload
+					"downlinkOnly":      5,    // Ждать 5 сек после закрытия upload перед закрытием download
+					"bufferSize":        256,  // 256KB буфер на соединение (для видеостриминга)
 				},
 				"1": map[string]interface{}{
 					"statsUserUplink":   true,
 					"statsUserDownlink": true,
 					"handshake":         4,
-					"connIdle":          600, // Premium: 10 мин idle
+					"connIdle":          3600, // Premium: тот же 1 час idle, что и standard (раньше было 600)
 					"uplinkOnly":        2,
 					"downlinkOnly":      5,
 					"bufferSize":        512, // Premium: 512KB буфер (стриминг HD видео)
