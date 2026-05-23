@@ -218,8 +218,14 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 			for _, p := range profiles {
 				fragment := fmt.Sprintf("%s %s?serverDescription=%s", profileEmoji, p.tag, subDescB64(p.subDesc))
+				// tcpKeepAliveInterval=15 / tcpKeepAliveIdle=100: shipped via the URI so Happ /
+				// v2rayNG configure their outbound sockopt without manual editing. Keepalive
+				// pings prevent the client's policy.connIdle (which we cannot push via the
+				// URI — it's a client-side policy field) from killing long-lived streams
+				// (AI streaming, WebSocket, SSE), AND keep carrier-NAT mappings alive on
+				// mobile / hotel wifi networks.
 				vlessURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp%s#%s",
+					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam,
 					url.QueryEscape(fragment))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
@@ -239,7 +245,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			fragment := fmt.Sprintf("⚡ XHTTP?serverDescription=%s", subDescB64)
 			// NOTE: splithttp transport does NOT use flow=xtls-rprx-vision (flow is only for tcp+Reality)
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp#%s",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(fragment))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
