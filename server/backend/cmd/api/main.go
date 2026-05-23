@@ -986,6 +986,7 @@ func main() {
 
 	// Subscription links (без auth — по subscribe_token)
 	http.HandleFunc("/api/v1/user/subscribe/", apiLimiter.Middleware(handleSubscriptionLink))
+	http.HandleFunc("/api/v1/user/happ-link/", apiLimiter.Middleware(handleGetHappLink))
 
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))

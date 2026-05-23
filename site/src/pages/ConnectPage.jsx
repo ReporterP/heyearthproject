@@ -16,16 +16,26 @@ function detectPlatform() {
   return 'desktop'
 }
 
-function buildHappDeeplink(subscribeUrl) {
-  // base64-encode the URL, strip trailing '=' padding (Happ accepts either)
-  const b64 = btoa(subscribeUrl).replace(/=+$/, '')
-  return `happ://add/${b64}`
+function buildAndroidIntent(happLink) {
+  // happLink is "happ://crypt5/<payload>". Strip "happ://" prefix and rebuild as
+  // an Android Intent URI. The S.browser_fallback_url parameter triggers a
+  // native redirect to Play Store if the app is not installed — no JS needed.
+  const tail = happLink.replace(/^happ:\/\//, '')
+  const fallback = encodeURIComponent(PLAY_STORE_URL)
+  return `intent://${tail}#Intent;scheme=happ;package=com.happproxy;S.browser_fallback_url=${fallback};end`
 }
 
-function buildAndroidIntent(subscribeUrl) {
-  const b64 = btoa(subscribeUrl).replace(/=+$/, '')
-  const fallback = encodeURIComponent(PLAY_STORE_URL)
-  return `intent://add/${b64}#Intent;scheme=happ;package=com.happproxy;S.browser_fallback_url=${fallback};end`
+async function fetchHappLink(token) {
+  // Fetches the documented `happ://crypt5/<encrypted>` deeplink from backend
+  // (which caches results from crypto.happ.su). Returns null on failure.
+  try {
+    const res = await fetch(`/api/v1/user/happ-link/${encodeURIComponent(token)}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    return (data && data.happ_link) || null
+  } catch {
+    return null
+  }
 }
 
 async function copyToClipboard(text) {
@@ -44,6 +54,52 @@ export default function ConnectPage() {
   const platform = detectPlatform()
   const [copied, setCopied] = useState(false)
   const [triggered, setTriggered] = useState(false)
+  const [happLink, setHappLink] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const subscribeUrl = token
+    ? `${window.location.origin}/api/v1/user/subscribe/${token}`
+    : ''
+
+  // Fetch the crypt5 deeplink from backend on mount.
+  useEffect(() => {
+    if (!token) {
+      setLoading(false)
+      return
+    }
+    let cancelled = false
+    fetchHappLink(token).then((link) => {
+      if (cancelled) return
+      setHappLink(link)
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [token])
+
+  // Once the happ link is loaded, trigger the deeplink + fallback timer.
+  useEffect(() => {
+    if (loading || !happLink || typeof window === 'undefined') return
+
+    // Android: Intent URI handles Play Store fallback natively.
+    if (platform === 'android') {
+      window.location.href = buildAndroidIntent(happLink)
+      setTriggered(true)
+      return
+    }
+
+    // iOS / Desktop: try deeplink, fall back to download URL after timeout.
+    const fallback = platform === 'ios' ? APP_STORE_URL : DESKTOP_HAPP_URL
+    window.location.href = happLink
+    setTriggered(true)
+
+    const handle = setTimeout(() => {
+      if (!document.hidden) {
+        window.location.href = fallback
+      }
+    }, DEEPLINK_TIMEOUT_MS)
+
+    return () => clearTimeout(handle)
+  }, [loading, happLink, platform])
 
   if (!token) {
     return (
@@ -61,36 +117,6 @@ export default function ConnectPage() {
     )
   }
 
-  const subscribeUrl = `${window.location.origin}/api/v1/user/subscribe/${token}`
-  const happDeeplink = buildHappDeeplink(subscribeUrl)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    // Android: Intent URI handles fallback natively, no JS timeout needed.
-    if (platform === 'android') {
-      const androidIntent = buildAndroidIntent(subscribeUrl)
-      window.location.href = androidIntent
-      setTriggered(true)
-      return
-    }
-
-    // iOS / Desktop: try deeplink, fall back to download URL after timeout.
-    const fallback = platform === 'ios' ? APP_STORE_URL : DESKTOP_HAPP_URL
-    window.location.href = happDeeplink
-    setTriggered(true)
-
-    const handle = setTimeout(() => {
-      // If the app opened, the tab is hidden (iOS) or unloaded. If still visible,
-      // redirect to the store/site for install.
-      if (!document.hidden) {
-        window.location.href = fallback
-      }
-    }, DEEPLINK_TIMEOUT_MS)
-
-    return () => clearTimeout(handle)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
   async function doCopy() {
     const ok = await copyToClipboard(subscribeUrl)
     if (ok) {
@@ -98,6 +124,12 @@ export default function ConnectPage() {
       setTimeout(() => setCopied(false), 1800)
     }
   }
+
+  const heading = loading
+    ? 'Готовим ссылку…'
+    : happLink
+      ? 'Открываем Happ…'
+      : 'Сервис временно недоступен'
 
   return (
     <section className="min-h-[80vh] flex items-center justify-center px-4 py-10">
@@ -108,11 +140,16 @@ export default function ConnectPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
             </svg>
           </div>
-          <h1 className="text-xl md:text-2xl font-bold">Открываем Happ…</h1>
+          <h1 className="text-xl md:text-2xl font-bold">{heading}</h1>
         </div>
         {triggered && (
           <p className="text-sm text-text-secondary mb-5">
             Если Happ не открылся автоматически, выберите ваше устройство ниже.
+          </p>
+        )}
+        {!loading && !happLink && (
+          <p className="text-sm text-amber-300 mb-5">
+            Не удалось получить шифрованную ссылку. Используйте ручную установку через QR/копирование ниже.
           </p>
         )}
 

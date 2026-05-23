@@ -74,6 +74,10 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Profile-Title", "HiEarth")
 	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
 	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+	// Global proxy mode — disable Happ's smart-routing rules so ALL traffic
+	// goes through our VLESS exit. Aligns with our hub-and-spoke model where
+	// the exit is the single egress.
+	w.Header().Set("Routing-Enable", "0")
 
 	// Dynamic announce shown in Happ as a clickable row below the progress bar.
 	// Happ requires `base64:` prefix for non-ASCII content per their docs
@@ -303,10 +307,68 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 	baseURL := publicBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
+	// Happ one-tap import requires `happ://crypt5/<encrypted>` per docs.
+	// We fetch from crypto.happ.su lazily and cache in users.happ_crypt_link.
+	// On failure we still return the plain subscribe_url — frontend can copy.
+	happLink, _ := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"subscribe_token": token,
 		"subscribe_url":   subscribeURL,
 		"clash_url":       subscribeURL + "?format=clash",
+		"happ_link":       happLink,
+	})
+}
+
+// handleGetHappLink — public endpoint for ConnectPage to fetch the Happ
+// crypt5 deeplink by subscribe token (no auth needed; token IS the bearer).
+//
+// GET /api/v1/user/happ-link/<token>
+// → 200 OK {"happ_link": "happ://crypt5/..."}
+// → 404 if token unknown
+// → 502 if crypto.happ.su unreachable on first call (subsequent calls hit cache)
+func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/user/happ-link/")
+	token := strings.TrimSpace(path)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing token"})
+		return
+	}
+
+	var userID string
+	err := db.DB.QueryRow(`
+		SELECT user_id FROM users WHERE subscribe_token::text = $1
+	`, token).Scan(&userID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "invalid token"})
+		return
+	}
+
+	baseURL := publicBaseURL()
+	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
+
+	happLink, err := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"error":         "crypto.happ.su unavailable",
+			"subscribe_url": subscribeURL,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"happ_link":     happLink,
+		"subscribe_url": subscribeURL,
 	})
 }
 
