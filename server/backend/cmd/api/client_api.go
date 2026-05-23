@@ -188,13 +188,15 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			}
 
 			// Profile tag enrichment — per Happ docs (emoji.md / examples-of-links):
-			//   • Leading flag emoji becomes the profile icon automatically
 			//   • #Title?serverDescription=<base64> shows custom subtitle
 			//     (replaces technical "VLESS" line under the profile name)
-			// We use the country of the primary exit-node — that's where the user
-			// effectively appears online, not the RU hub which is just our entry.
-			exitCC := biz.GetPrimaryExitCountryCode()
-			flag := biz.CountryCodeToFlag(exitCC) // 🌍 fallback
+			//
+			// We use a neutral ⚡ emoji prefix instead of a country flag because
+			// the user's actual exit is selected by the smart load-balancer at
+			// connection time — could be any of N countries. A specific country
+			// flag would mislead. The ⚡ also conveys "speed" which matches
+			// the Reality TCP performance profile.
+			const profileEmoji = "⚡"
 			subDescB64 := func(s string) string {
 				return base64.StdEncoding.EncodeToString([]byte(s))
 			}
@@ -215,7 +217,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			}
 
 			for _, p := range profiles {
-				fragment := fmt.Sprintf("%s %s?serverDescription=%s", flag, p.tag, subDescB64(p.subDesc))
+				fragment := fmt.Sprintf("%s %s?serverDescription=%s", profileEmoji, p.tag, subDescB64(p.subDesc))
 				vlessURI := fmt.Sprintf(
 					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp%s#%s",
 					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam,
@@ -232,10 +234,9 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
 		if realityPubKey != "" && canVLESS {
-			exitCC := biz.GetPrimaryExitCountryCode()
-			flag := biz.CountryCodeToFlag(exitCC)
+			// Neutral ⚡ prefix — exit country chosen by smart load-balancer at connect.
 			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Reality • Chrome • XHTTP (anti-DPI)"))
-			fragment := fmt.Sprintf("%s XHTTP?serverDescription=%s", flag, subDescB64)
+			fragment := fmt.Sprintf("⚡ XHTTP?serverDescription=%s", subDescB64)
 			// NOTE: splithttp transport does NOT use flow=xtls-rprx-vision (flow is only for tcp+Reality)
 			xhttpURI := fmt.Sprintf(
 				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp#%s",
