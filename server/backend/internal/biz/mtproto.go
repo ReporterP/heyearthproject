@@ -67,6 +67,37 @@ func PickMTProtoExit() (host, port string, ok bool) {
 	return chosen.IPAddress, port, true
 }
 
+// ListMTProtoExitIPs returns IP addresses of all exit-nodes currently running
+// a healthy mtproto-proxy daemon. Used by the subscription handler to build
+// the "DirectIp" rule in the Happ routing profile so Telegram's connections
+// to these IPs bypass the VPN tunnel (avoiding the VPN-traffic-loops-to-itself
+// problem when the user has both VPN and MTProto-proxy enabled).
+func ListMTProtoExitIPs() ([]string, error) {
+	rows, err := db.DB.Query(`
+		SELECT ip_address
+		  FROM servers
+		 WHERE is_exit_node = TRUE
+		   AND lifecycle_state = 'online'
+		   AND mtproto_status = 'healthy'
+		 ORDER BY id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list mtproto exit ips: %w", err)
+	}
+	defer rows.Close()
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			continue
+		}
+		if ip != "" {
+			ips = append(ips, ip)
+		}
+	}
+	return ips, rows.Err()
+}
+
 // ListExitsNeedingMTProto returns online exits that have no daemon installed
 // yet (mtproto_installed_at IS NULL). Used by Ghost Reconciler.
 func ListExitsNeedingMTProto() ([]MTProtoExit, error) {

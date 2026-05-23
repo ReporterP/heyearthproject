@@ -74,10 +74,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Profile-Title", "HiEarth")
 	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
 	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
-	// Global proxy mode — disable Happ's smart-routing rules so ALL traffic
-	// goes through our VLESS exit. Aligns with our hub-and-spoke model where
-	// the exit is the single egress.
-	w.Header().Set("Routing-Enable", "0")
+	// Routing-Enable: 1 — we DO want Happ's routing rules to apply, because
+	// the subscription body ships a `happ://routing/onadd/<b64>` profile with
+	// DirectIp exclusions for our MTProto-proxy IPs. Without these exclusions,
+	// when a user enables both VPN and Telegram's MTProto-proxy, the Telegram
+	// → MTProto-proxy connection loops through the VPN tunnel and breaks.
+	w.Header().Set("Routing-Enable", "1")
 
 	// Dynamic announce shown in Happ as a clickable row below the progress bar.
 	// Happ requires `base64:` prefix for non-ASCII content per their docs
@@ -88,8 +90,23 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Announce-Url", announceURL)
 	}
 
-	// Build URI list
+	// Build URI list — prepend a Happ routing profile deeplink if we have
+	// MTProto-proxy IPs to exclude from VPN routing. This lets Telegram's
+	// MTProto traffic skip the tunnel when both are enabled simultaneously.
+	// The deeplink format `happ://routing/onadd/<b64-json>` is documented at
+	// https://www.happ.su/main/dev-docs/routing.md. Non-Happ clients ignore
+	// unknown URI schemes safely.
 	var uris []string
+	if mtprotoIPs, err := biz.ListMTProtoExitIPs(); err == nil && len(mtprotoIPs) > 0 {
+		// Convert bare IPs to /32 CIDR for unambiguous matching.
+		cidrs := make([]string, 0, len(mtprotoIPs))
+		for _, ip := range mtprotoIPs {
+			cidrs = append(cidrs, ip+"/32")
+		}
+		if deeplink := biz.BuildHappRoutingDeeplink(cidrs); deeplink != "" {
+			uris = append(uris, deeplink)
+		}
+	}
 	for _, opt := range options {
 		if opt.Uri != "" {
 			uris = append(uris, opt.Uri)
