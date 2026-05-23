@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-
+	"encoding/base64"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -186,24 +187,39 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				flowParam = "&flow=" + flow
 			}
 
+			// Profile tag enrichment — per Happ docs (emoji.md / examples-of-links):
+			//   • Leading flag emoji becomes the profile icon automatically
+			//   • #Title?serverDescription=<base64> shows custom subtitle
+			//     (replaces technical "VLESS" line under the profile name)
+			// We use the country of the primary exit-node — that's where the user
+			// effectively appears online, not the RU hub which is just our entry.
+			exitCC := biz.GetPrimaryExitCountryCode()
+			flag := biz.CountryCodeToFlag(exitCC) // 🌍 fallback
+			subDescB64 := func(s string) string {
+				return base64.StdEncoding.EncodeToString([]byte(s))
+			}
+
 			// Multi-profile: 3 VLESS URIs optimized for different ISP types.
 			// Client (Happ/v2rayNG) tests all and auto-picks the fastest working one.
 			profiles := []struct {
 				fp       string
 				label    string
-				tag      string
+				tag      string // displayed under the flag
+				subDesc  string // custom 2nd line (base64 inside URI)
 				networks []string
 				priority int32
 			}{
-				{"chrome", "Домашний интернет", "HeYearth-Home", []string{"wifi", "ethernet", "any"}, 0},
-				{"safari", "Мобильный интернет", "HeYearth-Mobile", []string{"cellular", "wifi"}, 1},
-				{"edge", "Строгий режим", "HeYearth-Strict", []string{"cellular", "wifi", "ethernet", "any"}, 2},
+				{"chrome", "Домашний интернет", "Домашний", "Reality • Chrome • TCP", []string{"wifi", "ethernet", "any"}, 0},
+				{"safari", "Мобильный интернет", "Мобильный", "Reality • Safari • TCP", []string{"cellular", "wifi"}, 1},
+				{"edge", "Строгий режим", "Строгий", "Reality • Edge • TCP", []string{"cellular", "wifi", "ethernet", "any"}, 2},
 			}
 
 			for _, p := range profiles {
+				fragment := fmt.Sprintf("%s %s?serverDescription=%s", flag, p.tag, subDescB64(p.subDesc))
 				vlessURI := fmt.Sprintf(
 					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp%s#%s",
-					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam, p.tag)
+					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam,
+					url.QueryEscape(fragment))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
 					Uri:                 vlessURI,
 					Protocol:            "vless",
@@ -216,10 +232,15 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
 		if realityPubKey != "" && canVLESS {
+			exitCC := biz.GetPrimaryExitCountryCode()
+			flag := biz.CountryCodeToFlag(exitCC)
+			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Reality • Chrome • XHTTP (anti-DPI)"))
+			fragment := fmt.Sprintf("%s XHTTP?serverDescription=%s", flag, subDescB64)
 			// NOTE: splithttp transport does NOT use flow=xtls-rprx-vision (flow is only for tcp+Reality)
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp#HeYearth-XHTTP",
-				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID)
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp#%s",
+				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
+				url.QueryEscape(fragment))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,
 				Protocol:            "vless",
