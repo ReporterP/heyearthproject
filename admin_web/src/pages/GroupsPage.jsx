@@ -119,7 +119,7 @@ function GroupsPageContent() {
 
       {paged.items.length === 0 && !paged.loading ? (
         <EmptyState
-          icon={UsersRound}
+          icon={<UsersRound className="w-12 h-12" />}
           title={t.noGroups || 'Нет групп'}
           description="Группы заменены на Тарифные планы — используйте /plans."
         />

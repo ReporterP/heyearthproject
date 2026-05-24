@@ -47,7 +47,7 @@ function EmailLogTab() {
     <div>
       <SearchPaginationBar search={paged.search} onSearch={paged.doSearch} page={paged.page} totalPages={paged.totalPages} onPageChange={paged.setPage} loading={paged.loading} />
       {paged.items.length === 0 && !paged.loading ? (
-        <EmptyState icon={RotateCcw} title="Журнал email пуст" description="Транзакционные письма появятся здесь после первой отправки." />
+        <EmptyState icon={<RotateCcw className="w-12 h-12" />} title="Журнал email пуст" description="Транзакционные письма появятся здесь после первой отправки." />
       ) : (
         <div className="mt-4">
           <Table>
@@ -101,7 +101,7 @@ function RetryQueueTab() {
     <div>
       <SearchPaginationBar search={paged.search} onSearch={paged.doSearch} page={paged.page} totalPages={paged.totalPages} onPageChange={paged.setPage} loading={paged.loading} />
       {paged.items.length === 0 && !paged.loading ? (
-        <EmptyState icon={RotateCcw} title="Очередь retries пуста" description="Все recurring платежи прошли успешно." />
+        <EmptyState icon={<RotateCcw className="w-12 h-12" />} title="Очередь retries пуста" description="Все recurring платежи прошли успешно." />
       ) : (
         <div className="mt-4">
           <Table>

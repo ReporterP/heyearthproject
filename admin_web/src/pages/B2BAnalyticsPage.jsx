@@ -53,7 +53,7 @@ export default function B2BAnalyticsPage() {
     return (
       <div>
         <PageHeader title="B2B Аналитика" subtitle="Сводка по тенантам, выручке и активности" />
-        <EmptyState icon={TrendingUp} title="Нет данных" description={error || 'Не удалось загрузить аналитику'} />
+        <EmptyState icon={<TrendingUp className="w-12 h-12" />} title="Нет данных" description={error || 'Не удалось загрузить аналитику'} />
       </div>
     )
   }

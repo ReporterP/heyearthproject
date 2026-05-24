@@ -163,7 +163,7 @@ export default function AdminsPage() {
           ) : null}
         />
         {users.length === 0 ? (
-          <EmptyState icon={ShieldCheck} title="Нет администраторов" description="Создайте первую учётную запись администратора." />
+          <EmptyState icon={<ShieldCheck className="w-12 h-12" />} title="Нет администраторов" description="Создайте первую учётную запись администратора." />
         ) : (
           <Table>
             <Thead>
