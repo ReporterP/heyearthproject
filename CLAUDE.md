@@ -54,6 +54,13 @@ cd admin_web && npm run build
 cd site && npm run build
 ```
 
+- **Visual verification**: after any UI edit in admin_web/, take a screenshot via `mcp__claude-in-chrome` MCP at https://admin.hiearth.ru/<route> in incognito. Compare against the theme-lock criteria above.
+- **STOP catches** during UI work — if any of these appear in generated code, halt and fix:
+  - `bg-slate-X`, `text-slate-X`, `border-slate-X`, `bg-gray-X`, `bg-zinc-X` — use theme tokens (`bg-canvas`, `bg-elevated`, `text-primary`, `border-default` etc.)
+  - `Inter`, `Roboto`, `Open Sans`, `Arial` font references — Geist везде
+  - `shadow-*` Tailwind utilities (`shadow-lg`, `shadow-2xl`, `drop-shadow-*`) — hairline borders only; exception: modal Dialog overlay may have `shadow-2xl` for depth
+  - `rounded-2xl` and larger — keep corners restrained (`rounded`, `rounded-md`, `rounded-lg`)
+
 ---
 
 ## Repository Layout
@@ -288,6 +295,59 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Dart/Flutter**: `dart format`, Provider, null safety.
 - **React**: functional components + hooks, Tailwind CSS v4, Context API.
 - **API errors**: always `{"error": "message"}` JSON.
+
+## Frontend aesthetics
+
+<frontend_aesthetics>
+You tend to converge toward generic, "on distribution" outputs. In frontend
+design, this creates what users call the "AI slop" aesthetic. Avoid this:
+make creative, distinctive frontends that surprise and delight. Focus on:
+
+Typography: Choose fonts that are beautiful, unique, and interesting. Avoid
+generic fonts like Arial and Inter; opt instead for distinctive choices
+that elevate the frontend's aesthetics.
+
+Color & Theme: Commit to a cohesive aesthetic. Use CSS variables for
+consistency. Dominant colors with sharp accents outperform timid,
+evenly-distributed palettes. Draw from IDE themes and cultural aesthetics
+for inspiration.
+
+Motion: Use animations for effects and micro-interactions. Prioritize
+CSS-only solutions for HTML. Use Motion library for React when available.
+Focus on high-impact moments: one well-orchestrated page load with
+staggered reveals (animation-delay) creates more delight than scattered
+micro-interactions.
+
+Backgrounds: Create atmosphere and depth rather than defaulting to solid
+colors. Layer CSS gradients, use geometric patterns, or add contextual
+effects that match the overall aesthetic.
+
+Avoid generic AI-generated aesthetics:
+- Overused font families (Inter, Roboto, Arial, system fonts)
+- Cliched color schemes (particularly purple gradients on white backgrounds)
+- Predictable layouts and component patterns
+- Cookie-cutter design that lacks context-specific character
+
+Interpret creatively and make unexpected choices that feel genuinely
+designed for the context. Vary between light and dark themes, different
+fonts, different aesthetics. You still tend to converge on common choices
+(Space Grotesk, for example) across generations. Avoid this: it is critical
+that you think outside the box!
+</frontend_aesthetics>
+
+## Admin UI theme lock
+
+<always_use_linear_style_dark_theme>
+- Tokens из admin_web/src/styles/theme.css (oklch, никогда не slate-X / gray-X / zinc-X).
+- Geist Sans (body), Geist Mono (numbers, slugs, UUID, IP, hash).
+- Hairline borders (border-default), drop-shadows запрещены.
+- Dense rows: 36px (--row-height-default), без oversized hero spacing на internal pages.
+- Tabular nums + Geist Mono для всех чисел в таблицах.
+- Cards: 1px border-default, bg-elevated, no shadow.
+- Active nav: bg-accent/10 + 2px accent-coloured left border.
+- Accent — violet (--color-accent); используется sparingly, не на больших площадях.
+- Rounded corners: rounded (4px) или rounded-md (6px); rounded-lg/xl только для модалок и панелей выше карточек.
+</always_use_linear_style_dark_theme>
 
 ## Branding
 
