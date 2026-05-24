@@ -244,6 +244,7 @@ export default function LandingPage() {
               const pf = typeof p.features === 'string' ? JSON.parse(p.features || '{}') : (p.features || {})
               if (pf.traffic_masking) planFeatures.push('Маскировка трафика')
               if (pf.priority_support) planFeatures.push('Приоритетная поддержка')
+              if (p.direct_routing_enabled) planFeatures.push('Доступ к РФ-сервисам')
               return (
               <div
                 key={p.id}

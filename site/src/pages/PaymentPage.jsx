@@ -200,6 +200,7 @@ export default function PaymentPage() {
             const planFeatures = plan.features ? (typeof plan.features === 'string' ? JSON.parse(plan.features || '{}') : plan.features) : {}
             if (planFeatures.traffic_masking) features.push('Маскировка трафика')
             if (planFeatures.priority_support) features.push('Приоритетная поддержка')
+            if (plan.direct_routing_enabled) features.push('Доступ к РФ-сервисам')
 
             return (
               <div
