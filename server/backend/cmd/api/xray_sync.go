@@ -287,6 +287,16 @@ func SyncXrayConfig() error {
 		})
 	}
 
+	// ── Direct-routing outbound ──
+	// Unconditional: cheap, idempotent, avoids "tag not found" errors at Xray
+	// startup if rule construction below emits outboundTag before outbound is
+	// registered. UseIP so Xray resolves FQDN locally on the Hub (RU IP).
+	outbounds = append(outbounds, map[string]interface{}{
+		"tag":      "direct-freedom",
+		"protocol": "freedom",
+		"settings": map[string]interface{}{"domainStrategy": "UseIP"},
+	})
+
 	// ── Routing (политики безопасности) ──
 	rules := []map[string]interface{}{
 		// 1. Блокировка приватных IP — inter-spoke изоляция
@@ -301,6 +311,65 @@ func SyncXrayConfig() error {
 		{"type": "field", "port": "5222,5223", "outboundTag": "block"},
 		// 4. DNS-over-HTTPS: НЕ блокируем, пусть идёт через exit-ноды
 		// Chrome/Edge используют DoH (chrome.cloudflare-dns.com), блокировка ломает DNS резолвинг
+	}
+
+	// ── Per-plan direct-routing rules ──
+	// Для каждого плана с прикреплёнными direct-сервисами добавляем правила
+	// (user → direct-freedom) с фильтром по domain И/ИЛИ ip. Вставляются ДО
+	// per-plan balancer rules и ДО no-exit blackhole — поэтому при падении
+	// всех exit-нод пользователи с direct-сервисами продолжают достукиваться.
+	directPlanIDs, drErr := biz.GetPlanIDsWithDirectRoutes()
+	if drErr != nil {
+		log.Printf("[xray-sync] GetPlanIDsWithDirectRoutes error: %v (skipping direct rules)", drErr)
+		directPlanIDs = nil
+	}
+	for _, planID := range directPlanIDs {
+		services, sErr := biz.GetDirectRouteServicesForPlan(planID)
+		if sErr != nil {
+			log.Printf("[xray-sync] GetDirectRouteServicesForPlan(plan=%d) error: %v (skipping)", planID, sErr)
+			continue
+		}
+		var domains []string
+		var ips []string
+		for _, svc := range services {
+			if !svc.IsActive {
+				continue
+			}
+			for _, d := range svc.Domains {
+				if d != "" {
+					domains = append(domains, "domain:"+d)
+				}
+			}
+			ips = append(ips, svc.IP4...)
+			ips = append(ips, svc.IP6...)
+			ips = append(ips, svc.CIDR4...)
+			ips = append(ips, svc.CIDR6...)
+		}
+		var userIDs []string
+		for _, client := range activeClients {
+			if client.PlanID == planID && client.UserID != "" {
+				userIDs = append(userIDs, client.UserID)
+			}
+		}
+		if len(userIDs) == 0 {
+			continue
+		}
+		if len(domains) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"user":        userIDs,
+				"domain":      domains,
+				"outboundTag": "direct-freedom",
+			})
+		}
+		if len(ips) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"user":        userIDs,
+				"ip":          ips,
+				"outboundTag": "direct-freedom",
+			})
+		}
 	}
 
 	// Traffic masking routing rules (только для premium пользователей)
