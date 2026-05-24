@@ -11,7 +11,7 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen flex bg-canvas text-primary">
-      <Sidebar onCmdK={() => setCmdkOpen(true)} />
+      <Sidebar collapsed={false} onToggleCollapse={() => {}} onCmdK={() => setCmdkOpen(true)} />
       <main className="flex-1 overflow-x-hidden">
         <div className="max-w-screen-2xl mx-auto px-6 py-4">
           <ErrorBoundary>
