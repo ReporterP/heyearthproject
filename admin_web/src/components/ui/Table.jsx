@@ -28,8 +28,8 @@ export function Tr({ children, className = '', ...props }) {
 
 export function Th({ sortKey, sortState, onSort, align = 'left', children, className = '' }) {
   const sortable = !!(sortKey && onSort)
-  const active = sortState?.column === sortKey
-  const direction = active ? sortState.direction : null
+  const active = !!(sortState && sortState.column === sortKey)
+  const direction = active ? (sortState?.direction ?? null) : null
   const handleClick = () => sortable && onSort(sortKey)
   const alignCls = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'
   return (
