@@ -91,21 +91,29 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build URI list — prepend a Happ routing profile deeplink if we have
-	// MTProto-proxy IPs to exclude from VPN routing. This lets Telegram's
-	// MTProto traffic skip the tunnel when both are enabled simultaneously.
+	// MTProto-proxy IPs to exclude from VPN routing, OR if the user's plan has
+	// direct-route services attached (e.g. RU banks/госуслуги bypass).
 	// The deeplink format `happ://routing/onadd/<b64-json>` is documented at
 	// https://www.happ.su/main/dev-docs/routing.md. Non-Happ clients ignore
 	// unknown URI schemes safely.
 	var uris []string
-	if mtprotoIPs, err := biz.ListMTProtoExitIPs(); err == nil && len(mtprotoIPs) > 0 {
-		// Convert bare IPs to /32 CIDR for unambiguous matching.
-		cidrs := make([]string, 0, len(mtprotoIPs))
-		for _, ip := range mtprotoIPs {
-			cidrs = append(cidrs, ip+"/32")
-		}
-		if deeplink := biz.BuildHappRoutingDeeplink(cidrs); deeplink != "" {
-			uris = append(uris, deeplink)
-		}
+	mtprotoIPs, mtErr := biz.ListMTProtoExitIPs()
+	if mtErr != nil {
+		log.Printf("[subscribe] ListMTProtoExitIPs error: %v (continuing with no MTProto direct-IPs)", mtErr)
+		mtprotoIPs = nil
+	}
+	// Determine plan_id of the user's current active subscription. Errors are
+	// non-fatal — planID stays 0, BuildHappRoutingDeeplinkForPlan handles that.
+	planID := 0
+	_ = db.DB.QueryRow(`
+		SELECT COALESCE(plan_id, 0) FROM user_subscriptions
+		 WHERE user_id = (SELECT id FROM users WHERE user_id = $1)
+		   AND valid_until > CURRENT_TIMESTAMP
+		   AND plan_id IS NOT NULL
+		 ORDER BY valid_until DESC LIMIT 1
+	`, userID).Scan(&planID)
+	if deeplink := biz.BuildHappRoutingDeeplinkForPlan(planID, mtprotoIPs); deeplink != "" {
+		uris = append(uris, deeplink)
 	}
 	for _, opt := range options {
 		if opt.Uri != "" {
