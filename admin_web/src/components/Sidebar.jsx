@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, UsersRound, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette,
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
@@ -66,7 +66,7 @@ function loadOpenGroups() {
   try { return JSON.parse(localStorage.getItem(GROUPS_KEY) || '{}') } catch { return {} }
 }
 
-export default function Sidebar({ collapsed, onToggleCollapse, onCmdK }) {
+export default function Sidebar({ collapsed, onToggleCollapse, onCmdK, mobile = false, onMobileNav }) {
   const { can, isTenantAdmin, admin, logout } = useAuth()
   const { t } = useT()
   const [openGroups, setOpenGroups] = useState(loadOpenGroups)
@@ -84,18 +84,24 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK }) {
 
   return (
     <aside
-      className="shrink-0 h-screen sticky top-0 bg-elevated border-r border-default flex flex-col"
-      style={{ width: collapsed ? '60px' : '240px', transition: 'width 150ms ease' }}
+      className={`shrink-0 h-screen bg-elevated border-r border-default flex flex-col ${
+        mobile ? '' : 'sticky top-0'
+      }`}
+      style={mobile
+        ? { width: '280px' }
+        : { width: collapsed ? '60px' : '240px', transition: 'width 150ms ease' }}
     >
       {/* Header */}
       <div className="h-12 px-3 flex items-center justify-between border-b border-default">
         {!collapsed && <div className="font-semibold text-primary tracking-tight truncate">HiEarth Admin</div>}
         <button
           onClick={onToggleCollapse}
-          aria-label={collapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель'}
-          className={`p-1.5 rounded text-tertiary hover:text-primary hover:bg-hover ${collapsed ? 'mx-auto' : ''}`}
+          aria-label={mobile ? 'Закрыть меню' : (collapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель')}
+          className={`p-1.5 rounded text-tertiary hover:text-primary hover:bg-hover ${(!mobile && collapsed) ? 'mx-auto' : ''}`}
         >
-          {collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+          {mobile
+            ? <X className="w-4 h-4" />
+            : (collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />)}
         </button>
       </div>
 
@@ -133,7 +139,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK }) {
           if (collapsed) {
             return (
               <div key={g.label} className="mt-2 first:mt-0">
-                {visible.map((item) => <SidebarItem key={item.to} item={item} t={t} collapsed />)}
+                {visible.map((item) => <SidebarItem key={item.to} item={item} t={t} collapsed onMobileNav={onMobileNav} />)}
                 <div className="my-2 mx-2 border-t border-default/40" />
               </div>
             )
@@ -152,7 +158,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK }) {
               </button>
               {open && (
                 <div className="space-y-0.5">
-                  {visible.map((item) => <SidebarItem key={item.to} item={item} t={t} collapsed={false} />)}
+                  {visible.map((item) => <SidebarItem key={item.to} item={item} t={t} collapsed={false} onMobileNav={onMobileNav} />)}
                 </div>
               )}
             </div>
@@ -214,7 +220,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK }) {
   )
 }
 
-function SidebarItem({ item, t, collapsed }) {
+function SidebarItem({ item, t, collapsed, onMobileNav }) {
   const Icon = item.icon
   const label = t[item.label] || item.label
   return (
@@ -222,6 +228,7 @@ function SidebarItem({ item, t, collapsed }) {
       to={item.to}
       title={collapsed ? label : undefined}
       aria-label={collapsed ? label : undefined}
+      onClick={() => { onMobileNav && onMobileNav() }}
       className={({ isActive }) =>
         `flex items-center gap-2 h-8 rounded text-sm transition-colors ${
           collapsed ? 'justify-center w-9 mx-auto px-0' : 'px-3'
