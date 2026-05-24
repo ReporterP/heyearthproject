@@ -390,6 +390,10 @@ func sanitiseDomains(slug string, in []string, errs *[]ImportError) []string {
 		if strings.HasPrefix(d, "*.") {
 			d = strings.TrimPrefix(d, "*.")
 		}
+		// Strip ":<port>" suffix — Xray "domain:" matcher works on hostnames only.
+		if idx := strings.LastIndex(d, ":"); idx > 0 {
+			d = d[:idx]
+		}
 		if !directRouteDomainRegex.MatchString(d) {
 			*errs = append(*errs, ImportError{Slug: slug, Field: "domains", Value: raw, Message: "invalid domain"})
 			continue
