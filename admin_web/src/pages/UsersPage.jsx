@@ -181,14 +181,15 @@ export default function UsersPage() {
       </div>
 
       {/* Search */}
-      <form onSubmit={onSearchSubmit} className="flex items-center gap-2 max-w-md">
+      <form onSubmit={onSearchSubmit} className="flex flex-col sm:flex-row sm:items-center gap-2 max-w-md">
         <Input
           type="text"
           placeholder={t.search}
           value={searchInput}
           onChange={e => setSearchInput(e.target.value)}
+          className="w-full sm:flex-1"
         />
-        <Button type="submit" variant="secondary">{t.search}</Button>
+        <Button type="submit" variant="secondary" className="w-full sm:w-auto">{t.search}</Button>
       </form>
 
       {error && <p className="text-danger text-sm">{error}</p>}

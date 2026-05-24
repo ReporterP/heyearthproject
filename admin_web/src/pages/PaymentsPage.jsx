@@ -278,35 +278,35 @@ export default function PaymentsPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-3">
+        <div className="w-full sm:w-auto">
           <label className="block text-xs text-secondary mb-1">{t.fieldStatus}</label>
           <Select
             value={f.status}
             onChange={e => setF({ status: e.target.value, page: 1 })}
-            className="w-48"
+            className="w-full sm:w-48"
           >
             {STATUS_OPTIONS.map(o => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </Select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label className="block text-xs text-secondary mb-1">С даты</label>
           <Input
             type="date"
             value={f.from}
             onChange={e => setF({ from: e.target.value, page: 1 })}
-            className="w-44"
+            className="w-full sm:w-44"
           />
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label className="block text-xs text-secondary mb-1">По дату</label>
           <Input
             type="date"
             value={f.to}
             onChange={e => setF({ to: e.target.value, page: 1 })}
-            className="w-44"
+            className="w-full sm:w-44"
           />
         </div>
       </div>

@@ -767,20 +767,22 @@ export default function ServersPage() {
       />
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2">
-        <form onSubmit={onSearchSubmit} className="flex items-center gap-2 max-w-md flex-1">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
+        <form onSubmit={onSearchSubmit} className="flex flex-col sm:flex-row sm:items-center gap-2 w-full sm:max-w-md sm:flex-1">
           <Input
             type="text"
             placeholder={t.search}
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
+            className="w-full sm:flex-1"
           />
-          <Button type="submit" variant="secondary">{t.search}</Button>
+          <Button type="submit" variant="secondary" className="w-full sm:w-auto">{t.search}</Button>
         </form>
         <Select
           value={f.lifecycle_state}
           onChange={e => setF({ lifecycle_state: e.target.value, page: 1 })}
           aria-label="Lifecycle state"
+          className="w-full sm:w-auto"
         >
           {LIFECYCLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </Select>
@@ -789,7 +791,7 @@ export default function ServersPage() {
           placeholder="Страна (RU, NL, ...)"
           value={f.country}
           onChange={e => setF({ country: e.target.value.toUpperCase(), page: 1 })}
-          className="w-40"
+          className="w-full sm:w-40"
         />
       </div>
 

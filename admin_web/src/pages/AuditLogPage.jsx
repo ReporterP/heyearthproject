@@ -72,33 +72,33 @@ export default function AuditLogPage() {
     <div className="space-y-4">
       <PageHeader title={t.navAuditLog} subtitle="История действий администраторов" />
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3">
         <Input
           type="text"
           placeholder="Действие (например, create_user)"
           value={action}
           onChange={e => update({ action: e.target.value, page: 1 })}
-          className="w-64"
+          className="w-full sm:flex-1 sm:max-w-xs"
         />
         <Input
           type="text"
           placeholder="Админ (username)"
           value={admin}
           onChange={e => update({ admin: e.target.value, page: 1 })}
-          className="w-48"
+          className="w-full sm:w-48"
         />
         <Input
           type="date"
           value={from}
           onChange={e => update({ from: e.target.value, page: 1 })}
-          className="w-44"
+          className="w-full sm:w-44"
           aria-label="С даты"
         />
         <Input
           type="date"
           value={to}
           onChange={e => update({ to: e.target.value, page: 1 })}
-          className="w-44"
+          className="w-full sm:w-44"
           aria-label="По дату"
         />
       </div>

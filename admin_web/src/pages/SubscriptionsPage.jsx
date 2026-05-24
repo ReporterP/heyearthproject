@@ -140,20 +140,21 @@ export default function SubscriptionsPage() {
       />
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <form onSubmit={onSearchSubmit} className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3">
+        <form onSubmit={onSearchSubmit} className="flex flex-col sm:flex-row sm:items-center gap-2 w-full sm:flex-1 sm:min-w-[200px] sm:max-w-md">
           <Input
             type="text"
             placeholder={t.search}
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
+            className="w-full sm:flex-1"
           />
-          <Button type="submit" variant="secondary">{t.search}</Button>
+          <Button type="submit" variant="secondary" className="w-full sm:w-auto">{t.search}</Button>
         </form>
         <Select
           value={f.plan_id}
           onChange={e => setF({ plan_id: e.target.value, page: 1 })}
-          className="w-48"
+          className="w-full sm:w-48"
           aria-label="План"
         >
           <option value="">Все планы</option>
@@ -162,7 +163,7 @@ export default function SubscriptionsPage() {
         <Select
           value={f.status}
           onChange={e => setF({ status: e.target.value, page: 1 })}
-          className="w-48"
+          className="w-full sm:w-48"
           aria-label="Статус"
         >
           <option value="">Все статусы</option>

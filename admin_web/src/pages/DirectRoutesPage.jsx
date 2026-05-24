@@ -175,17 +175,17 @@ export default function DirectRoutesPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 bg-elevated/40 border border-default rounded p-2">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 bg-elevated/40 border border-default rounded p-2">
         <Input
           type="search" value={searchInput} onChange={(e) => setSearchInput(e.target.value)}
           placeholder="Поиск по slug или названию"
-          className="flex-1 min-w-[200px]"
+          className="w-full sm:flex-1 sm:min-w-[200px]"
         />
-        <Select value={f.group} onChange={(e) => setF({ group: e.target.value, page: 1 })} className="w-48">
+        <Select value={f.group} onChange={(e) => setF({ group: e.target.value, page: 1 })} className="w-full sm:w-48">
           <option value="">Все группы</option>
           {groups.map((g) => <option key={g} value={g}>{g}</option>)}
         </Select>
-        <Select value={f.is_active} onChange={(e) => setF({ is_active: e.target.value, page: 1 })} className="w-48">
+        <Select value={f.is_active} onChange={(e) => setF({ is_active: e.target.value, page: 1 })} className="w-full sm:w-48">
           <option value="all">Все статусы</option>
           <option value="active">Только активные</option>
           <option value="inactive">Только неактивные</option>

@@ -130,13 +130,14 @@ export default function PromocodesPage() {
         ) : null}
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
         {STATUS_FILTERS.map(sf => (
           <Button
             key={sf.value}
             size="sm"
             variant={filter.status === sf.value ? 'primary' : 'secondary'}
             onClick={() => setFilter({ status: sf.value })}
+            className="w-full sm:w-auto"
           >
             {sf.label}
           </Button>
