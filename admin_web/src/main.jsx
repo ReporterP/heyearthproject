@@ -3,8 +3,13 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '@fontsource/ibm-plex-mono/700.css'
+import '@fontsource-variable/jetbrains-mono'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import { I18nProvider } from './i18n/index.jsx'
+import { ThemeProvider } from './theme/ThemeContext.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import RequireAuth from './auth/RequireAuth.jsx'
@@ -36,12 +41,13 @@ import './style.css'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <I18nProvider>
-          <AuthProvider>
-            <ToastProvider>
-              <Routes>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <BrowserRouter>
+          <I18nProvider>
+            <AuthProvider>
+              <ToastProvider>
+                <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route element={<RequireAuth />}>
                 <Route element={<Layout />}>
@@ -75,6 +81,7 @@ createRoot(document.getElementById('root')).render(
           </AuthProvider>
         </I18nProvider>
       </BrowserRouter>
-    </ErrorBoundary>
+      </ErrorBoundary>
+    </ThemeProvider>
   </StrictMode>
 )
