@@ -35,11 +35,13 @@ var (
 
 const (
 	crtShTimeout   = 8 * time.Second
-	dnsLookupTime  = 3 * time.Second
-	totalBudget    = 30 * time.Second
-	dnsWorkerCount = 20
-	maxSubdomains  = 500
-	maxIPsCombined = 1000
+	dnsLookupTime       = 3 * time.Second
+	totalBudget         = 60 * time.Second
+	dnsWorkerCount      = 20
+	maxSubdomains       = 500
+	maxIPsCombined      = 1000
+	crtShRetries        = 3
+	hackerTargetTimeout = 8 * time.Second
 )
 
 // DiscoveryResult is the response shape for one DiscoverDomain call.
@@ -78,11 +80,9 @@ func DiscoverDomain(parent context.Context, rootDomain string) (*DiscoveryResult
 		Warnings:  []string{},
 	}
 
-	// Fetch crt.sh.
-	subdomains, crtErr := fetchCrtSh(ctx, root)
-	if crtErr != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("crt.sh failed: %v — will use DNS on root only", crtErr))
-	}
+	// Fetch subdomains: crt.sh with retries, then HackerTarget fallback.
+	subdomains, fetchWarnings := fetchSubdomains(ctx, root)
+	result.Warnings = append(result.Warnings, fetchWarnings...)
 
 	// Always include root domain.
 	subSet := map[string]struct{}{root: {}}
@@ -171,8 +171,9 @@ func fetchCrtSh(ctx context.Context, root string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return nil, fmt.Errorf("crt.sh HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		// Drain body to allow connection reuse, but do NOT include HTML/text in error.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("crt.sh HTTP %d", resp.StatusCode)
 	}
 
 	var entries []struct {
@@ -250,6 +251,125 @@ func resolveAll(ctx context.Context, subs []string) (map[string]struct{}, map[st
 	close(jobs)
 	wg.Wait()
 	return ip4, ip6, resolved
+}
+
+// fetchSubdomains tries crt.sh (3 retries with backoff), then HackerTarget as
+// fallback. Returns the merged subdomain list and any warnings worth surfacing.
+func fetchSubdomains(ctx context.Context, root string) ([]string, []string) {
+	var warnings []string
+	merged := map[string]struct{}{}
+
+	crtSubs, crtErr := fetchCrtShWithRetry(ctx, root)
+	if crtErr != nil {
+		warnings = append(warnings, fmt.Sprintf("crt.sh failed after %d retries: %s — trying fallback", crtShRetries, crtErr.Error()))
+	}
+	for _, s := range crtSubs {
+		merged[s] = struct{}{}
+	}
+
+	// If crt.sh returned nothing (failure or empty), try HackerTarget as fallback.
+	if len(crtSubs) == 0 {
+		htSubs, htErr := fetchHackerTarget(ctx, root)
+		if htErr != nil {
+			warnings = append(warnings, fmt.Sprintf("HackerTarget fallback failed: %s — using DNS on root only", htErr.Error()))
+		} else if len(htSubs) > 0 {
+			warnings = append(warnings, fmt.Sprintf("HackerTarget fallback succeeded: %d subdomains", len(htSubs)))
+			for _, s := range htSubs {
+				merged[s] = struct{}{}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(merged))
+	for s := range merged {
+		out = append(out, s)
+	}
+	return out, warnings
+}
+
+// fetchCrtShWithRetry wraps fetchCrtSh with 3 attempts and exponential backoff
+// (2s, 4s, 8s). Returns the result of the first successful attempt or the
+// final error.
+func fetchCrtShWithRetry(ctx context.Context, root string) ([]string, error) {
+	var lastErr error
+	backoff := 2 * time.Second
+	for attempt := 1; attempt <= crtShRetries; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled before retry %d: %w", attempt, ctx.Err())
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+		}
+		subs, err := fetchCrtSh(ctx, root)
+		if err == nil {
+			return subs, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// fetchHackerTarget queries api.hackertarget.com/hostsearch as a free, no-key
+// fallback. Response is plain text: "subdomain,IP\n" per line. We extract the
+// subdomain side and filter to those under the requested root.
+func fetchHackerTarget(ctx context.Context, root string) ([]string, error) {
+	uri := "https://api.hackertarget.com/hostsearch/?q=" + url.QueryEscape(root)
+	reqCtx, cancel := context.WithTimeout(ctx, hackerTargetTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, uri, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "HiEarth-direct-routing-discovery/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("HackerTarget HTTP %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	body := string(bodyBytes)
+
+	// HackerTarget rate-limit / error messages come back as 200 OK plain text.
+	trimmed := strings.ToLower(strings.TrimSpace(body))
+	if strings.HasPrefix(trimmed, "error") ||
+		strings.Contains(trimmed, "api count exceeded") ||
+		strings.Contains(trimmed, "no records") {
+		return nil, fmt.Errorf("rate-limit or empty response")
+	}
+
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(body, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), ",", 2)
+		if len(parts) < 1 {
+			continue
+		}
+		n := strings.ToLower(strings.TrimSpace(parts[0]))
+		if n == "" {
+			continue
+		}
+		n = strings.TrimPrefix(n, "*.")
+		if !strings.HasSuffix(n, "."+root) && n != root {
+			continue
+		}
+		seen[n] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func setToSortedSlice(m map[string]struct{}) []string {

@@ -415,7 +415,7 @@ func DiscoverDomainHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 31*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 61*time.Second)
 	defer cancel()
 
 	result, err := biz.DiscoverDomain(ctx, p.RootDomain)
