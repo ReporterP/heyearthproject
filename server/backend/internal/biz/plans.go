@@ -22,6 +22,7 @@ type Plan struct {
 	AllowedProtocols []string `json:"allowed_protocols"`
 	Features         string   `json:"features"` // JSON string
 	IsActive         bool     `json:"is_active"`
+	DirectRoutingEnabled bool   `json:"direct_routing_enabled"`
 	SortOrder        int      `json:"sort_order"`
 	AutoRenewDefault      bool   `json:"auto_renew_default"`
 	MaxActivationsPerUser *int  `json:"max_activations_per_user,omitempty"`
@@ -35,7 +36,8 @@ type Plan struct {
 func ListActivePlans() ([]Plan, error) {
 	rows, err := db.DB.Query(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
+		       sort_order, auto_renew_default,
 		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE is_active = TRUE
 		ORDER BY sort_order, price_rub
@@ -49,7 +51,8 @@ func ListActivePlans() ([]Plan, error) {
 	for rows.Next() {
 		var p Plan
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
-			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
+			&p.DirectRoutingEnabled, &p.SortOrder,
 			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
@@ -63,7 +66,8 @@ func ListActivePlans() ([]Plan, error) {
 func ListAllPlans() ([]Plan, error) {
 	rows, err := db.DB.Query(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
+		       sort_order, auto_renew_default,
 		       max_activations_per_user, created_at, updated_at
 		FROM plans ORDER BY sort_order, id
 	`)
@@ -76,7 +80,8 @@ func ListAllPlans() ([]Plan, error) {
 	for rows.Next() {
 		var p Plan
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
-			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
+			&p.DirectRoutingEnabled, &p.SortOrder,
 			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
@@ -91,11 +96,13 @@ func GetPlanByID(id int) (*Plan, error) {
 	var p Plan
 	err := db.DB.QueryRow(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
+		       sort_order, auto_renew_default,
 		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE id = $1
 	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
-		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
+		&p.DirectRoutingEnabled, &p.SortOrder,
 		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -109,11 +116,13 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 	var p Plan
 	err := db.DB.QueryRow(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		       allowed_protocols, COALESCE(features::text, '{}'), is_active, sort_order, auto_renew_default,
+		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
+		       sort_order, auto_renew_default,
 		       max_activations_per_user, created_at, updated_at
 		FROM plans WHERE slug = $1
 	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
-		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive, &p.SortOrder,
+		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
+		&p.DirectRoutingEnabled, &p.SortOrder,
 		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -143,11 +152,13 @@ func CreatePlan(p *Plan) (int, error) {
 	var id int
 	err := db.DB.QueryRow(`
 		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
-		                   allowed_protocols, features, is_active, sort_order, auto_renew_default, max_activations_per_user)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+		                   allowed_protocols, features, is_active, direct_routing_enabled, sort_order,
+		                   auto_renew_default, max_activations_per_user)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
 		RETURNING id
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
-		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser).Scan(&id)
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
+		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -162,10 +173,12 @@ func UpdatePlan(id int, p *Plan) error {
 	_, err := db.DB.Exec(`
 		UPDATE plans SET slug=$1, name=$2, description=$3, price_rub=$4, duration_days=$5,
 		       traffic_limit_bytes=$6, allowed_protocols=$7, features=$8::jsonb, is_active=$9,
-		       sort_order=$10, auto_renew_default=$11, max_activations_per_user=$12, updated_at=CURRENT_TIMESTAMP
-		WHERE id = $13
+		       direct_routing_enabled=$10, sort_order=$11, auto_renew_default=$12,
+		       max_activations_per_user=$13, updated_at=CURRENT_TIMESTAMP
+		WHERE id = $14
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
-		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser, id)
+		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
+		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser, id)
 	if err != nil {
 		return err
 	}

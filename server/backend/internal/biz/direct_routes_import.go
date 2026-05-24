@@ -38,10 +38,9 @@ var directRouteDomainRegex = regexp.MustCompile(`^[a-z0-9.*-]+\.[a-z][a-z0-9-]{1
 
 // ImportOptions controls behaviour of ImportDirectRoutesJSON.
 type ImportOptions struct {
-	OverwriteExisting bool  // if true, services with matching slug are updated; else skipped
-	ActivateNew       bool  // is_active for newly-created services
-	DryRun            bool  // if true, transaction is rolled back at the end
-	DefaultPlanIDs    []int // if non-empty, every created/updated service is attached to these plans
+	OverwriteExisting bool // if true, services with matching slug are updated; else skipped
+	ActivateNew       bool // is_active for newly-created services
+	DryRun            bool // if true, transaction is rolled back at the end
 }
 
 // ImportError is a single non-fatal validation issue inside an entry.
@@ -93,56 +92,6 @@ func BulkDelete(ids []int) error {
 	}
 	if err := BumpDirectRoutesVersion(); err != nil {
 		return fmt.Errorf("bump version after bulk delete: %w", err)
-	}
-	go NotifySubscriptionChange()
-	return nil
-}
-
-// BulkSetPlans replaces plan attachments for many services atomically.
-// Empty planIDs detaches all listed services from every plan.
-func BulkSetPlans(serviceIDs []int, planIDs []int) error {
-	if len(serviceIDs) == 0 {
-		return nil
-	}
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err := tx.Exec(
-		`DELETE FROM plan_direct_services WHERE service_id = ANY($1)`,
-		pq.Array(serviceIDs)); err != nil {
-		return fmt.Errorf("bulk clear attachments: %w", err)
-	}
-	for _, sid := range serviceIDs {
-		if sid <= 0 {
-			continue
-		}
-		for _, pid := range planIDs {
-			if pid <= 0 {
-				continue
-			}
-			if _, err := tx.Exec(
-				`INSERT INTO plan_direct_services (plan_id, service_id) VALUES ($1, $2)
-				 ON CONFLICT DO NOTHING`,
-				pid, sid); err != nil {
-				return fmt.Errorf("bulk attach plan %d to service %d: %w", pid, sid, err)
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit bulk set plans: %w", err)
-	}
-	committed = true
-
-	if err := BumpDirectRoutesVersion(); err != nil {
-		return fmt.Errorf("bump version after bulk plans: %w", err)
 	}
 	go NotifySubscriptionChange()
 	return nil
@@ -259,19 +208,12 @@ func ImportDirectRoutesJSON(jsonBytes []byte, opts ImportOptions) (*ImportResult
 				return nil, fmt.Errorf("insert %s: %w", e.Slug, err)
 			}
 			result.Created++
-			if err := attachDefaultPlans(tx, newID, opts.DefaultPlanIDs); err != nil {
-				return nil, err
-			}
 		case err != nil:
 			return nil, fmt.Errorf("lookup %s: %w", e.Slug, err)
 		default:
 			// Existing service.
 			if !opts.OverwriteExisting {
 				result.Skipped++
-				// Even if we skip update we still respect DefaultPlanIDs (additive).
-				if err := attachDefaultPlans(tx, existingID, opts.DefaultPlanIDs); err != nil {
-					return nil, err
-				}
 				continue
 			}
 			isActive := true
@@ -297,9 +239,6 @@ func ImportDirectRoutesJSON(jsonBytes []byte, opts ImportOptions) (*ImportResult
 				return nil, fmt.Errorf("update %s: %w", e.Slug, err)
 			}
 			result.Updated++
-			if err := attachDefaultPlans(tx, existingID, opts.DefaultPlanIDs); err != nil {
-				return nil, err
-			}
 		}
 	}
 
@@ -362,21 +301,6 @@ func parseDirectRoutesInput(b []byte) ([]rawEntry, string, error) {
 	}
 
 	return nil, "", fmt.Errorf("unrecognised top-level JSON shape")
-}
-
-func attachDefaultPlans(tx *sql.Tx, serviceID int, planIDs []int) error {
-	for _, pid := range planIDs {
-		if pid <= 0 {
-			continue
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO plan_direct_services (plan_id, service_id) VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			pid, serviceID); err != nil {
-			return fmt.Errorf("attach default plan %d to service %d: %w", pid, serviceID, err)
-		}
-	}
-	return nil
 }
 
 func sanitiseDomains(slug string, in []string, errs *[]ImportError) []string {

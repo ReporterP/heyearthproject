@@ -13,30 +13,44 @@ package biz
 // который возвращает и total, и active отдельно.
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/heyearth/backend/internal/db"
 	"github.com/lib/pq"
 )
 
-// GetDirectRouteServicesForPlan returns all is_active services attached to a plan.
+// GetDirectRouteServicesForPlan returns all active services iff the plan has
+// direct_routing_enabled=TRUE; otherwise it returns an empty slice.
 func GetDirectRouteServicesForPlan(planID int) ([]DirectRouteService, error) {
 	if planID <= 0 {
 		return nil, fmt.Errorf("get services for plan: plan id is required")
 	}
-	q := `
+	var enabled bool
+	err := db.DB.QueryRow(
+		`SELECT direct_routing_enabled FROM plans WHERE id = $1`, planID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []DirectRouteService{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read plan flag: %w", err)
+	}
+	if !enabled {
+		return []DirectRouteService{}, nil
+	}
+
+	rows, err := db.DB.Query(`
 		SELECT s.id, s.slug, s.name, s.group_name, s.source,
 		       s.domains, s.ip4, s.ip6, s.cidr4, s.cidr6, s.dns_servers,
 		       s.timeout_sec, s.is_active, s.notes,
 		       s.created_at::text, s.updated_at::text
 		FROM direct_route_services s
-		JOIN plan_direct_services pds ON pds.service_id = s.id
-		WHERE pds.plan_id = $1 AND s.is_active = TRUE
+		WHERE s.is_active = TRUE
 		ORDER BY s.group_name, s.name
-	`
-	rows, err := db.DB.Query(q, planID)
+	`)
 	if err != nil {
-		return nil, fmt.Errorf("services for plan %d: %w", planID, err)
+		return nil, fmt.Errorf("list active services: %w", err)
 	}
 	defer rows.Close()
 
@@ -47,7 +61,7 @@ func GetDirectRouteServicesForPlan(planID int) ([]DirectRouteService, error) {
 		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.GroupName, &s.Source,
 			&domains, &ip4, &ip6, &cidr4, &cidr6, &dns,
 			&s.TimeoutSec, &s.IsActive, &s.Notes, &s.CreatedAt, &s.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan service for plan: %w", err)
+			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		s.Domains = []string(domains)
 		s.IP4 = []string(ip4)
@@ -60,22 +74,19 @@ func GetDirectRouteServicesForPlan(planID int) ([]DirectRouteService, error) {
 	return out, rows.Err()
 }
 
-// GetPlanIDsWithDirectRoutes returns distinct plan ids that have at least one
-// active direct-route service attached. Used by xray_sync to know which plans
-// need extra routing rules.
+// GetPlanIDsWithDirectRoutes returns ids of active plans with
+// direct_routing_enabled=TRUE. Used by xray_sync to know which plans need
+// extra routing rules.
 func GetPlanIDsWithDirectRoutes() ([]int, error) {
 	rows, err := db.DB.Query(`
-		SELECT DISTINCT pds.plan_id
-		FROM plan_direct_services pds
-		JOIN direct_route_services s ON s.id = pds.service_id
-		WHERE s.is_active = TRUE
-		ORDER BY pds.plan_id
+		SELECT id FROM plans
+		WHERE direct_routing_enabled = TRUE AND is_active = TRUE
+		ORDER BY id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("plan ids with direct routes: %w", err)
 	}
 	defer rows.Close()
-
 	out := []int{}
 	for rows.Next() {
 		var pid int
@@ -153,10 +164,8 @@ func GetDirectRoutesStats() (map[string]any, error) {
 
 	var plansCount int
 	if err := db.DB.QueryRow(`
-		SELECT COUNT(DISTINCT pds.plan_id)
-		FROM plan_direct_services pds
-		JOIN direct_route_services s ON s.id = pds.service_id
-		WHERE s.is_active = TRUE
+		SELECT COUNT(*) FROM plans
+		WHERE direct_routing_enabled = TRUE AND is_active = TRUE
 	`).Scan(&plansCount); err != nil {
 		return nil, fmt.Errorf("plans count: %w", err)
 	}

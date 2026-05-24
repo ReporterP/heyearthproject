@@ -254,67 +254,6 @@ func DeleteDirectRouteService(id int) error {
 	return nil
 }
 
-// SetServicePlans replaces the set of plans attached to a service atomically.
-// Empty planIDs is valid and means "detach from all plans".
-func SetServicePlans(serviceID int, planIDs []int) error {
-	if serviceID <= 0 {
-		return fmt.Errorf("set service plans: service id is required")
-	}
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err := tx.Exec(`DELETE FROM plan_direct_services WHERE service_id = $1`, serviceID); err != nil {
-		return fmt.Errorf("clear plan attachments: %w", err)
-	}
-	for _, pid := range planIDs {
-		if pid <= 0 {
-			continue
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO plan_direct_services (plan_id, service_id) VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			pid, serviceID); err != nil {
-			return fmt.Errorf("attach plan %d: %w", pid, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set plans: %w", err)
-	}
-	committed = true
-
-	_ = BumpDirectRoutesVersion()
-	go NotifySubscriptionChange()
-	return nil
-}
-
-// GetServicePlanIDs returns plan_ids attached to a service, ordered ascending.
-func GetServicePlanIDs(serviceID int) ([]int, error) {
-	rows, err := db.DB.Query(
-		`SELECT plan_id FROM plan_direct_services WHERE service_id = $1 ORDER BY plan_id`,
-		serviceID)
-	if err != nil {
-		return nil, fmt.Errorf("get service plan ids: %w", err)
-	}
-	defer rows.Close()
-	out := []int{}
-	for rows.Next() {
-		var pid int
-		if err := rows.Scan(&pid); err != nil {
-			return nil, fmt.Errorf("scan plan id: %w", err)
-		}
-		out = append(out, pid)
-	}
-	return out, rows.Err()
-}
-
 // BumpDirectRoutesVersion increments direct_routes_version in app_settings.
 // Clients (Happ profile + xray sync) check this value to know when to rebuild.
 func BumpDirectRoutesVersion() error {
