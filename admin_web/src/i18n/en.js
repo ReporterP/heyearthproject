@@ -36,6 +36,7 @@ export default {
   navAdmins: 'Admins',
   navTenants: 'Tenants',
   navTrafficMasking: 'Traffic Masking',
+  navDirectRoutes: 'Direct Routing',
   navAuditLog: 'Audit Log',
   navAutoTuner: 'Auto-Tuner',
   navMTProto: 'MTProto',
