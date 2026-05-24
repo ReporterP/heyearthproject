@@ -1,132 +1,146 @@
 import { NavLink } from 'react-router-dom'
+import {
+  LayoutDashboard, Users, UsersRound, CreditCard, Ticket, Wallet, RotateCcw,
+  Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
+} from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
+import { Kbd } from './ui/index.js'
 
-const navItems = [
-  { to: '/dashboard', label: 'navDashboard', perm: 'dashboard.read', icon: DashboardIcon },
-  { to: '/users', label: 'navUsers', perm: 'users.read', icon: UsersIcon },
-  { to: '/plans', label: 'navPlans', perm: 'settings.read', icon: PlansIcon },
-  { to: '/subscriptions', label: 'navSubscriptions', perm: 'subscriptions.read', icon: SubsIcon },
-  // Groups hidden — replaced by Plans. Route still works at /groups for direct access.
-  { to: '/promocodes', label: 'navPromocodes', perm: 'promocodes.read', icon: PromoIcon },
-  { to: '/payments', label: 'navPayments', perm: 'payments.read', icon: PaymentsIcon },
-  { to: '/payment-ops', label: 'navPaymentOps', perm: 'payments.read', icon: PaymentsIcon },
-  { to: '/traffic', label: 'navTraffic', perm: 'dashboard.read', icon: TrafficIcon },
-  { to: '/servers', label: 'navServers', perm: 'servers.read', icon: ServersIcon },
-  { to: '/traffic-masking', label: 'navTrafficMasking', perm: 'traffic_masking.read', icon: MaskingIcon, hideForTenant: true },
-  { to: '/direct-routes', label: 'navDirectRoutes', perm: 'routing.direct.view', icon: DirectRoutesIcon, hideForTenant: true },
-  { to: '/ssh-keys', label: 'navSshKeys', perm: 'servers.read', icon: KeysIcon, hideForTenant: true },
-  { to: '/releases', label: 'navReleases', perm: 'releases.read', icon: ReleasesIcon, hideForTenant: true },
-  { to: '/admins', label: 'navAdmins', perm: 'admins.read', icon: AdminsIcon, hideForTenant: true },
-  { to: '/tenants', label: 'navTenants', perm: 'tenants.read', icon: TenantsIcon, hideForTenant: true },
-  { to: '/b2b-analytics', label: 'navB2BAnalytics', perm: 'tenants.read', icon: TenantsIcon, hideForTenant: true },
-  { to: '/audit-log', label: 'navAuditLog', perm: 'audit.read', icon: AuditIcon, hideForTenant: true },
-  { to: '/auto-tuner', label: 'navAutoTuner', perm: 'settings.read', icon: AutoTunerIcon, hideForTenant: true },
-  { to: '/mtproto', label: 'navMTProto', perm: 'settings.read', icon: MTProtoIcon, hideForTenant: true },
-  { to: '/settings', label: 'navSettings', perm: null, icon: SettingsIcon, hideForTenant: true },
+const groups = [
+  {
+    label: 'ОБЗОР',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'navDashboard',  perm: 'dashboard.read' },
+      { to: '/traffic',   icon: BarChart3,        label: 'navTraffic',    perm: 'dashboard.read' },
+    ],
+  },
+  {
+    label: 'ПОЛЬЗОВАТЕЛИ',
+    items: [
+      { to: '/users',         icon: Users,      label: 'navUsers',         perm: 'users.read' },
+      { to: '/groups',        icon: UsersRound, label: 'navGroups',        perm: 'groups.read' },
+      { to: '/subscriptions', icon: CreditCard, label: 'navSubscriptions', perm: 'subscriptions.read' },
+      { to: '/promocodes',    icon: Ticket,     label: 'navPromocodes',    perm: 'promocodes.read' },
+    ],
+  },
+  {
+    label: 'ИНФРАСТРУКТУРА',
+    items: [
+      { to: '/servers',          icon: Server,   label: 'navServers',        perm: 'servers.read',           hideForTenant: true },
+      { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys',        perm: 'servers.read',           hideForTenant: true },
+      { to: '/releases',         icon: Rocket,   label: 'navReleases',       perm: 'releases.read',          hideForTenant: true },
+      { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking', perm: 'traffic_masking.read',   hideForTenant: true },
+      { to: '/direct-routes',    icon: Route,    label: 'navDirectRoutes',   perm: 'routing.direct.view',    hideForTenant: true },
+      { to: '/mtproto',          icon: Send,     label: 'navMTProto',        perm: 'settings.read',          hideForTenant: true },
+      { to: '/auto-tuner',       icon: Zap,      label: 'navAutoTuner',      perm: 'settings.read',          hideForTenant: true },
+    ],
+  },
+  {
+    label: 'ДЕНЬГИ',
+    items: [
+      { to: '/plans',        icon: Package,  label: 'navPlans',       perm: 'settings.read' },
+      { to: '/payments',     icon: Wallet,   label: 'navPayments',    perm: 'payments.read' },
+      { to: '/payment-ops',  icon: RotateCcw, label: 'navPaymentOps', perm: 'payments.read' },
+    ],
+  },
+  {
+    label: 'АДМИН',
+    items: [
+      { to: '/admins',        icon: ShieldCheck, label: 'navAdmins',       perm: 'admins.read',  hideForTenant: true },
+      { to: '/audit-log',     icon: FileText,    label: 'navAuditLog',     perm: 'audit.read',   hideForTenant: true },
+      { to: '/tenants',       icon: Building2,   label: 'navTenants',      perm: 'tenants.read', hideForTenant: true },
+      { to: '/b2b-analytics', icon: TrendingUp,  label: 'navB2BAnalytics', perm: 'tenants.read', hideForTenant: true },
+      { to: '/settings',      icon: Settings,    label: 'navSettings',     perm: null,           hideForTenant: true },
+    ],
+  },
 ]
 
-export default function Sidebar({ collapsed, onToggle }) {
-  const { can, isTenantAdmin } = useAuth()
+export default function Sidebar({ onCmdK }) {
+  const { can, isTenantAdmin, admin, logout } = useAuth()
   const { t } = useT()
 
-  const visible = navItems.filter(item => {
-    if (item.hideForTenant && isTenantAdmin) return false
-    if (item.perm && !can(item.perm)) return false
-    return true
-  })
+  const renderItem = (item) => {
+    if (item.hideForTenant && isTenantAdmin) return null
+    if (item.perm && !can(item.perm)) return null
+    const Icon = item.icon
+    return (
+      <NavLink
+        key={item.to}
+        to={item.to}
+        className={({ isActive }) =>
+          `flex items-center gap-2 h-8 px-3 rounded text-sm transition-colors ${
+            isActive
+              ? 'bg-accent/10 text-primary border-l-2 border-accent pl-[10px]'
+              : 'text-secondary hover:bg-hover hover:text-primary'
+          }`
+        }
+      >
+        <Icon className="w-4 h-4 shrink-0" />
+        <span className="flex-1 truncate">{t[item.label] || item.label}</span>
+      </NavLink>
+    )
+  }
 
   return (
-    <aside className={`bg-surface-card border-r border-white/10 flex flex-col transition-all duration-200 ${collapsed ? 'w-16' : 'w-56'}`}>
+    <aside className="w-60 shrink-0 h-screen sticky top-0 bg-elevated border-r border-default flex flex-col">
+      {/* Header */}
+      <div className="h-12 px-4 flex items-center border-b border-default">
+        <div className="font-semibold text-primary tracking-tight">HiEarth Admin</div>
+      </div>
+
+      {/* Cmd+K trigger */}
       <button
-        onClick={onToggle}
-        className="p-3 text-text-secondary hover:text-text-primary transition self-end"
-        title={collapsed ? 'Expand' : 'Collapse'}
+        type="button"
+        onClick={onCmdK}
+        className="mx-2 mt-3 mb-1 flex items-center gap-2 h-8 px-2.5 rounded border border-default bg-canvas hover:bg-hover transition-colors text-sm text-tertiary hover:text-primary"
       >
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          {collapsed
-            ? <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-            : <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-          }
-        </svg>
+        <Search className="w-3.5 h-3.5" />
+        <span className="flex-1 text-left">Поиск...</span>
+        <span className="flex gap-0.5">
+          <Kbd>⌘</Kbd>
+          <Kbd>K</Kbd>
+        </span>
       </button>
-      <nav className="flex-1 overflow-y-auto py-2">
-        {visible.map(item => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                isActive
-                  ? 'text-brand bg-brand/10 border-r-2 border-brand'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
-              }`
-            }
-          >
-            <item.icon className="w-5 h-5 shrink-0" />
-            {!collapsed && <span className="truncate">{t[item.label]}</span>}
-          </NavLink>
-        ))}
+
+      {/* Groups */}
+      <nav className="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+        {groups.map((g) => {
+          const visible = g.items
+            .map(renderItem)
+            .filter(Boolean)
+          if (visible.length === 0) return null
+          return (
+            <div key={g.label}>
+              <div className="text-[10px] uppercase tracking-wider text-tertiary px-3 mt-4 mb-1">
+                {g.label}
+              </div>
+              <div className="space-y-0.5">{visible}</div>
+            </div>
+          )
+        })}
       </nav>
+
+      {/* User dropdown */}
+      <div className="border-t border-default p-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-full bg-accent/20 text-accent flex items-center justify-center text-xs font-semibold">
+            {(admin?.username || 'A').charAt(0).toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-primary truncate">{admin?.username || 'admin'}</div>
+            <div className="text-[11px] text-tertiary truncate">{(admin?.roles || []).join(', ')}</div>
+          </div>
+          <button
+            onClick={logout}
+            aria-label="Выйти"
+            className="p-1.5 rounded text-tertiary hover:text-danger hover:bg-hover transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
     </aside>
   )
-}
-
-// Inline SVG icon components
-function DashboardIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" /></svg>
-}
-function UsersIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" /></svg>
-}
-function GroupsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-9.75 5.25m7.321-2.25l4.179 2.25-4.179 2.25m0 0L12 17.25l-5.571-3m11.142 0l4.179 2.25L12 21.75l-9.75-5.25 4.179-2.25" /></svg>
-}
-function SubsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" /></svg>
-}
-function PromoIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 010 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 010-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375z" /></svg>
-}
-function PaymentsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" /></svg>
-}
-function ServersIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.923a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 00-3-3H5.25a3 3 0 00-3 3m16.5 0h.008v.008h-.008v-.008zm-3 0h.008v.008h-.008v-.008z" /></svg>
-}
-function MaskingIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
-}
-function KeysIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" /></svg>
-}
-function ReleasesIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
-}
-function AdminsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.204-.107-.397.165-.71.505-.78.929l-.15.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.506-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.108-1.204l-.526-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-}
-function TenantsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" /></svg>
-}
-function PlansIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" /></svg>
-}
-function AutoTunerIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" /></svg>
-}
-function AuditIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" /></svg>
-}
-function TrafficIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg>
-}
-function MTProtoIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12zm0 0h7.5" /></svg>
-}
-function DirectRoutesIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 00-10.026 0 1.106 1.106 0 00-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" /></svg>
-}
-function SettingsIcon({ className }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
 }
