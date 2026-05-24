@@ -23,6 +23,7 @@ bd list --status in_progress       # что сейчас в работе
 | `heyearthproject-uys` | Complete YooKassa migration | closed | [prd](../prd/yookassa-migration.prd.md) | [plan](../plan/yookassa-migration.md) | [tasks](yookassa-migration.md) | ✓ |
 | `heyearthproject-vq3` | YooKassa Phase 2: conversion + retention | open (P1) | [prd](../prd/yookassa-phase2.prd.md) | [plan](../plan/yookassa-phase2.md) | [tasks](yookassa-phase2.md) | — |
 | `heyearthproject-9gl` | Post-QA hardening (dashboard/SOCKS5/traffic/auth/deeplinks) | open (P2) | [prd](../prd/post-qa-hardening.prd.md) | [plan](../plan/post-qa-hardening.md) | [tasks](post-qa-hardening.md) | — |
+| `heyearthproject-agh4` | Direct routing infrastructure (bypass VPN для российских сервисов) | open (P2) | [prd](../prd/direct-routing.prd.md) | [plan](../superpowers/plans/2026-05-24-direct-routing-infrastructure.md) | [tasks](direct-routing.md) | — |
 
 ## Как добавить новый эпик
 
