@@ -3,6 +3,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import DirectRouteEditDialog from '../components/DirectRouteEditDialog.jsx'
 import DirectRoutesImportDialog from '../components/DirectRoutesImportDialog.jsx'
+import DiscoveryDialog from '../components/DiscoveryDialog'
 
 export default function DirectRoutesPage() {
   const { token } = useAuth()
@@ -27,6 +28,7 @@ export default function DirectRoutesPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editService, setEditService] = useState(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [discoveryOpen, setDiscoveryOpen] = useState(false)
 
   // Debounce search.
   useEffect(() => {
@@ -131,6 +133,10 @@ export default function DirectRoutesPage() {
           <button onClick={() => { setEditService(null); setEditOpen(true) }}
             className="px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500">
             + Добавить сервис
+          </button>
+          <button onClick={() => setDiscoveryOpen(true)}
+            className="px-3 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500">
+            🔍 Найти по домену
           </button>
           <button onClick={() => setImportOpen(true)}
             className="px-3 py-1.5 rounded bg-sky-600 text-white hover:bg-sky-500">
@@ -248,6 +254,11 @@ export default function DirectRoutesPage() {
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={fetchAll}
+      />
+      <DiscoveryDialog
+        open={discoveryOpen}
+        onClose={() => setDiscoveryOpen(false)}
+        onCreated={fetchAll}
       />
     </div>
   )
