@@ -139,6 +139,12 @@ export default function DirectRoutesPage() {
         </div>
       </div>
 
+      <div className="rounded border border-sky-700/40 bg-sky-900/20 p-3 text-sm text-slate-300">
+        Сервисы видны пользователям тарифа, у которого включена опция
+        «Доступ к РФ-сервисам» в настройках тарифа.
+        <a href="/plans" className="ml-1 text-sky-400 hover:underline">Настроить тарифы →</a>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-4 gap-3">
         <Card label="Всего сервисов" value={stats?.total_services ?? 0} />

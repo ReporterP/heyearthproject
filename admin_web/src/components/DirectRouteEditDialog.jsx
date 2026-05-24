@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
-import PlanSelector from './PlanSelector'
 
 /**
  * DirectRouteEditDialog — modal CRUD form for a direct routing service.
@@ -18,7 +17,6 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
   const isEdit = Boolean(service && service.id)
 
   const [form, setForm] = useState(blankForm())
-  const [planIDs, setPlanIDs] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState({})
 
@@ -41,27 +39,11 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
         timeout_sec: service.timeout_sec || 3600,
         notes: service.notes || '',
       })
-      // Fetch current plan_ids from server (the row passed via props may be stale).
-      fetchPlanIDs(service.id)
     } else {
       setForm(blankForm())
-      setPlanIDs([])
     }
     setErrors({})
   }, [open, service]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function fetchPlanIDs(id) {
-    try {
-      const resp = await fetch(`/api/admin/direct-routes/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!resp.ok) return
-      const data = await resp.json()
-      setPlanIDs(Array.isArray(data.plan_ids) ? data.plan_ids : [])
-    } catch (e) {
-      // non-fatal — leave planIDs empty
-    }
-  }
 
   // Close on Escape.
   useEffect(() => {
@@ -111,7 +93,6 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
         dns_servers: linesToArray(form.dns_servers),
         timeout_sec: parseInt(form.timeout_sec, 10) || 3600,
         notes: form.notes || '',
-        plan_ids: planIDs,
       }
       let savedID = service?.id
       if (isEdit) {
@@ -123,16 +104,6 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ error: resp.statusText }))
           throw new Error(err.error || resp.statusText)
-        }
-        // Update plan attachments (PUT /id/plans).
-        const respP = await fetch(`/api/admin/direct-routes/${service.id}/plans`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ plan_ids: planIDs }),
-        })
-        if (!respP.ok) {
-          const err = await respP.json().catch(() => ({ error: respP.statusText }))
-          throw new Error(err.error || respP.statusText)
         }
       } else {
         const resp = await fetch('/api/admin/direct-routes', {
@@ -231,10 +202,6 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
               />
             </Row>
           </div>
-
-          <Row label="Планы">
-            <PlanSelector value={planIDs} onChange={setPlanIDs} />
-          </Row>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-slate-800">
             <button type="button" onClick={onClose}
