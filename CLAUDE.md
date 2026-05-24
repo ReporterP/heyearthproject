@@ -37,6 +37,21 @@ User communicates in Russian. Use Russian for UI strings and user-facing code; E
 - **Context7** (`mcp__context7__query-docs`): **обязательно** перед кодом с внешними библиотеками
 - **Sequential Thinking**: для сложных архитектурных раздумий
 
+### Написание планов через subagents
+
+**Правило:** при использовании `superpowers:writing-plans`, если план ожидается >800 строк или >6 задач — **всегда декомпозируй на параллельные foreground subagent'ы**, каждый пишет свою фазу в `/tmp/plan-phaseN.md`, потом склей через `cat` в один файл + добавь header/footer.
+
+Причина: один Write на 2000+ строк часто упирается в context-overflow или socket-disconnect. Параллельные subagent'ы пишут независимо, каждый держит свой собственный лимит, и общая wall-time меньше.
+
+Шаблон:
+1. Set up через `Write` → `C:/tmp/plan-header.md` (title, goal, file map).
+2. Параллельные foreground subagent dispatches — каждый пишет свою фазу в `C:/tmp/plan-phaseN.md`.
+3. `Write` → `C:/tmp/plan-footer.md` (self-review, execution handoff).
+4. `cat C:/tmp/plan-header.md C:/tmp/plan-phase*.md C:/tmp/plan-footer.md > docs/superpowers/plans/<date>-<topic>.md`.
+5. Commit + offer subagent-driven vs inline execution.
+
+Для маленьких планов (≤6 задач, ~500-800 строк) — один Write OK.
+
 ### Верификация (проект без тестов)
 
 В HiEarth нет автоматических тестов. TDD адаптируется:
