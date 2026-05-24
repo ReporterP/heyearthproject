@@ -1,10 +1,22 @@
 import { useState, useEffect } from 'react'
+import { Package } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchPlans, createPlan, updatePlan, deletePlan, fetchServersPaged } from '../api/admin.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { formatBytes } from '../utils/format.js'
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  EmptyState,
+  Input,
+  PageHeader,
+  Spinner,
+  Textarea,
+} from '../components/ui/index.js'
 
 const PROTOCOL_OPTIONS = ['all', 'vless', 'socks', 'http']
 
@@ -18,6 +30,7 @@ export default function PlansPage() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null) // null | plan object
   const [confirm, setConfirm] = useState(null)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -52,6 +65,7 @@ export default function PlansPage() {
       toast.error('slug и name обязательны')
       return
     }
+    setSaving(true)
     try {
       if (p.id) {
         await updatePlan(p.id, p)
@@ -64,6 +78,8 @@ export default function PlansPage() {
       reload()
     } catch (e) {
       toast.error(e.message)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -78,116 +94,148 @@ export default function PlansPage() {
     setConfirm(null)
   }
 
-  if (loading) return <div className="flex justify-center py-20"><div className="w-8 h-8 border-2 border-brand/30 border-t-brand rounded-full animate-spin" /></div>
+  if (loading) return (
+    <div className="flex justify-center py-20">
+      <Spinner size="md" />
+    </div>
+  )
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-bold">Тарифные планы</h2>
-          <p className="text-sm text-text-secondary mt-1">Конструктор подписок: протоколы, серверы, трафик, цена</p>
+    <div className="space-y-4">
+      <PageHeader
+        title="Тарифные планы"
+        subtitle="Конструктор подписок: протоколы, серверы, трафик, цена"
+        actions={can('settings.write') ? (
+          <Button variant="primary" onClick={openCreate}>+ Создать план</Button>
+        ) : null}
+      />
+
+      {plans.length === 0 ? (
+        <EmptyState
+          icon={<Package className="w-12 h-12" />}
+          title="Нет тарифных планов"
+          description="Создайте первый план: задайте цену, срок, разрешённые протоколы и серверы."
+          action={can('settings.write') ? (
+            <Button variant="primary" onClick={openCreate}>+ Создать план</Button>
+          ) : null}
+        />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {plans.map(plan => (
+            <Card key={plan.id} className={`p-5 transition-colors ${plan.is_active ? '' : 'border-danger/30 opacity-60'}`}>
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <h3 className={`font-semibold text-lg ${plan.is_active ? 'text-primary' : 'line-through text-tertiary'}`}>{plan.name}</h3>
+                  <p className="text-xs text-tertiary font-mono">{plan.slug}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-semibold tabular-nums font-mono text-accent">{plan.price_rub}₽</p>
+                  <p className="text-xs text-tertiary">{plan.duration_days} дн.</p>
+                </div>
+              </div>
+
+              {plan.description && <p className="text-sm text-secondary mb-3">{plan.description}</p>}
+
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {(plan.allowed_protocols || []).map(p => (
+                  <Badge key={p} variant="accent" className="uppercase">{p}</Badge>
+                ))}
+              </div>
+
+              <div className="text-xs text-tertiary space-y-1 mb-3">
+                <p>Трафик: <span className="text-primary font-medium">{plan.traffic_limit_bytes ? formatBytes(plan.traffic_limit_bytes) : 'Безлимит'}</span></p>
+                <p>Серверов: <span className="text-primary font-medium">{plan.server_ids?.length || 0}</span></p>
+                <p>Автопродление: <span className="text-primary">{plan.auto_renew_default ? 'Да' : 'Нет'}</span></p>
+                <p>Доступ к РФ-сервисам: <span className="text-primary">{plan.direct_routing_enabled ? 'Включён' : 'Выключен'}</span></p>
+                {!plan.is_active && <p className="text-danger font-medium">Неактивен</p>}
+              </div>
+
+              {can('settings.write') && (
+                <div className="flex gap-2 pt-3 border-t border-default/60">
+                  <Button size="sm" variant="secondary" onClick={() => openEdit(plan)}>Редактировать</Button>
+                  <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirm(plan)}>Удалить</Button>
+                </div>
+              )}
+            </Card>
+          ))}
         </div>
-        {can('settings.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + Создать план
-          </button>
-        )}
-      </div>
-
-      {/* Plans grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-        {plans.map(plan => (
-          <div key={plan.id} className={`bg-surface-card rounded-xl border p-5 transition ${plan.is_active ? 'border-white/10' : 'border-red-500/20 opacity-60'}`}>
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <h3 className={`font-semibold text-lg ${plan.is_active ? '' : 'line-through text-text-secondary'}`}>{plan.name}</h3>
-                <p className="text-xs text-text-secondary font-mono">{plan.slug}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-bold text-brand">{plan.price_rub}₽</p>
-                <p className="text-xs text-text-secondary">{plan.duration_days} дн.</p>
-              </div>
-            </div>
-
-            <p className="text-sm text-text-secondary mb-3">{plan.description}</p>
-
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {(plan.allowed_protocols || []).map(p => (
-                <span key={p} className="px-2 py-0.5 rounded text-[10px] font-bold bg-brand/10 text-brand uppercase">{p}</span>
-              ))}
-            </div>
-
-            <div className="text-xs text-text-secondary space-y-1 mb-3">
-              <p>Трафик: <span className="text-text-primary font-medium">{plan.traffic_limit_bytes ? formatBytes(plan.traffic_limit_bytes) : 'Безлимит'}</span></p>
-              <p>Серверов: <span className="text-text-primary font-medium">{plan.server_ids?.length || 0}</span></p>
-              <p>Автопродление: <span className="text-text-primary">{plan.auto_renew_default ? 'Да' : 'Нет'}</span></p>
-              <p>Доступ к РФ-сервисам: <span className="text-text-primary">{plan.direct_routing_enabled ? 'Включён' : 'Выключен'}</span></p>
-              {!plan.is_active && <p className="text-red-400 font-medium">Неактивен</p>}
-            </div>
-
-            {can('settings.write') && (
-              <div className="flex gap-2 pt-3 border-t border-white/5">
-                <button onClick={() => openEdit(plan)} className="px-3 py-1.5 rounded-lg bg-brand/20 text-brand text-xs hover:bg-brand/30 transition">Редактировать</button>
-                <button onClick={() => setConfirm(plan)} className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs hover:bg-red-500/30 transition">Удалить</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      )}
 
       {/* Edit/Create modal */}
-      {editing && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setEditing(null)}>
-          <div className="bg-surface-card rounded-xl border border-white/10 w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold mb-4">{editing.id ? 'Редактировать план' : 'Создать план'}</h3>
-
+      <Dialog
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={editing?.id ? 'Редактировать план' : 'Создать план'}
+        maxWidth="max-w-2xl"
+      >
+        {editing && (
+          <>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
-                <label className="text-xs text-text-secondary">Slug (URL-ключ)</label>
-                <input value={editing.slug} onChange={e => setEditing({...editing, slug: e.target.value})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="vless-reality" />
+                <label className="text-xs text-tertiary block mb-1">Slug (URL-ключ)</label>
+                <Input
+                  value={editing.slug}
+                  onChange={e => setEditing({...editing, slug: e.target.value})}
+                  placeholder="vless-reality"
+                  className="font-mono"
+                />
               </div>
               <div>
-                <label className="text-xs text-text-secondary">Название</label>
-                <input value={editing.name} onChange={e => setEditing({...editing, name: e.target.value})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" placeholder="SOCKS Basic" />
+                <label className="text-xs text-tertiary block mb-1">Название</label>
+                <Input
+                  value={editing.name}
+                  onChange={e => setEditing({...editing, name: e.target.value})}
+                  placeholder="SOCKS Basic"
+                />
               </div>
             </div>
 
             <div className="mb-4">
-              <label className="text-xs text-text-secondary">Описание</label>
-              <textarea value={editing.description} onChange={e => setEditing({...editing, description: e.target.value})}
-                className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" rows={2} />
+              <label className="text-xs text-tertiary block mb-1">Описание</label>
+              <Textarea
+                value={editing.description || ''}
+                onChange={e => setEditing({...editing, description: e.target.value})}
+                rows={2}
+              />
             </div>
 
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div>
-                <label className="text-xs text-text-secondary">Цена (₽)</label>
-                <input type="number" value={editing.price_rub} onChange={e => setEditing({...editing, price_rub: parseInt(e.target.value) || 0})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+                <label className="text-xs text-tertiary block mb-1">Цена (₽)</label>
+                <Input
+                  type="number"
+                  value={editing.price_rub}
+                  onChange={e => setEditing({...editing, price_rub: parseInt(e.target.value) || 0})}
+                />
               </div>
               <div>
-                <label className="text-xs text-text-secondary">Срок (дни)</label>
-                <input type="number" value={editing.duration_days} onChange={e => setEditing({...editing, duration_days: parseInt(e.target.value) || 30})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+                <label className="text-xs text-tertiary block mb-1">Срок (дни)</label>
+                <Input
+                  type="number"
+                  value={editing.duration_days}
+                  onChange={e => setEditing({...editing, duration_days: parseInt(e.target.value) || 30})}
+                />
               </div>
               <div>
-                <label className="text-xs text-text-secondary">Трафик (ГБ, 0=безлимит)</label>
-                <input type="number" value={editing.traffic_limit_bytes ? Math.round(editing.traffic_limit_bytes / 1073741824) : 0}
+                <label className="text-xs text-tertiary block mb-1">Трафик (ГБ, 0=безлимит)</label>
+                <Input
+                  type="number"
+                  value={editing.traffic_limit_bytes ? Math.round(editing.traffic_limit_bytes / 1073741824) : 0}
                   onChange={e => {
                     const gb = parseInt(e.target.value) || 0
                     setEditing({...editing, traffic_limit_bytes: gb > 0 ? gb * 1073741824 : null})
                   }}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+                />
               </div>
             </div>
 
-            <div className="mb-4">
-              <label className="text-xs text-text-secondary mb-2 block">Протоколы</label>
-              <div className="flex flex-wrap gap-2">
+            <Card className="p-4 mb-4">
+              <label className="text-xs text-tertiary mb-2 block">Протоколы</label>
+              <div className="flex flex-wrap gap-3">
                 {PROTOCOL_OPTIONS.map(proto => (
                   <label key={proto} className="flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox"
+                    <input
+                      type="checkbox"
                       checked={(editing.allowed_protocols || []).includes(proto)}
                       onChange={e => {
                         const current = editing.allowed_protocols || []
@@ -197,19 +245,21 @@ export default function PlansPage() {
                           setEditing({...editing, allowed_protocols: current.filter(p => p !== proto)})
                         }
                       }}
-                      className="rounded" />
-                    <span className="text-sm uppercase">{proto}</span>
+                      className="rounded"
+                    />
+                    <span className="text-sm uppercase text-primary">{proto}</span>
                   </label>
                 ))}
               </div>
-            </div>
+            </Card>
 
-            <div className="mb-4">
-              <label className="text-xs text-text-secondary mb-2 block">Серверы (выбрать доступные)</label>
-              <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+            <Card className="p-4 mb-4">
+              <label className="text-xs text-tertiary mb-2 block">Серверы (выбрать доступные)</label>
+              <div className="flex flex-wrap gap-3 max-h-32 overflow-y-auto">
                 {servers.map(srv => (
                   <label key={srv.id} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input type="checkbox"
+                    <input
+                      type="checkbox"
                       checked={(editing.server_ids || []).includes(srv.id)}
                       onChange={e => {
                         const current = editing.server_ids || []
@@ -219,15 +269,16 @@ export default function PlansPage() {
                           setEditing({...editing, server_ids: current.filter(id => id !== srv.id)})
                         }
                       }}
-                      className="rounded" />
-                    <span>{srv.name || srv.ip_address}</span>
+                      className="rounded"
+                    />
+                    <span className="text-primary">{srv.name || srv.ip_address}</span>
                   </label>
                 ))}
               </div>
-            </div>
+            </Card>
 
-            <div className="mb-4">
-              <label className="text-xs text-text-secondary mb-2 block">Возможности плана</label>
+            <Card className="p-4 mb-4">
+              <label className="text-xs text-tertiary mb-2 block">Возможности плана</label>
               <div className="flex flex-wrap gap-3">
                 {[
                   { key: 'traffic_masking', label: 'Маскировка трафика' },
@@ -238,67 +289,87 @@ export default function PlansPage() {
                     : (editing.features || {})
                   return (
                     <label key={feat.key} className="flex items-center gap-1.5 cursor-pointer">
-                      <input type="checkbox"
+                      <input
+                        type="checkbox"
                         checked={!!features[feat.key]}
                         onChange={e => {
                           const updated = { ...features, [feat.key]: e.target.checked || undefined }
                           if (!e.target.checked) delete updated[feat.key]
                           setEditing({...editing, features: JSON.stringify(updated)})
                         }}
-                        className="rounded" />
-                      <span className="text-sm">{feat.label}</span>
+                        className="rounded"
+                      />
+                      <span className="text-sm text-primary">{feat.label}</span>
                     </label>
                   )
                 })}
               </div>
-            </div>
+            </Card>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={editing.is_active} onChange={e => setEditing({...editing, is_active: e.target.checked})} className="rounded" />
-                <span className="text-sm">Активен</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={editing.auto_renew_default} onChange={e => setEditing({...editing, auto_renew_default: e.target.checked})} className="rounded" />
-                <span className="text-sm">Автопродление</span>
-              </label>
-              <label className="flex items-start gap-2 mt-2">
-                <input
-                  type="checkbox"
-                  checked={!!editing.direct_routing_enabled}
-                  onChange={e => setEditing({...editing, direct_routing_enabled: e.target.checked})}
-                  className="rounded mt-1"
-                />
-                <span>
-                  <span className="block">Доступ к РФ-сервисам</span>
-                  <span className="block text-xs text-text-secondary">
-                    Трафик к российским банкам, госуслугам и маркетплейсам идёт напрямую, минуя VPN.
+            <Card className="p-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editing.is_active}
+                    onChange={e => setEditing({...editing, is_active: e.target.checked})}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-primary">Активен</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editing.auto_renew_default}
+                    onChange={e => setEditing({...editing, auto_renew_default: e.target.checked})}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-primary">Автопродление</span>
+                </label>
+                <label className="flex items-start gap-2 md:col-span-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!editing.direct_routing_enabled}
+                    onChange={e => setEditing({...editing, direct_routing_enabled: e.target.checked})}
+                    className="rounded mt-1"
+                  />
+                  <span>
+                    <span className="block text-sm text-primary">Доступ к РФ-сервисам</span>
+                    <span className="block text-xs text-tertiary">
+                      Трафик к российским банкам, госуслугам и маркетплейсам идёт напрямую, минуя VPN.
+                    </span>
                   </span>
-                </span>
-              </label>
-              <div>
-                <label className="text-xs text-text-secondary">Порядок</label>
-                <input type="number" value={editing.sort_order} onChange={e => setEditing({...editing, sort_order: parseInt(e.target.value) || 0})}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
+                </label>
+                <div>
+                  <label className="text-xs text-tertiary block mb-1">Порядок</label>
+                  <Input
+                    type="number"
+                    value={editing.sort_order}
+                    onChange={e => setEditing({...editing, sort_order: parseInt(e.target.value) || 0})}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-tertiary block mb-1">Макс. активаций/юзер</label>
+                  <Input
+                    type="number"
+                    value={editing.max_activations_per_user ?? ''}
+                    placeholder="без лимита"
+                    onChange={e => {
+                      const v = e.target.value === '' ? null : parseInt(e.target.value) || null
+                      setEditing({...editing, max_activations_per_user: v})
+                    }}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="text-xs text-text-secondary">Макс. активаций/юзер</label>
-                <input type="number" value={editing.max_activations_per_user ?? ''} placeholder="без лимита"
-                  onChange={e => {
-                    const v = e.target.value === '' ? null : parseInt(e.target.value) || null
-                    setEditing({...editing, max_activations_per_user: v})
-                  }}
-                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm" />
-              </div>
-            </div>
+            </Card>
 
-            <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
-              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg bg-surface-alt text-text-secondary text-sm hover:text-text-primary transition">Отмена</button>
-              <button onClick={handleSave} className="px-6 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">Сохранить</button>
+            <div className="flex justify-end gap-2 pt-4 border-t border-default">
+              <Button variant="ghost" onClick={() => setEditing(null)}>Отмена</Button>
+              <Button variant="primary" onClick={handleSave} loading={saving}>Сохранить</Button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Dialog>
 
       {/* Delete confirm */}
       {confirm && (

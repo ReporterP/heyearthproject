@@ -1,5 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../components/Toast.jsx'
+import {
+  Button,
+  Card,
+  Input,
+  PageHeader,
+  Spinner,
+} from '../components/ui/index.js'
 
 const API = '/api/admin/mtproto'
 
@@ -71,27 +78,31 @@ export default function MTProtoPage() {
     }
   }
 
-  if (loading) return <div className="p-6 text-text-secondary">Loading…</div>
+  if (loading) return (
+    <div className="flex justify-center py-20">
+      <Spinner size="md" />
+    </div>
+  )
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl">
-      <h1 className="text-xl md:text-2xl font-bold mb-1">MTProto Telegram Proxy</h1>
-      <p className="text-sm text-text-secondary mb-1">
-        Кнопка для добавления HeYearth MTProto-прокси в Telegram. Бонус-фича для активных подписчиков.
-      </p>
-      <p className="text-xs text-text-secondary mb-6">
+    <div className="max-w-2xl space-y-4">
+      <PageHeader
+        title="MTProto Telegram Proxy"
+        subtitle="Кнопка для добавления HeYearth MTProto-прокси в Telegram. Бонус-фича для активных подписчиков."
+      />
+      <p className="text-xs text-tertiary">
         Host и Port теперь управляются автоматически — балансировщик выбирает здоровый exit-сервер при каждом запросе пользователя.
       </p>
 
-      <div className="space-y-4 bg-surface-card rounded-xl border border-white/10 p-5">
+      <Card className="p-5 space-y-4">
         <label className="flex items-center gap-3 cursor-pointer">
           <input
             type="checkbox"
             checked={form.enabled}
             onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-            className="w-4 h-4"
+            className="w-4 h-4 rounded"
           />
-          <span className="text-sm">Включить MTProto (виден ли deeplink в личном кабинете)</span>
+          <span className="text-sm text-primary">Включить MTProto (виден ли deeplink в личном кабинете)</span>
         </label>
 
         <label className="flex items-center gap-3 cursor-pointer">
@@ -99,57 +110,56 @@ export default function MTProtoPage() {
             type="checkbox"
             checked={form.auto_install}
             onChange={(e) => setForm({ ...form, auto_install: e.target.checked })}
-            className="w-4 h-4"
+            className="w-4 h-4 rounded"
           />
-          <span className="text-sm">Автоматически ставить mtproxy на новые/существующие exit-серверы</span>
+          <span className="text-sm text-primary">Автоматически ставить mtproxy на новые/существующие exit-серверы</span>
         </label>
 
         <div>
-          <label className="text-xs text-text-secondary block mb-1">Secret (32 hex chars)</label>
+          <label className="text-xs text-tertiary block mb-1">Secret (32 hex chars)</label>
           <div className="flex gap-2">
-            <input
+            <Input
               type="text"
               value={form.secret}
               onChange={(e) => setForm({ ...form, secret: e.target.value })}
-              className="flex-1 px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm font-mono"
+              className="font-mono"
               placeholder="d4...e1"
             />
-            <button
+            <Button
+              variant="secondary"
               onClick={regenerateSecret}
               disabled={saving}
-              className="px-3 py-2 rounded-lg bg-amber-500/20 text-amber-300 text-xs hover:bg-amber-500/30"
             >
               Regenerate
-            </button>
+            </Button>
           </div>
         </div>
 
         <div>
-          <label className="text-xs text-text-secondary block mb-1">
+          <label className="text-xs text-tertiary block mb-1">
             Sponsor channel (необязательно — баннер канала в Telegram)
           </label>
-          <input
+          <Input
             type="text"
             value={form.sponsor_channel}
             onChange={(e) => setForm({ ...form, sponsor_channel: e.target.value })}
-            className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm"
             placeholder="@hiearth (тег получите у @mtproxybot)"
           />
         </div>
 
         <div className="pt-2">
-          <button
+          <Button
+            variant="primary"
             onClick={save}
-            disabled={saving}
-            className="px-5 py-2 rounded-lg bg-brand/30 text-brand text-sm font-medium hover:bg-brand/40 disabled:opacity-50"
+            loading={saving}
           >
-            {saving ? 'Сохраняем…' : 'Сохранить'}
-          </button>
+            Сохранить
+          </Button>
         </div>
-      </div>
+      </Card>
 
-      <p className="text-xs text-text-secondary mt-4">
-        Для тега напишите <code>@mtproxybot</code> команду <code className="text-text-primary">/newproxy</code> с host+port+secret.
+      <p className="text-xs text-tertiary">
+        Для тега напишите <code className="text-primary">@mtproxybot</code> команду <code className="text-primary">/newproxy</code> с host+port+secret.
       </p>
     </div>
   )
