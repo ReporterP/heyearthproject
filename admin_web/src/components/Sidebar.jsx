@@ -14,7 +14,7 @@ const navItems = [
   { to: '/traffic', label: 'navTraffic', perm: 'dashboard.read', icon: TrafficIcon },
   { to: '/servers', label: 'navServers', perm: 'servers.read', icon: ServersIcon },
   { to: '/traffic-masking', label: 'navTrafficMasking', perm: 'traffic_masking.read', icon: MaskingIcon, hideForTenant: true },
-  { to: '/direct-routes', label: 'navDirectRoutes', perm: 'settings.read', icon: DirectRoutesIcon, hideForTenant: true },
+  { to: '/direct-routes', label: 'navDirectRoutes', perm: 'routing.direct.view', icon: DirectRoutesIcon, hideForTenant: true },
   { to: '/ssh-keys', label: 'navSshKeys', perm: 'servers.read', icon: KeysIcon, hideForTenant: true },
   { to: '/releases', label: 'navReleases', perm: 'releases.read', icon: ReleasesIcon, hideForTenant: true },
   { to: '/admins', label: 'navAdmins', perm: 'admins.read', icon: AdminsIcon, hideForTenant: true },
