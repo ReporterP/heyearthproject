@@ -50,6 +50,27 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		realTotal = 0
 	}
 
+	// Sortable columns whitelist (Phase 1 Task 3).
+	allowedSort := map[string]string{
+		"id":         "p.id",
+		"created_at": "p.created_at",
+		"amount":     "p.amount",
+		"status":     "p.status",
+		"user_id":    "p.user_id",
+	}
+	sortCol := "p.created_at"
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort"))); v != "" {
+		if c, ok := allowedSort[v]; ok {
+			sortCol = c
+		}
+	}
+	dir := "DESC"
+	if d := strings.ToLower(r.URL.Query().Get("dir")); d == "asc" {
+		dir = "ASC"
+	} else if d == "desc" {
+		dir = "DESC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT p.id, COALESCE(p.user_id, 0), COALESCE(p.user_id_text, COALESCE(u.user_id, '')),
 		       p.amount::float8, p.currency, p.status, COALESCE(p.provider, ''),
@@ -67,9 +88,9 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		FROM payments p
 		LEFT JOIN users u ON u.user_id = p.user_id_text
 		WHERE %s
-		ORDER BY p.created_at DESC
+		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
-	`, where, argN, argN+1)
+	`, where, sortCol, dir, argN, argN+1)
 	args = append(args, p.PageSize, p.Offset())
 
 	rows, err := db.DB.Query(query, args...)

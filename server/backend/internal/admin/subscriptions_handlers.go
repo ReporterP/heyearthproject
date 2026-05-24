@@ -30,6 +30,28 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sortable columns whitelist (Phase 1 Task 3).
+	allowedSort := map[string]string{
+		"user_id":     "us.user_id",
+		"group_id":    "us.group_id",
+		"valid_until": "us.valid_until",
+		"plan_id":     "us.plan_id",
+		"started_at":  "us.started_at",
+		"status":      "us.status",
+	}
+	sortCol := "us.valid_until"
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort"))); v != "" {
+		if c, ok := allowedSort[v]; ok {
+			sortCol = c
+		}
+	}
+	dir := "DESC"
+	if d := strings.ToLower(r.URL.Query().Get("dir")); d == "asc" {
+		dir = "ASC"
+	} else if d == "desc" {
+		dir = "DESC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT us.user_id, u.user_id, us.group_id, ug.name, us.valid_until, us.auto_renew,
 		       COALESCE(us.plan_id, 0), COALESCE(p.name, ''), COALESCE(us.status, 'active'),
@@ -39,9 +61,9 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 		JOIN user_groups ug ON ug.id = us.group_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE %s
-		ORDER BY us.valid_until DESC
+		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
-	`, where, argN, argN+1)
+	`, where, sortCol, dir, argN, argN+1)
 	args = append(args, p.PageSize, p.Offset())
 
 	rows, err := db.DB.Query(query, args...)

@@ -55,6 +55,33 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sortable columns whitelist (Phase 1 Task 3).
+	// last_check is mapped to the underlying last_tunnel_check column.
+	allowedSort := map[string]string{
+		"id":              "s.id",
+		"country_code":    "s.country_code",
+		"status":          "s.status",
+		"last_check":      "s.last_tunnel_check",
+		"lifecycle_state": "s.lifecycle_state",
+		"load_weight":     "s.load_weight",
+	}
+	sortCol := ""
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort"))); v != "" {
+		if c, ok := allowedSort[v]; ok {
+			sortCol = c
+		}
+	}
+	dir := "DESC"
+	if d := strings.ToLower(r.URL.Query().Get("dir")); d == "asc" {
+		dir = "ASC"
+	} else if d == "desc" {
+		dir = "DESC"
+	}
+	orderBy := "COALESCE(s.updated_at, CURRENT_TIMESTAMP) DESC, s.id DESC"
+	if sortCol != "" {
+		orderBy = sortCol + " " + dir
+	}
+
 	query := fmt.Sprintf(`
 		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
@@ -65,9 +92,9 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		FROM servers s
 		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 		WHERE %s
-		ORDER BY COALESCE(s.updated_at, CURRENT_TIMESTAMP) DESC, s.id DESC
+		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, where, argN, argN+1)
+	`, where, orderBy, argN, argN+1)
 	args = append(args, p.PageSize, p.Offset())
 
 	rows, err := db.DB.Query(query, args...)

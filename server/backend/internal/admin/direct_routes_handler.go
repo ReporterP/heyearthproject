@@ -109,6 +109,31 @@ func ListDirectRoutesHandler(w http.ResponseWriter, r *http.Request) {
 		filters.IsActive = &b
 	}
 
+	// Sortable columns whitelist (Phase 1 Task 3). When ?sort= is empty or
+	// unrecognized we leave filters.OrderBy as "" — the biz layer then falls
+	// back to the multi-column default "s.group_name ASC, s.name ASC".
+	allowedSort := map[string]string{
+		"id":         "id",
+		"slug":       "slug",
+		"name":       "name",
+		"group_name": "group_name",
+		"updated_at": "updated_at",
+		"created_at": "created_at",
+	}
+	sortCol := ""
+	if v := strings.ToLower(strings.TrimSpace(q.Get("sort"))); v != "" {
+		if c, ok := allowedSort[v]; ok {
+			sortCol = c
+		}
+	}
+	dir := "ASC"
+	if d := strings.ToLower(q.Get("dir")); d == "desc" {
+		dir = "DESC"
+	}
+	if sortCol != "" {
+		filters.OrderBy = "s." + sortCol + " " + dir
+	}
+
 	items, err := biz.ListDirectRouteServices(filters)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, err.Error())

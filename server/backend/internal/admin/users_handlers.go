@@ -39,6 +39,31 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sortable columns whitelist (Phase 1 Task 3).
+	// Map keys are accepted ?sort= values; map values are the actual SQL
+	// expressions (with proper alias prefix). Invalid values fall back to
+	// the default ORDER BY.
+	allowedSort := map[string]string{
+		"id":         "u.id",
+		"user_id":    "u.user_id",
+		"username":   "u.username",
+		"created_at": "u.created_at",
+		"updated_at": "u.updated_at",
+		"role":       "u.role",
+	}
+	sortCol := "u.created_at"
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort"))); v != "" {
+		if c, ok := allowedSort[v]; ok {
+			sortCol = c
+		}
+	}
+	dir := "DESC"
+	if d := strings.ToLower(r.URL.Query().Get("dir")); d == "asc" {
+		dir = "ASC"
+	} else if d == "desc" {
+		dir = "DESC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT u.id, u.user_id, COALESCE(u.username, ''), u.telegram_id, u.role, COALESCE(u.is_blocked, FALSE),
 		       COALESCE(u.preferred_platform, ''),
@@ -56,9 +81,9 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN user_groups ug ON ug.id = us.group_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE %s
-		ORDER BY u.created_at DESC, u.id DESC
+		ORDER BY %s %s, u.id DESC
 		LIMIT $%d OFFSET $%d
-	`, where, argN, argN+1)
+	`, where, sortCol, dir, argN, argN+1)
 	args = append(args, p.PageSize, p.Offset())
 
 	rows, err := db.DB.Query(query, args...)

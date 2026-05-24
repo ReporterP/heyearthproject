@@ -56,6 +56,11 @@ type DirectRouteFilters struct {
 	IsActive  *bool
 	Search    string // case-insensitive substring match against slug/name
 	PlanID    int    // 0 = any plan
+	// OrderBy is an optional pre-validated ORDER BY clause (without the
+	// "ORDER BY" keyword). When empty the default "s.group_name ASC, s.name ASC"
+	// is used. Callers MUST pre-whitelist any column names; this string is
+	// inlined into the SQL.
+	OrderBy string
 }
 
 func validateDirectRouteService(s *DirectRouteService) error {
@@ -112,7 +117,11 @@ func ListDirectRouteServices(filters DirectRouteFilters) ([]DirectRouteService, 
 	if len(conds) > 0 {
 		q += " WHERE " + strings.Join(conds, " AND ")
 	}
-	q += " ORDER BY s.group_name, s.name"
+	if filters.OrderBy != "" {
+		q += " ORDER BY " + filters.OrderBy
+	} else {
+		q += " ORDER BY s.group_name ASC, s.name ASC"
+	}
 
 	rows, err := db.DB.Query(q, args...)
 	if err != nil {
