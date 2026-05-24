@@ -16,7 +16,7 @@ import { useToast } from './Toast'
  */
 export default function PlanSelector({ value = [], onChange, disabled = false }) {
   const { token } = useAuth()
-  const { showError } = useToast()
+  const toast = useToast()
   const [plans, setPlans] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -28,7 +28,7 @@ export default function PlanSelector({ value = [], onChange, disabled = false })
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!resp.ok) {
-          showError('Не удалось загрузить список планов')
+          toast.error('Не удалось загрузить список планов')
           return
         }
         const data = await resp.json()
@@ -41,14 +41,14 @@ export default function PlanSelector({ value = [], onChange, disabled = false })
         })
         setPlans(list)
       } catch (e) {
-        if (!cancelled) showError('Ошибка сети: ' + e.message)
+        if (!cancelled) toast.error('Ошибка сети: ' + e.message)
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     load()
     return () => { cancelled = true }
-  }, [token])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token])
 
   const toggle = (id) => {
     if (disabled) return
