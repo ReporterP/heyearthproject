@@ -6,8 +6,10 @@ function SortIcon({ direction }) {
 
 export function Table({ children, className = '' }) {
   return (
-    <div className={`rounded border border-default overflow-x-auto ${className}`}>
-      <table className="w-full text-sm">{children}</table>
+    <div
+      className={`rounded border border-default overflow-x-auto relative [mask-image:linear-gradient(to_right,black_0,black_calc(100%-24px),transparent_100%)] sm:[mask-image:none] ${className}`}
+    >
+      <table className="w-full text-sm min-w-[640px]">{children}</table>
     </div>
   )
 }
