@@ -1,10 +1,23 @@
 import { useState, useEffect } from 'react'
+import { EyeOff } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchTrafficMaskingRules, createTrafficMaskingRule, updateTrafficMaskingRule, deleteTrafficMaskingRule } from '../api/admin.js'
 import CrudDialog, { FormField, TextInput, Checkbox } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import {
+  Button,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  TableSkeleton,
+  EmptyState,
+} from '../components/ui/index.js'
 
 export default function TrafficMaskingPage() {
   const { t } = useT()
@@ -25,6 +38,7 @@ export default function TrafficMaskingPage() {
 
   async function load() {
     setLoading(true)
+    setError('')
     try {
       const data = await fetchTrafficMaskingRules()
       setRules(data.rules || data || [])
@@ -97,60 +111,68 @@ export default function TrafficMaskingPage() {
     }
   }
 
-  if (loading) return <p className="text-text-secondary">{t.loading}</p>
-  if (error) return <p className="text-red-400">{error}</p>
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">{t.trafficMaskingTitle}</h2>
-        {can('traffic_masking.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.trafficMaskingCreate}
-          </button>
-        )}
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        title={t.trafficMaskingTitle}
+        subtitle={t.trafficMaskingSubtitle || 'Подмена SNI домена в трафике'}
+        actions={can('traffic_masking.write') ? (
+          <Button variant="primary" onClick={openCreate}>+ {t.trafficMaskingCreate}</Button>
+        ) : null}
+      />
 
-      {rules.length === 0 ? (
-        <p className="text-text-secondary">{t.trafficMaskingNoRules}</p>
+      {error && <p className="text-danger text-sm">{error}</p>}
+
+      {loading ? (
+        <TableSkeleton rows={6} cols={5} />
+      ) : rules.length === 0 ? (
+        <EmptyState
+          icon={<EyeOff className="w-12 h-12" />}
+          title={t.trafficMaskingNoRules}
+          description={t.trafficMaskingNoRulesDesc || 'Создайте первое правило подмены SNI домена.'}
+          action={can('traffic_masking.write') ? (
+            <Button variant="primary" onClick={openCreate}>+ {t.trafficMaskingCreate}</Button>
+          ) : null}
+        />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-text-secondary text-left">
-                <th className="py-2 px-3">ID</th>
-                <th className="py-2 px-3">{t.trafficMaskingSourceDomain}</th>
-                <th className="py-2 px-3">{t.trafficMaskingMaskDomain}</th>
-                <th className="py-2 px-3">{t.trafficMaskingActive}</th>
-                {can('traffic_masking.write') && <th className="py-2 px-3"></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {rules.map(r => (
-                <tr key={r.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                  <td className="py-2 px-3">{r.id}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{r.source_domain}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{r.mask_domain}</td>
-                  <td className="py-2 px-3">
-                    <button
-                      onClick={() => can('traffic_masking.write') && !togglingId && toggleActive(r)}
-                      disabled={togglingId === r.id}
-                      className={`w-10 h-6 rounded-full transition relative ${togglingId === r.id ? 'opacity-50 cursor-wait' : ''} ${r.is_active ? 'bg-brand' : 'bg-white/20'}`}
-                    >
-                      <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${r.is_active ? 'left-[18px]' : 'left-0.5'}`} />
-                    </button>
-                  </td>
-                  {can('traffic_masking.write') && (
-                    <td className="py-2 px-3 flex gap-2">
-                      <button onClick={() => openEdit(r)} className="text-brand hover:underline">{t.edit}</button>
-                      <button onClick={() => setConfirm(r)} className="text-red-400 hover:underline">{t.delete}</button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <Thead>
+            <Tr>
+              <Th>ID</Th>
+              <Th>{t.trafficMaskingSourceDomain}</Th>
+              <Th>{t.trafficMaskingMaskDomain}</Th>
+              <Th>{t.trafficMaskingActive}</Th>
+              {can('traffic_masking.write') && <Th>Действия</Th>}
+            </Tr>
+          </Thead>
+          <Tbody>
+            {rules.map(r => (
+              <Tr key={r.id}>
+                <Td mono>{r.id}</Td>
+                <Td mono className="text-xs">{r.source_domain}</Td>
+                <Td mono className="text-xs">{r.mask_domain}</Td>
+                <Td>
+                  <button
+                    onClick={() => can('traffic_masking.write') && !togglingId && toggleActive(r)}
+                    disabled={togglingId === r.id}
+                    aria-label={r.is_active ? 'Деактивировать' : 'Активировать'}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${togglingId === r.id ? 'opacity-50 cursor-wait' : ''} ${r.is_active ? 'bg-success/30' : 'bg-hover'}`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 rounded-full transition-transform ${r.is_active ? 'translate-x-[18px] bg-success' : 'translate-x-1 bg-tertiary'}`} />
+                  </button>
+                </Td>
+                {can('traffic_masking.write') && (
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => openEdit(r)}>{t.edit}</Button>
+                      <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirm(r)}>{t.delete}</Button>
+                    </div>
+                  </Td>
+                )}
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
       )}
 
       <CrudDialog

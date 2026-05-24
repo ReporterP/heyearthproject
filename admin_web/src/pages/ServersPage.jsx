@@ -1,15 +1,15 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Server } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import usePagedData from '../hooks/usePagedData.js'
+import { useUrlState } from '../hooks/useUrlState.js'
 import {
   fetchServersPaged, createServer, updateServer, deleteServer,
   runServerAction, fetchServerLogs, fetchServerFiles, fetchSshKeys,
   fetchServerDetail, generateTunnelCreds,
 } from '../api/admin.js'
-import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
@@ -17,6 +17,22 @@ import StatusBadge from '../components/StatusBadge.jsx'
 import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
 import { formatRelativeTime } from '../utils/format.js'
+import {
+  Button,
+  Input,
+  Select,
+  Badge,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  TableSkeleton,
+  EmptyState,
+  Dialog,
+} from '../components/ui/index.js'
 
 /* ── SVG icon helpers ── */
 const Icon = ({ d, className = 'w-4 h-4' }) => (
@@ -46,9 +62,9 @@ function TunnelBadge({ status }) {
   if (!status) return null
   const key = status.toLowerCase()
   const colors = {
-    healthy:     'bg-green-500/20 text-green-400',
+    healthy:     'bg-success/20 text-success',
     configuring: 'bg-yellow-500/20 text-yellow-400',
-    error:       'bg-red-500/20 text-red-400',
+    error:       'bg-danger/20 text-danger',
   }
   const cls = colors[key] || 'bg-gray-500/20 text-gray-400'
   return (
@@ -95,9 +111,9 @@ function CopyButton({ text, toast }) {
   }
   return (
     <button onClick={handleCopy} title="Copy IP"
-      className="inline-flex items-center gap-1 text-text-secondary hover:text-brand transition">
+      className="inline-flex items-center gap-1 text-secondary hover:text-accent transition">
       {copied
-        ? <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+        ? <svg className="w-4 h-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
         : <IconCopy />
       }
     </button>
@@ -117,12 +133,12 @@ function MetricsPanel({ metrics }) {
     { label: 'Uptime', value: metrics.uptime ? formatUptime(metrics.uptime) : null },
     { label: 'Load', value: metrics.load_avg != null ? String(metrics.load_avg) : null },
   ].filter(i => i.value != null)
-  if (items.length === 0) return <p className="text-xs text-text-secondary mt-2">No metrics data available</p>
+  if (items.length === 0) return <p className="text-xs text-secondary mt-2">No metrics data available</p>
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 p-3 rounded-lg bg-surface-alt/50">
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 p-3 rounded-lg bg-elevated/50">
       {items.map(i => (
         <div key={i.label}>
-          <p className="text-[10px] uppercase tracking-wider text-text-secondary">{i.label}</p>
+          <p className="text-[10px] uppercase tracking-wider text-secondary">{i.label}</p>
           <p className="text-sm font-semibold">{i.value}</p>
         </div>
       ))}
@@ -130,42 +146,14 @@ function MetricsPanel({ metrics }) {
   )
 }
 
-/* ── Status filter tabs ── */
-const STATUS_FILTERS = ['all', 'online', 'provisioning', 'offline', 'maintenance']
-
-function StatusFilterBar({ value, onChange, counts }) {
-  const { t } = useT()
-  const labels = {
-    all: t.serverFilterAll || 'Все',
-    online: t.serverFilterOnline || 'Онлайн',
-    provisioning: t.serverFilterProvisioning || 'Настройка',
-    offline: t.serverFilterOffline || 'Оффлайн',
-    maintenance: t.serverFilterMaintenance || 'Обслуживание',
-  }
-  return (
-    <div className="flex items-center gap-1 mb-4 flex-wrap">
-      {STATUS_FILTERS.map(s => {
-        const active = value === s
-        const count = counts[s]
-        return (
-          <button key={s} onClick={() => onChange(s)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-              active
-                ? 'bg-brand text-white'
-                : 'bg-surface-alt text-text-secondary hover:text-text-primary hover:bg-surface-alt/80'
-            }`}>
-            {labels[s]}
-            {count != null && (
-              <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${
-                active ? 'bg-white/20' : 'bg-white/10'
-              }`}>{count}</span>
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
+/* ── Status filter (now via Select bound to useUrlState lifecycle_state) ── */
+const LIFECYCLE_OPTIONS = [
+  { value: '', label: 'Все состояния' },
+  { value: 'provisioning', label: 'Провижн' },
+  { value: 'online', label: 'Online' },
+  { value: 'offline', label: 'Offline' },
+  { value: 'deleted', label: 'Deleted' },
+]
 
 /* ── Logs Modal (improved) ── */
 function LogsModal({ logsModal, setLogsModal, fetchLogs, toast }) {
@@ -210,33 +198,33 @@ function LogsModal({ logsModal, setLogsModal, fetchLogs, toast }) {
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={() => setLogsModal(null)}>
-      <div className="bg-surface-card rounded-xl border border-white/10 w-full max-w-4xl max-h-[85vh] m-4 flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-elevated rounded-xl border border-default w-full max-w-4xl max-h-[85vh] m-4 flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-default">
           <div className="flex items-center gap-3">
             <h3 className="font-semibold">{t.serverLogsTitle} — {logsModal.server.name}</h3>
           </div>
-          <button onClick={() => setLogsModal(null)} className="text-text-secondary hover:text-text-primary">
+          <button onClick={() => setLogsModal(null)} className="text-secondary hover:text-primary">
             <IconClose />
           </button>
         </div>
 
         {/* Toolbar */}
         <div className="flex items-center gap-3 px-5 py-2 border-b border-white/5 flex-wrap">
-          <label className="text-xs text-text-secondary">{t.serverLogsService}:</label>
+          <label className="text-xs text-secondary">{t.serverLogsService}:</label>
           <select value={service} onChange={e => setService(e.target.value)}
-            className="px-2 py-1 rounded-lg bg-surface-alt border border-white/10 text-sm text-text-primary focus:border-brand outline-none">
+            className="px-2 py-1 rounded-lg bg-elevated border border-default text-sm text-primary focus:border-brand outline-none">
             {services.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
 
-          <label className="text-xs text-text-secondary ml-2">{t.serverLogsTailLines || 'Lines'}:</label>
+          <label className="text-xs text-secondary ml-2">{t.serverLogsTailLines || 'Lines'}:</label>
           <select value={tail} onChange={e => setTail(Number(e.target.value))}
-            className="px-2 py-1 rounded-lg bg-surface-alt border border-white/10 text-sm text-text-primary focus:border-brand outline-none">
+            className="px-2 py-1 rounded-lg bg-elevated border border-default text-sm text-primary focus:border-brand outline-none">
             {tailOptions.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
 
           <button onClick={doRefresh} disabled={loading}
-            className="ml-auto flex items-center gap-1 px-3 py-1 rounded-lg bg-brand/20 text-brand text-sm hover:bg-brand/30 transition disabled:opacity-50">
+            className="ml-auto flex items-center gap-1 px-3 py-1 rounded-lg bg-accent/20 text-accent text-sm hover:bg-accent/30 transition disabled:opacity-50">
             <IconRestart />
             {t.serverLogsRefresh}
           </button>
@@ -244,7 +232,7 @@ function LogsModal({ logsModal, setLogsModal, fetchLogs, toast }) {
 
         {/* Logs content */}
         <pre ref={preRef}
-          className="flex-1 overflow-auto p-4 text-xs font-mono text-text-secondary whitespace-pre-wrap">
+          className="flex-1 overflow-auto p-4 text-xs font-mono text-secondary whitespace-pre-wrap">
           {loading ? (t.loading || 'Loading...') : (text || 'No logs')}
         </pre>
       </div>
@@ -258,7 +246,45 @@ export default function ServersPage() {
   const { can } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
-  const paged = usePagedData(fetchServersPaged)
+
+  const [f, setF] = useUrlState({ search: '', lifecycle_state: '', country: '', sort: 'id', dir: 'asc', page: 1 })
+  const sortState = { column: f.sort, direction: f.dir }
+  const onSort = (col) => setF({ sort: col, dir: f.sort === col && f.dir === 'asc' ? 'desc' : 'asc', page: 1 })
+
+  const pageSize = 20
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [searchInput, setSearchInput] = useState(f.search)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    setError('')
+    const params = { page: f.page, pageSize, search: f.search, sort: f.sort, dir: f.dir }
+    if (f.lifecycle_state) params.lifecycle_state = f.lifecycle_state
+    if (f.country) params.country = f.country
+    fetchServersPaged(params)
+      .then(data => {
+        setItems(data.items || data.data || [])
+        setTotal(data.total || 0)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [f.page, f.search, f.sort, f.dir, f.lifecycle_state, f.country])
+
+  useEffect(() => { load() }, [load])
+
+  const reload = load
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  // Compatibility shim — old code references paged.items / paged.reload
+  const paged = {
+    items, total, page: f.page, totalPages, loading, error, reload,
+    setPage: (p) => setF({ page: p }),
+    search: f.search,
+    doSearch: (val) => setF({ search: val, page: 1 }),
+  }
 
   const [dialog, setDialog] = useState(null)
   const [confirm, setConfirm] = useState(null)
@@ -267,7 +293,6 @@ export default function ServersPage() {
   const [filesModal, setFilesModal] = useState(null)
   const [sshKeys, setSshKeys] = useState([])
   const [viewMode, setViewMode] = useState('cards') // 'cards' | 'list'
-  const [statusFilter, setStatusFilter] = useState('all')
   const [configServer, setConfigServer] = useState(null) // server for config editor
   const [expandedMetrics, setExpandedMetrics] = useState({}) // serverId -> detail data
   const [progressModal, setProgressModal] = useState(null) // { id, name }
@@ -315,25 +340,12 @@ export default function ServersPage() {
     return () => clearInterval(interval)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Filtered items
-  const filteredItems = useMemo(() => {
-    if (statusFilter === 'all') return paged.items
-    return paged.items.filter(srv => (srv.status || '').toLowerCase() === statusFilter)
-  }, [paged.items, statusFilter])
-
-  // Status counts
-  const statusCounts = useMemo(() => {
-    const counts = { all: paged.items.length, online: 0, provisioning: 0, offline: 0, maintenance: 0 }
-    paged.items.forEach(srv => {
-      const s = (srv.status || '').toLowerCase()
-      if (counts[s] != null) counts[s]++
-    })
-    return counts
-  }, [paged.items])
+  // Items already filtered by backend via ?lifecycle_state / ?country
+  const filteredItems = items
 
   const onlineCount = useMemo(() =>
-    paged.items.filter(s => (s.status || '').toLowerCase() === 'online').length,
-    [paged.items]
+    items.filter(s => (s.status || '').toLowerCase() === 'online').length,
+    [items]
   )
 
   async function openCreate() {
@@ -519,25 +531,25 @@ export default function ServersPage() {
     const detail = expandedMetrics[srv.id]
 
     return (
-      <div className="bg-surface-card rounded-xl border border-white/10 p-4 flex flex-col">
+      <div className="bg-elevated rounded-xl border border-default p-4 flex flex-col">
         {/* Top row: name + status */}
         <div className="flex items-start justify-between mb-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="font-semibold truncate cursor-pointer hover:text-brand transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</h3>
+              <h3 className="font-semibold truncate cursor-pointer hover:text-accent transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</h3>
             </div>
             {/* IP address prominent */}
             <div className="flex items-center gap-1.5 mt-1">
-              <span className="text-sm font-mono text-brand">{ip}</span>
+              <span className="text-sm font-mono text-accent">{ip}</span>
               {ip && <CopyButton text={ip} toast={toast} />}
-              <span className="text-xs text-text-secondary ml-1">:{srv.port || srv.ssh_port || 22}</span>
+              <span className="text-xs text-secondary ml-1">:{srv.port || srv.ssh_port || 22}</span>
             </div>
           </div>
           <StatusBadge status={srv.status} />
         </div>
 
         {/* Details row */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary mb-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-secondary mb-2">
           {srv.location && <span>{srv.location}</span>}
           {srv.country_code && <span>{srv.country_code.toUpperCase()}</span>}
           {conns != null && (
@@ -558,23 +570,23 @@ export default function ServersPage() {
           <TunnelBadge status={srv.tunnel_status} />
           {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
             <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
-              srv.mtproto_status === 'healthy' ? 'bg-emerald-500/15 text-emerald-300' :
-              srv.mtproto_status === 'unhealthy' ? 'bg-red-500/15 text-red-300' :
-              'bg-blue-500/15 text-blue-300'
+              srv.mtproto_status === 'healthy' ? 'bg-success/15 text-success' :
+              srv.mtproto_status === 'unhealthy' ? 'bg-danger/15 text-danger' :
+              'bg-info/15 text-info'
             }`} title={`MTProto: ${srv.mtproto_status}`}>
               MTP
             </span>
           )}
           {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
           {srv.tunnel_protocol && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono uppercase">{srv.tunnel_protocol}</span>
           )}
           {srv.tunnel_port > 0 && (
-            <span className="text-[10px] text-text-secondary">:{srv.tunnel_port}</span>
+            <span className="text-[10px] text-secondary">:{srv.tunnel_port}</span>
           )}
         </div>
         {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
-          <p className="text-xs text-red-400 mb-2">{t.serverTunnelError}: {srv.tunnel_error}</p>
+          <p className="text-xs text-danger mb-2">{t.serverTunnelError}: {srv.tunnel_error}</p>
         )}
 
         {/* Tags */}
@@ -586,37 +598,37 @@ export default function ServersPage() {
 
         {/* Metrics toggle */}
         <button onClick={() => toggleMetrics(srv.id)}
-          className="flex items-center gap-1 text-xs text-text-secondary hover:text-brand transition mb-2 self-start">
+          className="flex items-center gap-1 text-xs text-secondary hover:text-accent transition mb-2 self-start">
           <IconChart />
           {detail ? (t.serverHideMetrics || 'Hide metrics') : (t.serverShowMetrics || 'Show metrics')}
         </button>
-        {detail === 'loading' && <p className="text-xs text-text-secondary mt-2">{t.loading || 'Loading...'}</p>}
+        {detail === 'loading' && <p className="text-xs text-secondary mt-2">{t.loading || 'Loading...'}</p>}
         {detail && detail !== 'loading' && <MetricsPanel metrics={{ ...(detail.load_metrics || detail.metrics || detail), synced_at: srv.metrics_synced_at || (detail.load_metrics?.synced_at) }} />}
 
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
           {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
             <button key={a.key} onClick={() => doAction(srv, a)}
-              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary hover:bg-surface-alt/80 transition"
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary hover:bg-elevated/80 transition"
               title={a.desc || a.label}>
               {a.icon}
               <span className="hidden sm:inline">{a.label}</span>
             </button>
           ))}
           <button onClick={() => showLogs(srv)}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
             title={t.serverLogs}>
             <IconLogs />
             <span className="hidden sm:inline">{t.serverLogs}</span>
           </button>
           <button onClick={() => showFiles(srv)}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
             title={t.serverFiles}>
             <IconFolder />
             <span className="hidden sm:inline">{t.serverFiles}</span>
           </button>
           <button onClick={() => setConfigServer(srv)}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary transition"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
             title="Config Editor">
             <IconConfig />
             <span className="hidden sm:inline">Config</span>
@@ -624,13 +636,13 @@ export default function ServersPage() {
           {can('servers.write') && (
             <>
               <button onClick={() => openEdit(srv)}
-                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-brand/20 text-brand hover:bg-brand/30 transition"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-accent/20 text-accent hover:bg-accent/30 transition"
                 title={t.edit}>
                 <IconEdit />
                 <span className="hidden sm:inline">{t.edit}</span>
               </button>
               <button onClick={() => setConfirm(srv)}
-                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-danger/20 text-danger hover:bg-danger/30 transition"
                 title={t.delete}>
                 <IconTrash />
                 <span className="hidden sm:inline">{t.delete}</span>
@@ -647,125 +659,153 @@ export default function ServersPage() {
     const ip = ipAddress(srv)
     const healthTime = lastHealthCheck(srv)
     const conns = activeConns(srv)
+    const lifecycle = srv.lifecycle_state || 'online'
+    const lifecycleBadge = (
+      lifecycle === 'provisioning' ? <Badge variant="warning">провижн</Badge> :
+      lifecycle === 'online' ? <Badge variant="success">online</Badge> :
+      lifecycle === 'offline' ? <Badge variant="danger">offline</Badge> :
+      lifecycle === 'deleted' ? <Badge variant="default">deleted</Badge> :
+      <Badge variant="default">{lifecycle}</Badge>
+    )
 
     return (
-      <tr className="border-b border-white/5 hover:bg-surface-alt/30 transition">
-        <td className="py-3 px-3">
-          <div className="font-semibold text-sm cursor-pointer hover:text-brand transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</div>
-          <div className="flex items-center gap-2 mt-0.5">
-            {srv.location && <span className="text-xs text-text-secondary">{srv.location}</span>}
-            {srv.country_code && <span className="text-xs text-text-secondary">{srv.country_code.toUpperCase()}</span>}
-          </div>
-        </td>
-        <td className="py-3 px-3">
+      <Tr>
+        <Td>
+          <div className="font-semibold text-sm cursor-pointer hover:text-accent transition" onClick={() => navigate(`/servers/${srv.id}`)}>{srv.name || ip}</div>
+          {srv.location && <div className="text-xs text-secondary mt-0.5">{srv.location}</div>}
+        </Td>
+        <Td mono>
           <div className="flex items-center gap-1.5">
-            <span className="font-mono text-sm text-brand">{ip}</span>
+            <span className="text-accent">{ip}</span>
             {ip && <CopyButton text={ip} toast={toast} />}
           </div>
-        </td>
-        <td className="py-3 px-3"><StatusBadge status={srv.status} /></td>
-        <td className="py-3 px-3">
+        </Td>
+        <Td>{srv.country_code ? srv.country_code.toUpperCase() : '—'}</Td>
+        <Td><StatusBadge status={srv.status} /></Td>
+        <Td>{lifecycleBadge}</Td>
+        <Td>
           <div className="flex items-center gap-1.5 flex-wrap">
             <TunnelBadge status={srv.tunnel_status} />
             {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
-                srv.mtproto_status === 'healthy' ? 'bg-emerald-500/15 text-emerald-300' :
-                srv.mtproto_status === 'unhealthy' ? 'bg-red-500/15 text-red-300' :
-                'bg-blue-500/15 text-blue-300'
+                srv.mtproto_status === 'healthy' ? 'bg-success/15 text-success' :
+                srv.mtproto_status === 'unhealthy' ? 'bg-danger/15 text-danger' :
+                'bg-info/15 text-info'
               }`} title={`MTProto: ${srv.mtproto_status}`}>
                 MTP
               </span>
             )}
-            {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
             {srv.tunnel_protocol && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand font-mono uppercase">{srv.tunnel_protocol}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono uppercase">{srv.tunnel_protocol}</span>
             )}
             {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
-              <span className="text-xs text-red-400 ml-1 truncate max-w-[200px]" title={srv.tunnel_error}>{srv.tunnel_error}</span>
+              <span className="text-xs text-danger ml-1 truncate max-w-[200px]" title={srv.tunnel_error}>{srv.tunnel_error}</span>
             )}
           </div>
-        </td>
-        <td className="py-3 px-3 text-sm text-center">{conns ?? '—'}</td>
-        <td className="py-3 px-3 text-xs text-text-secondary">
+        </Td>
+        <Td align="center" className="tabular-nums">{conns ?? '—'}</Td>
+        <Td className="text-xs text-tertiary whitespace-nowrap">
           {healthTime ? formatRelativeTime(healthTime) : '—'}
-        </td>
-        <td className="py-3 px-3">
-          <div className="flex flex-wrap gap-1">
-            {(srv.tags || []).map(tag => <TagChip key={tag} tag={tag} />)}
-          </div>
-        </td>
-        <td className="py-3 px-3">
-          <div className="flex items-center gap-1">
-            {/* Server actions */}
+        </Td>
+        <Td align="right" className="tabular-nums">{srv.load_weight ?? '—'}</Td>
+        <Td>
+          <div className="flex items-center gap-1 flex-wrap">
             {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
               <button key={a.key} onClick={() => doAction(srv, a)}
-                className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary"
+                aria-label={a.label}
+                className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary"
                 title={a.desc || a.label}>{a.icon}</button>
             ))}
-            <span className="w-px h-4 bg-white/10 mx-0.5" />
-            <button onClick={() => showLogs(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverLogs}><IconLogs /></button>
-            <button onClick={() => showFiles(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverFiles}><IconFolder /></button>
-            <button onClick={() => setConfigServer(srv)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title="Config Editor"><IconConfig /></button>
-            <button onClick={() => toggleMetrics(srv.id)} className="p-1 rounded hover:bg-surface-alt transition text-text-secondary hover:text-text-primary" title={t.serverShowMetrics || 'Metrics'}><IconChart /></button>
+            <span className="w-px h-4 bg-default mx-0.5" />
+            <button onClick={() => showLogs(srv)} aria-label={t.serverLogs} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverLogs}><IconLogs /></button>
+            <button onClick={() => showFiles(srv)} aria-label={t.serverFiles} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverFiles}><IconFolder /></button>
+            <button onClick={() => setConfigServer(srv)} aria-label="Config Editor" className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title="Config Editor"><IconConfig /></button>
+            <button onClick={() => toggleMetrics(srv.id)} aria-label={t.serverShowMetrics || 'Metrics'} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverShowMetrics || 'Metrics'}><IconChart /></button>
             {can('servers.write') && (
               <>
-                <button onClick={() => openEdit(srv)} className="p-1 rounded hover:bg-brand/20 transition text-brand" title={t.edit}><IconEdit /></button>
-                <button onClick={() => setConfirm(srv)} className="p-1 rounded hover:bg-red-500/20 transition text-red-400" title={t.delete}><IconTrash /></button>
+                <button onClick={() => openEdit(srv)} aria-label={t.edit} className="p-1 rounded hover:bg-accent/20 transition text-accent" title={t.edit}><IconEdit /></button>
+                <button onClick={() => setConfirm(srv)} aria-label={t.delete} className="p-1 rounded hover:bg-danger/20 transition text-danger" title={t.delete}><IconTrash /></button>
               </>
             )}
           </div>
-        </td>
-      </tr>
+        </Td>
+      </Tr>
     )
   }
 
-  return (
-    <div>
-      {/* Header with counts */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold">{t.serversTitle}</h2>
-          <p className="text-sm text-text-secondary mt-0.5">
-            {t.serverTotalCount || 'Total'}: {paged.total}
-            <span className="mx-2">|</span>
-            <span className="text-green-400">{t.serverOnlineCount || 'Online'}: {onlineCount}</span>
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* View mode toggle */}
-          <div className="flex items-center rounded-lg border border-white/10 overflow-hidden">
-            <button onClick={() => setViewMode('cards')}
-              className={`p-2 transition ${viewMode === 'cards' ? 'bg-brand text-white' : 'bg-surface-alt text-text-secondary hover:text-text-primary'}`}
-              title={t.serverViewCards || 'Cards'}>
-              <IconGrid />
-            </button>
-            <button onClick={() => setViewMode('list')}
-              className={`p-2 transition ${viewMode === 'list' ? 'bg-brand text-white' : 'bg-surface-alt text-text-secondary hover:text-text-primary'}`}
-              title={t.serverViewList || 'List'}>
-              <IconList />
-            </button>
-          </div>
-          {can('servers.write') && (
-            <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-              + {t.createServer}
-            </button>
-          )}
-        </div>
-      </div>
+  function onSearchSubmit(e) {
+    e.preventDefault()
+    setF({ search: searchInput, page: 1 })
+  }
 
-      <SearchPaginationBar
-        search={paged.search} onSearch={paged.doSearch}
-        page={paged.page} totalPages={paged.totalPages} onPageChange={paged.setPage}
-        loading={paged.loading}
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title={t.serversTitle + (total > 0 ? ` (${total})` : '')}
+        subtitle={`${t.serverOnlineCount || 'Online'}: ${onlineCount} / ${total}`}
+        actions={(
+          <>
+            <div className="flex items-center rounded-lg border border-default overflow-hidden">
+              <button onClick={() => setViewMode('cards')}
+                aria-label={t.serverViewCards || 'Cards'}
+                className={`p-2 transition ${viewMode === 'cards' ? 'bg-accent text-white' : 'bg-elevated text-secondary hover:text-primary'}`}
+                title={t.serverViewCards || 'Cards'}>
+                <IconGrid />
+              </button>
+              <button onClick={() => setViewMode('list')}
+                aria-label={t.serverViewList || 'List'}
+                className={`p-2 transition ${viewMode === 'list' ? 'bg-accent text-white' : 'bg-elevated text-secondary hover:text-primary'}`}
+                title={t.serverViewList || 'List'}>
+                <IconList />
+              </button>
+            </div>
+            {can('servers.write') && (
+              <Button variant="primary" onClick={openCreate}>+ {t.createServer}</Button>
+            )}
+          </>
+        )}
       />
 
-      {/* Status filter */}
-      <StatusFilterBar value={statusFilter} onChange={setStatusFilter} counts={statusCounts} />
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <form onSubmit={onSearchSubmit} className="flex items-center gap-2 max-w-md flex-1">
+          <Input
+            type="text"
+            placeholder={t.search}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+          />
+          <Button type="submit" variant="secondary">{t.search}</Button>
+        </form>
+        <Select
+          value={f.lifecycle_state}
+          onChange={e => setF({ lifecycle_state: e.target.value, page: 1 })}
+          aria-label="Lifecycle state"
+        >
+          {LIFECYCLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </Select>
+        <Input
+          type="text"
+          placeholder="Страна (RU, NL, ...)"
+          value={f.country}
+          onChange={e => setF({ country: e.target.value.toUpperCase(), page: 1 })}
+          className="w-40"
+        />
+      </div>
 
-      {paged.error && <p className="text-red-400 mb-4">{paged.error}</p>}
+      {error && <p className="text-danger text-sm">{error}</p>}
 
-      {filteredItems.length === 0 && !paged.loading ? (
-        <p className="text-text-secondary">{t.noServers}</p>
+      {loading ? (
+        <TableSkeleton rows={10} cols={7} />
+      ) : filteredItems.length === 0 ? (
+        <EmptyState
+          icon={<Server className="w-12 h-12" />}
+          title={t.noServers || 'Нет серверов'}
+          description="Добавьте первый сервер через кнопку выше."
+          action={can('servers.write') ? (
+            <Button variant="primary" onClick={openCreate}>+ {t.createServer}</Button>
+          ) : null}
+        />
       ) : viewMode === 'cards' ? (
         /* ── Card grid ── */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -773,24 +813,35 @@ export default function ServersPage() {
         </div>
       ) : (
         /* ── List table ── */
-        <div className="overflow-x-auto rounded-xl border border-white/10">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-surface-alt/50 text-xs text-text-secondary uppercase tracking-wider">
-                <th className="py-2 px-3 font-medium">{t.fieldServerName}</th>
-                <th className="py-2 px-3 font-medium">IP</th>
-                <th className="py-2 px-3 font-medium">{t.fieldStatus}</th>
-                <th className="py-2 px-3 font-medium">Tunnel</th>
-                <th className="py-2 px-3 font-medium text-center">{t.serverActiveConns || 'Conn.'}</th>
-                <th className="py-2 px-3 font-medium">{t.serverLastHealth || 'Health'}</th>
-                <th className="py-2 px-3 font-medium">{t.fieldTags}</th>
-                <th className="py-2 px-3 font-medium">{t.serverActionsCol || 'Actions'}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredItems.map(srv => <ServerRow key={srv.id} srv={srv} />)}
-            </tbody>
-          </table>
+        <Table>
+          <Thead>
+            <Tr>
+              <Th sortKey="name" sortState={sortState} onSort={onSort}>{t.fieldServerName}</Th>
+              <Th>IP</Th>
+              <Th sortKey="country_code" sortState={sortState} onSort={onSort}>Country</Th>
+              <Th sortKey="status" sortState={sortState} onSort={onSort}>{t.fieldStatus}</Th>
+              <Th sortKey="lifecycle_state" sortState={sortState} onSort={onSort}>Lifecycle</Th>
+              <Th>Tunnel</Th>
+              <Th align="center">{t.serverActiveConns || 'Conn.'}</Th>
+              <Th sortKey="last_check" sortState={sortState} onSort={onSort}>{t.serverLastHealth || 'Health'}</Th>
+              <Th sortKey="load_weight" sortState={sortState} onSort={onSort}>Weight</Th>
+              <Th>{t.serverActionsCol || 'Actions'}</Th>
+            </Tr>
+          </Thead>
+          <Tbody>
+            {filteredItems.map(srv => <ServerRow key={srv.id} srv={srv} />)}
+          </Tbody>
+        </Table>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-tertiary">{total} записей</span>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" disabled={f.page <= 1} onClick={() => setF({ page: f.page - 1 })} aria-label="Предыдущая страница">«</Button>
+            <span className="text-sm text-secondary tabular-nums">{f.page} / {totalPages}</span>
+            <Button variant="secondary" size="sm" disabled={f.page >= totalPages} onClick={() => setF({ page: f.page + 1 })} aria-label="Следующая страница">»</Button>
+          </div>
         </div>
       )}
 
@@ -807,22 +858,22 @@ export default function ServersPage() {
       {/* Files modal */}
       {filesModal && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={() => setFilesModal(null)}>
-          <div className="bg-surface-card rounded-xl border border-white/10 w-full max-w-lg max-h-[70vh] m-4 flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+          <div className="bg-elevated rounded-xl border border-default w-full max-w-lg max-h-[70vh] m-4 flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-default">
               <h3 className="font-semibold">{t.serverFilesTitle}</h3>
-              <button onClick={() => setFilesModal(null)} className="text-text-secondary hover:text-text-primary">
+              <button onClick={() => setFilesModal(null)} className="text-secondary hover:text-primary">
                 <IconClose />
               </button>
             </div>
             <div className="px-5 py-2 flex items-center gap-2 border-b border-white/5">
               {/* Breadcrumb: each segment is clickable to jump back */}
-              <div className="flex-1 text-xs font-mono text-text-secondary flex flex-wrap items-center gap-1">
+              <div className="flex-1 text-xs font-mono text-secondary flex flex-wrap items-center gap-1">
                 {(() => {
                   const parts = filesModal.path.replace(/^\/+|\/+$/g, '').split('/')
                   return (
                     <>
                       <span
-                        className="cursor-pointer hover:text-brand"
+                        className="cursor-pointer hover:text-accent"
                         onClick={() => showFiles(filesModal.server, '/')}
                       >/</span>
                       {parts.map((seg, i) => {
@@ -831,7 +882,7 @@ export default function ServersPage() {
                         return (
                           <span key={i}>
                             <span
-                              className={isLast ? 'text-text-primary' : 'cursor-pointer hover:text-brand'}
+                              className={isLast ? 'text-primary' : 'cursor-pointer hover:text-accent'}
                               onClick={isLast ? undefined : () => showFiles(filesModal.server, subPath)}
                             >{seg}</span>
                             {!isLast && <span className="mx-0.5">/</span>}
@@ -848,7 +899,7 @@ export default function ServersPage() {
                     const parent = filesModal.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/'
                     showFiles(filesModal.server, parent)
                   }}
-                  className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-text-secondary hover:text-text-primary"
+                  className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-secondary hover:text-primary"
                   title="Parent directory"
                 >↑ ..</button>
               )}
@@ -856,11 +907,11 @@ export default function ServersPage() {
             <div className="flex-1 overflow-auto px-5 pb-4">
               {filesModal.entries.map((e, i) => (
                 <div key={i}
-                  className={`text-sm py-1 px-2 rounded cursor-pointer hover:bg-white/5 ${e.is_dir ? 'text-brand' : 'text-text-primary'}`}
+                  className={`text-sm py-1 px-2 rounded cursor-pointer hover:bg-white/5 ${e.is_dir ? 'text-accent' : 'text-primary'}`}
                   onClick={() => e.is_dir && showFiles(filesModal.server, filesModal.path.replace(/\/+$/, '') + '/' + e.name)}
                 >
                   {e.is_dir ? '\uD83D\uDCC1 ' : '\uD83D\uDCC4 '}{e.name}
-                  {!e.is_dir && e.size != null && <span className="text-text-secondary text-xs ml-2">({formatSize(e.size)})</span>}
+                  {!e.is_dir && e.size != null && <span className="text-secondary text-xs ml-2">({formatSize(e.size)})</span>}
                 </div>
               ))}
             </div>
@@ -893,7 +944,7 @@ export default function ServersPage() {
             { value: 'maintenance', label: 'Обслуживание' },
           ]} />
         </FormField>
-        <div className="mt-3 mb-1 text-xs font-semibold text-text-secondary uppercase tracking-wider">Настройка туннеля</div>
+        <div className="mt-3 mb-1 text-xs font-semibold text-secondary uppercase tracking-wider">Настройка туннеля</div>
         <FormField label="Протокол туннеля">
           <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
             { value: 'hysteria2', label: 'Hysteria2 (UDP, recommended)' },
@@ -934,18 +985,22 @@ export default function ServersPage() {
       />
 
       {/* Action confirm dialog */}
-      {actionConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setActionConfirm(null)}>
-          <div className="bg-surface rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-text-primary mb-2">{actionConfirm.action.label}</h3>
-            <p className="text-text-secondary text-sm mb-6">{actionConfirm.action.desc}<br/>Сервер: <b>{actionConfirm.server.name}</b></p>
+      <Dialog
+        open={!!actionConfirm}
+        onClose={() => setActionConfirm(null)}
+        title={actionConfirm?.action?.label || ''}
+        maxWidth="max-w-md"
+      >
+        {actionConfirm && (
+          <>
+            <p className="text-secondary text-sm mb-6">{actionConfirm.action.desc}<br/>Сервер: <b>{actionConfirm.server.name}</b></p>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setActionConfirm(null)} className="px-4 py-2 rounded-lg bg-surface-alt text-text-secondary hover:text-text-primary">Отмена</button>
-              <button onClick={() => { executeAction(actionConfirm.server, actionConfirm.action); setActionConfirm(null) }} className="px-4 py-2 rounded-lg bg-brand text-white hover:bg-brand/80">Выполнить</button>
+              <Button variant="ghost" onClick={() => setActionConfirm(null)}>Отмена</Button>
+              <Button variant="primary" onClick={() => { executeAction(actionConfirm.server, actionConfirm.action); setActionConfirm(null) }}>Выполнить</Button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Dialog>
 
       {/* Provision progress */}
       {progressModal && <ProvisionProgressDialog open={true} server={progressModal} onClose={() => { setProgressModal(null); paged.reload() }} />}

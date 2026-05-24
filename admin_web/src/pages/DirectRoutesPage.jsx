@@ -1,13 +1,34 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import { Route, Search } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
+import { useUrlState } from '../hooks/useUrlState.js'
 import DirectRouteEditDialog from '../components/DirectRouteEditDialog.jsx'
 import DirectRoutesImportDialog from '../components/DirectRoutesImportDialog.jsx'
 import DiscoveryDialog from '../components/DiscoveryDialog'
+import {
+  Button,
+  Input,
+  Select,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Badge,
+  TableSkeleton,
+  EmptyState,
+} from '../components/ui/index.js'
 
 export default function DirectRoutesPage() {
   const { token } = useAuth()
   const toast = useToast()
+
+  const [f, setF] = useUrlState({ search: '', group: '', is_active: 'all', sort: '', dir: 'asc', page: 1 })
+  const sortState = { column: f.sort, direction: f.dir }
+  const onSort = (col) => setF({ sort: col, dir: f.sort === col && f.dir === 'asc' ? 'desc' : 'asc', page: 1 })
 
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
@@ -15,11 +36,14 @@ export default function DirectRoutesPage() {
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // filters
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [group, setGroup] = useState('')
-  const [activeFilter, setActiveFilter] = useState('all') // all | active | inactive
+  // Local search input for debouncing
+  const [searchInput, setSearchInput] = useState(f.search)
+  useEffect(() => {
+    const tm = setTimeout(() => {
+      if (searchInput !== f.search) setF({ search: searchInput, page: 1 })
+    }, 300)
+    return () => clearTimeout(tm)
+  }, [searchInput]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // selection
   const [selected, setSelected] = useState(new Set())
@@ -30,20 +54,16 @@ export default function DirectRoutesPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
 
-  // Debounce search.
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300)
-    return () => clearTimeout(t)
-  }, [search])
-
-  async function fetchAll() {
+  const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
       const params = new URLSearchParams()
-      if (group) params.set('group', group)
-      if (debouncedSearch) params.set('search', debouncedSearch)
-      if (activeFilter === 'active') params.set('is_active', 'true')
-      if (activeFilter === 'inactive') params.set('is_active', 'false')
+      if (f.group) params.set('group', f.group)
+      if (f.search) params.set('search', f.search)
+      if (f.is_active === 'active') params.set('is_active', 'true')
+      if (f.is_active === 'inactive') params.set('is_active', 'false')
+      if (f.sort) params.set('sort', f.sort)
+      if (f.dir) params.set('dir', f.dir)
 
       const [respItems, respStats, respGroups] = await Promise.all([
         fetch(`/api/admin/direct-routes?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -62,12 +82,9 @@ export default function DirectRoutesPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [token, f.search, f.group, f.is_active, f.sort, f.dir]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    fetchAll()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, group, activeFilter])
+  useEffect(() => { fetchAll() }, [fetchAll])
 
   function toggleSelect(id) {
     setSelected((prev) => {
@@ -125,124 +142,127 @@ export default function DirectRoutesPage() {
   const allSelected = selected.size > 0 && selected.size === items.length
 
   return (
-    <div className="p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-100">Прямая маршрутизация</h1>
-        <div className="flex gap-2">
-          <button onClick={() => { setEditService(null); setEditOpen(true) }}
-            className="px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500">
-            + Добавить сервис
-          </button>
-          <button onClick={() => setDiscoveryOpen(true)}
-            className="px-3 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500">
-            🔍 Найти по домену
-          </button>
-          <button onClick={() => setImportOpen(true)}
-            className="px-3 py-1.5 rounded bg-sky-600 text-white hover:bg-sky-500">
-            Импорт JSON
-          </button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        title="Прямая маршрутизация"
+        subtitle="РФ-сервисы, доступные пользователям тарифа с включённой опцией"
+        actions={
+          <>
+            <Button variant="primary" onClick={() => { setEditService(null); setEditOpen(true) }}>
+              + Добавить сервис
+            </Button>
+            <Button variant="secondary" icon={<Search className="w-4 h-4" />} onClick={() => setDiscoveryOpen(true)}>
+              Найти по домену
+            </Button>
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              Импорт JSON
+            </Button>
+          </>
+        }
+      />
 
-      <div className="rounded border border-sky-700/40 bg-sky-900/20 p-3 text-sm text-slate-300">
-        Сервисы видны пользователям тарифа, у которого включена опция
-        «Доступ к РФ-сервисам» в настройках тарифа.
-        <a href="/plans" className="ml-1 text-sky-400 hover:underline">Настроить тарифы →</a>
+      <div className="rounded border border-info/40 bg-info/15 p-3 text-sm text-secondary">
+        Сервисы видны пользователям тарифа, у которого включена опция «Доступ к РФ-сервисам».
+        <a href="/plans" className="ml-1 text-info hover:underline">Настроить тарифы →</a>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-3">
         <Card label="Всего сервисов" value={stats?.total_services ?? 0} />
-        <Card label="Активных" value={stats?.active_services ?? 0} tone="emerald" />
-        <Card label="Доменов" value={(stats?.total_domains ?? 0).toLocaleString('ru-RU')} tone="sky" />
-        <Card label="IP-адресов" value={(stats?.total_ips ?? 0).toLocaleString('ru-RU')} tone="sky" />
+        <Card label="Активных" value={stats?.active_services ?? 0} tone="success" />
+        <Card label="Доменов" value={(stats?.total_domains ?? 0).toLocaleString('ru-RU')} tone="info" />
+        <Card label="IP-адресов" value={(stats?.total_ips ?? 0).toLocaleString('ru-RU')} tone="info" />
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 bg-slate-900/40 border border-slate-800 rounded p-2">
-        <input
-          type="search" value={search} onChange={(e) => setSearch(e.target.value)}
+      <div className="flex flex-wrap items-center gap-2 bg-elevated/40 border border-default rounded p-2">
+        <Input
+          type="search" value={searchInput} onChange={(e) => setSearchInput(e.target.value)}
           placeholder="Поиск по slug или названию"
-          className="flex-1 min-w-[200px] px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
+          className="flex-1 min-w-[200px]"
         />
-        <select value={group} onChange={(e) => setGroup(e.target.value)}
-          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100">
+        <Select value={f.group} onChange={(e) => setF({ group: e.target.value, page: 1 })} className="w-48">
           <option value="">Все группы</option>
           {groups.map((g) => <option key={g} value={g}>{g}</option>)}
-        </select>
-        <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)}
-          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100">
+        </Select>
+        <Select value={f.is_active} onChange={(e) => setF({ is_active: e.target.value, page: 1 })} className="w-48">
           <option value="all">Все статусы</option>
           <option value="active">Только активные</option>
           <option value="inactive">Только неактивные</option>
-        </select>
+        </Select>
       </div>
 
       {/* Bulk bar */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded p-2">
-          <span className="text-sm text-slate-200">Выбрано: {selected.size}</span>
-          <button onClick={() => bulkAction('activate')} className="px-2 py-1 text-xs rounded bg-emerald-700 hover:bg-emerald-600 text-white">Активировать</button>
-          <button onClick={() => bulkAction('deactivate')} className="px-2 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white">Деактивировать</button>
-          <button onClick={() => bulkAction('delete')} className="px-2 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white">Удалить</button>
-          <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-slate-400 hover:text-slate-200">Очистить</button>
+        <div className="flex items-center gap-2 bg-elevated border border-default rounded p-2">
+          <span className="text-sm text-primary">Выбрано: {selected.size}</span>
+          <Button size="sm" variant="primary" onClick={() => bulkAction('activate')}>Активировать</Button>
+          <Button size="sm" variant="secondary" onClick={() => bulkAction('deactivate')}>Деактивировать</Button>
+          <Button size="sm" variant="danger" onClick={() => bulkAction('delete')}>Удалить</Button>
+          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setSelected(new Set())}>Очистить</Button>
         </div>
       )}
 
       {/* Table */}
-      <div className="overflow-x-auto rounded border border-slate-800">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-900/60 text-slate-400 text-left">
-            <tr>
-              <th className="px-2 py-2 w-8">
-                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
-              </th>
-              <th className="px-2 py-2">Slug</th>
-              <th className="px-2 py-2">Название</th>
-              <th className="px-2 py-2">Группа</th>
-              <th className="px-2 py-2 text-right">Доменов</th>
-              <th className="px-2 py-2 text-right">IP</th>
-              <th className="px-2 py-2">Активен</th>
-              <th className="px-2 py-2">Обновлён</th>
-              <th className="px-2 py-2"></th>
-            </tr>
-          </thead>
-          <tbody className="text-slate-200">
-            {loading && (
-              <tr><td colSpan={9} className="px-2 py-6 text-center text-slate-500">Загрузка…</td></tr>
-            )}
-            {!loading && items.length === 0 && (
-              <tr><td colSpan={9} className="px-2 py-6 text-center text-slate-500">Нет сервисов</td></tr>
-            )}
-            {!loading && items.map((s) => (
-              <tr key={s.id} className="border-t border-slate-800 hover:bg-slate-900/40">
-                <td className="px-2 py-2">
-                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleSelect(s.id)} />
-                </td>
-                <td className="px-2 py-2 font-mono text-xs">{s.slug}</td>
-                <td className="px-2 py-2">{s.name}</td>
-                <td className="px-2 py-2"><span className="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-200">{s.group_name}</span></td>
-                <td className="px-2 py-2 text-right text-xs text-slate-400">{(s.domains || []).length}</td>
-                <td className="px-2 py-2 text-right text-xs text-slate-400">{((s.ip4 || []).length + (s.ip6 || []).length + (s.cidr4 || []).length + (s.cidr6 || []).length)}</td>
-                <td className="px-2 py-2">
+      {loading ? (
+        <TableSkeleton rows={10} cols={9} />
+      ) : items.length === 0 ? (
+        <EmptyState
+          icon={<Route className="w-12 h-12" />}
+          title="Нет сервисов"
+          description={f.search || f.group || f.is_active !== 'all' ? 'Попробуйте изменить фильтры' : 'Добавьте сервис или импортируйте JSON'}
+          action={<Button variant="primary" onClick={() => { setEditService(null); setEditOpen(true) }}>+ Добавить</Button>}
+        />
+      ) : (
+        <Table>
+          <Thead>
+            <Tr>
+              <Th className="w-8">
+                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} aria-label="Выбрать все" />
+              </Th>
+              <Th sortKey="slug" sortState={sortState} onSort={onSort}>Slug</Th>
+              <Th sortKey="name" sortState={sortState} onSort={onSort}>Название</Th>
+              <Th sortKey="group_name" sortState={sortState} onSort={onSort}>Группа</Th>
+              <Th align="right">Доменов</Th>
+              <Th align="right">IP</Th>
+              <Th>Активен</Th>
+              <Th sortKey="updated_at" sortState={sortState} onSort={onSort}>Обновлён</Th>
+              <Th>Действия</Th>
+            </Tr>
+          </Thead>
+          <Tbody>
+            {items.map((s) => (
+              <Tr key={s.id}>
+                <Td>
+                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleSelect(s.id)} aria-label={`Выбрать ${s.name}`} />
+                </Td>
+                <Td mono className="text-xs">{s.slug}</Td>
+                <Td>{s.name}</Td>
+                <Td>
+                  {s.group_name ? <Badge variant="default">{s.group_name}</Badge> : <span className="text-tertiary">—</span>}
+                </Td>
+                <Td align="right" mono className="text-xs text-tertiary">{(s.domains || []).length}</Td>
+                <Td align="right" mono className="text-xs text-tertiary">
+                  {((s.ip4 || []).length + (s.ip6 || []).length + (s.cidr4 || []).length + (s.cidr6 || []).length)}
+                </Td>
+                <Td>
                   {s.is_active
-                    ? <span className="text-xs px-2 py-0.5 rounded bg-emerald-800/60 text-emerald-200">да</span>
-                    : <span className="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400">нет</span>}
-                </td>
-                <td className="px-2 py-2 text-xs text-slate-500">{(s.updated_at || '').replace('T', ' ').slice(0, 16)}</td>
-                <td className="px-2 py-2 text-right">
-                  <button onClick={() => { setEditService(s); setEditOpen(true) }}
-                    className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-slate-100">Edit</button>
-                  <button onClick={() => deleteOne(s.id, s.name)}
-                    className="ml-1 px-2 py-1 text-xs rounded bg-red-800 hover:bg-red-700 text-red-100">Del</button>
-                </td>
-              </tr>
+                    ? <Badge variant="success">да</Badge>
+                    : <Badge variant="default">нет</Badge>}
+                </Td>
+                <Td className="text-xs text-disabled whitespace-nowrap">{(s.updated_at || '').replace('T', ' ').slice(0, 16)}</Td>
+                <Td>
+                  <div className="flex gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Edit</Button>
+                    <Button size="sm" variant="ghost" className="text-danger" onClick={() => deleteOne(s.id, s.name)}>Del</Button>
+                  </div>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table>
-      </div>
-      {!loading && <div className="text-xs text-slate-500">Итого записей: {total}</div>}
+          </Tbody>
+        </Table>
+      )}
+      {!loading && <div className="text-xs text-disabled">Итого записей: {total}</div>}
 
       <DirectRouteEditDialog
         open={editOpen}
@@ -266,14 +286,14 @@ export default function DirectRoutesPage() {
 
 function Card({ label, value, tone }) {
   const toneClass = {
-    emerald: 'text-emerald-300',
-    sky: 'text-sky-300',
-    slate: 'text-slate-200',
-  }[tone] || 'text-slate-200'
+    success: 'text-success',
+    info: 'text-info',
+    default: 'text-primary',
+  }[tone] || 'text-primary'
   return (
-    <div className="rounded border border-slate-800 bg-slate-900/50 p-3">
-      <div className={`text-xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="rounded border border-default bg-elevated/40 p-3">
+      <div className={`text-xl font-semibold tabular-nums ${toneClass}`}>{value}</div>
+      <div className="text-xs text-disabled">{label}</div>
     </div>
   )
 }
