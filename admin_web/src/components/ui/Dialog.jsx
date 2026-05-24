@@ -12,7 +12,7 @@ export function Dialog({ open, onClose, title, children, maxWidth = 'max-w-2xl',
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className={`bg-overlay rounded border border-default p-6 shadow-2xl w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}
+      <div className={`bg-overlay rounded-[var(--radius-default,0.25rem)] border border-default p-6 shadow-2xl w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}
            onClick={(e) => e.stopPropagation()}>
         {title && (
           <div className="flex items-center gap-2 mb-4">

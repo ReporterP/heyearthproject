@@ -1,5 +1,5 @@
 export function Card({ className = '', children, ...props }) {
-  return <div className={`rounded border border-default bg-elevated ${className}`} {...props}>{children}</div>
+  return <div className={`rounded-[var(--radius-default,0.25rem)] [border-width:var(--border-width-default,1px)] border-solid border-default bg-elevated ${className}`} {...props}>{children}</div>
 }
 
 export function CardHeader({ className = '', children }) {

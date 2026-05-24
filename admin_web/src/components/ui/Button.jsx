@@ -15,7 +15,7 @@ export const Button = forwardRef(function Button(
   return (
     <button ref={ref}
       disabled={disabled || loading}
-      className={`inline-flex items-center justify-center gap-1.5 rounded border font-medium
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-default,0.25rem)] [border-width:var(--border-width-default,1px)] border-solid font-medium
         transition-colors disabled:opacity-40 disabled:cursor-not-allowed
         focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent
         ${variants[variant]} ${sizes[size]} ${className}`}

@@ -1,6 +1,6 @@
 import { forwardRef } from 'react'
 
-const baseField = "rounded border px-3 text-sm bg-elevated text-primary placeholder:text-tertiary transition-colors focus:outline-none focus:border-strong focus:ring-1 focus:ring-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
+const baseField = "rounded-[var(--radius-default,0.25rem)] [border-width:var(--border-width-default,1px)] border-solid px-3 text-sm bg-elevated text-primary placeholder:text-tertiary transition-colors focus:outline-none focus:border-strong focus:ring-1 focus:ring-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
 
 export const Input = forwardRef(function Input({ className = '', error, ...props }, ref) {
   return <input ref={ref} className={`${baseField} h-8 w-full ${error ? 'border-danger' : 'border-default'} ${className}`} {...props} />
