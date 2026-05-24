@@ -18,6 +18,7 @@ package admin
 // Import max body: 10 MiB via http.MaxBytesReader.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
@@ -381,4 +383,63 @@ func DirectRouteItemRouter(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeAdminError(w, http.StatusNotFound, "unknown sub-resource: "+sub)
 	}
+}
+
+// ---------- discovery ----------
+
+type DiscoverPayload struct {
+	RootDomain string `json:"root_domain"`
+}
+
+// DiscoverDomainHandler does crt.sh + DNS discovery for the requested root
+// domain and returns the preview without persisting anything. UI then POSTs
+// to the regular /api/admin/direct-routes create endpoint to save it.
+func DiscoverDomainHandler(w http.ResponseWriter, r *http.Request) {
+	var p DiscoverPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(p.RootDomain) == "" {
+		writeAdminError(w, http.StatusBadRequest, "root_domain is required")
+		return
+	}
+
+	claims, _ := ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeAdminError(w, http.StatusUnauthorized, "missing admin session")
+		return
+	}
+	if !checkDiscoveryRateLimit(claims.AdminID) {
+		writeAdminError(w, http.StatusTooManyRequests, "rate limit exceeded (10/hour)")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 31*time.Second)
+	defer cancel()
+
+	result, err := biz.DiscoverDomain(ctx, p.RootDomain)
+	if err != nil {
+		switch {
+		case errors.Is(err, biz.ErrInvalidDomain):
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, biz.ErrNoResults):
+			writeAdminError(w, http.StatusBadGateway, "no subdomains found and DNS resolution failed")
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			writeAdminError(w, http.StatusGatewayTimeout, "discovery timed out")
+		default:
+			writeAdminError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	WriteAuditLog(r, "direct_routes.discover", "domain", strings.TrimSpace(p.RootDomain), map[string]any{
+		"subdomains_found":    result.SubdomainsFound,
+		"subdomains_resolved": result.SubdomainsResolved,
+		"ips_count":           len(result.IP4) + len(result.IP6),
+		"duration_ms":         result.DurationMs,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }

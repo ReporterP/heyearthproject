@@ -401,6 +401,15 @@ func RegisterRoutes() {
 		RequirePermission("routing.direct.manage", ImportDirectRoutesHandler).ServeHTTP(w, r)
 	}))
 
+	// Discovery: crt.sh + DNS resolution preview for a root domain.
+	http.HandleFunc("/api/admin/direct-routes/discover", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		RequirePermission("routing.direct.manage", DiscoverDomainHandler).ServeHTTP(w, r)
+	}))
+
 	// Catch-all for /api/admin/direct-routes/{id} and /{id}/plans. ServeMux
 	// longest-prefix match ensures the fixed paths above win for stats/groups/bulk/import.
 	http.HandleFunc("/api/admin/direct-routes/", AuthMiddleware(DirectRouteItemRouter))
