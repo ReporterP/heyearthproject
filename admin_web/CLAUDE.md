@@ -69,3 +69,70 @@ Semantic: bg-success, bg-warning, bg-danger, bg-info (and text-* / border-*)
 - Russian strings в UI (i18n keys в i18n/ru.js / en.js при необходимости)
 - backend response shape: { items: [...], total: N } для пагинации
 - After UI change: chrome MCP screenshot before commit
+
+## Mobile responsive (mandatory)
+
+Admin должен корректно работать на 375px viewport (iPhone SE). Breakpoint
+policy: Tailwind defaults — sm (640) / md (768) / lg (1024). md=768 —
+граница mobile/desktop shell.
+
+### Patterns (все новые pages обязаны соблюдать)
+
+**Layout:**
+- Sidebar — MobileTopbar на mobile (<md), sticky drawer (fixed inset-y-0
+  w-72 -translate-x-full) открывается по hamburger. Уже реализовано в
+  Layout.jsx — нового кода для этого писать не надо.
+
+**PageHeader (всегда через `<PageHeader>` primitive):**
+- title/subtitle wrap, actions flex-col → sm:flex-row, actions
+  flex-wrap. Реализовано в primitive — пишите `<PageHeader>`, всё работает.
+
+**Filter rows (обязательный шаблон):**
+
+```jsx
+<div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4">
+  <Input className="w-full sm:flex-1" />
+  <Select className="w-full sm:w-auto" />
+</div>
+```
+
+Никаких голых `flex` без `sm:` префиксов — иначе фильтры схлопнутся в
+строку на mobile и обрежутся.
+
+**Stats grid:**
+
+```jsx
+<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+```
+
+Никогда не `grid-cols-N` без responsive prefix.
+
+**Tables:**
+- Всегда через `<Table>` primitive — он уже даёт overflow-x-auto +
+  min-w-[640px] + mask fade hint на mobile
+- НЕ заворачивать таблицу в дополнительный fixed-width container
+
+**Dialogs:**
+- Через `<Dialog>` primitive — он сам fullscreen на mobile (rounded-none
+  + h-full + p-4) и обычный модал на >=sm
+
+### NEVER (mobile-specific)
+
+- Не использовать `w-screen` для контента — может вызвать horizontal
+  scroll. Use `w-full`.
+- Не использовать `min-w-[Npx]` где N > 320 без `sm:min-w-[...]`
+  override — на 375px ломает layout.
+- Не использовать `flex-row` без `flex-col sm:flex-row` если items
+  длинные (текст + кнопки).
+- Не делать grids с >2 колонками без responsive prefix.
+
+### Verification (обязательно перед commit для UI-changes)
+
+Через chrome MCP открыть страницу на 375px (iPhone SE) и 1440px:
+1. Hamburger открывается, drawer скользит из левой стороны
+2. Filters стакаются вертикально
+3. Tables скроллятся горизонтально внутри своего контейнера (не на всю
+   страницу)
+4. Dialogs fullscreen на <sm
+5. PageHeader actions переносятся
+6. Нет horizontal scroll основной страницы
