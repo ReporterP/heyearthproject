@@ -1,6 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import { I18nProvider } from './i18n/index.jsx'
 import { ToastProvider } from './components/Toast.jsx'
