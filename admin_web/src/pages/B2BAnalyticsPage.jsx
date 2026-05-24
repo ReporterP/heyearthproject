@@ -64,7 +64,7 @@ export default function B2BAnalyticsPage() {
       <PageHeader title="B2B Аналитика" subtitle="Сводка по тенантам, выручке и активности" />
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <Kpi label="Всего компаний" value={c.total || 0} />
         <Kpi label="Активных" value={c.active || 0} color="text-success" />
         <Kpi label="Неактивных" value={c.inactive || 0} color="text-warning" />
@@ -72,7 +72,7 @@ export default function B2BAnalyticsPage() {
         <Kpi label="B2B-юзеров" value={data.members_total || 0} />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Kpi label="Доход за 30д (списания)" value={fmtMoney(data.mrr_30d)} color="text-success" big />
         <Kpi label="Пополнения за 30д" value={fmtMoney(data.credits_30d)} color="text-info" big />
       </div>

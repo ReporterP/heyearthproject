@@ -218,7 +218,7 @@ export default function TrafficPage() {
               <p className="text-tertiary">{t.loading}</p>
             ) : userDetail ? (
               <div>
-                <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                   <div className="text-center">
                     <p className="text-xs text-tertiary">{t.trafficUpload}</p>
                     <p className="text-xl font-semibold text-info tabular-nums font-mono">{formatBytes(userDetail.upload)}</p>
