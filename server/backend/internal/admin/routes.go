@@ -355,6 +355,56 @@ func RegisterRoutes() {
 		}
 	}))
 
+	// ------------------------------------------------------------------
+	// Direct routing (services that bypass the proxy chain)
+	// ------------------------------------------------------------------
+	http.HandleFunc("/api/admin/direct-routes", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("routing.direct.view", ListDirectRoutesHandler).ServeHTTP(w, r)
+		case http.MethodPost:
+			RequirePermission("routing.direct.manage", CreateDirectRouteHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}))
+
+	http.HandleFunc("/api/admin/direct-routes/stats", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		RequirePermission("routing.direct.view", DirectRoutesStatsHandler).ServeHTTP(w, r)
+	}))
+
+	http.HandleFunc("/api/admin/direct-routes/groups", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		RequirePermission("routing.direct.view", DirectRoutesGroupsHandler).ServeHTTP(w, r)
+	}))
+
+	http.HandleFunc("/api/admin/direct-routes/bulk", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		RequirePermission("routing.direct.manage", BulkActionHandler).ServeHTTP(w, r)
+	}))
+
+	http.HandleFunc("/api/admin/direct-routes/import", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		RequirePermission("routing.direct.manage", ImportDirectRoutesHandler).ServeHTTP(w, r)
+	}))
+
+	// Catch-all for /api/admin/direct-routes/{id} and /{id}/plans. ServeMux
+	// longest-prefix match ensures the fixed paths above win for stats/groups/bulk/import.
+	http.HandleFunc("/api/admin/direct-routes/", AuthMiddleware(DirectRouteItemRouter))
+
 	// Audit Log
 	http.HandleFunc("/api/admin/audit-log", withMethod(http.MethodGet, RequirePermission("audit.read", ListAuditLogHandler)))
 
