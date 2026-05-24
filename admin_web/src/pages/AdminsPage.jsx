@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { ShieldCheck } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
@@ -8,6 +9,22 @@ import {
   fetchAdminPermissions,
 } from '../api/admin.js'
 import CrudDialog, { FormField, TextInput, Checkbox } from '../components/CrudDialog.jsx'
+import {
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  EmptyState,
+  TableSkeleton,
+} from '../components/ui/index.js'
 
 export default function AdminsPage() {
   const { t } = useT()
@@ -127,88 +144,103 @@ export default function AdminsPage() {
     setUserRoles(prev => prev.includes(roleId) ? prev.filter(r => r !== roleId) : [...prev, roleId])
   }
 
-  if (loading) return <p className="text-text-secondary">{t.loading}</p>
+  if (loading) return (
+    <div>
+      <PageHeader title={t.sectionAdminUsers} subtitle="Администраторы и роли" />
+      <TableSkeleton rows={6} cols={5} />
+    </div>
+  )
 
   return (
     <div className="space-y-8">
       {/* Admin Users */}
       <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold">{t.sectionAdminUsers}</h2>
-          {can('admins.write') && (
-            <button onClick={openCreateUser} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-              + {t.createAdmin}
-            </button>
-          )}
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-text-secondary text-left">
-                <th className="py-2 px-3">ID</th>
-                <th className="py-2 px-3">{t.fieldUsername}</th>
-                <th className="py-2 px-3">{t.fieldDisplayName}</th>
-                <th className="py-2 px-3">{t.fieldRoles}</th>
-                <th className="py-2 px-3">{t.fieldAdminIsActive}</th>
-                {can('admins.write') && <th className="py-2 px-3"></th>}
-              </tr>
-            </thead>
-            <tbody>
+        <PageHeader
+          title={t.sectionAdminUsers}
+          subtitle="Учётные записи с доступом к админ-панели"
+          actions={can('admins.write') ? (
+            <Button onClick={openCreateUser}>+ {t.createAdmin}</Button>
+          ) : null}
+        />
+        {users.length === 0 ? (
+          <EmptyState icon={ShieldCheck} title="Нет администраторов" description="Создайте первую учётную запись администратора." />
+        ) : (
+          <Table>
+            <Thead>
+              <Tr>
+                <Th>ID</Th>
+                <Th>{t.fieldUsername}</Th>
+                <Th>{t.fieldDisplayName}</Th>
+                <Th>{t.fieldRoles}</Th>
+                <Th>{t.fieldAdminIsActive}</Th>
+                {can('admins.write') && <Th></Th>}
+              </Tr>
+            </Thead>
+            <Tbody>
               {users.map(u => (
-                <tr key={u.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                  <td className="py-2 px-3">{u.id}</td>
-                  <td className="py-2 px-3">{u.username}</td>
-                  <td className="py-2 px-3">{u.display_name || '\u2014'}</td>
-                  <td className="py-2 px-3">
+                <Tr key={u.id}>
+                  <Td mono>{u.id}</Td>
+                  <Td><span className="font-mono text-primary">{u.username}</span></Td>
+                  <Td>{u.display_name || '—'}</Td>
+                  <Td>
                     <div className="flex flex-wrap gap-1">
                       {(u.roles || []).map((r, i) => (
-                        <span key={i} className="text-xs bg-brand/20 text-brand px-2 py-0.5 rounded-full">{r.name || r.key || r}</span>
+                        <Badge key={i} variant="accent">{r.name || r.key || r}</Badge>
                       ))}
                     </div>
-                  </td>
-                  <td className="py-2 px-3">{u.is_active !== false ? '\u2713' : '\u2717'}</td>
+                  </Td>
+                  <Td>
+                    {u.is_active !== false
+                      ? <Badge variant="success">Активен</Badge>
+                      : <Badge variant="default">Отключён</Badge>}
+                  </Td>
                   {can('admins.write') && (
-                    <td className="py-2 px-3">
-                      <button onClick={() => openEditUser(u)} className="text-brand hover:underline">{t.edit}</button>
-                    </td>
+                    <Td>
+                      <Button variant="ghost" size="sm" onClick={() => openEditUser(u)}>{t.edit}</Button>
+                    </Td>
                   )}
-                </tr>
+                </Tr>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </Tbody>
+          </Table>
+        )}
       </section>
 
       {/* Roles */}
       <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold">{t.sectionRoles}</h2>
-          {can('admins.write') && (
-            <button onClick={openCreateRole} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-              + {t.createRole}
-            </button>
-          )}
-        </div>
+        <PageHeader
+          title={t.sectionRoles}
+          subtitle="Роли и наборы разрешений"
+          actions={can('admins.write') ? (
+            <Button onClick={openCreateRole}>+ {t.createRole}</Button>
+          ) : null}
+        />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {roles.map(r => (
-            <div key={r.id} className="bg-surface-card rounded-xl border border-white/10 p-4">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-semibold">{r.name || r.key}</h3>
-                {r.is_system && <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full">{t.fieldIsSystem}</span>}
-              </div>
-              <p className="text-xs text-text-secondary font-mono mb-2">{r.key}</p>
-              <div className="flex flex-wrap gap-1">
-                {(r.permissions || []).map((p, i) => {
-                  const label = typeof p === 'object' ? (p.Key || p.key || p.name) : p
-                  return (
-                    <span key={label || i} className="text-xs bg-surface-alt text-text-secondary px-2 py-0.5 rounded">{label}</span>
-                  )
-                })}
-              </div>
-              {can('admins.write') && !r.is_system && (
-                <button onClick={() => openEditRole(r)} className="mt-3 text-xs text-brand hover:underline">{t.edit}</button>
-              )}
-            </div>
+            <Card key={r.id}>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-primary">{r.name || r.key}</h3>
+                  {r.is_system && <Badge variant="warning">{t.fieldIsSystem}</Badge>}
+                </div>
+                <p className="text-xs text-tertiary font-mono mt-1">{r.key}</p>
+              </CardHeader>
+              <CardBody>
+                <div className="flex flex-wrap gap-1">
+                  {(r.permissions || []).map((p, i) => {
+                    const label = typeof p === 'object' ? (p.Key || p.key || p.name) : p
+                    return (
+                      <Badge key={label || i} variant="default">{label}</Badge>
+                    )
+                  })}
+                </div>
+                {can('admins.write') && !r.is_system && (
+                  <div className="mt-3">
+                    <Button variant="ghost" size="sm" onClick={() => openEditRole(r)}>{t.edit}</Button>
+                  </div>
+                )}
+              </CardBody>
+            </Card>
           ))}
         </div>
       </section>
@@ -226,8 +258,8 @@ export default function AdminsPage() {
         <FormField label={t.fieldRoles}>
           <div className="flex flex-wrap gap-2">
             {roles.map(r => (
-              <label key={r.id} className="flex items-center gap-1 text-sm cursor-pointer">
-                <input type="checkbox" checked={userRoles.includes(r.id)} onChange={() => toggleUserRole(r.id)} className="rounded border-white/20 bg-surface-alt text-brand focus:ring-brand" />
+              <label key={r.id} className="flex items-center gap-1 text-sm cursor-pointer text-primary">
+                <input type="checkbox" checked={userRoles.includes(r.id)} onChange={() => toggleUserRole(r.id)} className="rounded border-default bg-elevated text-accent focus:ring-accent" />
                 {r.name || r.key}
               </label>
             ))}
@@ -246,8 +278,8 @@ export default function AdminsPage() {
         <FormField label={t.fieldPermissions}>
           <div className="grid grid-cols-2 gap-1 max-h-48 overflow-y-auto">
             {allPerms.map(p => (
-              <label key={p} className="flex items-center gap-1 text-xs cursor-pointer">
-                <input type="checkbox" checked={rolePerms.includes(p)} onChange={() => togglePerm(p)} className="rounded border-white/20 bg-surface-alt text-brand focus:ring-brand" />
+              <label key={p} className="flex items-center gap-1 text-xs cursor-pointer text-primary">
+                <input type="checkbox" checked={rolePerms.includes(p)} onChange={() => togglePerm(p)} className="rounded border-default bg-elevated text-accent focus:ring-accent" />
                 {p}
               </label>
             ))}

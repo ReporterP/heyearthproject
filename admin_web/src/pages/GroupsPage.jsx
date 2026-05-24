@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { UsersRound } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
@@ -7,14 +8,26 @@ import { fetchGroupsPaged, createGroup, updateGroup, deleteGroup } from '../api/
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, Checkbox } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import {
+  Badge,
+  Button,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  EmptyState,
+} from '../components/ui/index.js'
 
 export default function GroupsPage() {
   // Deprecation banner
   return (
     <div>
-      <div className="p-4 mb-6 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
+      <div className="p-4 mb-6 rounded border border-warning/30 bg-warning/10 text-warning text-sm">
         <p className="font-semibold mb-1">Устаревшая страница</p>
-        <p>Группы заменены на <a href="/plans" className="text-brand underline hover:text-brand-light">Тарифные планы</a>. Управляйте подписками через страницу Планов. Группы сохранены для обратной совместимости.</p>
+        <p>Группы заменены на <a href="/plans" className="text-accent underline hover:text-accent-hover">Тарифные планы</a>. Управляйте подписками через страницу Планов. Группы сохранены для обратной совместимости.</p>
       </div>
       <GroupsPageContent />
     </div>
@@ -86,14 +99,12 @@ function GroupsPageContent() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">{t.groupsTitle}</h2>
-        {can('groups.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.createGroup}
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title={t.groupsTitle}
+        actions={can('groups.write') ? (
+          <Button onClick={openCreate}>+ {t.createGroup}</Button>
+        ) : null}
+      />
 
       <SearchPaginationBar
         search={paged.search}
@@ -104,40 +115,44 @@ function GroupsPageContent() {
         loading={paged.loading}
       />
 
-      {paged.error && <p className="text-red-400 mb-4">{paged.error}</p>}
+      {paged.error && <p className="text-danger mb-4">{paged.error}</p>}
 
       {paged.items.length === 0 && !paged.loading ? (
-        <p className="text-text-secondary">{t.noGroups}</p>
+        <EmptyState
+          icon={UsersRound}
+          title={t.noGroups || 'Нет групп'}
+          description="Группы заменены на Тарифные планы — используйте /plans."
+        />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-text-secondary text-left">
-                <th className="py-2 px-3">ID</th>
-                <th className="py-2 px-3">{t.fieldGroupName}</th>
-                <th className="py-2 px-3">{t.fieldDescription}</th>
-                <th className="py-2 px-3">{t.fieldIsPremium}</th>
-                {can('groups.write') && <th className="py-2 px-3"></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {paged.items.map(g => (
-                <tr key={g.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                  <td className="py-2 px-3">{g.id}</td>
-                  <td className="py-2 px-3">{g.name}</td>
-                  <td className="py-2 px-3 text-text-secondary">{g.description || '\u2014'}</td>
-                  <td className="py-2 px-3">{g.is_premium ? '\u2713' : ''}</td>
-                  {can('groups.write') && (
-                    <td className="py-2 px-3 flex gap-2">
-                      <button onClick={() => openEdit(g)} className="text-brand hover:underline">{t.edit}</button>
-                      <button onClick={() => setConfirm(g)} className="text-red-400 hover:underline">{t.delete}</button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <Thead>
+            <Tr>
+              <Th>ID</Th>
+              <Th>{t.fieldGroupName}</Th>
+              <Th>{t.fieldDescription}</Th>
+              <Th>{t.fieldIsPremium}</Th>
+              {can('groups.write') && <Th></Th>}
+            </Tr>
+          </Thead>
+          <Tbody>
+            {paged.items.map(g => (
+              <Tr key={g.id}>
+                <Td mono>{g.id}</Td>
+                <Td>{g.name}</Td>
+                <Td><span className="text-secondary">{g.description || '—'}</span></Td>
+                <Td>{g.is_premium ? <Badge variant="accent">Premium</Badge> : <span className="text-tertiary">—</span>}</Td>
+                {can('groups.write') && (
+                  <Td>
+                    <div className="flex gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => openEdit(g)}>{t.edit}</Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirm(g)} className="text-danger">{t.delete}</Button>
+                    </div>
+                  </Td>
+                )}
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
       )}
 
       <CrudDialog

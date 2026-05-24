@@ -1,4 +1,18 @@
 import { useEffect, useState } from 'react'
+import { TrendingUp } from 'lucide-react'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  EmptyState,
+} from '../components/ui/index.js'
 
 /*
  * B2B analytics dashboard for HiEarth admins.
@@ -34,115 +48,137 @@ export default function B2BAnalyticsPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <p className="text-text-secondary">Загрузка…</p>
-  if (error || !data) return <p className="text-red-400">{error || 'Нет данных'}</p>
+  if (loading) return <p className="text-secondary">Загрузка…</p>
+  if (error || !data) {
+    return (
+      <div>
+        <PageHeader title="B2B Аналитика" subtitle="Сводка по тенантам, выручке и активности" />
+        <EmptyState icon={TrendingUp} title="Нет данных" description={error || 'Не удалось загрузить аналитику'} />
+      </div>
+    )
+  }
 
   const c = data.counts || {}
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold">B2B Аналитика</h2>
+      <PageHeader title="B2B Аналитика" subtitle="Сводка по тенантам, выручке и активности" />
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Kpi label="Всего компаний" value={c.total || 0} />
-        <Kpi label="Активных" value={c.active || 0} color="text-green-400" />
-        <Kpi label="Неактивных" value={c.inactive || 0} color="text-amber-400" />
-        <Kpi label="Приостановлено" value={c.suspended || 0} color="text-red-400" />
+        <Kpi label="Активных" value={c.active || 0} color="text-success" />
+        <Kpi label="Неактивных" value={c.inactive || 0} color="text-warning" />
+        <Kpi label="Приостановлено" value={c.suspended || 0} color="text-danger" />
         <Kpi label="B2B-юзеров" value={data.members_total || 0} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Kpi label="Доход за 30д (списания)" value={fmtMoney(data.mrr_30d)} color="text-green-400" big />
-        <Kpi label="Пополнения за 30д" value={fmtMoney(data.credits_30d)} color="text-brand-light" big />
+        <Kpi label="Доход за 30д (списания)" value={fmtMoney(data.mrr_30d)} color="text-success" big />
+        <Kpi label="Пополнения за 30д" value={fmtMoney(data.credits_30d)} color="text-info" big />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Top by spend */}
-        <div className="bg-surface-card rounded-xl border border-white/10 p-5">
-          <h3 className="text-base font-semibold mb-3">Топ-10 по тратам (30д)</h3>
-          {(!data.top_by_spend || data.top_by_spend.length === 0) ? (
-            <p className="text-sm text-text-secondary">Пока нет списаний.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-text-secondary text-xs">
-                  <th className="text-left pb-2">Компания</th>
-                  <th className="text-right pb-2">Юзеры</th>
-                  <th className="text-right pb-2">Списано</th>
-                  <th className="text-right pb-2">Баланс</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.top_by_spend.map(t => (
-                  <tr key={t.id} className="border-t border-white/5">
-                    <td className="py-2"><span className={`mr-2 inline-block w-2 h-2 rounded-full ${t.status === 'active' ? 'bg-green-400' : t.status === 'suspended' ? 'bg-red-400' : 'bg-amber-400'}`} />{t.name}</td>
-                    <td className="text-right">{t.members}</td>
-                    <td className="text-right font-medium text-red-400">{fmtMoney(t.metric_rub)}</td>
-                    <td className="text-right text-text-secondary">{fmtMoney(t.balance)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <Card>
+          <CardHeader>
+            <h3 className="text-base font-semibold text-primary">Топ-10 по тратам (30д)</h3>
+          </CardHeader>
+          <CardBody>
+            {(!data.top_by_spend || data.top_by_spend.length === 0) ? (
+              <p className="text-sm text-secondary">Пока нет списаний.</p>
+            ) : (
+              <Table>
+                <Thead>
+                  <Tr>
+                    <Th>Компания</Th>
+                    <Th align="right">Юзеры</Th>
+                    <Th align="right">Списано</Th>
+                    <Th align="right">Баланс</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {data.top_by_spend.map(t => (
+                    <Tr key={t.id}>
+                      <Td>
+                        <span className={`mr-2 inline-block w-2 h-2 rounded-full ${t.status === 'active' ? 'bg-success' : t.status === 'suspended' ? 'bg-danger' : 'bg-warning'}`} />
+                        {t.name}
+                      </Td>
+                      <Td align="right" mono>{t.members}</Td>
+                      <Td align="right" mono><span className="text-danger font-medium">{fmtMoney(t.metric_rub)}</span></Td>
+                      <Td align="right" mono><span className="text-secondary">{fmtMoney(t.balance)}</span></Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+          </CardBody>
+        </Card>
 
         {/* Top by traffic */}
-        <div className="bg-surface-card rounded-xl border border-white/10 p-5">
-          <h3 className="text-base font-semibold mb-3">Топ-10 по трафику (30д)</h3>
-          {(!data.top_by_traffic || data.top_by_traffic.length === 0) ? (
-            <p className="text-sm text-text-secondary">Пока нет трафика по тенантам.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-text-secondary text-xs">
-                  <th className="text-left pb-2">Компания</th>
-                  <th className="text-right pb-2">Юзеры</th>
-                  <th className="text-right pb-2">Трафик</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.top_by_traffic.map(t => (
-                  <tr key={t.id} className="border-t border-white/5">
-                    <td className="py-2">{t.name}</td>
-                    <td className="text-right">{t.members}</td>
-                    <td className="text-right font-medium text-cyan-400">{fmtBytes(t.metric_bytes)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <Card>
+          <CardHeader>
+            <h3 className="text-base font-semibold text-primary">Топ-10 по трафику (30д)</h3>
+          </CardHeader>
+          <CardBody>
+            {(!data.top_by_traffic || data.top_by_traffic.length === 0) ? (
+              <p className="text-sm text-secondary">Пока нет трафика по тенантам.</p>
+            ) : (
+              <Table>
+                <Thead>
+                  <Tr>
+                    <Th>Компания</Th>
+                    <Th align="right">Юзеры</Th>
+                    <Th align="right">Трафик</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {data.top_by_traffic.map(t => (
+                    <Tr key={t.id}>
+                      <Td>{t.name}</Td>
+                      <Td align="right" mono>{t.members}</Td>
+                      <Td align="right" mono><span className="text-info font-medium">{fmtBytes(t.metric_bytes)}</span></Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+          </CardBody>
+        </Card>
       </div>
 
       {/* Recent topups activity */}
-      <div className="bg-surface-card rounded-xl border border-white/10 p-5">
-        <h3 className="text-base font-semibold mb-3">Последние пополнения</h3>
-        {(!data.recent_topups || data.recent_topups.length === 0) ? (
-          <p className="text-sm text-text-secondary">Пока нет пополнений.</p>
-        ) : (
-          <div className="space-y-2">
-            {data.recent_topups.map(tx => (
-              <div key={tx.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-white/[0.03] border border-white/5">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium truncate">{tx.tenant_name}</p>
-                  <p className="text-[11px] text-text-secondary truncate">{tx.description}</p>
+      <Card>
+        <CardHeader>
+          <h3 className="text-base font-semibold text-primary">Последние пополнения</h3>
+        </CardHeader>
+        <CardBody>
+          {(!data.recent_topups || data.recent_topups.length === 0) ? (
+            <p className="text-sm text-secondary">Пока нет пополнений.</p>
+          ) : (
+            <div className="space-y-2">
+              {data.recent_topups.map(tx => (
+                <div key={tx.id} className="flex items-center justify-between gap-3 p-3 rounded bg-canvas border border-default">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-primary truncate">{tx.tenant_name}</p>
+                    <p className="text-[11px] text-tertiary truncate">{tx.description}</p>
+                  </div>
+                  <span className="text-sm font-semibold text-success whitespace-nowrap tabular-nums">+{fmtMoney(tx.amount)}</span>
+                  <span className="text-[11px] text-tertiary whitespace-nowrap tabular-nums">{fmtDate(tx.created_at)}</span>
                 </div>
-                <span className="text-sm font-semibold text-green-400 whitespace-nowrap">+{fmtMoney(tx.amount)}</span>
-                <span className="text-[11px] text-text-secondary whitespace-nowrap">{fmtDate(tx.created_at)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
     </div>
   )
 }
 
 function Kpi({ label, value, color, big }) {
   return (
-    <div className="bg-surface-card rounded-xl border border-white/10 p-4">
-      <p className="text-xs text-text-secondary mb-1">{label}</p>
-      <p className={`${big ? 'text-2xl' : 'text-xl'} font-bold ${color || 'text-text-primary'}`}>{value}</p>
-    </div>
+    <Card className="p-4">
+      <p className="text-xs text-tertiary mb-1">{label}</p>
+      <p className={`${big ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums ${color || 'text-primary'}`}>{value}</p>
+    </Card>
   )
 }
