@@ -86,7 +86,7 @@ func GenerateAct(data ActData) (filePath string, err error)
 
 ## Точки вызова
 
-**Счёт** — в `handleCreateInvoice` (`internal/admin/tenants_handlers.go`)
+**Счёт** — в `handleCreateInvoice` (`cmd/api/invoice_handlers.go`)
 сразу после `INSERT INTO invoice_records`:
 
 ```go

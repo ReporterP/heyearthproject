@@ -26,7 +26,9 @@ import (
 	"github.com/lib/pq"
 )
 
-var directRouteSlugRegex = regexp.MustCompile(`^[a-z0-9.-]+$`)
+// Slug допускает: a-z, 0-9, точку, дефис, подчёркивание, "@" и ":" — последние
+// два нужны для community-листов с слагами вида "yandex@cloud" или "vk@vkplay.ru".
+var directRouteSlugRegex = regexp.MustCompile(`^[a-z0-9._:@-]+$`)
 
 // DirectRouteService is one bundle of direct-routing endpoints attached to N plans.
 type DirectRouteService struct {

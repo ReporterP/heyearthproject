@@ -32,7 +32,9 @@ import (
 	"github.com/lib/pq"
 )
 
-var directRouteDomainRegex = regexp.MustCompile(`^[a-z0-9.*-]+\.[a-z]{2,}$`)
+// Domain допускает Punycode-TLD (xn--p1ai = .рф) — цифры и дефис в TLD.
+// TLD не может начинаться с дефиса и должен быть не короче 2 символов.
+var directRouteDomainRegex = regexp.MustCompile(`^[a-z0-9.*-]+\.[a-z][a-z0-9-]{1,}$`)
 
 // ImportOptions controls behaviour of ImportDirectRoutesJSON.
 type ImportOptions struct {

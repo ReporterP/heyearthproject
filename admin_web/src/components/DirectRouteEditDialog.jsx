@@ -81,12 +81,12 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
     const errs = {}
     const slug = (form.slug || '').trim().toLowerCase()
     if (!slug) errs.slug = 'Обязательно'
-    else if (!/^[a-z0-9.-]+$/.test(slug)) errs.slug = 'Только a-z, 0-9, точка, дефис'
+    else if (!/^[a-z0-9._:@-]+$/.test(slug)) errs.slug = 'Только a-z, 0-9, . _ : @ -'
     if (!(form.name || '').trim()) errs.name = 'Обязательно'
     const t = parseInt(form.timeout_sec, 10)
     if (Number.isNaN(t) || t < 60 || t > 86400) errs.timeout_sec = '60..86400'
-    // Light per-line checks (don't block — backend will sanitise).
-    const badDomains = linesToArray(form.domains).filter((d) => !/^[a-z0-9.*-]+\.[a-z]{2,}$/i.test(d))
+    // Light per-line checks (don't block — backend will sanitise). TLD allows Punycode (xn--).
+    const badDomains = linesToArray(form.domains).filter((d) => !/^[a-z0-9.*-]+\.[a-z][a-z0-9-]{1,}$/i.test(d))
     if (badDomains.length > 0) errs.domains = `Не валидно: ${badDomains.slice(0, 3).join(', ')}`
     setErrors(errs)
     return Object.keys(errs).length === 0

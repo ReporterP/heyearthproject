@@ -64,7 +64,7 @@ type ImportPayload struct {
 	DefaultPlanIDs    []int  `json:"default_plan_ids"`
 }
 
-var directRouteSlugRegexHandler = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
+var directRouteSlugRegexHandler = regexp.MustCompile(`^[a-z0-9._:@-]{1,64}$`)
 
 func serviceFromPayload(p DirectRoutePayload) *biz.DirectRouteService {
 	return &biz.DirectRouteService{
@@ -90,7 +90,7 @@ func validateDirectRoutePayload(p DirectRoutePayload) string {
 		return "slug is required"
 	}
 	if !directRouteSlugRegexHandler.MatchString(slug) {
-		return "slug must match ^[a-z0-9._-]{1,64}$"
+		return "slug must match ^[a-z0-9._:@-]{1,64}$"
 	}
 	if strings.TrimSpace(p.Name) == "" {
 		return "name is required"
