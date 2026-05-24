@@ -42,6 +42,7 @@ func CreatePlanHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to create plan: "+err.Error())
 		return
 	}
+	go biz.NotifySubscriptionChange()
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id, "message": "Plan created"})
 }
 
@@ -64,6 +65,7 @@ func UpdatePlanHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update plan: "+err.Error())
 		return
 	}
+	go biz.NotifySubscriptionChange()
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Plan updated"})
 }
 

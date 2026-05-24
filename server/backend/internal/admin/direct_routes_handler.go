@@ -12,7 +12,6 @@ package admin
 //   GET    /{id}             -> GetDirectRouteHandler
 //   PUT    /{id}             -> UpdateDirectRouteHandler
 //   DELETE /{id}             -> DeleteDirectRouteHandler
-//   PUT    /{id}/plans       -> SetServicePlansHandler
 //
 // Permissions: routing.direct.view (read), routing.direct.manage (write).
 // Audit: every mutating call writes "direct_routes.<action>" to admin_audit_log.
@@ -47,13 +46,11 @@ type DirectRoutePayload struct {
 	TimeoutSec int      `json:"timeout_sec"`
 	IsActive   bool     `json:"is_active"`
 	Notes      string   `json:"notes"`
-	PlanIDs    []int    `json:"plan_ids,omitempty"`
 }
 
 type BulkActionPayload struct {
-	Action  string `json:"action"`
-	IDs     []int  `json:"ids"`
-	PlanIDs []int  `json:"plan_ids,omitempty"`
+	Action string `json:"action"`
+	IDs    []int  `json:"ids"`
 }
 
 type ImportPayload struct {
@@ -61,7 +58,6 @@ type ImportPayload struct {
 	OverwriteExisting bool   `json:"overwrite_existing"`
 	ActivateNew       bool   `json:"activate_new"`
 	DryRun            bool   `json:"dry_run"`
-	DefaultPlanIDs    []int  `json:"default_plan_ids"`
 }
 
 var directRouteSlugRegexHandler = regexp.MustCompile(`^[a-z0-9._:@-]{1,64}$`)
@@ -109,11 +105,6 @@ func ListDirectRoutesHandler(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("is_active"); v != "" {
 		b := v == "true" || v == "1"
 		filters.IsActive = &b
-	}
-	if v := q.Get("plan_id"); v != "" {
-		if pid, err := strconv.Atoi(v); err == nil {
-			filters.PlanID = pid
-		}
 	}
 
 	items, err := biz.ListDirectRouteServices(filters)
@@ -199,19 +190,8 @@ func GetDirectRouteHandler(w http.ResponseWriter, r *http.Request, id int) {
 		writeAdminError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	planIDs, err := biz.GetServicePlanIDs(id)
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if planIDs == nil {
-		planIDs = []int{}
-	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"service":  svc,
-		"plan_ids": planIDs,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"service": svc})
 }
 
 func CreateDirectRouteHandler(w http.ResponseWriter, r *http.Request) {
@@ -230,17 +210,10 @@ func CreateDirectRouteHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if len(p.PlanIDs) > 0 {
-		if err := biz.SetServicePlans(id, p.PlanIDs); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
 	WriteAuditLog(r, "direct_routes.create", "direct_route_service", strconv.Itoa(id), map[string]any{
-		"slug":     svc.Slug,
-		"name":     svc.Name,
-		"group":    svc.GroupName,
-		"plan_ids": p.PlanIDs,
+		"slug":  svc.Slug,
+		"name":  svc.Name,
+		"group": svc.GroupName,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -304,35 +277,6 @@ func DeleteDirectRouteHandler(w http.ResponseWriter, r *http.Request, id int) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func SetServicePlansHandler(w http.ResponseWriter, r *http.Request, id int) {
-	var p struct {
-		PlanIDs []int `json:"plan_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-	existing, err := biz.GetDirectRouteServiceByID(id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeAdminError(w, http.StatusNotFound, "direct route not found")
-			return
-		}
-		writeAdminError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = existing
-	if err := biz.SetServicePlans(id, p.PlanIDs); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	WriteAuditLog(r, "direct_routes.set_plans", "direct_route_service", strconv.Itoa(id), map[string]any{
-		"plan_ids": p.PlanIDs,
-	})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-}
-
 // ---------- bulk ----------
 
 func BulkActionHandler(w http.ResponseWriter, r *http.Request) {
@@ -353,8 +297,6 @@ func BulkActionHandler(w http.ResponseWriter, r *http.Request) {
 		err = biz.BulkSetActive(p.IDs, false)
 	case "delete":
 		err = biz.BulkDelete(p.IDs)
-	case "set_plans":
-		err = biz.BulkSetPlans(p.IDs, p.PlanIDs)
 	default:
 		writeAdminError(w, http.StatusBadRequest, "unknown action: "+p.Action)
 		return
@@ -364,9 +306,8 @@ func BulkActionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteAuditLog(r, "direct_routes.bulk_"+p.Action, "direct_route_service", "", map[string]any{
-		"ids":      p.IDs,
-		"count":    len(p.IDs),
-		"plan_ids": p.PlanIDs,
+		"ids":   p.IDs,
+		"count": len(p.IDs),
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(p.IDs)})
@@ -389,7 +330,6 @@ func ImportDirectRoutesHandler(w http.ResponseWriter, r *http.Request) {
 		OverwriteExisting: p.OverwriteExisting,
 		ActivateNew:       p.ActivateNew,
 		DryRun:            p.DryRun,
-		DefaultPlanIDs:    p.DefaultPlanIDs,
 	}
 	payloadBytes := []byte(p.JSON)
 	result, err := biz.ImportDirectRoutesJSON(payloadBytes, opts)
@@ -398,14 +338,13 @@ func ImportDirectRoutesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteAuditLog(r, "direct_routes.bulk_import", "direct_route_service", "", map[string]any{
-		"format":           "json",
-		"size_bytes":       len(payloadBytes),
-		"created":          result.Created,
-		"updated":          result.Updated,
-		"skipped":          result.Skipped,
-		"errors_count":     len(result.Errors),
-		"default_plan_ids": p.DefaultPlanIDs,
-		"dry_run":          p.DryRun,
+		"format":       "json",
+		"size_bytes":   len(payloadBytes),
+		"created":      result.Created,
+		"updated":      result.Updated,
+		"skipped":      result.Skipped,
+		"errors_count": len(result.Errors),
+		"dry_run":      p.DryRun,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
@@ -439,14 +378,6 @@ func DirectRouteItemRouter(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-	case "plans":
-		if r.Method != http.MethodPut {
-			writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		RequirePermission("routing.direct.manage", func(w http.ResponseWriter, r *http.Request) {
-			SetServicePlansHandler(w, r, id)
-		}).ServeHTTP(w, r)
 	default:
 		writeAdminError(w, http.StatusNotFound, "unknown sub-resource: "+sub)
 	}
