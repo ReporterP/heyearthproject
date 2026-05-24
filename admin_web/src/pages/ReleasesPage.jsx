@@ -1,10 +1,23 @@
 import { useState, useEffect, useRef } from 'react'
+import { Rocket } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchReleases, uploadRelease, activateRelease } from '../api/admin.js'
 import CrudDialog, { FormField, TextInput, TextArea, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import {
+  Button,
+  PageHeader,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  TableSkeleton,
+  EmptyState,
+} from '../components/ui/index.js'
 
 export default function ReleasesPage() {
   const { t } = useT()
@@ -71,57 +84,58 @@ export default function ReleasesPage() {
     }
   }
 
-  if (loading) return <p className="text-text-secondary">{t.loading}</p>
-  if (error) return <p className="text-red-400">{error}</p>
+  const headerActions = can('releases.write') ? (
+    <Button variant="primary" size="md" onClick={openUpload}>+ {t.uploadRelease}</Button>
+  ) : null
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">{t.releasesTitle}</h2>
-        {can('releases.write') && (
-          <button onClick={openUpload} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.uploadRelease}
-          </button>
-        )}
-      </div>
+      <PageHeader title={t.releasesTitle} actions={headerActions} />
 
-      {releases.length === 0 ? (
-        <p className="text-text-secondary">{t.noReleases}</p>
+      {error && <p className="text-danger text-sm mb-4">{error}</p>}
+
+      {loading ? (
+        <TableSkeleton rows={8} cols={can('releases.write') ? 7 : 6} />
+      ) : releases.length === 0 ? (
+        <EmptyState
+          icon={<Rocket className="w-12 h-12" />}
+          title={t.noReleases}
+          description="Загрузите первый релиз приложения"
+          action={can('releases.write') ? <Button variant="primary" onClick={openUpload}>+ {t.uploadRelease}</Button> : null}
+        />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-text-secondary text-left">
-                <th className="py-2 px-3">ID</th>
-                <th className="py-2 px-3">{t.fieldPlatform}</th>
-                <th className="py-2 px-3">{t.fieldVersion}</th>
-                <th className="py-2 px-3">{t.fieldMandatory}</th>
-                <th className="py-2 px-3">{t.fieldStatus}</th>
-                <th className="py-2 px-3">{t.fieldReleaseNotes}</th>
-                {can('releases.write') && <th className="py-2 px-3"></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {releases.map(r => (
-                <tr key={r.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                  <td className="py-2 px-3">{r.id}</td>
-                  <td className="py-2 px-3">{r.platform}</td>
-                  <td className="py-2 px-3 font-mono">{r.version}</td>
-                  <td className="py-2 px-3">{r.mandatory ? '\u2713' : ''}</td>
-                  <td className="py-2 px-3"><StatusBadge status={r.is_active ? 'Active' : 'Inactive'} /></td>
-                  <td className="py-2 px-3 text-text-secondary truncate max-w-[200px]">{r.release_notes || '\u2014'}</td>
-                  {can('releases.write') && (
-                    <td className="py-2 px-3">
-                      {!r.is_active && (
-                        <button onClick={() => doActivate(r.id)} className="text-brand hover:underline text-xs">{t.activate}</button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <Thead>
+            <Tr>
+              <Th>ID</Th>
+              <Th>{t.fieldPlatform}</Th>
+              <Th>{t.fieldVersion}</Th>
+              <Th>{t.fieldMandatory}</Th>
+              <Th>{t.fieldStatus}</Th>
+              <Th>{t.fieldReleaseNotes}</Th>
+              {can('releases.write') && <Th></Th>}
+            </Tr>
+          </Thead>
+          <Tbody>
+            {releases.map(r => (
+              <Tr key={r.id}>
+                <Td mono>{r.id}</Td>
+                <Td>{r.platform}</Td>
+                <Td mono>{r.version}</Td>
+                <Td>{r.mandatory ? '✓' : ''}</Td>
+                <Td><StatusBadge status={r.is_active ? 'Active' : 'Inactive'} /></Td>
+                <Td className="text-tertiary truncate max-w-[200px]">{r.release_notes || '—'}</Td>
+                {can('releases.write') && (
+                  <Td>
+                    {!r.is_active && (
+                      <Button variant="ghost" size="sm" onClick={() => doActivate(r.id)}>{t.activate}</Button>
+                    )}
+                  </Td>
+                )}
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
       )}
 
       <CrudDialog
@@ -147,9 +161,9 @@ export default function ReleasesPage() {
             ref={fileRef}
             type="file"
             onChange={(e) => setFile(e.target.files[0] || null)}
-            className="text-sm text-text-secondary file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-brand file:text-white file:text-sm file:cursor-pointer hover:file:bg-brand-dark"
+            className="text-sm text-tertiary file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-accent file:text-white file:text-sm file:cursor-pointer hover:file:bg-accent-hover"
           />
-          {file && <p className="text-xs text-text-secondary mt-1">{t.fieldFileSelected}: {file.name}</p>}
+          {file && <p className="text-xs text-tertiary mt-1">{t.fieldFileSelected}: {file.name}</p>}
         </FormField>
       </CrudDialog>
     </div>

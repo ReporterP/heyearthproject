@@ -1,10 +1,18 @@
-import { useState, useEffect, useReducer } from 'react'
+import { useEffect, useReducer } from 'react'
+import { Key } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchSshKeys, createSshKey, updateSshKey, deleteSshKey } from '../api/admin.js'
 import CrudDialog, { FormField, TextInput, TextArea } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import {
+  Button,
+  Card,
+  PageHeader,
+  Skeleton,
+  EmptyState,
+} from '../components/ui/index.js'
 
 function reducer(state, action) {
   switch (action.type) {
@@ -81,30 +89,37 @@ export default function SshKeysPage() {
     navigator.clipboard.writeText(fp).then(() => toast.info('Copied'))
   }
 
-  if (s.loading) return <p className="text-text-secondary">{t.loading}</p>
-  if (s.error) return <p className="text-red-400">{s.error}</p>
+  const headerActions = can('servers.write') ? (
+    <Button variant="primary" size="md" onClick={openCreate}>+ {t.addSshKey}</Button>
+  ) : null
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">{t.sshKeysTitle}</h2>
-        {can('servers.write') && (
-          <button onClick={openCreate} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-            + {t.addSshKey}
-          </button>
-        )}
-      </div>
+      <PageHeader title={t.sshKeysTitle} actions={headerActions} />
 
-      {s.keys.length === 0 ? (
-        <p className="text-text-secondary">{t.noSshKeys}</p>
+      {s.error && <p className="text-danger text-sm mb-4">{s.error}</p>}
+
+      {s.loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+      ) : s.keys.length === 0 ? (
+        <EmptyState
+          icon={<Key className="w-12 h-12" />}
+          title={t.noSshKeys}
+          description="Добавьте SSH-ключ для подключения к серверам"
+          action={can('servers.write') ? <Button variant="primary" onClick={openCreate}>+ {t.addSshKey}</Button> : null}
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {s.keys.map(k => (
-            <div key={k.id} className="bg-surface-card rounded-xl border border-white/10 p-4">
-              <h3 className="font-semibold mb-1">{k.name}</h3>
+            <Card key={k.id} className="p-4">
+              <h3 className="font-semibold mb-1 text-primary">{k.name}</h3>
               {k.fingerprint && (
                 <p
-                  className="text-xs font-mono text-text-secondary truncate cursor-pointer hover:text-text-primary"
+                  className="text-xs font-mono text-tertiary truncate cursor-pointer hover:text-primary"
                   onClick={() => copyFingerprint(k.fingerprint)}
                   title="Click to copy"
                 >
@@ -113,11 +128,11 @@ export default function SshKeysPage() {
               )}
               {can('servers.write') && (
                 <div className="flex gap-2 mt-3">
-                  <button onClick={() => openEdit(k)} className="text-xs px-2 py-1 rounded bg-brand/20 text-brand hover:bg-brand/30 transition">{t.edit}</button>
-                  <button onClick={() => dispatch({ type: 'SET', patch: { confirm: k } })} className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">{t.delete}</button>
+                  <Button variant="secondary" size="sm" onClick={() => openEdit(k)}>{t.edit}</Button>
+                  <Button variant="danger" size="sm" onClick={() => dispatch({ type: 'SET', patch: { confirm: k } })}>{t.delete}</Button>
                 </div>
               )}
-            </div>
+            </Card>
           ))}
         </div>
       )}
