@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
-import PlanSelector from './PlanSelector'
 
 /**
  * DirectRoutesImportDialog — bulk JSON import modal.
@@ -21,7 +20,6 @@ export default function DirectRoutesImportDialog({ open, onClose, onImported }) 
   const [fileName, setFileName] = useState('')
   const [overwrite, setOverwrite] = useState(false)
   const [activateNew, setActivateNew] = useState(true)
-  const [defaultPlanIDs, setDefaultPlanIDs] = useState([])
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState(null) // ImportResult
   const [dragOver, setDragOver] = useState(false)
@@ -33,7 +31,6 @@ export default function DirectRoutesImportDialog({ open, onClose, onImported }) 
       setFileName('')
       setOverwrite(false)
       setActivateNew(true)
-      setDefaultPlanIDs([])
       setPreview(null)
       setBusy(false)
       setDragOver(false)
@@ -83,7 +80,6 @@ export default function DirectRoutesImportDialog({ open, onClose, onImported }) 
           overwrite_existing: overwrite,
           activate_new: activateNew,
           dry_run: dryRun,
-          default_plan_ids: defaultPlanIDs,
         }),
       })
       if (!resp.ok) {
@@ -164,9 +160,8 @@ export default function DirectRoutesImportDialog({ open, onClose, onImported }) 
             <input type="checkbox" checked={activateNew} onChange={(e) => setActivateNew(e.target.checked)} />
             <span className="text-sm text-slate-200">Активировать новые записи</span>
           </label>
-          <div className="pt-2">
-            <div className="text-xs text-slate-400 mb-1">Привязать импортированные записи к планам</div>
-            <PlanSelector value={defaultPlanIDs} onChange={setDefaultPlanIDs} />
+          <div className="mt-2 text-xs text-slate-400">
+            Импорт добавляет сервисы в общий каталог. Видимость пользователям задаётся в настройках тарифа.
           </div>
         </div>
 
