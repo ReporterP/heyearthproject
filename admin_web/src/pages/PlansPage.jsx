@@ -38,7 +38,7 @@ export default function PlansPage() {
     setEditing({
       slug: '', name: '', description: '', price_rub: 0, duration_days: 30,
       traffic_limit_bytes: null, allowed_protocols: ['all'], features: '{}',
-      is_active: true, sort_order: 0, auto_renew_default: true, server_ids: [],
+      is_active: true, direct_routing_enabled: false, sort_order: 0, auto_renew_default: true, server_ids: [],
     })
   }
 
@@ -121,6 +121,7 @@ export default function PlansPage() {
               <p>Трафик: <span className="text-text-primary font-medium">{plan.traffic_limit_bytes ? formatBytes(plan.traffic_limit_bytes) : 'Безлимит'}</span></p>
               <p>Серверов: <span className="text-text-primary font-medium">{plan.server_ids?.length || 0}</span></p>
               <p>Автопродление: <span className="text-text-primary">{plan.auto_renew_default ? 'Да' : 'Нет'}</span></p>
+              <p>Доступ к РФ-сервисам: <span className="text-text-primary">{plan.direct_routing_enabled ? 'Включён' : 'Выключен'}</span></p>
               {!plan.is_active && <p className="text-red-400 font-medium">Неактивен</p>}
             </div>
 
@@ -260,6 +261,20 @@ export default function PlansPage() {
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={editing.auto_renew_default} onChange={e => setEditing({...editing, auto_renew_default: e.target.checked})} className="rounded" />
                 <span className="text-sm">Автопродление</span>
+              </label>
+              <label className="flex items-start gap-2 mt-2">
+                <input
+                  type="checkbox"
+                  checked={!!editing.direct_routing_enabled}
+                  onChange={e => setEditing({...editing, direct_routing_enabled: e.target.checked})}
+                  className="rounded mt-1"
+                />
+                <span>
+                  <span className="block">Доступ к РФ-сервисам</span>
+                  <span className="block text-xs text-text-secondary">
+                    Трафик к российским банкам, госуслугам и маркетплейсам идёт напрямую, минуя VPN.
+                  </span>
+                </span>
               </label>
               <div>
                 <label className="text-xs text-text-secondary">Порядок</label>
