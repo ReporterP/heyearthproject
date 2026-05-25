@@ -131,6 +131,14 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 		return Hysteria2AuthResult{}
 	}
 
+	// Cycle-quota gate. Express traffic flows into traffic_stats via the
+	// hysteria2-stats collector; IsCycleExceeded reuses the same machinery
+	// that Xray-side cycle limits use, so over-quota Express users are
+	// rejected automatically within ~60s of crossing their limit.
+	if exceeded, _ := IsCycleExceeded(userPK, userID); exceeded {
+		return Hysteria2AuthResult{OK: false}
+	}
+
 	return Hysteria2AuthResult{
 		OK:       true,
 		UserID:   userID,
