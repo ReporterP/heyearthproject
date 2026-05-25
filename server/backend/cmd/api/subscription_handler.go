@@ -277,26 +277,50 @@ rules:
 // `expire` always present if there's an active subscription (Happ uses it for the
 // "Истекает: DATE" display below the progress bar).
 func buildSubscriptionUserinfo(userID string) string {
-	var trafficUsed int64
-	var trafficLimit *int64
+	// Resolve active subscription: started_at (for cycle math), valid_until,
+	// and the effective per-cycle limit (user override > plan default > 0/unlimited).
+	var startedAt sql.NullTime
 	var validUntil time.Time
+	var subLimit sql.NullInt64
+	var planLimit sql.NullInt64
+	var userDBID int
 	err := db.DB.QueryRow(`
-		SELECT COALESCE(us.traffic_used, 0), us.traffic_limit, us.valid_until
+		SELECT u.id, us.started_at, us.valid_until,
+		       us.traffic_limit, p.traffic_limit_bytes
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
+		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&trafficUsed, &trafficLimit, &validUntil)
+		ORDER BY us.valid_until DESC
+		LIMIT 1
+	`, userID).Scan(&userDBID, &startedAt, &validUntil, &subLimit, &planLimit)
 	if err != nil {
 		return ""
 	}
+	_ = userDBID // reserved for future per-user override path
 
-	info := fmt.Sprintf("upload=0; download=%d", trafficUsed)
-	if trafficLimit != nil && *trafficLimit > 0 {
-		info += fmt.Sprintf("; total=%d", *trafficLimit)
+	// Effective limit (0 = unlimited; total=0 is the happ standard for ∞)
+	var effLimit int64
+	if subLimit.Valid && subLimit.Int64 > 0 {
+		effLimit = subLimit.Int64
+	} else if planLimit.Valid && planLimit.Int64 > 0 {
+		effLimit = planLimit.Int64
 	}
-	info += fmt.Sprintf("; expire=%d", validUntil.Unix())
-	return info
+
+	// Cycle window — usage we report is *this cycle*, not subscription lifetime.
+	cycleStart, cycleEnd := biz.CycleWindow(startedAt, time.Now())
+	cycleUsed, _ := biz.PeriodUsage(userID, cycleStart, cycleEnd)
+
+	// expire = end of current cycle so happ shows the meaningful date (when
+	// quota resets) for monthly-cycle users. If the subscription ends before
+	// cycle end (e.g. user's annual plan ends mid-cycle), prefer valid_until.
+	expireAt := cycleEnd
+	if validUntil.Before(expireAt) {
+		expireAt = validUntil
+	}
+
+	return fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d",
+		cycleUsed, effLimit, expireAt.Unix())
 }
 
 // handleGetSubscribeToken — REST endpoint для получения subscribe token текущего пользователя.
