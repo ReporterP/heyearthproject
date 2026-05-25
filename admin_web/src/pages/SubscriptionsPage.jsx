@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
-import { CreditCard, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { CreditCard } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchSubscriptionsPaged, saveSubscription, deleteSubscription, fetchPlans } from '../api/admin.js'
+import { fetchSubscriptionsPaged, deleteSubscription, fetchPlans } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { formatDateShort } from '../utils/format.js'
@@ -21,7 +22,6 @@ import {
   Badge,
   TableSkeleton,
   EmptyState,
-  Dialog,
 } from '../components/ui/index.js'
 
 const STATUS_VARIANT = {
@@ -35,8 +35,13 @@ export default function SubscriptionsPage() {
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
+  const navigate = useNavigate()
 
-  const [f, setF] = useUrlState({ search: '', plan_id: '', status: '', sort: 'valid_until', dir: 'desc', page: 1 })
+  const [f, setF] = useUrlState({
+    search: '', plan_id: '', status: '',
+    expiring_days: '', with_promo: '',
+    sort: 'valid_until', dir: 'desc', page: 1,
+  })
   const sortState = { column: f.sort, direction: f.dir }
   const onSort = (col) => setF({ sort: col, dir: f.sort === col && f.dir === 'asc' ? 'desc' : 'asc', page: 1 })
 
@@ -47,7 +52,6 @@ export default function SubscriptionsPage() {
   const pageSize = 20
 
   const [plans, setPlans] = useState([])
-  const [editing, setEditing] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [searchInput, setSearchInput] = useState(f.search)
@@ -74,41 +78,27 @@ export default function SubscriptionsPage() {
     fetchPlans().then(p => setPlans(Array.isArray(p) ? p : [])).catch(() => {})
   }, [])
 
-  function openCreate() {
-    setEditing({
-      user_db_id: '', user_id: '', plan_id: plans[0]?.id || 1,
-      valid_until_date: '', auto_renew: true, status: 'active',
-    })
-  }
-
-  function openEdit(item) {
-    setEditing({
-      ...item,
-      valid_until_date: item.valid_until ? item.valid_until.slice(0, 10) : '',
-      _existing: true,
-    })
-  }
-
-  async function handleSave() {
-    if (!editing.user_db_id && !editing.user_id) { toast.error('User ID обязателен'); return }
-    setSaving(true)
-    try {
-      const validUntil = editing.valid_until_date
-        ? editing.valid_until_date + 'T23:59:59+03:00'
-        : editing.valid_until
-      await saveSubscription({
-        user_db_id: parseInt(editing.user_db_id) || 0,
-        plan_id: parseInt(editing.plan_id) || 0,
-        valid_until: validUntil,
-        auto_renew: editing.auto_renew,
-        status: editing.status || 'active',
-      })
-      toast.success('Сохранено')
-      setEditing(null)
-      load()
-    } catch (err) { toast.error(err.message) }
-    finally { setSaving(false) }
-  }
+  // Client-side filter — backend doesn't support expiring_in_days / with_promo yet.
+  // Applied after fetch on the current page (acceptable for audit view).
+  const visibleItems = useMemo(() => {
+    let out = items
+    if (f.expiring_days) {
+      const days = parseInt(f.expiring_days, 10)
+      if (days > 0) {
+        const now = Date.now()
+        const cutoff = now + days * 86400000
+        out = out.filter(s => {
+          if (!s.valid_until) return false
+          const ts = new Date(s.valid_until).getTime()
+          return ts >= now && ts <= cutoff
+        })
+      }
+    }
+    if (f.with_promo === '1') {
+      out = out.filter(s => !!s.promocode_used)
+    }
+    return out
+  }, [items, f.expiring_days, f.with_promo])
 
   async function handleDelete() {
     setSaving(true)
@@ -121,6 +111,11 @@ export default function SubscriptionsPage() {
     finally { setSaving(false) }
   }
 
+  function openUserDrawer(s) {
+    if (!s.user_db_id) return
+    navigate(`/users?open=${s.user_db_id}&tab=subscriptions`)
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   function onSearchSubmit(e) {
@@ -131,11 +126,8 @@ export default function SubscriptionsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Подписки"
-        subtitle="Активные подписки пользователей — планы, статусы, промокоды"
-        actions={can('subscriptions.write') ? (
-          <Button variant="primary" onClick={openCreate}>+ Создать подписку</Button>
-        ) : null}
+        title="История подписок"
+        subtitle="Полная история подписок всех пользователей — для аудита и анализа. Создание новых подписок — на странице пользователя."
       />
 
       {/* Filters */}
@@ -171,17 +163,42 @@ export default function SubscriptionsPage() {
           <option value="cancelled">Cancelled</option>
           <option value="pending_renewal">Pending Renewal</option>
         </Select>
+        <Select
+          value={f.expiring_days}
+          onChange={e => setF({ expiring_days: e.target.value, page: 1 })}
+          className="w-full sm:w-48"
+          aria-label="Истекают в течение"
+        >
+          <option value="">Истекают: любые</option>
+          <option value="3">Истекают за 3 дня</option>
+          <option value="7">Истекают за 7 дней</option>
+          <option value="14">Истекают за 14 дней</option>
+          <option value="30">Истекают за 30 дней</option>
+        </Select>
+        <label className="flex items-center gap-1.5 text-sm text-secondary cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={f.with_promo === '1'}
+            onChange={e => setF({ with_promo: e.target.checked ? '1' : '', page: 1 })}
+            className="rounded"
+          />
+          С промокодом
+        </label>
       </div>
 
       {error && <p className="text-danger text-sm">{error}</p>}
 
       {loading ? (
-        <TableSkeleton rows={10} cols={8} />
-      ) : items.length === 0 ? (
+        <TableSkeleton rows={10} cols={7} />
+      ) : visibleItems.length === 0 ? (
         <EmptyState
           icon={<CreditCard className="w-12 h-12" />}
           title="Нет подписок"
-          description="Подписки пользователей появятся здесь"
+          description={
+            f.expiring_days || f.with_promo === '1' || f.search || f.plan_id || f.status
+              ? 'По текущим фильтрам ничего не найдено'
+              : 'История подписок появится здесь, как только пользователи начнут оформлять планы'
+          }
         />
       ) : (
         <Table>
@@ -191,19 +208,25 @@ export default function SubscriptionsPage() {
               <Th sortKey="plan_id" sortState={sortState} onSort={onSort}>План</Th>
               <Th>Статус</Th>
               <Th sortKey="valid_until" sortState={sortState} onSort={onSort}>Действует до</Th>
-              <Th align="center">Оплата</Th>
+              <Th align="right">Оплата</Th>
               <Th>Промокод</Th>
               <Th align="center">Авто</Th>
-              {can('subscriptions.write') && <Th>Действия</Th>}
+              <Th align="right">Действия</Th>
             </Tr>
           </Thead>
           <Tbody>
-            {items.map((s, i) => {
+            {visibleItems.map((s, i) => {
               const isExpired = s.valid_until && new Date(s.valid_until) < new Date()
               const statusKey = isExpired ? 'expired' : (s.status || 'active')
               return (
-                <Tr key={s.id ?? `${s.user_db_id}-${i}`} className={isExpired ? 'opacity-50' : ''}>
-                  <Td mono className="text-xs text-accent">{(s.user_id || '').slice(0, 16)}{s.user_id && s.user_id.length > 16 ? '…' : ''}</Td>
+                <Tr
+                  key={s.id ?? `${s.user_db_id}-${i}`}
+                  className={`cursor-pointer hover:bg-hover ${isExpired ? 'opacity-60' : ''}`}
+                  onClick={() => openUserDrawer(s)}
+                >
+                  <Td mono className="text-xs text-accent">
+                    {(s.user_id || '').slice(0, 16)}{s.user_id && s.user_id.length > 16 ? '…' : ''}
+                  </Td>
                   <Td>
                     {s.plan_name
                       ? <Badge variant="accent">{s.plan_name}</Badge>
@@ -212,7 +235,7 @@ export default function SubscriptionsPage() {
                   <Td>
                     <Badge variant={STATUS_VARIANT[statusKey] || 'default'}>{statusKey}</Badge>
                   </Td>
-                  <Td>{formatDateShort(s.valid_until)}</Td>
+                  <Td mono>{formatDateShort(s.valid_until)}</Td>
                   <Td align="right" mono>
                     {s.price_paid > 0
                       ? <span className="text-success font-medium">{s.price_paid}₽</span>
@@ -221,19 +244,29 @@ export default function SubscriptionsPage() {
                   <Td>
                     {s.promocode_used
                       ? <span className="font-mono text-xs text-warning">{s.promocode_used}</span>
-                      : '—'}
+                      : <span className="text-tertiary">—</span>}
                   </Td>
                   <Td align="center">
-                    {s.auto_renew ? <span className="text-success">✓</span> : ''}
+                    {s.auto_renew ? <span className="text-success">✓</span> : <span className="text-tertiary">—</span>}
                   </Td>
-                  {can('subscriptions.write') && (
-                    <Td>
-                      <div className="flex gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(s)}>Ред.</Button>
-                        <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirm(s)}>Уд.</Button>
-                      </div>
-                    </Td>
-                  )}
+                  <Td align="right">
+                    <div className="flex gap-1 justify-end" onClick={e => e.stopPropagation()}>
+                      <Button size="sm" variant="ghost" onClick={() => openUserDrawer(s)}>
+                        Открыть юзера
+                      </Button>
+                      {can('subscriptions.write') && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-danger"
+                          onClick={() => setConfirm(s)}
+                          aria-label="Удалить"
+                        >
+                          ✕
+                        </Button>
+                      )}
+                    </div>
+                  </Td>
                 </Tr>
               )
             })}
@@ -243,7 +276,7 @@ export default function SubscriptionsPage() {
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-tertiary">{total} записей</span>
+          <span className="text-sm text-tertiary tabular-nums">{total} записей</span>
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="sm" disabled={f.page <= 1} onClick={() => setF({ page: f.page - 1 })} aria-label="Предыдущая страница">«</Button>
             <span className="text-sm text-secondary tabular-nums">{f.page} / {totalPages}</span>
@@ -252,83 +285,13 @@ export default function SubscriptionsPage() {
         </div>
       )}
 
-      {/* Edit/Create dialog */}
-      <Dialog
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        title={editing?._existing ? 'Редактировать подписку' : 'Создать подписку'}
-        maxWidth="max-w-lg"
-      >
-        {editing && (
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs text-secondary block mb-1">Пользователь</label>
-              {editing._existing ? (
-                <p className="font-mono text-sm text-accent">{editing.user_id || `DB #${editing.user_db_id}`}</p>
-              ) : (
-                <Input
-                  type="number"
-                  value={editing.user_db_id}
-                  onChange={e => setEditing({ ...editing, user_db_id: e.target.value })}
-                  placeholder="User DB ID (число)"
-                />
-              )}
-            </div>
-            <div>
-              <label className="text-xs text-secondary block mb-1">Тарифный план</label>
-              <Select
-                value={editing.plan_id || ''}
-                onChange={e => setEditing({ ...editing, plan_id: parseInt(e.target.value) || 0 })}
-              >
-                <option value="">— без плана (legacy) —</option>
-                {plans.map(p => (
-                  <option key={p.id} value={p.id}>{p.name} ({p.price_rub}₽ / {p.duration_days}дн.)</option>
-                ))}
-              </Select>
-            </div>
-            <div>
-              <label className="text-xs text-secondary block mb-1">Действует до</label>
-              <Input
-                type="date"
-                value={editing.valid_until_date || (editing.valid_until ? editing.valid_until.slice(0, 10) : '')}
-                onChange={e => setEditing({ ...editing, valid_until_date: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-secondary block mb-1">Статус</label>
-              <Select
-                value={editing.status || 'active'}
-                onChange={e => setEditing({ ...editing, status: e.target.value })}
-              >
-                <option value="active">Active</option>
-                <option value="expired">Expired</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="pending_renewal">Pending Renewal</option>
-              </Select>
-            </div>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={editing.auto_renew}
-                onChange={e => setEditing({ ...editing, auto_renew: e.target.checked })}
-                className="rounded"
-              />
-              <span className="text-sm text-primary">Автопродление</span>
-            </label>
-
-            <div className="flex justify-end gap-2 pt-4 border-t border-default">
-              <Button variant="ghost" onClick={() => setEditing(null)}>Отмена</Button>
-              <Button variant="primary" onClick={handleSave} loading={saving}>Сохранить</Button>
-            </div>
-          </div>
-        )}
-      </Dialog>
-
       {confirm && (
         <ConfirmDialog
           open={true}
           message={`Удалить подписку ${confirm.user_id || confirm.user_db_id}?`}
-          onConfirm={handleDelete} onCancel={() => setConfirm(null)} loading={saving}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirm(null)}
+          loading={saving}
         />
       )}
     </div>

@@ -17,7 +17,7 @@ export const commands = [
 
   // Users
   { id: 'go-users',         label: 'Пользователи',           icon: Users,           kind: 'page', href: '/users',         group: 'Пользователи',   shortcut: ['⌘', 'U'] },
-  { id: 'go-subscriptions', label: 'Подписки',               icon: CreditCard,      kind: 'page', href: '/subscriptions', group: 'Пользователи' },
+  { id: 'go-subscriptions', label: 'История подписок',       icon: CreditCard,      kind: 'page', href: '/subscriptions', group: 'Пользователи' },
   { id: 'go-promocodes',    label: 'Промокоды',              icon: Ticket,          kind: 'page', href: '/promocodes',    group: 'Пользователи' },
 
   // Infrastructure

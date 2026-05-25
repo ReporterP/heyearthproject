@@ -24,7 +24,7 @@ export default {
   login: 'Login',
   navDashboard: 'Dashboard',
   navUsers: 'Users',
-  navSubscriptions: 'Subscriptions',
+  navSubscriptions: 'Subscription History',
   navPlans: 'Plans',
   navPromocodes: 'Promocodes',
   navPayments: 'Payments',
