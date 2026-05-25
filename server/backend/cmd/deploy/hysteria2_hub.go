@@ -80,6 +80,32 @@ HOOK
   chmod +x /etc/letsencrypt/renewal-hooks/deploy/00-ssl-cert-group.sh
 fi
 
+# ── 3a. Hysteria2 geoip.dat ──
+# Used by ACL direct(geoip:ru) rule so RU traffic from Express users exits
+# the Hub directly (not via NL — saves a hop, avoids geoblock by RU services
+# like yandex.ru / vk.com / habr.com). direct(geoip:private) keeps RFC1918
+# traffic on-host (admin loopback probes, health checks).
+GEOIP_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+if [ ! -f /etc/hysteria/geoip.dat ] || [ $(find /etc/hysteria/geoip.dat -mtime +30 | wc -l) -gt 0 ]; then
+  echo "[hysteria2-hub] downloading geoip.dat..."
+  curl -fsSL "$GEOIP_URL" -o /etc/hysteria/geoip.dat.new
+  mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
+  chown hysteria:hysteria /etc/hysteria/geoip.dat
+  chmod 644 /etc/hysteria/geoip.dat
+fi
+
+# Monthly geoip.dat refresh cron (idempotent — overwrites each time).
+# Reloads hysteria2-server after fetch so the new geoip is picked up.
+cat > /etc/cron.monthly/heyearth-hysteria-geoip <<'CRON'
+#!/usr/bin/env bash
+set -e
+curl -fsSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o /etc/hysteria/geoip.dat.new
+mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
+chown hysteria:hysteria /etc/hysteria/geoip.dat
+systemctl reload hysteria2-server 2>/dev/null || systemctl restart hysteria2-server
+CRON
+chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
+
 # ── 4. iptables UDP port-hopping range → :50443 ──
 # Port hopping: clients pick a random port from 50000-50100; iptables forwards
 # all of those to the single hysteria listener on :50443. Protects from QoS

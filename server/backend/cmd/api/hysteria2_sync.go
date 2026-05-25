@@ -288,11 +288,21 @@ outbounds:
   - name: hub_direct
     type: direct
 
-# ACL: route everything via exit tunnel. The direct outbound is kept as a
-# named fallback (operator can manually flip a rule for diagnostics) but is
-# not used by any inline rule below.
+# ACL: GeoIP-aware routing.
+#   direct(geoip:ru)      — RU traffic exits the Hub directly (Hub is in RU);
+#                           saves a NL hop and avoids geoblocks on yandex.ru,
+#                           vk.com, habr.com, etc.
+#   direct(geoip:private) — RFC1918 (10/8, 172.16/12, 192.168/16) stays on-host
+#                           for admin loopback probes / health checks.
+#   via_exit(all)         — everything else goes through the Hub→Exit SOCKS5
+#                           tunnel (127.0.0.1:1090) to NL/LV/DE.
+# geoip.dat is provisioned by cmd/deploy/hysteria2_hub.go (Loyalsoldier release)
+# and refreshed monthly by /etc/cron.monthly/heyearth-hysteria-geoip.
 acl:
+  geoip: /etc/hysteria/geoip.dat
   inline:
+    - direct(geoip:ru)
+    - direct(geoip:private)
     - via_exit(all)
 `, hysteria2Listen, hysteria2TLSCert, hysteria2TLSKey, obfsPassword, hysteria2AuthURL, statsSecret, maxUp, maxDown)
 }
