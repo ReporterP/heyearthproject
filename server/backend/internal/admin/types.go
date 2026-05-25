@@ -74,6 +74,9 @@ type adminUserRow struct {
 	UpdatedAt         time.Time     `json:"-"`
 	CurrentPlan       string        `json:"current_plan"`
 	ValidUntil        sql.NullTime  `json:"-"`
+	LastSeen          sql.NullTime  `json:"-"`
+	Traffic30dBytes   int64         `json:"traffic_30d_bytes"`
+	TrafficLimitBytes int64         `json:"traffic_limit_bytes"`
 }
 
 type userPayload struct {

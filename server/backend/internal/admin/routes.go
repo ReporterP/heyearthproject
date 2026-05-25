@@ -30,7 +30,12 @@ func RegisterRoutes() {
 		}
 	}))
 	http.HandleFunc("/api/admin/users/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/devices") {
+		trimmed := strings.TrimSuffix(r.URL.Path, "/")
+		if strings.HasSuffix(trimmed, "/traffic") {
+			RequirePermission("users.read", ListUserTrafficHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/devices") {
 			RequirePermission("users.read", ListUserDevicesHandler).ServeHTTP(w, r)
 			return
 		}
