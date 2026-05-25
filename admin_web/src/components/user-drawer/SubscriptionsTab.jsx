@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Pencil, Plus, X } from 'lucide-react'
 import { useT } from '../../i18n/index.jsx'
 import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
-import { fetchUserSubscriptions, saveSubscription, deleteSubscription, fetchPlans } from '../../api/admin.js'
+import { fetchUserSubscriptions, saveSubscription, updateSubscription, deleteSubscription, fetchPlans } from '../../api/admin.js'
 import { Button, Input, Select, Badge, Table, Thead, Tbody, Tr, Th, Td, EmptyState } from '../ui/index.js'
 import ConfirmDialog from '../ConfirmDialog.jsx'
 import { formatDateShort } from '../../utils/format.js'
@@ -28,8 +28,9 @@ export default function SubscriptionsTab({ user, onChanged }) {
   const [confirm, setConfirm] = useState(null)
   const [busy, setBusy] = useState(false)
 
-  // Inline create form state
-  const [creating, setCreating] = useState(false)
+  // Inline create / edit form state.
+  // `editing` is null for closed, 'new' for create mode, or a row object for edit mode.
+  const [editing, setEditing] = useState(null)
   const [draft, setDraft] = useState({ plan_id: '', valid_until_date: '', auto_renew: true, status: 'active' })
 
   const load = useCallback(() => {
@@ -53,22 +54,43 @@ export default function SubscriptionsTab({ user, onChanged }) {
       auto_renew: true,
       status: 'active',
     })
-    setCreating(true)
+    setEditing('new')
   }
 
-  async function submitCreate(e) {
+  function openEdit(row) {
+    setDraft({
+      plan_id: row.plan_id || '',
+      valid_until_date: row.valid_until ? row.valid_until.slice(0, 10) : '',
+      auto_renew: !!row.auto_renew,
+      status: row.status || 'active',
+    })
+    setEditing(row)
+  }
+
+  async function submitForm(e) {
     e.preventDefault()
     setBusy(true)
     try {
-      await saveSubscription({
-        user_db_id: user.id,
-        plan_id: Number(draft.plan_id) || null,
-        valid_until: draft.valid_until_date ? new Date(draft.valid_until_date).toISOString() : null,
-        auto_renew: !!draft.auto_renew,
-        status: draft.status,
-      })
-      toast.success(t.create + ' OK')
-      setCreating(false)
+      const isNew = editing === 'new'
+      if (isNew) {
+        await saveSubscription({
+          user_db_id: user.id,
+          plan_id: Number(draft.plan_id) || null,
+          valid_until: draft.valid_until_date ? new Date(draft.valid_until_date).toISOString() : null,
+          auto_renew: !!draft.auto_renew,
+          status: draft.status,
+        })
+        toast.success(t.create + ' OK')
+      } else {
+        await updateSubscription(editing.id, {
+          plan_id: Number(draft.plan_id) || 0,
+          valid_until: draft.valid_until_date ? new Date(draft.valid_until_date).toISOString() : '',
+          auto_renew: !!draft.auto_renew,
+          status: draft.status,
+        })
+        toast.success(t.save + ' OK')
+      }
+      setEditing(null)
       load()
       onChanged?.()
     } catch (err) {
@@ -97,15 +119,18 @@ export default function SubscriptionsTab({ user, onChanged }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-primary">{t.drawerTabSubs}</h3>
-        {can('subscriptions.write') && !creating && (
+        {can('subscriptions.write') && !editing && (
           <Button size="sm" variant="primary" onClick={openCreate} icon={<Plus className="w-3.5 h-3.5" />}>
             {t.drawerAddSub || '+ Подписка'}
           </Button>
         )}
       </div>
 
-      {creating && (
-        <form onSubmit={submitCreate} className="rounded-md border border-default bg-elevated p-3 space-y-2">
+      {editing && (
+        <form onSubmit={submitForm} className="rounded-md border border-default bg-elevated p-3 space-y-2">
+          <p className="text-xs text-tertiary">
+            {editing === 'new' ? (t.create || 'Создать') : `${t.edit || 'Ред.'} #${editing.id}`}
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <label className="text-xs text-tertiary">
               {t.fieldPlan || 'Тариф'}
@@ -130,8 +155,10 @@ export default function SubscriptionsTab({ user, onChanged }) {
             </label>
           </div>
           <div className="flex justify-end gap-2">
-            <Button size="sm" variant="ghost" type="button" onClick={() => setCreating(false)}>{t.cancel}</Button>
-            <Button size="sm" variant="primary" type="submit" loading={busy}>{t.create}</Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setEditing(null)}>{t.cancel}</Button>
+            <Button size="sm" variant="primary" type="submit" loading={busy}>
+              {editing === 'new' ? t.create : t.save}
+            </Button>
           </div>
         </form>
       )}
@@ -158,21 +185,32 @@ export default function SubscriptionsTab({ user, onChanged }) {
             {items.map(s => (
               <Tr key={s.id}>
                 <Td className="text-xs">
-                  {formatDateShort(s.created_at)} → {formatDateShort(s.valid_until)}
+                  {formatDateShort(s.started_at)} → {formatDateShort(s.valid_until)}
                 </Td>
                 <Td>{s.plan_name || s.plan || '—'}</Td>
-                <Td mono align="right">{s.price_rub != null ? `${s.price_rub}₽` : '—'}</Td>
-                <Td mono className="text-xs">{s.promocode || '—'}</Td>
+                <Td mono align="right">
+                  {s.price_paid > 0 ? `${s.price_paid}₽` : (s.price_rub != null ? `${s.price_rub}₽` : '—')}
+                </Td>
+                <Td mono className="text-xs">{s.promocode_used || s.promocode || '—'}</Td>
                 <Td><Badge variant={STATUS_VARIANT[s.status] || 'default'}>{s.status}</Badge></Td>
                 <Td align="right">
                   {can('subscriptions.write') && (
-                    <button
-                      onClick={() => setConfirm(s)}
-                      aria-label={t.delete}
-                      className="text-tertiary hover:text-danger transition p-1 rounded hover:bg-hover"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => openEdit(s)}
+                        aria-label={t.edit}
+                        className="text-tertiary hover:text-primary transition p-1 rounded hover:bg-hover"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setConfirm(s)}
+                        aria-label={t.delete}
+                        className="text-tertiary hover:text-danger transition p-1 rounded hover:bg-hover"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
                 </Td>
               </Tr>

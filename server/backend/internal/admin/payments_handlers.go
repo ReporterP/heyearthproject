@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,18 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		where += fmt.Sprintf(" AND (COALESCE(p.user_id_text,'') ILIKE $%d OR COALESCE(p.external_id,'') ILIKE $%d)", argN, argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
+	}
+	// Scope by user DB id — used by the user drawer (Трафик+Платежи tab) to
+	// fetch per-user payment history. Without this, the drawer was showing
+	// the global payments list. Match against either the int FK (p.user_id)
+	// or the joined users.id from p.user_id_text — many older rows only have
+	// the text UUID populated, not the int FK.
+	if udbStr := strings.TrimSpace(r.URL.Query().Get("user_db_id")); udbStr != "" {
+		if udb, err := strconv.Atoi(udbStr); err == nil && udb > 0 {
+			where += fmt.Sprintf(" AND (p.user_id = $%d OR u.id = $%d)", argN, argN)
+			args = append(args, udb)
+			argN++
+		}
 	}
 
 	var total int

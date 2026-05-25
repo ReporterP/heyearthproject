@@ -43,6 +43,9 @@ export function fetchSubscriptionsPaged(params) {
 export function saveSubscription(payload) {
   return apiFetch('/subscriptions', { method: 'POST', body: payload })
 }
+export function updateSubscription(id, payload) {
+  return apiFetch(`/subscriptions/${id}`, { method: 'PATCH', body: payload })
+}
 export function deleteSubscription(id) {
   return apiFetch(`/subscriptions/${id}`, { method: 'DELETE' })
 }

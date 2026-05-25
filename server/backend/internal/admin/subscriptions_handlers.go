@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,15 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 		where += fmt.Sprintf(" AND u.user_id ILIKE $%d", argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
+	}
+	// Scope by user DB id — used by the user drawer (Подписки tab) to fetch
+	// per-user history. Without this, the drawer was showing the global list.
+	if udbStr := strings.TrimSpace(r.URL.Query().Get("user_db_id")); udbStr != "" {
+		if udb, err := strconv.Atoi(udbStr); err == nil && udb > 0 {
+			where += fmt.Sprintf(" AND us.user_id = $%d", argN)
+			args = append(args, udb)
+			argN++
+		}
 	}
 
 	var total int
@@ -57,7 +67,8 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(us.plan_id, 0), COALESCE(p.name, 'standard'),
 		       us.valid_until, us.auto_renew,
 		       COALESCE(us.status, 'active'),
-		       COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, '')
+		       COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, ''),
+		       us.started_at
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		LEFT JOIN plans p ON p.id = us.plan_id
@@ -79,19 +90,25 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 		Status        string `json:"status"`
 		PricePaid     int    `json:"price_paid"`
 		PromocodeUsed string `json:"promocode_used"`
+		StartedAt     string `json:"started_at,omitempty"`
 	}
 	var items []subRow
 	for rows.Next() {
 		var item subRow
 		var validUntil time.Time
+		var startedAt sql.NullTime
 		if err := rows.Scan(&item.ID, &item.UserID, &item.UserKey,
 			&item.PlanID, &item.PlanName,
 			&validUntil, &item.AutoRenew,
-			&item.Status, &item.PricePaid, &item.PromocodeUsed); err != nil {
+			&item.Status, &item.PricePaid, &item.PromocodeUsed,
+			&startedAt); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan subscription: "+err.Error())
 			return
 		}
 		item.ValidUntil = validUntil.Format(time.RFC3339)
+		if startedAt.Valid {
+			item.StartedAt = startedAt.Time.Format(time.RFC3339)
+		}
 		items = append(items, item)
 	}
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize})
@@ -147,4 +164,80 @@ func DeleteSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	biz.NotifySubscriptionChange()
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Subscription deleted"})
+}
+
+// UpdateSubscriptionHandler — PATCH /api/admin/subscriptions/{id}.
+// Lets admins edit valid_until / plan_id / auto_renew / status on an existing
+// row from the user drawer. Body is a subset of subscriptionPayload —
+// only non-zero fields get applied (COALESCE preserves existing values).
+func UpdateSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/subscriptions/"), "/")
+	if path == "" {
+		writeAdminError(w, http.StatusBadRequest, "Expected /api/admin/subscriptions/{id}")
+		return
+	}
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid subscription id")
+		return
+	}
+
+	var payload struct {
+		PlanID     int    `json:"plan_id"`
+		ValidUntil string `json:"valid_until"`
+		AutoRenew  *bool  `json:"auto_renew"`
+		Status     string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Build a partial UPDATE: only touch the fields the client sent.
+	sets := []string{}
+	args := []any{}
+	argN := 1
+	if payload.PlanID > 0 {
+		sets = append(sets, fmt.Sprintf("plan_id = $%d", argN))
+		args = append(args, payload.PlanID)
+		argN++
+	}
+	if strings.TrimSpace(payload.ValidUntil) != "" {
+		validUntil, perr := time.Parse(time.RFC3339, strings.TrimSpace(payload.ValidUntil))
+		if perr != nil {
+			writeAdminError(w, http.StatusBadRequest, "valid_until must be RFC3339")
+			return
+		}
+		sets = append(sets, fmt.Sprintf("valid_until = $%d", argN))
+		args = append(args, validUntil)
+		argN++
+	}
+	if payload.AutoRenew != nil {
+		sets = append(sets, fmt.Sprintf("auto_renew = $%d", argN))
+		args = append(args, *payload.AutoRenew)
+		argN++
+	}
+	if s := strings.TrimSpace(payload.Status); s != "" {
+		sets = append(sets, fmt.Sprintf("status = $%d", argN))
+		args = append(args, s)
+		argN++
+	}
+	if len(sets) == 0 {
+		writeAdminError(w, http.StatusBadRequest, "No fields to update")
+		return
+	}
+
+	args = append(args, id)
+	q := fmt.Sprintf(`UPDATE user_subscriptions SET %s WHERE id = $%d`, strings.Join(sets, ", "), argN)
+	res, err := db.DB.Exec(q, args...)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to update subscription: "+err.Error())
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeAdminError(w, http.StatusNotFound, "Subscription not found")
+		return
+	}
+	biz.NotifySubscriptionChange()
+	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Subscription updated"})
 }

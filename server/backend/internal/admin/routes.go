@@ -59,7 +59,16 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
-	http.HandleFunc("/api/admin/subscriptions/", withMethod(http.MethodDelete, RequirePermission("subscriptions.write", DeleteSubscriptionHandler)))
+	http.HandleFunc("/api/admin/subscriptions/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			RequirePermission("subscriptions.write", UpdateSubscriptionHandler).ServeHTTP(w, r)
+		case http.MethodDelete:
+			RequirePermission("subscriptions.write", DeleteSubscriptionHandler).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 
 	http.HandleFunc("/api/admin/promocodes", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

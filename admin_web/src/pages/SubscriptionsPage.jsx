@@ -113,7 +113,16 @@ export default function SubscriptionsPage() {
 
   function openUserDrawer(s) {
     if (!s.user_db_id) return
-    navigate(`/users?open=${s.user_db_id}&tab=subscriptions`)
+    // Pass the UUID as search so the master list filters to this single user
+    // (UsersPage resolves selectedUser via items.find — without filtering, a
+    // deep-linked user that's not on page 1 would never appear in items and
+    // the drawer would silently not render).
+    const params = new URLSearchParams({
+      open: String(s.user_db_id),
+      tab: 'subscriptions',
+    })
+    if (s.user_id) params.set('search', s.user_id)
+    navigate(`/users?${params.toString()}`)
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
