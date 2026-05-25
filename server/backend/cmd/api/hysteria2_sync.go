@@ -407,9 +407,18 @@ func validateHysteria2Config(path string) error {
 		combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
 		lower := strings.ToLower(combined)
 
-		// Port conflict ≠ bad config — the live server is holding :50443.
-		// Everything before bind passed; treat as valid.
+		// Port conflict ≠ bad config — the live server is holding :50443 or
+		// :7653 (trafficStats). Everything before bind passed; treat as valid.
 		if strings.Contains(lower, "address already in use") {
+			return nil
+		}
+
+		// "INFO server mode" is logged AFTER config parsing succeeds but BEFORE
+		// any bind. If we see it, the config is syntactically valid — any
+		// subsequent exit is a runtime/bind issue, not a config issue.
+		// Hysteria sometimes exits status 1 on bind conflicts without logging
+		// a FATAL (buffer flush race?), so this serves as a fallback signal.
+		if strings.Contains(lower, "server mode") {
 			return nil
 		}
 

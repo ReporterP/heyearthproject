@@ -5,6 +5,11 @@
 -- Predecessor: 000048_express_hysteria2 (introduced Express plan toggles).
 -- See docs/superpowers/specs/2026-05-26-express-integration-design.md A1/A2.
 
+-- Seed uses gen_random_uuid() — built-in in PG 13+, no extension needed.
+-- Two UUIDs concatenated and stripped of dashes give 64 hex chars (32 bytes)
+-- — enough entropy for a Bearer secret. Avoids pgcrypto dependency since
+-- the heyearth DB user lacks CREATE EXTENSION privilege on managed Postgres.
+
 -- RTT tracking for exit selection. tunnel-monitor (cmd/api/xray_sync.go::
 -- checkTunnelHealth) measures TCP+TLS handshake latency every 30s and now
 -- persists the result here so biz.SelectExpressExit() can pick best-RTT.
@@ -23,6 +28,8 @@ ALTER TABLE servers
 -- production state.
 INSERT INTO app_settings (key, value)
 VALUES
-  ('hysteria2_stats_secret', encode(gen_random_bytes(32), 'hex')),
+  ('hysteria2_stats_secret',
+   replace(gen_random_uuid()::text, '-', '') ||
+   replace(gen_random_uuid()::text, '-', '')),
   ('hysteria2_tunnel_mode', 'shared')
 ON CONFLICT (key) DO NOTHING;
