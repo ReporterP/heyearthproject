@@ -1,7 +1,9 @@
 package main
 
 import (
+	cryptorand "crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,6 +17,10 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
+
+// autoTunerIter counts completed runFullTuner iterations. Used by
+// rotateHysteria2ObfsIfDue to fire every ~7 days (42 × 4h).
+var autoTunerIter int
 
 // ─────────────────────── Auto-Tuner v2 ───────────────────────
 //
@@ -273,7 +279,43 @@ func runFullTuner() {
 		log.Println("[auto-tuner] Client config changed — config_version incremented, users should refresh subscription")
 	}
 
+	// Hysteria2 obfs rotation — weekly cadence. Independent of Xray tuning;
+	// piggybacks on the 4h tuner loop to avoid spawning another goroutine.
+	rotateHysteria2ObfsIfDue(autoTunerIter)
+	autoTunerIter++
+
 	log.Println("[auto-tuner] Full optimization run complete")
+}
+
+// rotateHysteria2ObfsIfDue regenerates hysteria2_obfs_password once every
+// ~7 days (42 iterations × 4h ≈ 168h). Bumps hysteria2_config_version so
+// downstream sync detects the change. Existing Express users get the new
+// URI on their next /api/v1/user/subscribe/<token> fetch (Happ refetches
+// per Subscription-Userinfo `expire` timestamp).
+func rotateHysteria2ObfsIfDue(iter int) {
+	if iter == 0 {
+		return // skip first iteration after boot
+	}
+	if iter%42 != 0 {
+		return
+	}
+	newObfs := randHex32()
+	if err := biz.SetSetting("hysteria2_obfs_password", newObfs); err != nil {
+		log.Printf("[auto-tuner] obfs rotation: SET failed: %v", err)
+		return
+	}
+	verStr := biz.GetSettingOrDefault("hysteria2_config_version", "0")
+	ver, _ := strconv.Atoi(verStr)
+	_ = biz.SetSetting("hysteria2_config_version", strconv.Itoa(ver+1))
+	_ = biz.SetSetting("hysteria2_obfs_rotated_at", time.Now().Format(time.RFC3339))
+	log.Printf("[auto-tuner] hysteria2 obfs rotated (config_version=%d)", ver+1)
+	biz.RequestSync()
+}
+
+func randHex32() string {
+	b := make([]byte, 16)
+	_, _ = cryptorand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ─── Phase 1: SNI tuning (server-side) ───
