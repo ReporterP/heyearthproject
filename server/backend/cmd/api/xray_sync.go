@@ -870,6 +870,18 @@ func checkAllTunnels() {
 	statusChanged := false
 	for _, node := range nodes {
 		probeResult, latencyMs, probeError := checkTunnelHealth(node)
+
+		// Persist per-probe RTT for adaptive Express-tunnel exit selection
+		// (biz.DecideExpressTunnel). We write last_rtt_ms/last_rtt_at on EVERY
+		// successful probe — independently of hysteresis-driven status flips —
+		// so the lowest-RTT exit selection always sees fresh data. Failures
+		// are intentionally ignored so transient blips don't poison selection.
+		if probeResult == "healthy" && latencyMs > 0 {
+			if rttErr := biz.UpdateExitRTT(node.ID, latencyMs); rttErr != nil {
+				log.Printf("[tunnel-monitor] UpdateExitRTT(%d) failed: %v", node.ID, rttErr)
+			}
+		}
+
 		oldStatus := node.TunnelStatus
 		hc := getHealthCounter(node.ID)
 
