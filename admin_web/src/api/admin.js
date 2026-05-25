@@ -26,6 +26,15 @@ export function deleteUser(id) {
 export function fetchUserDevices(userId) {
   return apiFetch(`/users/${userId}/devices`)
 }
+export function fetchUserSubscriptions(userDbId) {
+  return pagedFetch('/subscriptions', { user_db_id: userDbId, page: 1, pageSize: 100, sort: 'valid_until', dir: 'desc' })
+}
+export function fetchUserPayments(userDbId) {
+  return pagedFetch('/payments', { user_db_id: userDbId, page: 1, pageSize: 50, sort: 'created_at', dir: 'desc' })
+}
+export function fetchUserTraffic(userDbId, days = 30) {
+  return apiFetch(`/users/${userDbId}/traffic?days=${days}`)
+}
 
 // ── Subscriptions ──
 export function fetchSubscriptionsPaged(params) {
