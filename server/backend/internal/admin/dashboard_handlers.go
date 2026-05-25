@@ -26,7 +26,6 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		`},
 		{&overview.ServersCount, `SELECT COUNT(*) FROM servers`},
 		{&overview.OnlineServersCount, `SELECT COUNT(*) FROM servers WHERE status = 'online'`},
-		{&overview.GroupsCount, `SELECT COUNT(*) FROM user_groups`},
 		{&overview.PromocodesCount, `SELECT COUNT(*) FROM promocodes`},
 		{&overview.PaymentsCount, `SELECT COUNT(*) FROM payments`},
 		{&overview.ActiveReleases, `SELECT COUNT(*) FROM app_releases WHERE is_active = TRUE`},

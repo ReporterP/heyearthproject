@@ -55,8 +55,9 @@ type DeviceRegistration struct {
 
 // UserSubscriptionDetail is returned in subscription lists.
 type UserSubscriptionDetail struct {
-	GroupID    int    `json:"group_id"`
-	GroupName  string `json:"group_name"`
+	ID         int    `json:"id"`
+	PlanID     int    `json:"plan_id"`
+	PlanName   string `json:"plan_name"`
 	ValidUntil string `json:"valid_until"`
 	AutoRenew  bool   `json:"auto_renew"`
 	Active     bool   `json:"active"`
@@ -238,8 +239,8 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 	if sub == nil {
 		profile.CurrentPlan = ""
 	} else {
-		profile.CurrentPlan = sub.GroupName  // plan name (from plans.name)
-		profile.CurrentPlanSlug = sub.Plan   // plan slug (from plans.slug)
+		profile.CurrentPlan = sub.PlanName  // plan name (from plans.name)
+		profile.CurrentPlanSlug = sub.Plan  // plan slug (from plans.slug)
 		profile.ValidUntil = sub.ValidUntil.Format(time.RFC3339)
 		profile.IsPremium = sub.IsPremium
 	}
@@ -333,10 +334,10 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 		return nil, err
 	}
 	rows, err := db.DB.Query(`
-		SELECT us.group_id, COALESCE(p.name, ug.name, 'standard'), us.valid_until, us.auto_renew, us.valid_until > NOW(),
+		SELECT us.id, COALESCE(us.plan_id, 0), COALESCE(p.name, 'standard'),
+		       us.valid_until, us.auto_renew, us.valid_until > NOW(),
 		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0)
 		FROM user_subscriptions us
-		JOIN user_groups ug ON ug.id = us.group_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1
 		ORDER BY us.valid_until DESC
@@ -350,7 +351,7 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 	for rows.Next() {
 		var item UserSubscriptionDetail
 		var validUntil time.Time
-		if err := rows.Scan(&item.GroupID, &item.GroupName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlanID, &item.PlanName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub); err != nil {
 			return nil, err
 		}
 		item.ValidUntil = validUntil.Format(time.RFC3339)
@@ -468,24 +469,6 @@ func createUserRecord(userID, preferredPlatform, locale string) (*User, error) {
 	// Бесплатная подписка больше не выдаётся при регистрации.
 	// Пользователь должен оплатить или ввести промокод.
 	return &user, nil
-}
-
-func ensureFreeSubscription(userDBID int) error {
-	var freeGroupID int
-	err := db.DB.QueryRow(`SELECT id FROM user_groups WHERE name = 'Free' LIMIT 1`).Scan(&freeGroupID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("load free group: %w", err)
-	}
-	validUntil := time.Now().AddDate(100, 0, 0) // 100 years
-	_, err = db.DB.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (user_id, group_id) DO NOTHING
-	`, userDBID, freeGroupID, validUntil)
-	return err
 }
 
 func newCanonicalUserID() string {

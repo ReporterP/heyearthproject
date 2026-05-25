@@ -275,9 +275,11 @@ func (s *server) ListSubscriptions(ctx context.Context, req *heyearth_v1.ListSub
 	}
 	response := &heyearth_v1.ListSubscriptionsResponse{Items: make([]*heyearth_v1.SubscriptionItem, 0, len(items))}
 	for _, item := range items {
+		// GroupId/GroupName were replaced by plan_id/plan_name in the data model,
+		// but the proto field tags are still named group_* for wire compatibility.
 		response.Items = append(response.Items, &heyearth_v1.SubscriptionItem{
-			GroupId:    int32(item.GroupID),
-			GroupName:  item.GroupName,
+			GroupId:    int32(item.PlanID),
+			GroupName:  item.PlanName,
 			ValidUntil: item.ValidUntil,
 			AutoRenew:  item.AutoRenew,
 			Active:     item.Active,

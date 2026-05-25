@@ -113,8 +113,6 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "dashboard.read", Name: "Dashboard Read", Description: "View admin dashboard"},
 	{Key: "users.read", Name: "Users Read", Description: "View users"},
 	{Key: "users.write", Name: "Users Write", Description: "Create and update users"},
-	{Key: "groups.read", Name: "Groups Read", Description: "View groups"},
-	{Key: "groups.write", Name: "Groups Write", Description: "Create and update groups"},
 	{Key: "subscriptions.read", Name: "Subscriptions Read", Description: "View subscriptions"},
 	{Key: "subscriptions.write", Name: "Subscriptions Write", Description: "Create and update subscriptions"},
 	{Key: "promocodes.read", Name: "Promocodes Read", Description: "View promocodes"},

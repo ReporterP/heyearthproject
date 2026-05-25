@@ -14,8 +14,8 @@ import (
 
 type promocodeFullResponse struct {
 	Code             string  `json:"code"`
-	GroupID          int     `json:"group_id_granted"`
-	GroupName        string  `json:"group_name"`
+	PlanID           int     `json:"plan_id_granted"`
+	PlanName         string  `json:"plan_name"`
 	DurationDays     int     `json:"duration_days"`
 	MaxUses          int     `json:"max_uses"`
 	CurrentUses      int     `json:"current_uses"`
@@ -29,14 +29,13 @@ type promocodeFullResponse struct {
 	FreeDays         int     `json:"free_days"`
 	TrafficGiftBytes int64   `json:"traffic_gift_bytes"`
 	AppliesToPlans   []int64 `json:"applies_to_plans"`
-	PlanIDGranted    *int    `json:"plan_id_granted"`
 	PerUserLimit     int     `json:"per_user_limit"`
 	IsActive         bool    `json:"is_active"`
 }
 
 type promocodeFullPayload struct {
 	Code             string  `json:"code"`
-	GroupID          int     `json:"group_id_granted"`
+	PlanID           int     `json:"plan_id_granted"`
 	DurationDays     int     `json:"duration_days"`
 	MaxUses          int     `json:"max_uses"`
 	ExpiresAt        string  `json:"expires_at"`
@@ -46,7 +45,6 @@ type promocodeFullPayload struct {
 	FreeDays         int     `json:"free_days"`
 	TrafficGiftBytes int64   `json:"traffic_gift_bytes"`
 	AppliesToPlans   []int64 `json:"applies_to_plans"`
-	PlanIDGranted    *int    `json:"plan_id_granted"`
 	PerUserLimit     int     `json:"per_user_limit"`
 	IsActive         *bool   `json:"is_active"`
 }
@@ -70,15 +68,15 @@ func ListPromocodesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT p.code, COALESCE(p.group_id_granted, 0), COALESCE(ug.name, ''),
+		SELECT p.code, COALESCE(p.plan_id_granted, 0), COALESCE(pl.name, ''),
 		       p.duration_days, p.max_uses, p.current_uses, p.expires_at,
 		       COALESCE(p.created_at, CURRENT_TIMESTAMP), COALESCE(p.updated_at, CURRENT_TIMESTAMP),
 		       COALESCE(p.promo_type, 'free_trial'), COALESCE(p.discount_percent, 0),
 		       COALESCE(p.discount_fixed_rub, 0), COALESCE(p.free_days, 0),
 		       COALESCE(p.traffic_gift_bytes, 0), p.applies_to_plans,
-		       p.plan_id_granted, COALESCE(p.per_user_limit, 1), COALESCE(p.is_active, true)
+		       COALESCE(p.per_user_limit, 1), COALESCE(p.is_active, true)
 		FROM promocodes p
-		LEFT JOIN user_groups ug ON ug.id = p.group_id_granted
+		LEFT JOIN plans pl ON pl.id = p.plan_id_granted
 		WHERE %s
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d
@@ -98,14 +96,13 @@ func ListPromocodesHandler(w http.ResponseWriter, r *http.Request) {
 		var expiresAt sql.NullTime
 		var createdAt, updatedAt time.Time
 		var appliesToPlans pq.Int64Array
-		var planIDGranted sql.NullInt64
 
-		if err := rows.Scan(&item.Code, &item.GroupID, &item.GroupName,
+		if err := rows.Scan(&item.Code, &item.PlanID, &item.PlanName,
 			&item.DurationDays, &item.MaxUses, &item.CurrentUses, &expiresAt,
 			&createdAt, &updatedAt,
 			&item.PromoType, &item.DiscountPercent, &item.DiscountFixedRub,
 			&item.FreeDays, &item.TrafficGiftBytes, &appliesToPlans,
-			&planIDGranted, &item.PerUserLimit, &item.IsActive); err != nil {
+			&item.PerUserLimit, &item.IsActive); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "scan error: "+err.Error())
 			return
 		}
@@ -115,10 +112,6 @@ func ListPromocodesHandler(w http.ResponseWriter, r *http.Request) {
 		item.CreatedAt = createdAt.Format(time.RFC3339)
 		item.UpdatedAt = updatedAt.Format(time.RFC3339)
 		item.AppliesToPlans = []int64(appliesToPlans)
-		if planIDGranted.Valid {
-			v := int(planIDGranted.Int64)
-			item.PlanIDGranted = &v
-		}
 		items = append(items, item)
 	}
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize})
@@ -150,13 +143,13 @@ func CreatePromocodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := db.DB.Exec(`
-		INSERT INTO promocodes (code, group_id_granted, duration_days, max_uses, expires_at,
+		INSERT INTO promocodes (code, plan_id_granted, duration_days, max_uses, expires_at,
 		       promo_type, discount_percent, discount_fixed_rub, free_days, traffic_gift_bytes,
-		       applies_to_plans, plan_id_granted, per_user_limit, is_active, created_at, updated_at)
-		VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
-	`, strings.ToUpper(strings.TrimSpace(pl.Code)), pl.GroupID, pl.DurationDays, pl.MaxUses, expiresAt,
+		       applies_to_plans, per_user_limit, is_active, created_at, updated_at)
+		VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+	`, strings.ToUpper(strings.TrimSpace(pl.Code)), pl.PlanID, pl.DurationDays, pl.MaxUses, expiresAt,
 		pl.PromoType, pl.DiscountPercent, pl.DiscountFixedRub, pl.FreeDays, pl.TrafficGiftBytes,
-		pq.Array(pl.AppliesToPlans), pl.PlanIDGranted, pl.PerUserLimit, isActive)
+		pq.Array(pl.AppliesToPlans), pl.PerUserLimit, isActive)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "create error: "+err.Error())
 		return
@@ -190,7 +183,7 @@ func UpdatePromocodeHandler(w http.ResponseWriter, r *http.Request) {
 
 	_, err := db.DB.Exec(`
 		UPDATE promocodes SET
-		    group_id_granted = NULLIF($1, 0),
+		    plan_id_granted = NULLIF($1, 0),
 		    duration_days = CASE WHEN $2 > 0 THEN $2 ELSE duration_days END,
 		    max_uses = $3,
 		    expires_at = COALESCE($4, expires_at),
@@ -200,14 +193,13 @@ func UpdatePromocodeHandler(w http.ResponseWriter, r *http.Request) {
 		    free_days = $8,
 		    traffic_gift_bytes = $9,
 		    applies_to_plans = $10,
-		    plan_id_granted = $11,
-		    per_user_limit = $12,
-		    is_active = $13,
+		    per_user_limit = $11,
+		    is_active = $12,
 		    updated_at = NOW()
-		WHERE code = $14
-	`, pl.GroupID, pl.DurationDays, pl.MaxUses, expiresAt,
+		WHERE code = $13
+	`, pl.PlanID, pl.DurationDays, pl.MaxUses, expiresAt,
 		pl.PromoType, pl.DiscountPercent, pl.DiscountFixedRub, pl.FreeDays, pl.TrafficGiftBytes,
-		pq.Array(pl.AppliesToPlans), pl.PlanIDGranted, pl.PerUserLimit, isActive, code)
+		pq.Array(pl.AppliesToPlans), pl.PerUserLimit, isActive, code)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "update error: "+err.Error())
 		return

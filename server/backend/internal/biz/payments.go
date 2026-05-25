@@ -92,26 +92,6 @@ func HasActiveSubscription(userID string) (bool, error) {
 	return count > 0, err
 }
 
-func ActivateSubscription(userID string, groupID int, plan string, durationDays int, priceRub int) error {
-	var dbUserID int
-	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
-	if err != nil {
-		return fmt.Errorf("resolve user %s: %w", userID, err)
-	}
-	validUntil := time.Now().AddDate(0, 0, durationDays)
-	_, err = db.DB.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan, price_rub)
-		VALUES ($1, $2, $3, true, $4, $5)
-		ON CONFLICT (user_id, group_id) DO UPDATE
-		SET valid_until = GREATEST(user_subscriptions.valid_until, $3),
-		    plan = $4, price_rub = $5, auto_renew = true
-	`, dbUserID, groupID, validUntil, plan, priceRub)
-	if err == nil {
-		NotifySubscriptionChange()
-	}
-	return err
-}
-
 // Tenant — minimal B2B tenant record. Mirrors the columns used by the
 // public-API/webhook code paths; admin handlers have their own response
 // type with additional fields.
@@ -215,7 +195,7 @@ func CreditTenantWallet(tenantID int, amount float64, description string, paymen
 //   user    — proxy access only, no dashboard rights
 //
 // Note: users.tenant_id is preserved as the "primary tenant" for legacy queries
-// that filter on it (servers, user_groups). New code should consult this table.
+// that filter on it. New code should consult this table.
 
 type TenantMember struct {
 	TenantID int

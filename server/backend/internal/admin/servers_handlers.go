@@ -120,7 +120,6 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		if sshKeyName != "" {
 			s.SshKeyName = sshKeyName
 		}
-		s.GroupIDs, _ = listServerGroupIDs(s.ID)
 		s.UpdatedAt = updatedAt.Format(time.RFC3339)
 		if metricsSyncedAt.Valid {
 			s.MetricsSyncedAt = metricsSyncedAt.Time.Format(time.RFC3339)
@@ -222,10 +221,6 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to insert server")
 		return
 	}
-	if err := replaceServerGroupsTx(tx, serverID, req.GroupIDs); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to assign server groups")
-		return
-	}
 	if err := tx.Commit(); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save server")
 		return
@@ -286,9 +281,6 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Status) == "" {
 		req.Status = existing.Status
 	}
-	if req.GroupIDs == nil {
-		req.GroupIDs = existing.GroupIDs
-	}
 
 	// Все серверы — exit nodes
 	isExitNode := true
@@ -345,10 +337,6 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, serverID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
-		return
-	}
-	if err := replaceServerGroupsTx(tx, serverID, req.GroupIDs); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to assign groups")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -685,7 +673,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 	if sshKeyName != "" {
 		server.SshKeyName = sshKeyName
 	}
-	server.GroupIDs, _ = listServerGroupIDs(server.ID)
 	server.UpdatedAt = updatedAt.Format(time.RFC3339)
 	if metricsSyncedAt.Valid {
 		server.MetricsSyncedAt = metricsSyncedAt.Time.Format(time.RFC3339)
@@ -694,36 +681,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		server.LoadMetrics = json.RawMessage(`{}`)
 	}
 	return server, nil
-}
-
-func listServerGroupIDs(serverID int) ([]int, error) {
-	rows, err := db.DB.Query(`SELECT group_id FROM server_groups WHERE server_id = $1 ORDER BY group_id ASC`, serverID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groupIDs []int
-	for rows.Next() {
-		var groupID int
-		if err := rows.Scan(&groupID); err != nil {
-			return nil, err
-		}
-		groupIDs = append(groupIDs, groupID)
-	}
-	return groupIDs, rows.Err()
-}
-
-func replaceServerGroupsTx(tx *sql.Tx, serverID int, groupIDs []int) error {
-	if _, err := tx.Exec(`DELETE FROM server_groups WHERE server_id = $1`, serverID); err != nil {
-		return err
-	}
-	for _, groupID := range groupIDs {
-		if _, err := tx.Exec(`INSERT INTO server_groups (server_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, serverID, groupID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ── Server actions (sync, restart, reprovision) ──────────

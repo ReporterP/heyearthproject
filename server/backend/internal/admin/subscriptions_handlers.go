@@ -32,8 +32,8 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Sortable columns whitelist (Phase 1 Task 3).
 	allowedSort := map[string]string{
+		"id":          "us.id",
 		"user_id":     "us.user_id",
-		"group_id":    "us.group_id",
 		"valid_until": "us.valid_until",
 		"plan_id":     "us.plan_id",
 		"started_at":  "us.started_at",
@@ -53,12 +53,13 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := fmt.Sprintf(`
-		SELECT us.user_id, u.user_id, us.group_id, ug.name, us.valid_until, us.auto_renew,
-		       COALESCE(us.plan_id, 0), COALESCE(p.name, ''), COALESCE(us.status, 'active'),
+		SELECT us.id, us.user_id, u.user_id,
+		       COALESCE(us.plan_id, 0), COALESCE(p.name, 'standard'),
+		       us.valid_until, us.auto_renew,
+		       COALESCE(us.status, 'active'),
 		       COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, '')
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
-		JOIN user_groups ug ON ug.id = us.group_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE %s
 		ORDER BY %s %s
@@ -75,18 +76,18 @@ func ListSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	type subRow struct {
 		subscriptionResponse
-		PlanID       int    `json:"plan_id"`
-		PlanName     string `json:"plan_name"`
-		Status       string `json:"status"`
-		PricePaid    int    `json:"price_paid"`
+		Status        string `json:"status"`
+		PricePaid     int    `json:"price_paid"`
 		PromocodeUsed string `json:"promocode_used"`
 	}
 	var items []subRow
 	for rows.Next() {
 		var item subRow
 		var validUntil time.Time
-		if err := rows.Scan(&item.UserID, &item.UserKey, &item.GroupID, &item.GroupName, &validUntil, &item.AutoRenew,
-			&item.PlanID, &item.PlanName, &item.Status, &item.PricePaid, &item.PromocodeUsed); err != nil {
+		if err := rows.Scan(&item.ID, &item.UserID, &item.UserKey,
+			&item.PlanID, &item.PlanName,
+			&validUntil, &item.AutoRenew,
+			&item.Status, &item.PricePaid, &item.PromocodeUsed); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan subscription: "+err.Error())
 			return
 		}
@@ -102,8 +103,8 @@ func UpsertSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if payload.UserID == 0 || payload.GroupID == 0 || strings.TrimSpace(payload.ValidUntil) == "" {
-		writeAdminError(w, http.StatusBadRequest, "user_db_id, group_id and valid_until are required")
+	if payload.UserID == 0 || payload.PlanID == 0 || strings.TrimSpace(payload.ValidUntil) == "" {
+		writeAdminError(w, http.StatusBadRequest, "user_db_id, plan_id and valid_until are required")
 		return
 	}
 	validUntil, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.ValidUntil))
@@ -118,19 +119,10 @@ func UpsertSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 		status = "active"
 	}
 
-	// plan_id is optional (0 = no plan, legacy subscription)
-	var planID *int
-	if payload.PlanID > 0 {
-		planID = &payload.PlanID
-	}
-
 	if _, err := db.DB.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan_id, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id, group_id)
-		DO UPDATE SET valid_until = EXCLUDED.valid_until, auto_renew = EXCLUDED.auto_renew,
-		             plan_id = EXCLUDED.plan_id, status = EXCLUDED.status
-	`, payload.UserID, payload.GroupID, validUntil, payload.AutoRenew, planID, status); err != nil {
+		INSERT INTO user_subscriptions (user_id, plan_id, valid_until, auto_renew, status)
+		VALUES ($1, $2, $3, $4, $5)
+	`, payload.UserID, payload.PlanID, validUntil, payload.AutoRenew, status); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save subscription: "+err.Error())
 		return
 	}
@@ -140,18 +132,16 @@ func UpsertSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 
 func DeleteSubscriptionHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/subscriptions/"), "/")
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
-		writeAdminError(w, http.StatusBadRequest, "Expected /api/admin/subscriptions/{userId}/{groupId}")
+	if path == "" {
+		writeAdminError(w, http.StatusBadRequest, "Expected /api/admin/subscriptions/{id}")
 		return
 	}
-	userID, errUser := strconv.Atoi(parts[0])
-	groupID, errGroup := strconv.Atoi(parts[1])
-	if errUser != nil || errGroup != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid subscription key")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, "Invalid subscription id")
 		return
 	}
-	if _, err := db.DB.Exec(`DELETE FROM user_subscriptions WHERE user_id = $1 AND group_id = $2`, userID, groupID); err != nil {
+	if _, err := db.DB.Exec(`DELETE FROM user_subscriptions WHERE id = $1`, id); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to delete subscription")
 		return
 	}

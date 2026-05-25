@@ -24,8 +24,9 @@ type User struct {
 
 // Subscription represents an active user subscription.
 type Subscription struct {
-	GroupID    int
-	GroupName  string
+	ID         int
+	PlanID     int
+	PlanName   string
 	IsPremium  bool
 	Plan       string
 	PriceRub   int
@@ -132,9 +133,10 @@ type ActiveVlessClient struct {
 // Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
 // plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
+	// Premium derivation: any active subscription = premium (groups removed).
 	rows, err := db.DB.Query(`
 		SELECT u.vless_uuid::text, u.user_id,
-		       COALESCE(bool_or(ug.is_premium), FALSE) AS is_premium,
+		       TRUE AS is_premium,
 		       COALESCE(
 		         (SELECT sub.plan_id FROM user_subscriptions sub
 		          WHERE sub.user_id = u.id AND sub.plan_id IS NOT NULL
@@ -144,7 +146,6 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		       ) AS best_plan_id
 		FROM users u
 		JOIN user_subscriptions us ON us.user_id = u.id
-		JOIN user_groups ug ON ug.id = us.group_id
 		WHERE u.vless_uuid IS NOT NULL
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
@@ -250,23 +251,24 @@ func touchLastSeen(userDBID int) {
 }
 
 // GetUserSubscription returns the best active subscription for a user.
-// Prefers plan-based subscriptions over legacy group-based ones.
+// Returns the longest-running active subscription (by valid_until).
 func GetUserSubscription(userID int) (*Subscription, error) {
 	var sub Subscription
-	// Try plan-based subscription first (new system)
+	var planID sql.NullInt64
 	err := db.DB.QueryRow(`
-		SELECT us.group_id, COALESCE(p.name, ug.name, 'standard'),
-		       COALESCE(p.price_rub > 200, ug.is_premium, FALSE),
+		SELECT us.id,
+		       COALESCE(us.plan_id, 0),
+		       COALESCE(p.name, 'standard'),
+		       COALESCE(p.price_rub > 200, FALSE),
 		       COALESCE(p.slug, us.plan, 'standard'),
 		       COALESCE(us.price_paid, p.price_rub, us.price_rub, 0),
 		       us.valid_until
 		FROM user_subscriptions us
-		JOIN user_groups ug ON us.group_id = ug.id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
 		ORDER BY us.valid_until DESC
 		LIMIT 1
-	`, userID).Scan(&sub.GroupID, &sub.GroupName, &sub.IsPremium, &sub.Plan, &sub.PriceRub, &sub.ValidUntil)
+	`, userID).Scan(&sub.ID, &planID, &sub.PlanName, &sub.IsPremium, &sub.Plan, &sub.PriceRub, &sub.ValidUntil)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -274,11 +276,14 @@ func GetUserSubscription(userID int) (*Subscription, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get subscription: %w", err)
 	}
+	if planID.Valid {
+		sub.PlanID = int(planID.Int64)
+	}
 	return &sub, nil
 }
 
 // ApplyPromocode applies a promocode to a user, extending their subscription.
-// Supports both legacy (group_id_granted) and new (free_trial/traffic_gift) promo types.
+// Supports new (free_trial/traffic_gift) promo types backed by plan_id_granted.
 func ApplyPromocode(userID int, code string) error {
 	tx, err := db.DB.Begin()
 	if err != nil {
@@ -286,16 +291,17 @@ func ApplyPromocode(userID int, code string) error {
 	}
 	defer tx.Rollback()
 
-	var groupID, durationDays, maxUses, currentUses, freeDays int
+	var planIDGranted sql.NullInt64
+	var durationDays, maxUses, currentUses, freeDays int
 	var promoType string
 	var expiresAt sql.NullTime
 
 	err = tx.QueryRow(`
-		SELECT COALESCE(group_id_granted, 1), COALESCE(duration_days, 30),
+		SELECT plan_id_granted, COALESCE(duration_days, 30),
 		       max_uses, current_uses, expires_at, COALESCE(promo_type, 'free_trial'),
 		       COALESCE(free_days, duration_days, 30)
 		FROM promocodes WHERE code = $1 FOR UPDATE
-	`, code).Scan(&groupID, &durationDays, &maxUses, &currentUses, &expiresAt, &promoType, &freeDays)
+	`, code).Scan(&planIDGranted, &durationDays, &maxUses, &currentUses, &expiresAt, &promoType, &freeDays)
 
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("промокод не найден")
@@ -322,22 +328,36 @@ func ApplyPromocode(userID int, code string) error {
 		days = freeDays
 	}
 
-	// Activate subscription using group_id=1 slot (standard single-plan model)
+	// Resolve target plan: explicit plan_id_granted wins, else fall back to free-trial.
+	var planID int
+	if planIDGranted.Valid {
+		planID = int(planIDGranted.Int64)
+	} else {
+		if err := tx.QueryRow(`SELECT id FROM plans WHERE slug = 'free-trial' LIMIT 1`).Scan(&planID); err != nil {
+			return fmt.Errorf("resolve free-trial plan: %w", err)
+		}
+	}
+
+	// Try to extend existing active subscription on the same plan; otherwise insert new.
 	baseValidUntil := time.Now().AddDate(0, 0, days)
-	_, err = tx.Exec(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until, status, promocode_used)
-		VALUES ($1, 1, $2, 'active', $3)
-		ON CONFLICT (user_id, group_id)
-		DO UPDATE SET valid_until =
-			CASE
-				WHEN user_subscriptions.valid_until > NOW()
-					THEN user_subscriptions.valid_until + ($4 * INTERVAL '1 day')
-				ELSE NOW() + ($4 * INTERVAL '1 day')
-			END,
-			status = 'active', promocode_used = $3
-	`, userID, baseValidUntil, code, days)
+	res, err := tx.Exec(`
+		UPDATE user_subscriptions
+		SET valid_until = valid_until + ($1 * INTERVAL '1 day'),
+		    status = 'active', promocode_used = $2
+		WHERE user_id = $3 AND plan_id = $4 AND valid_until > NOW()
+	`, days, code, userID, planID)
 	if err != nil {
 		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		_, err = tx.Exec(`
+			INSERT INTO user_subscriptions (user_id, plan_id, valid_until, status, promocode_used)
+			VALUES ($1, $2, $3, 'active', $4)
+		`, userID, planID, baseValidUntil, code)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -44,27 +44,6 @@ func RegisterRoutes() {
 		}
 	}))
 
-	http.HandleFunc("/api/admin/groups", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("groups.read", ListGroupsHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("groups.write", CreateGroupHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/groups/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPatch:
-			RequirePermission("groups.write", UpdateGroupHandler).ServeHTTP(w, r)
-		case http.MethodDelete:
-			RequirePermission("groups.write", DeleteGroupHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-
 	http.HandleFunc("/api/admin/subscriptions", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

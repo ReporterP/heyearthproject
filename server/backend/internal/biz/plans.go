@@ -229,7 +229,8 @@ func IsProtocolAllowed(userID, protocol string) bool {
 }
 
 // ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
-// Uses group_id=1 as the single-subscription slot (one active plan per user).
+// If the user already has an active subscription on the same plan, valid_until is extended;
+// otherwise a new subscription row is inserted (multiple plans per user allowed).
 func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
 	var dbUserID int
 	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
@@ -237,19 +238,29 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		return fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
-	// Ensure legacy group 1 exists (required for FK constraint).
-	// All plan-based subscriptions use group_id=1 as a single-slot key.
-	db.DB.Exec(`INSERT INTO user_groups (id, name, is_premium) VALUES (1, 'default', false) ON CONFLICT DO NOTHING`)
+	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
 
-	validUntil := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
+	// Try to extend an existing active subscription on the same plan first.
+	res, err := db.DB.Exec(fmt.Sprintf(`
+		UPDATE user_subscriptions
+		SET valid_until = GREATEST(valid_until, %s),
+		    price_paid = $1, promocode_used = $2,
+		    status = 'active', auto_renew = true
+		WHERE user_id = $3 AND plan_id = $4 AND valid_until > NOW()
+	`, validUntilExpr), pricePaid, promocodeUsed, dbUserID, planID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := res.RowsAffected(); affected > 0 {
+		NotifySubscriptionChange()
+		return nil
+	}
 
+	// No active sub for this plan — insert a new row.
 	_, err = db.DB.Exec(fmt.Sprintf(`
-		INSERT INTO user_subscriptions (user_id, group_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
-		VALUES ($1, 1, %s, true, $2, $3, $4, 'active', NOW())
-		ON CONFLICT (user_id, group_id) DO UPDATE
-		SET valid_until = GREATEST(user_subscriptions.valid_until, %s),
-		    plan_id = $2, price_paid = $3, promocode_used = $4, status = 'active', auto_renew = true
-	`, validUntil, validUntil), dbUserID, planID, pricePaid, promocodeUsed)
+		INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
+		VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
+	`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed)
 	if err == nil {
 		NotifySubscriptionChange()
 	}

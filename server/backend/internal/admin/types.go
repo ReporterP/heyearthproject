@@ -11,7 +11,6 @@ type dashboardOverview struct {
 	ActiveUsersCount   int64 `json:"active_users_count"`
 	ServersCount       int64 `json:"servers_count"`
 	OnlineServersCount int64 `json:"online_servers_count"`
-	GroupsCount        int64 `json:"groups_count"`
 	PromocodesCount    int64 `json:"promocodes_count"`
 	PaymentsCount      int64 `json:"payments_count"`
 	ActiveReleases     int64 `json:"active_releases"`
@@ -85,34 +84,18 @@ type userPayload struct {
 	PreferredPlatform string `json:"preferred_platform"`
 }
 
-type groupResponse struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	IsPremium   bool   `json:"is_premium"`
-	CompanyID   *int   `json:"company_id,omitempty"`
-	UpdatedAt   string `json:"updated_at"`
-}
-
-type groupPayload struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	IsPremium   bool   `json:"is_premium"`
-	CompanyID   *int   `json:"company_id"`
-}
-
 type subscriptionResponse struct {
+	ID         int    `json:"id"`
 	UserID     int    `json:"user_db_id"`
 	UserKey    string `json:"user_id"`
-	GroupID    int    `json:"group_id"`
-	GroupName  string `json:"group_name"`
+	PlanID     int    `json:"plan_id"`
+	PlanName   string `json:"plan_name"`
 	ValidUntil string `json:"valid_until"`
 	AutoRenew  bool   `json:"auto_renew"`
 }
 
 type subscriptionPayload struct {
 	UserID     int    `json:"user_db_id"`
-	GroupID    int    `json:"group_id"`
 	PlanID     int    `json:"plan_id"`
 	ValidUntil string `json:"valid_until"`
 	AutoRenew  bool   `json:"auto_renew"`
@@ -171,7 +154,6 @@ type serverResponse struct {
 	Status      string          `json:"status"`
 	LoadMetrics      json.RawMessage `json:"load_metrics"`
 	MetricsSyncedAt  string          `json:"metrics_synced_at,omitempty"`
-	GroupIDs         []int           `json:"group_ids"`
 	UpdatedAt        string          `json:"updated_at"`
 	// Exit-node / tunnel
 	IsExitNode      bool   `json:"is_exit_node"`
@@ -199,7 +181,6 @@ type serverPayload struct {
 	SshKeyID    *int   `json:"ssh_key_id"`
 	CountryCode string `json:"country_code"`
 	Status      string `json:"status"`
-	GroupIDs    []int  `json:"group_ids"`
 	// Exit-node / tunnel
 	IsExitNode      *bool  `json:"is_exit_node"`
 	TunnelProtocol  string `json:"tunnel_protocol"`
