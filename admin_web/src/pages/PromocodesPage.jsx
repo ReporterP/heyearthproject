@@ -60,7 +60,7 @@ export default function PromocodesPage() {
       code: '', promo_type: 'free_trial', duration_days: 30, max_uses: 100,
       discount_percent: 0, discount_fixed_rub: 0, free_days: 7,
       traffic_gift_bytes: 0, applies_to_plans: [], plan_id_granted: null,
-      per_user_limit: 1, is_active: true, group_id_granted: 0, expires_at: '',
+      per_user_limit: 1, is_active: true, expires_at: '',
     })
   }
 

@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Users, UsersRound, CreditCard, Ticket, Wallet, RotateCcw,
+  LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
 } from 'lucide-react'
@@ -17,7 +17,6 @@ export const commands = [
 
   // Users
   { id: 'go-users',         label: 'Пользователи',           icon: Users,           kind: 'page', href: '/users',         group: 'Пользователи',   shortcut: ['⌘', 'U'] },
-  { id: 'go-groups',        label: 'Группы',                 icon: UsersRound,      kind: 'page', href: '/groups',        group: 'Пользователи' },
   { id: 'go-subscriptions', label: 'Подписки',               icon: CreditCard,      kind: 'page', href: '/subscriptions', group: 'Пользователи' },
   { id: 'go-promocodes',    label: 'Промокоды',              icon: Ticket,          kind: 'page', href: '/promocodes',    group: 'Пользователи' },
 

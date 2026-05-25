@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, UsersRound, CreditCard, Ticket, Wallet, RotateCcw,
+  LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
   ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X,
@@ -23,7 +23,6 @@ const groups = [
     label: 'ПОЛЬЗОВАТЕЛИ',
     items: [
       { to: '/users',         icon: Users,      label: 'navUsers',         perm: 'users.read' },
-      { to: '/groups',        icon: UsersRound, label: 'navGroups',        perm: 'groups.read' },
       { to: '/subscriptions', icon: CreditCard, label: 'navSubscriptions', perm: 'subscriptions.read' },
       { to: '/promocodes',    icon: Ticket,     label: 'navPromocodes',    perm: 'promocodes.read' },
     ],

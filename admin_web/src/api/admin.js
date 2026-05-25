@@ -27,23 +27,6 @@ export function fetchUserDevices(userId) {
   return apiFetch(`/users/${userId}/devices`)
 }
 
-// ── Groups ──
-export function fetchGroupsPaged(params) {
-  return pagedFetch('/groups', params)
-}
-export function fetchGroups(pageSize = 200) {
-  return pagedFetch('/groups', { pageSize })
-}
-export function createGroup(payload) {
-  return apiFetch('/groups', { method: 'POST', body: payload })
-}
-export function updateGroup(id, payload) {
-  return apiFetch(`/groups/${id}`, { method: 'PATCH', body: payload })
-}
-export function deleteGroup(id) {
-  return apiFetch(`/groups/${id}`, { method: 'DELETE' })
-}
-
 // ── Subscriptions ──
 export function fetchSubscriptionsPaged(params) {
   return pagedFetch('/subscriptions', params)
@@ -51,8 +34,8 @@ export function fetchSubscriptionsPaged(params) {
 export function saveSubscription(payload) {
   return apiFetch('/subscriptions', { method: 'POST', body: payload })
 }
-export function deleteSubscription(userDbId, groupId) {
-  return apiFetch(`/subscriptions/${userDbId}/${groupId}`, { method: 'DELETE' })
+export function deleteSubscription(id) {
+  return apiFetch(`/subscriptions/${id}`, { method: 'DELETE' })
 }
 
 // ── Promocodes ──

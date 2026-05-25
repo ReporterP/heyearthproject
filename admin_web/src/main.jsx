@@ -17,7 +17,6 @@ import LoginPage from './auth/LoginPage.jsx'
 import Layout from './components/Layout.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import UsersPage from './pages/UsersPage.jsx'
-import GroupsPage from './pages/GroupsPage.jsx'
 import SubscriptionsPage from './pages/SubscriptionsPage.jsx'
 import PromocodesPage from './pages/PromocodesPage.jsx'
 import PaymentsPage from './pages/PaymentsPage.jsx'
@@ -53,7 +52,6 @@ createRoot(document.getElementById('root')).render(
                 <Route element={<Layout />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/users" element={<UsersPage />} />
-                  <Route path="/groups" element={<GroupsPage />} />
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/promocodes" element={<PromocodesPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />

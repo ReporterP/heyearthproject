@@ -76,7 +76,7 @@ export default function SubscriptionsPage() {
 
   function openCreate() {
     setEditing({
-      user_db_id: '', user_id: '', group_id: 1, plan_id: plans[0]?.id || 1,
+      user_db_id: '', user_id: '', plan_id: plans[0]?.id || 1,
       valid_until_date: '', auto_renew: true, status: 'active',
     })
   }
@@ -98,7 +98,6 @@ export default function SubscriptionsPage() {
         : editing.valid_until
       await saveSubscription({
         user_db_id: parseInt(editing.user_db_id) || 0,
-        group_id: parseInt(editing.group_id) || 1,
         plan_id: parseInt(editing.plan_id) || 0,
         valid_until: validUntil,
         auto_renew: editing.auto_renew,
@@ -114,7 +113,7 @@ export default function SubscriptionsPage() {
   async function handleDelete() {
     setSaving(true)
     try {
-      await deleteSubscription(confirm.user_db_id, confirm.group_id)
+      await deleteSubscription(confirm.id)
       toast.success('Удалено')
       setConfirm(null)
       load()
@@ -203,12 +202,12 @@ export default function SubscriptionsPage() {
               const isExpired = s.valid_until && new Date(s.valid_until) < new Date()
               const statusKey = isExpired ? 'expired' : (s.status || 'active')
               return (
-                <Tr key={`${s.user_db_id}-${s.group_id}-${i}`} className={isExpired ? 'opacity-50' : ''}>
+                <Tr key={s.id ?? `${s.user_db_id}-${i}`} className={isExpired ? 'opacity-50' : ''}>
                   <Td mono className="text-xs text-accent">{(s.user_id || '').slice(0, 16)}{s.user_id && s.user_id.length > 16 ? '…' : ''}</Td>
                   <Td>
                     {s.plan_name
                       ? <Badge variant="accent">{s.plan_name}</Badge>
-                      : <span className="text-tertiary text-xs">{s.group_name || '—'}</span>}
+                      : <span className="text-tertiary text-xs">—</span>}
                   </Td>
                   <Td>
                     <Badge variant={STATUS_VARIANT[statusKey] || 'default'}>{statusKey}</Badge>
