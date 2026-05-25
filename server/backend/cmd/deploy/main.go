@@ -1566,6 +1566,37 @@ echo '--- auth backend probe ---'
 curl -s -w 'http=%{http_code} time=%{time_total}s' -X POST http://127.0.0.1:8000/internal/hysteria2/auth -d '{"auth":"_probe_"}' 2>&1 | head -2`, false)
 	fmt.Println(hy2Out)
 
+	// Express (Hysteria2) — DB-driven runtime view: tunnel mode, bound exit,
+	// config_version, obfs rotation age, active client count.
+	fmt.Println("=== Express (Hysteria2) ===")
+	expressOut, _ := runSSH(client, `# server status + UDP listener
+SRV=$(systemctl is-active hysteria2-server 2>/dev/null || echo inactive)
+LISTEN=$(ss -ulnp 2>/dev/null | grep ':50443' | head -1 | awk '{print $5}')
+echo "  server: $SRV${LISTEN:+, UDP $LISTEN}"
+
+# Tunnel mode + healthy exits
+MODE=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(value,'unknown') FROM app_settings WHERE key='hysteria2_tunnel_mode';\"" 2>/dev/null | head -1 | tr -d ' ')
+N=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COUNT(*) FROM servers WHERE COALESCE(is_exit_node,FALSE)=TRUE AND COALESCE(lifecycle_state,'')='online' AND COALESCE(tunnel_status,'')='healthy';\"" 2>/dev/null | head -1 | tr -d ' ')
+echo "  tunnel mode: ${MODE:-unknown} (${N:-0} healthy exits)"
+
+# Best-RTT bound exit
+BEST=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(country_code,'??') || ' ' || ip_address || ' (RTT ' || COALESCE(last_rtt_ms::text,'?') || 'ms)' FROM servers WHERE COALESCE(is_exit_node,FALSE)=TRUE AND COALESCE(lifecycle_state,'')='online' AND COALESCE(tunnel_status,'')='healthy' ORDER BY COALESCE(last_rtt_ms,9999) ASC LIMIT 1;\"" 2>/dev/null | head -1)
+echo "  bound exit: ${BEST:-none}"
+
+# config version
+VER=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(value,'?') FROM app_settings WHERE key='hysteria2_config_version';\"" 2>/dev/null | head -1 | tr -d ' ')
+echo "  config_version: ${VER:-?}"
+
+# obfs rotation age
+ROT=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(value,'never') FROM app_settings WHERE key='hysteria2_obfs_rotated_at';\"" 2>/dev/null | head -1 | tr -d ' ')
+echo "  obfs rotation: ${ROT:-never}"
+
+# active clients via stats API
+SECRET=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(value,'') FROM app_settings WHERE key='hysteria2_stats_secret';\"" 2>/dev/null | head -1 | tr -d ' ')
+CLIENTS=$(curl -s -m 1 -H "Authorization: ${SECRET}" http://127.0.0.1:7653/traffic 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null)
+echo "  active clients: ${CLIENTS:-?}"`, false)
+	fmt.Println(expressOut)
+
 	// nginx stream
 	fmt.Println("=== Nginx stream config ===")
 	nginxOut, _ := runSSH(client, "cat /etc/nginx/stream.d/heyearth.conf 2>/dev/null || echo 'NO STREAM CONFIG'", false)
