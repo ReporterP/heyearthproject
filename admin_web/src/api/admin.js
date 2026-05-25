@@ -32,8 +32,8 @@ export function fetchUserSubscriptions(userDbId) {
 export function fetchUserPayments(userDbId) {
   return pagedFetch('/payments', { user_db_id: userDbId, page: 1, pageSize: 50, sort: 'created_at', dir: 'desc' })
 }
-export function fetchUserTraffic(userDbId, days = 30) {
-  return apiFetch(`/users/${userDbId}/traffic?days=${days}`)
+export function fetchUserTraffic(userDbId) {
+  return apiFetch(`/users/${userDbId}/traffic`)
 }
 
 // ── Subscriptions ──
