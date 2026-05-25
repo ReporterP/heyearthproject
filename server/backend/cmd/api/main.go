@@ -870,18 +870,23 @@ func main() {
 	}
 	admin.InitCORS()
 
-	// Устанавливаем хук для синхронизации Xray + Hysteria2 при изменении подписок (debounced).
-	// Both loops debounce internally — calling both per event is safe.
-	biz.OnSubscriptionChange = func() {
-		RequestXraySync()
-		RequestHysteria2Sync()
-	}
+	// Wire the biz-layer sync orchestrator. biz.RequestSync() debounces
+	// 2s and fans out to both Xray and Hysteria2. All subscription/plan
+	// mutation paths (handlers, crons, admin) call biz.NotifySubscriptionChange
+	// which funnels through RequestSync.
+	biz.XraySyncFn = RequestXraySync
+	biz.Hysteria2SyncFn = RequestHysteria2Sync
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
 
 	// Hysteria2 server sync (no-op if hysteria binary not installed)
 	StartHysteria2SyncLoop()
+
+	// Hysteria2 per-user traffic collector — polls loopback trafficStats
+	// endpoint every 60s and writes deltas into traffic_stats so cycle-quota
+	// enforcement (biz.IsCycleExceeded) covers Express users transparently.
+	StartHysteria2StatsLoop()
 
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()

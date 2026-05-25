@@ -9,18 +9,6 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
-// OnSubscriptionChange — колбэк, вызываемый при изменении подписок.
-// Устанавливается из cmd/api для синхронизации Xray конфига.
-var OnSubscriptionChange func()
-
-// NotifySubscriptionChange вызывает колбэк если он установлен.
-// Экспортируется для использования из admin-пакета.
-func NotifySubscriptionChange() {
-	if OnSubscriptionChange != nil {
-		go OnSubscriptionChange()
-	}
-}
-
 type PaymentRecord struct {
 	ID               int
 	UserID           string
