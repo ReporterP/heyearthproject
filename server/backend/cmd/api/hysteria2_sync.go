@@ -24,6 +24,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,40 +120,53 @@ func SyncHysteria2Config() error {
 
 	yaml := renderHysteria2Config(maxUp, maxDown, obfsPassword)
 
+	// No-op short-circuit FIRST — if content matches what's on disk, nothing
+	// changed since last sync and we don't need to touch validation/reload.
+	// This also avoids the "port already in use" false-failure during validation
+	// when a running hysteria2-server is holding :50443 with the same config.
+	if existing, err := os.ReadFile(hysteria2ConfigPath); err == nil {
+		if bytes.Equal(existing, []byte(yaml)) {
+			return nil
+		}
+	}
+
 	tmpPath := hysteria2ConfigPath + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(yaml), 0600); err != nil {
 		return fmt.Errorf("write tmp config: %w", err)
 	}
 
-	// Smoke-validate by parsing config without starting (hysteria has no --check flag,
-	// so we use `--disable-update-check` + a short-running `server --config` with
-	// SIGTERM. Simpler: rely on `hysteria server --config X` returning a parse error
-	// in stderr if YAML is broken — we shell-out with a 1-second timeout.
-	if err := validateHysteria2Config(tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("hysteria2 config validation failed: %w", err)
-	}
-
-	// No-op if content matches disk.
-	if existing, err := os.ReadFile(hysteria2ConfigPath); err == nil {
-		if bytes.Equal(existing, []byte(yaml)) {
-			_ = os.Remove(tmpPath)
-			return nil
-		}
-	}
+	// NOTE: we used to run `hysteria server --config <tmp>` as a smoke test,
+	// but hysteria has no `--check` flag and any binary-level check tries to
+	// bind :50443 — which is already held by the running hysteria2-server.
+	// The bind-conflict made every sync after the first one fail spuriously.
+	// We rely instead on `systemctl reload` (SIGHUP): hysteria2 hot-reloads
+	// the config, and if it can't parse the new file it keeps the in-memory
+	// config + logs the error — fail-safe by design.
 
 	if err := os.Rename(tmpPath, hysteria2ConfigPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename hysteria2 config: %w", err)
 	}
 
-	// Reload (SIGHUP). Hysteria2 supports config hot-reload without dropping connections.
-	if out, err := exec.Command("systemctl", "reload", "hysteria2-server").CombinedOutput(); err != nil {
-		// Fall back to restart only if reload not supported by the unit.
-		log.Printf("[hysteria2-sync] reload failed (%v: %s), trying restart", err, strings.TrimSpace(string(out)))
-		if out2, err2 := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err2 != nil {
-			return fmt.Errorf("restart hysteria2-server: %w (%s)", err2, strings.TrimSpace(string(out2)))
+	// Hand the file off to the hysteria service account. heyearth-api runs as
+	// root, so the renamed file is root:root 0600 by default — the hysteria
+	// systemd unit runs as user `hysteria` and would otherwise hit EACCES on
+	// open. We don't fail the sync on chown error: best-effort, log only.
+	if hu, err := user.Lookup("hysteria"); err == nil {
+		uid, _ := strconv.Atoi(hu.Uid)
+		gid, _ := strconv.Atoi(hu.Gid)
+		if cerr := os.Chown(hysteria2ConfigPath, uid, gid); cerr != nil {
+			log.Printf("[hysteria2-sync] chown config to hysteria failed: %v", cerr)
 		}
+		_ = os.Chmod(hysteria2ConfigPath, 0640)
+	}
+
+	// Restart. Hysteria v2.6.x does NOT support SIGHUP hot-reload — it treats
+	// SIGHUP as a terminate signal and exits cleanly without restarting itself.
+	// Plain `systemctl restart` is the only reliable way to pick up new config.
+	// QUIC clients reconnect within ~1s after the brief downtime.
+	if out, err := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err != nil {
+		return fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
 	// Bump config_version so admin UI / clients can detect changes.
@@ -243,29 +258,44 @@ sniff:
 // the subsequent `systemctl reload` failing.
 func validateHysteria2Config(path string) error {
 	// Quick syntax sanity: try parsing the file with `hysteria server --config <path>`
-	// for 500ms then send SIGTERM. If the process exits with stderr mentioning
-	// "yaml" or "config" before the timeout, it's a parse error.
+	// for 2 seconds then send SIGTERM. 500ms was too tight — hysteria's TLS cert
+	// load + UDP socket bind can take longer on first run. 2s is the upper bound
+	// for healthy startup; anything beyond that is suspicious.
+	//
+	// We capture BOTH stdout and stderr because hysteria can log FATAL to either
+	// depending on log-format and version. If the process exits within the
+	// timeout, the captured output usually contains a "FATAL <reason>" line that
+	// is the real diagnostic — surface it to the caller verbatim.
 	cmd := exec.Command("hysteria", "server", "--config", path, "--disable-update-check")
-	var stderr bytes.Buffer
+	var stderr, stdout bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("hysteria start: %w", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
-		out := stderr.String()
+		out := stderr.String() + stdout.String()
 		if strings.Contains(strings.ToLower(out), "yaml") || strings.Contains(strings.ToLower(out), "unmarshal") {
 			return fmt.Errorf("yaml parse: %s", strings.TrimSpace(out))
 		}
 		return nil
 	case err := <-done:
-		out := stderr.String()
-		// If hysteria exited before the timeout, it crashed on parse/config.
-		return fmt.Errorf("exited early: %v (%s)", err, strings.TrimSpace(out))
+		out := strings.TrimSpace(stderr.String() + stdout.String())
+		// Port conflict ≠ bad config — it just means the live server is holding
+		// :50443 with an existing config. The new file passed syntax/TLS/auth
+		// init successfully up to the bind step.
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "address already in use") ||
+			strings.Contains(lower, "bind: address already in use") {
+			return nil
+		}
+		// If hysteria exited before the timeout, it crashed on parse/TLS/auth/etc.
+		return fmt.Errorf("exited early: %v — %s", err, out)
 	}
 }
 

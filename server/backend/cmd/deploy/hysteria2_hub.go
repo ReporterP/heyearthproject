@@ -52,14 +52,32 @@ chmod 750 /etc/hysteria
 
 # Grant hysteria user read access to Let's Encrypt certs.
 # Standard Let's Encrypt layout: /etc/letsencrypt/{live,archive}/<domain>/...
-# Add hysteria to ssl-cert group if it exists, fallback to ACL.
-if getent group ssl-cert >/dev/null; then
-  usermod -aG ssl-cert hysteria || true
-else
-  # ACL fallback if ssl-cert group isn't present
-  if command -v setfacl >/dev/null; then
-    setfacl -R -m u:hysteria:rX /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
-  fi
+# Default certbot perms are 0700 root:root on archive/, which blocks even
+# group-membered users. We create the ssl-cert group (idempotent), set
+# archive+live group ownership + group-read perms, then add hysteria to it.
+# Without this hysteria service fails with "permission denied" on TLS load.
+getent group ssl-cert >/dev/null || groupadd -r ssl-cert
+usermod -aG ssl-cert hysteria || true
+if [ -d /etc/letsencrypt/archive ]; then
+  chgrp -R ssl-cert /etc/letsencrypt/archive /etc/letsencrypt/live 2>/dev/null || true
+  chmod -R g+rX /etc/letsencrypt/archive /etc/letsencrypt/live 2>/dev/null || true
+fi
+
+# Certbot post-renewal hook: certbot rewrites files on renew and resets
+# perms back to root-only. Drop a renewal-hooks/deploy/ script that re-applies
+# the ssl-cert group ownership so hysteria keeps reading the new cert.
+if [ -d /etc/letsencrypt/renewal-hooks/deploy ]; then
+  cat > /etc/letsencrypt/renewal-hooks/deploy/00-ssl-cert-group.sh <<'HOOK'
+#!/usr/bin/env bash
+# Auto-installed by HeYearth --setup-hysteria2-hub. Re-applies ssl-cert
+# group ownership on certbot-managed certs so the hysteria2-server service
+# can keep reading certs after each renewal.
+set -e
+getent group ssl-cert >/dev/null || groupadd -r ssl-cert
+chgrp -R ssl-cert /etc/letsencrypt/archive /etc/letsencrypt/live 2>/dev/null || true
+chmod -R g+rX /etc/letsencrypt/archive /etc/letsencrypt/live 2>/dev/null || true
+HOOK
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/00-ssl-cert-group.sh
 fi
 
 # ── 4. iptables UDP port-hopping range → :50443 ──
@@ -100,7 +118,10 @@ User=hysteria
 Group=hysteria
 WorkingDirectory=/etc/hysteria
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/server.yaml --disable-update-check
-ExecReload=/bin/kill -HUP $MAINPID
+# Hysteria v2.6.x does not honor SIGHUP for hot-reload (it terminates instead).
+# heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
+# ExecReload points at restart so ad-hoc systemctl reload from operators works.
+ExecReload=/bin/systemctl restart hysteria2-server
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
