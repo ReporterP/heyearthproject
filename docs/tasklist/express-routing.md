@@ -255,7 +255,72 @@ created: 2026-05-25
 ## Verification log
 
 Evidence каждого закрытия:
-- (пока пусто, заполняется по мере выполнения)
+
+- **express-001** `[2026-05-25]` миграция `migrations/000048_express_hysteria2.up.sql` создана:
+  - `ALTER TABLE users ADD COLUMN hysteria2_password VARCHAR(64)`
+  - `ALTER TABLE plans ADD COLUMN express_enabled BOOL, express_up_mbps INT, express_down_mbps INT`
+  - `UPDATE plans SET express_enabled=true, allowed_protocols+='hysteria2' WHERE slug IN ('all-inclusive','annual-premium')`
+  - `INSERT INTO app_settings (hysteria2_obfs_password, hysteria2_config_version)` с conflict-do-nothing
+  - Парный `.down.sql` сделан. Применится на проде через стандартный migrate runner.
+
+- **express-002** `[2026-05-25]` `internal/biz/plans.go` расширен: `Plan.ExpressEnabled/UpMbps/DownMbps`, все 5 SQL-запросов (`ListActive`, `ListAll`, `GetPlanByID`, `GetPlanBySlug`, `CreatePlan`, `UpdatePlan`) включают новые колонки. `go build ./...` ✓
+
+- **express-003** `[2026-05-25]` `internal/biz/hysteria2_auth.go`:
+  - `GetUserHysteria2Password(userID)` — lazy-fills `users.hysteria2_password` (32 bytes hex)
+  - `GetHysteria2ObfsPassword()` — lazy-fills `app_settings.hysteria2_obfs_password`
+  - `ValidateHysteria2Auth(password)` — проверяет user не blocked + active sub + plan.express_enabled + 'hysteria2' in allowed_protocols + traffic limit
+  - `go build ./...` ✓
+
+- **express-004** `[2026-05-25]` `cmd/api/hysteria2_auth_handler.go`:
+  - `POST /internal/hysteria2/auth` зарегистрирован в `main.go`
+  - Reject non-loopback requests via `isLoopback(r.RemoteAddr)` — двойная защита (nginx + handler)
+  - Response shape совместим с Hysteria2 HTTP auth-backend protocol: `{"ok":true,"id":"<userID>"}` / `{"ok":false}`
+  - `go build ./...` ✓
+
+- **express-005** `[2026-05-25]` `cmd/api/hysteria2_sync.go`:
+  - `SyncHysteria2Config()` пишет `/etc/hysteria/server.yaml` с Salamander obfs, Brutal up/down (max across active plans), HTTP auth backend на 127.0.0.1:8000
+  - Atomic write (.tmp → validate → rename) + `systemctl reload` (fallback на restart)
+  - No-op early return если hysteria binary отсутствует (dev environments)
+  - Bumps `hysteria2_config_version` в app_settings
+  - `RequestHysteria2Sync()` debounced 2s, привязан к `OnSubscriptionChange` рядом с `RequestXraySync`
+  - `StartHysteria2SyncLoop()` стартует initial + 5-min ticker, no-op если бинаря нет
+  - `go build ./...` ✓
+
+- **express-006** `[2026-05-25]` `cmd/deploy/hysteria2_hub.go`:
+  - Flag `--setup-hysteria2-hub` зарегистрирован в `cmd/deploy/main.go`
+  - Скрипт идемпотентен: install hysteria binary v2.6.1, useradd hysteria, mkdir /etc/hysteria, iptables nat REDIRECT 50000-50100→50443, ufw allow, systemd unit с SIGHUP reload, ждёт heyearth-api initial config до 30s, enable+start service
+  - Hardening: NoNewPrivileges, ProtectSystem=strict, ReadWritePaths=/etc/hysteria, ReadOnlyPaths=/etc/letsencrypt, ssl-cert group/ACL для чтения LE-сертификатов
+  - `go build ./...` ✓
+
+- **express-007** `[2026-05-25]` `OnSubscriptionChange` в `cmd/api/main.go` теперь вызывает `RequestXraySync() + RequestHysteria2Sync()` — обе debounce независимо. `StartHysteria2SyncLoop()` добавлен рядом с `StartXraySyncLoop()`.
+
+- **express-008** `[2026-05-25]` `cmd/api/subscription_handler.go`:
+  - `canHysteria2 := biz.IsProtocolAllowed(userID, "hysteria2")` добавлен в `buildClashConfig`
+  - Новый Clash профиль `HiEarth-Express` (type: hysteria2) выдаётся premium-юзерам, с per-user password, общим obfs password, plan-specific up/down Mbps
+  - Профиль НЕ выдаётся base/free пользователям благодаря `IsProtocolAllowed` проверке
+
+- **express-010** `[2026-05-25]` `admin_web/src/pages/PlansPage.jsx`:
+  - openCreate() инициализирует Express defaults (enabled=false, 50/100)
+  - Новая Card с тремя полями: checkbox Express Enabled, two numeric inputs Up/Down Mbps
+  - Disabled state когда express_enabled=false (UX guard)
+  - Theme-lock: text-primary/tertiary, bg-elevated, font-mono tabular-nums, без shadow
+  - `npm run build` ✓
+
+- **express-011** `[2026-05-25]` `admin_web/src/pages/ServerDetailPage.jsx`:
+  - Новый Card "Express (Hysteria2)" только для Hub-серверов (`!is_exit_node`)
+  - Status badge (healthy/degraded/disabled) + version badge
+  - 6-column grid: binary, config, active plans, up cap, down cap, last sync
+  - Error display если `last_error` непустой
+  - Новый biz helper `biz.GetHysteria2Status()`, admin route `GET /api/admin/hysteria2/status` (RequirePermission "servers.read")
+  - `npm run build` ✓
+
+- **express-012** `[2026-05-25]` `cmd/deploy/main.go` doStatus расширен секцией `=== Hysteria2 (Express) ===`:
+  - hysteria version, systemctl is-active, config presence
+  - `ss -ulnp` для UDP 50000-50100/50443
+  - `iptables -t nat -L PREROUTING` для redirect rule
+  - curl probe на `/internal/hysteria2/auth`
+
+- **express-009, express-013, express-014** — production verification — требуют доступа к Hub-серверу и тестовому Happ-клиенту. Делается отдельно после применения миграции и `cmd/deploy --setup-hysteria2-hub`.
 
 ## Локальные команды Beads (запускать на dev-машине, не в remote)
 

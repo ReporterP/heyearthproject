@@ -52,6 +52,7 @@ export default function PlansPage() {
       slug: '', name: '', description: '', price_rub: 0, duration_days: 30,
       traffic_limit_bytes: null, allowed_protocols: ['all'], features: '{}',
       is_active: true, direct_routing_enabled: false, sort_order: 0, auto_renew_default: true, server_ids: [],
+      express_enabled: false, express_up_mbps: 50, express_down_mbps: 100,
     })
   }
 
@@ -303,6 +304,56 @@ export default function PlansPage() {
                     </label>
                   )
                 })}
+              </div>
+            </Card>
+
+            <Card className="p-4 mb-4">
+              <label className="text-xs text-tertiary mb-2 block">Express (низколатентный маршрут на UDP)</label>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <label className="flex items-start gap-2 cursor-pointer md:col-span-3">
+                  <input
+                    type="checkbox"
+                    checked={!!editing.express_enabled}
+                    onChange={e => setEditing({...editing, express_enabled: e.target.checked})}
+                    className="rounded mt-1"
+                  />
+                  <span>
+                    <span className="block text-sm text-primary">Включить Express</span>
+                    <span className="block text-xs text-tertiary">
+                      Дополнительный UDP/QUIC-маршрут с обфускацией для игр, голоса и видеозвонков.
+                      Happ сам переключается, при недоступности UDP — fallback на основной маршрут.
+                      Чтобы профиль попал в подписку, добавьте также <span className="font-mono">hysteria2</span> в список протоколов выше.
+                    </span>
+                  </span>
+                </label>
+                <div>
+                  <label className="text-xs text-tertiary block mb-1">Up Mbps</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    disabled={!editing.express_enabled}
+                    value={editing.express_up_mbps ?? 50}
+                    onChange={e => setEditing({...editing, express_up_mbps: parseInt(e.target.value) || 0})}
+                    className="font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-tertiary block mb-1">Down Mbps</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    disabled={!editing.express_enabled}
+                    value={editing.express_down_mbps ?? 100}
+                    onChange={e => setEditing({...editing, express_down_mbps: parseInt(e.target.value) || 0})}
+                    className="font-mono tabular-nums"
+                  />
+                </div>
+                <div className="text-xs text-tertiary md:col-span-1">
+                  <p>Значения для Brutal congestion control.</p>
+                  <p className="mt-1">Не ставьте выше реального канала — иначе jitter и потери.</p>
+                </div>
               </div>
             </Card>
 

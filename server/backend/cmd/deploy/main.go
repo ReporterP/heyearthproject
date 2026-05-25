@@ -63,6 +63,7 @@ func main() {
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
 	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality + SOCKS5 + HTTP proxy) на главный сервер")
+	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
 	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
@@ -95,6 +96,8 @@ func main() {
 		mode = "nginx"
 	case *setupXrayFlag:
 		mode = "setup-xray"
+	case *setupHy2Flag:
+		mode = "setup-hysteria2-hub"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
@@ -108,7 +111,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -230,6 +233,8 @@ func main() {
 		doNginx(sftpClient, client, cfg)
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
+	case "setup-hysteria2-hub":
+		setupHysteria2Hub(client, cfg)
 	case "backup":
 		doBackup(client, cfg)
 	case "restore":
@@ -1539,6 +1544,27 @@ fi
 echo '--- ports ---'
 ss -tlnp 2>/dev/null | grep -E '10443|:443 |8388|1080|8080' || echo 'no matching ports'`, false)
 	fmt.Println(xrayOut)
+
+	// Hysteria2 (Express)
+	fmt.Println("=== Hysteria2 (Express) ===")
+	hy2Out, _ := runSSH(client, `if command -v hysteria >/dev/null 2>&1; then
+  echo "binary: $(hysteria version 2>/dev/null | head -1)"
+else
+  echo "binary: NOT INSTALLED"
+fi
+systemctl is-active hysteria2-server 2>/dev/null || echo "service: not running"
+if [ -f /etc/hysteria/server.yaml ]; then
+  echo "config: present ($(wc -l < /etc/hysteria/server.yaml) lines)"
+else
+  echo "config: absent"
+fi
+echo '--- UDP listeners ---'
+ss -ulnp 2>/dev/null | grep -E ':50(4|0)' || echo 'no UDP listeners on 50000-50100/50443'
+echo '--- iptables nat ---'
+iptables -t nat -L PREROUTING -n 2>/dev/null | grep -E '5000[0-9]:5010[0-9]|50443' || echo 'no UDP redirect rule found'
+echo '--- auth backend probe ---'
+curl -s -w 'http=%{http_code} time=%{time_total}s' -X POST http://127.0.0.1:8000/internal/hysteria2/auth -d '{"auth":"_probe_"}' 2>&1 | head -2`, false)
+	fmt.Println(hy2Out)
 
 	// nginx stream
 	fmt.Println("=== Nginx stream config ===")

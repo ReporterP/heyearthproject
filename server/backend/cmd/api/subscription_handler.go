@@ -161,6 +161,7 @@ func buildClashConfig(userID string) string {
 	canVLESS := biz.IsProtocolAllowed(userID, "vless")
 	canSOCKS := biz.IsProtocolAllowed(userID, "socks")
 	canHTTP := biz.IsProtocolAllowed(userID, "http")
+	canHysteria2 := biz.IsProtocolAllowed(userID, "hysteria2")
 
 	var proxies []string
 	var proxyNames []string
@@ -217,6 +218,45 @@ func buildClashConfig(userID string) string {
       short-id: "%s"
     client-fingerprint: chrome
     servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+	}
+
+	// 1c. Hysteria2 Express (premium plans only — auto-routed by Happ for UDP-heavy traffic).
+	// Happ chooses Hysteria2 when QUIC is available; falls back to VLESS Reality when UDP
+	// is blocked (corporate WiFi, mobile carriers throttling QUIC). The auth-backend
+	// enforces plan membership server-side, so even if someone copies the URI to a base-tier
+	// account it will be rejected.
+	if canHysteria2 {
+		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
+		obfsPassword := biz.GetHysteria2ObfsPassword()
+		// Per-plan up/down. Fall back to safe defaults if plan lookup fails.
+		up, down := 50, 100
+		if plan, perr := biz.GetUserPlan(userID); perr == nil && plan != nil && plan.ExpressEnabled {
+			if plan.ExpressUpMbps > 0 {
+				up = plan.ExpressUpMbps
+			}
+			if plan.ExpressDownMbps > 0 {
+				down = plan.ExpressDownMbps
+			}
+		}
+		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
+			name := "HiEarth-Express"
+			proxyNames = append(proxyNames, name)
+			// Clash.Meta hysteria2 profile. Ports range matches the iptables redirect
+			// configured by cmd/deploy --setup-hysteria2-hub. Happ picks one randomly
+			// and rotates per its port-hop schedule.
+			proxies = append(proxies, fmt.Sprintf(
+				`  - name: "%s"
+    type: hysteria2
+    server: %s
+    ports: 50000-50100
+    password: "%s"
+    obfs: salamander
+    obfs-password: "%s"
+    sni: %s
+    skip-cert-verify: false
+    up: "%d Mbps"
+    down: "%d Mbps"`, name, host, hy2Password, obfsPassword, host, up, down))
+		}
 	}
 
 	// 2. SOCKS

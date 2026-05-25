@@ -26,6 +26,11 @@ type Plan struct {
 	SortOrder        int      `json:"sort_order"`
 	AutoRenewDefault      bool   `json:"auto_renew_default"`
 	MaxActivationsPerUser *int  `json:"max_activations_per_user,omitempty"`
+	// Express (Hysteria2) — UDP/QUIC inbound on the Hub for low-latency traffic.
+	// Brutal congestion control needs explicit up/down targets in Mbps per plan.
+	ExpressEnabled  bool `json:"express_enabled"`
+	ExpressUpMbps   int  `json:"express_up_mbps"`
+	ExpressDownMbps int  `json:"express_down_mbps"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
 	// Computed
@@ -38,7 +43,9 @@ func ListActivePlans() ([]Plan, error) {
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
 		       sort_order, auto_renew_default,
-		       max_activations_per_user, created_at, updated_at
+		       max_activations_per_user,
+		       express_enabled, express_up_mbps, express_down_mbps,
+		       created_at, updated_at
 		FROM plans WHERE is_active = TRUE
 		ORDER BY sort_order, price_rub
 	`)
@@ -53,7 +60,9 @@ func ListActivePlans() ([]Plan, error) {
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
 			&p.DirectRoutingEnabled, &p.SortOrder,
-			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.AutoRenewDefault, &p.MaxActivationsPerUser,
+			&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		p.ServerIDs = getPlanServerIDs(p.ID)
@@ -68,7 +77,9 @@ func ListAllPlans() ([]Plan, error) {
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
 		       sort_order, auto_renew_default,
-		       max_activations_per_user, created_at, updated_at
+		       max_activations_per_user,
+		       express_enabled, express_up_mbps, express_down_mbps,
+		       created_at, updated_at
 		FROM plans ORDER BY sort_order, id
 	`)
 	if err != nil {
@@ -82,7 +93,9 @@ func ListAllPlans() ([]Plan, error) {
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 			&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
 			&p.DirectRoutingEnabled, &p.SortOrder,
-			&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.AutoRenewDefault, &p.MaxActivationsPerUser,
+			&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		p.ServerIDs = getPlanServerIDs(p.ID)
@@ -98,7 +111,9 @@ func GetPlanByID(id int) (*Plan, error) {
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
 		       sort_order, auto_renew_default,
-		       max_activations_per_user, created_at, updated_at
+		       max_activations_per_user,
+		       express_enabled, express_up_mbps, express_down_mbps,
+		       created_at, updated_at
 		FROM plans WHERE id = $1
 	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
@@ -118,7 +133,9 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		       allowed_protocols, COALESCE(features::text, '{}'), is_active, direct_routing_enabled,
 		       sort_order, auto_renew_default,
-		       max_activations_per_user, created_at, updated_at
+		       max_activations_per_user,
+		       express_enabled, express_up_mbps, express_down_mbps,
+		       created_at, updated_at
 		FROM plans WHERE slug = $1
 	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
@@ -153,12 +170,14 @@ func CreatePlan(p *Plan) (int, error) {
 	err := db.DB.QueryRow(`
 		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		                   allowed_protocols, features, is_active, direct_routing_enabled, sort_order,
-		                   auto_renew_default, max_activations_per_user)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+		                   auto_renew_default, max_activations_per_user,
+		                   express_enabled, express_up_mbps, express_down_mbps)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
 		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
-		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser).Scan(&id)
+		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser,
+		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -174,11 +193,14 @@ func UpdatePlan(id int, p *Plan) error {
 		UPDATE plans SET slug=$1, name=$2, description=$3, price_rub=$4, duration_days=$5,
 		       traffic_limit_bytes=$6, allowed_protocols=$7, features=$8::jsonb, is_active=$9,
 		       direct_routing_enabled=$10, sort_order=$11, auto_renew_default=$12,
-		       max_activations_per_user=$13, updated_at=CURRENT_TIMESTAMP
-		WHERE id = $14
+		       max_activations_per_user=$13,
+		       express_enabled=$14, express_up_mbps=$15, express_down_mbps=$16,
+		       updated_at=CURRENT_TIMESTAMP
+		WHERE id = $17
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
 		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
-		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser, id)
+		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser,
+		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps, id)
 	if err != nil {
 		return err
 	}

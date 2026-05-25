@@ -94,6 +94,9 @@ export function fetchServersPaged(params) {
 export function fetchServerDetail(id) {
   return apiFetch(`/servers/${id}`)
 }
+export function fetchHysteria2Status() {
+  return apiFetch('/hysteria2/status')
+}
 export function createServer(payload) {
   return apiFetch('/servers', { method: 'POST', body: payload })
 }

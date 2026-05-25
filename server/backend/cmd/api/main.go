@@ -870,13 +870,18 @@ func main() {
 	}
 	admin.InitCORS()
 
-	// Устанавливаем хук для синхронизации Xray при изменении подписок (debounced)
+	// Устанавливаем хук для синхронизации Xray + Hysteria2 при изменении подписок (debounced).
+	// Both loops debounce internally — calling both per event is safe.
 	biz.OnSubscriptionChange = func() {
 		RequestXraySync()
+		RequestHysteria2Sync()
 	}
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
+
+	// Hysteria2 server sync (no-op if hysteria binary not installed)
+	StartHysteria2SyncLoop()
 
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()
@@ -949,6 +954,10 @@ func main() {
 	// Subscription links (без auth — по subscribe_token)
 	http.HandleFunc("/api/v1/user/subscribe/", apiLimiter.Middleware(handleSubscriptionLink))
 	http.HandleFunc("/api/v1/user/happ-link/", apiLimiter.Middleware(handleGetHappLink))
+
+	// Hysteria2 auth backend (loopback-only — nginx must NOT proxy /internal/*).
+	// Called by the local hysteria2-server.service on every client handshake.
+	http.HandleFunc("/internal/hysteria2/auth", handleHysteria2Auth)
 
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))

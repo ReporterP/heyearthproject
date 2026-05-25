@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchServerDetail, fetchServerLogs, runServerAction } from '../api/admin.js'
+import { fetchServerDetail, fetchServerLogs, runServerAction, fetchHysteria2Status } from '../api/admin.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
 import DeleteServerDialog from '../components/DeleteServerDialog.jsx'
@@ -71,6 +71,7 @@ export default function ServerDetailPage() {
   const toast = useToast()
 
   const [server, setServer] = useState(null)
+  const [hysteria2, setHysteria2] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [logs, setLogs] = useState('')
@@ -95,6 +96,12 @@ export default function ServerDetailPage() {
       setError(null)
 
       setLogsService(prev => prev ?? (data.is_exit_node ? 'node-agent' : 'heyearth-api'))
+
+      // Fetch Hysteria2 (Express) snapshot for the Hub. Exit nodes don't run
+      // a client-facing Hysteria2 server, so we skip the request there.
+      if (!data.is_exit_node) {
+        fetchHysteria2Status().then(setHysteria2).catch(() => setHysteria2(null))
+      }
 
       const m = data.load_metrics || {}
       const cpu = m.cpu_usage ?? m.cpu_percent
@@ -253,6 +260,71 @@ export default function ServerDetailPage() {
           <MiniBarChart data={cpuHistory.current} color="#6366f1" label="CPU History" />
           <MiniBarChart data={ramHistory.current} color="#22d3ee" label="RAM History" />
           <MiniBarChart data={connHistory.current} color="#f59e0b" label="Connections" unit="" max={Math.max(10, ...connHistory.current)} />
+        </Card>
+      )}
+
+      {/* Hysteria2 (Express) — Hub only */}
+      {!server.is_exit_node && hysteria2 && (
+        <Card className="p-4 mb-6">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold text-primary">Express (Hysteria2)</h3>
+            <div className="flex items-center gap-2">
+              {hysteria2.binary_installed && hysteria2.config_present && hysteria2.active_plans > 0 && !hysteria2.last_error ? (
+                <Badge variant="success">
+                  <span className="w-2 h-2 rounded-full bg-current" /> healthy
+                </Badge>
+              ) : hysteria2.active_plans === 0 ? (
+                <Badge variant="default">disabled</Badge>
+              ) : (
+                <Badge variant="warning">
+                  <span className="w-2 h-2 rounded-full bg-current" /> degraded
+                </Badge>
+              )}
+              <Badge variant="default" className="font-mono">v{hysteria2.config_version}</Badge>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Binary</div>
+              <div className={hysteria2.binary_installed ? 'text-success font-mono' : 'text-danger font-mono'}>
+                {hysteria2.binary_installed ? 'installed' : 'missing'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Config</div>
+              <div className={hysteria2.config_present ? 'text-success font-mono' : 'text-tertiary font-mono'}>
+                {hysteria2.config_present ? 'present' : 'absent'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Active plans</div>
+              <div className="font-mono tabular-nums text-primary">{hysteria2.active_plans}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Up cap</div>
+              <div className="font-mono tabular-nums text-primary">{hysteria2.max_up_mbps} Mbps</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Down cap</div>
+              <div className="font-mono tabular-nums text-primary">{hysteria2.max_down_mbps} Mbps</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-tertiary uppercase tracking-wider mb-1">Last sync</div>
+              <div className="font-mono tabular-nums text-primary">
+                {hysteria2.last_sync_at > 0
+                  ? new Date(hysteria2.last_sync_at * 1000).toLocaleTimeString('ru-RU')
+                  : '—'}
+              </div>
+            </div>
+          </div>
+          {hysteria2.last_error && (
+            <p className="mt-3 text-xs text-danger font-mono break-all">
+              {hysteria2.last_error}
+            </p>
+          )}
+          <p className="mt-3 text-[10px] text-tertiary">
+            UDP 50000-50100 (port-hopping) → :50443 · Brutal congestion · Salamander obfuscation
+          </p>
         </Card>
       )}
 
