@@ -244,6 +244,29 @@ sniff:
   enable: true
   timeout: 2s
   rewriteDomain: false
+
+# Outbound routing — hub-and-spoke architecture: the Hub itself does NOT egress
+# user traffic directly. Every client connection is forwarded via the local
+# Hub→Exit SOCKS5 tunnel (127.0.0.1:1090) which a separate hysteria-client
+# process maintains to one of the exit nodes (NL/LV/DE). This keeps Hysteria2
+# users on the same egress path as VLESS Reality users — same exit IPs, same
+# geo. Without this block, hysteria-server would egress from the Hub's own
+# Russia IP and the tunnel would establish (good ping) but real traffic would
+# either be blocked at the Hub firewall or appear from RU (broken VPN).
+outbounds:
+  - name: via_exit
+    type: socks5
+    socks5:
+      addr: 127.0.0.1:1090
+  - name: hub_direct
+    type: direct
+
+# ACL: route everything via exit tunnel. The direct outbound is kept as a
+# named fallback (operator can manually flip a rule for diagnostics) but is
+# not used by any inline rule below.
+acl:
+  inline:
+    - via_exit(all)
 `, hysteria2Listen, hysteria2TLSCert, hysteria2TLSKey, obfsPassword, hysteria2AuthURL, maxUp, maxDown)
 }
 

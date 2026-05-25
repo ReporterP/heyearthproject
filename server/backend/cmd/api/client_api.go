@@ -259,6 +259,35 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 
 	}
 
+	// 2. Hysteria2 «Express» — QUIC/UDP low-latency путь.
+	// Сейчас включён для ВСЕХ пользователей (не привязан к плану) — это «технологический preview»
+	// чтобы happ показывал Express в списке профилей и мы видели реальное поведение.
+	// Авторизация через per-user пароль (hysteria2_password), сервер проверяет через HTTP-бэкенд.
+	if mainServerHost != "" {
+		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
+		obfsPassword := biz.GetHysteria2ObfsPassword()
+		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
+			// Port-hopping: клиент берёт случайный порт из 50000-50100, iptables на Хабе REDIRECT
+			// все эти UDP-порты на :50443 где слушает hysteria2-server. Защищает от QoS,
+			// который таргетирует один UDP-порт.
+			// Hysteria2 URI: hysteria2://<password>@<host>:<port>/?obfs=salamander&obfs-password=<obfs>&sni=<sni>&insecure=0#<name>
+			// Поле `mport` — Happ-расширение для port-hopping ranges.
+			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Hysteria2 • QUIC • Salamander obfs"))
+			fragment := fmt.Sprintf("⚡ Express?serverDescription=%s", subDescB64)
+			hy2URI := fmt.Sprintf(
+				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
+				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
+				url.QueryEscape(fragment))
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 hy2URI,
+				Protocol:            "hysteria2",
+				Label:               "Express (быстрое подключение)",
+				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
+				Priority:            -2, // выше всех — happ попробует первым, иначе fallback на VLESS Reality
+			})
+		}
+	}
+
 	return opts
 }
 
