@@ -81,6 +81,15 @@ func RegisterRoutes() {
 		}
 	}))
 	http.HandleFunc("/api/admin/promocodes/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// Action sub-route: POST /api/admin/promocodes/{code}/reapply-plan.
+		if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/reapply-plan") {
+			if r.Method != http.MethodPost {
+				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+				return
+			}
+			RequirePermission("promocodes.write", ReapplyPromocodePlanHandler).ServeHTTP(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPatch:
 			RequirePermission("promocodes.write", UpdatePromocodeHandler).ServeHTTP(w, r)

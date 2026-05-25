@@ -63,6 +63,9 @@ export function updatePromocode(code, payload) {
 export function deletePromocode(code) {
   return apiFetch(`/promocodes/${encodeURIComponent(code)}`, { method: 'DELETE' })
 }
+export function reapplyPromocodePlan(code) {
+  return apiFetch(`/promocodes/${encodeURIComponent(code)}/reapply-plan`, { method: 'POST' })
+}
 
 // ── Payments ──
 export function fetchPaymentsPaged(params) {

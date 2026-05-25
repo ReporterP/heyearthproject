@@ -216,3 +216,54 @@ func DeletePromocodeHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = db.DB.Exec("DELETE FROM promocodes WHERE code = $1", code)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Deleted"})
 }
+
+// ReapplyPromocodePlanHandler — POST /api/admin/promocodes/{code}/reapply-plan.
+// Rewrites every user_subscription that was created via this promocode so
+// its plan_id matches the promocode's current plan_id_granted. Useful when
+// the admin edits plan_id_granted on an existing promocode and wants past
+// redemptions to reflect the new plan — also covers legacy rows from
+// before migration 000047 (group_id removal) that had NULL plan_id.
+func ReapplyPromocodePlanHandler(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/promocodes/"), "/")
+	// Path is "{code}/reapply-plan" — strip the trailing action.
+	if !strings.HasSuffix(rest, "/reapply-plan") {
+		writeAdminError(w, http.StatusBadRequest, "Expected /api/admin/promocodes/{code}/reapply-plan")
+		return
+	}
+	code := strings.TrimSuffix(rest, "/reapply-plan")
+	if code == "" {
+		writeAdminError(w, http.StatusBadRequest, "Invalid promocode")
+		return
+	}
+
+	var planIDGranted sql.NullInt64
+	if err := db.DB.QueryRow(`SELECT plan_id_granted FROM promocodes WHERE code = $1`, code).Scan(&planIDGranted); err != nil {
+		if err == sql.ErrNoRows {
+			writeAdminError(w, http.StatusNotFound, "Promocode not found")
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load promocode")
+		return
+	}
+	if !planIDGranted.Valid {
+		writeAdminError(w, http.StatusBadRequest, "Promocode has no plan_id_granted — set a plan before reapplying")
+		return
+	}
+
+	res, err := db.DB.Exec(`
+		UPDATE user_subscriptions
+		SET plan_id = $1
+		WHERE promocode_used = $2
+		  AND (plan_id IS NULL OR plan_id != $1)
+	`, planIDGranted.Int64, code)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to reapply plan: "+err.Error())
+		return
+	}
+	affected, _ := res.RowsAffected()
+	writeAdminJSON(w, http.StatusOK, map[string]any{
+		"message":  "Plan reapplied",
+		"affected": affected,
+		"plan_id":  planIDGranted.Int64,
+	})
+}

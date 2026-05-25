@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import usePagedData from '../hooks/usePagedData.js'
 import { useUrlState } from '../hooks/useUrlState.js'
-import { fetchPromocodesPaged, createPromocode, updatePromocode, deletePromocode, fetchPlans } from '../api/admin.js'
+import { fetchPromocodesPaged, createPromocode, updatePromocode, deletePromocode, reapplyPromocodePlan, fetchPlans } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { formatBytes } from '../utils/format.js'
@@ -97,6 +97,24 @@ export default function PromocodesPage() {
       toast.error(e.message)
     }
     setConfirm(null)
+  }
+
+  async function handleReapply(item) {
+    // Confirms with the admin first — this rewrites plan_id on every past
+    // subscription created via this promocode. Useful when plan_id_granted
+    // is edited and the admin wants historical redemptions to match.
+    const ok = window.confirm(
+      `Применить план «${item.plan_name || '#' + item.plan_id_granted}» ко всем подпискам с промокодом ${item.code}?\n\n` +
+      'Это перепишет plan_id у всех исторических применений этого промокода (включая записи с пустым планом из legacy данных). Действие необратимо.'
+    )
+    if (!ok) return
+    try {
+      const res = await reapplyPromocodePlan(item.code)
+      toast.success(`Обновлено подписок: ${res.affected || 0}`)
+      paged.reload()
+    } catch (e) {
+      toast.error(e.message)
+    }
   }
 
   function promoTypeLabel(type) {
@@ -198,6 +216,16 @@ export default function PromocodesPage() {
                   {can('promocodes.write') && (
                     <div className="flex items-center gap-1">
                       <Button size="sm" variant="ghost" onClick={() => openEdit(item)}>Ред.</Button>
+                      {item.plan_id_granted > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleReapply(item)}
+                          title="Применить текущий план ко всем прошлым применениям"
+                        >
+                          План→всем
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirm(item)}>Уд.</Button>
                     </div>
                   )}
