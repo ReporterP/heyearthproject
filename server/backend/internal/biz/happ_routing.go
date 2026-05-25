@@ -179,9 +179,25 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 		directSites = append(directSites, "domain:"+base)
 	}
 
+	// Prepend `geoip:ru` shortcut — Happ's trie-lookup against the bundled
+	// geoip.dat catches every RU IP in O(log) vs the linear scan over the
+	// individual /32 list below. We still keep the explicit IPs as a safety
+	// net (non-RU infra that we want direct, e.g. CDN edges, MTProto).
+	directIPs = append([]string{"geoip:ru"}, directIPs...)
+
 	return buildHappDeeplinkFromProfile(happRoutingProfile{
-		Name:           "HeYearth Smart Routing",
-		GlobalProxy:    "true",
+		Name:        "HeYearth Smart Routing",
+		GlobalProxy: "true",
+		// DNS — explicit DoH to avoid leaks/slow public resolvers. Happ uses
+		// DomesticDns for hosts matched as direct (DirectSites/DirectIp) and
+		// RemoteDns for everything going through the proxy.
+		RemoteDns:   "https://1.1.1.1/dns-query",
+		DomesticDns: "https://77.88.8.8/dns-query",
+		// Geoipurl points at our self-hosted geoip.dat (refreshed monthly by
+		// the hysteria geoip cron — same file Hysteria2 ACL uses). Lets us
+		// use `geoip:ru` / `geoip:cn` shortcuts in DirectIp / ProxyIp
+		// instead of shipping tens of thousands of individual addresses.
+		Geoipurl:       "https://hiearth.ru/static/geoip.dat",
 		DnsHosts:       map[string]string{},
 		DirectSites:    directSites,
 		DirectIp:       directIPs,
@@ -203,6 +219,9 @@ func BuildHappRoutingDeeplink(directIPs []string) string {
 	return buildHappDeeplinkFromProfile(happRoutingProfile{
 		Name:           "HeYearth Smart Routing",
 		GlobalProxy:    "true",
+		RemoteDns:      "https://1.1.1.1/dns-query",
+		DomesticDns:    "https://77.88.8.8/dns-query",
+		Geoipurl:       "https://hiearth.ru/static/geoip.dat",
 		DnsHosts:       map[string]string{},
 		DirectSites:    []string{},
 		DirectIp:       directIPs,
