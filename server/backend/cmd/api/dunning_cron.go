@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -127,7 +128,7 @@ func attemptRetry(client *yookassa.Client, retry *biz.RetryRow) error {
 		reason = payment.CancellationDetails.Reason
 	}
 	_ = biz.MarkRetryFailed(retry.ID, reason)
-	sendDunningEmailByPlan(retry, plan, fmt.Errorf(reason))
+	sendDunningEmailByPlan(retry, plan, errors.New(reason))
 	return nil
 }
 
