@@ -113,6 +113,16 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("list active clients: %w", err)
 	}
 
+	// Per-user quota cutoff: load the set ONCE per sync. Users over their
+	// current billing cycle quota are excluded from VLESS clients arrays and
+	// per-user routing rules. The set re-computes on every sync (debounced
+	// 2s), so cycle-resets pick up automatically without a flag.
+	quotaExceeded, qerr := biz.ListQuotaExceededUUIDs()
+	if qerr != nil {
+		log.Printf("[xray-sync] WARN failed to load quota-exceeded set: %v — continuing without cutoff", qerr)
+		quotaExceeded = map[string]struct{}{}
+	}
+
 	// Серверный UUID — для обратной совместимости и админ-доступа
 	serverUUID := keys.UUID
 	if serverUUID != "" {
@@ -140,7 +150,12 @@ func SyncXrayConfig() error {
 
 	// Policy levels: 0 = standard, 1 = premium
 	vlessClients := make([]map[string]interface{}, 0, len(activeClients))
+	skippedQuota := 0
 	for _, c := range activeClients {
+		if _, blocked := quotaExceeded[c.UUID]; blocked {
+			skippedQuota++
+			continue // over cycle quota — re-included when cycle resets
+		}
 		email := c.UserID
 		if email == "" {
 			email = "server@heyearth"
@@ -155,6 +170,9 @@ func SyncXrayConfig() error {
 			"email": email,
 			"level": level,
 		})
+	}
+	if skippedQuota > 0 {
+		log.Printf("[xray-sync] quota cutoff: %d user(s) excluded from VLESS clients this sync", skippedQuota)
 	}
 
 	// (activeClients уже использованы для заполнения vlessClients и uuidToUserID)
@@ -435,6 +453,9 @@ func SyncXrayConfig() error {
 
 		// Per-plan routing rules: match user email → plan-specific balancer
 		for _, client := range activeClients {
+			if _, blocked := quotaExceeded[client.UUID]; blocked {
+				continue // quota cutoff — user already missing from clients arrays
+			}
 			if balancerTag, ok := planBalancers[client.PlanID]; ok {
 				rules = append(rules, map[string]interface{}{
 					"type":        "field",

@@ -190,35 +190,20 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 }
 
-// checkTrafficLimits логирует пользователей, превысивших лимит трафика.
+// checkTrafficLimits — delegates to biz, logs offenders, triggers an immediate
+// debounced xray sync so the cutoff lands within ~2 seconds of the offending
+// traffic_stats insert (vs waiting for the next 5-minute periodic sync).
 func checkTrafficLimits() {
-	rows, err := db.DB.Query(`
-		SELECT u.user_id, us.traffic_used, us.traffic_limit
-		FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		WHERE us.valid_until > NOW()
-		  AND us.traffic_limit IS NOT NULL
-		  AND us.traffic_used >= us.traffic_limit
-		  AND COALESCE(u.is_blocked, false) = false
-	`)
+	over, err := biz.ListQuotaExceededUUIDs()
 	if err != nil {
+		log.Printf("[traffic-stats] checkTrafficLimits: %v", err)
 		return
 	}
-	defer rows.Close()
-
-	exceeded := 0
-	for rows.Next() {
-		var userID string
-		var used, limit int64
-		if err := rows.Scan(&userID, &used, &limit); err != nil {
-			continue
-		}
-		log.Printf("[traffic-stats] ⚠ Пользователь %s превысил лимит трафика: %d / %d bytes",
-			userID, used, limit)
-		exceeded++
+	if len(over) == 0 {
+		return
 	}
-
-	if exceeded > 0 {
-		RequestXraySync()
+	for uuid := range over {
+		log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика", uuid)
 	}
+	RequestXraySync()
 }
