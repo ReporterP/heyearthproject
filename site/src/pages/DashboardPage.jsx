@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, getSubscription, getConnections, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink, getMtproto } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import TrafficCard from '../components/TrafficCard.jsx'
 
 // Extracts the trailing token segment from a subscribe URL like
 // https://hiearth.ru/api/v1/user/subscribe/<token>
@@ -628,90 +629,11 @@ export default function DashboardPage() {
         </Link>
 
         {/* ─── Traffic Stats ─── */}
-        {trafficStats && (trafficStats.traffic_used > 0 || trafficStats.traffic_limit) && (() => {
-          // Colored threshold logic: <80% green, 80-99% yellow, =100% red.
-          const ratio = trafficStats.traffic_limit
-            ? trafficStats.traffic_used / trafficStats.traffic_limit
-            : 0
-          const pct = Math.min(100, ratio * 100)
-          const exhausted = trafficStats.traffic_limit && trafficStats.traffic_used >= trafficStats.traffic_limit
-          const warning = !exhausted && ratio >= 0.8
-          const barClass = exhausted
-            ? 'bg-gradient-to-r from-red-500 to-rose-600'
-            : warning
-              ? 'bg-gradient-to-r from-amber-400 to-orange-500'
-              : 'bg-gradient-to-r from-brand to-accent'
-          return (
-          <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/10 flex items-center justify-center">
-                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-                </svg>
-              </div>
-              <div>
-                <h2 className="text-base font-semibold">Трафик</h2>
-                <p className="text-xs text-text-secondary">Использование за текущий период</p>
-              </div>
-            </div>
-
-            {/* Exhausted / warning banner */}
-            {exhausted && (
-              <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30">
-                <p className="text-sm font-semibold text-red-300">Трафик закончился</p>
-                <p className="text-xs text-red-300/80 mt-1">Подключения заблокированы до начала нового периода или продления тарифа.</p>
-                <Link to="/payment" className="inline-flex items-center gap-1.5 mt-2 text-xs font-medium text-red-200 hover:text-white transition">
-                  Продлить тариф
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-                </Link>
-              </div>
-            )}
-            {warning && (
-              <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
-                <p className="text-sm font-semibold text-amber-300">Трафик почти закончился</p>
-                <p className="text-xs text-amber-300/80 mt-1">Осталось меньше 20% — заранее продлите тариф, чтобы не остаться без связи.</p>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-text-secondary">Использовано</span>
-                <span className="font-medium">{formatBytes(trafficStats.traffic_used)}</span>
-              </div>
-              {trafficStats.traffic_limit && (
-                <>
-                  <div className="w-full bg-white/10 rounded-full h-2.5">
-                    <div
-                      className={`${barClass} h-2.5 rounded-full transition-all duration-500`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-text-secondary">
-                    <span>{Math.round(pct)}%</span>
-                    <span>Лимит: {formatBytes(trafficStats.traffic_limit)}</span>
-                  </div>
-                </>
-              )}
-              {trafficStats.upload_bytes > 0 && (
-                <div className="flex gap-4 pt-2 border-t border-white/5">
-                  <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-                    <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
-                    </svg>
-                    {formatBytes(trafficStats.upload_bytes)}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-                    <svg className="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15m0 0h11.25m-11.25 0V8.25" />
-                    </svg>
-                    {formatBytes(trafficStats.download_bytes)}
-                  </div>
-                </div>
-              )}
-            </div>
+        {trafficStats && (
+          <div className="mb-6 animate-fade-in-up delay-250">
+            <TrafficCard data={trafficStats} />
           </div>
-          )
-        })()}
+        )}
 
         {/* ─── Promo code ─── */}
         <div className="glass-card rounded-2xl p-6 mb-6 animate-fade-in-up delay-250">
