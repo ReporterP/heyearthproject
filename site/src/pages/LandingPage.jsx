@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext.jsx'
 
 const features = [
   {
@@ -65,6 +66,7 @@ function formatDuration(days) {
 }
 
 export default function LandingPage() {
+  const { isLoggedIn } = useAuth()
   const [plans, setPlans] = useState([])
   useEffect(() => {
     fetch('/api/v1/plans').then(r => r.json()).then(d => setPlans(Array.isArray(d) ? d.filter(p => p.price_rub > 0) : [])).catch(() => {})
@@ -113,7 +115,7 @@ export default function LandingPage() {
 
           <div className="mt-10 flex flex-wrap justify-center gap-4 animate-fade-in-up delay-300">
             <Link
-              to="/register"
+              to={isLoggedIn ? "/dashboard" : "/register"}
               className="group relative px-8 py-3.5 rounded-xl font-semibold text-white overflow-hidden transition-all duration-300 hover:shadow-xl hover:shadow-brand/25 hover:-translate-y-0.5"
             >
               <span className="absolute inset-0 bg-gradient-to-r from-brand to-brand-dark" />
@@ -208,7 +210,7 @@ export default function LandingPage() {
 
           <div className="text-center mt-12 animate-fade-in-up delay-600">
             <Link
-              to="/register"
+              to={isLoggedIn ? "/dashboard" : "/register"}
               className="inline-flex items-center gap-2 px-6 py-3 rounded-xl glass hover:bg-brand/10 text-brand-light font-semibold transition-all duration-300 hover:-translate-y-0.5"
             >
               Создать аккаунт за 10 секунд

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { registerUser, updateProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -6,7 +6,12 @@ import PasswordInput from '../components/PasswordInput.jsx'
 
 export default function RegisterPage() {
   const navigate = useNavigate()
-  const { login } = useAuth()
+  const { login, isLoggedIn } = useAuth()
+
+  // Already logged in? Skip the registration flow entirely.
+  useEffect(() => {
+    if (isLoggedIn) navigate('/dashboard', { replace: true })
+  }, [isLoggedIn, navigate])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [generatedId, setGeneratedId] = useState('')

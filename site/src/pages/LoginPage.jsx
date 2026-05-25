@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { loginUser } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -7,7 +7,12 @@ import PasswordInput from '../components/PasswordInput.jsx'
 export default function LoginPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { login } = useAuth()
+  const { login, isLoggedIn } = useAuth()
+
+  // Already logged in? Skip the login flow.
+  useEffect(() => {
+    if (isLoggedIn) navigate('/dashboard', { replace: true })
+  }, [isLoggedIn, navigate])
 
   const [idOrUsername, setIdOrUsername] = useState('')
   const [password, setPassword] = useState('')

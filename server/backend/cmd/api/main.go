@@ -390,14 +390,18 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 			return
 		}
-		if req.Username != "" {
-			if err := biz.SetUsername(userID, req.Username); err != nil {
+		// IMPORTANT: password must be set before username — SetUsername refuses
+		// to run on accounts without a cloud password (it's the auth factor for
+		// future username-based logins). Reverse order = single-form registration
+		// works in one POST.
+		if req.NewPassword != "" {
+			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
 		}
-		if req.NewPassword != "" {
-			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword); err != nil {
+		if req.Username != "" {
+			if err := biz.SetUsername(userID, req.Username); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
