@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Users } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Users, MoreHorizontal } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchUsersPaged, createUser, updateUser, deleteUser, fetchUserDevices } from '../api/admin.js'
+import { fetchUsersPaged, createUser } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
+import { useHotkey } from '../hooks/useHotkey.js'
 import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
-import ConfirmDialog from '../components/ConfirmDialog.jsx'
-import { formatDateShort } from '../utils/format.js'
+import UserDrawer from '../components/UserDrawer.jsx'
+import { formatDateShort, formatBytes, formatRelativeRu } from '../utils/format.js'
 import {
   Button,
   Input,
@@ -21,21 +22,42 @@ import {
   Badge,
   TableSkeleton,
   EmptyState,
-  Dialog,
 } from '../components/ui/index.js'
 
-const STATUS_FILTERS = [
-  { value: '', key: 'filterAll' },
-  { value: 'active', key: 'filterActive' },
-  { value: 'blocked', key: 'filterBlocked' },
+// Status filter tabs. v1 ships without live counts — labels only.
+// To add counts later, hit /users/status-counts endpoint (out of scope).
+const STATUS_TABS = [
+  { value: '',         key: 'filterAll' },
+  { value: 'active',   key: 'statusActive' },
+  { value: 'expiring', key: 'statusExpiring' },
+  { value: 'no_plan',  key: 'statusNoPlan' },
+  { value: 'blocked',  key: 'statusBlocked' },
 ]
+
+// Status dot color resolved from row state.
+//   blocked        → danger (red)
+//   no plan / expired → tertiary (gray)
+//   expiring in 7d → warning (amber)
+//   active         → success (green)
+function statusDot(user) {
+  if (user.is_blocked) return 'bg-danger'
+  if (!user.valid_until) return 'bg-tertiary'
+  const expires = new Date(user.valid_until).getTime()
+  const now = Date.now()
+  if (expires < now) return 'bg-tertiary'
+  if (expires - now < 7 * 86400000) return 'bg-warning'
+  return 'bg-success'
+}
 
 export default function UsersPage() {
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
 
-  const [f, setF] = useUrlState({ search: '', status: '', sort: 'created_at', dir: 'desc', page: 1 })
+  const [f, setF] = useUrlState({
+    search: '', status: '', sort: 'last_seen', dir: 'desc', page: 1,
+    open: '', tab: 'profile',
+  })
   const sortState = { column: f.sort, direction: f.dir }
   const onSort = (col) => setF({ sort: col, dir: f.sort === col && f.dir === 'asc' ? 'desc' : 'asc', page: 1 })
 
@@ -43,9 +65,9 @@ export default function UsersPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [selectedIndex, setSelectedIndex] = useState(-1)
   const pageSize = 20
 
-  // Local search input bound to URL state on submit
   const [searchInput, setSearchInput] = useState(f.search)
 
   const load = useCallback(() => {
@@ -62,61 +84,30 @@ export default function UsersPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Dialogs
-  const [dialog, setDialog] = useState(null)
-  const [confirm, setConfirm] = useState(null)
+  // Create dialog (single remaining out-of-drawer entry point)
+  const [createOpen, setCreateOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [devices, setDevices] = useState(null)
-
-  // Form state
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [role, setRole] = useState('user')
-  const [blocked, setBlocked] = useState(false)
+  const [newUsername, setNewUsername] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newRole, setNewRole] = useState('user')
+  const [newBlocked, setNewBlocked] = useState(false)
 
   function openCreate() {
-    setUsername('')
-    setPassword('')
-    setRole('user')
-    setBlocked(false)
-    setDialog({ mode: 'create' })
+    setNewUsername('')
+    setNewPassword('')
+    setNewRole('user')
+    setNewBlocked(false)
+    setCreateOpen(true)
   }
 
-  function openEdit(item) {
-    setUsername(item.username || '')
-    setPassword('')
-    setRole(item.role || 'user')
-    setBlocked(item.is_blocked || false)
-    setDialog({ mode: 'edit', item })
-  }
-
-  async function showDevices(user) {
-    try {
-      const devs = await fetchUserDevices(user.id)
-      const items = Array.isArray(devs) ? devs : (Array.isArray(devs?.devices) ? devs.devices : [])
-      setDevices({ user, items })
-    } catch (err) {
-      toast.error(err.message)
-    }
-  }
-
-  async function handleSave() {
+  async function handleCreate() {
     setSaving(true)
     try {
-      const payload = {
-        username,
-        role,
-        is_blocked: blocked,
-      }
-      if (password) payload.password = password
-      if (dialog.mode === 'create') {
-        await createUser(payload)
-        toast.success(t.create + ' OK')
-      } else {
-        await updateUser(dialog.item.id, payload)
-        toast.success(t.save + ' OK')
-      }
-      setDialog(null)
+      const payload = { username: newUsername, role: newRole, is_blocked: newBlocked }
+      if (newPassword) payload.password = newPassword
+      await createUser(payload)
+      toast.success(t.create + ' OK')
+      setCreateOpen(false)
       load()
     } catch (err) {
       toast.error(err.message)
@@ -125,36 +116,47 @@ export default function UsersPage() {
     }
   }
 
-  async function handleDelete() {
-    setSaving(true)
-    try {
-      await deleteUser(confirm.id)
-      toast.success(t.delete + ' OK')
-      setConfirm(null)
-      load()
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setSaving(false)
-    }
+  // Drawer: derive selected user object from items + URL state.
+  // v1 limitation: if `f.open` references a user not in the current page,
+  // selectedUser will be null and the drawer will not render. User can
+  // re-click after paginating. A future iteration could fetch the single
+  // user on cache miss.
+  const selectedUser = useMemo(() => {
+    if (!f.open) return null
+    const id = Number(f.open)
+    return items.find(u => u.id === id) || null
+  }, [items, f.open])
+
+  function openDrawer(user, tab = 'profile') {
+    setF({ open: String(user.id), tab })
+  }
+  function closeDrawer() {
+    setF({ open: '', tab: '' })
   }
 
-  async function handleQuickToggleBlock(user) {
-    try {
-      await updateUser(user.id, { is_blocked: !user.is_blocked })
-      toast.success(!user.is_blocked ? t.quickBlock + ' OK' : t.quickUnblock + ' OK')
-      load()
-    } catch (err) {
-      toast.error(err.message)
+  // J/K row navigation + Enter to open. Skip when drawer or create dialog is open
+  // so the global hotkey doesn't fight with form inputs / drawer ESC.
+  useHotkey({ key: 'j' }, () => {
+    if (f.open || createOpen) return
+    setSelectedIndex(i => Math.min(items.length - 1, i + 1))
+  })
+  useHotkey({ key: 'k' }, () => {
+    if (f.open || createOpen) return
+    setSelectedIndex(i => Math.max(0, i - 1))
+  })
+  useHotkey({ key: 'Enter' }, () => {
+    if (f.open || createOpen) return
+    if (selectedIndex >= 0 && items[selectedIndex]) {
+      openDrawer(items[selectedIndex])
     }
-  }
-
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  })
 
   function onSearchSubmit(e) {
     e.preventDefault()
     setF({ search: searchInput, page: 1 })
   }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
     <div className="space-y-4">
@@ -166,18 +168,23 @@ export default function UsersPage() {
         ) : null}
       />
 
-      {/* Status filter tabs */}
-      <div className="flex flex-wrap items-center gap-2">
-        {STATUS_FILTERS.map(sf => (
-          <Button
-            key={sf.value}
-            size="sm"
-            variant={f.status === sf.value ? 'primary' : 'secondary'}
-            onClick={() => setF({ status: sf.value, page: 1 })}
-          >
-            {t[sf.key]}
-          </Button>
-        ))}
+      {/* Status filter tabs — replaces previous button group. Counts deferred to v2. */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-default">
+        {STATUS_TABS.map(tab => {
+          const active = f.status === tab.value
+          return (
+            <button
+              key={tab.value || 'all'}
+              onClick={() => setF({ status: tab.value, page: 1 })}
+              className={`px-3 py-1.5 text-sm font-medium rounded-t transition relative ${
+                active ? 'text-accent bg-accent/10' : 'text-secondary hover:text-primary hover:bg-hover'
+              }`}
+            >
+              {t[tab.key]}
+              {active && <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-accent" />}
+            </button>
+          )
+        })}
       </div>
 
       {/* Search */}
@@ -206,53 +213,73 @@ export default function UsersPage() {
         <Table>
           <Thead>
             <Tr>
-              <Th sortKey="id" sortState={sortState} onSort={onSort}>ID</Th>
-              <Th sortKey="user_id" sortState={sortState} onSort={onSort}>{t.fieldUserId}</Th>
               <Th sortKey="username" sortState={sortState} onSort={onSort}>{t.fieldUsername}</Th>
-              <Th sortKey="role" sortState={sortState} onSort={onSort}>{t.fieldRole}</Th>
               <Th>{t.userPlan}</Th>
+              <Th>{t.fieldStatus}</Th>
+              <Th sortKey="valid_until" sortState={sortState} onSort={onSort}>{t.columnValidUntil}</Th>
+              <Th sortKey="last_seen" sortState={sortState} onSort={onSort}>{t.columnLastSeen}</Th>
               <Th sortKey="created_at" sortState={sortState} onSort={onSort}>{t.fieldCreatedAt}</Th>
-              <Th>{t.fieldBlocked}</Th>
-              <Th>Действия</Th>
+              <Th sortKey="traffic_30d_bytes" sortState={sortState} onSort={onSort}>{t.columnTraffic30d}</Th>
+              <Th></Th>
             </Tr>
           </Thead>
           <Tbody>
-            {items.map(u => (
-              <Tr key={u.id}>
-                <Td mono>{u.id}</Td>
-                <Td mono className="text-xs">{u.user_id}</Td>
-                <Td>{u.username || '—'}</Td>
-                <Td>{u.role}</Td>
-                <Td>{u.plan || '—'}</Td>
-                <Td className="text-xs text-tertiary whitespace-nowrap">{formatDateShort(u.created_at)}</Td>
-                <Td>
-                  {u.is_blocked
-                    ? <Badge variant="danger">blocked</Badge>
-                    : <Badge variant="success">active</Badge>}
-                </Td>
-                <Td>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {can('users.write') && (
-                      <button
-                        onClick={() => handleQuickToggleBlock(u)}
-                        title={u.is_blocked ? t.quickUnblock : t.quickBlock}
-                        aria-label={u.is_blocked ? t.quickUnblock : t.quickBlock}
-                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.is_blocked ? 'bg-danger/30' : 'bg-success/30'}`}
-                      >
-                        <span className={`inline-block h-3.5 w-3.5 rounded-full transition-transform ${u.is_blocked ? 'translate-x-1 bg-danger' : 'translate-x-[18px] bg-success'}`} />
-                      </button>
-                    )}
-                    <Button size="sm" variant="ghost" onClick={() => showDevices(u)}>Devices</Button>
-                    {can('users.write') && (
-                      <>
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(u)}>{t.edit}</Button>
-                        <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirm(u)}>{t.delete}</Button>
-                      </>
-                    )}
-                  </div>
-                </Td>
-              </Tr>
-            ))}
+            {items.map((u, idx) => {
+              const isSelected = idx === selectedIndex
+              const trafficPct = u.traffic_limit_bytes > 0
+                ? Math.min(100, Math.round((u.traffic_30d_bytes / u.traffic_limit_bytes) * 100))
+                : 0
+              return (
+                <Tr
+                  key={u.id}
+                  onClick={() => openDrawer(u)}
+                  className={`group cursor-pointer ${isSelected ? 'bg-accent/10 border-l-2 border-l-accent' : ''}`}
+                >
+                  <Td>
+                    <div className="flex flex-col">
+                      <span className="text-primary text-sm">{u.username || '—'}</span>
+                      <span className="font-mono text-xs text-tertiary">{u.user_id}</span>
+                    </div>
+                  </Td>
+                  <Td>{u.plan ? <Badge variant="accent">{u.plan}</Badge> : <span className="text-tertiary">—</span>}</Td>
+                  <Td>
+                    <span
+                      className={`inline-block w-2 h-2 rounded-full ${statusDot(u)}`}
+                      aria-label={u.is_blocked ? 'blocked' : 'active'}
+                    />
+                  </Td>
+                  <Td mono className="text-xs whitespace-nowrap">{u.valid_until ? formatDateShort(u.valid_until) : '—'}</Td>
+                  <Td className="text-xs text-tertiary whitespace-nowrap">{formatRelativeRu(u.last_seen)}</Td>
+                  <Td mono className="text-xs text-tertiary whitespace-nowrap">{formatDateShort(u.created_at)}</Td>
+                  <Td>
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <div className="h-1 bg-canvas border border-default rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all ${trafficPct >= 90 ? 'bg-danger' : trafficPct >= 70 ? 'bg-warning' : 'bg-info'}`}
+                          style={{ width: `${trafficPct}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-tertiary font-mono tabular-nums">
+                        {formatBytes(u.traffic_30d_bytes || 0)}
+                        {u.traffic_limit_bytes > 0 && ` / ${formatBytes(u.traffic_limit_bytes)}`}
+                      </span>
+                    </div>
+                  </Td>
+                  <Td align="right">
+                    {/* Hover ⋯ overflow button — opens drawer same as row click.
+                        v2: per-row dropdown with quick actions. For v1 keep it as
+                        a visual affordance only — actions all live in the drawer. */}
+                    <button
+                      onClick={e => { e.stopPropagation(); openDrawer(u) }}
+                      className="opacity-0 group-hover:opacity-100 hover:bg-hover text-tertiary rounded p-1 transition"
+                      aria-label={t.actions}
+                    >
+                      <MoreHorizontal className="w-3.5 h-3.5" />
+                    </button>
+                  </Td>
+                </Tr>
+              )
+            })}
           </Tbody>
         </Table>
       )}
@@ -268,60 +295,33 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* Devices modal */}
-      <Dialog
-        open={!!devices}
-        onClose={() => setDevices(null)}
-        title={devices ? t.registeredDevicesLabel(devices.items.length) : ''}
-        maxWidth="max-w-md"
-      >
-        {devices && (devices.items.length === 0 ? (
-          <p className="text-secondary text-sm">{t.usersNoDevices || 'No devices'}</p>
-        ) : (
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {devices.items.map((d, i) => (
-              <div key={i} className="text-sm bg-elevated rounded p-3 border border-default">
-                <p className="font-mono text-xs text-tertiary">{d.device_id}</p>
-                <p className="text-primary">{d.platform} {d.app_version}</p>
-                {d.last_seen && <p className="text-xs text-tertiary">{t.deviceLastSeen}: {new Date(d.last_seen).toLocaleString()}</p>}
-              </div>
-            ))}
-          </div>
-        ))}
-        <div className="flex justify-end mt-4">
-          <Button variant="ghost" onClick={() => setDevices(null)}>{t.close}</Button>
-        </div>
-      </Dialog>
+      {/* Drawer — render only when selectedUser resolves */}
+      <UserDrawer
+        user={selectedUser}
+        defaultTab={f.tab || 'profile'}
+        onClose={closeDrawer}
+        onUserMutated={load}
+      />
 
-      {/* Create / Edit dialog */}
+      {/* Create dialog — only out-of-drawer flow that remains */}
       <CrudDialog
-        open={!!dialog} title={dialog?.mode === 'create' ? t.createUser : t.editUser}
-        onClose={() => setDialog(null)} onSubmit={handleSave} loading={saving}
+        open={createOpen}
+        title={t.createUser}
+        onClose={() => setCreateOpen(false)}
+        onSubmit={handleCreate}
+        loading={saving}
       >
-        {dialog?.mode === 'edit' && dialog.item?.user_id && (
-          <FormField label={t.fieldUserId}>
-            <div className="w-full px-3 py-2 rounded bg-elevated/50 border border-default text-tertiary text-sm font-mono select-all">
-              {dialog.item.user_id}
-            </div>
-          </FormField>
-        )}
         <FormField label={t.fieldUsername}>
-          <TextInput value={username} onChange={setUsername} autoFocus />
+          <TextInput value={newUsername} onChange={setNewUsername} autoFocus />
         </FormField>
         <FormField label={t.password}>
-          <TextInput value={password} onChange={setPassword} type="password" placeholder={dialog?.mode === 'edit' ? 'Leave blank to keep' : ''} />
+          <TextInput value={newPassword} onChange={setNewPassword} type="password" />
         </FormField>
         <FormField label={t.fieldRole}>
-          <SelectInput value={role} onChange={setRole} options={[{ value: 'user', label: 'User' }, { value: 'premium', label: 'Premium' }]} />
+          <SelectInput value={newRole} onChange={setNewRole} options={[{ value: 'user', label: 'User' }, { value: 'premium', label: 'Premium' }]} />
         </FormField>
-        <Checkbox label={t.fieldBlocked} checked={blocked} onChange={setBlocked} />
+        <Checkbox label={t.fieldBlocked} checked={newBlocked} onChange={setNewBlocked} />
       </CrudDialog>
-
-      <ConfirmDialog
-        open={!!confirm}
-        message={t.deleteUserConfirm(confirm?.user_id || confirm?.id)}
-        onConfirm={handleDelete} onCancel={() => setConfirm(null)} loading={saving}
-      />
     </div>
   )
 }

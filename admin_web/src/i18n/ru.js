@@ -299,4 +299,40 @@ export default {
 
   // B2B nav
   navB2BAnalytics: 'B2B Аналитика',
+
+  // Drawer tabs
+  drawerTabProfile: 'Профиль',
+  drawerTabSubs: 'Подписки',
+  drawerTabTraffic: 'Трафик и платежи',
+  drawerAddSub: '+ Подписка',
+  drawerTrafficTitle: 'Трафик за 30 дней',
+  drawerPaymentsTitle: 'Платежи',
+  drawerByCountry: 'По странам',
+  drawerByCountryEmpty: 'Распределение по странам пока недоступно',
+  drawerNoTraffic: 'За последние 30 дней трафика нет.',
+  drawerNoPayments: 'Платежей нет.',
+
+  // Status filter tabs (UsersPage v2)
+  statusActive: 'Активные',
+  statusExpiring: 'Истекают',
+  statusNoPlan: 'Без подписки',
+  statusBlocked: 'Заблокированные',
+
+  // New UsersPage columns
+  columnLastSeen: 'Был онлайн',
+  columnTraffic30d: 'Трафик 30д',
+  columnValidUntil: 'Действует до',
+
+  // Subscription field labels (drawer SubscriptionsTab)
+  fieldPeriod: 'Период',
+  fieldPrice: 'Цена',
+  fieldPromo: 'Промокод',
+  noSubscriptionsDesc: 'Добавьте первую через кнопку выше',
+  deleteSubscriptionConfirm: (id) => `Удалить подписку #${id}?`,
+  actions: 'Действия',
+
+  // Relative time labels
+  relMinAgo: 'мин',
+  relHourAgo: 'ч',
+  relDayAgo: 'дн',
 }

@@ -299,4 +299,40 @@ export default {
 
   // B2B nav
   navB2BAnalytics: 'B2B Analytics',
+
+  // Drawer tabs
+  drawerTabProfile: 'Profile',
+  drawerTabSubs: 'Subscriptions',
+  drawerTabTraffic: 'Traffic & Payments',
+  drawerAddSub: '+ Subscription',
+  drawerTrafficTitle: 'Traffic — last 30 days',
+  drawerPaymentsTitle: 'Payments',
+  drawerByCountry: 'By country',
+  drawerByCountryEmpty: 'Per-country breakdown is not available yet',
+  drawerNoTraffic: 'No traffic in the last 30 days.',
+  drawerNoPayments: 'No payments.',
+
+  // Status filter tabs (UsersPage v2)
+  statusActive: 'Active',
+  statusExpiring: 'Expiring',
+  statusNoPlan: 'No plan',
+  statusBlocked: 'Blocked',
+
+  // New UsersPage columns
+  columnLastSeen: 'Last seen',
+  columnTraffic30d: 'Traffic 30d',
+  columnValidUntil: 'Valid until',
+
+  // Subscription field labels (drawer SubscriptionsTab)
+  fieldPeriod: 'Period',
+  fieldPrice: 'Price',
+  fieldPromo: 'Promo',
+  noSubscriptionsDesc: 'Add the first one via the button above',
+  deleteSubscriptionConfirm: (id) => `Delete subscription #${id}?`,
+  actions: 'Actions',
+
+  // Relative time labels
+  relMinAgo: 'min',
+  relHourAgo: 'h',
+  relDayAgo: 'd',
 }

@@ -65,3 +65,23 @@ export function formatRelativeTime(isoString) {
     return isoString
   }
 }
+
+/**
+ * Russian-localized relative time label suitable for table cells.
+ * < 60 sec        → "1 мин"  (rounds up to 1)
+ * < 60 min        → "12 мин"
+ * < 24 h          → "3 ч"
+ * <= 30 d         → "6 дн"
+ * > 30 d or empty → falls back to formatDateShort / "—"
+ */
+export function formatRelativeRu(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000))
+  if (diffSec < 60)         return '1 мин'
+  if (diffSec < 3600)       return `${Math.floor(diffSec / 60)} мин`
+  if (diffSec < 86400)      return `${Math.floor(diffSec / 3600)} ч`
+  if (diffSec < 86400 * 30) return `${Math.floor(diffSec / 86400)} дн`
+  return formatDateShort(iso)
+}
