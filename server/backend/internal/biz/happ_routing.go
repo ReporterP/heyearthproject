@@ -17,7 +17,43 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
+
+// collapseToETLDPlusOne reduces a list of fully-qualified domains down to
+// their unique effective-TLD+1 (registrable domain). Example:
+//   mail.yandex.ru, lxc.lavka.yandex.net, 3ds.bank.yandex.ru
+// becomes:
+//   yandex.ru, yandex.net
+//
+// Why: Xray-syntax `domain:yandex.ru` already matches every subdomain
+// (mail.yandex.ru, bank.yandex.ru, ...). Emitting 3 413 FQDN entries for
+// the Yandex service is O(N) busy-work on every Happ connection — the
+// list explodes the subscription body, balloons client memory, and slows
+// route decisions in the hot path. eTLD+1 dedup shrinks 20 149 → ~100.
+func collapseToETLDPlusOne(domains []string) []string {
+	seen := make(map[string]struct{}, len(domains))
+	out := make([]string, 0, 256)
+	for _, d := range domains {
+		d = strings.TrimSpace(strings.ToLower(d))
+		if d == "" {
+			continue
+		}
+		// publicsuffix handles co.uk / com.ua / .рф correctly.
+		base, err := publicsuffix.EffectiveTLDPlusOne(d)
+		if err != nil || base == "" {
+			// Fall back to the domain as-is (rare — IDN or oddly-formed).
+			base = d
+		}
+		if _, dup := seen[base]; dup {
+			continue
+		}
+		seen[base] = struct{}{}
+		out = append(out, base)
+	}
+	return out
+}
 
 // happRoutingProfile is the JSON shape Happ accepts. Field names match Happ's
 // `happ://routing/onadd/<json>` example verbatim (PascalCase). "GlobalProxy"
@@ -90,7 +126,24 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 		directIPs = append(directIPs, normalizeIPToCIDR(ip))
 	}
 
-	directSites := []string{}
+	// Accumulate raw FQDNs across all services, then collapse to eTLD+1
+	// at the end. Pre-collapse a yandex.ru service can ship 3 400+ FQDNs
+	// that Xray's `domain:yandex.ru` rule already covers transitively.
+	rawDomains := make([]string, 0, 1024)
+	// Dedup IPs/CIDRs while accumulating — multiple services often list
+	// overlapping infra (CDN edges shared between gov + telecom services).
+	seenIP := make(map[string]struct{}, 512)
+	addIP := func(s string) {
+		if s == "" {
+			return
+		}
+		cidr := normalizeIPToCIDR(s)
+		if _, dup := seenIP[cidr]; dup {
+			return
+		}
+		seenIP[cidr] = struct{}{}
+		directIPs = append(directIPs, cidr)
+	}
 
 	if planID > 0 {
 		services, err := GetDirectRouteServicesForPlan(planID)
@@ -101,33 +154,29 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 				if !svc.IsActive {
 					continue
 				}
-				for _, d := range svc.Domains {
-					if d != "" {
-						directSites = append(directSites, "domain:"+d)
-					}
-				}
+				rawDomains = append(rawDomains, svc.Domains...)
 				for _, ip := range svc.IP4 {
-					if ip != "" {
-						directIPs = append(directIPs, normalizeIPToCIDR(ip))
-					}
+					addIP(ip)
 				}
 				for _, ip := range svc.IP6 {
-					if ip != "" {
-						directIPs = append(directIPs, normalizeIPToCIDR(ip))
-					}
+					addIP(ip)
 				}
 				for _, c := range svc.CIDR4 {
-					if c != "" {
-						directIPs = append(directIPs, c)
-					}
+					addIP(c)
 				}
 				for _, c := range svc.CIDR6 {
-					if c != "" {
-						directIPs = append(directIPs, c)
-					}
+					addIP(c)
 				}
 			}
 		}
+	}
+
+	// Collapse all collected FQDNs to unique eTLD+1 — the Xray "domain:"
+	// prefix matches all subdomains, so emitting `domain:yandex.ru` is
+	// equivalent to listing every yandex.ru / yandex.net FQDN explicitly.
+	directSites := []string{}
+	for _, base := range collapseToETLDPlusOne(rawDomains) {
+		directSites = append(directSites, "domain:"+base)
 	}
 
 	return buildHappDeeplinkFromProfile(happRoutingProfile{
