@@ -9,8 +9,11 @@ package main
 // Salamander obfuscation, and Brutal congestion control.
 //
 // Reload mechanism: write to .tmp, validate with `hysteria server --disable-update-check
-// --config <file>` smoke parse, atomic rename, then `systemctl reload hysteria-server`
-// (SIGHUP). Reload preserves active sessions.
+// --config <file>` (2s timeout, treat bind-conflict on :50443 as success — the
+// running service holding the port means parse+TLS+auth init all passed before
+// the bind step), atomic rename only on success, then `systemctl restart
+// hysteria2-server`. Restart (not SIGHUP reload) — hysteria v2.6.x treats SIGHUP
+// as terminate.
 //
 // Per-plan Brutal targets: Hysteria2 accepts global bandwidth caps in the
 // server config; per-user enforcement happens via the auth-backend response
@@ -20,6 +23,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -138,18 +142,24 @@ func SyncHysteria2Config() error {
 		}
 	}
 
+	// Atomic write with pre-rename validation. Mirrors the xray_sync.go pattern:
+	// 1) write generated content to a .tmp file;
+	// 2) run `hysteria server --config <tmp>` with a 2s timeout — bind conflicts
+	//    on :50443 are treated as success (means config parsed and reached the
+	//    bind step, i.e. structurally valid);
+	// 3) atomic rename only if validation passes — broken YAML never reaches
+	//    systemctl restart, the live server stays healthy, error captured into
+	//    app_settings for admin UI / deploy --status.
 	tmpPath := hysteria2ConfigPath + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(yaml), 0600); err != nil {
 		return fmt.Errorf("write tmp config: %w", err)
 	}
 
-	// NOTE: we used to run `hysteria server --config <tmp>` as a smoke test,
-	// but hysteria has no `--check` flag and any binary-level check tries to
-	// bind :50443 — which is already held by the running hysteria2-server.
-	// The bind-conflict made every sync after the first one fail spuriously.
-	// We rely instead on `systemctl reload` (SIGHUP): hysteria2 hot-reloads
-	// the config, and if it can't parse the new file it keeps the in-memory
-	// config + logs the error — fail-safe by design.
+	if vErr := validateHysteria2Config(tmpPath); vErr != nil {
+		_ = os.Remove(tmpPath)
+		recordHysteria2SyncError(vErr)
+		return fmt.Errorf("validation failed (keeping existing config): %w", vErr)
+	}
 
 	if err := os.Rename(tmpPath, hysteria2ConfigPath); err != nil {
 		_ = os.Remove(tmpPath)
@@ -287,55 +297,65 @@ acl:
 `, hysteria2Listen, hysteria2TLSCert, hysteria2TLSKey, obfsPassword, hysteria2AuthURL, statsSecret, maxUp, maxDown)
 }
 
-// validateHysteria2Config runs `hysteria server --config <path>` with a short
-// timeout. If the binary exits with a parse error before the timeout, we report
-// it. If it starts listening (which it shouldn't on the same port as the live
-// service), we kill it and consider the syntax OK.
+// validateHysteria2Config runs `hysteria server --config <path> --disable-update-check`
+// for up to 2 seconds. Three outcomes:
 //
-// Practical note: there's no first-class `--check` flag, so we use `server --help`
-// + a substring search for known YAML errors when reading the stderr of a quick
-// invocation. This is best-effort; a malformed config will still be caught by
-// the subsequent `systemctl reload` failing.
+//  1. Process is killed by our timeout — means it parsed YAML, loaded TLS,
+//     started the auth backend, and reached the UDP bind step (or beyond). For
+//     our purposes that's a passing config; we kill it and return nil.
+//  2. Process exits within the timeout with "address already in use" — bind
+//     conflict against the live hysteria2-server holding :50443. Same as (1):
+//     config got past every parse/load gate; bind failure is environmental.
+//  3. Process exits within the timeout with any other error — real failure
+//     (YAML parse, missing cert, malformed Brutal limits, etc). Return the
+//     captured stdout+stderr verbatim so the admin sees the actual diagnostic.
+//
+// We capture BOTH stdout and stderr because hysteria writes FATAL log lines to
+// either depending on log-format and version. The 2s budget is the upper bound
+// for healthy startup on this server class — generous enough to absorb cert +
+// socket init, tight enough not to block sync for long on a real crash.
+//
+// Hysteria v2.6.x has no first-class `--check`/`--validate` flag (verified via
+// `hysteria server --help`), so the launch-with-timeout pattern is the only
+// available syntactic gate.
 func validateHysteria2Config(path string) error {
-	// Quick syntax sanity: try parsing the file with `hysteria server --config <path>`
-	// for 2 seconds then send SIGTERM. 500ms was too tight — hysteria's TLS cert
-	// load + UDP socket bind can take longer on first run. 2s is the upper bound
-	// for healthy startup; anything beyond that is suspicious.
-	//
-	// We capture BOTH stdout and stderr because hysteria can log FATAL to either
-	// depending on log-format and version. If the process exits within the
-	// timeout, the captured output usually contains a "FATAL <reason>" line that
-	// is the real diagnostic — surface it to the caller verbatim.
-	cmd := exec.Command("hysteria", "server", "--config", path, "--disable-update-check")
-	var stderr, stdout bytes.Buffer
-	cmd.Stderr = &stderr
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "hysteria", "server", "--config", path, "--disable-update-check")
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("hysteria start: %w", err)
+		return fmt.Errorf("start hysteria: %w", err)
 	}
+
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+
 	select {
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+		// Timed out — process reached/passed the bind step. Kill and treat as
+		// valid. CommandContext should already SIGKILL on ctx expiry, but call
+		// Kill explicitly to be deterministic across Go versions / platforms.
 		_ = cmd.Process.Kill()
 		<-done
-		out := stderr.String() + stdout.String()
-		if strings.Contains(strings.ToLower(out), "yaml") || strings.Contains(strings.ToLower(out), "unmarshal") {
-			return fmt.Errorf("yaml parse: %s", strings.TrimSpace(out))
-		}
 		return nil
+
 	case err := <-done:
-		out := strings.TrimSpace(stderr.String() + stdout.String())
-		// Port conflict ≠ bad config — it just means the live server is holding
-		// :50443 with an existing config. The new file passed syntax/TLS/auth
-		// init successfully up to the bind step.
-		lower := strings.ToLower(out)
-		if strings.Contains(lower, "address already in use") ||
-			strings.Contains(lower, "bind: address already in use") {
+		combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+		lower := strings.ToLower(combined)
+
+		// Port conflict ≠ bad config — the live server is holding :50443.
+		// Everything before bind passed; treat as valid.
+		if strings.Contains(lower, "address already in use") {
 			return nil
 		}
-		// If hysteria exited before the timeout, it crashed on parse/TLS/auth/etc.
-		return fmt.Errorf("exited early: %v — %s", err, out)
+
+		// Anything else within the 2s budget is a real failure. Return the
+		// captured output verbatim so callers / admin UI see the diagnostic.
+		return fmt.Errorf("hysteria exited early: %v (%s)", err, combined)
 	}
 }
 
