@@ -1,6 +1,6 @@
 ---
 id: express-routing
-beads_id: heyearthproject-TBD
+beads_id: heyearthproject-3pc0
 prd: ../prd/express-routing.prd.md
 status: draft
 created: 2026-05-25

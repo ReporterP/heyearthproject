@@ -1,6 +1,6 @@
 ---
 id: express-routing
-beads_id: heyearthproject-TBD
+beads_id: heyearthproject-3pc0
 title: Express — Hysteria2 client inbound for premium plans
 status: draft
 created: 2026-05-25

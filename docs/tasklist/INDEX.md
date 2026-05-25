@@ -24,7 +24,7 @@ bd list --status in_progress       # что сейчас в работе
 | `heyearthproject-vq3` | YooKassa Phase 2: conversion + retention | open (P1) | [prd](../prd/yookassa-phase2.prd.md) | [plan](../plan/yookassa-phase2.md) | [tasks](yookassa-phase2.md) | — |
 | `heyearthproject-9gl` | Post-QA hardening (dashboard/SOCKS5/traffic/auth/deeplinks) | open (P2) | [prd](../prd/post-qa-hardening.prd.md) | [plan](../plan/post-qa-hardening.md) | [tasks](post-qa-hardening.md) | — |
 | `heyearthproject-agh4` | Direct routing infrastructure (bypass VPN для российских сервисов) | open (P2) | [prd](../prd/direct-routing.prd.md) | [plan](../superpowers/plans/2026-05-24-direct-routing-infrastructure.md) | [tasks](direct-routing.md) | — |
-| `heyearthproject-TBD` | Express — Hysteria2 client inbound for premium plans | draft | [prd](../prd/express-routing.prd.md) | [plan](../plan/express-routing.md) | [tasks](express-routing.md) | — |
+| `heyearthproject-3pc0` | Express — Hysteria2 client inbound for premium plans | draft | [prd](../prd/express-routing.prd.md) | [plan](../plan/express-routing.md) | [tasks](express-routing.md) | — |
 
 ## Как добавить новый эпик
 
