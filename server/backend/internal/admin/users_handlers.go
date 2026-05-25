@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -322,85 +322,21 @@ func ListUserDevicesHandler(w http.ResponseWriter, r *http.Request) {
 //
 // `days` is clamped to [1, 90]; default 30.
 func ListUserTrafficHandler(w http.ResponseWriter, r *http.Request) {
+	// Path: /api/admin/users/{id}/traffic
 	userDbID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "traffic")
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
 		return
 	}
-
-	days := 30
-	if v := r.URL.Query().Get("days"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 90 {
-			days = n
-		}
-	}
-
-	// Look up user_id (TEXT UUID) — traffic_stats joins on users.user_id,
-	// not users.id — and the current plan limit.
-	var userTextID string
-	var limitBytes int64
-	err := db.DB.QueryRow(`
-		SELECT u.user_id, COALESCE(p.traffic_limit_bytes, 0)
-		FROM users u
-		LEFT JOIN LATERAL (
-			SELECT us2.plan_id
-			FROM user_subscriptions us2
-			WHERE us2.user_id = u.id AND us2.valid_until > NOW()
-			ORDER BY us2.valid_until DESC
-			LIMIT 1
-		) us ON TRUE
-		LEFT JOIN plans p ON p.id = us.plan_id
-		WHERE u.id = $1
-	`, userDbID).Scan(&userTextID, &limitBytes)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, "user not found")
+	var userUUID string
+	if err := db.DB.QueryRow(`SELECT user_id FROM users WHERE id = $1`, userDbID).Scan(&userUUID); err != nil {
+		writeAdminError(w, http.StatusNotFound, "User not found")
 		return
 	}
-
-	// Daily breakdown — group by date, sum upload+download.
-	rows, err := db.DB.Query(`
-		SELECT recorded_at::date AS day,
-		       COALESCE(SUM(upload_bytes + download_bytes), 0) AS bytes
-		FROM traffic_stats
-		WHERE user_id = $1
-		  AND recorded_at >= NOW() - ($2 || ' days')::interval
-		GROUP BY day
-		ORDER BY day
-	`, userTextID, fmt.Sprintf("%d", days))
+	resp, err := biz.BuildTrafficResponse(userDbID, userUUID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "traffic query error: "+err.Error())
+		writeAdminError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
-
-	type dayRow struct {
-		Day   string `json:"day"`
-		Bytes int64  `json:"bytes"`
-	}
-	byDay := []dayRow{}
-	var total int64
-	for rows.Next() {
-		var d time.Time
-		var b int64
-		if err := rows.Scan(&d, &b); err != nil {
-			continue
-		}
-		byDay = append(byDay, dayRow{Day: d.Format("2006-01-02"), Bytes: b})
-		total += b
-	}
-
-	// Per-country breakdown — placeholder. traffic_stats has no server_id /
-	// exit_node_id column, so we cannot attribute bytes to an exit country.
-	// TODO: when traffic_stats grows a server_id column, join servers.country_code
-	// and SUM(upload+download) GROUP BY country_code ORDER BY bytes DESC.
-	byCountry := []map[string]any{}
-
-	writeAdminJSON(w, http.StatusOK, map[string]any{
-		"user_db_id":  userDbID,
-		"days":        days,
-		"limit_bytes": limitBytes,
-		"total_bytes": total,
-		"by_day":      byDay,
-		"by_country":  byCountry,
-	})
+	writeAdminJSON(w, http.StatusOK, resp)
 }

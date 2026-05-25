@@ -795,58 +795,16 @@ func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
-
-	// Получаем текущие лимиты из подписки
-	var trafficUsed int64
-	var trafficLimit *int64
-	err = db.DB.QueryRow(`
-		SELECT COALESCE(us.traffic_used, 0), us.traffic_limit
-		FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&trafficUsed, &trafficLimit)
+	var userDBID int
+	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
+	resp, err := biz.BuildTrafficResponse(userDBID, userID)
 	if err != nil {
-		trafficUsed = 0
-		trafficLimit = nil
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
-
-	// Получаем историю за последние 30 дней (агрегировано по дням)
-	rows, err := db.DB.Query(`
-		SELECT DATE(recorded_at) as day,
-		       SUM(upload_bytes) as upload,
-		       SUM(download_bytes) as download
-		FROM traffic_stats
-		WHERE user_id = $1 AND recorded_at > NOW() - INTERVAL '30 days'
-		GROUP BY DATE(recorded_at)
-		ORDER BY day DESC
-	`, userID)
-
-	var history []map[string]interface{}
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var day string
-			var up, down int64
-			if err := rows.Scan(&day, &up, &down); err == nil {
-				history = append(history, map[string]interface{}{
-					"date":     day,
-					"upload":   up,
-					"download": down,
-					"total":    up + down,
-				})
-			}
-		}
-	}
-
-	resp := map[string]interface{}{
-		"traffic_used": trafficUsed,
-		"history":      history,
-	}
-	if trafficLimit != nil {
-		resp["traffic_limit"] = *trafficLimit
-	}
-
 	writeJSON(w, http.StatusOK, resp)
 }
 

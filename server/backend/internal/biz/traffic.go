@@ -237,3 +237,141 @@ func ListQuotaExceededUUIDs() (map[string]struct{}, error) {
 	}
 	return out, nil
 }
+
+// TrafficResponse is the unified JSON shape returned by /api/v1/user/traffic
+// and /api/admin/users/{id}/traffic.
+type TrafficResponse struct {
+	Subscription *TrafficSubscriptionInfo `json:"subscription,omitempty"`
+	Cycle        *TrafficCycleInfo        `json:"cycle,omitempty"`
+	Periods      TrafficPeriods           `json:"periods"`
+}
+
+type TrafficSubscriptionInfo struct {
+	StartedAt   string `json:"started_at,omitempty"`  // RFC3339
+	ValidUntil  string `json:"valid_until,omitempty"` // RFC3339
+	PlanName    string `json:"plan_name"`
+	IsUnlimited bool   `json:"is_unlimited"`
+}
+
+type TrafficCycleInfo struct {
+	StartedAt  string  `json:"started_at"`  // RFC3339, cycle start
+	EndsAt     string  `json:"ends_at"`     // RFC3339, cycle end
+	UsedBytes  int64   `json:"used_bytes"`
+	LimitBytes int64   `json:"limit_bytes"` // 0 = unlimited
+	Percent    float64 `json:"percent"`
+	Exceeded   bool    `json:"exceeded"`
+}
+
+type TrafficPeriods struct {
+	Day   TrafficPeriodDay   `json:"day"`
+	Week  TrafficPeriodDay   `json:"week"`
+	Month TrafficPeriodDay   `json:"month"`
+	Year  TrafficPeriodMonth `json:"year"`
+}
+
+type TrafficPeriodDay struct {
+	UsedBytes int64       `json:"used_bytes"`
+	ByDay     []DayBucket `json:"by_day"`
+}
+
+type TrafficPeriodMonth struct {
+	UsedBytes int64         `json:"used_bytes"`
+	ByMonth   []MonthBucket `json:"by_month"`
+}
+
+// BuildTrafficResponse assembles the unified traffic payload for a user.
+// Returns zero-valued Periods if the user has no traffic_stats rows.
+// Used by both /api/v1/user/traffic and /api/admin/users/{id}/traffic.
+func BuildTrafficResponse(userDBID int, userUUID string) (TrafficResponse, error) {
+	now := time.Now()
+
+	// 1. Active subscription + plan info
+	var sub TrafficSubscriptionInfo
+	var startedAt sql.NullTime
+	var validUntil sql.NullTime
+	var planName sql.NullString
+	var planLimit sql.NullInt64
+	var subLimit sql.NullInt64
+	err := db.DB.QueryRow(`
+		SELECT us.started_at, us.valid_until,
+		       COALESCE(p.name, 'standard'),
+		       p.traffic_limit_bytes,
+		       us.traffic_limit
+		FROM user_subscriptions us
+		LEFT JOIN plans p ON p.id = us.plan_id
+		WHERE us.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY us.valid_until DESC
+		LIMIT 1
+	`, userDBID).Scan(&startedAt, &validUntil, &planName, &planLimit, &subLimit)
+
+	var hasSub bool
+	if err == nil {
+		hasSub = true
+		sub.PlanName = planName.String
+		if startedAt.Valid {
+			sub.StartedAt = startedAt.Time.Format(time.RFC3339)
+		}
+		if validUntil.Valid {
+			sub.ValidUntil = validUntil.Time.Format(time.RFC3339)
+		}
+	} else if err != sql.ErrNoRows {
+		return TrafficResponse{}, fmt.Errorf("load subscription: %w", err)
+	}
+
+	// 2. Effective limit (sub override > plan limit > 0/unlimited)
+	var effLimit int64
+	if subLimit.Valid && subLimit.Int64 > 0 {
+		effLimit = subLimit.Int64
+	} else if planLimit.Valid && planLimit.Int64 > 0 {
+		effLimit = planLimit.Int64
+	}
+	sub.IsUnlimited = effLimit == 0
+
+	// 3. Cycle window
+	cs, ce := CycleWindow(startedAt, now)
+	cycleUsed, _ := PeriodUsage(userUUID, cs, ce)
+	var pct float64
+	if effLimit > 0 {
+		pct = float64(cycleUsed) / float64(effLimit) * 100.0
+		if pct > 100 {
+			pct = 100
+		}
+	}
+	cycle := TrafficCycleInfo{
+		StartedAt:  cs.Format(time.RFC3339),
+		EndsAt:     ce.Format(time.RFC3339),
+		UsedBytes:  cycleUsed,
+		LimitBytes: effLimit,
+		Percent:    pct,
+		Exceeded:   effLimit > 0 && cycleUsed >= effLimit,
+	}
+
+	// 4. Display periods
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekStart := now.AddDate(0, 0, -7)
+	yearStart := now.AddDate(0, 0, -365)
+
+	periods := TrafficPeriods{}
+
+	dayUsed, _ := PeriodUsage(userUUID, dayStart, now)
+	dayBuckets, _ := PeriodBreakdownByDay(userUUID, dayStart, now)
+	periods.Day = TrafficPeriodDay{UsedBytes: dayUsed, ByDay: dayBuckets}
+
+	weekUsed, _ := PeriodUsage(userUUID, weekStart, now)
+	weekBuckets, _ := PeriodBreakdownByDay(userUUID, weekStart, now)
+	periods.Week = TrafficPeriodDay{UsedBytes: weekUsed, ByDay: weekBuckets}
+
+	monthUsed, _ := PeriodUsage(userUUID, cs, ce)
+	monthBuckets, _ := PeriodBreakdownByDay(userUUID, cs, ce)
+	periods.Month = TrafficPeriodDay{UsedBytes: monthUsed, ByDay: monthBuckets}
+
+	yearUsed, _ := PeriodUsage(userUUID, yearStart, now)
+	yearBuckets, _ := PeriodBreakdownByMonth(userUUID, yearStart, now)
+	periods.Year = TrafficPeriodMonth{UsedBytes: yearUsed, ByMonth: yearBuckets}
+
+	resp := TrafficResponse{Periods: periods, Cycle: &cycle}
+	if hasSub {
+		resp.Subscription = &sub
+	}
+	return resp, nil
+}
