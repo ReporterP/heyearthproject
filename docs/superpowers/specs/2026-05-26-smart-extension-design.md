@@ -60,10 +60,10 @@ ActivateSubscriptionWithPlan(user, new_plan):
 ```
 
 **Бизнес-правило `downgrade_not_allowed`:**
-- Срабатывает когда у юзера активная подписка с `current.plan.price_rub > new_plan.price_rub`
-- UI: на карточке более дешёвого плана — disabled button с tooltip «Доступно после окончания текущей подписки»
+- Срабатывает **только при активной подписке** (`current.valid_until > NOW`) когда `current.plan.price_rub > new_plan.price_rub`
+- **После окончания подписки (`current.valid_until <= NOW`) — любой план доступен**, включая дешевле текущего. Юзер свободен в выборе после истечения.
+- UI: на карточке более дешёвого плана — disabled button с tooltip «Доступно после DD.MM.YYYY» (показывается дата окончания текущей подписки)
 - Backend: payment_handlers.go возвращает 400 с error code `downgrade_not_allowed`
-- После expiry активной подписки (`current.valid_until <= NOW`) — любой план доступен (включая дешёвый)
 
 **Equal-price plan switch разрешён** (`new_price == current_price`, но `plan_id ≠`): юзер хочет поменять состав протоколов / серверов при той же цене. Математика конвертации даёт `bonus_days = leftover_days × new_duration / current_duration` — для same duration → ровно leftover_days переносится в новый план.
 
