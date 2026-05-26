@@ -200,6 +200,12 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			realityFPs := []string{"chrome", "safari", "ios", "firefox"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
+				// URI param order is load-bearing for happ-desktop's URI parser —
+				// encryption → security → sni → fp → pbk → sid → type → tcpKeepAlive* → flow.
+				// Reordering breaks Reality on happ-desktop (verified via commits
+				// 1d8f6b4 / 9dd9776 — two debug cycles). Dropping tcpKeepAlive*
+				// also breaks ping AND connection on happ-desktop. Do not "clean up"
+				// this format string.
 				vlessURI := fmt.Sprintf(
 					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 					userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, flowParam,
@@ -250,33 +256,34 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
 		obfsPassword := biz.GetHysteria2ObfsPassword()
 		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
-			// Бамбук 1 (BBR adaptive)
-			bambooBBRLabel := "🎋 Бамбук 1 only WiFi"
-			bambooBBRURI := fmt.Sprintf(
-				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
-				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.PathEscape(bambooBBRLabel))
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 bambooBBRURI,
-				Protocol:            "hysteria2",
-				Label:               bambooBBRLabel,
-				RecommendedNetworks: []string{"wifi", "ethernet"},
-				Priority:            6,
-			})
-
-			// Бамбук 2 (Brutal CC, 20↑/80↓ Mbps fixed)
-			bambooBrutalLabel := "🎋 Бамбук 2 only WiFi"
-			bambooBrutalURI := fmt.Sprintf(
-				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100&upmbps=20&downmbps=80#%s",
-				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.PathEscape(bambooBrutalLabel))
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 bambooBrutalURI,
-				Protocol:            "hysteria2",
-				Label:               bambooBrutalLabel,
-				RecommendedNetworks: []string{"wifi", "ethernet"},
-				Priority:            7,
-			})
+			// Two Бамбук variants — identical except for the bandwidth params that
+			// flip Hysteria2's congestion control:
+			//   BBR (no bandwidth) — adaptive, learns network
+			//   Brutal (with upmbps/downmbps) — fixed rate, beats operator UDP QoS
+			// Note: "only WiFi" in label is the happ-native filter token — exact
+			// spelling matters (verified per happ docs 2026-05-26). Do not change.
+			bambooVariants := []struct {
+				name     string // "Бамбук 1" / "Бамбук 2"
+				bwParams string // "" → BBR; "&upmbps=N&downmbps=N" → Brutal CC
+				priority int32
+			}{
+				{"Бамбук 1", "", 6},
+				{"Бамбук 2", "&upmbps=20&downmbps=80", 7},
+			}
+			for _, v := range bambooVariants {
+				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
+				uri := fmt.Sprintf(
+					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100%s#%s",
+					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
+					v.bwParams, url.PathEscape(label))
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 uri,
+					Protocol:            "hysteria2",
+					Label:               label,
+					RecommendedNetworks: []string{"wifi", "ethernet"},
+					Priority:            v.priority,
+				})
+			}
 		}
 	}
 
