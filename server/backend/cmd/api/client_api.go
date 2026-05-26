@@ -272,8 +272,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			}
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
+				// hop_interval=15s — Hysteria2 client rotates source port every 15 seconds.
+				// Mobile carrier (Tele2) UDP-QoS sliding-window is typically 20-60s; 15s
+				// rotation beats heuristic before pattern stabilizes. Default would be
+				// happ-client's internal value (often 30s+). Verified safe per
+				// docs/research/2026-05-26-mobile-dpi-tele2.md.
 				uri := fmt.Sprintf(
-					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000%s#%s",
+					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000&hop_interval=15%s#%s",
 					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
 					v.bwParams, url.PathEscape(label))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
