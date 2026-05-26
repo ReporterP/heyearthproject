@@ -129,11 +129,20 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	// Downgrade guard — fail fast before creating any payment record.
 	// Same business rule as biz.ActivateSubscriptionWithPlan (defense-in-depth):
 	// blocked only while subscription is active. After expiry — allowed.
-	if prorRes, prErr := biz.CalculateProrationCredit(userID, plan.ID); prErr == nil && prorRes.IsDowngradeBlocked {
+	//
+	// If the proration check itself errors, log it and trust the activation-time
+	// guard in biz.ActivateSubscriptionWithPlan as fallback (it will refund the
+	// payment via webhook downgrade-blocked path). Current CalculateProrationCredit
+	// swallows scan errors and returns empty result, so this branch is dormant
+	// today — but explicit logging makes silent failures observable.
+	prorRes, prErr := biz.CalculateProrationCredit(userID, plan.ID)
+	if prErr != nil {
+		log.Printf("[payment.create] proration check failed for user=%s plan=%d: %v", userID, plan.ID, prErr)
+	}
+	if prErr == nil && prorRes.IsDowngradeBlocked {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
 		return
 	}
-	_ = originalPrice
 
 	// Free plan — activate immediately
 	if priceRub <= 0 {
@@ -438,7 +447,7 @@ func processPaymentEvent(p *yookassa.Payment) error {
 				fmt.Sscanf(p.Amount.Value, "%d", &pricePaidInt)
 				if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, pricePaidInt, promocode); err != nil {
 					if errors.Is(err, biz.ErrDowngradeNotAllowed) {
-						log.Printf("[payment.webhook] downgrade blocked for user=%s plan=%d — skipping activation, payment refunded manually", userID, planID)
+						log.Printf("[yookassa-webhook] downgrade blocked for user=%s plan=%d — skipping activation, payment refunded manually", userID, planID)
 						// Don't return — let the webhook reply 200 to YooKassa so it doesn't retry forever.
 						// Funds remain in YooKassa pending state for manual refund (ops responsibility).
 					} else {
