@@ -254,9 +254,53 @@ func IsProtocolAllowed(userID, protocol string) bool {
 	return false
 }
 
+// computeBonusDays — общая математика для конвертации остатка старого плана
+// в бонус-дни нового. Используется и в ActivateSubscriptionWithPlan, и в
+// CalculateProrationCredit чтобы числа в UI preview и в финальной активации
+// были идентичны.
+//
+// Формула:
+//   leftover_money = currentPriceRub × leftoverDays / currentDurationDays
+//   bonus_days     = floor(leftover_money × newDurationDays / newPriceRub)
+//   bonus_days     = min(bonus_days, newDurationDays × 10)  // защита
+//
+// Edge cases:
+//   currentPriceRub == 0      → leftover_money = 0       → bonus = 0
+//   newPriceRub == 0          → деление guarded           → bonus = 0
+//   leftoverDays <= 0         → leftover_money = 0        → bonus = 0
+//   currentDurationDays <= 0  → бессмысленный план       → bonus = 0
+func computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPriceRub, newDurationDays int) int {
+	if currentPriceRub <= 0 || currentDurationDays <= 0 || leftoverDays <= 0 || newPriceRub <= 0 || newDurationDays <= 0 {
+		return 0
+	}
+	leftoverMoney := float64(currentPriceRub) * float64(leftoverDays) / float64(currentDurationDays)
+	bonus := int(leftoverMoney * float64(newDurationDays) / float64(newPriceRub))
+	cap := newDurationDays * 10
+	if bonus > cap {
+		bonus = cap
+	}
+	return bonus
+}
+
+// ErrDowngradeNotAllowed возвращается из ActivateSubscriptionWithPlan когда
+// активная подписка дороже нового плана. После истечения валиdity (current.valid_until ≤ NOW)
+// эта проверка не срабатывает — юзер свободен.
+var ErrDowngradeNotAllowed = fmt.Errorf("downgrade_not_allowed")
+
 // ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
-// If the user already has an active subscription on the same plan, valid_until is extended;
-// otherwise a new subscription row is inserted (multiple plans per user allowed).
+//
+// Behaviour by case:
+//   1. No active subscription (or current expired):  INSERT new row, valid_until = NOW + durationDays.
+//   2. Active subscription, same plan:               UPDATE valid_until = current + durationDays (simple stacking).
+//   3. Active subscription, different plan, new cheaper:  ErrDowngradeNotAllowed — caller must surface as HTTP 400.
+//   4. Active subscription, different plan, new ≥ current price:
+//       leftover_money = current.price × leftover_days / current.duration
+//       bonus_days     = floor(leftover_money × durationDays / pricePaid)  (capped at durationDays × 10)
+//       Update row to new plan_id, valid_until = NOW + durationDays + bonus_days, price_paid = pricePaid.
+//
+// pricePaid is the *new* plan's price (not the amount after discount) — it's what
+// determines bonus_days. Promocode discounts already adjusted the YooKassa charge
+// upstream; here we always use new_plan.price_rub for honest conversion.
 func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
 	var dbUserID int
 	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
@@ -264,29 +308,72 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		return fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
-	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
+	// Fetch current active subscription (any plan) — most recent active row.
+	var currentSubID int
+	var currentPlanID int
+	var currentPriceRub int
+	var currentDurationDays int
+	var currentValidUntil time.Time
+	row := db.DB.QueryRow(`
+		SELECT us.id, us.plan_id, p.price_rub, p.duration_days, us.valid_until
+		FROM user_subscriptions us
+		JOIN plans p ON p.id = us.plan_id
+		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, dbUserID)
+	hasActive := true
+	if scanErr := row.Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil); scanErr != nil {
+		hasActive = false // sql.ErrNoRows — нет активной → ветка (1)
+	}
 
-	// Try to extend an existing active subscription on the same plan first.
-	res, err := db.DB.Exec(fmt.Sprintf(`
-		UPDATE user_subscriptions
-		SET valid_until = GREATEST(valid_until, %s),
-		    price_paid = $1, promocode_used = $2,
-		    status = 'active', auto_renew = true
-		WHERE user_id = $3 AND plan_id = $4 AND valid_until > NOW()
-	`, validUntilExpr), pricePaid, promocodeUsed, dbUserID, planID)
-	if err != nil {
+	// (1) No active subscription — fresh INSERT.
+	if !hasActive {
+		validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
+		_, err = db.DB.Exec(fmt.Sprintf(`
+			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
+			VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
+		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed)
+		if err == nil {
+			NotifySubscriptionChange()
+		}
 		return err
 	}
-	if affected, _ := res.RowsAffected(); affected > 0 {
-		NotifySubscriptionChange()
-		return nil
+
+	// (2) Same plan — extend valid_until in place.
+	if currentPlanID == planID {
+		validUntilExpr := fmt.Sprintf("valid_until + INTERVAL '%d days'", durationDays)
+		_, err = db.DB.Exec(fmt.Sprintf(`
+			UPDATE user_subscriptions
+			SET valid_until = %s,
+			    price_paid = $1, promocode_used = $2,
+			    status = 'active', auto_renew = true
+			WHERE id = $3
+		`, validUntilExpr), pricePaid, promocodeUsed, currentSubID)
+		if err == nil {
+			NotifySubscriptionChange()
+		}
+		return err
 	}
 
-	// No active sub for this plan — insert a new row.
+	// (3) Different plan, downgrade — REJECT.
+	if pricePaid < currentPriceRub {
+		return ErrDowngradeNotAllowed
+	}
+
+	// (4) Cross-plan upgrade or equal-price switch — convert leftover to bonus days.
+	leftoverDays := int(time.Until(currentValidUntil).Hours() / 24)
+	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, pricePaid, durationDays)
+	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays+bonusDays)
 	_, err = db.DB.Exec(fmt.Sprintf(`
-		INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
-		VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
-	`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed)
+		UPDATE user_subscriptions
+		SET plan_id = $1,
+		    valid_until = %s,
+		    price_paid = $2,
+		    promocode_used = $3,
+		    status = 'active',
+		    auto_renew = true
+		WHERE id = $4
+	`, validUntilExpr), planID, pricePaid, promocodeUsed, currentSubID)
 	if err == nil {
 		NotifySubscriptionChange()
 	}
@@ -425,89 +512,101 @@ func CheckPlanActivationLimit(userID string, planID int) error {
 	return nil
 }
 
-// ProrationResult — расчёт остатка текущей подписки в рублях.
+// ProrationResult — расчёт остатка текущей подписки.
+//
+// Legacy fields (CreditRub / Applied / IsDowngrade) сохранены для backward-compat
+// и продолжают питать ProrationPreview frontend, но больше НЕ используются для
+// вычитания из цены платежа в /payment/create. Юзер платит full new_plan.price_rub;
+// остаток конвертируется в bonus_days (см. ниже) и продлевает valid_until.
 type ProrationResult struct {
-	CreditRub       int     // Кредит от текущей подписки (руб, округлён вниз)
-	DaysRemaining   int     // Дней до конца текущей подписки
-	CurrentPlanID   int     // Текущий план
-	CurrentPriceRub int     // Цена текущего плана
-	NewPlanPriceRub int     // Цена нового плана (для UI)
-	IsDowngrade     bool    // true если новый план дешевле текущего
-	Applied         bool    // Применимо ли для нового plan (не даунгрейд с credit > new price)
+	CreditRub          int       // [legacy] Кредит от текущей подписки (руб, округлён вниз)
+	DaysRemaining      int       // Дней до конца текущей подписки
+	CurrentPlanID      int       // Текущий план (0 = нет активной подписки)
+	CurrentPriceRub    int       // Цена текущего плана
+	NewPlanPriceRub    int       // Цена нового плана (для UI)
+	IsDowngrade        bool      // [legacy] true если новый план дешевле
+	Applied            bool      // [legacy] true если CreditRub можно применить
+	BonusDays          int       // Сколько бонус-дней получит юзер при покупке (>0 только для cross-plan upgrade/equal)
+	NewValidUntil      time.Time // Итоговая дата окончания после покупки (NOW + new_duration + BonusDays, либо valid_until + new_duration для same-plan)
+	IsDowngradeBlocked bool      // true если покупка должна быть отклонена 400 downgrade_not_allowed
 }
 
-// CalculateProrationCredit вычисляет credit для юзера при смене тарифа.
-// Формула: credit = current_plan_price * (days_remaining / duration_days)
+// CalculateProrationCredit вычисляет credit + bonus_days для юзера при смене тарифа.
 //
-// Правила:
-//   - Apply только если current_price > 0 (с free нет proration)
-//   - Credit не превышает 90% от new_plan цены (защита от zero-value оплат)
-//   - Для downgrade (new < current) — credit 0 (просто новая цена, но valid_until продлевается на больший из двух)
+// Возвращает ОБА расчёта (legacy money-credit и новый days-bonus) в одном
+// ProrationResult, чтобы handleProrationPreview мог выдать backward-compat ответ
+// и новые поля одновременно.
+//
+// Логика is_downgrade_blocked: true только при наличии активной подписки и
+// new_plan.price_rub < current.plan.price_rub. После истечения подписки (нет
+// активной строки) — false, downgrade разрешён.
 func CalculateProrationCredit(userID string, newPlanID int) (*ProrationResult, error) {
 	res := &ProrationResult{}
+
+	// Fetch new plan first (needed even when no active sub, for the response).
+	newPlan, err := GetPlanByID(newPlanID)
+	if err != nil || newPlan == nil {
+		return res, nil
+	}
+	res.NewPlanPriceRub = newPlan.PriceRub
 
 	// Текущая активная подписка
 	var currentPlanID int
 	var currentPrice int
 	var currentDuration int
 	var validUntil time.Time
-	err := db.DB.QueryRow(`
+	scanErr := db.DB.QueryRow(`
 		SELECT us.plan_id, p.price_rub, p.duration_days, us.valid_until
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		JOIN plans p ON p.id = us.plan_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
 		ORDER BY us.valid_until DESC LIMIT 1
 	`, userID).Scan(&currentPlanID, &currentPrice, &currentDuration, &validUntil)
-	if err != nil {
-		return res, nil // нет активной — нет credit
-	}
-
-	if currentPrice <= 0 || currentDuration <= 0 {
+	if scanErr != nil {
+		// Нет активной — bonus 0, downgrade не блокируется, valid_until = NOW + new.duration.
+		res.NewValidUntil = time.Now().Add(time.Duration(newPlan.DurationDays) * 24 * time.Hour)
 		return res, nil
 	}
 
 	daysRemaining := int(time.Until(validUntil).Hours() / 24)
-	if daysRemaining <= 0 {
-		return res, nil
+	if daysRemaining < 0 {
+		daysRemaining = 0
 	}
-
-	// Pro-rata credit
-	credit := int(float64(currentPrice) * float64(daysRemaining) / float64(currentDuration))
-	if credit <= 0 {
-		return res, nil
-	}
-
-	res.CreditRub = credit
 	res.DaysRemaining = daysRemaining
 	res.CurrentPlanID = currentPlanID
 	res.CurrentPriceRub = currentPrice
-
-	// Ограничение: credit не больше 90% от new plan price (чтобы всегда был оплачиваемый остаток)
-	newPlan, err := GetPlanByID(newPlanID)
-	if err != nil || newPlan == nil {
-		res.Applied = false
-		return res, nil
-	}
-
-	res.NewPlanPriceRub = newPlan.PriceRub
 	res.IsDowngrade = newPlan.PriceRub < currentPrice
+	res.IsDowngradeBlocked = currentPlanID != newPlanID && newPlan.PriceRub < currentPrice
 
-	// Free newPlan — credit не применяем (платить нечего)
-	if newPlan.PriceRub <= 0 {
-		res.Applied = false
+	// Same plan — extension. valid_until = current + new.duration. bonus = 0.
+	if currentPlanID == newPlanID {
+		res.NewValidUntil = validUntil.Add(time.Duration(newPlan.DurationDays) * 24 * time.Hour)
 		return res, nil
 	}
 
-	// Ограничение: credit не больше 90% от new plan price (чтобы всегда был оплачиваемый
-	// остаток больше 0 — иначе ЮKassa может не принять платёж на 0₽).
-	// При downgrade credit обычно больше new price — будет обрезан до 90%,
-	// а valid_until продлится через GREATEST в ActivateSubscriptionWithPlan.
-	maxCredit := int(float64(newPlan.PriceRub) * 0.9)
-	if credit > maxCredit {
-		res.CreditRub = maxCredit
+	// Downgrade blocked — bonus = 0, valid_until не меняется (мы и не будем активировать).
+	if res.IsDowngradeBlocked {
+		res.NewValidUntil = validUntil
+		return res, nil
 	}
 
-	res.Applied = true
+	// Cross-plan upgrade/equal — bonus_days conversion.
+	res.BonusDays = computeBonusDays(currentPrice, currentDuration, daysRemaining, newPlan.PriceRub, newPlan.DurationDays)
+	res.NewValidUntil = time.Now().Add(time.Duration(newPlan.DurationDays+res.BonusDays) * 24 * time.Hour)
+
+	// Legacy money-credit поля (для backward-compat UI которое их читает).
+	// Сейчас payment_handlers НЕ применяет CreditRub к priceRub — юзер платит full.
+	if currentPrice > 0 && currentDuration > 0 && daysRemaining > 0 {
+		credit := int(float64(currentPrice) * float64(daysRemaining) / float64(currentDuration))
+		if credit > 0 && newPlan.PriceRub > 0 {
+			maxCredit := int(float64(newPlan.PriceRub) * 0.9)
+			if credit > maxCredit {
+				credit = maxCredit
+			}
+			res.CreditRub = credit
+			res.Applied = true
+		}
+	}
 	return res, nil
 }
