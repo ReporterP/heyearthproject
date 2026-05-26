@@ -191,69 +191,68 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			//   • #Title?serverDescription=<base64> shows custom subtitle
 			//     (replaces technical "VLESS" line under the profile name)
 			//
-			// We use a neutral ⚡ emoji prefix instead of a country flag because
-			// the user's actual exit is selected by the smart load-balancer at
-			// connection time — could be any of N countries. A specific country
-			// flag would mislead. The ⚡ also conveys "speed" which matches
-			// the Reality TCP performance profile.
-			const profileEmoji = "⚡"
+			// Tree-themed names (🌳 Берёза / 🌲 Дуб / 🎋 Бамбук) replace the
+			// previous country-flag-vs-⚡ approach. The user's actual exit is
+			// selected by the smart load-balancer at connection time — could be
+			// any of N countries — so we don't expose exit geography here.
 			subDescB64 := func(s string) string {
 				return base64.StdEncoding.EncodeToString([]byte(s))
 			}
 
-			// Multi-profile: 3 VLESS URIs optimized for different ISP types.
-			// Client (Happ/v2rayNG) tests all and auto-picks the fastest working one.
-			profiles := []struct {
-				fp       string
-				label    string
-				tag      string // displayed under the flag
-				subDesc  string // custom 2nd line (base64 inside URI)
-				networks []string
-				priority int32
-			}{
-				{"chrome", "Домашний интернет", "Домашний", "Reality • Chrome • TCP", []string{"wifi", "ethernet", "any"}, 0},
-				{"safari", "Мобильный интернет", "Мобильный", "Reality • Safari • TCP", []string{"cellular", "wifi"}, 1},
-				{"edge", "Строгий режим", "Строгий", "Reality • Edge • TCP", []string{"cellular", "wifi", "ethernet", "any"}, 2},
-			}
-
-			for _, p := range profiles {
-				fragment := fmt.Sprintf("%s %s?serverDescription=%s", profileEmoji, p.tag, subDescB64(p.subDesc))
-				// tcpKeepAliveInterval=15 / tcpKeepAliveIdle=100: shipped via the URI so Happ /
-				// v2rayNG configure their outbound sockopt without manual editing. Keepalive
-				// pings prevent the client's policy.connIdle (which we cannot push via the
-				// URI — it's a client-side policy field) from killing long-lived streams
-				// (AI streaming, WebSocket, SSE), AND keep carrier-NAT mappings alive on
-				// mobile / hotel wifi networks.
-				vlessURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
-					userVlessUUID, mainServerHost, realitySNI, p.fp, realityPubKey, realityShortID, flowParam,
-					url.QueryEscape(fragment))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 vlessURI,
-					Protocol:            "vless",
-					Label:               p.label,
-					RecommendedNetworks: p.networks,
-					Priority:            p.priority,
-				})
-			}
+			// Single unified VLESS Reality entry — «🌳 Берёза».
+			// Previously we shipped 3 variants (chrome/safari/edge fingerprints
+			// branded as Домашний/Мобильный/Строгий) so happ could auto-pick the
+			// fastest. The diversity confused users — same exit nodes, same
+			// performance, just different TLS fingerprints. Population-level FP
+			// diversity is preserved by auto-tuner's 4h rotation of
+			// app_settings.reality_fingerprint across the user base.
+			//
+			// chrome is kept as the default fingerprint (most reliable in
+			// production based on tunnel-monitor logs).
+			//
+			// tcpKeepAliveInterval=15 / tcpKeepAliveIdle=100: shipped via the URI
+			// so happ configures sockopt without manual editing. Keepalive pings
+			// prevent client-side policy.connIdle from killing long-lived streams
+			// (AI streaming, WebSocket, SSE) AND keep carrier-NAT mappings alive
+			// on mobile / hotel wifi networks.
+			fragment := fmt.Sprintf("🌳 Берёза?serverDescription=%s",
+				subDescB64("Универсальное подключение — работает везде, выбирайте по умолчанию"))
+			vlessURI := fmt.Sprintf(
+				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
+				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
+				url.QueryEscape(fragment))
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 vlessURI,
+				Protocol:            "vless",
+				Label:               "🌳 Берёза",
+				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+				Priority:            0,
+			})
 		}
 
-		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443)
+		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443) — «🌲 Дуб».
+		// Fallback profile for ISPs running aggressive behavioral DPI against
+		// pure-TCP Reality. SplitHTTP framing makes the connection look like
+		// HTTP/1.1 long-poll rather than direct Reality handshake — slips past
+		// some Russian DPI deployments that learned to fingerprint TCP+Reality
+		// timing patterns.
 		if realityPubKey != "" && canVLESS {
-			// Neutral ⚡ prefix — exit country chosen by smart load-balancer at connect.
-			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Reality • Chrome • XHTTP (anti-DPI)"))
-			fragment := fmt.Sprintf("⚡ XHTTP?serverDescription=%s", subDescB64)
-			// NOTE: splithttp transport does NOT use flow=xtls-rprx-vision (flow is only for tcp+Reality)
+			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Запасной — для регионов со строгой блокировкой"))
+			fragment := fmt.Sprintf("🌲 Дуб?serverDescription=%s", subDescB64)
+			// type=xhttp matches the Xray inbound's `network: xhttp` (renamed
+			// from splithttp in Xray v1.8.21+). XTLS flow MUST be absent on
+			// xhttp transport — server-side clients list excludes it. See
+			// xray_sync.go::vlessClientsXHTTP.
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=splithttp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(fragment))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,
 				Protocol:            "vless",
-				Label:               "XHTTP Reality (максимальная защита)",
-				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-				Priority:            -1, // highest priority — most DPI-resistant
+				Label:               "🌲 Дуб",
+				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+				Priority:            1, // below Берёза — fallback choice
 			})
 		}
 
@@ -272,8 +271,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// который таргетирует один UDP-порт.
 			// Hysteria2 URI: hysteria2://<password>@<host>:<port>/?obfs=salamander&obfs-password=<obfs>&sni=<sni>&insecure=0#<name>
 			// Поле `mport` — Happ-расширение для port-hopping ranges.
-			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Hysteria2 • QUIC • Salamander obfs"))
-			fragment := fmt.Sprintf("⚡ Express?serverDescription=%s", subDescB64)
+			//
+			// «🎋 Бамбук» — premium speed profile. RecommendedNetworks limited to
+			// wifi/ethernet because UDP-based QUIC works best on stable lossless
+			// links. The subtitle explicitly warns about the Wi-Fi limitation so
+			// users don't pick it on cellular and complain about reconnects.
+			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Максимальная скорость для стримов и игр. ⚠️ Работает только через Wi-Fi"))
+			fragment := fmt.Sprintf("🎋 Бамбук?serverDescription=%s", subDescB64)
 			hy2URI := fmt.Sprintf(
 				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
 				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
@@ -281,9 +285,9 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 hy2URI,
 				Protocol:            "hysteria2",
-				Label:               "Express (быстрое подключение)",
-				RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-				Priority:            -2, // выше всех — happ попробует первым, иначе fallback на VLESS Reality
+				Label:               "🎋 Бамбук",
+				RecommendedNetworks: []string{"wifi", "ethernet"}, // Wi-Fi only hint to happ
+				Priority:            2,                            // below Дуб — premium pick, not default
 			})
 		}
 	}

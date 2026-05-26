@@ -184,6 +184,24 @@ func SyncXrayConfig() error {
 		})
 	}
 
+	// vlessClientsXHTTP mirrors vlessClients minus the `flow` field. XTLS Vision
+	// (`xtls-rprx-vision`) only works with `network=tcp`; on an xhttp/splithttp
+	// transport the Xray server rejects the handshake when clients have flow
+	// set. Until now both inbounds shared `vlessClients` — the xhttp inbound
+	// has been accepting connections but failing them right after Reality
+	// handshake (visible to happ as "н/д" / no latency).
+	vlessClientsXHTTP := make([]map[string]interface{}, 0, len(vlessClients))
+	for _, c := range vlessClients {
+		cc := make(map[string]interface{}, len(c))
+		for k, v := range c {
+			if k == "flow" {
+				continue
+			}
+			cc[k] = v
+		}
+		vlessClientsXHTTP = append(vlessClientsXHTTP, cc)
+	}
+
 	// ── Reality SNI (настраивается через app_settings, по умолчанию — apple.com) ──
 	// apple.com — оптимальный SNI для обхода DPI в России (массовый трафик, нельзя заблокировать)
 	realitySNI := "apple.com"
@@ -214,7 +232,7 @@ func SyncXrayConfig() error {
 			// making traffic statistically indistinguishable from normal web browsing.
 			// Port 2443 direct (no nginx stream needed).
 			"tag": "vless-xhttp", "listen": "0.0.0.0", "port": 2443, "protocol": "vless",
-			"settings": map[string]interface{}{"clients": vlessClients, "decryption": "none"},
+			"settings": map[string]interface{}{"clients": vlessClientsXHTTP, "decryption": "none"},
 			"streamSettings": map[string]interface{}{
 				"network": "xhttp", "security": "reality",
 				"xhttpSettings": map[string]interface{}{
