@@ -310,7 +310,15 @@ quic:
   maxConnReceiveWindow:    20971520
   maxIdleTimeout: 60s
   maxIncomingStreams: 1024
-  disablePathMTUDiscovery: false
+  # Disable Path MTU Discovery — cell DPI on Tele2 (and other RU carriers)
+  # fingerprints VPN tunnels via ICMP fragmentation-needed packets that
+  # PMTUD generates when probing path MTU. Cellular path MTU is typically
+  # 1400-1450 (vs our Hub 1500) so PMTUD activity leaks. With PMTUD disabled,
+  # Hysteria2 uses QUIC default ~1252-byte payload regardless of network —
+  # no probing packets, predictable size, no DPI fingerprint surface.
+  # Throughput cost: ~3%% on high-MTU paths (negligible vs cellular).
+  # See docs/research/2026-05-26-mobile-dpi-tele2.md (R3).
+  disablePathMTUDiscovery: true
 
 # Disable UDP traffic from clients only on misconfigured Hub (we want UDP).
 disableUDP: false
