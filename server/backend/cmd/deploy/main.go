@@ -64,6 +64,7 @@ func main() {
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
 	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality + SOCKS5 + HTTP proxy) на главный сервер")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
+	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
 	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
@@ -98,6 +99,8 @@ func main() {
 		mode = "setup-xray"
 	case *setupHy2Flag:
 		mode = "setup-hysteria2-hub"
+	case *setupAwgFlag:
+		mode = "setup-awg"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
@@ -111,7 +114,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -199,6 +202,7 @@ func main() {
 		doSSL(client, cfg)
 		doNginx(sftpClient, client, cfg) // перезаписать конфиг с учётом SSL
 		seedConnectionSettings(client, cfg)
+		setupAmneziaWGHub(client, cfg)
 		verifyServices(client)
 	case "update-main":
 		// installAnsibleOnServer пропускаем — apt-get update может зависать
@@ -235,6 +239,8 @@ func main() {
 		verifyServices(client)
 	case "setup-hysteria2-hub":
 		setupHysteria2Hub(client, cfg)
+	case "setup-awg":
+		setupAmneziaWGHub(client, cfg)
 	case "backup":
 		doBackup(client, cfg)
 	case "restore":
