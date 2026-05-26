@@ -248,7 +248,7 @@ func buildClashConfig(userID string) string {
 				`  - name: "%s"
     type: hysteria2
     server: %s
-    ports: 50000-50100
+    ports: 30000-65000
     password: "%s"
     obfs: salamander
     obfs-password: "%s"

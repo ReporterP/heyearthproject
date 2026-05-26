@@ -273,7 +273,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
 				uri := fmt.Sprintf(
-					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100%s#%s",
+					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000%s#%s",
 					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
 					v.bwParams, url.PathEscape(label))
 				opts = append(opts, &heyearth_v1.ConnectionOption{

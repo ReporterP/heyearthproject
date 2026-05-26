@@ -3,8 +3,9 @@ package main
 // Hysteria2 Hub provisioner.
 //
 // Installs the official `hysteria` binary, creates the systemd unit and a
-// non-root system user, opens UDP 50000-50100 (port-hopping range) via iptables
-// REDIRECT to the canonical :50443, then triggers an initial config write by
+// non-root system user, opens UDP 30000-65000 (port-hopping range, widened
+// from 50000-50100 for cell-DPI evasion) via iptables REDIRECT to the
+// canonical :50443, then triggers an initial config write by
 // hitting the heyearth-api sync loop (heyearth-api runs locally and watches for
 // plan/subscription changes).
 //
@@ -133,12 +134,14 @@ CRON
 chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
 
 # ── 4. iptables UDP port-hopping range → :50443 ──
-# Port hopping: clients pick a random port from 50000-50100; iptables forwards
-# all of those to the single hysteria listener on :50443. Protects from QoS
-# throttling that targets a specific UDP port.
-if ! iptables -t nat -C PREROUTING -p udp --dport 50000:50100 -j REDIRECT --to-ports 50443 2>/dev/null; then
-  iptables -t nat -A PREROUTING -p udp --dport 50000:50100 -j REDIRECT --to-ports 50443
-  echo "[hysteria2-hub] iptables UDP redirect 50000:50100 → 50443 added"
+# Port hopping: clients pick a random port from 30000-65000 (widened from
+# 50000-50100 for cell-DPI evasion — narrow ranges are fingerprintable as
+# "VPN port-hopping"); iptables forwards all of those to the single hysteria
+# listener on :50443. Protects from QoS throttling that targets a specific
+# UDP port.
+if ! iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; then
+  iptables -t nat -A PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443
+  echo "[hysteria2-hub] iptables UDP redirect 30000:65000 → 50443 added"
 fi
 
 # Persist iptables (Debian/Ubuntu use iptables-persistent)
@@ -150,7 +153,7 @@ fi
 
 # ── 5. Open firewall (ufw if active) ──
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow 50000:50100/udp comment 'Hysteria2 Express' 2>/dev/null || true
+  ufw allow 30000:65000/udp comment 'Hysteria2 Express' 2>/dev/null || true
   ufw allow 50443/udp comment 'Hysteria2 Express canonical' 2>/dev/null || true
 fi
 
