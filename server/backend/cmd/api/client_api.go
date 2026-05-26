@@ -252,6 +252,25 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				})
 			}
 
+			// 🌳 Берёза 3 — alt-port :30443 to bypass operator-level QoS throttling
+			// that targets known VPN-port :443 traffic to vdsina IP ranges (MTS observed
+			// throttling :443 + :2443 specifically). Same Reality config as Берёза 1+2,
+			// just a high port outside common DPI rules. Single fingerprint (chrome).
+			{
+				altPortLabel := "🌳 Берёза 3 (alt-port)"
+				altURI := fmt.Sprintf(
+					"vless://%s@%s:30443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&flow=xtls-rprx-vision&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
+					userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
+					url.PathEscape(altPortLabel))
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 altURI,
+					Protocol:            "vless",
+					Label:               altPortLabel,
+					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+					Priority:            2, // try right after Берёза 1+2 (priority 0,1)
+				})
+			}
+
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443 (configurable port via app_settings.xhttp_port),
 			// 2 uTLS variants. XHTTP framing looks like an HTTP/1.1 long-poll
 			// instead of pure-Reality timing pattern, slipping past DPI that
@@ -276,7 +295,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 2), // 2..3
+					Priority:            int32(i + 3), // 3..4 (shifted by 1 to make room for Берёза 3 at priority 2)
 				})
 			}
 		}

@@ -239,6 +239,33 @@ func SyncXrayConfig() error {
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		},
 		{
+			// 🌳 Берёза 3 (alt-port): identical Reality config but on a high port
+			// to bypass operator-level QoS throttling that targets known
+			// VPN-port :443 traffic to vdsina IP ranges. Same keys/UUIDs as
+			// vless-reality :10443 — just a different listen port to escape
+			// per-IP+per-port throttle rules. Reality dest still points to
+			// the configured camouflage SNI for proper Reality-Vision behavior.
+			"tag": "vless-reality-hi", "listen": "0.0.0.0", "port": 30443, "protocol": "vless",
+			"settings": map[string]interface{}{"clients": vlessClients, "decryption": "none"},
+			"streamSettings": map[string]interface{}{
+				"network": "tcp", "security": "reality",
+				"realitySettings": map[string]interface{}{
+					"show": false, "dest": realitySNI + ":443", "xver": 0,
+					"serverNames":  []string{realitySNI, "www." + realitySNI},
+					"privateKey":   keys.PrivateKey,
+					"shortIds":     []string{keys.ShortID, ""},
+					"xPaddingBytes": "100-1000",
+				},
+				"sockopt": map[string]interface{}{
+					"tcpKeepAliveInterval": 30,
+					"tcpKeepAliveIdle":     120,
+					"tcpFastOpen":          true,
+					"tcpNoDelay":           true,
+				},
+			},
+			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+		},
+		{
 			// VLESS Reality + XHTTP (splithttp) — anti-behavioral-DPI transport
 			// XHTTP splits upload/download into separate HTTP transactions,
 			// making traffic statistically indistinguishable from normal web browsing.
