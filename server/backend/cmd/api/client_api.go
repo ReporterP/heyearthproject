@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
@@ -187,17 +186,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				flowParam = "&flow=" + flow
 			}
 
-			// Profile tag enrichment — per Happ docs (emoji.md / examples-of-links):
-			//   • #Title?serverDescription=<base64> shows custom subtitle
-			//     (replaces technical "VLESS" line under the profile name)
-			//
-			// Tree-themed names (🌳 Берёза / 🌲 Дуб / 🎋 Бамбук) replace the
-			// previous country-flag-vs-⚡ approach. The user's actual exit is
-			// selected by the smart load-balancer at connection time — could be
-			// any of N countries — so we don't expose exit geography here.
-			subDescB64 := func(s string) string {
-				return base64.StdEncoding.EncodeToString([]byte(s))
-			}
+			// Tree-themed names (🌳 Берёза / 🌲 Дуб / 🎋 Бамбук) with inline
+			// short explainers (• основной / • запасной / • Wi-Fi). The earlier
+			// approach of base64-encoded `serverDescription` in URL fragments
+			// (per happ docs) is not rendered on current happ builds — we bake
+			// the explainer into the visible label instead. The user's actual
+			// exit is selected by the smart load-balancer at connect time, so
+			// we don't expose country geography here.
 
 			// Single unified VLESS Reality entry — «🌳 Берёза».
 			// Previously we shipped 3 variants (chrome/safari/edge fingerprints
@@ -215,16 +210,18 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// prevent client-side policy.connIdle from killing long-lived streams
 			// (AI streaming, WebSocket, SSE) AND keep carrier-NAT mappings alive
 			// on mobile / hotel wifi networks.
-			fragment := fmt.Sprintf("🌳 Берёза?serverDescription=%s",
-				subDescB64("Универсальное подключение — работает везде, выбирайте по умолчанию"))
+			// Compact inline label — happ's serverDescription base64 hint inside
+			// the URL fragment isn't being rendered on every happ build, so we
+			// bake the explainer directly into the visible name. Short phrase
+			// fits the bold first-line layout without truncation.
 			vlessURI := fmt.Sprintf(
 				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
-				url.QueryEscape(fragment))
+				url.QueryEscape("🌳 Берёза • основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
 				Protocol:            "vless",
-				Label:               "🌳 Берёза",
+				Label:               "🌳 Берёза • основной",
 				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
 				Priority:            0,
 			})
@@ -237,20 +234,24 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		// some Russian DPI deployments that learned to fingerprint TCP+Reality
 		// timing patterns.
 		if realityPubKey != "" && canVLESS {
-			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Запасной — для регионов со строгой блокировкой"))
-			fragment := fmt.Sprintf("🌲 Дуб?serverDescription=%s", subDescB64)
 			// type=xhttp matches the Xray inbound's `network: xhttp` (renamed
 			// from splithttp in Xray v1.8.21+). XTLS flow MUST be absent on
 			// xhttp transport — server-side clients list excludes it. See
 			// xray_sync.go::vlessClientsXHTTP.
+			//
+			// path=/ + host=<server> are required so the xhttp HTTP request
+			// matches what the server's xhttpSettings.host expects (Reality
+			// validates Host header against this list, not realitySettings.
+			// serverNames which contains the SNI camouflage domain yandex.ru).
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
-				url.QueryEscape(fragment))
+				url.QueryEscape(mainServerHost),
+				url.QueryEscape("🌲 Дуб • запасной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,
 				Protocol:            "vless",
-				Label:               "🌲 Дуб",
+				Label:               "🌲 Дуб • запасной",
 				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
 				Priority:            1, // below Берёза — fallback choice
 			})
@@ -276,16 +277,14 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// wifi/ethernet because UDP-based QUIC works best on stable lossless
 			// links. The subtitle explicitly warns about the Wi-Fi limitation so
 			// users don't pick it on cellular and complain about reconnects.
-			subDescB64 := base64.StdEncoding.EncodeToString([]byte("Максимальная скорость для стримов и игр. ⚠️ Работает только через Wi-Fi"))
-			fragment := fmt.Sprintf("🎋 Бамбук?serverDescription=%s", subDescB64)
 			hy2URI := fmt.Sprintf(
 				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
 				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.QueryEscape(fragment))
+				url.QueryEscape("🎋 Бамбук • скорость, только Wi-Fi"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 hy2URI,
 				Protocol:            "hysteria2",
-				Label:               "🎋 Бамбук",
+				Label:               "🎋 Бамбук • скорость, только Wi-Fi",
 				RecommendedNetworks: []string{"wifi", "ethernet"}, // Wi-Fi only hint to happ
 				Priority:            2,                            // below Дуб — premium pick, not default
 			})

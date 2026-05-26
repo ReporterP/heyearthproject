@@ -236,6 +236,17 @@ func SyncXrayConfig() error {
 			"streamSettings": map[string]interface{}{
 				"network": "xhttp", "security": "reality",
 				"xhttpSettings": map[string]interface{}{
+					// path MUST match what clients send in their URI's `path=` param.
+					// `/` is the minimal-friction default — looks like a generic web
+					// site root request, no path-specific filtering hits.
+					"path": "/",
+					// host is the SNI that the xhttp transport uses for the HTTP
+					// Host header. MUST be one of realitySettings.serverNames OR
+					// listed here explicitly; without it Xray validates against
+					// realitySettings.serverNames (yandex.ru) but happ sends
+					// Host: hiearth.ru → silent handshake failure (Reality OK,
+					// xhttp layer rejects). This was the «н/д» bug.
+					"host":          biz.GetSettingOrDefault("main_server_host", "hiearth.ru"),
 					"mode":          "auto",
 					"xPaddingBytes": "100-1000",
 				},
