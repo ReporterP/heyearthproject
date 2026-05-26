@@ -7,6 +7,27 @@
 
 ---
 
+## 🔴 Critical Correction — Hub Location (post-deploy revelation)
+
+**Our Hub is physically in Moscow, Russia** (IP 45.150.39.236, AS48282 "Hosting technology LTD" / vdsina.ru). The original draft of this document implicitly assumed a foreign-DC Hub, which inverted several recommendations:
+
+| Aspect | Original (wrong) assumption | Corrected for RU Hub |
+|--------|-----------------------------|----------------------|
+| `dest = yandex.ru` | "ASN mismatch with foreign DC IP" → bad | **Domestic resource, no DPI block possible, signal-noise high** → correct |
+| RU "freezing attack" (>15-20KB) | Applies to us as foreign-DC IP | Applies less — attack targets _foreign_ DC IPs specifically. Our R4 mitigation still useful but less critical. |
+| `dl.google.com` swap recommendation | "Industry 2026 best" | Worse for our case — Google CDN in RU constrained after April 2025 throttling; theoretical ASN mismatch with RU Hub IP |
+| `microsoft.com` swap | "Safe global alternative" | Lower priority — neutral but no advantage over domestic yandex.ru |
+
+**Decision (2026-05-26):** Keep `reality_sni_domain = yandex.ru`. Rationale:
+- DPI cannot block SNI=yandex.ru — it's part of Russia's own legit infrastructure
+- Reality already protects against ASN-based active probing (probes get forwarded to real yandex.ru:443 without correct pbk)
+- yandex.ru has TLS 1.3, H2, X25519 — meets all Reality dest requirements
+- Atomic-rollback is always available via `UPDATE app_settings SET value=... WHERE key='reality_sni_domain'` if future evidence contradicts
+
+T2.1 (dest swap) is **CLOSED — not needed**. T2.2 (per-operator docs, this section) is what remains of Tier 2.
+
+---
+
 ## Executive Summary
 
 Industry-reported VLESS+Reality bypass rate on RU TSPU sits at **~99.5 %** when configured correctly. Our config is **~95 % correct**, with three confirmed gaps that can plausibly account for the residual failures on Tele2:
