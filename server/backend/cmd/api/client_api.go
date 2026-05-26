@@ -271,6 +271,31 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				})
 			}
 
+			// 🌳 Берёза 4 + 5 — SECOND Hub IP 109.172.86.40 (additional vdsina address
+			// on same VPS as primary 45.150.39.236). MTS observed to apply per-IP
+			// QoS throttling: even alt-port :30443 throttled on primary IP. New IP
+			// not yet fingerprinted by MTS DPI → should give full speed until/if
+			// MTS adds it to their throttle list. Same Reality keys (single Xray
+			// listener serves both IPs via 0.0.0.0). Chrome + safari fingerprints.
+			altHubIP := biz.GetSettingOrDefault("alt_hub_ip", "109.172.86.40")
+			if altHubIP != "" {
+				altFPs := []string{"chrome", "safari"}
+				for i, fp := range altFPs {
+					altIPLabel := fmt.Sprintf("🌳 Берёза %d (new IP)", i+4)
+					altIPURI := fmt.Sprintf(
+						"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&flow=xtls-rprx-vision&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
+						userVlessUUID, altHubIP, realitySNI, fp, realityPubKey, realityShortID,
+						url.PathEscape(altIPLabel))
+					opts = append(opts, &heyearth_v1.ConnectionOption{
+						Uri:                 altIPURI,
+						Protocol:            "vless",
+						Label:               altIPLabel,
+						RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+						Priority:            int32(3 + i), // 3..4 (between alt-port Берёза 3 and Дуб)
+					})
+				}
+			}
+
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443 (configurable port via app_settings.xhttp_port),
 			// 2 uTLS variants. XHTTP framing looks like an HTTP/1.1 long-poll
 			// instead of pure-Reality timing pattern, slipping past DPI that
@@ -295,7 +320,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 3), // 3..4 (shifted by 1 to make room for Берёза 3 at priority 2)
+					Priority:            int32(i + 5), // 5..6 (after Берёза 1+2=0,1; Берёза 3 alt-port=2; Берёза 4+5 new-IP=3,4)
 				})
 			}
 		}
