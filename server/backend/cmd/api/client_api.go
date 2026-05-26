@@ -225,14 +225,17 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// happ-desktop shows n/a) appears sensitive to param ordering and
 			// to non-standard tcpKeepAlive* params. Dropped tcpKeepAlive*
 			// — they're TCP socket tuning, not protocol-critical.
-			// flow=xtls-rprx-vision goes at the END (after type=tcp), matching
-			// the param order from the previously-working multi-FP variant
-			// (Домашний/Мобильный/Строгий, all 200-225ms). happ-desktop's
-			// embedded parser is sensitive to this — moving flow between
-			// encryption and security broke ping/connect for VLESS Reality
-			// while Hysteria2 (no flow param) kept working.
+			// URI exactly mirrors the working multi-FP variant from before the
+			// consolidation (Домашний 225ms / Мобильный 222ms / Строгий 215ms).
+			// Param order:
+			//   encryption -> security -> sni -> fp -> pbk -> sid -> type
+			//   -> tcpKeepAliveInterval -> tcpKeepAliveIdle -> flow
+			// happ-desktop embedded parser appears strict about this exact
+			// ordering for VLESS+Reality+Vision. Reverting parameter order or
+			// dropping tcpKeepAlive* breaks ping AND connection — Hysteria
+			// (no flow param) is unaffected.
 			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp%s#%s",
+				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
 				url.PathEscape("🌳 Берёза - основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
@@ -260,10 +263,11 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// matches what the server's xhttpSettings.host expects (Reality
 			// validates Host header against this list, not realitySettings.
 			// serverNames which contains the SNI camouflage domain yandex.ru).
-			// Canonical param order (no flow — xhttp doesn't use XTLS Vision).
-			// Dropped tcpKeepAlive* — same parser-sensitivity concern as Берёза.
+			// Mirror Berëza param structure (incl. tcpKeepAlive*). No flow on
+			// xhttp transport — XTLS Vision only works with type=tcp. Plus
+			// xhttp-specific params: path + host + mode.
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto#%s",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(mainServerHost),
 				url.PathEscape("🌲 Дуб - запасной"))
