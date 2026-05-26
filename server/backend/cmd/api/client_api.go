@@ -214,10 +214,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// the URL fragment isn't being rendered on every happ build, so we
 			// bake the explainer directly into the visible name. Short phrase
 			// fits the bold first-line layout without truncation.
+			// PathEscape encodes spaces as %20 (RFC 3986 fragment); QueryEscape
+			// would emit `+` which happ-desktop renders literally as «+» between
+			// words. Verified visually 2026-05-26.
 			vlessURI := fmt.Sprintf(
 				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
-				url.QueryEscape("🌳 Берёза • основной"))
+				url.PathEscape("🌳 Берёза • основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
 				Protocol:            "vless",
@@ -247,7 +250,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(mainServerHost),
-				url.QueryEscape("🌲 Дуб • запасной"))
+				url.PathEscape("🌲 Дуб • запасной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,
 				Protocol:            "vless",
@@ -280,7 +283,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			hy2URI := fmt.Sprintf(
 				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
 				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.QueryEscape("🎋 Бамбук • скорость, только Wi-Fi"))
+				url.PathEscape("🎋 Бамбук • скорость, только Wi-Fi"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 hy2URI,
 				Protocol:            "hysteria2",
