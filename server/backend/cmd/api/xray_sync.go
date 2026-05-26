@@ -785,14 +785,16 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 				},
 			},
 			"streamSettings": streamSettings,
-			// Мультиплексирование: много стримов по одному SS соединению.
-			// Экономит TCP+TLS handshakes для каждого нового user connection.
-			"mux": map[string]interface{}{
-				"enabled":         true,
-				"concurrency":     getMuxConcurrency(),
-				"xudpConcurrency": 16,
-				"xudpProxyUDP443": "allow",
-			},
+			// NOTE: NO mux — пользователь сообщил bistable behavior ("летает или n/a"
+			// при подключении). Mux multiplexes user streams over one TCP connection
+			// to exit; if mux session is in flaky state (cold start, reconnect),
+			// new user requests may block or fail intermittently while the mux
+			// pool stabilizes. Without mux, each user request opens its own TCP
+			// to exit — more handshakes (slightly higher latency) but deterministic
+			// per-stream success/failure, no shared mux state to coordinate.
+			// xudpProxyUDP443=allow (mux-only feature) also removed: YouTube QUIC
+			// now falls back to TCP HTTPS through the tunnel — slower in theory
+			// but more reliable in practice on flaky mobile networks.
 		}
 
 	case "hysteria2":
