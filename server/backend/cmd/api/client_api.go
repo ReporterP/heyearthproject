@@ -225,15 +225,15 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// happ-desktop shows n/a) appears sensitive to param ordering and
 			// to non-standard tcpKeepAlive* params. Dropped tcpKeepAlive*
 			// — they're TCP socket tuning, not protocol-critical.
-			flowSuffix := ""
-			if flowParam != "" {
-				// flowParam already starts with "&flow="; we want "&flow=..."
-				// to land between encryption and security per spec order.
-				flowSuffix = flowParam
-			}
+			// flow=xtls-rprx-vision goes at the END (after type=tcp), matching
+			// the param order from the previously-working multi-FP variant
+			// (Домашний/Мобильный/Строгий, all 200-225ms). happ-desktop's
+			// embedded parser is sensitive to this — moving flow between
+			// encryption and security broke ping/connect for VLESS Reality
+			// while Hysteria2 (no flow param) kept working.
 			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none%s&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s",
-				userVlessUUID, mainServerHost, flowSuffix, realitySNI, realityPubKey, realityShortID,
+				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp%s#%s",
+				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
 				url.PathEscape("🌳 Берёза - основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
