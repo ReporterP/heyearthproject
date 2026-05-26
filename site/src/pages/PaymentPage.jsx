@@ -56,6 +56,7 @@ export default function PaymentPage() {
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState('')
   const [prorations, setProrations] = useState({}) // planId → {original_price, proration_credit, final_price}
+  const [earlyRenewalThreshold, setEarlyRenewalThreshold] = useState(3)
 
   useEffect(() => {
     const promises = [
@@ -96,6 +97,12 @@ export default function PaymentPage() {
       const map = {}
       pairs.forEach(([id, d]) => { if (d) map[id] = d })
       setProrations(map)
+      // All responses carry the same early_renewal_days_threshold (backend
+      // setting is global); pick the first response that includes it.
+      const firstWithThreshold = pairs.find(([, d]) => d && typeof d.early_renewal_days_threshold === 'number')
+      if (firstWithThreshold) {
+        setEarlyRenewalThreshold(firstWithThreshold[1].early_renewal_days_threshold)
+      }
     })
   }, [token, validUntil, plans])
 
@@ -141,6 +148,14 @@ export default function PaymentPage() {
       setPaying(false)
     }
   }
+
+  // Computed daysRemaining for «Продлить заранее» badge — recomputed every render.
+  const daysRemaining = (() => {
+    if (!validUntil) return Infinity
+    const ms = new Date(validUntil).getTime() - Date.now()
+    return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)))
+  })()
+  const showEarlyRenewalBadge = currentPlanSlug && daysRemaining <= earlyRenewalThreshold
 
   if (loading) return (
     <div className="flex items-center justify-center py-32">
@@ -268,27 +283,65 @@ export default function PaymentPage() {
                   ))}
                 </ul>
 
-                <button
-                  onClick={e => {
-                    e.stopPropagation()
-                    if (isDowngrade || isCurrent) return
-                    // Warn about plan switch if user has active sub
-                    if (currentPlanSlug && !isCurrent) {
-                      if (!confirm('При оплате нового тарифа ваша текущая подписка будет заменена. Продолжить?')) return
-                    }
-                    handlePay(plan.id)
-                  }}
-                  disabled={paying || isDowngrade}
-                  className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
-                    isDowngrade
-                      ? 'bg-white/5 text-text-secondary/50 cursor-not-allowed'
-                      : isCurrent
-                        ? 'bg-green-500/15 text-green-400 hover:bg-green-500/25'
-                        : 'bg-white/5 text-text-primary hover:bg-brand/20 hover:text-brand-light border border-white/5 hover:border-brand/30'
-                  } disabled:opacity-50`}
-                >
-                  {isDowngrade ? 'Недоступно' : paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}
-                </button>
+                {(() => {
+                  const pr = prorations[plan.id] || {}
+                  const blocked = pr.is_downgrade_blocked === true
+                  const bonus = pr.bonus_days || 0
+                  const validUntilDate = validUntil ? new Date(validUntil).toLocaleDateString('ru-RU') : ''
+                  const dr = daysRemaining
+                  const dayWord = dr === 1 ? 'день' : dr < 5 ? 'дня' : 'дней'
+
+                  return (
+                    <>
+                      {/* Bonus days hint — only when conversion will happen */}
+                      {bonus > 0 && !blocked && !isCurrent && !isDowngrade && (
+                        <p className="text-xs text-accent mb-2">
+                          +{bonus} бонус-дней (за {pr.days_remaining} оставшихся дней текущего плана)
+                        </p>
+                      )}
+
+                      {/* Early renewal badge on current plan */}
+                      {isCurrent && showEarlyRenewalBadge && (
+                        <p className="text-xs text-amber-400 mb-2">
+                          ⏰ Подписка скоро закончится — продлите заранее (осталось {dr} {dayWord})
+                        </p>
+                      )}
+
+                      {/* Buy / disabled button */}
+                      {blocked ? (
+                        <button
+                          disabled
+                          title={`Доступно после ${validUntilDate}`}
+                          className="w-full py-2.5 rounded-xl text-sm font-medium bg-white/5 text-text-secondary/50 cursor-not-allowed disabled:opacity-50"
+                        >
+                          Доступно после {validUntilDate}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={e => {
+                            e.stopPropagation()
+                            if (isDowngrade || isCurrent) return
+                            // Warn about plan switch if user has active sub
+                            if (currentPlanSlug && !isCurrent) {
+                              if (!confirm('При оплате нового тарифа ваша текущая подписка будет заменена. Продолжить?')) return
+                            }
+                            handlePay(plan.id)
+                          }}
+                          disabled={paying || isDowngrade}
+                          className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                            isDowngrade
+                              ? 'bg-white/5 text-text-secondary/50 cursor-not-allowed'
+                              : isCurrent
+                                ? 'bg-green-500/15 text-green-400 hover:bg-green-500/25'
+                                : 'bg-white/5 text-text-primary hover:bg-brand/20 hover:text-brand-light border border-white/5 hover:border-brand/30'
+                          } disabled:opacity-50`}
+                        >
+                          {isDowngrade ? 'Недоступно' : paying ? 'Обработка...' : isCurrent ? 'Продлить' : isFree ? 'Активировать' : 'Оформить'}
+                        </button>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
             )
           })}
