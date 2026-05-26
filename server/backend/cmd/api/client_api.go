@@ -230,8 +230,17 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				// the end (after flow) to preserve the load-bearing happ-desktop
 				// URI parser order documented above. See:
 				// docs/research/2026-05-26-reality-mobile-dpi-deep-dive.md (T1.1)
+				//
+				// fragment=length,interval,packets — happ-desktop client-side TLS
+				// ClientHello fragmentation. Splits the (large, xPaddingBytes-padded)
+				// Reality ClientHello into 1-10 byte chunks with 5-20ms intervals,
+				// PRE-EMPTING mobile CGNAT (Tele2 in particular) from fragmenting
+				// the packet itself and dropping the reassembly. This is the canonical
+				// happ docs example. tlshello = fragment only TLS ClientHello, not all
+				// traffic. Server-side does nothing — kernel TCP reassembles transparently.
+				// See: https://www.happ.su/main/dev-docs/examples-of-links-and-parameters
 				vlessURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s&spx=%%2F#%s",
+					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
 					userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, flowParam,
 					url.PathEscape(label))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
@@ -254,8 +263,11 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
 				// spx=%%2F at end — same rationale as Берёза TCP above (T1.1)
+				// fragment=1-10,5-20,tlshello — same as Берёза above. XHTTP also
+				// carries a Reality TLS ClientHello on connection setup; mobile
+				// CGNAT fragmentation hits this just as hard as plain TCP Reality.
 				xhttpURI := fmt.Sprintf(
-					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&spx=%%2F#%s",
+					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
 					userVlessUUID, mainServerHost, xhttpPort, realitySNI, fp, realityPubKey, realityShortID,
 					url.QueryEscape(mainServerHost),
 					url.PathEscape(label))
