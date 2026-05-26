@@ -217,9 +217,23 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// PathEscape encodes spaces as %20 (RFC 3986 fragment); QueryEscape
 			// would emit `+` which happ-desktop renders literally as «+» between
 			// words. Verified visually 2026-05-26.
+			//
+			// URI param order follows the v2ray-spec canonical order:
+			// encryption → flow → security → sni → fp → pbk → sid → type.
+			// happ-desktop's embedded Xray-core URI parser (verified 2026-05-26
+			// via e2e probe — server-side connection works perfectly, but
+			// happ-desktop shows n/a) appears sensitive to param ordering and
+			// to non-standard tcpKeepAlive* params. Dropped tcpKeepAlive*
+			// — they're TCP socket tuning, not protocol-critical.
+			flowSuffix := ""
+			if flowParam != "" {
+				// flowParam already starts with "&flow="; we want "&flow=..."
+				// to land between encryption and security per spec order.
+				flowSuffix = flowParam
+			}
 			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
-				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
+				"vless://%s@%s:443?encryption=none%s&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s",
+				userVlessUUID, mainServerHost, flowSuffix, realitySNI, realityPubKey, realityShortID,
 				url.PathEscape("🌳 Берёза - основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
@@ -246,8 +260,10 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// matches what the server's xhttpSettings.host expects (Reality
 			// validates Host header against this list, not realitySettings.
 			// serverNames which contains the SNI camouflage domain yandex.ru).
+			// Canonical param order (no flow — xhttp doesn't use XTLS Vision).
+			// Dropped tcpKeepAlive* — same parser-sensitivity concern as Берёза.
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(mainServerHost),
 				url.PathEscape("🌲 Дуб - запасной"))
