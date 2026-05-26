@@ -223,6 +223,18 @@ func SyncXrayConfig() error {
 					"shortIds":     []string{keys.ShortID, ""},
 					"xPaddingBytes": "100-1000", // Anti-DPI: normalize packet sizes
 				},
+				// T1.2: bilateral TCP keepalive on the server inbound. Client URI
+				// already carries tcpKeepAlive* but mobile CGNAT (Tele2/MTS) reaps
+				// idle TCP from BOTH sides; without server-side keepalive the NAT
+				// entry dies before client probe fires, then server traffic looks
+				// unsolicited and gets dropped. tcpFastOpen mirrors the egress
+				// path. See docs/research/2026-05-26-reality-mobile-dpi-deep-dive.md
+				"sockopt": map[string]interface{}{
+					"tcpKeepAliveInterval": 30,  // probe every 30 s
+					"tcpKeepAliveIdle":     120, // start probing after 2 min idle
+					"tcpFastOpen":          true,
+					"tcpNoDelay":           true,
+				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		},
@@ -255,11 +267,13 @@ func SyncXrayConfig() error {
 					"scMaxEachPostBytes": "10000-15000",
 					// R4: spread response across many buffered POSTs so the
 					// "freezing" attack can't latch onto a single long-lived TCP.
-					// NB: Xray 26.x exposes scMaxBufferedPosts (not the
-					// scMaxConcurrentPosts name some docs use). Verified via
-					// `grep -aoE "sc[A-Z][a-zA-Z]+" /opt/heyearth/xray/xray`
-					// against the live 26.3.27 binary.
-					"scMaxBufferedPosts": "20-40",
+					// NB: Xray 26.x types this as int64 (NOT a "min-max" string range
+					// like scMaxEachPostBytes). Verified via Xray source code +
+					// runtime crash: `cannot unmarshal string into Go struct field
+					// SplitHTTPConfig.scMaxBufferedPosts of type int64`. Default 30.
+					// 40 chosen as conservative upper bound to absorb burst response
+					// without hitting connection-drop threshold.
+					"scMaxBufferedPosts": 40,
 				},
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
@@ -267,6 +281,16 @@ func SyncXrayConfig() error {
 					"privateKey":    keys.PrivateKey,
 					"shortIds":      []string{keys.ShortID, ""},
 					"xPaddingBytes": "100-1000",
+				},
+				// T1.2: bilateral TCP keepalive — same rationale as vless-reality
+				// inbound above. XHTTP is HTTP/1.1 long-poll over TCP, so the
+				// underlying TCP socket is just as vulnerable to mobile CGNAT
+				// idle reap as plain Reality TCP.
+				"sockopt": map[string]interface{}{
+					"tcpKeepAliveInterval": 30,
+					"tcpKeepAliveIdle":     120,
+					"tcpFastOpen":          true,
+					"tcpNoDelay":           true,
 				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
