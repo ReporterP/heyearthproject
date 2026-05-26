@@ -147,6 +147,22 @@ export default function SettingsPage() {
             </Card>
 
             <Card>
+              <CardHeader><h3 className="text-lg font-semibold text-primary">Подписки и продление</h3></CardHeader>
+              <CardBody>
+                {loading ? <Skeleton className="h-24" /> : (
+                  <div className="divide-y divide-default">
+                    <SettingCard
+                      label="Окно досрочного продления (дней)"
+                      hint="За сколько дней до окончания подписки на сайте появляется CTA «Продлить заранее». Допустимо 0..30. По умолчанию 3 (показывать за 3 дня до конца). 0 — никогда не показывать."
+                      value={settings.early_renewal_days_threshold || '3'}
+                      onSave={v => saveSetting('early_renewal_days_threshold', v)}
+                    />
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+
+            <Card>
               <CardHeader><h3 className="text-lg font-semibold text-primary">Блок «Поддержать разработчика»</h3></CardHeader>
               <CardBody>
                 {loading ? <Skeleton className="h-24" /> : (
