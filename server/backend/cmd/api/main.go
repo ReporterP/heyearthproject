@@ -876,12 +876,18 @@ func main() {
 	// which funnels through RequestSync.
 	biz.XraySyncFn = RequestXraySync
 	biz.Hysteria2SyncFn = RequestHysteria2Sync
+	biz.AWGSyncFn = RequestAWGSync // Palma — added in T6
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
 
 	// Hysteria2 server sync (no-op if hysteria binary not installed)
 	StartHysteria2SyncLoop()
+
+	// AmneziaWG (Palma) server sync — generates /opt/heyearth/awg/awg0.conf
+	// from current peers + reloads awg.service. No-op if --setup-awg was not
+	// run on this Hub (the /opt/heyearth/awg dir is absent).
+	StartAWGSyncLoop()
 
 	// Hysteria2 per-user traffic collector — polls loopback trafficStats
 	// endpoint every 60s and writes deltas into traffic_stats so cycle-quota
