@@ -95,6 +95,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil || plan == nil {
+		log.Printf("[payment.create] план не найден: userID=%q body.PlanID=%d body.Plan=%q err=%v plan_nil=%v", userID, body.PlanID, body.Plan, err, plan == nil)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "план не найден"})
 		return
 	}

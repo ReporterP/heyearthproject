@@ -118,7 +118,9 @@ func GetPlanByID(id int) (*Plan, error) {
 	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
 		&p.DirectRoutingEnabled, &p.SortOrder,
-		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
+		&p.AutoRenewDefault, &p.MaxActivationsPerUser,
+		&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +142,9 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
 		&p.TrafficLimitBytes, pq.Array(&p.AllowedProtocols), &p.Features, &p.IsActive,
 		&p.DirectRoutingEnabled, &p.SortOrder,
-		&p.AutoRenewDefault, &p.MaxActivationsPerUser, &p.CreatedAt, &p.UpdatedAt)
+		&p.AutoRenewDefault, &p.MaxActivationsPerUser,
+		&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
