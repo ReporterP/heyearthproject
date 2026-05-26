@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
@@ -186,18 +187,72 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				flowParam = "&flow=" + flow
 			}
 
+			// 🌴 Пальма — AmneziaWG 2.0 (UDP :51820). Priority 0 — happ shows it first.
+			// Plan-gated via plan.AmneziaWGEnabled (admin tunable per plan via PlansPage).
+			// Per-user keys + per-user randomized CPS junk-packet params defeat
+			// fingerprint detection. AmneziaWG is the only profile of the 7 that uses
+			// pure WireGuard + CPS junk packets (not QUIC, not TCP+Reality) — TSPU
+			// fundamentally can't identify the protocol. See spec
+			// docs/superpowers/specs/2026-05-26-amneziawg-palma-design.md.
+			plan, _ := biz.GetUserPlan(userID)
+			if plan != nil && plan.AmneziaWGEnabled {
+				cfg, err := biz.GetUserAWGConfig(userID)
+				if err == nil && cfg != nil {
+					// Build WG-INI config string, base64-encode, embed in amneziawg:// URI.
+					wgConfig := fmt.Sprintf(`[Interface]
+PrivateKey = %s
+Address = %s/32
+DNS = 1.1.1.1
+Jc = %d
+Jmin = %d
+Jmax = %d
+S1 = %d
+S2 = %d
+H1 = %d
+H2 = %d
+H3 = %d
+H4 = %d
+
+[Peer]
+PublicKey = %s
+PresharedKey = %s
+AllowedIPs = 0.0.0.0/0
+Endpoint = %s
+PersistentKeepalive = 25
+`,
+						cfg.UserPrivKey, cfg.IPAddress,
+						cfg.CPSParams.Jc, cfg.CPSParams.Jmin, cfg.CPSParams.Jmax,
+						cfg.CPSParams.S1, cfg.CPSParams.S2,
+						cfg.CPSParams.H1, cfg.CPSParams.H2, cfg.CPSParams.H3, cfg.CPSParams.H4,
+						cfg.ServerPubKey, cfg.UserPSK, cfg.Endpoint,
+					)
+					configB64 := base64.StdEncoding.EncodeToString([]byte(wgConfig))
+					palmaURI := fmt.Sprintf("amneziawg://%s?name=Palma#%s",
+						configB64, url.PathEscape("🌴 Пальма"))
+					opts = append(opts, &heyearth_v1.ConnectionOption{
+						Uri:                 palmaURI,
+						Protocol:            "amneziawg",
+						Label:               "🌴 Пальма",
+						RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+						Priority:            0,
+					})
+				}
+			}
+
 			// FP matrix — happ-desktop sees different uTLS ClientHello JA3s for
-			// each entry. Russian ISP DPI applies different rules per operator;
-			// chrome/safari/ios/firefox give us 4 distinct JA3 signatures so at
-			// least one passes through any given operator's DPI whitelist.
-			// uTLS FP is purely client-side — server (Xray) doesn't validate it,
-			// so all 4 entries share the same vless-reality inbound on :443.
+			// each entry. Reality TCP shares one inbound — all FPs fail together
+			// when DPI catches by IP/port. 4-FP defense-in-depth was overkill;
+			// chrome+safari covers the JA3-fingerprinting case where one specific
+			// FP happens to be whitelisted by an operator's DPI (rare, but cheap
+			// to keep). uTLS FP is purely client-side — server (Xray) doesn't
+			// validate it, so both entries share the same vless-reality inbound
+			// on :443.
 			//
 			// PathEscape (not QueryEscape): RFC 3986 fragment encoding emits %20
 			// for spaces; QueryEscape's `+` is rendered literally by happ-desktop.
 			//
-			// 🌳 Берёза 1..4 — TCP Reality :443, 4 uTLS variants.
-			realityFPs := []string{"chrome", "safari", "ios", "firefox"}
+			// 🌳 Берёза 1..2 — TCP Reality :443, 2 uTLS variants.
+			realityFPs := []string{"chrome", "safari"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
 				// URI param order is load-bearing for happ-desktop's URI parser —
@@ -215,7 +270,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i), // 0..3
+					Priority:            int32(i + 1), // 1..2 (priority 0 reserved for 🌴 Пальма)
 				})
 			}
 
@@ -239,7 +294,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(4 + i), // 4..5
+					Priority:            int32(i + 3), // 3..4
 				})
 			}
 		}
@@ -267,8 +322,8 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				bwParams string // "" → BBR; "&upmbps=N&downmbps=N" → Brutal CC
 				priority int32
 			}{
-				{"Бамбук 1", "", 6},
-				{"Бамбук 2", "&upmbps=20&downmbps=80", 7},
+				{"Бамбук 1", "", 5},
+				{"Бамбук 2", "&upmbps=20&downmbps=80", 6},
 			}
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
