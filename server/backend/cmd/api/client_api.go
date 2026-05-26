@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
@@ -187,57 +186,22 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				flowParam = "&flow=" + flow
 			}
 
-			// 🌴 Пальма — AmneziaWG 2.0 (UDP :51820). Priority 0 — happ shows it first.
-			// Plan-gated via plan.AmneziaWGEnabled (admin tunable per plan via PlansPage).
-			// Per-user keys + per-user randomized CPS junk-packet params defeat
-			// fingerprint detection. AmneziaWG is the only profile of the 7 that uses
-			// pure WireGuard + CPS junk packets (not QUIC, not TCP+Reality) — TSPU
-			// fundamentally can't identify the protocol. See spec
-			// docs/superpowers/specs/2026-05-26-amneziawg-palma-design.md.
-			plan, _ := biz.GetUserPlan(userID)
-			if plan != nil && plan.AmneziaWGEnabled {
-				cfg, err := biz.GetUserAWGConfig(userID)
-				if err == nil && cfg != nil {
-					// Build WG-INI config string, base64-encode, embed in amneziawg:// URI.
-					wgConfig := fmt.Sprintf(`[Interface]
-PrivateKey = %s
-Address = %s/32
-DNS = 1.1.1.1
-Jc = %d
-Jmin = %d
-Jmax = %d
-S1 = %d
-S2 = %d
-H1 = %d
-H2 = %d
-H3 = %d
-H4 = %d
-
-[Peer]
-PublicKey = %s
-PresharedKey = %s
-AllowedIPs = 0.0.0.0/0
-Endpoint = %s
-PersistentKeepalive = 25
-`,
-						cfg.UserPrivKey, cfg.IPAddress,
-						cfg.CPSParams.Jc, cfg.CPSParams.Jmin, cfg.CPSParams.Jmax,
-						cfg.CPSParams.S1, cfg.CPSParams.S2,
-						cfg.CPSParams.H1, cfg.CPSParams.H2, cfg.CPSParams.H3, cfg.CPSParams.H4,
-						cfg.ServerPubKey, cfg.UserPSK, cfg.Endpoint,
-					)
-					configB64 := base64.StdEncoding.EncodeToString([]byte(wgConfig))
-					palmaURI := fmt.Sprintf("amneziawg://%s?name=Palma#%s",
-						configB64, url.PathEscape("🌴 Пальма"))
-					opts = append(opts, &heyearth_v1.ConnectionOption{
-						Uri:                 palmaURI,
-						Protocol:            "amneziawg",
-						Label:               "🌴 Пальма",
-						RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-						Priority:            0,
-					})
-				}
-			}
+			// 🌴 Пальма (AmneziaWG) — server-side infrastructure ready (biz/awg.go,
+			// awg_sync.go, awg.service on :51820, per-plan amnezia_wg_enabled flag,
+			// per-user keys + CPS via biz.GetUserAWGConfig) but NOT emitted in happ
+			// subscription because happ uses xray-core + sing-box internally — neither
+			// supports AmneziaWG. happ silently drops amneziawg:// URIs.
+			//
+			// Future integration via dedicated AmneziaVPN client: separate endpoint
+			// GET /api/v1/user/awg-config returns WG-INI as text/plain, site shows
+			// QR + .conf download for users on amnezia_wg_enabled plans. See beads
+			// heyearthproject-v7lb for the planned UI work.
+			//
+			// DO NOT delete the biz.GetUserAWGConfig path here — left as inline
+			// comment for grep continuity. To re-enable Palma in a happ-compatible
+			// way (if/when happ adds amneziawg:// support OR via wireguard:// stub):
+			// 1. Uncomment the emit block (see git history at commit 42a51d6)
+			// 2. Restore Priority arithmetic: realityFPs +1, xhttpFPs +3, bambooVariants 5/6
 
 			// FP matrix — happ-desktop sees different uTLS ClientHello JA3s for
 			// each entry. Reality TCP shares one inbound — all FPs fail together
@@ -270,7 +234,7 @@ PersistentKeepalive = 25
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 1), // 1..2 (priority 0 reserved for 🌴 Пальма)
+					Priority:            int32(i), // 0..1 (Berëza is now top-priority — Palma not emitted in happ subs)
 				})
 			}
 
@@ -294,7 +258,7 @@ PersistentKeepalive = 25
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 3), // 3..4
+					Priority:            int32(i + 2), // 2..3
 				})
 			}
 		}
@@ -322,8 +286,8 @@ PersistentKeepalive = 25
 				bwParams string // "" → BBR; "&upmbps=N&downmbps=N" → Brutal CC
 				priority int32
 			}{
-				{"Бамбук 1", "", 5},
-				{"Бамбук 2", "&upmbps=20&downmbps=80", 6},
+				{"Бамбук 1", "", 4},
+				{"Бамбук 2", "&upmbps=20&downmbps=80", 5},
 			}
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
