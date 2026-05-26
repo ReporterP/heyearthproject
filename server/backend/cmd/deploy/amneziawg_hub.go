@@ -24,8 +24,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// amneziawgVersion pins the upstream release.
-const amneziawgVersion = "v0.2.3"
+// amneziawgVersion pins the upstream git tag. Upstream amnezia-vpn/amneziawg-go
+// publishes only source tags (no prebuilt GitHub Release artifacts), so this
+// is the ref we git-clone + go-build from. Latest stable as of 2026-05-26.
+const amneziawgVersion = "v0.2.18"
 
 // setupAmneziaWGHub provisions amneziawg-go on the Hub. Idempotent.
 // Mirrors setupHysteria2Hub signature exactly.
@@ -45,49 +47,43 @@ mkdir -p /opt/heyearth/awg
 chown amnezia-wg:amnezia-wg /opt/heyearth/awg
 chmod 750 /opt/heyearth/awg
 
-# ── 3. Download + install amneziawg-go binary ──
+# ── 3. Build amneziawg-go from source ──
+# Upstream amnezia-vpn/amneziawg-go has no published GitHub Releases — only
+# source tags. We git clone + go build. Requires go toolchain on Hub
+# (installed by installGoOnServer in --main at /usr/local/go).
 INSTALL_BIN=/opt/heyearth/awg/amneziawg-go
-NEED_DOWNLOAD=1
 if [ -x "$INSTALL_BIN" ]; then
   echo "[awg-hub] Binary already present at $INSTALL_BIN — keeping existing install"
-  NEED_DOWNLOAD=0
-fi
-
-if [ "$NEED_DOWNLOAD" = "1" ]; then
-  apt-get install -y -qq wget tar 2>/dev/null || true
-  cd /tmp
-  TARBALL=amneziawg-go-linux-amd64.tar.gz
-  URL="https://github.com/amnezia-vpn/amneziawg-go/releases/download/__VERSION__/${TARBALL}"
-  SHA_URL="https://github.com/amnezia-vpn/amneziawg-go/releases/download/__VERSION__/SHA256SUMS"
-  echo "[awg-hub] Downloading $URL ..."
-  wget -q "$URL" -O "$TARBALL"
-
-  # Best-effort SHA256 verification
-  if wget -q "$SHA_URL" -O SHA256SUMS 2>/dev/null && [ -s SHA256SUMS ]; then
-    if sha256sum --check --ignore-missing SHA256SUMS 2>/dev/null | grep -q "${TARBALL}: OK"; then
-      echo "[awg-hub] SHA256 verified for $TARBALL"
-    else
-      echo "[awg-hub] WARN: SHA256 mismatch for $TARBALL — refusing to install"
-      exit 1
-    fi
-  else
-    echo "[awg-hub] WARN: SHA256SUMS not available upstream, skipping integrity check"
-  fi
-
-  tar -xzf "$TARBALL"
-  if [ -f amneziawg-go ]; then
-    mv amneziawg-go "$INSTALL_BIN"
-  elif [ -f "amneziawg-go-__VERSION__/amneziawg-go" ]; then
-    mv "amneziawg-go-__VERSION__/amneziawg-go" "$INSTALL_BIN"
-  else
-    echo "[awg-hub] ERROR: unexpected tarball layout — could not find amneziawg-go binary"
-    ls -la
+else
+  # /usr/local/go/bin is set via /etc/profile.d/go.sh which non-login shells
+  # don't source — make sure 'go' is reachable here.
+  export PATH="$PATH:/usr/local/go/bin"
+  if ! command -v go >/dev/null 2>&1; then
+    echo "[awg-hub] ERROR: go toolchain not installed on Hub. Run --main first to install Go."
     exit 1
   fi
+  echo "[awg-hub] go version: $(go version)"
+
+  # Ensure git + build deps available
+  apt-get install -y -qq git ca-certificates 2>/dev/null || true
+
+  # Clone + checkout pinned tag
+  SRC_DIR=/tmp/amneziawg-go-src
+  rm -rf "$SRC_DIR"
+  echo "[awg-hub] Cloning amneziawg-go @ __VERSION__ ..."
+  git clone --depth 1 --branch __VERSION__ https://github.com/amnezia-vpn/amneziawg-go.git "$SRC_DIR"
+
+  # Build (CGO_ENABLED=0 for static binary — no glibc surprise on minimal Hub variants)
+  echo "[awg-hub] Building amneziawg-go ..."
+  cd "$SRC_DIR"
+  CGO_ENABLED=0 go build -o "$INSTALL_BIN" -ldflags "-s -w" .
+
   chmod +x "$INSTALL_BIN"
   chown root:root "$INSTALL_BIN"
-  rm -f "$TARBALL" SHA256SUMS
-  echo "[awg-hub] Binary installed at $INSTALL_BIN"
+
+  # Cleanup source tree — keep only the binary
+  rm -rf "$SRC_DIR"
+  echo "[awg-hub] Binary built at $INSTALL_BIN ($(du -h "$INSTALL_BIN" | cut -f1))"
 fi
 
 # ── 4. systemd unit ──
