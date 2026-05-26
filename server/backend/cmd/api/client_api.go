@@ -187,7 +187,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			}
 
 			// Tree-themed names (🌳 Берёза / 🌲 Дуб / 🎋 Бамбук) with inline
-			// short explainers (• основной / • запасной / • Wi-Fi). The earlier
+			// short explainers (• основной / - запасной / • Wi-Fi). The earlier
 			// approach of base64-encoded `serverDescription` in URL fragments
 			// (per happ docs) is not rendered on current happ builds — we bake
 			// the explainer into the visible label instead. The user's actual
@@ -220,11 +220,11 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			vlessURI := fmt.Sprintf(
 				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
-				url.PathEscape("🌳 Берёза • основной"))
+				url.PathEscape("🌳 Берёза - основной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 vlessURI,
 				Protocol:            "vless",
-				Label:               "🌳 Берёза • основной",
+				Label:               "🌳 Берёза - основной",
 				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
 				Priority:            0,
 			})
@@ -250,11 +250,11 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(mainServerHost),
-				url.PathEscape("🌲 Дуб • запасной"))
+				url.PathEscape("🌲 Дуб - запасной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 xhttpURI,
 				Protocol:            "vless",
-				Label:               "🌲 Дуб • запасной",
+				Label:               "🌲 Дуб - запасной",
 				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
 				Priority:            1, // below Берёза — fallback choice
 			})
@@ -283,11 +283,11 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			hy2URI := fmt.Sprintf(
 				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
 				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.PathEscape("🎋 Бамбук • скорость, только Wi-Fi"))
+				url.PathEscape("🎋 Бамбук - скорость, только Wi-Fi"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
 				Uri:                 hy2URI,
 				Protocol:            "hysteria2",
-				Label:               "🎋 Бамбук • скорость, только Wi-Fi",
+				Label:               "🎋 Бамбук - скорость, только Wi-Fi",
 				RecommendedNetworks: []string{"wifi", "ethernet"}, // Wi-Fi only hint to happ
 				Priority:            2,                            // below Дуб — premium pick, not default
 			})
