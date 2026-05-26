@@ -219,11 +219,10 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 		return nil, fmt.Errorf("resolve user: %w", err)
 	}
 
-	serverPriv, serverPub, err := GetServerAWGKeys()
+	_, serverPub, err := GetServerAWGKeys()
 	if err != nil {
 		return nil, err
 	}
-	_ = serverPriv
 
 	tx, err := db.DB.Begin()
 	if err != nil {
