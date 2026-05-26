@@ -220,7 +220,14 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// NO alt-port/alt-IP variants. User-reported these additions broke
 			// the previously-working Reality path. Keep tcpKeepAlive* and flow at end
 			// (load-bearing for happ-desktop URI parser, verified working pre-Hysteria2).
-			realityFPs := []string{"chrome", "safari"}
+			// uTLS fingerprints: ios + safari (both Apple-style, less commonly fingerprinted
+// by RU TSPU). chrome was previously the first fingerprint but user reports
+// Берёза 1 (chrome) and Дуб 1 (chrome) both fail to connect ("n/a"), while
+// Берёза 2 and Дуб 2 (safari) work — TSPU has started targeting Chrome JA3
+// signatures specifically because Chrome is the most popular uTLS profile
+// used by VPN clients. Switching the first profile to ios (Apple mobile)
+// keeps two distinct fingerprints for diversity and avoids the blocklist.
+realityFPs := []string{"ios", "safari"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
 				vlessURI := fmt.Sprintf(
@@ -239,7 +246,8 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443, 2 uTLS variants.
 			// Pre-Hysteria2 working URI shape — no spx, no fragment.
 			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
-			xhttpFPs := []string{"chrome", "safari"}
+			// Same rationale as realityFPs above — chrome → ios для Дуб 1.
+xhttpFPs := []string{"ios", "safari"}
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
 				xhttpURI := fmt.Sprintf(
