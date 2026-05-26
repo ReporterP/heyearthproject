@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -125,23 +126,22 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
 	}
 
-	// Proration: если юзер меняет тариф при активной подписке — даём credit
-	prorationCredit := 0
-	if prorRes, prErr := biz.CalculateProrationCredit(userID, plan.ID); prErr == nil && prorRes.Applied {
-		// Применяем credit только если новый план != текущего (иначе просто продление)
-		if prorRes.CurrentPlanID != plan.ID && prorRes.CreditRub > 0 {
-			prorationCredit = prorRes.CreditRub
-			if prorationCredit >= priceRub {
-				prorationCredit = priceRub - 1 // оставляем минимум 1₽ чтобы платёж был > 0
-			}
-			priceRub -= prorationCredit
-		}
+	// Downgrade guard — fail fast before creating any payment record.
+	// Same business rule as biz.ActivateSubscriptionWithPlan (defense-in-depth):
+	// blocked only while subscription is active. After expiry — allowed.
+	if prorRes, prErr := biz.CalculateProrationCredit(userID, plan.ID); prErr == nil && prorRes.IsDowngradeBlocked {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
+		return
 	}
 	_ = originalPrice
 
 	// Free plan — activate immediately
 	if priceRub <= 0 {
 		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, promoUsed); err != nil {
+			if errors.Is(err, biz.ErrDowngradeNotAllowed) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "activate: " + err.Error()})
 			return
 		}
@@ -245,7 +245,6 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		"confirmation_token": confirmationToken, // для embedded widget
 		"test":               payment.Test,
 		"original_price":     originalPrice,
-		"proration_credit":   prorationCredit,
 		"final_price":        priceRub,
 	})
 }
@@ -438,13 +437,20 @@ func processPaymentEvent(p *yookassa.Payment) error {
 				var pricePaidInt int
 				fmt.Sscanf(p.Amount.Value, "%d", &pricePaidInt)
 				if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, pricePaidInt, promocode); err != nil {
-					return fmt.Errorf("activate plan %d: %w", planID, err)
-				}
-				log.Printf("[yookassa-webhook] ✓ activated plan '%s' for user %s (%s ₽)", plan.Name, userID, p.Amount.Value)
-				RequestXraySync()
+					if errors.Is(err, biz.ErrDowngradeNotAllowed) {
+						log.Printf("[payment.webhook] downgrade blocked for user=%s plan=%d — skipping activation, payment refunded manually", userID, planID)
+						// Don't return — let the webhook reply 200 to YooKassa so it doesn't retry forever.
+						// Funds remain in YooKassa pending state for manual refund (ops responsibility).
+					} else {
+						return fmt.Errorf("activate plan %d: %w", planID, err)
+					}
+				} else {
+					log.Printf("[yookassa-webhook] ✓ activated plan '%s' for user %s (%s ₽)", plan.Name, userID, p.Amount.Value)
+					RequestXraySync()
 
-				// Email notification: активация или продление
-				go sendActivationEmail(userID, plan, pricePaidInt, autoRenew, paymentDBID)
+					// Email notification: активация или продление
+					go sendActivationEmail(userID, plan, pricePaidInt, autoRenew, paymentDBID)
+				}
 			}
 		}
 	}
@@ -676,7 +682,23 @@ func cancellationReason(p *yookassa.Payment) string {
 }
 
 // handleProrationPreview — GET /api/v1/payment/proration-preview?plan_id=X
-// Возвращает breakdown без создания платежа (для UI на странице выбора тарифа).
+//
+// Returns breakdown without creating a payment (for plan-card rendering on
+// site/PaymentPage). Response shape (added 2026-05-26 with Smart Extension):
+//
+//	{
+//	  // Legacy fields (kept for backward-compat with deployed older bundles):
+//	  "original_price":   3000,        // plan.PriceRub
+//	  "proration_credit": 150,         // legacy money credit (NOT applied in /create)
+//	  "final_price":      2850,        // original_price - proration_credit
+//	  "days_remaining":   15,          // leftover days on current sub
+//
+//	  // New fields (used by current bundle):
+//	  "bonus_days":                    18,
+//	  "new_valid_until":               "2027-06-12T18:30:00+03:00",
+//	  "is_downgrade_blocked":          false,
+//	  "early_renewal_days_threshold":  3
+//	}
 func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -702,8 +724,16 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 	prorRes, _ := biz.CalculateProrationCredit(userID, planID)
 	credit := 0
 	daysRemaining := 0
+	bonusDays := 0
+	isDowngradeBlocked := false
+	newValidUntil := ""
 	if prorRes != nil {
 		daysRemaining = prorRes.DaysRemaining
+		bonusDays = prorRes.BonusDays
+		isDowngradeBlocked = prorRes.IsDowngradeBlocked
+		if !prorRes.NewValidUntil.IsZero() {
+			newValidUntil = prorRes.NewValidUntil.Format(time.RFC3339)
+		}
 		if prorRes.Applied && prorRes.CurrentPlanID != planID {
 			credit = prorRes.CreditRub
 			if credit >= plan.PriceRub {
@@ -711,11 +741,16 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	threshold, _ := strconv.Atoi(biz.GetSettingOrDefault("early_renewal_days_threshold", "3"))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"original_price":   plan.PriceRub,
-		"proration_credit": credit,
-		"final_price":      plan.PriceRub - credit,
-		"days_remaining":   daysRemaining,
+		"original_price":               plan.PriceRub,
+		"proration_credit":             credit,
+		"final_price":                  plan.PriceRub - credit,
+		"days_remaining":               daysRemaining,
+		"bonus_days":                   bonusDays,
+		"new_valid_until":              newValidUntil,
+		"is_downgrade_blocked":         isDowngradeBlocked,
+		"early_renewal_days_threshold": threshold,
 	})
 }
 
