@@ -2,6 +2,7 @@ package biz
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -275,9 +276,9 @@ func computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPri
 	}
 	leftoverMoney := float64(currentPriceRub) * float64(leftoverDays) / float64(currentDurationDays)
 	bonus := int(leftoverMoney * float64(newDurationDays) / float64(newPriceRub))
-	cap := newDurationDays * 10
-	if bonus > cap {
-		bonus = cap
+	maxBonus := newDurationDays * 10
+	if bonus > maxBonus {
+		bonus = maxBonus
 	}
 	return bonus
 }
@@ -285,7 +286,7 @@ func computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPri
 // ErrDowngradeNotAllowed возвращается из ActivateSubscriptionWithPlan когда
 // активная подписка дороже нового плана. После истечения валиdity (current.valid_until ≤ NOW)
 // эта проверка не срабатывает — юзер свободен.
-var ErrDowngradeNotAllowed = fmt.Errorf("downgrade_not_allowed")
+var ErrDowngradeNotAllowed = errors.New("downgrade_not_allowed")
 
 // ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
 //
@@ -302,69 +303,105 @@ var ErrDowngradeNotAllowed = fmt.Errorf("downgrade_not_allowed")
 // determines bonus_days. Promocode discounts already adjusted the YooKassa charge
 // upstream; here we always use new_plan.price_rub for honest conversion.
 func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
-	var dbUserID int
-	err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
+	tx, err := db.DB.Begin()
 	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var dbUserID int
+	if err := tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
 		return fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
-	// Fetch current active subscription (any plan) — most recent active row.
+	// Fetch new plan's LIST price (not pricePaid, which may be discounted by
+	// promocode). Downgrade comparison and bonus_days math must use list prices
+	// to be semantically honest — see code-quality review of 8197e40.
+	newPlan, err := GetPlanByID(planID)
+	if err != nil || newPlan == nil {
+		return fmt.Errorf("resolve new plan %d: %w", planID, err)
+	}
+	newPlanListPrice := newPlan.PriceRub
+
+	// Fetch current active subscription (any plan) with FOR UPDATE so concurrent
+	// payments serialize on this user's most-recent active row instead of racing
+	// SELECT-then-UPDATE.
 	var currentSubID int
 	var currentPlanID int
 	var currentPriceRub int
 	var currentDurationDays int
 	var currentValidUntil time.Time
-	row := db.DB.QueryRow(`
+	hasActive := true
+	scanErr := tx.QueryRow(`
 		SELECT us.id, us.plan_id, p.price_rub, p.duration_days, us.valid_until
 		FROM user_subscriptions us
 		JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
 		ORDER BY us.valid_until DESC LIMIT 1
-	`, dbUserID)
-	hasActive := true
-	if scanErr := row.Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil); scanErr != nil {
-		hasActive = false // sql.ErrNoRows — нет активной → ветка (1)
+		FOR UPDATE OF us
+	`, dbUserID).Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil)
+	if scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			hasActive = false // нет активной подписки → ветка (1)
+		} else {
+			return fmt.Errorf("scan current subscription: %w", scanErr)
+		}
 	}
 
 	// (1) No active subscription — fresh INSERT.
 	if !hasActive {
 		validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
-		_, err = db.DB.Exec(fmt.Sprintf(`
+		if _, err := tx.Exec(fmt.Sprintf(`
 			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
 			VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
-		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed)
-		if err == nil {
-			NotifySubscriptionChange()
+		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed); err != nil {
+			return err
 		}
-		return err
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+		NotifySubscriptionChange()
+		return nil
 	}
 
 	// (2) Same plan — extend valid_until in place.
 	if currentPlanID == planID {
 		validUntilExpr := fmt.Sprintf("valid_until + INTERVAL '%d days'", durationDays)
-		_, err = db.DB.Exec(fmt.Sprintf(`
+		if _, err := tx.Exec(fmt.Sprintf(`
 			UPDATE user_subscriptions
 			SET valid_until = %s,
 			    price_paid = $1, promocode_used = $2,
 			    status = 'active', auto_renew = true
 			WHERE id = $3
-		`, validUntilExpr), pricePaid, promocodeUsed, currentSubID)
-		if err == nil {
-			NotifySubscriptionChange()
+		`, validUntilExpr), pricePaid, promocodeUsed, currentSubID); err != nil {
+			return err
 		}
-		return err
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+		NotifySubscriptionChange()
+		return nil
 	}
 
 	// (3) Different plan, downgrade — REJECT.
-	if pricePaid < currentPriceRub {
+	// Use list price (not pricePaid) so promocode-discounted upgrades aren't
+	// falsely blocked: a user paying 150₽ with promo for a 300₽ plan over
+	// a 250₽ active sub is upgrading, not downgrading.
+	if newPlanListPrice < currentPriceRub {
 		return ErrDowngradeNotAllowed
 	}
 
 	// (4) Cross-plan upgrade or equal-price switch — convert leftover to bonus days.
+	// Use list price (newPlanListPrice), not pricePaid, so promocode discounts
+	// don't artificially inflate bonus_days. The user paid what the promo said;
+	// the bonus is computed against the plan's true value.
 	leftoverDays := int(time.Until(currentValidUntil).Hours() / 24)
-	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, pricePaid, durationDays)
+	if leftoverDays < 0 {
+		leftoverDays = 0
+	}
+	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPlanListPrice, durationDays)
 	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays+bonusDays)
-	_, err = db.DB.Exec(fmt.Sprintf(`
+	if _, err := tx.Exec(fmt.Sprintf(`
 		UPDATE user_subscriptions
 		SET plan_id = $1,
 		    valid_until = %s,
@@ -373,11 +410,14 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		    status = 'active',
 		    auto_renew = true
 		WHERE id = $4
-	`, validUntilExpr), planID, pricePaid, promocodeUsed, currentSubID)
-	if err == nil {
-		NotifySubscriptionChange()
+	`, validUntilExpr), planID, pricePaid, promocodeUsed, currentSubID); err != nil {
+		return err
 	}
-	return err
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	NotifySubscriptionChange()
+	return nil
 }
 
 // ApplyPromoToPrice validates and applies a promocode for a specific plan and user.
