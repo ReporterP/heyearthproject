@@ -1003,6 +1003,16 @@ server {
 
     location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
+    # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
+    # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
+    # www-data needs read access via setfacl — see cmd/deploy/hysteria2_hub.go.
+    location = /static/geoip.dat {
+        alias /etc/hysteria/geoip.dat;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
     location / { root /var/www/heyearth-site; try_files $uri $uri/ /index.html; }
     location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
 }
@@ -1087,6 +1097,16 @@ server {
     }
 
     location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
+
+    # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
+    # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
+    # www-data needs read access via setfacl — see cmd/deploy/hysteria2_hub.go.
+    location = /static/geoip.dat {
+        alias /etc/hysteria/geoip.dat;
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
 
     location / { root /var/www/heyearth-site; try_files $uri $uri/ /index.html; }
     location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }

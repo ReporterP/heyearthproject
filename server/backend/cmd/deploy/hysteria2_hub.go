@@ -94,14 +94,40 @@ if [ ! -f /etc/hysteria/geoip.dat ] || [ $(find /etc/hysteria/geoip.dat -mtime +
   chmod 644 /etc/hysteria/geoip.dat
 fi
 
+# ── 3b. nginx access to geoip.dat (Happ Geoipurl) ──
+# nginx is configured to alias /static/geoip.dat → /etc/hysteria/geoip.dat
+# (see cmd/deploy/main.go nginx-builder). The dir is owned hysteria:hysteria
+# mode 750 so www-data normally can't traverse it. We use POSIX ACL (NOT
+# group membership) because the same directory holds server.yaml with auth-
+# secrets for exit-node Hysteria2 tunnels — adding www-data to the hysteria
+# group would leak those secrets. ACL grants traverse-only on the dir
+# (--x = search by name, no listing) and read on the single geoip file.
+if ! command -v setfacl >/dev/null 2>&1; then
+  apt-get install -y -qq acl >/dev/null 2>&1 || true
+fi
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m u:www-data:--x /etc/hysteria
+  setfacl -m u:www-data:r-- /etc/hysteria/geoip.dat
+  echo "[hysteria2-hub] ACL: www-data can read /etc/hysteria/geoip.dat (server.yaml stays private)"
+else
+  echo "[hysteria2-hub] WARN: setfacl not available; nginx will not serve /static/geoip.dat — Happ clients will fail"
+fi
+
 # Monthly geoip.dat refresh cron (idempotent — overwrites each time).
 # Reloads hysteria2-server after fetch so the new geoip is picked up.
+# Re-applies www-data ACL because the mv below swaps inodes and drops file ACL
+# (the dir ACL set above survives — we don't re-create the directory).
 cat > /etc/cron.monthly/heyearth-hysteria-geoip <<'CRON'
 #!/usr/bin/env bash
 set -e
 curl -fsSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o /etc/hysteria/geoip.dat.new
 mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
 chown hysteria:hysteria /etc/hysteria/geoip.dat
+chmod 644 /etc/hysteria/geoip.dat
+# Re-apply nginx read ACL (mv replaces inode → file ACL is lost).
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m u:www-data:r-- /etc/hysteria/geoip.dat 2>/dev/null || true
+fi
 systemctl reload hysteria2-server 2>/dev/null || systemctl restart hysteria2-server
 CRON
 chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
