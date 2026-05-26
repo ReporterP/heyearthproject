@@ -712,9 +712,15 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 		if sni == "" {
 			sni = node.IPAddress
 		}
-		// Без flow: "xtls-rprx-vision" — чтобы работал mux (мультиплексирование).
-		// Vision хорош для single-stream, но mux критичен для скорости
-		// при множестве мелких подключений (Telegram, Instagram, YouTube).
+		// flow: "xtls-rprx-vision" REQUIRED to match exit-side clients.flow.
+		// Without flow, exit's vless-reality rejects user (flow mismatch) and
+		// Reality falls back to dest → Hub Reality client sees real cert →
+		// "REALITY: received real certificate (potential MITM)" error.
+		// Mux MUST be disabled when flow=xtls-rprx-vision is set
+		// (XTLS Vision is incompatible with mux multiplexing — Xray docs).
+		// Previously this code used mux without flow which worked on the
+		// older legacy exit setup but conflicts with the current exit
+		// VLESS Reality client config that enforces Vision flow.
 		outbound := map[string]interface{}{
 			"tag": tag, "protocol": "vless",
 			"settings": map[string]interface{}{
@@ -722,7 +728,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					{
 						"address": node.IPAddress, "port": node.TunnelPort,
 						"users": []map[string]interface{}{
-							{"id": node.TunnelUUID, "encryption": "none"},
+							{"id": node.TunnelUUID, "encryption": "none", "flow": "xtls-rprx-vision"},
 						},
 					},
 				},
@@ -740,14 +746,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					"tcpKeepAliveInterval": 30,
 				},
 			},
-			// Мультиплексирование: несколько стримов по одному VLESS соединению.
-			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
-			"mux": map[string]interface{}{
-				"enabled":          true,
-				"concurrency":      getMuxConcurrency(),
-				"xudpConcurrency":  16,  // UDP мультиплексирование (DNS, QUIC)
-				"xudpProxyUDP443":  "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
-			},
+			// NOTE: NO mux block — Vision flow is incompatible with mux.
 		}
 		// Добавляем publicKey и shortId если заданы
 		if node.TunnelPubKey != "" {
