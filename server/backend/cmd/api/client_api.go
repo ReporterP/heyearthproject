@@ -186,136 +186,96 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				flowParam = "&flow=" + flow
 			}
 
-			// Tree-themed names (🌳 Берёза / 🌲 Дуб / 🎋 Бамбук) with inline
-			// short explainers (• основной / - запасной / • Wi-Fi). The earlier
-			// approach of base64-encoded `serverDescription` in URL fragments
-			// (per happ docs) is not rendered on current happ builds — we bake
-			// the explainer into the visible label instead. The user's actual
-			// exit is selected by the smart load-balancer at connect time, so
-			// we don't expose country geography here.
+			// FP matrix — happ-desktop sees different uTLS ClientHello JA3s for
+			// each entry. Russian ISP DPI applies different rules per operator;
+			// chrome/safari/ios/firefox give us 4 distinct JA3 signatures so at
+			// least one passes through any given operator's DPI whitelist.
+			// uTLS FP is purely client-side — server (Xray) doesn't validate it,
+			// so all 4 entries share the same vless-reality inbound on :443.
+			//
+			// PathEscape (not QueryEscape): RFC 3986 fragment encoding emits %20
+			// for spaces; QueryEscape's `+` is rendered literally by happ-desktop.
+			//
+			// 🌳 Берёза 1..4 — TCP Reality :443, 4 uTLS variants.
+			realityFPs := []string{"chrome", "safari", "ios", "firefox"}
+			for i, fp := range realityFPs {
+				label := fmt.Sprintf("🌳 Берёза %d", i+1)
+				vlessURI := fmt.Sprintf(
+					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
+					userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, flowParam,
+					url.PathEscape(label))
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 vlessURI,
+					Protocol:            "vless",
+					Label:               label,
+					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+					Priority:            int32(i), // 0..3
+				})
+			}
 
-			// Single unified VLESS Reality entry — «🌳 Берёза».
-			// Previously we shipped 3 variants (chrome/safari/edge fingerprints
-			// branded as Домашний/Мобильный/Строгий) so happ could auto-pick the
-			// fastest. The diversity confused users — same exit nodes, same
-			// performance, just different TLS fingerprints. Population-level FP
-			// diversity is preserved by auto-tuner's 4h rotation of
-			// app_settings.reality_fingerprint across the user base.
-			//
-			// chrome is kept as the default fingerprint (most reliable in
-			// production based on tunnel-monitor logs).
-			//
-			// tcpKeepAliveInterval=15 / tcpKeepAliveIdle=100: shipped via the URI
-			// so happ configures sockopt without manual editing. Keepalive pings
-			// prevent client-side policy.connIdle from killing long-lived streams
-			// (AI streaming, WebSocket, SSE) AND keep carrier-NAT mappings alive
-			// on mobile / hotel wifi networks.
-			// Compact inline label — happ's serverDescription base64 hint inside
-			// the URL fragment isn't being rendered on every happ build, so we
-			// bake the explainer directly into the visible name. Short phrase
-			// fits the bold first-line layout without truncation.
-			// PathEscape encodes spaces as %20 (RFC 3986 fragment); QueryEscape
-			// would emit `+` which happ-desktop renders literally as «+» between
-			// words. Verified visually 2026-05-26.
-			//
-			// URI param order follows the v2ray-spec canonical order:
-			// encryption → flow → security → sni → fp → pbk → sid → type.
-			// happ-desktop's embedded Xray-core URI parser (verified 2026-05-26
-			// via e2e probe — server-side connection works perfectly, but
-			// happ-desktop shows n/a) appears sensitive to param ordering and
-			// to non-standard tcpKeepAlive* params. Dropped tcpKeepAlive*
-			// — they're TCP socket tuning, not protocol-critical.
-			// URI exactly mirrors the working multi-FP variant from before the
-			// consolidation (Домашний 225ms / Мобильный 222ms / Строгий 215ms).
-			// Param order:
-			//   encryption -> security -> sni -> fp -> pbk -> sid -> type
-			//   -> tcpKeepAliveInterval -> tcpKeepAliveIdle -> flow
-			// happ-desktop embedded parser appears strict about this exact
-			// ordering for VLESS+Reality+Vision. Reverting parameter order or
-			// dropping tcpKeepAlive* breaks ping AND connection — Hysteria
-			// (no flow param) is unaffected.
-			vlessURI := fmt.Sprintf(
-				"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
-				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID, flowParam,
-				url.PathEscape("🌳 Берёза - основной"))
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 vlessURI,
-				Protocol:            "vless",
-				Label:               "🌳 Берёза - основной",
-				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-				Priority:            0,
-			})
-		}
-
-		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI) — «🌲 Дуб».
-		// Fallback profile for ISPs running aggressive behavioral DPI against
-		// pure-TCP Reality. SplitHTTP framing makes the connection look like
-		// HTTP/1.1 long-poll rather than direct Reality handshake — slips past
-		// some Russian DPI deployments that learned to fingerprint TCP+Reality
-		// timing patterns.
-		//
-		// Port: configurable via app_settings.xhttp_port (default 2443). If
-		// provider firewall blocks :2443 (verified 2026-05-26 on vdsina —
-		// external TCP times out, internal succeeds), the setting can be
-		// changed to a port the provider allows without redeploy.
-		if realityPubKey != "" && canVLESS {
+			// 🌲 Дуб 1..2 — XHTTP Reality :2443 (configurable port via app_settings.xhttp_port),
+			// 2 uTLS variants. XHTTP framing looks like an HTTP/1.1 long-poll
+			// instead of pure-Reality timing pattern, slipping past DPI that
+			// learned to fingerprint TCP+Vision. Server inbound `vless-xhttp`
+			// strips the `flow` field from clients (see xray_sync.go::vlessClientsXHTTP)
+			// because XTLS Vision is incompatible with xhttp transport.
 			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
-			// type=xhttp matches the Xray inbound's `network: xhttp` (renamed
-			// from splithttp in Xray v1.8.21+). XTLS flow MUST be absent on
-			// xhttp transport — server-side clients list excludes it. See
-			// xray_sync.go::vlessClientsXHTTP.
-			//
-			// path=/ + host=<server> are required so the xhttp HTTP request
-			// matches what the server's xhttpSettings.host expects (Reality
-			// validates Host header against this list, not realitySettings.
-			// serverNames which contains the SNI camouflage domain yandex.ru).
-			// Mirror Berëza param structure (incl. tcpKeepAlive*). No flow on
-			// xhttp transport — XTLS Vision only works with type=tcp. Plus
-			// xhttp-specific params: path + host + mode.
-			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
-				userVlessUUID, mainServerHost, xhttpPort, realitySNI, realityPubKey, realityShortID,
-				url.QueryEscape(mainServerHost),
-				url.PathEscape("🌲 Дуб - запасной"))
-			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 xhttpURI,
-				Protocol:            "vless",
-				Label:               "🌲 Дуб - запасной",
-				RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-				Priority:            1, // below Берёза — fallback choice
-			})
+			xhttpFPs := []string{"chrome", "safari"}
+			for i, fp := range xhttpFPs {
+				label := fmt.Sprintf("🌲 Дуб %d", i+1)
+				xhttpURI := fmt.Sprintf(
+					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+					userVlessUUID, mainServerHost, xhttpPort, realitySNI, fp, realityPubKey, realityShortID,
+					url.QueryEscape(mainServerHost),
+					url.PathEscape(label))
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 xhttpURI,
+					Protocol:            "vless",
+					Label:               label,
+					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
+					Priority:            int32(4 + i), // 4..5
+				})
+			}
 		}
-
 	}
 
-	// 2. Hysteria2 «Express» — QUIC/UDP low-latency путь.
-	// Сейчас включён для ВСЕХ пользователей (не привязан к плану) — это «технологический preview»
-	// чтобы happ показывал Express в списке профилей и мы видели реальное поведение.
-	// Авторизация через per-user пароль (hysteria2_password), сервер проверяет через HTTP-бэкенд.
+	// 2. Hysteria2 «Бамбук» — QUIC/UDP, Wi-Fi only (mobile carriers QoS UDP).
+	// Two entries differ only in congestion control:
+	//   Бамбук 1 — no bandwidth in URI → Hysteria2 client picks BBR (adaptive)
+	//   Бамбук 2 — explicit upmbps/downmbps → Hysteria2 client picks Brutal CC
+	//              (fixed bandwidth, ignores loss-induced backoff — beats operator
+	//              QoS that throttles UDP via packet loss injection)
+	// Both labels contain "only WiFi" — happ natively hides them on cellular.
 	if mainServerHost != "" {
 		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
 		obfsPassword := biz.GetHysteria2ObfsPassword()
 		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
-			// Port-hopping: клиент берёт случайный порт из 50000-50100, iptables на Хабе REDIRECT
-			// все эти UDP-порты на :50443 где слушает hysteria2-server. Защищает от QoS,
-			// который таргетирует один UDP-порт.
-			// Hysteria2 URI: hysteria2://<password>@<host>:<port>/?obfs=salamander&obfs-password=<obfs>&sni=<sni>&insecure=0#<name>
-			// Поле `mport` — Happ-расширение для port-hopping ranges.
-			//
-			// «🎋 Бамбук» — premium speed profile. RecommendedNetworks limited to
-			// wifi/ethernet because UDP-based QUIC works best on stable lossless
-			// links. The subtitle explicitly warns about the Wi-Fi limitation so
-			// users don't pick it on cellular and complain about reconnects.
-			hy2URI := fmt.Sprintf(
+			// Бамбук 1 (BBR adaptive)
+			bambooBBRLabel := "🎋 Бамбук 1 only WiFi"
+			bambooBBRURI := fmt.Sprintf(
 				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100#%s",
 				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
-				url.PathEscape("🎋 Бамбук - скорость, только Wi-Fi"))
+				url.PathEscape(bambooBBRLabel))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
-				Uri:                 hy2URI,
+				Uri:                 bambooBBRURI,
 				Protocol:            "hysteria2",
-				Label:               "🎋 Бамбук - скорость, только Wi-Fi",
-				RecommendedNetworks: []string{"wifi", "ethernet"}, // Wi-Fi only hint to happ
-				Priority:            2,                            // below Дуб — premium pick, not default
+				Label:               bambooBBRLabel,
+				RecommendedNetworks: []string{"wifi", "ethernet"},
+				Priority:            6,
+			})
+
+			// Бамбук 2 (Brutal CC, 20↑/80↓ Mbps fixed)
+			bambooBrutalLabel := "🎋 Бамбук 2 only WiFi"
+			bambooBrutalURI := fmt.Sprintf(
+				"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=50000-50100&upmbps=20&downmbps=80#%s",
+				url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
+				url.PathEscape(bambooBrutalLabel))
+			opts = append(opts, &heyearth_v1.ConnectionOption{
+				Uri:                 bambooBrutalURI,
+				Protocol:            "hysteria2",
+				Label:               bambooBrutalLabel,
+				RecommendedNetworks: []string{"wifi", "ethernet"},
+				Priority:            7,
 			})
 		}
 	}
