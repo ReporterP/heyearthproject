@@ -767,6 +767,22 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 		if method == "" {
 			method = "2022-blake3-aes-128-gcm"
 		}
+		// Stream transport: port 443 → WS (legacy, masquerades as HTTPS through nginx);
+		// any other port → plain TCP (lower latency, no WS framing overhead).
+		// Plain TCP is preferred when the exit listens on a dedicated SS port
+		// (e.g. :8388) — saves the WS handshake RTT and per-message framing.
+		streamSettings := map[string]interface{}{
+			"network": "tcp",
+			"sockopt": map[string]interface{}{
+				"tcpFastOpen":          true, // Экономия 1 RTT
+				"tcpNoDelay":           true, // Без буферизации Nagle
+				"tcpKeepAliveInterval": 30,   // Keepalive от DPI
+			},
+		}
+		if node.TunnelPort == 443 {
+			streamSettings["network"] = "ws"
+			streamSettings["wsSettings"] = map[string]interface{}{"path": "/stream"}
+		}
 		return map[string]interface{}{
 			"tag": tag, "protocol": "shadowsocks",
 			"settings": map[string]interface{}{
@@ -779,21 +795,9 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"streamSettings": map[string]interface{}{
-				// WebSocket transport: трафик выглядит как обычный HTTPS-вебсокет,
-				// DPI не может отличить от обычного сайта. Значительно ускоряет
-				// международные соединения, т.к. DPI не throttle'ит WS-трафик.
-				"network": "ws",
-				"wsSettings": map[string]interface{}{
-					"path": "/stream",
-				},
-				"sockopt": map[string]interface{}{
-					"tcpFastOpen":          true,  // Экономия 1 RTT
-					"tcpNoDelay":           true,  // Без буферизации Nagle
-					"tcpKeepAliveInterval": 30,    // Keepalive от DPI
-				},
-			},
-			// Мультиплексирование: много стримов по одному SS+WS соединению
+			"streamSettings": streamSettings,
+			// Мультиплексирование: много стримов по одному SS соединению.
+			// Экономит TCP+TLS handshakes для каждого нового user connection.
 			"mux": map[string]interface{}{
 				"enabled":         true,
 				"concurrency":     getMuxConcurrency(),
