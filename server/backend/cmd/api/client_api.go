@@ -216,31 +216,15 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// for spaces; QueryEscape's `+` is rendered literally by happ-desktop.
 			//
 			// 🌳 Берёза 1..2 — TCP Reality :443, 2 uTLS variants.
+			// URI params restored to pre-Hysteria2 working state — NO spx, NO fragment,
+			// NO alt-port/alt-IP variants. User-reported these additions broke
+			// the previously-working Reality path. Keep tcpKeepAlive* and flow at end
+			// (load-bearing for happ-desktop URI parser, verified working pre-Hysteria2).
 			realityFPs := []string{"chrome", "safari"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
-				// URI param order is load-bearing for happ-desktop's URI parser —
-				// encryption → security → sni → fp → pbk → sid → type → tcpKeepAlive* → flow.
-				// Reordering breaks Reality on happ-desktop (verified via commits
-				// 1d8f6b4 / 9dd9776 — two debug cycles). Dropping tcpKeepAlive*
-				// also breaks ping AND connection on happ-desktop. Do not "clean up"
-				// this format string.
-				// spx=%%2F (URL-encoded "/") activates Reality spider-mode against
-				// active DPI probing — Reality's last layer of defense. Appended at
-				// the end (after flow) to preserve the load-bearing happ-desktop
-				// URI parser order documented above. See:
-				// docs/research/2026-05-26-reality-mobile-dpi-deep-dive.md (T1.1)
-				//
-				// fragment=length,interval,packets — happ-desktop client-side TLS
-				// ClientHello fragmentation. Splits the (large, xPaddingBytes-padded)
-				// Reality ClientHello into 1-10 byte chunks with 5-20ms intervals,
-				// PRE-EMPTING mobile CGNAT (Tele2 in particular) from fragmenting
-				// the packet itself and dropping the reassembly. This is the canonical
-				// happ docs example. tlshello = fragment only TLS ClientHello, not all
-				// traffic. Server-side does nothing — kernel TCP reassembles transparently.
-				// See: https://www.happ.su/main/dev-docs/examples-of-links-and-parameters
 				vlessURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
+					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 					userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, flowParam,
 					url.PathEscape(label))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
@@ -248,70 +232,18 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i), // 0..1 (Berëza is now top-priority — Palma not emitted in happ subs)
+					Priority:            int32(i), // 0..1
 				})
 			}
 
-			// 🌳 Берёза 3 — alt-port :30443 to bypass operator-level QoS throttling
-			// that targets known VPN-port :443 traffic to vdsina IP ranges (MTS observed
-			// throttling :443 + :2443 specifically). Same Reality config as Берёза 1+2,
-			// just a high port outside common DPI rules. Single fingerprint (chrome).
-			{
-				altPortLabel := "🌳 Берёза 3 (alt-port)"
-				altURI := fmt.Sprintf(
-					"vless://%s@%s:30443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&flow=xtls-rprx-vision&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
-					userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
-					url.PathEscape(altPortLabel))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 altURI,
-					Protocol:            "vless",
-					Label:               altPortLabel,
-					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            2, // try right after Берёза 1+2 (priority 0,1)
-				})
-			}
-
-			// 🌳 Берёза 4 + 5 — SECOND Hub IP 109.172.86.40 (additional vdsina address
-			// on same VPS as primary 45.150.39.236). MTS observed to apply per-IP
-			// QoS throttling: even alt-port :30443 throttled on primary IP. New IP
-			// not yet fingerprinted by MTS DPI → should give full speed until/if
-			// MTS adds it to their throttle list. Same Reality keys (single Xray
-			// listener serves both IPs via 0.0.0.0). Chrome + safari fingerprints.
-			altHubIP := biz.GetSettingOrDefault("alt_hub_ip", "109.172.86.40")
-			if altHubIP != "" {
-				altFPs := []string{"chrome", "safari"}
-				for i, fp := range altFPs {
-					altIPLabel := fmt.Sprintf("🌳 Берёза %d (new IP)", i+4)
-					altIPURI := fmt.Sprintf(
-						"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&flow=xtls-rprx-vision&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
-						userVlessUUID, altHubIP, realitySNI, fp, realityPubKey, realityShortID,
-						url.PathEscape(altIPLabel))
-					opts = append(opts, &heyearth_v1.ConnectionOption{
-						Uri:                 altIPURI,
-						Protocol:            "vless",
-						Label:               altIPLabel,
-						RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-						Priority:            int32(3 + i), // 3..4 (between alt-port Берёза 3 and Дуб)
-					})
-				}
-			}
-
-			// 🌲 Дуб 1..2 — XHTTP Reality :2443 (configurable port via app_settings.xhttp_port),
-			// 2 uTLS variants. XHTTP framing looks like an HTTP/1.1 long-poll
-			// instead of pure-Reality timing pattern, slipping past DPI that
-			// learned to fingerprint TCP+Vision. Server inbound `vless-xhttp`
-			// strips the `flow` field from clients (see xray_sync.go::vlessClientsXHTTP)
-			// because XTLS Vision is incompatible with xhttp transport.
+			// 🌲 Дуб 1..2 — XHTTP Reality :2443, 2 uTLS variants.
+			// Pre-Hysteria2 working URI shape — no spx, no fragment.
 			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
 			xhttpFPs := []string{"chrome", "safari"}
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
-				// spx=%%2F at end — same rationale as Берёза TCP above (T1.1)
-				// fragment=1-10,5-20,tlshello — same as Берёза above. XHTTP also
-				// carries a Reality TLS ClientHello on connection setup; mobile
-				// CGNAT fragmentation hits this just as hard as plain TCP Reality.
 				xhttpURI := fmt.Sprintf(
-					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100&spx=%%2F&fragment=1-10,5-20,tlshello#%s",
+					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 					userVlessUUID, mainServerHost, xhttpPort, realitySNI, fp, realityPubKey, realityShortID,
 					url.QueryEscape(mainServerHost),
 					url.PathEscape(label))
@@ -320,7 +252,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 					Protocol:            "vless",
 					Label:               label,
 					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 5), // 5..6 (after Берёза 1+2=0,1; Берёза 3 alt-port=2; Берёза 4+5 new-IP=3,4)
+					Priority:            int32(i + 2), // 2..3
 				})
 			}
 		}

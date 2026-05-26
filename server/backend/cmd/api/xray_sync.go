@@ -223,45 +223,6 @@ func SyncXrayConfig() error {
 					"shortIds":     []string{keys.ShortID, ""},
 					"xPaddingBytes": "100-1000", // Anti-DPI: normalize packet sizes
 				},
-				// T1.2: bilateral TCP keepalive on the server inbound. Client URI
-				// already carries tcpKeepAlive* but mobile CGNAT (Tele2/MTS) reaps
-				// idle TCP from BOTH sides; without server-side keepalive the NAT
-				// entry dies before client probe fires, then server traffic looks
-				// unsolicited and gets dropped. tcpFastOpen mirrors the egress
-				// path. See docs/research/2026-05-26-reality-mobile-dpi-deep-dive.md
-				"sockopt": map[string]interface{}{
-					"tcpKeepAliveInterval": 30,  // probe every 30 s
-					"tcpKeepAliveIdle":     120, // start probing after 2 min idle
-					"tcpFastOpen":          true,
-					"tcpNoDelay":           true,
-				},
-			},
-			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
-		},
-		{
-			// 🌳 Берёза 3 (alt-port): identical Reality config but on a high port
-			// to bypass operator-level QoS throttling that targets known
-			// VPN-port :443 traffic to vdsina IP ranges. Same keys/UUIDs as
-			// vless-reality :10443 — just a different listen port to escape
-			// per-IP+per-port throttle rules. Reality dest still points to
-			// the configured camouflage SNI for proper Reality-Vision behavior.
-			"tag": "vless-reality-hi", "listen": "0.0.0.0", "port": 30443, "protocol": "vless",
-			"settings": map[string]interface{}{"clients": vlessClients, "decryption": "none"},
-			"streamSettings": map[string]interface{}{
-				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{
-					"show": false, "dest": realitySNI + ":443", "xver": 0,
-					"serverNames":  []string{realitySNI, "www." + realitySNI},
-					"privateKey":   keys.PrivateKey,
-					"shortIds":     []string{keys.ShortID, ""},
-					"xPaddingBytes": "100-1000",
-				},
-				"sockopt": map[string]interface{}{
-					"tcpKeepAliveInterval": 30,
-					"tcpKeepAliveIdle":     120,
-					"tcpFastOpen":          true,
-					"tcpNoDelay":           true,
-				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		},
@@ -739,15 +700,9 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 		if sni == "" {
 			sni = node.IPAddress
 		}
-		// flow: "xtls-rprx-vision" REQUIRED to match exit-side clients.flow.
-		// Without flow, exit's vless-reality rejects user (flow mismatch) and
-		// Reality falls back to dest → Hub Reality client sees real cert →
-		// "REALITY: received real certificate (potential MITM)" error.
-		// Mux MUST be disabled when flow=xtls-rprx-vision is set
-		// (XTLS Vision is incompatible with mux multiplexing — Xray docs).
-		// Previously this code used mux without flow which worked on the
-		// older legacy exit setup but conflicts with the current exit
-		// VLESS Reality client config that enforces Vision flow.
+		// Без flow: "xtls-rprx-vision" — чтобы работал mux (мультиплексирование).
+		// Vision хорош для single-stream, но mux критичен для скорости
+		// при множестве мелких подключений (Telegram, Instagram, YouTube).
 		outbound := map[string]interface{}{
 			"tag": tag, "protocol": "vless",
 			"settings": map[string]interface{}{
@@ -755,7 +710,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					{
 						"address": node.IPAddress, "port": node.TunnelPort,
 						"users": []map[string]interface{}{
-							{"id": node.TunnelUUID, "encryption": "none", "flow": "xtls-rprx-vision"},
+							{"id": node.TunnelUUID, "encryption": "none"},
 						},
 					},
 				},
@@ -773,7 +728,14 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					"tcpKeepAliveInterval": 30,
 				},
 			},
-			// NOTE: NO mux block — Vision flow is incompatible with mux.
+			// Мультиплексирование: несколько стримов по одному VLESS соединению.
+			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
+			"mux": map[string]interface{}{
+				"enabled":         true,
+				"concurrency":     getMuxConcurrency(),
+				"xudpConcurrency": 16,        // UDP мультиплексирование (DNS, QUIC)
+				"xudpProxyUDP443": "allow",   // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
+			},
 		}
 		// Добавляем publicKey и shortId если заданы
 		if node.TunnelPubKey != "" {
