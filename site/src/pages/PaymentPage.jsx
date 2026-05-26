@@ -23,7 +23,21 @@ function formatDuration(days) {
 
 function protocolLabel(protocols) {
   if (!protocols || protocols.includes('all')) return 'Все протоколы'
-  return protocols.map(p => p === 'vless' ? 'Прокси' : p === 'socks' ? '' : p === 'http' ? 'HTTP' : p === 'all' ? 'Все протоколы' : p.toUpperCase()).filter(Boolean).join(' + ')
+  // User-facing names. Technical protocol identifiers are mapped to
+  // friendly Russian labels — we don't expose «VLESS» / «Hysteria2»
+  // / «XHTTP» in marketing because users don't know what those mean.
+  const labelMap = {
+    vless: 'Прокси',
+    hysteria2: 'Скоростной',
+    xhttp: 'Anti-DPI',
+    all: 'Все протоколы',
+    // Legacy entries that may still appear on old plans in the DB.
+    // Filtered out (empty string) so they don't surface in the UI;
+    // admin should migrate those plans via the protocols editor.
+    socks: '',
+    http: '',
+  }
+  return protocols.map(p => labelMap[p] !== undefined ? labelMap[p] : p.toUpperCase()).filter(Boolean).join(' + ')
 }
 
 export default function PaymentPage() {

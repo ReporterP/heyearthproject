@@ -18,7 +18,12 @@ import {
   Textarea,
 } from '../components/ui/index.js'
 
-const PROTOCOL_OPTIONS = ['all', 'vless', 'socks', 'http']
+// Active client-facing protocols (server-side actually implemented).
+// `socks` and `http` removed — proxy outbounds were retired in May 2026.
+// `xhttp` added — VLESS over XHTTP transport (Дуб), introduced same period.
+// Legacy plans in DB may still carry old strings; IsProtocolAllowed
+// matches by exact string, so old plans keep working until migrated.
+const PROTOCOL_OPTIONS = ['all', 'vless', 'hysteria2', 'xhttp']
 
 export default function PlansPage() {
   const { t } = useT()
