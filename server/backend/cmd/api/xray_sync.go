@@ -249,6 +249,17 @@ func SyncXrayConfig() error {
 					"host":          biz.GetSettingOrDefault("main_server_host", "hiearth.ru"),
 					"mode":          "auto",
 					"xPaddingBytes": "100-1000",
+					// R4: cap each POST chunk under 15 KB so a single TCP doesn't
+					// accumulate enough data to trigger the RU "freezing" attack
+					// on foreign-datacenter IPs (~15-20 KB threshold observed).
+					"scMaxEachPostBytes": "10000-15000",
+					// R4: spread response across many buffered POSTs so the
+					// "freezing" attack can't latch onto a single long-lived TCP.
+					// NB: Xray 26.x exposes scMaxBufferedPosts (not the
+					// scMaxConcurrentPosts name some docs use). Verified via
+					// `grep -aoE "sc[A-Z][a-zA-Z]+" /opt/heyearth/xray/xray`
+					// against the live 26.3.27 binary.
+					"scMaxBufferedPosts": "20-40",
 				},
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
