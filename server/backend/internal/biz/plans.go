@@ -32,6 +32,10 @@ type Plan struct {
 	ExpressEnabled  bool `json:"express_enabled"`
 	ExpressUpMbps   int  `json:"express_up_mbps"`
 	ExpressDownMbps int  `json:"express_down_mbps"`
+	// AmneziaWG ("🌴 Пальма") — userspace WG + Custom Protocol Settings on
+	// UDP :51820. Per-plan opt-in; when true subscription emits amneziawg://
+	// URI as priority-0 profile. See biz/awg.go::GetUserAWGConfig.
+	AmneziaWGEnabled bool `json:"amnezia_wg_enabled"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
 	// Computed
@@ -46,6 +50,7 @@ func ListActivePlans() ([]Plan, error) {
 		       sort_order, auto_renew_default,
 		       max_activations_per_user,
 		       express_enabled, express_up_mbps, express_down_mbps,
+		       amnezia_wg_enabled,
 		       created_at, updated_at
 		FROM plans WHERE is_active = TRUE
 		ORDER BY sort_order, price_rub
@@ -63,6 +68,7 @@ func ListActivePlans() ([]Plan, error) {
 			&p.DirectRoutingEnabled, &p.SortOrder,
 			&p.AutoRenewDefault, &p.MaxActivationsPerUser,
 			&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+			&p.AmneziaWGEnabled,
 			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
@@ -80,6 +86,7 @@ func ListAllPlans() ([]Plan, error) {
 		       sort_order, auto_renew_default,
 		       max_activations_per_user,
 		       express_enabled, express_up_mbps, express_down_mbps,
+		       amnezia_wg_enabled,
 		       created_at, updated_at
 		FROM plans ORDER BY sort_order, id
 	`)
@@ -96,6 +103,7 @@ func ListAllPlans() ([]Plan, error) {
 			&p.DirectRoutingEnabled, &p.SortOrder,
 			&p.AutoRenewDefault, &p.MaxActivationsPerUser,
 			&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+			&p.AmneziaWGEnabled,
 			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
@@ -114,6 +122,7 @@ func GetPlanByID(id int) (*Plan, error) {
 		       sort_order, auto_renew_default,
 		       max_activations_per_user,
 		       express_enabled, express_up_mbps, express_down_mbps,
+		       amnezia_wg_enabled,
 		       created_at, updated_at
 		FROM plans WHERE id = $1
 	`, id).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
@@ -121,6 +130,7 @@ func GetPlanByID(id int) (*Plan, error) {
 		&p.DirectRoutingEnabled, &p.SortOrder,
 		&p.AutoRenewDefault, &p.MaxActivationsPerUser,
 		&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+		&p.AmneziaWGEnabled,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -138,6 +148,7 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 		       sort_order, auto_renew_default,
 		       max_activations_per_user,
 		       express_enabled, express_up_mbps, express_down_mbps,
+		       amnezia_wg_enabled,
 		       created_at, updated_at
 		FROM plans WHERE slug = $1
 	`, slug).Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.PriceRub, &p.DurationDays,
@@ -145,6 +156,7 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 		&p.DirectRoutingEnabled, &p.SortOrder,
 		&p.AutoRenewDefault, &p.MaxActivationsPerUser,
 		&p.ExpressEnabled, &p.ExpressUpMbps, &p.ExpressDownMbps,
+		&p.AmneziaWGEnabled,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -176,13 +188,15 @@ func CreatePlan(p *Plan) (int, error) {
 		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		                   allowed_protocols, features, is_active, direct_routing_enabled, sort_order,
 		                   auto_renew_default, max_activations_per_user,
-		                   express_enabled, express_up_mbps, express_down_mbps)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
+		                   express_enabled, express_up_mbps, express_down_mbps,
+		                   amnezia_wg_enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		RETURNING id
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
 		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
 		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser,
-		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps).Scan(&id)
+		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps,
+		p.AmneziaWGEnabled).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -200,12 +214,14 @@ func UpdatePlan(id int, p *Plan) error {
 		       direct_routing_enabled=$10, sort_order=$11, auto_renew_default=$12,
 		       max_activations_per_user=$13,
 		       express_enabled=$14, express_up_mbps=$15, express_down_mbps=$16,
+		       amnezia_wg_enabled=$17,
 		       updated_at=CURRENT_TIMESTAMP
-		WHERE id = $17
+		WHERE id = $18
 	`, p.Slug, p.Name, p.Description, p.PriceRub, p.DurationDays, p.TrafficLimitBytes,
 		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
 		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser,
-		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps, id)
+		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps,
+		p.AmneziaWGEnabled, id)
 	if err != nil {
 		return err
 	}
