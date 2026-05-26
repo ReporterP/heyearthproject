@@ -247,13 +247,19 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			})
 		}
 
-		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI, port 2443) — «🌲 Дуб».
+		// 1b. VLESS Reality + XHTTP (anti-behavioral-DPI) — «🌲 Дуб».
 		// Fallback profile for ISPs running aggressive behavioral DPI against
 		// pure-TCP Reality. SplitHTTP framing makes the connection look like
 		// HTTP/1.1 long-poll rather than direct Reality handshake — slips past
 		// some Russian DPI deployments that learned to fingerprint TCP+Reality
 		// timing patterns.
+		//
+		// Port: configurable via app_settings.xhttp_port (default 2443). If
+		// provider firewall blocks :2443 (verified 2026-05-26 on vdsina —
+		// external TCP times out, internal succeeds), the setting can be
+		// changed to a port the provider allows without redeploy.
 		if realityPubKey != "" && canVLESS {
+			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
 			// type=xhttp matches the Xray inbound's `network: xhttp` (renamed
 			// from splithttp in Xray v1.8.21+). XTLS flow MUST be absent on
 			// xhttp transport — server-side clients list excludes it. See
@@ -267,8 +273,8 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// xhttp transport — XTLS Vision only works with type=tcp. Plus
 			// xhttp-specific params: path + host + mode.
 			xhttpURI := fmt.Sprintf(
-				"vless://%s@%s:2443?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
-				userVlessUUID, mainServerHost, realitySNI, realityPubKey, realityShortID,
+				"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+				userVlessUUID, mainServerHost, xhttpPort, realitySNI, realityPubKey, realityShortID,
 				url.QueryEscape(mainServerHost),
 				url.PathEscape("🌲 Дуб - запасной"))
 			opts = append(opts, &heyearth_v1.ConnectionOption{
