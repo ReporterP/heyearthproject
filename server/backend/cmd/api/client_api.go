@@ -220,14 +220,18 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 			// NO alt-port/alt-IP variants. User-reported these additions broke
 			// the previously-working Reality path. Keep tcpKeepAlive* and flow at end
 			// (load-bearing for happ-desktop URI parser, verified working pre-Hysteria2).
-			// uTLS fingerprints: ios + safari (both Apple-style, less commonly fingerprinted
-// by RU TSPU). chrome was previously the first fingerprint but user reports
-// Берёза 1 (chrome) and Дуб 1 (chrome) both fail to connect ("n/a"), while
-// Берёза 2 and Дуб 2 (safari) work — TSPU has started targeting Chrome JA3
-// signatures specifically because Chrome is the most popular uTLS profile
-// used by VPN clients. Switching the first profile to ios (Apple mobile)
-// keeps two distinct fingerprints for diversity and avoids the blocklist.
-realityFPs := []string{"ios", "safari"}
+			//
+			// uTLS fingerprints: chrome + firefox.
+			// Rationale (research: docs/research/2026-05-27-happ-tele2-tls-handshake.md):
+			// fp=ios and fp=safari have documented Xray-core regressions — XTLS #5918
+			// ("firstLen=0, EOF" on iOS+XHTTP: TLS handshake completes but HTTP data
+			// never flows) and XTLS #4852 (uTLS ClientHello extension order). These
+			// regressions manifest on Tele2 mobile DPI as «плавающая ошибка TLS
+			// рукопожатия» in Happ ping check. Chrome is the most-tested uTLS profile
+			// (used by 80% of Reality clients) and has no open regressions. Firefox
+			// is the second-most-tested, kept as JA3 diversification within one
+			// subscription.
+			realityFPs := []string{"chrome", "firefox"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
 				vlessURI := fmt.Sprintf(
@@ -246,8 +250,9 @@ realityFPs := []string{"ios", "safari"}
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443, 2 uTLS variants.
 			// Pre-Hysteria2 working URI shape — no spx, no fragment.
 			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
-			// Same rationale as realityFPs above — chrome → ios для Дуб 1.
-xhttpFPs := []string{"ios", "safari"}
+			// Same rationale as realityFPs above (research 2026-05-27) — chrome + firefox
+			// to avoid ios/safari XTLS regressions, especially XHTTP-specific #5918.
+			xhttpFPs := []string{"chrome", "firefox"}
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
 				xhttpURI := fmt.Sprintf(
