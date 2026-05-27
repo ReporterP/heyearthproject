@@ -94,26 +94,37 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// MTProto-proxy IPs to exclude from VPN routing, OR if the user's plan has
 	// direct-route services attached (e.g. RU banks/госуслуги bypass).
 	// The deeplink format `happ://routing/onadd/<b64-json>` is documented at
-	// https://www.happ.su/main/dev-docs/routing.md. Non-Happ clients ignore
-	// unknown URI schemes safely.
+	// https://www.happ.su/main/dev-docs/routing.md.
+	//
+	// IMPORTANT: emit happ://routing ONLY for Happ User-Agent. Non-Happ clients
+	// (Hiddify, v2rayNG, sing-box, NekoBox) misparse the huge base64 blob
+	// (~300KB) embedded as URI #1 — Hiddify Android user reported TLS handshake
+	// errors + total connectivity failure tracing to the happ://routing line
+	// corrupting the subscription parser state. The previous "non-Happ clients
+	// ignore unknown URI schemes safely" assumption proved wrong in practice.
+	uaForRouting := strings.ToLower(r.Header.Get("User-Agent"))
+	wantsHappRouting := strings.Contains(uaForRouting, "happ")
+
 	var uris []string
-	mtprotoIPs, mtErr := biz.ListMTProtoExitIPs()
-	if mtErr != nil {
-		log.Printf("[subscribe] ListMTProtoExitIPs error: %v (continuing with no MTProto direct-IPs)", mtErr)
-		mtprotoIPs = nil
-	}
-	// Determine plan_id of the user's current active subscription. Errors are
-	// non-fatal — planID stays 0, BuildHappRoutingDeeplinkForPlan handles that.
-	planID := 0
-	_ = db.DB.QueryRow(`
-		SELECT COALESCE(plan_id, 0) FROM user_subscriptions
-		 WHERE user_id = (SELECT id FROM users WHERE user_id = $1)
-		   AND valid_until > CURRENT_TIMESTAMP
-		   AND plan_id IS NOT NULL
-		 ORDER BY valid_until DESC LIMIT 1
-	`, userID).Scan(&planID)
-	if deeplink := biz.BuildHappRoutingDeeplinkForPlan(planID, mtprotoIPs); deeplink != "" {
-		uris = append(uris, deeplink)
+	if wantsHappRouting {
+		mtprotoIPs, mtErr := biz.ListMTProtoExitIPs()
+		if mtErr != nil {
+			log.Printf("[subscribe] ListMTProtoExitIPs error: %v (continuing with no MTProto direct-IPs)", mtErr)
+			mtprotoIPs = nil
+		}
+		// Determine plan_id of the user's current active subscription. Errors are
+		// non-fatal — planID stays 0, BuildHappRoutingDeeplinkForPlan handles that.
+		planID := 0
+		_ = db.DB.QueryRow(`
+			SELECT COALESCE(plan_id, 0) FROM user_subscriptions
+			 WHERE user_id = (SELECT id FROM users WHERE user_id = $1)
+			   AND valid_until > CURRENT_TIMESTAMP
+			   AND plan_id IS NOT NULL
+			 ORDER BY valid_until DESC LIMIT 1
+		`, userID).Scan(&planID)
+		if deeplink := biz.BuildHappRoutingDeeplinkForPlan(planID, mtprotoIPs); deeplink != "" {
+			uris = append(uris, deeplink)
+		}
 	}
 	for _, opt := range options {
 		if opt.Uri != "" {
