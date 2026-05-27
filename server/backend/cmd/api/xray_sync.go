@@ -290,6 +290,39 @@ func SyncXrayConfig() error {
 		},
 	}
 
+	// ☁️ vless-ws-cdn — VLESS over WebSocket inbound on loopback :11443 for
+	// CDN-fronted path. Cloudflare terminates user-side TLS, our nginx vhost
+	// for cdn.hiearth.ru upgrades to WebSocket and proxies here. No security
+	// layer at xray level — TLS already terminated by CF, plain WS arrives
+	// from nginx via loopback. Toggle-gated via app_settings.cdn_enabled —
+	// inbound only generated when feature is enabled. Re-uses vlessClientsXHTTP
+	// (same per-user UUIDs, no flow because WebSocket is incompatible with
+	// XTLS Vision, identical rationale to xhttp transport).
+	if biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
+		cdnWSPath := biz.GetSettingOrDefault("cdn_ws_path", "/cdn-ws")
+		inbounds = append(inbounds, map[string]interface{}{
+			"tag":      "vless-ws-cdn",
+			"listen":   "127.0.0.1",
+			"port":     11443,
+			"protocol": "vless",
+			"settings": map[string]interface{}{
+				"clients":    vlessClientsXHTTP,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]interface{}{
+				"network": "ws",
+				"wsSettings": map[string]interface{}{
+					"path":    cdnWSPath,
+					"headers": map[string]interface{}{},
+				},
+			},
+			"sniffing": map[string]interface{}{
+				"enabled":      true,
+				"destOverride": []string{"http", "tls", "quic"},
+			},
+		})
+	}
+
 	// ── Outbounds ──
 	outbounds := []map[string]interface{}{
 		{
