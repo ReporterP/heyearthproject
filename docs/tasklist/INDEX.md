@@ -25,6 +25,7 @@ bd list --status in_progress       # что сейчас в работе
 | `heyearthproject-9gl` | Post-QA hardening (dashboard/SOCKS5/traffic/auth/deeplinks) | open (P2) | [prd](../prd/post-qa-hardening.prd.md) | [plan](../plan/post-qa-hardening.md) | [tasks](post-qa-hardening.md) | — |
 | `heyearthproject-agh4` | Direct routing infrastructure (bypass VPN для российских сервисов) | open (P2) | [prd](../prd/direct-routing.prd.md) | [plan](../superpowers/plans/2026-05-24-direct-routing-infrastructure.md) | [tasks](direct-routing.md) | — |
 | `heyearthproject-3pc0` | Express — Hysteria2 client inbound for premium plans | draft | [prd](../prd/express-routing.prd.md) | [plan](../plan/express-routing.md) | [tasks](express-routing.md) | — |
+| `heyearthproject-ei6j` | Tele2 mobile DPI mitigation v2 (chrome fp + Yandex Cloud SNI) | ready (P1) | [prd](../prd/tele2-mobile-dpi-v2.prd.md) | [plan](../plan/tele2-mobile-dpi-v2.md) | [tasks](tele2-mobile-dpi-v2.md) | — |
 
 ## Как добавить новый эпик
 
