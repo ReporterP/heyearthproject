@@ -188,10 +188,14 @@ func buildClashConfig(userID string) string {
 			flowLine = fmt.Sprintf("\n    flow: %s", flow)
 		}
 
-		// Multi-profile: 3 VLESS configs for different ISP aggressiveness
+		// Multi-profile: 3 VLESS configs for different ISP aggressiveness.
+		// fp diversification: chrome (most-tested), firefox (second-most-tested),
+		// edge (Chromium-based but distinct JA3). Avoid ios/safari — XTLS #5918,
+		// #4852 regressions cause flapping handshake on RU mobile DPI
+		// (research: docs/research/2026-05-27-happ-tele2-tls-handshake.md).
 		profiles := []struct{ name, fp string }{
 			{"HeYearth-Home", "chrome"},
-			{"HeYearth-Mobile", "safari"},
+			{"HeYearth-Mobile", "firefox"},
 			{"HeYearth-Strict", "edge"},
 		}
 		for _, p := range profiles {
