@@ -298,8 +298,12 @@ func SyncXrayConfig() error {
 	// inbound only generated when feature is enabled. Re-uses vlessClientsXHTTP
 	// (same per-user UUIDs, no flow because WebSocket is incompatible with
 	// XTLS Vision, identical rationale to xhttp transport).
+	//
+	// host field is at top level of wsSettings (xray 26.x new syntax — the
+	// old "headers":{"Host":...} pattern is deprecated and breaks validation).
 	if biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
 		cdnWSPath := biz.GetSettingOrDefault("cdn_ws_path", "/cdn-ws")
+		cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag":      "vless-ws-cdn",
 			"listen":   "127.0.0.1",
@@ -312,8 +316,8 @@ func SyncXrayConfig() error {
 			"streamSettings": map[string]interface{}{
 				"network": "ws",
 				"wsSettings": map[string]interface{}{
-					"path":    cdnWSPath,
-					"headers": map[string]interface{}{},
+					"path": cdnWSPath,
+					"host": cdnHost,
 				},
 			},
 			"sniffing": map[string]interface{}{
