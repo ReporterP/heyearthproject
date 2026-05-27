@@ -264,6 +264,33 @@ xhttpFPs := []string{"ios", "safari"}
 				})
 			}
 		}
+
+		// ☁️ Облако (CDN) — VLESS over WebSocket through Cloudflare. Bypasses
+		// per-IP operator blocks (Tele2 flapping, MTS throttling) by routing
+		// user traffic through CF edge IP pool (millions of IPs). Trades Reality
+		// stealth for CF's blanket-blocking immunity. Use when Berëza/Дуб are
+		// blocked at the operator level. Toggle-gated via app_settings.cdn_enabled
+		// for zero-deploy rollback. Priority 10 — displayed last; happ users try
+		// faster Reality profiles first, fall back to Облако if blocked.
+		if canVLESS && biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
+			cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
+			cdnPath := biz.GetSettingOrDefault("cdn_ws_path", "/cdn-ws")
+			if cdnHost != "" {
+				cdnLabel := "☁️ Облако (CDN)"
+				cdnURI := fmt.Sprintf(
+					"vless://%s@%s:443?encryption=none&security=tls&sni=%s&type=ws&host=%s&path=%s&fp=chrome&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+					userVlessUUID, cdnHost, cdnHost, cdnHost,
+					url.QueryEscape(cdnPath),
+					url.PathEscape(cdnLabel))
+				opts = append(opts, &heyearth_v1.ConnectionOption{
+					Uri:                 cdnURI,
+					Protocol:            "vless",
+					Label:               cdnLabel,
+					RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
+					Priority:            10, // displayed last — fallback when Reality direct fails
+				})
+			}
+		}
 	}
 
 	// 2. Hysteria2 «Бамбук» — QUIC/UDP, Wi-Fi only (mobile carriers QoS UDP).
