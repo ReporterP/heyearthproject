@@ -290,22 +290,23 @@ func SyncXrayConfig() error {
 		},
 	}
 
-	// ☁️ vless-ws-cdn — VLESS over WebSocket inbound on loopback :11443 for
+	// ☁️ vless-xhttp-cdn — VLESS over XHTTP inbound on loopback :11443 for
 	// CDN-fronted path. Cloudflare terminates user-side TLS, our nginx vhost
-	// for cdn.hiearth.ru upgrades to WebSocket and proxies here. No security
-	// layer at xray level — TLS already terminated by CF, plain WS arrives
-	// from nginx via loopback. Toggle-gated via app_settings.cdn_enabled —
-	// inbound only generated when feature is enabled. Re-uses vlessClientsXHTTP
-	// (same per-user UUIDs, no flow because WebSocket is incompatible with
-	// XTLS Vision, identical rationale to xhttp transport).
+	// for cdn.hiearth.ru proxies plain HTTP to here. No security layer at
+	// xray level — TLS already terminated by CF.
 	//
-	// host field is at top level of wsSettings (xray 26.x new syntax — the
-	// old "headers":{"Host":...} pattern is deprecated and breaks validation).
+	// XHTTP chosen over WebSocket because xray 26.x deprecates WS ("Please
+	// migrate to XHTTP H2 & H3"). XHTTP also splits up/down streams (packet-up
+	// mode) which plays better with CF's HTTP/2 multiplexing quirks.
+	//
+	// Toggle-gated via app_settings.cdn_enabled — inbound only generated when
+	// feature is enabled. Re-uses vlessClientsXHTTP (same per-user UUIDs, no
+	// flow because XHTTP is incompatible with XTLS Vision).
 	if biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
-		cdnWSPath := biz.GetSettingOrDefault("cdn_ws_path", "/cdn-ws")
+		cdnXHPath := biz.GetSettingOrDefault("cdn_xh_path", "/cdn-xh")
 		cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
 		inbounds = append(inbounds, map[string]interface{}{
-			"tag":      "vless-ws-cdn",
+			"tag":      "vless-xhttp-cdn",
 			"listen":   "127.0.0.1",
 			"port":     11443,
 			"protocol": "vless",
@@ -314,10 +315,11 @@ func SyncXrayConfig() error {
 				"decryption": "none",
 			},
 			"streamSettings": map[string]interface{}{
-				"network": "ws",
-				"wsSettings": map[string]interface{}{
-					"path": cdnWSPath,
+				"network": "xhttp",
+				"xhttpSettings": map[string]interface{}{
+					"path": cdnXHPath,
 					"host": cdnHost,
+					"mode": "packet-up", // CDN-friendly: separate up/down HTTP requests
 				},
 			},
 			"sniffing": map[string]interface{}{

@@ -265,20 +265,25 @@ xhttpFPs := []string{"ios", "safari"}
 			}
 		}
 
-		// ☁️ Облако (CDN) — VLESS over WebSocket through Cloudflare. Bypasses
+		// ☁️ Облако (CDN) — VLESS over XHTTP through Cloudflare. Bypasses
 		// per-IP operator blocks (Tele2 flapping, MTS throttling) by routing
 		// user traffic through CF edge IP pool (millions of IPs). Trades Reality
-		// stealth for CF's blanket-blocking immunity. Use when Berëza/Дуб are
-		// blocked at the operator level. Toggle-gated via app_settings.cdn_enabled
-		// for zero-deploy rollback. Priority 10 — displayed last; happ users try
-		// faster Reality profiles first, fall back to Облако if blocked.
+		// stealth for CF's blanket-blocking immunity.
+		//
+		// XHTTP (not WebSocket) — xray 26.x deprecates WS, recommends XHTTP.
+		// XHTTP packet-up mode separates upstream/downstream into discrete
+		// HTTP requests, plays better with CF's HTTP/2 multiplexing.
+		//
+		// Toggle-gated via app_settings.cdn_enabled. Priority 10 — displayed
+		// last; happ users try faster Reality profiles first, fall back to
+		// Облако if blocked.
 		if canVLESS && biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
 			cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
-			cdnPath := biz.GetSettingOrDefault("cdn_ws_path", "/cdn-ws")
+			cdnPath := biz.GetSettingOrDefault("cdn_xh_path", "/cdn-xh")
 			if cdnHost != "" {
 				cdnLabel := "☁️ Облако (CDN)"
 				cdnURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=tls&sni=%s&type=ws&host=%s&path=%s&fp=chrome&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+					"vless://%s@%s:443?encryption=none&security=tls&sni=%s&type=xhttp&host=%s&path=%s&mode=packet-up&fp=chrome&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 					userVlessUUID, cdnHost, cdnHost, cdnHost,
 					url.QueryEscape(cdnPath),
 					url.PathEscape(cdnLabel))
