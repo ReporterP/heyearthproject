@@ -12,25 +12,25 @@ created: 2026-05-27
 
 ## Фаза 1: Code change (binary deploy)
 
-- [ ] **heyearthproject-9mqz** — T1: Switch Reality/XHTTP fp from ios+safari to chrome+firefox
-  - Файлы: `server/backend/cmd/api/client_api.go:218-265`
-  - Verify: `go build ./cmd/api/...` exit 0; `grep -nE '"ios"\|"safari"' cmd/api/client_api.go` ничего не находит
-  - Commit prefix: `feat(reality): switch URI fp from ios+safari to chrome+firefox`
+- [x] **heyearthproject-9mqz** — T1: Switch Reality/XHTTP fp from ios+safari to chrome+firefox ✓ 2026-05-27
+  - Файлы: `server/backend/cmd/api/client_api.go:218-265` + `subscription_handler.go:192-196` (Clash.Meta YAML emitter — discovered as in-scope sister-change)
+  - Verify: `go build ./cmd/api/...` exit 0; `grep -nE '"ios"|"safari"' cmd/api/{client_api,subscription_handler}.go` returns empty (exit 1)
+  - Commits: `1a6a242` (main: client_api.go), `769625a` (sister: subscription_handler.go HeYearth-Mobile fp safari→firefox)
 
 ## Фаза 2: Production state change
 
-- [ ] **heyearthproject-nuyf** — T2: Hard-switch reality_sni_domain + restart heyearth-api (blocks: 9mqz)
+- [x] **heyearthproject-nuyf** — T2: Hard-switch reality_sni_domain + restart heyearth-api ✓ 2026-05-28
   - Файлы: prod PostgreSQL `app_settings.reality_sni_domain`, prod service `heyearth-api`
   - Verify: `psql -c "SELECT value FROM app_settings WHERE key='reality_sni_domain'"` = `storage.yandexcloud.net`; `systemctl is-active heyearth-api` = `active`
-  - Не code-commit — production state change
+  - Deployed T1 binary via quick_deploy (22MB, 2.4s), UPDATE 1, restart 16:21:49 MSK
 
 ## Фаза 3: Verification
 
-- [ ] **heyearthproject-ywbk** — T3: Verify chain DB → xray config → subscription URI (blocks: nuyf)
-  - Verify a: `jq '.inbounds[] | select(.protocol=="vless") | .streamSettings.realitySettings.dest' /opt/heyearth/xray/config.json` = `storage.yandexcloud.net:443`
-  - Verify b: `systemctl is-active xray.service` = `active`; нет error в journalctl --since '2 min ago'
-  - Verify c: `curl -H 'User-Agent: Happ' /api/v1/user/subscribe/d329def4-...` возвращает 4 vless:// с `sni=storage.yandexcloud.net` и чередующимися `fp=chrome`/`fp=firefox`
-  - Verify d: `openssl s_client -connect storage.yandexcloud.net:443 -servername storage.yandexcloud.net` показывает валидный Yandex CA cert
+- [x] **heyearthproject-ywbk** — T3: Verify chain DB → xray config → subscription URI ✓ 2026-05-28
+  - Verify a: ✓ оба VLESS inbounds `dest=storage.yandexcloud.net:443`, serverNames содержит её
+  - Verify b: ✓ `xray.service` active, нет error/fail/panic за 5 мин
+  - Verify c: ✓ 4 URI — Берёза 1=chrome, Берёза 2=firefox, Дуб 1=chrome, Дуб 2=firefox; все `sni=storage.yandexcloud.net`
+  - Verify d: ✓ TLS probe `storage.yandexcloud.net:443` → Verify return code 0, cert `O=YANDEX LLC, CN=*.storage-1.yandexcloud.net`
 
 - [ ] **heyearthproject-u54t** — T4: E2E test on Tele2 mobile (blocks: ywbk)
   - Interactive с другом пользователя на Tele2 mobile + Happ
@@ -55,4 +55,6 @@ _(пусто — заполнится во время execute если найд�
 - Wire `reality_fingerprint` setting из app_settings в client_api.go — технический долг (auto-tuner пишет, никто не читает)
 
 ## Verification log
-_(заполнится по мере закрытия каждой задачи)_
+- **heyearthproject-9mqz** (T1): [2026-05-27] `go build ./cmd/api/...` exit 0; `grep '"ios"|"safari"'` empty ✓ commits 1a6a242 + 769625a
+- **heyearthproject-nuyf** (T2): [2026-05-28 16:21] quick_deploy 22MB ✓; `UPDATE 1` reality_sni_domain=storage.yandexcloud.net; restart 16:21:49 MSK; api+xray active ✓
+- **heyearthproject-ywbk** (T3): [2026-05-28] xray config dest=storage.yandexcloud.net:443 (both inbounds) ✓; 4 URI chrome/firefox+new SNI ✓; TLS probe code 0 (Yandex LLC) ✓
