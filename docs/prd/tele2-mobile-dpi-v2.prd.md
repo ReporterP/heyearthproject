@@ -2,7 +2,7 @@
 id: tele2-mobile-dpi-v2
 beads_id: heyearthproject-ei6j
 title: Tele2 mobile DPI mitigation v2 (chrome fp + Yandex Cloud SNI)
-status: draft
+status: done
 created: 2026-05-27
 author: alex
 ---
@@ -42,14 +42,14 @@ Research (`docs/research/2026-05-27-happ-tele2-tls-handshake.md`) выявил �
 
 ## Acceptance criteria
 
-- [ ] `cmd/api/client_api.go` строки 230 и 250 эмитят `[]string{"chrome", "firefox"}` вместо `[]string{"ios", "safari"}`
-- [ ] Комментарии выше обоих slice'ов обновлены: убрана устаревшая мотивация про «TSPU таргетит Chrome JA3»; добавлена ссылка на research-документ
-- [ ] `app_settings.reality_sni_domain` в production DB = `storage.yandexcloud.net`
-- [ ] После `RequestXraySync` файл `/opt/heyearth/xray/config.json` содержит для обоих VLESS inbounds: `"dest": "storage.yandexcloud.net:443"` и `"serverNames"` содержит `"storage.yandexcloud.net"`
-- [ ] `xray.service` после reload активен, без crash-loop в `journalctl -u xray.service`
-- [ ] `curl /api/v1/user/subscribe/<test-token>` с UA=Happ возвращает 4 VLESS URI: Берёза 1 = `fp=chrome`, Берёза 2 = `fp=firefox`, Дуб 1 = `fp=chrome`, Дуб 2 = `fp=firefox`. У всех URI `sni=storage.yandexcloud.net`
-- [ ] Пользователь на Tele2 mobile (subscribe_token `d329def4-…`) refresh-ит подписку в Happ → пробует ping → ping проходит **стабильно**, без плавающих ошибок в течение 2+ минут наблюдения
-- [ ] В xray access log за окно теста видны accepted Reality handshakes от его UUID `0feec1d4-…` с реальными destinations (telegram/google/whatsapp), а не только probe-домены
+- [x] `cmd/api/client_api.go` строки 230 и 250 эмитят `[]string{"chrome", "firefox"}` вместо `[]string{"ios", "safari"}` — commit `1a6a242`
+- [x] Комментарии выше обоих slice'ов обновлены: убрана устаревшая мотивация про «TSPU таргетит Chrome JA3»; добавлена ссылка на research-документ — commit `1a6a242` (+ sister fix `769625a` для Clash.Meta emitter)
+- [x] `app_settings.reality_sni_domain` в production DB = `storage.yandexcloud.net` — UPDATE 1 (2026-05-28)
+- [x] После restart файл `/opt/heyearth/xray/config.json` содержит для обоих VLESS inbounds `"dest": "storage.yandexcloud.net:443"` и `"serverNames"` содержит `"storage.yandexcloud.net"` — verified via jq
+- [x] `xray.service` после reload активен, без crash-loop — verified, нет error/fail/panic
+- [x] `curl /api/v1/user/subscribe/<test-token>` с UA=Happ возвращает 4 VLESS URI: Берёза 1=`fp=chrome`, Берёза 2=`fp=firefox`, Дуб 1=`fp=chrome`, Дуб 2=`fp=firefox`, все `sni=storage.yandexcloud.net` — verified
+- [x] Пользователь на Tele2 mobile refresh-ит подписку → подключается стабильно. **Нюанс:** работают только firefox-профили (Берёза 2, Дуб 2); chrome-профили (Берёза 1, Дуб 1) режутся Tele2 Chrome-JA3 DPI. Пользователь использует Берёза 2/Дуб 2 — стабильная связь подтверждена.
+- [x] В xray access log видны accepted Reality handshakes от UUID `0feec1d4-…` с реальными destinations — **272 коннекта за 10 мин** (telegram/wps/office/google) vs ~1/час до фикса
 
 ## Out of scope
 

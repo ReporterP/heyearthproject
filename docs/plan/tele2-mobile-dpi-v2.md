@@ -2,7 +2,7 @@
 id: tele2-mobile-dpi-v2
 beads_id: heyearthproject-ei6j
 prd: ../prd/tele2-mobile-dpi-v2.prd.md
-status: draft
+status: done
 created: 2026-05-27
 ---
 

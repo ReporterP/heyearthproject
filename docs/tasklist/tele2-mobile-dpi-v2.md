@@ -32,19 +32,17 @@ created: 2026-05-27
   - Verify c: ✓ 4 URI — Берёза 1=chrome, Берёза 2=firefox, Дуб 1=chrome, Дуб 2=firefox; все `sni=storage.yandexcloud.net`
   - Verify d: ✓ TLS probe `storage.yandexcloud.net:443` → Verify return code 0, cert `O=YANDEX LLC, CN=*.storage-1.yandexcloud.net`
 
-- [ ] **heyearthproject-u54t** — T4: E2E test on Tele2 mobile (blocks: ywbk)
+- [x] **heyearthproject-u54t** — T4: E2E test on Tele2 mobile ✓ 2026-05-28 PASS
   - Interactive с другом пользователя на Tele2 mobile + Happ
-  - Verify: `journalctl -u xray.service --since '<T_START>' | grep '5f5f66b7-'` показывает 10+ accepted-записей на реальные destinations (telegram/google) за окно теста
-  - Verify: friend report — ping стабильно OK 3/3, google.com открылся, t.me открылся
-  - На успехе — `bd remember` insight для future sessions
+  - Verify: **272 accepted-коннекта за 10 мин** от `5f5f66b7-` (telegram/wps/office/google-analytics) vs ~1/час до фикса
+  - Friend report: **Берёза 2 + Дуб 2 (firefox) работают**. Берёза 1/Дуб 1 (chrome) режутся Tele2 Chrome-JA3 DPI — kept for diversity (desktop/др. операторы)
+  - Finding записан в `bd remember [tele2-ru-mobile-dpi-targets-chrome-utls-ja3]`
 
 ## Side quests / Conditional
 
-- [ ] **heyearthproject-harz** — T5: ROLLBACK (conditional, P0)
-  - Триггер: T3 нашёл xray crash/wrong URI ИЛИ T4 friend report'нул "no improvement"
-  - Action: `UPDATE app_settings SET value='yandex.ru'` + `systemctl restart heyearth-api`
-  - Verify: `jq dest` снова `yandex.ru:443`
-  - Решение про fp-фикс: оставить если partial improvement, revert если регресс
+- [x] **heyearthproject-harz** — T5: ROLLBACK (conditional, P0) — ✓ NOT NEEDED 2026-05-28
+  - Триггер не сработал: T3 чисто, T4 passed. storage.yandexcloud.net IS whitelisted Tele2.
+  - Фикс остаётся в проде.
 
 ## Discovered side quests
 _(пусто — заполнится во время execute если найдём что-то связанное но out-of-scope)_
@@ -58,3 +56,9 @@ _(пусто — заполнится во время execute если найд�
 - **heyearthproject-9mqz** (T1): [2026-05-27] `go build ./cmd/api/...` exit 0; `grep '"ios"|"safari"'` empty ✓ commits 1a6a242 + 769625a
 - **heyearthproject-nuyf** (T2): [2026-05-28 16:21] quick_deploy 22MB ✓; `UPDATE 1` reality_sni_domain=storage.yandexcloud.net; restart 16:21:49 MSK; api+xray active ✓
 - **heyearthproject-ywbk** (T3): [2026-05-28] xray config dest=storage.yandexcloud.net:443 (both inbounds) ✓; 4 URI chrome/firefox+new SNI ✓; TLS probe code 0 (Yandex LLC) ✓
+- **heyearthproject-u54t** (T4): [2026-05-28 16:35] 272 accepted conns/10min from 5f5f66b7 (telegram/wps/office/google) ✓ friend confirms Берёза 2+Дуб 2 (firefox) work on Tele2 ✓
+- **heyearthproject-harz** (T5): [2026-05-28] rollback NOT triggered — fix succeeded, storage.yandexcloud.net whitelisted ✓
+
+## Outcome
+
+**SUCCESS.** Tele2 mobile + Happ restored. Key finding: Tele2 RU DPI targets Chrome uTLS JA3 — fp=firefox profiles (Берёза 2, Дуб 2) work, fp=chrome (Берёза 1, Дуб 1) blocked. SNI=storage.yandexcloud.net (Yandex Cloud ASN) passes Tele2 whitelist. Combined effect: 272 conns/10min vs ~1/hour before. chrome profiles kept for desktop + other carriers (per-user fallback diversity). User decided: leave profile order as-is.
