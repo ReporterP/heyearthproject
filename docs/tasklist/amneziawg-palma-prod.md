@@ -3,7 +3,7 @@ id: amneziawg-palma-prod
 beads_id: heyearthproject-98ng
 plan: ../plan/amneziawg-palma-prod.md
 prd: ../prd/amneziawg-palma-prod.prd.md
-status: ready
+status: in_progress
 created: 2026-06-08
 ---
 
@@ -52,5 +52,13 @@ created: 2026-06-08
 - [ ] Reality (Берёза/Дуб) на Tele2 работает — xray accepted-коннекты идут
 - [ ] Hub→Exit Hysteria2 туннель здоров
 
-## Verification log
-_(заполнится по мере закрытия задач)_
+## Verification log (2026-06-09)
+- **T1** ✓ c33c1e6 — amneziawg-tools built (2.15.0 era), awg-quick oneshot unit, awg0 UP, :51820 listening, ip_forward=1. (deploy required T3 renderer fix first)
+- **T3** ✓ ebb4aba — CPS moved to [Interface] (global, GetServerCPSParams), awg syncconf + cold-start (awg-quick), traffic-limit WHERE. Fixed root cause Palma never came up (CPS-in-[Peer] rejected by `awg setconf`). awg0.conf valid, peers applied.
+- **T2** ✓ 91ecd41/c3d108b/ee393b5 — socks-awg inbound + hev-socks5-tunnel 2.15.0 + policy routing table 100. **Split verified: dzen.ru/mail.ru → direct-freedom (Moscow), ipify → exit-2 (Amsterdam)**, как Happ. Fixed: user-bound rules gotcha (added inboundTag:[socks-awg] split rules); cap-sandbox broke hev (dropped); git tag 2.7.7→2.15.0. peer 10.66.66.2 → awgtun. table main + Reality untouched.
+- **T5** ✓ f259b77 — /api/v1/user/awg-config (401 no-token, gated), amnezia_available flag.
+- **T6** ✓ d70b516 — Пальма card (lazy QR+conf+deeplink), site build OK, deployed.
+- **T7** ✓ — gating SQL (0/250→FALSE, 300/3000→TRUE), peer count 5→4, admin checkbox verified.
+- **T4** ✓ eb9cba5 — awg_stats.go collector (dual-write traffic_stats + traffic_used), started, reads `awg show transfer` (4 peers).
+- **RED LINE held throughout:** Happ subscription = 4 vless / 0 amneziawg; Reality SOCKS 1090 → Amsterdam; table main default unchanged; all 6 services active.
+- **T8** ◐ pending: live AmneziaWG-client money-shot (foreign→Amsterdam, RU→Hub direct, traffic_used grows) — USER-ASSISTED via cabinet config.
