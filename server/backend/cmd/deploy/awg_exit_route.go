@@ -28,8 +28,9 @@ import (
 )
 
 // hevSocks5TunnelVersion pins the upstream git tag (source-only; we
-// git clone --recursive + make). Stable as of rollout.
-const hevSocks5TunnelVersion = "2.7.7"
+// git clone --recursive + make). Verified to exist via git ls-remote
+// (heiher/hev-socks5-tunnel uses bare X.Y.Z tags, no "v" prefix).
+const hevSocks5TunnelVersion = "2.15.0"
 
 // awgXraySocksPort is the loopback SOCKS5 inbound we add to Hub xray in Step 0.
 // AWG egress targets THIS (not Hysteria2 directly) so xray applies its global
@@ -105,11 +106,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Runs as root, no capability sandbox: hev-socks5-tunnel fails to open its
+# config / create the tun under NoNewPrivileges + a narrowed
+# CapabilityBoundingSet (exit 254 "Open awgtun.yaml failed"). Verified that a
+# plain root unit creates awgtun reliably, so we keep it minimal.
 ExecStart=$BIN $CONF
 # Policy routing: ONLY the AWG subnet uses table $TABLE -> awgtun. Idempotent
-# (|| true on add; we never delete table main). rp_filter=2 (loose) so the
-# asymmetric return path via awgtun is not dropped.
-ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do ip link show $TUN >/dev/null 2>&1 && break; sleep 0.5; done; \
+# (route replace + grep-guarded rule add; we never delete table main). Wait up
+# to 10s for hev-socks5-tunnel to create the tun before adding the route.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do ip link show $TUN >/dev/null 2>&1 && break; sleep 0.5; done; \
   sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null; \
   sysctl -w net.ipv4.conf.$TUN.rp_filter=2 >/dev/null 2>&1 || true; \
   ip route replace default dev $TUN table $TABLE; \
@@ -119,9 +124,6 @@ ExecStopPost=/bin/sh -c 'ip rule del from $SUBNET lookup $TABLE 2>/dev/null || t
 Restart=always
 RestartSec=5
 User=root
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
