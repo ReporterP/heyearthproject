@@ -22,12 +22,14 @@ author: alex
 
 ## Цель
 
-Довести Пальму до полностью рабочего прода: пользователь на плане 300₽/3000₽ видит в личном кабинете **дополнительное** (не вытесняющее Reality) подключение AmneziaWG, скачивает конфиг (QR/файл/deeplink), подключается клиентом AmneziaWG, получает заграничный IP через Exit (как Happ), его трафик учитывается в общий лимит подписки, а при истечении подписки или превышении лимита доступ снимается. Админ управляет доступностью через флаг плана. **Текущие подключения (Reality/Happ) не затрагиваются.**
+Довести Пальму до полностью рабочего прода: пользователь на плане 300₽/3000₽ видит в личном кабинете **дополнительное** (не вытесняющее Reality) подключение AmneziaWG, скачивает конфиг (QR/файл/deeplink), подключается клиентом AmneziaWG и получает **split-маршрутизацию как в Happ** — российские сайты напрямую (быстро, РФ IP), заграничные через Exit (Amsterdam, обход блокировок). Его трафик учитывается в общий лимит подписки, а при истечении подписки или превышении лимита доступ снимается. Админ управляет доступностью через флаг плана. **Текущие подключения (Reality/Happ) не затрагиваются.**
+
+**Как достигается split:** AWG-трафик заворачивается (tun2socks) в аддитивный SOCKS5 inbound самого Hub xray, который уже применяет глобальные routing-правила (~20K РФ-доменов + 13K РФ-подсетей → direct-freedom, остальное → exit-balancer). AWG наследует тот же engine что Reality — одна точка истины, без дублирования geoip.
 
 ## User stories
 
 - Как **пользователь на плане 300₽/3000₽**, я хочу видеть в личном кабинете дополнительное подключение AmneziaWG (QR + файл + кнопка «открыть в клиенте»), чтобы подключиться через приложение AmneziaWG как альтернативу Happ.
-- Как **пользователь AmneziaWG**, я хочу выходить в интернет с заграничного IP (как через Happ), чтобы обходить и DPI, и гео-блокировки.
+- Как **пользователь AmneziaWG**, я хочу чтобы трафик маршрутизировался как в Happ — российские сайты напрямую (быстро, с российским IP — госуслуги/банки работают), заграничные через Exit (заграничный IP, обход блокировок), — чтобы получить и скорость на РФ-ресурсах, и обход гео-блокировок.
 - Как **пользователь**, я хочу чтобы мой AWG-трафик и срок подписки учитывались в общий счёт (как в Happ), чтобы лимиты работали честно.
 - Как **админ**, я хочу включать/выключать доступность AmneziaWG для плана через checkbox, чтобы управлять кто имеет доступ.
 - Как **пользователь без доступа по подписке**, я НЕ должен видеть в кабинете блок AmneziaWG вообще.
@@ -41,11 +43,12 @@ author: alex
 - [ ] `net.ipv4.ip_forward=1` включён и persistent
 - [ ] `awg.service` (или `awg-quick@awg0`) активен, переживает рестарт сервера (enabled), не в crash-loop
 
-### Routing через Exit
-- [ ] tun2socks (hev-socks5-tunnel) поднят, upstream `127.0.0.1:1090` (существующий Hysteria2 SOCKS)
-- [ ] `ip rule` для `from 10.66.66.0/24 lookup <table>` + default route через tun2socks в этой таблице
-- [ ] Подключённый AmneziaWG-клиент при `curl ifconfig.me` (или аналог) получает **IP Exit-ноды (Амстердам)**, НЕ Hub (Москва)
-- [ ] DNS-резолв через туннель работает (сайты открываются по имени)
+### Split-routing через xray (как Happ)
+- [ ] В Hub xray добавлен **аддитивный** `socks-awg` SOCKS5 inbound (`127.0.0.1:10808`, loopback) с `sniffing`; Reality inbounds, routing rules и outbounds НЕ тронуты
+- [ ] tun2socks (hev-socks5-tunnel) upstream = xray `socks-awg` (`127.0.0.1:10808`), НЕ Hysteria2 напрямую — xray делает split
+- [ ] `ip rule from 10.66.66.0/24 lookup 100` + default route через tun2socks в table 100; table `main` НЕ тронут
+- [ ] **Split работает (главный критерий):** заграничный сайт через AWG → **Amsterdam Exit IP**; российский сайт (geosite/geoip) → **Hub direct (Москва, 45.150.39.236)**. То есть AWG наследует тот же domain+geoip split что Reality/Happ
+- [ ] DNS-резолв через туннель работает (UDP 53 через SOCKS UDP ASSOCIATE)
 
 ### awg_sync.go фикс
 - [ ] Применение конфига через `awg syncconf awg0 <(awg-quick strip awg0.conf)` (не `wg`)
@@ -82,13 +85,13 @@ author: alex
 - ❌ AmneziaWG на планах дешевле 300₽ (free-trial, 250₽ — выключаем)
 - ❌ Множественные Exit-ноды / выбор страны для AWG (используется тот же Exit что Reality)
 - ❌ Per-protocol раздельный учёт трафика (Reality отдельно, AWG отдельно) — счётчик ОБЩИЙ
-- ❌ Изменение Happ-подписки, `client_api.go` emit-логики, `xray_sync.go`, Hub→Exit Hysteria2 config
+- ❌ Изменение Happ-подписки, `client_api.go` emit-логики, Reality vless-inbounds, xray routing rules/outbounds, Hub→Exit Hysteria2 config. (В `xray_sync.go` добавляется ТОЛЬКО аддитивный `socks-awg` loopback-inbound — Reality-часть не трогается)
 - ❌ AWG над IPv6 (только IPv4 10.66.66.0/24)
 - ❌ Port-hopping для AWG (фиксированный :51820)
 
 ## Риски и open questions
 
-- 🔴 **T2 (routing через Exit) — главный риск.** tun2socks + policy-routing + UDP-через-SOCKS5. Если UDP ASSOCIATE Hysteria2-SOCKS или hev-socks5-tunnel не прокинет UDP/DNS — AWG не получит интернет или будет резолвить мимо. Mitigation: делается изолированно после рабочего L3-интерфейса; Reality-путь (xray→1090) не трогается ни на шаг; откат = снять `ip rule` + остановить tun2socks unit.
+- 🔴 **T2 (split-routing через xray) — главный риск.** Цепочка tun2socks → xray socks-awg inbound → global routing → direct/exit. Риски: (а) глобальные routing-правила (`inboundTag: null`) могут не примениться к новому inbound, если у Reality-inbound'ов есть привязка по тегу — проверено на проде: rules глобальные, должно работать; (б) `sniffing` с `routeOnly` должен корректно извлекать домен из SNI для geosite-split; (в) UDP ASSOCIATE через hev-socks5-tunnel для DNS/QUIC. Mitigation: pre-flight тестирует split на уровне SOCKS (foreign→Amsterdam, RU→Hub) ДО подключения клиента; Reality-путь не трогается; откат = снять `ip rule` + остановить tun2socks (socks-awg inbound безвреден loopback-only).
 - 🔴 **Применение CPS через `awg` требует чтобы версия amneziawg-tools совпадала с протоколом amneziawg-go v0.2.18.** Mitigation: ставить tools той же мажорной версии, проверить `awg show` после первого apply.
 - 🟡 **Загрузка на Hub:** AWG-трафик добавит нагрузку на тот же Hysteria2-туннель что Reality. Премиум-юзеров мало, риск низкий, но мониторим.
 - 🟡 **amneziawg-tools сборка:** если PPA недоступен из РФ — собрать из исходников (нужен make/gcc на Hub). Проверить наличие toolchain.

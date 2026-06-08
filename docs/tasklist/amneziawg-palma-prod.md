@@ -19,9 +19,9 @@ created: 2026-06-08
   - Файлы: `cmd/deploy/amneziawg_hub.go`
   - Verify: `--ssh "ip link show awg0"` UP, `--ssh "ss -ulnp | grep 51820"` listening, `--ssh "awg show awg0"`
 
-- [ ] **heyearthproject-plyd** — T2: Routing через Exit (hev-socks5-tunnel + policy route 10.66.66.0/24) [blocks: T1]
-  - Файлы: `cmd/deploy/awg_exit_route.go` (new), `cmd/deploy/main.go`
-  - Verify: AWG-клиент `curl ifconfig.me` = Amsterdam IP; `ip rule show | grep 10.66.66`; Reality не затронут
+- [ ] **heyearthproject-plyd** — T2: Split-routing через xray (socks-awg inbound + tun2socks + policy route) [blocks: T1]
+  - Файлы: `cmd/api/xray_sync.go` (аддитивный socks-awg inbound), `cmd/deploy/awg_exit_route.go` (new), `cmd/deploy/main.go`
+  - Verify: **split как Happ** — foreign→Amsterdam, RU-сайт→Hub direct (Москва); `ip rule show | grep 10.66.66`; table main не тронут; Reality не затронут
 
 - [ ] **heyearthproject-5ol2** — T3: Фикс awg_sync.go (wg→awg syncconf, real cold-start, traffic-limit WHERE) [blocks: T2]
   - Файлы: `cmd/api/awg_sync.go`

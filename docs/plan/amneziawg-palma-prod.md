@@ -19,20 +19,21 @@ created: 2026-06-08
 ## 🔴 RED LINE — invariants every task must preserve
 
 - **Happ subscription** (`client_api.go`, `subscription_handler.go`) emits the SAME 4 Reality URIs — `amneziawg://` stays commented out (Happ can't parse it).
-- **Reality / xray / Hub→Exit Hysteria2** config is NOT modified. AWG becomes a SECOND consumer of the existing SOCKS:`1088+exitID` tunnel; the Reality path (xray → that SOCKS → Exit) is untouched.
+- **Reality inbounds, xray routing rules, all outbounds, and Hub→Exit Hysteria2** are NOT modified. T2 adds ONE *additive* loopback inbound to xray (`socks-awg`, 127.0.0.1:10808) that AWG feeds into; it inherits the existing GLOBAL routing rules (`inboundTag: null`) so AWG gets the same RU-direct / rest-Exit split as Reality. The Reality vless inbounds and the Hysteria2 outbound are untouched.
 - **Policy routing is scoped to `10.66.66.0/24` only** — never a change to the main routing table or a global default route.
 - Every task carries a regression check; T8 has explicit RED-LINE evidence (4 Reality URIs / 0 amneziawg in Happ sub; xray `accepted` still flowing).
 
 ## Task order & dependency
 
-T1 (interface up) → T2 (egress via Exit) → T3 (apply bug + enforcement) → T4 (traffic collector) → T5 (endpoint) → T6 (cabinet UI) → T7 (gating + admin verify) → T8 (deploy everything + E2E). T1-T2 are Hub infra (deploy-time). T3-T6 are backend/frontend code. T7 is data+verify. T8 ships and proves it. Backend tasks (T3,T4,T5) can be coded then deployed together in T8; Hub infra (T1,T2) deploys via `--setup-awg`.
+T1 (interface up) → T2 (split-routing via xray socks-awg) → T3 (apply bug + enforcement) → T4 (traffic collector) → T5 (endpoint) → T6 (cabinet UI) → T7 (gating + admin verify) → T8 (deploy everything + E2E). T2 has a code part (`socks-awg` inbound in xray_sync.go — deploys with the backend binary) AND a deploy part (`--setup-awg` installs tun2socks); the xray inbound must be live (heyearth-api restarted → xray config regenerated) BEFORE tun2socks dials 10808. T3-T6 are backend/frontend code. T7 is data+verify. T8 ships and proves it.
 
 ## File map
 
 | File | Task | Change |
 |------|------|--------|
 | `server/backend/cmd/deploy/amneziawg_hub.go` | T1 | install amneziawg-tools, `awg-quick up`, ip_forward, unit rewrite |
-| `server/backend/cmd/deploy/awg_exit_route.go` (new) | T2 | hev-socks5-tunnel + policy routing via Exit SOCKS |
+| `server/backend/cmd/api/xray_sync.go` | T2 | additive `socks-awg` SOCKS5 inbound (split entry point — RU direct / rest Exit) |
+| `server/backend/cmd/deploy/awg_exit_route.go` (new) | T2 | hev-socks5-tunnel → xray socks-awg + policy routing |
 | `server/backend/cmd/deploy/main.go` | T2 | wire `setupAWGExitRoute` into `case "setup-awg"` |
 | `server/backend/cmd/api/awg_sync.go` | T3 | `wg`→`awg` apply, real cold-start, traffic-limit WHERE |
 | `server/backend/cmd/api/awg_stats.go` (new) | T4 | per-peer traffic collector (dual-write) |
@@ -466,38 +467,147 @@ Expected: one commit created touching only `amneziawg_hub.go`.
 
 Run: `git show --stat HEAD`
 Expected: `1 file changed`, path `server/backend/cmd/deploy/amneziawg_hub.go`, and the trailer block (`Beads: heyearthproject-98ng (T1)` + `Co-Authored-By: Claude Opus 4.7 (1M context)`) visible.
-### Task 2: Route AmneziaWG egress through Exit (tun2socks + policy routing)
+### Task 2: Route AmneziaWG egress through xray (split-routing — RU direct / rest via Exit, как Happ)
 
 > **Beads:** `heyearthproject-98ng (T2)` — hardest/riskiest task of Palma rollout.
 >
-> **Tool chosen:** **hev-socks5-tunnel** (`github.com/heiher/hev-socks5-tunnel`). Justification (1 sentence): it is the only widely-used userspace TUN→SOCKS5 forwarder that relays **both TCP and UDP through a single SOCKS5 upstream via UDP ASSOCIATE** (config key `socks5.udp: 'udp'`), which Hysteria2's SOCKS5 supports — so AWG clients' DNS (UDP 53) and QUIC all reach Amsterdam without a second UDP-handling daemon (unlike redsocks, which is TCP-only).
+> **Approach (optimal — reuses the Hub's existing xray routing).** Hub xray already
+> applies GLOBAL routing rules (`inboundTag: null`, verified on prod) that send
+> ~20178 RU domains + 13080 RU IP-ranges to the `direct-freedom` outbound (egress
+> straight from the Hub, Moscow) and everything else to the `exit-balancer`
+> (Amsterdam via Hysteria2). **This is exactly Happ's split-routing**, by domain AND
+> geoip. So instead of forcing ALL AWG traffic to the Exit, we add ONE additive
+> SOCKS5 inbound to Hub xray and feed AWG into it — AWG then inherits the identical
+> split: Russian sites go **direct** (fast, Russian IP — gosuslugi/banks/Yandex work),
+> foreign sites egress via **Amsterdam** (bypass blocks). One routing engine, one
+> source of truth, no geoip duplication.
 >
-> **What we build:** a NEW deploy file `server/backend/cmd/deploy/awg_exit_route.go` exposing `setupAWGExitRoute(client, cfg)`, wired into `case "setup-awg":` so a single `--setup-awg` provisions AWG **and** its egress route. Mirrors the SSH-heredoc + WARN-on-error style of `amneziawg_hub.go`.
+> **Why not feed AWG straight into Hysteria2 SOCKS (the naive «all-to-Exit»):** that
+> would tunnel even Russian sites through Amsterdam — slower, and RU-IP-gated services
+> (banks, gosuslugi) break. Domain-level split on a pure-L3 WireGuard is impossible on
+> the client; doing it server-side via xray is the only way to match Happ.
+>
+> **Tool chosen:** **hev-socks5-tunnel** (`github.com/heiher/hev-socks5-tunnel`) — the
+> userspace TUN→SOCKS5 forwarder that relays **both TCP and UDP through one SOCKS5
+> upstream via UDP ASSOCIATE** (`socks5.udp: 'udp'`), so AWG clients' DNS (UDP 53) and
+> QUIC traverse it (unlike redsocks, TCP-only). Its upstream is the new **xray** SOCKS5
+> inbound `127.0.0.1:10808` — NOT Hysteria2 directly. **xray does the split.**
+>
+> **What we build:** (a) Step 0 — an additive `socks-awg` inbound in `xray_sync.go`;
+> (b) Step 1+ — `server/backend/cmd/deploy/awg_exit_route.go` exposing
+> `setupAWGExitRoute(client, cfg)` (hev-socks5-tunnel → xray SOCKS + policy routing),
+> wired into `case "setup-awg":`. Mirrors `amneziawg_hub.go`'s SSH-heredoc style.
 
 ---
 
 #### RED LINE (do not violate)
 
-- Reality's path `xray → 127.0.0.1:1090 → Hysteria2 → Exit` MUST NOT change. tun2socks is a **second, independent** consumer of the same SOCKS5 — it only *reads* from it, never reconfigures Hysteria2.
-- Policy routing scopes **only** `10.66.66.0/24` into a dedicated table (`100`). NEVER add/replace a default route in table `main`. NEVER touch Hub's own egress or Xray's routing.
-- The tun device (`awgtun`, `198.18.0.1/15` link-local-ish RFC2544 benchmark range — chosen so it cannot collide with `10.66.66.0/24`, Hub LAN, or Hysteria2's `192.168.x` mux) is referenced ONLY by table `100`.
+- Hub xray gets **ONE additive inbound** (`socks-awg`, `listen 127.0.0.1`, loopback-only). Reality inbounds (`vless-reality`, `vless-xhttp`, `shadowsocks`), the global routing rules, and ALL outbounds are UNCHANGED — the new inbound merely inherits the existing global rules (`inboundTag: null`). This is additive, not a rewrite of the Reality path.
+- Reality's path `xray → Hysteria2 → Exit` MUST NOT change. AWG rides the SAME xray routing engine through a separate loopback inbound.
+- Policy routing scopes **only** `10.66.66.0/24` into a dedicated table (`100`). NEVER add/replace a default route in table `main`. NEVER touch Hub's own egress.
+- The tun device (`awgtun`, `198.18.0.1/15` RFC2544 benchmark range — cannot collide with `10.66.66.0/24`, Hub LAN, or Hysteria2's `192.168.x` mux) is referenced ONLY by table `100`.
 
 ---
 
-#### Pre-flight: confirm the LIVE egress SOCKS port (critical — it is NOT hardcoded 1090)
+#### Step 0 — Add an additive SOCKS5 inbound to Hub xray (the split entry point)
 
-The Hub's Hysteria2-server outbound SOCKS is dynamic: `1088 + exitID` (shared mode, the per-exit `hysteria2-client-<id>.service`), or `1091` (dedicated mode, `hysteria2-client-express.service`), or `1090` (N=0 fallback). See `cmd/api/hysteria2_sync.go:259-264` and `cmd/api/xray_sync.go:844`. tun2socks MUST target the SAME port Reality currently uses, else AWG egress silently fails-closed.
+This is the inbound `tun2socks` feeds into. Because Hub xray's routing rules are global (`inboundTag: null`), traffic entering here is split RU-direct / rest-Exit automatically — no per-inbound rule needed. `sniffing` is mandatory: it recovers the destination domain from the TLS SNI / HTTP Host so the **geosite** (domain) rules fire, not just geoip.
 
-- [ ] **Discover the live SOCKS port** Xray's Hysteria2 outbound actually dials:
+**Files:** Modify `server/backend/cmd/api/xray_sync.go` — the `inbounds := []map[string]interface{}{...}` slice (starts ~line 213; `vless-reality`, `vless-xhttp`, `shadowsocks` entries each already carry a `sniffing` block).
+
+- [ ] **Step 0.1: Read the current inbound slice + the api-in append pattern**
   ```bash
-  go run ./cmd/deploy --ssh 'ss -ltnp | grep -E "127.0.0.1:(108[0-9]|109[0-9])" ; echo "---hysteria client units---" ; systemctl list-units "hysteria2-client*" --no-legend'
+  cd C:/Users/alex/Documents/heyearthproject/server/backend
+  sed -n '213,300p' cmd/api/xray_sync.go      # the literal inbounds slice
+  sed -n '590,600p' cmd/api/xray_sync.go       # how api-in is appended (mirror this append style)
   ```
-  Expected (current single-exit prod, exit ID=2): a line `LISTEN 0 ... 127.0.0.1:1090 ... hysteria` and unit `hysteria2-client-2.service` (or `hysteria2-client-express.service` on :1091 if 2+ exits). **Record this port** — call it `$SOCKS_PORT`. The diagnosis earlier showed `LISTEN 127.0.0.1:1090 hysteria`, so the default below is `1090`; if discovery shows `1091`, pass `AWG_EXIT_SOCKS_PORT=1091`.
-- [ ] **Confirm that port already egresses to Amsterdam** (baseline, proves SOCKS is healthy before we attach to it):
+  Expected: the slice literal with `"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}}` on the vless entries; `api-in` appended later via `inbounds = append(inbounds, map[string]interface{}{...})`.
+
+- [ ] **Step 0.2: Append the `socks-awg` inbound (mirror the api-in append, place it right after the api-in append block ~line 595)**
+
+OLD (the api-in append, ~lines 591-595 — quote the real lines you read in 0.1):
+```go
+	// dokodemo-door inbound для gRPC API доступа к статистике
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag": "api-in", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door",
+```
+
+NEW — leave the api-in append exactly as-is, and ADD this block immediately after it closes (after the `})` that ends the api-in append; match the real closing line):
+```go
+	// SOCKS5 inbound for AmneziaWG (Palma) egress. AWG's tun2socks
+	// (hev-socks5-tunnel) dials this on loopback; traffic then flows through
+	// the SAME global routing rules as Reality (inboundTag: null) → RU domains
+	// + RU geoip go to direct-freedom (Hub Moscow), everything else to the
+	// exit-balancer (Amsterdam). sniffing recovers the domain from TLS SNI /
+	// HTTP Host so geosite (domain) rules fire, matching Happ's split.
+	// Loopback-only (127.0.0.1) — never exposed to the network.
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag":      "socks-awg",
+		"listen":   "127.0.0.1",
+		"port":     10808,
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"auth": "noauth",
+			"udp":  true,
+			"ip":   "127.0.0.1",
+		},
+		"sniffing": map[string]interface{}{
+			"enabled":      true,
+			"destOverride": []string{"http", "tls", "quic"},
+			"routeOnly":    true,
+		},
+	})
+```
+
+> `routeOnly: true` makes sniffing affect ROUTING only (pick direct vs exit by domain) without rewriting the dialled address — the connection still dials the original IP, we just classify it. `udp: true` carries DNS (53) + QUIC so name-based rules and UDP apps work.
+
+- [ ] **Step 0.3: Build**
   ```bash
-  go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:1090 https://api.ipify.org ; echo'
+  cd C:/Users/alex/Documents/heyearthproject/server/backend
+  go build ./cmd/api/...
+  echo "BUILD_EXIT=$?"
   ```
-  Expected: the **Amsterdam Exit IP** (NOT `45.150.39.236`). If this prints the Hub IP or times out, STOP — the tunnel is broken upstream; fixing tun2socks won't help. (Note `--socks5-hostname` so DNS resolves Exit-side, matching how AWG DNS will behave.)
+  Expected: `BUILD_EXIT=0`.
+
+- [ ] **Step 0.4: Commit (the xray inbound is deployed with the T8 backend push; commit now so it's atomic with the rest)**
+  ```bash
+  cd C:/Users/alex/Documents/heyearthproject
+  git add server/backend/cmd/api/xray_sync.go
+  git commit -m "$(cat <<'EOF'
+feat(palma): additive socks-awg inbound on Hub xray for split egress
+
+AWG's tun2socks dials this loopback SOCKS5 (127.0.0.1:10808); traffic then
+inherits xray's existing GLOBAL routing rules (inboundTag:null) — RU domains
++ RU geoip → direct-freedom (Hub Moscow), rest → exit-balancer (Amsterdam).
+Gives AmneziaWG the same domain+geoip split as Reality/Happ. Additive only:
+Reality inbounds, routing rules, and outbounds are untouched.
+
+Beads: heyearthproject-98ng (T2)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+EOF
+)"
+  ```
+
+---
+
+#### Pre-flight: confirm the xray split is live before attaching AWG
+
+The egress now targets xray's `socks-awg` inbound (127.0.0.1:10808). Verify (after the Step-0 binary is deployed in T8) that xray both exposes it AND splits correctly:
+
+- [ ] **Confirm the socks-awg inbound is listening:**
+  ```bash
+  go run ./cmd/deploy --ssh 'ss -ltnp | grep 127.0.0.1:10808 ; jq -r ".inbounds[] | select(.tag==\"socks-awg\") | {tag,port,listen}" /opt/heyearth/xray/config.json'
+  ```
+  Expected: a `LISTEN 127.0.0.1:10808` line and the inbound present in the generated config.
+- [ ] **Confirm xray splits a foreign dest to Amsterdam and a RU dest direct, THROUGH the new inbound:**
+  ```bash
+  # Foreign → must be Amsterdam Exit IP:
+  go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org ; echo'
+  # RU site → must be the Hub IP 45.150.39.236 (direct-freedom), NOT Amsterdam:
+  go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 https://api-maps.yandex.ru >/dev/null && curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 "https://yandex.ru" -o /dev/null -w "%{remote_ip}\n"'
+  ```
+  Expected: the foreign curl returns the **Amsterdam Exit IP**; the Yandex `remote_ip` resolves to a **Yandex/RU address reached directly** (proving RU traffic took `direct-freedom`, not the Exit). If both go to Amsterdam, the global rules aren't applying to the new inbound — STOP and check `routeOnly`/sniffing. (This pair is the split money-shot at the SOCKS layer, before the client even connects.)
 
 ---
 
@@ -512,17 +622,19 @@ package main
 // AmneziaWG egress router (Palma — Task 2).
 //
 // By default AWG peers in 10.66.66.0/24 (awg0) would NAT out of the Hub =
-// Russian IP. We instead route ONLY that subnet through the SAME Hysteria2
-// SOCKS5 (127.0.0.1:<port>) that Reality uses, so AWG egresses via the Exit
-// node (Amsterdam) = foreign IP, consistent with Happ/Reality.
+// Russian IP. We instead route ONLY that subnet into the Hub's own xray via
+// a loopback SOCKS5 inbound (127.0.0.1:10808, added in Step 0). xray then
+// applies its GLOBAL split routing — RU domains+geoip → direct-freedom (Hub
+// Moscow), everything else → exit-balancer (Amsterdam) — so AWG inherits the
+// same per-site split as Reality/Happ: Russian sites direct, foreign via Exit.
 //
 // Mechanism: hev-socks5-tunnel (userspace TUN->SOCKS5, TCP+UDP via SOCKS5
 // UDP ASSOCIATE) on tun device `awgtun`, plus policy routing:
 //   ip rule add from 10.66.66.0/24 lookup 100
 //   ip route add default dev awgtun table 100
 //
-// RED LINE: never touches table `main`; Reality's xray->1090->hysteria path
-// is untouched. tun2socks is a SECOND, read-only consumer of SOCKS5.
+// RED LINE: never touches table `main`; Reality's xray->Hysteria2->Exit path
+// is untouched. tun2socks feeds xray's additive socks-awg inbound only.
 //
 // Mirrors amneziawg_hub.go: SSH-heredoc, idempotent, WARN-on-error.
 
@@ -537,11 +649,11 @@ import (
 // git clone --recursive + make). Stable as of rollout.
 const hevSocks5TunnelVersion = "2.7.7"
 
-// awgEgressSocksPort is the Hysteria2-server outbound SOCKS5 port that
-// Reality currently uses (1088+exitID; 1090 in current single-exit prod).
-// Overridable via AWG_EXIT_SOCKS_PORT in deploy env so we follow shared(1090)
-// vs dedicated(1091) without a code change. See cmd/api/hysteria2_sync.go.
-const awgEgressDefaultSocksPort = 1090
+// awgXraySocksPort is the loopback SOCKS5 inbound we add to Hub xray in Step 0.
+// AWG egress targets THIS (not Hysteria2 directly) so xray applies its global
+// split routing (RU → direct-freedom, rest → exit-balancer). Fixed value — it's
+// our own inbound, not the dynamic per-exit Hysteria2 port.
+const awgXraySocksPort = 10808
 
 const (
 	awgTunDevice  = "awgtun"
@@ -555,10 +667,9 @@ const (
 func setupAWGExitRoute(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[awg-route] Настройка egress AmneziaWG через Exit-ноду (tun2socks + policy routing)...")
 
-	socksPort := cfg.env.get("AWG_EXIT_SOCKS_PORT", "")
-	if strings.TrimSpace(socksPort) == "" {
-		socksPort = fmt.Sprintf("%d", awgEgressDefaultSocksPort)
-	}
+	// Egress target is our own xray socks-awg inbound (Step 0), which performs
+	// the RU-direct / rest-Exit split. Fixed port, no env override needed.
+	socksPort := fmt.Sprintf("%d", awgXraySocksPort)
 
 	script := `set -e
 
@@ -726,34 +837,45 @@ echo "[awg-route] Setup complete."
   ```
   Expected: `ip rule` lists `from 10.66.66.0/24 lookup 100`; table 100 shows `default dev awgtun`; **table main default is the ORIGINAL Hub default (`default via <hub-gw> dev eth0`)**, NOT awgtun. (This line is the RED-LINE guard: if `awgtun` appears in table main, STOP and roll back.)
 
-#### Step 6 — Money-shot: AWG client egresses via Amsterdam
+#### Step 6 — Money-shot: AWG client gets the SAME split as Happ (foreign→Amsterdam, RU→direct)
 
-- [ ] On a device connected to AmneziaWG (peer in `10.66.66.0/24`), run:
+This is the proof the optimal split works end-to-end. On a device connected to AmneziaWG (peer in `10.66.66.0/24`):
+
+- [ ] **Foreign site → Amsterdam Exit IP:**
   ```bash
   curl -s https://api.ipify.org ; echo
   curl -s https://ifconfig.me ; echo
   ```
-  Expected: BOTH return the **Exit/Amsterdam IP** — the SAME IP that the Step-0 baseline `--socks5-hostname` curl returned — **NOT** the Hub IP `45.150.39.236`.
-- [ ] DNS goes through the tunnel too (proves UDP 53 over SOCKS UDP ASSOCIATE):
+  Expected: BOTH return the **Exit/Amsterdam IP** — the SAME IP the pre-flight `--socks5-hostname 127.0.0.1:10808` foreign curl returned — **NOT** the Hub IP `45.150.39.236`.
+- [ ] **Russian site → direct (Hub Moscow), NOT Amsterdam** — this is what makes it «как Happ»:
+  ```bash
+  # ipinfo via a RU-geosite/geoip dest: check the apparent egress for a RU service.
+  # 2ip.ru reports your visible IP; reached over a RU-routed path it should show the
+  # Hub (45.150.39.236), not the Amsterdam Exit.
+  curl -s "https://2ip.ru/" -o /dev/null -w "reached RU site, egress via Hub expected\n"
+  curl -s https://api.ipify.org ; echo   # contrast: still Amsterdam for foreign
+  ```
+  Expected: Russian/geosite destinations are reached over `direct-freedom` (Hub Moscow IP 45.150.39.236 visible to RU sites), while foreign destinations stay on the Amsterdam Exit. If a RU site shows the Amsterdam IP, the split isn't applying — re-check the Step-0 pre-flight Yandex `remote_ip` test.
+- [ ] **DNS through the tunnel (UDP 53 over SOCKS UDP ASSOCIATE):**
   ```bash
   # On the AWG client (DNS in its .conf, e.g. 1.1.1.1):
-  curl -s https://api.ipify.org/?format=json ; echo      # name resolution must succeed
-  nslookup api.ipify.org                                  # should resolve via the conf DNS, no timeout
+  nslookup api.ipify.org    # resolves via conf DNS, no timeout
+  curl -s https://api.ipify.org/?format=json ; echo   # name resolution succeeds
   ```
-  Expected: resolution succeeds and the IP is still Amsterdam. (If TCP worked but DNS hangs, the `udp: 'udp'` path is the suspect — re-check Step 1 config and `journalctl -u awg-tun2socks`.)
+  Expected: resolution succeeds. (If TCP worked but DNS hangs, the `udp: 'udp'` path is the suspect — re-check Step 1 config and `journalctl -u awg-tun2socks`.)
 
 #### Step 7 — Confirm Reality is UNCHANGED (RED-LINE regression check)
 
-- [ ] Reality's SOCKS path still egresses Amsterdam (must equal the Step-0 baseline byte-for-byte):
+- [ ] Reality's own Hysteria2 SOCKS path still egresses Amsterdam (unchanged — Reality dials Hysteria2 directly, not our new xray inbound):
   ```bash
   go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:1090 https://api.ipify.org ; echo'
   ```
-  Expected: same Amsterdam IP as Step 0 — tun2socks attaching as a second consumer did not disturb it.
-- [ ] Xray still accepting (quick log sanity — no new SOCKS-related errors):
+  Expected: Amsterdam IP — adding the `socks-awg` inbound + tun2socks did not disturb Reality's path (the new inbound only ADDS an entry point; Reality's vless inbounds and the Hysteria2 outbound are untouched).
+- [ ] Xray still accepting Reality, and the new inbound didn't break the config (quick log sanity):
   ```bash
-  go run ./cmd/deploy --ssh 'journalctl -u heyearth-api -n 5 --no-pager ; echo "---xray---" ; tail -n 5 /var/log/xray/access.log 2>/dev/null || journalctl -u xray -n 5 --no-pager'
+  go run ./cmd/deploy --ssh 'systemctl is-active xray ; journalctl -u xray -n 8 --no-pager | grep -iE "accepted|error|failed" | tail'
   ```
-  Expected: recent `accepted` lines (or normal log flow), no spike of `failed to dial ... 127.0.0.1:1090` errors introduced by our change.
+  Expected: `active`; recent `accepted` lines flowing; no spike of new errors after the `socks-awg` inbound was added.
 - [ ] `go run ./cmd/deploy --status`
   Expected: heyearth-api, xray, hysteria2-server, awg, and (newly) awg-tun2socks all healthy.
 
@@ -762,20 +884,25 @@ echo "[awg-route] Setup complete."
 - [ ] Stage + commit on a feature branch (branch first if on `main`):
   ```bash
   git add server/backend/cmd/deploy/awg_exit_route.go server/backend/cmd/deploy/main.go
-  git commit -m "feat(palma): route AmneziaWG egress through Exit via hev-socks5-tunnel + policy routing
+  git commit -m "$(cat <<'EOF'
+feat(palma): AmneziaWG egress via xray split-routing (hev-socks5-tunnel)
 
-AWG subnet 10.66.66.0/24 now egresses through the same Hysteria2 SOCKS5
-(127.0.0.1:1090) Reality uses, so Palma clients get the Amsterdam Exit IP
-instead of Hub Moscow NAT. Userspace TUN->SOCKS5 (TCP+UDP via UDP ASSOCIATE)
-on awgtun; policy routing scopes table 100 to the AWG subnet only — Reality's
-xray->1090->Hysteria2 path and table main are untouched.
+AWG subnet 10.66.66.0/24 is policy-routed into the Hub's own xray through
+a loopback socks-awg inbound (127.0.0.1:10808), so it inherits xray's GLOBAL
+split: RU domains+geoip → direct-freedom (Hub Moscow), rest → exit-balancer
+(Amsterdam). Same per-site behaviour as Happ — Russian sites direct (fast,
+RU IP), foreign sites via Exit. Userspace TUN->SOCKS5 (TCP+UDP via UDP
+ASSOCIATE) on awgtun; table 100 scoped to the AWG subnet only — table main
+and Reality's xray->Hysteria2 path untouched.
 
-Wired into --setup-awg. Verified: connected AWG client curl ifconfig.me
-returns Exit IP; Reality SOCKS curl unchanged; table main default intact.
+Wired into --setup-awg. Verified: AWG client foreign curl = Amsterdam,
+RU site = Hub direct; Reality SOCKS curl unchanged; table main intact.
 
 Beads: heyearthproject-98ng (T2)
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+EOF
+)"
   ```
 
 ---
@@ -800,6 +927,7 @@ Removing the egress route reverts AWG peers to NAT-out-of-Hub (Russian IP) but d
   ```bash
   go run ./cmd/deploy --ssh 'ip rule show | grep "lookup 100" || echo "rule gone (ok)"; ip route show table 100 || echo "table 100 empty (ok)"; ip route show table main default'
   ```
+- [ ] The Step-0 `socks-awg` xray inbound is loopback-only and harmless once tun2socks is gone (nothing dials it). Leave it, OR for a full teardown `git revert` the Step-0.4 commit and redeploy the backend. No urgency — it never accepts non-loopback traffic.
 ### Task 3: Fix awg_sync.go — apply via awg, real cold-start, traffic enforcement
 
 **File:** `server/backend/cmd/api/awg_sync.go` (single file, 318 lines)
@@ -2044,7 +2172,7 @@ bd remember "AmneziaWG 🌴 Пальма (epic heyearthproject-98ng): Hub :51820
 
 **Spec coverage:**
 - PRD «Инфраструктура (Hub)» → T1 (amneziawg-tools, awg-quick up, ip_forward, :51820, enabled) ✓
-- PRD «Routing через Exit» → T2 (hev-socks5-tunnel, ip rule 10.66.66.0/24, money-shot Amsterdam IP, DNS) ✓
+- PRD «Routing через Exit» → T2 (split-routing «как Happ»: additive xray `socks-awg` inbound + hev-socks5-tunnel + ip rule 10.66.66.0/24; money-shot: foreign→Amsterdam, RU→Hub direct; DNS over UDP ASSOCIATE) ✓
 - PRD «awg_sync.go фикс» → T3 (`awg syncconf`, real cold-start, traffic-limit WHERE) ✓
 - PRD «Traffic accounting» → T4 (awg_stats.go, dual-write traffic_stats + traffic_used, shared limit) ✓
 - PRD «Личный кабинет» → T5 (`amnezia_available` + `/awg-config` gated 403) + T6 (additive card, QR+file+deeplink+client link, hidden if no access) ✓
