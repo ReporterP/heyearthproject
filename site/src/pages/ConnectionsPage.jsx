@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getConnections, getDownloads, getSubscribeLink } from '../api/user.js'
+import { getProfile, getConnections, getDownloads, getSubscribeLink, getAwgConfig } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
@@ -58,6 +58,12 @@ export default function ConnectionsPage() {
 
   const canConnect = connections?.can_connect
   const vlessReality = connections?.vless_reality || ''
+  const amneziaAvailable = connections?.amnezia_available
+
+  // Palma (AmneziaWG) — lazy-loaded config, only fetched when the card expands.
+  const [awg, setAwg] = useState(null)
+  const [awgLoading, setAwgLoading] = useState(false)
+  const [awgError, setAwgError] = useState('')
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -65,6 +71,33 @@ export default function ConnectionsPage() {
       setCopiedField(field)
       setTimeout(() => setCopiedField(''), 2000)
     }
+  }
+
+  async function loadAwg() {
+    if (awg || awgLoading) return // fetch once
+    setAwgLoading(true)
+    setAwgError('')
+    try {
+      const data = await getAwgConfig(token)
+      setAwg(data)
+    } catch (e) {
+      setAwgError(e.message || 'Не удалось загрузить конфигурацию')
+    } finally {
+      setAwgLoading(false)
+    }
+  }
+
+  function downloadAwgConf() {
+    if (!awg?.config_text) return
+    const blob = new Blob([awg.config_text], { type: 'text/plain' })
+    const href = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = href
+    a.download = 'palma.conf'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(href)
   }
 
   /* ─── Loading ─── */
@@ -212,6 +245,97 @@ export default function ConnectionsPage() {
                   <details className="mt-3">
                     <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код подписки</summary>
                     <img src={qrUrl(subscribeLink.subscribe_url)} alt="QR" className="mt-2 rounded-lg bg-white p-2 w-[180px] h-[180px]" loading="lazy" />
+                  </details>
+                </div>
+              )}
+
+              {/* ─── Пальма (AmneziaWG) — only for amnezia_wg_enabled plans ─── */}
+              {amneziaAvailable && (
+                <div className="p-4 rounded-xl bg-gradient-to-br from-emerald-500/[0.06] to-cyan-500/[0.04] border border-emerald-500/15 mb-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-xs font-bold">🌴 Пальма</span>
+                    <span className="text-[10px] text-text-secondary">AmneziaWG · максимальная маскировка</span>
+                  </div>
+                  <p className="text-xs text-text-secondary mb-3">
+                    Отдельный протокол для приложения AmneziaWG. Скачайте конфиг или отсканируйте QR-код.
+                  </p>
+
+                  <details className="group" onToggle={(e) => { if (e.currentTarget.open) loadAwg() }}>
+                    <summary className="inline-flex items-center gap-1.5 text-sm text-emerald-300 cursor-pointer hover:text-emerald-200 transition select-none">
+                      <svg className="w-4 h-4 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                      Показать конфигурацию
+                    </summary>
+
+                    <div className="mt-4">
+                      {awgLoading && (
+                        <div className="flex items-center gap-2 text-xs text-text-secondary">
+                          <div className="w-4 h-4 rounded-full border-2 border-emerald-400/30 border-t-emerald-400 animate-spin" />
+                          Загрузка конфигурации...
+                        </div>
+                      )}
+
+                      {awgError && (
+                        <p className="text-xs text-red-400">{awgError}</p>
+                      )}
+
+                      {awg?.config_text && (
+                        <div className="space-y-4">
+                          <div className="flex flex-col sm:flex-row gap-4 items-start">
+                            <img
+                              src={qrUrl(awg.config_text)}
+                              alt="QR конфигурации Пальмы"
+                              className="rounded-lg bg-white p-2 w-[180px] h-[180px] flex-shrink-0"
+                              loading="lazy"
+                            />
+                            <div className="flex-1 min-w-0">
+                              {awg.endpoint && (
+                                <p className="text-xs text-text-secondary mb-1">
+                                  Сервер: <code className="font-mono text-text-primary">{awg.endpoint}</code>
+                                </p>
+                              )}
+                              {awg.ip && (
+                                <p className="text-xs text-text-secondary mb-3">
+                                  Ваш IP: <code className="font-mono text-text-primary">{awg.ip}</code>
+                                </p>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  onClick={downloadAwgConf}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 transition"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                  </svg>
+                                  Скачать .conf
+                                </button>
+                                {awg.deeplink && (
+                                  <a
+                                    href={awg.deeplink}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium glass hover:bg-white/10 transition"
+                                  >
+                                    Открыть в AmneziaWG
+                                  </a>
+                                )}
+                                <CopyButton text={awg.config_text} label="Копировать конфиг" />
+                              </div>
+                              <a
+                                href="https://github.com/amnezia-vpn/amnezia-client/releases"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 mt-3 text-xs text-brand-light hover:text-accent transition"
+                              >
+                                Скачать приложение AmneziaWG
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                                </svg>
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </details>
                 </div>
               )}

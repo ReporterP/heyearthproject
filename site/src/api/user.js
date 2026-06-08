@@ -74,6 +74,16 @@ export async function getConnections(token, platform) {
   return jsonOrThrow(res, 'Failed to load connections')
 }
 
+// AmneziaWG ("Пальма") per-user config. Heavy (keys + CPS) — fetched lazily,
+// only for users whose connections.amnezia_available is true. Returns
+// { available, config_text, deeplink, endpoint, ip }.
+export async function getAwgConfig(token) {
+  const res = await fetch(`${API_BASE}/api/v1/user/awg-config`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return jsonOrThrow(res, 'Не удалось загрузить конфигурацию Пальмы')
+}
+
 export async function getDownloads() {
   const res = await fetch(`${API_BASE}/api/v1/user/downloads`)
   return jsonOrThrow(res, 'Failed to load downloads')
