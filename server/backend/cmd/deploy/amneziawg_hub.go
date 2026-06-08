@@ -29,6 +29,12 @@ import (
 // is the ref we git-clone + go-build from. Latest stable as of 2026-05-26.
 const amneziawgVersion = "v0.2.18"
 
+// amneziawgToolsVersion pins amnezia-vpn/amneziawg-tools (the `awg` + `awg-quick`
+// CLIs). The Hub has no PPA from RU, so we git-clone + `make` from source
+// (toolchain: make + gcc). This tag carries the same CPS param set (Jc/Jmin/
+// Jmax/S1/S2/H1-H4) as amneziawg-go v0.2.18, so configs round-trip cleanly.
+const amneziawgToolsVersion = "v1.0.20241018"
+
 // setupAmneziaWGHub provisions amneziawg-go on the Hub. Idempotent.
 // Mirrors setupHysteria2Hub signature exactly.
 func setupAmneziaWGHub(client *ssh.Client, cfg *deployConfig) {
@@ -86,27 +92,115 @@ else
   echo "[awg-hub] Binary built at $INSTALL_BIN ($(du -h "$INSTALL_BIN" | cut -f1))"
 fi
 
+# ── 3b. Build amneziawg-tools from source (awg + awg-quick CLIs) ──
+# These provide the userspace control plane: 'awg' (config apply / show, also
+# symlinked as 'wg' so awg_sync.go's 'wg syncconf' works) and 'awg-quick'
+# (brings the interface UP: spawns amneziawg-go, applies addr/port/peers/CPS).
+# RU Hub has no PPA, so build from source. The tools repo is a Makefile build
+# (C + shell), NOT a go build — needs make + gcc.
+if command -v awg >/dev/null 2>&1 && command -v awg-quick >/dev/null 2>&1; then
+  echo "[awg-hub] amneziawg-tools already installed: $(awg --version 2>&1 | head -1)"
+else
+  echo "[awg-hub] Installing build toolchain for amneziawg-tools (make, gcc)..."
+  apt-get update -qq 2>/dev/null || true
+  apt-get install -y -qq git make gcc build-essential 2>/dev/null || apt-get install -y -qq git make gcc 2>/dev/null || true
+  if ! command -v make >/dev/null 2>&1 || ! command -v gcc >/dev/null 2>&1; then
+    echo "[awg-hub] ERROR: make/gcc not available — cannot build amneziawg-tools."
+    exit 1
+  fi
+
+  TOOLS_SRC=/tmp/amneziawg-tools-src
+  rm -rf "$TOOLS_SRC"
+  echo "[awg-hub] Cloning amneziawg-tools @ __TOOLS_VERSION__ ..."
+  git clone --depth 1 --branch __TOOLS_VERSION__ https://github.com/amnezia-vpn/amneziawg-tools.git "$TOOLS_SRC"
+
+  # Upstream layout: the wg-tools sources live under src/. 'make install' puts
+  # 'awg' + 'awg-quick' into /usr/bin and the man pages; WITH_WGQUICK=yes builds
+  # the quick wrapper. PREFIX defaults to /usr — explicit for clarity.
+  echo "[awg-hub] Building amneziawg-tools ..."
+  make -C "$TOOLS_SRC/src" -j"$(nproc)"
+  make -C "$TOOLS_SRC/src" PREFIX=/usr WITH_WGQUICK=yes install
+
+  rm -rf "$TOOLS_SRC"
+
+  # amneziawg-tools installs the binary as 'awg'. awg_sync.go calls 'wg syncconf',
+  # so provide a 'wg' → 'awg' shim if the package didn't already create one.
+  if ! command -v wg >/dev/null 2>&1; then
+    AWG_BIN="$(command -v awg)"
+    ln -sf "$AWG_BIN" /usr/bin/wg
+    echo "[awg-hub] symlinked wg → $AWG_BIN (for awg_sync.go 'wg syncconf')"
+  fi
+
+  if ! command -v awg-quick >/dev/null 2>&1; then
+    echo "[awg-hub] ERROR: awg-quick not on PATH after install — interface cannot come UP."
+    exit 1
+  fi
+  echo "[awg-hub] amneziawg-tools installed: awg=$(command -v awg) awg-quick=$(command -v awg-quick)"
+fi
+
+# ── 3c. Config path bridge ──
+# awg-quick reads /etc/amnezia/amneziawg/<iface>.conf by default; heyearth-api
+# (awg_sync.go) writes the canonical config to /opt/heyearth/awg/awg0.conf.
+# Symlink so awg-quick AND 'wg syncconf .../awg0.conf' share one source of truth.
+mkdir -p /etc/amnezia/amneziawg
+ln -sf /opt/heyearth/awg/awg0.conf /etc/amnezia/amneziawg/awg0.conf
+echo "[awg-hub] linked /etc/amnezia/amneziawg/awg0.conf → /opt/heyearth/awg/awg0.conf"
+
+# ── 3d. Bootstrap a minimal awg0.conf if heyearth-api hasn't written one yet ──
+# T1 only brings infra UP. If there are no AWG peers yet, awg_sync.go has not
+# created awg0.conf, but awg-quick needs SOMETHING to read. Write an [Interface]-
+# only stub (no peers) so the interface comes up + listens. heyearth-api will
+# atomically overwrite this with the real config (same path) on first sync; the
+# stub uses a throwaway key that gets replaced — the real PrivateKey comes from
+# biz.GetServerAWGKeys() inside awg_sync.go.
+if [ ! -f /opt/heyearth/awg/awg0.conf ]; then
+  STUB_PRIV="$(awg genkey)"
+  cat > /opt/heyearth/awg/awg0.conf <<STUB
+# /opt/heyearth/awg/awg0.conf
+# Bootstrap stub written by --setup-awg (T1). heyearth-api awg_sync.go
+# overwrites this atomically with the real key + peers on first sync.
+[Interface]
+PrivateKey = ${STUB_PRIV}
+ListenPort = 51820
+Address = 10.66.66.1/24
+STUB
+  chown amnezia-wg:amnezia-wg /opt/heyearth/awg/awg0.conf
+  chmod 640 /opt/heyearth/awg/awg0.conf
+  echo "[awg-hub] wrote bootstrap [Interface]-only awg0.conf (no peers yet)"
+else
+  echo "[awg-hub] awg0.conf already present (heyearth-api manages it) — leaving as-is"
+fi
+
 # ── 4. systemd unit ──
+# awg-quick brings the interface UP: it spawns amneziawg-go for awg0, then
+# applies Address/ListenPort/Peers/CPS from awg0.conf via 'awg setconf'. We use
+# a oneshot+RemainAfterExit unit (the standard wg-quick@ pattern, inlined for a
+# fixed iface). amneziawg-go is on PATH via the symlink below so awg-quick finds
+# the AmneziaWG userspace impl instead of a kernel module (Hub has no awg kmod).
+#
+# Unit name stays 'awg' and iface stays 'awg0' — awg_sync.go does
+# 'systemctl restart awg' and 'wg syncconf awg0 ...' and MUST keep matching.
+#
+# WG_QUICK_USERSPACE_IMPLEMENTATION tells awg-quick to use the userspace binary;
+# WG_SUDO=1 / direct root run means no sudo needed (unit runs as root).
+ln -sf /opt/heyearth/awg/amneziawg-go /usr/bin/amneziawg-go
 cat > /etc/systemd/system/awg.service <<'UNIT'
 [Unit]
-Description=AmneziaWG userspace VPN server (Palma)
-Documentation=https://github.com/amnezia-vpn/amneziawg-go
+Description=AmneziaWG userspace VPN server (Palma) via awg-quick
+Documentation=https://github.com/amnezia-vpn/amneziawg-tools
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-ExecStart=/opt/heyearth/awg/amneziawg-go -f awg0
-Restart=always
-RestartSec=5
+Type=oneshot
+RemainAfterExit=yes
 User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_MODULE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-Environment=WG_PROCESS_FOREGROUND=1
-Environment=LOG_LEVEL=info
-NoNewPrivileges=true
-ProtectHome=true
-PrivateTmp=true
+Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
+Environment=WG_SUDO=1
+ExecStart=/usr/bin/awg-quick up awg0
+ExecStop=/usr/bin/awg-quick down awg0
+# Re-apply config on 'systemctl reload awg' without tearing the tunnel down.
+ExecReload=/bin/sh -c 'exec /usr/bin/wg syncconf awg0 <(/usr/bin/awg-quick strip awg0)'
 
 [Install]
 WantedBy=multi-user.target
@@ -126,21 +220,56 @@ if command -v netfilter-persistent >/dev/null; then
   netfilter-persistent save 2>/dev/null || true
 fi
 
-# ── 6. Enable service ──
+# ── 5b. Enable IPv4 forwarding persistently ──
+# AWG peers send packets destined off-host; the kernel must route between awg0
+# and the Hub's egress NIC. NAT/policy-routing to Exit is Task 2 — here we only
+# flip the forwarding switch so the interface is usable. Persist via sysctl.d.
+cat > /etc/sysctl.d/99-heyearth-awg.conf <<'SYSCTL'
+# AmneziaWG (Palma) — enable routing of peer traffic. Installed by --setup-awg.
+net.ipv4.ip_forward = 1
+SYSCTL
+sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-heyearth-awg.conf >/dev/null 2>&1 || true
+echo "[awg-hub] net.ipv4.ip_forward = $(cat /proc/sys/net/ipv4/ip_forward)"
+
+# ── 6. Enable + start service ──
 systemctl daemon-reload
 systemctl enable awg >/dev/null 2>&1
-echo "[awg-hub] systemd unit installed and enabled (not started yet — waits for awg0.conf)"
+systemctl restart awg
+echo "[awg-hub] awg.service enabled and started (awg-quick up awg0)"
 
-# ── 7. Health check ──
-sleep 1
+# ── 7. Health check (hard — interface MUST be up after T1) ──
+sleep 2
+FAIL=0
+if ip link show awg0 >/dev/null 2>&1; then
+  STATE="$(ip -br link show awg0 | awk '{print $2}')"
+  echo "[awg-hub] awg0 present, state=$STATE"
+else
+  echo "[awg-hub] ERROR: awg0 interface does not exist"
+  FAIL=1
+fi
 if ss -ulnp 2>/dev/null | grep -qE ':51820\b'; then
   echo "[awg-hub] UDP :51820 listener present"
 else
-  echo "[awg-hub] WARN: no UDP listener on :51820 yet — expected on first install."
+  echo "[awg-hub] ERROR: no UDP listener on :51820"
+  FAIL=1
+fi
+if awg show awg0 >/dev/null 2>&1; then
+  echo "[awg-hub] awg show awg0 OK:"
+  awg show awg0 | sed 's/^/[awg-hub]   /'
+else
+  echo "[awg-hub] ERROR: 'awg show awg0' failed"
+  FAIL=1
+fi
+if [ "$FAIL" = "1" ]; then
+  echo "[awg-hub] ── diagnostics ──"
+  systemctl status awg --no-pager -l | sed 's/^/[awg-hub]   /' || true
+  journalctl -u awg -n 40 --no-pager | sed 's/^/[awg-hub]   /' || true
+  exit 1
 fi
 
-echo "[awg-hub] Setup complete."
+echo "[awg-hub] Setup complete — awg0 UP, listening on :51820."
 `, "__VERSION__", amneziawgVersion)
+	script = strings.ReplaceAll(script, "__TOOLS_VERSION__", amneziawgToolsVersion)
 
 	out, err := runSSH(client, script, true)
 	if err != nil {
