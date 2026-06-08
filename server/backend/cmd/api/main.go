@@ -986,6 +986,13 @@ func main() {
 	// enforcement (biz.IsCycleExceeded) covers Express users transparently.
 	StartHysteria2StatsLoop()
 
+	// AmneziaWG (Palma) per-peer traffic collector — reads `awg show awg0
+	// transfer` every 60s, writes deltas to traffic_stats AND
+	// user_subscriptions.traffic_used so AWG shares one subscription limit
+	// with Reality/Hysteria2 (T3 peer-selection gates on traffic_used).
+	// No-op until --setup-awg has run on this Hub.
+	StartAWGStatsLoop()
+
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()
 
