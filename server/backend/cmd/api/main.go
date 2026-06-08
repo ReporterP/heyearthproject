@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -313,7 +315,7 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		IDOrUsername string `json:"id_or_username"`
-		Password    string `json:"password"`
+		Password     string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -529,18 +531,18 @@ func handleUserPaymentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := map[string]any{
-		"id":                   p.ID,
-		"amount":               p.Amount,
-		"currency":             p.Currency,
-		"status":               p.Status,
-		"payment_method_type":  p.PaymentMethodType,
-		"refunded_amount":      p.RefundedAmount,
-		"receipt_registered":   p.ReceiptRegistered,
-		"yookassa_payment_id":  p.YookassaPaymentID,
-		"description":          p.Description,
-		"payer_email":          p.PayerEmail,
-		"created_at":           p.CreatedAt,
-		"test":                 p.Test,
+		"id":                  p.ID,
+		"amount":              p.Amount,
+		"currency":            p.Currency,
+		"status":              p.Status,
+		"payment_method_type": p.PaymentMethodType,
+		"refunded_amount":     p.RefundedAmount,
+		"receipt_registered":  p.ReceiptRegistered,
+		"yookassa_payment_id": p.YookassaPaymentID,
+		"description":         p.Description,
+		"payer_email":         p.PayerEmail,
+		"created_at":          p.CreatedAt,
+		"test":                p.Test,
 	}
 	if paidAt.Valid {
 		out["paid_at"] = paidAt.String
@@ -598,6 +600,10 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"traffic_masking_available": access.TrafficMaskingAvailable,
 		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
 		"subscription_version":      subVer,
+		// Palma (AmneziaWG) availability — true only for active subs on an
+		// amnezia_wg_enabled plan. Site renders the WG/QR block off this flag;
+		// the heavy config is fetched lazily via GET /api/v1/user/awg-config.
+		"amnezia_available": false,
 	}
 
 	// Add plan info to response
@@ -611,6 +617,9 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 			"traffic_limit":     plan.TrafficLimitBytes,
 			"duration_days":     plan.DurationDays,
 		}
+		// GetUserPlan only returns a plan for an active subscription, and
+		// access.CanConnect already encodes the same gate used for connection_options.
+		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
 	}
 
 	// Подключения доступны только при активной подписке (per-user UUID)
@@ -653,6 +662,89 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleUserAWGConfig — GET /api/v1/user/awg-config
+// Returns the per-user AmneziaWG ("Пальма") client config as WG-INI text plus an
+// amneziawg:// deeplink, for users on an amnezia_wg_enabled plan with an active
+// subscription. The config is heavy (per-user keys + CPS) so the site fetches it
+// lazily — NOT part of /connections. Calling this lazy-inits the user's keys
+// (biz.GetUserAWGConfig) and triggers RequestAWGSync so the peer lands in awg0.conf.
+func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Gate: plan must have AmneziaWG enabled. GetUserPlan errors unless the user
+	// has an active subscription, so this single check covers both conditions.
+	plan, err := biz.GetUserPlan(userID)
+	if err != nil || plan == nil || !plan.AmneziaWGEnabled {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "AmneziaWG (Пальма) недоступен на вашем тарифе",
+		})
+		return
+	}
+
+	cfg, err := biz.GetUserAWGConfig(userID)
+	if err != nil {
+		log.Printf("[awg-config] GetUserAWGConfig(%s): %v", userID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config build failed"})
+		return
+	}
+	// Ensure the freshly-allocated peer is flushed to awg0.conf on the Hub.
+	RequestAWGSync()
+
+	ip := cfg.IPAddress
+	if ip != "" && !strings.Contains(ip, "/") {
+		ip += "/32"
+	}
+
+	var b strings.Builder
+	b.WriteString("[Interface]\n")
+	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.UserPrivKey)
+	fmt.Fprintf(&b, "Address = %s\n", ip)
+	b.WriteString("DNS = 1.1.1.1, 8.8.8.8\n")
+	fmt.Fprintf(&b, "Jc = %d\n", cfg.CPSParams.Jc)
+	fmt.Fprintf(&b, "Jmin = %d\n", cfg.CPSParams.Jmin)
+	fmt.Fprintf(&b, "Jmax = %d\n", cfg.CPSParams.Jmax)
+	fmt.Fprintf(&b, "S1 = %d\n", cfg.CPSParams.S1)
+	fmt.Fprintf(&b, "S2 = %d\n", cfg.CPSParams.S2)
+	fmt.Fprintf(&b, "H1 = %d\n", cfg.CPSParams.H1)
+	fmt.Fprintf(&b, "H2 = %d\n", cfg.CPSParams.H2)
+	fmt.Fprintf(&b, "H3 = %d\n", cfg.CPSParams.H3)
+	fmt.Fprintf(&b, "H4 = %d\n\n", cfg.CPSParams.H4)
+	b.WriteString("[Peer]\n")
+	fmt.Fprintf(&b, "PublicKey = %s\n", cfg.ServerPubKey)
+	if cfg.UserPSK != "" {
+		fmt.Fprintf(&b, "PresharedKey = %s\n", cfg.UserPSK)
+	}
+	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
+	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.Endpoint)
+	b.WriteString("PersistentKeepalive = 25\n")
+	configText := b.String()
+
+	deeplink := "amneziawg://" +
+		base64.StdEncoding.EncodeToString([]byte(configText)) +
+		"#" + url.PathEscape("🌴 Пальма")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available":   true,
+		"config_text": configText,
+		"deeplink":    deeplink,
+		"endpoint":    cfg.Endpoint,
+		"ip":          cfg.IPAddress,
+	})
 }
 
 // handleUserMTProto — GET /api/v1/user/mtproto
@@ -917,8 +1009,8 @@ func main() {
 	StartGhostReconciler()
 
 	// Rate limiters
-	authLimiter := middleware.NewRateLimiter(10, time.Minute)   // 10 req/min per IP (auth)
-	apiLimiter := middleware.NewRateLimiter(100, time.Minute)   // 100 req/min per IP (general API)
+	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
+	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
 	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)
 
 	grpcAddr := "127.0.0.1:50051"
@@ -957,6 +1049,7 @@ func main() {
 	// Детали одного платежа: GET /api/v1/user/payments/{id}
 	http.HandleFunc("/api/v1/user/payments/", apiLimiter.Middleware(handleUserPaymentDetail))
 	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
+	http.HandleFunc("/api/v1/user/awg-config", apiLimiter.Middleware(handleUserAWGConfig)) // Palma — Beads heyearthproject-98ng T5
 	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
 	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
 	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))
