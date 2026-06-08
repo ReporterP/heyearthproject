@@ -18,7 +18,6 @@ package main
 import (
 	"bytes"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -79,10 +78,18 @@ func SyncAWGConfig() error {
 		return fmt.Errorf("get server awg keys: %w", err)
 	}
 
+	// Global obfuscation params for the [Interface] block. AmneziaWG CPS are
+	// interface-level (same for server + every client), NOT per-peer.
+	serverCPS, err := biz.GetServerCPSParams()
+	if err != nil {
+		return fmt.Errorf("get server cps: %w", err)
+	}
+
+	// traffic_limit enforcement: a peer over its subscription quota is excluded
+	// from the rendered config, so the next sync drops it (NULL = unlimited).
 	rows, err := db.DB.Query(`
 		SELECT u.awg_public_key,
 		       COALESCE(u.awg_preshared_key, ''),
-		       COALESCE(u.awg_cps_params, '{}'::jsonb)::text,
 		       u.awg_ip_address
 		FROM users u
 		JOIN user_subscriptions us ON us.user_id = u.id
@@ -90,6 +97,7 @@ func SyncAWGConfig() error {
 		WHERE p.amnezia_wg_enabled = TRUE
 		  AND us.status = 'active'
 		  AND us.valid_until > NOW()
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 		  AND u.awg_public_key IS NOT NULL
 		  AND u.awg_public_key <> ''
 		  AND u.awg_ip_address IS NOT NULL
@@ -102,23 +110,21 @@ func SyncAWGConfig() error {
 	var peers []awgPeer
 	for rows.Next() {
 		var p awgPeer
-		var cpsJSON string
 		var ip sql.NullString
-		if err := rows.Scan(&p.PublicKey, &p.PresharedKey, &cpsJSON, &ip); err != nil {
+		if err := rows.Scan(&p.PublicKey, &p.PresharedKey, &ip); err != nil {
 			return fmt.Errorf("scan peer row: %w", err)
 		}
 		if !ip.Valid || ip.String == "" {
 			continue
 		}
 		p.AllowedIP = ip.String
-		p.CPS = parseAWGCPSParams(cpsJSON)
 		peers = append(peers, p)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate peer rows: %w", err)
 	}
 
-	conf := renderAWGConfig(serverPriv, peers)
+	conf := renderAWGConfig(serverPriv, serverCPS, peers)
 
 	// No-op short-circuit: identical content → skip reload.
 	if existing, err := os.ReadFile(awgConfigPath); err == nil {
@@ -140,12 +146,19 @@ func SyncAWGConfig() error {
 		log.Printf("[awg-sync] chown awg config: %v (continuing)", err)
 	}
 
-	// Layered reload: wg syncconf (zero-downtime) → systemctl restart (cold-start).
-	if out, err := exec.Command("wg", "syncconf", awgInterface, awgConfigPath).CombinedOutput(); err != nil {
-		log.Printf("[awg-sync] wg syncconf failed (%v: %s) — falling back to systemctl restart awg",
-			err, strings.TrimSpace(string(out)))
-		if out2, err2 := exec.Command("systemctl", "restart", "awg").CombinedOutput(); err2 != nil {
-			return fmt.Errorf("restart awg: %w (%s)", err2, strings.TrimSpace(string(out2)))
+	// Layered reload:
+	//   1. `awg syncconf` (zero-downtime) — apply peer/CPS changes in place.
+	//      MUST be `awg` not `wg`: the config carries CPS params (Jc/S1/H1…)
+	//      vanilla wireguard-tools rejects. syncconf needs a stripped config
+	//      (no [Interface] Address), produced by `awg-quick strip`. We strip to
+	//      a temp file because os/exec runs no shell (no process substitution).
+	//   2. Cold-start fallback: `awg-quick down/up` re-creates the interface
+	//      with the full config (a bare `systemctl restart awg` only bounced the
+	//      daemon without ever applying address/port/peers).
+	if err := applyAWGConfig(); err != nil {
+		log.Printf("[awg-sync] awg syncconf failed (%v) — cold-starting via awg-quick", err)
+		if err2 := coldStartAWG(); err2 != nil {
+			return fmt.Errorf("cold-start awg: %w", err2)
 		}
 	}
 
@@ -169,68 +182,51 @@ func recordAWGSyncError(err error) {
 	_ = biz.SetSetting("awg_last_error", err.Error())
 }
 
+// awgStrippedPath holds the `awg-quick strip` output fed to `awg syncconf`.
+const awgStrippedPath = "/opt/heyearth/awg/awg0.stripped"
+
+// applyAWGConfig does a zero-downtime in-place reload: strip the full config to
+// a syncconf-compatible form (no [Interface] Address), then apply via
+// `awg syncconf`. `awg-quick strip` reads /etc/amnezia/amneziawg/awg0.conf
+// (symlinked to awgConfigPath by --setup-awg).
+func applyAWGConfig() error {
+	stripped, err := exec.Command("awg-quick", "strip", awgInterface).Output()
+	if err != nil {
+		return fmt.Errorf("awg-quick strip: %w", err)
+	}
+	if err := os.WriteFile(awgStrippedPath, stripped, 0o640); err != nil {
+		return fmt.Errorf("write stripped config: %w", err)
+	}
+	if out, err := exec.Command("awg", "syncconf", awgInterface, awgStrippedPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("awg syncconf: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// coldStartAWG fully re-creates the interface: awg-quick down (best-effort,
+// the iface may already be absent) then up with the current config.
+func coldStartAWG() error {
+	_, _ = exec.Command("awg-quick", "down", awgInterface).CombinedOutput()
+	if out, err := exec.Command("awg-quick", "up", awgInterface).CombinedOutput(); err != nil {
+		return fmt.Errorf("awg-quick up: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 type awgPeer struct {
 	PublicKey    string
 	PresharedKey string
 	AllowedIP    string
-	CPS          awgCPS
-}
-
-type awgCPS struct {
-	Jc   int
-	Jmin int
-	Jmax int
-	S1   int
-	S2   int
-	H1   int
-	H2   int
-	H3   int
-	H4   int
-}
-
-// parseAWGCPSParams pulls obfuscation fields from JSONB blob. Defaults on malformed.
-//
-// Note: biz.AWGCPSParams stores H1-H4 as uint32; this sync sees them via JSON which
-// may round-trip them as numbers. We accept int (Go default JSON number type) which
-// matches the wider range needed for full uint32 values (mod 2^31 since Go int on
-// amd64 is 64-bit signed, so positive uint32 fits without overflow).
-func parseAWGCPSParams(jsonText string) awgCPS {
-	def := awgCPS{
-		Jc: 4, Jmin: 50, Jmax: 1000,
-		S1: 0, S2: 0,
-		H1: 1, H2: 2, H3: 3, H4: 4,
-	}
-	if jsonText == "" || jsonText == "{}" {
-		return def
-	}
-	// Map field tag (lowercase from biz/awg.go json tags) to int.
-	var m map[string]int
-	if err := json.Unmarshal([]byte(jsonText), &m); err != nil {
-		log.Printf("[awg-sync] parse cps params: %v (using defaults)", err)
-		return def
-	}
-	get := func(key string, fallback int) int {
-		if v, ok := m[key]; ok {
-			return v
-		}
-		return fallback
-	}
-	// biz/awg.go uses lowercase json tags: jc, jmin, jmax, s1, s2, h1, h2, h3, h4
-	return awgCPS{
-		Jc:   get("jc", def.Jc),
-		Jmin: get("jmin", def.Jmin),
-		Jmax: get("jmax", def.Jmax),
-		S1:   get("s1", def.S1),
-		S2:   get("s2", def.S2),
-		H1:   get("h1", def.H1),
-		H2:   get("h2", def.H2),
-		H3:   get("h3", def.H3),
-		H4:   get("h4", def.H4),
-	}
 }
 
 // renderAWGConfig produces awg0.conf content. Deterministic ordering.
-func renderAWGConfig(serverPriv string, peers []awgPeer) string {
+//
+// CPS obfuscation params (Jc/Jmin/Jmax/S1/S2/H1-H4) go in [Interface] ONLY —
+// they are global AmneziaWG settings shared by the server and every client.
+// Emitting them per-[Peer] makes `awg setconf` reject the file with
+// "Line unrecognized: Jc=…" (this was the bug that kept Palma from ever
+// coming up). H1-H4 are uint32 in biz.AWGCPSParams; %d prints them fine.
+func renderAWGConfig(serverPriv string, cps biz.AWGCPSParams, peers []awgPeer) string {
 	var b strings.Builder
 	b.WriteString("# /opt/heyearth/awg/awg0.conf\n")
 	b.WriteString("# Generated by heyearth-api awg_sync.go. DO NOT EDIT BY HAND.\n")
@@ -238,6 +234,15 @@ func renderAWGConfig(serverPriv string, peers []awgPeer) string {
 	fmt.Fprintf(&b, "PrivateKey = %s\n", serverPriv)
 	fmt.Fprintf(&b, "ListenPort = %d\n", awgListenPort)
 	fmt.Fprintf(&b, "Address = %s\n", awgServerIP)
+	fmt.Fprintf(&b, "Jc = %d\n", cps.Jc)
+	fmt.Fprintf(&b, "Jmin = %d\n", cps.Jmin)
+	fmt.Fprintf(&b, "Jmax = %d\n", cps.Jmax)
+	fmt.Fprintf(&b, "S1 = %d\n", cps.S1)
+	fmt.Fprintf(&b, "S2 = %d\n", cps.S2)
+	fmt.Fprintf(&b, "H1 = %d\n", cps.H1)
+	fmt.Fprintf(&b, "H2 = %d\n", cps.H2)
+	fmt.Fprintf(&b, "H3 = %d\n", cps.H3)
+	fmt.Fprintf(&b, "H4 = %d\n", cps.H4)
 	b.WriteString("\n")
 
 	for _, p := range peers {
@@ -251,15 +256,6 @@ func renderAWGConfig(serverPriv string, peers []awgPeer) string {
 			ip = ip + "/32"
 		}
 		fmt.Fprintf(&b, "AllowedIPs = %s\n", ip)
-		fmt.Fprintf(&b, "Jc = %d\n", p.CPS.Jc)
-		fmt.Fprintf(&b, "Jmin = %d\n", p.CPS.Jmin)
-		fmt.Fprintf(&b, "Jmax = %d\n", p.CPS.Jmax)
-		fmt.Fprintf(&b, "S1 = %d\n", p.CPS.S1)
-		fmt.Fprintf(&b, "S2 = %d\n", p.CPS.S2)
-		fmt.Fprintf(&b, "H1 = %d\n", p.CPS.H1)
-		fmt.Fprintf(&b, "H2 = %d\n", p.CPS.H2)
-		fmt.Fprintf(&b, "H3 = %d\n", p.CPS.H3)
-		fmt.Fprintf(&b, "H4 = %d\n", p.CPS.H4)
 		b.WriteString("\n")
 	}
 

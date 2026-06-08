@@ -15,17 +15,20 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// AWGCPSParams — Custom Protocol Settings per user. Each peer gets unique
-// values so DPI can't fingerprint "all AmneziaWG users share signature X".
+// AWGCPSParams — AmneziaWG obfuscation params. These are GLOBAL [Interface]-
+// level settings (NOT per-peer): the server and every client must present the
+// SAME values or the handshake is rejected. One bundle per Hub, generated once
+// by GetServerCPSParams and stored in app_settings.awg_server_cps_params.
 //
 // Generation ranges (see generateCPSParams):
-//   Jc: 3..10           — number of junk packets sent BEFORE handshake
-//   Jmin: 50..500       — junk packet min size in bytes
-//   Jmax: 500..1500     — junk packet max size in bytes (must be > Jmin)
-//   S1: 15..150         — pad bytes prepended to init packet
-//   S2: 15..150         — pad bytes appended to init packet
-//                         (S1+S2 < 1280 to stay below QUIC-class MTU)
-//   H1..H4: random uint32 — magic header values overriding WG defaults
+//
+//	Jc: 3..10           — number of junk packets sent BEFORE handshake
+//	Jmin: 50..500       — junk packet min size in bytes
+//	Jmax: 500..1500     — junk packet max size in bytes (must be > Jmin)
+//	S1: 15..150         — pad bytes prepended to init packet
+//	S2: 15..150         — pad bytes appended to init packet
+//	                      (S1+S2 < 1280 to stay below QUIC-class MTU)
+//	H1..H4: random uint32 — magic header values overriding WG defaults
 type AWGCPSParams struct {
 	Jc   int    `json:"jc"`
 	Jmin int    `json:"jmin"`
@@ -45,7 +48,7 @@ type AWGConfig struct {
 	UserPubKey   string       // base64, 32 bytes
 	UserPSK      string       // base64, 32 bytes (Q on init packet)
 	ServerPubKey string       // base64, 32 bytes
-	CPSParams    AWGCPSParams // per-user random
+	CPSParams    AWGCPSParams // global server CPS (same for all clients)
 	IPAddress    string       // "10.66.66.42" — assigned slot in /24
 	Endpoint     string       // "<main_host>:51820" — Hub UDP listener
 }
@@ -211,8 +214,39 @@ func GetServerAWGKeys() (privKey, pubKey string, err error) {
 	return privKey, pubKey, nil
 }
 
+// GetServerCPSParams returns the Hub's single global CPS (obfuscation) bundle,
+// lazy-init in app_settings. AmneziaWG CPS params (Jc/Jmin/Jmax/S1/S2/H1-H4)
+// are INTERFACE-level, not per-peer: the server and EVERY client must present
+// the SAME values in their [Interface] section or the handshake is rejected
+// ("awg setconf" errors with "Line unrecognized: Jc=..." when they appear in a
+// [Peer] block). So there is exactly ONE set per Hub, generated once and shared
+// by the server config and all client configs.
+func GetServerCPSParams() (AWGCPSParams, error) {
+	if raw := GetSettingOrDefault("awg_server_cps_params", ""); raw != "" {
+		var p AWGCPSParams
+		if err := json.Unmarshal([]byte(raw), &p); err == nil {
+			return p, nil
+		}
+		// Malformed stored value — regenerate below.
+	}
+
+	p, err := generateCPSParams()
+	if err != nil {
+		return AWGCPSParams{}, fmt.Errorf("generate server cps: %w", err)
+	}
+	buf, err := json.Marshal(p)
+	if err != nil {
+		return AWGCPSParams{}, fmt.Errorf("marshal server cps: %w", err)
+	}
+	if err := SetSetting("awg_server_cps_params", string(buf)); err != nil {
+		return AWGCPSParams{}, fmt.Errorf("persist server cps: %w", err)
+	}
+	return p, nil
+}
+
 // GetUserAWGConfig returns user's AWG config, lazy-init on first call.
-// Transactional — all 5 awg_* columns written atomically.
+// Transactional — per-user awg_* columns (keys, PSK, IP) written atomically.
+// CPS params come from GetServerCPSParams (global), NOT per-user.
 func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 	user, err := GetOrCreateUser(userID)
 	if err != nil {
@@ -224,36 +258,32 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 		return nil, err
 	}
 
+	// Global obfuscation params — same for server [Interface] and every client.
+	serverCPS, err := GetServerCPSParams()
+	if err != nil {
+		return nil, err
+	}
+
 	tx, err := db.DB.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	var (
-		privKey, pubKey, psk, ip sql.NullString
-		cpsJSON                  sql.NullString
-	)
+	var privKey, pubKey, psk, ip sql.NullString
 	err = tx.QueryRow(`
 		SELECT COALESCE(awg_private_key, ''),
 		       COALESCE(awg_public_key, ''),
 		       COALESCE(awg_preshared_key, ''),
-		       COALESCE(awg_ip_address, ''),
-		       COALESCE(awg_cps_params::text, '')
+		       COALESCE(awg_ip_address, '')
 		FROM users WHERE id = $1
 		FOR UPDATE
-	`, user.ID).Scan(&privKey, &pubKey, &psk, &ip, &cpsJSON)
+	`, user.ID).Scan(&privKey, &pubKey, &psk, &ip)
 	if err != nil {
 		return nil, fmt.Errorf("load awg state: %w", err)
 	}
 
 	if privKey.Valid && privKey.String != "" {
-		var cps AWGCPSParams
-		if cpsJSON.Valid && cpsJSON.String != "" {
-			if err := json.Unmarshal([]byte(cpsJSON.String), &cps); err != nil {
-				return nil, fmt.Errorf("decode cached cps: %w", err)
-			}
-		}
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit (read-only): %w", err)
 		}
@@ -262,7 +292,7 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 			UserPubKey:   pubKey.String,
 			UserPSK:      psk.String,
 			ServerPubKey: serverPub,
-			CPSParams:    cps,
+			CPSParams:    serverCPS, // global, not per-user
 			IPAddress:    ip.String,
 			Endpoint:     awgEndpoint(),
 		}, nil
@@ -276,28 +306,21 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	newCPS, err := generateCPSParams()
-	if err != nil {
-		return nil, err
-	}
-	cpsBytes, err := json.Marshal(newCPS)
-	if err != nil {
-		return nil, fmt.Errorf("marshal cps: %w", err)
-	}
 	newIP, err := allocateUserIP(tx)
 	if err != nil {
 		return nil, err
 	}
 
+	// CPS is global (GetServerCPSParams), so we do NOT persist per-user CPS.
+	// The awg_cps_params column is left untouched (legacy/unused).
 	if _, err := tx.Exec(`
 		UPDATE users
 		   SET awg_private_key   = $1,
 		       awg_public_key    = $2,
 		       awg_preshared_key = $3,
-		       awg_cps_params    = $4::jsonb,
-		       awg_ip_address    = $5
-		 WHERE id = $6
-	`, newPriv, newPub, newPSK, string(cpsBytes), newIP, user.ID); err != nil {
+		       awg_ip_address    = $4
+		 WHERE id = $5
+	`, newPriv, newPub, newPSK, newIP, user.ID); err != nil {
 		return nil, fmt.Errorf("persist awg state: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -309,7 +332,7 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 		UserPubKey:   newPub,
 		UserPSK:      newPSK,
 		ServerPubKey: serverPub,
-		CPSParams:    newCPS,
+		CPSParams:    serverCPS, // global, not per-user
 		IPAddress:    newIP,
 		Endpoint:     awgEndpoint(),
 	}, nil
