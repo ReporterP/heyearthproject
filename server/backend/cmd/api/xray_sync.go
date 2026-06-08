@@ -218,9 +218,9 @@ func SyncXrayConfig() error {
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
-					"serverNames":  []string{realitySNI, "www." + realitySNI},
-					"privateKey":   keys.PrivateKey,
-					"shortIds":     []string{keys.ShortID, ""},
+					"serverNames":   []string{realitySNI, "www." + realitySNI},
+					"privateKey":    keys.PrivateKey,
+					"shortIds":      []string{keys.ShortID, ""},
 					"xPaddingBytes": "100-1000", // Anti-DPI: normalize packet sizes
 				},
 			},
@@ -286,7 +286,7 @@ func SyncXrayConfig() error {
 		{
 			"tag": "shadowsocks", "listen": "0.0.0.0", "port": 8388, "protocol": "shadowsocks",
 			"settings": map[string]interface{}{"method": "2022-blake3-aes-128-gcm", "password": keys.SSPassword, "network": "tcp,udp"},
-			"sniffing":  map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		},
 	}
 
@@ -594,6 +594,30 @@ func SyncXrayConfig() error {
 		"settings": map[string]interface{}{"address": "127.0.0.1"},
 	})
 
+	// SOCKS5 inbound для AmneziaWG (Palma) egress. AWG's tun2socks
+	// (hev-socks5-tunnel) dials this on loopback; traffic then flows through
+	// the SAME global routing rules as Reality (inboundTag: null) → RU domains
+	// + RU geoip go to direct-freedom (Hub Moscow), everything else to the
+	// exit-balancer (Amsterdam). sniffing recovers the domain from TLS SNI /
+	// HTTP Host so geosite (domain) rules fire, matching Happ's split.
+	// Loopback-only (127.0.0.1) — never exposed to the network.
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag":      "socks-awg",
+		"listen":   "127.0.0.1",
+		"port":     10808,
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"auth": "noauth",
+			"udp":  true,
+			"ip":   "127.0.0.1",
+		},
+		"sniffing": map[string]interface{}{
+			"enabled":      true,
+			"destOverride": []string{"http", "tls", "quic"},
+			"routeOnly":    true,
+		},
+	})
+
 	// API routing rule: перенаправляем трафик api-in → api handler
 	apiRule := map[string]interface{}{
 		"type": "field", "inboundTag": []string{"api-in"}, "outboundTag": "api",
@@ -772,8 +796,8 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			"mux": map[string]interface{}{
 				"enabled":         true,
 				"concurrency":     getMuxConcurrency(),
-				"xudpConcurrency": 16,        // UDP мультиплексирование (DNS, QUIC)
-				"xudpProxyUDP443": "allow",   // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
+				"xudpConcurrency": 16,      // UDP мультиплексирование (DNS, QUIC)
+				"xudpProxyUDP443": "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
 			},
 		}
 		// Добавляем publicKey и shortId если заданы
@@ -1301,4 +1325,3 @@ func getMuxConcurrency() int {
 	}
 	return v
 }
-

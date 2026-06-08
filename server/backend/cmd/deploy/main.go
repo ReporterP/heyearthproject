@@ -241,6 +241,7 @@ func main() {
 		setupHysteria2Hub(client, cfg)
 	case "setup-awg":
 		setupAmneziaWGHub(client, cfg)
+		setupAWGExitRoute(client, cfg)
 	case "backup":
 		doBackup(client, cfg)
 	case "restore":
