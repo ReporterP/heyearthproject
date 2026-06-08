@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -432,6 +433,12 @@ func SyncXrayConfig() error {
 		log.Printf("[xray-sync] GetPlanIDsWithDirectRoutes error: %v (skipping direct rules)", drErr)
 		directPlanIDs = nil
 	}
+	// Accumulate the UNION of all RU direct-route domains/IPs across plans for
+	// the socks-awg inbound (AmneziaWG). The per-plan rules below are user-bound
+	// (VLESS UUID); socks-awg has no user, so it gets its own inbound-bound split
+	// rules built from the same lists (added after the loop).
+	awgDirectDomainsSet := map[string]struct{}{}
+	awgDirectIPsSet := map[string]struct{}{}
 	for _, planID := range directPlanIDs {
 		services, sErr := biz.GetDirectRouteServicesForPlan(planID)
 		if sErr != nil {
@@ -453,6 +460,13 @@ func SyncXrayConfig() error {
 			ips = append(ips, svc.IP6...)
 			ips = append(ips, svc.CIDR4...)
 			ips = append(ips, svc.CIDR6...)
+		}
+		// Feed the inbound-bound socks-awg split (union across all plans, deduped).
+		for _, d := range domains {
+			awgDirectDomainsSet[d] = struct{}{}
+		}
+		for _, ip := range ips {
+			awgDirectIPsSet[ip] = struct{}{}
 		}
 		var userIDs []string
 		for _, client := range activeClients {
@@ -479,6 +493,40 @@ func SyncXrayConfig() error {
 				"outboundTag": "direct-freedom",
 			})
 		}
+	}
+
+	// ── socks-awg (AmneziaWG / Palma) split-routing ──
+	// The per-plan rules above are user-bound (VLESS UUID); the socks-awg SOCKS5
+	// inbound (fed by tun2socks) has no user, so it would fall straight to the
+	// catch-all exit-balancer (Amsterdam) — ALL traffic incl. RU. To match Happ's
+	// split we emit inbound-bound rules from the SAME union of RU direct domains/
+	// IPs: RU → direct-freedom (Hub Moscow), everything else falls through to the
+	// catch-all exit-balancer rule below. Sorted for deterministic config output.
+	if len(awgDirectDomainsSet) > 0 {
+		awgDomains := make([]string, 0, len(awgDirectDomainsSet))
+		for d := range awgDirectDomainsSet {
+			awgDomains = append(awgDomains, d)
+		}
+		sort.Strings(awgDomains)
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"inboundTag":  []string{"socks-awg"},
+			"domain":      awgDomains,
+			"outboundTag": "direct-freedom",
+		})
+	}
+	if len(awgDirectIPsSet) > 0 {
+		awgIPs := make([]string, 0, len(awgDirectIPsSet))
+		for ip := range awgDirectIPsSet {
+			awgIPs = append(awgIPs, ip)
+		}
+		sort.Strings(awgIPs)
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"inboundTag":  []string{"socks-awg"},
+			"ip":          awgIPs,
+			"outboundTag": "direct-freedom",
+		})
 	}
 
 	// Traffic masking routing rules (только для premium пользователей)
