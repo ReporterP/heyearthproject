@@ -313,6 +313,13 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 	if mainServerHost != "" {
 		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
 		obfsPassword := biz.GetHysteria2ObfsPassword()
+		// SNI MUST match the Hysteria2 server's TLS cert. The server uses a
+		// Let's Encrypt cert for hiearth.ru (SAN: hiearth.ru, www, admin — NO IP).
+		// main_server_host became the bare IP 45.150.39.236 on 2026-05-26, so using
+		// it as the URI sni with insecure=0 made every QUIC TLS handshake fail
+		// ("Бамбук не отвечает"). Connect host stays the IP (no DNS dependency),
+		// but sni uses the cert domain from hub_main_server_host.
+		hysteria2SNI := biz.GetSettingOrDefault("hub_main_server_host", "hiearth.ru")
 		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
 			// Two Бамбук variants — identical except for the bandwidth params that
 			// flip Hysteria2's congestion control:
@@ -337,7 +344,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 				// docs/research/2026-05-26-mobile-dpi-tele2.md.
 				uri := fmt.Sprintf(
 					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000&hop_interval=15%s#%s",
-					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), mainServerHost,
+					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), hysteria2SNI,
 					v.bwParams, url.PathEscape(label))
 				opts = append(opts, &heyearth_v1.ConnectionOption{
 					Uri:                 uri,
