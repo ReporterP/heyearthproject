@@ -96,7 +96,47 @@ socks5:
 CONFEOF
 echo "[awg-route] Wrote $CONF (upstream SOCKS5 127.0.0.1:$SOCKS_PORT, udp=udp)"
 
-# ── 3. systemd unit (Restart=always) ──
+# ── 3a. Route up/down helper scripts ──
+# Kept OUT of the unit's ExecStartPost: an unquoted-heredoc unit with an inline
+# 'for i in $(seq 1 20)' had $(seq) expanded into 20 literal lines, producing a
+# multi-line ExecStartPost that systemd rejected ("Unbalanced quoting", unit
+# fatal error). Quoted heredoc ('UPEOF') keeps $ unexpanded so the scripts are
+# written verbatim and evaluated at runtime. Idempotent; never touches table main.
+cat > /opt/heyearth/awg/awg-route-up.sh <<'UPEOF'
+#!/bin/sh
+# AWG egress routing UP (awg-tun2socks ExecStartPost). Idempotent.
+TUN=awgtun
+SUBNET=10.66.66.0/24
+TABLE=100
+# Wait up to 10s for hev-socks5-tunnel to create the tun.
+for i in $(seq 1 20); do ip link show "$TUN" >/dev/null 2>&1 && break; sleep 0.5; done
+# Loose rp_filter: the asymmetric return path via awgtun must not be dropped.
+sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null
+sysctl -w "net.ipv4.conf.$TUN.rp_filter=2" >/dev/null 2>&1 || true
+# Policy routing: ONLY the AWG subnet uses $TABLE -> awgtun. Never table main.
+ip route replace default dev "$TUN" table "$TABLE"
+ip rule show | grep -q "from $SUBNET lookup $TABLE" || ip rule add from "$SUBNET" lookup "$TABLE"
+# Open FORWARD awg0<->awgtun (ufw default FORWARD policy is DROP).
+iptables -C FORWARD -i awg0 -o "$TUN" -j ACCEPT 2>/dev/null || iptables -I FORWARD -i awg0 -o "$TUN" -j ACCEPT
+iptables -C FORWARD -i "$TUN" -o awg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i "$TUN" -o awg0 -j ACCEPT
+UPEOF
+chmod +x /opt/heyearth/awg/awg-route-up.sh
+
+cat > /opt/heyearth/awg/awg-route-down.sh <<'DOWNEOF'
+#!/bin/sh
+# AWG egress routing DOWN (awg-tun2socks ExecStopPost). Best-effort.
+TUN=awgtun
+SUBNET=10.66.66.0/24
+TABLE=100
+ip rule del from "$SUBNET" lookup "$TABLE" 2>/dev/null || true
+ip route flush table "$TABLE" 2>/dev/null || true
+iptables -D FORWARD -i awg0 -o "$TUN" -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i "$TUN" -o awg0 -j ACCEPT 2>/dev/null || true
+DOWNEOF
+chmod +x /opt/heyearth/awg/awg-route-down.sh
+echo "[awg-route] Wrote route up/down helper scripts"
+
+# ── 3b. systemd unit (Restart=always) ──
 cat > /etc/systemd/system/awg-tun2socks.service <<UNIT
 [Unit]
 Description=AmneziaWG egress tun2socks (hev-socks5-tunnel -> Exit SOCKS5)
@@ -111,23 +151,8 @@ Type=simple
 # CapabilityBoundingSet (exit 254 "Open awgtun.yaml failed"). Verified that a
 # plain root unit creates awgtun reliably, so we keep it minimal.
 ExecStart=$BIN $CONF
-# Policy routing: ONLY the AWG subnet uses table $TABLE -> awgtun. Idempotent
-# (route replace + grep-guarded rule add; we never delete table main). Wait up
-# to 10s for hev-socks5-tunnel to create the tun before adding the route.
-# Also open FORWARD awg0<->awgtun: ufw's default FORWARD policy is DROP, which
-# silently kills the awg0->awgtun handoff (handshake works, bulk data never
-# reaches the socks-awg inbound). iptables -C ... || -I keeps it idempotent.
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do ip link show $TUN >/dev/null 2>&1 && break; sleep 0.5; done; \
-  sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null; \
-  sysctl -w net.ipv4.conf.$TUN.rp_filter=2 >/dev/null 2>&1 || true; \
-  ip route replace default dev $TUN table $TABLE; \
-  ip rule show | grep -q "from $SUBNET lookup $TABLE" || ip rule add from $SUBNET lookup $TABLE; \
-  iptables -C FORWARD -i awg0 -o $TUN -j ACCEPT 2>/dev/null || iptables -I FORWARD -i awg0 -o $TUN -j ACCEPT; \
-  iptables -C FORWARD -i $TUN -o awg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i $TUN -o awg0 -j ACCEPT'
-ExecStopPost=/bin/sh -c 'ip rule del from $SUBNET lookup $TABLE 2>/dev/null || true; \
-  ip route flush table $TABLE 2>/dev/null || true; \
-  iptables -D FORWARD -i awg0 -o $TUN -j ACCEPT 2>/dev/null || true; \
-  iptables -D FORWARD -i $TUN -o awg0 -j ACCEPT 2>/dev/null || true'
+ExecStartPost=/opt/heyearth/awg/awg-route-up.sh
+ExecStopPost=/opt/heyearth/awg/awg-route-down.sh
 Restart=always
 RestartSec=5
 User=root
