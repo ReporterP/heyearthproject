@@ -4,7 +4,7 @@ package main
 // AmneziaWG Hub provisioner.
 //
 // Installs the upstream `amneziawg-go` userspace VPN binary, creates a
-// systemd unit, opens UDP :51820 via ufw, then exits. The actual server
+// systemd unit, opens UDP :443 via ufw, then exits. The actual server
 // config (awg0.conf — interface keys + per-peer CPS params) is generated
 // by heyearth-api at runtime (see cmd/api/awg_sync.go), so this script
 // does NOT write a config file.
@@ -13,7 +13,7 @@ package main
 // idempotence semantics, same WARN-on-error policy.
 //
 // MVP scope (see docs/superpowers/specs/2026-05-26-amneziawg-palma-design.md):
-//  - fixed listen port 51820/UDP (no port-hopping)
+//  - fixed listen port 443/UDP (QUIC-class — ISPs rarely block; no port-hopping)
 //  - no DNAT REDIRECT range (Hysteria2 has it; AWG does not need it yet)
 //  - CPS obfuscation is per-peer, lives in awg0.conf, NOT in this script
 
@@ -161,7 +161,7 @@ if [ ! -f /opt/heyearth/awg/awg0.conf ]; then
 # overwrites this atomically with the real key + peers on first sync.
 [Interface]
 PrivateKey = ${STUB_PRIV}
-ListenPort = 51820
+ListenPort = 443
 Address = 10.66.66.1/24
 STUB
   chown amnezia-wg:amnezia-wg /opt/heyearth/awg/awg0.conf
@@ -207,12 +207,14 @@ WantedBy=multi-user.target
 UNIT
 
 # ── 5. Firewall ──
+# AWG listens on UDP 443 (QUIC-class — ISPs rarely block it, unlike a high
+# custom port). This is UDP only; TCP 443 (Reality/nginx) is a separate rule.
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-  if ! ufw status | grep -q "51820/udp"; then
-    ufw allow 51820/udp comment 'AmneziaWG Palma'
-    echo "[awg-hub] ufw allow 51820/udp added"
+  if ! ufw status | grep -q "443/udp"; then
+    ufw allow 443/udp comment 'AmneziaWG Palma'
+    echo "[awg-hub] ufw allow 443/udp added"
   else
-    echo "[awg-hub] ufw rule for 51820/udp already present"
+    echo "[awg-hub] ufw rule for 443/udp already present"
   fi
 fi
 
@@ -247,10 +249,10 @@ else
   echo "[awg-hub] ERROR: awg0 interface does not exist"
   FAIL=1
 fi
-if ss -ulnp 2>/dev/null | grep -qE ':51820\b'; then
-  echo "[awg-hub] UDP :51820 listener present"
+if ss -ulnp 2>/dev/null | grep -qE ':443\b'; then
+  echo "[awg-hub] UDP :443 listener present"
 else
-  echo "[awg-hub] ERROR: no UDP listener on :51820"
+  echo "[awg-hub] ERROR: no UDP listener on :443"
   FAIL=1
 fi
 if awg show awg0 >/dev/null 2>&1; then
@@ -267,7 +269,7 @@ if [ "$FAIL" = "1" ]; then
   exit 1
 fi
 
-echo "[awg-hub] Setup complete — awg0 UP, listening on :51820."
+echo "[awg-hub] Setup complete — awg0 UP, listening on :443/udp."
 `, "__VERSION__", amneziawgVersion)
 	script = strings.ReplaceAll(script, "__TOOLS_VERSION__", amneziawgToolsVersion)
 

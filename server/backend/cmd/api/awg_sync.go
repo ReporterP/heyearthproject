@@ -4,7 +4,7 @@ package main
 // AmneziaWG (Palma) server config sync.
 //
 // Architecture: amneziawg-go runs as its own systemd unit (awg.service) on
-// the Hub, listening UDP :51820. Per-user keys + CPS obfuscation params are
+// the Hub, listening UDP :443. Per-user keys + CPS obfuscation params are
 // stored in PostgreSQL (users.awg_public_key, users.awg_preshared_key,
 // users.awg_cps_params, users.awg_ip_address). On every plan/subscription
 // mutation, biz.NotifySubscriptionChange fans out to RequestAWGSync (wired
@@ -35,7 +35,7 @@ const (
 	awgConfigPath = "/opt/heyearth/awg/awg0.conf"
 	awgConfigDir  = "/opt/heyearth/awg"
 	awgInterface  = "awg0"
-	awgListenPort = 51820
+	awgListenPort = 443 // UDP 443 (QUIC-class): home/mobile ISPs rarely block it, unlike a high custom port. TCP 443 (Reality/nginx) is separate — no conflict.
 	awgServerIP   = "10.66.66.1/24"
 )
 

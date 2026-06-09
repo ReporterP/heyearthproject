@@ -50,7 +50,7 @@ type AWGConfig struct {
 	ServerPubKey string       // base64, 32 bytes
 	CPSParams    AWGCPSParams // global server CPS (same for all clients)
 	IPAddress    string       // "10.66.66.42" — assigned slot in /24
-	Endpoint     string       // "<main_host>:51820" — Hub UDP listener
+	Endpoint     string       // "<main_host>:443" — Hub UDP listener (UDP 443, QUIC-class)
 }
 
 // generateKeyPair returns base64-encoded curve25519 keypair.
@@ -338,8 +338,10 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 	}, nil
 }
 
-// awgEndpoint returns "<main_host>:51820" for client URI building.
+// awgEndpoint returns "<main_host>:443" for client URI building. AWG listens on
+// UDP 443 (QUIC-class port that home/mobile ISPs rarely block); TCP 443 (Reality)
+// is a separate socket.
 func awgEndpoint() string {
 	host := GetSettingOrDefault("main_server_host", "")
-	return host + ":51820"
+	return host + ":443"
 }
