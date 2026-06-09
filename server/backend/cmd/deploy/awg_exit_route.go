@@ -114,13 +114,20 @@ ExecStart=$BIN $CONF
 # Policy routing: ONLY the AWG subnet uses table $TABLE -> awgtun. Idempotent
 # (route replace + grep-guarded rule add; we never delete table main). Wait up
 # to 10s for hev-socks5-tunnel to create the tun before adding the route.
+# Also open FORWARD awg0<->awgtun: ufw's default FORWARD policy is DROP, which
+# silently kills the awg0->awgtun handoff (handshake works, bulk data never
+# reaches the socks-awg inbound). iptables -C ... || -I keeps it idempotent.
 ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do ip link show $TUN >/dev/null 2>&1 && break; sleep 0.5; done; \
   sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null; \
   sysctl -w net.ipv4.conf.$TUN.rp_filter=2 >/dev/null 2>&1 || true; \
   ip route replace default dev $TUN table $TABLE; \
-  ip rule show | grep -q "from $SUBNET lookup $TABLE" || ip rule add from $SUBNET lookup $TABLE'
+  ip rule show | grep -q "from $SUBNET lookup $TABLE" || ip rule add from $SUBNET lookup $TABLE; \
+  iptables -C FORWARD -i awg0 -o $TUN -j ACCEPT 2>/dev/null || iptables -I FORWARD -i awg0 -o $TUN -j ACCEPT; \
+  iptables -C FORWARD -i $TUN -o awg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i $TUN -o awg0 -j ACCEPT'
 ExecStopPost=/bin/sh -c 'ip rule del from $SUBNET lookup $TABLE 2>/dev/null || true; \
-  ip route flush table $TABLE 2>/dev/null || true'
+  ip route flush table $TABLE 2>/dev/null || true; \
+  iptables -D FORWARD -i awg0 -o $TUN -j ACCEPT 2>/dev/null || true; \
+  iptables -D FORWARD -i $TUN -o awg0 -j ACCEPT 2>/dev/null || true'
 Restart=always
 RestartSec=5
 User=root
