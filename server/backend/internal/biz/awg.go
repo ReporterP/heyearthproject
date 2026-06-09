@@ -51,6 +51,7 @@ type AWGConfig struct {
 	CPSParams    AWGCPSParams // global server CPS (same for all clients)
 	IPAddress    string       // "10.66.66.42" — assigned slot in /24
 	Endpoint     string       // "<main_host>:443" — Hub UDP listener (UDP 443, QUIC-class)
+	MimicI1      string       // AmneziaWG 2.0 I1 mimic-QUIC signature (empty = disabled / 1.5 mode)
 }
 
 // generateKeyPair returns base64-encoded curve25519 keypair.
@@ -244,6 +245,16 @@ func GetServerCPSParams() (AWGCPSParams, error) {
 	return p, nil
 }
 
+// GetServerMimicI1 returns the AmneziaWG 2.0 I1 mimic-QUIC signature shared by
+// the server [Interface] and every client. It makes the WireGuard handshake
+// look like a QUIC Initial packet so mobile carriers (which throttle unknown
+// UDP) see legitimate QUIC and let it through. Stored in app_settings.awg_mimic_i1;
+// empty value disables it (falls back to plain 1.5 obfuscation). MUST be identical
+// on server and client or the handshake fails.
+func GetServerMimicI1() string {
+	return GetSettingOrDefault("awg_mimic_i1", "")
+}
+
 // GetUserAWGConfig returns user's AWG config, lazy-init on first call.
 // Transactional — per-user awg_* columns (keys, PSK, IP) written atomically.
 // CPS params come from GetServerCPSParams (global), NOT per-user.
@@ -259,6 +270,7 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 	}
 
 	// Global obfuscation params — same for server [Interface] and every client.
+	serverMimic := GetServerMimicI1()
 	serverCPS, err := GetServerCPSParams()
 	if err != nil {
 		return nil, err
@@ -295,6 +307,7 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 			CPSParams:    serverCPS, // global, not per-user
 			IPAddress:    ip.String,
 			Endpoint:     awgEndpoint(),
+			MimicI1:      serverMimic,
 		}, nil
 	}
 
@@ -335,6 +348,7 @@ func GetUserAWGConfig(userID string) (*AWGConfig, error) {
 		CPSParams:    serverCPS, // global, not per-user
 		IPAddress:    newIP,
 		Endpoint:     awgEndpoint(),
+		MimicI1:      serverMimic,
 	}, nil
 }
 

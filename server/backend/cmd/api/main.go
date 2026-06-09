@@ -728,8 +728,14 @@ func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "H1 = %d\n", cfg.CPSParams.H1)
 	fmt.Fprintf(&b, "H2 = %d\n", cfg.CPSParams.H2)
 	fmt.Fprintf(&b, "H3 = %d\n", cfg.CPSParams.H3)
-	fmt.Fprintf(&b, "H4 = %d\n\n", cfg.CPSParams.H4)
-	b.WriteString("[Peer]\n")
+	fmt.Fprintf(&b, "H4 = %d\n", cfg.CPSParams.H4)
+	// AmneziaWG 2.0 mimic-QUIC: makes the handshake look like a QUIC Initial
+	// packet so mobile carriers (which throttle unknown UDP) pass it. Must match
+	// the server's I1 — both come from app_settings.awg_mimic_i1. Empty = 1.5 mode.
+	if cfg.MimicI1 != "" {
+		fmt.Fprintf(&b, "I1 = %s\n", cfg.MimicI1)
+	}
+	b.WriteString("\n[Peer]\n")
 	fmt.Fprintf(&b, "PublicKey = %s\n", cfg.ServerPubKey)
 	if cfg.UserPSK != "" {
 		fmt.Fprintf(&b, "PresharedKey = %s\n", cfg.UserPSK)

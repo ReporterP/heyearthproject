@@ -244,6 +244,12 @@ func renderAWGConfig(serverPriv string, cps biz.AWGCPSParams, peers []awgPeer) s
 	fmt.Fprintf(&b, "H2 = %d\n", cps.H2)
 	fmt.Fprintf(&b, "H3 = %d\n", cps.H3)
 	fmt.Fprintf(&b, "H4 = %d\n", cps.H4)
+	// AmneziaWG 2.0 I1 mimic-QUIC signature (optional). Empty = plain 1.5
+	// obfuscation. When set it MUST match every client's I1 or the handshake
+	// fails — both come from app_settings.awg_mimic_i1 via biz.GetServerMimicI1.
+	if mimic := biz.GetServerMimicI1(); mimic != "" {
+		fmt.Fprintf(&b, "I1 = %s\n", mimic)
+	}
 	b.WriteString("\n")
 
 	for _, p := range peers {
