@@ -714,6 +714,11 @@ func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("[Interface]\n")
 	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.UserPrivKey)
 	fmt.Fprintf(&b, "Address = %s\n", ip)
+	// MTU 1280 (min IPv6 MTU): AWG-over-UDP encapsulation + CPS junk can push a
+	// 1420-byte inner packet past the path MTU on mobile/PPPoE links, fragmenting
+	// large TCP segments so connections open but data stalls ("слабый интернет").
+	// 1280 leaves headroom and traverses every path.
+	b.WriteString("MTU = 1280\n")
 	b.WriteString("DNS = 1.1.1.1, 8.8.8.8\n")
 	fmt.Fprintf(&b, "Jc = %d\n", cfg.CPSParams.Jc)
 	fmt.Fprintf(&b, "Jmin = %d\n", cfg.CPSParams.Jmin)

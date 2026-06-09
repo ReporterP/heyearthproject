@@ -86,7 +86,7 @@ fi
 cat > "$CONF" <<CONFEOF
 tunnel:
   name: $TUN
-  mtu: 8500
+  mtu: 1280
   ipv4: $TUN_IP
 
 socks5:

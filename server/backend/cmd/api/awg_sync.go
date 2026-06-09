@@ -234,6 +234,7 @@ func renderAWGConfig(serverPriv string, cps biz.AWGCPSParams, peers []awgPeer) s
 	fmt.Fprintf(&b, "PrivateKey = %s\n", serverPriv)
 	fmt.Fprintf(&b, "ListenPort = %d\n", awgListenPort)
 	fmt.Fprintf(&b, "Address = %s\n", awgServerIP)
+	b.WriteString("MTU = 1280\n") // match client MTU; avoids AWG-over-UDP fragmentation stalls
 	fmt.Fprintf(&b, "Jc = %d\n", cps.Jc)
 	fmt.Fprintf(&b, "Jmin = %d\n", cps.Jmin)
 	fmt.Fprintf(&b, "Jmax = %d\n", cps.Jmax)
