@@ -2,7 +2,7 @@
 id: amneziawg-palma-prod
 beads_id: heyearthproject-98ng
 title: AmneziaWG (Пальма) production rollout — cabinet + traffic + Exit routing
-status: draft
+status: done
 created: 2026-06-08
 author: alex
 ---
