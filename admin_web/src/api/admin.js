@@ -9,6 +9,9 @@ export function login(username, password) {
 export function fetchOverview() {
   return apiFetch('/overview')
 }
+export function fetchCapacity() {
+  return apiFetch('/capacity')
+}
 
 // ── Users ──
 export function fetchUsersPaged(params) {

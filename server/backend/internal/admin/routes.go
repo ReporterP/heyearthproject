@@ -194,6 +194,9 @@ func RegisterRoutes() {
 	// Hysteria2 (Express) status — read-only snapshot for the Hub server detail page.
 	http.HandleFunc("/api/admin/hysteria2/status", withMethod(http.MethodGet, RequirePermission("servers.read", Hysteria2StatusHandler)))
 
+	// Capacity widget — read-only Hub+Exit headroom snapshot (CPU/traffic vs ceiling).
+	http.HandleFunc("/api/admin/capacity", withMethod(http.MethodGet, RequirePermission("dashboard.read", CapacityHandler)))
+
 	// Auto-tuner
 	http.HandleFunc("/api/admin/auto-tuner/status", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerStatusHandler)))
 	http.HandleFunc("/api/admin/auto-tuner/history", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerHistoryHandler)))
