@@ -34,3 +34,4 @@ admin_web/dist/
 server/backend/heyearth-api
 server/backend/heyearth-api.bin
 .superpowers/
+.plan-tmp/
