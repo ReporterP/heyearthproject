@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import QRCode from '../components/QRCode.jsx'
 
 /* ── Platform constants ── */
 const APP_STORE_URL = 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108'
 const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.happproxy'
 const DESKTOP_HAPP_URL = 'https://www.happ.su/main/ru'
 const DEEPLINK_TIMEOUT_MS = 1500
+
+/* ── Icons ── */
+const IconApple = (p) => (<svg {...p} viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 1.5c.1 1-.3 2-.9 2.7-.7.8-1.7 1.4-2.7 1.3-.1-1 .4-2 1-2.7.6-.7 1.7-1.2 2.6-1.3zM19 17.3c-.5 1.1-.7 1.6-1.4 2.6-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.4.9-3.7.9c-1.6 0-2.8-1.5-3.7-2.9C.7 16.4.4 12 2 9.3c1-1.6 2.6-2.6 4.1-2.6 1.5 0 2.5 1 3.7 1 1.2 0 1.9-1 3.7-1 1.3 0 2.7.7 3.7 2-3.2 1.8-2.7 6.4.8 8.6z" /></svg>)
+const IconAndroid = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="8" width="12" height="11" rx="2" /><path d="M9 8V6a3 3 0 016 0v2M8 5L6.5 3M16 5l1.5-2M9.5 12h.01M14.5 12h.01" /></svg>)
+const IconDesktop = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>)
 
 /* ── Helpers ── */
 function detectPlatform() {
@@ -17,17 +23,12 @@ function detectPlatform() {
 }
 
 function buildAndroidIntent(happLink) {
-  // happLink is "happ://crypt5/<payload>". Strip "happ://" prefix and rebuild as
-  // an Android Intent URI. The S.browser_fallback_url parameter triggers a
-  // native redirect to Play Store if the app is not installed — no JS needed.
   const tail = happLink.replace(/^happ:\/\//, '')
   const fallback = encodeURIComponent(PLAY_STORE_URL)
   return `intent://${tail}#Intent;scheme=happ;package=com.happproxy;S.browser_fallback_url=${fallback};end`
 }
 
 async function fetchHappLink(token) {
-  // Fetches the documented `happ://crypt5/<encrypted>` deeplink from backend
-  // (which caches results from crypto.happ.su). Returns null on failure.
   try {
     const res = await fetch(`/api/v1/user/happ-link/${encodeURIComponent(token)}`)
     if (!res.ok) return null
@@ -57,16 +58,10 @@ export default function ConnectPage() {
   const [happLink, setHappLink] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const subscribeUrl = token
-    ? `${window.location.origin}/api/v1/user/subscribe/${token}`
-    : ''
+  const subscribeUrl = token ? `${window.location.origin}/api/v1/user/subscribe/${token}` : ''
 
-  // Fetch the crypt5 deeplink from backend on mount.
   useEffect(() => {
-    if (!token) {
-      setLoading(false)
-      return
-    }
+    if (!token) { setLoading(false); return }
     let cancelled = false
     fetchHappLink(token).then((link) => {
       if (cancelled) return
@@ -76,42 +71,31 @@ export default function ConnectPage() {
     return () => { cancelled = true }
   }, [token])
 
-  // Once the happ link is loaded, trigger the deeplink + fallback timer.
   useEffect(() => {
     if (loading || !happLink || typeof window === 'undefined') return
-
-    // Android: Intent URI handles Play Store fallback natively.
     if (platform === 'android') {
       window.location.href = buildAndroidIntent(happLink)
       setTriggered(true)
       return
     }
-
-    // iOS / Desktop: try deeplink, fall back to download URL after timeout.
     const fallback = platform === 'ios' ? APP_STORE_URL : DESKTOP_HAPP_URL
     window.location.href = happLink
     setTriggered(true)
-
     const handle = setTimeout(() => {
-      if (!document.hidden) {
-        window.location.href = fallback
-      }
+      if (!document.hidden) window.location.href = fallback
     }, DEEPLINK_TIMEOUT_MS)
-
     return () => clearTimeout(handle)
   }, [loading, happLink, platform])
 
   if (!token) {
     return (
       <section className="min-h-[60vh] flex items-center justify-center px-4">
-        <div className="glass-card rounded-2xl p-8 max-w-md text-center">
-          <h1 className="text-2xl font-bold mb-2">Ссылка некорректна</h1>
+        <div className="card rounded-[22px] p-8 max-w-md text-center">
+          <h1 className="serif text-2xl font-semibold mb-2">Ссылка некорректна</h1>
           <p className="text-sm text-text-secondary mb-6">
             Параметр <code>sub</code> отсутствует. Откройте кнопку «Добавить в приложение» из личного кабинета.
           </p>
-          <Link to="/dashboard" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand/20 text-brand hover:bg-brand/30 transition">
-            ← В личный кабинет
-          </Link>
+          <Link to="/dashboard" className="btn-primary !py-2.5 !text-sm">← В личный кабинет</Link>
         </div>
       </section>
     )
@@ -119,74 +103,64 @@ export default function ConnectPage() {
 
   async function doCopy() {
     const ok = await copyToClipboard(subscribeUrl)
-    if (ok) {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    }
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1800) }
   }
 
-  const heading = loading
-    ? 'Готовим ссылку…'
-    : happLink
-      ? 'Открываем Happ…'
-      : 'Сервис временно недоступен'
+  const heading = loading ? 'Готовим ссылку…' : happLink ? 'Открываем приложение…' : 'Готово к ручной настройке'
+
+  const dlButtons = [
+    { url: APP_STORE_URL, Icon: IconApple, label: 'Скачать для iPhone (App Store)' },
+    { url: PLAY_STORE_URL, Icon: IconAndroid, label: 'Скачать для Android (Google Play)' },
+    { url: DESKTOP_HAPP_URL, Icon: IconDesktop, label: 'Скачать для ПК (Windows / macOS / Linux)' },
+  ]
 
   return (
-    <section className="min-h-[80vh] flex items-center justify-center px-4 py-10">
-      <div className="glass-card rounded-2xl p-6 md:p-8 max-w-lg w-full">
+    <section className="relative min-h-[80vh] flex items-center justify-center px-4 py-10 overflow-hidden">
+      <div className="pointer-events-none absolute top-10 right-10 w-72 h-72 rounded-full bg-brand/8 blur-[110px]" />
+      <div className="card rounded-[22px] p-6 md:p-8 max-w-lg w-full relative">
         <div className="flex items-center gap-3 mb-3">
-          <div className="w-10 h-10 rounded-xl bg-brand/20 flex items-center justify-center">
-            <svg className="w-6 h-6 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <div className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/25 text-brand flex items-center justify-center">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
             </svg>
           </div>
-          <h1 className="text-xl md:text-2xl font-bold">{heading}</h1>
+          <h1 className="serif text-xl md:text-2xl font-semibold">{heading}</h1>
         </div>
         {triggered && (
-          <p className="text-sm text-text-secondary mb-5">
-            Если Happ не открылся автоматически, выберите ваше устройство ниже.
-          </p>
+          <p className="text-sm text-text-secondary mb-5">Если приложение не открылось автоматически, выберите ваше устройство ниже.</p>
         )}
         {!loading && !happLink && (
-          <p className="text-sm text-amber-300 mb-5">
-            Не удалось получить шифрованную ссылку. Используйте ручную установку через QR/копирование ниже.
-          </p>
+          <p className="text-sm text-accent mb-5">Быструю ссылку подготовить не удалось. Используйте ручную установку через QR или копирование ниже.</p>
         )}
 
         <div className="space-y-2 mb-6">
-          <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer"
-             className="block px-4 py-3 rounded-xl bg-bg-surface/50 hover:bg-bg-surface/70 border border-border text-sm text-text-primary transition">
-            📱 Скачать Happ для iPhone (App Store)
-          </a>
-          <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer"
-             className="block px-4 py-3 rounded-xl bg-bg-surface/50 hover:bg-bg-surface/70 border border-border text-sm text-text-primary transition">
-            🤖 Скачать Happ для Android (Google Play)
-          </a>
-          <a href={DESKTOP_HAPP_URL} target="_blank" rel="noopener noreferrer"
-             className="block px-4 py-3 rounded-xl bg-bg-surface/50 hover:bg-bg-surface/70 border border-border text-sm text-text-primary transition">
-            💻 Скачать Happ для ПК (Windows / macOS / Linux)
-          </a>
+          {dlButtons.map(({ url, Icon, label }) => (
+            <a key={label} href={url} target="_blank" rel="noopener noreferrer"
+               className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-brand/12 hover:border-brand/25 text-sm text-text-primary transition">
+              <span className="text-brand"><Icon className="w-5 h-5" /></span>
+              {label}
+            </a>
+          ))}
         </div>
 
-        <div className="border-t border-border pt-5">
-          <p className="text-xs text-text-secondary mb-2">
-            Или используйте другой клиент (v2rayNG, Streisand, Hiddify):
-          </p>
-          <div className="flex items-stretch gap-2">
-            <code className="flex-1 px-3 py-2 rounded-lg bg-bg-app text-xs font-mono break-all overflow-hidden text-ellipsis whitespace-nowrap">
+        <div className="border-t border-brand/10 pt-5">
+          <p className="text-xs text-text-secondary mb-3">Или вставьте ссылку в другое приложение (v2rayNG, Streisand):</p>
+          <div className="flex items-stretch gap-2 mb-4">
+            <code className="flex-1 px-3 py-2 rounded-lg bg-bg-app border border-brand/10 text-xs font-mono break-all overflow-hidden text-ellipsis whitespace-nowrap">
               {subscribeUrl}
             </code>
-            <button onClick={doCopy}
-                    className="px-3 py-2 rounded-lg bg-brand/20 text-brand hover:bg-brand/30 text-sm transition shrink-0">
+            <button onClick={doCopy} className="px-3 py-2 rounded-lg bg-brand/15 text-brand hover:bg-brand/25 text-sm transition shrink-0">
               {copied ? '✓ OK' : 'Копировать'}
             </button>
           </div>
+          <details>
+            <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">Показать QR-код</summary>
+            <div className="mt-3 flex justify-center"><QRCode data={subscribeUrl} size={190} /></div>
+          </details>
         </div>
 
         <div className="mt-6 text-center">
-          <Link to="/dashboard" className="text-xs text-text-secondary hover:text-text-primary transition">
-            ← Назад в личный кабинет
-          </Link>
+          <Link to="/dashboard" className="text-xs text-text-secondary hover:text-text-primary transition">← Назад в личный кабинет</Link>
         </div>
       </div>
     </section>
