@@ -1,17 +1,20 @@
-import { useState } from 'react'
+import { useState, useId } from 'react'
 
-export default function PasswordInput({ value, onChange, placeholder, label, className = '' }) {
+export default function PasswordInput({ value, onChange, placeholder, label, className = '', autoComplete }) {
   const [visible, setVisible] = useState(false)
+  const id = useId()
   return (
     <div className={className}>
-      {label && <label className="block text-xs font-medium text-text-secondary mb-2">{label}</label>}
+      {label && <label htmlFor={id} className="block text-xs font-medium text-text-secondary mb-2">{label}</label>}
       <div className="relative">
         <input
+          id={id}
           type={visible ? 'text' : 'password'}
           value={value}
           onChange={onChange}
           placeholder={placeholder}
-          className="w-full px-4 py-3.5 pr-12 rounded-xl bg-white/5 border border-white/10 focus:border-brand/50 focus:bg-white/[0.07] focus:outline-none focus:ring-1 focus:ring-brand/30 transition-all duration-300 text-sm placeholder:text-text-secondary/50"
+          autoComplete={autoComplete}
+          className="w-full px-4 py-3.5 pr-12 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-brand/25 transition-all duration-300 text-sm placeholder:text-faint"
         />
         <button
           type="button"

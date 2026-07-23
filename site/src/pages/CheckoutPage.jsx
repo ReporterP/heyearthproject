@@ -84,8 +84,8 @@ export default function CheckoutPage() {
           },
           customization: {
             colors: {
-              controlPrimary: '#7c3aed', // наш brand фиолетовый
-              background: '#0a0f1e',
+              controlPrimary: '#10b981', // brand emerald («Лес в ночи»)
+              background: '#0a130f',     // ночной лес
             },
           },
         })
@@ -137,7 +137,7 @@ export default function CheckoutPage() {
       <div className="relative max-w-xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold">Оплата</h1>
+            <h1 className="serif text-2xl md:text-3xl font-semibold">Оплата</h1>
             {planName && (
               <p className="text-sm text-text-secondary mt-1">Тариф «{planName}»</p>
             )}
@@ -148,41 +148,39 @@ export default function CheckoutPage() {
         </div>
 
         {status === 'loading' && (
-          <div className="glass-card rounded-2xl p-8 flex items-center justify-center min-h-[400px]">
+          <div className="card p-8 flex items-center justify-center min-h-[400px]">
             <div className="text-center">
-              <div className="inline-block w-10 h-10 rounded-full border-2 border-brand/30 border-t-brand animate-spin mb-3" />
+              <div className="inline-block w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin mb-3" />
               <p className="text-sm text-text-secondary">Подготавливаем форму оплаты…</p>
             </div>
           </div>
         )}
 
         {status === 'error' && (
-          <div className="glass-card rounded-2xl p-6 border border-red-500/30">
+          <div className="card p-6 !border-danger/30">
             <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
-                <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <div className="w-10 h-10 rounded-full bg-danger/15 flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
               <div className="flex-1">
-                <h2 className="font-semibold mb-1">Не удалось открыть оплату</h2>
+                <h2 className="serif font-semibold mb-1">Не удалось открыть оплату</h2>
                 <p className="text-sm text-text-secondary mb-4">{error}</p>
-                <Link to="/payment" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white text-sm font-medium hover:bg-brand-dark transition">
-                  Вернуться к выбору
-                </Link>
+                <Link to="/payment" className="btn-primary !py-2.5 !text-sm">Вернуться к выбору</Link>
               </div>
             </div>
           </div>
         )}
 
         {status === 'success' && (
-          <div className="glass-card rounded-2xl p-8 text-center border border-green-500/30">
-            <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-green-500/20 flex items-center justify-center">
-              <svg className="w-8 h-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="card p-8 text-center !border-brand/30">
+            <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-brand/15 border border-brand/25 flex items-center justify-center">
+              <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             </div>
-            <h2 className="text-xl font-bold mb-1">Оплата прошла</h2>
+            <h2 className="serif text-xl font-semibold mb-1">Оплата прошла</h2>
             <p className="text-sm text-text-secondary">Переходим в личный кабинет…</p>
           </div>
         )}
