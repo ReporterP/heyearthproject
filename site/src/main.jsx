@@ -2,6 +2,8 @@ import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.jsx'
+import '@fontsource-variable/lora'
+import '@fontsource-variable/raleway'
 import './style.css'
 import SiteHeader from './components/SiteHeader.jsx'
 import SiteFooter from './components/SiteFooter.jsx'
@@ -28,12 +30,14 @@ import ConnectPage from './pages/ConnectPage.jsx'
 
 function NotFoundPage() {
   return (
-    <div className="flex flex-col items-center justify-center py-32 px-4">
-      <h1 className="text-6xl font-bold text-white/20 mb-4">404</h1>
-      <p className="text-lg text-white/60 mb-6">Страница не найдена</p>
-      <Link to="/" className="px-5 py-2.5 bg-brand rounded-xl text-white hover:bg-brand/80 transition">
-        На главную
-      </Link>
+    <div className="relative flex flex-col items-center justify-center py-40 px-4 text-center overflow-hidden">
+      <div className="pointer-events-none absolute left-1/2 top-1/3 h-72 w-72 -translate-x-1/2 rounded-full bg-brand/10 blur-3xl" />
+      <p className="serif text-[7rem] leading-none font-semibold text-brand/25 tabular-nums">404</p>
+      <h1 className="serif text-2xl mt-2 mb-3">Тропа не найдена</h1>
+      <p className="text-text-secondary mb-8 max-w-sm">
+        Похоже, эта страница затерялась в лесу. Вернёмся к началу.
+      </p>
+      <Link to="/" className="btn-primary">На главную</Link>
     </div>
   )
 }

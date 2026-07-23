@@ -53,8 +53,8 @@ export default function TrafficCard({ data }) {
       {/* Header — icon + title + period switcher */}
       <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/10 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <div className="w-10 h-10 rounded-xl bg-brand/12 border border-brand/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
             </svg>
           </div>
@@ -74,7 +74,7 @@ export default function TrafficCard({ data }) {
               onClick={() => setPeriod(po.id)}
               className={`text-xs px-3 py-1.5 rounded-lg transition-all duration-200 ${
                 period === po.id
-                  ? 'bg-gradient-to-br from-cyan-500 to-blue-500 text-white font-semibold shadow-lg shadow-cyan-500/20'
+                  ? 'bg-brand text-[#04231a] font-semibold'
                   : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
               }`}
             >
@@ -102,8 +102,8 @@ export default function TrafficCard({ data }) {
           <div
             className={`h-full transition-all duration-500 ${
               cycle.exceeded
-                ? 'bg-gradient-to-r from-red-500 to-orange-500'
-                : 'bg-gradient-to-r from-cyan-500 to-blue-500'
+                ? 'bg-gradient-to-r from-danger to-accent'
+                : 'bg-gradient-to-r from-brand-dark to-brand'
             }`}
             style={{ width: `${Math.min(100, cycle.percent)}%` }}
           />
@@ -125,7 +125,7 @@ export default function TrafficCard({ data }) {
                 title={`${bucketLabel(b, period)}: ${formatBytes(b.bytes)}`}
               >
                 <div
-                  className="w-full bg-gradient-to-t from-cyan-500/60 to-blue-500/80 group-hover:from-cyan-400 group-hover:to-blue-400 rounded-t transition-all"
+                  className="w-full bg-gradient-to-t from-brand/40 to-brand/80 group-hover:from-brand/60 group-hover:to-brand rounded-t transition-all"
                   style={{ height: `${h}px` }}
                 />
                 {buckets.length <= 12 && (

@@ -48,7 +48,7 @@ export default function TelegramProxyButton({ token }) {
         </div>
       </div>
       <p className="text-sm text-text-secondary mb-3">
-        Только для трафика Telegram. Не заменяет VPN, но помогает когда Telegram блокируется отдельно.
+        Быстрый доступ к Telegram в один клик — отдельный канал только для мессенджера, помимо основного подключения.
       </p>
       <div className="flex flex-wrap gap-2">
         <a

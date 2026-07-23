@@ -1,0 +1,236 @@
+### Task 5: AWG config endpoint (/api/v1/user/awg-config + connections flag)
+
+Adds the `amnezia_available` gating flag to the existing connections response and a new
+authenticated `GET /api/v1/user/awg-config` that returns the per-user WG-INI text + an
+`amneziawg://` deeplink. Backend infra (`biz.GetUserAWGConfig`, `RequestAWGSync`,
+`awg.service` on :51820) already exists — this just exposes it over HTTP. Happ subscription
+emit stays untouched (RED LINE).
+
+**Files:** `server/backend/cmd/api/main.go` (handler + route), reuses `biz.GetUserAWGConfig`
+(`internal/biz/awg.go`), `biz.GetUserPlan` (`internal/biz/plans.go:246`), `RequestAWGSync`
+(`cmd/api/awg_sync.go:52`), `biz.AWGCPSParams` field names from `awg.go:29-39`.
+
+- [ ] **5.1 — Add `amnezia_available` to the connections response.** In `main.go`
+  `handleUserConnections` the response map is built at line 594. The flag must be true only
+  when the user's plan has AmneziaWG enabled AND they can connect. `access.CanConnect`
+  already encodes "active subscription" (it gates the whole `connection_options` block at
+  line 617), and `biz.GetUserPlan` returns an error unless there is an active plan — so
+  `plan.AmneziaWGEnabled && access.CanConnect` is the exact mirror of the existing
+  `can_connect` semantics. Compute it inside the existing `if plan, err := ...` block so we
+  reuse the single `GetUserPlan` call already there (line 604), then surface it as a flat
+  field. OLD:
+
+  ```go
+  	// Build flat fields for backward compatibility with site/app
+  	resp := map[string]any{
+  		"user_id":                   userID,
+  		"can_connect":               access.CanConnect,
+  		"is_premium":                access.IsPremium,
+  		"traffic_masking_available": access.TrafficMaskingAvailable,
+  		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
+  		"subscription_version":      subVer,
+  	}
+
+  	// Add plan info to response
+  	if plan, err := biz.GetUserPlan(userID); err == nil && plan != nil {
+  		resp["plan"] = map[string]any{
+  			"id":                plan.ID,
+  			"slug":              plan.Slug,
+  			"name":              plan.Name,
+  			"allowed_protocols": plan.AllowedProtocols,
+  			"server_ids":        plan.ServerIDs,
+  			"traffic_limit":     plan.TrafficLimitBytes,
+  			"duration_days":     plan.DurationDays,
+  		}
+  	}
+  ```
+
+  NEW (note the additive `"amnezia_available": false` default in the map + the assignment
+  inside the plan block — shape is unchanged, only one new key):
+
+  ```go
+  	// Build flat fields for backward compatibility with site/app
+  	resp := map[string]any{
+  		"user_id":                   userID,
+  		"can_connect":               access.CanConnect,
+  		"is_premium":                access.IsPremium,
+  		"traffic_masking_available": access.TrafficMaskingAvailable,
+  		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
+  		"subscription_version":      subVer,
+  		// Palma (AmneziaWG) availability — true only for active subs on an
+  		// amnezia_wg_enabled plan. Site renders the WG/QR block off this flag;
+  		// the heavy config is fetched lazily via GET /api/v1/user/awg-config.
+  		"amnezia_available": false,
+  	}
+
+  	// Add plan info to response
+  	if plan, err := biz.GetUserPlan(userID); err == nil && plan != nil {
+  		resp["plan"] = map[string]any{
+  			"id":                plan.ID,
+  			"slug":              plan.Slug,
+  			"name":              plan.Name,
+  			"allowed_protocols": plan.AllowedProtocols,
+  			"server_ids":        plan.ServerIDs,
+  			"traffic_limit":     plan.TrafficLimitBytes,
+  			"duration_days":     plan.DurationDays,
+  		}
+  		// GetUserPlan only returns a plan for an active subscription, and
+  		// access.CanConnect already encodes the same gate used for connection_options.
+  		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
+  	}
+  ```
+
+- [ ] **5.2 — Write `handleUserAWGConfig` in `main.go`.** Place it directly after
+  `handleUserConnections` (ends line 656), before `handleUserMTProto`. Mirror the auth +
+  CORS preamble of `handleUserMTProto` (`extractUserFromToken`, `setCORS`,
+  `MethodOptions` short-circuit, GET-only). Gate: re-run `biz.GetUserPlan` and reject with
+  403 if no plan or `!plan.AmneziaWGEnabled`. The client INI mirrors the server-side
+  `renderAWGConfig` field order (`awg_sync.go:233-267`) but client-shaped: client
+  `[Interface]` carries `PrivateKey`/`Address` (the `/32`)/`DNS`, `[Peer]` carries the
+  server `PublicKey`, `PresharedKey`, `AllowedIPs = 0.0.0.0/0, ::/0`, `Endpoint`, and the
+  same `Jc..H4` CPS lines. After building keys, call `RequestAWGSync()` so the peer is
+  written into `awg0.conf` on the Hub. Deeplink = `amneziawg://` + base64(INI) +
+  `#🌴 Пальма`. Add a new func:
+
+  ```go
+  // handleUserAWGConfig — GET /api/v1/user/awg-config
+  // Returns the per-user AmneziaWG ("Пальма") client config as WG-INI text plus an
+  // amneziawg:// deeplink, for users on an amnezia_wg_enabled plan with an active
+  // subscription. The config is heavy (per-user keys + CPS) so the site fetches it
+  // lazily — NOT part of /connections. Calling this lazy-inits the user's keys
+  // (biz.GetUserAWGConfig) and triggers RequestAWGSync so the peer lands in awg0.conf.
+  func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
+  	setCORS(w, r)
+  	if r.Method == http.MethodOptions {
+  		w.WriteHeader(http.StatusOK)
+  		return
+  	}
+  	if r.Method != http.MethodGet {
+  		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  		return
+  	}
+  	userID, err := extractUserFromToken(r)
+  	if err != nil {
+  		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+  		return
+  	}
+
+  	// Gate: plan must have AmneziaWG enabled. GetUserPlan errors unless the user
+  	// has an active subscription, so this single check covers both conditions.
+  	plan, err := biz.GetUserPlan(userID)
+  	if err != nil || plan == nil || !plan.AmneziaWGEnabled {
+  		writeJSON(w, http.StatusForbidden, map[string]string{
+  			"error": "AmneziaWG (Пальма) недоступен на вашем тарифе",
+  		})
+  		return
+  	}
+
+  	cfg, err := biz.GetUserAWGConfig(userID)
+  	if err != nil {
+  		log.Printf("[awg-config] GetUserAWGConfig(%s): %v", userID, err)
+  		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config build failed"})
+  		return
+  	}
+  	// Ensure the freshly-allocated peer is flushed to awg0.conf on the Hub.
+  	RequestAWGSync()
+
+  	ip := cfg.IPAddress
+  	if ip != "" && !strings.Contains(ip, "/") {
+  		ip += "/32"
+  	}
+
+  	var b strings.Builder
+  	b.WriteString("[Interface]\n")
+  	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.UserPrivKey)
+  	fmt.Fprintf(&b, "Address = %s\n", ip)
+  	b.WriteString("DNS = 1.1.1.1, 8.8.8.8\n")
+  	fmt.Fprintf(&b, "Jc = %d\n", cfg.CPSParams.Jc)
+  	fmt.Fprintf(&b, "Jmin = %d\n", cfg.CPSParams.Jmin)
+  	fmt.Fprintf(&b, "Jmax = %d\n", cfg.CPSParams.Jmax)
+  	fmt.Fprintf(&b, "S1 = %d\n", cfg.CPSParams.S1)
+  	fmt.Fprintf(&b, "S2 = %d\n", cfg.CPSParams.S2)
+  	fmt.Fprintf(&b, "H1 = %d\n", cfg.CPSParams.H1)
+  	fmt.Fprintf(&b, "H2 = %d\n", cfg.CPSParams.H2)
+  	fmt.Fprintf(&b, "H3 = %d\n", cfg.CPSParams.H3)
+  	fmt.Fprintf(&b, "H4 = %d\n\n", cfg.CPSParams.H4)
+  	b.WriteString("[Peer]\n")
+  	fmt.Fprintf(&b, "PublicKey = %s\n", cfg.ServerPubKey)
+  	if cfg.UserPSK != "" {
+  		fmt.Fprintf(&b, "PresharedKey = %s\n", cfg.UserPSK)
+  	}
+  	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
+  	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.Endpoint)
+  	b.WriteString("PersistentKeepalive = 25\n")
+  	configText := b.String()
+
+  	deeplink := "amneziawg://" +
+  		base64.StdEncoding.EncodeToString([]byte(configText)) +
+  		"#" + url.PathEscape("🌴 Пальма")
+
+  	writeJSON(w, http.StatusOK, map[string]any{
+  		"available":   true,
+  		"config_text": configText,
+  		"deeplink":    deeplink,
+  		"endpoint":    cfg.Endpoint,
+  		"ip":          cfg.IPAddress,
+  	})
+  }
+  ```
+
+- [ ] **5.3 — Verify imports in `main.go`.** `fmt`, `log`, `net/http`, `strings`, and
+  `net/url` are already imported (used by `handleUserConnections` /
+  `buildHubConnectionOptions`). Confirm `encoding/base64` is present; if the Grep below
+  returns nothing, add `"encoding/base64"` to the import block. Check:
+
+  ```bash
+  cd server/backend && rg '"encoding/base64"|"net/url"|"strings"' cmd/api/main.go
+  ```
+
+- [ ] **5.4 — Register the route.** In `main.go` next to the existing connections route
+  (line 959). OLD:
+
+  ```go
+  	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
+  	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
+  ```
+
+  NEW:
+
+  ```go
+  	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
+  	http.HandleFunc("/api/v1/user/awg-config", apiLimiter.Middleware(handleUserAWGConfig)) // Palma — Beads heyearthproject-98ng T5
+  	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
+  ```
+
+- [ ] **5.5 — Build evidence (must pass).**
+
+  ```bash
+  cd server/backend && go build ./cmd/api/...
+  ```
+
+  Expect: no output, exit 0. (Quick auth sanity, optional, if a local instance is up:
+  `curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/v1/user/awg-config`
+  → `401` without a token, proving the route is wired and auth-gated.)
+
+- [ ] **5.6 — Commit (backend only).**
+
+  ```bash
+  git add server/backend/cmd/api/main.go
+  git commit -m @'
+  feat(palma): expose AmneziaWG config via /api/v1/user/awg-config
+
+  Add amnezia_available flag to /user/connections (gated on
+  plan.AmneziaWGEnabled && active subscription) and a new authenticated
+  GET /api/v1/user/awg-config returning per-user WG-INI + amneziawg://
+  deeplink. Reuses biz.GetUserAWGConfig (lazy key init) and triggers
+  RequestAWGSync so the peer is written to awg0.conf. Happ subscription
+  emit untouched (client_api.go stays commented for amneziawg://).
+
+  Beads: heyearthproject-98ng (T5)
+
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+  '@
+  ```
+
+---
+
