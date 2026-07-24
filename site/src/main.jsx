@@ -7,6 +7,7 @@ import '@fontsource-variable/raleway'
 import './style.css'
 import SiteHeader from './components/SiteHeader.jsx'
 import SiteFooter from './components/SiteFooter.jsx'
+import AmbientFireflies from './components/AmbientFireflies.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 import LandingPage from './pages/LandingPage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
@@ -53,7 +54,8 @@ function App() {
     <BrowserRouter>
       <AuthProvider>
       <ScrollToTop />
-      <div className="min-h-screen flex flex-col">
+      <AmbientFireflies />
+      <div className="relative z-10 min-h-screen flex flex-col">
         <SiteHeader />
         <main className="flex-1">
           <Routes>

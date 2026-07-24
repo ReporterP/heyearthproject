@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
 import QRCode from '../components/QRCode.jsx'
+import { CabinetSkeleton } from '../components/Skeleton.jsx'
 
 const Tree = ({ className = 'w-4 h-4' }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M9 22V4M15 22V6M6 9c0-2 2-3 3-3M18 11c0-2-2-4-3-4" /></svg>
@@ -88,14 +89,7 @@ export default function ConnectionsPage() {
     URL.revokeObjectURL(href)
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <div className="text-center">
-        <div className="w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin mx-auto mb-4" />
-        <p className="text-text-secondary text-sm">Загрузка…</p>
-      </div>
-    </div>
-  )
+  if (loading) return <CabinetSkeleton />
 
   if (error) return (
     <div className="flex items-center justify-center py-32">

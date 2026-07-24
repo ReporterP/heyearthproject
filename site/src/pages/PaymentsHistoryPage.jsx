@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getPayments, getProfile, getUserCards, deleteUserCard, toggleAutoRenew, requestRefund, pauseSubscription, resumeSubscription } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { CabinetSkeleton } from '../components/Skeleton.jsx'
 
 function formatDate(d) {
   if (!d) return '—'
@@ -151,11 +152,7 @@ export default function PaymentsHistoryPage() {
     })
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <div className="w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin" />
-    </div>
-  )
+  if (loading) return <CabinetSkeleton />
 
   return (
     <section className="relative py-10 md:py-16">
