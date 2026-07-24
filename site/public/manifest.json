@@ -1,11 +1,11 @@
 {
-  "name": "HeYearth",
-  "short_name": "HeYearth",
-  "description": "Экологичный VPN-сервис",
+  "name": "HiEarth",
+  "short_name": "HiEarth",
+  "description": "Устойчивый интернет-доступ с умной эко-маршрутизацией",
   "start_url": "/dashboard",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#6366f1",
+  "background_color": "#0a130f",
+  "theme_color": "#0a130f",
   "orientation": "portrait-primary",
   "icons": [
     {
