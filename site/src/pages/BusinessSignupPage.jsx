@@ -9,7 +9,7 @@ const Arrow = ({ className = 'w-4 h-4' }) => (
 export default function BusinessSignupPage() {
   const [step, setStep] = useState(1)
   const [specs, setSpecs] = useState({
-    users: 10, ownServers: 0, useProviderServers: true, premiumEnabled: false, unlimited: false,
+    users: 10, ownServers: 0, useProviderServers: true,
   })
   const [email, setEmail] = useState('')
   const [companyName, setCompanyName] = useState('')
@@ -18,15 +18,12 @@ export default function BusinessSignupPage() {
   const [error, setError] = useState('')
   const [signupResult, setSignupResult] = useState(null)
 
-  // Client-side estimate only. The signup endpoint records users/servers; the
-  // premium option is confirmed by a manager, so this is never presented as a
-  // binding total (see the note under the figure).
+  // Mirrors the server-side tariff formula. Every parameter here is recorded by
+  // the signup endpoint, so the figure shown matches what the account gets.
   const monthlyEstimate = useMemo(() => {
     let total = specs.users * 250
     if (specs.useProviderServers) total += 1000
-    const extraServers = Math.max(0, specs.ownServers - 5)
-    total += extraServers * 100
-    if (specs.premiumEnabled) total += specs.users * 50
+    total += Math.max(0, specs.ownServers - 5) * 100
     return total
   }, [specs])
 
@@ -114,8 +111,6 @@ export default function BusinessSignupPage() {
             {step === 1 && (
               <div className="glass-strong rounded-[26px] p-6 md:p-8 animate-fade-in-scale">
                 <div className="space-y-6">
-                  {(
-                    <>
                       <div className="group">
                         <label className="flex items-center gap-2 text-xs font-medium text-text-secondary mb-2 group-focus-within:text-brand transition-colors">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" /></svg>
@@ -132,33 +127,17 @@ export default function BusinessSignupPage() {
                         <input type="number" min="0" value={specs.ownServers} onChange={e => updateSpec('ownServers', parseInt(e.target.value) || 0)} className={inputCls} />
                       </div>
 
-                      <div className="space-y-3">
-                        <label className="group flex items-center gap-3 p-4 rounded-xl card card-hover cursor-pointer">
-                          <div className="relative flex-shrink-0">
-                            <input type="checkbox" checked={specs.useProviderServers} onChange={e => updateSpec('useProviderServers', e.target.checked)} className="sr-only peer" />
-                            <div className="w-10 h-6 rounded-full bg-white/10 peer-checked:bg-brand transition-colors duration-300" />
-                            <div className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-300 peer-checked:translate-x-4" />
-                          </div>
-                          <div>
-                            <span className="text-sm font-medium">Использовать наши серверы</span>
-                            <span className="block text-xs text-text-secondary mt-0.5">+1 000 ₽/мес</span>
-                          </div>
-                        </label>
-
-                        <label className="group flex items-center gap-3 p-4 rounded-xl card card-hover cursor-pointer">
-                          <div className="relative flex-shrink-0">
-                            <input type="checkbox" checked={specs.premiumEnabled} onChange={e => updateSpec('premiumEnabled', e.target.checked)} className="sr-only peer" />
-                            <div className="w-10 h-6 rounded-full bg-white/10 peer-checked:bg-brand transition-colors duration-300" />
-                            <div className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-300 peer-checked:translate-x-4" />
-                          </div>
-                          <div>
-                            <span className="text-sm font-medium">Премиум для пользователей</span>
-                            <span className="block text-xs text-text-secondary mt-0.5">+50 ₽/мес за каждого</span>
-                          </div>
-                        </label>
-                      </div>
-                    </>
-                  )}
+                      <label className="group flex items-center gap-3 p-4 rounded-xl card card-hover cursor-pointer">
+                        <div className="relative flex-shrink-0">
+                          <input type="checkbox" checked={specs.useProviderServers} onChange={e => updateSpec('useProviderServers', e.target.checked)} className="sr-only peer" />
+                          <div className="w-10 h-6 rounded-full bg-white/10 peer-checked:bg-brand transition-colors duration-300" />
+                          <div className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-300 peer-checked:translate-x-4" />
+                        </div>
+                        <div>
+                          <span className="text-sm font-medium">Использовать наши серверы</span>
+                          <span className="block text-xs text-text-secondary mt-0.5">+1 000 ₽/мес</span>
+                        </div>
+                      </label>
 
                   <div className="relative p-6 rounded-2xl glass border border-brand/20 overflow-hidden">
                     <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-brand/10 to-transparent rounded-bl-[80px] pointer-events-none" />
@@ -170,7 +149,7 @@ export default function BusinessSignupPage() {
                       </div>
                     </div>
                     <p className="relative text-[11px] text-faint mt-2">
-                      Расчёт по базовым ставкам. Итоговый тариф подтверждается менеджером после регистрации — списаний до этого не будет.
+                      Расчёт по базовым ставкам — столько будет списываться ежемесячно. Сейчас ничего не спишется.
                     </p>
                   </div>
 
@@ -205,7 +184,7 @@ export default function BusinessSignupPage() {
                       <span className="font-semibold tabular-nums">≈ {monthlyEstimate.toLocaleString('ru-RU')} ₽ / мес</span>
                     </div>
                     <ul className="text-xs text-text-secondary leading-relaxed space-y-1">
-                      <li>· {specs.users} польз. × 250 ₽{specs.premiumEnabled ? ' + премиум 50 ₽/чел.' : ''}</li>
+                      <li>· {specs.users} польз. × 250 ₽</li>
                       {specs.useProviderServers && <li>· наши серверы — 1 000 ₽</li>}
                       {specs.ownServers > 5 && <li>· доп. серверы: {specs.ownServers - 5} × 100 ₽</li>}
                       <li className="text-faint pt-1">Оплата — через пополнение кошелька в панели. Сейчас ничего не спишется.</li>
