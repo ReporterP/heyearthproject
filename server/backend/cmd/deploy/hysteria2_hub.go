@@ -144,11 +144,19 @@ if ! iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-p
   echo "[hysteria2-hub] iptables UDP redirect 30000:65000 → 50443 added"
 fi
 
-# Persist iptables (Debian/Ubuntu use iptables-persistent)
+# Persist iptables (Debian/Ubuntu use iptables-persistent).
+# NOTE: this block is best-effort only — on a host without iptables-persistent
+# BOTH branches silently no-op, and the REDIRECT above is lost on reboot. That
+# actually happened (Hub rebooted 2026-07-11, rule vanished, every port-hopping
+# client black-holed). The authoritative guarantee is the ExecStartPre in the
+# hysteria2-server unit below, which re-applies the rule on every service start
+# including boot. Keep this save as an extra layer, and create the directory so
+# the second branch can work at all.
 if command -v netfilter-persistent >/dev/null; then
   netfilter-persistent save 2>/dev/null || true
-elif command -v iptables-save >/dev/null && [ -d /etc/iptables ]; then
-  iptables-save > /etc/iptables/rules.v4
+elif command -v iptables-save >/dev/null; then
+  mkdir -p /etc/iptables
+  iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 fi
 
 # ── 5. Open firewall (ufw if active) ──
@@ -172,6 +180,11 @@ Type=simple
 User=hysteria
 Group=hysteria
 WorkingDirectory=/etc/hysteria
+# Port-hopping REDIRECT belongs to this service's lifecycle: clients dial random
+# UDP ports in 30000-65000 and only reach the listener because of this NAT rule.
+# iptables rules do not survive a reboot on this host (no iptables-persistent),
+# so re-apply it idempotently on every start. '+' runs it as root despite User=.
+ExecStartPre=+/bin/sh -c 'iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443'
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/server.yaml --disable-update-check
 # Hysteria v2.6.x does not honor SIGHUP for hot-reload (it terminates instead).
 # heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
