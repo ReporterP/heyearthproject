@@ -2,6 +2,21 @@ import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { getBusinessMe, initBusinessTopup, createBusinessInvite, removeBusinessMember, changeBusinessMemberRole } from '../api/business.js'
+import { copyToClipboard } from '../components/CopyButton.jsx'
+import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import useReveal from '../hooks/useReveal.js'
+
+/* Empty state with a way forward instead of a bare line of text */
+function Empty({ icon, title, hint, action }) {
+  return (
+    <div className="text-center py-8">
+      <div className="w-11 h-11 mx-auto rounded-full bg-white/[0.04] border border-brand/10 text-faint flex items-center justify-center mb-3">{icon}</div>
+      <p className="text-sm font-medium mb-1">{title}</p>
+      <p className="text-xs text-text-secondary max-w-xs mx-auto">{hint}</p>
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  )
+}
 
 /*
  * B2B tenant self-service dashboard. Rendered at /business/dashboard. The
@@ -45,6 +60,8 @@ export default function BusinessDashboardPage() {
   const [confirmRemove, setConfirmRemove] = useState(null) // member pending removal
   const [removeBusy, setRemoveBusy] = useState(false)
   const [copiedField, setCopiedField] = useState('')
+  const [savingRole, setSavingRole] = useState(null)   // user_db_id being updated
+  const [notice, setNotice] = useState('')
 
   async function load() {
     setLoading(true)
@@ -66,12 +83,18 @@ export default function BusinessDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
+  useReveal([loading, data])
+
+  // Chips set numbers, the input sets strings — normalise once, here.
+  const topupValue = parseInt(topupAmount, 10)
+  const topupValid = Number.isFinite(topupValue) && topupValue >= 100
+
   async function handleTopup() {
-    if (!(topupAmount >= 100)) return
+    if (!topupValid) return
     setTopupLoading(true)
     try {
       const returnUrl = window.location.origin + '/business/dashboard'
-      const res = await initBusinessTopup(token, { amount: Number(topupAmount), returnUrl })
+      const res = await initBusinessTopup(token, { amount: topupValue, returnUrl })
       if (res.confirmation_url) window.location.href = res.confirmation_url
     } catch (e) {
       setActionError(e.message || 'Не удалось создать платёж')
@@ -110,27 +133,36 @@ export default function BusinessDashboardPage() {
     }
   }
 
+  // Optimistic: the select reflects the new role immediately and reverts in
+  // place on failure — no full-page reload flash for a one-field change.
   async function handleChangeRole(member, newRole) {
-    if (newRole === member.role) return
+    if (newRole === member.role || savingRole) return
+    const prevRole = member.role
+    setSavingRole(member.user_db_id)
+    setActionError('')
+    setData(d => ({ ...d, members: d.members.map(m => m.user_db_id === member.user_db_id ? { ...m, role: newRole } : m) }))
     try {
       await changeBusinessMemberRole(token, member.user_db_id, newRole)
-      await load()
+      setNotice(`Роль обновлена: ${roleLabel(newRole).text}`)
+      setTimeout(() => setNotice(''), 3000)
     } catch (e) {
+      setData(d => ({ ...d, members: d.members.map(m => m.user_db_id === member.user_db_id ? { ...m, role: prevRole } : m) }))
       setActionError(e.message || 'Не удалось изменить роль')
+    } finally {
+      setSavingRole(null)
     }
   }
 
-  function copy(text, field) {
-    navigator.clipboard?.writeText?.(text)
-    setCopiedField(field)
-    setTimeout(() => setCopiedField(''), 1800)
+  async function copy(text, field) {
+    // shared helper — has an execCommand fallback for non-secure contexts
+    const ok = await copyToClipboard(text)
+    if (ok) {
+      setCopiedField(field)
+      setTimeout(() => setCopiedField(''), 1800)
+    }
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <div className="w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin" />
-    </div>
-  )
+  if (loading) return <CabinetSkeleton />
 
   if (error || !data) return (
     <div className="max-w-xl mx-auto py-16 px-4">
@@ -152,8 +184,15 @@ export default function BusinessDashboardPage() {
     <section className="relative py-10 md:py-16">
       <div className="relative max-w-5xl mx-auto px-4 sm:px-6">
 
+        {notice && (
+          <div role="status" aria-live="polite" className="mb-4 flex items-start gap-2 p-3 rounded-xl bg-brand/10 border border-brand/20 animate-fade-in">
+            <svg className="w-5 h-5 text-brand flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+            <p className="text-sm text-text-primary flex-1">{notice}</p>
+          </div>
+        )}
+
         {actionError && (
-          <div className="mb-6 flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20">
+          <div role="alert" className="mb-6 flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 animate-fade-in">
             <svg className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
             <p className="text-sm text-danger flex-1">{actionError}</p>
             <button onClick={() => setActionError('')} aria-label="Скрыть" className="text-danger/70 hover:text-danger"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg></button>
@@ -206,18 +245,39 @@ export default function BusinessDashboardPage() {
         </div>
 
         {/* Members */}
-        <div className="card rounded-[22px] p-6 mb-6">
+        <div className="card rounded-[22px] p-6 mb-6 reveal">
           <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-            <div>
+            <div className="min-w-0">
               <h2 className="serif text-lg font-semibold">Сотрудники</h2>
-              <p className="text-xs text-text-secondary mt-0.5">{data.members.length} из {t.max_users || '∞'} мест занято</p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                {data.members.length} из {t.max_users || '∞'} мест занято
+                {t.max_users > 0 && data.members.length >= t.max_users && <span className="text-accent"> · мест не осталось</span>}
+              </p>
             </div>
             {isAdmin && (
               <button onClick={() => { setInviteOpen(true); setInviteResult(null) }} className="btn-ghost !py-2 !px-4 !text-sm">+ Пригласить</button>
             )}
           </div>
+
+          {/* seat capacity at a glance */}
+          {t.max_users > 0 && (
+            <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden mb-5">
+              <div
+                className={`h-full transition-all duration-500 ${data.members.length >= t.max_users ? 'bg-accent' : 'bg-brand'}`}
+                style={{ width: `${Math.min(100, (data.members.length / t.max_users) * 100)}%` }}
+              />
+            </div>
+          )}
+
           {data.members.length === 0 ? (
-            <p className="text-sm text-text-secondary">Сотрудники не привязаны. Пригласите первого через кнопку выше.</p>
+            <Empty
+              icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.1a9.4 9.4 0 002.6.4 9.3 9.3 0 004.1-1 4.1 4.1 0 00-7.5-2.5M15 19.1v-.1c0-1.1-.3-2.2-.8-3.1M15 19.1v.1A12.3 12.3 0 018.6 21c-2.3 0-4.5-.6-6.4-1.8v-.1a6.4 6.4 0 0112-3.1M12 6.4a3.4 3.4 0 11-6.8 0 3.4 3.4 0 016.8 0zm8.3 2.2a2.6 2.6 0 11-5.3 0 2.6 2.6 0 015.3 0z" /></svg>}
+              title="Сотрудники не привязаны"
+              hint="Создайте ссылку-приглашение — сотрудник перейдёт по ней и получит доступ без отдельной регистрации."
+              action={isAdmin
+                ? <button onClick={() => { setInviteOpen(true); setInviteResult(null) }} className="btn-primary !py-2.5 !text-sm">Пригласить первого</button>
+                : <p className="text-xs text-faint">Приглашать может администратор компании</p>}
+            />
           ) : (
             <div className="space-y-2">
               {data.members.map(m => {
@@ -229,22 +289,32 @@ export default function BusinessDashboardPage() {
                       <p className="text-[11px] text-faint truncate font-mono">{m.user_id}</p>
                     </div>
                     {isAdmin ? (
-                      <select
-                        value={m.role}
-                        onChange={e => handleChangeRole(m, e.target.value)}
-                        className="px-2 py-1 rounded-lg bg-white/5 border border-brand/12 text-[11px] font-medium hover:bg-white/10 transition"
-                        title="Изменить роль"
-                      >
-                        <option value="admin">Админ</option>
-                        <option value="billing">Биллинг</option>
-                        <option value="viewer">Только чтение</option>
-                        <option value="user">Сотрудник</option>
-                      </select>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <select
+                          value={m.role}
+                          onChange={e => handleChangeRole(m, e.target.value)}
+                          disabled={savingRole === m.user_db_id}
+                          aria-busy={savingRole === m.user_db_id}
+                          className="px-2 py-1 rounded-lg bg-white/5 border border-brand/12 text-[11px] font-medium hover:bg-white/10 transition disabled:opacity-50"
+                          title="Изменить роль"
+                        >
+                          <option value="admin">Админ</option>
+                          <option value="billing">Биллинг</option>
+                          <option value="viewer">Только чтение</option>
+                          <option value="user">Сотрудник</option>
+                        </select>
+                        {savingRole === m.user_db_id && (
+                          <svg className="w-3.5 h-3.5 animate-spin text-brand" viewBox="0 0 24 24" fill="none" aria-label="Сохраняем">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        )}
+                      </div>
                     ) : (
-                      <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${rl.cls}`}>{rl.text}</span>
+                      <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium flex-shrink-0 ${rl.cls}`}>{rl.text}</span>
                     )}
                     {isAdmin && (
-                      <button onClick={() => setConfirmRemove(m)} className="text-xs text-danger hover:brightness-125 transition" title="Удалить из компании">Удалить</button>
+                      <button onClick={() => setConfirmRemove(m)} disabled={savingRole === m.user_db_id} className="text-xs text-danger hover:brightness-125 transition disabled:opacity-40 flex-shrink-0" title="Удалить из компании">Удалить</button>
                     )}
                   </div>
                 )
@@ -282,10 +352,15 @@ export default function BusinessDashboardPage() {
         )}
 
         {/* Transactions */}
-        <div className="card rounded-[22px] p-6">
+        <div className="card rounded-[22px] p-6 reveal">
           <h2 className="serif text-lg font-semibold mb-4">История операций</h2>
           {data.transactions.length === 0 ? (
-            <p className="text-sm text-text-secondary">Пока пусто. Все пополнения и списания будут видны здесь.</p>
+            <Empty
+              icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" /></svg>}
+              title="Операций пока нет"
+              hint="Здесь появятся все пополнения кошелька и ежемесячные списания."
+              action={canBill ? <button onClick={() => setTopupOpen(true)} className="btn-primary !py-2.5 !text-sm">Пополнить кошелёк</button> : null}
+            />
           ) : (
             <div className="space-y-2">
               {data.transactions.map(tx => (
@@ -319,7 +394,9 @@ export default function BusinessDashboardPage() {
           </div>
           <div className="flex gap-3 mt-6">
             <button onClick={() => setTopupOpen(false)} className="btn-ghost flex-1 !py-3 !text-sm">Отмена</button>
-            <button onClick={handleTopup} disabled={topupLoading || !(topupAmount >= 100)} className="btn-primary flex-1 !py-3 !text-sm disabled:opacity-50">{topupLoading ? '…' : 'Оплатить'}</button>
+            <button onClick={handleTopup} disabled={topupLoading || !topupValid} className="btn-primary flex-1 !py-3 !text-sm disabled:opacity-40">
+              {topupLoading ? 'Готовим оплату…' : topupValid ? `Оплатить ${topupValue.toLocaleString('ru-RU')} ₽` : 'Оплатить'}
+            </button>
           </div>
         </ModalOverlay>
       )}
