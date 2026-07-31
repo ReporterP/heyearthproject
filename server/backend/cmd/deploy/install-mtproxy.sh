@@ -67,9 +67,19 @@ fi
 SECRET=$(tr -d '\n\r ' < "$WORKDIR/secret")
 
 # mtg v2 uses a TOML config file (CLI flags removed in v2). Write it.
+#
+# doh-ip: mtg resolves the fake-TLS fronting domain over DNS-over-HTTPS and
+# defaults to Quad9 (9.9.9.9). From our exit nodes that endpoint answers HTTP
+# 400/505 instead of a DNS reply, so mtg cannot resolve the fronting domain at
+# all — it logs "cannot dial to the fronting domain" and every Telegram client
+# hangs mid-handshake (TCP connects, MTProto never completes). Cloudflare
+# (1.1.1.1) answers correctly over HTTP/2 from the same host, so pin it.
 cat > "$WORKDIR/config.toml" <<EOF
 secret = "$SECRET"
 bind-to = "0.0.0.0:$PORT"
+
+[network]
+doh-ip = "1.1.1.1"
 EOF
 
 # Systemd unit — mtg loads config from TOML.
