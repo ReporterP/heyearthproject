@@ -9,6 +9,19 @@ const Arrow = () => (
   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
 )
 
+/* Password strength hint — guidance, not a hard gate (backend accepts 4+) */
+function strengthOf(pw) {
+  if (!pw) return null
+  let score = 0
+  if (pw.length >= 8) score++
+  if (pw.length >= 12) score++
+  if (/[a-zA-Zа-яА-Я]/.test(pw) && /\d/.test(pw)) score++
+  if (/[^\w\s]/.test(pw)) score++
+  if (score <= 1) return { label: 'Слабый', pct: 33, cls: 'bg-danger', text: 'text-danger' }
+  if (score === 2) return { label: 'Средний', pct: 66, cls: 'bg-accent', text: 'text-accent' }
+  return { label: 'Надёжный', pct: 100, cls: 'bg-brand', text: 'text-brand' }
+}
+
 export default function RegisterPage() {
   const navigate = useNavigate()
   const { login, isLoggedIn } = useAuth()
@@ -16,10 +29,13 @@ export default function RegisterPage() {
   useEffect(() => {
     if (isLoggedIn) navigate('/dashboard', { replace: true })
   }, [isLoggedIn, navigate])
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [generatedId, setGeneratedId] = useState('')
   const [copied, setCopied] = useState(false)
+  const [downloaded, setDownloaded] = useState(false)
+  const [acknowledged, setAcknowledged] = useState(false) // gates "continue"
   const [authToken, setAuthToken] = useState('')
 
   // Optional credentials
@@ -31,6 +47,8 @@ export default function RegisterPage() {
   const [credsMsg, setCredsMsg] = useState('')
   const [credsErr, setCredsErr] = useState('')
   const [credsSaved, setCredsSaved] = useState(false)
+
+  const strength = strengthOf(password)
 
   async function handleRegister() {
     setLoading(true)
@@ -55,6 +73,21 @@ export default function RegisterPage() {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch { /* clipboard unavailable */ }
+  }
+
+  // A credential that cannot be recovered deserves an offline copy
+  function downloadId() {
+    const body = `HiEarth ID\n${generatedId}\n\nЭто ваш единственный ключ от аккаунта — восстановить его нельзя.\nВход: https://hiearth.ru/login\n`
+    const blob = new Blob([body], { type: 'text/plain;charset=utf-8' })
+    const href = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = href
+    a.download = 'hiearth-id.txt'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(href)
+    setDownloaded(true)
   }
 
   async function saveCreds() {
@@ -106,7 +139,7 @@ export default function RegisterPage() {
               </p>
 
               {error && (
-                <div className="flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 mb-6 animate-fade-in">
+                <div role="alert" className="flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 mb-6 animate-fade-in">
                   <svg className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                   </svg>
@@ -121,7 +154,7 @@ export default function RegisterPage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    Создание…
+                    Создаём аккаунт…
                   </>
                 ) : (<>Получить HiEarth ID <Arrow /></>)}
               </button>
@@ -145,8 +178,8 @@ export default function RegisterPage() {
               </p>
             </>
           ) : (
-            <div className="text-center animate-fade-in-scale">
-              <div className="flex justify-center mb-6">
+            <div className="animate-fade-in-scale">
+              <div className="flex justify-center mb-5">
                 <div className="w-16 h-16 rounded-full bg-brand/12 border border-brand/25 flex items-center justify-center">
                   <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -154,43 +187,39 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <h2 className="serif text-2xl font-semibold mb-2">Ваш HiEarth ID</h2>
-              <p className="text-text-secondary text-sm mb-6">Сохраните этот ID — он понадобится для входа</p>
+              <h2 className="serif text-2xl font-semibold mb-2 text-center">Аккаунт создан</h2>
+              <p className="text-text-secondary text-sm mb-6 text-center">Это ваш ключ от аккаунта. Сохраните его — восстановить нельзя.</p>
 
-              <div className="relative my-6 p-6 rounded-2xl glass border border-brand/30 glow-brand">
-                <p className="text-3xl md:text-4xl font-mono font-bold tracking-wider text-brand-light break-all">{generatedId}</p>
+              <div className="relative mb-4 p-6 rounded-2xl glass border border-brand/30 glow-brand text-center">
+                <p className="text-2xl md:text-3xl font-mono font-bold tracking-wider text-brand-light break-all select-all">{generatedId}</p>
                 <div className="absolute top-2 left-2 w-3 h-3 border-l-2 border-t-2 border-brand/40 rounded-tl" />
                 <div className="absolute top-2 right-2 w-3 h-3 border-r-2 border-t-2 border-brand/40 rounded-tr" />
                 <div className="absolute bottom-2 left-2 w-3 h-3 border-l-2 border-b-2 border-brand/40 rounded-bl" />
                 <div className="absolute bottom-2 right-2 w-3 h-3 border-r-2 border-b-2 border-brand/40 rounded-br" />
               </div>
 
-              <button className="btn-ghost mb-6" onClick={copyId}>
-                {copied ? (
-                  <>
-                    <svg className="w-5 h-5 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                    Скопировано!
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25" /></svg>
-                    Копировать ID
-                  </>
-                )}
-              </button>
+              {/* Two ways to save it — both tracked so we can nudge */}
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                <button onClick={copyId} className={copied ? 'btn-primary !py-2.5 !text-sm' : 'btn-ghost !py-2.5 !text-sm'}>
+                  {copied ? (<><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>Скопировано</>) : 'Копировать'}
+                </button>
+                <button onClick={downloadId} className={downloaded ? 'btn-primary !py-2.5 !text-sm' : 'btn-ghost !py-2.5 !text-sm'}>
+                  {downloaded ? (<><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>Скачано</>) : 'Скачать файл'}
+                </button>
+              </div>
 
-              <div className="flex items-start gap-3 p-4 rounded-xl bg-accent/10 border border-accent/25 text-left mb-6">
+              <div className="flex items-start gap-3 p-4 rounded-xl bg-accent/10 border border-accent/25 text-left mb-5">
                 <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                 </svg>
-                <div>
-                  <p className="text-sm font-semibold text-accent mb-0.5">Важно! Сохраните ваш ID</p>
-                  <p className="text-xs text-accent/70">Без него вы не сможете войти в аккаунт. Запишите его в надёжное место.</p>
-                </div>
+                <p className="text-xs text-accent/90 leading-relaxed">
+                  Без этого ID вы не сможете войти. Мы не храним почту и телефон, поэтому восстановить доступ невозможно.
+                </p>
               </div>
 
+              {/* Optional: shorter login instead of the long ID */}
               {!credsSaved && (
-                <div className="mb-6 text-left">
+                <div className="mb-5 text-left">
                   {!showCreds ? (
                     <button
                       type="button"
@@ -198,7 +227,7 @@ export default function RegisterPage() {
                       className="w-full py-3 rounded-xl border border-dashed border-brand/20 hover:border-brand/45 hover:bg-brand/5 text-sm text-text-secondary hover:text-text-primary transition-all flex items-center justify-center gap-2"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
-                      Создать логин и пароль (необязательно)
+                      Добавить логин и пароль — вход станет проще
                     </button>
                   ) : (
                     <div className="p-4 rounded-xl bg-white/[0.03] border border-brand/12 space-y-3">
@@ -206,25 +235,35 @@ export default function RegisterPage() {
                         <p className="text-sm font-semibold">Логин и пароль</p>
                         <button onClick={() => setShowCreds(false)} className="text-xs text-text-secondary hover:text-text-primary">Пропустить</button>
                       </div>
-                      <p className="text-xs text-text-secondary">Удобнее входить по короткому username вместо длинного ID. Можно задать позже в настройках.</p>
+                      <p className="text-xs text-text-secondary">Тогда для входа хватит короткого имени вместо длинного ID.</p>
                       <div>
-                        <label htmlFor="reg-username" className="sr-only">Имя пользователя</label>
+                        <label htmlFor="reg-username" className="block text-xs font-medium text-text-secondary mb-1.5">Имя пользователя</label>
                         <input
                           id="reg-username"
                           type="text"
                           value={username}
                           onChange={e => setUsername(e.target.value)}
-                          placeholder="username (мин. 5 символов)"
+                          placeholder="минимум 5 символов"
                           autoComplete="username"
                           className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/25 text-sm placeholder:text-faint"
                         />
                       </div>
-                      <PasswordInput value={password} onChange={e => setPassword(e.target.value)} placeholder="Пароль" label="" autoComplete="new-password" />
-                      <PasswordInput value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Повторите пароль" label="" autoComplete="new-password" />
-                      {credsErr && <p className="text-danger text-xs">{credsErr}</p>}
+                      <div>
+                        <PasswordInput value={password} onChange={e => setPassword(e.target.value)} placeholder="Пароль" label="Пароль" autoComplete="new-password" />
+                        {strength && (
+                          <div className="mt-1.5">
+                            <div className="h-1 rounded-full bg-white/8 overflow-hidden">
+                              <div className={`h-full ${strength.cls} transition-all duration-300`} style={{ width: `${strength.pct}%` }} />
+                            </div>
+                            <p className={`text-[11px] mt-1 ${strength.text}`}>{strength.label}{strength.pct < 100 && ' — длиннее 8 символов надёжнее'}</p>
+                          </div>
+                        )}
+                      </div>
+                      <PasswordInput value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Повторите пароль" label="Подтверждение" autoComplete="new-password" />
+                      {credsErr && <p role="alert" className="text-danger text-xs">{credsErr}</p>}
                       {credsMsg && <p className="text-brand text-xs">{credsMsg}</p>}
                       <button disabled={credsLoading} onClick={saveCreds} className="btn-primary w-full !py-2.5 !text-sm disabled:opacity-50">
-                        {credsLoading ? 'Сохранение…' : 'Сохранить'}
+                        {credsLoading ? 'Сохраняем…' : 'Сохранить'}
                       </button>
                     </div>
                   )}
@@ -232,15 +271,29 @@ export default function RegisterPage() {
               )}
 
               {credsSaved && (
-                <div className="mb-6 flex items-center gap-2 p-3 rounded-xl bg-brand/10 border border-brand/20">
-                  <svg className="w-4 h-4 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                  <p className="text-brand text-sm">Логин <strong>@{username}</strong> сохранён. Можно входить по нему.</p>
+                <div className="mb-5 flex items-center gap-2 p-3 rounded-xl bg-brand/10 border border-brand/20">
+                  <svg className="w-4 h-4 text-brand flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                  <p className="text-brand text-sm">Логин <strong>@{username}</strong> сохранён — можно входить по нему.</p>
                 </div>
               )}
 
-              <button className="btn-primary w-full !py-3.5" onClick={() => navigate('/dashboard')}>
+              {/* Explicit acknowledgement gates the exit — you can't drift past an
+                  unrecoverable credential by accident */}
+              <label className="flex items-start gap-3 p-3.5 rounded-xl bg-white/[0.03] border border-brand/12 cursor-pointer hover:border-brand/25 transition mb-4">
+                <input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} className="accent-brand w-4 h-4 mt-0.5 flex-shrink-0" />
+                <span className="text-sm">Я сохранил свой HiEarth ID в надёжном месте</span>
+              </label>
+
+              <button
+                className="btn-primary w-full !py-3.5 disabled:opacity-40"
+                disabled={!acknowledged}
+                onClick={() => navigate('/dashboard')}
+              >
                 Перейти в личный кабинет <Arrow />
               </button>
+              {!acknowledged && (
+                <p className="text-[11px] text-faint text-center mt-2.5">Отметьте галочку, когда сохраните ID</p>
+              )}
             </div>
           )}
         </div>

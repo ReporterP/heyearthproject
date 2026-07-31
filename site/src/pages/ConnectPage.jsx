@@ -55,6 +55,7 @@ export default function ConnectPage() {
   const platform = detectPlatform()
   const [copied, setCopied] = useState(false)
   const [triggered, setTriggered] = useState(false)
+  const [notOpened, setNotOpened] = useState(false)
   const [happLink, setHappLink] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -74,15 +75,16 @@ export default function ConnectPage() {
   useEffect(() => {
     if (loading || !happLink || typeof window === 'undefined') return
     if (platform === 'android') {
+      // Android Intent URI handles the store fallback natively.
       window.location.href = buildAndroidIntent(happLink)
       setTriggered(true)
       return
     }
-    const fallback = platform === 'ios' ? APP_STORE_URL : DESKTOP_HAPP_URL
     window.location.href = happLink
     setTriggered(true)
+    // If the app didn't take over, OFFER the store — never yank the user there.
     const handle = setTimeout(() => {
-      if (!document.hidden) window.location.href = fallback
+      if (!document.hidden) setNotOpened(true)
     }, DEEPLINK_TIMEOUT_MS)
     return () => clearTimeout(handle)
   }, [loading, happLink, platform])
@@ -126,8 +128,24 @@ export default function ConnectPage() {
           </div>
           <h1 className="serif text-xl md:text-2xl font-semibold">{heading}</h1>
         </div>
-        {triggered && (
+        {triggered && !notOpened && (
           <p className="text-sm text-text-secondary mb-5">Если приложение не открылось автоматически, выберите ваше устройство ниже.</p>
+        )}
+
+        {/* App didn't take over — offer the next step instead of hijacking */}
+        {notOpened && (
+          <div className="mb-5 p-4 rounded-xl bg-accent/10 border border-accent/25 animate-fade-in">
+            <p className="text-sm font-medium text-accent mb-1">Похоже, приложение не установлено</p>
+            <p className="text-xs text-text-secondary mb-3">Скачайте его — после установки вернитесь и нажмите ссылку ещё раз. Или добавьте подписку вручную ниже.</p>
+            <div className="flex flex-wrap gap-2">
+              <a href={platform === 'ios' ? APP_STORE_URL : DESKTOP_HAPP_URL} target="_blank" rel="noopener noreferrer" className="btn-primary !py-2.5 !text-sm">
+                Скачать приложение
+              </a>
+              <button onClick={() => { setNotOpened(false); if (happLink) window.location.href = happLink }} className="btn-ghost !py-2.5 !text-sm">
+                Попробовать снова
+              </button>
+            </div>
+          </div>
         )}
         {!loading && !happLink && (
           <p className="text-sm text-accent mb-5">Быструю ссылку подготовить не удалось. Используйте ручную установку через QR или копирование ниже.</p>

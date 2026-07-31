@@ -120,6 +120,59 @@ export default function PaymentDetailPage() {
           )}
         </div>
 
+        {/* ─── Timeline: what happened to this payment, in order ─── */}
+        <div className="card rounded-[22px] p-6 mb-4">
+          <h2 className="serif text-base font-semibold mb-4">Что происходило</h2>
+          <ol className="relative space-y-4">
+            {(() => {
+              const isPaid = ['succeeded', 'completed'].includes(payment.status)
+              const isFailed = ['failed', 'canceled', 'cancelled'].includes(payment.status)
+              const steps = [
+                { key: 'created', title: 'Платёж создан', at: payment.created_at, state: 'done' },
+                isFailed
+                  ? { key: 'failed', title: payment.status === 'refunded' ? 'Возврат' : 'Платёж не прошёл', at: null, state: 'failed', note: payment.cancellation_reason }
+                  : { key: 'paid', title: 'Оплачен', at: payment.paid_at, state: isPaid ? 'done' : 'pending', note: isPaid ? null : 'Ждём подтверждения от банка' },
+                ...(isFailed ? [] : [{
+                  key: 'receipt',
+                  title: 'Чек зарегистрирован в ОФД',
+                  at: null,
+                  state: payment.receipt_registered ? 'done' : isPaid ? 'pending' : 'idle',
+                  note: payment.receipt_registered ? (payment.payer_email ? `Копия отправлена на ${payment.payer_email}` : 'Передан в ОФД') : isPaid ? 'Обычно занимает пару минут' : null,
+                }]),
+                ...(hasRefund ? [{ key: 'refund', title: `Возвращено ${refunded.toLocaleString('ru-RU')} ${payment.currency}`, at: null, state: 'done' }] : []),
+              ]
+              return steps.map((s, i) => (
+                <li key={s.key} className="flex gap-3">
+                  <div className="flex flex-col items-center flex-shrink-0">
+                    <span className={`w-6 h-6 rounded-full grid place-items-center border ${
+                      s.state === 'done' ? 'bg-brand/15 border-brand/30 text-brand'
+                        : s.state === 'failed' ? 'bg-danger/15 border-danger/30 text-danger'
+                        : s.state === 'pending' ? 'bg-accent/12 border-accent/30 text-accent'
+                        : 'bg-white/[0.04] border-brand/10 text-faint'
+                    }`}>
+                      {s.state === 'done' ? (
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>
+                      ) : s.state === 'failed' ? (
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
+                      ) : s.state === 'pending' ? (
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                      ) : (
+                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                      )}
+                    </span>
+                    {i < steps.length - 1 && <span className="w-px flex-1 min-h-[14px] bg-brand/12 mt-1" />}
+                  </div>
+                  <div className="pb-1 min-w-0">
+                    <p className={`text-sm font-medium ${s.state === 'idle' ? 'text-faint' : ''}`}>{s.title}</p>
+                    {s.at && <p className="text-xs text-text-secondary mt-0.5">{formatDate(s.at)}</p>}
+                    {s.note && <p className="text-xs text-text-secondary mt-0.5">{s.note}</p>}
+                  </div>
+                </li>
+              ))
+            })()}
+          </ol>
+        </div>
+
         {/* ─── Details ─── */}
         <div className="card rounded-[22px] p-6 mb-4">
           <h2 className="serif text-base font-semibold mb-4">Детали</h2>

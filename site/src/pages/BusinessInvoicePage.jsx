@@ -43,6 +43,16 @@ export default function BusinessInvoicePage() {
 
   const inputCls = 'w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-text-primary focus:border-brand/50 focus:ring-2 focus:ring-brand/20 outline-none transition placeholder:text-faint'
 
+  // Real validation — the hints promised rules that were never enforced
+  const amountNum = parseInt(amount, 10)
+  const innValid = inn.length === 10 || inn.length === 12
+  const amountValid = Number.isFinite(amountNum) && amountNum >= 100
+  const emailValid = /^\S+@\S+\.\S+$/.test(email)
+  const innError = inn.length > 0 && !innValid ? 'ИНН должен содержать 10 цифр (юрлицо) или 12 (ИП)' : ''
+  const amountError = amount.length > 0 && !amountValid ? 'Минимальная сумма счёта — 100 ₽' : ''
+  const emailError = email.length > 0 && !emailValid ? 'Проверьте адрес — похоже, в нём опечатка' : ''
+  const canSubmit = innValid && company.trim().length > 0 && amountValid && emailValid && !loading
+
   if (result) {
     return (
       <section className="relative py-10 md:py-16">
@@ -102,8 +112,8 @@ export default function BusinessInvoicePage() {
         <form onSubmit={handleSubmit} className="card rounded-[22px] p-6 space-y-4">
           <div>
             <label className="block text-sm text-text-secondary mb-1">ИНН <span className="text-accent">*</span></label>
-            <input type="text" required value={inn} onChange={e => setInn(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="7707083893 или 500913244106" className={`${inputCls} font-mono`} />
-            <p className="text-xs text-faint mt-1">10 цифр для юрлица, 12 для ИП</p>
+            <input type="text" inputMode="numeric" required value={inn} onChange={e => setInn(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="7707083893 или 500913244106" aria-invalid={!!innError} className={`${inputCls} font-mono ${innError ? '!border-danger/50' : ''}`} />
+            {innError ? <p className="text-xs text-danger mt-1">{innError}</p> : <p className="text-xs text-faint mt-1">10 цифр для юрлица, 12 для ИП</p>}
           </div>
 
           <div>
@@ -113,13 +123,14 @@ export default function BusinessInvoicePage() {
 
           <div>
             <label className="block text-sm text-text-secondary mb-1">Сумма (₽) <span className="text-accent">*</span></label>
-            <input type="number" min="100" required value={amount} onChange={e => setAmount(e.target.value)} placeholder="5000" className={inputCls} />
-            <p className="text-xs text-faint mt-1">Минимум 100 ₽</p>
+            <input type="number" min="100" required value={amount} onChange={e => setAmount(e.target.value)} placeholder="5000" aria-invalid={!!amountError} className={`${inputCls} ${amountError ? '!border-danger/50' : ''}`} />
+            {amountError ? <p className="text-xs text-danger mt-1">{amountError}</p> : <p className="text-xs text-faint mt-1">Минимум 100 ₽</p>}
           </div>
 
           <div>
             <label className="block text-sm text-text-secondary mb-1">Email для чека <span className="text-accent">*</span></label>
-            <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="buyer@company.ru" className={inputCls} />
+            <input type="email" inputMode="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="buyer@company.ru" aria-invalid={!!emailError} className={`${inputCls} ${emailError ? '!border-danger/50' : ''}`} />
+            {emailError && <p className="text-xs text-danger mt-1">{emailError}</p>}
           </div>
 
           <div>
@@ -129,7 +140,7 @@ export default function BusinessInvoicePage() {
 
           {error && <p className="text-sm text-danger bg-danger/10 px-3 py-2 rounded-lg">{error}</p>}
 
-          <button type="submit" disabled={loading || !inn || !company || !amount || !email} className="btn-primary w-full !py-3 disabled:opacity-50">
+          <button type="submit" disabled={!canSubmit} className="btn-primary w-full !py-3 disabled:opacity-40">
             {loading ? 'Создаём…' : 'Получить счёт'}
           </button>
 

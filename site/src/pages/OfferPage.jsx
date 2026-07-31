@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import LegalToc from '../components/LegalToc.jsx'
 
 export default function OfferPage() {
   const [s, setS] = useState({})
@@ -10,12 +11,14 @@ export default function OfferPage() {
 
   return (
     <section className="py-10 md:py-16">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6">
         <p className="eyebrow mb-4">Документы</p>
         <h1 className="serif text-3xl md:text-4xl font-semibold mb-2">Договор-оферта</h1>
         <p className="text-sm text-faint mb-8">Дата последнего обновления: 07 апреля 2026 г.</p>
 
-        <article className="card p-6 md:p-8 space-y-6 text-text-secondary text-[15px] leading-relaxed">
+        <div className="grid lg:grid-cols-[16rem_1fr] gap-6 items-start">
+        <div className="lg:order-2 min-w-0">
+        <article id="legal-doc" className="card p-6 md:p-8 space-y-6 text-text-secondary text-[15px] leading-relaxed">
           <div>
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">1. Предмет договора</h2>
             <p>{company} (далее — Исполнитель) предоставляет услуги прокси-маршрутизации интернет-трафика (далее — Сервис) посредством веб-сайта hiearth.ru и приложения HiEarth.</p>
@@ -67,6 +70,9 @@ export default function OfferPage() {
             <p>Email: <a href={`mailto:${email}`} className="text-brand hover:underline">{email}</a></p>
           </div>
         </article>
+        </div>
+        <div className="lg:order-1"><LegalToc /></div>
+        </div>
       </div>
     </section>
   )

@@ -58,7 +58,10 @@ export default function CheckoutPage() {
     setPlanName(plan)
 
     if (!token) {
-      setError('Токен оплаты не найден. Вернитесь к выбору тарифа и попробуйте снова.')
+      // Session token is gone (refresh / deep link / new tab). The payment
+      // itself still exists on the server — offer to open it instead of
+      // dead-ending the user.
+      setError('Сессия оплаты не найдена — вероятно, страница была обновлена или открыта заново.')
       setStatus('error')
       return
     }
@@ -166,8 +169,15 @@ export default function CheckoutPage() {
               </div>
               <div className="flex-1">
                 <h2 className="serif font-semibold mb-1">Не удалось открыть оплату</h2>
-                <p className="text-sm text-text-secondary mb-4">{error}</p>
-                <Link to="/payment" className="btn-primary !py-2.5 !text-sm">Вернуться к выбору</Link>
+                <p className="text-sm text-text-secondary mb-2">{error}</p>
+                <p className="text-xs text-faint mb-4">
+                  Деньги не списаны. Если платёж уже был создан, его можно продолжить или проверить статус в истории.
+                </p>
+                <div className="flex flex-wrap gap-2.5">
+                  <Link to="/payment" className="btn-primary !py-2.5 !text-sm">Выбрать тариф заново</Link>
+                  {paymentId && <Link to={`/payments/${paymentId}`} className="btn-ghost !py-2.5 !text-sm">Открыть этот платёж</Link>}
+                  <Link to="/payments" className="btn-ghost !py-2.5 !text-sm">История платежей</Link>
+                </div>
               </div>
             </div>
           </div>
