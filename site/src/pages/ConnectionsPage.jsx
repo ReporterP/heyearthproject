@@ -6,10 +6,74 @@ import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
 import QRCode from '../components/QRCode.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import useReveal from '../hooks/useReveal.js'
 
+/* ── Icons ── */
 const Tree = ({ className = 'w-4 h-4' }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M9 22V4M15 22V6M6 9c0-2 2-3 3-3M18 11c0-2-2-4-3-4" /></svg>
 )
+const IconLink = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>)
+const IconApple = (p) => (<svg {...p} viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 1.5c.1 1-.3 2-.9 2.7-.7.8-1.7 1.4-2.7 1.3-.1-1 .4-2 1-2.7.6-.7 1.7-1.2 2.6-1.3zM19 17.3c-.5 1.1-.7 1.6-1.4 2.6-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.4.9-3.7.9c-1.6 0-2.8-1.5-3.7-2.9C.7 16.4.4 12 2 9.3c1-1.6 2.6-2.6 4.1-2.6 1.5 0 2.5 1 3.7 1 1.2 0 1.9-1 3.7-1 1.3 0 2.7.7 3.7 2-3.2 1.8-2.7 6.4.8 8.6z" /></svg>)
+const IconAndroid = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="8" width="12" height="11" rx="2" /><path d="M9 8V6a3 3 0 016 0v2M8 5L6.5 3M16 5l1.5-2M9.5 12h.01M14.5 12h.01" /></svg>)
+const IconDesktop = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>)
+const IconDownload = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>)
+
+/* Styled disclosure (replaces dated native <details>) */
+function Reveal({ label, children }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button onClick={() => setOpen(o => !o)} aria-expanded={open} className="inline-flex items-center gap-1.5 text-xs text-brand hover:text-brand-light transition">
+        <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
+        {label}
+      </button>
+      <div className="grid transition-all duration-300 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
+        <div className="overflow-hidden"><div className="pt-3">{children}</div></div>
+      </div>
+    </div>
+  )
+}
+
+/* Device-specific setup steps */
+const DEVICE_STEPS = {
+  ios: [
+    'Установите приложение Happ из App Store',
+    'Нажмите «Подключить автоматически» выше — приложение откроется само',
+    'Если не открылось: скопируйте ссылку и в Happ нажмите Подписки → + → Вставить из буфера',
+    'Включите подключение переключателем в приложении',
+  ],
+  android: [
+    'Установите Happ из Google Play (или v2rayNG)',
+    'Нажмите «Подключить автоматически» выше',
+    'Если не открылось: скопируйте ссылку, в приложении → + → Импорт из буфера обмена',
+    'Включите подключение переключателем',
+  ],
+  desktop: [
+    'Скачайте Happ для Windows / macOS / Linux',
+    'Скопируйте ссылку подписки кнопкой ниже',
+    'В приложении: Подписки → Добавить → вставьте ссылку',
+    'Включите подключение',
+  ],
+}
+const DEVICES = [
+  { id: 'ios', label: 'iPhone', Icon: IconApple },
+  { id: 'android', label: 'Android', Icon: IconAndroid },
+  { id: 'desktop', label: 'ПК', Icon: IconDesktop },
+]
+
+function detectDevice() {
+  if (typeof navigator === 'undefined') return 'desktop'
+  const ua = navigator.userAgent || ''
+  if (/iPad|iPhone|iPod/.test(ua)) return 'ios'
+  if (/Android/.test(ua)) return 'android'
+  return 'desktop'
+}
+
+function extractTokenFromUrl(url) {
+  if (!url) return ''
+  const parts = url.split('/')
+  return parts[parts.length - 1] || ''
+}
 
 export default function ConnectionsPage() {
   const navigate = useNavigate()
@@ -23,6 +87,8 @@ export default function ConnectionsPage() {
   const [error, setError] = useState('')
   const [configUpdated, setConfigUpdated] = useState(false)
   const [copiedField, setCopiedField] = useState('')
+  const [method, setMethod] = useState('sub')      // sub | proxy | palma
+  const [device, setDevice] = useState(detectDevice())
 
   useEffect(() => {
     if (!token) { navigate('/login'); return }
@@ -52,10 +118,13 @@ export default function ConnectionsPage() {
   const canConnect = connections?.can_connect
   const vlessReality = connections?.vless_reality || ''
   const amneziaAvailable = connections?.amnezia_available
+  const subUrl = subscribeLink?.subscribe_url || ''
 
   const [awg, setAwg] = useState(null)
   const [awgLoading, setAwgLoading] = useState(false)
   const [awgError, setAwgError] = useState('')
+
+  useReveal([loading, canConnect])
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -67,13 +136,18 @@ export default function ConnectionsPage() {
     setAwgLoading(true)
     setAwgError('')
     try {
-      const data = await getAwgConfig(token)
-      setAwg(data)
+      setAwg(await getAwgConfig(token))
     } catch (e) {
       setAwgError(e.message || 'Не удалось загрузить конфигурацию')
     } finally {
       setAwgLoading(false)
     }
+  }
+
+  // Lazy-load Пальма config the moment its tab is opened (was: on <details> toggle)
+  function selectMethod(id) {
+    setMethod(id)
+    if (id === 'palma') loadAwg()
   }
 
   function downloadAwgConf() {
@@ -95,9 +169,7 @@ export default function ConnectionsPage() {
     <div className="flex items-center justify-center py-32">
       <div className="text-center glass-strong rounded-[22px] p-8 max-w-sm mx-6">
         <div className="w-12 h-12 rounded-full bg-danger/10 flex items-center justify-center mx-auto mb-4">
-          <svg className="w-6 h-6 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-          </svg>
+          <svg className="w-6 h-6 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
         </div>
         <p className="text-danger mb-4 text-sm">{error}</p>
         <button className="btn-primary !py-2.5 !text-sm" onClick={() => window.location.reload()}>Повторить</button>
@@ -105,189 +177,230 @@ export default function ConnectionsPage() {
     </div>
   )
 
+  /* ── Empty state: no active subscription ── */
+  if (!canConnect) return (
+    <section className="relative py-16 md:py-24">
+      <div className="max-w-md mx-auto px-4 text-center">
+        <div className="w-14 h-14 mx-auto rounded-full bg-accent/12 border border-accent/25 text-accent flex items-center justify-center mb-5">
+          <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+        </div>
+        <h1 className="serif text-2xl font-semibold mb-2">Нет активной подписки</h1>
+        <p className="text-sm text-text-secondary mb-7">Оформите подписку или активируйте промокод — и данные для подключения появятся здесь.</p>
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <Link to="/payment" className="btn-primary !py-2.5 !text-sm">Выбрать тариф</Link>
+          <Link to="/dashboard" className="btn-ghost !py-2.5 !text-sm">В кабинет</Link>
+        </div>
+      </div>
+    </section>
+  )
+
+  const methods = [
+    { id: 'sub', label: 'Подписка', badge: 'Рекомендуем', available: !!subUrl },
+    { id: 'proxy', label: 'Прокси-ссылка', available: !!vlessReality },
+    { id: 'palma', label: 'Пальма', available: !!amneziaAvailable },
+  ].filter(m => m.available)
+
+  const active = methods.find(m => m.id === method) ? method : (methods[0]?.id || 'sub')
+  const happHref = subUrl ? `/connect?sub=${encodeURIComponent(extractTokenFromUrl(subUrl))}` : '#'
+
   return (
     <section className="relative py-10 md:py-16 overflow-hidden">
       <div className="pointer-events-none absolute top-0 left-1/4 w-96 h-96 bg-brand/6 rounded-full blur-[130px]" />
-      <div className="pointer-events-none absolute bottom-0 right-1/4 w-96 h-96 bg-accent/6 rounded-full blur-[130px]" />
 
-      <div className="relative max-w-5xl mx-auto px-4 sm:px-6">
+      <div className="relative max-w-3xl mx-auto px-4 sm:px-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8 animate-fade-in">
+        <div className="flex items-center justify-between mb-8 gap-3 flex-wrap animate-fade-in">
           <div>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">Подключение и настройка</h1>
-            <p className="text-sm text-text-secondary mt-1">Данные для подключения и инструкции</p>
+            <h1 className="serif text-2xl md:text-3xl font-semibold">Подключение</h1>
+            <p className="text-sm text-text-secondary mt-1">Настройте устройство за пару минут</p>
           </div>
           <Link to="/dashboard" className="btn-ghost !py-2 !px-4 !text-sm">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-            </svg>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
             Кабинет
           </Link>
         </div>
 
-        {/* ─── Connections ─── */}
-        <div className="card rounded-[22px] p-6 md:p-8 mb-6 animate-fade-in-up delay-100">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 rounded-xl bg-brand/12 border border-brand/20 text-brand flex items-center justify-center">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-              </svg>
+        {/* Config updated notice */}
+        {configUpdated && subUrl && (
+          <div className="p-4 rounded-xl bg-accent/10 border border-accent/20 mb-5 animate-fade-in">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+              <div className="flex-1">
+                <p className="text-accent text-sm font-medium">Настройки обновились</p>
+                <p className="text-xs text-text-secondary mt-1">Параметры подключения оптимизированы. Обновите подписку в приложении, чтобы применить их.</p>
+                <div className="flex items-center gap-3 mt-3">
+                  <button onClick={() => { copyText(subUrl, 'sub-update'); setConfigUpdated(false) }} className="px-4 py-2 rounded-lg bg-accent/15 text-accent text-sm font-medium hover:bg-accent/25 transition">
+                    {copiedField === 'sub-update' ? '✓ Скопировано' : 'Скопировать ссылку'}
+                  </button>
+                  <button onClick={() => setConfigUpdated(false)} className="text-xs text-text-secondary hover:text-text-primary transition">Скрыть</button>
+                </div>
+              </div>
             </div>
-            <h2 className="serif text-lg font-semibold">Подключение</h2>
           </div>
+        )}
 
-          {!canConnect ? (
-            <div className="flex items-center gap-3 p-4 rounded-xl bg-accent/10 border border-accent/20">
-              <svg className="w-5 h-5 text-accent flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-              </svg>
-              <div>
-                <p className="text-accent text-sm font-medium">Нет активной подписки</p>
-                <p className="text-text-secondary text-xs mt-0.5">Оформите подписку или введите промокод, чтобы получить данные для подключения.</p>
-                <Link to="/payment" className="inline-flex items-center gap-1.5 mt-2 text-sm text-brand hover:text-brand-light transition-colors">
-                  Оформить подписку
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-                </Link>
+        {/* ═══ STEP 1 — the recommended path, front and centre ═══ */}
+        <div className="card-feat rounded-[22px] p-6 md:p-7 mb-5 reveal">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-6 h-6 rounded-full bg-brand text-[#04231a] text-xs font-bold grid place-items-center">1</span>
+            <h2 className="serif text-lg font-semibold">Подключить автоматически</h2>
+          </div>
+          <p className="text-sm text-text-secondary mb-5">Откроет приложение и добавит подписку — ничего копировать не нужно.</p>
+          <a href={happHref} className="btn-primary w-full !py-4 !rounded-2xl text-base">
+            <IconLink className="w-5 h-5" />
+            Подключить в приложении
+          </a>
+          <p className="text-xs text-faint mt-3 text-center">
+            Нет приложения? <a href="https://www.happ.su/main/ru" target="_blank" rel="noopener noreferrer" className="text-brand hover:text-brand-light">Скачайте Happ</a> — займёт минуту
+          </p>
+        </div>
+
+        <TelegramProxyButton token={token} />
+
+        {/* ═══ STEP 2 — manual methods, one at a time (progressive disclosure) ═══ */}
+        <div className="card rounded-[22px] p-6 md:p-7 mb-5 reveal">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-6 h-6 rounded-full bg-brand/15 border border-brand/25 text-brand text-xs font-bold grid place-items-center">2</span>
+            <h2 className="serif text-lg font-semibold">Или добавить вручную</h2>
+          </div>
+          <p className="text-sm text-text-secondary mb-5">Отсканируйте QR-код в приложении или скопируйте ссылку.</p>
+
+          {/* method segmented control */}
+          {methods.length > 1 && (
+            <div className="inline-flex p-1 rounded-xl bg-white/[0.04] border border-brand/10 mb-5 flex-wrap gap-1" role="tablist">
+              {methods.map(m => (
+                <button
+                  key={m.id} role="tab" aria-selected={active === m.id}
+                  onClick={() => selectMethod(m.id)}
+                  className={`px-3.5 py-2 rounded-lg text-sm font-medium transition-all duration-200 inline-flex items-center gap-1.5 ${
+                    active === m.id ? 'bg-brand text-[#04231a]' : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  {m.id === 'palma' && <Tree className="w-3.5 h-3.5" />}
+                  {m.label}
+                  {m.badge && active !== m.id && <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/15 text-brand">{m.badge}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* ── Подписка ── */}
+          {active === 'sub' && subUrl && (
+            <div className="flex flex-col sm:flex-row gap-5 items-start animate-fade-in">
+              <QRCode data={subUrl} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
+              <div className="flex-1 min-w-0 w-full">
+                <p className="text-sm font-medium mb-1">Ссылка подписки</p>
+                <p className="text-xs text-text-secondary mb-3">Работает в Happ, v2rayNG, Streisand и Clash. Настройки обновляются автоматически.</p>
+                <div className="flex gap-2 mb-3">
+                  <button onClick={() => copyText(subUrl, 'sub')} className="btn-primary !py-2.5 !text-sm flex-1 sm:flex-none">
+                    {copiedField === 'sub' ? '✓ Скопировано' : 'Копировать ссылку'}
+                  </button>
+                </div>
+                <Reveal label="Показать ссылку целиком">
+                  <code className="block text-[11px] font-mono text-text-primary break-all select-all bg-bg-app border border-brand/10 rounded-lg p-2.5">{subUrl}</code>
+                </Reveal>
               </div>
             </div>
-          ) : (
-            <>
-              {configUpdated && subscribeLink?.subscribe_url && (
-                <div className="p-4 rounded-xl bg-accent/10 border border-accent/20 mb-5 animate-fade-in">
-                  <div className="flex items-start gap-3">
-                    <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                    </svg>
-                    <div className="flex-1">
-                      <p className="text-accent text-sm font-medium">Конфигурация обновилась</p>
-                      <p className="text-xs text-text-secondary mt-1">Параметры подключения были автоматически оптимизированы. Обновите подписку в приложении, чтобы применить новые настройки.</p>
-                      <div className="flex items-center gap-3 mt-3">
-                        <button onClick={() => { copyText(subscribeLink.subscribe_url, 'sub-update'); setConfigUpdated(false) }}
-                          className="px-4 py-2 rounded-lg bg-accent/15 text-accent text-sm font-medium hover:bg-accent/25 transition">
-                          Скопировать ссылку подписки
-                        </button>
-                        <button onClick={() => setConfigUpdated(false)} className="text-xs text-text-secondary hover:text-text-primary transition">Скрыть</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+          )}
 
-              <TelegramProxyButton token={token} />
+          {/* ── Прокси-ссылка ── */}
+          {active === 'proxy' && vlessReality && (
+            <div className="flex flex-col sm:flex-row gap-5 items-start animate-fade-in">
+              <QRCode data={vlessReality} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
+              <div className="flex-1 min-w-0 w-full">
+                <p className="text-sm font-medium mb-1">Одиночное подключение</p>
+                <p className="text-xs text-text-secondary mb-3">Один сервер без автообновления. Подойдёт, если подписка не поддерживается вашим приложением.</p>
+                <div className="mb-3"><CopyButton text={vlessReality} label="Копировать ссылку" /></div>
+                <Reveal label="Показать ссылку целиком">
+                  <code className="block text-[11px] font-mono text-text-primary break-all select-all bg-bg-app border border-brand/10 rounded-lg p-2.5">{vlessReality}</code>
+                </Reveal>
+              </div>
+            </div>
+          )}
 
-              {/* ─── Connection card: proxy string ─── */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-                {vlessReality && (
-                  <div className="p-4 rounded-xl bg-white/[0.03] border border-brand/10">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-md bg-brand/15 text-brand text-xs font-bold">Прокси</span>
-                        <span className="text-[10px] text-brand bg-brand/10 px-1.5 py-0.5 rounded">оптимизированный</span>
-                      </div>
-                      <CopyButton text={vlessReality} />
-                    </div>
-                    <code className="text-[11px] font-mono text-text-primary break-all select-all line-clamp-2">{vlessReality}</code>
-                    <p className="text-xs text-text-secondary mt-1.5">Оптимизированная маршрутизация. Для Happ, v2rayNG, Streisand</p>
-                    <details className="mt-3">
-                      <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код</summary>
-                      <div className="mt-2"><QRCode data={vlessReality} size={180} /></div>
-                    </details>
-                  </div>
-                )}
+          {/* ── Пальма ── */}
+          {active === 'palma' && (
+            <div className="animate-fade-in">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-brand/15 text-brand text-xs font-bold"><Tree className="w-3.5 h-3.5" /> Пальма</span>
+                <span className="text-xs text-text-secondary">усиленный приватный канал</span>
               </div>
 
-              {/* ─── Subscription URL ─── */}
-              {subscribeLink?.subscribe_url && (
-                <div className="p-4 rounded-xl bg-white/[0.03] border border-brand/10 mb-5">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-md bg-accent/15 text-accent text-xs font-bold">Подписка</span>
-                      <span className="text-[10px] text-text-secondary">Happ / v2rayNG / Streisand / Clash</span>
-                    </div>
-                    <CopyButton text={subscribeLink.subscribe_url} />
-                  </div>
-                  <code className="text-[11px] font-mono text-text-primary break-all select-all">{subscribeLink.subscribe_url}</code>
-                  <p className="text-xs text-text-secondary mt-1.5">Вставьте эту ссылку в приложение как подписку — настройки обновятся автоматически</p>
-                  <details className="mt-3">
-                    <summary className="text-xs text-brand cursor-pointer hover:text-brand-light transition">QR-код подписки</summary>
-                    <div className="mt-2"><QRCode data={subscribeLink.subscribe_url} size={180} /></div>
-                  </details>
+              {awgLoading && (
+                <div className="flex items-center gap-2 text-xs text-text-secondary py-4">
+                  <div className="w-4 h-4 rounded-full border-2 border-brand/30 border-t-brand animate-spin" />
+                  Готовим конфигурацию…
                 </div>
               )}
-
-              {/* ─── Пальма (усиленный канал) ─── */}
-              {amneziaAvailable && (
-                <div className="p-4 rounded-xl bg-gradient-to-br from-raise to-surface-alt border border-brand/15 mb-5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-brand/15 text-brand text-xs font-bold"><Tree className="w-3.5 h-3.5" /> Пальма</span>
-                    <span className="text-[10px] text-text-secondary">Усиленный приватный канал</span>
-                  </div>
-                  <p className="text-xs text-text-secondary mb-3">
-                    Отдельный канал для приложения AmneziaWG. Скачайте конфигурацию или отсканируйте QR-код.
-                  </p>
-
-                  <details className="group" onToggle={(e) => { if (e.currentTarget.open) loadAwg() }}>
-                    <summary className="inline-flex items-center gap-1.5 text-sm text-brand cursor-pointer hover:text-brand-light transition select-none">
-                      <svg className="w-4 h-4 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
-                      Показать конфигурацию
-                    </summary>
-
-                    <div className="mt-4">
-                      {awgLoading && (
-                        <div className="flex items-center gap-2 text-xs text-text-secondary">
-                          <div className="w-4 h-4 rounded-full border-2 border-brand/30 border-t-brand animate-spin" />
-                          Загрузка конфигурации…
-                        </div>
-                      )}
-                      {awgError && <p className="text-xs text-danger">{awgError}</p>}
-                      {awg?.config_text && (
-                        <div className="flex flex-col sm:flex-row gap-4 items-start">
-                          <QRCode data={awg.config_text} size={180} className="flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            {awg.endpoint && <p className="text-xs text-text-secondary mb-1">Сервер: <code className="font-mono text-text-primary">{awg.endpoint}</code></p>}
-                            {awg.ip && <p className="text-xs text-text-secondary mb-3">Ваш IP: <code className="font-mono text-text-primary">{awg.ip}</code></p>}
-                            <div className="flex flex-wrap gap-2">
-                              <button onClick={downloadAwgConf} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-brand/15 text-brand hover:bg-brand/25 transition">
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
-                                Скачать .conf
-                              </button>
-                              {awg.deeplink && (
-                                <a href={awg.deeplink} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium glass hover:bg-white/10 transition">Открыть в AmneziaWG</a>
-                              )}
-                              <CopyButton text={awg.config_text} label="Копировать конфиг" />
-                            </div>
-                            <a href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-3 text-xs text-brand hover:text-brand-light transition">
-                              Скачать приложение AmneziaWG
-                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-                            </a>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </details>
+              {awgError && (
+                <div className="py-3">
+                  <p className="text-sm text-danger mb-2">{awgError}</p>
+                  <button onClick={() => { setAwg(null); setAwgError(''); loadAwg() }} className="btn-ghost !py-2 !px-4 !text-sm">Повторить</button>
                 </div>
               )}
-            </>
+              {awg?.config_text && (
+                <div className="flex flex-col sm:flex-row gap-5 items-start">
+                  <QRCode data={awg.config_text} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
+                  <div className="flex-1 min-w-0 w-full">
+                    <p className="text-xs text-text-secondary mb-3">Для приложения AmneziaWG. Отсканируйте QR-код или скачайте файл конфигурации.</p>
+                    {awg.endpoint && <p className="text-xs text-text-secondary mb-1">Сервер: <code className="font-mono text-text-primary">{awg.endpoint}</code></p>}
+                    {awg.ip && <p className="text-xs text-text-secondary mb-3">Ваш IP: <code className="font-mono text-text-primary">{awg.ip}</code></p>}
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      <button onClick={downloadAwgConf} className="btn-primary !py-2.5 !text-sm"><IconDownload className="w-4 h-4" /> Скачать .conf</button>
+                      {awg.deeplink && <a href={awg.deeplink} className="btn-ghost !py-2.5 !text-sm">Открыть в AmneziaWG</a>}
+                      <CopyButton text={awg.config_text} label="Копировать конфиг" />
+                    </div>
+                    <a href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand hover:text-brand-light transition">
+                      Скачать приложение AmneziaWG
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
-        {/* ─── Downloads ─── */}
+        {/* ═══ STEP 3 — device-specific instructions ═══ */}
+        <div className="card rounded-[22px] p-6 md:p-7 mb-5 reveal">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="w-6 h-6 rounded-full bg-brand/15 border border-brand/25 text-brand text-xs font-bold grid place-items-center">3</span>
+            <h2 className="serif text-lg font-semibold">Пошаговая инструкция</h2>
+          </div>
+
+          <div className="inline-flex p-1 rounded-xl bg-white/[0.04] border border-brand/10 mb-5 gap-1" role="tablist">
+            {DEVICES.map(d => (
+              <button
+                key={d.id} role="tab" aria-selected={device === d.id}
+                onClick={() => setDevice(d.id)}
+                className={`px-3.5 py-2 rounded-lg text-sm font-medium transition-all duration-200 inline-flex items-center gap-2 ${
+                  device === d.id ? 'bg-brand text-[#04231a]' : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                <d.Icon className="w-4 h-4" />{d.label}
+              </button>
+            ))}
+          </div>
+
+          <ol className="space-y-3.5">
+            {DEVICE_STEPS[device].map((step, i) => (
+              <li key={i} className="flex gap-3 animate-fade-in" style={{ animationDelay: `${i * 45}ms` }}>
+                <span className="flex-shrink-0 w-6 h-6 rounded-full bg-white/[0.05] border border-brand/12 text-faint text-xs font-semibold grid place-items-center">{i + 1}</span>
+                <p className="text-sm text-text-secondary pt-0.5">{step}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+
+        {/* ═══ Downloads ═══ */}
         {Object.keys(downloads).length > 0 && (
-          <div className="card rounded-[22px] p-6 md:p-8 mb-6 animate-fade-in-up delay-200">
-            <div className="flex items-center gap-3 mb-5">
-              <div className="w-10 h-10 rounded-xl bg-brand/12 border border-brand/20 text-brand flex items-center justify-center">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                </svg>
-              </div>
-              <h2 className="serif text-base font-semibold">Скачать приложение</h2>
-            </div>
+          <div className="card rounded-[22px] p-6 md:p-7 reveal">
+            <h2 className="serif text-base font-semibold mb-1">Скачать приложение</h2>
+            <p className="text-xs text-text-secondary mb-4">Официальные сборки для вашей платформы</p>
             <div className="flex flex-wrap gap-3">
               {Object.entries(downloads).map(([platform, info]) => (
-                <a key={platform} href={info.url} target="_blank" rel="noopener noreferrer" className="btn-primary !py-3 !px-5">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                  </svg>
+                <a key={platform} href={info.url} target="_blank" rel="noopener noreferrer" className="btn-ghost !py-3 !px-5">
+                  <IconDownload className="w-4 h-4" />
                   {platform.charAt(0).toUpperCase() + platform.slice(1)}
                   {info.version && <span className="opacity-60 text-xs">v{info.version}</span>}
                 </a>

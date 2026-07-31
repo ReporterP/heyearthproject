@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import QRCodeLib from 'qrcode'
 
 /**
  * QRCode — renders a QR code client-side (no third-party service).
@@ -12,12 +11,15 @@ export default function QRCode({ data, size = 180, className = '' }) {
   useEffect(() => {
     if (!data) { setSrc(''); return }
     let cancelled = false
-    QRCodeLib.toDataURL(data, {
-      width: size,
-      margin: 1,
-      errorCorrectionLevel: 'M',
-      color: { dark: '#0a130f', light: '#ffffff' },
-    })
+    // Dynamic import keeps the QR library out of the main bundle — it's only
+    // needed on the connection screens (§3 bundle-splitting).
+    import('qrcode')
+      .then(({ default: QRCodeLib }) => QRCodeLib.toDataURL(data, {
+        width: size,
+        margin: 1,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#0a130f', light: '#ffffff' },
+      }))
       .then(url => { if (!cancelled) setSrc(url) })
       .catch(() => { if (!cancelled) setSrc('') })
     return () => { cancelled = true }
