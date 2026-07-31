@@ -10,15 +10,47 @@ package biz
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/rand"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
 	"golang.org/x/crypto/ssh"
 )
+
+// MTProtoFrontingDomain returns the configured fake-TLS fronting domain.
+//
+// The domain is hex-encoded into the mtg secret, and Telegram sends it as the
+// TLS SNI of the fake-TLS ClientHello. Clients that sniff TLS (Happ/sing-box/
+// Xray with destOverride) REPLACE the connection destination with this domain,
+// which drops the proxy IP out of the flow — the DirectIp exception can no
+// longer match and the request ends up dialled against the real domain on the
+// proxy port. So the domain MUST resolve to the MTProto exit node(s); if it
+// does not, the proxy is unreachable for those clients while every server-side
+// check (daemon up, port listening, TCP probe) still reports healthy.
+func MTProtoFrontingDomain() string {
+	return strings.TrimSpace(GetSettingOrDefault("mtproto_fronting_domain", ""))
+}
+
+// BuildMTProtoSecret assembles an mtg fake-TLS secret: the "ee" marker, 16
+// random bytes, and the hex-encoded fronting domain — the exact layout mtg's
+// own `generate-secret --hex <domain>` produces.
+func BuildMTProtoSecret(domain string) (string, error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return "", fmt.Errorf("fronting domain is empty")
+	}
+	buf := make([]byte, 16)
+	if _, err := crand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate random secret: %w", err)
+	}
+	return "ee" + hex.EncodeToString(buf) + hex.EncodeToString([]byte(domain)), nil
+}
 
 // MTProtoExit — minimal row returned by the picker.
 type MTProtoExit struct {
@@ -154,6 +186,11 @@ func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, 
 	if secret == "" {
 		return fmt.Errorf("mtproto_secret is empty in app_settings")
 	}
+	frontingDomain := MTProtoFrontingDomain()
+	if frontingDomain == "" {
+		return fmt.Errorf("mtproto_fronting_domain is empty in app_settings — " +
+			"set a domain whose A record points at the exit nodes (see 000054 migration)")
+	}
 
 	cfg := &ssh.ClientConfig{
 		User:            sshUser,
@@ -202,7 +239,10 @@ func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runSession.Run(fmt.Sprintf("bash /tmp/install-mtproxy.sh %s %s", port, secret)) }()
+	go func() {
+		done <- runSession.Run(fmt.Sprintf("bash /tmp/install-mtproxy.sh %s %s %s",
+			port, secret, frontingDomain))
+	}()
 	select {
 	case err := <-done:
 		if err != nil {

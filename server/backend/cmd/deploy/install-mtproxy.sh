@@ -3,10 +3,12 @@
 # statically-linked Go binary. Replaces unmaintained TelegramMessenger/MTProxy
 # which segfaults on Ubuntu 24+ even with CFLAGS=-fcommon workaround.
 #
-# Usage: bash install-mtproxy.sh [PORT] [SECRET]
+# Usage: bash install-mtproxy.sh [PORT] [SECRET] [FRONTING_DOMAIN]
 #   PORT defaults to 8443.
 #   SECRET (optional) — mtg-format hex string (starts with "ee" + 32 random
 #   hex + hex-encoded fake-TLS domain). If absent, mtg generates one.
+#   FRONTING_DOMAIN (REQUIRED) — fake-TLS domain baked into a generated secret.
+#   It MUST resolve (public A record) to this exit node, see the note below.
 #
 # Last stdout line is `secret: <value>` (parsed by Go caller).
 #
@@ -19,10 +21,30 @@ set -euxo pipefail  # -x prints each command to stderr — verbose for diagnosti
 
 PORT="${1:-8443}"
 SECRET_ARG="${2:-}"
+FAKE_TLS_HOST="${3:-}"
 MTG_VERSION="2.2.8"
 WORKDIR=/opt/mtproxy
 BIN=/usr/local/bin/mtg
-FAKE_TLS_HOST="www.google.com"
+
+# The fronting domain is NOT cosmetic — it decides whether clients can reach
+# this proxy at all.
+#
+# Telegram sends it as the SNI of the fake-TLS ClientHello. Clients that sniff
+# TLS (Happ/sing-box/Xray with destOverride) then REPLACE the destination with
+# that domain, keeping the port. So the connection stops going to this node's
+# IP and goes to whatever the domain actually resolves to, on :PORT.
+#
+# Measured on prod 2026-08-01: with fronting cloud.yandex.ru the exit node saw
+# zero packets from clients, and instead dialled the sniffed domain on :8443
+# itself. A probe carrying an SNI that resolves back to the node reached mtg
+# and handshook normally.
+#
+# => the domain MUST have a public A record pointing at this exit node.
+# Refuse to install rather than provision a proxy no sniffing client can use.
+if [[ -z "$FAKE_TLS_HOST" ]]; then
+  echo "ERR: FRONTING_DOMAIN (arg 3) is required — must be a domain whose A record points at this node" >&2
+  exit 1
+fi
 
 if [[ $EUID -ne 0 ]]; then
   echo "ERR: run as root" >&2
@@ -35,6 +57,24 @@ apt-get update -qq
 apt-get install -y -qq curl ca-certificates tar iproute2
 
 mkdir -p "$WORKDIR"
+
+# Fail loudly when the fronting domain does not point back here. Without this
+# check a wrong domain installs "successfully", the daemon runs, the TCP health
+# probe stays green (it sends no TLS, so there is no SNI to sniff) — and every
+# real client is silently re-targeted somewhere else. That is exactly how the
+# 2026-07/08 outage stayed invisible for days.
+PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')"
+FRONT_IPS="$(getent ahostsv4 "$FAKE_TLS_HOST" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+FRONT_OK=0
+for a in $FRONT_IPS; do
+  if [[ "$a" == "$PUBLIC_IP" ]]; then FRONT_OK=1; fi
+done
+if [[ $FRONT_OK -ne 1 ]]; then
+  echo "ERR: fronting domain '$FAKE_TLS_HOST' resolves to [${FRONT_IPS:-nothing}], not to this node ($PUBLIC_IP)." >&2
+  echo "     Clients that sniff TLS would be re-targeted away from this proxy. Fix the A record first." >&2
+  exit 1
+fi
+echo "[install-mtproxy] fronting domain $FAKE_TLS_HOST -> $PUBLIC_IP OK"
 
 # Download mtg static binary if missing OR pinned at a different version.
 # It used to only check for existence, so a version bump here never reached
@@ -154,7 +194,7 @@ if command -v ufw >/dev/null 2>&1; then
   ufw allow "$PORT"/tcp || true
 fi
 
-PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')"
+# PUBLIC_IP already resolved above during the fronting-domain check.
 echo
 echo "[install-mtproxy] DONE"
 echo "  host: $PUBLIC_IP"

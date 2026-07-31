@@ -1,20 +1,23 @@
 package admin
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
 )
 
 // MTProtoSettings — admin-facing representation of all mtproto_* settings.
 type MTProtoSettings struct {
-	Enabled        bool   `json:"enabled"`
-	Host           string `json:"host"`
-	Port           string `json:"port"`
-	Secret         string `json:"secret"`
+	Enabled bool   `json:"enabled"`
+	Host    string `json:"host"`
+	Port    string `json:"port"`
+	Secret  string `json:"secret"`
+	// FrontingDomain — fake-TLS domain baked into Secret. MUST resolve to the
+	// MTProto exit nodes: TLS-sniffing clients override the connection
+	// destination with it. See biz.MTProtoFrontingDomain.
+	FrontingDomain string `json:"fronting_domain"`
 	SponsorChannel string `json:"sponsor_channel"`
 	AutoInstall    bool   `json:"auto_install"`
 }
@@ -26,6 +29,7 @@ func GetMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 		Host:           biz.GetSettingOrDefault("mtproto_host", ""),
 		Port:           biz.GetSettingOrDefault("mtproto_port", "8443"),
 		Secret:         biz.GetSettingOrDefault("mtproto_secret", ""),
+		FrontingDomain: biz.MTProtoFrontingDomain(),
 		SponsorChannel: biz.GetSettingOrDefault("mtproto_sponsor_channel", ""),
 		AutoInstall:    biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true",
 	}
@@ -53,6 +57,7 @@ func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 		"mtproto_host":            s.Host,
 		"mtproto_port":            s.Port,
 		"mtproto_secret":          s.Secret,
+		"mtproto_fronting_domain": strings.TrimSpace(s.FrontingDomain),
 		"mtproto_sponsor_channel": s.SponsorChannel,
 		"mtproto_auto_install":    autoInstall,
 	} {
@@ -69,14 +74,19 @@ func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // GenerateMTProtoSecret — POST /api/admin/mtproto/generate-secret
-// Produces 32 hex chars (16 random bytes) and saves to mtproto_secret.
+//
+// Produces a full mtg fake-TLS secret: "ee" + 16 random bytes + hex(fronting
+// domain). It used to emit bare 32 hex chars, which is NOT an mtg secret — the
+// installer rejected the format and silently regenerated its own secret on the
+// node, so app_settings and the daemon disagreed and every client deeplink
+// broke. Requires mtproto_fronting_domain to be configured.
 func GenerateMTProtoSecret(w http.ResponseWriter, r *http.Request) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to generate random")
+	secret, err := biz.BuildMTProtoSecret(biz.MTProtoFrontingDomain())
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest,
+			"Задайте Fronting domain перед генерацией секрета — он кодируется внутрь секрета")
 		return
 	}
-	secret := hex.EncodeToString(buf)
 	if err := biz.SetSetting("mtproto_secret", secret); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save secret")
 		return

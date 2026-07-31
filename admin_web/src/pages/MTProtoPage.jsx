@@ -29,6 +29,7 @@ export default function MTProtoPage() {
   const [form, setForm] = useState({
     enabled: false,
     secret: '',
+    fronting_domain: '',
     sponsor_channel: '',
     auto_install: true,
   })
@@ -40,6 +41,7 @@ export default function MTProtoPage() {
       setForm({
         enabled: !!data.enabled,
         secret: data.secret || '',
+        fronting_domain: data.fronting_domain || '',
         sponsor_channel: data.sponsor_channel || '',
         auto_install: data.auto_install !== false,
       })
@@ -116,7 +118,27 @@ export default function MTProtoPage() {
         </label>
 
         <div>
-          <label className="text-xs text-tertiary block mb-1">Secret (32 hex chars)</label>
+          <label className="text-xs text-tertiary block mb-1">
+            Fronting domain (fake-TLS SNI)
+          </label>
+          <Input
+            type="text"
+            value={form.fronting_domain}
+            onChange={(e) => setForm({ ...form, fronting_domain: e.target.value })}
+            className="font-mono"
+            placeholder="mt.hiearth.ru"
+          />
+          <p className="text-xs text-tertiary mt-1">
+            A-запись домена <strong className="text-secondary">обязана</strong> указывать на exit-ноды.
+            Клиенты со сниффингом TLS (Happ) подменяют адрес назначения этим доменом — если он ведёт
+            не на ноду, прокси недоступен, а все серверные проверки при этом остаются зелёными.
+          </p>
+        </div>
+
+        <div>
+          <label className="text-xs text-tertiary block mb-1">
+            Secret (mtg-формат: ee + 32 hex + hex домена)
+          </label>
           <div className="flex gap-2">
             <Input
               type="text"

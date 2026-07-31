@@ -23,9 +23,12 @@ import (
 
 // collapseToETLDPlusOne reduces a list of fully-qualified domains down to
 // their unique effective-TLD+1 (registrable domain). Example:
-//   mail.yandex.ru, lxc.lavka.yandex.net, 3ds.bank.yandex.ru
+//
+//	mail.yandex.ru, lxc.lavka.yandex.net, 3ds.bank.yandex.ru
+//
 // becomes:
-//   yandex.ru, yandex.net
+//
+//	yandex.ru, yandex.net
 //
 // Why: Xray-syntax `domain:yandex.ru` already matches every subdomain
 // (mail.yandex.ru, bank.yandex.ru, ...). Emitting 3 413 FQDN entries for
@@ -104,8 +107,8 @@ func buildHappDeeplinkFromProfile(profile happRoutingProfile) string {
 // BuildHappRoutingDeeplinkForPlan собирает Happ routing-профиль под конкретный план.
 //
 // В DirectIp попадают:
-//   • MTProto exit-IP пользователя (передаются как голые IP, /32 добавляется внутри)
-//   • IP4/IP6/CIDR4/CIDR6 всех активных direct-route сервисов плана
+//   - MTProto exit-IP пользователя (передаются как голые IP, /32 добавляется внутри)
+//   - IP4/IP6/CIDR4/CIDR6 всех активных direct-route сервисов плана
 //
 // В DirectSites попадают домены этих же сервисов, каждый с префиксом "domain:"
 // (Xray-синтаксис, который Happ принимает — матчит сам домен и все поддомены).
@@ -177,6 +180,16 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 	directSites := []string{}
 	for _, base := range collapseToETLDPlusOne(rawDomains) {
 		directSites = append(directSites, "domain:"+base)
+	}
+
+	// The MTProto fronting domain must be direct too, not just the exit IP.
+	// A TLS-sniffing client rewrites the destination of the fake-TLS flow from
+	// <exit-ip>:<port> to <fronting-domain>:<port>, after which the DirectIp
+	// /32 entry can no longer match — so without this the Telegram-proxy flow
+	// is pushed into the VPN tunnel and reaches the node the long way round
+	// (client → Hub → tunnel → exit → back to itself), or not at all.
+	if fronting := MTProtoFrontingDomain(); fronting != "" {
+		directSites = append(directSites, "domain:"+fronting)
 	}
 
 	// Prepend `geoip:ru` shortcut — Happ's trie-lookup against the bundled
