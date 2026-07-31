@@ -74,9 +74,17 @@ SECRET=$(tr -d '\n\r ' < "$WORKDIR/secret")
 # all — it logs "cannot dial to the fronting domain" and every Telegram client
 # hangs mid-handshake (TCP connects, MTProto never completes). Cloudflare
 # (1.1.1.1) answers correctly over HTTP/2 from the same host, so pin it.
+#
+# prefer-ip: mtg defaults to "prefer-ipv6". Our exit nodes have NO global IPv6
+# address and no IPv6 default route, so mtg picked AAAA records for the
+# Telegram DCs and hung on connect. The fake-TLS handshake still completed
+# (Telegram showed a healthy ping) but the session never established — the
+# client sat on "connecting" forever. Pin IPv4 so upstream dials use the only
+# family this host actually has.
 cat > "$WORKDIR/config.toml" <<EOF
 secret = "$SECRET"
 bind-to = "0.0.0.0:$PORT"
+prefer-ip = "prefer-ipv4"
 
 [network]
 doh-ip = "1.1.1.1"
