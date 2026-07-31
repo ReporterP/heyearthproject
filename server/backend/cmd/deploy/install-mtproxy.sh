@@ -19,7 +19,7 @@ set -euxo pipefail  # -x prints each command to stderr — verbose for diagnosti
 
 PORT="${1:-8443}"
 SECRET_ARG="${2:-}"
-MTG_VERSION="2.1.7"
+MTG_VERSION="2.2.8"
 WORKDIR=/opt/mtproxy
 BIN=/usr/local/bin/mtg
 FAKE_TLS_HOST="www.google.com"
@@ -36,9 +36,19 @@ apt-get install -y -qq curl ca-certificates tar iproute2
 
 mkdir -p "$WORKDIR"
 
-# Download mtg static binary if not present.
-if [[ ! -x "$BIN" ]]; then
-  echo "[install-mtproxy] downloading mtg v${MTG_VERSION}"
+# Download mtg static binary if missing OR pinned at a different version.
+# It used to only check for existence, so a version bump here never reached
+# hosts that already had a binary. That left exit nodes stuck on 2.1.7 (2022):
+# it rejected the fake-TLS ClientHello of current Telegram clients, fronted
+# every connection instead, and clients hung on "connecting" forever.
+NEED_MTG_INSTALL=1
+if [[ -x "$BIN" ]] && "$BIN" --version 2>&1 | grep -q "^${MTG_VERSION}[^0-9]"; then
+  NEED_MTG_INSTALL=0
+  echo "[install-mtproxy] mtg already at v${MTG_VERSION}"
+fi
+if [[ $NEED_MTG_INSTALL -eq 1 ]]; then
+  echo "[install-mtproxy] installing mtg v${MTG_VERSION}"
+  systemctl stop mtproxy 2>/dev/null || true   # binary is busy while running
   cd /tmp
   curl -fsSL -o /tmp/mtg.tar.gz \
     "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-amd64.tar.gz"
