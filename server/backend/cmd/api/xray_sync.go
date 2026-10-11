@@ -781,6 +781,7 @@ func SyncXrayConfig() error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restart xray: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
+	recordXrayRestart()
 
 	// Notify clients that subscription config has changed.
 	biz.BumpSubscriptionVersion()

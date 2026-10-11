@@ -1029,6 +1029,10 @@ func main() {
 	// and DB lifecycle state. Optional auto-cleanup / auto-repair via app_settings.
 	StartGhostReconciler()
 
+	// Monitoring → Telegram alerts: external loop probe of the entry via an exit,
+	// check-host from RU, site certificate, backups, disk, xray restart storm.
+	StartMonitor()
+
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
