@@ -87,10 +87,43 @@ func RequestXraySync() {
 		debounceTimer.Stop()
 	}
 	debounceTimer = time.AfterFunc(2*time.Second, func() {
-		if err := SyncXrayConfig(); err != nil {
-			log.Printf("[xray-sync] debounced sync error: %v", err)
-		}
+		runXraySync("debounced sync error")
 	})
+}
+
+// xraySyncAlertKey — ключ алерта «конфиг xray не применяется».
+const xraySyncAlertKey = "xray-sync-failed"
+
+// xraySyncAlertDetailsMax limits the error text in the alert: `xray run -test`
+// output can be long and a Telegram message is capped at 4096 characters.
+const xraySyncAlertDetailsMax = 800
+
+// runXraySync is the single entry point of all background syncs (startup,
+// periodic, debounced): it runs SyncXrayConfig, logs a failure and keeps the
+// "xray-sync-failed" alert in step with the result.
+func runXraySync(label string) {
+	err := SyncXrayConfig()
+	if err != nil {
+		log.Printf("[xray-sync] %s: %v", label, err)
+	}
+	reportXraySync(alerts, err)
+}
+
+// reportXraySync raises a critical alert on any SyncXrayConfig error (leak
+// guard, `xray run -test`, restart failure, DB errors) — until it is fixed the
+// running config silently stays stale. A nil result, including "config
+// unchanged" and "xray not installed", resolves the alert; resolving a key that
+// was never raised is a no-op.
+func reportXraySync(m *alertManager, err error) {
+	if err == nil {
+		m.Resolve(xraySyncAlertKey, "Конфиг xray снова применяется")
+		return
+	}
+	details := []rune(err.Error())
+	if len(details) > xraySyncAlertDetailsMax {
+		details = append(details[:xraySyncAlertDetailsMax], '…')
+	}
+	m.Raise(xraySyncAlertKey, AlertCritical, "Конфиг xray не применяется", string(details))
 }
 
 // SyncXrayConfig немедленно синхронизирует конфиг (для startup/periodic/forced).
@@ -647,9 +680,13 @@ func SyncXrayConfig() error {
 	} else {
 		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик на всех
 		// пользовательских inbound (включая shadowsocks, socks-awg, CDN).
-		// Явные RU-direct правила выше продолжают работать.
+		// Явные RU-direct правила выше продолжают работать. Исключение — DNS (порт 53):
+		// клиенты AWG резолвят через 1.1.1.1/8.8.8.8 внутри туннеля, без ответа не
+		// откроются даже RU-direct сайты. Запрос глушит outbound dns-hijack и отвечает
+		// встроенным DNS xray (он уходит с Hub по dnsDirectRule); остальное блокируется.
 		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
-		rules = append(rules, noExitBlockRule(userInbounds))
+		outbounds = append(outbounds, dnsHijackOutbound())
+		rules = append(rules, noExitDNSRule(userInbounds), noExitBlockRule(userInbounds))
 		routing["rules"] = rules
 	}
 
@@ -736,7 +773,7 @@ func SyncXrayConfig() error {
 
 	// Leak guard: never write a config whose default outbound or balancer
 	// fallback could send user traffic out via the Hub's RU IP.
-	if err := checkNoDirectLeak(outbounds, routing); err != nil {
+	if err := checkNoDirectLeak(inbounds, outbounds, routing); err != nil {
 		return fmt.Errorf("xray config leak guard: %w", err)
 	}
 
@@ -1270,18 +1307,14 @@ func StartXraySyncLoop() {
 	}
 
 	// Начальная синхронизация
-	if err := SyncXrayConfig(); err != nil {
-		log.Printf("[xray-sync] Начальная синхронизация: %v", err)
-	}
+	runXraySync("Начальная синхронизация")
 
 	// Периодическая синхронизация каждые 5 минут
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := SyncXrayConfig(); err != nil {
-				log.Printf("[xray-sync] Периодическая синхронизация: %v", err)
-			}
+			runXraySync("Периодическая синхронизация")
 		}
 	}()
 

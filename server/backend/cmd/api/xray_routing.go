@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -13,15 +14,21 @@ import (
 //     Falling back to the exit (not block) matters: xray's observatory marks
 //     the only exit "dead" ~37x/day on short probe failures, and block would
 //     turn each of those into a user-visible outage;
-//   - with no healthy exit, every user inbound is blocked.
+//   - with no healthy exit, every user inbound is blocked (DNS excepted, see
+//     noExitDNSRule);
+//   - the only rule that may use the Hub-local "direct" outbound is the one for
+//     xray's own DNS client (dnsDirectRule).
 //
 // Otherwise unmatched traffic and balancer failures egress via the first
 // outbound, which used to be "direct", i.e. the Hub's RU IP.
 const (
-	xrayBlockTag  = "block"
-	xrayDirectTag = "direct"  // Hub-local egress, used only by xray's own DNS
-	xrayDNSTag    = "dns-out" // dns.tag: inboundTag of xray's built-in DNS queries
-	xrayAPIInTag  = "api-in"
+	xrayBlockTag      = "block"
+	xrayDirectTag     = "direct"     // Hub-local egress, used only by xray's own DNS
+	xrayDNSTag        = "dns-out"    // dns.tag: inboundTag of xray's built-in DNS queries
+	xrayDNSHijackTag  = "dns-hijack" // no-exit mode: answers users' port-53 queries from the built-in DNS
+	xrayAPIInTag      = "api-in"
+	xrayRulePortDNS   = "53"
+	xrayRuleTypeField = "field"
 )
 
 func newBlockOutbound() map[string]interface{} {
@@ -32,10 +39,25 @@ func newBlockOutbound() map[string]interface{} {
 	}
 }
 
+// dnsHijackOutbound is xray's "dns" outbound: it terminates a DNS query itself
+// and answers it from the built-in DNS client, so nothing is forwarded to the
+// address the client asked. Used only in the no-exit mode (noExitDNSRule).
+func dnsHijackOutbound() map[string]interface{} {
+	return map[string]interface{}{"protocol": "dns", "tag": xrayDNSHijackTag}
+}
+
 // newBalancer builds a balancer whose fallback is never the default outbound.
 // selector holds only exits our health monitor reports healthy (exitTags in
 // SyncXrayConfig), so when observatory briefly marks them all dead the
 // fallback is the first of them; with an empty selector it is block.
+//
+// Side effect of setting fallbackTag, intended and accepted: xray's random and
+// roundRobin strategies then start honouring the observatory (without a
+// fallbackTag random ignores it). With >= 2 exits a false "dead" mark takes that
+// exit out of the rotation until the next probe, and if all of them are marked
+// dead the traffic goes to selector[0] instead of leaking via the Hub — a
+// possibly dead exit beats the RU IP. Not a regression: before this change the
+// same situation fell through to the default "direct" outbound.
 func newBalancer(tag string, selector []string, strategy string) map[string]interface{} {
 	fallback := xrayBlockTag
 	if len(selector) > 0 && strings.HasPrefix(selector[0], "exit-") {
@@ -65,27 +87,69 @@ func userInboundTags(inbounds []map[string]interface{}) []string {
 // RU-direct rules, so RU-direct keeps working while every exit is down.
 func noExitBlockRule(inboundTags []string) map[string]interface{} {
 	return map[string]interface{}{
-		"type":        "field",
+		"type":        xrayRuleTypeField,
 		"inboundTag":  inboundTags,
 		"outboundTag": xrayBlockTag,
 	}
 }
 
-// dnsDirectRule sends xray's own DNS queries out of the Hub. Their only
-// consumers are freedom outbounds with UseIP (direct-freedom, mask-*), which
-// connect from the Hub anyway. Without it the queries would hit the default
-// outbound (block) whenever no exit is up.
+// noExitDNSRule lets users' port-53 traffic reach the dns-hijack outbound
+// instead of the no-exit block rule. Without it the AWG clients (DNS = 1.1.1.1,
+// 8.8.8.8, arriving via tun2socks in socks-awg as UDP :53) could not resolve
+// anything, not even the RU-direct sites that are still served. The queries are
+// answered by xray's built-in DNS, which goes out through dnsDirectRule; no user
+// data leaves the Hub. Must come BEFORE noExitBlockRule.
+func noExitDNSRule(inboundTags []string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        xrayRuleTypeField,
+		"inboundTag":  inboundTags,
+		"port":        xrayRulePortDNS,
+		"outboundTag": xrayDNSHijackTag,
+	}
+}
+
+// dnsDirectRule sends xray's own DNS queries out of the Hub. Their consumers
+// are the freedom outbounds with UseIP (direct-freedom, mask-*), which connect
+// from the Hub anyway, and, in the no-exit mode, the dns-hijack outbound.
+// Without it the queries would hit the default outbound (block) whenever no exit
+// is up.
+//
+// Behaviour change, intended: xray's built-in DNS now always resolves from the
+// Hub, also while the exits are healthy. Previously its queries were routed like
+// user traffic, i.e. through the catch-all balancer to the exit abroad. Resolving
+// from the Hub gives RU-correct answers (RU CDN nodes) for direct-freedom, which
+// is what the Hub connects to anyway; nothing new is exposed, as those domains
+// are contacted from the Hub's IP regardless.
 func dnsDirectRule() map[string]interface{} {
 	return map[string]interface{}{
-		"type":        "field",
+		"type":        xrayRuleTypeField,
 		"inboundTag":  []string{xrayDNSTag},
 		"outboundTag": xrayDirectTag,
 	}
 }
 
+// ruleTagList reads a rule's list-of-strings field (inboundTag), nil if absent.
+func ruleTagList(rule map[string]interface{}, key string) []string {
+	v, _ := rule[key].([]string)
+	return v
+}
+
+// isInboundOnlyRule reports whether rule matches on inboundTag alone: any other
+// matcher (port, domain, ip, user, network, protocol, ...) narrows it down.
+func isInboundOnlyRule(rule map[string]interface{}) bool {
+	for k := range rule {
+		switch k {
+		case "type", "inboundTag", "outboundTag":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // checkNoDirectLeak is the last guard before the config is written: a config
 // violating the invariants is rejected and the running one stays in place.
-func checkNoDirectLeak(outbounds []map[string]interface{}, routing map[string]interface{}) error {
+func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map[string]interface{}) error {
 	if len(outbounds) == 0 {
 		return fmt.Errorf("no outbounds")
 	}
@@ -95,18 +159,48 @@ func checkNoDirectLeak(outbounds []map[string]interface{}, routing map[string]in
 	if proto, _ := outbounds[0]["protocol"].(string); proto != "blackhole" {
 		return fmt.Errorf("default outbound protocol is %q, want blackhole", proto)
 	}
-	raw, ok := routing["balancers"]
-	if !ok {
-		return nil
+
+	var rules []map[string]interface{}
+	if raw, ok := routing["rules"]; ok {
+		if rules, ok = raw.([]map[string]interface{}); !ok {
+			return fmt.Errorf("routing.rules has type %T", raw)
+		}
 	}
-	balancers, ok := raw.([]map[string]interface{})
-	if !ok {
-		return fmt.Errorf("routing.balancers has type %T", raw)
+	// The Hub-local "direct" egress is reserved for xray's own DNS client.
+	for _, r := range rules {
+		if r["outboundTag"] == xrayDirectTag && !reflect.DeepEqual(ruleTagList(r, "inboundTag"), []string{xrayDNSTag}) {
+			return fmt.Errorf("rule %v sends traffic to %q; only the %q inbound may", r, xrayDirectTag, xrayDNSTag)
+		}
+	}
+
+	var balancers []map[string]interface{}
+	if raw, ok := routing["balancers"]; ok {
+		if balancers, ok = raw.([]map[string]interface{}); !ok {
+			return fmt.Errorf("routing.balancers has type %T", raw)
+		}
 	}
 	for _, b := range balancers {
 		fb, _ := b["fallbackTag"].(string)
 		if fb != xrayBlockTag && !strings.HasPrefix(fb, "exit-") {
 			return fmt.Errorf("balancer %v has fallbackTag %q, want %q or an exit-* tag", b["tag"], fb, xrayBlockTag)
+		}
+	}
+	if len(balancers) > 0 {
+		return nil
+	}
+
+	// No balancers = no healthy exit: every user inbound must be blocked.
+	blocked := map[string]bool{}
+	for _, r := range rules {
+		if r["outboundTag"] == xrayBlockTag && isInboundOnlyRule(r) {
+			for _, tag := range ruleTagList(r, "inboundTag") {
+				blocked[tag] = true
+			}
+		}
+	}
+	for _, tag := range userInboundTags(inbounds) {
+		if !blocked[tag] {
+			return fmt.Errorf("no healthy exit, but inbound %q is not blocked", tag)
 		}
 	}
 	return nil
