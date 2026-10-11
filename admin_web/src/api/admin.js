@@ -242,6 +242,20 @@ export function updateSetting(key, value) {
   return apiFetch('/settings', { method: 'POST', body: { key, value } })
 }
 
+// ── Alerts (Telegram) ──
+export function fetchAlertSettings() {
+  return apiFetch('/alerts/settings')
+}
+export function saveAlertSettings(payload) {
+  return apiFetch('/alerts/settings', { method: 'PUT', body: payload })
+}
+export function sendAlertTest() {
+  return apiFetch('/alerts/test', { method: 'POST' })
+}
+export function fetchAlertEvents(limit = 100) {
+  return apiFetch(`/alerts/events?limit=${limit}`)
+}
+
 // ── Auto-Tuner ──
 export function fetchAutoTunerStatus() {
   return apiFetch('/auto-tuner/status')

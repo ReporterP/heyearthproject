@@ -19,6 +19,8 @@ func ListSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to load settings")
 		return
 	}
+	// The Telegram alert bot token is write-only: managed via /api/admin/alerts/settings.
+	delete(settings, "alert_telegram_bot_token")
 	writeAdminJSON(w, http.StatusOK, settings)
 }
 

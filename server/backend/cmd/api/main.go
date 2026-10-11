@@ -1141,6 +1141,9 @@ func main() {
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
 	http.HandleFunc("/api/v1/app/donation-settings", apiLimiter.Middleware(handleDonationSettings))
 
+	// Admin: Telegram alerts — settings (token masked), test message, event journal
+	registerAlertAdminRoutes()
+
 	// Admin panel
 	admin.RegisterRoutes()
 

@@ -36,6 +36,7 @@ import PlansPage from './pages/PlansPage.jsx'
 import B2BAnalyticsPage from './pages/B2BAnalyticsPage.jsx'
 import MTProtoPage from './pages/MTProtoPage.jsx'
 import DirectRoutesPage from './pages/DirectRoutesPage.jsx'
+import AlertsPage from './pages/AlertsPage.jsx'
 import './style.css'
 
 createRoot(document.getElementById('root')).render(
@@ -70,6 +71,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/auto-tuner" element={<AutoTunerPage />} />
                   <Route path="/plans" element={<PlansPage />} />
                   <Route path="/mtproto" element={<MTProtoPage />} />
+                  <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/direct-routes" element={<DirectRoutesPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>

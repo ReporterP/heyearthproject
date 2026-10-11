@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
   ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -37,6 +37,7 @@ const groups = [
       { to: '/direct-routes',    icon: Route,    label: 'navDirectRoutes',   perm: 'routing.direct.view',    hideForTenant: true },
       { to: '/mtproto',          icon: Send,     label: 'navMTProto',        perm: 'settings.read',          hideForTenant: true },
       { to: '/auto-tuner',       icon: Zap,      label: 'navAutoTuner',      perm: 'settings.read',          hideForTenant: true },
+      { to: '/alerts',           icon: Bell,     label: 'navAlerts',         perm: 'settings.read',          hideForTenant: true },
     ],
   },
   {

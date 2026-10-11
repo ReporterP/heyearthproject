@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
 } from 'lucide-react'
 
 /**
@@ -28,6 +28,7 @@ export const commands = [
   { id: 'go-direct-routes',   label: 'Прямая маршрутизация', icon: Route,           kind: 'page', href: '/direct-routes',   group: 'Инфраструктура' },
   { id: 'go-mtproto',         label: 'MTProto',              icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
   { id: 'go-auto-tuner',      label: 'Auto-Tuner',           icon: Zap,             kind: 'page', href: '/auto-tuner',      group: 'Инфраструктура' },
+  { id: 'go-alerts',          label: 'Алерты',               icon: Bell,            kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
 
   // Money
   { id: 'go-plans',        label: 'Тарифы',                  icon: Package,         kind: 'page', href: '/plans',        group: 'Деньги' },

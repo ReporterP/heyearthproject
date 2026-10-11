@@ -39,6 +39,7 @@ export default {
   navAuditLog: 'Audit Log',
   navAutoTuner: 'Auto-Tuner',
   navMTProto: 'MTProto',
+  navAlerts: 'Alerts',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',
   dashUsers: 'Users',
