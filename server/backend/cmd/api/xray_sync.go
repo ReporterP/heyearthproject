@@ -1074,10 +1074,14 @@ func checkAllTunnels() {
 	}
 
 	if len(nodes) == 0 {
+		// No online exit at all: SyncXrayConfig blocks every user inbound.
+		RaiseAlert("all-exits-down", AlertCritical, "Нет ни одной exit-ноды",
+			"В servers нет online exit-нод — пользовательский трафик заблокирован (кроме RU-direct).")
 		return
 	}
 
 	statusChanged := false
+	healthyCount := 0
 	for _, node := range nodes {
 		probeResult, latencyMs, probeError := checkTunnelHealth(node)
 
@@ -1122,6 +1126,9 @@ func checkAllTunnels() {
 		default: // "unknown" or empty — use probe result directly
 			newStatus = probeResult
 		}
+		if newStatus == "healthy" {
+			healthyCount++
+		}
 
 		if newStatus != oldStatus {
 			if err := biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError); err != nil {
@@ -1138,10 +1145,16 @@ func checkAllTunnels() {
 				log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — туннель НЕДОСТУПЕН (после %d проверок)",
 					node.ID, node.Name, node.IPAddress, hysteresisUnhealthy)
 				biz.RecordFailedConnection(node.ID)
+				RaiseAlert(exitDownAlertKey(node.ID), AlertWarn,
+					fmt.Sprintf("Exit-нода %s недоступна", node.Name),
+					fmt.Sprintf("#%d %s (%s, %s): проверка туннеля не проходит. Ошибка: %s",
+						node.ID, node.Name, node.IPAddress, node.TunnelProtocol, probeError))
 			} else if newStatus == "healthy" && oldStatus == "unhealthy" {
 				log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН",
 					node.ID, node.Name, node.IPAddress)
 				biz.RecordSuccessfulConnection(node.ID)
+				ResolveAlert(exitDownAlertKey(node.ID),
+					fmt.Sprintf("Exit-нода %s (#%d) снова доступна, RTT %d мс", node.Name, node.ID, latencyMs))
 			} else {
 				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s",
 					node.ID, node.Name, oldStatus, newStatus)
@@ -1150,6 +1163,16 @@ func checkAllTunnels() {
 			// Обновляем last_tunnel_check при КАЖДОЙ проверке, независимо от статуса
 			_ = biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError)
 		}
+	}
+
+	// Evaluated every cycle (RaiseAlert dedups by key with a 30-min cooldown),
+	// so an outage that began before an API restart still alerts.
+	if healthyCount == 0 {
+		RaiseAlert("all-exits-down", AlertCritical, "Все exit-ноды недоступны",
+			fmt.Sprintf("0 из %d exit-нод healthy — пользовательский трафик заблокирован (кроме RU-direct).", len(nodes)))
+	} else {
+		ResolveAlert("all-exits-down",
+			fmt.Sprintf("Exit-ноды снова доступны: %d из %d healthy", healthyCount, len(nodes)))
 	}
 
 	// Если статус какой-то ноды изменился — пересинхронизируем Xray (debounced)
@@ -1238,7 +1261,7 @@ func checkMTProtoHealth() {
 // checkTunnelHealth проверяет доступность exit-ноды по протоколу.
 // - VLESS: TCP + TLS handshake (Reality endpoint)
 // - Shadowsocks: TCP connect (WS порт 443)
-// - Hysteria2: проверка локального SOCKS5 порта Hysteria2-клиента на Hub
+// - Hysteria2: GET generate_204 через локальный SOCKS5 Hysteria2-клиента (весь путь до exit)
 // - Остальные: TCP connect
 // Возвращает статус и latency в миллисекундах.
 func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, errMsg string) {
@@ -1267,13 +1290,19 @@ func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, e
 		tlsConn.Close()
 
 	case "hysteria2":
+		// C4: a listening local SOCKS port says nothing about the exit. Fetch a
+		// real 204 THROUGH the tunnel (Hub -> hysteria2 client -> exit -> internet).
 		hy2Port := 1088 + node.ID
 		localAddr := fmt.Sprintf("127.0.0.1:%d", hy2Port)
-		conn, err := net.DialTimeout("tcp", localAddr, 3*time.Second)
+		rtt, err := probeViaSOCKS5(localAddr, exitProbeURL, exitProbeTimeout)
 		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("hysteria2 local SOCKS %s: %v", localAddr, err)
+			return "unhealthy", 0, fmt.Sprintf("hysteria2 via %s: %v", localAddr, err)
 		}
-		conn.Close()
+		ms := int(rtt.Milliseconds())
+		if ms < 1 {
+			ms = 1
+		}
+		return "healthy", ms, ""
 
 	case "shadowsocks":
 		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
