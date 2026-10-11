@@ -29,6 +29,7 @@ const (
 
 const (
 	alertCooldown      = 30 * time.Minute
+	alertRetryBackoff  = 5 * time.Minute // pause before re-sending a raise/repeat whose delivery failed
 	alertTokenSetting  = "alert_telegram_bot_token"
 	alertChatIDSetting = "alert_telegram_chat_id"
 
@@ -73,6 +74,7 @@ type alertState struct {
 	level    AlertLevel
 	title    string
 	lastSent time.Time // cooldown anchor: time of the last message attempt, zero when that attempt failed
+	retryAt  time.Time // after a failed raise/repeat: no new attempt (and no journal row) before this moment; survives Resolve
 	inc      *alertIncident
 }
 
@@ -207,7 +209,8 @@ func (m *alertManager) purgeLoop() {
 
 // RaiseAlert sends the alert once per key; while the key stays active a critical
 // alert is repeated at most once per cooldown (30 min), a warn alert is not repeated.
-// A warn → critical escalation is sent immediately.
+// A warn → critical escalation is sent immediately. After a failed delivery the key is
+// quiet for alertRetryBackoff (5 min), then the next RaiseAlert retries.
 func RaiseAlert(key string, level AlertLevel, title, details string) {
 	alerts.Raise(key, level, title, details)
 }
@@ -222,6 +225,12 @@ func (m *alertManager) Raise(key string, level AlertLevel, title, details string
 	if st == nil {
 		st = &alertState{}
 		m.state[key] = st
+	}
+	if now.Before(st.retryAt) {
+		// the previous delivery failed (Telegram down, or not configured yet): do not hammer it
+		// and do not fill the journal — not even for an escalation
+		m.mu.Unlock()
+		return
 	}
 	prev := *st
 	coolOK := st.lastSent.IsZero() || now.Sub(st.lastSent) >= m.cooldown
@@ -334,8 +343,16 @@ func (m *alertManager) settle(o alertOutgoing, ev alertEvent, sent bool) {
 			if o.inc != nil {
 				o.inc.delivered = true
 			}
-		} else if same {
-			st.notified, st.lastSent = false, time.Time{} // failed: the next Raise retries
+			if st != nil {
+				st.retryAt = time.Time{}
+			}
+		} else {
+			if st != nil {
+				st.retryAt = m.now().Add(alertRetryBackoff)
+			}
+			if same {
+				st.notified, st.lastSent = false, time.Time{} // failed: the first Raise after the backoff retries
+			}
 		}
 	case o.recovery && !sent:
 		if same {
@@ -364,10 +381,10 @@ func replayAlertEvents(events []alertEvent) map[string]*alertState {
 			}
 			st.active, st.level, st.title = true, ev.Level, ev.Title
 			if ev.Delivered {
-				st.notified, st.lastSent = true, ev.At
+				st.notified, st.lastSent, st.retryAt = true, ev.At, time.Time{}
 				st.inc.delivered = true
 			} else {
-				st.notified, st.lastSent = false, time.Time{}
+				st.notified, st.lastSent, st.retryAt = false, time.Time{}, ev.At.Add(alertRetryBackoff)
 			}
 		case "suppressed":
 			if !st.active || st.inc == nil {

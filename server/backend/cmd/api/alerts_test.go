@@ -127,8 +127,8 @@ func TestAlertFailedSendIsRetriedOnNextRaise(t *testing.T) {
 	if len(h.sent) != 0 || len(h.events) != 1 || h.events[0].Delivered || h.events[0].Error == "" {
 		t.Fatalf("first attempt must fail and be journaled as undelivered: sent=%q events=%+v", h.sent, h.events)
 	}
-	h.advance(time.Second)
-	h.m.Raise("k", AlertCritical, "T", "d") // next poll of the monitor: must retry, not wait out the cooldown
+	h.advance(alertRetryBackoff + time.Second)
+	h.m.Raise("k", AlertCritical, "T", "d") // first poll after the backoff: must retry, not wait out the 30 min cooldown
 	if len(h.sent) != 1 {
 		t.Fatalf("failed raise must be re-sent by the next Raise, got %d sent", len(h.sent))
 	}
@@ -147,7 +147,7 @@ func TestAlertFailedRepeatIsRetried(t *testing.T) {
 	h.advance(31 * time.Minute)
 	h.failSends = 1
 	h.m.Raise("k", AlertCritical, "T", "") // repeat fails
-	h.advance(time.Second)
+	h.advance(alertRetryBackoff + time.Second)
 	h.m.Raise("k", AlertCritical, "T", "") // retried
 	if len(h.sent) != 2 || h.attempts != 3 {
 		t.Fatalf("failed repeat must be retried: sent=%d attempts=%d", len(h.sent), h.attempts)
@@ -165,10 +165,15 @@ func TestAlertResolveAfterOnlyFailedRaisesSendsNothing(t *testing.T) {
 	if got := h.kinds(); got != "raise,cleared" {
 		t.Fatalf("event kinds: %s", got)
 	}
-	// nothing was delivered → no flapping cooldown either: a new outage is reported at once
+	// nothing was delivered → no flapping cooldown, only the retry backoff of the failed delivery
+	h.m.Raise("k", AlertCritical, "T", "")
+	if h.attempts != 1 {
+		t.Fatalf("a new outage inside the retry backoff must not hit Telegram again, attempts=%d", h.attempts)
+	}
+	h.advance(alertRetryBackoff + time.Second)
 	h.m.Raise("k", AlertCritical, "T", "")
 	if len(h.sent) != 1 {
-		t.Fatalf("new outage after a silent incident must be sent, got %d", len(h.sent))
+		t.Fatalf("new outage after the backoff must be sent, got %d", len(h.sent))
 	}
 }
 
@@ -233,6 +238,59 @@ func TestAlertResolveWaitsForRaiseOutcome(t *testing.T) {
 				t.Fatalf("sent=%q kinds=%v, want %d messages and kinds %s", sent, kinds, tc.wantSent, tc.wantKinds)
 			}
 		})
+	}
+}
+
+func TestAlertFailedSendBacksOffBeforeRetry(t *testing.T) {
+	h := newAlertHarness()
+	h.failSends = 1
+	h.m.Raise("k", AlertCritical, "T", "d") // t0: delivery fails
+	if h.attempts != 1 || len(h.events) != 1 {
+		t.Fatalf("setup: attempts=%d events=%d", h.attempts, len(h.events))
+	}
+	h.advance(time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "d") // t0+1m: inside the backoff
+	if h.attempts != 1 || len(h.events) != 1 {
+		t.Fatalf("inside the backoff there must be no delivery attempt and no journal row: attempts=%d events=%d", h.attempts, len(h.events))
+	}
+	h.advance(4*time.Minute + time.Second)
+	h.m.Raise("k", AlertCritical, "T", "d") // t0+5m+1s: retried
+	if h.attempts != 2 || len(h.sent) != 1 || len(h.events) != 2 {
+		t.Fatalf("after the backoff the raise must be retried: attempts=%d sent=%d events=%d", h.attempts, len(h.sent), len(h.events))
+	}
+}
+
+// Until the owner creates the bot there is no token/chat_id: every delivery fails with
+// errAlertsNotConfigured. A monitor polling every minute must not write a row per poll.
+func TestAlertNotConfiguredIsAttemptedOncePerBackoff(t *testing.T) {
+	h := newAlertHarness()
+	h.m.send = func(string) error { h.attempts++; return errAlertsNotConfigured }
+	for minute := 0; minute < 12; minute++ {
+		h.m.Raise("k", AlertCritical, "T", "")
+		h.advance(time.Minute)
+	}
+	if h.attempts != 3 || len(h.events) != 3 { // minutes 0, 5 and 10
+		t.Fatalf("want one attempt per %s, got attempts=%d events=%d", alertRetryBackoff, h.attempts, len(h.events))
+	}
+	for _, ev := range h.events {
+		if ev.Delivered || ev.Error != errAlertsNotConfigured.Error() {
+			t.Fatalf("journal row must carry the delivery error: %+v", ev)
+		}
+	}
+}
+
+func TestAlertSuccessfulDeliveryKeepsCooldownNotBackoff(t *testing.T) {
+	h := newAlertHarness()
+	h.failSends = 1
+	h.m.Raise("k", AlertCritical, "T", "") // fails
+	h.advance(alertRetryBackoff + time.Second)
+	h.m.Raise("k", AlertCritical, "T", "") // delivered
+	h.advance(time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "") // inside the 30 min cooldown: silent, as before
+	h.advance(31 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "") // cooldown over: critical repeat
+	if len(h.sent) != 2 || !strings.Contains(h.sent[1], "ПОВТОР") || h.attempts != 3 {
+		t.Fatalf("a delivered alert follows the normal cooldown rules: sent=%q attempts=%d", h.sent, h.attempts)
 	}
 }
 
@@ -413,6 +471,24 @@ func TestReplayAlertEventsCountsOnlyDeliveredRaises(t *testing.T) {
 	h2.m.Raise("failed", AlertCritical, "F", "")
 	if len(h2.sent) != 1 {
 		t.Fatalf("undelivered raise must be re-sent after a restart: %q", h2.sent)
+	}
+}
+
+func TestReplayAlertEventsRestoresRetryBackoff(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	events := []alertEvent{{Key: "k", Level: AlertCritical, Kind: "raise", Title: "T", Delivered: false, Error: "not configured", At: t0}}
+
+	h := newAlertHarness()
+	h.now = t0.Add(time.Minute) // API restarted (deploy) right after the failed attempt
+	h.m.state = replayAlertEvents(events)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if h.attempts != 0 || len(h.events) != 0 {
+		t.Fatalf("a restart must not skip the retry backoff: attempts=%d events=%d", h.attempts, len(h.events))
+	}
+	h.advance(alertRetryBackoff)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 1 {
+		t.Fatalf("after the backoff the raise must be retried: sent=%d", len(h.sent))
 	}
 }
 
