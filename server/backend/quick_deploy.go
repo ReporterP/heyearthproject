@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	host       = "45.150.39.236:22"
 	user       = "root"
 	appDir     = "/opt/heyearth/mainserver"
 	binaryName = "heyearth-api"
@@ -33,20 +32,31 @@ func main() {
 	serverRoot := filepath.Dir(backendRoot)
 	envFile := filepath.Join(serverRoot, ".env")
 
-	// Загрузить пароль из .env
-	password := ""
+	// Load host and password from .env — the Hub IP is not hardcoded
+	// (it changed on 2026-10-10 after the old one was filtered upstream).
+	password, deployHost, deployPort := "", "", "22"
 	if data, err := os.ReadFile(envFile); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "DEPLOY_SSH_PASSWORD=") {
+			switch {
+			case strings.HasPrefix(line, "DEPLOY_SSH_PASSWORD="):
 				password = strings.TrimPrefix(line, "DEPLOY_SSH_PASSWORD=")
-				break
+			case strings.HasPrefix(line, "DEPLOY_HOST="):
+				deployHost = strings.TrimPrefix(line, "DEPLOY_HOST=")
+			case strings.HasPrefix(line, "DEPLOY_PORT="):
+				if p := strings.TrimPrefix(line, "DEPLOY_PORT="); p != "" {
+					deployPort = p
+				}
 			}
 		}
 	}
 	if password == "" {
 		log.Fatal("DEPLOY_SSH_PASSWORD not found in server/.env")
 	}
+	if deployHost == "" {
+		log.Fatal("DEPLOY_HOST not found in server/.env")
+	}
+	host := net.JoinHostPort(deployHost, deployPort)
 
 	// 1. Собрать бинарник для Linux
 	fmt.Println("[1/5] Сборка бинарника для Linux...")
