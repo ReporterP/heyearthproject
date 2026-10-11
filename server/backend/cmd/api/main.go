@@ -968,6 +968,9 @@ func main() {
 		log.Fatalf("failed to initialize DB: %v", err)
 	}
 	defer db.CloseDB()
+	// Alerts: replay alert_events so already-reported incidents are not re-sent after a
+	// restart, start the retention purge. Must run before any background loop calls RaiseAlert.
+	alerts.Init()
 	if err := admin.ValidateConfig(); err != nil {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
