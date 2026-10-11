@@ -151,6 +151,7 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		  AND us.valid_until > CURRENT_TIMESTAMP
 		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 		GROUP BY u.vless_uuid, u.user_id, u.id
+		ORDER BY u.user_id
 	`)
 	if err != nil {
 		return nil, err
@@ -164,7 +165,7 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		}
 		// Load allowed server IDs from plan_servers
 		if c.PlanID > 0 {
-			srvRows, srvErr := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1", c.PlanID)
+			srvRows, srvErr := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1 ORDER BY server_id", c.PlanID)
 			if srvErr == nil {
 				for srvRows.Next() {
 					var sid int
