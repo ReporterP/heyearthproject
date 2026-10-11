@@ -1099,35 +1099,23 @@ func checkAllTunnels() {
 		oldStatus := node.TunnelStatus
 		hc := getHealthCounter(node.ID)
 
-		// Update hysteresis counters.
-		if probeResult == "healthy" {
-			hc.consecutiveOK++
-			hc.consecutiveFail = 0
-		} else {
-			hc.consecutiveFail++
-			hc.consecutiveOK = 0
-		}
-
-		// Determine effective status with hysteresis.
-		var newStatus string
-		switch oldStatus {
-		case "healthy":
-			if hc.consecutiveFail >= hysteresisUnhealthy {
-				newStatus = "unhealthy"
-			} else {
-				newStatus = "healthy"
-			}
-		case "unhealthy":
-			if hc.consecutiveOK >= hysteresisHealthy {
-				newStatus = "healthy"
-			} else {
-				newStatus = "unhealthy"
-			}
-		default: // "unknown" or empty — use probe result directly
-			newStatus = probeResult
-		}
+		// Hysteresis counters -> effective status + alert action (see evalExitHealth).
+		newStatus, alertAction := evalExitHealth(oldStatus, probeResult, hc)
 		if newStatus == "healthy" {
 			healthyCount++
+		}
+
+		// The per-exit alert follows the STATUS on every tick, not just the flip:
+		// RaiseAlert/ResolveAlert dedup by key, so steady state is silent, while a
+		// lost or failed delivery, a flap inside the cooldown or an API restart with
+		// the exit already down are all retried on the next tick.
+		switch alertAction {
+		case exitAlertRaise:
+			RaiseAlert(exitDownAlertKey(node.ID), AlertWarn,
+				fmt.Sprintf("Exit-нода %s недоступна", node.Name),
+				exitDownDetails(node, probeError))
+		case exitAlertResolve:
+			ResolveAlert(exitDownAlertKey(node.ID), exitUpMessage(node, latencyMs))
 		}
 
 		if newStatus != oldStatus {
@@ -1145,16 +1133,10 @@ func checkAllTunnels() {
 				log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — туннель НЕДОСТУПЕН (после %d проверок)",
 					node.ID, node.Name, node.IPAddress, hysteresisUnhealthy)
 				biz.RecordFailedConnection(node.ID)
-				RaiseAlert(exitDownAlertKey(node.ID), AlertWarn,
-					fmt.Sprintf("Exit-нода %s недоступна", node.Name),
-					fmt.Sprintf("#%d %s (%s, %s): проверка туннеля не проходит. Ошибка: %s",
-						node.ID, node.Name, node.IPAddress, node.TunnelProtocol, probeError))
 			} else if newStatus == "healthy" && oldStatus == "unhealthy" {
 				log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН",
 					node.ID, node.Name, node.IPAddress)
 				biz.RecordSuccessfulConnection(node.ID)
-				ResolveAlert(exitDownAlertKey(node.ID),
-					fmt.Sprintf("Exit-нода %s (#%d) снова доступна, RTT %d мс", node.Name, node.ID, latencyMs))
 			} else {
 				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s",
 					node.ID, node.Name, oldStatus, newStatus)
@@ -1259,10 +1241,12 @@ func checkMTProtoHealth() {
 }
 
 // checkTunnelHealth проверяет доступность exit-ноды по протоколу.
-// - VLESS: TCP + TLS handshake (Reality endpoint)
-// - Shadowsocks: TCP connect (WS порт 443)
-// - Hysteria2: GET generate_204 через локальный SOCKS5 Hysteria2-клиента (весь путь до exit)
-// - Остальные: TCP connect
+//   - VLESS: TCP + TLS handshake (Reality endpoint)
+//   - Shadowsocks: TCP connect (WS порт 443)
+//   - Hysteria2: GET generate_204 (gstatic, затем cloudflare) через локальный SOCKS5
+//     Hysteria2-клиента (весь путь до exit); здоров, если любой из двух отвечает 204
+//   - Остальные: TCP connect
+//
 // Возвращает статус и latency в миллисекундах.
 func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, errMsg string) {
 	start := time.Now()
@@ -1294,9 +1278,11 @@ func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, e
 		// real 204 THROUGH the tunnel (Hub -> hysteria2 client -> exit -> internet).
 		hy2Port := 1088 + node.ID
 		localAddr := fmt.Sprintf("127.0.0.1:%d", hy2Port)
-		rtt, err := probeViaSOCKS5(localAddr, exitProbeURL, exitProbeTimeout)
+		// gstatic first, cloudflare as a fallback: healthy if either answers 204.
+		// The error is a single line naming the exit and the SOCKS address once.
+		rtt, err := probeExitViaSOCKS5(localAddr, exitProbeTargets, exitProbeTimeout)
 		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("hysteria2 via %s: %v", localAddr, err)
+			return "unhealthy", 0, fmt.Sprintf("hysteria2 exit #%d via %s: %v", node.ID, localAddr, err)
 		}
 		ms := int(rtt.Milliseconds())
 		if ms < 1 {
