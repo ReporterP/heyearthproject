@@ -30,7 +30,7 @@ import (
 //   - Spoke (exit-ноды) подключены к Hub через зашифрованные туннели
 //   - Hub маршрутизирует трафик пользователей через здоровые exit-ноды
 //   - Балансировка нагрузки: leastPing по всем доступным exit-нодам
-//   - Если exit-нод нет — трафик идёт напрямую (freedom)
+//   - Если exit-нод нет — пользовательский трафик блокируется (кроме явных RU-direct правил)
 //
 // Безопасность:
 //   - Per-user UUID для VLESS, per-user login/pass для SOCKS5/HTTP
@@ -330,10 +330,49 @@ func SyncXrayConfig() error {
 		})
 	}
 
+	// ── Xray Stats API ──
+	// dokodemo-door inbound для gRPC API доступа к статистике
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag": "api-in", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door",
+		"settings": map[string]interface{}{"address": "127.0.0.1"},
+	})
+
+	// SOCKS5 inbound для AmneziaWG (Palma) egress. AWG's tun2socks
+	// (hev-socks5-tunnel) dials this on loopback; traffic then flows through
+	// the SAME global routing rules as Reality (inboundTag: null) → RU domains
+	// + RU geoip go to direct-freedom (Hub Moscow), everything else to the
+	// exit-balancer (Amsterdam). sniffing recovers the domain from TLS SNI /
+	// HTTP Host so geosite (domain) rules fire, matching Happ's split.
+	// Loopback-only (127.0.0.1) — never exposed to the network.
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag":      "socks-awg",
+		"listen":   "127.0.0.1",
+		"port":     10808,
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"auth": "noauth",
+			"udp":  true,
+			"ip":   "127.0.0.1",
+		},
+		"sniffing": map[string]interface{}{
+			"enabled":      true,
+			"destOverride": []string{"http", "tls", "quic"},
+			"routeOnly":    true,
+		},
+	})
+
+	// Every inbound except api-in carries user traffic; the no-exit block rule
+	// must cover all of them (C2: shadowsocks, socks-awg and CDN used to leak).
+	userInbounds := userInboundTags(inbounds)
+
 	// ── Outbounds ──
+	// outbounds[0] is xray's default handler: unmatched traffic and balancer
+	// failures without fallbackTag land there. It MUST be block (C2).
 	outbounds := []map[string]interface{}{
+		newBlockOutbound(),
 		{
-			"protocol": "freedom", "tag": "direct",
+			// Hub-local egress for xray's own DNS client only (dnsDirectRule).
+			"protocol": "freedom", "tag": xrayDirectTag,
 			"settings": map[string]interface{}{"domainStrategy": "UseIP"},
 			"streamSettings": map[string]interface{}{
 				"sockopt": map[string]interface{}{
@@ -342,7 +381,6 @@ func SyncXrayConfig() error {
 				},
 			},
 		},
-		{"protocol": "blackhole", "tag": "block", "settings": map[string]interface{}{"response": map[string]string{"type": "none"}}},
 	}
 
 	// ── Exit-ноды (Spoke outbounds) ──
@@ -409,6 +447,8 @@ func SyncXrayConfig() error {
 
 	// ── Routing (политики безопасности) ──
 	rules := []map[string]interface{}{
+		// 0. Встроенный DNS xray → с Hub. Явно: default outbound теперь block.
+		dnsDirectRule(),
 		// 1. Блокировка приватных IP — inter-spoke изоляция
 		// Spoke-ноды не могут обращаться к другим spoke или к внутренней сети Hub
 		{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
@@ -549,11 +589,7 @@ func SyncXrayConfig() error {
 
 		// Default balancer with all exit nodes
 		balancers := []map[string]interface{}{
-			{
-				"tag":      "exit-balancer",
-				"selector": exitTags,
-				"strategy": map[string]string{"type": balancerStrategy},
-			},
+			newBalancer("exit-balancer", exitTags, balancerStrategy),
 		}
 
 		// Per-plan balancers: create a balancer for each unique set of allowed servers
@@ -582,11 +618,7 @@ func SyncXrayConfig() error {
 			}
 			balancerTag := fmt.Sprintf("plan-%d-balancer", client.PlanID)
 			planBalancers[client.PlanID] = balancerTag
-			balancers = append(balancers, map[string]interface{}{
-				"tag":      balancerTag,
-				"selector": planTags,
-				"strategy": map[string]string{"type": balancerStrategy},
-			})
+			balancers = append(balancers, newBalancer(balancerTag, planTags, balancerStrategy))
 		}
 		routing["balancers"] = balancers
 
@@ -613,15 +645,11 @@ func SyncXrayConfig() error {
 		routing["rules"] = rules
 
 	} else {
-		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик.
-		// Без exit-нод трафик пошёл бы direct (без шифрования, с IP хаба) — недопустимо.
-		// Блокируем ВСЕ inbound-ы: SOCKS5, HTTP, VLESS Reality, VLESS XHTTP.
+		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик на всех
+		// пользовательских inbound (включая shadowsocks, socks-awg, CDN).
+		// Явные RU-direct правила выше продолжают работать.
 		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"inboundTag":  []string{"vless-reality", "vless-xhttp"},
-			"outboundTag": "block",
-		})
+		rules = append(rules, noExitBlockRule(userInbounds))
 		routing["rules"] = rules
 	}
 
@@ -634,37 +662,6 @@ func SyncXrayConfig() error {
 			"probeURL":        "https://www.google.com/generate_204",
 		}
 	}
-
-	// ── Xray Stats API ──
-	// dokodemo-door inbound для gRPC API доступа к статистике
-	inbounds = append(inbounds, map[string]interface{}{
-		"tag": "api-in", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door",
-		"settings": map[string]interface{}{"address": "127.0.0.1"},
-	})
-
-	// SOCKS5 inbound для AmneziaWG (Palma) egress. AWG's tun2socks
-	// (hev-socks5-tunnel) dials this on loopback; traffic then flows through
-	// the SAME global routing rules as Reality (inboundTag: null) → RU domains
-	// + RU geoip go to direct-freedom (Hub Moscow), everything else to the
-	// exit-balancer (Amsterdam). sniffing recovers the domain from TLS SNI /
-	// HTTP Host so geosite (domain) rules fire, matching Happ's split.
-	// Loopback-only (127.0.0.1) — never exposed to the network.
-	inbounds = append(inbounds, map[string]interface{}{
-		"tag":      "socks-awg",
-		"listen":   "127.0.0.1",
-		"port":     10808,
-		"protocol": "socks",
-		"settings": map[string]interface{}{
-			"auth": "noauth",
-			"udp":  true,
-			"ip":   "127.0.0.1",
-		},
-		"sniffing": map[string]interface{}{
-			"enabled":      true,
-			"destOverride": []string{"http", "tls", "quic"},
-			"routeOnly":    true,
-		},
-	})
 
 	// API routing rule: перенаправляем трафик api-in → api handler
 	apiRule := map[string]interface{}{
@@ -686,7 +683,7 @@ func SyncXrayConfig() error {
 			"servers":       getDNSServers(),
 			"queryStrategy": "UseIPv4",
 			"disableCache":  false,
-			"tag":           "dns-out",
+			"tag":           xrayDNSTag,
 		},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
@@ -735,6 +732,12 @@ func SyncXrayConfig() error {
 	// Observatory для leastPing балансировки exit-нод
 	if observatory != nil {
 		config["observatory"] = observatory
+	}
+
+	// Leak guard: never write a config whose default outbound or balancer
+	// fallback could send user traffic out via the Hub's RU IP.
+	if err := checkNoDirectLeak(outbounds, routing); err != nil {
+		return fmt.Errorf("xray config leak guard: %w", err)
 	}
 
 	// Сериализуем конфиг
