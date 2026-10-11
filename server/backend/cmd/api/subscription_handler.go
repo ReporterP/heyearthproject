@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,6 +21,15 @@ import (
 //
 // GET /api/v1/user/subscribe/{token} — base64 список URI (V2Ray/SingBox формат)
 // GET /api/v1/user/subscribe/{token}?format=clash — YAML для Clash/ClashMeta
+
+// writeSubscriptionUnavailable answers a temporary failure with 503 and
+// Retry-After. Subscription clients (Happ and friends) keep their cached
+// profiles on 5xx, whereas a 404/403 makes them treat the link as invalid.
+func writeSubscriptionUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Retry-After", "300")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte(msg))
+}
 
 func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -42,14 +52,26 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		SELECT user_id FROM users WHERE subscribe_token::text = $1
 	`, token).Scan(&userID)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("invalid token"))
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("invalid token"))
+			return
+		}
+		// A DB failure is not an invalid link: answer 503 so the client keeps
+		// its cached profiles. Never log the token itself.
+		log.Printf("[subscribe] subscribe_token lookup failed: %v", err)
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
 
 	// Проверяем доступ
 	access, err := biz.GetUserAccessState(userID, "")
-	if err != nil || !access.CanConnect {
+	if err != nil {
+		log.Printf("[subscribe] user %s: access state lookup failed: %v", userID, err)
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
+		return
+	}
+	if !access.CanConnect {
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte("no active subscription"))
 		return
@@ -59,17 +81,27 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	options, err := buildHubConnectionOptions(userID)
 	if err != nil {
 		// 503 keeps the client's cached profiles; never substitute another UUID.
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("temporarily unavailable"))
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
 	if len(options) == 0 {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("no connections available"))
+		writeSubscriptionUnavailable(w, "no connections available")
 		return
 	}
 
 	format := r.URL.Query().Get("format")
+
+	// Build the Clash profile before any header is written: if the per-user
+	// UUID cannot be resolved the client must get a clean 503 (and keep its
+	// cached profile), not a 200 with an empty "# error" body.
+	var clashConfig string
+	if format == "clash" {
+		clashConfig, err = buildClashConfig(userID)
+		if err != nil {
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+	}
 
 	// Common headers for all formats — see spec
 	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
@@ -140,7 +172,6 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	switch format {
 	case "clash":
-		clashConfig := buildClashConfig(userID)
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=heyearth.yaml")
 		w.Write([]byte(clashConfig))
@@ -166,12 +197,15 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildClashConfig генерирует Clash/ClashMeta YAML конфиг.
-func buildClashConfig(userID string) string {
+// Returns an error when the per-user UUID cannot be resolved; the caller must
+// answer 503 rather than ship a placeholder profile that would overwrite the
+// client's cached one.
+func buildClashConfig(userID string) (string, error) {
 	host := biz.GetSettingOrDefault("main_server_host", "hiearth.ru")
 	vlessUUID, err := biz.GetUserVlessUUID(userID)
 	if err != nil {
-		log.Printf("[subscribe] vless uuid error: %v", err)
-		return "# error: no vless uuid"
+		log.Printf("[subscribe] user %s: vless uuid error: %v", userID, err)
+		return "", fmt.Errorf("vless uuid: %w", err)
 	}
 
 	// Check protocol permissions for this user's plan
@@ -328,7 +362,7 @@ proxy-groups:
 
 rules:
   - MATCH,HeYearth
-`, strings.Join(proxies, "\n"), namesList)
+`, strings.Join(proxies, "\n"), namesList), nil
 }
 
 // buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.

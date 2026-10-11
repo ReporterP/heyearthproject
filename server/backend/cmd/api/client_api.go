@@ -137,7 +137,9 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 	}
 	access, err := biz.GetUserAccessState(userID, req.GetPlatform())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get access state: %v", err)
+		// Keep SQL details server-side; clients get a fixed message.
+		log.Printf("[connection-bundle] user %s: access state lookup failed: %v", userID, err)
+		return nil, status.Error(codes.Internal, "failed to load access state")
 	}
 	if access.IsBlocked {
 		return nil, status.Error(codes.PermissionDenied, "user is blocked")

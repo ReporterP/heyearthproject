@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -15,57 +17,71 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
-// fakeSettingsConnector is a database/sql driver that answers app_settings
-// lookups from a map and fails every other query. That is a half-reachable
-// database (users table times out, settings still readable) which is exactly
-// when the old code fell back to the server master UUID. It lets the test
-// drive the real biz.GetUserVlessUUID error path without PostgreSQL.
-type fakeSettingsConnector struct{ settings map[string]string }
-
-func (c fakeSettingsConnector) Connect(context.Context) (driver.Conn, error) {
-	return fakeSettingsConn(c), nil
+// fakeDBConnector is a database/sql driver that answers app_settings lookups
+// from a map, optionally answers the subscribe_token lookup, and fails every
+// other query. That is a half-reachable database (users table times out,
+// settings still readable), which is exactly when the old code fell back to the
+// server master UUID. It lets the tests drive the real error paths of the biz
+// layer without PostgreSQL.
+type fakeDBConnector struct {
+	settings map[string]string
+	// subscribeUser answers `SELECT user_id FROM users WHERE subscribe_token...`:
+	// nil -> the query fails, pointer to "" -> no rows (sql.ErrNoRows),
+	// otherwise that user_id is returned.
+	subscribeUser *string
 }
-func (c fakeSettingsConnector) Driver() driver.Driver { return fakeSettingsDriver{} }
 
-type fakeSettingsDriver struct{}
+func (c fakeDBConnector) Connect(context.Context) (driver.Conn, error) { return fakeDBConn(c), nil }
+func (c fakeDBConnector) Driver() driver.Driver                        { return fakeDBDriver{} }
 
-func (fakeSettingsDriver) Open(string) (driver.Conn, error) {
+type fakeDBDriver struct{}
+
+func (fakeDBDriver) Open(string) (driver.Conn, error) {
 	return nil, errors.New("fake driver: open by name not supported")
 }
 
-type fakeSettingsConn fakeSettingsConnector
+type fakeDBConn fakeDBConnector
 
-func (fakeSettingsConn) Prepare(string) (driver.Stmt, error) {
+func (fakeDBConn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("fake driver: prepare not supported")
 }
-func (fakeSettingsConn) Close() error { return nil }
-func (fakeSettingsConn) Begin() (driver.Tx, error) {
+func (fakeDBConn) Close() error { return nil }
+func (fakeDBConn) Begin() (driver.Tx, error) {
 	return nil, errors.New("fake driver: transactions not supported")
 }
 
-func (c fakeSettingsConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if !strings.Contains(query, "app_settings") {
-		return nil, errors.New("fake driver: database unavailable")
-	}
-	rows := &fakeSettingsRows{}
-	if len(args) == 1 {
-		if key, ok := args[0].Value.(string); ok {
-			if v, found := c.settings[key]; found {
-				rows.values = []string{v}
+func (c fakeDBConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	switch {
+	case strings.Contains(query, "app_settings"):
+		rows := &fakeDBRows{cols: []string{"value"}}
+		if len(args) == 1 {
+			if key, ok := args[0].Value.(string); ok {
+				if v, found := c.settings[key]; found {
+					rows.values = []string{v}
+				}
 			}
 		}
+		return rows, nil
+	case c.subscribeUser != nil && strings.Contains(query, "WHERE subscribe_token"):
+		rows := &fakeDBRows{cols: []string{"user_id"}}
+		if *c.subscribeUser != "" {
+			rows.values = []string{*c.subscribeUser}
+		}
+		return rows, nil
+	default:
+		return nil, errors.New("fake driver: database unavailable")
 	}
-	return rows, nil
 }
 
-type fakeSettingsRows struct {
+type fakeDBRows struct {
+	cols   []string
 	values []string
 	pos    int
 }
 
-func (*fakeSettingsRows) Columns() []string { return []string{"value"} }
-func (*fakeSettingsRows) Close() error      { return nil }
-func (r *fakeSettingsRows) Next(dest []driver.Value) error {
+func (r *fakeDBRows) Columns() []string { return r.cols }
+func (*fakeDBRows) Close() error        { return nil }
+func (r *fakeDBRows) Next(dest []driver.Value) error {
 	if r.pos >= len(r.values) {
 		return io.EOF
 	}
@@ -74,36 +90,61 @@ func (r *fakeSettingsRows) Next(dest []driver.Value) error {
 	return nil
 }
 
+// useFakeDB points the package-global db.DB and the global logger at test
+// doubles for the duration of the test. The returned stopLog restores the
+// logger and returns everything logged so far; call it BEFORE asserting on the
+// log (bytes.Buffer is not goroutine-safe, a stray log writer must not race
+// with the reads).
+//
+// Tests using this MUST NOT use t.Parallel() and must not run alongside
+// parallel tests that touch db.DB or the log output.
+func useFakeDB(t *testing.T, c fakeDBConnector) (stopLog func() string) {
+	t.Helper()
+	fakeDB := sql.OpenDB(c)
+	prevDB := db.DB
+	db.DB = fakeDB
+
+	var logBuf bytes.Buffer
+	prevLogOut := log.Writer()
+	log.SetOutput(&logBuf)
+	stopLog = func() string {
+		log.SetOutput(prevLogOut)
+		return logBuf.String()
+	}
+	t.Cleanup(func() {
+		log.SetOutput(prevLogOut) // idempotent: stopLog may already have run
+		db.DB = prevDB
+		_ = fakeDB.Close() // close our own handle, never whatever db.DB points at
+	})
+	return stopLog
+}
+
+const testMasterUUID = "deadbeef-0000-4000-8000-000000000001"
+
+func testSettingsWithMasterUUID() map[string]string {
+	return map[string]string{
+		"main_server_host":   "hub.example.test",
+		"vless_uuid":         testMasterUUID,
+		"reality_public_key": "test-public-key",
+		"reality_short_id":   "abcd",
+	}
+}
+
 // H7: when the per-user VLESS UUID lookup fails, buildHubConnectionOptions must
 // return an error and no options. It must never substitute the server master
 // UUID (app_settings.vless_uuid), which bypasses accounting, quota and
 // revocation and gets cached by clients forever.
 func TestBuildHubConnectionOptions_LookupFailureNeverFallsBackToMasterUUID(t *testing.T) {
-	const masterUUID = "deadbeef-0000-4000-8000-000000000001"
-
-	prevDB := db.DB
-	db.DB = sql.OpenDB(fakeSettingsConnector{settings: map[string]string{
-		"main_server_host":   "hub.example.test",
-		"vless_uuid":         masterUUID,
-		"reality_public_key": "test-public-key",
-		"reality_short_id":   "abcd",
-	}})
-	var logBuf bytes.Buffer
-	prevLogOut := log.Writer()
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() {
-		log.SetOutput(prevLogOut)
-		_ = db.DB.Close()
-		db.DB = prevDB
-	})
+	stopLog := useFakeDB(t, fakeDBConnector{settings: testSettingsWithMasterUUID()})
 
 	// Precondition: the master UUID really is readable, so the old fallback
 	// would have had something to hand out.
-	if got, gerr := biz.GetSetting("vless_uuid"); gerr != nil || got != masterUUID {
+	if got, gerr := biz.GetSetting("vless_uuid"); gerr != nil || got != testMasterUUID {
 		t.Fatalf("fake DB does not serve the master uuid (got %q, err %v): test would prove nothing", got, gerr)
 	}
 
 	opts, err := buildHubConnectionOptions("user-1")
+	logged := stopLog()
 	if err == nil {
 		t.Fatalf("expected an error when the per-user uuid lookup fails, got %d options", len(opts))
 	}
@@ -111,14 +152,106 @@ func TestBuildHubConnectionOptions_LookupFailureNeverFallsBackToMasterUUID(t *te
 		t.Errorf("expected no options on error, got %d", len(opts))
 	}
 	for _, o := range opts {
-		if strings.Contains(o.GetUri(), masterUUID) {
+		if strings.Contains(o.GetUri(), testMasterUUID) {
 			t.Errorf("master uuid leaked into option %q", o.GetLabel())
 		}
 	}
-	if strings.Contains(err.Error(), masterUUID) {
+	if strings.Contains(err.Error(), testMasterUUID) {
 		t.Errorf("master uuid leaked into the error: %v", err)
 	}
-	if !strings.Contains(logBuf.String(), "vless uuid lookup failed") {
-		t.Errorf("lookup failure was not logged, log output: %q", logBuf.String())
+	if !strings.Contains(logged, "vless uuid lookup failed") {
+		t.Errorf("lookup failure was not logged, log output: %q", logged)
+	}
+	if strings.Contains(logged, testMasterUUID) {
+		t.Errorf("master uuid leaked into the log: %q", logged)
+	}
+}
+
+// The Clash path used to answer 200 with a "# error: no vless uuid" body, which
+// a Clash client would store as its profile. It must report an error instead so
+// the handler can answer 503.
+func TestBuildClashConfig_LookupFailureReturnsError(t *testing.T) {
+	stopLog := useFakeDB(t, fakeDBConnector{settings: testSettingsWithMasterUUID()})
+
+	cfg, err := buildClashConfig("user-1")
+	logged := stopLog()
+	if err == nil {
+		t.Fatalf("expected an error when the per-user uuid lookup fails, got config %q", cfg)
+	}
+	if cfg != "" {
+		t.Errorf("expected an empty config on error, got %q", cfg)
+	}
+	if strings.Contains(cfg+err.Error()+logged, testMasterUUID) {
+		t.Errorf("master uuid leaked (config/error/log)")
+	}
+}
+
+// A database failure on the subscription endpoint must read as "try again
+// later" (503 + Retry-After), not as an invalid link (404) or lost access (403):
+// Happ drops its cached profiles on those. A genuinely unknown token stays 404.
+func TestHandleSubscriptionLink_DBFailureIsTemporaryNotInvalid(t *testing.T) {
+	const token = "11111111-2222-4333-8444-555555555555"
+	user := "user-1"
+	noUser := ""
+
+	cases := []struct {
+		name      string
+		conn      fakeDBConnector
+		wantCode  int
+		wantBody  string
+		wantRetry string
+		wantInLog string
+	}{
+		{
+			name:      "token lookup fails",
+			conn:      fakeDBConnector{settings: testSettingsWithMasterUUID()},
+			wantCode:  http.StatusServiceUnavailable,
+			wantBody:  "temporarily unavailable",
+			wantRetry: "300",
+			wantInLog: "subscribe_token lookup failed",
+		},
+		{
+			name:     "unknown token",
+			conn:     fakeDBConnector{settings: testSettingsWithMasterUUID(), subscribeUser: &noUser},
+			wantCode: http.StatusNotFound,
+			wantBody: "invalid token",
+		},
+		{
+			name:      "access state lookup fails",
+			conn:      fakeDBConnector{settings: testSettingsWithMasterUUID(), subscribeUser: &user},
+			wantCode:  http.StatusServiceUnavailable,
+			wantBody:  "temporarily unavailable",
+			wantRetry: "300",
+			wantInLog: "access state lookup failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stopLog := useFakeDB(t, tc.conn)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/user/subscribe/"+token, nil)
+			rec := httptest.NewRecorder()
+			handleSubscriptionLink(rec, req)
+			logged := stopLog()
+
+			if rec.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d (body %q)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if got := rec.Body.String(); got != tc.wantBody {
+				t.Errorf("body = %q, want %q", got, tc.wantBody)
+			}
+			if got := rec.Header().Get("Retry-After"); got != tc.wantRetry {
+				t.Errorf("Retry-After = %q, want %q", got, tc.wantRetry)
+			}
+			if tc.wantInLog != "" && !strings.Contains(logged, tc.wantInLog) {
+				t.Errorf("log does not contain %q: %q", tc.wantInLog, logged)
+			}
+			if strings.Contains(logged, token) {
+				t.Errorf("subscribe token leaked into the log: %q", logged)
+			}
+			if strings.Contains(rec.Body.String(), testMasterUUID) {
+				t.Errorf("master uuid leaked into the response")
+			}
+		})
 	}
 }

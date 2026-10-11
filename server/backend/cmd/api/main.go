@@ -581,7 +581,9 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	access, err := biz.GetUserAccessState(userID, platform)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		// Keep SQL details server-side; clients get a fixed message.
+		log.Printf("[connections] user %s: access state lookup failed: %v", userID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось получить состояние доступа, попробуйте позже"})
 		return
 	}
 
