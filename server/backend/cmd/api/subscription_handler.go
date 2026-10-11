@@ -56,7 +56,13 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Получаем connection options (per-user)
-	options := buildHubConnectionOptions(userID)
+	options, err := buildHubConnectionOptions(userID)
+	if err != nil {
+		// 503 keeps the client's cached profiles; never substitute another UUID.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("temporarily unavailable"))
+		return
+	}
 	if len(options) == 0 {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("no connections available"))

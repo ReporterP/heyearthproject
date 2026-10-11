@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -146,7 +147,10 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 	}
 
 	// Hub-and-spoke: return main server connection info (per-user UUID)
-	options := buildHubConnectionOptions(userID)
+	options, err := buildHubConnectionOptions(userID)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "connection options temporarily unavailable")
+	}
 
 	return &heyearth_v1.ConnectionBundleResponse{
 		UserId:                userID,
@@ -160,13 +164,16 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 // In hub-and-spoke model, all users connect to the main server only.
 // Каждый пользователь получает уникальные подключения (per-user VLESS UUID).
 // Only VLESS is exposed to users now. SOCKS/HTTP user-facing inbounds removed (see spec 2026-05-22-socks5-removal-mtproto-perk-design.md).
-func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
+func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, error) {
 	mainServerHost := biz.GetSettingOrDefault("main_server_host", "")
 
-	// Per-user UUID используется как пароль для прокси-авторизации
+	// Per-user UUID. NEVER fall back to the server master UUID
+	// (app_settings.vless_uuid): it bypasses per-user accounting, quota and
+	// revocation (H7). A lookup failure is an error for the caller.
 	userVlessUUID, err := biz.GetUserVlessUUID(userID)
 	if err != nil {
-		userVlessUUID = biz.GetSettingOrDefault("vless_uuid", "")
+		log.Printf("[connection-options] user %s: vless uuid lookup failed: %v", userID, err)
+		return nil, fmt.Errorf("vless uuid: %w", err)
 	}
 
 	// Check user's plan for protocol restrictions
@@ -357,7 +364,7 @@ func buildHubConnectionOptions(userID string) []*heyearth_v1.ConnectionOption {
 		}
 	}
 
-	return opts
+	return opts, nil
 }
 
 // ─────────────────────── Subscriptions & Payments ───────────────────────

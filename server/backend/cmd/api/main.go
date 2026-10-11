@@ -624,7 +624,11 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 
 	// Подключения доступны только при активной подписке (per-user UUID)
 	if access.CanConnect {
-		options := buildHubConnectionOptions(userID)
+		options, optErr := buildHubConnectionOptions(userID)
+		if optErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Подключения временно недоступны, попробуйте позже"})
+			return
+		}
 		resp["connection_options"] = options
 		for _, opt := range options {
 			switch opt.Protocol {
