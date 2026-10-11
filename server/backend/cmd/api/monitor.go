@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -27,21 +30,26 @@ import (
 const (
 	loopProbeInterval      = time.Minute
 	loopProbeFailThreshold = 3
+	loopProbeStaleAfter    = 10 * time.Minute // probes skipped for longer than this → "consecutive" starts over
 	checkHostInterval      = 15 * time.Minute
 	checkHostFailThreshold = 2
 	housekeepingInterval   = 10 * time.Minute
 	certWarnDays           = 14
+	certReadFailThreshold  = 3
 	backupDir              = "/opt/heyearth/backups"
+	backupGlob             = "backup-*.tar.gz" // regular, non-empty files only (see newestBackupModTime)
 	backupMaxAge           = 26 * time.Hour
 	diskWarnPercent        = 85.0
 	defaultCheckHostNodes  = "ru1.node.check-host.net,ru2.node.check-host.net,ru3.node.check-host.net"
 )
 
 var (
-	checkHostBase  = "https://check-host.net"
-	loopProbeFails int       // touched only by the loop-probe goroutine
-	loopProbeOKLog time.Time // rate-limits the "probe OK" log line to once an hour
-	checkHostFails int       // touched only by the check-host goroutine
+	checkHostBase    = "https://check-host.net"
+	loopProbeState   loopProbeStreak // touched only by the loop-probe goroutine
+	loopProbeOKLog   time.Time       // rate-limits the "probe OK" log line to once an hour
+	loopProbeSkipLog logGate         // rate-limits the "probe skipped" log line to once an hour
+	checkHostFails   int             // touched only by the check-host goroutine
+	certReadFails    int             // touched only by the housekeeping goroutine
 )
 
 func StartMonitor() {
@@ -49,15 +57,19 @@ func StartMonitor() {
 		log.Println("[monitor] не Linux — мониторинг отключён (локальная разработка)")
 		return
 	}
+	// Each step has its own recover: a panic in one must not skip the others.
 	go runEvery(90*time.Second, loopProbeInterval, func() {
-		runLoopProbe()
-		checkXrayRestartWindow()
+		safely("loop-проба", runLoopProbe)
+		safely("NRestarts xray", pollXraySystemdRestarts)
+		safely("окно рестартов xray", checkXrayRestartWindow)
 	})
-	go runEvery(5*time.Minute, checkHostInterval, runCheckHostProbe)
+	go runEvery(5*time.Minute, checkHostInterval, func() {
+		safely("check-host", runCheckHostProbe)
+	})
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
-		checkSiteCertExpiry()
-		checkBackupFreshness()
-		checkDiskUsage()
+		safely("сертификат", checkSiteCertExpiry)
+		safely("бэкап", checkBackupFreshness)
+		safely("диск", checkDiskUsage)
 	})
 	log.Printf("[monitor] запущен: loop-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
 		loopProbeInterval, checkHostInterval, housekeepingInterval)
@@ -66,16 +78,51 @@ func StartMonitor() {
 func runEvery(initialDelay, interval time.Duration, fn func()) {
 	time.Sleep(initialDelay)
 	for {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[monitor] panic: %v", r)
-				}
-			}()
-			fn()
-		}()
+		safely("цикл", fn)
 		time.Sleep(interval)
 	}
+}
+
+// safely runs fn and turns a panic into a log line with the stack trace.
+func safely(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[monitor] panic в %q: %v\n%s", name, r, debug.Stack())
+		}
+	}()
+	fn()
+}
+
+// logGate lets a message through at most once per interval. Single-goroutine use.
+type logGate struct{ last time.Time }
+
+func (g *logGate) allow(now time.Time, every time.Duration) bool {
+	if !g.last.IsZero() && now.Sub(g.last) < every {
+		return false
+	}
+	g.last = now
+	return true
+}
+
+// loopProbeStreak counts consecutive failed loop probes. Probes that were skipped
+// (no healthy exit, tunnel down) for longer than loopProbeStaleAfter break the streak,
+// so "3 in a row" cannot stretch over hours of unrelated failures.
+type loopProbeStreak struct {
+	fails int
+	last  time.Time // time of the previous verdict
+}
+
+func (s *loopProbeStreak) record(now time.Time, ok bool) int {
+	if !s.last.IsZero() && now.Sub(s.last) > loopProbeStaleAfter {
+		s.fails = 0
+	}
+	s.last = now
+	if ok {
+		s.fails = 0
+	} else {
+		s.fails++
+	}
+	return s.fails
 }
 
 func monitorEntryHost() string {
@@ -93,19 +140,25 @@ func monitorSiteHost() string {
 
 // ── (a) loop probe: Hub → exit SOCKS → public entry of the Hub ──
 
+func logLoopProbeSkipped(reason string) {
+	if loopProbeSkipLog.allow(time.Now(), time.Hour) {
+		log.Printf("[monitor] loop-проба пропущена: %s (повтор записи не чаще раза в час)", reason)
+	}
+}
+
 func runLoopProbe() {
 	port, ok := pickExitSocksPort()
 	if !ok {
-		log.Println("[monitor] loop-проба пропущена: нет здорового exit с локальным SOCKS")
+		logLoopProbeSkipped("нет здорового exit с локальным SOCKS")
 		return
 	}
 	dialer, err := exitSocksDialer(port)
 	if err != nil {
-		log.Printf("[monitor] loop-проба пропущена: %v", err)
+		logLoopProbeSkipped(err.Error())
 		return
 	}
 	if err := socksDialCheck(dialer, "1.1.1.1:443"); err != nil { // a broken tunnel says nothing about the entry
-		log.Printf("[monitor] loop-проба пропущена: туннель exit :%d не работает: %v", port, err)
+		logLoopProbeSkipped(fmt.Sprintf("туннель exit :%d не работает: %v", port, err))
 		return
 	}
 	entry, site := monitorEntryHost(), monitorSiteHost()
@@ -118,7 +171,7 @@ func runLoopProbe() {
 		problems = append(problems, fmt.Sprintf("TLS-вход (SNI %s): %v", sni, err))
 	}
 	if len(problems) == 0 {
-		loopProbeFails = 0
+		loopProbeState.record(time.Now(), true)
 		if time.Since(loopProbeOKLog) > time.Hour {
 			loopProbeOKLog = time.Now()
 			log.Printf("[monitor] loop-проба OK: %s:443 доступен снаружи (через exit :%d)", entry, port)
@@ -126,12 +179,12 @@ func runLoopProbe() {
 		ResolveAlert("entry-unreachable-external", fmt.Sprintf("Вход %s:443 снова доступен снаружи (проба через exit :%d).", entry, port))
 		return
 	}
-	loopProbeFails++
-	log.Printf("[monitor] loop-проба провалена (%d подряд): %s", loopProbeFails, strings.Join(problems, "; "))
-	if loopProbeFails >= loopProbeFailThreshold {
+	fails := loopProbeState.record(time.Now(), false)
+	log.Printf("[monitor] loop-проба провалена (%d подряд): %s", fails, strings.Join(problems, "; "))
+	if fails >= loopProbeFailThreshold {
 		RaiseAlert("entry-unreachable-external", AlertCritical, "Вход недоступен снаружи",
 			fmt.Sprintf("%d проверок подряд через exit :%d не прошли до %s:443.\n%s",
-				loopProbeFails, port, entry, strings.Join(problems, "\n")))
+				fails, port, entry, strings.Join(problems, "\n")))
 	}
 }
 
@@ -202,18 +255,27 @@ func (t checkHostTally) verdict() string {
 
 // parseCheckHostTCPResult parses /check-result/<id> of a check-tcp request:
 // {"ru1.node.check-host.net":[{"time":0.05,"address":"1.2.3.4"}],"ru2...":[{"error":"Connection timed out"}],"ru3...":null}
-func parseCheckHostTCPResult(body []byte) (checkHostTally, error) {
+// Only the nodes we asked for are counted: a requested node missing from the response is
+// pending, a node we did not ask for is ignored (check-host may substitute nodes), so
+// "unreachable" really means every requested node answered and all of them failed.
+func parseCheckHostTCPResult(body []byte, requested []string) (checkHostTally, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return checkHostTally{}, fmt.Errorf("check-host: bad JSON: %w", err)
 	}
 	var t checkHostTally
-	for _, v := range raw {
+	seen := make(map[string]bool, len(requested))
+	for _, node := range requested {
+		if seen[node] {
+			continue
+		}
+		seen[node] = true
+		v, present := raw[node]
 		var results []struct {
 			Time  *float64 `json:"time"`
 			Error string   `json:"error"`
 		}
-		if string(v) == "null" || json.Unmarshal(v, &results) != nil || len(results) == 0 {
+		if !present || string(v) == "null" || json.Unmarshal(v, &results) != nil || len(results) == 0 {
 			t.Pending++
 			continue
 		}
@@ -276,7 +338,7 @@ func checkHostTCP(target string, nodes []string) (checkHostTally, string, error)
 		if err != nil {
 			return checkHostTally{}, start.PermanentLink, err
 		}
-		if tally, err = parseCheckHostTCPResult(res); err != nil {
+		if tally, err = parseCheckHostTCPResult(res, nodes); err != nil {
 			return checkHostTally{}, start.PermanentLink, err
 		}
 		if tally.Pending == 0 {
@@ -299,6 +361,9 @@ func splitCSV(s string) []string {
 func runCheckHostProbe() {
 	entry := monitorEntryHost()
 	nodes := splitCSV(biz.GetSettingOrDefault("monitor_checkhost_nodes", defaultCheckHostNodes))
+	if len(nodes) == 0 { // blank setting: never let check-host pick arbitrary (non-RU) nodes
+		nodes = splitCSV(defaultCheckHostNodes)
+	}
 	tally, link, err := checkHostTCP(net.JoinHostPort(entry, "443"), nodes)
 	if err != nil {
 		log.Printf("[monitor] check-host недоступен, результат не учитывается: %v", err)
@@ -337,44 +402,79 @@ func fetchCertNotAfter(addr, sni string) (time.Time, error) {
 	return certs[0].NotAfter, nil
 }
 
+// certExpiryAlert decides whether the certificate needs an alert. An already expired
+// certificate is critical with its own wording: that also escalates the warn raised by
+// the 14-day check earlier (a repeated warn would be silently deduplicated).
+func certExpiryAlert(site string, notAfter, now time.Time) (level AlertLevel, title, details string, alert bool) {
+	left := notAfter.Sub(now)
+	if left <= 0 {
+		return AlertCritical, "Сертификат сайта истёк",
+			fmt.Sprintf("Сертификат %s истёк %s, браузеры показывают ошибку. Срочно проверьте продление certbot: systemctl list-timers | grep certbot.",
+				site, notAfter.In(mskZone).Format("02.01.2006 15:04")), true
+	}
+	if days := int(left.Hours() / 24); days < certWarnDays {
+		return AlertWarn, "Сертификат сайта скоро истечёт",
+			fmt.Sprintf("Сертификат %s действует до %s (осталось %d дн.). Проверьте продление certbot: systemctl list-timers | grep certbot.",
+				site, notAfter.In(mskZone).Format("02.01.2006"), days), true
+	}
+	return "", "", "", false
+}
+
 func checkSiteCertExpiry() {
 	site := monitorSiteHost()
 	notAfter, err := fetchCertNotAfter("127.0.0.1:8443", site)
 	if err != nil {
-		log.Printf("[monitor] сертификат %s: не удалось прочитать: %v", site, err)
+		certReadFails++
+		log.Printf("[monitor] сертификат %s: не удалось прочитать (%d подряд): %v", site, certReadFails, err)
+		if certReadFails >= certReadFailThreshold {
+			RaiseAlert("tls-cert-check-failed", AlertWarn, "Не удаётся проверить сертификат сайта",
+				fmt.Sprintf("%d проверок подряд не удалось прочитать сертификат %s на 127.0.0.1:8443: %v. Срок действия не контролируется, проверьте nginx: systemctl status nginx.",
+					certReadFails, site, err))
+		}
 		return
 	}
-	days := int(time.Until(notAfter).Hours() / 24)
-	if days < certWarnDays {
-		RaiseAlert("tls-cert-expiry", AlertWarn, "Сертификат сайта скоро истечёт",
-			fmt.Sprintf("Сертификат %s действует до %s (осталось %d дн.). Проверьте продление certbot: systemctl list-timers | grep certbot.",
-				site, notAfter.In(mskZone).Format("02.01.2006"), days))
+	certReadFails = 0
+	ResolveAlert("tls-cert-check-failed", fmt.Sprintf("Сертификат %s снова читается.", site))
+	if level, title, details, alert := certExpiryAlert(site, notAfter, time.Now()); alert {
+		RaiseAlert("tls-cert-expiry", level, title, details)
 		return
 	}
 	ResolveAlert("tls-cert-expiry", fmt.Sprintf("Сертификат %s продлён: действует до %s.", site, notAfter.In(mskZone).Format("02.01.2006")))
 }
 
-func newestEntryModTime(dir string) (time.Time, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return time.Time{}, err
-	}
+// newestBackupModTime returns the mtime of the newest real backup among the entries of
+// the backup directory: a regular, non-empty file named backup-*.tar.gz (the format of
+// doBackup and of the Task 9 timer). Directories (the <ts>/ working dir created before
+// pg_dump, lost+found), partial/temporary files and empty files do not count.
+// The zero time means "no valid backup".
+func newestBackupModTime(entries []fs.DirEntry) time.Time {
 	var newest time.Time
 	for _, e := range entries {
-		if info, err := e.Info(); err == nil && info.ModTime().After(newest) {
+		if ok, _ := path.Match(backupGlob, e.Name()); !ok {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+			continue
+		}
+		if info.ModTime().After(newest) {
 			newest = info.ModTime()
 		}
 	}
-	return newest, nil
+	return newest
 }
 
 func checkBackupFreshness() {
-	newest, err := newestEntryModTime(backupDir)
+	entries, err := os.ReadDir(backupDir)
+	var newest time.Time
+	if err == nil {
+		newest = newestBackupModTime(entries)
+	}
 	switch {
 	case err != nil:
 		RaiseAlert("backup-stale", AlertWarn, "Бэкапов нет", fmt.Sprintf("Не удалось прочитать %s: %v", backupDir, err))
 	case newest.IsZero():
-		RaiseAlert("backup-stale", AlertWarn, "Бэкапов нет", fmt.Sprintf("Каталог %s пуст.", backupDir))
+		RaiseAlert("backup-stale", AlertWarn, "Бэкапов нет", fmt.Sprintf("В %s нет ни одного непустого файла %s.", backupDir, backupGlob))
 	case time.Since(newest) > backupMaxAge:
 		RaiseAlert("backup-stale", AlertWarn, "Бэкап устарел",
 			fmt.Sprintf("Последний бэкап в %s — %v назад (порог %v).", backupDir, time.Since(newest).Round(time.Minute), backupMaxAge))

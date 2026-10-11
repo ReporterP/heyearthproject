@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,24 +16,39 @@ const (
 	xrayRestartThreshold = 10
 )
 
-// slidingWindowCounter counts events within the last window. Calls must use non-decreasing time.
+// slidingWindowCounter counts events within the last window. The timestamp is taken
+// under the lock, so events are always stored in non-decreasing time order even when
+// several goroutines add concurrently.
 type slidingWindowCounter struct {
 	mu     sync.Mutex
 	window time.Duration
+	clock  func() time.Time // nil → time.Now; tests inject a fake. Called with mu held.
 	events []time.Time
 }
 
-func (c *slidingWindowCounter) Add(now time.Time) int {
+func (c *slidingWindowCounter) nowLocked() time.Time {
+	if c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
+}
+
+// Add records n events at the current time and returns the count within the window.
+func (c *slidingWindowCounter) Add(n int) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.events = append(c.events, now)
+	now := c.nowLocked()
+	for i := 0; i < n; i++ {
+		c.events = append(c.events, now)
+	}
 	return c.pruneLocked(now)
 }
 
-func (c *slidingWindowCounter) Count(now time.Time) int {
+// Count returns the number of events within the window.
+func (c *slidingWindowCounter) Count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pruneLocked(now)
+	return c.pruneLocked(c.nowLocked())
 }
 
 func (c *slidingWindowCounter) pruneLocked(now time.Time) int {
@@ -45,13 +65,13 @@ var xrayRestarts = &slidingWindowCounter{window: xrayRestartWindow}
 
 // recordXrayRestart is called after every successful `systemctl restart xray`.
 func recordXrayRestart() {
-	evaluateXrayRestartStorm(xrayRestarts.Add(time.Now()))
+	evaluateXrayRestartStorm(xrayRestarts.Add(1))
 }
 
 // checkXrayRestartWindow re-evaluates without a new restart so the storm alert
 // resolves once restarts stop (called every minute by the monitor).
 func checkXrayRestartWindow() {
-	evaluateXrayRestartStorm(xrayRestarts.Count(time.Now()))
+	evaluateXrayRestartStorm(xrayRestarts.Count())
 }
 
 func evaluateXrayRestartStorm(n int) {
@@ -62,4 +82,69 @@ func evaluateXrayRestartStorm(n int) {
 		return
 	}
 	ResolveAlert("xray-restart-storm", fmt.Sprintf("Рестарты xray в норме: %d за последний час.", n))
+}
+
+// ── restarts done by systemd itself (crash loop, Restart=on-failure) ──
+// recordXrayRestart only sees restarts requested by the API; a crashing xray that systemd
+// keeps bringing back never passes through it. systemd exposes those as NRestarts.
+
+var (
+	xrayNRestartsLast  int64 // touched only by the minute-loop goroutine
+	xrayNRestartsKnown bool
+	xrayNRestartsLog   logGate
+)
+
+// xrayNRestartsDelta is the number of automatic restarts since the previous reading.
+// The first reading is only a baseline. NRestarts drops back to 0 when the unit is
+// restarted manually (the API does that on every config sync), so cur < last means
+// "reset, and cur automatic restarts happened after it".
+func xrayNRestartsDelta(last, cur int64, haveLast bool) int {
+	switch {
+	case !haveLast:
+		return 0
+	case cur >= last:
+		return int(cur - last)
+	default:
+		return int(cur)
+	}
+}
+
+func parseNRestarts(out string) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative NRestarts %d", n)
+	}
+	return n, nil
+}
+
+func readXrayNRestarts() (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "xray", "-p", "NRestarts", "--value").Output()
+	if err != nil {
+		return 0, err
+	}
+	return parseNRestarts(string(out))
+}
+
+// pollXraySystemdRestarts adds restarts that systemd performed on its own to the same
+// window as recordXrayRestart, so the storm alert covers both sources. Errors are
+// tolerated: this is an extra signal, not a reason to alert.
+func pollXraySystemdRestarts() {
+	cur, err := readXrayNRestarts()
+	if err != nil {
+		if xrayNRestartsLog.allow(time.Now(), time.Hour) {
+			log.Printf("[monitor] NRestarts xray недоступен (повтор записи не чаще раза в час): %v", err)
+		}
+		return
+	}
+	delta := xrayNRestartsDelta(xrayNRestartsLast, cur, xrayNRestartsKnown)
+	xrayNRestartsLast, xrayNRestartsKnown = cur, true
+	if delta > 0 {
+		n := xrayRestarts.Add(delta)
+		log.Printf("[monitor] systemd перезапустил xray сам: +%d (всего за час: %d)", delta, n)
+	}
 }
