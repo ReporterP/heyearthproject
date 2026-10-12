@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -71,19 +72,81 @@ func (rl *RateLimiter) cleanup() {
 	}
 }
 
-// ExtractIP извлекает реальный IP из запроса (за nginx).
-// Trusts X-Real-IP set by nginx, then falls back to RemoteAddr.
-// X-Forwarded-For is NOT trusted as it can be spoofed by clients.
+// Client IP trust model.
+//
+// X-Real-IP and X-Forwarded-For are plain request headers: whoever opens the TCP connection
+// writes them. They name the real client only when the connection comes from nginx, which on
+// the Hub proxies /api/ and /api/admin/ to the main listener 127.0.0.1:8000 with
+//
+//	proxy_set_header X-Real-IP $remote_addr;                         (overwrites any client value)
+//	proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;    (appends $remote_addr)
+//
+// ExtractIP therefore reads the headers only when BOTH hold:
+//
+//  1. the request was accepted by a server whose BaseContext is TrustedProxyBaseContext (or
+//     whose context was otherwise marked with TrustProxyHeaders). Only the nginx-facing main
+//     listener is built that way; every other server — the Hysteria2 auth listener on
+//     127.0.0.1:8001, test servers, anything added later — is unmarked and uses RemoteAddr;
+//  2. the immediate peer (RemoteAddr) is a loopback address, i.e. could be nginx at all.
+//
+// Then X-Real-IP wins; without it, the LAST X-Forwarded-For entry (the one nginx appended — the
+// entries to its left came from the client). A header value that is not an IP address is ignored.
+//
+// Residual: on the main listener any local process that connects to 127.0.0.1:8000 looks like
+// nginx and can choose its rate-limit key. Keeping the hysteria user (the uid that carries
+// Bamboo users' traffic) off :8000 is the job of the kernel egress guard and the Bamboo ACL.
+type trustProxyKey struct{}
+
+// TrustProxyHeaders returns ctx marked so that ExtractIP honours X-Real-IP / X-Forwarded-For
+// for requests served under it (subject to the loopback-peer check). Use it only for the
+// listener nginx proxies to.
+func TrustProxyHeaders(ctx context.Context) context.Context {
+	return context.WithValue(ctx, trustProxyKey{}, true)
+}
+
+// TrustedProxyBaseContext is an http.Server.BaseContext for the nginx-facing listener.
+func TrustedProxyBaseContext(net.Listener) context.Context {
+	return TrustProxyHeaders(context.Background())
+}
+
+func proxyHeadersTrusted(ctx context.Context) bool {
+	trusted, _ := ctx.Value(trustProxyKey{}).(bool)
+	return trusted
+}
+
+// ExtractIP returns the client IP used as the rate-limit key. See the trust model above: the
+// proxy headers are honoured only on a TrustProxyHeaders listener and only from a loopback
+// peer; otherwise the result is the host part of RemoteAddr.
 func ExtractIP(r *http.Request) string {
-	// X-Real-IP — set by nginx, trustworthy (nginx overwrites this header)
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		peer = host
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || !peerIP.IsLoopback() || !proxyHeadersTrusted(r.Context()) {
+		return peer
 	}
-	return host
+	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+		return ip.String()
+	}
+	if ip := lastForwardedFor(r.Header.Values("X-Forwarded-For")); ip != nil {
+		return ip.String()
+	}
+	return peer
+}
+
+// lastForwardedFor returns the right-most X-Forwarded-For entry across all header lines, or nil
+// when it is absent or not an IP address. Only the right-most entry was written by our proxy.
+func lastForwardedFor(values []string) net.IP {
+	for i := len(values) - 1; i >= 0; i-- {
+		parts := strings.Split(values[i], ",")
+		for j := len(parts) - 1; j >= 0; j-- {
+			if p := strings.TrimSpace(parts[j]); p != "" {
+				return net.ParseIP(p)
+			}
+		}
+	}
+	return nil
 }
 
 // MaxBodySize wraps a handler to limit request body size (prevents OOM).

@@ -8,12 +8,13 @@ package main
 // shell out to the official `hysteria` binary and let it own the UDP listen,
 // Salamander obfuscation, and Brutal congestion control.
 //
-// Reload mechanism: write to .tmp, validate with `hysteria server --disable-update-check
-// --config <file>` (2s timeout, treat bind-conflict on :50443 as success — the
-// running service holding the port means parse+TLS+auth init all passed before
-// the bind step), atomic rename only on success, then `systemctl restart
-// hysteria2-server`. Restart (not SIGHUP reload) — hysteria v2.6.x treats SIGHUP
-// as terminate.
+// Reload mechanism: render the config; if it is byte-identical to the file on disk, stop
+// (no restart). Otherwise write it to .tmp, validate it with validateHysteria2Config
+// (hysteria2_validate.go: a real `hysteria server` on a copy whose QUIC and trafficStats
+// listeners are moved to ephemeral loopback ports, accepted only if it is still running after
+// hysteria2ValidateTimeout), atomic rename only on success, then `systemctl restart
+// hysteria2-server`. This code never relies on a signal-based hot reload; the pinned hysteria
+// release is config.HysteriaVersion (internal/config/versions.go).
 //
 // Per-plan Brutal targets: Hysteria2 accepts global bandwidth caps in the
 // server config; per-user enforcement happens via the auth-backend response
@@ -41,7 +42,10 @@ const (
 	hysteria2TLSCert    = "/etc/letsencrypt/live/hiearth.ru/fullchain.pem"
 	hysteria2TLSKey     = "/etc/letsencrypt/live/hiearth.ru/privkey.pem"
 	hysteria2Listen     = ":50443"
-	hysteria2AuthURL    = "http://127.0.0.1:8000/internal/hysteria2/auth"
+	// hysteria2AuthURL points hysteria-server at the auth-only listener (hysteria2_auth_listener.go),
+	// never at the main API listener :8000. Changing it changes the rendered bytes, so the next
+	// sync rewrites server.yaml and restarts hysteria2-server once.
+	hysteria2AuthURL = "http://" + hysteria2AuthListenAddr + hysteria2AuthPath
 )
 
 var (
@@ -145,9 +149,9 @@ func SyncHysteria2Config() error {
 	yaml := renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, decision.OutboundPort, hubOwnIPs())
 
 	// No-op short-circuit FIRST — if content matches what's on disk, nothing
-	// changed since last sync and we don't need to touch validation/reload.
-	// This also avoids the "port already in use" false-failure during validation
-	// when a running hysteria2-server is holding :50443 with the same config.
+	// changed since last sync: no validation, no rename, no restart. This is the
+	// only change detection; any byte difference (e.g. a new auth URL) leads to
+	// exactly one validate + rename + restart, and the next sync is a no-op again.
 	if existing, err := os.ReadFile(hysteria2ConfigPath); err == nil {
 		if bytes.Equal(existing, []byte(yaml)) {
 			return nil
@@ -156,12 +160,12 @@ func SyncHysteria2Config() error {
 
 	// Atomic write with pre-rename validation. Mirrors the xray_sync.go pattern:
 	// 1) write generated content to a .tmp file;
-	// 2) run `hysteria server --config <tmp>` with a 2s timeout — bind conflicts
-	//    on :50443 are treated as success (means config parsed and reached the
-	//    bind step, i.e. structurally valid);
-	// 3) atomic rename only if validation passes — broken YAML never reaches
-	//    systemctl restart, the live server stays healthy, error captured into
-	//    app_settings for admin UI / deploy --status.
+	// 2) validateHysteria2Config(tmp) — starts hysteria on a copy bound to ephemeral
+	//    loopback ports (never the live :50443 / 127.0.0.1:7653) and accepts the
+	//    config only if the process is still running after hysteria2ValidateTimeout;
+	// 3) atomic rename only if validation passes — a rejected config never reaches
+	//    systemctl restart, the live server keeps its current file, error captured
+	//    into app_settings for admin UI / deploy --status.
 	tmpPath := hysteria2ConfigPath + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(yaml), 0600); err != nil {
 		return fmt.Errorf("write tmp config: %w", err)
@@ -191,10 +195,9 @@ func SyncHysteria2Config() error {
 		_ = os.Chmod(hysteria2ConfigPath, 0640)
 	}
 
-	// Restart. Hysteria v2.6.x does NOT support SIGHUP hot-reload — it treats
-	// SIGHUP as a terminate signal and exits cleanly without restarting itself.
-	// Plain `systemctl restart` is the only reliable way to pick up new config.
-	// QUIC clients reconnect within ~1s after the brief downtime.
+	// Restart to pick up the new file. This code does not use a signal-based hot
+	// reload (no SIGHUP); `systemctl restart` is the one reload path. Connected
+	// clients are dropped and have to reconnect (and re-authenticate).
 	if out, err := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err != nil {
 		return fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -373,15 +376,21 @@ acl:
 //
 //	reject(geoip:private), reject(127.0.0.0/8), reject(::1/128),
 //	reject(0.0.0.0/8), reject(::/128)                             private ranges, loopback, "this host"
+//	reject(<hysteria2PrivateRanges>...)                           RFC1918, CGNAT, link-local, ULA
 //	per Hub address: via_exit(ip, tcp/80), via_exit(ip, tcp/443), reject(ip)
 //	direct(geoip:ru), via_exit(all)                               the rest, as before
 //
-// (the explicit entries do not rely on the geoip file knowing every range). This is
-// defence in depth: a hostname that resolves to one of these addresses is still matched here
-// (hysteria resolves it first), but the authoritative protection is the kernel egress guard
-// (cmd/deploy/ops_egress_guard.go), which also covers what an ACL cannot see.
+// The explicit entries do not rely on the geoip file: geoip:private only covers what the
+// installed geoip.dat lists under "private", and that file is downloaded and refreshed
+// separately from this code. This is defence in depth: a hostname that resolves to one of these
+// addresses is still matched here (hysteria resolves it first), but the authoritative
+// protection is the kernel egress guard (cmd/deploy/ops_egress_guard.go), which also covers
+// what an ACL cannot see.
 func hysteria2ACLRules(hubIPs []string) []string {
 	rules := []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)"}
+	for _, cidr := range hysteria2PrivateRanges {
+		rules = append(rules, "reject("+cidr+")")
+	}
 	for _, ip := range hubIPs {
 		rules = append(rules,
 			fmt.Sprintf("via_exit(%s, tcp/%d)", ip, hubOpenPortHTTP),
@@ -389,6 +398,19 @@ func hysteria2ACLRules(hubIPs []string) []string {
 			fmt.Sprintf("reject(%s)", ip))
 	}
 	return append(rules, "direct(geoip:ru)", "via_exit(all)")
+}
+
+// hysteria2PrivateRanges are rejected explicitly in the Bamboo ACL, right after the loopback /
+// "this host" rejects: RFC1918, shared address space (CGNAT, RFC 6598), IPv4 link-local, IPv6
+// unique-local and IPv6 link-local.
+var hysteria2PrivateRanges = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+	"169.254.0.0/16",
+	"fc00::/7",
+	"fe80::/10",
 }
 
 // hysteria2ACLInline renders hysteria2ACLRules as the YAML list items under acl.inline.

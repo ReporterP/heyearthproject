@@ -34,7 +34,10 @@ const hysteria2ProbeListen = "127.0.0.1:0"
 //   - the process exits earlier, whatever the reason → the config is rejected and the error
 //     carries what hysteria printed (stdout and stderr, it writes its FATAL line to either).
 //
-// Hysteria v2.6.x has no --check flag, so start-and-watch is the only syntactic gate.
+// This code does not use any config-check / dry-run mode of the hysteria binary (pinned as
+// config.HysteriaVersion); start-and-watch is the only gate. The probe runs the same
+// `hysteria server --config <file> --disable-update-check` command line as the hysteria2-server
+// unit, on the probe copy (and as the API's user, not as `hysteria`).
 func validateHysteria2Config(path string) error {
 	return validateHysteria2ConfigWith(path, runHysteria2Probe, hysteria2ValidateTimeout)
 }

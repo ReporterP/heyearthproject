@@ -965,6 +965,12 @@ func main() {
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
 
+	// Auth-only loopback listener for hysteria-server (127.0.0.1:8001). Bound before the
+	// first Hysteria2 sync, which writes this address into /etc/hysteria/server.yaml.
+	if err := startHysteria2AuthListener(handleHysteria2Auth); err != nil {
+		log.Fatalf("hysteria2 auth listener: %v", err)
+	}
+
 	// Hysteria2 server sync (no-op if hysteria binary not installed)
 	StartHysteria2SyncLoop()
 
@@ -1063,8 +1069,13 @@ func main() {
 	http.HandleFunc("/api/v1/user/happ-link/", apiLimiter.Middleware(handleGetHappLink))
 
 	// Hysteria2 auth backend (loopback-only — nginx must NOT proxy /internal/*).
-	// Called by the local hysteria2-server.service on every client handshake.
-	http.HandleFunc("/internal/hysteria2/auth", handleHysteria2Auth)
+	// DEPRECATED on this listener: hysteria2_sync.go now writes the dedicated
+	// 127.0.0.1:8001 listener into /etc/hysteria/server.yaml; this route only serves
+	// a hysteria2-server still running a server.yaml from before that change.
+	// Remove it once the Hub's /etc/hysteria/server.yaml references :8001 (an API
+	// with this change has synced it) and nothing else calls the path on :8000 (the
+	// auth probe of `deploy --status` in cmd/deploy/main.go still does).
+	http.HandleFunc(hysteria2AuthPath, handleHysteria2Auth)
 
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
@@ -1133,5 +1144,6 @@ func main() {
 	admin.RegisterRoutes()
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
-	log.Fatal(http.ListenAndServe(httpAddr, nil))
+	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
+	log.Fatal(newMainHTTPServer(httpAddr, nil).ListenAndServe())
 }

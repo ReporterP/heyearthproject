@@ -1385,9 +1385,13 @@ func ServerActionProgressHandler(w http.ResponseWriter, r *http.Request) {
 // ── Setup exit node (async, 7 steps) ──
 
 // exitHysteria2ServerScript renders step 3 of runSetupExitNode (run as root on the exit):
-// install/upgrade the hysteria binary, write server.yaml + hysteria2.service, restart.
+// install/upgrade the hysteria binary, write server.yaml (ending with the shared
+// config.ExitHysteriaACL block for exitIP) + hysteria2.service, restart.
 // Plain concatenation, not a format string: the install script carries a literal %2F.
-func exitHysteria2ServerScript() string {
+func exitHysteria2ServerScript(exitIP string) string {
+	if net.ParseIP(strings.TrimSpace(exitIP)) == nil {
+		log.Printf("[provision] exit address %q is not an IP address: hysteria ACL written without the own-address reject", exitIP)
+	}
 	return "set -e\n" + config.HysteriaInstallScript() + `mkdir -p /opt/heyearth/certs /opt/heyearth/hysteria
 if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
@@ -1415,7 +1419,7 @@ quic:
 bandwidth:
   up: 100 mbps
   down: 100 mbps
-HEOF
+` + config.ExitHysteriaACL(exitIP) + `HEOF
 cat > /etc/systemd/system/hysteria2.service << 'SEOF'
 [Unit]
 Description=Hysteria2 VPN Server (HeYearth)
@@ -1621,7 +1625,7 @@ systemctl daemon-reload && systemctl enable xray && systemctl restart xray`)
 
 	// ── Шаг 3: Hysteria2 ──
 	setStep(2, "running", "")
-	_, err = runCmd(client, exitHysteria2ServerScript())
+	_, err = runCmd(client, exitHysteria2ServerScript(server.IPAddress))
 	if err != nil {
 		finishWithError(2, err)
 		return

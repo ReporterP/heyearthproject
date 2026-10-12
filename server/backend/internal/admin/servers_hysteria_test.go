@@ -21,7 +21,7 @@ func TestRunSetupExitNodeHysteriaScripts(t *testing.T) {
 		hubSide bool
 		want    []string
 	}{
-		{"exitHysteria2ServerScript", exitHysteria2ServerScript(), false, []string{
+		{"exitHysteria2ServerScript", exitHysteria2ServerScript("203.0.113.5"), false, []string{
 			"set -e\n" + install,
 			"systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2",
 		}},

@@ -109,7 +109,9 @@ func TestHysteria2ACLRules(t *testing.T) {
 	}
 	// no Hub address known: the unconditional rejects are still there and still first
 	bare := hysteria2ACLRules(nil)
-	if !reflect.DeepEqual(bare, []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)", "direct(geoip:ru)", "via_exit(all)"}) {
+	if !reflect.DeepEqual(bare, []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)",
+		"reject(10.0.0.0/8)", "reject(172.16.0.0/12)", "reject(192.168.0.0/16)", "reject(100.64.0.0/10)", "reject(169.254.0.0/16)", "reject(fc00::/7)", "reject(fe80::/10)",
+		"direct(geoip:ru)", "via_exit(all)"}) {
 		t.Errorf("rules without Hub addresses: %v", bare)
 	}
 }
