@@ -65,6 +65,7 @@ func main() {
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
 	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality) на главный сервер")
+	streamPPFlag := flag.String("stream-proxy-protocol", "", "on|off: PROXY protocol на 443 stream (реальные IP клиентов для nginx/API); переключает nginx и xray Reality вместе, на Hub отдельным юнитом")
 	forceFlag := flag.Bool("force", false, "с --setup-xray: заменить существующий /opt/heyearth/xray/config.json bootstrap-конфигом (на живом Hub отрежет пользователей до синхронизации API)")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
@@ -109,6 +110,8 @@ func main() {
 		mode = "setup-awg"
 	case *setupOpsFlag:
 		mode = "setup-ops"
+	case *streamPPFlag != "":
+		mode = "stream-proxy-protocol"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
@@ -122,7 +125,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -186,6 +189,10 @@ func main() {
 	}
 	if mode == "setup-ops" {
 		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient)
+		return
+	}
+	if mode == "stream-proxy-protocol" {
+		switchStreamProxyProtocol(client, cfg, *streamPPFlag, config.DefaultRealitySNI)
 		return
 	}
 
@@ -1019,7 +1026,12 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	// Если Xray активен — настраиваем nginx stream для SNI routing на 443
 	if xrayActive && ssl {
-		streamConf := buildNginxStreamConf(domain)
+		// The stream must match what xray's Reality inbound expects right now: with
+		// acceptProxyProtocol a stream without PROXY would break every Reality handshake.
+		ppOut, _ := runSSH(client, streamProxyLiveCheck, false)
+		proxyProtocol := strings.TrimSpace(ppOut) == "on"
+		fmt.Printf("nginx stream: PROXY protocol %s (по живому конфигу xray)\n", map[bool]string{true: "ВКЛ", false: "выкл"}[proxyProtocol])
+		streamConf := buildNginxStreamConf(domain, proxyProtocol)
 		_, _ = runSSH(client, "apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true", true)
 		_, _ = runSSH(client, "mkdir -p /etc/nginx/stream.d", true)
 		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
@@ -1120,9 +1132,15 @@ server {
 func buildNginxConfSSL(domain, appDir, certPath string, xrayActive bool) string {
 	// Когда Xray активен, порт 443 занят nginx stream для SNI routing.
 	// HTTPS server blocks слушают на 8443 (внутренний), трафик приходит через stream.
+	// Плюс listener 127.0.0.1:8446 с PROXY protocol — цель stream, пока включён
+	// --stream-proxy-protocol (nginxProxyProtocolListen). Он есть всегда: без
+	// PROXY-трафика он просто не используется, а 8443 остаётся обычным для прямых
+	// локальных проверок (монитор сертификата в cmd/api).
 	httpsPort := "443"
+	ppListen := ""
 	if xrayActive {
 		httpsPort = "8443"
+		ppListen = nginxProxyProtocolListen
 	}
 
 	return fmt.Sprintf(`# ── HTTP → HTTPS redirect ────────────────────────────────────────
@@ -1137,7 +1155,7 @@ server {
 server {
     listen %[4]s ssl http2;
     listen [::]:%[4]s ssl http2;
-    server_name %[1]s www.%[1]s;
+%[5]s    server_name %[1]s www.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
     ssl_certificate_key %[3]s/privkey.pem;
@@ -1178,7 +1196,7 @@ server {
 server {
     listen %[4]s ssl http2;
     listen [::]:%[4]s ssl http2;
-    server_name admin.%[1]s;
+%[5]s    server_name admin.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
     ssl_certificate_key %[3]s/privkey.pem;
@@ -1203,7 +1221,7 @@ server {
 server {
     listen %[4]s ssl http2;
     listen [::]:%[4]s ssl http2;
-    server_name site.%[1]s;
+%[5]s    server_name site.%[1]s;
 
     ssl_certificate %[3]s/fullchain.pem;
     ssl_certificate_key %[3]s/privkey.pem;
@@ -1220,12 +1238,19 @@ server {
     server_name _;
     return 301 https://%[1]s$request_uri;
 }
-`, domain, appDir, certPath, httpsPort)
+`, domain, appDir, certPath, httpsPort, ppListen)
 }
 
 // buildNginxStreamConf создаёт конфиг nginx stream для SNI routing на порту 443:
-// наши домены → nginx HTTPS (8443), остальное → Xray VLESS Reality (10443)
-func buildNginxStreamConf(domain string) string {
+// наши домены → nginx HTTPS (8443), остальное → Xray VLESS Reality (10443).
+// proxyProtocol (режим --stream-proxy-protocol on): stream шлёт PROXY-заголовок с
+// реальным адресом клиента, домены идут на PROXY-listener 127.0.0.1:8446, а inbound
+// Reality обязан принимать PROXY (acceptProxyProtocol, app_settings.stream_proxy_protocol).
+func buildNginxStreamConf(domain string, proxyProtocol bool) string {
+	httpsUpstream, ppLine := "127.0.0.1:8443", ""
+	if proxyProtocol {
+		httpsUpstream, ppLine = "127.0.0.1:"+nginxProxyProtocolPort, "    "+streamProxyProtocolLine+"\n"
+	}
 	return fmt.Sprintf(`# SNI-based routing: наши домены → nginx HTTPS, VPN-трафик → Xray
 map $ssl_preread_server_name $backend {
     %[1]s          nginx_https;
@@ -1236,7 +1261,7 @@ map $ssl_preread_server_name $backend {
 }
 
 upstream nginx_https {
-    server 127.0.0.1:8443;
+    server %[2]s;
 }
 
 upstream xray_vless {
@@ -1247,11 +1272,11 @@ server {
     listen 443 so_keepalive=60s:10s:3;
     listen [::]:443 so_keepalive=60s:10s:3;
     ssl_preread on;
-    # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
+%[3]s    # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
     proxy_timeout 3600s;
     proxy_pass $backend;
 }
-`, domain)
+`, domain, httpsUpstream, ppLine)
 }
 
 func doSSL(client *ssh.Client, cfg *deployConfig) {

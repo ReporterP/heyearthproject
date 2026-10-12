@@ -101,6 +101,10 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 4. **БД:** `OWNER=$(runuser -u postgres -- psql -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='heyearth'")`;
    `runuser -u postgres -- pg_restore --clean --if-exists --no-owner --role="$OWNER" -d heyearth < /root/restore/db.dump`;
    `runuser -u postgres -- psql -d heyearth -tAc "SELECT count(*) FROM users"` = `users_count` из `/root/restore/meta.txt` (допуск как в проверке выше).
+   PROXY protocol на 443 на время восстановления выключить (иначе API включит его в xray, а nginx из шага 6 будет без него — Reality не работает):
+   `runuser -u postgres -- psql -d heyearth -tAc "SELECT value FROM app_settings WHERE key='stream_proxy_protocol'"` — запомнить; затем
+   `runuser -u postgres -- psql -d heyearth -c "UPDATE app_settings SET value='false' WHERE key='stream_proxy_protocol'"`. Если было `true` — после шага 11
+   включить заново: `go run ./cmd/deploy --stream-proxy-protocol on` (docs/runbooks/stream-proxy-protocol.md).
 5. **Состояние (файлы)** — прежний `api.env` из архива несёт СТАРЫЙ пароль БД, поэтому строку `DATABASE_URL` нового Hub сохранить и вернуть:
    ```
    NEW_DB=$(grep '^DATABASE_URL=' /opt/heyearth/mainserver/api.env)

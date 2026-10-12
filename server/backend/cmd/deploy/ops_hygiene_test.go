@@ -12,7 +12,7 @@ import (
 // — i.e. what is on the Hub today.
 func oldNginxStreamConf(t *testing.T, domain string) string {
 	t.Helper()
-	cur := buildNginxStreamConf(domain)
+	cur := buildNginxStreamConf(domain, false)
 	block := "    " + nginxStreamTimeoutComment + "\n    proxy_timeout " + nginxStreamTimeoutValue + ";\n"
 	old := strings.ReplaceAll(strings.Replace(cur, block, "", 1), " so_keepalive="+nginxClientKeepalive+";", ";")
 	if old == cur || strings.Contains(old, "proxy_timeout") || strings.Contains(old, "keepalive") {
@@ -22,7 +22,7 @@ func oldNginxStreamConf(t *testing.T, domain string) string {
 }
 
 func TestNginxStreamGeneratorHasTimeout(t *testing.T) {
-	conf := buildNginxStreamConf("hiearth.ru")
+	conf := buildNginxStreamConf("hiearth.ru", false)
 	want := "    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_pass $backend;\n"
 	if !strings.Contains(conf, want) {
 		t.Fatalf("the SNI router server block must carry proxy_timeout between ssl_preread and proxy_pass:\n%s", conf)
@@ -126,7 +126,7 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		t.Skip("no working bash")
 	}
 	old := oldNginxStreamConf(t, "hiearth.ru")
-	cur := buildNginxStreamConf("hiearth.ru")
+	cur := buildNginxStreamConf("hiearth.ru", false)
 	run := func(t *testing.T, tFail, tBroken bool, files []nginxFile, show ...string) string {
 		t.Helper()
 		out, _ := runBash(t, nginxHarness(tFail, tBroken, files, show...))
@@ -181,6 +181,16 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		if strings.Count(out, "already as wanted") != 2 {
 			t.Errorf("both files must report 'already as wanted':\n%s", out)
 		}
+	})
+
+	t.Run("a router with PROXY protocol on (deploy --stream-proxy-protocol) is already as wanted: --setup-ops keeps proxy_protocol and the 8446 upstream", func(t *testing.T) {
+		t.Parallel()
+		on := buildNginxStreamConf("hiearth.ru", true)
+		out := run(t, false, false, []nginxFile{{"nginx.conf", patchedNginxConf, true}, {router, on, true}}, router)
+		if got := shown(out, router); got != on {
+			t.Fatalf("--setup-ops changed the PROXY-on router:\n--- got\n%s\n--- want\n%s", got, on)
+		}
+		wantLines(t, out, "STATE exit=0", "STATE backups=0")
 	})
 
 	t.Run("nginx -t failing on a config this run did not change: FAILED, no reload, nothing restored", func(t *testing.T) {
