@@ -67,7 +67,7 @@ function Delivery({ ev }) {
   if (ev.delivered) return <span className="text-success">отправлено</span>
   const range = ev.count > 1 ? `${ev.count} попыток подряд, первая: ${formatDate(ev.firstAt)}` : ''
   return (
-    <span className="flex items-center gap-1.5 min-w-0 max-w-xs" title={[ev.error, range].filter(Boolean).join('\n') || undefined}>
+    <span className="flex items-center gap-1.5 min-w-0 max-w-full" title={[ev.error, range].filter(Boolean).join('\n') || undefined}>
       <span className="text-danger shrink-0">не доставлено</span>
       {ev.count > 1 && <span className="shrink-0 font-mono tabular-nums text-tertiary">×{ev.count}</span>}
       {ev.error && <span className="min-w-0 truncate text-secondary">· {ev.error}</span>}
@@ -205,7 +205,7 @@ export default function AlertsPage() {
   if (loading) return <div className="flex justify-center py-20"><Spinner size="md" /></div>
 
   return (
-    <div className="max-w-5xl space-y-6">
+    <div className="max-w-7xl space-y-6">
       <PageHeader
         title="Алерты"
         subtitle="Доступность входа (снаружи и из РФ), Бамбук, exit-ноды, отключение по квоте, xray, база данных, сертификат, бэкапы и диск — сообщения в Telegram-чат администратора."
@@ -294,12 +294,12 @@ export default function AlertsPage() {
                     <Td><LevelBadge ev={ev} /></Td>
                     <Td><Badge variant={kind.variant}>{kind.label}</Badge></Td>
                     <Td mono className="text-secondary whitespace-nowrap">{ev.key}</Td>
-                    <Td className="max-w-sm">
+                    <Td className="max-w-xs">
                       <span className="block truncate text-primary" title={ev.details}>
                         {ev.title}{ev.details ? <span className="text-tertiary"> — {ev.details}</span> : null}
                       </span>
                     </Td>
-                    <Td className="max-w-xs"><Delivery ev={ev} /></Td>
+                    <Td className="max-w-[14rem]"><Delivery ev={ev} /></Td>
                   </Tr>
                 )
               })}
