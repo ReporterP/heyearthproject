@@ -52,7 +52,8 @@ func setupHysteria2Hub(client *ssh.Client, cfg *deployConfig) {
 
 // hysteria2HubScript is the idempotent provisioning script run as root on the Hub.
 func hysteria2HubScript() string {
-	return strings.NewReplacer("__HYSTERIA_INSTALL__", config.HysteriaInstallScript(), "__PORTHOP__", hysteria2PortHopRule).Replace(`set -e
+	return strings.NewReplacer("__HYSTERIA_INSTALL__", config.HysteriaInstallScript(), "__PORTHOP__", hysteria2PortHopRule,
+		"__START__", hysteria2HubStartScript).Replace(`set -e
 
 # ── 1. Install / upgrade hysteria binary (previous kept as hysteria.bak) ──
 __HYSTERIA_INSTALL__
@@ -105,7 +106,7 @@ fi
 GEOIP_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
 if [ ! -f /etc/hysteria/geoip.dat ] || [ $(find /etc/hysteria/geoip.dat -mtime +30 | wc -l) -gt 0 ]; then
   echo "[hysteria2-hub] downloading geoip.dat..."
-  curl -fsSL "$GEOIP_URL" -o /etc/hysteria/geoip.dat.new
+  curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "$GEOIP_URL" -o /etc/hysteria/geoip.dat.new
   mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
   chown hysteria:hysteria /etc/hysteria/geoip.dat
   chmod 644 /etc/hysteria/geoip.dat
@@ -137,7 +138,7 @@ fi
 cat > /etc/cron.monthly/heyearth-hysteria-geoip <<'CRON'
 #!/usr/bin/env bash
 set -e
-curl -fsSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o /etc/hysteria/geoip.dat.new
+curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o /etc/hysteria/geoip.dat.new
 mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
 chown hysteria:hysteria /etc/hysteria/geoip.dat
 chmod 644 /etc/hysteria/geoip.dat
@@ -180,8 +181,8 @@ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active
 fi
 
 # ── 6. systemd unit ──
-# Reload (SIGHUP) supported by hysteria — sync loop uses 'systemctl reload' first,
-# falls back to restart only if reload errors.
+# No SIGHUP hot-reload: heyearth-api hysteria2_sync.go restarts the unit after config
+# writes, and ExecReload maps an operator's 'systemctl reload' to a restart (see unit).
 cat > /etc/systemd/system/hysteria2-server.service <<'UNIT'
 [Unit]
 Description=Hysteria2 server (Express routing for premium plans)
@@ -287,21 +288,41 @@ fi
 chown hysteria:hysteria /etc/hysteria/server.yaml
 chmod 640 /etc/hysteria/server.yaml
 
-# ── 8. Enable + start the service ──
+__START__
+echo "[hysteria2-hub] Setup complete."
+`)
+}
+
+// hysteria2HubStartScript is steps 8-9 of hysteria2HubScript: (re)start hysteria2-server and
+// smoke-check it. When the server is not active, step 1 replaced the binary in THIS run
+// (HY_REPLACED=1, set by config.HysteriaInstallScript) and hysteria.bak exists, it restores
+// the previous binary (temp + mv, .bak kept), restarts, prints "ROLLED BACK" and exits 1.
+// A failing restart is not fatal by itself (set -e): the is-active check decides, so a broken
+// new binary still reaches the rollback.
+const hysteria2HubStartScript = `# ── 8. Enable + start the service ──
 systemctl enable hysteria2-server >/dev/null 2>&1
-systemctl restart hysteria2-server
+systemctl restart hysteria2-server || true
 sleep 2
 
-# ── 9. Smoke check ──
+# ── 9. Smoke check; auto-rollback of a binary replaced in this run ──
 if systemctl is-active --quiet hysteria2-server; then
   echo "[hysteria2-hub] hysteria2-server is active"
   ss -ulnp | grep -E ':(50443)' || echo "[hysteria2-hub] WARN: no UDP listener on :50443"
 else
   echo "[hysteria2-hub] ERROR: hysteria2-server failed to start"
-  journalctl -u hysteria2-server -n 30 --no-pager
+  journalctl -u hysteria2-server -n 30 --no-pager || true
+  if [ "${HY_REPLACED:-0}" = 1 ] && [ -f /usr/local/bin/hysteria.bak ]; then
+    if cp -p /usr/local/bin/hysteria.bak /usr/local/bin/hysteria.rollback.tmp && mv -f /usr/local/bin/hysteria.rollback.tmp /usr/local/bin/hysteria; then
+      systemctl restart hysteria2-server || true
+      sleep 2
+      if systemctl is-active --quiet hysteria2-server; then HY_STATE=active; else HY_STATE="NOT active"; fi
+      HY_PREV=$(/usr/local/bin/hysteria version 2>/dev/null | awk '$1=="Version:"{print $2}') || HY_PREV=""
+      echo "[hysteria2-hub] ROLLED BACK to previous binary ${HY_PREV:-?} (failed: $HY_WANT); hysteria2-server is $HY_STATE"
+    else
+      rm -f /usr/local/bin/hysteria.rollback.tmp
+      echo "[hysteria2-hub] ERROR: rollback to /usr/local/bin/hysteria.bak failed; the $HY_WANT binary is still in place"
+    fi
+  fi
   exit 1
 fi
-
-echo "[hysteria2-hub] Setup complete."
-`)
-}
+`

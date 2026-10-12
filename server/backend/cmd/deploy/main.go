@@ -1580,7 +1580,7 @@ ss -tlnp 2>/dev/null | grep -E ':(443|2443|10443) ' || echo 'no matching ports'`
 	// Hysteria2 (Express)
 	fmt.Println("=== Hysteria2 (Express) ===")
 	hy2Out, _ := runSSH(client, `if command -v hysteria >/dev/null 2>&1; then
-  echo "binary: $(hysteria version 2>/dev/null | head -1)"
+  echo "binary: $(hysteria version 2>/dev/null | awk '$1=="Version:"{print $2}') (pinned: `+config.HysteriaVersion+`)"
 else
   echo "binary: NOT INSTALLED"
 fi
@@ -2100,8 +2100,12 @@ systemctl enable hysteria2-client-%s
 systemctl restart hysteria2-client-%s
 sleep 2
 systemctl status hysteria2-client-%s --no-pager | head -5
+if ! systemctl is-active --quiet hysteria2-client-%s; then
+  echo "[hy2] ERROR: hysteria2-client-%s не активен после рестарта (см. journalctl -u hysteria2-client-%s)" >&2
+  exit 1
+fi
 echo "Hysteria2 client for %s: port $PORT"
-`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
+`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, serverID, serverID, serverID, exitIP)
 }
 
 // setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.

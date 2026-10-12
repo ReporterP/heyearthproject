@@ -5,17 +5,23 @@ import (
 	"strings"
 )
 
-// HysteriaVersion — the single pinned apernet/hysteria release for every install path
-// (cmd/deploy/hysteria2_hub.go, cmd/deploy/main.go setupExitNodeDeploy,
+// HysteriaVersion — the single pinned HyNetworks (formerly apernet) hysteria release for
+// every install path (cmd/deploy/hysteria2_hub.go, cmd/deploy/main.go setupExitNodeDeploy,
 // internal/admin/servers_handlers.go). Upgrade exits (servers) before the Hub:
 // 2.8.2+ clients lose UDP against older servers. That is why only exit-side paths and
 // the Hub's own deploy --setup-hysteria2-hub upgrade (HysteriaInstallScript); Hub-side
 // steps of exit provisioning only fill in a missing binary (HysteriaEnsureScript).
 const HysteriaVersion = "v2.13.0"
 
+// HysteriaSHA256 — sha256 of the HysteriaVersion hysteria-linux-amd64 asset, from the
+// release's official hashes.txt ("<sha>  build/hysteria-linux-amd64"). Update together with
+// HysteriaVersion. The installer refuses to chmod/execute a download that does not match.
+const HysteriaSHA256 = "907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691"
+
 // HysteriaDownloadURL — linux-amd64 asset; the tag "app/vX.Y.Z" has its slash encoded.
+// github.com/apernet/hysteria now 301s to HyNetworks; use the canonical location.
 func HysteriaDownloadURL() string {
-	return "https://github.com/apernet/hysteria/releases/download/app%2F" + HysteriaVersion + "/hysteria-linux-amd64"
+	return "https://github.com/HyNetworks/hysteria/releases/download/app%2F" + HysteriaVersion + "/hysteria-linux-amd64"
 }
 
 // Output lines of HysteriaInstallScript that HysteriaInstallError looks for.
@@ -26,24 +32,36 @@ const (
 )
 
 // HysteriaInstallScript — idempotent shell: installs/upgrades /usr/local/bin/hysteria to
-// HysteriaVersion. The download must report exactly HysteriaVersion before it replaces
-// anything; the previous binary is kept as hysteria.bak (written via a temp file + mv, so
-// a running .bak never hits ETXTBSY). On failure it prints "[hysteria] ERROR" to stderr,
-// leaves the installed binary untouched and returns non-zero. Safe under set -eo pipefail.
+// HysteriaVersion. The download must match HysteriaSHA256 before it is made executable or run,
+// and must then report exactly HysteriaVersion before it replaces anything; the previous
+// binary is kept as hysteria.bak (written via a temp file + mv, so a running .bak never hits
+// ETXTBSY). Sets HY_REPLACED=1 when it replaced the binary in this run, else 0 (callers use
+// it to decide on a rollback). On failure it prints "[hysteria] ERROR" to stderr, leaves the
+// installed binary untouched and returns non-zero. Safe under set -eo pipefail.
 // Does not restart units.
 func HysteriaInstallScript() string {
+	return hysteriaInstallScript(HysteriaSHA256)
+}
+
+// hysteriaInstallScript renders the installer for the given expected sha256; production
+// always passes HysteriaSHA256, tests pass the hash of their stub binaries.
+func hysteriaInstallScript(sha256 string) string {
 	return `HY_WANT="` + HysteriaVersion + `"
+HY_SHA256="` + sha256 + `"
+HY_REPLACED=0
 HY_CUR=$(/usr/local/bin/hysteria version 2>/dev/null | awk '$1=="Version:"{print $2}') || HY_CUR=""
 if [ "$HY_CUR" != "$HY_WANT" ]; then
   if curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -o /usr/local/bin/hysteria.new "` + HysteriaDownloadURL() + `" \
+    && echo "$HY_SHA256  /usr/local/bin/hysteria.new" | sha256sum -c --quiet \
     && chmod +x /usr/local/bin/hysteria.new \
     && [ "$(/usr/local/bin/hysteria.new version 2>/dev/null | awk '$1=="Version:"{print $2}')" = "$HY_WANT" ] \
     && { [ ! -x /usr/local/bin/hysteria ] || { cp -p /usr/local/bin/hysteria /usr/local/bin/hysteria.bak.tmp && mv -f /usr/local/bin/hysteria.bak.tmp /usr/local/bin/hysteria.bak; }; } \
     && mv -f /usr/local/bin/hysteria.new /usr/local/bin/hysteria; then
+    HY_REPLACED=1
     echo "[hysteria] installed $HY_WANT (previous: ${HY_CUR:-none} -> /usr/local/bin/hysteria.bak)"
   else
     rm -f /usr/local/bin/hysteria.new /usr/local/bin/hysteria.bak.tmp
-    echo "[hysteria] ERROR: download/verify of $HY_WANT failed, binary unchanged" >&2
+    echo "[hysteria] ERROR: download/sha256/verify of $HY_WANT failed, binary unchanged" >&2
     false
   fi
 else
@@ -53,16 +71,20 @@ fi
 }
 
 // HysteriaEnsureScript — for the Hub-side steps of exit provisioning: installs
-// HysteriaVersion only when /usr/local/bin/hysteria is absent and never touches an existing
-// binary. The Hub's server and its clients to every exit share that binary and pick it up on
-// their next restart, so upgrading it here would put a new client in front of exits that may
-// still run an older server (2.8.2+ clients lose UDP against older servers). The Hub is
-// upgraded on purpose, after all exits, by deploy --setup-hysteria2-hub.
+// HysteriaVersion only when /usr/local/bin/hysteria is absent or does not run, and never
+// touches a working binary. The Hub's server and its clients to every exit share that binary
+// and pick it up on their next restart, so upgrading it here would put a new client in front
+// of exits that may still run an older server (2.8.2+ clients lose UDP against older
+// servers). The Hub is upgraded on purpose, after all exits, by deploy --setup-hysteria2-hub.
 func HysteriaEnsureScript() string {
-	return `if [ -x /usr/local/bin/hysteria ]; then
+	return hysteriaEnsureScript(HysteriaInstallScript())
+}
+
+func hysteriaEnsureScript(install string) string {
+	return `if [ -x /usr/local/bin/hysteria ] && /usr/local/bin/hysteria version >/dev/null 2>&1; then
   echo "[hysteria] keeping existing Hub binary (upgrade: deploy --setup-hysteria2-hub)"
 else
-` + HysteriaInstallScript() + `fi
+` + install + `fi
 `
 }
 
