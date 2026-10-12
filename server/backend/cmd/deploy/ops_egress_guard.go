@@ -19,9 +19,15 @@ package main
 //
 //	xray.service cgroup (xray runs as root, so a uid match would be useless):
 //	  TCP (new connections) to 127.0.0.0/8 except the exit tunnels' SOCKS ports  -> REJECT
-//	  UDP to 127.0.0.0/8 except DNS                                              -> REJECT
 //	  0.0.0.0/8                                                                  -> REJECT
 //	  each of the Hub's own addresses: TCP except 80/443, all UDP                -> REJECT
+//	  NO loopback UDP rule: the datagrams xray sends to 127.0.0.0/8 are replies of its socks-awg
+//	  inbound to hev-socks5-tunnel's ephemeral port (all UDP of AmneziaWG users, DNS included) and
+//	  UDP relayed to a hysteria client's SOCKS UDP-ASSOCIATE port (QUIC, calls, games of VLESS
+//	  users). A rule without connection state cannot tell them from an attack and would break
+//	  them. The UDP services of this host (the local DNS stub, the AmneziaWG and Hysteria2
+//	  listeners) expose nothing to an unauthenticated datagram, unlike sshd, PostgreSQL or the
+//	  API. The install step verifies that datagrams from xray's cgroup are still delivered.
 //	user hysteria (hysteria2-server and its tunnel clients; port 53 stays open for the Go resolver's TCP
 //	fallback to the local stub resolver):
 //	  TCP to 127.0.0.0/8 except the SOCKS ports and the API port 8000 (its auth
@@ -104,7 +110,6 @@ build_rules() {
   fi
   if [ "$cg" = 1 ]; then
     r -m cgroup --path "$CGROUP_PATH" -p tcp --syn -d "$LO" -m multiport ! --dports "$SOCKS_PORTS" -j REJECT --reject-with tcp-reset
-    r -m cgroup --path "$CGROUP_PATH" -p udp -d "$LO" ! --dport 53 -j REJECT
     r -m cgroup --path "$CGROUP_PATH" -d "$ZERO" -j REJECT
     for ip in $(hub_ips "$fam"); do
       r -m cgroup --path "$CGROUP_PATH" -p tcp --syn -d "$ip" -m multiport ! --dports 80,443 -j REJECT --reject-with tcp-reset
@@ -160,7 +165,7 @@ func renderEgressGuardScript() string {
 	return strings.NewReplacer("__SOCKS_PORTS__", egressSocksPorts, "__API_PORT__", egressAPIPort).Replace(egressGuardScript)
 }
 
-const egressGuardUnitText = "[Unit]\nDescription=Kernel egress guard: loopback and own-address restrictions for xray and hysteria2, xray API restricted to heyearth-api\nWants=network-online.target\nAfter=network-online.target\nBefore=xray.service hysteria2-server.service heyearth-api.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/opt/heyearth/bin/heyearth-egress-guard.sh start\nExecStop=/opt/heyearth/bin/heyearth-egress-guard.sh stop\n\n[Install]\nWantedBy=multi-user.target\n"
+const egressGuardUnitText = "[Unit]\nDescription=Kernel egress guard: loopback and own-address restrictions for xray and hysteria2, xray API restricted to heyearth-api\nAfter=local-fs.target\nBefore=xray.service hysteria2-server.service heyearth-api.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/opt/heyearth/bin/heyearth-egress-guard.sh start\nExecStop=/opt/heyearth/bin/heyearth-egress-guard.sh stop\n\n[Install]\nWantedBy=multi-user.target\n"
 
 // egressGuardDropIn re-applies the xray cgroup rules after every xray start. The leading "-"
 // makes a failure of the script irrelevant to xray.service itself.
@@ -180,7 +185,12 @@ const egressGuardDropIn = "# Installed by deploy --setup-ops (cmd/deploy/ops_egr
 //	pick_port P...        the first of the ports that has a listener
 //	wild_port             a port (not 80/443) listening on all addresses, i.e. reachable through
 //	                      the Hub's own public address
-//	rollback              take the guard away again
+//	xray_cgroup_udp_loopback  a datagram sent from inside the xray cgroup to a throw-away
+//	                      loopback UDP listener (python3) must arrive (0 = delivered, 1 = lost,
+//	                      99 = could not test)
+//	keep_api_rule         re-apply the single 10085 owner rule directly in OUTPUT
+//	rollback              take the guard away again, then keep_api_rule: a rolled-back guard
+//	                      still leaves the xray API protected (until the next reboot)
 //
 // XRAY and CGROUP_DIR are unit-test hooks.
 const egressGuardHelpers = `GUARD=` + egressGuardPath + `
@@ -193,7 +203,44 @@ hy_connect() { timeout 8 runuser -u hysteria -- bash -c 'exec 3<>/dev/tcp/$0/$1'
 xray_cgroup_connect() { timeout 8 bash -c 'echo $$ > "$0/cgroup.procs" || exit 99; exec 3<>/dev/tcp/$1/$2' "$CGROUP_DIR" "$1" "$2" 2>/dev/null; }
 pick_port() { for p in "$@"; do if ss -lnt | grep -q ":$p "; then echo "$p"; return 0; fi; done; return 1; }
 wild_port() { ss -lnt | awk 'NR > 1 && $4 ~ /^(0\.0\.0\.0|\*):[0-9]+$/ { n = split($4, a, ":"); if (a[n] != 80 && a[n] != 443) { print a[n]; exit } }'; }
-rollback() { systemctl disable --now ` + egressGuardUnit + ` >/dev/null 2>&1 || true; "$GUARD" stop >/dev/null 2>&1 || true; }
+xray_cgroup_udp_loopback() {
+  command -v python3 >/dev/null 2>&1 || return 99
+  d=$(mktemp -d) || return 99
+  python3 -c 'import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("127.0.0.1", 0))
+open(sys.argv[1] + "/port", "w").write(str(s.getsockname()[1]))
+s.settimeout(5)
+try:
+    s.recvfrom(64)
+    open(sys.argv[1] + "/got", "w").write("1")
+except Exception:
+    pass' "$d" &
+  lp=$!
+  i=0; while [ ! -s "$d/port" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  port=$(cat "$d/port" 2>/dev/null || true)
+  if [ -z "$port" ]; then kill "$lp" 2>/dev/null || true; rm -rf "$d"; return 99; fi
+  timeout 6 bash -c 'echo $$ > "$0/cgroup.procs" || exit 99; exec 3<>/dev/udp/127.0.0.1/$1; echo ping >&3' "$CGROUP_DIR" "$port" 2>/dev/null && sent=0 || sent=$?
+  if [ "$sent" = 99 ]; then kill "$lp" 2>/dev/null || true; rm -rf "$d"; return 99; fi
+  wait "$lp" 2>/dev/null || true
+  if [ -s "$d/got" ]; then rm -rf "$d"; return 0; fi
+  rm -rf "$d"; return 1
+}
+keep_api_rule() {
+  uid=$(id -u "$api_user" 2>/dev/null || echo 0)
+  spec="-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner $uid -j REJECT --reject-with tcp-reset"
+  iptables -w 5 -C OUTPUT $spec 2>/dev/null || iptables -w 5 -I OUTPUT 1 $spec
+}
+rollback() {
+  systemctl disable --now heyearth-egress-guard.service >/dev/null 2>&1 || true
+  "$GUARD" stop >/dev/null 2>&1 || true
+  if keep_api_rule; then
+    echo "[ops] egress guard rolled back — xray API protection kept (10085 owner rule)"
+    echo "[ops] (that rule is not boot-persistent while the guard is off: fix the cause and re-run --setup-ops)"
+  else
+    echo "[ops] WARN: egress guard rolled back, but the xray API protection (10085 owner rule) could NOT be re-applied"
+  fi
+}
 `
 
 // egressGuardPreScript runs before anything is installed: the prerequisites (fail-closed — if
@@ -246,7 +293,9 @@ fi
 //   - xray's traffic (socks-awg inbound -> https://ya.ru), if it flowed before;
 //   - the hysteria user's auth callback to the API on :8000, if it worked before;
 //   - xray's access to an exit tunnel port (a listener in the allowed SOCKS range) from inside
-//     its cgroup.
+//     its cgroup;
+//   - a UDP datagram from inside xray's cgroup to a throw-away loopback listener (the path of
+//     the AmneziaWG replies and of a hysteria client's UDP-ASSOCIATE relay).
 //
 // "refused" paths must be refused, otherwise the run FAILS (the rules stay, they are harmless —
 // but the protection must not be mistaken for working): user nobody -> 127.0.0.1:10085; the
@@ -322,6 +371,13 @@ if [ "$cg" = 1 ] && [ -d "$CGROUP_DIR" ]; then
     else echo "[ops] egress guard: xray still reaches the exit tunnel port 127.0.0.1:$tunnel"; fi
   else
     echo "[ops] WARN: no exit tunnel listener in ` + egressSocksPorts + ` on loopback — the allowed xray path is not verified"
+  fi
+  xray_cgroup_udp_loopback && rc=0 || rc=$?
+  if [ "$rc" = 0 ]; then echo "[ops] egress guard: a UDP datagram from xray's cgroup reaches a loopback listener (the AmneziaWG replies and the UDP-ASSOCIATE relay path)"
+  elif [ "$rc" = 99 ]; then echo "[ops] WARN: cannot test UDP from xray's cgroup (python3 missing or the cgroup cannot be entered) — the loopback UDP path is not verified"
+  else
+    rollback
+    echo "[ops] FAILED: a UDP datagram from xray's cgroup to a loopback listener was not delivered after the egress guard — guard rolled back"; exit 1
   fi
   xp=$(pick_port 8000 22 5432 8443 || true)
   if [ -n "$xp" ]; then

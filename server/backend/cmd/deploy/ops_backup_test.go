@@ -645,13 +645,21 @@ yes | SSH_ORIGINAL_COMMAND="$name 500 $sum400" timeout 10 bash "$T/receive.sh" 2
 		}
 	})
 
-	t.Run("a bad re-upload of the same name does not replace the good archive", func(t *testing.T) {
+	t.Run("a re-upload of an existing name with different content is refused (EXISTS, exit 8) and the stored archive stays byte for byte", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `name=$(n now)
 recv "$(cmdline "$name" "$T/blob")" "$T/blob" >/dev/null
-recv "$name 400 $(sha256sum "$T/blob500" | cut -d' ' -f1)" "$T/blob500" >/dev/null 2>&1; echo "STATE exit=$?"
-echo "STATE still_the_first=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" = "$(sha256sum "$T/blob" | cut -d' ' -f1)" ] && echo 1 || echo 0) stored=$(stored)"`)
-		want(t, out, "STATE exit=3", "STATE still_the_first=1 stored=1")
+before=$(sha256sum "$T/store/$name" | cut -d' ' -f1); mt=$(stat -c %Y "$T/store/$name")
+# another payload under the same name: different sha and size, and the same size with a different sha
+recv "$(cmdline "$name" "$T/blob500")" "$T/blob500" 2>&1; echo "STATE other_size=$?"
+head -c 400 /dev/zero | tr '\0' 'q' > "$T/blob400b"
+recv "$(cmdline "$name" "$T/blob400b")" "$T/blob400b" >/dev/null 2>&1; echo "STATE same_size=$?"
+recv "$name 400 $(sha256sum "$T/blob" | cut -d' ' -f1)x" "$T/blob" >/dev/null 2>&1; echo "STATE malformed=$?"
+echo "STATE untouched=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" = "$before" ] && [ "$(stat -c %Y "$T/store/$name")" = "$mt" ] && echo 1 || echo 0) stored=$(stored)"`)
+		want(t, out, "STATE other_size=8", "STATE same_size=8", "STATE malformed=2", "STATE untouched=1 stored=1")
+		if !strings.Contains(out, "EXISTS") {
+			t.Errorf("no EXISTS message:\n%s", out)
+		}
 	})
 
 	t.Run("not enough free space for twice the biggest of (newest archive, declared size, minimum): rejected before anything is written", func(t *testing.T) {
@@ -711,16 +719,19 @@ echo "STATE today_files=$(ls "$T/store" | grep "backup-$today" | sed "s/backup-$
 			"STATE today_files=040000 110000 ", "STATE stored=10")
 	})
 
-	t.Run("a re-upload of a stored name (the Hub's retry) is accepted even when its date is full", func(t *testing.T) {
+	t.Run("the Hub's own retry (same name, same sha256 and size) is answered OK without touching the file, even when its date is full", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `today=$(date +%Y%m%d)
 for h in 01 02; do recv "$(cmdline "backup-$today-${h}0000.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE first$h=$?"; done
+f=$T/store/backup-$today-020000.tar.gz.age; mt=$(stat -c %Y "$f")
 recv "$(cmdline "backup-$today-030000.tar.gz.age" "$T/blob")" "$T/blob" 2>&1; echo "STATE third=$?"
-recv "$(cmdline "backup-$today-020000.tar.gz.age" "$T/blob500")" "$T/blob500" >/dev/null 2>&1; echo "STATE retry=$?"
-echo "STATE sha_is_the_new_one=$([ "$(sha256sum "$T/store/backup-$today-020000.tar.gz.age" | cut -d' ' -f1)" = "$(sha256sum "$T/blob500" | cut -d' ' -f1)" ] && echo 1 || echo 0) stored=$(stored)"`)
-		want(t, out, "STATE first01=0", "STATE first02=0", "STATE third=7", "STATE retry=0", "STATE sha_is_the_new_one=1 stored=2")
-		if !strings.Contains(out, "FULL") {
-			t.Errorf("no FULL message:\n%s", out)
+recv "$(cmdline "backup-$today-020000.tar.gz.age" "$T/blob")" /dev/null 2>&1; echo "STATE retry=$?"
+echo "STATE untouched=$([ "$(stat -c %Y "$f")" = "$mt" ] && echo 1 || echo 0) stored=$(stored)"
+echo "STATE sha=$(sha256sum "$T/blob" | cut -d' ' -f1)"`)
+		want(t, out, "STATE first01=0", "STATE first02=0", "STATE third=7", "STATE retry=0", "STATE untouched=1 stored=2")
+		sha := strings.TrimPrefix(lineWithPrefix(out, "STATE sha="), "STATE sha=")
+		if !hasLine(out, "OK "+sha) || !strings.Contains(out, "FULL") {
+			t.Errorf("the retry must be answered 'OK <sha256>' (without reading its stream) and the third archive refused with FULL:\n%s", out)
 		}
 	})
 

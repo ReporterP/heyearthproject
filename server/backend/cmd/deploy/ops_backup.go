@@ -208,11 +208,14 @@ func installBackupTimer(client *ssh.Client, bc backupConfig) error {
 //     (yesterday, today, tomorrow — wide enough for clock and time-zone differences between
 //     the Hub and the exit). An archive "from" any other day is refused, so a forged date can
 //     neither push archives out of the retention window nor park files in it;
+//   - a stored archive is never overwritten: a re-upload of an existing name is answered
+//     "OK <sha256>" without touching the file when the declared sha256 and size are those of the
+//     stored file (the Hub's own retry, idempotent), and refused otherwise (EXISTS, exit 8) —
+//     a compromised Hub cannot replace yesterday's or today's good archive with garbage;
 //   - at most PER_DATE archives per date. When a date is full the new upload is REFUSED
-//     (FULL, exit 7) — never made room for by deleting something that is already stored; only
-//     a re-upload of an existing name (the Hub's own retry) replaces it. A hostile Hub can
-//     thus fill the quota of three dates with garbage and block new backups, but it cannot
-//     destroy a single stored archive;
+//     (FULL, exit 7) — never made room for by deleting something that is already stored. A
+//     hostile Hub can thus fill the quota of three dates with garbage and block new backups,
+//     but it cannot destroy a single stored archive;
 //   - files are deleted by age only: names older than KEEP_DAYS days;
 //   - one upload at a time (flock -n; a second one is refused with BUSY, exit 6);
 //   - the declared size is at most MAX_BYTES and at most that many bytes (plus one, to notice an
@@ -243,8 +246,12 @@ if [ "$SIZE" -lt 1 ] || [ "$SIZE" -gt "$MAX_BYTES" ]; then reject "declared size
 mkdir -p "$DIR"
 exec 9>"$DIR/.lock"
 flock -n 9 || reject "BUSY: another upload is in progress" 6
-STORED_THAT_DATE=$(ls -1 "$DIR" | grep -E "$NAMERE" | grep -Fxv -e "$NAME" | grep -c "^backup-$D-" || true)
-if [ "$STORED_THAT_DATE" -ge "$PER_DATE" ]; then reject "FULL: $STORED_THAT_DATE archives are already stored for $D (a re-upload of a stored name is still accepted)" 7; fi
+if [ -e "$DIR/$NAME" ]; then
+  if [ "$(stat -c %s "$DIR/$NAME")" -eq "$SIZE" ] && [ "$(sha256sum "$DIR/$NAME" | cut -d' ' -f1)" = "$SUM" ]; then echo "OK $SUM"; exit 0; fi
+  reject "EXISTS: $NAME is already stored with different content — a stored archive is never overwritten" 8
+fi
+STORED_THAT_DATE=$(ls -1 "$DIR" | grep -E "$NAMERE" | grep -c "^backup-$D-" || true)
+if [ "$STORED_THAT_DATE" -ge "$PER_DATE" ]; then reject "FULL: $STORED_THAT_DATE archives are already stored for $D" 7; fi
 LASTNAME=$(ls -1 "$DIR" | grep -E "$NAMERE" | sort | tail -n 1 || true)
 BASE=$MIN_BYTES
 if [ -n "$LASTNAME" ]; then LAST=$(stat -c %s "$DIR/$LASTNAME"); if [ "$LAST" -gt "$BASE" ]; then BASE=$LAST; fi; fi

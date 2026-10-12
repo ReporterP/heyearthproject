@@ -117,7 +117,6 @@ func expectedEgressRules(fam int, apiUID string, hy string, cgroup bool, ips []s
 	if cgroup {
 		cg := "-m cgroup --path system.slice/xray.service"
 		r = append(r, eChain+cg+" -p tcp --syn -d "+lo+" -m multiport ! --dports 1088:1599"+eReject,
-			eChain+cg+" -p udp -d "+lo+" ! --dport 53 -j REJECT",
 			eChain+cg+" -d "+zero+" -j REJECT")
 		for _, ip := range ips {
 			r = append(r, eChain+cg+" -p tcp --syn -d "+ip+" -m multiport ! --dports 80,443"+eReject,
@@ -190,17 +189,56 @@ func TestEgressGuardScript(t *testing.T) {
 echo "STATE out4=$(cat "$T/out.v4")"; echo "STATE out6=$(cat "$T/out.v6")"
 echo "STATE head4=$(sed -n 1,2p "$T/restore.v4" | tr '\n' '|')"; echo "STATE tail4=$(tail -n 1 "$T/restore.v4")"
 `+dumpChains("v4", "v6"))
-		wantLines(t, out, "STATE rc=0", "STATE s jumps4=1 rules4=18 mut4=1 restores4=1", "STATE out4=-A OUTPUT -j HEYEARTH-EGRESS", "STATE out6=-A OUTPUT -j HEYEARTH-EGRESS",
+		wantLines(t, out, "STATE rc=0", "STATE s jumps4=1 rules4=17 mut4=1 restores4=1", "STATE out4=-A OUTPUT -j HEYEARTH-EGRESS", "STATE out6=-A OUTPUT -j HEYEARTH-EGRESS",
 			"STATE head4=*filter|:HEYEARTH-EGRESS - [0:0]|", "STATE tail4=COMMIT")
 		diff(t, "IPv4 rules", chainLines(out, "v4"), expectedEgressRules(4, "0", "998", true, hubV4))
 		diff(t, "IPv6 rules", chainLines(out, "v6"), expectedEgressRules(6, "0", "998", true, hubV6))
+	})
+
+	t.Run("NO loopback UDP rule exists for the xray cgroup in either family: its datagrams to 127.0.0.0/8 / ::1 are the socks-awg inbound's replies and the UDP-ASSOCIATE relay", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, nil, `guard start; echo "STATE rc=$?"
+`+dumpChains("v4", "v6"))
+		wantLines(t, out, "STATE rc=0")
+		for tag, ips := range map[string]int{"v4": len(hubV4), "v6": len(hubV6)} {
+			lines := chainLines(out, tag)
+			cgUDP := 0
+			for _, l := range lines {
+				if !strings.Contains(l, "-p udp") {
+					continue
+				}
+				if strings.Contains(l, "-d 127.") || strings.Contains(l, "-d ::1") || strings.Contains(l, "-d 0.0.0.0") || strings.Contains(l, "-d ::/128") {
+					t.Errorf("%s: a UDP rule towards loopback / 'this host' exists: %s", tag, l)
+				}
+				if strings.Contains(l, "-m cgroup") {
+					cgUDP++
+					// the only UDP rules of the cgroup are the Hub's own addresses
+					if !regexp.MustCompile(` -d [0-9a-f.:]+ -j REJECT$`).MatchString(l) {
+						t.Errorf("%s: unexpected UDP rule for the xray cgroup: %s", tag, l)
+					}
+				}
+			}
+			if cgUDP != ips {
+				t.Errorf("%s: want exactly one UDP rule per Hub address for the cgroup (%d), got %d", tag, ips, cgUDP)
+			}
+			// ... while the TCP side of the cgroup is still closed on loopback
+			found := false
+			for _, l := range lines {
+				if strings.Contains(l, "-m cgroup") && strings.Contains(l, "-p tcp") && (strings.Contains(l, "-d 127.0.0.0/8") || strings.Contains(l, "-d ::1/128")) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: the TCP loopback rule of the xray cgroup is missing", tag)
+			}
+		}
 	})
 
 	t.Run("start is idempotent: re-applying replaces the chain content in place and keeps a single jump", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, nil, `guard start; first=$(cat "$T/chain.v4"); guard start; guard; second=$(cat "$T/chain.v4"); state s
 echo "STATE same=$([ "$first" = "$second" ] && echo 1 || echo 0)"`)
-		wantLines(t, out, "STATE same=1", "STATE s jumps4=1 rules4=18 mut4=1 restores4=3")
+		wantLines(t, out, "STATE same=1", "STATE s jumps4=1 rules4=17 mut4=1 restores4=3")
 	})
 
 	t.Run("without the user hysteria its rules are skipped, the rest stays", func(t *testing.T) {
@@ -256,9 +294,9 @@ echo "STATE same=$([ "$first" = "$second" ] && echo 1 || echo 0)"`)
 	t.Run("IPv6 is best effort: no ip6tables-restore, or a failing one, never fails the start", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, map[string]string{"HAVE_V6": "0"}, `guard start; echo "STATE rc=$?"; echo "STATE v6_restores=$(count "$T/restores.v6")"; state s`)
-		wantLines(t, out, "STATE rc=0", "STATE v6_restores=0", "STATE s jumps4=1 rules4=18 mut4=1 restores4=1")
+		wantLines(t, out, "STATE rc=0", "STATE v6_restores=0", "STATE s jumps4=1 rules4=17 mut4=1 restores4=1")
 		out = run(t, map[string]string{"RESTORE6_FAIL": "1"}, `guard start; echo "STATE rc=$?"; state s`)
-		wantLines(t, out, "STATE rc=0", "STATE s jumps4=1 rules4=18 mut4=1 restores4=1")
+		wantLines(t, out, "STATE rc=0", "STATE s jumps4=1 rules4=17 mut4=1 restores4=1")
 		if !strings.Contains(out, "the IPv6 rules were not applied") {
 			t.Errorf("no warning:\n%s", out)
 		}
@@ -269,7 +307,7 @@ echo "STATE same=$([ "$first" = "$second" ] && echo 1 || echo 0)"`)
 		out := run(t, map[string]string{"MAKE_CG": "0"}, `guard start; echo "STATE start4=$(count "$T/chain.v4")"
 mkdir -p "$CGROUP_DIR"; guard xray; echo "STATE rc=$? after_xray4=$(count "$T/chain.v4")"; state s
 `+dumpChains("v4"))
-		wantLines(t, out, "STATE start4=9", "STATE rc=0 after_xray4=18", "STATE s jumps4=1 rules4=18 mut4=1 restores4=2")
+		wantLines(t, out, "STATE start4=9", "STATE rc=0 after_xray4=17", "STATE s jumps4=1 rules4=17 mut4=1 restores4=2")
 		diff(t, "IPv4 rules after the xray start", chainLines(out, "v4"), expectedEgressRules(4, "0", "998", true, hubV4))
 
 		out = run(t, map[string]string{"GUARD_ENABLED": "0"}, `guard xray; echo "STATE rc=$?"; state s`)
@@ -289,7 +327,7 @@ guard start; echo '`+legacyOwner+`' >> "$T/out.v4"; echo '`+legacyCg+`' >> "$T/o
 guard stop; echo "STATE rcstop=$?"; state after; echo "STATE out4=$(tr '\n' '|' < "$T/out.v4")"; echo "STATE out6=$(cat "$T/out.v6")"
 echo "STATE chain_files=$(ls "$T" | grep -c '^chain\.' | tr -d ' ')"
 guard stop; echo "STATE rcstop2=$?"`)
-		wantLines(t, out, "STATE before jumps4=1 rules4=18 mut4=1 restores4=1", "STATE rcstop=0", "STATE after jumps4=0 rules4=0 mut4=6 restores4=1",
+		wantLines(t, out, "STATE before jumps4=1 rules4=17 mut4=1 restores4=1", "STATE rcstop=0", "STATE after jumps4=0 rules4=0 mut4=6 restores4=1",
 			"STATE out4="+unrelated+"|", "STATE out6=", "STATE chain_files=0", "STATE rcstop2=0")
 	})
 
@@ -421,10 +459,17 @@ func TestEgressGuardInstallScript(t *testing.T) {
 	}
 	// the unit: boot persistence without iptables-persistent
 	for _, want := range []string{"Type=oneshot", "RemainAfterExit=yes", "ExecStart=/opt/heyearth/bin/heyearth-egress-guard.sh start", "ExecStop=/opt/heyearth/bin/heyearth-egress-guard.sh stop",
-		"WantedBy=multi-user.target", "After=network-online.target", "Wants=network-online.target", "Before=xray.service hysteria2-server.service heyearth-api.service"} {
+		"WantedBy=multi-user.target", "After=local-fs.target", "Before=xray.service hysteria2-server.service heyearth-api.service"} {
 		if !strings.Contains(egressGuardUnitText, want) {
 			t.Errorf("unit lacks %q", want)
 		}
+	}
+	// network-online.target (systemd-networkd-wait-online) can hold xray back for up to two
+	// minutes at boot; the guard only needs the local filesystem and the kernel, not a network.
+	// DefaultDependencies stays on: it only adds After=basic.target and the shutdown conflict,
+	// both harmless, and xray is ordered after basic.target anyway.
+	if strings.Contains(egressGuardUnitText, "network-online") || strings.Contains(egressGuardUnitText, "DefaultDependencies=no") {
+		t.Errorf("the guard unit must not depend on network-online.target: %q", egressGuardUnitText)
 	}
 	// the drop-in must never be able to fail xray.service ("-" = ignore the exit status)
 	if !strings.Contains(egressGuardDropIn, "[Service]\nExecStartPost=-/opt/heyearth/bin/heyearth-egress-guard.sh xray\n") {
@@ -548,6 +593,114 @@ GUARD=/bin/true; rollback; echo "STATE rollback_rc=$?"
 	}
 }
 
+// The UDP probe: python3 and the real cgroup are stubbed, the verdict logic is not.
+// 0 = the datagram arrived, 1 = it was lost (the guard is blamed), 99 = cannot be tested.
+func TestEgressGuardUDPProbe(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	// the fake python3 plays the listener: it publishes a port and, when FAKE_DELIVER=1, "receives" the datagram
+	const fake = `python3() { printf 4242 > "$3/port"; if [ "$FAKE_DELIVER" = 1 ]; then printf 1 > "$3/got"; fi; }`
+	run := func(prelude string) string {
+		out, exit := runBash(t, `T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+`+egressGuardHelpers+`
+`+prelude+`
+xray_cgroup_udp_loopback && rc=0 || rc=$?; echo "STATE rc=$rc"
+`)
+		if exit != 0 {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+		return lineWithPrefix(out, "STATE rc=")
+	}
+	rc := func(line string) string { return strings.Fields(strings.TrimPrefix(line, "STATE "))[0] }
+	t.Run("the datagram is delivered: 0", func(t *testing.T) {
+		t.Parallel()
+		if got := rc(run(fake + `; FAKE_DELIVER=1; mkdir -p "$T/cg"; CGROUP_DIR="$T/cg"`)); got != "rc=0" {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("the datagram is lost: 1 (the caller rolls the guard back)", func(t *testing.T) {
+		t.Parallel()
+		if got := rc(run(fake + `; FAKE_DELIVER=0; mkdir -p "$T/cg"; CGROUP_DIR="$T/cg"`)); got != "rc=1" {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("the xray cgroup cannot be entered: 99, not a failure", func(t *testing.T) {
+		t.Parallel()
+		if got := rc(run(fake + `; FAKE_DELIVER=1; CGROUP_DIR="$T/no-such-cgroup"`)); got != "rc=99" {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("no python3: 99, not a failure", func(t *testing.T) {
+		t.Parallel()
+		if got := rc(run(`command() { if [ "$1" = -v ] && [ "$2" = python3 ]; then return 1; fi; builtin command "$@"; }; CGROUP_DIR="$T"`)); got != "rc=99" {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("the listener never publishes a port: 99", func(t *testing.T) {
+		t.Parallel()
+		if got := rc(run(`python3() { :; }; CGROUP_DIR="$T"`)); got != "rc=99" {
+			t.Errorf("got %s", got)
+		}
+	})
+}
+
+// A rolled-back guard must still protect the xray API (127.0.0.1:10085): the legacy single owner
+// rule is re-applied (once) after the chain is removed, and the operator is told so.
+func TestEgressGuardRollback(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	const keptLine = "[ops] egress guard rolled back — xray API protection kept (10085 owner rule)"
+	run := func(prelude string) string {
+		out, exit := runBash(t, `T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+`+egressGuardHelpers+`
+GUARD="$T/guard.sh"; printf '#!/bin/sh\necho "guard $*" >> "'$T'/log"\n' > "$GUARD"; chmod +x "$GUARD"
+systemctl() { echo "systemctl $*" >> "$T/log"; }
+iptables() { echo "iptables $*" >> "$T/log"; case " $* " in *" -C "*) return "${IPT_HAVE:-1}";; *" -I "*) return "${IPT_INSERT:-0}";; esac; }
+id() { echo 77; }
+api_user=heyearth
+`+prelude+`
+rollback; echo "STATE rc=$?"
+cat "$T/log"
+`)
+		if exit != 0 {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+		return out
+	}
+	const spec = "-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner 77 -j REJECT --reject-with tcp-reset"
+	t.Run("the rule is missing: inserted at the top of OUTPUT after the chain is gone, and reported", func(t *testing.T) {
+		t.Parallel()
+		out := run(`IPT_HAVE=1`)
+		for _, l := range []string{keptLine, "STATE rc=0", "iptables -w 5 -C OUTPUT " + spec, "iptables -w 5 -I OUTPUT 1 " + spec,
+			"systemctl disable --now heyearth-egress-guard.service"} {
+			if !hasLine(out, l) {
+				t.Errorf("missing %q:\n%s", l, out)
+			}
+		}
+		// order: unit off -> chain removed -> API rule re-applied
+		iDisable, iStop, iInsert := strings.Index(out, "systemctl disable"), strings.Index(out, "guard stop"), strings.Index(out, "-I OUTPUT 1")
+		if !(iDisable >= 0 && iDisable < iStop && iStop < iInsert) {
+			t.Errorf("order must be: disable the unit, remove the chain, re-apply the API rule:\n%s", out)
+		}
+	})
+	t.Run("the rule is already there: not duplicated", func(t *testing.T) {
+		t.Parallel()
+		out := run(`IPT_HAVE=0`)
+		if !hasLine(out, keptLine) || strings.Contains(out, " -I OUTPUT") {
+			t.Errorf("an existing rule must be kept without a second insert:\n%s", out)
+		}
+	})
+	t.Run("the rule cannot be re-applied: an explicit WARN, never the 'kept' line", func(t *testing.T) {
+		t.Parallel()
+		out := run(`IPT_HAVE=1; IPT_INSERT=1`)
+		if hasLine(out, keptLine) || !strings.Contains(out, "WARN: egress guard rolled back, but the xray API protection (10085 owner rule) could NOT be re-applied") {
+			t.Errorf("a failed re-apply must not claim the protection is kept:\n%s", out)
+		}
+	})
+}
+
 // ───────────────────────── the post-check of the install ─────────────────────────
 
 func TestEgressGuardPostScript(t *testing.T) {
@@ -566,7 +719,7 @@ func TestEgressGuardPostScript(t *testing.T) {
 	good := map[string]string{
 		"live": "1", "before": "1", "api_user": "root", "cg": "1", "xray_live": "1", "xray_before": "1", "hy_uid": "998", "hy_before": "1",
 		"API_AFTER_OK": "1", "XRAY_AFTER_OK": "1", "HY_AUTH_AFTER_OK": "1", "HY_OPEN": "0", "NOBODY_OPEN": "0", "ALLOWED_OPEN": "1",
-		"CG_TUNNEL_RC": "0", "CG_OTHER_RC": "1", "MAKE_CG": "1", "LISTEN_PORT": "22", "WILD": "22", "TUNNEL_LISTEN": "1",
+		"CG_TUNNEL_RC": "0", "CG_OTHER_RC": "1", "MAKE_CG": "1", "LISTEN_PORT": "22", "WILD": "22", "TUNNEL_LISTEN": "1", "UDP_RC": "0",
 	}
 	harness := func(over map[string]string) string {
 		return assignments(mergeVars(good, over)) + `
@@ -580,6 +733,7 @@ xray_cgroup_connect() { echo "cg_connect $1:$2" >> "$T/probes"; if [ "$2" = 1090
 pick_port() { echo "$LISTEN_PORT"; }
 wild_port() { echo "$WILD"; }
 rollback() { echo rollback >> "$T/calls"; }
+xray_cgroup_udp_loopback() { echo udp_loopback >> "$T/probes"; return "$UDP_RC"; }
 runuser() { echo "runuser $2" >> "$T/users"; if [ "$2" = "$api_user" ]; then [ "$ALLOWED_OPEN" = 1 ]; else [ "$NOBODY_OPEN" = 1 ]; fi; }
 ss() {
   echo "State Recv-Q Send-Q Local Address:Port Peer"
@@ -599,7 +753,7 @@ echo "STATE probes=$( [ -f "$T/probes" ] && tr '\n' ';' < "$T/probes" )"
 		{name: "everything works: allowed paths work, forbidden ones are refused", wantExit: 0, wantCalls: "",
 			wantOut: []string{"egress guard: verified", "the xray API refuses user nobody and answers for root", "xray still carries traffic", "the hysteria user still reaches the API auth callback",
 				"the hysteria user is refused on 127.0.0.1:22", "the hysteria user is refused on the Hub's own address 138.16.181.225:22",
-				"xray still reaches the exit tunnel port 127.0.0.1:1090", "xray is refused on 127.0.0.1:22", "xray is refused on the Hub's own address 138.16.181.225:22"},
+				"xray still reaches the exit tunnel port 127.0.0.1:1090", "a UDP datagram from xray's cgroup reaches a loopback listener", "xray is refused on 127.0.0.1:22", "xray is refused on the Hub's own address 138.16.181.225:22"},
 			notOut: []string{"FAILED", "WARN"}},
 		{name: "xray stopped carrying traffic: rolled back", v: map[string]string{"XRAY_AFTER_OK": "0"}, wantExit: 1, wantCalls: "rollback;",
 			wantOut: []string{"xray no longer carries traffic", "guard rolled back"}, notOut: []string{"verified"}},
@@ -613,6 +767,10 @@ echo "STATE probes=$( [ -f "$T/probes" ] && tr '\n' ';' < "$T/probes" )"
 			wantOut: []string{"FAILED: the hysteria user can still open 127.0.0.1:22", "FAILED: the hysteria user can still open 138.16.181.225:22"}, notOut: []string{"verified"}},
 		{name: "xray (its cgroup) lost its exit tunnel port: rolled back", v: map[string]string{"CG_TUNNEL_RC": "1"}, wantExit: 1, wantCalls: "rollback;",
 			wantOut: []string{"xray cannot reach the exit tunnel port 127.0.0.1:1090", "guard rolled back"}},
+		{name: "a UDP datagram from xray's cgroup to a loopback listener is lost: rolled back (the AmneziaWG / UDP-ASSOCIATE path is broken)", v: map[string]string{"UDP_RC": "1"}, wantExit: 1, wantCalls: "rollback;",
+			wantOut: []string{"a UDP datagram from xray's cgroup to a loopback listener was not delivered after the egress guard — guard rolled back"}, notOut: []string{"verified"}},
+		{name: "the UDP probe cannot run (no python3, or the cgroup cannot be entered): a warning, not a failure", v: map[string]string{"UDP_RC": "99"}, wantExit: 0, wantCalls: "",
+			wantOut: []string{"cannot test UDP from xray's cgroup (python3 missing or the cgroup cannot be entered)"}, notOut: []string{"FAILED", "rolled back"}},
 		{name: "the probe cannot enter the xray cgroup: the cgroup rules are not verified, a warning", v: map[string]string{"CG_TUNNEL_RC": "99", "CG_OTHER_RC": "99"}, wantExit: 0, wantCalls: "",
 			wantOut: []string{"cannot move a probe into"}, notOut: []string{"FAILED", "rolled back"}},
 		{name: "xray (its cgroup) can still open the API port or the Hub's own address: FAILED", v: map[string]string{"CG_OTHER_RC": "0"}, wantExit: 1, wantCalls: "",
