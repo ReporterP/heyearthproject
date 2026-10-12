@@ -1,23 +1,21 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 )
 
-// ───────────────────────── nginx stream proxy_timeout ─────────────────────────
+// ───────────────────────── nginx stream timeouts + limits ─────────────────────────
 
-// oldNginxStreamConf is what buildNginxStreamConf produced before the proxy_timeout change —
-// i.e. what is on the Hub today.
+// oldNginxStreamConf is what buildNginxStreamConf produced before the timeout / keepalive change
+// — i.e. what is on the Hub today.
 func oldNginxStreamConf(t *testing.T, domain string) string {
 	t.Helper()
 	cur := buildNginxStreamConf(domain)
-	block := "    " + nginxStreamTimeoutComment + "\n    proxy_timeout " + nginxStreamTimeoutValue + ";\n"
+	block := "    " + nginxStreamTimeoutComment + "\n    proxy_timeout " + nginxStreamTimeoutValue + ";\n    proxy_socket_keepalive on;\n"
 	old := strings.Replace(cur, block, "", 1)
-	if old == cur || strings.Contains(old, "proxy_timeout") {
+	if old == cur || strings.Contains(old, "proxy_timeout") || strings.Contains(old, "proxy_socket_keepalive") {
 		t.Fatalf("cannot derive the old config from the generator output:\n%s", cur)
 	}
 	return old
@@ -25,40 +23,74 @@ func oldNginxStreamConf(t *testing.T, domain string) string {
 
 func TestNginxStreamGeneratorHasTimeout(t *testing.T) {
 	conf := buildNginxStreamConf("hiearth.ru")
-	want := "    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_pass $backend;\n"
+	want := "    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;\n"
 	if !strings.Contains(conf, want) {
-		t.Fatalf("the SNI router server block must carry proxy_timeout between ssl_preread and proxy_pass:\n%s", conf)
+		t.Fatalf("the SNI router server block must carry proxy_timeout and proxy_socket_keepalive between ssl_preread and proxy_pass:\n%s", conf)
 	}
 	if nginxStreamTimeoutValue != "3600s" {
 		t.Fatalf("proxy_timeout must equal xray connIdle (3600s), got %s", nginxStreamTimeoutValue)
 	}
 }
 
+// Ubuntu's stock nginx.conf plus the stream include doNginx appends, and what the patch makes of it.
+const (
+	stockNginxConf = "user www-data;\nworker_processes auto;\npid /run/nginx.pid;\nerror_log /var/log/nginx/error.log;\ninclude /etc/nginx/modules-enabled/*.conf;\n\n" +
+		"events {\n\tworker_connections 768;\n\t# multi_accept on;\n}\n\nhttp {\n\tsendfile on;\n\tinclude /etc/nginx/conf.d/*.conf;\n}\nstream { include /etc/nginx/stream.d/*.conf; }\n"
+	patchedNginxConf = "user www-data;\nworker_processes auto;\npid /run/nginx.pid;\nerror_log /var/log/nginx/error.log;\ninclude /etc/nginx/modules-enabled/*.conf;\n\n" +
+		"worker_rlimit_nofile 65535;\nevents {\n\tworker_connections 8192;\n\t# multi_accept on;\n}\n\nhttp {\n\tsendfile on;\n\tinclude /etc/nginx/conf.d/*.conf;\n}\nstream { include /etc/nginx/stream.d/*.conf; }\n"
+)
+
+// nginx -T is emulated: it dumps, under "# configuration file <path>:" headers, exactly the
+// files listed in $T/included (the files nginx reads) — never stale copies lying around.
 const nginxHarnessStubs = `
-nginx() { echo "nginx $*" >> "$T/calls"; if [ "$NGINX_T_FAIL" = 1 ]; then echo "nginx: [emerg] stub config error" >&2; return 1; fi; }
+nginx() {
+  case "$1" in
+    -T) if [ "$NGINX_T_BROKEN" = 1 ]; then echo "nginx: [emerg] stub broken config" >&2; return 1; fi
+        echo "nginx: configuration file test is successful" >&2
+        for f in $(cat "$T/included"); do echo "# configuration file $f:"; cat "$f"; done ;;
+    -t) echo "nginx -t" >> "$T/calls"; if [ "$NGINX_T_FAIL" = 1 ]; then echo "nginx: [emerg] stub config error" >&2; return 1; fi ;;
+    *) echo "STUB-BAD-NGINX $*" >&2; return 99 ;;
+  esac
+}
 systemctl() { echo "systemctl $*" >> "$T/calls"; }
+sleep() { :; }
 `
 
-// nginxHarness: setup creates files under $T/nginx; the patch script then runs in a subshell
-// against NGINX_DIR=$T/nginx with backups in $T/bk.
-func nginxHarness(tFail bool, setup string, show ...string) string {
-	f := "0"
-	if tFail {
-		f = "1"
+type nginxFile struct {
+	path, content string
+	included      bool // read by nginx (listed in nginx -T)
+}
+
+// nginxHarness lays the files out under $T/nginx, runs the patch script in a subshell against
+// the stubs, then prints the state and the files named in show (paths relative to $T/nginx).
+func nginxHarness(tFail, tBroken bool, files []nginxFile, show ...string) string {
+	b := func(v bool) string {
+		if v {
+			return "1"
+		}
+		return "0"
 	}
 	var sb strings.Builder
-	sb.WriteString(assignments(map[string]string{"NGINX_T_FAIL": f}))
+	sb.WriteString(assignments(map[string]string{"NGINX_T_FAIL": b(tFail), "NGINX_T_BROKEN": b(tBroken)}))
 	sb.WriteString(`
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/nginx"
-export NGINX_DIR="$T/nginx" NGINX_BACKUP_DIR="$T/bk"
-` + nginxHarnessStubs + setup + `
+mkdir -p "$T/nginx"; : > "$T/included"; : > "$T/calls"
+export NGINX_BACKUP_DIR="$T/bk"
+` + nginxHarnessStubs)
+	for _, f := range files {
+		fmt.Fprintf(&sb, "mkdir -p \"$T/nginx/$(dirname %[1]s)\"\ncat > \"$T/nginx/%[1]s\" <<'CONF_EOF'\n%[2]sCONF_EOF\n", f.path, f.content)
+		if f.included {
+			fmt.Fprintf(&sb, "echo \"$T/nginx/%s\" >> \"$T/included\"\n", f.path)
+		}
+	}
+	sb.WriteString("cp -r \"$T/nginx\" \"$T/nginx.orig\"\n")
+	sb.WriteString(`
 cat > "$T/patch.sh" <<'PATCH_SCRIPT_EOF'
 ` + renderNginxStreamPatchScript() + `PATCH_SCRIPT_EOF
 ( . "$T/patch.sh" )
 rc=$?
 echo "STATE exit=$rc"
-echo "STATE calls=$( [ -f "$T/calls" ] && tr '\n' ';' < "$T/calls" )"
+echo "STATE calls=$(tr '\n' ';' < "$T/calls")"
 echo "STATE tree=$(cd "$T/nginx" && find . -type f | sort | tr '\n' ' ')"
 echo "STATE backups=$(ls "$T/bk" 2>/dev/null | wc -l | tr -d ' ')"
 `)
@@ -77,155 +109,287 @@ func shown(out, file string) string {
 	return body
 }
 
-func writeConf(path, content string) string {
-	return fmt.Sprintf("mkdir -p \"$T/nginx/$(dirname %[1]s)\"\ncat > \"$T/nginx/%[1]s\" <<'CONF_EOF'\n%[2]sCONF_EOF\n", path, content)
-}
-
 func TestNginxStreamPatchScript(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
 	old := oldNginxStreamConf(t, "hiearth.ru")
 	cur := buildNginxStreamConf("hiearth.ru")
-
-	t.Run("the live file of the old generator becomes byte-identical to the new generator output", func(t *testing.T) {
-		t.Parallel()
-		out, _ := runBash(t, nginxHarness(false, writeConf("stream.d/heyearth.conf", old), "stream.d/heyearth.conf"))
-		if got := shown(out, "stream.d/heyearth.conf"); got != cur {
-			t.Fatalf("patched file differs from buildNginxStreamConf:\n--- got\n%s\n--- want\n%s\n--- full output\n%s", got, cur, out)
-		}
-		for _, l := range []string{"STATE exit=0", "STATE calls=nginx -t;systemctl reload nginx;", "STATE tree=./stream.d/heyearth.conf ", "STATE backups=1"} {
+	run := func(t *testing.T, tFail, tBroken bool, files []nginxFile, show ...string) string {
+		t.Helper()
+		out, _ := runBash(t, nginxHarness(tFail, tBroken, files, show...))
+		return out
+	}
+	wantLines := func(t *testing.T, out string, lines ...string) {
+		t.Helper()
+		for _, l := range lines {
 			if !hasLine(out, l) {
-				t.Errorf("missing %q:\n%s", l, out)
+				t.Errorf("missing line %q in:\n%s", l, out)
 			}
 		}
-		if !strings.Contains(out, "proxy_timeout 3600s;") || !strings.Contains(out, "proxy_timeout added to") {
-			t.Errorf("the grep of the result / the change notice is missing:\n%s", out)
+	}
+	const (
+		router = "stream.d/heyearth.conf"
+		bakNot = "stream.d/heyearth.conf.bak"
+		unused = "unused/old.conf"
+	)
+
+	t.Run("the live files of the old generator become what the new generator and the stock nginx.conf patch give; stale and unread copies stay untouched", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, false, false, []nginxFile{
+			{"nginx.conf", stockNginxConf, true}, {router, old, true},
+			{bakNot, old, false}, {unused, old, false},
+		}, router, "nginx.conf", bakNot, unused)
+		if got := shown(out, router); got != cur {
+			t.Fatalf("router file differs from buildNginxStreamConf:\n--- got\n%s\n--- want\n%s\n--- output\n%s", got, cur, out)
+		}
+		if got := shown(out, "nginx.conf"); got != patchedNginxConf {
+			t.Fatalf("nginx.conf:\n--- got\n%s\n--- want\n%s", got, patchedNginxConf)
+		}
+		if shown(out, bakNot) != old || shown(out, unused) != old {
+			t.Errorf("files nginx does not read (stale .bak, unused copy) must not be touched:\n%s", out)
+		}
+		wantLines(t, out, "STATE exit=0", "STATE calls=nginx -t;systemctl reload nginx;", "STATE backups=2",
+			"STATE tree=./nginx.conf ./stream.d/heyearth.conf ./stream.d/heyearth.conf.bak ./unused/old.conf ")
+		for _, s := range []string{"proxy_timeout 3600s;", "proxy_socket_keepalive on;", "worker_rlimit_nofile 65535;", "worker_connections 8192;",
+			"nginx: proxy_timeout 3600s, proxy_socket_keepalive on, worker_rlimit_nofile 65535, worker_connections 8192 are in the effective config"} {
+			if !strings.Contains(out, s) {
+				t.Errorf("output lacks %q:\n%s", s, out)
+			}
 		}
 	})
 
 	t.Run("a second run changes nothing and does not reload nginx", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, nginxHarness(false, writeConf("stream.d/heyearth.conf", cur), "stream.d/heyearth.conf"))
-		if got := shown(out, "stream.d/heyearth.conf"); got != cur {
-			t.Fatalf("file changed:\n%s", got)
+		out := run(t, false, false, []nginxFile{{"nginx.conf", patchedNginxConf, true}, {router, cur, true}}, router, "nginx.conf")
+		if shown(out, router) != cur || shown(out, "nginx.conf") != patchedNginxConf {
+			t.Fatalf("files changed:\n%s", out)
 		}
-		for _, l := range []string{"STATE exit=0", "STATE calls=", "STATE backups=0"} {
-			if !hasLine(out, l) {
-				t.Errorf("missing %q:\n%s", l, out)
-			}
-		}
-		if !strings.Contains(out, "proxy_timeout already set in") {
-			t.Errorf("no 'already set' notice:\n%s", out)
+		wantLines(t, out, "STATE exit=0", "STATE calls=", "STATE backups=0")
+		if strings.Count(out, "already as wanted") != 2 {
+			t.Errorf("both files must report 'already as wanted':\n%s", out)
 		}
 	})
 
-	t.Run("nginx -t failing restores the original and does not reload", func(t *testing.T) {
+	t.Run("nginx -t failing restores every patched file byte for byte and does not reload", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, nginxHarness(true, writeConf("stream.d/heyearth.conf", old), "stream.d/heyearth.conf"))
-		if got := shown(out, "stream.d/heyearth.conf"); got != old {
-			t.Fatalf("original not restored:\n%s", got)
+		out := run(t, true, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {router, old, true}}, router, "nginx.conf")
+		if shown(out, router) != old || shown(out, "nginx.conf") != stockNginxConf {
+			t.Fatalf("originals not restored:\n%s", out)
 		}
-		for _, l := range []string{"STATE exit=1", "STATE calls=nginx -t;"} {
-			if !hasLine(out, l) {
-				t.Errorf("missing %q:\n%s", l, out)
-			}
-		}
+		wantLines(t, out, "STATE exit=1", "STATE calls=nginx -t;")
 		if !strings.Contains(out, "originals restored") || strings.Contains(out, "reload nginx") {
 			t.Errorf("wrong failure handling:\n%s", out)
 		}
 	})
 
-	t.Run("finds stream-enabled/heyearth (no .conf), skips backups and unrelated proxy_pass, keeps copies out of /etc/nginx", func(t *testing.T) {
+	t.Run("values that differ are replaced, not duplicated; stale directives after proxy_pass are folded into the canonical block", func(t *testing.T) {
 		t.Parallel()
-		decoy := "server {\n    location / {\n        proxy_pass http://127.0.0.1:8000;\n    }\n}\n"
-		setup := writeConf("stream-enabled/heyearth", old) +
-			writeConf("stream.d/heyearth.conf.bak", old) +
-			writeConf("conf.d/site.conf", decoy)
-		out, _ := runBash(t, nginxHarness(false, setup, "stream-enabled/heyearth", "stream.d/heyearth.conf.bak", "conf.d/site.conf"))
-		if got := shown(out, "stream-enabled/heyearth"); got != cur {
-			t.Fatalf("stream-enabled/heyearth not patched:\n%s", got)
+		hand := "server {\n    listen 443;\n    ssl_preread on;\n    proxy_pass $backend;\n    proxy_timeout 10m;\n    proxy_socket_keepalive off;\n}\n"
+		wantRouter := "server {\n    listen 443;\n    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;\n}\n"
+		conf := strings.Replace(strings.Replace(stockNginxConf, "worker_connections 768;", "worker_connections 100;", 1),
+			"include /etc/nginx/modules-enabled/*.conf;\n", "include /etc/nginx/modules-enabled/*.conf;\nworker_rlimit_nofile 1024;\n", 1)
+		out := run(t, false, false, []nginxFile{{"nginx.conf", conf, true}, {"stream.d/hand.conf", hand, true}}, "stream.d/hand.conf", "nginx.conf")
+		if got := shown(out, "stream.d/hand.conf"); got != wantRouter {
+			t.Fatalf("router:\n--- got\n%s\n--- want\n%s\n%s", got, wantRouter, out)
 		}
-		if got := shown(out, "stream.d/heyearth.conf.bak"); got != old {
-			t.Errorf("a .bak file must not be touched:\n%s", got)
+		got := shown(out, "nginx.conf")
+		if strings.Count(got, "worker_rlimit_nofile") != 1 || !strings.Contains(got, "worker_rlimit_nofile 65535;\n") ||
+			strings.Count(got, "worker_connections") != 1 || !strings.Contains(got, "\tworker_connections 8192;\n") {
+			t.Fatalf("nginx.conf:\n%s", got)
 		}
-		if got := shown(out, "conf.d/site.conf"); got != decoy {
-			t.Errorf("a config without 'proxy_pass $backend;' must not be touched:\n%s", got)
-		}
-		if !hasLine(out, "STATE tree=./conf.d/site.conf ./stream-enabled/heyearth ./stream.d/heyearth.conf.bak ") {
-			t.Errorf("the original copy must not land inside the nginx directory (a stream-enabled/* glob would load it twice):\n%s", out)
-		}
-		if !hasLine(out, "STATE backups=1") || !hasLine(out, "STATE exit=0") {
-			t.Errorf("state:\n%s", out)
-		}
+		wantLines(t, out, "STATE exit=0", "STATE calls=nginx -t;systemctl reload nginx;")
 	})
 
-	t.Run("every SNI-router server block is patched, indentation kept", func(t *testing.T) {
+	t.Run("block-aware: every SNI-router server block is patched, other server blocks keep their own proxy_timeout", func(t *testing.T) {
 		t.Parallel()
-		two := "server {\n\tlisten 443;\n\tssl_preread on;\n\tproxy_pass $backend;\n}\nserver {\n    listen 8444;\n    ssl_preread on;\n    proxy_pass $backend;\n}\n"
-		out, _ := runBash(t, nginxHarness(false, writeConf("stream.d/two.conf", two), "stream.d/two.conf"))
+		other := "server {\n    listen 9000;\n    proxy_timeout 5s;\n    proxy_pass 127.0.0.1:9;\n}\n"
+		two := "server {\n\tlisten 443;\n\tssl_preread on;\n\tproxy_pass $backend;\n}\n" + other +
+			"server {\n    listen 8444;\n    ssl_preread on;\n    proxy_pass $backend;\n}\n"
+		out := run(t, false, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {"stream.d/two.conf", two, true}}, "stream.d/two.conf")
 		got := shown(out, "stream.d/two.conf")
 		if n := strings.Count(got, "proxy_timeout 3600s;"); n != 2 {
-			t.Fatalf("want 2 proxy_timeout lines, got %d:\n%s", n, got)
+			t.Fatalf("want 2 patched router blocks, got %d:\n%s", n, got)
 		}
-		if !strings.Contains(got, "\t"+nginxStreamTimeoutComment+"\n\tproxy_timeout 3600s;\n\tproxy_pass $backend;") ||
-			!strings.Contains(got, "    "+nginxStreamTimeoutComment+"\n    proxy_timeout 3600s;\n    proxy_pass $backend;") {
-			t.Fatalf("indentation not kept:\n%s", got)
+		if !strings.Contains(got, other) {
+			t.Errorf("a server block that is not the SNI router must be left alone:\n%s", got)
 		}
-	})
-
-	t.Run("a different proxy_timeout set by hand is left alone", func(t *testing.T) {
-		t.Parallel()
-		hand := strings.Replace(old, "    proxy_pass $backend;", "    proxy_timeout 10m;\n    proxy_pass $backend;", 1)
-		out, _ := runBash(t, nginxHarness(false, writeConf("stream.d/heyearth.conf", hand), "stream.d/heyearth.conf"))
-		if got := shown(out, "stream.d/heyearth.conf"); got != hand {
-			t.Fatalf("file changed:\n%s", got)
-		}
-		if !hasLine(out, "STATE calls=") {
-			t.Errorf("must not test/reload nginx:\n%s", out)
+		if !strings.Contains(got, "\t"+nginxStreamTimeoutComment+"\n\tproxy_timeout 3600s;\n\tproxy_socket_keepalive on;\n\tproxy_pass $backend;") ||
+			!strings.Contains(got, "    "+nginxStreamTimeoutComment+"\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;") {
+			t.Errorf("indentation not kept:\n%s", got)
 		}
 	})
 
-	t.Run("no stream config at all is a note, not a failure", func(t *testing.T) {
+	t.Run("an events block without worker_connections gets one, a missing worker_rlimit_nofile goes into the main context", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, nginxHarness(false, writeConf("conf.d/site.conf", "server { listen 80; }\n")))
-		if !hasLine(out, "STATE exit=0") || !hasLine(out, "STATE calls=") || !strings.Contains(out, "nothing to patch") {
-			t.Fatalf("output:\n%s", out)
+		bare := "worker_processes auto;\nevents {\n\t# multi_accept on;\n}\nstream { include /etc/nginx/stream.d/*.conf; }\n"
+		want := "worker_processes auto;\nworker_rlimit_nofile 65535;\nevents {\n    worker_connections 8192;\n\t# multi_accept on;\n}\nstream { include /etc/nginx/stream.d/*.conf; }\n"
+		out := run(t, false, false, []nginxFile{{"nginx.conf", bare, true}, {router, old, true}}, "nginx.conf")
+		if got := shown(out, "nginx.conf"); got != want {
+			t.Fatalf("nginx.conf:\n--- got\n%s\n--- want\n%s", got, want)
+		}
+	})
+
+	t.Run("the router inline in nginx.conf: one file patched twice, the backup keeps the true original", func(t *testing.T) {
+		t.Parallel()
+		inline := "events {\n\tworker_connections 768;\n}\nstream {\n\tserver {\n\t\tlisten 443;\n\t\tssl_preread on;\n\t\tproxy_pass $backend;\n\t}\n}\n"
+		want := "worker_rlimit_nofile 65535;\nevents {\n\tworker_connections 8192;\n}\nstream {\n\tserver {\n\t\tlisten 443;\n\t\tssl_preread on;\n\t\t" +
+			nginxStreamTimeoutComment + "\n\t\tproxy_timeout 3600s;\n\t\tproxy_socket_keepalive on;\n\t\tproxy_pass $backend;\n\t}\n}\n"
+		out, _ := runBash(t, nginxHarness(false, false, []nginxFile{{"nginx.conf", inline, true}}, "nginx.conf")+`echo "STATE backup_is_original=$(cmp -s "$T"/bk/* "$T/nginx.orig/nginx.conf" && echo 1 || echo 0)"`+"\n")
+		if got := shown(out, "nginx.conf"); got != want {
+			t.Fatalf("nginx.conf:\n--- got\n%s\n--- want\n%s\n%s", got, want, out)
+		}
+		wantLines(t, out, "STATE exit=0", "STATE backups=1", "STATE backup_is_original=1")
+	})
+
+	t.Run("a config that nginx -T cannot dump aborts before anything is touched", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, false, true, []nginxFile{{"nginx.conf", stockNginxConf, true}, {router, old, true}}, router, "nginx.conf")
+		wantLines(t, out, "STATE exit=1", "STATE calls=", "STATE backups=0")
+		if shown(out, router) != old || shown(out, "nginx.conf") != stockNginxConf || !strings.Contains(out, "nginx -T does not work") {
+			t.Errorf("output:\n%s", out)
+		}
+	})
+
+	t.Run("no SNI router among the files nginx reads is a note, not a failure, and nginx.conf is left alone", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, false, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {unused, old, false}}, "nginx.conf")
+		wantLines(t, out, "STATE exit=0", "STATE calls=", "STATE backups=0")
+		if shown(out, "nginx.conf") != stockNginxConf || !strings.Contains(out, "nothing to patch") {
+			t.Errorf("output:\n%s", out)
+		}
+	})
+
+	t.Run("if the effective config still lacks a directive after the reload the run FAILS", func(t *testing.T) {
+		t.Parallel()
+		// 'server' and '{' on different lines: the block is not recognised, nothing can be inserted
+		odd := "server\n{\n    listen 443;\n    proxy_pass $backend;\n}\n"
+		out := run(t, false, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {"stream.d/odd.conf", odd, true}}, "stream.d/odd.conf")
+		wantLines(t, out, "STATE exit=1")
+		if !strings.Contains(out, "FAILED: the effective nginx config lacks 'proxy_timeout") || !strings.Contains(out, "lacks 'proxy_socket_keepalive") {
+			t.Errorf("output:\n%s", out)
+		}
+		if strings.Contains(out, "are in the effective config") {
+			t.Errorf("must not report success:\n%s", out)
 		}
 	})
 }
 
 // ───────────────────────── journald + fail2ban ─────────────────────────
 
-func payloadOf(t *testing.T, script, path string) string {
-	t.Helper()
-	i := strings.Index(script, "put_file "+path+" ")
-	if i < 0 {
-		t.Fatalf("no put_file for %s", path)
+func fail2banHarness(vars map[string]string, sshClient string) string {
+	base := map[string]string{"NEVER_IGNORE": "", "HOST_IPS": "", "DB_IPS": "", "DB_FAIL": "0"}
+	return assignments(mergeVars(base, vars)) + `
+export SSH_CLIENT=` + shQuote(sshClient) + `
+hostname() { echo "$HOST_IPS"; }
+runuser() { if [ "$DB_FAIL" = 1 ]; then return 1; fi; printf '%s\n' "$DB_IPS"; }
+SSHD_PORT=22
+` + fail2banIgnoreScript + fail2banJailFunc + `echo "STATE ignore=$IGNORE"
+render_jail
+`
+}
+
+func TestFail2banIgnore(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
 	}
-	m := regexp.MustCompile(`'([A-Za-z0-9+/=]*)'`).FindStringSubmatch(script[i:])
-	b, err := base64.StdEncoding.DecodeString(m[1])
-	if err != nil {
-		t.Fatalf("payload of %s: %v", path, err)
+	const exit1, exit2 = "89.124.89.126", "5.6.7.8"
+	cases := []struct {
+		name      string
+		vars      map[string]string
+		sshClient string
+		want      string // exact ignore list
+		wantOut   []string
+	}{
+		{
+			name:      "loopback + the Hub's own addresses + the operator's current address",
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225 10.0.0.2 2001:db8::2", "DB_IPS": exit1 + "\n" + exit2},
+			sshClient: "203.0.113.9 51234 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225 10.0.0.2 2001:db8::2 203.0.113.9",
+			wantOut:   []string{"fail2ban: ignoring your current address 203.0.113.9"},
+		},
+		{
+			name:      "the backup target is NEVER ignored, even when the operator comes through it",
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_IPS": exit2},
+			sshClient: exit1 + " 51234 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			wantOut:   []string{"NOT whitelisting " + exit1 + " — it is an exit node"},
+		},
+		{
+			name:      "an exit node known only from the servers table is not ignored either",
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_IPS": exit1 + "\n" + exit2 + "\n"},
+			sshClient: exit2 + " 40000 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			wantOut:   []string{"NOT whitelisting " + exit2},
+		},
+		{
+			name:      "the servers table unreadable: the known target is still excluded, other addresses are whitelisted",
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_FAIL": "1"},
+			sshClient: "198.51.100.4 1 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225 198.51.100.4",
+		},
+		{
+			name:      "an IPv6 operator address is whitelisted",
+			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
+			sshClient: "2001:db8::77 5555 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225 2001:db8::77",
+		},
+		{
+			name:      "garbage in SSH_CLIENT and in hostname -I is never copied into the config",
+			vars:      map[string]string{"HOST_IPS": "300.1.1.1 docker0 138.16.181.225 1.2.3 ::;reboot"},
+			sshClient: "$(reboot) 1 2",
+			want:      "127.0.0.1/8 ::1 138.16.181.225",
+		},
+		{
+			name:      "256 in an octet is not an address",
+			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
+			sshClient: "1.2.3.256 1 22",
+			want:      "127.0.0.1/8 ::1 138.16.181.225",
+		},
+		{
+			name:      "no SSH_CLIENT (not an SSH session): loopback and the Hub only",
+			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
+			sshClient: "",
+			want:      "127.0.0.1/8 ::1 138.16.181.225",
+		},
 	}
-	return string(b)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			out, exit := runBash(t, fail2banHarness(c.vars, c.sshClient))
+			if exit != 0 {
+				t.Fatalf("exit %d:\n%s", exit, out)
+			}
+			if !hasLine(out, "STATE ignore="+c.want) {
+				t.Errorf("want ignore list %q:\n%s", c.want, out)
+			}
+			for _, l := range []string{"ignoreip = " + c.want, "[sshd]", "enabled = true", "backend = systemd", "port = 22", "maxretry = 5", "findtime = 10m", "bantime = 1h"} {
+				if !hasLine(out, l) {
+					t.Errorf("jail lacks %q:\n%s", l, out)
+				}
+			}
+			for _, s := range c.wantOut {
+				if !strings.Contains(out, s) {
+					t.Errorf("output lacks %q:\n%s", s, out)
+				}
+			}
+			jail := out[strings.Index(out, "# Installed by"):]
+			for _, bad := range []string{exit1, exit2} {
+				if strings.Contains(jail, bad) {
+					t.Errorf("exit address %s must not be in the jail:\n%s", bad, jail)
+				}
+			}
+		})
+	}
 }
 
 func TestHostHygieneScript(t *testing.T) {
 	s := renderHostHygieneScript(2222, "89.124.89.126")
-	if got := payloadOf(t, s, "/etc/systemd/journald.conf.d/heyearth.conf"); !strings.Contains(got, "[Journal]\nSystemMaxUse=1G\n") {
+	if got := payloadFrom(t, s, "/etc/systemd/journald.conf.d/heyearth.conf"); !strings.Contains(got, "[Journal]\nSystemMaxUse=1G\n") {
 		t.Errorf("journald drop-in: %q", got)
 	}
-	jail := payloadOf(t, s, "/etc/fail2ban/jail.d/heyearth-sshd.conf")
-	for _, want := range []string{"[sshd]\n", "enabled = true\n", "backend = systemd\n", "port = 2222\n", "maxretry = 5\n", "findtime = 10m\n", "bantime = 1h\n", "ignoreip = 127.0.0.1/8 ::1 89.124.89.126\n"} {
-		if !strings.Contains(jail, want) {
-			t.Errorf("jail lacks %q:\n%s", want, jail)
-		}
-	}
-	if got := renderFail2banJail(22, ""); !strings.Contains(got, "ignoreip = 127.0.0.1/8 ::1\n") || strings.Contains(got, "ignoreip = 127.0.0.1/8 ::1 \n") {
-		t.Errorf("jail without a backup target: %q", got)
-	}
 	for _, want := range []string{
+		"SSHD_PORT=2222\n", "NEVER_IGNORE='89.124.89.126'\n", "put_file /etc/fail2ban/jail.d/heyearth-sshd.conf 644 \"$(render_jail | base64 -w0)\"",
 		`if ! command -v fail2ban-client`, "apt-get install -y -qq fail2ban python3-systemd", // installed only when missing; failure aborts (set -e)
 		`journalctl --vacuum-size=1G`, `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi`,
 		`[ "$PUT_CHANGED" = 1 ] || ! systemctl is-active --quiet fail2ban`, "fail2ban-client status sshd", "jail sshd is not running",
@@ -233,6 +397,10 @@ func TestHostHygieneScript(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
+	}
+	// the exit address only ever appears as the "never ignore" input, not in a literal ignoreip
+	if strings.Contains(s, "ignoreip = 127.0.0.1/8 ::1 89.124.89.126") {
+		t.Errorf("the backup target must not be hard-coded into ignoreip")
 	}
 	// restarts of journald / fail2ban are conditional: a re-run must not restart anything unchanged
 	if strings.Contains(s, "\nsystemctl restart fail2ban") || strings.Contains(s, "\nsystemctl restart systemd-journald") {

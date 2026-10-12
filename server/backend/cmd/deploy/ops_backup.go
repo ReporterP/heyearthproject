@@ -1,16 +1,20 @@
 package main
 
-// Daily Hub backup + off-box copy to an exit node: `deploy --setup-ops [--backup-target <exit-IP>]`.
+// Daily Hub backup + encrypted off-box copy to an exit node:
+// `deploy --setup-ops [--backup-target <exit-IP> --backup-age-recipient age1…]`.
 // Runbook: docs/runbooks/restore-hub-backup.md.
 //
-// The off-box copy uses a dedicated ed25519 key that is allowed on the exit ONLY as a forced
-// command (heyearth-backup-receive): a stolen key can store backup-*.tar.gz files, nothing else.
-// No password is stored on the Hub (servers.ssh_password is AES-encrypted in the DB, a bash
-// timer could not use it, and a plaintext copy would be the same root secret as the exit itself).
+// The off-box copy is encrypted on the Hub (age, to a public key whose private half the owner
+// keeps offline) and uploaded with a dedicated ed25519 key that is allowed on the exit ONLY as a
+// forced command (heyearth-backup-receive): a stolen Hub key can store capped, name-checked
+// backup-*.tar.gz.age files, nothing else, and the exit never sees plaintext. No password is
+// stored on the Hub (servers.ssh_password is AES-encrypted in the DB, a bash timer could not use
+// it, and a plaintext copy would be the same root secret as the exit itself).
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -21,8 +25,9 @@ import (
 )
 
 const (
-	backupSSHKey     = "/root/.ssh/heyearth_backup_ed25519"
-	backupKeyComment = "heyearth-backup@hub"
+	backupSSHKey           = "/root/.ssh/heyearth_backup_ed25519"
+	backupKeyComment       = "heyearth-backup@hub"
+	backupAgeRecipientFile = "/etc/heyearth/backup-age.pub"
 )
 
 // backupScript runs on the Hub from heyearth-backup.service. Two env hooks exist for the unit
@@ -31,7 +36,12 @@ const (
 //
 // Order matters for the monitor (cmd/api/monitor.go counts regular non-empty
 // backup-*.tar.gz files by mtime): the archive appears under its final name only after it has
-// been written completely (.part + mv) and read back with tar -t.
+// been written completely (.part + mv) and read back with tar -t. Local archives stay plain;
+// only the copy that leaves the Hub is encrypted (backup-<ts>.tar.gz.age) — the checksum, the
+// size and the receiver's name check all apply to the ciphertext.
+//
+// The free-space check runs before anything is written: a full disk fails the run with a clear
+// last-error and no new archive, which the monitor turns into a backup-stale alert.
 //
 // users_count is taken right BEFORE pg_dump; registrations between the two make the dump a
 // few users larger, which heyearth-backup-verify.sh tolerates (see there).
@@ -43,10 +53,16 @@ source "${HEYEARTH_BACKUP_ENV:-/etc/heyearth/backup.env}"
 FILES_ROOT="${FILES_ROOT:-/}"; FILES_ROOT="${FILES_ROOT%/}"
 TS=$(date +%Y%m%d-%H%M%S); ARCHIVE="$BACKUP_DIR/backup-$TS.tar.gz"
 mkdir -p "$BACKUP_DIR"
+fail() { echo "$(date -Is) $*" > "$BACKUP_DIR/last-error"; echo "ERROR: $*" >&2; exit 1; }
+LAST=$(ls -1t "$BACKUP_DIR"/backup-*.tar.gz 2>/dev/null | sed -n 1p || true)
+LAST_SIZE=0; if [ -n "$LAST" ]; then LAST_SIZE=$(stat -c %s "$LAST"); fi
+NEED=$((2 * LAST_SIZE + 1073741824))
+AVAIL=$(df --output=avail -B1 "$BACKUP_DIR" | tail -n 1 | tr -d ' ' || true)
+case "$AVAIL" in ''|*[!0-9]*) fail "cannot read the free space of $BACKUP_DIR" ;; esac
+[ "$AVAIL" -ge "$NEED" ] || fail "not enough free space in $BACKUP_DIR: $AVAIL bytes free, $NEED needed (2x the last archive + 1 GiB)"
 find "$BACKUP_DIR" -maxdepth 1 -name '.work-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
 WORK=$(mktemp -d "$BACKUP_DIR/.work-XXXXXX")
 trap 'rm -rf "$WORK" "$ARCHIVE.part"' EXIT
-fail() { echo "$(date -Is) $*" > "$BACKUP_DIR/last-error"; echo "ERROR: $*" >&2; exit 1; }
 USERS=$(runuser -u postgres -- psql -d heyearth -tAc "SELECT count(*) FROM users") || fail "users count failed"
 case "$USERS" in ''|*[!0-9]*) fail "users count is not a number: '$USERS'" ;; esac
 runuser -u postgres -- pg_dump -Fc -d heyearth > "$WORK/db.dump" || fail "pg_dump failed"
@@ -67,14 +83,19 @@ ls -1t "$BACKUP_DIR"/backup-*.tar.gz | tail -n +$((KEEP + 1)) | xargs -r rm -f -
 date -Is > "$BACKUP_DIR/last-success"
 echo "local: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1), users=$USERS)"
 if [ -z "${TARGET_HOST:-}" ]; then echo "WARN: no TARGET_HOST, offsite skipped" >&2; rm -f "$BACKUP_DIR/last-error"; exit 0; fi
-SUM=$(sha256sum "$ARCHIVE" | cut -d' ' -f1)
+[ -s "${AGE_RECIPIENT_FILE:-}" ] || fail "offsite copy needs an age recipient (AGE_RECIPIENT_FILE) — a plain archive is never sent off the Hub (local archive kept)"
+command -v age >/dev/null 2>&1 || fail "age is not installed (local archive kept)"
+OFFNAME="backup-$TS.tar.gz.age"
+age -R "$AGE_RECIPIENT_FILE" -o "$WORK/$OFFNAME" "$ARCHIVE" || fail "age encryption failed (local archive kept)"
+[ -s "$WORK/$OFFNAME" ] || fail "age produced an empty file (local archive kept)"
+SUM=$(sha256sum "$WORK/$OFFNAME" | cut -d' ' -f1); SIZE=$(stat -c %s "$WORK/$OFFNAME")
 for i in 1 2 3; do
   RESP=""
   if RESP=$(ssh -i "$SSH_KEY" -p "$TARGET_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
         -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-        "root@$TARGET_HOST" "backup-$TS.tar.gz" < "$ARCHIVE" 2>"$WORK/ssh.err") && [ "$RESP" = "OK $SUM" ]; then
+        "root@$TARGET_HOST" "$OFFNAME $SIZE $SUM" < "$WORK/$OFFNAME" 2>"$WORK/ssh.err") && [ "$RESP" = "OK $SUM" ]; then
     date -Is > "$BACKUP_DIR/last-offsite"; rm -f "$BACKUP_DIR/last-error"
-    echo "offsite: $TARGET_HOST OK (sha256 $SUM)"; exit 0
+    echo "offsite: $TARGET_HOST OK (encrypted, sha256 $SUM)"; exit 0
   fi
   echo "offsite attempt $i failed: ${RESP:-} $(cat "$WORK/ssh.err")" >&2
   if [ "$i" -lt 3 ]; then sleep 30; fi
@@ -82,8 +103,9 @@ done
 fail "offsite copy to $TARGET_HOST failed after 3 attempts (local archive kept)"
 `
 
-// backupVerifyScript restores an archive into the scratch DB heyearth_restore_test and compares
-// the users count with meta.txt. Usage: heyearth-backup-verify.sh [archive] (default: newest).
+// backupVerifyScript restores a PLAIN local archive into the scratch DB heyearth_restore_test and
+// compares the users count with meta.txt. Usage: heyearth-backup-verify.sh [archive] (default:
+// newest local one). An off-box .age copy must be decrypted first (see the runbook).
 //
 // meta.txt was written a moment before pg_dump, so on a live system the restored count may be
 // a little higher (new registrations) or lower (deleted accounts). A difference of at most
@@ -93,6 +115,7 @@ const backupVerifyScript = `#!/usr/bin/env bash
 set -euo pipefail
 umask 077
 ARCHIVE="${1:-$(ls -1t /opt/heyearth/backups/backup-*.tar.gz | sed -n 1p)}"
+case "$ARCHIVE" in *.age) echo "$ARCHIVE is encrypted: decrypt it first (age -d -i backup.key -o backup.tar.gz $ARCHIVE), see docs/runbooks/restore-hub-backup.md" >&2; exit 2 ;; esac
 WORK=$(mktemp -d)
 cleanup() { runuser -u postgres -- dropdb --if-exists heyearth_restore_test || true; rm -rf "$WORK"; }
 trap cleanup EXIT
@@ -112,7 +135,7 @@ elif [ "$DRIFT" -le "$TOL" ]; then echo "RESTORE-TEST: OK (users changed by $DRI
 else echo "RESTORE-TEST: MISMATCH"; exit 1; fi
 `
 
-const backupServiceUnit = "[Unit]\nDescription=HiEarth Hub backup (pg_dump + state + certs, offsite copy)\nWants=network-online.target\nAfter=network-online.target postgresql.service\n\n[Service]\nType=oneshot\nExecStart=/opt/heyearth/bin/heyearth-backup.sh\nNice=10\nIOSchedulingClass=idle\nTimeoutStartSec=30min\n"
+const backupServiceUnit = "[Unit]\nDescription=HiEarth Hub backup (pg_dump + state + certs, encrypted offsite copy)\nWants=network-online.target\nAfter=network-online.target postgresql.service\n\n[Service]\nType=oneshot\nExecStart=/opt/heyearth/bin/heyearth-backup.sh\nNice=10\nIOSchedulingClass=idle\nTimeoutStartSec=30min\n"
 
 // backupOnCalendar is 04:00 Moscow time (no DST there); the install script validates it with
 // systemd-analyze before writing anything.
@@ -120,27 +143,40 @@ const backupOnCalendar = "*-*-* 04:00:00 Europe/Moscow"
 
 const backupTimerUnit = "[Unit]\nDescription=Daily HiEarth Hub backup at 04:00 MSK\n\n[Timer]\nOnCalendar=" + backupOnCalendar + "\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
 
-func renderBackupEnv(target string, port int) string {
-	return fmt.Sprintf("BACKUP_DIR=/opt/heyearth/backups\nKEEP=14\nTARGET_HOST=%s\nTARGET_PORT=%d\nSSH_KEY=%s\n", target, port, backupSSHKey)
+func renderBackupEnv(bc backupConfig) string {
+	return fmt.Sprintf("BACKUP_DIR=/opt/heyearth/backups\nKEEP=14\nTARGET_HOST=%s\nTARGET_PORT=%d\nSSH_KEY=%s\nAGE_RECIPIENT=%s\nAGE_RECIPIENT_FILE=%s\n",
+		bc.target, bc.port, backupSSHKey, bc.ageRecipient, backupAgeRecipientFile)
 }
 
 // renderBackupInstallScript installs the backup scripts, units and (once) the SSH key, then
-// enables the timer. Tools the backup needs are checked BEFORE anything is written: a timer
-// that cannot work must not be installed (monitoring would only notice 26 hours later).
-func renderBackupInstallScript(target string, port int) string {
+// enables the timer. Everything the backup needs is checked or installed BEFORE anything is
+// written: a timer that cannot work must not be installed (monitoring would only notice 26
+// hours later). age is installed from apt (idempotent) only when an off-box copy is configured.
+func renderBackupInstallScript(bc backupConfig) string {
 	files := []opsFile{
-		{"/etc/heyearth/backup.env", "600", renderBackupEnv(target, port)},
+		{"/etc/heyearth/backup.env", "600", renderBackupEnv(bc)},
 		{"/opt/heyearth/bin/heyearth-backup.sh", "700", backupScript},
 		{"/opt/heyearth/bin/heyearth-backup-verify.sh", "700", backupVerifyScript},
 		{"/etc/systemd/system/heyearth-backup.service", "644", backupServiceUnit},
 		{"/etc/systemd/system/heyearth-backup.timer", "644", backupTimerUnit},
+	}
+	ageInstall := ""
+	if bc.ageRecipient != "" {
+		files = append(files, opsFile{backupAgeRecipientFile, "644", bc.ageRecipient + "\n"})
+		ageInstall = `if ! command -v age >/dev/null 2>&1; then
+  timeout 300 apt-get update -qq || true
+  DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y -qq age || { echo "[ops] ABORT: cannot install age — backup timer not installed"; exit 1; }
+fi
+command -v age >/dev/null 2>&1 || { echo "[ops] ABORT: age is still missing — backup timer not installed"; exit 1; }
+echo "[ops] age: $(age --version 2>&1 | head -n 1)"
+`
 	}
 	return `set -eu
 for t in pg_dump pg_restore psql runuser tar gzip sha256sum ssh ssh-keygen base64 systemctl systemd-analyze; do
   command -v "$t" >/dev/null 2>&1 || { echo "[ops] ABORT: $t is not installed — backup timer not installed"; exit 1; }
 done
 systemd-analyze calendar "` + backupOnCalendar + `" >/dev/null 2>&1 || { echo "[ops] ABORT: this systemd cannot parse OnCalendar with a time zone — backup timer not installed"; exit 1; }
-` + opsPutFileFunc + `
+` + ageInstall + opsPutFileFunc + `
 mkdir -p /etc/heyearth /opt/heyearth/bin /opt/heyearth/backups /root/.ssh
 chmod 700 /opt/heyearth/backups /root/.ssh
 ` + putFileCalls(files) + `K=` + backupSSHKey + `
@@ -152,33 +188,59 @@ systemctl list-timers heyearth-backup.timer --no-pager
 `
 }
 
-func installBackupTimer(client *ssh.Client, target string, port int) error {
-	return runOpsScript(client, "backup timer (setup-ops)", renderBackupInstallScript(target, port))
+func installBackupTimer(client *ssh.Client, bc backupConfig) error {
+	return runOpsScript(client, "backup timer (setup-ops)", renderBackupInstallScript(bc))
 }
 
 // backupReceiverScript is the forced command of the Hub backup key, installed on the exit.
-// sshd hands it the client's command line in SSH_ORIGINAL_COMMAND; the only accepted values
-// are "ping" and a backup-YYYYmmdd-HHMMSS.tar.gz name. The stream is stored as <name>.part,
-// checked with gzip -t (a connection that dropped midway must not leave a truncated "newest"
-// archive that would push a good one out of the KEEP window) and only then renamed.
+// sshd hands it the client's command line in SSH_ORIGINAL_COMMAND; the only accepted values are
+//
+//	ping
+//	backup-YYYYmmdd-HHMMSS.tar.gz.age <size> <sha256>
+//
+// The name must carry a real date that is not more than a day in the future (so a Hub that is
+// compromised cannot push "newer" names to evict good archives), the declared size is capped
+// (MAX_BYTES) and the stream is cut at that cap, the filesystem must have room for twice the
+// biggest of (newest stored archive, declared size, MIN_BYTES) before anything is written, and the
+// stream is stored as <name>.part and renamed only when size and sha256 match what was declared —
+// the archive is ciphertext, so integrity can be checked but not the content. Rotation keeps the
+// newest KEEP archives by the date in the NAME, never by mtime or by how many files were uploaded.
 const backupReceiverScript = `#!/usr/bin/env bash
 # Installed by Hub deploy --setup-ops (cmd/deploy/ops_backup.go). DO NOT EDIT.
-# Forced command of the Hub backup key. Stores stdin as /var/backups/heyearth-hub/<name>, keeps the newest 7.
+# Forced command of the Hub backup key. Stores an age-encrypted archive as /var/backups/heyearth-hub/<name>,
+# keeps the newest 7 by the date in the name.
 # receiver-version: __VERSION__
 set -euo pipefail
 umask 077
-DIR=/var/backups/heyearth-hub; KEEP=7; NAME="${SSH_ORIGINAL_COMMAND:-}"
-if [ "$NAME" = "ping" ]; then echo "PONG __VERSION__"; exit 0; fi
-if ! [[ "$NAME" =~ ^backup-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]]; then echo "rejected: $NAME" >&2; exit 2; fi
+DIR=/var/backups/heyearth-hub; KEEP=7; MAX_BYTES=4294967296; MIN_BYTES=104857600;
+CMD="${SSH_ORIGINAL_COMMAND:-}"
+reject() { echo "rejected: $1" >&2; exit "${2:-2}"; }
+if [ "$CMD" = "ping" ]; then echo "PONG __VERSION__"; exit 0; fi
+RE='^(backup-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.tar\.gz\.age) ([0-9]{1,12}) ([0-9a-f]{64})$'
+[[ "$CMD" =~ $RE ]] || reject "command not recognised"
+NAME="${BASH_REMATCH[1]}"; SIZE=$((10#${BASH_REMATCH[8]})); SUM="${BASH_REMATCH[9]}"
+WHEN=$(date -d "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]} ${BASH_REMATCH[5]}:${BASH_REMATCH[6]}:${BASH_REMATCH[7]}" +%s 2>/dev/null) || reject "the name does not carry a valid date"
+[ "$WHEN" -le $(( $(date +%s) + 86400 )) ] || reject "the date in the name is more than a day in the future"
+if [ "$SIZE" -lt 1 ] || [ "$SIZE" -gt "$MAX_BYTES" ]; then reject "declared size $SIZE is outside 1..$MAX_BYTES" 4; fi
 mkdir -p "$DIR"
+LASTNAME=$(ls -1 "$DIR" | grep -E '^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$' | sort | tail -n 1 || true)
+BASE=$MIN_BYTES
+if [ -n "$LASTNAME" ]; then LAST=$(stat -c %s "$DIR/$LASTNAME"); if [ "$LAST" -gt "$BASE" ]; then BASE=$LAST; fi; fi
+if [ "$SIZE" -gt "$BASE" ]; then BASE=$SIZE; fi
+AVAIL=$(df --output=avail -B1 "$DIR" | tail -n 1 | tr -d ' ' || true)
+case "$AVAIL" in ''|*[!0-9]*) reject "cannot read the free space of $DIR" 5 ;; esac
+[ "$AVAIL" -ge $((2 * BASE)) ] || reject "not enough free space: $AVAIL bytes free, $((2 * BASE)) needed" 5
 PART="$DIR/$NAME.part"
 trap 'rm -f "$PART"' EXIT
 find "$DIR" -maxdepth 1 -name '*.part' -mmin +120 -delete 2>/dev/null || true
-cat > "$PART"
-gzip -t "$PART" 2>/dev/null || { echo "rejected: truncated or corrupt gzip stream" >&2; exit 3; }
+head -c $((MAX_BYTES + 1)) > "$PART"
+GOT=$(stat -c %s "$PART")
+[ "$GOT" -le "$MAX_BYTES" ] || reject "the stream exceeds $MAX_BYTES bytes" 4
+[ "$GOT" -eq "$SIZE" ] || reject "size mismatch: declared $SIZE, received $GOT" 3
+[ "$(sha256sum "$PART" | cut -d' ' -f1)" = "$SUM" ] || reject "sha256 mismatch" 3
 mv -f "$PART" "$DIR/$NAME"
-ls -1t "$DIR"/backup-*.tar.gz | tail -n +$((KEEP + 1)) | xargs -r rm -f --
-echo "OK $(sha256sum "$DIR/$NAME" | cut -d' ' -f1)"
+ls -1 "$DIR" | grep -E '^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$' | sort -r | tail -n +$((KEEP + 1)) | while IFS= read -r old; do rm -f -- "$DIR/$old"; done
+echo "OK $SUM"
 `
 
 // backupReceiverVersion identifies the receiver text. The receiver answers "ping" with
@@ -196,6 +258,7 @@ func renderBackupReceiver() string {
 var (
 	backupPubKeyRe  = regexp.MustCompile(`^ssh-ed25519 [A-Za-z0-9+/]+={0,2} ` + regexp.QuoteMeta(backupKeyComment) + `$`)
 	hostKeyFieldsRe = regexp.MustCompile(`^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$`)
+	fingerprintRe   = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 )
 
 // backupAuthorizedKeysLine is the authorized_keys entry of the Hub key on the exit: forced
@@ -209,17 +272,32 @@ func backupAuthorizedKeysLine(pub string) (string, error) {
 	return `command="/usr/local/sbin/heyearth-backup-receive",restrict,no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ` + pub, nil
 }
 
-// renderReceiverInstallScript runs on the exit: the forced-command script and the Hub key's
-// authorized_keys entry (any older entry of the same key is replaced, other keys are kept).
+// receiverPaths are the locations the receiver install script writes to on the exit. Production
+// uses prodReceiverPaths; the tests pass shell expressions under a temp directory.
+type receiverPaths struct{ receiver, dir, sshDir string }
+
+var prodReceiverPaths = receiverPaths{"/usr/local/sbin/heyearth-backup-receive", "/var/backups/heyearth-hub", "/root/.ssh"}
+
 func renderReceiverInstallScript(authLine string) string {
+	return renderReceiverInstallScriptAt(prodReceiverPaths, authLine)
+}
+
+// renderReceiverInstallScriptAt runs on the exit: the forced-command script and the Hub key's
+// authorized_keys entry. Any older entry of the same key is replaced and other keys are kept; if
+// authorized_keys cannot be read (grep exit status above 1) the script aborts and leaves the
+// file untouched, instead of writing back a shortened file.
+func renderReceiverInstallScriptAt(p receiverPaths, authLine string) string {
 	return `set -eu
 ` + opsPutFileFunc + `
-mkdir -p /var/backups/heyearth-hub /root/.ssh
-chmod 700 /var/backups/heyearth-hub /root/.ssh
-` + putFileCalls([]opsFile{{"/usr/local/sbin/heyearth-backup-receive", "755", renderBackupReceiver()}}) + `touch /root/.ssh/authorized_keys
-{ grep -v '` + backupKeyComment + `' /root/.ssh/authorized_keys || true; printf '%s\n' '` + authLine + `'; } > /root/.ssh/authorized_keys.new
-chmod 600 /root/.ssh/authorized_keys.new
-mv -f /root/.ssh/authorized_keys.new /root/.ssh/authorized_keys
+mkdir -p ` + p.dir + ` ` + p.sshDir + `
+chmod 700 ` + p.dir + ` ` + p.sshDir + `
+` + putFileCalls([]opsFile{{p.receiver, "755", renderBackupReceiver()}}) + `AK=` + p.sshDir + `/authorized_keys
+touch "$AK"
+grep -v '` + backupKeyComment + `' "$AK" > "$AK.new" && rc=0 || rc=$?
+if [ "$rc" -gt 1 ]; then rm -f "$AK.new"; echo "[ops] ABORT: cannot read $AK (grep exit $rc) — authorized_keys left untouched"; exit 1; fi
+printf '%s\n' '` + authLine + `' >> "$AK.new"
+chmod 600 "$AK.new"
+mv -f "$AK.new" "$AK"
 echo "[ops] exit: receiver and authorized_keys entry installed"
 `
 }
@@ -249,12 +327,49 @@ echo '%[1]s %[2]s %[3]s' >> /root/.ssh/known_hosts
 `, known, hostKeyType, hostKeyB64) + backupProbeCommand(target, port) + "\n"
 }
 
+// exitAccess is what reaching the exit by root password requires.
+type exitAccess struct{ password, fingerprint string }
+
+// exitAccessFor is strict on purpose: the exit's root password goes over the wire only to a
+// host whose ed25519 host key is pinned, and only a password meant for the exit is used — the
+// Hub's deploy password is never tried there.
+func exitAccessFor(env envMap, flagPassword string) (exitAccess, error) {
+	pw := flagPassword
+	if pw == "" {
+		pw = env.get("EXIT_NODE_SSH_PASSWORD", "")
+	}
+	if pw == "" {
+		return exitAccess{}, errors.New("the backup key does not work on the exit yet and installing it needs the exit's root password: " +
+			"set EXIT_NODE_SSH_PASSWORD in server/.env or pass --exit-node-password (the Hub deploy password is never tried on the exit)")
+	}
+	fp := strings.TrimSpace(env.get("EXIT_NODE_HOST_KEY_FINGERPRINT", ""))
+	if fp == "" {
+		return exitAccess{}, errors.New("EXIT_NODE_HOST_KEY_FINGERPRINT is required whenever the exit is reached by password " +
+			"(without it anybody on the path could pose as the exit and receive its root password). On the exit run " +
+			"`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` and put the SHA256:… value into server/.env")
+	}
+	if !fingerprintRe.MatchString(fp) {
+		return exitAccess{}, fmt.Errorf("EXIT_NODE_HOST_KEY_FINGERPRINT %q must look like SHA256:<43 base64 characters> (the ed25519 host key fingerprint)", fp)
+	}
+	return exitAccess{password: pw, fingerprint: fp}, nil
+}
+
+// hostKeyMatchesFingerprint reports whether the "<type> <base64>" host key has the pinned
+// SHA256 fingerprint.
+func hostKeyMatchesFingerprint(keyType, keyB64, fingerprint string) bool {
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyType + " " + keyB64))
+	if err != nil {
+		return false
+	}
+	return ssh.FingerprintSHA256(key) == fingerprint
+}
+
 // installOffsiteBackupKey makes the Hub backup key usable on the exit. If the key already
-// answers the forced-command probe with the current receiver version, nothing is touched and
-// no exit password is needed (so a re-run survives a password rotation). Otherwise the receiver
-// and the authorized_keys entry are installed over the exit's root password
-// (--exit-node-password / EXIT_NODE_SSH_PASSWORD / the Hub deploy password, like setup-exit-node)
-// and the exit's ed25519 host key is pinned in the Hub's known_hosts.
+// answers the forced-command probe with the current receiver version (checked against the
+// host key pinned in the Hub's known_hosts), nothing is touched and no exit password is needed,
+// so a re-run survives a password rotation. Otherwise the receiver and the authorized_keys entry
+// are installed over the exit's root password, with the exit's ed25519 host key pinned by
+// EXIT_NODE_HOST_KEY_FINGERPRINT, and that host key is then pinned in the Hub's known_hosts.
 func installOffsiteBackupKey(hub *ssh.Client, cfg *deployConfig, target, password string, port int) error {
 	want := "PONG " + backupReceiverVersion()
 	fmt.Printf("[ops] offsite: проверяю, работает ли ключ бэкапа на %s:%d (при первом запуске проба ожидаемо упадёт)\n", target, port)
@@ -265,6 +380,10 @@ func installOffsiteBackupKey(hub *ssh.Client, cfg *deployConfig, target, passwor
 		return nil
 	}
 
+	access, err := exitAccessFor(cfg.env, password)
+	if err != nil {
+		return err
+	}
 	pubOut, err := runSSHBash(hub, "read backup public key", "cat "+backupSSHKey+".pub", true)
 	if err != nil {
 		return fmt.Errorf("backup public key missing on the Hub (did the backup timer step fail?): %w", err)
@@ -273,12 +392,9 @@ func installOffsiteBackupKey(hub *ssh.Client, cfg *deployConfig, target, passwor
 	if err != nil {
 		return err
 	}
-	if password == "" {
-		password = cfg.env.get("EXIT_NODE_SSH_PASSWORD", cfg.deployPassword)
-	}
-	exit, err := sshDial(net.JoinHostPort(target, strconv.Itoa(port)), "root", password, cfg.env.get("EXIT_NODE_HOST_KEY_FINGERPRINT", ""))
+	exit, err := sshDialAlgos(net.JoinHostPort(target, strconv.Itoa(port)), "root", access.password, access.fingerprint, []string{ssh.KeyAlgoED25519})
 	if err != nil {
-		return fmt.Errorf("SSH to the backup target %s:%d (set EXIT_NODE_SSH_PASSWORD or --exit-node-password): %w", target, port, err)
+		return fmt.Errorf("SSH to the backup target %s:%d (password + pinned host key): %w", target, port, err)
 	}
 	defer exit.Close()
 	if _, err := runSSHBash(exit, "install receiver (exit)", renderReceiverInstallScript(authLine), true); err != nil {
@@ -288,6 +404,9 @@ func installOffsiteBackupKey(hub *ssh.Client, cfg *deployConfig, target, passwor
 	f := strings.Fields(hostKey)
 	if err != nil || len(f) < 2 || !hostKeyFieldsRe.MatchString(f[0]+" "+f[1]) {
 		return fmt.Errorf("cannot read the ed25519 host key of %s: %v", target, err)
+	}
+	if !hostKeyMatchesFingerprint(f[0], f[1], access.fingerprint) {
+		return fmt.Errorf("the ed25519 host key file of %s does not match EXIT_NODE_HOST_KEY_FINGERPRINT — not pinning it", target)
 	}
 	probe, err := runSSHBash(hub, "pin exit host key + probe", renderKnownHostsScript(target, port, f[0], f[1]), true)
 	if err != nil || !strings.Contains(probe, want) {

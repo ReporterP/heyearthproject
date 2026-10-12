@@ -75,6 +75,7 @@ func main() {
 	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
 	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, ежедневный бэкап (+копия на exit: --backup-target), fail2ban, journald, nginx stream timeout, защита xray API")
 	backupTarget := flag.String("backup-target", "", "IP exit-ноды для копии бэкапа (--setup-ops); пароль: --exit-node-password или EXIT_NODE_SSH_PASSWORD")
+	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	flag.Parse()
 
 	var mode string
@@ -181,7 +182,7 @@ func main() {
 		return
 	}
 	if mode == "setup-ops" {
-		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort)
+		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient)
 		return
 	}
 
@@ -371,6 +372,13 @@ func findRepoRoot() string {
 }
 
 func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, error) {
+	return sshDialAlgos(addr, user, password, expectedFingerprint, nil)
+}
+
+// sshDialAlgos is sshDial with an optional list of accepted host key algorithms. A pinned
+// fingerprint is only meaningful for one key type, so callers that pin an ed25519 fingerprint
+// restrict the negotiation to ssh-ed25519 (otherwise the server may present its RSA key).
+func sshDialAlgos(addr, user, password, expectedFingerprint string, hostKeyAlgorithms []string) (*ssh.Client, error) {
 	var callback ssh.HostKeyCallback
 	if strings.TrimSpace(expectedFingerprint) != "" {
 		callback = func(hostname string, remoteAddr net.Addr, key ssh.PublicKey) error {
@@ -386,10 +394,11 @@ func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, err
 	}
 
 	cfg := &ssh.ClientConfig{
-		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: callback,
-		Timeout:         15 * time.Second,
+		User:              user,
+		Auth:              []ssh.AuthMethod{ssh.Password(password)},
+		HostKeyCallback:   callback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           15 * time.Second,
 	}
 	client, err := ssh.Dial("tcp", addr, cfg)
 	if err != nil {
@@ -1016,6 +1025,11 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		// Добавить include stream.d в nginx.conf если ещё нет
 		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)
 		fmt.Println("nginx stream SNI routing настроен (443 → 8443/10443)")
+		// worker_rlimit_nofile / worker_connections live in nginx.conf, which this tool does not generate:
+		// apply the same idempotent patch as --setup-ops (nginx -t before reload, rollback on failure).
+		if err := patchNginxStream(client); err != nil {
+			fmt.Printf("WARN: nginx limits/timeouts patch: %v\n", err)
+		}
 	} else {
 		// Xray не установлен — убираем stream-конфиг, чтобы не было конфликта портов
 		// (conf.d слушает 443 напрямую, stream тоже хотел бы 443)
@@ -1232,6 +1246,7 @@ server {
     ssl_preread on;
     # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
     proxy_timeout 3600s;
+    proxy_socket_keepalive on;
     proxy_pass $backend;
 }
 `, domain)

@@ -1,7 +1,8 @@
 package main
 
 // Hub ops hygiene: `deploy --setup-ops`. Server-side changes of subproject 1 parts 4–5
-// live here (and in ops_backup.go / ops_hygiene.go) so a reinstall reproduces them. Idempotent.
+// live here (and in ops_backup.go / ops_hygiene.go / ops_xray_guard.go) so a reinstall
+// reproduces them. Idempotent.
 //
 // Every step is a bash script rendered by Go and executed through runSSHBash. Files are
 // installed with put_file (base64 payload, atomic mv, "unchanged" when identical) so a re-run
@@ -12,25 +13,33 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// backupConfig is the resolved off-box backup configuration: flags, else what a previous run
+// stored in /etc/heyearth/backup.env.
+type backupConfig struct {
+	target       string // exit IP, "" = local backups only
+	port         int    // its sshd port
+	ageRecipient string // age1… public key the off-box copy is encrypted to
+}
 
 // setupOpsHub — deploy --setup-ops. Idempotent; re-run after any reinstall.
 //
 // The firewall prune runs first and is fatal (nothing else has been touched yet). The other
 // steps are independent: a failing one is reported and the rest still run, then the whole run
 // exits non-zero, so a transient apt outage cannot keep the backup timer from being installed.
-// Without --backup-target the target already configured in /etc/heyearth/backup.env is kept
-// (a re-run must never silently turn the off-box copy off).
-func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPassword string, exitSSHPort int) {
-	if err := validateBackupTarget(backupTarget, exitSSHPort); err != nil {
+// Without --backup-target / --backup-age-recipient the values stored in /etc/heyearth/backup.env
+// are kept (a re-run must never silently turn the off-box copy off); if backup.env cannot be
+// read, the backup steps are skipped instead of guessing.
+func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPassword string, exitSSHPort int, ageRecipient string) {
+	if err := validateBackupFlags(backupTarget, exitSSHPort, ageRecipient); err != nil {
 		log.Fatalf("[ops] %v", err)
 	}
 	pruneStaleFirewallRules(client)
-
-	target, port := resolveBackupTarget(client, backupTarget, exitSSHPort)
 
 	var failed []string
 	step := func(name string, run func() error) bool {
@@ -43,15 +52,23 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 		return true
 	}
 
-	backupOK := step("backup timer", func() error { return installBackupTimer(client, target, port) })
-	switch {
-	case target == "":
-		fmt.Println("[ops] WARN: --backup-target не задан — копия бэкапа вне Hub НЕ настроена")
-	case backupOK:
-		step("offsite backup key", func() error { return installOffsiteBackupKey(client, cfg, target, exitPassword, port) })
+	var bc backupConfig
+	if step("backup config", func() (err error) {
+		bc, err = resolveBackupConfig(client, backupTarget, exitSSHPort, ageRecipient)
+		return err
+	}) {
+		if step("backup timer", func() error { return installBackupTimer(client, bc) }) {
+			if bc.target == "" {
+				fmt.Println("[ops] WARN: --backup-target не задан — копия бэкапа вне Hub НЕ настроена")
+			} else {
+				step("offsite backup key", func() error { return installOffsiteBackupKey(client, cfg, bc.target, exitPassword, bc.port) })
+			}
+		}
+	} else {
+		bc.target = backupTarget // fail2ban still must not whitelist the exit
 	}
-	step("journald + fail2ban", func() error { return setupJournaldFail2ban(client, cfg.deployPort, target) })
-	step("nginx stream proxy_timeout", func() error { return patchNginxStreamTimeout(client) })
+	step("journald + fail2ban", func() error { return setupJournaldFail2ban(client, cfg.deployPort, bc.target) })
+	step("nginx stream timeouts + limits", func() error { return patchNginxStream(client) })
 	step("xray API guard", func() error { return installXrayAPIGuard(client) })
 
 	if len(failed) > 0 {
@@ -60,47 +77,107 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 	fmt.Println("[ops] setup-ops: all steps OK")
 }
 
-// validateBackupTarget accepts "" (no off-box copy) or an IP literal plus a TCP port. The value
-// ends up in shell scripts, ssh arguments and a fail2ban config, so it is never free text.
-func validateBackupTarget(target string, port int) error {
+// ageRecipientRe is an age X25519 public key: "age1" + 58 bech32 characters.
+var ageRecipientRe = regexp.MustCompile(`^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$`)
+
+// validateBackupFlags accepts "" (no off-box copy) or an IP literal plus a TCP port, and ""
+// or a well-formed age recipient. The values end up in shell scripts, ssh arguments and config
+// files, so they are never free text.
+func validateBackupFlags(target string, port int, ageRecipient string) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("--exit-node-ssh-port %d is not a TCP port", port)
 	}
 	if target != "" && net.ParseIP(target) == nil {
 		return fmt.Errorf("--backup-target %q is not an IP address", target)
 	}
+	if ageRecipient != "" && !ageRecipientRe.MatchString(ageRecipient) {
+		return fmt.Errorf("--backup-age-recipient %q is not an age public key (age1…, 62 characters)", ageRecipient)
+	}
 	return nil
 }
 
-// resolveBackupTarget returns the flag value, or — when the flag is empty — the target a
-// previous run stored in /etc/heyearth/backup.env (invalid or absent → "").
-func resolveBackupTarget(client *ssh.Client, flagTarget string, flagPort int) (string, int) {
-	if flagTarget != "" {
-		return flagTarget, flagPort
+// readBackupEnvScript tells "no backup.env yet" (ENV-ABSENT, a fresh Hub) apart from a real
+// failure (non-zero exit: unreadable file, grep error). grep exit 1 (no matching line) is fine.
+const readBackupEnvScript = `f=/etc/heyearth/backup.env
+if [ ! -e "$f" ]; then echo ENV-ABSENT; exit 0; fi
+grep -E '^(TARGET_HOST|TARGET_PORT|AGE_RECIPIENT)=' "$f"; rc=$?
+if [ "$rc" -gt 1 ]; then echo "cannot read $f (grep exit $rc)" >&2; exit 1; fi
+echo ENV-OK
+`
+
+// resolveBackupConfig merges the flags with the stored configuration. Flags win; a flag target
+// takes its port from --exit-node-ssh-port, a stored target keeps its stored port. An error
+// (unreadable backup.env, malformed stored values, a target without a recipient) aborts the
+// backup steps: guessing here could silently switch the off-box copy off or send it unencrypted.
+func resolveBackupConfig(client *ssh.Client, flagTarget string, flagPort int, flagRecipient string) (backupConfig, error) {
+	out, err := runSSHBash(client, "read backup.env", readBackupEnvScript, true)
+	if err != nil {
+		return backupConfig{}, fmt.Errorf("cannot read the stored backup configuration, backup steps skipped: %w", err)
 	}
-	out, _ := runSSHBash(client, "read backup target", `grep -E '^TARGET_(HOST|PORT)=' /etc/heyearth/backup.env 2>/dev/null || true`, false)
-	target, port := parseBackupEnvTarget(out, flagPort)
-	if target != "" {
-		fmt.Printf("[ops] --backup-target не задан: оставляю %s:%d из /etc/heyearth/backup.env\n", target, port)
+	stored, err := parseBackupEnv(out)
+	if err != nil {
+		return backupConfig{}, err
 	}
-	return target, port
+	return mergeBackupConfig(stored, flagTarget, flagPort, flagRecipient)
 }
 
-func parseBackupEnvTarget(envLines string, defPort int) (string, int) {
-	target, port := "", defPort
-	for _, l := range strings.Split(envLines, "\n") {
+func mergeBackupConfig(stored backupConfig, flagTarget string, flagPort int, flagRecipient string) (backupConfig, error) {
+	bc := stored
+	if flagTarget != "" {
+		bc.target, bc.port = flagTarget, flagPort
+	} else if bc.target != "" {
+		fmt.Printf("[ops] --backup-target не задан: оставляю %s:%d из /etc/heyearth/backup.env\n", bc.target, bc.port)
+	}
+	if bc.port == 0 {
+		bc.port = flagPort
+	}
+	if flagRecipient != "" {
+		bc.ageRecipient = flagRecipient
+	}
+	if bc.target != "" && bc.ageRecipient == "" {
+		return backupConfig{}, fmt.Errorf("the off-box copy to %s needs an age recipient: pass --backup-age-recipient age1… "+
+			"(the public key of a key pair you generated offline with age-keygen; plain archives are never sent off the Hub)", bc.target)
+	}
+	return bc, nil
+}
+
+// parseBackupEnv parses the output of readBackupEnvScript. The first line must be ENV-ABSENT or
+// ENV-OK, and any stored value that is present must be well-formed — otherwise it is an error,
+// never "treat as not configured".
+func parseBackupEnv(out string) (backupConfig, error) {
+	lines := strings.Split(strings.ReplaceAll(out, "\r", ""), "\n")
+	var bc backupConfig
+	state := ""
+	for _, l := range lines {
 		l = strings.TrimSpace(l)
-		if v, ok := strings.CutPrefix(l, "TARGET_HOST="); ok && net.ParseIP(v) != nil {
-			target = v
-		}
-		if v, ok := strings.CutPrefix(l, "TARGET_PORT="); ok {
-			var p int
-			if _, err := fmt.Sscanf(v, "%d", &p); err == nil && p >= 1 && p <= 65535 {
-				port = p
+		switch {
+		case l == "":
+		case l == "ENV-ABSENT" || l == "ENV-OK":
+			state = l
+		case strings.HasPrefix(l, "TARGET_HOST="):
+			v := strings.TrimPrefix(l, "TARGET_HOST=")
+			if v != "" && net.ParseIP(v) == nil {
+				return backupConfig{}, fmt.Errorf("backup.env has a malformed TARGET_HOST=%q, backup steps skipped", v)
 			}
+			bc.target = v
+		case strings.HasPrefix(l, "TARGET_PORT="):
+			var p int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(l, "TARGET_PORT="), "%d", &p); err != nil || p < 1 || p > 65535 {
+				return backupConfig{}, fmt.Errorf("backup.env has a malformed %q, backup steps skipped", l)
+			}
+			bc.port = p
+		case strings.HasPrefix(l, "AGE_RECIPIENT="):
+			v := strings.TrimPrefix(l, "AGE_RECIPIENT=")
+			if v != "" && !ageRecipientRe.MatchString(v) {
+				return backupConfig{}, fmt.Errorf("backup.env has a malformed AGE_RECIPIENT, backup steps skipped")
+			}
+			bc.ageRecipient = v
 		}
 	}
-	return target, port
+	if state == "" {
+		return backupConfig{}, fmt.Errorf("unexpected answer while reading backup.env (%q), backup steps skipped", strings.TrimSpace(out))
+	}
+	return bc, nil
 }
 
 // opsPutFileFunc is prepended to every script that installs files. put_file PATH MODE BASE64

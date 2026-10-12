@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"os/exec"
@@ -9,12 +11,15 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 )
 
-// The scripts under test are executed by a real bash, through the same transport as production
-// (runSSHBash: an outer shell runs `bash -c '<shQuote(script)>'`), against stub functions that
-// replace runuser / ssh / sleep. Everything happens in a mktemp directory created by the
+// The scripts under test are executed by a real bash against stub functions that replace
+// runuser / ssh / age / df / sleep. Everything happens in a mktemp directory created by the
 // harness itself; nothing outside it is touched. Tests skip when there is no working bash.
+
+const testAgeRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
 
 // runBash runs script the way production does: the remote login shell receives the single
 // command line `bash -c '<shQuote(script)>'` and parses it. Here that command line is fed to an
@@ -25,8 +30,7 @@ func runBash(t *testing.T, script string) (string, int) {
 	return runBashStdin(t, "bash -c "+shQuote(script)+"\n")
 }
 
-// runBashStdin feeds script on stdin (no argv size limit) — used for syntax checks and for
-// scripts that must be run with extra environment.
+// runBashStdin feeds script on stdin (no argv size limit) — used for syntax checks and by runBash.
 func runBashStdin(t *testing.T, script string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command("bash", args...)
@@ -92,6 +96,7 @@ const backupHarnessStubs = `
 runuser() {
   shift 2; if [ "$1" = "--" ]; then shift; fi
   cmd="$1"; shift
+  echo "$cmd" >> "$T/calls"
   case "$cmd" in
     pg_dump) if [ "$PGDUMP_FAIL" = 1 ]; then echo "pg_dump: stub failure" >&2; return 1; fi
              if [ "$PGDUMP_EMPTY" = 1 ]; then return 0; fi
@@ -99,6 +104,16 @@ runuser() {
     psql)    if [ "$PSQL_FAIL" = 1 ]; then return 1; fi; echo "$USERS_STUB" ;;
     *) echo "STUB-BAD-RUNUSER $cmd" >&2; return 99 ;;
   esac
+}
+df() { printf 'Avail\n%s\n' "$DF_AVAIL"; }
+age() {
+  echo "$*" >> "$T/age.args"
+  if [ "$AGE_FAIL" = 1 ]; then echo "age: stub failure" >&2; return 1; fi
+  out=""; in=""
+  while [ $# -gt 0 ]; do
+    case "$1" in -R) shift 2 ;; -o) out="$2"; shift 2 ;; *) in="$1"; shift ;; esac
+  done
+  { printf 'AGE-STUB\n'; cat "$in"; } > "$out"
 }
 ssh() {
   echo "$*" >> "$T/ssh.args"
@@ -126,15 +141,22 @@ echo "STATE last_offsite=$([ -f "$B/last-offsite" ] && echo 1 || echo 0)"
 echo "STATE last_error=$([ -f "$B/last-error" ] && echo 1 || echo 0)"
 echo "STATE last_error_text=$(cat "$B/last-error" 2>/dev/null | cut -d' ' -f2-)"
 echo "STATE stray=$(ls -A "$B" | grep -cE '^\.work-|\.part$')"
+echo "STATE pgdump_calls=$(grep -c '^pg_dump$' "$T/calls" 2>/dev/null)"
 echo "STATE ssh_calls=$(cat "$T/ssh.args" 2>/dev/null | wc -l | tr -d ' ')"
 echo "STATE ssh_args=$(sed -n 1p "$T/ssh.args" 2>/dev/null)"
+echo "STATE ssh_last=$(tail -n 1 "$T/ssh.args" 2>/dev/null)"
+echo "STATE age_args=$(sed -n 1p "$T/age.args" 2>/dev/null)"
 newest=$(ls -1t "$B"/backup-*.tar.gz 2>/dev/null | sed -n 1p)
 if [ -n "$newest" ]; then
   echo "STATE members=$(tar -tzf "$newest" | sort | tr '\n' ' ')"
   echo "STATE meta=$(tar -xzOf "$newest" meta.txt | grep users_count)"
   echo "STATE files=$(tar -xzOf "$newest" files.tar.gz | tar -tz | grep -v '/$' | sort | tr '\n' ' ')"
   echo "STATE dump=$(tar -xzOf "$newest" db.dump | head -c 30)"
-  echo "STATE received_equal=$([ -f "$T/received" ] && cmp -s "$newest" "$T/received" && echo 1 || echo 0)"
+  if [ -f "$T/received" ]; then
+    echo "STATE received_head=$(head -n 1 "$T/received")"
+    echo "STATE received_is_plain_archive=$(cmp -s "$newest" "$T/received" && echo 1 || echo 0)"
+    echo "STATE received_wraps_archive=$(tail -n +2 "$T/received" | cmp -s - "$newest" && echo 1 || echo 0)"
+  fi
 fi
 `
 
@@ -143,7 +165,8 @@ fi
 func backupHarness(vars map[string]string, pre string) string {
 	base := map[string]string{
 		"KEEP": "14", "TARGET_HOST": "203.0.113.7", "PGDUMP_FAIL": "0", "PGDUMP_EMPTY": "0",
-		"PSQL_FAIL": "0", "USERS_STUB": "42", "SSH_MODE": "ok",
+		"PSQL_FAIL": "0", "USERS_STUB": "42", "SSH_MODE": "ok", "AGE_FAIL": "0", "AGE_PUB": "1",
+		"DF_AVAIL": "999999999999",
 	}
 	v := mergeVars(base, vars)
 	return assignments(v) + `
@@ -154,8 +177,10 @@ echo jwt > "$T/root/opt/heyearth/mainserver/api.env"
 echo ca > "$T/root/opt/heyearth/mainserver/certs/ca-cert.pem"
 echo le > "$T/root/etc/letsencrypt/cert.pem"
 echo sni > "$T/root/etc/nginx/stream-enabled/heyearth"
-printf 'BACKUP_DIR=%s\nKEEP=%s\nTARGET_HOST=%s\nTARGET_PORT=22\nSSH_KEY=%s\nFILES_ROOT=%s\n' \
-  "$T/backups" "$KEEP" "$TARGET_HOST" "$T/key" "$T/root" > "$T/backup.env"
+: > "$T/calls"
+if [ "$AGE_PUB" = 1 ]; then echo "` + testAgeRecipient + `" > "$T/age.pub"; fi
+printf 'BACKUP_DIR=%s\nKEEP=%s\nTARGET_HOST=%s\nTARGET_PORT=22\nSSH_KEY=%s\nAGE_RECIPIENT_FILE=%s\nFILES_ROOT=%s\n' \
+  "$T/backups" "$KEEP" "$TARGET_HOST" "$T/key" "$T/age.pub" "$T/root" > "$T/backup.env"
 export HEYEARTH_BACKUP_ENV="$T/backup.env"
 ` + backupHarnessStubs + pre + `
 cat > "$T/backup.sh" <<'BACKUP_SCRIPT_EOF'
@@ -168,6 +193,9 @@ func TestBackupScript(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
+	lastArchive := func(size int) string {
+		return fmt.Sprintf(`head -c %d /dev/zero > "$T/backups/backup-20260101-000000.tar.gz"`+"\n", size)
+	}
 	cases := []struct {
 		name     string
 		vars     map[string]string
@@ -178,15 +206,15 @@ func TestBackupScript(t *testing.T) {
 		notSub   []string
 	}{
 		{
-			name: "success: archive with db, meta and config files, copied off-box and verified",
+			name: "success: plain local archive, encrypted copy shipped off-box and verified",
 			want: []string{
 				"STATE exit=0", "STATE archives=1", "STATE last_success=1", "STATE last_offsite=1", "STATE last_error=0",
-				"STATE stray=0", "STATE ssh_calls=1", "STATE received_equal=1",
+				"STATE stray=0", "STATE ssh_calls=1", "STATE received_head=AGE-STUB", "STATE received_is_plain_archive=0", "STATE received_wraps_archive=1",
 				"STATE members=db.dump files.tar.gz meta.txt ",
 				"STATE meta=users_count=42",
 				"STATE files=etc/letsencrypt/cert.pem etc/nginx/stream-enabled/heyearth opt/heyearth/mainserver/api.env opt/heyearth/mainserver/certs/ca-cert.pem opt/heyearth/state/reality-keys.json ",
 			},
-			wantSub: []string{"local: ", "users=42)", "offsite: 203.0.113.7 OK (sha256 ", "BatchMode=yes", "StrictHostKeyChecking=yes", "root@203.0.113.7 backup-"},
+			wantSub: []string{"local: ", "users=42)", "offsite: 203.0.113.7 OK (encrypted, sha256 ", "BatchMode=yes", "StrictHostKeyChecking=yes", "root@203.0.113.7 backup-"},
 			notSub:  []string{"ERROR", "WARN", "STUB-BAD"},
 		},
 		{
@@ -230,13 +258,51 @@ func TestBackupScript(t *testing.T) {
 		{
 			name: "two failed attempts then success: exit 0, last-offsite written, no last-error",
 			vars: map[string]string{"SSH_MODE": "flaky"},
-			want: []string{"STATE exit=0", "STATE last_offsite=1", "STATE last_error=0", "STATE ssh_calls=3", "STATE received_equal=1"},
+			want: []string{"STATE exit=0", "STATE last_offsite=1", "STATE last_error=0", "STATE ssh_calls=3", "STATE received_wraps_archive=1"},
 		},
 		{
-			name:    "no TARGET_HOST: local backup only, warning, exit 0, no ssh",
-			vars:    map[string]string{"TARGET_HOST": ""},
-			want:    []string{"STATE exit=0", "STATE archives=1", "STATE last_success=1", "STATE last_offsite=0", "STATE last_error=0", "STATE ssh_calls=0"},
+			name:    "no TARGET_HOST: local backup only, warning, exit 0, no ssh, no age",
+			vars:    map[string]string{"TARGET_HOST": "", "AGE_PUB": "0"},
+			want:    []string{"STATE exit=0", "STATE archives=1", "STATE last_success=1", "STATE last_offsite=0", "STATE last_error=0", "STATE ssh_calls=0", "STATE age_args="},
 			wantSub: []string{"WARN: no TARGET_HOST, offsite skipped"},
+		},
+		{
+			name: "a target without an age recipient is never served plain: local archive kept, nothing sent",
+			vars: map[string]string{"AGE_PUB": "0"}, wantExit: 1,
+			want: []string{
+				"STATE exit=1", "STATE archives=1", "STATE last_success=1", "STATE last_offsite=0", "STATE last_error=1", "STATE ssh_calls=0", "STATE age_args=",
+				"STATE last_error_text=offsite copy needs an age recipient (AGE_RECIPIENT_FILE) — a plain archive is never sent off the Hub (local archive kept)",
+			},
+		},
+		{
+			name: "age failing: nothing is sent, local archive kept",
+			vars: map[string]string{"AGE_FAIL": "1"}, wantExit: 1,
+			want: []string{"STATE exit=1", "STATE archives=1", "STATE last_success=1", "STATE ssh_calls=0", "STATE last_error_text=age encryption failed (local archive kept)"},
+		},
+		{
+			name: "free space below 1 GiB: fails before pg_dump with a clear message, no archive",
+			vars: map[string]string{"DF_AVAIL": "1000"}, wantExit: 1,
+			want: []string{
+				"STATE exit=1", "STATE archives=0", "STATE last_success=0", "STATE last_error=1", "STATE pgdump_calls=0", "STATE stray=0",
+				"STATE last_error_text=not enough free space in $T/backups: 1000 bytes free, 1073741824 needed (2x the last archive + 1 GiB)",
+			},
+		},
+		{
+			name: "free space needed is 2x the last archive + 1 GiB: one byte short fails",
+			vars: map[string]string{"DF_AVAIL": "1073751823"}, pre: lastArchive(5000), wantExit: 1,
+			want:    []string{"STATE exit=1", "STATE archives=1", "STATE last_success=0", "STATE pgdump_calls=0"},
+			wantSub: []string{"1073751823 bytes free, 1073751824 needed"},
+		},
+		{
+			name: "free space needed is 2x the last archive + 1 GiB: exactly enough passes",
+			vars: map[string]string{"DF_AVAIL": "1073751824"}, pre: lastArchive(5000),
+			want: []string{"STATE exit=0", "STATE archives=2", "STATE last_success=1", "STATE pgdump_calls=1"},
+		},
+		{
+			name: "unreadable free space fails instead of guessing",
+			vars: map[string]string{"DF_AVAIL": ""}, wantExit: 1,
+			want:    []string{"STATE exit=1", "STATE archives=0", "STATE pgdump_calls=0"},
+			wantSub: []string{"cannot read the free space of"},
 		},
 	}
 	for _, c := range cases {
@@ -250,6 +316,14 @@ func TestBackupScript(t *testing.T) {
 				t.Fatalf("%s, want exit %d\n%s", got, c.wantExit, out)
 			}
 			for _, l := range c.want {
+				if strings.Contains(l, "$T/") { // the temp dir is only known to the harness
+					prefix, suffix, _ := strings.Cut(l, "$T/")
+					p := lineWithPrefix(out, prefix)
+					if p == "" || !strings.HasSuffix(p, suffix) {
+						t.Errorf("missing line like %q in:\n%s", l, out)
+					}
+					continue
+				}
 				if !hasLine(out, l) {
 					t.Errorf("missing line %q in:\n%s", l, out)
 				}
@@ -268,6 +342,29 @@ func TestBackupScript(t *testing.T) {
 	}
 }
 
+func TestBackupScriptOffsiteCommand(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	out, _ := runBash(t, backupHarness(nil, "")+`echo "STATE cipher_size=$(wc -c < "$T/received" | tr -d ' ')"
+echo "STATE cipher_sha=$(sha256sum "$T/received" | cut -d' ' -f1)"
+`)
+	last := lineWithPrefix(out, "STATE ssh_last=")
+	m := regexp.MustCompile(`root@203\.0\.113\.7 (backup-\d{8}-\d{6}\.tar\.gz\.age) (\d+) ([0-9a-f]{64})$`).FindStringSubmatch(last)
+	if m == nil {
+		t.Fatalf("the remote command must be '<name>.tar.gz.age <size> <sha256>', got %q\n%s", last, out)
+	}
+	if !hasLine(out, "STATE cipher_size="+m[2]) || !hasLine(out, "STATE cipher_sha="+m[3]) {
+		t.Errorf("the declared size and sha256 must be those of the ciphertext that was sent:\n%s", out)
+	}
+	if strings.Contains(last, ".tar.gz ") {
+		t.Errorf("the plain archive name must not be sent: %q", last)
+	}
+	if age := lineWithPrefix(out, "STATE age_args="); !strings.Contains(age, "-R ") || !strings.Contains(age, "-o ") || !strings.Contains(age, m[1]) {
+		t.Errorf("age must encrypt to the recipient file (-R) and write the ciphertext under the offsite name: %q", age)
+	}
+}
+
 func TestBackupScriptRotation(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
@@ -275,7 +372,7 @@ func TestBackupScriptRotation(t *testing.T) {
 	pre := `for d in 01 02 03 04; do echo old > "$T/backups/backup-202601${d}-000000.tar.gz"; touch -d "2026-01-${d} 00:00:00" "$T/backups/backup-202601${d}-000000.tar.gz"; done
 echo keepme > "$T/backups/notes.txt"
 `
-	out, _ := runBash(t, backupHarness(map[string]string{"KEEP": "3", "TARGET_HOST": ""}, pre)+`echo "STATE notes=$(cat "$T/backups/notes.txt")"`+"\n")
+	out, _ := runBash(t, backupHarness(map[string]string{"KEEP": "3", "TARGET_HOST": "", "AGE_PUB": "0"}, pre)+`echo "STATE notes=$(cat "$T/backups/notes.txt")"`+"\n")
 	names := strings.Fields(strings.TrimPrefix(lineWithPrefix(out, "STATE names="), "STATE names="))
 	if len(names) != 3 || names[0] != "20260103-000000" || names[1] != "20260104-000000" ||
 		!regexp.MustCompile(`^\d{8}-\d{6}$`).MatchString(names[2]) || names[2] <= "20260104-000000" {
@@ -297,6 +394,8 @@ func verifyHarness(expected, restored string, restoreFail bool) string {
 T=$(mktemp -d); W=$(mktemp -d); trap 'rm -rf "$T" "$W"' EXIT
 echo "PGDMP" > "$W/db.dump"; printf 'created_at=now\nusers_count=%s\nhost=h\n' "$EXPECTED" > "$W/meta.txt"
 tar -C "$W" -czf "$T/backup-20261012-040000.tar.gz" db.dump meta.txt
+printf 'ciphertext' > "$T/backup-20261012-040000.tar.gz.age"
+: > "$T/calls"
 runuser() {
   shift 2; if [ "$1" = "--" ]; then shift; fi
   cmd="$1"; shift
@@ -312,11 +411,11 @@ runuser() {
 }
 cat > "$T/verify.sh" <<'VERIFY_SCRIPT_EOF'
 ` + backupVerifyScript + `VERIFY_SCRIPT_EOF
-( . "$T/verify.sh" "$T/backup-20261012-040000.tar.gz" )
+( . "$T/verify.sh" "${VERIFY_ARCHIVE:-$T/backup-20261012-040000.tar.gz}" )
 rc=$?
 echo "STATE exit=$rc"
-echo "STATE dropdb_calls=$(grep -c '^dropdb' "$T/calls")"
-echo "STATE last_call=$(tail -1 "$T/calls" | cut -d' ' -f1)"
+echo "STATE dropdb_calls=$(grep -c '^dropdb' "$T/calls" 2>/dev/null)"
+echo "STATE last_call=$(tail -1 "$T/calls" 2>/dev/null | cut -d' ' -f1)"
 `
 }
 
@@ -364,142 +463,467 @@ func TestBackupVerifyScript(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("an encrypted off-box copy is refused with the way to decrypt it, no database is touched", func(t *testing.T) {
+		t.Parallel()
+		out, _ := runBash(t, assignments(map[string]string{"VERIFY_ARCHIVE": "/x/backup-20261012-040000.tar.gz.age"})+verifyHarness("42", "42", false))
+		if !hasLine(out, "STATE exit=2") || !strings.Contains(out, "is encrypted: decrypt it first (age -d -i backup.key") || !hasLine(out, "STATE dropdb_calls=0") {
+			t.Fatalf("output:\n%s", out)
+		}
+	})
 }
 
 // ───────────────────────── heyearth-backup-receive (runs on the exit) ─────────────────────────
 
-// receiverForTest swaps the fixed directory / retention of the receiver for test values. The
-// production text has no environment hooks: the receiver is a security boundary.
-func receiverForTest(t *testing.T, keep int) string {
+type receiverOpts struct{ keep, max, min int64 }
+
+// receiverForTest swaps the fixed directory / retention / caps of the receiver for test values.
+// The production text has no environment hooks: the receiver is a security boundary.
+func receiverForTest(t *testing.T, o receiverOpts) string {
 	t.Helper()
-	const fixed = "DIR=/var/backups/heyearth-hub; KEEP=7;"
+	const fixed = "DIR=/var/backups/heyearth-hub; KEEP=7; MAX_BYTES=4294967296; MIN_BYTES=104857600;"
 	if !strings.Contains(backupReceiverScript, fixed) {
 		t.Fatalf("receiver no longer contains %q — update the test", fixed)
 	}
-	return strings.Replace(renderBackupReceiver(), fixed, fmt.Sprintf(`DIR="$T/store"; KEEP=%d;`, keep), 1)
+	return strings.Replace(renderBackupReceiver(), fixed, fmt.Sprintf(`DIR="$T/store"; KEEP=%d; MAX_BYTES=%d; MIN_BYTES=%d;`, o.keep, o.max, o.min), 1)
 }
 
-func receiverHarness(t *testing.T, keep int, body string) string {
+// receiverHarness defines: n <date-expr> -> an offsite name for that date, cmdline <name> <file>
+// -> the forced-command line for that payload, recv <command> <stdin-file> -> runs the receiver.
+func receiverHarness(t *testing.T, o receiverOpts, body string) string {
 	return `
-T=$(mktemp -d); W=$(mktemp -d); trap 'rm -rf "$T" "$W"' EXIT
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cat > "$T/receive.sh" <<'RECEIVER_EOF'
-` + receiverForTest(t, keep) + `RECEIVER_EOF
+` + receiverForTest(t, o) + `RECEIVER_EOF
 export T
-echo "payload of a backup" > "$W/db.dump"; tar -C "$W" -czf "$T/good.tar.gz" db.dump
-head -c 60 "$T/good.tar.gz" > "$T/truncated.tar.gz"
+head -c 400 /dev/zero | tr '\0' 'x' > "$T/blob"
+head -c 500 /dev/zero | tr '\0' 'y' > "$T/blob500"
+head -c 3000 /dev/zero | tr '\0' 'z' > "$T/blob3000"
+n() { date -d "$1" +backup-%Y%m%d-%H%M%S.tar.gz.age; }
+cmdline() { printf '%s %s %s' "$1" "$(wc -c < "$2" | tr -d ' ')" "$(sha256sum "$2" | cut -d' ' -f1)"; }
 recv() { SSH_ORIGINAL_COMMAND="$1" bash "$T/receive.sh" < "$2"; }
+stored() { ls -A "$T/store" 2>/dev/null | wc -l | tr -d ' '; }
 ` + body
 }
+
+var defaultReceiver = receiverOpts{keep: 7, max: 100000, min: 1}
 
 func TestBackupReceiver(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
 	version := backupReceiverVersion()
+	run := func(t *testing.T, o receiverOpts, body string) string {
+		t.Helper()
+		out, _ := runBash(t, receiverHarness(t, o, body))
+		return out
+	}
+	want := func(t *testing.T, out string, lines ...string) {
+		t.Helper()
+		for _, l := range lines {
+			if !hasLine(out, l) {
+				t.Errorf("missing line %q in:\n%s", l, out)
+			}
+		}
+	}
 
 	t.Run("ping answers with the receiver version and reads nothing", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 7, `recv ping /dev/null; echo "STATE exit=$?"; echo "STATE stored=$(ls -A "$T/store" 2>/dev/null | wc -l | tr -d ' ')"`))
-		if !hasLine(out, "PONG "+version) || !hasLine(out, "STATE exit=0") || !hasLine(out, "STATE stored=0") {
-			t.Fatalf("ping:\n%s", out)
+		out := run(t, defaultReceiver, `recv ping /dev/null; echo "STATE exit=$?"; echo "STATE stored=$(stored)"`)
+		want(t, out, "PONG "+version, "STATE exit=0", "STATE stored=0")
+	})
+
+	t.Run("a valid upload is stored atomically and answered with the sha256 of the ciphertext", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `name=$(n now); recv "$(cmdline "$name" "$T/blob")" "$T/blob"; echo "STATE exit=$?"
+echo "STATE sum_ok=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" = "$(sha256sum "$T/blob" | cut -d' ' -f1)" ] && echo 1 || echo 0)"
+echo "STATE only_the_archive=$([ "$(ls -A "$T/store")" = "$name" ] && echo 1 || echo 0)"
+echo "STATE sha=$(sha256sum "$T/blob" | cut -d' ' -f1)"`)
+		want(t, out, "STATE exit=0", "STATE sum_ok=1", "STATE only_the_archive=1")
+		sha := strings.TrimPrefix(lineWithPrefix(out, "STATE sha="), "STATE sha=")
+		if !hasLine(out, "OK "+sha) {
+			t.Fatalf("the answer must be 'OK <sha256>':\n%s", out)
 		}
 	})
 
-	t.Run("a valid name stores the stream atomically and answers with its sha256", func(t *testing.T) {
+	t.Run("anything but ping or a well-formed ciphertext upload command is rejected and stores nothing", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 7, `recv backup-20261012-040000.tar.gz "$T/good.tar.gz"; echo "STATE exit=$?"
-echo "STATE sum_ok=$([ "$(sha256sum "$T/store/backup-20261012-040000.tar.gz" | cut -d' ' -f1)" = "$(sha256sum "$T/good.tar.gz" | cut -d' ' -f1)" ] && echo 1 || echo 0)"
-echo "STATE files=$(ls -A "$T/store" | tr '\n' ' ')"`))
-		if !hasLine(out, "STATE exit=0") || !hasLine(out, "STATE sum_ok=1") || !hasLine(out, "STATE files=backup-20261012-040000.tar.gz ") {
-			t.Fatalf("store:\n%s", out)
+		good := `$(date +backup-%Y%m%d-%H%M%S)`
+		cmds := []string{
+			`../evil.tar.gz.age 400 ` + strings.Repeat("a", 64),
+			`backup-2026-1.tar.gz.age 400 ` + strings.Repeat("a", 64),
+			good + `.tar.gz 400 ` + strings.Repeat("a", 64), // a plain name is no longer accepted
+			good + `.tar.gz.age`, // no size / sha
+			good + `.tar.gz.age 400`,
+			good + `.tar.gz.age abc ` + strings.Repeat("a", 64),
+			good + `.tar.gz.age 400 ` + strings.Repeat("A", 64),
+			good + `.tar.gz.age 400 ` + strings.Repeat("a", 63),
+			good + `.tar.gz.age 400 ` + strings.Repeat("a", 64) + ` extra`,
+			good + `.tar.gz.age 400 ` + strings.Repeat("a", 64) + `; id`,
+			good + `.tar.gz.age.part 400 ` + strings.Repeat("a", 64),
+			`x/` + good + `.tar.gz.age 400 ` + strings.Repeat("a", 64),
+			`ping x`, `scp -t /root`, `bash`, ``,
 		}
-		if !regexp.MustCompile(`(?m)^OK [0-9a-f]{64}\r?$`).MatchString(out) {
-			t.Fatalf("no 'OK <sha256>' answer:\n%s", out)
+		var sb strings.Builder
+		for i, c := range cmds {
+			fmt.Fprintf(&sb, "recv \"%s\" \"$T/blob\" >/dev/null 2>&1; echo \"STATE rc%d=$?\"\n", c, i)
 		}
-	})
-
-	t.Run("anything but ping or a backup-YYYYmmdd-HHMMSS.tar.gz name is rejected and stores nothing", func(t *testing.T) {
-		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 7, `for n in '../evil.tar.gz' 'backup-2026-1.tar.gz' 'backup-20261012-040000.tar.gz; id' 'backup-20261012-040000.tar.gz.part' 'x/backup-20261012-040000.tar.gz' 'ping ' 'scp -t /root' 'bash' ''; do
-  recv "$n" "$T/good.tar.gz" >/dev/null 2>&1; echo "STATE rc[$n]=$?"
-done
-echo "STATE stored=$(ls -A "$T/store" 2>/dev/null | wc -l | tr -d ' ')"; echo "STATE outside=$(ls "$T" | grep -c evil)"`))
-		for _, n := range []string{"../evil.tar.gz", "backup-2026-1.tar.gz", "backup-20261012-040000.tar.gz; id", "backup-20261012-040000.tar.gz.part", "x/backup-20261012-040000.tar.gz", "ping ", "scp -t /root", "bash", ""} {
-			if !hasLine(out, fmt.Sprintf("STATE rc[%s]=2", n)) {
-				t.Errorf("name %q must be rejected with status 2:\n%s", n, out)
+		sb.WriteString(`echo "STATE stored=$(stored)"; echo "STATE outside=$(ls "$T" | grep -c evil)"`)
+		out := run(t, defaultReceiver, sb.String())
+		for i, c := range cmds {
+			if !hasLine(out, fmt.Sprintf("STATE rc%d=2", i)) {
+				t.Errorf("command %q must be rejected with status 2:\n%s", c, out)
 			}
 		}
-		if !hasLine(out, "STATE stored=0") || !hasLine(out, "STATE outside=0") {
-			t.Errorf("a rejected name left something behind:\n%s", out)
+		want(t, out, "STATE stored=0", "STATE outside=0")
+	})
+
+	t.Run("the date in the name must be real and at most a day in the future", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `
+f=$(n '+2 days');  recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future2d=$?"
+f=$(n '+12 hours'); recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future12h=$?"
+for bad in backup-20261301-000000 backup-20260231-000000 backup-20261012-250000 backup-99991231-235959; do
+  recv "$(cmdline "$bad.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE bad[$bad]=$?"
+done
+echo "STATE stored=$(stored)"`)
+		want(t, out, "STATE future2d=2", "STATE future12h=0", "STATE bad[backup-20261301-000000]=2", "STATE bad[backup-20260231-000000]=2",
+			"STATE bad[backup-20261012-250000]=2", "STATE bad[backup-99991231-235959]=2", "STATE stored=1")
+	})
+
+	t.Run("size cap: the declared size is checked up front and the stream is cut at the cap", func(t *testing.T) {
+		t.Parallel()
+		o := receiverOpts{keep: 7, max: 1000, min: 1}
+		out := run(t, o, `
+name=$(n now)
+recv "$name 5000 $(sha256sum "$T/blob3000" | cut -d' ' -f1)" "$T/blob3000" >/dev/null 2>&1; echo "STATE declared_too_big=$? stored=$(stored)"
+recv "$name 500 $(sha256sum "$T/blob500" | cut -d' ' -f1)" "$T/blob3000" >/dev/null 2>&1; echo "STATE stream_over_cap=$? stored=$(stored)"
+recv "$(cmdline "$name" "$T/blob500")" "$T/blob500" >/dev/null 2>&1; echo "STATE within_cap=$? stored=$(stored)"`)
+		want(t, out, "STATE declared_too_big=4 stored=0", "STATE stream_over_cap=4 stored=0", "STATE within_cap=0 stored=1")
+	})
+
+	t.Run("size or sha256 not matching what was declared: rejected, nothing stored, no .part", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `
+name=$(n now); sum400=$(sha256sum "$T/blob" | cut -d' ' -f1)
+recv "$name 500 $sum400" "$T/blob" >/dev/null 2>&1;  echo "STATE declared_larger=$? stored=$(stored)"
+recv "$name 300 $sum400" "$T/blob" >/dev/null 2>&1;  echo "STATE declared_smaller=$? stored=$(stored)"
+recv "$name 400 $(printf '0%.0s' $(seq 64))" "$T/blob" >/dev/null 2>&1; echo "STATE wrong_sha=$? stored=$(stored)"`)
+		want(t, out, "STATE declared_larger=3 stored=0", "STATE declared_smaller=3 stored=0", "STATE wrong_sha=3 stored=0")
+	})
+
+	t.Run("a bad re-upload of the same name does not replace the good archive", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `name=$(n now)
+recv "$(cmdline "$name" "$T/blob")" "$T/blob" >/dev/null
+recv "$name 400 $(sha256sum "$T/blob500" | cut -d' ' -f1)" "$T/blob500" >/dev/null 2>&1; echo "STATE exit=$?"
+echo "STATE still_the_first=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" = "$(sha256sum "$T/blob" | cut -d' ' -f1)" ] && echo 1 || echo 0) stored=$(stored)"`)
+		want(t, out, "STATE exit=3", "STATE still_the_first=1 stored=1")
+	})
+
+	t.Run("not enough free space for twice the biggest of (newest archive, declared size, minimum): rejected before anything is written", func(t *testing.T) {
+		t.Parallel()
+		o := receiverOpts{keep: 7, max: 100000, min: 1 << 50}
+		out := run(t, o, `name=$(n now); recv "$(cmdline "$name" "$T/blob")" "$T/blob" 2>&1; echo "STATE exit=$?"; echo "STATE stored=$(stored)"`)
+		want(t, out, "STATE exit=5", "STATE stored=0")
+		if !strings.Contains(out, "not enough free space") {
+			t.Errorf("output:\n%s", out)
 		}
 	})
 
-	t.Run("a truncated gzip stream is rejected: no file, no .part", func(t *testing.T) {
+	t.Run("rotation keeps the newest KEEP by the date in the name, whatever the mtimes are", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 7, `recv backup-20261012-040000.tar.gz "$T/truncated.tar.gz" 2>&1; echo "STATE exit=$?"; echo "STATE stored=$(ls -A "$T/store" | wc -l | tr -d ' ')"`))
-		if !hasLine(out, "STATE exit=3") || !hasLine(out, "STATE stored=0") || !strings.Contains(out, "rejected: truncated or corrupt gzip stream") {
-			t.Fatalf("truncated:\n%s", out)
+		o := receiverOpts{keep: 3, max: 100000, min: 1}
+		out := run(t, o, `mkdir -p "$T/store"
+# five stored archives whose mtimes are the REVERSE of their names: the oldest name is the newest file
+i=0
+for d in '-5 days' '-4 days' '-3 days' '-2 days' '-1 days'; do
+  i=$((i+1)); f=$(n "$d"); cp "$T/blob" "$T/store/$f"; touch -d "2026-10-0$((10-i)) 04:00:00" "$T/store/$f"; eval "name$i=$f"
+done
+# a decoy with an absurdly old name must not outlive the rotation either
+today=$(n now); recv "$(cmdline "$today" "$T/blob")" "$T/blob" >/dev/null; echo "STATE exit=$?"
+for i in 1 2 3 4 5; do eval "f=\$name$i"; echo "STATE exists$i=$([ -e "$T/store/$f" ] && echo 1 || echo 0)"; done
+echo "STATE today=$([ -e "$T/store/$today" ] && echo 1 || echo 0) stored=$(stored)"`)
+		want(t, out, "STATE exit=0", "STATE exists1=0", "STATE exists2=0", "STATE exists3=0", "STATE exists4=1", "STATE exists5=1", "STATE today=1 stored=3")
+	})
+
+	t.Run("flooding with unrelated or old names cannot evict the newest archives", func(t *testing.T) {
+		t.Parallel()
+		o := receiverOpts{keep: 3, max: 100000, min: 1}
+		out := run(t, o, `mkdir -p "$T/store"
+for d in '-3 days' '-2 days' '-1 days'; do f=$(n "$d"); cp "$T/blob" "$T/store/$f"; done
+for k in 1 2 3 4 5; do f="backup-2020010$k-000000.tar.gz.age"; recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null; done
+recv "$(cmdline "$(n '+30 days')" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future=$?"
+echo "STATE kept=$(ls "$T/store" | sed 's/backup-//; s/-[0-9]*\.tar\.gz\.age//' | tr '\n' ' ')"
+echo "STATE count=$(stored)"
+echo "STATE expected=$(for d in '-3 days' '-2 days' '-1 days'; do n "$d" | sed 's/backup-//; s/-[0-9]*\.tar\.gz\.age//'; done | tr '\n' ' ')"`)
+		want(t, out, "STATE future=2", "STATE count=3")
+		if k, e := lineWithPrefix(out, "STATE kept="), lineWithPrefix(out, "STATE expected="); strings.TrimPrefix(k, "STATE kept=") != strings.TrimPrefix(e, "STATE expected=") {
+			t.Errorf("the three newest archives must survive:\n%s", out)
+		}
+	})
+}
+
+// The exit-side installer, run against a temp directory: receiver installed, other keys kept,
+// our own entry replaced (not duplicated), and an unreadable authorized_keys aborts untouched.
+func TestReceiverInstallScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	const pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl heyearth-backup@hub"
+	auth, err := backupAuthorizedKeysLine(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := receiverPaths{receiver: "$T/sbin/heyearth-backup-receive", dir: "$T/store", sshDir: "$T/ssh"}
+	harness := func(stubs, pre string) string {
+		return `T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/ssh"
+printf 'ssh-ed25519 AAAAother1 admin@laptop\nssh-rsa AAAAother2 ci@runner\n' > "$T/ssh/authorized_keys"
+` + pre + `
+cat > "$T/install.sh" <<'INSTALL_EOF'
+` + renderReceiverInstallScriptAt(paths, auth) + `INSTALL_EOF
+cp "$T/ssh/authorized_keys" "$T/ak.before"
+( ` + stubs + `
+. "$T/install.sh" )
+echo "STATE exit=$?"
+echo "STATE keys=$(grep -c . "$T/ssh/authorized_keys")"
+echo "STATE ours=$(grep -c 'heyearth-backup@hub' "$T/ssh/authorized_keys")"
+echo "STATE others=$(grep -c -e AAAAother1 -e AAAAother2 "$T/ssh/authorized_keys")"
+echo "STATE unchanged=$(cmp -s "$T/ak.before" "$T/ssh/authorized_keys" && echo 1 || echo 0)"
+echo "STATE new_left=$([ -e "$T/ssh/authorized_keys.new" ] && echo 1 || echo 0)"
+echo "STATE receiver=$([ -s "$T/sbin/heyearth-backup-receive" ] && head -n 1 "$T/sbin/heyearth-backup-receive")"
+echo "STATE forced=$(grep 'heyearth-backup@hub' "$T/ssh/authorized_keys" | cut -c1-59)"
+`
+	}
+
+	t.Run("installs the receiver and adds our entry next to the other keys; a second run does not duplicate it", func(t *testing.T) {
+		t.Parallel()
+		out, _ := runBash(t, harness("", `echo 'command="/old",restrict ssh-ed25519 AAAAstale heyearth-backup@hub' >> "$T/ssh/authorized_keys"`)+`
+( . "$T/install.sh" ) >/dev/null; echo "STATE keys_after_second_run=$(grep -c . "$T/ssh/authorized_keys") ours_after_second_run=$(grep -c 'heyearth-backup@hub' "$T/ssh/authorized_keys")"`)
+		for _, l := range []string{"STATE exit=0", "STATE keys=3", "STATE ours=1", "STATE others=2", "STATE new_left=0", "STATE receiver=#!/usr/bin/env bash",
+			`STATE forced=command="/usr/local/sbin/heyearth-backup-receive",restrict,`, "STATE keys_after_second_run=3 ours_after_second_run=1"} {
+			if !hasLine(out, l) {
+				t.Errorf("missing %q:\n%s", l, out)
+			}
+		}
+		if strings.Contains(out, "AAAAstale") {
+			t.Errorf("the stale entry of our key must be replaced:\n%s", out)
 		}
 	})
 
-	t.Run("a corrupt re-upload does not replace the good archive of the same name", func(t *testing.T) {
+	t.Run("an unreadable authorized_keys aborts and leaves it untouched (grep exit 2 must not shrink the file)", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 7, `recv backup-20261012-040000.tar.gz "$T/good.tar.gz" >/dev/null
-recv backup-20261012-040000.tar.gz "$T/truncated.tar.gz" >/dev/null 2>&1; echo "STATE exit=$?"
-echo "STATE still_good=$(gzip -t "$T/store/backup-20261012-040000.tar.gz" && echo 1 || echo 0)"`))
-		if !hasLine(out, "STATE exit=3") || !hasLine(out, "STATE still_good=1") {
-			t.Fatalf("re-upload:\n%s", out)
+		out, _ := runBash(t, harness("grep() { return 2; }", ""))
+		for _, l := range []string{"STATE exit=1", "STATE unchanged=1", "STATE new_left=0", "STATE ours=0", "STATE others=2"} {
+			if !hasLine(out, l) {
+				t.Errorf("missing %q:\n%s", l, out)
+			}
+		}
+		if !strings.Contains(out, "ABORT: cannot read") || !strings.Contains(out, "(grep exit 2)") {
+			t.Errorf("no abort message:\n%s", out)
 		}
 	})
 
-	t.Run("keeps the newest KEEP archives", func(t *testing.T) {
+	t.Run("an authorized_keys without any line of ours (grep exit 1) is the normal first install", func(t *testing.T) {
 		t.Parallel()
-		out, _ := runBash(t, receiverHarness(t, 3, `mkdir -p "$T/store"
-for d in 01 02 03 04 05; do cp "$T/good.tar.gz" "$T/store/backup-202610${d}-040000.tar.gz"; touch -d "2026-10-${d} 04:00:00" "$T/store/backup-202610${d}-040000.tar.gz"; done
-recv backup-20261012-040000.tar.gz "$T/good.tar.gz" >/dev/null; echo "STATE exit=$?"
-echo "STATE kept=$(ls "$T/store" | sed 's/backup-//; s/-040000.tar.gz//' | tr '\n' ' ')"`))
-		if !hasLine(out, "STATE exit=0") || !hasLine(out, "STATE kept=20261004 20261005 20261012 ") {
-			t.Fatalf("rotation:\n%s", out)
+		out, _ := runBash(t, harness("", `: > "$T/ssh/authorized_keys"`))
+		if !hasLine(out, "STATE exit=0") || !hasLine(out, "STATE keys=1") || !hasLine(out, "STATE ours=1") {
+			t.Errorf("output:\n%s", out)
 		}
 	})
+}
+
+// ───────────────────────── backup.env resolution ─────────────────────────
+
+func TestReadBackupEnvScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	run := func(setup string) (string, int) {
+		return runBash(t, `T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+export HEYEARTH_BACKUP_ENV="$T/backup.env"
+`+setup+"\n"+strings.ReplaceAll(readBackupEnvScript, "/etc/heyearth/backup.env", `${HEYEARTH_BACKUP_ENV}`))
+	}
+	t.Run("absent file is ENV-ABSENT, exit 0", func(t *testing.T) {
+		out, exit := run("")
+		if exit != 0 || !hasLine(out, "ENV-ABSENT") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+	t.Run("present file: the three keys and ENV-OK", func(t *testing.T) {
+		out, exit := run(`printf 'BACKUP_DIR=/x\nTARGET_HOST=89.124.89.126\nTARGET_PORT=22\nAGE_RECIPIENT=` + testAgeRecipient + `\nSSH_KEY=/k\n' > "$T/backup.env"`)
+		if exit != 0 || !hasLine(out, "ENV-OK") || !hasLine(out, "TARGET_HOST=89.124.89.126") || !hasLine(out, "AGE_RECIPIENT="+testAgeRecipient) || strings.Contains(out, "SSH_KEY") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+	t.Run("present file without any of the keys (grep exit 1) is fine", func(t *testing.T) {
+		out, exit := run(`echo KEEP=14 > "$T/backup.env"`)
+		if exit != 0 || !hasLine(out, "ENV-OK") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+	t.Run("a read error (grep exit 2) is a failure, never ENV-ABSENT", func(t *testing.T) {
+		out, exit := run(`echo TARGET_HOST=1.2.3.4 > "$T/backup.env"; grep() { return 2; }`)
+		if exit != 1 || hasLine(out, "ENV-ABSENT") || hasLine(out, "ENV-OK") || !strings.Contains(out, "cannot read") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+}
+
+func TestParseBackupEnv(t *testing.T) {
+	ok := func(in string, want backupConfig) {
+		t.Helper()
+		got, err := parseBackupEnv(in)
+		if err != nil || got != want {
+			t.Errorf("parseBackupEnv(%q) = %+v, %v; want %+v", in, got, err, want)
+		}
+	}
+	bad := func(in, why string) {
+		t.Helper()
+		if _, err := parseBackupEnv(in); err == nil {
+			t.Errorf("parseBackupEnv(%q) must fail (%s)", in, why)
+		}
+	}
+	ok("ENV-ABSENT\n", backupConfig{})
+	ok("ENV-OK\n", backupConfig{})
+	ok("TARGET_HOST=89.124.89.126\nTARGET_PORT=2222\nAGE_RECIPIENT="+testAgeRecipient+"\nENV-OK\n", backupConfig{"89.124.89.126", 2222, testAgeRecipient})
+	ok("TARGET_HOST=\nTARGET_PORT=22\nAGE_RECIPIENT=\nENV-OK\r\n", backupConfig{"", 22, ""})
+	bad("", "no state marker: the read did not work")
+	bad("TARGET_HOST=89.124.89.126\n", "no state marker")
+	bad("TARGET_HOST=$(reboot)\nENV-OK\n", "malformed host must not be treated as 'no target'")
+	bad("TARGET_PORT=99999\nENV-OK\n", "malformed port")
+	bad("AGE_RECIPIENT=age1short\nENV-OK\n", "malformed recipient")
+}
+
+func TestMergeBackupConfig(t *testing.T) {
+	stored := backupConfig{"89.124.89.126", 2222, testAgeRecipient}
+	other := "age1" + strings.Repeat("q", 58)
+	cases := []struct {
+		name       string
+		stored     backupConfig
+		target     string
+		port       int
+		recipient  string
+		want       backupConfig
+		wantErrHas string
+	}{
+		{"nothing stored, nothing given: local backups only", backupConfig{}, "", 22, "", backupConfig{port: 22}, ""},
+		{"flags only", backupConfig{}, "89.124.89.126", 22, testAgeRecipient, backupConfig{"89.124.89.126", 22, testAgeRecipient}, ""},
+		{"stored values are kept when no flags are given (a re-run never switches the copy off)", stored, "", 22, "", stored, ""},
+		{"a flag target replaces the stored one and takes the flag port", stored, "5.6.7.8", 22, "", backupConfig{"5.6.7.8", 22, testAgeRecipient}, ""},
+		{"a new recipient replaces the stored one", stored, "", 22, other, backupConfig{"89.124.89.126", 2222, other}, ""},
+		{"a recipient alone (no target) is persisted", backupConfig{}, "", 22, testAgeRecipient, backupConfig{"", 22, testAgeRecipient}, ""},
+		{"a target without any recipient is refused", backupConfig{}, "89.124.89.126", 22, "", backupConfig{}, "--backup-age-recipient"},
+		{"a stored target without a stored recipient is refused too", backupConfig{"89.124.89.126", 22, ""}, "", 22, "", backupConfig{}, "--backup-age-recipient"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := mergeBackupConfig(c.stored, c.target, c.port, c.recipient)
+			if c.wantErrHas != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErrHas) {
+					t.Fatalf("want an error mentioning %q, got %v (%+v)", c.wantErrHas, err, got)
+				}
+				return
+			}
+			if err != nil || got != c.want {
+				t.Fatalf("got %+v, %v; want %+v", got, err, c.want)
+			}
+		})
+	}
+}
+
+func TestValidateBackupFlags(t *testing.T) {
+	for _, tc := range []struct {
+		target    string
+		port      int
+		recipient string
+		ok        bool
+	}{
+		{"", 22, "", true}, {"89.124.89.126", 22, testAgeRecipient, true}, {"2001:db8::1", 2222, "", true},
+		{"89.124.89.126; rm -rf /", 22, "", false}, {"host.example.com", 22, "", false}, {"1.2.3", 22, "", false},
+		{"89.124.89.126", 0, "", false}, {"89.124.89.126", 70000, "", false}, {"", 0, "", false},
+		{"", 22, "age1short", false}, {"", 22, "AGE-SECRET-KEY-1QQQQ", false}, {"", 22, testAgeRecipient + "x", false},
+		{"", 22, strings.Replace(testAgeRecipient, "age1q", "age1b", 1), false}, // b is not in the bech32 alphabet
+	} {
+		if err := validateBackupFlags(tc.target, tc.port, tc.recipient); (err == nil) != tc.ok {
+			t.Errorf("validateBackupFlags(%q, %d, %q) = %v, want ok=%v", tc.target, tc.port, tc.recipient, err, tc.ok)
+		}
+	}
+}
+
+// ───────────────────────── exit credentials ─────────────────────────
+
+func TestExitAccessFor(t *testing.T) {
+	const fp = "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8"
+	env := func(kv ...string) envMap {
+		m := envMap{}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	t.Run("password and fingerprint from the environment", func(t *testing.T) {
+		a, err := exitAccessFor(env("EXIT_NODE_SSH_PASSWORD", "exit-pw", "EXIT_NODE_HOST_KEY_FINGERPRINT", fp), "")
+		if err != nil || a.password != "exit-pw" || a.fingerprint != fp {
+			t.Fatalf("%+v, %v", a, err)
+		}
+	})
+	t.Run("the flag password wins over the environment", func(t *testing.T) {
+		a, err := exitAccessFor(env("EXIT_NODE_SSH_PASSWORD", "env-pw", "EXIT_NODE_HOST_KEY_FINGERPRINT", fp), "flag-pw")
+		if err != nil || a.password != "flag-pw" {
+			t.Fatalf("%+v, %v", a, err)
+		}
+	})
+	t.Run("the Hub deploy password is never a fallback", func(t *testing.T) {
+		_, err := exitAccessFor(env("DEPLOY_SSH_PASSWORD", "hub-pw", "EXIT_NODE_HOST_KEY_FINGERPRINT", fp), "")
+		if err == nil || !strings.Contains(err.Error(), "EXIT_NODE_SSH_PASSWORD") || !strings.Contains(err.Error(), "never tried on the exit") {
+			t.Fatalf("want a clear error about the missing exit password, got %v", err)
+		}
+	})
+	t.Run("the host key fingerprint is mandatory on the password path", func(t *testing.T) {
+		_, err := exitAccessFor(env("EXIT_NODE_SSH_PASSWORD", "exit-pw"), "")
+		if err == nil || !strings.Contains(err.Error(), "EXIT_NODE_HOST_KEY_FINGERPRINT is required") || !strings.Contains(err.Error(), "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") {
+			t.Fatalf("want an error that says how to get the fingerprint, got %v", err)
+		}
+	})
+	t.Run("a malformed fingerprint is refused", func(t *testing.T) {
+		for _, bad := range []string{"MD5:aa:bb", "SHA256:short", "nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8", "SHA256:" + strings.Repeat("A", 44)} {
+			if _, err := exitAccessFor(env("EXIT_NODE_SSH_PASSWORD", "x", "EXIT_NODE_HOST_KEY_FINGERPRINT", bad), ""); err == nil {
+				t.Errorf("accepted %q", bad)
+			}
+		}
+	})
+}
+
+func TestHostKeyMatchesFingerprint(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(ssh.MarshalAuthorizedKey(sshPub)))
+	fp := ssh.FingerprintSHA256(sshPub)
+	if !fingerprintRe.MatchString(fp) {
+		t.Fatalf("fingerprintRe does not accept a real fingerprint %q", fp)
+	}
+	if !hostKeyMatchesFingerprint(fields[0], fields[1], fp) {
+		t.Errorf("the key must match its own fingerprint")
+	}
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	otherPub, _ := ssh.NewPublicKey(other)
+	if hostKeyMatchesFingerprint(fields[0], fields[1], ssh.FingerprintSHA256(otherPub)) {
+		t.Errorf("a different key's fingerprint must not match")
+	}
+	if hostKeyMatchesFingerprint("ssh-ed25519", "not-base64!!", fp) {
+		t.Errorf("garbage must not match")
+	}
 }
 
 // ───────────────────────── Go-side rendering ─────────────────────────
-
-func TestValidateBackupTarget(t *testing.T) {
-	for _, tc := range []struct {
-		target string
-		port   int
-		ok     bool
-	}{
-		{"", 22, true}, {"89.124.89.126", 22, true}, {"2001:db8::1", 2222, true},
-		{"89.124.89.126; rm -rf /", 22, false}, {"host.example.com", 22, false}, {"1.2.3", 22, false},
-		{"89.124.89.126", 0, false}, {"89.124.89.126", 70000, false}, {"", 0, false},
-	} {
-		if err := validateBackupTarget(tc.target, tc.port); (err == nil) != tc.ok {
-			t.Errorf("validateBackupTarget(%q, %d) = %v, want ok=%v", tc.target, tc.port, err, tc.ok)
-		}
-	}
-}
-
-func TestParseBackupEnvTarget(t *testing.T) {
-	for _, tc := range []struct {
-		in         string
-		wantTarget string
-		wantPort   int
-	}{
-		{"TARGET_HOST=89.124.89.126\nTARGET_PORT=2222\n", "89.124.89.126", 2222},
-		{"TARGET_HOST=89.124.89.126\n", "89.124.89.126", 22},
-		{"", "", 22},
-		{"TARGET_HOST=\nTARGET_PORT=22\n", "", 22},
-		{"TARGET_HOST=$(reboot)\nTARGET_PORT=99999\n", "", 22},
-	} {
-		gotT, gotP := parseBackupEnvTarget(tc.in, 22)
-		if gotT != tc.wantTarget || gotP != tc.wantPort {
-			t.Errorf("parseBackupEnvTarget(%q) = %q, %d; want %q, %d", tc.in, gotT, gotP, tc.wantTarget, tc.wantPort)
-		}
-	}
-}
 
 func TestBackupAuthorizedKeysLine(t *testing.T) {
 	const pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl heyearth-backup@hub"
@@ -542,63 +966,98 @@ func TestReceiverVersion(t *testing.T) {
 	}
 }
 
+func payloadFrom(t *testing.T, script, path string) string {
+	t.Helper()
+	i := strings.Index(script, "put_file "+path+" ")
+	if i < 0 {
+		t.Fatalf("no put_file for %s", path)
+	}
+	m := regexp.MustCompile(`'([A-Za-z0-9+/=]*)'`).FindStringSubmatch(script[i:])
+	got, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		t.Fatalf("payload of %s: %v", path, err)
+	}
+	return string(got)
+}
+
 func TestRenderBackupInstallScript(t *testing.T) {
-	s := renderBackupInstallScript("89.124.89.126", 2222)
-	// payloads round-trip through base64
-	payloads := map[string]string{
-		"/etc/heyearth/backup.env":                    renderBackupEnv("89.124.89.126", 2222),
+	bc := backupConfig{"89.124.89.126", 2222, testAgeRecipient}
+	s := renderBackupInstallScript(bc)
+	for path, content := range map[string]string{
+		"/etc/heyearth/backup.env":                    renderBackupEnv(bc),
 		"/opt/heyearth/bin/heyearth-backup.sh":        backupScript,
 		"/opt/heyearth/bin/heyearth-backup-verify.sh": backupVerifyScript,
 		"/etc/systemd/system/heyearth-backup.service": backupServiceUnit,
 		"/etc/systemd/system/heyearth-backup.timer":   backupTimerUnit,
-	}
-	for path, content := range payloads {
-		want := fmt.Sprintf("put_file %s ", path)
-		i := strings.Index(s, want)
-		if i < 0 {
-			t.Errorf("no put_file for %s", path)
-			continue
-		}
-		m := regexp.MustCompile(`'([A-Za-z0-9+/=]*)'`).FindStringSubmatch(s[i:])
-		got, err := base64.StdEncoding.DecodeString(m[1])
-		if err != nil || string(got) != content {
-			t.Errorf("payload of %s does not round-trip (%v)", path, err)
+		"/etc/heyearth/backup-age.pub":                testAgeRecipient + "\n",
+	} {
+		if got := payloadFrom(t, s, path); got != content {
+			t.Errorf("payload of %s does not round-trip", path)
 		}
 	}
-	env := renderBackupEnv("89.124.89.126", 2222)
-	for _, want := range []string{"TARGET_HOST=89.124.89.126\n", "TARGET_PORT=2222\n", "KEEP=14\n", "SSH_KEY=/root/.ssh/heyearth_backup_ed25519\n", "BACKUP_DIR=/opt/heyearth/backups\n"} {
+	env := renderBackupEnv(bc)
+	for _, want := range []string{"TARGET_HOST=89.124.89.126\n", "TARGET_PORT=2222\n", "KEEP=14\n", "SSH_KEY=/root/.ssh/heyearth_backup_ed25519\n",
+		"BACKUP_DIR=/opt/heyearth/backups\n", "AGE_RECIPIENT=" + testAgeRecipient + "\n", "AGE_RECIPIENT_FILE=/etc/heyearth/backup-age.pub\n"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("backup.env lacks %q", want)
 		}
 	}
-	// the calendar expression of the timer is validated by systemd itself before any write
-	if a, b := strings.Index(s, `systemd-analyze calendar "`+backupOnCalendar+`"`), strings.Index(s, "put_file /etc/heyearth/backup.env"); a < 0 || b < 0 || a > b {
-		t.Errorf("the OnCalendar check must come before the first put_file")
-	}
-	// the tool check precedes every write
-	if a, b := strings.Index(s, "is not installed"), strings.Index(s, "put_file /etc/heyearth/backup.env"); a < 0 || b < 0 || a > b {
-		t.Errorf("the prerequisite check must come before the first put_file")
+	// everything that can fail is checked or installed before the first write
+	first := strings.Index(s, "put_file /etc/heyearth/backup.env")
+	for _, marker := range []string{"is not installed", `systemd-analyze calendar "` + backupOnCalendar + `"`, "apt-get install -y -qq age", "cannot install age"} {
+		if i := strings.Index(s, marker); i < 0 || first < 0 || i > first {
+			t.Errorf("%q must come before the first put_file", marker)
+		}
 	}
 	if !strings.Contains(backupTimerUnit, "OnCalendar=*-*-* 04:00:00 Europe/Moscow") || !strings.Contains(backupTimerUnit, "Persistent=true") {
 		t.Errorf("timer: %q", backupTimerUnit)
 	}
+	// local-only configuration: no age package, no recipient file
+	local := renderBackupInstallScript(backupConfig{port: 22})
+	if strings.Contains(local, "apt-get") || strings.Contains(local, "backup-age.pub") {
+		t.Errorf("a local-only install must not touch age")
+	}
+	if got := payloadFrom(t, local, "/etc/heyearth/backup.env"); !strings.Contains(got, "TARGET_HOST=\n") || !strings.Contains(got, "AGE_RECIPIENT=\n") {
+		t.Errorf("local-only env: %q", got)
+	}
 }
 
-// The install script must refuse to touch the host when a tool is missing — run with the tool
-// check failing and every mutating command replaced by a trap, so the test cannot write to /etc
-// even when it runs as root on a Linux CI host.
-func TestBackupInstallAbortsBeforeWritingWhenAToolIsMissing(t *testing.T) {
+// The install script must refuse to touch the host when a tool is missing or age cannot be
+// installed — run with the checks failing and every mutating command replaced by a trap, so the
+// test cannot write to /etc even when it runs as root on a Linux CI host.
+func TestBackupInstallAbortsBeforeWriting(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
-	guard := `
-command() { if [ "$1" = -v ] && [ "$2" = pg_dump ]; then return 1; fi; builtin command "$@"; }
-for f in mkdir chmod systemctl ssh-keygen mktemp mv cp tee; do eval "$f() { echo UNEXPECTED-$f \"\$@\"; exit 99; }"; done
+	trap := `for f in mkdir chmod systemctl ssh-keygen mktemp mv cp tee; do eval "$f() { echo UNEXPECTED-$f; exit 99; }"; done
 `
-	out, exit := runBash(t, guard+renderBackupInstallScript("89.124.89.126", 22))
-	if exit != 1 || !strings.Contains(out, "[ops] ABORT: pg_dump is not installed — backup timer not installed") || strings.Contains(out, "UNEXPECTED") {
-		t.Fatalf("exit %d:\n%s", exit, out)
-	}
+	t.Run("a missing tool", func(t *testing.T) {
+		guard := `command() { if [ "$1" = -v ] && [ "$2" = pg_dump ]; then return 1; fi; builtin command "$@"; }` + "\n" + trap
+		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}))
+		if exit != 1 || !strings.Contains(out, "[ops] ABORT: pg_dump is not installed — backup timer not installed") || strings.Contains(out, "UNEXPECTED") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+	t.Run("age cannot be installed", func(t *testing.T) {
+		guard := `command() { if [ "$1" = -v ] && [ "$2" = age ]; then return 1; fi; return 0; }
+timeout() { shift; "$@"; }
+apt-get() { echo "apt: stub failure" >&2; return 100; }
+systemd-analyze() { return 0; }
+` + trap
+		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}))
+		if exit != 1 || !strings.Contains(out, "[ops] ABORT: cannot install age — backup timer not installed") || strings.Contains(out, "UNEXPECTED") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+	t.Run("a systemd that cannot parse the time zone", func(t *testing.T) {
+		guard := `command() { return 0; }
+systemd-analyze() { return 1; }
+` + trap
+		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{port: 22}))
+		if exit != 1 || !strings.Contains(out, "cannot parse OnCalendar with a time zone") || strings.Contains(out, "UNEXPECTED") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
 }
 
 func TestPutFile(t *testing.T) {
@@ -644,13 +1103,15 @@ func TestOpsScriptsParse(t *testing.T) {
 		"backup.sh":              backupScript,
 		"backup-verify.sh":       backupVerifyScript,
 		"receiver":               renderBackupReceiver(),
-		"backup install":         renderBackupInstallScript("89.124.89.126", 22),
+		"backup install":         renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}),
+		"backup install local":   renderBackupInstallScript(backupConfig{port: 22}),
 		"receiver install":       renderReceiverInstallScript(auth),
 		"known_hosts + probe":    renderKnownHostsScript("89.124.89.126", 2222, "ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
 		"journald + fail2ban":    renderHostHygieneScript(22, "89.124.89.126"),
-		"nginx stream patch":     renderNginxStreamPatchScript(),
+		"nginx patch":            renderNginxStreamPatchScript(),
 		"xray api guard":         xrayAPIGuardScript,
 		"xray api guard install": renderXrayAPIGuardInstallScript(),
+		"read backup.env":        readBackupEnvScript,
 		"prune firewall":         pruneFirewallScript,
 	}
 	for name, s := range scripts {
@@ -661,8 +1122,8 @@ func TestOpsScriptsParse(t *testing.T) {
 			}
 		})
 	}
-	// The exit-side scripts and the Hub scripts are shipped through `bash -c <quoted>`: the
-	// quoted form must not exceed what a single argument may carry (128 KiB on Linux).
+	// The scripts are shipped through `bash -c <quoted>`: the quoted form must not exceed what a
+	// single argument may carry (128 KiB on Linux).
 	for name, s := range scripts {
 		if n := len(shQuote(s)); n > 100_000 {
 			t.Errorf("%s: %d bytes as one argument", name, n)
