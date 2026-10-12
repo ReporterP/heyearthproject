@@ -322,3 +322,33 @@ func TestExitNodeSetupError(t *testing.T) {
 		})
 	}
 }
+
+// The exit's hysteria server is the tunnel egress: server.yaml must close with the shared
+// config.ExitHysteriaACL (rejects loopback/private/link-local/own IP, then direct(all)), the
+// same block the admin panel's exit provisioning writes.
+func TestExitNodeSetupScriptACL(t *testing.T) {
+	s := exitNodeSetupScript("203.0.113.7")
+	_, yaml, ok := strings.Cut(s, "cat > /opt/heyearth/hysteria/server.yaml <<'HYEOF'\n")
+	if !ok {
+		t.Fatal("no quoted server.yaml heredoc")
+	}
+	yaml, _, ok = strings.Cut(yaml, "\nHYEOF\n")
+	if !ok {
+		t.Fatal("server.yaml heredoc not terminated")
+	}
+	yaml += "\n"
+	acl := config.ExitHysteriaACL("203.0.113.7")
+	if !strings.HasSuffix(yaml, "\n\n"+acl) {
+		t.Fatalf("server.yaml must end with the shared exit ACL:\n%s", yaml)
+	}
+	for _, want := range []string{"    - reject(127.0.0.0/8)\n", "    - reject(10.0.0.0/8)\n", "    - reject(203.0.113.7)\n    - direct(all)\n"} {
+		if !strings.Contains(yaml, want) {
+			t.Errorf("server.yaml lacks %q", want)
+		}
+	}
+	for _, keep := range []string{"listen: :50443\n", "  password: PLACEHOLDER_SS_PASSWORD\n", "bandwidth:\n  up: 1 gbps\n  down: 1 gbps\n"} {
+		if !strings.Contains(yaml, keep) {
+			t.Errorf("server.yaml lost %q", keep)
+		}
+	}
+}

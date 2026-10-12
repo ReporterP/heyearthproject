@@ -1762,8 +1762,10 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 }
 
 // exitNodeSetupScript renders the root provisioning script for a new exit node: Xray
-// (SS+WS :443, VLESS Reality :10443) + Hysteria2 server (:50443). Pure, so tests can
-// render it without SSH.
+// (SS+WS :443, VLESS Reality :10443) + Hysteria2 server (:50443). The hysteria server.yaml
+// ends with config.ExitHysteriaACL (shared with the admin panel's exit provisioning), so the
+// tunnel egress cannot reach the exit's loopback, private neighbours or its own public IP.
+// Pure, so tests can render it without SSH.
 func exitNodeSetupScript(exitIP string) string {
 	return fmt.Sprintf(`set -e
 mkdir -p /opt/heyearth/xray /opt/heyearth/state
@@ -1976,6 +1978,8 @@ quic:
 bandwidth:
   up: 1 gbps
   down: 1 gbps
+
+%s
 HYEOF
 # Подставляем пароль
 sed -i "s|PLACEHOLDER_SS_PASSWORD|$SS_PASSWORD|g" /opt/heyearth/hysteria/server.yaml
@@ -2034,7 +2038,7 @@ echo "Short ID: $SHORT_ID"
 echo "SS Password: $SS_PASSWORD"
 echo "SNI: microsoft.com"
 echo "================================="
-`, config.HysteriaInstallScript(), exitIP)
+`, config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP), "\n"), exitIP)
 }
 
 // exitNodeSetupError says why exitNodeSetupScript did not complete: the script exited
