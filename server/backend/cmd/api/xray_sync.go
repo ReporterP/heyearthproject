@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -21,6 +20,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/xraydiff"
 )
 
 // ─────────────────────── Xray Config Sync (Hub-and-Spoke) ───────────────────────
@@ -836,26 +836,38 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
-	// Skip restart if config hasn't actually changed (avoids dropping active connections)
-	if existingConfig, err := os.ReadFile(xrayConfigPath); err == nil {
-		if bytes.Equal(existingConfig, configJSON) {
-			_ = os.Remove(tmpPath)
-			log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
-			return nil
-		}
+	// ── Apply: unchanged / user-only via the xray API / restart (Task 7) ──
+	// Canonical comparison (parsed JSON, xraydiff) with the config xray runs from.
+	// User-only changes go live without a restart; structural ones, any API
+	// error and a stale runtime (failed apply or restart) restart xray.
+	start := time.Now()
+	action, diff, liveErr, err := xrayApplier{
+		readRunning: func() ([]byte, error) { return os.ReadFile(xrayConfigPath) },
+		applyLive:   func(d xraydiff.Result) error { return applyUserOnlyDiff(xrayBin, d) },
+		install:     func() error { return os.Rename(tmpPath, xrayConfigPath) },
+		discard:     func() { _ = os.Remove(tmpPath) },
+		restart:     restartXray,
+	}.apply(configJSON, &xrayRuntimeStale)
+	if liveErr != nil {
+		RaiseAlert(xrayLiveAlertKey, AlertWarn, "Горячее применение пользователей не удалось",
+			truncateAlertDetails(liveErr.Error())+" — откат на рестарт xray")
+	}
+	if err != nil {
+		return err
+	}
+	switch action {
+	case xrayApplyUnchanged:
+		log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
+		return nil
+	case xrayApplyLive:
+		ResolveAlert(xrayLiveAlertKey, "Горячее применение пользователей снова работает")
+		added, removed := diff.UserTotals()
+		log.Printf("[xray-sync] user-only applied via API: +%d/-%d users, rules %v (routing pushed=%v), %d ms",
+			added, removed, diff.ChangedRules, diff.RoutingChanged, time.Since(start).Milliseconds())
+		return nil
 	}
 
-	// Atomic rename
-	if err := os.Rename(tmpPath, xrayConfigPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename xray config: %w", err)
-	}
-
-	// Restart Xray (Xray-core не поддерживает reload — только restart)
-	cmd := exec.Command("systemctl", "restart", "xray")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("restart xray: %w (%s)", err, strings.TrimSpace(string(output)))
-	}
+	// Restarted: structural change, failed API apply or stale runtime.
 	recordXrayRestart()
 
 	// Notify clients that subscription config has changed.
