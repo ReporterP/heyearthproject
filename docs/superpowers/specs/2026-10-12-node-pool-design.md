@@ -1,7 +1,7 @@
 ---
 beads_epic: heyearthproject-cudk
 research: docs/research/2026-10-12-node-pool-map.md
-status: review
+status: approved-design
 created: 2026-10-12
 ---
 
