@@ -73,10 +73,12 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	fx := newLeakFixture()
 	user := userInboundTags(fx.inbounds)
 	bal := newBalancer("exit-balancer", []string{"exit-2"}, "random")
+	// Shape of the Task 7 generator: one plan-* tagged rule per plan.
 	exitRules := []map[string]interface{}{
 		{"type": "field", "inboundTag": []string{"api-in"}, "outboundTag": "api"},
 		dnsDirectRule(),
-		{"type": "field", "user": []string{"u1"}, "domain": []string{"domain:yandex.ru"}, "outboundTag": "direct-freedom"},
+		{"type": "field", "ruleTag": "plan-3-direct-domains", "user": []string{"u1", "u2"}, "domain": []string{"domain:yandex.ru"}, "outboundTag": "direct-freedom"},
+		{"type": "field", "ruleTag": "plan-3-users", "user": []string{"u1", "u2"}, "balancerTag": "plan-3-balancer"},
 		{"type": "field", "network": "tcp,udp", "balancerTag": "exit-balancer"},
 	}
 	noExitRules := []map[string]interface{}{
@@ -84,7 +86,8 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	}
 
 	// accepted
-	if err := checkNoDirectLeak(fx.inbounds, fx.good, routingWith(exitRules, bal)); err != nil {
+	planBal := newBalancer("plan-3-balancer", []string{"exit-2"}, "random")
+	if err := checkNoDirectLeak(fx.inbounds, fx.good, routingWith(exitRules, bal, planBal)); err != nil {
 		t.Fatalf("valid exit config rejected: %v", err)
 	}
 	if err := checkNoDirectLeak(fx.inbounds, fx.noExit, routingWith(noExitRules)); err != nil {

@@ -550,9 +550,13 @@ func SyncXrayConfig() error {
 		if len(userIDs) == 0 {
 			continue
 		}
+		// One rule per plan with a stable ruleTag (xraydiff: plan-* rules are
+		// user-only and are applied live through `xray api adrules`).
+		sort.Strings(userIDs)
 		if len(domains) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
+				"ruleTag":     fmt.Sprintf("plan-%d-direct-domains", planID),
 				"user":        userIDs,
 				"domain":      domains,
 				"outboundTag": "direct-freedom",
@@ -561,6 +565,7 @@ func SyncXrayConfig() error {
 		if len(ips) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
+				"ruleTag":     fmt.Sprintf("plan-%d-direct-ip", planID),
 				"user":        userIDs,
 				"ip":          ips,
 				"outboundTag": "direct-freedom",
@@ -626,7 +631,8 @@ func SyncXrayConfig() error {
 		}
 
 		// Per-plan balancers: create a balancer for each unique set of allowed servers
-		planBalancers := map[int]string{} // planID → balancer tag
+		planBalancers := map[int]string{}                    // planID → balancer tag
+		planBalancerDefs := map[int]map[string]interface{}{} // planID → balancer
 		for _, client := range activeClients {
 			if client.PlanID == 0 || len(client.AllowedServerIDs) == 0 {
 				continue // no plan or all servers → default balancer
@@ -651,22 +657,48 @@ func SyncXrayConfig() error {
 			}
 			balancerTag := fmt.Sprintf("plan-%d-balancer", client.PlanID)
 			planBalancers[client.PlanID] = balancerTag
-			balancers = append(balancers, newBalancer(balancerTag, planTags, balancerStrategy))
+			planBalancerDefs[client.PlanID] = newBalancer(balancerTag, planTags, balancerStrategy)
+		}
+		// Plan balancers in plan-ID order, not in the order of each plan's first
+		// user (ORDER BY user_id): otherwise a new user could reorder the list, and
+		// xraydiff treats any balancer change as structural (restart).
+		balancerPlanIDs := make([]int, 0, len(planBalancerDefs))
+		for id := range planBalancerDefs {
+			balancerPlanIDs = append(balancerPlanIDs, id)
+		}
+		sort.Ints(balancerPlanIDs)
+		for _, id := range balancerPlanIDs {
+			balancers = append(balancers, planBalancerDefs[id])
 		}
 		routing["balancers"] = balancers
 
-		// Per-plan routing rules: match user email → plan-specific balancer
+		// Per-plan routing rules: ONE rule per plan (ruleTag plan-<id>-users) with the
+		// sorted emails of its users → plan balancer. Each client has exactly one
+		// PlanID, so user sets of different plans are disjoint and the semantics equal
+		// the former one-rule-per-user list at the same position (before catch-all).
+		planUsers := map[int][]string{}
 		for _, client := range activeClients {
 			if _, blocked := quotaExceeded[client.UUID]; blocked {
 				continue // quota cutoff — user already missing from clients arrays
 			}
-			if balancerTag, ok := planBalancers[client.PlanID]; ok {
-				rules = append(rules, map[string]interface{}{
-					"type":        "field",
-					"user":        []string{client.UserID},
-					"balancerTag": balancerTag,
-				})
+			if _, ok := planBalancers[client.PlanID]; ok && client.UserID != "" {
+				planUsers[client.PlanID] = append(planUsers[client.PlanID], client.UserID)
 			}
+		}
+		planIDs := make([]int, 0, len(planUsers))
+		for id := range planUsers {
+			planIDs = append(planIDs, id)
+		}
+		sort.Ints(planIDs)
+		for _, planID := range planIDs {
+			users := planUsers[planID]
+			sort.Strings(users)
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"ruleTag":     fmt.Sprintf("plan-%d-users", planID),
+				"user":        users,
+				"balancerTag": planBalancers[planID],
+			})
 		}
 
 		// Default rule: all remaining traffic → default balancer with all exit nodes
@@ -708,7 +740,7 @@ func SyncXrayConfig() error {
 	existingRules := routing["rules"].([]map[string]interface{})
 	routing["rules"] = append([]map[string]interface{}{apiRule}, existingRules...)
 
-	// API outbound (handler для StatsService)
+	// API outbound (handler для Stats/Handler/RoutingService)
 	outbounds = append(outbounds, map[string]interface{}{
 		"protocol": "freedom", "tag": "api",
 	})
@@ -727,10 +759,13 @@ func SyncXrayConfig() error {
 		"routing":   routing,
 		// Stats API: включаем сбор статистики
 		"stats": map[string]interface{}{},
-		// API handler для доступа к статистике
+		// API handler: stats + live user/rule changes (Task 7). Listens only via
+		// the loopback dokodemo inbound api-in (127.0.0.1:10085).
 		"api": map[string]interface{}{
 			"tag": "api",
 			"services": []string{
+				"HandlerService",
+				"RoutingService",
 				"StatsService",
 			},
 		},
