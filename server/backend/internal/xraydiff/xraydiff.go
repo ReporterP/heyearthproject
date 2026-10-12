@@ -47,6 +47,7 @@ type Result struct {
 	UserCounts     map[string]int  // inbound tag -> clients in the new config
 	RuleTags       []string        // ruleTag ("" if none) of every new rule, in order
 	routing        any             // routing object of the new config
+	present        map[string]bool // lower(email) of every client of the new config
 }
 
 // UserTotals returns the number of add and remove operations.
@@ -55,6 +56,26 @@ func (r Result) UserTotals() (added, removed int) {
 		added, removed = added+len(ic.Added), removed+len(ic.Removed)
 	}
 	return added, removed
+}
+
+// Revoked returns the users whose access the diff revokes: removed from an
+// inbound and absent from every inbound of the new config (quota exceeded,
+// blocked, subscription expired). Lower-case, sorted. A modified client
+// (remove + add) is not revoked. `xray api rmu` only rejects NEW connections of
+// these users; their open ones keep working until closed.
+func (r Result) Revoked() []string {
+	set := map[string]bool{}
+	for _, ic := range r.Inbounds {
+		for _, e := range ic.Removed {
+			if k := strings.ToLower(e); !r.present[k] {
+				set[k] = true
+			}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return sortedKeys(set)
 }
 
 type parts struct {
@@ -88,9 +109,13 @@ func Classify(oldJSON, newJSON []byte) (Result, error) {
 	if key := firstDiff(oldP.rest, newP.rest); key != "" {
 		return Result{Kind: Structural, Reason: "changed " + key}, nil
 	}
-	res := Result{Kind: UserOnly, UserCounts: map[string]int{}, RuleTags: newP.ruleTags, routing: newCfg["routing"]}
+	res := Result{Kind: UserOnly, UserCounts: map[string]int{}, RuleTags: newP.ruleTags,
+		routing: newCfg["routing"], present: map[string]bool{}}
 	for _, tag := range unionKeys(oldP.clients, newP.clients) {
 		oldC, newC := oldP.clients[tag], newP.clients[tag]
+		for k := range newC {
+			res.present[k] = true
+		}
 		ic := InboundChange{Tag: tag, inbound: newP.inbounds[tag]}
 		if ic.inbound == nil {
 			ic.inbound = oldP.inbounds[tag]
@@ -289,7 +314,6 @@ func (r Result) RoutingPayload() ([]byte, error) {
 var (
 	reAdded   = regexp.MustCompile(`Added (\d+) user\(s\) in total`)
 	reRemoved = regexp.MustCompile(`Removed (\d+) user\(s\) in total`)
-	reCount   = regexp.MustCompile(`"count":\s*"?(\d+)`)
 )
 
 // ParseAddedTotal: N from "Added N user(s) in total." (adu exits 0 even when some
@@ -299,16 +323,29 @@ func ParseAddedTotal(out string) int { return firstInt(reAdded, out) }
 // ParseRemovedTotal: N from "Removed N user(s) in total." (rmu). -1 if missing.
 func ParseRemovedTotal(out string) int { return firstInt(reRemoved, out) }
 
-// ParseUserCount parses inboundusercount output {"count": N}; the field is
-// omitted when N == 0, so "{}" means 0.
+// ParseUserCount parses inboundusercount output {"count": N}. The field is
+// omitted when N == 0, so "{}" means 0; N may be a JSON number or, as protojson
+// encodes int64, a string ("42").
 func ParseUserCount(out string) (int, error) {
-	if n := firstInt(reCount, out); n >= 0 {
-		return n, nil
+	i, j := strings.Index(out, "{"), strings.LastIndex(out, "}")
+	if i < 0 || j < i {
+		return 0, fmt.Errorf("inboundusercount: unexpected output %q", strings.TrimSpace(out))
 	}
-	if strings.Contains(out, "{") {
+	var v struct {
+		Count json.RawMessage `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(out[i:j+1]), &v); err != nil {
+		return 0, fmt.Errorf("inboundusercount: %w", err)
+	}
+	if len(v.Count) == 0 {
 		return 0, nil
 	}
-	return 0, fmt.Errorf("inboundusercount: unexpected output %q", strings.TrimSpace(out))
+	raw := strings.Trim(string(v.Count), `"`)
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("inboundusercount: bad count %s", v.Count)
+	}
+	return n, nil
 }
 
 // ParseRuleTags parses lsrules output {"rules":[{"tag":..,"ruleTag":..}]} into

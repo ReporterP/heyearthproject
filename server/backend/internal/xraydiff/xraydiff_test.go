@@ -3,6 +3,7 @@ package xraydiff
 import (
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -259,17 +260,216 @@ func TestParseCLIOutput(t *testing.T) {
 			t.Errorf("case %d: got %d, want %d", i, c.got, c.want)
 		}
 	}
-	if n, err := ParseUserCount("{\n    \"count\": 42\n}\n"); err != nil || n != 42 {
-		t.Errorf("ParseUserCount(42) = %d, %v", n, err)
+	counts := []struct {
+		out  string
+		want int
+		ok   bool
+	}{
+		{"{\n    \"count\": 42\n}\n", 42, true},     // JSON number
+		{"{\n    \"count\": \"42\"\n}\n", 42, true}, // protojson int64 = string
+		{"{}\n", 0, true},                           // count omitted when 0
+		{"failed to get inbound user count\n", 0, false},
+		{"{\"count\": \"many\"}", 0, false},
+		{"{\"count\": -1}", 0, false},
 	}
-	if n, err := ParseUserCount("{}\n"); err != nil || n != 0 {
-		t.Errorf("ParseUserCount({}) = %d, %v", n, err)
-	}
-	if _, err := ParseUserCount("failed to get inbound user count\n"); err == nil {
-		t.Error("ParseUserCount(garbage): want error")
+	for _, c := range counts {
+		n, err := ParseUserCount(c.out)
+		if (err == nil) != c.ok || (c.ok && n != c.want) {
+			t.Errorf("ParseUserCount(%q) = %d, %v; want %d ok=%v", c.out, n, err, c.want, c.ok)
+		}
 	}
 	tags, err := ParseRuleTags("{\n \"rules\": [\n  {\"tag\": \"api\"},\n  {\"ruleTag\": \"plan-3-users\"},\n  {}\n ]\n}\n")
 	if err != nil || !reflect.DeepEqual(tags, []string{"", "plan-3-users", ""}) {
 		t.Errorf("ParseRuleTags = %v, %v", tags, err)
+	}
+}
+
+// roundtrip turns a test config into what json.Unmarshal yields (float64 numbers).
+func roundtrip(t *testing.T, v any) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(mustJSON(t, v), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func inboundsByTag(cfg map[string]any) map[string]map[string]any {
+	m := map[string]map[string]any{}
+	for _, raw := range cfg["inbounds"].([]any) {
+		in := raw.(map[string]any)
+		m[in["tag"].(string)] = in
+	}
+	return m
+}
+
+// normalizeClients sorts every clients array by lower(email): client order is
+// not part of the comparison (xray keeps users in a map).
+func normalizeClients(cfg map[string]any) map[string]any {
+	for _, in := range inboundsByTag(cfg) {
+		settings, _ := in["settings"].(map[string]any)
+		if _, has := settings["clients"]; !has {
+			continue
+		}
+		cs, _ := settings["clients"].([]any)
+		if cs == nil {
+			cs = []any{}
+		}
+		sort.Slice(cs, func(i, j int) bool {
+			return strings.ToLower(cs[i].(map[string]any)["email"].(string)) <
+				strings.ToLower(cs[j].(map[string]any)["email"].(string))
+		})
+		settings["clients"] = cs
+	}
+	return cfg
+}
+
+// replayLive does to the OLD config what the live path does to the running xray:
+// rmu (case-insensitive emails) → adrules without -append (routing replaced by
+// RoutingPayload) → adu (clients of AddUsersPayload added to the inbound).
+func replayLive(t *testing.T, oldCfg map[string]any, r Result) map[string]any {
+	t.Helper()
+	cfg := clone(oldCfg).(map[string]any)
+	live := inboundsByTag(cfg)
+	for _, ic := range r.Inbounds {
+		settings := live[ic.Tag]["settings"].(map[string]any)
+		gone := map[string]bool{}
+		for _, e := range ic.Removed {
+			gone[strings.ToLower(e)] = true
+		}
+		cs, _ := settings["clients"].([]any)
+		kept := []any{}
+		for _, c := range cs {
+			if !gone[strings.ToLower(c.(map[string]any)["email"].(string))] {
+				kept = append(kept, c)
+			}
+		}
+		settings["clients"] = kept
+	}
+	if r.RoutingChanged {
+		rp, err := r.RoutingPayload()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v struct {
+			Routing map[string]any `json:"routing"`
+		}
+		if err := json.Unmarshal(rp, &v); err != nil {
+			t.Fatal(err)
+		}
+		cfg["routing"] = v.Routing
+	}
+	payload, total, err := r.AddUsersPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total > 0 {
+		var v struct {
+			Inbounds []map[string]any `json:"inbounds"`
+		}
+		if err := json.Unmarshal(payload, &v); err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range v.Inbounds {
+			tag := in["tag"].(string)
+			added := in["settings"].(map[string]any)["clients"].([]any)
+			// adu builds the whole inbound: apart from clients it must equal the running one.
+			want, got := clone(live[tag]).(map[string]any), clone(in).(map[string]any)
+			delete(want["settings"].(map[string]any), "clients")
+			delete(got["settings"].(map[string]any), "clients")
+			if !reflect.DeepEqual(want, got) {
+				t.Fatalf("adu inbound %s differs from the config inbound:\n got %v\nwant %v", tag, got, want)
+			}
+			settings := live[tag]["settings"].(map[string]any)
+			cs, _ := settings["clients"].([]any)
+			settings["clients"] = append(cs, added...)
+		}
+	}
+	return cfg
+}
+
+func TestUserOnlyOpsReproduceNewConfig(t *testing.T) {
+	setPlanUsers := func(c map[string]any, users ...any) { rules(c)[3].(map[string]any)["user"] = users }
+	cases := []struct {
+		name    string
+		mutate  func(map[string]any)
+		revoked []string
+	}{
+		{"user added", func(c map[string]any) {
+			setClients(c, "vless-reality", vless("alice", 1, true), vless("bob", 1, true), vless("carol", 1, true))
+			setClients(c, "vless-xhttp", vless("alice", 1, false), vless("bob", 1, false), vless("carol", 1, false))
+			setPlanUsers(c, "alice", "bob", "carol")
+		}, nil},
+		{"quota cutoff", func(c map[string]any) {
+			setClients(c, "vless-reality", vless("alice", 1, true))
+			setClients(c, "vless-xhttp", vless("alice", 1, false))
+			setPlanUsers(c, "alice")
+		}, []string{"bob"}},
+		{"modified client", func(c map[string]any) {
+			setClients(c, "vless-reality", vless("alice", 0, true), vless("bob", 1, true))
+		}, nil},
+		{"new plan rule", func(c map[string]any) {
+			r := rules(c)
+			setRules(c, r[0], r[1], r[2], rule("plan-5-direct-ip", "user", []any{"alice"}, "ip", []any{"5.255.255.0/24"}, "outboundTag", "direct-freedom"), r[3], r[4])
+		}, nil},
+		{"plan rule moved", func(c map[string]any) {
+			r := rules(c)
+			setRules(c, r[0], r[1], r[3], r[2], r[4])
+		}, nil},
+		{"plan rule removed", func(c map[string]any) {
+			r := rules(c)
+			setRules(c, r[0], r[1], r[3], r[4])
+		}, nil},
+		{"last users leave", func(c map[string]any) {
+			setClients(c, "vless-reality")
+			setClients(c, "vless-xhttp")
+			r := rules(c)
+			setRules(c, r[0], r[1], r[4])
+		}, []string{"alice", "bob"}},
+		{"mixed: add, revoke, modify", func(c map[string]any) {
+			setClients(c, "vless-reality", vless("alice", 0, true), vless("carol", 1, true))
+			setClients(c, "vless-xhttp", vless("alice", 0, false), vless("carol", 1, false))
+			setPlanUsers(c, "alice", "carol")
+			rules(c)[2].(map[string]any)["user"] = []any{"alice", "carol"}
+		}, []string{"bob"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldCfg, newCfg := roundtrip(t, baseConfig()), baseConfig()
+			tc.mutate(newCfg)
+			want := roundtrip(t, newCfg)
+			got, err := Classify(mustJSON(t, oldCfg), mustJSON(t, want))
+			if err != nil || got.Kind != UserOnly {
+				t.Fatalf("Classify = %v (%s), %v; want user-only", got.Kind, got.Reason, err)
+			}
+			replayed := normalizeClients(replayLive(t, oldCfg, got))
+			if !reflect.DeepEqual(replayed, normalizeClients(want)) {
+				t.Fatalf("live ops on the old config do not give the new config:\n got %s\nwant %s",
+					mustJSON(t, replayed), mustJSON(t, want))
+			}
+			if r := got.Revoked(); strings.Join(r, ",") != strings.Join(tc.revoked, ",") {
+				t.Errorf("Revoked = %v, want %v", r, tc.revoked)
+			}
+		})
+	}
+}
+
+func TestRevokedIsCaseInsensitive(t *testing.T) {
+	oldCfg := baseConfig()
+	setClients(oldCfg, "vless-reality", vless("alice", 1, true), vless("Bob", 1, true))
+	newCfg := baseConfig()
+	setClients(newCfg, "vless-reality", vless("alice", 1, true))
+	got, err := Classify(mustJSON(t, oldCfg), mustJSON(t, newCfg))
+	if err != nil || got.Kind != UserOnly {
+		t.Fatalf("Classify = %v (%s), %v", got.Kind, got.Reason, err)
+	}
+	// bob stays in vless-xhttp: not revoked.
+	if r := got.Revoked(); len(r) != 0 {
+		t.Fatalf("Revoked = %v, want none (bob is still in vless-xhttp)", r)
+	}
+	setClients(newCfg, "vless-xhttp", vless("alice", 1, false))
+	got, _ = Classify(mustJSON(t, oldCfg), mustJSON(t, newCfg))
+	if r := got.Revoked(); strings.Join(r, ",") != "bob" {
+		t.Fatalf("Revoked = %v, want [bob] (lower-case)", r)
 	}
 }
