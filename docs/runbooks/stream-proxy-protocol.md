@@ -2,57 +2,67 @@
 
 ## Зачем
 
-nginx stream на `:443` (SNI-роутер, `ssl_preread`) отдаёт наши домены http-nginx на `127.0.0.1:8443`, всё остальное — xray Reality на `127.0.0.1:10443`.
-Без PROXY protocol оба видят каждого клиента как `127.0.0.1`: API получает `X-Real-IP: 127.0.0.1`, поэтому вебхуки YooKassa отклоняются (403,
-у возвратов нет запасной синхронизации), лимиты по IP становятся общими на всех, IP в аудите бесполезны (на проде 1105 из 1150 запросов за день — `127.0.0.1`).
+nginx stream на `:443` (SNI-роутер, `ssl_preread`) отдаёт наши домены http-nginx, всё остальное — xray Reality. Без PROXY protocol оба видят каждого клиента
+как `127.0.0.1`: API получает `X-Real-IP: 127.0.0.1`, поэтому вебхуки YooKassa отклоняются (403, у возвратов нет запасной синхронизации), лимиты по IP
+становятся общими на всех, IP в аудите бесполезны (на проде 1105 из 1150 запросов за день — `127.0.0.1`).
 
-Режим **выключен по умолчанию** и включается одной командой, которая переключает обе стороны вместе.
+## Как устроено: у обоих бэкендов по два входа, переключается только stream
 
-## Что меняется в режиме «on»
-
-| Где | off | on |
+| | выкл (`off`, по умолчанию) | вкл (`on`) |
 |---|---|---|
-| stream (`/etc/nginx/stream.d/heyearth.conf`, блок с `proxy_pass $backend;`) | домены → `127.0.0.1:8443` | `proxy_protocol on;`, домены → `127.0.0.1:8446` |
-| http nginx (`/etc/nginx/conf.d/heyearth.conf`, каждый HTTPS-блок) | `listen 8443 ssl http2;` | то же **плюс** `listen 127.0.0.1:8446 ssl http2 proxy_protocol;`, `set_real_ip_from 127.0.0.1;`, `real_ip_header proxy_protocol;` |
-| xray, inbound `vless-reality` (127.0.0.1:10443) | без `sockopt` | `streamSettings.sockopt.acceptProxyProtocol: true` |
-| `app_settings.stream_proxy_protocol` | `false` (или нет ключа) | `true` |
+| upstream `nginx_https` (наши домены) | `127.0.0.1:8443` | `127.0.0.1:8446` (http-nginx с `proxy_protocol`) |
+| upstream `xray_vless` (Reality) | `127.0.0.1:10443` (`vless-reality`) | `127.0.0.1:10444` (`vless-reality-pp`, `acceptProxyProtocol`) |
+| блок SNI-роутера в `/etc/nginx/stream.d/heyearth.conf` | без `proxy_protocol` | `proxy_protocol on;` |
 
-- Слушатель `8446` с PROXY есть в http-конфиге всегда (генератор `--nginx`/`--main`/`--site`, и сама команда его дописывает); пока режим выключен, он не используется.
-  Обычный `8443` не меняется никогда: прямые локальные проверки без PROXY-заголовка продолжают работать (монитор сертификата в API читает его на `127.0.0.1:8443`).
-- Заголовки к API не меняются: `realip` превращает `$remote_addr` в адрес клиента, и существующий `proxy_set_header X-Real-IP $remote_addr;` несёт реальный IP
-  (API доверяет `X-Real-IP` только от nginx). Запрос на `8443` без PROXY остаётся `127.0.0.1`.
-- `acceptProxyProtocol` получает только `vless-reality`: это единственный inbound за stream. `vless-xhttp` (`:2443`) смотрит в интернет напрямую, CDN-inbound стоит за http-nginx.
-- xray с `acceptProxyProtocol` **требует** заголовок: nginx и xray переключаются только вместе. Значение настройки читается строго: только `true`/`false`,
-  иначе синхронизация xray прерывается и работающий конфиг остаётся (опечатка не превратится в «выключено» при включённом nginx).
+- **Оба входа существуют всегда.** xray: `vless-reality` (10443) и его зеркало `vless-reality-pp` (10444) — одинаковые клиенты (с учётом отключения по квоте),
+  ключи Reality и маршрутизация; пользователи добавляются/удаляются в оба (живое применение по тегу), при отсутствии exit блокируются оба, дайджест подписки
+  зеркало не учитывает (клиенты его не видят — баннера «обновите подписку» не будет). http-nginx: каждый HTTPS-блок слушает `8443` и
+  `listen 127.0.0.1:8446 ssl http2 proxy_protocol;` с `set_real_ip_from 127.0.0.1; real_ip_header proxy_protocol;` — на 8446 `$remote_addr` становится реальным
+  адресом, и существующий `proxy_set_header X-Real-IP $remote_addr;` несёт его в API. Обычный `8443` остаётся без PROXY для прямых локальных проверок
+  (монитор сертификата в API читает `127.0.0.1:8443`).
+- **Переключение — только выбор upstream в stream**: один `nginx -t` + `reload`. Никакой настройки в БД, xray и API не перезапускаются, окна недоступности
+  нет, сессии, открытые по прежнему пути, доживают.
+- Старый деплой, который перепишет stream «по-старому» (без режима), попадёт в «выкл» — 10443 есть всегда, Reality продолжит работать.
+- `--main`, `--site`, `--nginx`, `--setup-xray` **сохраняют живой режим**: читают `/etc/nginx/stream.d/heyearth.conf` и пишут stream в том же режиме. Если режим
+  по файлу не определяется (половинчатая ручная правка), они **ничего в nginx не трогают** и останавливаются с ошибкой. `--setup-ops` строку `proxy_protocol on;`
+  и порты upstream сохраняет.
 
-## Как включить (порядок)
+## Как включить
 
-1. Задеплоить API с поддержкой настройки (коммит с этим режимом или новее): `go run ./cmd/deploy --update-main` (или `quick_deploy.go`).
-   Старый API настройку не знает — команда прождёт 120 с и откатится сама.
-2. `go run ./cmd/deploy --stream-proxy-protocol on` и смотреть вывод. Команда:
-   - печатает ожидаемый простой: **Reality (Берёза/Дуб)** — новые подключения не проходят ~2–5 с между перезапуском xray и reload nginx, активные Reality-сессии рвутся
-     при перезапуске xray; `heyearth-api` перезапускается (~2–5 с); сайт, админка, XHTTP, Бамбук, AWG — без простоя;
-   - кладёт скрипт в `/opt/heyearth/ops/stream-proxy-switch.sh` и запускает его на Hub юнитом `heyearth-stream-proxy` (`systemd-run`) — **обрыв SSH его не прерывает**;
-     сама команда читает `/var/log/heyearth-stream-proxy.log` и при обрыве переподключается;
-   - на Hub: `stream_proxy_protocol = true` → перезапуск `heyearth-api` (стартовая синхронизация переписывает `config.json` и перезапускает xray) →
-     ждёт, пока в `config.json` появится `acceptProxyProtocol` и **новый** процесс xray слушает `127.0.0.1:10443` → правит nginx → `nginx -t` → reload → проверка;
-   - проверка: `https://hiearth.ru/api/v1/health` через `127.0.0.1:443` → 200; TLS-рукопожатие с Reality-SNI через `127.0.0.1:443` проходит; запрос на публичный
-     адрес Hub попадает в `/var/log/nginx/access.log` с этим адресом, а не `127.0.0.1`;
-   - при любой ошибке откатывает обе стороны в прежний режим (nginx первым, потом xray) и печатает `RESULT: rolled-back-to-off`;
-   - после успеха — внешняя проверка с машины оператора: строка `Внешняя проверка: nginx (и API через X-Real-IP) видит клиента как <ваш IP>`.
-3. Убедиться по делу: в журнале аудита админки появляются реальные IP; следующий вебхук YooKassa проходит (`journalctl -u heyearth-api | grep -i yookassa` — без 403);
+1. Задеплоить API, генерирующий зеркало (этот коммит или новее): `go run ./cmd/deploy --update-main` (или `quick_deploy.go`). Проверить на Hub:
+   `ss -ltn | grep 127.0.0.1:10444` и `grep -c vless-reality-pp /opt/heyearth/xray/config.json` (≥ 1). Без зеркала команда откажется включать режим.
+2. `go run ./cmd/deploy --stream-proxy-protocol on`. Команда:
+   - читает живые файлы nginx (`nginx -T` — чтобы найти их, затем точное содержимое), определяет текущий режим (если не определяется — ничего не меняет),
+     проверяет зеркало в живом конфиге xray и вычисляет новые файлы (в Go, без awk): в роутере — только upstream'ы, названные в `map … $backend`,
+     и `proxy_protocol on;`; в http-конфигах — слушатель 8446 + realip в каждый HTTPS-блок с обычным `listen … 8443 … ssl`, где его нет;
+   - запускает переключение на Hub юнитом `heyearth-stream-proxy` (`systemd-run`, обрыв SSH не мешает), лог `/var/log/heyearth-stream-proxy.log`; сама команда
+     читает лог и при обрыве переподключается (дальнейшие проверки идут по новому соединению);
+   - на Hub: файлы не менялись с момента чтения (sha256), API отвечает на `127.0.0.1:8000`, **текущий** режим работает через `:443` (сайт 200 и TLS-рукопожатие
+     с Reality-SNI) → запись файлов → `nginx -t` → `reload` → снова ждёт API → новый режим работает через `:443`, а запрос на публичный адрес Hub попадает
+     в `/var/log/nginx/access.log` с этим адресом, не `127.0.0.1`. Любая ошибка — прежние файлы обратно, `reload`, проверка: `RESULT: rolled-back-to-off`;
+   - после успеха — внешняя проверка с машины оператора: `Внешняя проверка: nginx (и API через X-Real-IP) видит клиента как <ваш IP>`.
+   - Повторный запуск в том же режиме ничего не пишет и только проверяет.
+3. Убедиться по делу: в журнале аудита админки реальные IP; следующий вебхук YooKassa проходит (`journalctl -u heyearth-api | grep -i yookassa` — без 403);
    Берёза/Дуб/Бамбук реальным Happ.
 
-Выключить: `go run ./cmd/deploy --stream-proxy-protocol off` (обратный порядок: nginx первым, затем настройка и xray; при ошибке — назад в «on»).
+Выключить: `go run ./cmd/deploy --stream-proxy-protocol off` (тот же порядок; слушатель 8446 в http-конфигах остаётся неиспользуемым).
 
 ## Если что-то пошло не так
 
-- Состояние на Hub: `tail -n 40 /var/log/heyearth-stream-proxy.log` (последняя строка `RESULT: …`), `systemctl status heyearth-stream-proxy` (пока идёт).
-  Второй запуск, пока первый не закончился, отказывается.
-- Что сейчас включено: `grep -c '"acceptProxyProtocol": true' /opt/heyearth/xray/config.json` (1 — xray ждёт PROXY), `nginx -T | grep -n 'proxy_protocol on'`,
-  `runuser -u postgres -- psql -d heyearth -tAc "SELECT value FROM app_settings WHERE key='stream_proxy_protocol'"`. Все три должны говорить одно и то же.
-- `RESULT: FAILED` с кодом 2 — не удался и откат: привести вручную в «off»: удалить строку `proxy_protocol on;` в блоке с `proxy_pass $backend;`, в `upstream`
-  вернуть `server 127.0.0.1:8443;`, `nginx -t && systemctl reload nginx`, затем `stream_proxy_protocol = false` и `systemctl restart heyearth-api`.
-  Копии конфигов nginx до переключения: `/var/backups/heyearth-nginx/*.spp`.
-- `--nginx`, `--site`, `--main`, `--setup-xray` генерируют stream по **живому** конфигу xray (есть `acceptProxyProtocol` → stream с PROXY), `--setup-ops` строку
-  `proxy_protocol on;` сохраняет — повторный деплой режим не ломает.
+- **`RESULT: FAILED` — сначала повторить противоположную команду** (упало `on` → `go run ./cmd/deploy --stream-proxy-protocol off`, и наоборот): она проверит,
+  что работает сейчас, и приведёт stream в согласованное состояние. Только если и она не проходит — разбираться вручную.
+- Состояние: `tail -n 40 /var/log/heyearth-stream-proxy.log` (последняя строка `RESULT: …`), `systemctl status heyearth-stream-proxy` (пока идёт; второй
+  запуск, пока первый не закончился, отказывается). Копии файлов до переключения: `/var/backups/heyearth-nginx/*.spp`.
+- Какой режим сейчас: `grep -n 'proxy_protocol on\|server 127.0.0.1' /etc/nginx/stream.d/heyearth.conf` — «вкл» это `proxy_protocol on;` + `8446` + `10444`,
+  «выкл» — без него + `8443` + `10443`. Ручная правка: только всё вместе, затем `nginx -t && systemctl reload nginx`.
+- **Свои vhost'ы на 8443.** Команда добавляет слушатель 8446 (+ realip) в каждый HTTPS-блок с обычным `listen … 8443 … ssl` во всех файлах, которые читает nginx,
+  включая сделанные руками (например `cdn.hiearth.ru`). Vhost, добавленный руками ПОСЛЕ включения, без `listen 127.0.0.1:8446 ssl http2 proxy_protocol;`
+  в режиме «вкл» получит чужой сертификат/сайт (stream шлёт его SNI на 8446): добавьте слушатель вручную или повторите
+  `go run ./cmd/deploy --stream-proxy-protocol on` (идемпотентно, допишет недостающее).
+
+## Персональные данные в журнале nginx
+
+С режимом «вкл» в `/var/log/nginx/access.log` (и в журнале аудита API) пишутся **реальные IP клиентов** — это персональные данные в смысле 152-ФЗ.
+Срок хранения журнала nginx задаёт logrotate: `cat /etc/logrotate.d/nginx` — в Ubuntu по умолчанию `daily` + `rotate 14`, то есть около 14 дней
+(старые сжимаются и удаляются). Владельцу решить, сколько хранить: другое число — `rotate N` в `/etc/logrotate.d/nginx`
+(проверка: `logrotate -d /etc/logrotate.d/nginx`); не хранить IP вовсе — свой `log_format` без `$remote_addr`. Учесть это в политике обработки ПД на сайте.

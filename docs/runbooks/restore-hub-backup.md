@@ -101,10 +101,8 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 4. **БД:** `OWNER=$(runuser -u postgres -- psql -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='heyearth'")`;
    `runuser -u postgres -- pg_restore --clean --if-exists --no-owner --role="$OWNER" -d heyearth < /root/restore/db.dump`;
    `runuser -u postgres -- psql -d heyearth -tAc "SELECT count(*) FROM users"` = `users_count` из `/root/restore/meta.txt` (допуск как в проверке выше).
-   PROXY protocol на 443 на время восстановления выключить (иначе API включит его в xray, а nginx из шага 6 будет без него — Reality не работает):
-   `runuser -u postgres -- psql -d heyearth -tAc "SELECT value FROM app_settings WHERE key='stream_proxy_protocol'"` — запомнить; затем
-   `runuser -u postgres -- psql -d heyearth -c "UPDATE app_settings SET value='false' WHERE key='stream_proxy_protocol'"`. Если было `true` — после шага 11
-   включить заново: `go run ./cmd/deploy --stream-proxy-protocol on` (docs/runbooks/stream-proxy-protocol.md).
+   Режим PROXY protocol на 443 возвращается вместе с `/etc/nginx/stream.d/heyearth.conf` из архива (шаг 5) и сохраняется шагом 6 (deploy читает живой
+   режим); оба входа xray (10443 и PROXY-зеркало 10444) есть и в bootstrap-конфиге, и в генерируемом — отдельно ничего делать не нужно.
    **Шаги 5–9 идут без kernel egress guard**: его файлов нет в архиве, ставит его шаг 10. Всё это время защиту Hub от «подключения к самому себе» дают только правила
    xray/hysteria (их пишет API) — проходите шаги 5–10 подряд, не объявляя новый адрес пользователям раньше шага 10. Шаг 10 сам выберет фазу гарда
    (B, если API уже слушает `127.0.0.1:8001` и `server.yaml` на него указывает — после шагов 2 и 7 это так).

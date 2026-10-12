@@ -307,9 +307,6 @@ type xraySettings struct {
 	dnsServers       []string // dns_servers
 	fingerprint      string   // reality_fingerprint (Hub→exit VLESS tunnels)
 	muxConcurrency   int      // mux_concurrency (Hub→exit tunnels)
-	// stream_proxy_protocol: nginx's 443 stream sends a PROXY header to the
-	// Reality inbound (deploy --stream-proxy-protocol switches both sides).
-	streamProxyProtocol bool
 }
 
 // xrayInputs is everything buildXrayConfig needs; nothing else is read.
@@ -327,7 +324,14 @@ type xrayInputs struct {
 
 // Defaults of the generator settings, used only while a key is absent or blank.
 const (
-	defaultMainServerHost   = "hiearth.ru"
+	defaultMainServerHost = "hiearth.ru"
+
+	// The Reality inbound behind nginx's 443 stream and its PROXY-protocol mirror (see
+	// realityInbound in buildXrayConfig; cmd/deploy --stream-proxy-protocol picks the port).
+	xrayRealityTag          = "vless-reality"
+	xrayRealityPort         = 10443
+	xrayRealityPPTag        = "vless-reality-pp"
+	xrayRealityPPPort       = 10444
 	defaultCDNXHPath        = "/cdn-xh"
 	defaultCDNHost          = "cdn.hiearth.ru"
 	defaultBalancerStrategy = "random"
@@ -381,13 +385,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 		return in, err
 	}
 	s.muxConcurrency = parseMuxConcurrency(mux)
-	pp, err := setting("stream_proxy_protocol", "false")
-	if err != nil {
-		return in, err
-	}
-	if s.streamProxyProtocol, err = parseStreamProxyProtocol(pp); err != nil {
-		return in, err
-	}
 
 	if in.clients, err = withSyncTimeout(r.clients); err != nil {
 		return in, fmt.Errorf("list active clients: %w", err)
@@ -413,20 +410,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 		return in, fmt.Errorf("hub addresses: %w", err)
 	}
 	return in, nil
-}
-
-// parseStreamProxyProtocol is strict: only "true" or "false". A typo must not
-// silently mean "off" while nginx already sends PROXY headers (every Reality
-// handshake would then fail); the sync aborts instead and keeps the running
-// config.
-func parseStreamProxyProtocol(v string) (bool, error) {
-	switch v {
-	case "true":
-		return true, nil
-	case "false":
-		return false, nil
-	}
-	return false, fmt.Errorf("setting stream_proxy_protocol: want true or false, got %q", v)
 }
 
 // parseDNSServers splits the comma-separated dns_servers value; an empty list
@@ -534,33 +517,41 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	realitySNI := settings.realitySNI
 
 	// ── Inbounds ──
-	realityStream := map[string]interface{}{
-		"network": "tcp", "security": "reality",
-		"realitySettings": map[string]interface{}{
-			"show": false, "dest": realitySNI + ":443", "xver": 0,
-			"serverNames": []string{realitySNI, "www." + realitySNI},
-			"privateKey":  keys.PrivateKey,
-			"shortIds":    []string{keys.ShortID, ""},
-		},
-	}
-	if settings.streamProxyProtocol {
-		// nginx's 443 stream (proxy_protocol on) prefixes every connection with
-		// a PROXY header carrying the real client address. xray then REQUIRES
-		// it: nginx and this flag are switched together by
-		// deploy --stream-proxy-protocol. Only this inbound sits behind the
-		// stream; vless-xhttp faces clients on :2443, the CDN inbound sits
-		// behind nginx http.
-		realityStream["sockopt"] = map[string]interface{}{"acceptProxyProtocol": true}
+	// realityInbound is the VLESS Reality inbound behind nginx's 443 stream (SNI router). It
+	// exists twice, identical except for the port and the PROXY header: vless-reality on
+	// 127.0.0.1:10443 (the stream without proxy_protocol) and vless-reality-pp on
+	// 127.0.0.1:10444, which REQUIRES the PROXY header nginx sends while
+	// deploy --stream-proxy-protocol is on. Switching is then only nginx's upstream choice: no
+	// xray change, no restart, sessions on the other inbound survive, and a stream config
+	// written without the mode (an old deploy) still reaches 10443. Same clients (quota
+	// excludes included), same Reality keys; xraydiff applies user changes to both by tag, the
+	// no-exit block covers both (userInboundTags), and the client-facing digest skips the
+	// mirror (xrayClientFacing): clients cannot tell which one served them.
+	realityInbound := func(tag string, port int, acceptProxyProtocol bool) map[string]interface{} {
+		stream := map[string]interface{}{
+			"network": "tcp", "security": "reality",
+			"realitySettings": map[string]interface{}{
+				"show": false, "dest": realitySNI + ":443", "xver": 0,
+				"serverNames": []string{realitySNI, "www." + realitySNI},
+				"privateKey":  keys.PrivateKey,
+				"shortIds":    []string{keys.ShortID, ""},
+			},
+		}
+		if acceptProxyProtocol {
+			stream["sockopt"] = map[string]interface{}{"acceptProxyProtocol": true}
+		}
+		return map[string]interface{}{
+			// Loopback behind the nginx stream SNI router; the client-facing TCP is
+			// nginx's, so no keepalive sockopt here.
+			"tag": tag, "listen": "127.0.0.1", "port": port, "protocol": "vless",
+			"settings":       map[string]interface{}{"clients": vlessClients, "decryption": "none"},
+			"streamSettings": stream,
+			"sniffing":       map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+		}
 	}
 	inbounds := []map[string]interface{}{
-		{
-			// Loopback behind the nginx stream SNI router (:443 → :10443); the
-			// client-facing TCP is nginx's, so no keepalive sockopt here.
-			"tag": "vless-reality", "listen": "127.0.0.1", "port": 10443, "protocol": "vless",
-			"settings":       map[string]interface{}{"clients": vlessClients, "decryption": "none"},
-			"streamSettings": realityStream,
-			"sniffing":       map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
-		},
+		realityInbound(xrayRealityTag, xrayRealityPort, false),
+		realityInbound(xrayRealityPPTag, xrayRealityPPPort, true),
 		{
 			// VLESS Reality + XHTTP (splithttp) — anti-behavioral-DPI transport
 			// XHTTP splits upload/download into separate HTTP transactions,

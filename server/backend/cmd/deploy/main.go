@@ -193,7 +193,7 @@ func main() {
 		return
 	}
 	if mode == "stream-proxy-protocol" {
-		switchStreamProxyProtocol(client, cfg, *streamPPFlag, config.DefaultRealitySNI)
+		switchStreamProxyProtocol(client, cfg, *streamPPFlag)
 		return
 	}
 
@@ -1014,6 +1014,19 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	// Проверяем наличие Xray — если установлен, используем stream для SNI routing на 443
 	xrayActive := isXrayInstalled(client)
 
+	// The stream keeps the live PROXY-protocol mode (deploy --stream-proxy-protocol). Determined
+	// from the router file before anything is written; if it cannot be determined, nginx is not
+	// touched at all (fail closed).
+	proxyProtocol := false
+	if xrayActive && ssl {
+		var err error
+		if proxyProtocol, err = streamModeForDeploy(runSSHQuiet(client, streamRouterReadCmd, "")); err != nil {
+			log.Fatalf("nginx: %v — конфиги nginx не трогаю. Приведите %s в порядок или выполните go run ./cmd/deploy --stream-proxy-protocol on|off",
+				err, streamRouterFile)
+		}
+		fmt.Printf("nginx stream: PROXY protocol %s (сохраняю живой режим)\n", map[bool]string{true: "ВКЛ", false: "выкл"}[proxyProtocol])
+	}
+
 	var nginxConf string
 	if ssl {
 		nginxConf = buildNginxConfSSL(domain, appDir, certPath, xrayActive)
@@ -1027,11 +1040,6 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	// Если Xray активен — настраиваем nginx stream для SNI routing на 443
 	if xrayActive && ssl {
-		// The stream must match what xray's Reality inbound expects right now: with
-		// acceptProxyProtocol a stream without PROXY would break every Reality handshake.
-		ppOut, _ := runSSH(client, streamProxyLiveCheck, false)
-		proxyProtocol := strings.TrimSpace(ppOut) == "on"
-		fmt.Printf("nginx stream: PROXY protocol %s (по живому конфигу xray)\n", map[bool]string{true: "ВКЛ", false: "выкл"}[proxyProtocol])
 		streamConf := buildNginxStreamConf(domain, proxyProtocol)
 		_, _ = runSSH(client, "apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true", true)
 		_, _ = runSSH(client, "mkdir -p /etc/nginx/stream.d", true)
@@ -1245,12 +1253,12 @@ server {
 // buildNginxStreamConf создаёт конфиг nginx stream для SNI routing на порту 443:
 // наши домены → nginx HTTPS (8443), остальное → Xray VLESS Reality (10443).
 // proxyProtocol (режим --stream-proxy-protocol on): stream шлёт PROXY-заголовок с
-// реальным адресом клиента, домены идут на PROXY-listener 127.0.0.1:8446, а inbound
-// Reality обязан принимать PROXY (acceptProxyProtocol, app_settings.stream_proxy_protocol).
+// реальным адресом клиента, домены идут на PROXY-listener 127.0.0.1:8446, Reality — на
+// зеркальный inbound 127.0.0.1:10444 с acceptProxyProtocol (оба есть всегда, см. stream_proxy.go).
 func buildNginxStreamConf(domain string, proxyProtocol bool) string {
-	httpsUpstream, ppLine := "127.0.0.1:8443", ""
+	httpsUpstream, xrayUpstream, ppLine := "127.0.0.1:8443", "127.0.0.1:"+xrayRealityPort, ""
 	if proxyProtocol {
-		httpsUpstream, ppLine = "127.0.0.1:"+nginxProxyProtocolPort, "    "+streamProxyProtocolLine+"\n"
+		httpsUpstream, xrayUpstream, ppLine = "127.0.0.1:"+nginxProxyProtocolPort, "127.0.0.1:"+xrayRealityPPPort, "    "+streamProxyProtocolLine+"\n"
 	}
 	return fmt.Sprintf(`# SNI-based routing: наши домены → nginx HTTPS, VPN-трафик → Xray
 map $ssl_preread_server_name $backend {
@@ -1266,18 +1274,18 @@ upstream nginx_https {
 }
 
 upstream xray_vless {
-    server 127.0.0.1:10443;
+    server %[3]s;
 }
 
 server {
     listen 443 so_keepalive=60s:10s:3;
     listen [::]:443 so_keepalive=60s:10s:3;
     ssl_preread on;
-%[3]s    # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
+%[4]s    # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
     proxy_timeout 3600s;
     proxy_pass $backend;
 }
-`, domain, httpsUpstream, ppLine)
+`, domain, httpsUpstream, xrayUpstream, ppLine)
 }
 
 func doSSL(client *ssh.Client, cfg *deployConfig) {
@@ -1464,6 +1472,9 @@ ss -tlnp | grep -E ':10443\s' || echo "ВНИМАНИЕ: Xray не слушае�
 // XRAY_BOOTSTRAP_WROTE=1 when it wrote. Needs UUID, PRIV_KEY, SHORT_ID. The Reality SNI is
 // config.DefaultRealitySNI, shaped like cmd/api/xray_sync.go (dest <sni>:443, serverNames <sni>
 // and www.<sni>); heyearth-api later replaces the whole file using app_settings.reality_sni_domain.
+// Like the generated config it has both entry points of the 443 stream: vless-reality
+// (127.0.0.1:10443) and its PROXY-protocol mirror vless-reality-pp (127.0.0.1:10444), so a stream
+// in either mode (deploy --stream-proxy-protocol) reaches Reality from the first xray start.
 // XRAY_CONF and XRAY_BIN are test hooks.
 const xrayBootstrapBlock = `XRAY_CONF="${XRAY_CONF:-/opt/heyearth/xray/config.json}"
 XRAY_BIN="${XRAY_BIN:-/opt/heyearth/xray/xray}"
@@ -1501,6 +1512,30 @@ else
         }
       },
       "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "` + xrayRealityPPTag + `",
+      "listen": "127.0.0.1",
+      "port": ` + xrayRealityPPPort + `,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "` + config.DefaultRealitySNI + `:443",
+          "xver": 0,
+          "serverNames": ["` + config.DefaultRealitySNI + `", "www.` + config.DefaultRealitySNI + `"],
+          "privateKey": "$PRIV_KEY",
+          "shortIds": ["$SHORT_ID"]
+        },
+        "sockopt": {"acceptProxyProtocol": true}
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
     }
   ],
   "outbounds": [
@@ -1523,7 +1558,7 @@ XRAYEOF
   fi
   mv -f "$XRAY_TMP" "$XRAY_CONF"
   XRAY_BOOTSTRAP_WROTE=1
-  echo "[xray] Bootstrap-конфиг записан (VLESS:10443, SNI ` + config.DefaultRealitySNI + `; остальное генерирует heyearth-api)"
+  echo "[xray] Bootstrap-конфиг записан (VLESS:10443 + PROXY-зеркало :10444, SNI ` + config.DefaultRealitySNI + `; остальное генерирует heyearth-api)"
 fi`
 
 // isXrayInstalled проверяет наличие Xray на сервере

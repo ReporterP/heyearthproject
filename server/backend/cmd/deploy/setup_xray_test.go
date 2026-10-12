@@ -34,10 +34,15 @@ func TestSetupXrayScript(t *testing.T) {
 		}
 	}
 	sni := config.DefaultRealitySNI
-	for _, w := range []string{`"dest": "` + sni + `:443"`, `"serverNames": ["` + sni + `", "www.` + sni + `"]`} {
+	for _, w := range []string{`"dest": "` + sni + `:443"`, `"serverNames": ["` + sni + `", "www.` + sni + `"]`,
+		// both entry points of the 443 stream exist from the first xray start
+		`"tag": "vless-reality",`, `"port": 10443,`, `"tag": "vless-reality-pp",`, `"port": 10444,`} {
 		if !strings.Contains(xrayBootstrapBlock, w) {
 			t.Errorf("bootstrap lacks %q", w)
 		}
+	}
+	if n := strings.Count(xrayBootstrapBlock, `"sockopt": {"acceptProxyProtocol": true}`); n != 1 {
+		t.Errorf("exactly the mirror accepts PROXY, got %d", n)
 	}
 }
 

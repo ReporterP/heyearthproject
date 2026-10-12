@@ -23,7 +23,8 @@ import (
 //
 // What the subscription URIs pin (client_api.go buildHubConnectionOptions,
 // subscription_handler.go) of the Hub's VLESS inbounds — the inbounds with
-// clients: vless-reality (Берёза: sni, pbk, sid, type=tcp, flow), vless-xhttp
+// clients: vless-reality (Берёза: sni, pbk, sid, type=tcp, flow; its PROXY-protocol mirror
+// vless-reality-pp is server-internal and skipped), vless-xhttp
 // (Дуб: port, sni, pbk, sid, type=xhttp, path, host, mode) and, while
 // cdn_enabled, vless-xhttp-cdn (Облако: path, host, mode; it appears and
 // disappears with the flag). So the digest covers, per such inbound: tag,
@@ -54,6 +55,11 @@ func xrayClientFacing(configJSON []byte) (string, error) {
 			continue // not a per-user VLESS inbound (api-in, socks-awg)
 		}
 		tag, _ := in["tag"].(string)
+		if tag == xrayRealityPPTag {
+			// The PROXY-protocol mirror of vless-reality (same clients and Reality settings,
+			// another loopback port behind the 443 stream): nothing a client sees.
+			continue
+		}
 		flowSet := map[string]bool{}
 		list, _ := rawClients.([]any)
 		for _, rc := range list {

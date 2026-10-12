@@ -2,8 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/xraydiff"
 )
 
 // inboundsByTag decodes the generated config's inbounds.
@@ -30,84 +34,156 @@ func acceptsProxyProtocol(in map[string]any) bool {
 	return v
 }
 
-// stream_proxy_protocol puts acceptProxyProtocol on the one inbound behind nginx's 443 stream
-// (vless-reality on 127.0.0.1:10443) and nowhere else; off, the inbound has no sockopt at all.
-func TestBuildXrayConfigStreamProxyProtocol(t *testing.T) {
-	for _, on := range []bool{false, true} {
-		in := baseInputs()
-		in.settings.streamProxyProtocol = on
-		in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, defaultCDNHost, defaultCDNXHPath
-		cfg, _ := genConfig(t, in, quotaCutoff{})
-		ib := inboundsByTag(t, cfg)
-		r := ib["vless-reality"]
-		if r == nil || r["listen"] != "127.0.0.1" || r["port"] != float64(10443) {
-			t.Fatalf("on=%v: vless-reality inbound on 127.0.0.1:10443 missing: %v", on, r)
+func emailsOf(t *testing.T, in map[string]any) []string {
+	t.Helper()
+	var out []string
+	for _, c := range in["settings"].(map[string]any)["clients"].([]any) {
+		out = append(out, c.(map[string]any)["email"].(string))
+	}
+	return out
+}
+
+// The Reality inbound behind the 443 stream exists twice: vless-reality (127.0.0.1:10443, no
+// PROXY) and its mirror vless-reality-pp (127.0.0.1:10444, acceptProxyProtocol), identical
+// otherwise — the same clients (quota excludes included), Reality settings and sniffing. No
+// other inbound accepts PROXY, and no setting decides any of it.
+func TestBuildXrayConfigRealityPPMirror(t *testing.T) {
+	in := baseInputs()
+	in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, defaultCDNHost, defaultCDNXHPath
+	cfg, _ := genConfig(t, in, quotaCutoff{true, userSet("bob")})
+	ib := inboundsByTag(t, cfg)
+	r, pp := ib[xrayRealityTag], ib[xrayRealityPPTag]
+	if r == nil || pp == nil {
+		t.Fatalf("both Reality inbounds must exist: %v / %v", r != nil, pp != nil)
+	}
+	if r["listen"] != "127.0.0.1" || r["port"] != float64(10443) || pp["listen"] != "127.0.0.1" || pp["port"] != float64(10444) {
+		t.Errorf("ports: %v:%v and %v:%v", r["listen"], r["port"], pp["listen"], pp["port"])
+	}
+	if acceptsProxyProtocol(r) || !acceptsProxyProtocol(pp) {
+		t.Errorf("only the mirror accepts PROXY: reality=%v pp=%v", acceptsProxyProtocol(r), acceptsProxyProtocol(pp))
+	}
+	if ss := r["streamSettings"].(map[string]any); ss["sockopt"] != nil {
+		t.Errorf("vless-reality must have no sockopt, got %v", ss["sockopt"])
+	}
+	// identical except tag, port and the PROXY sockopt
+	strip := func(in map[string]any) map[string]any {
+		c := map[string]any{}
+		for k, v := range in {
+			c[k] = v
 		}
-		if got := acceptsProxyProtocol(r); got != on {
-			t.Errorf("on=%v: vless-reality acceptProxyProtocol = %v", on, got)
+		delete(c, "tag")
+		delete(c, "port")
+		ss := map[string]any{}
+		for k, v := range in["streamSettings"].(map[string]any) {
+			ss[k] = v
 		}
-		if ss := r["streamSettings"].(map[string]any); !on && ss["sockopt"] != nil {
-			t.Errorf("off: vless-reality must have no sockopt, got %v", ss["sockopt"])
+		delete(ss, "sockopt")
+		c["streamSettings"] = ss
+		return c
+	}
+	if !reflect.DeepEqual(strip(r), strip(pp)) {
+		t.Errorf("the mirror differs from vless-reality:\n%v\n%v", strip(r), strip(pp))
+	}
+	if e := emailsOf(t, pp); strings.Contains(strings.Join(e, ","), "bob") || !reflect.DeepEqual(e, emailsOf(t, r)) {
+		t.Errorf("quota-excluded bob must be absent from both, lists equal: %v vs %v", e, emailsOf(t, r))
+	}
+	for tag, inb := range ib {
+		if tag != xrayRealityPPTag && acceptsProxyProtocol(inb) {
+			t.Errorf("inbound %s accepts PROXY", tag)
 		}
-		// Reality itself is untouched by the flag.
-		rs := r["streamSettings"].(map[string]any)["realitySettings"].(map[string]any)
-		if rs["dest"] != "yandex.ru:443" || rs["privateKey"] != "priv" {
-			t.Errorf("on=%v: realitySettings changed: %v", on, rs)
-		}
-		for tag, inb := range ib {
-			if tag != "vless-reality" && acceptsProxyProtocol(inb) {
-				t.Errorf("on=%v: inbound %s is not behind the 443 stream but accepts PROXY", on, tag)
-			}
-		}
-		if on && strings.Count(string(cfg), `"acceptProxyProtocol": true`) != 1 {
-			t.Errorf("on: acceptProxyProtocol must appear exactly once (deploy greps config.json for it)")
-		}
-		if !on && strings.Contains(string(cfg), "acceptProxyProtocol") {
-			t.Errorf("off: acceptProxyProtocol must not appear")
-		}
+	}
+	if strings.Count(string(cfg), `"acceptProxyProtocol": true`) != 1 {
+		t.Error("acceptProxyProtocol must appear exactly once (the mirror)")
 	}
 }
 
-// The setting is read strictly: absent = off, only "true"/"false" accepted, anything else
-// aborts the sync (the running config is kept) instead of silently meaning off.
-func TestXraySyncReadsStreamProxyProtocol(t *testing.T) {
-	for _, c := range []struct {
-		val     *string
-		want    bool
-		wantErr bool
-	}{
-		{nil, false, false},
-		{streamPPValue("false"), false, false},
-		{streamPPValue("true"), true, false},
-		{streamPPValue(" true "), true, false}, // settingForSync trims
-		{streamPPValue(""), false, false},      // blank = default
-		{streamPPValue("yes"), false, true},
-		{streamPPValue("TRUE"), false, true},
-		{streamPPValue("1"), false, true},
-	} {
-		settings := map[string]string{}
-		name := "absent"
-		if c.val != nil {
-			settings["stream_proxy_protocol"] = *c.val
-			name = *c.val
-		}
-		r, _ := fakeReads(settings, "")
-		in, err := r.load(xrayRealityKeys{})
-		if c.wantErr {
-			if err == nil || !strings.Contains(err.Error(), "stream_proxy_protocol") {
-				t.Errorf("%q: want an error naming the setting, got %v", name, err)
-			}
-			continue
-		}
-		if err != nil || in.settings.streamProxyProtocol != c.want {
-			t.Errorf("%q: got %v, %v; want %v", name, in.settings.streamProxyProtocol, err, c.want)
+// Clients never see the mirror: the subscription digest is the same with or without it, so
+// introducing it does not bump subscription_version.
+func TestClientFacingDigestSkipsRealityPP(t *testing.T) {
+	cfg, _ := genConfig(t, baseInputs(), quotaCutoff{})
+	var c map[string]any
+	if err := json.Unmarshal(cfg, &c); err != nil {
+		t.Fatal(err)
+	}
+	var kept []any
+	for _, raw := range c["inbounds"].([]any) {
+		if raw.(map[string]any)["tag"] != xrayRealityPPTag {
+			kept = append(kept, raw)
 		}
 	}
-	// a DB error on this key aborts like every other read
-	r, _ := fakeReads(map[string]string{}, "setting:stream_proxy_protocol")
-	if _, err := r.load(xrayRealityKeys{}); err == nil || !strings.Contains(err.Error(), "db down") {
-		t.Errorf("a failing read of stream_proxy_protocol must abort the load, got %v", err)
+	c["inbounds"] = kept
+	without, _ := json.Marshal(c)
+	a, err := xrayClientFacing(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := xrayClientFacing(without)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Error("the PROXY mirror changes the client-facing digest")
 	}
 }
 
-func streamPPValue(s string) *string { return &s }
+// User changes reach both Reality inbounds through the live path (xraydiff, per tag), and the
+// no-exit block covers the mirror too.
+func TestRealityPPMirrorLiveApplyAndNoExit(t *testing.T) {
+	old, _ := genConfig(t, baseInputs(), quotaCutoff{})
+	cur, _ := genConfig(t, withClients(baseInputs(), biz.ActiveVlessClient{UUID: "uuid-erin", UserID: "erin", IsPremium: true, PlanID: 3}), quotaCutoff{})
+	d, err := xraydiff.Classify(old, cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != xraydiff.UserOnly {
+		t.Fatalf("adding a user must stay user-only, got %v (%s)", d.Kind, d.Reason)
+	}
+	got := map[string]int{}
+	for _, ic := range d.Inbounds {
+		got[ic.Tag] = len(ic.Added)
+	}
+	if got[xrayRealityTag] != 1 || got[xrayRealityPPTag] != 1 {
+		t.Errorf("the new user must be added to both Reality inbounds: %v", got)
+	}
+	in := baseInputs()
+	in.exitNodes = nil
+	cfg, b := genConfig(t, in, quotaCutoff{})
+	if !b.noExit {
+		t.Fatal("noExit not reported")
+	}
+	var c struct {
+		Routing struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"routing"`
+	}
+	if err := json.Unmarshal(cfg, &c); err != nil {
+		t.Fatal(err)
+	}
+	blocked := false
+	for _, r := range c.Routing.Rules {
+		if r["outboundTag"] == xrayBlockTag {
+			tags, _ := r["inboundTag"].([]any) // decoded JSON
+			for _, tag := range tags {
+				if tag == xrayRealityPPTag {
+					blocked = true
+				}
+			}
+		}
+	}
+	if !blocked {
+		t.Error("without exits the mirror must be blocked like every user inbound")
+	}
+}
+
+// No setting couples xray to nginx's mode any more.
+func TestXraySyncReadsNoStreamProxySetting(t *testing.T) {
+	r, calls := fakeReads(map[string]string{"stream_proxy_protocol": "true"}, "")
+	if _, err := r.load(xrayRealityKeys{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range *calls {
+		if c == "setting:stream_proxy_protocol" {
+			t.Error("stream_proxy_protocol is read; the mirror inbound always exists")
+		}
+	}
+}
