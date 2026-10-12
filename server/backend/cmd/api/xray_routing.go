@@ -47,27 +47,25 @@ func dnsHijackOutbound() map[string]interface{} {
 	return map[string]interface{}{"protocol": "dns", "tag": xrayDNSHijackTag}
 }
 
-// newBalancer builds a balancer whose fallback is never the default outbound.
-// selector holds only exits our health monitor reports healthy (exitTags in
-// SyncXrayConfig), so when observatory briefly marks them all dead the
-// fallback is the first of them; with an empty selector it is block.
-//
-// Side effect of setting fallbackTag, intended and accepted: xray's random and
-// roundRobin strategies then start honouring the observatory (without a
-// fallbackTag random ignores it). With >= 2 exits a false "dead" mark takes that
-// exit out of the rotation until the next probe, and if all of them are marked
-// dead the traffic goes to selector[0] instead of leaking via the Hub — a
-// possibly dead exit beats the RU IP. Not a regression: before this change the
-// same situation fell through to the default "direct" outbound.
-func newBalancer(tag string, selector []string, strategy string) map[string]interface{} {
-	fallback := xrayBlockTag
-	if len(selector) > 0 && strings.HasPrefix(selector[0], "exit-") {
-		fallback = selector[0]
+// newBalancer builds a leastLoad balancer whose fallback is never the default outbound: the
+// primary path of its first exit (an exit our own monitor reports healthy) or block when it has
+// none. leastLoad needs the observatory and drops nodes it sees dead; costs order the paths
+// (exitCosts). The old balancer_strategy setting (random) is no longer used: random would split
+// traffic between an exit's Hysteria and TCP paths instead of preferring Hysteria.
+func newBalancer(tag string, selector []string, fallback string, costs []map[string]interface{}) map[string]interface{} {
+	if fallback == "" {
+		fallback = xrayBlockTag
+	}
+	if costs == nil {
+		costs = []map[string]interface{}{}
 	}
 	return map[string]interface{}{
-		"tag":         tag,
-		"selector":    selector,
-		"strategy":    map[string]string{"type": strategy},
+		"tag":      tag,
+		"selector": selector,
+		"strategy": map[string]interface{}{
+			"type":     "leastLoad",
+			"settings": map[string]interface{}{"costs": costs},
+		},
 		"fallbackTag": fallback,
 	}
 }
@@ -77,7 +75,9 @@ func newBalancer(tag string, selector []string, strategy string) map[string]inte
 func userInboundTags(inbounds []map[string]interface{}) []string {
 	tags := make([]string, 0, len(inbounds))
 	for _, in := range inbounds {
-		if tag, _ := in["tag"].(string); tag != "" && tag != xrayAPIInTag {
+		// probe-vr-* are the tunnel monitor's loopback inbounds, not user traffic: they must keep
+		// working in the no-exit mode (a recovered TCP path has to be seen).
+		if tag, _ := in["tag"].(string); tag != "" && tag != xrayAPIInTag && !strings.HasPrefix(tag, exitProbeTagPrefix) {
 			tags = append(tags, tag)
 		}
 	}
@@ -230,6 +230,18 @@ func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map
 	if proto, _ := outbounds[0]["protocol"].(string); proto != "blackhole" {
 		return fmt.Errorf("default outbound protocol is %q, want blackhole", proto)
 	}
+	outboundTags := make(map[string]bool, len(outbounds))
+	for _, o := range outbounds {
+		if tag, _ := o["tag"].(string); tag != "" {
+			outboundTags[tag] = true
+		}
+	}
+	// Probe inbounds are loopback-only.
+	for _, in := range inbounds {
+		if tag, _ := in["tag"].(string); strings.HasPrefix(tag, exitProbeTagPrefix) && in["listen"] != "127.0.0.1" {
+			return fmt.Errorf("probe inbound %q listens on %v, want 127.0.0.1", tag, in["listen"])
+		}
+	}
 
 	var rules []map[string]interface{}
 	if raw, ok := routing["rules"]; ok {
@@ -241,6 +253,13 @@ func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map
 	for _, r := range rules {
 		if r["outboundTag"] == xrayDirectTag && !reflect.DeepEqual(ruleTagList(r, "inboundTag"), []string{xrayDNSTag}) {
 			return fmt.Errorf("rule %v sends traffic to %q; only the %q inbound may", r, xrayDirectTag, xrayDNSTag)
+		}
+	}
+	// A probe outbound is reachable only from its own loopback inbound.
+	for _, r := range rules {
+		out, _ := r["outboundTag"].(string)
+		if strings.HasPrefix(out, exitProbeTagPrefix) && (!isInboundOnlyRule(r) || !reflect.DeepEqual(ruleTagList(r, "inboundTag"), []string{out})) {
+			return fmt.Errorf("rule %v reaches the probe outbound %q; only its own inbound may", r, out)
 		}
 	}
 
@@ -266,8 +285,8 @@ func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map
 	}
 	for _, b := range balancers {
 		fb, _ := b["fallbackTag"].(string)
-		if fb != xrayBlockTag && !strings.HasPrefix(fb, "exit-") {
-			return fmt.Errorf("balancer %v has fallbackTag %q, want %q or an exit-* tag", b["tag"], fb, xrayBlockTag)
+		if fb != xrayBlockTag && !(strings.HasPrefix(fb, "exit-") && outboundTags[fb]) {
+			return fmt.Errorf("balancer %v has fallbackTag %q, want %q or the tag of an exit outbound", b["tag"], fb, xrayBlockTag)
 		}
 	}
 	if len(balancers) > 0 {

@@ -8,12 +8,15 @@ import (
 )
 
 func TestRoutingBuilders(t *testing.T) {
-	b := newBalancer("plan-3-balancer", []string{"exit-2"}, "random")
-	if b["fallbackTag"] != "exit-2" || b["tag"] != "plan-3-balancer" || !reflect.DeepEqual(b["selector"], []string{"exit-2"}) {
+	costs := exitCosts([]exitRoute{{id: 2, weight: 1, hasHy: true, primary: "exit-2.hy"}})
+	b := newBalancer("plan-3-balancer", []string{"exit-2."}, "exit-2.hy", costs)
+	strategy, _ := b["strategy"].(map[string]interface{})
+	if b["fallbackTag"] != "exit-2.hy" || b["tag"] != "plan-3-balancer" || !reflect.DeepEqual(b["selector"], []string{"exit-2."}) ||
+		strategy["type"] != "leastLoad" || !reflect.DeepEqual(strategy["settings"], map[string]interface{}{"costs": costs}) {
 		t.Fatalf("unexpected balancer: %v", b)
 	}
-	if e := newBalancer("plan-9-balancer", nil, "random"); e["fallbackTag"] != "block" {
-		t.Fatalf("empty balancer must fall back to block: %v", e)
+	if e := newBalancer("plan-9-balancer", nil, "", nil); e["fallbackTag"] != "block" {
+		t.Fatalf("a balancer without exits must fall back to block: %v", e)
 	}
 	r := noExitBlockRule([]string{"vless-reality", "socks-awg"})
 	if r["outboundTag"] != "block" || !reflect.DeepEqual(r["inboundTag"], []string{"vless-reality", "socks-awg"}) {
@@ -34,7 +37,7 @@ func TestRoutingBuilders(t *testing.T) {
 	}
 	inbounds := []map[string]interface{}{
 		{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
-		{"tag": "vless-xhttp-cdn"}, {"tag": "api-in"}, {"tag": "socks-awg"},
+		{"tag": "vless-xhttp-cdn"}, {"tag": "api-in"}, {"tag": "probe-vr-2"}, {"tag": "socks-awg"},
 	}
 	want := []string{"vless-reality", "vless-xhttp", "vless-xhttp-cdn", "socks-awg"}
 	if got := userInboundTags(inbounds); !reflect.DeepEqual(got, want) {
@@ -56,7 +59,7 @@ func newLeakFixture() leakFixture {
 			{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
 			{"tag": "api-in"}, {"tag": "socks-awg"},
 		},
-		good:   []map[string]interface{}{newBlockOutbound(), direct},
+		good:   []map[string]interface{}{newBlockOutbound(), direct, {"protocol": "socks", "tag": "exit-2.hy"}},
 		noExit: []map[string]interface{}{newBlockOutbound(), direct, dnsHijackOutbound()},
 	}
 }
@@ -72,7 +75,7 @@ func routingWith(rules []map[string]interface{}, balancers ...map[string]interfa
 func TestCheckNoDirectLeak(t *testing.T) {
 	fx := newLeakFixture()
 	user := userInboundTags(fx.inbounds)
-	bal := newBalancer("exit-balancer", []string{"exit-2"}, "random")
+	bal := newBalancer("exit-balancer", []string{"exit-"}, "exit-2.hy", nil)
 	// Shape of the Task 7 generator: one plan-* tagged rule per plan.
 	exitRules := []map[string]interface{}{
 		{"type": "field", "inboundTag": []string{"api-in"}, "outboundTag": "api"},
@@ -87,7 +90,7 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	}
 
 	// accepted
-	planBal := newBalancer("plan-3-balancer", []string{"exit-2"}, "random")
+	planBal := newBalancer("plan-3-balancer", []string{"exit-2."}, "exit-2.hy", nil)
 	if err := checkNoDirectLeak(fx.inbounds, fx.good, routingWith(exitRules, bal, planBal)); err != nil {
 		t.Fatalf("valid exit config rejected: %v", err)
 	}
@@ -159,6 +162,22 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	}
 	if err := checkNoDirectLeak(fx.inbounds, fx.noExit, routingWith(split)); err != nil {
 		t.Fatalf("split block rules rejected: %v", err)
+	}
+
+	// fallbackTag must be a real exit outbound (a selector prefix is not a tag)
+	ghost := newBalancer("exit-balancer", []string{"exit-"}, "exit-9.hy", nil)
+	if checkNoDirectLeak(fx.inbounds, fx.good, routingWith(exitRules, ghost)) == nil {
+		t.Fatal("fallback to a missing exit outbound accepted")
+	}
+	// probe pairs: loopback only, reachable only from their own inbound
+	probeIn := append(append([]map[string]interface{}{}, fx.inbounds...), map[string]interface{}{"tag": "probe-vr-2", "listen": "0.0.0.0"})
+	if checkNoDirectLeak(probeIn, fx.good, routingWith(exitRules, bal)) == nil {
+		t.Fatal("a probe inbound listening beyond loopback accepted")
+	}
+	userToProbe := append(append([]map[string]interface{}{}, exitRules...),
+		map[string]interface{}{"type": "field", "user": []string{"u1"}, "outboundTag": "probe-vr-2"})
+	if checkNoDirectLeak(fx.inbounds, fx.good, routingWith(userToProbe, bal)) == nil {
+		t.Fatal("user traffic routed to a probe outbound accepted")
 	}
 }
 

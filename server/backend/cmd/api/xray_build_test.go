@@ -41,13 +41,13 @@ func baseInputs() xrayInputs {
 	return xrayInputs{
 		keys: xrayRealityKeys{PrivateKey: "priv", PublicKey: "pub", ShortID: "sid", UUID: "server-uuid"},
 		settings: xraySettings{
-			realitySNI: "yandex.ru", mainServerHost: "hiearth.ru", balancerStrategy: "random",
+			realitySNI: "yandex.ru", mainServerHost: "hiearth.ru",
 			dnsServers: []string{"8.8.8.8", "1.1.1.1"}, fingerprint: "chrome", muxConcurrency: 8,
 		},
 		clients: []biz.ActiveVlessClient{
 			testClient("alice", 3), testClient("bob", 3), testClient("carol", 5), testClient("dave", 0),
 		},
-		exitNodes:      []biz.ExitNodeTunnel{testExit(2, "vless"), testExit(3, "shadowsocks")},
+		exitNodes:      []biz.ExitNodeTunnel{testExit(2, "hysteria2"), testExit(3, "vless")},
 		maskingRules:   []biz.TrafficMaskingRule{{ID: 1, SourceDomain: "example.org", MaskDomain: "unused.example"}},
 		directPlanIDs:  []int{3},
 		directServices: []biz.DirectRouteService{{IsActive: true, Domains: []string{"ya.ru", "vk.com"}, IP4: []string{"77.88.8.8"}}},
@@ -164,10 +164,10 @@ func TestBuildXrayConfigDiffKinds(t *testing.T) {
 func TestBuildXrayConfigPlanBalancers(t *testing.T) {
 	cfg, b := genConfig(t, baseInputs(), quotaCutoff{})
 	want := []string{
-		"exit-balancer=exit-2+exit-3",
-		"plan-3-balancer=exit-2",
-		"plan-4-balancer=exit-3",
-		"plan-6-balancer=exit-2+exit-3",
+		"exit-balancer=exit-",
+		"plan-3-balancer=exit-2.",
+		"plan-4-balancer=exit-3.",
+		"plan-6-balancer=exit-2.+exit-3.",
 	}
 	if got := balancerTags(t, cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("balancers = %v, want %v", got, want)
@@ -345,7 +345,7 @@ func TestXraySyncReadsDefaults(t *testing.T) {
 	if s.realitySNI != biz.DefaultRealitySNI || s.realitySNI == "apple.com" {
 		t.Errorf("realitySNI = %q, want %q", s.realitySNI, biz.DefaultRealitySNI)
 	}
-	if s.mainServerHost != defaultMainServerHost || s.cdnEnabled || s.balancerStrategy != "random" ||
+	if s.mainServerHost != defaultMainServerHost || s.cdnEnabled ||
 		!reflect.DeepEqual(s.dnsServers, []string{"8.8.8.8", "1.1.1.1"}) || s.fingerprint != "chrome" || s.muxConcurrency != 8 {
 		t.Errorf("defaults = %+v", s)
 	}
@@ -474,9 +474,9 @@ func TestXrayClientFacing(t *testing.T) {
 		{"masking/direct/plans", func(in *xrayInputs) {
 			in.maskingRules, in.directPlanIDs, in.planServers = nil, nil, nil
 		}, quotaCutoff{}},
-		{"DNS, fingerprint, mux, strategy", func(in *xrayInputs) {
+		{"DNS, fingerprint, mux", func(in *xrayInputs) {
 			in.settings.dnsServers, in.settings.fingerprint = []string{"9.9.9.9"}, "firefox"
-			in.settings.muxConcurrency, in.settings.balancerStrategy = 4, "leastPing"
+			in.settings.muxConcurrency = 4
 		}, quotaCutoff{}},
 	}
 	for _, tt := range same {

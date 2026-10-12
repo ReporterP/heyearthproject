@@ -33,7 +33,7 @@ var (
 
 // exitSocksCandidates returns the local SOCKS port of every exit, in pickExitSocksPort's order
 // of preference (hysteria2 exits first, then by id): hysteria2-client-<id>.service listens on
-// 127.0.0.1:(1088+id), the same port buildExitNodeOutbound and checkTunnelHealth use
+// 127.0.0.1:(1088+id), the same port exitSocksPort (xray_exits.go) and checkTunnelHealth use
 // (exit id 2 → :1090).
 func exitSocksCandidates(nodes []biz.ExitNodeTunnel) []int {
 	nodes = append([]biz.ExitNodeTunnel(nil), nodes...)

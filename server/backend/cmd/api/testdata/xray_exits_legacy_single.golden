@@ -1,0 +1,99 @@
+{
+  "balancers": [
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-"
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "exit-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-3-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-6-balancer"
+    }
+  ],
+  "inbounds": [],
+  "observatory": {
+    "probeInterval": "30s",
+    "probeURL": "https://www.google.com/generate_204",
+    "subjectSelector": [
+      "exit-"
+    ]
+  },
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1090
+          }
+        ]
+      },
+      "tag": "exit-2.hy"
+    }
+  ],
+  "rules": [
+    {
+      "balancerTag": "plan-3-balancer",
+      "ruleTag": "plan-3-users",
+      "type": "field",
+      "user": [
+        "alice",
+        "bob"
+      ]
+    },
+    {
+      "balancerTag": "exit-balancer",
+      "network": "tcp,udp",
+      "type": "field"
+    }
+  ]
+}

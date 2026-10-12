@@ -1,0 +1,200 @@
+{
+  "balancers": [
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-"
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "exit-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-3-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-6-balancer"
+    }
+  ],
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 12002,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-2"
+    }
+  ],
+  "observatory": {
+    "probeInterval": "30s",
+    "probeURL": "https://www.google.com/generate_204",
+    "subjectSelector": [
+      "exit-"
+    ]
+  },
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1090
+          }
+        ]
+      },
+      "tag": "exit-2.hy"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "exit-2.vr"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-2"
+    }
+  ],
+  "rules": [
+    {
+      "inboundTag": [
+        "probe-vr-2"
+      ],
+      "outboundTag": "probe-vr-2",
+      "type": "field"
+    },
+    {
+      "balancerTag": "plan-3-balancer",
+      "ruleTag": "plan-3-users",
+      "type": "field",
+      "user": [
+        "alice",
+        "bob"
+      ]
+    },
+    {
+      "balancerTag": "exit-balancer",
+      "network": "tcp,udp",
+      "type": "field"
+    }
+  ]
+}

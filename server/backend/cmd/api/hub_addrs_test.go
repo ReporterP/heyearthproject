@@ -217,7 +217,7 @@ func portInRanges(p int, ranges string) bool {
 
 func TestCheckNoDirectLeakPrivateFirst(t *testing.T) {
 	fx := newLeakFixture()
-	bal := newBalancer("exit-balancer", []string{"exit-2"}, "random")
+	bal := newBalancer("exit-balancer", []string{"exit-"}, "exit-2.hy", nil)
 	catchAll := map[string]interface{}{"type": "field", "network": "tcp,udp", "balancerTag": "exit-balancer"}
 	freedom := map[string]interface{}{"type": "field", "ruleTag": "plan-3-direct-ip", "user": []string{"u1"}, "ip": []string{"1.2.3.0/24"}, "outboundTag": "direct-freedom"}
 	mask := map[string]interface{}{"type": "field", "domain": []string{"domain:example.com"}, "outboundTag": "mask-7"}

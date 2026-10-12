@@ -1,0 +1,511 @@
+{
+  "balancers": [
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-"
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            },
+            {
+              "match": "^exit-3\\.hy$",
+              "regexp": true,
+              "value": 6
+            },
+            {
+              "match": "^exit-3\\.vr$",
+              "regexp": true,
+              "value": 600
+            },
+            {
+              "match": "^exit-20\\.hy$",
+              "regexp": true,
+              "value": 1
+            },
+            {
+              "match": "^exit-20\\.vr$",
+              "regexp": true,
+              "value": 100
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "exit-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-3-balancer"
+    },
+    {
+      "fallbackTag": "exit-20.hy",
+      "selector": [
+        "exit-20."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-20\\.hy$",
+              "regexp": true,
+              "value": 1
+            },
+            {
+              "match": "^exit-20\\.vr$",
+              "regexp": true,
+              "value": 100
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-4-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.hy",
+      "selector": [
+        "exit-2.",
+        "exit-3.",
+        "exit-20."
+      ],
+      "strategy": {
+        "settings": {
+          "costs": [
+            {
+              "match": "^exit-2\\.hy$",
+              "regexp": true,
+              "value": 10
+            },
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1000
+            },
+            {
+              "match": "^exit-3\\.hy$",
+              "regexp": true,
+              "value": 6
+            },
+            {
+              "match": "^exit-3\\.vr$",
+              "regexp": true,
+              "value": 600
+            },
+            {
+              "match": "^exit-20\\.hy$",
+              "regexp": true,
+              "value": 1
+            },
+            {
+              "match": "^exit-20\\.vr$",
+              "regexp": true,
+              "value": 100
+            }
+          ]
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-6-balancer"
+    }
+  ],
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 12002,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-2"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12003,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-3"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12007,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-7"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12020,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-20"
+    }
+  ],
+  "observatory": {
+    "probeInterval": "30s",
+    "probeURL": "https://www.google.com/generate_204",
+    "subjectSelector": [
+      "exit-"
+    ]
+  },
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1090
+          }
+        ]
+      },
+      "tag": "exit-2.hy"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "exit-2.vr"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1091
+          }
+        ]
+      },
+      "tag": "exit-3.hy"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.3",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "exit-3.vr"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1108
+          }
+        ]
+      },
+      "tag": "exit-20.hy"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.20",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "exit-20.vr"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-2"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.3",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-3"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.7",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-7"
+    },
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.20",
+            "port": 10443,
+            "users": [
+              {
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "microsoft.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-20"
+    }
+  ],
+  "rules": [
+    {
+      "inboundTag": [
+        "probe-vr-2"
+      ],
+      "outboundTag": "probe-vr-2",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "probe-vr-3"
+      ],
+      "outboundTag": "probe-vr-3",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "probe-vr-7"
+      ],
+      "outboundTag": "probe-vr-7",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "probe-vr-20"
+      ],
+      "outboundTag": "probe-vr-20",
+      "type": "field"
+    },
+    {
+      "balancerTag": "plan-3-balancer",
+      "ruleTag": "plan-3-users",
+      "type": "field",
+      "user": [
+        "alice",
+        "bob"
+      ]
+    },
+    {
+      "balancerTag": "exit-balancer",
+      "network": "tcp,udp",
+      "type": "field"
+    }
+  ]
+}

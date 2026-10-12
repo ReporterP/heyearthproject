@@ -42,20 +42,36 @@ type ExitNodeTunnel struct {
 	ID             int
 	Name           string
 	IPAddress      string
-	TunnelProtocol string // vless, shadowsocks, socks5, http
+	TunnelProtocol string // hysteria2 (+ VLESS Reality on :10443) or legacy vless
 	TunnelPort     int
-	TunnelUUID     string // VLESS UUID / auth credential
-	TunnelPubKey   string // Reality public key (для VLESS)
-	TunnelShortID  string // Reality short ID (для VLESS)
+	TunnelUUID     string // VLESS UUID of the Hub on the exit's xray
+	TunnelPubKey   string // Reality public key of the exit's xray
+	TunnelShortID  string // Reality short ID
 	TunnelSNI      string // SNI для Reality
-	TunnelSSMethod string // Shadowsocks cipher
-	TunnelSSPass   string // Shadowsocks password
+	TunnelSSMethod string // legacy
+	TunnelSSPass   string // Hysteria auth password (historical column name)
 	TunnelStatus   string // healthy, unhealthy, unknown
-	LoadWeight     int    // 1-10 для weighted load balancing
+	LoadWeight     int    // 1-10: preference of the exit in the leastLoad balancers
+	LifecycleState string // pending, provisioning, online, failed, deprovisioning, offline
+}
+
+// exitNodeColumns is the select list scanExitNode reads.
+const exitNodeColumns = `id, COALESCE(name, ''), ip_address,
+	       COALESCE(tunnel_protocol, ''), COALESCE(tunnel_port, 0),
+	       COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''),
+	       COALESCE(tunnel_short_id, ''), COALESCE(tunnel_sni, ''),
+	       COALESCE(tunnel_ss_method, ''), COALESCE(tunnel_ss_password, ''),
+	       COALESCE(tunnel_status, 'unknown'), COALESCE(load_weight, 1), lifecycle_state`
+
+func scanExitNode(row interface{ Scan(dest ...any) error }) (ExitNodeTunnel, error) {
+	var n ExitNodeTunnel
+	err := row.Scan(&n.ID, &n.Name, &n.IPAddress, &n.TunnelProtocol, &n.TunnelPort,
+		&n.TunnelUUID, &n.TunnelPubKey, &n.TunnelShortID, &n.TunnelSNI,
+		&n.TunnelSSMethod, &n.TunnelSSPass, &n.TunnelStatus, &n.LoadWeight, &n.LifecycleState)
+	return n, err
 }
 
 // ListHealthyExitNodes возвращает все exit-ноды со статусом healthy.
-// Используется для генерации Xray outbound-ов на Hub.
 func ListHealthyExitNodes() ([]ExitNodeTunnel, error) {
 	return listExitNodesByStatus(context.Background(), "healthy")
 }
@@ -65,26 +81,29 @@ func ListHealthyExitNodesContext(ctx context.Context) ([]ExitNodeTunnel, error) 
 	return listExitNodesByStatus(ctx, "healthy")
 }
 
-// ListAllExitNodes возвращает все exit-ноды (для health-check).
+// ListOnlineExitNodesContext returns every online exit whatever its tunnel status: the xray
+// generator routes the healthy ones and keeps a probe pair for each (cmd/api/xray_exits.go).
+func ListOnlineExitNodesContext(ctx context.Context) ([]ExitNodeTunnel, error) {
+	return listExitNodesByStatus(ctx, "")
+}
+
+// ListAllExitNodes возвращает все online exit-ноды (для health-check).
 func ListAllExitNodes() ([]ExitNodeTunnel, error) {
 	return listExitNodesByStatus(context.Background(), "")
+}
+
+// GetExitNodeTunnel reads one exit in any lifecycle state («Проверить туннель»). sql.ErrNoRows
+// when the id is unknown or not an exit.
+func GetExitNodeTunnel(ctx context.Context, id int) (ExitNodeTunnel, error) {
+	return scanExitNode(db.DB.QueryRowContext(ctx,
+		`SELECT `+exitNodeColumns+` FROM servers WHERE id = $1 AND is_exit_node = TRUE`, id))
 }
 
 func listExitNodesByStatus(ctx context.Context, statusFilter string) ([]ExitNodeTunnel, error) {
 	// Defense-in-depth: only return servers whose lifecycle is 'online'.
 	// tunnel_status alone is not enough — a server marked offline in the FSM
 	// must never appear in xray routing (otherwise we get ghosts).
-	query := `
-		SELECT id, COALESCE(name, ''), ip_address,
-		       tunnel_protocol, tunnel_port,
-		       COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''),
-		       COALESCE(tunnel_short_id, ''), COALESCE(tunnel_sni, ''),
-		       COALESCE(tunnel_ss_method, ''), COALESCE(tunnel_ss_password, ''),
-		       tunnel_status, COALESCE(load_weight, 1)
-		FROM servers
-		WHERE is_exit_node = TRUE
-		  AND lifecycle_state = 'online'
-	`
+	query := `SELECT ` + exitNodeColumns + ` FROM servers WHERE is_exit_node = TRUE AND lifecycle_state = 'online'`
 	var args []any
 	if statusFilter != "" {
 		query += ` AND tunnel_status = $1`
@@ -100,15 +119,8 @@ func listExitNodesByStatus(ctx context.Context, statusFilter string) ([]ExitNode
 
 	var nodes []ExitNodeTunnel
 	for rows.Next() {
-		var n ExitNodeTunnel
-		if err := rows.Scan(
-			&n.ID, &n.Name, &n.IPAddress,
-			&n.TunnelProtocol, &n.TunnelPort,
-			&n.TunnelUUID, &n.TunnelPubKey,
-			&n.TunnelShortID, &n.TunnelSNI,
-			&n.TunnelSSMethod, &n.TunnelSSPass,
-			&n.TunnelStatus, &n.LoadWeight,
-		); err != nil {
+		n, err := scanExitNode(rows)
+		if err != nil {
 			log.Printf("scan exit node: %v", err)
 			continue
 		}

@@ -32,9 +32,7 @@ import (
 //   - Hub (главный сервер) принимает подключения пользователей
 //   - Spoke (exit-ноды) подключены к Hub через зашифрованные туннели
 //   - Hub маршрутизирует трафик пользователей через здоровые exit-ноды
-//   - Балансировка нагрузки: стратегия из app_settings balancer_strategy (по
-//     умолчанию random) по здоровым exit-нодам; observatory пробует их для
-//     fallback (см. newBalancer)
+//   - Балансировка: leastLoad с costs по путям exit (xray_exits.go); observatory пробует пути
 //   - Если exit-нод нет — пользовательский трафик блокируется (кроме явных RU-direct правил)
 //
 // Безопасность:
@@ -274,7 +272,7 @@ func settingForSync(ctx context.Context, get func(context.Context, string) (stri
 type xraySyncReads struct {
 	setting        func(ctx context.Context, key string) (string, error) // sql.ErrNoRows = absent
 	clients        func(ctx context.Context) ([]biz.ActiveVlessClient, error)
-	exitNodes      func(ctx context.Context) ([]biz.ExitNodeTunnel, error)
+	exitNodes      func(ctx context.Context) ([]biz.ExitNodeTunnel, error) // online exits, any tunnel_status
 	maskingRules   func(ctx context.Context) ([]biz.TrafficMaskingRule, error)
 	directPlanIDs  func(ctx context.Context) ([]int, error)
 	directServices func(ctx context.Context) ([]biz.DirectRouteService, error)
@@ -287,7 +285,7 @@ type xraySyncReads struct {
 var xrayDBReads = xraySyncReads{
 	setting:        biz.GetSettingContext,
 	clients:        biz.ListActiveVlessClientsContext,
-	exitNodes:      biz.ListHealthyExitNodesContext,
+	exitNodes:      biz.ListOnlineExitNodesContext,
 	maskingRules:   biz.ListActiveTrafficMaskingRulesContext,
 	directPlanIDs:  biz.GetPlanIDsWithDirectRoutesContext,
 	directServices: biz.ListActiveDirectRouteServicesContext,
@@ -298,15 +296,14 @@ var xrayDBReads = xraySyncReads{
 // xraySettings are the app_settings the generator uses, already defaulted
 // (absent/blank key only) and parsed.
 type xraySettings struct {
-	realitySNI       string   // reality_sni_domain
-	mainServerHost   string   // main_server_host (XHTTP Host header)
-	cdnEnabled       bool     // cdn_enabled
-	cdnXHPath        string   // cdn_xh_path (read only while the CDN is enabled)
-	cdnHost          string   // cdn_host (read only while the CDN is enabled)
-	balancerStrategy string   // balancer_strategy
-	dnsServers       []string // dns_servers
-	fingerprint      string   // reality_fingerprint (Hub→exit VLESS tunnels)
-	muxConcurrency   int      // mux_concurrency (Hub→exit tunnels)
+	realitySNI     string   // reality_sni_domain
+	mainServerHost string   // main_server_host (XHTTP Host header)
+	cdnEnabled     bool     // cdn_enabled
+	cdnXHPath      string   // cdn_xh_path (read only while the CDN is enabled)
+	cdnHost        string   // cdn_host (read only while the CDN is enabled)
+	dnsServers     []string // dns_servers
+	fingerprint    string   // reality_fingerprint (Hub→exit VLESS tunnels)
+	muxConcurrency int      // mux_concurrency (Hub→exit tunnels)
 }
 
 // xrayInputs is everything buildXrayConfig needs; nothing else is read.
@@ -314,7 +311,7 @@ type xrayInputs struct {
 	keys           xrayRealityKeys
 	settings       xraySettings
 	clients        []biz.ActiveVlessClient
-	exitNodes      []biz.ExitNodeTunnel // healthy, lifecycle online
+	exitNodes      []biz.ExitNodeTunnel // online; routed only while tunnel_status is healthy
 	maskingRules   []biz.TrafficMaskingRule
 	directPlanIDs  []int                    // active plans with direct_routing_enabled, ascending
 	directServices []biz.DirectRouteService // active services, shared by all those plans
@@ -328,16 +325,15 @@ const (
 
 	// The Reality inbound behind nginx's 443 stream and its PROXY-protocol mirror (see
 	// realityInbound in buildXrayConfig; cmd/deploy --stream-proxy-protocol picks the port).
-	xrayRealityTag          = "vless-reality"
-	xrayRealityPort         = 10443
-	xrayRealityPPTag        = "vless-reality-pp"
-	xrayRealityPPPort       = 10444
-	defaultCDNXHPath        = "/cdn-xh"
-	defaultCDNHost          = "cdn.hiearth.ru"
-	defaultBalancerStrategy = "random"
-	defaultDNSServers       = "8.8.8.8,1.1.1.1"
-	defaultFingerprint      = "chrome"
-	defaultMuxConcurrency   = 8
+	xrayRealityTag        = "vless-reality"
+	xrayRealityPort       = 10443
+	xrayRealityPPTag      = "vless-reality-pp"
+	xrayRealityPPPort     = 10444
+	defaultCDNXHPath      = "/cdn-xh"
+	defaultCDNHost        = "cdn.hiearth.ru"
+	defaultDNSServers     = "8.8.8.8,1.1.1.1"
+	defaultFingerprint    = "chrome"
+	defaultMuxConcurrency = 8
 )
 
 // load reads the generator inputs, each database call bounded by
@@ -369,9 +365,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 			return in, err
 		}
 	}
-	if s.balancerStrategy, err = setting("balancer_strategy", defaultBalancerStrategy); err != nil {
-		return in, err
-	}
 	dns, err := setting("dns_servers", defaultDNSServers)
 	if err != nil {
 		return in, err
@@ -390,7 +383,7 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 		return in, fmt.Errorf("list active clients: %w", err)
 	}
 	if in.exitNodes, err = withSyncTimeout(r.exitNodes); err != nil {
-		return in, fmt.Errorf("list healthy exit nodes: %w", err)
+		return in, fmt.Errorf("list online exit nodes: %w", err)
 	}
 	if in.maskingRules, err = withSyncTimeout(r.maskingRules); err != nil {
 		return in, fmt.Errorf("list traffic masking rules: %w", err)
@@ -446,7 +439,7 @@ type xrayBuild struct {
 	config       map[string]interface{}
 	vlessClients int  // VLESS clients per inbound (server entry included)
 	excluded     int  // clients the quota cutoff left out
-	exits        int  // exit outbounds (healthy exits with a valid tunnel)
+	exits        int  // routed (healthy) exits
 	maskRules    int  // mask-* outbounds
 	noExit       bool // no usable exit: every user inbound is blocked
 }
@@ -679,6 +672,11 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		},
 	})
 
+	// Exit paths and probe pairs (xray_exits.go). Probe inbounds are loopback-only and are not
+	// user inbounds (userInboundTags skips them).
+	exitCfg := buildExitConfig(in.exitNodes, settings.fingerprint, settings.muxConcurrency)
+	inbounds = append(inbounds, exitCfg.probeInbounds...)
+
 	// Every inbound except api-in carries user traffic; the no-exit block rule
 	// must cover all of them (C2: the old shadowsocks inbound, socks-awg and CDN used to leak).
 	userInbounds := userInboundTags(inbounds)
@@ -701,32 +699,9 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		},
 	}
 
-	// ── Exit-ноды (Spoke outbounds) ──
-	var exitTags []string
-	healthyExit := map[string]bool{}
-	for _, node := range in.exitNodes {
-		outbound := buildExitNodeOutbound(node, settings.fingerprint, settings.muxConcurrency)
-		if outbound != nil {
-			outbounds = append(outbounds, outbound)
-			tag := fmt.Sprintf("exit-%d", node.ID)
-			healthyExit[tag] = true
-			// Weighted: duplicate tag by load_weight for proportional distribution.
-			// NB (verified in Xray-core 26.3.27, app/proxyman/outbound Manager.Select):
-			// balancer selectors are tag PREFIXES and every outbound is listed once
-			// (break per tag), so the duplicates do not weight anything, and a
-			// selector "exit-2" also matches "exit-20".."exit-29". There is no exact
-			// or regex form; unambiguous selectors need other outbound tags (e.g.
-			// "exit-2." with selector "exit-2."), which the stats/probe code also
-			// uses — left as is, see the report of 2026-10-12.
-			w := node.LoadWeight
-			if w < 1 {
-				w = 1
-			}
-			for i := 0; i < w; i++ {
-				exitTags = append(exitTags, tag)
-			}
-		}
-	}
+	// ── Exit-ноды (Spoke outbounds): exit-N.hy / exit-N.vr of healthy exits, then probe-vr-N ──
+	outbounds = append(outbounds, exitCfg.outbounds...)
+	outbounds = append(outbounds, exitCfg.probeOutbounds...)
 
 	// ── Traffic masking rules ──
 	// Each rule gets a Hub-local freedom outbound mask-<id>; mask_domain is not
@@ -766,6 +741,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	// everything that leads back to the Hub itself or to a private range is blocked BEFORE any
 	// direct-freedom / mask-* rule appended below can match it.
 	rules := baseSecurityRules(in.hubIPs)
+	rules = append(rules, exitCfg.probeRules...) // after the private/loopback block, before everything else
 
 	// ── Per-plan direct-routing rules ──
 	// Для каждого плана с прикреплёнными direct-сервисами добавляем правила
@@ -873,11 +849,11 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	}
 
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
-	noExit := len(exitTags) == 0
+	noExit := len(exitCfg.routes) == 0
 	if !noExit {
-		// Default balancer with all exit nodes
+		// Catch-all balancer: every exit path ("exit-" never matches probe-vr-*).
 		balancers := []map[string]interface{}{
-			newBalancer("exit-balancer", exitTags, settings.balancerStrategy),
+			newBalancer("exit-balancer", []string{exitAllSelector}, exitCfg.routes[0].primary, exitCosts(exitCfg.routes)),
 		}
 
 		// Per-plan balancers come from plan_servers and exit health only, never
@@ -885,10 +861,13 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		// order, whether or not the plan has a user right now. routing.balancers
 		// is structural for xraydiff, so a balancer created by a plan's first
 		// subscriber (and dropped with its last one) would restart xray for
-		// everyone. A balancer no rule references is valid for xray (its router
-		// builds every balancer; only a rule naming a missing balancer fails).
-		// A plan without plan_servers rows, or none of them healthy, has no
-		// balancer: its users take the catch-all rule.
+		// everyone. A plan without plan_servers rows, or none of them healthy, has
+		// no balancer: its users take the catch-all rule. Selectors are
+		// "exit-<id>." per bound exit: a plain "exit-2" would also take exit-20..29.
+		routed := make(map[int]exitRoute, len(exitCfg.routes))
+		for _, r := range exitCfg.routes {
+			routed[r.id] = r
+		}
 		planIDs := make([]int, 0, len(in.planServers))
 		for id := range in.planServers {
 			planIDs = append(planIDs, id)
@@ -896,18 +875,22 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		sort.Ints(planIDs)
 		planBalancers := map[int]string{} // planID → balancer tag
 		for _, planID := range planIDs {
-			var planTags []string
+			var planRoutes []exitRoute
 			for _, serverID := range in.planServers[planID] {
-				if tag := fmt.Sprintf("exit-%d", serverID); healthyExit[tag] {
-					planTags = append(planTags, tag)
+				if r, ok := routed[serverID]; ok {
+					planRoutes = append(planRoutes, r)
 				}
 			}
-			if len(planTags) == 0 {
+			if len(planRoutes) == 0 {
 				continue
+			}
+			selector := make([]string, 0, len(planRoutes))
+			for _, r := range planRoutes {
+				selector = append(selector, exitSelector(r.id))
 			}
 			tag := fmt.Sprintf("plan-%d-balancer", planID)
 			planBalancers[planID] = tag
-			balancers = append(balancers, newBalancer(tag, planTags, settings.balancerStrategy))
+			balancers = append(balancers, newBalancer(tag, selector, planRoutes[0].primary, exitCosts(planRoutes)))
 		}
 		routing["balancers"] = balancers
 
@@ -962,12 +945,12 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		routing["rules"] = rules
 	}
 
-	// Observatory: probes the exits for the balancers. Used by leastPing, and
-	// by random/roundRobin too once a fallbackTag is set (see newBalancer).
+	// Observatory: probes every exit path (exit-N.hy / exit-N.vr, never probe-vr-*) for the
+	// leastLoad balancers, which drop the paths it sees dead (see newBalancer).
 	var observatory map[string]interface{}
 	if !noExit {
 		observatory = map[string]interface{}{
-			"subjectSelector": []string{"exit-"},
+			"subjectSelector": []string{exitAllSelector},
 			"probeInterval":   "30s",
 			"probeURL":        "https://www.google.com/generate_204",
 		}
@@ -1055,7 +1038,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		config:       config,
 		vlessClients: len(vlessClients),
 		excluded:     excluded,
-		exits:        len(healthyExit),
+		exits:        len(exitCfg.routes),
 		maskRules:    len(maskRouteEntries),
 		noExit:       noExit,
 	}, nil
@@ -1259,188 +1242,6 @@ func revocationReasons(revoked []string, clients []biz.ActiveVlessClient, quota 
 		}
 	}
 	return reasons
-}
-
-// buildExitNodeOutbound создаёт Xray outbound для exit-ноды.
-// Поддерживает VLESS Reality, Shadowsocks и прокси-протоколы. fingerprint
-// (reality_fingerprint) and mux (mux_concurrency) come from the sync inputs.
-// nil for a node without a usable tunnel config (logged; the same on every
-// sync for the same row).
-func buildExitNodeOutbound(node biz.ExitNodeTunnel, fingerprint string, mux int) map[string]interface{} {
-	tag := fmt.Sprintf("exit-%d", node.ID)
-
-	switch node.TunnelProtocol {
-	case "vless":
-		if node.TunnelUUID == "" || len(node.TunnelUUID) < 32 {
-			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — невалидный tunnel_uuid", node.ID, node.Name)
-			return nil
-		}
-		// Валидация: publicKey должен быть base64-строкой длиной ~43 символа (x25519)
-		if node.TunnelPubKey != "" && len(node.TunnelPubKey) < 40 {
-			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — невалидный tunnel_public_key %q", node.ID, node.Name, node.TunnelPubKey)
-			return nil
-		}
-		sni := node.TunnelSNI
-		if sni == "" {
-			sni = node.IPAddress
-		}
-		// Без flow: "xtls-rprx-vision" — чтобы работал mux (мультиплексирование).
-		// Vision хорош для single-stream, но mux критичен для скорости
-		// при множестве мелких подключений (Telegram, Instagram, YouTube).
-		outbound := map[string]interface{}{
-			"tag": tag, "protocol": "vless",
-			"settings": map[string]interface{}{
-				"vnext": []map[string]interface{}{
-					{
-						"address": node.IPAddress, "port": node.TunnelPort,
-						"users": []map[string]interface{}{
-							{"id": node.TunnelUUID, "encryption": "none"},
-						},
-					},
-				},
-			},
-			"streamSettings": map[string]interface{}{
-				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{"fingerprint": fingerprint, "serverName": sni},
-				"sockopt": map[string]interface{}{
-					"tcpFastOpen":          true,
-					"tcpNoDelay":           true,
-					"tcpKeepAliveInterval": 30,
-				},
-			},
-			// Мультиплексирование: несколько стримов по одному VLESS соединению.
-			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
-			"mux": map[string]interface{}{
-				"enabled":         true,
-				"concurrency":     mux,
-				"xudpConcurrency": 16,      // UDP мультиплексирование (DNS, QUIC)
-				"xudpProxyUDP443": "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
-			},
-		}
-		// Добавляем publicKey и shortId если заданы
-		if node.TunnelPubKey != "" {
-			rs := outbound["streamSettings"].(map[string]interface{})["realitySettings"].(map[string]interface{})
-			rs["publicKey"] = node.TunnelPubKey
-			if node.TunnelShortID != "" {
-				rs["shortId"] = node.TunnelShortID // singular — клиентская сторона Reality
-			}
-		}
-		return outbound
-
-	case "shadowsocks":
-		if node.TunnelSSPass == "" {
-			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — нет tunnel_ss_password", node.ID, node.Name)
-			return nil
-		}
-		method := node.TunnelSSMethod
-		if method == "" {
-			method = "2022-blake3-aes-128-gcm"
-		}
-		// Stream transport: port 443 → WS (legacy, masquerades as HTTPS through nginx);
-		// any other port → plain TCP (lower latency, no WS framing overhead).
-		// Plain TCP is preferred when the exit listens on a dedicated SS port
-		// (e.g. :8388) — saves the WS handshake RTT and per-message framing.
-		streamSettings := map[string]interface{}{
-			"network": "tcp",
-			"sockopt": map[string]interface{}{
-				"tcpFastOpen":          true, // Экономия 1 RTT
-				"tcpNoDelay":           true, // Без буферизации Nagle
-				"tcpKeepAliveInterval": 30,   // Keepalive от DPI
-			},
-		}
-		if node.TunnelPort == 443 {
-			streamSettings["network"] = "ws"
-			streamSettings["wsSettings"] = map[string]interface{}{"path": "/stream"}
-		}
-		return map[string]interface{}{
-			"tag": tag, "protocol": "shadowsocks",
-			"settings": map[string]interface{}{
-				"servers": []map[string]interface{}{
-					{
-						"address":  node.IPAddress,
-						"port":     node.TunnelPort,
-						"method":   method,
-						"password": node.TunnelSSPass,
-					},
-				},
-			},
-			"streamSettings": streamSettings,
-			// NOTE: NO mux — пользователь сообщил bistable behavior ("летает или n/a"
-			// при подключении). Mux multiplexes user streams over one TCP connection
-			// to exit; if mux session is in flaky state (cold start, reconnect),
-			// new user requests may block or fail intermittently while the mux
-			// pool stabilizes. Without mux, each user request opens its own TCP
-			// to exit — more handshakes (slightly higher latency) but deterministic
-			// per-stream success/failure, no shared mux state to coordinate.
-			// xudpProxyUDP443=allow (mux-only feature) also removed: YouTube QUIC
-			// now falls back to TCP HTTPS through the tunnel — slower in theory
-			// but more reliable in practice on flaky mobile networks.
-		}
-
-	case "hysteria2":
-		// Hysteria2: UDP/QUIC — нет head-of-line blocking, стабильный пинг.
-		// Hysteria2 клиент бежит отдельным сервисом (hysteria2-client.service)
-		// и предоставляет локальный SOCKS5 на 127.0.0.1:1090.
-		// Xray просто маршрутизирует через этот SOCKS5.
-		hy2Port := 1088 + node.ID // ID=2 → 1090, ID=3 → 1091, etc
-		return map[string]interface{}{
-			"tag": tag, "protocol": "socks",
-			"settings": map[string]interface{}{
-				"servers": []map[string]interface{}{
-					{
-						"address": "127.0.0.1",
-						"port":    hy2Port,
-					},
-				},
-			},
-		}
-
-	case "socks5":
-		outbound := map[string]interface{}{
-			"tag": tag, "protocol": "socks",
-			"settings": map[string]interface{}{
-				"servers": []map[string]interface{}{
-					{
-						"address": node.IPAddress,
-						"port":    node.TunnelPort,
-					},
-				},
-			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": mux},
-		}
-		if node.TunnelUUID != "" {
-			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
-			servers[0]["users"] = []map[string]interface{}{
-				{"user": "heyearth", "pass": node.TunnelUUID},
-			}
-		}
-		return outbound
-
-	case "http":
-		outbound := map[string]interface{}{
-			"tag": tag, "protocol": "http",
-			"settings": map[string]interface{}{
-				"servers": []map[string]interface{}{
-					{
-						"address": node.IPAddress,
-						"port":    node.TunnelPort,
-					},
-				},
-			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": mux},
-		}
-		if node.TunnelUUID != "" {
-			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
-			servers[0]["users"] = []map[string]interface{}{
-				{"user": "heyearth", "pass": node.TunnelUUID},
-			}
-		}
-		return outbound
-
-	default:
-		log.Printf("[xray-sync] exit-нода %d (%s): неизвестный протокол %q", node.ID, node.Name, node.TunnelProtocol)
-		return nil
-	}
 }
 
 // ─────────────────────── Tunnel Health Monitoring ───────────────────────
