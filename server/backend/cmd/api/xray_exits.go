@@ -44,7 +44,7 @@ const (
 	exitVRFlow         = "xtls-rprx-vision"
 	exitAllSelector    = "exit-"
 	exitProbeTagPrefix = "probe-vr-"
-	exitVRCostFactor   = 100 // see exitBaselines
+	exitVRCostFactor   = 400 // √400 = ×20 on RTT, see exitBaselines
 )
 
 // ─────────────── Balancer strategy: leastLoad with costs and baselines ───────────────
@@ -62,15 +62,26 @@ const (
 //     path that may itself be dead (e.g. only exit-N.vr alive at 200 ms = 2 s weighted), hence
 //     expected = 1.
 //
-// The baselines double, so one band is a factor of 2 in weighted RTT:
+// The baselines double. With the cheapest live path at x weighted (50 ms ≤ x < 1.6 s) the window
+// ends at the next baseline b, x < b ≤ 2x: another path with weighted cost c joins it never when
+// c ≥ 2x, always when c ≤ x, and in between depending on where the band edge falls. Hence:
 //   - the exits of the balancer's highest priority cost 1: their Hysteria paths share the load
-//     while their RTTs fall into the same band (60 ms and 70 ms: both under 100 ms);
-//   - an exit g priority steps lower costs (2g)², i.e. ×2g on its RTT: at an equal RTT (≥ 50 ms;
-//     a GET through an exit abroad takes longer) it lands at least one band higher, so it gets
-//     traffic only while the preferred exits are dead or at least 2g times slower;
-//   - the TCP path of a Hysteria exit costs ×100 more (×10 RTT, more than three bands): it gets
-//     traffic only while that exit's Hysteria path is dead or ten times slower. The single path
-//     of a VLESS-only exit costs as its priority.
+//     while their RTTs are in the same band — 60 and 70 ms (both under 100 ms) share, 190 and
+//     210 ms do not at that moment (200 ms lies between them), 210 and 230 ms do;
+//   - an exit g priority steps lower costs (4g)², i.e. ×4g on its RTT (exitTierCost): it gets
+//     traffic never while the preferred exits live and are at most 2g times slower than it,
+//     always once they are 4g times slower (2/1 at 101 vs 99 ms: the preferred alone; 250 vs
+//     90 ms: both; 250 vs 100 ms: the preferred alone — 4×100 is not below the 400 ms edge);
+//   - the TCP path of a Hysteria exit costs ×400 more (×20 RTT): it joins never while its
+//     Hysteria path lives and is at most 10 times slower, always once it is 20 times slower or
+//     dead. The single path of a VLESS-only exit costs as its priority, no ×400;
+//   - the preferred exit's Hysteria dead, its TCP alive, a reserve g steps lower with a live
+//     Hysteria, equal RTTs: 20 against 4g — g ≤ 2: the reserve's Hysteria alone; g = 3, 4: the
+//     reserve's Hysteria, the preferred TCP joining depending on the band; g = 5: equal cost,
+//     both; g = 6..9: the preferred TCP, the reserve joining depending on the band.
+//
+// RTTs under 50 ms (not reachable through an exit abroad) all share the first band; from 1.6 s
+// weighted on, only the cheapest path is taken.
 var exitBaselines = []string{"50ms", "100ms", "200ms", "400ms", "800ms", "1600ms"}
 
 const exitLeastLoadExpected = 1
@@ -90,7 +101,10 @@ func exitHasHyPath(n biz.ExitNodeTunnel) bool {
 	return exitIDValid(n.ID) && n.TunnelProtocol == "hysteria2"
 }
 
-// exitHasVRPath: the exit has a VLESS Reality path xray accepts (exitVRProblem).
+// exitHasVRPath is THE predicate of an exit's TCP path, shared by the generator (buildExitConfig),
+// the tunnel monitor and «Проверить туннель»: a VLESS Reality path xray accepts (exitVRProblem).
+// The owner's TCP-fallback switch (node-pool plan, Task 2.10) is added here as
+// `n.FallbackEnabled && …`; the callers need no change.
 func exitHasVRPath(n biz.ExitNodeTunnel) bool {
 	return exitVRProblem(n) == ""
 }
@@ -168,12 +182,10 @@ func exitVROutbound(n biz.ExitNodeTunnel, tag, fingerprint string, mux int) map[
 	if sni == "" {
 		sni = n.IPAddress
 	}
-	reality := map[string]interface{}{"fingerprint": fingerprint, "serverName": sni}
-	if n.TunnelPubKey != "" {
-		reality["publicKey"] = n.TunnelPubKey
-		if n.TunnelShortID != "" {
-			reality["shortId"] = n.TunnelShortID // singular: the client side of Reality
-		}
+	// publicKey is always there (exitHasVRPath); shortId is singular on the client side of Reality.
+	reality := map[string]interface{}{"fingerprint": fingerprint, "serverName": sni, "publicKey": n.TunnelPubKey}
+	if n.TunnelShortID != "" {
+		reality["shortId"] = n.TunnelShortID
 	}
 	user := map[string]interface{}{"id": n.TunnelUUID, "encryption": "none"}
 	out := map[string]interface{}{"tag": tag, "protocol": "vless"}
@@ -277,14 +289,17 @@ func buildExitConfig(nodes []biz.ExitNodeTunnel, fingerprint string, mux int) ex
 			notes[n.ID] = fmt.Sprintf("пропущена — id вне 1..%d (SOCKS 1088+id вне диапазона охраны исходящих)", exitMaxID)
 			continue
 		}
-		hy, vrProblem := exitHasHyPath(n), exitVRProblem(n)
-		vr := vrProblem == ""
-		switch {
-		case !hy && !vr:
-			notes[n.ID] = fmt.Sprintf("пропущена — нет пути Hysteria (протокол %q) и нет TCP-пути: %s", n.TunnelProtocol, vrProblem)
-			continue
-		case !vr:
-			notes[n.ID] = "TCP-путь (exit-" + strconv.Itoa(n.ID) + ".vr) не строится: " + vrProblem
+		hy, vr := exitHasHyPath(n), exitHasVRPath(n)
+		if !vr {
+			why := exitVRProblem(n)
+			if why == "" {
+				why = "путь выключен" // exitHasVRPath said no for a reason of its own (the owner's switch)
+			}
+			if !hy {
+				notes[n.ID] = fmt.Sprintf("пропущена — нет пути Hysteria (протокол %q) и нет TCP-пути: %s", n.TunnelProtocol, why)
+				continue
+			}
+			notes[n.ID] = "TCP-путь (exit-" + strconv.Itoa(n.ID) + ".vr) не строится: " + why
 		}
 		hyTag, vrTag := exitOutboundTags(n.ID)
 		if n.TunnelStatus == "healthy" {
@@ -326,12 +341,14 @@ func exitFallback(routes []exitRoute) string {
 }
 
 // exitTierCost is the leastLoad cost of a path gap priority steps below the balancer's best
-// exit: 1, then (2·gap)² (see exitBaselines).
+// exit: 1, then (4·gap)², i.e. ×4·gap on its RTT. With the doubling baselines such a path joins
+// the window never while the preferred exit is at most 2·gap times slower, always once it is
+// 4·gap times slower (see exitBaselines).
 func exitTierCost(gap int) int {
 	if gap <= 0 {
 		return 1
 	}
-	return 4 * gap * gap
+	return 16 * gap * gap
 }
 
 // exitCosts are the leastLoad costs of the given routed exits, relative to the highest

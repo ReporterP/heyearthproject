@@ -24,7 +24,7 @@
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 100
+              "value": 400
             }
           ],
           "expected": 1
@@ -57,7 +57,7 @@
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 100
+              "value": 400
             }
           ],
           "expected": 1
@@ -90,7 +90,7 @@
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 100
+              "value": 400
             }
           ],
           "expected": 1

@@ -233,9 +233,9 @@ func TestXrayExitCostsAndNoDuplicateTags(t *testing.T) {
 		}
 		seen[tag] = true
 	}
-	// Relative to the best priority of the balancer (weight 10): gap 0 → 1, gap 5 → 100,
-	// gap 9 → 324; the TCP path of a Hysteria exit costs ×100.
-	want := map[string]float64{"exit-20.hy": 1, "exit-20.vr": 100, "exit-3.hy": 100, "exit-3.vr": 10000, "exit-2.hy": 324, "exit-2.vr": 32400}
+	// Relative to the best priority of the balancer (weight 10): gap 0 → 1, gap 5 → (4·5)² = 400,
+	// gap 9 → (4·9)² = 1296; the TCP path of a Hysteria exit costs ×400.
+	want := map[string]float64{"exit-20.hy": 1, "exit-20.vr": 400, "exit-3.hy": 400, "exit-3.vr": 160000, "exit-2.hy": 1296, "exit-2.vr": 518400}
 	tags := slices.Sorted(maps.Keys(want))
 	for _, bal := range []string{"exit-balancer", "plan-6-balancer"} {
 		if got := v.balancer(t, bal).costsByTag(t, tags); !reflect.DeepEqual(got, want) {
@@ -243,18 +243,18 @@ func TestXrayExitCostsAndNoDuplicateTags(t *testing.T) {
 		}
 	}
 	// A balancer of one exit: that exit is its best priority, whatever its load_weight.
-	if got := v.balancer(t, "plan-3-balancer").costsByTag(t, tags); !reflect.DeepEqual(got, map[string]float64{"exit-2.hy": 1, "exit-2.vr": 100}) {
+	if got := v.balancer(t, "plan-3-balancer").costsByTag(t, tags); !reflect.DeepEqual(got, map[string]float64{"exit-2.hy": 1, "exit-2.vr": 400}) {
 		t.Errorf("plan-3 costs = %v", got)
 	}
 }
 
-// The single path of a VLESS-only exit costs as its priority: no ×100, it is not a fallback.
+// The single path of a VLESS-only exit costs as its priority: no ×400, it is not a fallback.
 func TestXrayExitVROnlyCost(t *testing.T) {
 	legacy := legacyVLESSExit(3)
 	legacy.LoadWeight = 4
 	cfg, _ := genConfig(t, exitsInputs(exitFixture(2, 5, "healthy", true), legacy), quotaCutoff{})
 	got := viewOf(t, cfg).balancer(t, "exit-balancer").costsByTag(t, []string{"exit-2.hy", "exit-2.vr", "exit-3.vr"})
-	if want := map[string]float64{"exit-2.hy": 1, "exit-2.vr": 100, "exit-3.vr": 4}; !reflect.DeepEqual(got, want) {
+	if want := map[string]float64{"exit-2.hy": 1, "exit-2.vr": 400, "exit-3.vr": 16}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs = %v, want %v (exit-3.vr: one priority step below, no TCP factor)", got, want)
 	}
 	if c := exitCosts([]exitRoute{{id: 5, weight: 1, hasVR: true, primary: "exit-5.vr"}}); asJSON(c) != `[{"match":"^exit-5\\.vr$","regexp":true,"value":1}]` {
@@ -280,7 +280,7 @@ func TestXrayExitBalancerStrategyPinned(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		gap, cost int
-	}{{0, 1}, {1, 4}, {2, 16}, {4, 64}, {9, 324}} {
+	}{{0, 1}, {1, 16}, {2, 64}, {4, 256}, {9, 1296}} {
 		if got := exitTierCost(tc.gap); got != tc.cost {
 			t.Errorf("exitTierCost(%d) = %d, want %d", tc.gap, got, tc.cost)
 		}
@@ -384,8 +384,11 @@ func leastLoadSelect(t *testing.T, v xrayView, balancer string, alive map[string
 
 // Load sharing and priorities of the generated balancers, as xray 26.3.27 selects.
 func TestXrayExitLeastLoadSelection(t *testing.T) {
-	equal := viewOf(t, mustGen(t, exitsInputs(exitFixture(2, 1, "healthy", true), exitFixture(3, 1, "healthy", true))))
-	prio := viewOf(t, mustGen(t, exitsInputs(exitFixture(2, 5, "healthy", true), exitFixture(3, 1, "healthy", true))))
+	// pair: exit 2 with priority w2 and exit 3 with priority 1 (gap w2-1 below exit 2).
+	pair := func(w2 int) xrayView {
+		return viewOf(t, mustGen(t, exitsInputs(exitFixture(2, w2, "healthy", true), exitFixture(3, 1, "healthy", true))))
+	}
+	equal, prio := pair(1), pair(5)
 	for _, tc := range []struct {
 		name     string
 		v        xrayView
@@ -405,18 +408,45 @@ func TestXrayExitLeastLoadSelection(t *testing.T) {
 		{"preferred exit dead: the reserve takes over", prio, "exit-balancer",
 			map[string]int64{"exit-3.hy": 100, "exit-3.vr": 110},
 			[]string{"exit-3.hy"}},
-		{"preferred exit nine times slower: the reserve shares", prio, "exit-balancer",
-			map[string]int64{"exit-2.hy": 900, "exit-3.hy": 100},
+		{"preferred exit 16× slower (4g, g = 4): the reserve shares", prio, "exit-balancer",
+			map[string]int64{"exit-2.hy": 1000, "exit-3.hy": 60},
 			[]string{"exit-2.hy", "exit-3.hy"}},
+		{"band edge: equal exits at 190/210 ms do not share at that moment", equal, "exit-balancer",
+			map[string]int64{"exit-2.hy": 190, "exit-3.hy": 210},
+			[]string{"exit-2.hy"}},
+		{"priorities 2/1 at 101 vs 99 ms: the preferred alone", pair(2), "exit-balancer",
+			map[string]int64{"exit-2.hy": 101, "exit-3.hy": 99, "exit-2.vr": 105, "exit-3.vr": 100},
+			[]string{"exit-2.hy"}},
+		{"priorities 2/1, preferred at 250 vs reserve at 90 ms (2.8×): the reserve joins", pair(2), "exit-balancer",
+			map[string]int64{"exit-2.hy": 250, "exit-3.hy": 90},
+			[]string{"exit-2.hy", "exit-3.hy"}},
+		{"priorities 2/1, 250 vs 100 ms: 4×100 is not below the 400 ms edge, the preferred alone", pair(2), "exit-balancer",
+			map[string]int64{"exit-2.hy": 250, "exit-3.hy": 100},
+			[]string{"exit-2.hy"}},
+		{"preferred Hysteria dead, reserve 2 steps lower, equal RTT: the reserve's Hysteria", pair(3), "exit-balancer",
+			map[string]int64{"exit-2.vr": 100, "exit-3.hy": 100, "exit-3.vr": 100},
+			[]string{"exit-3.hy"}},
+		{"preferred Hysteria dead, reserve 6 steps lower: the preferred TCP", pair(7), "exit-balancer",
+			map[string]int64{"exit-2.vr": 100, "exit-3.hy": 100},
+			[]string{"exit-2.vr"}},
+		{"preferred Hysteria dead, reserve 6 steps lower, 60 ms: the reserve joins in the band", pair(7), "exit-balancer",
+			map[string]int64{"exit-2.vr": 60, "exit-3.hy": 60},
+			[]string{"exit-2.vr", "exit-3.hy"}},
 		{"Review Focus 3: Hysteria of the plan's exit dead → its TCP path", viewOf(t, mustGen(t, exitsInputs(multiExits()...))), "plan-3-balancer",
 			map[string]int64{"exit-2.vr": 200, "exit-20.hy": 50, "exit-20.vr": 60},
 			[]string{"exit-2.vr"}},
-		{"one exit, Hysteria dead: TCP although 10× its RTT is past every baseline", equal, "plan-3-balancer",
+		{"one exit, Hysteria dead: TCP although 20× its RTT is past every baseline", equal, "plan-3-balancer",
 			map[string]int64{"exit-2.vr": 300},
 			[]string{"exit-2.vr"}},
 		{"one exit, both paths alive: Hysteria only", equal, "plan-3-balancer",
 			map[string]int64{"exit-2.hy": 300, "exit-2.vr": 150},
 			[]string{"exit-2.hy"}},
+		{"one exit, Hysteria 9× slower than TCP: still Hysteria alone (TCP joins only beyond 10×)", equal, "plan-3-balancer",
+			map[string]int64{"exit-2.hy": 900, "exit-2.vr": 100},
+			[]string{"exit-2.hy"}},
+		{"one exit, Hysteria 25× slower than TCP: the TCP path", equal, "plan-3-balancer",
+			map[string]int64{"exit-2.hy": 2500, "exit-2.vr": 100},
+			[]string{"exit-2.vr"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := leastLoadSelect(t, tc.v, tc.balancer, tc.alive); !reflect.DeepEqual(got, tc.want) {
