@@ -13,20 +13,20 @@ import (
 
 // Plan represents a subscription plan configured by admin.
 type Plan struct {
-	ID               int      `json:"id"`
-	Slug             string   `json:"slug"`
-	Name             string   `json:"name"`
-	Description      string   `json:"description"`
-	PriceRub         int      `json:"price_rub"`
-	DurationDays     int      `json:"duration_days"`
-	TrafficLimitBytes *int64  `json:"traffic_limit_bytes"`
-	AllowedProtocols []string `json:"allowed_protocols"`
-	Features         string   `json:"features"` // JSON string
-	IsActive         bool     `json:"is_active"`
-	DirectRoutingEnabled bool   `json:"direct_routing_enabled"`
-	SortOrder        int      `json:"sort_order"`
-	AutoRenewDefault      bool   `json:"auto_renew_default"`
-	MaxActivationsPerUser *int  `json:"max_activations_per_user,omitempty"`
+	ID                    int      `json:"id"`
+	Slug                  string   `json:"slug"`
+	Name                  string   `json:"name"`
+	Description           string   `json:"description"`
+	PriceRub              int      `json:"price_rub"`
+	DurationDays          int      `json:"duration_days"`
+	TrafficLimitBytes     *int64   `json:"traffic_limit_bytes"`
+	AllowedProtocols      []string `json:"allowed_protocols"`
+	Features              string   `json:"features"` // JSON string
+	IsActive              bool     `json:"is_active"`
+	DirectRoutingEnabled  bool     `json:"direct_routing_enabled"`
+	SortOrder             int      `json:"sort_order"`
+	AutoRenewDefault      bool     `json:"auto_renew_default"`
+	MaxActivationsPerUser *int     `json:"max_activations_per_user,omitempty"`
 	// Express (Hysteria2) — UDP/QUIC inbound on the Hub for low-latency traffic.
 	// Brutal congestion control needs explicit up/down targets in Mbps per plan.
 	ExpressEnabled  bool `json:"express_enabled"`
@@ -35,9 +35,9 @@ type Plan struct {
 	// AmneziaWG ("🌴 Пальма") — userspace WG + Custom Protocol Settings on
 	// UDP :51820. Per-plan opt-in; when true subscription emits amneziawg://
 	// URI as priority-0 profile. See biz/awg.go::GetUserAWGConfig.
-	AmneziaWGEnabled bool `json:"amnezia_wg_enabled"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	AmneziaWGEnabled bool   `json:"amnezia_wg_enabled"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 	// Computed
 	ServerIDs []int `json:"server_ids,omitempty"`
 }
@@ -242,7 +242,13 @@ func replacePlanServers(planID int, serverIDs []int) {
 	}
 }
 
-// GetUserPlan returns the active plan for a user.
+// GetUserPlan returns the active plan for a user: the plan of their latest
+// status = 'active' subscription, ordered by valid_until alone. It is
+// deliberately NOT the effective subscription of effectiveSubOrderBy: plan-less
+// legacy rows are not demoted, so a later plan-less subscription yields "no
+// active plan". Switching it would change the protocol gate (IsProtocolAllowed),
+// the AmneziaWG gate, auto-renew and the Express speeds for such users, not just
+// a tie-break.
 func GetUserPlan(userID string) (*Plan, error) {
 	var planID sql.NullInt64
 	err := db.DB.QueryRow(`
@@ -277,15 +283,17 @@ func IsProtocolAllowed(userID, protocol string) bool {
 // были идентичны.
 //
 // Формула:
-//   leftover_money = currentPriceRub × leftoverDays / currentDurationDays
-//   bonus_days     = floor(leftover_money × newDurationDays / newPriceRub)
-//   bonus_days     = min(bonus_days, newDurationDays × 10)  // защита
+//
+//	leftover_money = currentPriceRub × leftoverDays / currentDurationDays
+//	bonus_days     = floor(leftover_money × newDurationDays / newPriceRub)
+//	bonus_days     = min(bonus_days, newDurationDays × 10)  // защита
 //
 // Edge cases:
-//   currentPriceRub == 0      → leftover_money = 0       → bonus = 0
-//   newPriceRub == 0          → деление guarded           → bonus = 0
-//   leftoverDays <= 0         → leftover_money = 0        → bonus = 0
-//   currentDurationDays <= 0  → бессмысленный план       → bonus = 0
+//
+//	currentPriceRub == 0      → leftover_money = 0       → bonus = 0
+//	newPriceRub == 0          → деление guarded           → bonus = 0
+//	leftoverDays <= 0         → leftover_money = 0        → bonus = 0
+//	currentDurationDays <= 0  → бессмысленный план       → bonus = 0
 func computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPriceRub, newDurationDays int) int {
 	if currentPriceRub <= 0 || currentDurationDays <= 0 || leftoverDays <= 0 || newPriceRub <= 0 || newDurationDays <= 0 {
 		return 0
@@ -307,13 +315,13 @@ var ErrDowngradeNotAllowed = errors.New("downgrade_not_allowed")
 // ActivateSubscriptionWithPlan creates or extends a user's subscription based on a plan.
 //
 // Behaviour by case:
-//   1. No active subscription (or current expired):  INSERT new row, valid_until = NOW + durationDays.
-//   2. Active subscription, same plan:               UPDATE valid_until = current + durationDays (simple stacking).
-//   3. Active subscription, different plan, new cheaper:  ErrDowngradeNotAllowed — caller must surface as HTTP 400.
-//   4. Active subscription, different plan, new ≥ current price:
-//       leftover_money = current.price × leftover_days / current.duration
-//       bonus_days     = floor(leftover_money × durationDays / pricePaid)  (capped at durationDays × 10)
-//       Update row to new plan_id, valid_until = NOW + durationDays + bonus_days, price_paid = pricePaid.
+//  1. No active subscription (or current expired):  INSERT new row, valid_until = NOW + durationDays.
+//  2. Active subscription, same plan:               UPDATE valid_until = current + durationDays (simple stacking).
+//  3. Active subscription, different plan, new cheaper:  ErrDowngradeNotAllowed — caller must surface as HTTP 400.
+//  4. Active subscription, different plan, new ≥ current price:
+//     leftover_money = current.price × leftover_days / current.duration
+//     bonus_days     = floor(leftover_money × durationDays / pricePaid)  (capped at durationDays × 10)
+//     Update row to new plan_id, valid_until = NOW + durationDays + bonus_days, price_paid = pricePaid.
 //
 // pricePaid is the *new* plan's price (not the amount after discount) — it's what
 // determines bonus_days. Promocode discounts already adjusted the YooKassa charge

@@ -158,33 +158,53 @@ func PeriodBreakdownByMonth(userUUID string, from, to time.Time) ([]MonthBucket,
 // effectiveSubOrderBy returns the ORDER BY list that puts a user's effective
 // subscription first among their ACTIVE subscriptions, for the table alias given
 // (a trusted SQL identifier, always a literal at the call sites). The effective
-// subscription is the one whose plan the user actually runs on: the row
-// ListActiveVlessClients picks as best_plan_id (plan_id IS NOT NULL, latest
-// valid_until), extended with two tie-breakers: a legacy plan-less subscription is
-// considered only when no subscription has a plan, and equal valid_until falls
-// back to the newest row so the choice is deterministic. A user may hold several
-// active subscriptions at once (a paid plan plus a not-yet-expired free trial); the
-// quota, the cabinet traffic card and the plan routing must all be judged against
-// this ONE row, otherwise a paid unlimited plan gets cut off by the trial's 10 GB
-// limit. Every query that picks "the" subscription of a user builds its ORDER BY
-// from this function (alias "us" here, "sub" in ListActiveVlessClients).
+// subscription is the one whose plan the user actually runs on: plan-bearing
+// subscriptions first (a legacy plan-less one only when no subscription has a
+// plan), then the latest valid_until, then the newest row so the choice is
+// deterministic. A user may hold several active subscriptions at once (a paid
+// plan plus a not-yet-expired free trial); the quota, the cabinet traffic card
+// and the plan routing must all be judged against this ONE row, otherwise a paid
+// unlimited plan gets cut off by the trial's 10 GB limit.
+//
+// Queries ordered by it (package-level vars, asserted by TestEffectiveSubQueries):
+//   - activeVlessClientsQuery (best_plan_id, alias "sub") and effectivePlanIDQuery
+//     (EffectivePlanID): the plan the Hub routes the user by, and the Happ
+//     routing deeplink of the subscription endpoint;
+//   - quotaExceededQuery, effectiveLimitQuery, trafficSubscriptionQuery: the
+//     quota cutoff, IsCycleExceeded and the cabinet traffic card;
+//   - hysteria2AuthPlanQuery, hysteria2PlanGateQuery: the Express (Bamboo) plan
+//     gate. They join plans (plan_id is never NULL there) and keep their extra
+//     filters (status = 'active', the legacy traffic_used counter), which may skip
+//     the effective row for an older plan row; there the shared ordering only
+//     makes the tie-break deterministic.
+//
+// NOT every subscription lookup uses it: GetUserPlan, GetUserSubscription, the
+// upgrade/proration queries in plans.go, client_identity.go and the payment
+// handlers still order by valid_until alone. They can pick a different row
+// (notably a later plan-less legacy subscription), and switching them would
+// change protocol, AmneziaWG, auto-renew and pricing decisions, not just a
+// tie-break, so they are left as they are.
 func effectiveSubOrderBy(alias string) string {
 	return fmt.Sprintf("(%[1]s.plan_id IS NOT NULL) DESC, %[1]s.valid_until DESC, %[1]s.id DESC", alias)
 }
 
-// EffectiveLimit returns the effective per-cycle quota for the user's active
-// subscription. Returns 0 if user has no active sub or the plan is unlimited.
-// Priority: user_subscriptions.traffic_limit (per-row override) > plans.traffic_limit_bytes.
-func EffectiveLimit(userDBID int) (limit int64, startedAt sql.NullTime, err error) {
-	err = db.DB.QueryRow(`
+// effectiveLimitQuery: limit and cycle anchor of the effective subscription
+// (us.user_id = $1, users.id).
+var effectiveLimitQuery = `
 		SELECT COALESCE(us.traffic_limit, p.traffic_limit_bytes, 0),
 		       us.started_at
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY `+effectiveSubOrderBy("us")+`
+		ORDER BY ` + effectiveSubOrderBy("us") + `
 		LIMIT 1
-	`, userDBID).Scan(&limit, &startedAt)
+	`
+
+// EffectiveLimit returns the effective per-cycle quota for the user's active
+// subscription. Returns 0 if user has no active sub or the plan is unlimited.
+// Priority: user_subscriptions.traffic_limit (per-row override) > plans.traffic_limit_bytes.
+func EffectiveLimit(userDBID int) (limit int64, startedAt sql.NullTime, err error) {
+	err = db.DB.QueryRow(effectiveLimitQuery, userDBID).Scan(&limit, &startedAt)
 	if err == sql.ErrNoRows {
 		return 0, sql.NullTime{}, nil
 	}
@@ -223,7 +243,29 @@ func IsCycleExceeded(userDBID int, userUUID string) (bool, error) {
 // Computed in a single SQL query for performance — called by xray_sync on
 // every sync tick and by checkTrafficLimits after each collector iteration.
 func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
-	rows, err := db.DB.Query(`
+	rows, err := db.DB.Query(quotaExceededQuery)
+	if err != nil {
+		return nil, fmt.Errorf("quota-exceeded list: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, fmt.Errorf("quota-exceeded scan: %w", err)
+		}
+		out[userID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("quota-exceeded rows: %w", err)
+	}
+	return out, nil
+}
+
+// quotaExceededQuery lists the users.user_id of everyone whose current-cycle
+// usage reached the limit of their effective subscription (see
+// ListQuotaExceededUserIDs).
+var quotaExceededQuery = `
 		WITH active AS (
 			SELECT u.user_id, eff.started_at,
 			       COALESCE(eff.traffic_limit, p.traffic_limit_bytes, 0) AS lim
@@ -256,24 +298,7 @@ func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
 			FROM traffic_stats ts
 			WHERE ts.user_id = c.user_id AND ts.recorded_at >= c.cycle_start
 		) >= c.lim
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("quota-exceeded list: %w", err)
-	}
-	defer rows.Close()
-	out := make(map[string]struct{})
-	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			return nil, fmt.Errorf("quota-exceeded scan: %w", err)
-		}
-		out[userID] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("quota-exceeded rows: %w", err)
-	}
-	return out, nil
-}
+	`
 
 // TrafficResponse is the unified JSON shape returned by /api/v1/user/traffic
 // and /api/admin/users/{id}/traffic.
@@ -291,8 +316,8 @@ type TrafficSubscriptionInfo struct {
 }
 
 type TrafficCycleInfo struct {
-	StartedAt  string  `json:"started_at"`  // RFC3339, cycle start
-	EndsAt     string  `json:"ends_at"`     // RFC3339, cycle end
+	StartedAt  string  `json:"started_at"` // RFC3339, cycle start
+	EndsAt     string  `json:"ends_at"`    // RFC3339, cycle end
 	UsedBytes  int64   `json:"used_bytes"`
 	LimitBytes int64   `json:"limit_bytes"` // 0 = unlimited
 	Percent    float64 `json:"percent"`
@@ -316,6 +341,20 @@ type TrafficPeriodMonth struct {
 	ByMonth   []MonthBucket `json:"by_month"`
 }
 
+// trafficSubscriptionQuery: the effective subscription and its plan for the
+// cabinet traffic card (us.user_id = $1, users.id).
+var trafficSubscriptionQuery = `
+		SELECT us.started_at, us.valid_until,
+		       COALESCE(p.name, 'standard'),
+		       p.traffic_limit_bytes,
+		       us.traffic_limit
+		FROM user_subscriptions us
+		LEFT JOIN plans p ON p.id = us.plan_id
+		WHERE us.user_id = $1 AND us.valid_until > NOW()
+		ORDER BY ` + effectiveSubOrderBy("us") + `
+		LIMIT 1
+	`
+
 // BuildTrafficResponse assembles the unified traffic payload for a user.
 // Returns zero-valued Periods if the user has no traffic_stats rows.
 // Used by both /api/v1/user/traffic and /api/admin/users/{id}/traffic.
@@ -329,17 +368,7 @@ func BuildTrafficResponse(userDBID int, userUUID string) (TrafficResponse, error
 	var planName sql.NullString
 	var planLimit sql.NullInt64
 	var subLimit sql.NullInt64
-	err := db.DB.QueryRow(`
-		SELECT us.started_at, us.valid_until,
-		       COALESCE(p.name, 'standard'),
-		       p.traffic_limit_bytes,
-		       us.traffic_limit
-		FROM user_subscriptions us
-		LEFT JOIN plans p ON p.id = us.plan_id
-		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY `+effectiveSubOrderBy("us")+`
-		LIMIT 1
-	`, userDBID).Scan(&startedAt, &validUntil, &planName, &planLimit, &subLimit)
+	err := db.DB.QueryRow(trafficSubscriptionQuery, userDBID).Scan(&startedAt, &validUntil, &planName, &planLimit, &subLimit)
 
 	var hasSub bool
 	if err == nil {

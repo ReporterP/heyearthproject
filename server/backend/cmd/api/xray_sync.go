@@ -152,15 +152,12 @@ func SyncXrayConfig() error {
 	// by users.user_id == ActiveVlessClient.UserID) are excluded from the VLESS
 	// clients arrays and the per-plan routing rules, but ONLY while the
 	// app_settings flag quota_cutoff_enabled is "true" (default: off). The set
-	// re-computes on every sync (debounced 2s), so cycle resets pick up
-	// automatically.
-	quota, qerr := loadQuotaCutoff()
-	if qerr != nil {
-		log.Printf("[xray-sync] WARN failed to load quota state: %v — continuing without cutoff", qerr)
-	}
-	if notice := quota.disabledNotice(); notice != "" {
-		log.Print(notice)
-	}
+	// re-computes on every sync, so cycle resets pick up automatically. A failed
+	// read does not change the cutoff (loadQuotaForSync): the last applied flag
+	// and the last read set (up to quotaDecisionMaxAge old) are kept, otherwise a
+	// DB blip would restore every cut-off user and the collector would cut them
+	// again a minute later — with a forced xray restart for everyone.
+	quota := loadQuotaForSync(time.Now())
 
 	// Серверный UUID — для обратной совместимости и админ-доступа
 	serverUUID := keys.UUID
@@ -210,8 +207,12 @@ func SyncXrayConfig() error {
 			"level": level,
 		})
 	}
-	if skippedQuota > 0 {
-		log.Printf("[xray-sync] quota cutoff: %d user(s) excluded from VLESS clients this sync", skippedQuota)
+	// One summary line, logged when it changes and at most hourly otherwise (the
+	// periodic sync runs every 5 minutes). due is called on every sync, also with
+	// nothing to say, so a set that disappears and comes back is logged again.
+	quotaLine, quotaKey := quotaSyncSummary(quota, skippedQuota)
+	if quotaSummaries.due(quotaKey, time.Now(), quotaWarnEvery) && quotaLine != "" {
+		log.Print(quotaLine)
 	}
 
 	// (activeClients уже использованы для заполнения vlessClients и uuidToUserID)
@@ -841,6 +842,10 @@ func SyncXrayConfig() error {
 	if err != nil {
 		return err
 	}
+	// xray now runs this config (installed, applied live or unchanged): record the
+	// quota decision it carries. The traffic collector and the flag watcher
+	// request a sync only when their fresh reads differ from it.
+	quotaMemory.recordApplied(quota)
 	switch action {
 	case xrayApplyUnchanged:
 		log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")

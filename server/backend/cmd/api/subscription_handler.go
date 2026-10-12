@@ -150,16 +150,15 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[subscribe] ListMTProtoExitIPs error: %v (continuing with no MTProto direct-IPs)", mtErr)
 			mtprotoIPs = nil
 		}
-		// Determine plan_id of the user's current active subscription. Errors are
+		// Plan of the user's effective subscription: the plan the Hub routes the
+		// user by (best_plan_id of ListActiveVlessClients), so the deeplink's
+		// direct-route services match the Hub's per-plan rules. Errors are
 		// non-fatal — planID stays 0, BuildHappRoutingDeeplinkForPlan handles that.
-		planID := 0
-		_ = db.DB.QueryRow(`
-			SELECT COALESCE(plan_id, 0) FROM user_subscriptions
-			 WHERE user_id = (SELECT id FROM users WHERE user_id = $1)
-			   AND valid_until > CURRENT_TIMESTAMP
-			   AND plan_id IS NOT NULL
-			 ORDER BY valid_until DESC LIMIT 1
-		`, userID).Scan(&planID)
+		planID, planErr := biz.EffectivePlanID(userID)
+		if planErr != nil {
+			log.Printf("[subscribe] EffectivePlanID(%s): %v (routing deeplink without plan services)", userID, planErr)
+			planID = 0
+		}
 		if deeplink := biz.BuildHappRoutingDeeplinkForPlan(planID, mtprotoIPs); deeplink != "" {
 			uris = append(uris, deeplink)
 		}
@@ -496,12 +495,12 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 // headers shown in Happ as a single clickable line below the progress bar.
 //
 // Priority order:
-//   1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /checkout
-//   2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /checkout
-//   3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /checkout
-//   4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /checkout
-//   5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
-//   6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
+//  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /checkout
+//  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /checkout
+//  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /checkout
+//  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /checkout
+//  5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
+//  6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
 //
 // The dashboard / checkout URL roots are taken from publicBaseURL().
 // Returns empty strings if the user has no subscription record at all

@@ -117,18 +117,7 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	var allowed []string
 	var enabled bool
 	var up, down int
-	err := db.DB.QueryRow(`
-		SELECT p.id, p.allowed_protocols, p.express_enabled,
-		       p.express_up_mbps, p.express_down_mbps
-		FROM user_subscriptions us
-		JOIN plans p ON p.id = us.plan_id
-		WHERE us.user_id = $1
-		  AND us.valid_until > NOW()
-		  AND us.status = 'active'
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-		ORDER BY us.valid_until DESC
-		LIMIT 1
-	`, userPK).Scan(&planID, pq.Array(&allowed), &enabled, &up, &down)
+	err := db.DB.QueryRow(hysteria2AuthPlanQuery, userPK).Scan(&planID, pq.Array(&allowed), &enabled, &up, &down)
 	if err != nil {
 		return Hysteria2AuthResult{}
 	}
@@ -157,6 +146,41 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	}
 }
 
+// hysteria2AuthPlanQuery picks the plan row that authorizes an Express login
+// (us.user_id = $1, users.id). Ordered by effectiveSubOrderBy; with the inner
+// JOIN plans its first key is constant (plan_id is never NULL here), so compared
+// with the former `ORDER BY us.valid_until DESC` only the tie-break on equal
+// valid_until (newest row) is new and the same users are authorized. The
+// status = 'active' and legacy traffic_used filters are kept on purpose: they
+// can skip the effective subscription and fall back to an older plan row, so
+// the Express gate may judge a different row than the routing/quota code.
+var hysteria2AuthPlanQuery = `
+		SELECT p.id, p.allowed_protocols, p.express_enabled,
+		       p.express_up_mbps, p.express_down_mbps
+		FROM user_subscriptions us
+		JOIN plans p ON p.id = us.plan_id
+		WHERE us.user_id = $1
+		  AND us.valid_until > NOW()
+		  AND us.status = 'active'
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
+		ORDER BY ` + effectiveSubOrderBy("us") + `
+		LIMIT 1
+	`
+
+// hysteria2PlanGateQuery is the plan row of CanUseHysteria2 (u.user_id = $1,
+// users.user_id). Same ordering note as hysteria2AuthPlanQuery: only the
+// tie-break is new; status = 'active' is kept, the traffic_used filter is
+// deliberately absent (quota is enforced at auth time).
+var hysteria2PlanGateQuery = `
+		SELECT p.allowed_protocols, p.express_enabled
+		FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		JOIN plans p ON p.id = us.plan_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		ORDER BY ` + effectiveSubOrderBy("us") + `
+		LIMIT 1
+	`
+
 // CanUseHysteria2 — the same plan gate as ValidateHysteria2Auth (an active subscription
 // whose plan has express_enabled AND 'hysteria2'/'all' allowed). Builders use it so
 // «Бамбук» is never offered to a plan the auth backend would reject. Quota and the
@@ -169,14 +193,7 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 func CanUseHysteria2(userID string) (bool, error) {
 	var allowed []string
 	var enabled bool
-	err := db.DB.QueryRow(`
-		SELECT p.allowed_protocols, p.express_enabled
-		FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		JOIN plans p ON p.id = us.plan_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
-		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(pq.Array(&allowed), &enabled)
+	err := db.DB.QueryRow(hysteria2PlanGateQuery, userID).Scan(pq.Array(&allowed), &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -191,7 +208,7 @@ type Hysteria2Status struct {
 	BinaryInstalled bool   `json:"binary_installed"`
 	ConfigPresent   bool   `json:"config_present"`
 	ConfigVersion   string `json:"config_version"`
-	LastSyncAt      int64  `json:"last_sync_at"`      // unix seconds, 0 if never
+	LastSyncAt      int64  `json:"last_sync_at"` // unix seconds, 0 if never
 	LastError       string `json:"last_error,omitempty"`
 	MaxUpMbps       int    `json:"max_up_mbps"`
 	MaxDownMbps     int    `json:"max_down_mbps"`

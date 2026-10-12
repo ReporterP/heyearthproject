@@ -2,6 +2,7 @@ package biz
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -134,29 +135,10 @@ type ActiveVlessClient struct {
 // plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
 // The quota cutoff (ListQuotaExceededUserIDs) and the cabinet traffic card judge
 // the SAME subscription row: best_plan_id below is ordered by effectiveSubOrderBy
-// (traffic.go), the one ordering every "which subscription is the user's" query
-// shares.
+// (traffic.go), the ordering shared by the routing, quota and Express-gate
+// queries (its doc lists which lookups use it and which do not).
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
-	// Premium derivation: any active subscription = premium (groups removed).
-	rows, err := db.DB.Query(`
-		SELECT u.vless_uuid::text, u.user_id,
-		       TRUE AS is_premium,
-		       COALESCE(
-		         (SELECT sub.plan_id FROM user_subscriptions sub
-		          WHERE sub.user_id = u.id AND sub.plan_id IS NOT NULL
-		            AND sub.valid_until > CURRENT_TIMESTAMP
-		          ORDER BY ` + effectiveSubOrderBy("sub") + ` LIMIT 1),
-		         0
-		       ) AS best_plan_id
-		FROM users u
-		JOIN user_subscriptions us ON us.user_id = u.id
-		WHERE u.vless_uuid IS NOT NULL
-		  AND u.is_blocked = FALSE
-		  AND us.valid_until > CURRENT_TIMESTAMP
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-		GROUP BY u.vless_uuid, u.user_id, u.id
-		ORDER BY u.user_id
-	`)
+	rows, err := db.DB.Query(activeVlessClientsQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +165,58 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		result = append(result, c)
 	}
 	return result, rows.Err()
+}
+
+// activeVlessClientsQuery lists the VLESS clients of ListActiveVlessClients.
+// Premium derivation: any active subscription = premium (groups removed).
+// best_plan_id is the plan of the effective subscription (effectiveSubOrderBy).
+var activeVlessClientsQuery = `
+		SELECT u.vless_uuid::text, u.user_id,
+		       TRUE AS is_premium,
+		       COALESCE(
+		         (SELECT sub.plan_id FROM user_subscriptions sub
+		          WHERE sub.user_id = u.id AND sub.plan_id IS NOT NULL
+		            AND sub.valid_until > CURRENT_TIMESTAMP
+		          ORDER BY ` + effectiveSubOrderBy("sub") + ` LIMIT 1),
+		         0
+		       ) AS best_plan_id
+		FROM users u
+		JOIN user_subscriptions us ON us.user_id = u.id
+		WHERE u.vless_uuid IS NOT NULL
+		  AND u.is_blocked = FALSE
+		  AND us.valid_until > CURRENT_TIMESTAMP
+		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
+		GROUP BY u.vless_uuid, u.user_id, u.id
+		ORDER BY u.user_id
+	`
+
+// effectivePlanIDQuery is best_plan_id of activeVlessClientsQuery for one user
+// (users.user_id = $1): same filters, same ordering.
+var effectivePlanIDQuery = `
+		SELECT us.plan_id
+		FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.plan_id IS NOT NULL
+		  AND us.valid_until > CURRENT_TIMESTAMP
+		ORDER BY ` + effectiveSubOrderBy("us") + `
+		LIMIT 1
+	`
+
+// EffectivePlanID returns the plan of the user's effective subscription — the
+// PlanID ListActiveVlessClients reports, i.e. the plan the Hub routes the user
+// by — so per-plan client settings (the Happ routing deeplink) match the Hub's
+// per-plan rules. (0, nil) when the user has no active subscription with a plan;
+// a database failure is returned as an error.
+func EffectivePlanID(userID string) (int, error) {
+	var planID int
+	err := db.DB.QueryRow(effectivePlanIDQuery, userID).Scan(&planID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("effective plan: %w", err)
+	}
+	return planID, nil
 }
 
 // ActiveUserWithUUID — пара user_id + vless_uuid для активного пользователя.

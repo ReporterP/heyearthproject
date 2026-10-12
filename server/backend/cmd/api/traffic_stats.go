@@ -62,9 +62,11 @@ func StartTrafficStatsCollector() {
 
 func collectTrafficStats() {
 	// A flip of quota_cutoff_enabled is applied at once, not with the 5-minute
-	// periodic sync. Polled here, before the early returns below, because this
-	// is the only loop that ticks every minute whether or not Xray is reachable
-	// and has traffic (checkTrafficLimits runs only on windows with traffic).
+	// periodic sync: the watcher compares the flag with the value the last
+	// successful sync applied. Polled here, before the early returns below,
+	// because this is the only loop that ticks every minute whether or not Xray
+	// is reachable and has traffic (checkTrafficLimits runs only on windows with
+	// traffic).
 	watchQuotaCutoffFlag()
 
 	// Быстрая проверка доступности
@@ -209,37 +211,36 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 }
 
-// checkTrafficLimits — delegates to biz, logs offenders and, when the cutoff is
-// armed (app_settings quota_cutoff_enabled = "true"), requests a debounced xray
-// sync (2 s) instead of waiting for the 5-minute periodic one. That sync
-// removes the user live (`xray api rmu`), which only refuses NEW connections;
-// sessions already open keep working until the soft cutoff guard sees their
-// traffic in the next full stats window and forces a restart (≈1–2 min,
-// checkRevokedStillOnline). Repeated calls while the user stays over quota are
-// no-ops: the config no longer changes. With the cutoff disarmed the sync would
-// change nothing, so over-quota users are only logged, each at most once per
-// quotaWarnEvery (plus once whenever the set changes); the per-sync summary line
-// of SyncXrayConfig keeps the count visible.
+// checkTrafficLimits — delegates to biz, logs offenders and requests a debounced
+// xray sync (2 s) instead of waiting for the 5-minute periodic one, but ONLY when
+// the fresh decision differs from the one the last successful sync applied
+// (quotaSyncNeeded): the flag flipped, or the set of users to cut off changed in
+// either direction (a new offender while armed; a cycle reset or a payment
+// restores one). While nothing changes — a user may stay over quota for a whole
+// cycle — no sync is requested. An armed sync removes the user live
+// (`xray api rmu`), which only refuses NEW connections; sessions already open
+// keep working until the soft cutoff guard sees their traffic in the next full
+// stats window and forces a restart (≈1–2 min, checkRevokedStillOnline).
+// Per-user lines in both modes go through quotaWarnings: a user is logged when
+// first seen over quota (new offenders at once), then at most once per
+// quotaWarnEvery while they stay over it; the per-sync summary line of
+// SyncXrayConfig keeps the count visible. A failed read skips the tick: no sync
+// is requested, so nothing is restored or cut.
 func checkTrafficLimits() {
 	quota, err := loadQuotaCutoff()
 	if err != nil {
-		log.Printf("[traffic-stats] checkTrafficLimits: %v", err)
+		log.Printf("[traffic-stats] checkTrafficLimits: %v — проверка пропущена, синхронизация не запрошена", err)
 		return
 	}
-	if len(quota.over) == 0 {
-		quotaWarnings.due(quota.over, time.Now(), quotaWarnEvery) // forget users who left the set
+	for _, line := range quotaOffenderLines(quota, quotaWarnings, time.Now(), quotaWarnEvery) {
+		log.Print(line)
+	}
+	applied := quotaMemory.appliedState()
+	if !quotaSyncNeeded(quota, applied) {
 		return
 	}
-	if quota.enabled {
-		for userID := range quota.over {
-			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика", userID)
-		}
-	} else {
-		for _, userID := range quotaWarnings.due(quota.over, time.Now(), quotaWarnEvery) {
-			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика (cutoff отключён: %s=false)", userID, quotaCutoffSetting)
-		}
-	}
-	if quota.needsSync() {
-		RequestXraySync()
-	}
+	added, removed := userSetDiff(quota.cut(), applied.cut)
+	log.Printf("[traffic-stats] quota: решение изменилось (%s=%v, применено %v; отключить +%d/вернуть %d) — запрашиваем xray sync",
+		quotaCutoffSetting, quota.enabled, applied.flag, added, removed)
+	requestSync()
 }
