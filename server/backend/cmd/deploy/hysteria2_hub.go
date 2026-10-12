@@ -32,11 +32,14 @@ import (
 // confirm and sendto fails with EPERM: Бамбук was dark for 6.5 h after the source switch.
 // 50443 itself is inside the range, so direct dials go through this rule too.
 //
+// The restricted rule is inserted (position 1) BEFORE the stale ones are deleted, so there is no
+// moment without a DNAT for new flows.
+//
 // The DNAT only matches packets addressed to the Hub itself (-m addrtype --dst-type LOCAL).
 // PREROUTING also sees FORWARDED traffic — AWG users (awg0) and docker containers talking
 // to the internet — and an unrestricted rule rewrote the dport of their UDP flows to 50443
 // (Discord voice, WhatsApp calls, games broke). Older unrestricted DNAT rules and the
-// legacy REDIRECT are removed first (loop -D until absent: a rule can be duplicated).
+// legacy REDIRECT are removed afterwards (loop -D until absent: a rule can be duplicated).
 //
 // The hop range overlaps the kernel's ip_local_port_range (32768-60999). Replies to the
 // Hub's own outgoing UDP (DNS, hysteria tunnel clients) are ESTABLISHED in conntrack and
@@ -46,10 +49,16 @@ import (
 // range is a host-wide change.
 //
 // Shell without single quotes: it is embedded in a sh -c '...' ExecStartPre.
-const hysteria2PortHopRule = `while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; do :; done; ` +
+const hysteria2PortHopRule = hysteria2PortHopCheck + ` 2>/dev/null || ` +
+	`iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443; ` +
+	`while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; do :; done; ` +
 	`while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null; do :; done; ` +
-	`iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443 2>/dev/null || ` +
-	`iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443`
+	hysteria2PortHopCheck
+
+// hysteria2PortHopCheck verifies the restricted rule; it is also the last command of
+// hysteria2PortHopRule, so ExecStartPre (and the live script under set -e) fails when the rule
+// is not there.
+const hysteria2PortHopCheck = `iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443`
 
 // setupHysteria2Hub provisions Hysteria2 server on the main Hub.
 // Idempotent: re-runs do not break existing config, do not reissue passwords.

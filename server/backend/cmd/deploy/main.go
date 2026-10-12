@@ -1596,11 +1596,12 @@ echo "  reality_public_key=$PUB_KEY"
 echo "  reality_short_id=$SHORT_ID"
 echo "  reality_sni=$REALITY_SNI"
 
-# Вставляем основные настройки (всегда перезаписываем)
+# main_server_host — только если его ещё нет: его меняют в админке (домен вместо IP), а
+# --update-main с DEPLOY_HOST (IP для SSH) не должен его перетирать.
 runuser -u postgres -- psql -d heyearth -c "
-INSERT INTO app_settings (key, value, updated_at) VALUES
-  ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP),
-  ('vless_port', '443', CURRENT_TIMESTAMP)
+INSERT INTO app_settings (key, value, updated_at) VALUES ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP)
+ON CONFLICT (key) DO NOTHING;
+INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_port', '443', CURRENT_TIMESTAMP)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
 " 2>/dev/null || true
 

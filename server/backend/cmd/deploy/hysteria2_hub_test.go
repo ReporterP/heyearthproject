@@ -54,27 +54,25 @@ func TestHysteria2PortHopRuleShape(t *testing.T) {
 func TestHysteria2PortHopRuleOnlyLocalDestinations(t *testing.T) {
 	r := hysteria2PortHopRule
 	adds := regexp.MustCompile(`iptables -t nat -(?:[AI]|C) PREROUTING[^;|&]*`).FindAllString(r, -1)
-	if len(adds) != 2 {
-		t.Fatalf("want exactly one -C and one -I PREROUTING call, got %d: %q", len(adds), adds)
+	if len(adds) != 3 { // -C || -I, then the final -C check
+		t.Fatalf("want -C, -I and the final -C check of PREROUTING, got %d: %q", len(adds), adds)
 	}
 	for _, a := range adds {
 		if !strings.Contains(a, "-m addrtype --dst-type LOCAL") {
 			t.Errorf("DNAT not restricted to LOCAL destinations: %q", a)
 		}
 	}
-	// Stale unrestricted DNAT rules (the previous version of this rule) are removed in a
-	// loop, before the restricted rule is checked/inserted.
-	del := "while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null; do :; done; "
-	i := strings.Index(r, del)
-	if i < 0 {
-		t.Fatalf("rule does not remove the stale unrestricted DNAT (want %q)", del)
+	// The restricted rule goes in FIRST (no moment without a DNAT), then the stale unrestricted
+	// DNAT and the legacy REDIRECT are removed in a loop.
+	ins := strings.Index(r, "-I PREROUTING 1 -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL")
+	del := strings.Index(r, "while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null; do :; done; ")
+	red := strings.Index(r, "while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; do :; done; ")
+	if ins < 0 || del < 0 || red < 0 || ins > del || ins > red {
+		t.Errorf("the restricted rule must be inserted before the stale rules are deleted (insert %d, delete DNAT %d, delete REDIRECT %d)", ins, del, red)
 	}
-	if c := strings.Index(r, "-C PREROUTING"); c < i {
-		t.Error("stale unrestricted DNAT must be removed before the -C/-I of the restricted rule")
-	}
-	// The -I must stay the last command: ExecStartPre fails loudly if it cannot insert.
-	if !strings.HasSuffix(r, "-j DNAT --to-destination :50443") || !strings.Contains(r[strings.LastIndex(r, "||"):], "-I PREROUTING 1") {
-		t.Error("the -I of the restricted rule must be the last command")
+	// The last command verifies the restricted rule: ExecStartPre fails loudly without it.
+	if !strings.HasSuffix(r, "; "+hysteria2PortHopCheck) {
+		t.Error("the restricted rule's -C check must be the last command")
 	}
 }
 

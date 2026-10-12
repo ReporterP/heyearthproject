@@ -385,7 +385,7 @@ func exitAccessFor(env envMap, flagPassword string) (exitAccess, error) {
 		pw = env.get("EXIT_NODE_SSH_PASSWORD", "")
 	}
 	if pw == "" {
-		return exitAccess{}, errors.New("the backup key does not work on the exit yet and installing it needs the exit's root password: " +
+		return exitAccess{}, errors.New("reaching the exit by password needs the exit's own root password: " +
 			"set EXIT_NODE_SSH_PASSWORD in server/.env or pass --exit-node-password (the Hub deploy password is never tried on the exit)")
 	}
 	fp := strings.TrimSpace(env.get("EXIT_NODE_HOST_KEY_FINGERPRINT", ""))

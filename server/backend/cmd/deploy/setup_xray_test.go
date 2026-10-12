@@ -108,6 +108,11 @@ func TestSeedConnectionSettingsScript(t *testing.T) {
 	if !strings.Contains(s, `MAIN_HOST="203.0.113.5"`) {
 		t.Error("host not rendered")
 	}
+	// main_server_host is only seeded when absent: --update-main must not replace the domain the
+	// admin set with DEPLOY_HOST
+	if !strings.Contains(s, "VALUES ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP)\nON CONFLICT (key) DO NOTHING;") {
+		t.Error("main_server_host must be inserted only when absent")
+	}
 	i := strings.Index(s, "('reality_sni_domain'")
 	if i < 0 {
 		t.Fatal("no reality_sni_domain seed")
