@@ -852,13 +852,9 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		log.Fatalf("upload migrations: %v", err)
 	}
 
-	// Ensure postgres has a known password so the API can connect without peer auth issues.
-	_, _ = runSSH(client, `sudo -u postgres psql -tAc "ALTER USER postgres PASSWORD 'HeYearthDB1';" 2>/dev/null || true`, false)
-
-	dbURL := cfg.env.get("DATABASE_URL", "")
-	if dbURL == "" || dbURL == "postgres://postgres@localhost:5432/heyearth?sslmode=disable" {
-		dbURL = "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable"
-	}
+	// The DB password lives only in the Hub's api.env: kept on every run, generated once on a
+	// first install, never reset (see db_password.go).
+	dbURL := resolveHubDatabaseURL(client, cfg)
 
 	apiEnv := map[string]string{
 		"APP_DIR":              appDir,
@@ -873,6 +869,10 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		"TLS_CA_FILE":          path.Join(appDir, "certs", "ca-cert.pem"),
 	}
 	if err := uploadFileContent(c, []byte(serializeEnv(apiEnv)), appDir+"/api.env"); err != nil {
+		log.Fatal(err)
+	}
+	// api.env carries the DB password, the JWT secret and the admin password.
+	if _, err := runSSH(client, "chmod 600 "+appDir+"/api.env", true); err != nil {
 		log.Fatal(err)
 	}
 
@@ -1468,9 +1468,8 @@ func isXrayInstalled(client *ssh.Client) bool {
 func seedConnectionSettings(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[seed] Автозаполнение настроек подключения...")
 
-	dbURL := cfg.env.get("DATABASE_URL", "postgres://postgres:HeYearthDB1@localhost:5432/heyearth?sslmode=disable")
-
-	// Скрипт читает reality-keys.json и xray config, затем вставляет в БД
+	// Скрипт читает reality-keys.json и xray config, затем вставляет в БД. psql идёт как
+	// postgres по peer auth: пароль БД (DATABASE_URL) в скрипт и argv не попадает.
 	script := fmt.Sprintf(`set -e
 MAIN_HOST="%s"
 
@@ -1523,7 +1522,7 @@ echo "  reality_short_id=$SHORT_ID"
 echo "  reality_sni=$REALITY_SNI"
 
 # Вставляем основные настройки (всегда перезаписываем)
-psql "%s" -c "
+runuser -u postgres -- psql -d heyearth -c "
 INSERT INTO app_settings (key, value, updated_at) VALUES
   ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP),
   ('vless_port', '443', CURRENT_TIMESTAMP)
@@ -1532,20 +1531,20 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIM
 
 # Вставляем ключи xray (перезаписываем)
 if [ -n "$VLESS_UUID" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_uuid', '$VLESS_UUID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('vless_uuid', '$VLESS_UUID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$PUB_KEY" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_public_key', '$PUB_KEY', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_public_key', '$PUB_KEY', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$SHORT_ID" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 if [ -n "$REALITY_SNI" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
 
 echo "[seed] Готово"
-`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL)
+`, cfg.host)
 
 	_, _ = runSSH(client, script, false)
 }
@@ -1666,15 +1665,14 @@ func doFixDB(client *ssh.Client, cfg *deployConfig) {
 	} else {
 		fmt.Println(out)
 	}
-	// На свежем Ubuntu postgres по умолчанию требует пароль для TCP; задаём и прописываем в api.env
+	// На свежем Ubuntu postgres требует пароль для TCP. Пароль задаётся только если у роли его
+	// ещё нет (тогда он случайный и попадает в api.env); существующий не сбрасывается.
 	fmt.Println("Настройка доступа к БД и перезапуск heyearth-api...")
-	script := `set -e
-sudo -u postgres psql -tAc "ALTER USER postgres PASSWORD 'HeYearthDB1';" 2>/dev/null || true
-grep -q "postgres:HeYearthDB1@" /opt/heyearth/mainserver/api.env || sed -i 's#postgres://postgres@localhost:5432#postgres://postgres:HeYearthDB1@localhost:5432#' /opt/heyearth/mainserver/api.env
-systemctl restart heyearth-api
-sleep 3
-`
-	_, _ = runSSH(client, script, false)
+	dbURL := resolveHubDatabaseURL(client, cfg)
+	if err := writeHubDatabaseURL(client, dbURL); err != nil {
+		log.Fatalf("[db] не удалось записать DATABASE_URL в %s: %v", hubAPIEnv, err)
+	}
+	_, _ = runSSH(client, "systemctl restart heyearth-api; sleep 3", false)
 	fmt.Println("Проверка:")
 	doStatus(client, cfg)
 }
@@ -2186,9 +2184,13 @@ print(k.get('ssPassword', ''))
 		tunnelSSPass = strings.TrimSpace(lines[3])
 	}
 
-	dbURL := cfg.env.get("DATABASE_URL", "")
+	// DATABASE_URL lives in the Hub's api.env (db_password.go); server/.env is the fallback.
+	dbURL, err := readHubDatabaseURL(mainClient)
+	if err != nil || dbURL == "" {
+		dbURL = cfg.env.get("DATABASE_URL", "")
+	}
 	if dbURL == "" {
-		fmt.Println("[exit-node] ОШИБКА: DATABASE_URL not set — required for exit node provisioning")
+		fmt.Println("[exit-node] ОШИБКА: DATABASE_URL не найден ни в api.env на Hub, ни в server/.env — нужен для записи exit-ноды в БД")
 		return
 	}
 
