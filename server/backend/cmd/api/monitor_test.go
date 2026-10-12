@@ -131,6 +131,78 @@ func TestLoopProbeStreak(t *testing.T) {
 	}
 }
 
+func TestLoopProbeStreakRecovered(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	var s loopProbeStreak
+	s.record(t0, false)
+	s.record(t0.Add(time.Minute), true)
+	if s.recovered() {
+		t.Fatal("one success after a failure is not a recovery")
+	}
+	s.record(t0.Add(2*time.Minute), false)
+	s.record(t0.Add(3*time.Minute), true)
+	if s.recovered() {
+		t.Fatal("a failure in between starts the count over")
+	}
+	s.record(t0.Add(4*time.Minute), true)
+	if !s.recovered() {
+		t.Fatal("two successes in a row are a recovery")
+	}
+	// a stale gap breaks the success streak as well
+	var g loopProbeStreak
+	g.record(t0, true)
+	g.record(t0.Add(loopProbeStaleAfter+time.Second), true)
+	if g.recovered() {
+		t.Fatal("successes separated by a stale gap are not consecutive")
+	}
+}
+
+type checkHostRecorder struct{ events []string }
+
+func (r *checkHostRecorder) raise(key string, level AlertLevel, _, _ string) {
+	r.events = append(r.events, "raise "+key+" "+string(level))
+}
+func (r *checkHostRecorder) resolve(key, _ string) { r.events = append(r.events, "resolve "+key) }
+
+func TestCheckHostVerdictStreaks(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	tally := checkHostTally{OK: 1, Failed: 2}
+	run := func(st *loopProbeStreak, r *checkHostRecorder, at time.Duration, verdict string) string {
+		r.events = nil
+		checkHostVerdict(st, t0.Add(at), verdict, "hiearth.ru", "https://check-host.net/x", tally, r.raise, r.resolve)
+		return strings.Join(r.events, ",")
+	}
+	const raise, resolve = "raise entry-unreachable-ru warn", "resolve entry-unreachable-ru"
+
+	var st loopProbeStreak
+	r := &checkHostRecorder{}
+	if got := run(&st, r, 0, "unreachable"); got != "" {
+		t.Fatalf("one failure: %q", got)
+	}
+	if got := run(&st, r, 15*time.Minute, "unknown"); got != "" {
+		t.Fatalf("unknown is not counted: %q", got)
+	}
+	if got := run(&st, r, 30*time.Minute, "unreachable"); got != raise {
+		t.Fatalf("two failures with one inconclusive run between must raise: %q", got)
+	}
+	if got := run(&st, r, 45*time.Minute, "reachable"); got != "" {
+		t.Fatalf("a single reachable verdict must not resolve: %q", got)
+	}
+	if got := run(&st, r, 60*time.Minute, "reachable"); got != resolve {
+		t.Fatalf("two reachable verdicts in a row must resolve: %q", got)
+	}
+
+	// M-4: failures hours apart (check-host unavailable in between) are not "consecutive"
+	var stale loopProbeStreak
+	run(&stale, r, 0, "unreachable")
+	if got := run(&stale, r, checkHostStaleAfter+time.Minute, "unreachable"); got != "" {
+		t.Fatalf("failures separated by more than %v must start over: %q", checkHostStaleAfter, got)
+	}
+	if got := run(&stale, r, checkHostStaleAfter+16*time.Minute, "unreachable"); got != raise {
+		t.Fatalf("then two in a row raise again: %q", got)
+	}
+}
+
 func TestLogGate(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
 	var g logGate

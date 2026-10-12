@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -94,27 +96,79 @@ func TestAlertResolveOnlyIfRaised(t *testing.T) {
 	}
 }
 
+// A warn key keeps the full cooldown after its recovery (critical: see the next test).
 func TestAlertFlappingSuppressedByCooldown(t *testing.T) {
 	h := newAlertHarness()
-	h.m.Raise("k", AlertCritical, "T", "") // +0m  sent
+	h.m.Raise("k", AlertWarn, "T", "") // +0m  sent
 	h.advance(time.Minute)
 	h.m.Resolve("k", "up") // +1m  sent (recovery)
 	h.advance(time.Minute)
-	h.m.Raise("k", AlertCritical, "T", "") // +2m  suppressed
+	h.m.Raise("k", AlertWarn, "T", "") // +2m  suppressed
 	h.advance(time.Minute)
 	h.m.Resolve("k", "up") // +3m  cleared silently
 	h.advance(time.Minute)
-	h.m.Raise("k", AlertCritical, "T", "") // +4m  suppressed
+	h.m.Raise("k", AlertWarn, "T", "") // +4m  suppressed
+	h.advance(10 * time.Minute)
+	h.m.Raise("k", AlertWarn, "T", "") // +14m still inside the warn cooldown
 	if len(h.sent) != 2 {
-		t.Fatalf("flapping inside cooldown must be silent, got %d: %q", len(h.sent), h.sent)
+		t.Fatalf("warn flapping inside cooldown must be silent, got %d: %q", len(h.sent), h.sent)
 	}
-	h.advance(28 * time.Minute) // +32m, 31m after the last message
-	h.m.Raise("k", AlertCritical, "T", "")
+	h.advance(18 * time.Minute) // +32m, 31m after the last message
+	h.m.Raise("k", AlertWarn, "T", "")
 	if len(h.sent) != 3 {
 		t.Fatalf("still-active alert must go out once cooldown expires, got %d", len(h.sent))
 	}
 	if got := h.kinds(); got != "raise,resolve,suppressed,cleared,suppressed,raise" {
 		t.Fatalf("event kinds: %s", got)
+	}
+}
+
+// A critical key that comes back after a delivered recovery is held back only
+// alertFlapSuppress, not the whole cooldown: the owner was just told "all clear".
+func TestAlertCriticalAfterRecoveryUsesShortSuppression(t *testing.T) {
+	h := newAlertHarness()
+	h.m.Raise("k", AlertCritical, "T", "") // +0m  sent
+	h.advance(time.Minute)
+	h.m.Resolve("k", "up") // +1m  recovery delivered
+	h.advance(time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "") // +2m  suppressed (1 min after the recovery)
+	h.advance(2 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "") // +4m  still inside alertFlapSuppress
+	if len(h.sent) != 2 {
+		t.Fatalf("inside the short window: want 2 messages, got %q", h.sent)
+	}
+	h.advance(2 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "") // +6m  5 min after the recovery: sent
+	if len(h.sent) != 3 || !strings.Contains(h.sent[2], "КРИТИЧНО") || strings.Contains(h.sent[2], "ПОВТОР") {
+		t.Fatalf("a critical outage 5 min after the recovery must be sent, not wait 30 min: %q", h.sent)
+	}
+	if got := h.kinds(); got != "raise,resolve,suppressed,raise" {
+		t.Fatalf("event kinds: %s", got)
+	}
+	// once the new raise is out, the normal 30 min repeat cooldown applies again
+	h.advance(10 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 3 {
+		t.Fatalf("no repeat 10 min after the raise: %q", h.sent)
+	}
+}
+
+// The short window needs a recovery that really reached Telegram.
+func TestAlertCriticalAfterUndeliveredRecoveryKeepsCooldown(t *testing.T) {
+	h := newAlertHarness()
+	h.m.Raise("k", AlertCritical, "T", "") // delivered
+	h.advance(time.Minute)
+	h.failSends = 1
+	h.m.Resolve("k", "up") // recovery attempted, failed
+	h.advance(6 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 1 {
+		t.Fatalf("the owner never got the recovery: the full cooldown applies, got %q", h.sent)
+	}
+	h.advance(24 * time.Minute) // 30 min after the failed recovery
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 2 {
+		t.Fatalf("after the cooldown the raise goes out: %q", h.sent)
 	}
 }
 
@@ -261,21 +315,80 @@ func TestAlertFailedSendBacksOffBeforeRetry(t *testing.T) {
 }
 
 // Until the owner creates the bot there is no token/chat_id: every delivery fails with
-// errAlertsNotConfigured. A monitor polling every minute must not write a row per poll.
-func TestAlertNotConfiguredIsAttemptedOncePerBackoff(t *testing.T) {
+// errAlertsNotConfigured. A monitor polling every minute must neither retry every 5 min
+// nor write a journal row per attempt: one row per incident, the rest is counted.
+func TestAlertNotConfiguredIsJournaledOncePerIncident(t *testing.T) {
 	h := newAlertHarness()
-	h.m.send = func(string) error { h.attempts++; return errAlertsNotConfigured }
-	for minute := 0; minute < 12; minute++ {
+	notConfigured := true
+	h.m.send = func(text string) error {
+		h.attempts++
+		if notConfigured {
+			return errAlertsNotConfigured
+		}
+		h.sent = append(h.sent, text)
+		return nil
+	}
+	start := h.now
+	for minute := 0; minute < 120; minute++ {
 		h.m.Raise("k", AlertCritical, "T", "")
+		h.m.Raise("w", AlertWarn, "W", "")
 		h.advance(time.Minute)
 	}
-	if h.attempts != 3 || len(h.events) != 3 { // minutes 0, 5 and 10
-		t.Fatalf("want one attempt per %s, got attempts=%d events=%d", alertRetryBackoff, h.attempts, len(h.events))
+	if h.attempts != 8 { // minutes 0, 30, 60 and 90 for each of the two keys
+		t.Fatalf("want one attempt per %s per key, got %d", alertNotConfiguredBackoff, h.attempts)
+	}
+	if got := h.kinds(); got != "raise,raise" {
+		t.Fatalf("one journal row per incident, got %s", got)
 	}
 	for _, ev := range h.events {
 		if ev.Delivered || ev.Error != errAlertsNotConfigured.Error() {
 			t.Fatalf("journal row must carry the delivery error: %+v", ev)
 		}
+	}
+	und := h.m.undelivered()
+	if len(und) != 2 || und[0].Key != "k" || und[1].Key != "w" {
+		t.Fatalf("both incidents are undelivered: %+v", und)
+	}
+	if u := und[0]; !u.NotConfigured || u.Attempts != 4 || u.Level != AlertCritical || u.Error != errAlertsNotConfigured.Error() ||
+		!u.FirstFailedAt.Equal(start) || !u.LastAttemptAt.Equal(start.Add(90*time.Minute)) ||
+		!u.NextRetryAt.Equal(start.Add(120*time.Minute)) {
+		t.Fatalf("undelivered summary: %+v", u)
+	}
+
+	// the owner saves the settings: retryNow lifts the 30 min backoff, the next poll delivers
+	notConfigured = false
+	h.m.retryNow()
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 1 || h.kinds() != "raise,raise,raise" || !h.events[2].Delivered {
+		t.Fatalf("after retryNow the raise must go out and be journaled: sent=%d kinds=%s", len(h.sent), h.kinds())
+	}
+	if und := h.m.undelivered(); len(und) != 1 || und[0].Key != "w" {
+		t.Fatalf("k was delivered, only w is left: %+v", und)
+	}
+}
+
+// A different error, or an escalation, is news: it is journaled even inside one incident.
+func TestAlertFailedDeliveryJournalsChangedErrorOrLevel(t *testing.T) {
+	h := newAlertHarness()
+	unauthorized := &telegramAPIError{Status: 401, Description: "Unauthorized", FromTelegram: true}
+	errs := []error{errAlertsNotConfigured, errAlertsNotConfigured, unauthorized, unauthorized}
+	h.m.send = func(string) error {
+		err := errs[h.attempts]
+		h.attempts++
+		return err
+	}
+	h.m.Raise("k", AlertWarn, "T", "") // not configured: row
+	h.advance(alertNotConfiguredBackoff)
+	h.m.Raise("k", AlertWarn, "T", "") // same error: no row
+	h.advance(alertNotConfiguredBackoff)
+	h.m.Raise("k", AlertCritical, "T", "") // new error and level: row
+	h.advance(alertRetryBackoff)           // a real Telegram error keeps the 5 min backoff
+	h.m.Raise("k", AlertCritical, "T", "") // same error and level: no row
+	if h.attempts != 4 || len(h.events) != 2 {
+		t.Fatalf("attempts=%d events=%d (%s), want 4 attempts and 2 rows", h.attempts, len(h.events), h.kinds())
+	}
+	if h.events[1].Level != AlertCritical || !strings.Contains(h.events[1].Error, "401") {
+		t.Fatalf("second row: %+v", h.events[1])
 	}
 }
 
@@ -492,6 +605,121 @@ func TestReplayAlertEventsRestoresRetryBackoff(t *testing.T) {
 	}
 }
 
+// M-2: a critical incident whose later rows are warn (a re-sent raise after a failed delivery
+// carries the caller's level) restores as critical, so the next critical poll after a restart
+// is not taken for an escalation.
+func TestReplayAlertEventsRestoresMaxLevelOfOpenIncident(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	state := replayAlertEvents([]alertEvent{
+		{ID: 1, Key: "k", Level: AlertCritical, Kind: "raise", Title: "T", Delivered: true, At: t0},
+		{ID: 2, Key: "k", Level: AlertCritical, Kind: "repeat", Title: "T", Error: "down", At: t0.Add(30 * time.Minute)},
+		// the retry after the backoff came from a warn-level poll and got through
+		{ID: 3, Key: "k", Level: AlertWarn, Kind: "raise", Title: "T", Delivered: true, At: t0.Add(36 * time.Minute)},
+		// an older, closed critical incident must not leak into a new warn one
+		{ID: 4, Key: "w", Level: AlertCritical, Kind: "raise", Title: "W", Delivered: true, At: t0},
+		{ID: 5, Key: "w", Level: AlertCritical, Kind: "resolve", Title: "W", Delivered: true, At: t0.Add(time.Minute)},
+		{ID: 6, Key: "w", Level: AlertWarn, Kind: "raise", Title: "W", Delivered: true, At: t0.Add(2 * time.Hour)},
+	})
+	if k := state["k"]; k == nil || k.level != AlertCritical || !k.active || !k.notified {
+		t.Fatalf("open incident must keep its highest level: %+v", k)
+	}
+	if w := state["w"]; w == nil || w.level != AlertWarn {
+		t.Fatalf("a new incident starts from its own level: %+v", w)
+	}
+
+	h := newAlertHarness()
+	h.now = t0.Add(40 * time.Minute) // API restarted 4 min after the last message
+	h.m.state = state
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 0 {
+		t.Fatalf("the next critical poll after a restart is not an escalation: %q", h.sent)
+	}
+	h.advance(30 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 1 || !strings.Contains(h.sent[0], "ПОВТОР") {
+		t.Fatalf("after the cooldown the critical incident is repeated: %q", h.sent)
+	}
+}
+
+// M-1: the extra rows loaded beyond the 7-day / 50-row window are merged into the window by id.
+func TestMergeAlertEvents(t *testing.T) {
+	ev := func(id int64) alertEvent { return alertEvent{ID: id, Key: "k"} }
+	got := mergeAlertEvents([]alertEvent{ev(5), ev(7), ev(9)}, []alertEvent{ev(1), ev(7), ev(3), ev(9)})
+	var ids []int64
+	for _, e := range got {
+		ids = append(ids, e.ID)
+	}
+	if fmt.Sprint(ids) != "[1 3 5 7 9]" {
+		t.Fatalf("merged ids %v", ids)
+	}
+}
+
+// M-1: an active warn delivered long ago (only its raise left after the window) and a
+// delivered raise pushed out of the window by later failed attempts both restore correctly.
+func TestReplayAlertEventsWithAnchorsBeyondWindow(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	window := []alertEvent{}
+	for i := 0; i < 3; i++ { // the newest rows of "c": failed attempts
+		window = append(window, alertEvent{ID: int64(100 + i), Key: "c", Level: AlertCritical, Kind: "raise", Title: "C",
+			Error: "Telegram HTTP 502: Bad Gateway", At: t0.Add(time.Duration(10+i) * 24 * time.Hour)})
+	}
+	anchors := []alertEvent{
+		{ID: 1, Key: "disk", Level: AlertWarn, Kind: "raise", Title: "D", Delivered: true, At: t0},                                      // 8+ days old
+		{ID: 2, Key: "c", Level: AlertCritical, Kind: "raise", Title: "C", Delivered: true, At: t0},                                     // the delivered raise
+		{ID: 102, Key: "c", Level: AlertCritical, Kind: "raise", Title: "C", Error: "Telegram HTTP 502: Bad Gateway", At: window[2].At}, // newest row, duplicate
+	}
+	h := newAlertHarness()
+	h.now = t0.Add(13 * 24 * time.Hour)
+	h.m.state = replayAlertEvents(mergeAlertEvents(window, anchors))
+	h.m.Raise("disk", AlertWarn, "D", "")
+	if len(h.sent) != 0 || len(h.events) != 0 {
+		t.Fatalf("an active warn must not be re-sent after a restart: sent=%q kinds=%s", h.sent, h.kinds())
+	}
+	h.m.Resolve("c", "up")
+	if len(h.sent) != 1 || !strings.Contains(h.sent[0], "ВОССТАНОВЛЕНО") {
+		t.Fatalf("the raise of c was delivered: the recovery is due: sent=%q kinds=%s", h.sent, h.kinds())
+	}
+}
+
+// After a restart a repeated "not configured" failure of the same incident is not journaled
+// again, and the restored retry backoff is the long one.
+func TestReplayAlertEventsRestoresFailureDedup(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	h := newAlertHarness()
+	h.m.send = func(string) error { h.attempts++; return errAlertsNotConfigured }
+	h.now = t0.Add(10 * time.Minute)
+	h.m.state = replayAlertEvents([]alertEvent{
+		{ID: 1, Key: "k", Level: AlertCritical, Kind: "raise", Title: "T", Error: errAlertsNotConfigured.Error(), At: t0},
+	})
+	h.m.Raise("k", AlertCritical, "T", "")
+	if h.attempts != 0 {
+		t.Fatalf("inside the restored 30 min backoff: attempts=%d", h.attempts)
+	}
+	h.advance(20 * time.Minute)
+	h.m.Raise("k", AlertCritical, "T", "")
+	if h.attempts != 1 || len(h.events) != 0 {
+		t.Fatalf("retried after the backoff, but no new row for the same failure: attempts=%d kinds=%s", h.attempts, h.kinds())
+	}
+	if und := h.m.undelivered(); len(und) != 1 || !und[0].NotConfigured || und[0].Attempts != 2 {
+		t.Fatalf("undelivered after replay: %+v", und)
+	}
+}
+
+// The short post-recovery window survives a restart: the resolve row restores the anchor.
+func TestReplayAlertEventsRestoresRecoveryAnchor(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	h := newAlertHarness()
+	h.now = t0.Add(6 * time.Minute)
+	h.m.state = replayAlertEvents([]alertEvent{
+		{ID: 1, Key: "k", Level: AlertCritical, Kind: "raise", Title: "T", Delivered: true, At: t0},
+		{ID: 2, Key: "k", Level: AlertCritical, Kind: "resolve", Title: "T", Delivered: true, At: t0.Add(time.Minute)},
+	})
+	h.m.Raise("k", AlertCritical, "T", "")
+	if len(h.sent) != 1 {
+		t.Fatalf("5 min after a delivered recovery a critical raise goes out, also after a restart: %q", h.sent)
+	}
+}
+
 func TestAlertInitReplaysWithoutHoldingTheLock(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
 	m := &alertManager{state: map[string]*alertState{}}
@@ -582,10 +810,126 @@ func TestAlertDBHelpersSurviveNilDB(t *testing.T) {
 	if _, err := listAlertEvents(10); !errors.Is(err, errAlertsNoDB) {
 		t.Fatalf("listAlertEvents without DB: %v", err)
 	}
-	if err := sendTelegramAlert("x"); !errors.Is(err, errAlertsNoDB) {
-		t.Fatalf("sendTelegramAlert without DB: %v", err)
+	old := alertTelegram
+	defer func() { alertTelegram = old }()
+	alertTelegram = newAlertTelegramSource(func(key string) (string, error) { return appSettingBounded(key, time.Second) })
+	if err := sendTelegramAlert("x"); !errors.Is(err, errAlertsNoDB) || errors.Is(err, errAlertsNotConfigured) {
+		t.Fatalf("sendTelegramAlert without DB and without a cache: %v", err)
 	}
 	recordAlertEvent(alertEvent{Key: "k", Level: AlertWarn, Kind: "raise", At: time.Now()}) // must not panic
+}
+
+// ── Telegram credentials cache (I-1) ──
+
+// fakeSettings is an app_settings stand-in: down=true makes every read fail like a DB outage.
+type fakeSettings struct {
+	mu     sync.Mutex
+	values map[string]string
+	down   bool
+	reads  int
+}
+
+func (f *fakeSettings) get(key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	if f.down {
+		return "", errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
+	}
+	v, ok := f.values[key]
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	return v, nil
+}
+
+func (f *fakeSettings) set(key, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down {
+		return errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
+	}
+	f.values[key] = value
+	return nil
+}
+
+// withFakeTelegram swaps the credentials source and the Telegram route for the test.
+func withFakeTelegram(t *testing.T, fs *fakeSettings) *[]string {
+	t.Helper()
+	oldSrc, oldRoute := alertTelegram, telegram
+	t.Cleanup(func() { alertTelegram, telegram = oldSrc, oldRoute })
+	alertTelegram = newAlertTelegramSource(fs.get)
+	var calls []string
+	telegram = &telegramRoute{
+		now:     time.Now,
+		direct:  func(token, chatID, text string) error { calls = append(calls, token+"|"+chatID); return nil },
+		viaExit: func(token, chatID, text string) error { return errNoExitRoute },
+	}
+	return &calls
+}
+
+const fakeBotToken = "123456789:AAFakeTokenFakeTokenFakeTokenFake12"
+
+func TestSendTelegramAlertUsesCacheWhileDBIsDown(t *testing.T) {
+	fs := &fakeSettings{values: map[string]string{alertTokenSetting: fakeBotToken, alertChatIDSetting: "-100"}}
+	calls := withFakeTelegram(t, fs)
+
+	if err := sendTelegramAlert("one"); err != nil {
+		t.Fatalf("DB up: %v", err)
+	}
+	fs.down = true
+	if err := sendTelegramAlert("two"); err != nil {
+		t.Fatalf("DB down: delivery must use the cached credentials, got %v", err)
+	}
+	if len(*calls) != 2 || (*calls)[1] != fakeBotToken+"|-100" {
+		t.Fatalf("both messages must reach Telegram with the cached token: %v", *calls)
+	}
+	// the DB is back with new values: they win over the cache
+	fs.down = false
+	fs.values[alertChatIDSetting] = "-200"
+	if err := sendTelegramAlert("three"); err != nil || (*calls)[2] != fakeBotToken+"|-200" {
+		t.Fatalf("a fresh read must refresh the cache: %v %v", err, *calls)
+	}
+}
+
+func TestSendTelegramAlertDBDownWithoutCacheIsNotNotConfigured(t *testing.T) {
+	fs := &fakeSettings{values: map[string]string{}, down: true}
+	calls := withFakeTelegram(t, fs)
+	err := sendTelegramAlert("x")
+	if !errors.Is(err, errAlertsNoDB) || errors.Is(err, errAlertsNotConfigured) || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("a DB outage must be reported as such, not as Telegram not configured: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("nothing to send with: %v", *calls)
+	}
+	// a known "not configured" (empty values read successfully) is cached as such
+	fs.down = false
+	fs.values[alertTokenSetting] = ""
+	if err := sendTelegramAlert("x"); !errors.Is(err, errAlertsNotConfigured) {
+		t.Fatalf("empty settings: %v", err)
+	}
+	fs.down = true
+	if err := sendTelegramAlert("x"); !errors.Is(err, errAlertsNotConfigured) {
+		t.Fatalf("cached empty settings while the DB is down: %v", err)
+	}
+}
+
+func TestAlertTelegramAfterWritePatchesCacheWhenReadFails(t *testing.T) {
+	fs := &fakeSettings{values: map[string]string{alertTokenSetting: fakeBotToken, alertChatIDSetting: "-100"}}
+	src := newAlertTelegramSource(fs.get)
+	if _, err := src.fresh(); err != nil {
+		t.Fatal(err)
+	}
+	fs.down = true // the write went through, the re-read right after it failed
+	src.afterWrite(alertSettingsUpdate{chatID: "-300", setChatID: true})
+	cfg, err := src.load()
+	if err != nil || cfg.chatID != "-300" || cfg.token != fakeBotToken {
+		t.Fatalf("the written chat_id must replace the cached one: %+v %v", cfg, err)
+	}
+	src.afterWrite(alertSettingsUpdate{token: "", setToken: true}) // token deleted
+	if cfg, _ := src.load(); cfg.configured() {
+		t.Fatalf("a deleted token must not stay usable from the cache: %+v", cfg)
+	}
 }
 
 // ── Telegram transport ──

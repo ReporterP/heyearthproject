@@ -33,14 +33,22 @@ const (
 	loopProbeStaleAfter    = 10 * time.Minute // probes skipped for longer than this → "consecutive" starts over
 	checkHostInterval      = 15 * time.Minute
 	checkHostFailThreshold = 2
-	housekeepingInterval   = 10 * time.Minute
-	certWarnDays           = 14
-	certReadFailThreshold  = 3
-	backupDir              = "/opt/heyearth/backups"
-	backupGlob             = "backup-*.tar.gz" // regular, non-empty files only (see newestBackupModTime)
-	backupMaxAge           = 26 * time.Hour
-	diskWarnPercent        = 85.0
-	defaultCheckHostNodes  = "ru1.node.check-host.net,ru2.node.check-host.net,ru3.node.check-host.net"
+	// checkHostStaleAfter: one run takes up to ~2.5 min (15 s request + 6 polls of up to 20 s),
+	// so consecutive runs are at most ~17.5 min apart; 40 min lets one inconclusive run sit
+	// between two counted verdicts, a longer gap starts the streak over.
+	checkHostStaleAfter = 40 * time.Minute
+	// probeResolveOKs: the loop probe, the Bamboo probe, check-host and the DB check resolve
+	// their alert only after this many successes in a row. One lucky probe in the middle of
+	// flapping would otherwise send "recovered" and start the post-recovery suppression.
+	probeResolveOKs       = 2
+	housekeepingInterval  = 10 * time.Minute
+	certWarnDays          = 14
+	certReadFailThreshold = 3
+	backupDir             = "/opt/heyearth/backups"
+	backupGlob            = "backup-*.tar.gz" // regular, non-empty files only (see newestBackupModTime)
+	backupMaxAge          = 26 * time.Hour
+	diskWarnPercent       = 85.0
+	defaultCheckHostNodes = "ru1.node.check-host.net,ru2.node.check-host.net,ru3.node.check-host.net"
 )
 
 var (
@@ -48,7 +56,7 @@ var (
 	loopProbeState   loopProbeStreak // touched only by the loop-probe goroutine
 	loopProbeOKLog   time.Time       // rate-limits the "probe OK" log line to once an hour
 	loopProbeSkipLog logGate         // rate-limits the "probe skipped" log line to once an hour
-	checkHostFails   int             // touched only by the check-host goroutine
+	checkHostState   loopProbeStreak // touched only by the check-host goroutine
 	certReadFails    int             // touched only by the housekeeping goroutine
 )
 
@@ -57,12 +65,22 @@ func StartMonitor() {
 		log.Println("[monitor] не Linux — мониторинг отключён (локальная разработка)")
 		return
 	}
-	// Each step has its own recover: a panic in one must not skip the others.
+	// The DB check has its own goroutine: the other steps read the DB without a deadline and
+	// would stall it exactly when the DB hangs.
+	go runEvery(30*time.Second, dbHealthInterval, func() {
+		safely("БД", runDBHealthCheck)
+	})
+	// Each step has its own recover: a panic in one must not skip the others. runEvery sleeps
+	// loopProbeInterval after a run, so the period is 1 min + the run time. Worst case with
+	// every step timing out, ~160 s: loop probe ~45 s (SOCKS check 10 s, site 20 s, TLS 15 s)
+	// + NRestarts 5 s + Bamboo ~45 s (see bambooMaxExits) + 2 s per healthy exit in each of
+	// the two liveExitSocksPorts calls + the 60 s pause. loopProbeStaleAfter (10 min) is well
+	// above that, so slow runs never break a failure streak.
 	go runEvery(90*time.Second, loopProbeInterval, func() {
 		safely("loop-проба", runLoopProbe)
 		safely("NRestarts xray", pollXraySystemdRestarts)
 		safely("окно рестартов xray", checkXrayRestartWindow)
-		safely("Бамбук-проба", runBambooProbe) // last: up to ~45 s worst case (see bambooMaxExits)
+		safely("Бамбук-проба", runBambooProbe) // last: the slowest step
 	})
 	go runEvery(5*time.Minute, checkHostInterval, func() {
 		safely("check-host", runCheckHostProbe)
@@ -73,8 +91,8 @@ func StartMonitor() {
 		safely("копия бэкапа", checkOffsiteBackupFreshness)
 		safely("диск", checkDiskUsage)
 	})
-	log.Printf("[monitor] запущен: loop-проба и Бамбук-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
-		loopProbeInterval, checkHostInterval, housekeepingInterval)
+	log.Printf("[monitor] запущен: БД каждые %v, loop-проба и Бамбук-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
+		dbHealthInterval, loopProbeInterval, checkHostInterval, housekeepingInterval)
 }
 
 func runEvery(initialDelay, interval time.Duration, fn func()) {
@@ -106,13 +124,17 @@ func (g *logGate) allow(now time.Time, every time.Duration) bool {
 	return true
 }
 
-// loopProbeStreak counts consecutive failed loop probes. Probes that were skipped
-// (no healthy exit, tunnel down) for longer than loopProbeStaleAfter break the streak,
-// so "3 in a row" cannot stretch over hours of unrelated failures.
+// loopProbeStreak counts consecutive failed and consecutive successful probe verdicts.
+// Probes that were skipped (no healthy exit, tunnel down) for longer than the stale window
+// break both streaks, so "3 in a row" cannot stretch over hours of unrelated failures.
 type loopProbeStreak struct {
 	fails int
+	oks   int       // consecutive successes, saturated at probeResolveOKs (see recovered)
 	last  time.Time // time of the previous verdict
 }
+
+// recovered reports whether the last probeResolveOKs verdicts were all successes.
+func (s *loopProbeStreak) recovered() bool { return s.oks >= probeResolveOKs }
 
 func (s *loopProbeStreak) record(now time.Time, ok bool) int {
 	return s.recordWithin(now, ok, loopProbeStaleAfter)
@@ -121,12 +143,16 @@ func (s *loopProbeStreak) record(now time.Time, ok bool) int {
 // recordWithin is record with a caller-chosen stale window (the Bamboo probe uses its own).
 func (s *loopProbeStreak) recordWithin(now time.Time, ok bool, staleAfter time.Duration) int {
 	if !s.last.IsZero() && now.Sub(s.last) > staleAfter {
-		s.fails = 0
+		s.fails, s.oks = 0, 0
 	}
 	s.last = now
 	if ok {
 		s.fails = 0
+		if s.oks < probeResolveOKs { // only "enough or not" matters
+			s.oks++
+		}
 	} else {
+		s.oks = 0
 		s.fails++
 	}
 	return s.fails
@@ -154,9 +180,9 @@ func logLoopProbeSkipped(reason string) {
 }
 
 func runLoopProbe() {
-	port, ok := pickExitSocksPort()
-	if !ok {
-		logLoopProbeSkipped("нет здорового exit с локальным SOCKS")
+	port, err := pickExitSocksPort()
+	if err != nil { // errNoLiveExit, or the DB error of reading the exit list
+		logLoopProbeSkipped(err.Error())
 		return
 	}
 	dialer, err := exitSocksDialer(port)
@@ -183,15 +209,18 @@ func runLoopProbe() {
 			loopProbeOKLog = time.Now()
 			log.Printf("[monitor] loop-проба OK: %s:443 доступен снаружи (через exit :%d)", entry, port)
 		}
-		ResolveAlert("entry-unreachable-external", fmt.Sprintf("Вход %s:443 снова доступен снаружи (проба через exit :%d).", entry, port))
+		if loopProbeState.recovered() { // one lucky probe while flapping is not a recovery
+			ResolveAlert("entry-unreachable-external", fmt.Sprintf("Вход %s:443 снова доступен снаружи: %d проверки подряд через зарубежный exit :%d прошли.",
+				entry, loopProbeState.oks, port))
+		}
 		return
 	}
 	fails := loopProbeState.record(time.Now(), false)
 	log.Printf("[monitor] loop-проба провалена (%d подряд): %s", fails, strings.Join(problems, "; "))
 	if fails >= loopProbeFailThreshold {
 		RaiseAlert("entry-unreachable-external", AlertCritical, "Вход недоступен снаружи",
-			fmt.Sprintf("%d проверок подряд через exit :%d не прошли до %s:443.\n%s",
-				fails, port, entry, strings.Join(problems, "\n")))
+			fmt.Sprintf("Проверка снаружи (через зарубежный exit :%d): %d проверок подряд не прошли до %s:443.\n%s",
+				port, fails, entry, strings.Join(problems, "\n")))
 	}
 }
 
@@ -378,16 +407,24 @@ func runCheckHostProbe() {
 	}
 	verdict := tally.verdict()
 	log.Printf("[monitor] check-host %s:443: OK=%d fail=%d pending=%d → %s %s", entry, tally.OK, tally.Failed, tally.Pending, verdict, link)
+	checkHostVerdict(&checkHostState, time.Now(), verdict, entry, link, tally, RaiseAlert, ResolveAlert)
+}
+
+// checkHostVerdict turns one check-host verdict into alerts; "unknown" is not counted at all.
+func checkHostVerdict(st *loopProbeStreak, now time.Time, verdict, entry, link string, tally checkHostTally,
+	raise func(key string, level AlertLevel, title, details string), resolve func(key, message string)) {
 	switch verdict {
 	case "reachable":
-		checkHostFails = 0
-		ResolveAlert("entry-unreachable-ru", fmt.Sprintf("Вход %s:443 снова доступен с RU-узлов check-host (%d из %d).",
-			entry, tally.OK, tally.OK+tally.Failed))
+		st.recordWithin(now, true, checkHostStaleAfter)
+		if st.recovered() {
+			resolve("entry-unreachable-ru", fmt.Sprintf("Вход %s:443 снова доступен с RU-узлов check-host: %d проверки подряд (последняя: %d из %d).",
+				entry, st.oks, tally.OK, tally.OK+tally.Failed))
+		}
 	case "unreachable":
-		checkHostFails++
-		if checkHostFails >= checkHostFailThreshold {
-			RaiseAlert("entry-unreachable-ru", AlertWarn, "Вход недоступен из РФ",
-				fmt.Sprintf("%d проверки подряд: ни один RU-узел check-host не подключился к %s:443.\n%s", checkHostFails, entry, link))
+		fails := st.recordWithin(now, false, checkHostStaleAfter)
+		if fails >= checkHostFailThreshold {
+			raise("entry-unreachable-ru", AlertWarn, "Вход недоступен из РФ",
+				fmt.Sprintf("%d проверки подряд: ни один RU-узел check-host не подключился к %s:443.\n%s", fails, entry, link))
 		}
 	}
 }

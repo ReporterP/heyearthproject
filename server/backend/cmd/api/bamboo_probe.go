@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
-	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -41,8 +40,11 @@ const (
 	bambooBlindAfter         = time.Hour       // deployed, but no verdict for this long → the probe is blind
 	bambooLookupTimeout      = 5 * time.Second // resolving main_server_host on the Hub
 	// bambooMaxExits bounds the exits tried in turn when the SOCKS of one cannot relay UDP. Worst
-	// case of one run, ~45 s: lookup 5 s + two hanging exits 2×(2×5 s) + no reply on the third
-	// 2×5 s + the DNS control 2×5 s.
+	// case of one run, ~45 s + 2 s per healthy exit: lookup 5 s + liveExitSocksPorts dialing the
+	// local SOCKS of every healthy exit until bambooMaxExits answer (2 s timeout each; a closed
+	// port on 127.0.0.1 fails at once, only a listener that never accepts costs the 2 s) + two
+	// hanging exits 2×(2×5 s) + no reply on the third 2×5 s + the DNS control 2×5 s. The DB
+	// reads before (obfs password, main_server_host, the exit list) are not bounded here.
 	bambooMaxExits       = 3
 	bambooHopPortMin     = 30000 // port-hopping range DNATed to :50443 (cmd/deploy hysteria2PortHopRule)
 	bambooHopPortMax     = 65000
@@ -539,7 +541,7 @@ type bambooMonitor struct {
 	psk       func() (string, error) // "" = not set; an error = could not read (DB down)
 	host      func() (string, error) // main_server_host
 	lookupIP  func(host string) (netip.Addr, error)
-	exitPorts func() []int // live exit SOCKS ports, preferred first
+	exitPorts func() ([]int, error) // live exit SOCKS ports, preferred first; an error = DB read failed
 	probe     func(socksPort int, host string, psk []byte) (time.Duration, int, error)
 	control   func(socksPort int) error
 	raise     func(key string, level AlertLevel, title, details string)
@@ -563,7 +565,7 @@ var bambooMon = &bambooMonitor{
 	psk:       func() (string, error) { return settingOrEmpty(biz.GetSetting, "hysteria2_obfs_password") },
 	host:      bambooEntryHost,
 	lookupIP:  lookupProbeIP,
-	exitPorts: func() []int { return liveExitSocksPorts(bambooMaxExits) },
+	exitPorts: func() ([]int, error) { return liveExitSocksPorts(bambooMaxExits) },
 	probe:     probeBamboo,
 	control:   func(socksPort int) error { return defaultBambooProber.control(socksPort) },
 	raise:     RaiseAlert,
@@ -572,20 +574,6 @@ var bambooMon = &bambooMonitor{
 }
 
 func runBambooProbe() { bambooMon.run() }
-
-// settingOrEmpty reads an app setting: a missing row is "", any other error is returned as is.
-// GetSettingOrDefault cannot be used here: it turns a DB outage into "not set", and "obfs
-// password not set" resolves the alerts (a false recovery in the middle of an outage).
-func settingOrEmpty(get func(key string) (string, error), key string) (string, error) {
-	v, err := get(key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(v), nil
-}
 
 // bambooEntryHost is monitorEntryHost that reports DB errors instead of using the default.
 func bambooEntryHost() (string, error) {
@@ -658,9 +646,13 @@ func (m *bambooMonitor) run() {
 		}
 		target, label = ip.String(), fmt.Sprintf("%s (%s)", host, ip)
 	}
-	ports := m.exitPorts()
+	ports, err := m.exitPorts()
+	if err != nil { // unknown, not "no exit": the skip reason must say it was the DB
+		m.skip(now, "db", err.Error())
+		return
+	}
 	if len(ports) == 0 {
-		m.skip(now, "no-exit", "нет здорового exit с локальным SOCKS")
+		m.skip(now, "no-exit", errNoLiveExit.Error())
 		return
 	}
 	var (
@@ -684,8 +676,10 @@ func (m *bambooMonitor) run() {
 		if m.okLog.allow(now, time.Hour) {
 			m.logf("[monitor] Бамбук-проба OK: %s UDP :%d ответил за %v (через exit :%d)", label, hop, rtt.Round(time.Millisecond), socksPort)
 		}
-		m.resolve(bambooAlertKey, fmt.Sprintf("Бамбук снова отвечает снаружи: %s UDP :%d за %v (проба через exit :%d).",
-			label, hop, rtt.Round(time.Millisecond), socksPort))
+		if m.streak.recovered() { // one lucky probe while flapping is not a recovery
+			m.resolve(bambooAlertKey, fmt.Sprintf("Бамбук снова отвечает снаружи (проверка через зарубежный exit :%d): %s UDP :%d за %v, %d проверки подряд.",
+				socksPort, label, hop, rtt.Round(time.Millisecond), m.streak.oks))
+		}
 	case bambooFail:
 		m.verdict(now)
 		// The stale window equals bambooBlindAfter: counted failures separated by skips for less
@@ -774,6 +768,6 @@ func bambooFailAlert(fails int, label string, hop, socksPort int, err error) (le
 			"это не ответ Бамбука: %v\nПроверьте main_server_host в настройках и журнал: journalctl -u heyearth-api | grep Бамбук.",
 			fails, label, err)
 	}
-	return level, title, fmt.Sprintf("%d проверок подряд Бамбук (Hysteria2 %s, UDP %d-%d → :50443) %s (exit :%d).\nПоследняя попытка: порт %d, %v\n%s",
-		fails, label, bambooHopPortMin, bambooHopPortMax, what, socksPort, hop, err, hint)
+	return level, title, fmt.Sprintf("Проверка снаружи (через зарубежный exit :%d): %d проверок подряд Бамбук (Hysteria2 %s, UDP %d-%d → :50443) %s.\nПоследняя попытка: порт %d, %v\n%s",
+		socksPort, fails, label, bambooHopPortMin, bambooHopPortMax, what, hop, err, hint)
 }

@@ -988,6 +988,7 @@ type bambooHarness struct {
 	lookupAddr   netip.Addr
 	lookupErr    error
 	ports        []int
+	portsErr     error         // reading the exit list failed (DB)
 	probeErr     map[int]error // by exit SOCKS port; missing = success
 	controlErr   error
 	lookups      []string // hosts resolved in the last step
@@ -997,6 +998,7 @@ type bambooHarness struct {
 	events       []string
 	details      map[string]string
 	titles       map[string]string
+	resolved     map[string]string // last recovery message per key
 	logs         []string
 	m            *bambooMonitor
 }
@@ -1012,6 +1014,7 @@ func newBambooHarness() *bambooHarness {
 		probeErr:   map[int]error{},
 		details:    map[string]string{},
 		titles:     map[string]string{},
+		resolved:   map[string]string{},
 	}
 	h.m = &bambooMonitor{
 		now:      func() time.Time { return h.now },
@@ -1032,7 +1035,7 @@ func newBambooHarness() *bambooHarness {
 			h.lookups = append(h.lookups, host)
 			return h.lookupAddr, h.lookupErr
 		},
-		exitPorts: func() []int { return h.ports },
+		exitPorts: func() ([]int, error) { return h.ports, h.portsErr },
 		probe: func(port int, host string, psk []byte) (time.Duration, int, error) {
 			if string(psk) != h.psk {
 				panic("psk not passed through")
@@ -1049,7 +1052,7 @@ func newBambooHarness() *bambooHarness {
 			h.events = append(h.events, fmt.Sprintf("raise %s %s", key, level))
 			h.titles[key], h.details[key] = title, details
 		},
-		resolve: func(key, _ string) { h.events = append(h.events, "resolve "+key) },
+		resolve: func(key, msg string) { h.events = append(h.events, "resolve "+key); h.resolved[key] = msg },
 		logf:    func(format string, args ...any) { h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
 	}
 	return h
@@ -1103,7 +1106,7 @@ func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 		t.Fatalf("3rd failure must raise: %v", h.events)
 	}
 	d := h.details[bambooAlertKey]
-	for _, want := range []string{"3 проверок подряд", "138.16.181.225", "41234", "exit :1090", "нет ответа", "hysteria2-server"} {
+	for _, want := range []string{"3 проверок подряд", "138.16.181.225", "41234", "снаружи (через зарубежный exit :1090)", "нет ответа", "hysteria2-server"} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("details lack %q:\n%s", want, d)
 		}
@@ -1112,11 +1115,58 @@ func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 		t.Fatalf("no reply must be checked by the control on the same exit: %v", h.controlPorts)
 	}
 	delete(h.probeErr, 1090)
-	if h.step(time.Minute); !h.has(resolveDown) || !h.has(resolveBlind) || h.raised() {
-		t.Fatalf("success must resolve both alerts: %v", h.events)
+	if h.step(time.Minute); h.has(resolveDown) || !h.has(resolveBlind) || h.raised() {
+		t.Fatalf("the first success resolves only the blind alert, Bamboo needs a second one: %v", h.events)
 	}
 	if len(h.controlPorts) != 0 {
 		t.Fatal("success needs no control")
+	}
+	if h.step(time.Minute); !h.has(resolveDown) || h.raised() {
+		t.Fatalf("the second success in a row must resolve: %v", h.events)
+	}
+}
+
+// Flapping: a single success between failures neither resolves nor restarts the alert.
+func TestBambooMonitorResolvesOnlyAfterTwoSuccesses(t *testing.T) {
+	h := newBambooHarness()
+	down := fmt.Errorf("%w от 138.16.181.225:41234 за 5s", errBambooNoReply)
+	h.probeErr[1090] = down
+	h.step(time.Minute).step(time.Minute)
+	if h.step(time.Minute); !h.has(raiseDown) {
+		t.Fatalf("setup: %v", h.events)
+	}
+	for i := 0; i < 5; i++ { // ok, fail, ok, fail, ...
+		delete(h.probeErr, 1090)
+		if h.step(time.Minute); h.has(resolveDown) {
+			t.Fatalf("flip %d: one success must not resolve: %v", i, h.events)
+		}
+		h.probeErr[1090] = down
+		if h.step(time.Minute); h.has(raiseDown) {
+			t.Fatalf("flip %d: one failure after a success is below the threshold: %v", i, h.events)
+		}
+	}
+	delete(h.probeErr, 1090)
+	h.step(time.Minute)
+	if h.step(time.Minute); !h.has(resolveDown) {
+		t.Fatalf("two successes in a row must resolve: %v", h.events)
+	}
+	if !strings.Contains(h.resolved[bambooAlertKey], "через зарубежный exit :1090") {
+		t.Fatalf("the recovery must name the vantage point: %q", h.resolved[bambooAlertKey])
+	}
+}
+
+// A failed read of the exit list is a DB problem: skipped with that reason, never "no exit",
+// and nothing is resolved.
+func TestBambooMonitorExitListDBError(t *testing.T) {
+	h := newBambooHarness()
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	h.step(time.Minute).step(time.Minute).step(time.Minute)
+	h.portsErr = errors.New("не удалось прочитать список exit-нод из БД: dial tcp 127.0.0.1:5432: connect: connection refused")
+	if h.step(time.Minute); len(h.events) != 0 || len(h.probed) != 0 {
+		t.Fatalf("a DB error must neither probe nor resolve: events %v, probed %v", h.events, h.probed)
+	}
+	if len(h.logs) != 1 || !strings.Contains(h.logs[0], "список exit-нод из БД") || strings.Contains(h.logs[0], "нет здорового exit") {
+		t.Fatalf("the skip must name the DB: %v", h.logs)
 	}
 }
 
@@ -1188,8 +1238,8 @@ func TestBambooMonitorTriesNextExitOnSocksFailure(t *testing.T) {
 	h := newBambooHarness()
 	h.ports = []int{1090, 1091}
 	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooSocks)
-	if h.step(time.Minute); fmt.Sprint(h.probed) != "[1090 1091]" || !h.has(resolveDown) {
-		t.Fatalf("probed %v, events %v", h.probed, h.events)
+	if h.step(time.Minute); fmt.Sprint(h.probed) != "[1090 1091]" || !h.has(resolveBlind) {
+		t.Fatalf("the second exit must give a verdict: probed %v, events %v", h.probed, h.events)
 	}
 	h.probeErr[1091] = fmt.Errorf("%w: x", errBambooNoReply)
 	h.step(time.Minute)

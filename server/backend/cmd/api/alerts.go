@@ -10,11 +10,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -28,18 +29,25 @@ const (
 )
 
 const (
-	alertCooldown      = 30 * time.Minute
-	alertRetryBackoff  = 5 * time.Minute // pause before re-sending a raise/repeat whose delivery failed
+	alertCooldown     = 30 * time.Minute
+	alertRetryBackoff = 5 * time.Minute // pause before re-sending a raise/repeat whose delivery failed
+	// alertNotConfiguredBackoff: without a bot token/chat_id every attempt fails the same way;
+	// retrying every 5 min only fills the log. Saving the settings retries at once (retryNow).
+	alertNotConfiguredBackoff = alertCooldown
+	// alertFlapSuppress: a critical alert that comes back after a delivered recovery is held
+	// back only this long (not the whole cooldown): the owner was just told "all clear".
+	alertFlapSuppress  = 5 * time.Minute
 	alertTokenSetting  = "alert_telegram_bot_token"
 	alertChatIDSetting = "alert_telegram_chat_id"
 
-	alertDBTimeout      = 5 * time.Second
-	alertRetention      = 90 * 24 * time.Hour
-	alertPurgeEvery     = 24 * time.Hour
-	alertReplayRetry    = 30 * time.Second
-	alertReplayPerKey   = 50 // newest journal rows per key replayed after a restart
-	alertQueueSize      = 256
-	telegramDirectPause = 10 * time.Minute // how long a failed direct path is skipped
+	alertSettingsTimeout = 3 * time.Second // reading the bot credentials on the delivery path
+	alertDBTimeout       = 5 * time.Second
+	alertRetention       = 90 * 24 * time.Hour
+	alertPurgeEvery      = 24 * time.Hour
+	alertReplayRetry     = 30 * time.Second
+	alertReplayPerKey    = 50 // newest journal rows per key replayed after a restart
+	alertQueueSize       = 256
+	telegramDirectPause  = 10 * time.Minute // how long a failed direct path is skipped
 )
 
 var (
@@ -66,16 +74,27 @@ type alertEvent struct {
 // alertIncident is shared by all events of one outage of a key. Guarded by alertManager.mu.
 type alertIncident struct {
 	delivered bool // a raise/repeat of this incident really reached Telegram → a recovery message is worth sending
+
+	// Failed deliveries since the last successful one. A failure with the same error and level
+	// as the previous one is not journaled again (Telegram not configured would otherwise add a
+	// row per key every backoff); the count and times are shown in the admin instead.
+	failErr       string
+	failLevel     AlertLevel
+	notConfigured bool // failErr is errAlertsNotConfigured
+	failures      int
+	firstFailAt   time.Time
+	lastAttemptAt time.Time
 }
 
 type alertState struct {
-	active   bool
-	notified bool // a raise/repeat message is in flight or delivered; false → the next Raise (re)sends
-	level    AlertLevel
-	title    string
-	lastSent time.Time // cooldown anchor: time of the last message attempt, zero when that attempt failed
-	retryAt  time.Time // after a failed raise/repeat: no new attempt (and no journal row) before this moment; survives Resolve
-	inc      *alertIncident
+	active      bool
+	notified    bool // a raise/repeat message is in flight or delivered; false → the next Raise (re)sends
+	level       AlertLevel
+	title       string
+	lastSent    time.Time // cooldown anchor: time of the last message attempt, zero when that attempt failed
+	recoveredAt time.Time // time of the last delivered recovery; equal to lastSent → the last message was "all clear"
+	retryAt     time.Time // after a failed raise/repeat: no new attempt (and no journal row) before this moment; survives Resolve
+	inc         *alertIncident
 }
 
 type alertOutgoing struct {
@@ -92,6 +111,7 @@ type alertManager struct {
 	record    func(ev alertEvent)
 	load      func() ([]alertEvent, error) // journal replay; runs outside mu
 	purge     func() (int64, error)        // retention; nil disables the daily purge
+	warm      func()                       // Init: fill the Telegram credentials cache while the DB is surely up
 	cooldown  time.Duration
 	initRetry time.Duration
 	queue     chan alertOutgoing // nil → deliver synchronously (tests)
@@ -110,6 +130,7 @@ func newProdAlertManager() *alertManager {
 		record:    recordAlertEvent,
 		load:      loadRecentAlertEvents,
 		purge:     purgeOldAlertEvents,
+		warm:      func() { _, _ = alertTelegram.fresh() },
 		cooldown:  alertCooldown,
 		initRetry: alertReplayRetry,
 		state:     map[string]*alertState{},
@@ -138,6 +159,9 @@ func (m *alertManager) flush() { m.pending.Wait() }
 // Until the replay succeeds the manager works on in-memory state; a failed replay is
 // retried in the background.
 func (m *alertManager) Init() {
+	if m.warm != nil {
+		m.warm()
+	}
 	if err := m.replay(); err != nil {
 		m.startReplayRetry(err)
 	}
@@ -209,8 +233,11 @@ func (m *alertManager) purgeLoop() {
 
 // RaiseAlert sends the alert once per key; while the key stays active a critical
 // alert is repeated at most once per cooldown (30 min), a warn alert is not repeated.
-// A warn → critical escalation is sent immediately. After a failed delivery the key is
-// quiet for alertRetryBackoff (5 min), then the next RaiseAlert retries.
+// A warn → critical escalation is sent immediately. A key that comes back within the
+// cooldown after its recovery message is "suppressed" (flapping); for a critical alert
+// after a delivered recovery only for alertFlapSuppress (5 min). After a failed delivery
+// the key is quiet for alertRetryBackoff (5 min; 30 min while Telegram is not configured),
+// then the next RaiseAlert retries.
 func RaiseAlert(key string, level AlertLevel, title, details string) {
 	alerts.Raise(key, level, title, details)
 }
@@ -233,7 +260,7 @@ func (m *alertManager) Raise(key string, level AlertLevel, title, details string
 		return
 	}
 	prev := *st
-	coolOK := st.lastSent.IsZero() || now.Sub(st.lastSent) >= m.cooldown
+	coolOK := m.cooledDown(st, level, now)
 	kind := ""
 	switch {
 	case !st.active && coolOK:
@@ -264,6 +291,21 @@ func (m *alertManager) Raise(key string, level AlertLevel, title, details string
 	}
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: level, Kind: kind, Title: title, Details: details, At: now}, send: send, inc: st.inc}
 	m.submitLocked(o, prev)
+}
+
+// cooledDown reports whether the flapping cooldown since the key's last message is over.
+// A critical alert right after a delivered recovery waits only alertFlapSuppress: the full
+// cooldown would leave the owner with "all clear" for up to 30 min of a new outage.
+func (m *alertManager) cooledDown(st *alertState, level AlertLevel, now time.Time) bool {
+	if st.lastSent.IsZero() {
+		return true
+	}
+	since := now.Sub(st.lastSent)
+	if since >= m.cooldown {
+		return true
+	}
+	afterRecovery := !st.recoveredAt.IsZero() && st.recoveredAt.Equal(st.lastSent)
+	return level == AlertCritical && afterRecovery && since >= alertFlapSuppress
 }
 
 func (m *alertManager) Resolve(key, message string) {
@@ -317,52 +359,128 @@ func (m *alertManager) deliver(o alertOutgoing) {
 			ev.Kind = "cleared" // the raise never reached Telegram: nothing to recover from
 		}
 	}
+	var sendErr error
 	if send {
-		if err := m.send(formatAlertText(ev)); err != nil {
-			ev.Error = err.Error()
+		if sendErr = m.send(formatAlertText(ev)); sendErr != nil {
+			ev.Error = sendErr.Error()
 		} else {
 			ev.Delivered = true
 		}
 	}
-	m.settle(o, ev, send)
+	attempt, journal := m.settle(o, ev, send, errors.Is(sendErr, errAlertsNotConfigured))
+	if !journal {
+		log.Printf("[alerts] %s %s [%s]: снова не доставлено (попытка %d, та же ошибка, в журнал не пишется): %s",
+			ev.Kind, ev.Key, ev.Level, attempt, ev.Error)
+		return
+	}
 	log.Printf("[alerts] %s %s [%s] %s: %s (delivered=%v %s)", ev.Kind, ev.Key, ev.Level, ev.Title, ev.Details, ev.Delivered, ev.Error)
 	if m.record != nil {
 		m.record(ev)
 	}
 }
 
-// settle applies the delivery outcome to the key's state.
-func (m *alertManager) settle(o alertOutgoing, ev alertEvent, sent bool) {
+// settle applies the delivery outcome to the key's state. It returns the number of failed
+// attempts of the incident so far and whether the event goes to the journal: a failed
+// raise/repeat that repeats the incident's previous failure (same error, same level) does not.
+func (m *alertManager) settle(o alertOutgoing, ev alertEvent, sent, notConfigured bool) (attempt int, journal bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st := m.state[ev.Key]
 	same := st != nil && st.inc == o.inc && st.lastSent.Equal(o.ev.At)
+	journal = true
 	switch {
 	case o.ev.Kind == "raise" || o.ev.Kind == "repeat":
 		if ev.Delivered {
 			if o.inc != nil {
 				o.inc.delivered = true
+				o.inc.failErr, o.inc.failLevel, o.inc.notConfigured, o.inc.failures = "", "", false, 0
 			}
 			if st != nil {
 				st.retryAt = time.Time{}
 			}
-		} else {
-			if st != nil {
-				st.retryAt = m.now().Add(alertRetryBackoff)
+			return 0, true
+		}
+		if o.inc != nil {
+			inc := o.inc
+			journal = inc.failures == 0 || inc.failErr != ev.Error || inc.failLevel != ev.Level
+			if inc.failures == 0 {
+				inc.firstFailAt = ev.At
 			}
-			if same {
-				st.notified, st.lastSent = false, time.Time{} // failed: the first Raise after the backoff retries
-			}
+			inc.failures++
+			inc.failErr, inc.failLevel, inc.notConfigured, inc.lastAttemptAt = ev.Error, ev.Level, notConfigured, ev.At
+			attempt = inc.failures
+		}
+		if st != nil {
+			st.retryAt = m.now().Add(alertRetryBackoffFor(notConfigured))
+		}
+		if same {
+			st.notified, st.lastSent = false, time.Time{} // failed: the first Raise after the backoff retries
+		}
+	case o.recovery && sent && ev.Delivered:
+		if st != nil && st.lastSent.Equal(o.ev.At) { // nothing was sent for this key since
+			st.recoveredAt = o.ev.At
 		}
 	case o.recovery && !sent:
 		if same {
 			st.lastSent = time.Time{} // no recovery was sent → no flapping cooldown either
 		}
 	}
+	return attempt, journal
 }
 
-// replayAlertEvents rebuilds per-key state from journal rows ordered by id ASC.
-// A raise/repeat counts as notified only if it was delivered.
+func alertRetryBackoffFor(notConfigured bool) time.Duration {
+	if notConfigured {
+		return alertNotConfiguredBackoff
+	}
+	return alertRetryBackoff
+}
+
+// retryNow lifts every delivery backoff: the Telegram settings changed (or a test message got
+// through), so the next RaiseAlert of a key whose delivery failed retries at once.
+func (m *alertManager) retryNow() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.state {
+		st.retryAt = time.Time{}
+	}
+}
+
+// alertUndelivered describes an active incident that has not reached Telegram yet.
+type alertUndelivered struct {
+	Key           string     `json:"key"`
+	Level         AlertLevel `json:"level"`
+	Title         string     `json:"title"`
+	Error         string     `json:"error"`
+	NotConfigured bool       `json:"not_configured"`
+	Attempts      int        `json:"attempts"` // since the API start; journal rows only after a restart
+	FirstFailedAt time.Time  `json:"first_failed_at"`
+	LastAttemptAt time.Time  `json:"last_attempt_at"`
+	NextRetryAt   time.Time  `json:"next_retry_at"`
+}
+
+// undelivered lists active incidents whose every delivery attempt failed, sorted by key.
+func (m *alertManager) undelivered() []alertUndelivered {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []alertUndelivered{}
+	for key, st := range m.state {
+		inc := st.inc
+		if !st.active || inc == nil || inc.delivered || inc.failures == 0 {
+			continue
+		}
+		out = append(out, alertUndelivered{
+			Key: key, Level: st.level, Title: st.title, Error: inc.failErr, NotConfigured: inc.notConfigured,
+			Attempts: inc.failures, FirstFailedAt: inc.firstFailAt, LastAttemptAt: inc.lastAttemptAt, NextRetryAt: st.retryAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+// replayAlertEvents rebuilds per-key state from journal rows ordered by id ASC (rows of one
+// key may have gaps, see loadRecentAlertEvents). A raise/repeat counts as notified only if it
+// was delivered. The level of an open incident is the highest level of its rows, as in Raise,
+// where an active critical key is never downgraded.
 func replayAlertEvents(events []alertEvent) map[string]*alertState {
 	state := make(map[string]*alertState)
 	for _, ev := range events {
@@ -375,24 +493,37 @@ func replayAlertEvents(events []alertEvent) map[string]*alertState {
 			state[ev.Key] = st
 		}
 		switch ev.Kind {
-		case "raise", "repeat":
+		case "raise", "repeat", "suppressed":
 			if !st.active || st.inc == nil {
 				st.inc = &alertIncident{}
+				st.level = ev.Level
+			} else if ev.Level == AlertCritical {
+				st.level = AlertCritical
 			}
-			st.active, st.level, st.title = true, ev.Level, ev.Title
-			if ev.Delivered {
+			st.active, st.title = true, ev.Title
+			switch {
+			case ev.Kind == "suppressed":
+				st.notified = false
+			case ev.Delivered:
 				st.notified, st.lastSent, st.retryAt = true, ev.At, time.Time{}
-				st.inc.delivered = true
-			} else {
-				st.notified, st.lastSent, st.retryAt = false, time.Time{}, ev.At.Add(alertRetryBackoff)
+				inc := st.inc
+				inc.delivered = true
+				inc.failErr, inc.failLevel, inc.notConfigured, inc.failures = "", "", false, 0
+			default:
+				notConfigured := ev.Error == errAlertsNotConfigured.Error()
+				st.notified, st.lastSent, st.retryAt = false, time.Time{}, ev.At.Add(alertRetryBackoffFor(notConfigured))
+				inc := st.inc
+				if inc.failures == 0 {
+					inc.firstFailAt = ev.At
+				}
+				inc.failures++
+				inc.failErr, inc.failLevel, inc.notConfigured, inc.lastAttemptAt = ev.Error, ev.Level, notConfigured, ev.At
 			}
-		case "suppressed":
-			if !st.active || st.inc == nil {
-				st.inc = &alertIncident{}
-			}
-			st.active, st.notified, st.level, st.title = true, false, ev.Level, ev.Title
 		case "resolve":
 			st.active, st.notified, st.lastSent = false, false, ev.At
+			if ev.Delivered {
+				st.recoveredAt = ev.At
+			}
 		case "cleared":
 			st.active, st.notified = false, false
 		}
@@ -513,9 +644,12 @@ func telegramSendDirect(token, chatID, text string) error {
 }
 
 func telegramSendViaExit(token, chatID, text string) error {
-	port, ok := pickExitSocksPort()
-	if !ok {
+	port, err := pickExitSocksPort()
+	if errors.Is(err, errNoLiveExit) {
 		return errNoExitRoute
+	}
+	if err != nil { // the exit list could not be read: say so instead of "no exit"
+		return fmt.Errorf("exit для обхода не выбран: %w", err)
 	}
 	client, err := exitSocksHTTPClient(port, 15*time.Second)
 	if err != nil {
@@ -528,16 +662,85 @@ func telegramSendViaExit(token, chatID, text string) error {
 	return nil
 }
 
-func sendTelegramAlert(text string) error {
-	if db.DB == nil {
-		return errAlertsNoDB
+// alertTelegramConfig is the bot token and chat id from app_settings ("" = not set).
+type alertTelegramConfig struct{ token, chatID string }
+
+func (c alertTelegramConfig) configured() bool { return c.token != "" && c.chatID != "" }
+
+// alertTelegramSource reads the Telegram credentials and keeps the last successful read, so a
+// DB outage neither blinds alerting nor gets reported as "Telegram не настроен".
+type alertTelegramSource struct {
+	get    func(key string) (string, error) // raw app_settings read; sql.ErrNoRows = missing row
+	cached atomic.Pointer[alertTelegramConfig]
+}
+
+var alertTelegram = newAlertTelegramSource(func(key string) (string, error) {
+	return appSettingBounded(key, alertSettingsTimeout)
+})
+
+func newAlertTelegramSource(get func(key string) (string, error)) *alertTelegramSource {
+	return &alertTelegramSource{get: get}
+}
+
+// fresh reads both settings from the DB and refreshes the cache. A missing or blank value is
+// "not set"; any other error is returned and leaves the cache untouched.
+func (s *alertTelegramSource) fresh() (alertTelegramConfig, error) {
+	token, err := settingOrEmpty(s.get, alertTokenSetting)
+	if err != nil {
+		return alertTelegramConfig{}, err
 	}
-	token := strings.TrimSpace(biz.GetSettingOrDefault(alertTokenSetting, ""))
-	chatID := strings.TrimSpace(biz.GetSettingOrDefault(alertChatIDSetting, ""))
-	if token == "" || chatID == "" {
+	chatID, err := settingOrEmpty(s.get, alertChatIDSetting)
+	if err != nil {
+		return alertTelegramConfig{}, err
+	}
+	cfg := alertTelegramConfig{token: token, chatID: chatID}
+	s.cached.Store(&cfg)
+	return cfg, nil
+}
+
+// load is fresh with a fallback to the last good read while the DB is unavailable. Without a
+// cache the error wraps errAlertsNoDB: it is never errAlertsNotConfigured.
+func (s *alertTelegramSource) load() (alertTelegramConfig, error) {
+	cfg, err := s.fresh()
+	if err == nil {
+		return cfg, nil
+	}
+	if c := s.cached.Load(); c != nil {
+		log.Printf("[alerts] настройки Telegram не прочитаны из БД (%v) — используем сохранённые в памяти", err)
+		return *c, nil
+	}
+	return alertTelegramConfig{}, fmt.Errorf("%w: настройки Telegram не прочитаны: %v", errAlertsNoDB, err)
+}
+
+// afterWrite runs after the admin saved upd: the cache must not keep the old credentials.
+// The values are re-read; if that fails, the written values are patched into the cache.
+func (s *alertTelegramSource) afterWrite(upd alertSettingsUpdate) {
+	if _, err := s.fresh(); err == nil {
+		return
+	}
+	c := s.cached.Load()
+	if c == nil {
+		return // nothing cached: the next successful read fills it
+	}
+	n := *c
+	if upd.setToken {
+		n.token = upd.token
+	}
+	if upd.setChatID {
+		n.chatID = upd.chatID
+	}
+	s.cached.Store(&n)
+}
+
+func sendTelegramAlert(text string) error {
+	cfg, err := alertTelegram.load()
+	if err != nil {
+		return err
+	}
+	if !cfg.configured() {
 		return errAlertsNotConfigured
 	}
-	return telegram.send(token, chatID, text)
+	return telegram.send(cfg.token, cfg.chatID, text)
 }
 
 func telegramSendMessage(client *http.Client, token, chatID, text string) error {
@@ -601,20 +804,66 @@ func recordAlertEvent(ev alertEvent) {
 	}
 }
 
-// loadRecentAlertEvents returns the newest alertReplayPerKey rows of every key (last 7 days),
-// oldest first, so one noisy key cannot push another key's raise out of the window.
+// loadRecentAlertEvents returns the journal rows replayAlertEvents needs, oldest first:
+//   - the newest alertReplayPerKey rows of every key from the last 7 days (cooldowns, flapping),
+//     per key, so one noisy key cannot push another key's raise out of the window;
+//   - per key, whatever its age: the newest row (an active warn delivered 8 days ago is not
+//     repeated, so its raise is its last row — without it every deploy would re-send it), and
+//     the newest delivered raise/repeat and the newest critical row of the open incident (rows
+//     after the last resolve/cleared), which a long run of failed attempts may push out of the
+//     window: they decide whether a recovery is due and the incident's level.
+//
+// At most alertReplayPerKey+3 rows per key; the anchors use idx_alert_events_key_id.
 func loadRecentAlertEvents() ([]alertEvent, error) {
 	if db.DB == nil {
 		return nil, errAlertsNoDB
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertDBTimeout)
 	defer cancel()
-	return scanAlertEvents(db.DB.QueryContext(ctx, `SELECT `+alertEventColumns+` FROM (
+	recent, err := scanAlertEvents(db.DB.QueryContext(ctx, `SELECT `+alertEventColumns+` FROM (
 		SELECT `+alertEventColumns+`,
 		       ROW_NUMBER() OVER (PARTITION BY alert_key ORDER BY id DESC) AS rn
 		FROM alert_events
 		WHERE kind <> 'test' AND created_at > NOW() - INTERVAL '7 days') t
 		WHERE rn <= $1 ORDER BY id ASC`, alertReplayPerKey))
+	if err != nil {
+		return nil, err
+	}
+	anchors, err := scanAlertEvents(db.DB.QueryContext(ctx, `
+		WITH open_rows AS (
+			SELECT e.id, e.alert_key, e.kind, e.level, e.delivered
+			FROM alert_events e
+			WHERE e.kind IN ('raise', 'repeat', 'suppressed')
+			  AND e.id > COALESCE((SELECT MAX(c.id) FROM alert_events c
+			                       WHERE c.alert_key = e.alert_key AND c.kind IN ('resolve', 'cleared')), 0)
+		)
+		SELECT `+alertEventColumns+` FROM alert_events WHERE id IN (
+			SELECT MAX(id) FROM alert_events WHERE kind <> 'test' GROUP BY alert_key
+			UNION
+			SELECT MAX(id) FROM open_rows WHERE kind IN ('raise', 'repeat') AND delivered GROUP BY alert_key
+			UNION
+			SELECT MAX(id) FROM open_rows WHERE level = 'critical' GROUP BY alert_key
+		) ORDER BY id ASC`))
+	if err != nil {
+		return nil, err
+	}
+	return mergeAlertEvents(recent, anchors), nil
+}
+
+// mergeAlertEvents unions two journal extracts by id, oldest first.
+func mergeAlertEvents(a, b []alertEvent) []alertEvent {
+	seen := make(map[int64]bool, len(a)+len(b))
+	out := make([]alertEvent, 0, len(a)+len(b))
+	for _, list := range [][]alertEvent{a, b} {
+		for _, ev := range list {
+			if !seen[ev.ID] {
+				seen[ev.ID] = true
+				out = append(out, ev)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // purgeOldAlertEvents enforces the journal retention (alertRetention).
