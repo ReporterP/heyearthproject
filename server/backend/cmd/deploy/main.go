@@ -1007,19 +1007,22 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	domain := cfg.siteDomain
 	certPath := "/etc/letsencrypt/live/" + domain
 
-	// Проверяем наличие SSL-сертификата
-	hasCert, _ := runSSH(client, fmt.Sprintf("test -f %s/fullchain.pem && echo yes || echo no", certPath), false)
-	ssl := strings.TrimSpace(hasCert) == "yes"
-
-	// Проверяем наличие Xray — если установлен, используем stream для SNI routing на 443
-	xrayActive := isXrayInstalled(client)
+	// Проверяем наличие SSL-сертификата и Xray (если установлен — stream для SNI routing на 443).
+	// Ошибка проверки — не «нет»: иначе nginx получил бы конфиг без SSL / без stream (fail closed).
+	ssl, err := parseYesNo(runSSHQuiet(client, "if [ -f "+certPath+"/fullchain.pem ]; then echo yes; else echo no; fi", ""))
+	if err != nil {
+		log.Fatalf("nginx: проверка сертификата %s: %v — конфиги nginx не трогаю", certPath, err)
+	}
+	xrayActive, err := isXrayInstalled(client)
+	if err != nil {
+		log.Fatalf("nginx: %v — конфиги nginx не трогаю", err)
+	}
 
 	// The stream keeps the live PROXY-protocol mode (deploy --stream-proxy-protocol). Determined
 	// from the router file before anything is written; if it cannot be determined, nginx is not
 	// touched at all (fail closed).
 	proxyProtocol := false
 	if xrayActive && ssl {
-		var err error
 		if proxyProtocol, err = streamModeForDeploy(runSSHQuiet(client, streamRouterReadCmd, "")); err != nil {
 			log.Fatalf("nginx: %v — конфиги nginx не трогаю. Приведите %s в порядок или выполните go run ./cmd/deploy --stream-proxy-protocol on|off",
 				err, streamRouterFile)
@@ -1060,7 +1063,10 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		_, _ = runSSH(client, "rm -f /etc/nginx/stream.d/heyearth.conf", true)
 	}
 
-	_, _ = runSSH(client, "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && systemctl restart nginx", true)
+	// reload, not restart: a restart drops every connection behind the 443 stream (Reality sessions).
+	if _, err := runSSH(client, nginxApplyCmd, true); err != nil {
+		log.Fatalf("nginx: nginx -t / reload не прошли: %v", err)
+	}
 }
 
 func buildNginxConfHTTP(domain, appDir string) string {
@@ -1562,12 +1568,39 @@ XRAYEOF
 fi`
 
 // isXrayInstalled проверяет наличие Xray на сервере
-func isXrayInstalled(client *ssh.Client) bool {
+func isXrayInstalled(client *ssh.Client) (bool, error) {
 	// Проверяем наличие бинарника Xray И наличие systemd-юнита.
 	// Не проверяем is-active — Xray может быть в состоянии "activating" при старте,
-	// но stream-конфиг nginx всё равно нужен для SNI routing.
-	out, _ := runSSH(client, "test -f /opt/heyearth/xray/xray && systemctl is-enabled xray 2>/dev/null || echo no", false)
-	return strings.TrimSpace(out) == "enabled"
+	// но stream-конфиг nginx всё равно нужен для SNI routing. Ошибка SSH — это ошибка, а не
+	// «не установлен»: иначе doNginx удалил бы stream-конфиг (fail closed).
+	installed, err := parseYesNo(runSSHQuiet(client, xrayInstalledCmd, ""))
+	if err != nil {
+		return false, fmt.Errorf("проверка xray: %w", err)
+	}
+	return installed, nil
+}
+
+// xrayInstalledCmd prints yes when the xray binary exists and its unit is enabled, else no.
+const xrayInstalledCmd = "if [ -f /opt/heyearth/xray/xray ] && systemctl is-enabled --quiet xray 2>/dev/null; then echo yes; else echo no; fi"
+
+// nginxApplyCmd validates and applies doNginx's config: reload when nginx runs (connections
+// survive), start when it does not (fresh install).
+const nginxApplyCmd = "rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable nginx && " +
+	"if systemctl is-active --quiet nginx; then systemctl reload nginx; else systemctl start nginx; fi"
+
+// parseYesNo reads the answer of a remote yes/no check; an SSH error or any other output is an
+// error, never a "no".
+func parseYesNo(out string, err error) (bool, error) {
+	if err != nil {
+		return false, err
+	}
+	switch strings.TrimSpace(out) {
+	case "yes":
+		return true, nil
+	case "no":
+		return false, nil
+	}
+	return false, fmt.Errorf("unexpected answer %q", strings.TrimSpace(out))
 }
 
 // seedConnectionSettings читает Xray-конфиг и reality-ключи с сервера,
