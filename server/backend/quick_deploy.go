@@ -59,7 +59,9 @@ func main() {
 		log.Fatal("DEPLOY_HOST not found in server/.env")
 	}
 	// The root password must never go to an unverified host: pin the Hub's host key.
-	// Get it with `ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -` and compare out of band.
+	// Go's SSH client negotiates the ECDSA host key when the server has one (as the Hub does),
+	// so pin THAT fingerprint: `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` on the Hub
+	// (read over an already-trusted session), the same value cmd/deploy uses.
 	if !strings.HasPrefix(hostKeyFP, "SHA256:") {
 		log.Fatal("DEPLOY_HOST_KEY_FINGERPRINT (SHA256:...) not found in server/.env — refusing to send the root password to an unverified host")
 	}
