@@ -204,21 +204,26 @@ func installBackupTimer(client *ssh.Client, bc backupConfig) error {
 //	backup-YYYYmmdd-HHMMSS.tar.gz.age <size> <sha256>
 //
 // What the receiver guarantees even if the Hub (and with it the key) is compromised:
-//   - the name carries a real date, not older than KEEP_DAYS days and not more than a day in the
-//     future — a flood of "newer" names cannot push real archives out;
+//   - the name carries a real date within one calendar day of the receiver's own date
+//     (yesterday, today, tomorrow — wide enough for clock and time-zone differences between
+//     the Hub and the exit). An archive "from" any other day is refused, so a forged date can
+//     neither push archives out of the retention window nor park files in it;
+//   - at most PER_DATE archives per date. When a date is full the new upload is REFUSED
+//     (FULL, exit 7) — never made room for by deleting something that is already stored; only
+//     a re-upload of an existing name (the Hub's own retry) replaces it. A hostile Hub can
+//     thus fill the quota of three dates with garbage and block new backups, but it cannot
+//     destroy a single stored archive;
+//   - files are deleted by age only: names older than KEEP_DAYS days;
 //   - one upload at a time (flock -n; a second one is refused with BUSY, exit 6);
 //   - the declared size is at most MAX_BYTES and at most that many bytes (plus one, to notice an
 //     excess) are read; the filesystem must have room for twice the biggest of (newest stored
 //     archive, declared size, MIN_BYTES) before anything is written;
 //   - the stream is stored as <name>.part and renamed only when size and sha256 are exactly what
-//     was declared (the archive is ciphertext: integrity can be checked, the content cannot);
-//   - rotation never evicts by count across dates: names older than KEEP_DAYS days are deleted,
-//     and of one date only the PER_DATE newest (by name) are kept. Seven uploads dated today can
-//     thus only replace each other, never the archives of the other days.
+//     was declared (the archive is ciphertext: integrity can be checked, the content cannot).
 const backupReceiverScript = `#!/usr/bin/env bash
 # Installed by Hub deploy --setup-ops (cmd/deploy/ops_backup.go). DO NOT EDIT.
 # Forced command of the Hub backup key. Stores an age-encrypted archive as /var/backups/heyearth-hub/<name>:
-# at most 2 per date, nothing older than 8 days (by the date in the name).
+# names within a day of today only, at most 2 per date (a full date refuses, never evicts), deleted by age (8 days) only.
 # receiver-version: __VERSION__
 set -euo pipefail
 umask 077
@@ -230,14 +235,16 @@ RE='^(backup-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.tar\
 NAMERE='^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$'
 [[ "$CMD" =~ $RE ]] || reject "command not recognised"
 NAME="${BASH_REMATCH[1]}"; SIZE=$((10#${BASH_REMATCH[8]})); SUM="${BASH_REMATCH[9]}"
-WHEN=$(date -d "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]} ${BASH_REMATCH[5]}:${BASH_REMATCH[6]}:${BASH_REMATCH[7]}" +%s 2>/dev/null) || reject "the name does not carry a valid date"
-[ "$WHEN" -le $(( $(date +%s) + 86400 )) ] || reject "the date in the name is more than a day in the future"
+date -d "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]} ${BASH_REMATCH[5]}:${BASH_REMATCH[6]}:${BASH_REMATCH[7]}" +%s >/dev/null 2>&1 || reject "the name does not carry a valid date"
+D="${NAME:7:8}"
+if [ "$D" -lt "$(date -d yesterday +%Y%m%d)" ] || [ "$D" -gt "$(date -d tomorrow +%Y%m%d)" ]; then reject "the date in the name is not within a day of today"; fi
 CUTOFF=$(date -d "-$KEEP_DAYS days" +%Y%m%d)
-[ "${NAME:7:8}" -ge "$CUTOFF" ] || reject "the date in the name is older than $KEEP_DAYS days"
 if [ "$SIZE" -lt 1 ] || [ "$SIZE" -gt "$MAX_BYTES" ]; then reject "declared size $SIZE is outside 1..$MAX_BYTES" 4; fi
 mkdir -p "$DIR"
 exec 9>"$DIR/.lock"
 flock -n 9 || reject "BUSY: another upload is in progress" 6
+STORED_THAT_DATE=$(ls -1 "$DIR" | grep -E "$NAMERE" | grep -Fxv -e "$NAME" | grep -c "^backup-$D-" || true)
+if [ "$STORED_THAT_DATE" -ge "$PER_DATE" ]; then reject "FULL: $STORED_THAT_DATE archives are already stored for $D (a re-upload of a stored name is still accepted)" 7; fi
 LASTNAME=$(ls -1 "$DIR" | grep -E "$NAMERE" | sort | tail -n 1 || true)
 BASE=$MIN_BYTES
 if [ -n "$LASTNAME" ]; then LAST=$(stat -c %s "$DIR/$LASTNAME"); if [ "$LAST" -gt "$BASE" ]; then BASE=$LAST; fi; fi
@@ -257,7 +264,6 @@ mv -f "$PART" "$DIR/$NAME"
 for f in $(ls -1 "$DIR" | grep -E "$NAMERE" | sort); do
   if [ "${f:7:8}" -lt "$CUTOFF" ]; then rm -f -- "$DIR/$f"; fi
 done
-ls -1 "$DIR" | grep -E "$NAMERE" | sort -r | awk -v n="$PER_DATE" '{ d = substr($0, 8, 8); c[d]++; if (c[d] > n) print }' | while IFS= read -r old; do rm -f -- "$DIR/$old"; done
 echo "OK $SUM"
 `
 

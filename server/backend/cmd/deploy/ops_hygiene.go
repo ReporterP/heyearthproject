@@ -2,7 +2,7 @@ package main
 
 // Hub hygiene steps of `deploy --setup-ops`: journald size cap, fail2ban sshd jail and the nginx
 // stream timeouts / connection limits on the live files. The xray API guard lives in
-// ops_xray_guard.go.
+// ops_egress_guard.go.
 
 import (
 	"fmt"

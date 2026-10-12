@@ -134,12 +134,20 @@ func dnsDirectRule() map[string]interface{} {
 //  0. xray's own DNS client goes out of the Hub (dnsDirectRule);
 //  1. private ranges are blocked (geoip:private) — spokes and users cannot reach the Hub's
 //     internal network or each other;
-//  2. the Hub's own public addresses are blocked on every port except 80/443 (hubIPs, see
+//  2. loopback and "this host" are blocked explicitly (127.0.0.0/8, ::1/128, 0.0.0.0/8, ::/128),
+//     so the block does not depend on what the geoip file happens to contain;
+//  3. the Hub's own public addresses are blocked on every port except 80/443 (hubIPs, see
 //     hub_addrs.go): a proxy user must not be able to make the Hub connect to itself — sshd,
 //     PostgreSQL, the API on :8000, the xray API — through a freedom outbound. Omitted when
-//     the list is empty;
-//  3. BitTorrent; 4. XMPP ports 5222/5223 (Chinese stock ROMs retry the dead Google Talk
+//     the list is empty (the caller logs that);
+//  4. BitTorrent; 5. XMPP ports 5222/5223 (Chinese stock ROMs retry the dead Google Talk
 //     endpoint endlessly, which backs up SOCKS5 i/o timeouts in the Hysteria2 client).
+//
+// These rules see only IP targets: with domainStrategy IPIfNonMatch a domain that matches an
+// earlier domain rule (a RU-direct service) is never re-matched against the IP rules, and a
+// freedom outbound with UseIP then resolves it wherever the DNS says — a hostile name may point
+// at 127.0.0.1 or at the Hub itself. So this is defence in depth; the authoritative protection
+// is the kernel egress guard (cmd/deploy/ops_egress_guard.go: iptables rules on the xray cgroup).
 //
 // DNS-over-HTTPS is deliberately not blocked: browsers resolve through it and it goes via the
 // exits. checkNoDirectLeak requires the private block to precede every freedom rule.
@@ -147,6 +155,7 @@ func baseSecurityRules(hubIPs []string) []map[string]interface{} {
 	rules := []map[string]interface{}{
 		dnsDirectRule(),
 		{"type": xrayRuleTypeField, "ip": []string{xrayPrivateIPTag}, "outboundTag": xrayBlockTag},
+		{"type": xrayRuleTypeField, "ip": append([]string{}, xrayLocalBlockIPs...), "outboundTag": xrayBlockTag},
 	}
 	if len(hubIPs) > 0 {
 		rules = append(rules, map[string]interface{}{
@@ -158,6 +167,9 @@ func baseSecurityRules(hubIPs []string) []map[string]interface{} {
 		map[string]interface{}{"type": xrayRuleTypeField, "port": "5222,5223", "outboundTag": xrayBlockTag},
 	)
 }
+
+// xrayLocalBlockIPs: loopback and "this host", IPv4 and IPv6.
+var xrayLocalBlockIPs = []string{"127.0.0.0/8", "::1/128", "0.0.0.0/8", "::/128"}
 
 // isFreedomRuleTarget reports whether outbound tag is a Hub-local freedom outbound a rule
 // could send user traffic out of the Hub through: direct-freedom (RU-direct services) and the

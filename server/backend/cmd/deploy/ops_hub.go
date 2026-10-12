@@ -1,7 +1,7 @@
 package main
 
 // Hub ops hygiene: `deploy --setup-ops`. Server-side changes of subproject 1 parts 4–5
-// live here (and in ops_backup.go / ops_hygiene.go / ops_xray_guard.go) so a reinstall
+// live here (and in ops_backup.go / ops_hygiene.go / ops_egress_guard.go) so a reinstall
 // reproduces them. Idempotent.
 //
 // Every step is a bash script rendered by Go and executed through runSSHBash. Files are
@@ -69,7 +69,7 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 	}
 	step("journald + fail2ban", func() error { return setupJournaldFail2ban(client, cfg.deployPort, bc.target) })
 	step("nginx stream timeouts + limits", func() error { return patchNginxStream(client) })
-	step("xray API guard", func() error { return installXrayAPIGuard(client) })
+	step("egress guard", func() error { return installEgressGuard(client) })
 
 	if len(failed) > 0 {
 		log.Fatalf("[ops] %d step(s) failed: %s", len(failed), strings.Join(failed, ", "))

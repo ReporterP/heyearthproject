@@ -596,18 +596,21 @@ echo "STATE sha=$(sha256sum "$T/blob" | cut -d' ' -f1)"`)
 		want(t, out, "STATE stored=0", "STATE outside=0")
 	})
 
-	t.Run("the date in the name must be real, at most a day in the future and at most KEEP_DAYS old", func(t *testing.T) {
+	t.Run("the name's date must be real and within one calendar day of the receiver's own date", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `
 f=$(n '+2 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future2d=$?"
 f=$(n '+12 hours'); recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future12h=$?"
+f=$(n '-1 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE yesterday=$?"
+f=$(n '-2 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE older2d=$?"
+f=$(n '-8 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE older8d=$?"
 f=$(n '-9 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE older9d=$?"
-f=$(n '-8 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE edge8d=$?"
 for bad in backup-20261301-000000 backup-20260231-000000 backup-20261012-250000 backup-99991231-235959; do
   recv "$(cmdline "$bad.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE bad[$bad]=$?"
 done
 echo "STATE stored=$(stored)"`)
-		want(t, out, "STATE future2d=2", "STATE future12h=0", "STATE older9d=2", "STATE edge8d=0", "STATE bad[backup-20261301-000000]=2", "STATE bad[backup-20260231-000000]=2",
+		want(t, out, "STATE future2d=2", "STATE future12h=0", "STATE yesterday=0", "STATE older2d=2", "STATE older8d=2", "STATE older9d=2",
+			"STATE bad[backup-20261301-000000]=2", "STATE bad[backup-20260231-000000]=2",
 			"STATE bad[backup-20261012-250000]=2", "STATE bad[backup-99991231-235959]=2", "STATE stored=2")
 	})
 
@@ -661,26 +664,67 @@ echo "STATE still_the_first=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" 
 		}
 	})
 
-	t.Run("seven uploads dated today cannot evict the real archives of the other days", func(t *testing.T) {
+	t.Run("forged dates cannot push real archives out: a full date is REFUSED (FULL, exit 7), nothing stored is ever evicted", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `mkdir -p "$T/store"
-# five real archives of the previous days; their mtimes are the REVERSE of their names (oldest name = newest file)
+# the real archives: one per day for the last five days, and today's 04:00 one; mtimes reversed on purpose
 i=0
 for d in '-5 days' '-4 days' '-3 days' '-2 days' '-1 days'; do
   i=$((i+1)); f=$(n "$d"); cp "$T/blob" "$T/store/$f"; touch -d "2026-10-0$((10-i)) 04:00:00" "$T/store/$f"; eval "real$i=$f"
 done
-today=$(date +%Y%m%d)
-for h in 01 02 03 04 05 06 07; do
-  recv "$(cmdline "backup-$today-${h}0000.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE up$h=$?"
+today=$(date +%Y%m%d); yesterday=$(date -d yesterday +%Y%m%d); tomorrow=$(date -d tomorrow +%Y%m%d)
+realtoday=backup-$today-040000.tar.gz.age; cp "$T/blob" "$T/store/$realtoday"
+# the attacker: three uploads for every date inside the accepted window ...
+for d in $yesterday $today $tomorrow; do
+  rcs=""
+  for h in 11 12 13; do
+    recv "$(cmdline "backup-$d-${h}0000.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; rcs="$rcs$? "
+  done
+  echo "STATE rcs[$d]=$rcs"
 done
+# ... and for dates outside it
+recv "$(cmdline "$(n '-3 days')" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE forged_old=$?"
+recv "$(cmdline "$(n '+5 days')" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE forged_future=$?"
 for i in 1 2 3 4 5; do eval "f=\$real$i"; echo "STATE real$i=$([ -e "$T/store/$f" ] && echo 1 || echo 0)"; done
-echo "STATE today_kept=$(ls "$T/store" | grep "backup-$today" | sed "s/backup-$today-//; s/.tar.gz.age//" | tr '\n' ' ')"
-echo "STATE stored=$(stored)"`)
-		want(t, out, "STATE up01=0", "STATE up07=0", "STATE real1=1", "STATE real2=1", "STATE real3=1", "STATE real4=1", "STATE real5=1",
-			"STATE today_kept=060000 070000 ", "STATE stored=7")
+echo "STATE realtoday=$([ -e "$T/store/$realtoday" ] && echo 1 || echo 0)"
+echo "STATE stored=$(stored)"
+echo "STATE today_files=$(ls "$T/store" | grep "backup-$today" | sed "s/backup-$today-//; s/.tar.gz.age//" | tr '\n' ' ')"`)
+		// yesterday and today already hold one real archive each: one more fits, then FULL; tomorrow takes two
+		var yesterday, today, tomorrow string
+		for _, l := range strings.Split(out, "\n") {
+			if rest, ok := strings.CutPrefix(strings.TrimRight(l, "\r"), "STATE rcs["); ok {
+				_, rcs, _ := strings.Cut(rest, "]=")
+				switch {
+				case yesterday == "":
+					yesterday = rcs
+				case today == "":
+					today = rcs
+				default:
+					tomorrow = rcs
+				}
+			}
+		}
+		if yesterday != "0 7 7 " || today != "0 7 7 " || tomorrow != "0 0 7 " {
+			t.Errorf("per-date results yesterday=%q today=%q tomorrow=%q (want '0 7 7 ', '0 7 7 ', '0 0 7 '):\n%s", yesterday, today, tomorrow, out)
+		}
+		want(t, out, "STATE forged_old=2", "STATE forged_future=2", "STATE real1=1", "STATE real2=1", "STATE real3=1", "STATE real4=1", "STATE real5=1", "STATE realtoday=1",
+			"STATE today_files=040000 110000 ", "STATE stored=10")
 	})
 
-	t.Run("only names older than KEEP_DAYS days are deleted; of one date only the newest PER_DATE stay", func(t *testing.T) {
+	t.Run("a re-upload of a stored name (the Hub's retry) is accepted even when its date is full", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `today=$(date +%Y%m%d)
+for h in 01 02; do recv "$(cmdline "backup-$today-${h}0000.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE first$h=$?"; done
+recv "$(cmdline "backup-$today-030000.tar.gz.age" "$T/blob")" "$T/blob" 2>&1; echo "STATE third=$?"
+recv "$(cmdline "backup-$today-020000.tar.gz.age" "$T/blob500")" "$T/blob500" >/dev/null 2>&1; echo "STATE retry=$?"
+echo "STATE sha_is_the_new_one=$([ "$(sha256sum "$T/store/backup-$today-020000.tar.gz.age" | cut -d' ' -f1)" = "$(sha256sum "$T/blob500" | cut -d' ' -f1)" ] && echo 1 || echo 0) stored=$(stored)"`)
+		want(t, out, "STATE first01=0", "STATE first02=0", "STATE third=7", "STATE retry=0", "STATE sha_is_the_new_one=1 stored=2")
+		if !strings.Contains(out, "FULL") {
+			t.Errorf("no FULL message:\n%s", out)
+		}
+	})
+
+	t.Run("files are deleted by age only: older than KEEP_DAYS go, everything else stays however many there are per date", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `mkdir -p "$T/store"
 old9=$(n '-9 days'); old8=$(n '-8 days'); d3a=backup-$(date -d '-3 days' +%Y%m%d)-010000.tar.gz.age; d3b=backup-$(date -d '-3 days' +%Y%m%d)-020000.tar.gz.age; d3c=backup-$(date -d '-3 days' +%Y%m%d)-030000.tar.gz.age
@@ -689,7 +733,7 @@ recv "$(cmdline "$(n now)" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE ex
 echo "STATE old9=$([ -e "$T/store/$old9" ] && echo 1 || echo 0) old8=$([ -e "$T/store/$old8" ] && echo 1 || echo 0)"
 echo "STATE d3=$([ -e "$T/store/$d3a" ] && echo 1 || echo 0)$([ -e "$T/store/$d3b" ] && echo 1 || echo 0)$([ -e "$T/store/$d3c" ] && echo 1 || echo 0)"
 echo "STATE stored=$(stored)"`)
-		want(t, out, "STATE exit=0", "STATE old9=0 old8=1", "STATE d3=011", "STATE stored=4")
+		want(t, out, "STATE exit=0", "STATE old9=0 old8=1", "STATE d3=111", "STATE stored=5")
 	})
 
 	t.Run("a second upload while one is running is refused with BUSY (exit 6) and writes nothing", func(t *testing.T) {
@@ -1194,19 +1238,19 @@ func TestOpsScriptsParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	scripts := map[string]string{
-		"backup.sh":              backupScript,
-		"backup-verify.sh":       backupVerifyScript,
-		"receiver":               renderBackupReceiver(),
-		"backup install":         renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}),
-		"backup install local":   renderBackupInstallScript(backupConfig{port: 22}),
-		"receiver install":       renderReceiverInstallScript(auth),
-		"known_hosts + probe":    renderKnownHostsScript("89.124.89.126", 2222, "ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
-		"journald + fail2ban":    renderHostHygieneScript(22, "89.124.89.126"),
-		"nginx patch":            renderNginxStreamPatchScript(),
-		"xray api guard":         xrayAPIGuardScript,
-		"xray api guard install": renderXrayAPIGuardInstallScript(),
-		"read backup.env":        readBackupEnvScript,
-		"prune firewall":         pruneFirewallScript,
+		"backup.sh":            backupScript,
+		"backup-verify.sh":     backupVerifyScript,
+		"receiver":             renderBackupReceiver(),
+		"backup install":       renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}),
+		"backup install local": renderBackupInstallScript(backupConfig{port: 22}),
+		"receiver install":     renderReceiverInstallScript(auth),
+		"known_hosts + probe":  renderKnownHostsScript("89.124.89.126", 2222, "ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
+		"journald + fail2ban":  renderHostHygieneScript(22, "89.124.89.126"),
+		"nginx patch":          renderNginxStreamPatchScript(),
+		"egress guard":         renderEgressGuardScript(),
+		"egress guard install": renderEgressGuardInstallScript(),
+		"read backup.env":      readBackupEnvScript,
+		"prune firewall":       pruneFirewallScript,
 	}
 	for name, s := range scripts {
 		t.Run(name, func(t *testing.T) {

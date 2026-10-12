@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net"
 	"sort"
 	"strings"
@@ -30,27 +31,60 @@ const (
 	xrayHubBlockedPorts = "1-79,81-442,444-65535"
 )
 
+// hubIPCache remembers the Hub's addresses once they have been found. An empty result is
+// NEVER cached: the first sync may run before the network is up or before main_server_host is
+// readable, and a Hub that "has no addresses" for the rest of the process lifetime would leave
+// the generated configs without their Hub-address blocks until the next restart. Once a
+// non-empty list exists it is kept, so the configs stay byte-stable (their no-op short-circuits
+// compare bytes; a flapping address list would restart xray / hysteria); a changed address needs
+// an API restart, which a deploy does anyway.
+type hubIPCache struct {
+	mu  sync.Mutex
+	ips []string
+}
+
+func (c *hubIPCache) get(compute func() []string, warn func(string)) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.ips) > 0 {
+		return c.ips
+	}
+	ips := compute()
+	if len(ips) == 0 {
+		warn("no public address of the Hub could be determined — the Hub-address block is OMITTED from the generated " +
+			"hysteria2 and xray configs this time (the kernel egress guard still applies); retrying on the next sync")
+		return nil
+	}
+	c.ips = ips
+	return ips
+}
+
 var (
-	hubIPsOnce sync.Once
-	hubIPsVal  []string
+	hubIPs     hubIPCache
+	hubIPsWarn logGate // at most one warning an hour: the syncs run every few minutes
 )
 
 // hubOwnIPs returns the public addresses of this host: every global unicast, non-private
 // address of its interfaces plus whatever main_server_host / hub_main_server_host point to
-// (a NATed Hub's public address is not on any interface). Computed once per process so the
-// generated configs stay byte-stable (their no-op short-circuits compare bytes; a flapping
-// address list would restart xray / hysteria); a changed address needs an API restart, which a
-// deploy does anyway.
+// (a NATed Hub's public address is not on any interface). See hubIPCache for the caching rules.
+// An empty list means "unknown": callers omit the Hub-address rule (deterministically) and the
+// warning above is logged.
 func hubOwnIPs() []string {
-	hubIPsOnce.Do(func() {
-		addrs, _ := net.InterfaceAddrs()
+	return hubIPs.get(func() []string {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			log.Printf("[hub-addrs] net.InterfaceAddrs: %v", err)
+		}
 		hosts := []string{
 			biz.GetSettingOrDefault("main_server_host", ""),
 			biz.GetSettingOrDefault("hub_main_server_host", ""),
 		}
-		hubIPsVal = collectHubIPs(addrs, hosts, lookupIPsTimeout)
+		return collectHubIPs(addrs, hosts, lookupIPsTimeout)
+	}, func(msg string) {
+		if hubIPsWarn.allow(time.Now(), time.Hour) {
+			log.Printf("[hub-addrs] WARN: %s", msg)
+		}
 	})
-	return hubIPsVal
 }
 
 func lookupIPsTimeout(host string) ([]net.IP, error) {

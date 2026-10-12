@@ -73,7 +73,7 @@ func TestHysteria2ACLRules(t *testing.T) {
 	rules := hysteria2ACLRules(hub)
 
 	// the three unconditional rejects come first, in this order
-	for i, want := range []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)"} {
+	for i, want := range []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)"} {
 		if rules[i] != want {
 			t.Fatalf("rule %d = %q, want %q (all: %v)", i, rules[i], want, rules)
 		}
@@ -109,7 +109,7 @@ func TestHysteria2ACLRules(t *testing.T) {
 	}
 	// no Hub address known: the unconditional rejects are still there and still first
 	bare := hysteria2ACLRules(nil)
-	if !reflect.DeepEqual(bare, []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "direct(geoip:ru)", "via_exit(all)"}) {
+	if !reflect.DeepEqual(bare, []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)", "direct(geoip:ru)", "via_exit(all)"}) {
 		t.Errorf("rules without Hub addresses: %v", bare)
 	}
 }
@@ -150,9 +150,9 @@ func TestRenderHysteria2ConfigACL(t *testing.T) {
 func TestBaseSecurityRules(t *testing.T) {
 	hub := []string{"138.16.181.225", "45.150.39.236"}
 	rules := baseSecurityRules(hub)
-	// 0 dns, 1 private block, 2 Hub addresses block, 3 bittorrent, 4 xmpp
-	if len(rules) != 5 {
-		t.Fatalf("want 5 rules, got %d: %v", len(rules), rules)
+	// 0 dns, 1 private block, 2 loopback + "this host", 3 Hub addresses block, 4 bittorrent, 5 xmpp
+	if len(rules) != 6 {
+		t.Fatalf("want 6 rules, got %d: %v", len(rules), rules)
 	}
 	if !reflect.DeepEqual(rules[0], dnsDirectRule()) {
 		t.Errorf("rule 0 must be xray's own DNS: %v", rules[0])
@@ -160,24 +160,28 @@ func TestBaseSecurityRules(t *testing.T) {
 	if !isPrivateBlockRule(rules[1]) {
 		t.Errorf("rule 1 must be the unconditional geoip:private block: %v", rules[1])
 	}
-	hubRule := rules[2]
+	local := rules[2]
+	if local["outboundTag"] != "block" || !reflect.DeepEqual(local["ip"], []string{"127.0.0.0/8", "::1/128", "0.0.0.0/8", "::/128"}) {
+		t.Errorf("rule 2 must block loopback and \"this host\" explicitly: %v", local)
+	}
+	hubRule := rules[3]
 	if hubRule["outboundTag"] != "block" || !reflect.DeepEqual(hubRule["ip"], hub) || hubRule["port"] != "1-79,81-442,444-65535" {
 		t.Errorf("rule 2 must block the Hub addresses on every port but 80/443: %v", hubRule)
 	}
 	if _, restricted := hubRule["inboundTag"]; restricted {
 		t.Errorf("the Hub-address block must apply to every inbound: %v", hubRule)
 	}
-	if !reflect.DeepEqual(rules[3]["protocol"], []string{"bittorrent"}) || rules[4]["port"] != "5222,5223" {
-		t.Errorf("bittorrent / XMPP rules changed: %v %v", rules[3], rules[4])
+	if !reflect.DeepEqual(rules[4]["protocol"], []string{"bittorrent"}) || rules[5]["port"] != "5222,5223" {
+		t.Errorf("bittorrent / XMPP rules changed: %v %v", rules[4], rules[5])
 	}
 	// the caller's slice is not aliased into the rule
 	hub[0] = "tampered"
-	if ips := rules[2]["ip"].([]string); ips[0] != "138.16.181.225" {
+	if ips := rules[3]["ip"].([]string); ips[0] != "138.16.181.225" {
 		t.Errorf("rule keeps a reference to the caller's slice")
 	}
 	// no Hub address known: the rule is omitted, the private block stays
 	bare := baseSecurityRules(nil)
-	if len(bare) != 4 || !isPrivateBlockRule(bare[1]) {
+	if len(bare) != 5 || !isPrivateBlockRule(bare[1]) {
 		t.Errorf("without Hub addresses: %v", bare)
 	}
 	// the port exception really leaves out exactly 80 and 443
@@ -244,5 +248,36 @@ func TestCheckNoDirectLeakPrivateFirst(t *testing.T) {
 	toExit := map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "exit-2"}
 	if checkNoDirectLeak(fx.inbounds, fx.good, routingWith([]map[string]interface{}{dnsDirectRule(), toExit, freedom, catchAll}, bal)) == nil {
 		t.Error("a private rule that does not block accepted as the guard")
+	}
+}
+
+func TestHubIPCache(t *testing.T) {
+	var c hubIPCache
+	var warns []string
+	warn := func(m string) { warns = append(warns, m) }
+	calls := 0
+	seq := [][]string{nil, {}, {"138.16.181.225"}, {"203.0.113.9"}}
+	compute := func() []string {
+		r := seq[calls]
+		calls++
+		return r
+	}
+
+	// two empty answers in a row: nothing is cached, each one warns, the caller gets nil
+	for i := 0; i < 2; i++ {
+		if got := c.get(compute, warn); len(got) != 0 {
+			t.Fatalf("empty answer %d returned %v", i, got)
+		}
+	}
+	if calls != 2 || len(warns) != 2 || !strings.Contains(warns[0], "OMITTED") {
+		t.Fatalf("empty results must not be cached and must warn: calls=%d warns=%v", calls, warns)
+	}
+
+	// the first non-empty answer is kept for good, and no longer asks
+	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"138.16.181.225"}) {
+		t.Fatalf("got %v", got)
+	}
+	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"138.16.181.225"}) || calls != 3 || len(warns) != 2 {
+		t.Fatalf("a found list must stay (byte-stable configs): got %v, calls=%d, warns=%d", got, calls, len(warns))
 	}
 }

@@ -23,7 +23,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -372,13 +371,17 @@ acl:
 // property: hysteria2 evaluates them top-down and the first match wins, so everything that
 // leads back to the Hub itself is rejected before direct(geoip:ru) can send it out locally.
 //
-//	reject(geoip:private), reject(127.0.0.0/8), reject(::1/128)   private ranges, loopback
+//	reject(geoip:private), reject(127.0.0.0/8), reject(::1/128),
+//	reject(0.0.0.0/8), reject(::/128)                             private ranges, loopback, "this host"
 //	per Hub address: via_exit(ip, tcp/80), via_exit(ip, tcp/443), reject(ip)
 //	direct(geoip:ru), via_exit(all)                               the rest, as before
 //
-// (the explicit loopback entries do not rely on the geoip file knowing every range).
+// (the explicit entries do not rely on the geoip file knowing every range). This is
+// defence in depth: a hostname that resolves to one of these addresses is still matched here
+// (hysteria resolves it first), but the authoritative protection is the kernel egress guard
+// (cmd/deploy/ops_egress_guard.go), which also covers what an ACL cannot see.
 func hysteria2ACLRules(hubIPs []string) []string {
-	rules := []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)"}
+	rules := []string{"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)"}
 	for _, ip := range hubIPs {
 		rules = append(rules,
 			fmt.Sprintf("via_exit(%s, tcp/%d)", ip, hubOpenPortHTTP),
@@ -395,77 +398,6 @@ func hysteria2ACLInline(hubIPs []string) string {
 		sb.WriteString("    - " + r + "\n")
 	}
 	return sb.String()
-}
-
-// validateHysteria2Config runs `hysteria server --config <path> --disable-update-check`
-// for up to 2 seconds. Three outcomes:
-//
-//  1. Process is killed by our timeout — means it parsed YAML, loaded TLS,
-//     started the auth backend, and reached the UDP bind step (or beyond). For
-//     our purposes that's a passing config; we kill it and return nil.
-//  2. Process exits within the timeout with "address already in use" — bind
-//     conflict against the live hysteria2-server holding :50443. Same as (1):
-//     config got past every parse/load gate; bind failure is environmental.
-//  3. Process exits within the timeout with any other error — real failure
-//     (YAML parse, missing cert, malformed Brutal limits, etc). Return the
-//     captured stdout+stderr verbatim so the admin sees the actual diagnostic.
-//
-// We capture BOTH stdout and stderr because hysteria writes FATAL log lines to
-// either depending on log-format and version. The 2s budget is the upper bound
-// for healthy startup on this server class — generous enough to absorb cert +
-// socket init, tight enough not to block sync for long on a real crash.
-//
-// Hysteria v2.6.x has no first-class `--check`/`--validate` flag (verified via
-// `hysteria server --help`), so the launch-with-timeout pattern is the only
-// available syntactic gate.
-func validateHysteria2Config(path string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "hysteria", "server", "--config", path, "--disable-update-check")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start hysteria: %w", err)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case <-ctx.Done():
-		// Timed out — process reached/passed the bind step. Kill and treat as
-		// valid. CommandContext should already SIGKILL on ctx expiry, but call
-		// Kill explicitly to be deterministic across Go versions / platforms.
-		_ = cmd.Process.Kill()
-		<-done
-		return nil
-
-	case err := <-done:
-		combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-		lower := strings.ToLower(combined)
-
-		// Port conflict ≠ bad config — the live server is holding :50443 or
-		// :7653 (trafficStats). Everything before bind passed; treat as valid.
-		if strings.Contains(lower, "address already in use") {
-			return nil
-		}
-
-		// "INFO server mode" is logged AFTER config parsing succeeds but BEFORE
-		// any bind. If we see it, the config is syntactically valid — any
-		// subsequent exit is a runtime/bind issue, not a config issue.
-		// Hysteria sometimes exits status 1 on bind conflicts without logging
-		// a FATAL (buffer flush race?), so this serves as a fallback signal.
-		if strings.Contains(lower, "server mode") {
-			return nil
-		}
-
-		// Anything else within the 2s budget is a real failure. Return the
-		// captured output verbatim so callers / admin UI see the diagnostic.
-		return fmt.Errorf("hysteria exited early: %v (%s)", err, combined)
-	}
 }
 
 // writeExpressClientConfig writes /etc/hysteria/client-express.yaml pointing at
