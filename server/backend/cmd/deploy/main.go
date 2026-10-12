@@ -408,7 +408,37 @@ func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, err
 	return client, nil
 }
 
+// runSSH runs cmd through the remote login shell. With check=true a failure is returned as
+// an error that carries a short label of the command, never the whole script.
 func runSSH(client *ssh.Client, cmd string, check bool) (string, error) {
+	return runSSHLabeled(client, cmd, cmdLabel(cmd), check)
+}
+
+// runSSHBash runs a (multi-line) script explicitly under bash instead of whatever the remote
+// login shell is: `bash -c '<script>'`, so bash-isms like `set -o pipefail` are deterministic.
+func runSSHBash(client *ssh.Client, label, script string, check bool) (string, error) {
+	return runSSHLabeled(client, "bash -c "+shQuote(script), label, check)
+}
+
+// shQuote single-quotes s for a POSIX shell.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// cmdLabel is the first non-empty line of cmd, shortened, with a note when more follow.
+func cmdLabel(cmd string) string {
+	lines := strings.Split(strings.TrimSpace(cmd), "\n")
+	label := strings.TrimSpace(lines[0])
+	if r := []rune(label); len(r) > 80 {
+		label = string(r[:80]) + "…"
+	}
+	if len(lines) > 1 {
+		label += fmt.Sprintf(" …(+%d lines)", len(lines)-1)
+	}
+	return label
+}
+
+func runSSHLabeled(client *ssh.Client, cmd, label string, check bool) (string, error) {
 	sess, err := client.NewSession()
 	if err != nil {
 		return "", err
@@ -427,7 +457,7 @@ func runSSH(client *ssh.Client, cmd string, check bool) (string, error) {
 		fmt.Fprint(os.Stderr, errOut.String())
 	}
 	if check && err != nil {
-		return outStr, fmt.Errorf("%s: %w", cmd, err)
+		return outStr, fmt.Errorf("%s: %w", label, err)
 	}
 	return outStr, nil
 }
@@ -1425,16 +1455,14 @@ func seedConnectionSettings(client *ssh.Client, cfg *deployConfig) {
 	script := fmt.Sprintf(`set -e
 MAIN_HOST="%s"
 
-# Читаем Reality-ключи и Shadowsocks пароль
+# Читаем Reality-ключи
 KEYS_FILE="/opt/heyearth/state/reality-keys.json"
 if [ -f "$KEYS_FILE" ]; then
   PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])" 2>/dev/null || echo "")
   SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])" 2>/dev/null || echo "")
-  SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))" 2>/dev/null || echo "")
 else
   PUB_KEY=""
   SHORT_ID=""
-  SS_PASSWORD=""
 fi
 
 # Ищем VLESS UUID из xray конфига
@@ -1474,7 +1502,6 @@ echo "  vless_uuid=$VLESS_UUID"
 echo "  reality_public_key=$PUB_KEY"
 echo "  reality_short_id=$SHORT_ID"
 echo "  reality_sni=$REALITY_SNI"
-echo "  ss_password=$SS_PASSWORD"
 
 # Вставляем основные настройки (всегда перезаписываем)
 psql "%s" -c "
@@ -1497,12 +1524,9 @@ fi
 if [ -n "$REALITY_SNI" ]; then
   psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
-if [ -n "$SS_PASSWORD" ]; then
-  psql "%s" -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('ss_password', '$SS_PASSWORD', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
-fi
 
 echo "[seed] Готово"
-`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL, dbURL)
+`, cfg.host, dbURL, dbURL, dbURL, dbURL, dbURL)
 
 	_, _ = runSSH(client, script, false)
 }
