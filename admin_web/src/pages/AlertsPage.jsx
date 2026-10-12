@@ -67,10 +67,10 @@ function Delivery({ ev }) {
   if (ev.delivered) return <span className="text-success">отправлено</span>
   const range = ev.count > 1 ? `${ev.count} попыток подряд, первая: ${formatDate(ev.firstAt)}` : ''
   return (
-    <span className="flex items-center gap-1.5 min-w-0" title={[ev.error, range].filter(Boolean).join('\n') || undefined}>
+    <span className="flex items-center gap-1.5 min-w-0 max-w-xs" title={[ev.error, range].filter(Boolean).join('\n') || undefined}>
       <span className="text-danger shrink-0">не доставлено</span>
       {ev.count > 1 && <span className="shrink-0 font-mono tabular-nums text-tertiary">×{ev.count}</span>}
-      {ev.error && <span className="truncate text-secondary">· {ev.error}</span>}
+      {ev.error && <span className="min-w-0 truncate text-secondary">· {ev.error}</span>}
     </span>
   )
 }
@@ -101,7 +101,7 @@ function UndeliveredBanner({ items }) {
             <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0 text-danger" aria-hidden="true" />
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-medium text-danger">{undeliveredHeadline(failing.length, 'ошибка отправки в Telegram')}</p>
-              <p className="text-xs text-secondary break-words">Последняя ошибка: {failing[0].error}</p>
+              <p className="text-xs text-secondary break-words">Последняя ошибка: {failing[0].error || '—'}</p>
               <UndeliveredList items={failing} />
             </div>
           </div>
@@ -118,7 +118,7 @@ function UndeliveredList({ items }) {
         <li key={u.key} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-mono text-primary">{u.key}</span>
           <span className={u.level === 'critical' ? 'text-danger' : 'text-warning'}>{u.level === 'critical' ? 'критично' : 'внимание'}</span>
-          <span className="truncate">{u.title}</span>
+          <span className="min-w-0 max-w-full sm:max-w-sm truncate">{u.title}</span>
           <span className="text-tertiary">
             попыток: <span className="font-mono tabular-nums">{u.attempts}</span>, последняя <span className="font-mono tabular-nums">{formatDate(u.last_attempt_at)}</span>
           </span>

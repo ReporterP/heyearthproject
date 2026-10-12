@@ -51,15 +51,17 @@ func dbBounded[T any](timeout time.Duration, fn func(ctx context.Context) (T, er
 	}
 }
 
-// appSettingBounded is biz.GetSetting with a hard deadline (sql.ErrNoRows for a missing key).
-func appSettingBounded(key string, timeout time.Duration) (string, error) {
+// appSettingWithTimeout is biz.GetSetting with a context deadline (sql.ErrNoRows for a missing
+// key). The context only makes lib/pq send a cancel request; callers that must not block on a
+// hung server wrap it in dbBounded (see alertTelegramSource.read).
+func appSettingWithTimeout(key string) (string, error) {
 	conn := db.DB
 	if conn == nil {
 		return "", errAlertsNoDB
 	}
-	return dbBounded(timeout, func(ctx context.Context) (string, error) {
-		var v string
-		err := conn.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = $1`, key).Scan(&v)
-		return v, err
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), alertSettingsTimeout)
+	defer cancel()
+	var v string
+	err := conn.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = $1`, key).Scan(&v)
+	return v, err
 }

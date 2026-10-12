@@ -47,6 +47,7 @@ const (
 	alertReplayRetry     = 30 * time.Second
 	alertReplayPerKey    = 50 // newest journal rows per key replayed after a restart
 	alertQueueSize       = 256
+	alertJournalSize     = 256              // rows waiting for the DB; beyond that they are dropped with a log line
 	telegramDirectPause  = 10 * time.Minute // how long a failed direct path is skipped
 )
 
@@ -111,7 +112,7 @@ type alertManager struct {
 	record    func(ev alertEvent)
 	load      func() ([]alertEvent, error) // journal replay; runs outside mu
 	purge     func() (int64, error)        // retention; nil disables the daily purge
-	warm      func()                       // Init: fill the Telegram credentials cache while the DB is surely up
+	warm      func()                       // Init: fill the credentials and exit-route caches while the DB is surely up
 	cooldown  time.Duration
 	initRetry time.Duration
 	queue     chan alertOutgoing // nil → deliver synchronously (tests)
@@ -127,16 +128,23 @@ func newProdAlertManager() *alertManager {
 	m := &alertManager{
 		now:       time.Now,
 		send:      sendTelegramAlert,
-		record:    recordAlertEvent,
+		record:    alertJournalQueue.record,
 		load:      loadRecentAlertEvents,
 		purge:     purgeOldAlertEvents,
-		warm:      func() { _, _ = alertTelegram.fresh() },
+		warm:      warmAlertCaches,
 		cooldown:  alertCooldown,
 		initRetry: alertReplayRetry,
 		state:     map[string]*alertState{},
 	}
 	m.startWorker(alertQueueSize)
 	return m
+}
+
+// warmAlertCaches fills the Telegram credentials cache and the exit-route cache at start,
+// while the DB is known to answer: a DB outage later can then still be reported.
+func warmAlertCaches() {
+	_, _ = alertTelegram.fresh()
+	_, _ = readExitSocksCandidates(exitListDeliveryTimeout)
 }
 
 // startWorker runs the single delivery worker: callers never block on Telegram,
@@ -644,7 +652,7 @@ func telegramSendDirect(token, chatID, text string) error {
 }
 
 func telegramSendViaExit(token, chatID, text string) error {
-	port, err := pickExitSocksPort()
+	port, err := pickDeliveryExitSocksPort() // bounded DB read, last known exit list as fallback
 	if errors.Is(err, errNoLiveExit) {
 		return errNoExitRoute
 	}
@@ -669,32 +677,68 @@ func (c alertTelegramConfig) configured() bool { return c.token != "" && c.chatI
 
 // alertTelegramSource reads the Telegram credentials and keeps the last successful read, so a
 // DB outage neither blinds alerting nor gets reported as "Telegram не настроен".
+//
+// Generations: afterWrite bumps gen before re-reading. A read stores its result only if no
+// write started since the read began (CompareAndSwap on the cached entry), so a slow read that
+// began before an admin's PUT can never put the old credentials back into the cache.
 type alertTelegramSource struct {
-	get    func(key string) (string, error) // raw app_settings read; sql.ErrNoRows = missing row
-	cached atomic.Pointer[alertTelegramConfig]
+	get     func(key string) (string, error) // raw app_settings read; sql.ErrNoRows = missing row
+	timeout time.Duration                    // hard deadline of one read of both settings
+	gen     atomic.Uint64
+	cached  atomic.Pointer[alertTelegramCached]
 }
 
-var alertTelegram = newAlertTelegramSource(func(key string) (string, error) {
-	return appSettingBounded(key, alertSettingsTimeout)
-})
+type alertTelegramCached struct {
+	cfg alertTelegramConfig
+	gen uint64 // generation the value was read (or written) under
+}
+
+var alertTelegram = newAlertTelegramSource(appSettingWithTimeout)
 
 func newAlertTelegramSource(get func(key string) (string, error)) *alertTelegramSource {
-	return &alertTelegramSource{get: get}
+	return &alertTelegramSource{get: get, timeout: alertSettingsTimeout}
 }
 
-// fresh reads both settings from the DB and refreshes the cache. A missing or blank value is
-// "not set"; any other error is returned and leaves the cache untouched.
+// read reads both settings with a hard deadline (dbBounded: a hung DB must not stall the single
+// delivery worker). A missing or blank value is "not set"; any other error is returned.
+func (s *alertTelegramSource) read() (alertTelegramConfig, error) {
+	return dbBounded(s.timeout, func(context.Context) (alertTelegramConfig, error) {
+		token, err := settingOrEmpty(s.get, alertTokenSetting)
+		if err != nil {
+			return alertTelegramConfig{}, err
+		}
+		chatID, err := settingOrEmpty(s.get, alertChatIDSetting)
+		if err != nil {
+			return alertTelegramConfig{}, err
+		}
+		return alertTelegramConfig{token: token, chatID: chatID}, nil
+	})
+}
+
+// store caches cfg read under generation g, unless a write began after that read (gen moved on)
+// or a newer generation is already cached.
+func (s *alertTelegramSource) store(cfg alertTelegramConfig, g uint64) bool {
+	next := &alertTelegramCached{cfg: cfg, gen: g}
+	for {
+		cur := s.cached.Load()
+		if s.gen.Load() != g || (cur != nil && cur.gen > g) {
+			return false
+		}
+		if s.cached.CompareAndSwap(cur, next) {
+			return true
+		}
+	}
+}
+
+// fresh reads both settings from the DB and refreshes the cache (see store). An error leaves
+// the cache untouched.
 func (s *alertTelegramSource) fresh() (alertTelegramConfig, error) {
-	token, err := settingOrEmpty(s.get, alertTokenSetting)
+	g := s.gen.Load()
+	cfg, err := s.read()
 	if err != nil {
 		return alertTelegramConfig{}, err
 	}
-	chatID, err := settingOrEmpty(s.get, alertChatIDSetting)
-	if err != nil {
-		return alertTelegramConfig{}, err
-	}
-	cfg := alertTelegramConfig{token: token, chatID: chatID}
-	s.cached.Store(&cfg)
+	s.store(cfg, g)
 	return cfg, nil
 }
 
@@ -707,29 +751,36 @@ func (s *alertTelegramSource) load() (alertTelegramConfig, error) {
 	}
 	if c := s.cached.Load(); c != nil {
 		log.Printf("[alerts] настройки Telegram не прочитаны из БД (%v) — используем сохранённые в памяти", err)
-		return *c, nil
+		return c.cfg, nil
 	}
 	return alertTelegramConfig{}, fmt.Errorf("%w: настройки Telegram не прочитаны: %v", errAlertsNoDB, err)
 }
 
 // afterWrite runs after the admin saved upd: the cache must not keep the old credentials.
-// The values are re-read; if that fails, the written values are patched into the cache.
+// It starts a new generation and re-reads; if that fails, the written values are patched into
+// the cached ones under the new generation.
 func (s *alertTelegramSource) afterWrite(upd alertSettingsUpdate) {
-	if _, err := s.fresh(); err == nil {
+	g := s.gen.Add(1)
+	if cfg, err := s.read(); err == nil {
+		s.store(cfg, g)
 		return
 	}
-	c := s.cached.Load()
-	if c == nil {
-		return // nothing cached: the next successful read fills it
+	for {
+		cur := s.cached.Load()
+		if cur == nil || cur.gen > g || s.gen.Load() != g {
+			return // nothing cached (the next successful read fills it) or a newer write won
+		}
+		n := cur.cfg
+		if upd.setToken {
+			n.token = upd.token
+		}
+		if upd.setChatID {
+			n.chatID = upd.chatID
+		}
+		if s.cached.CompareAndSwap(cur, &alertTelegramCached{cfg: n, gen: g}) {
+			return
+		}
 	}
-	n := *c
-	if upd.setToken {
-		n.token = upd.token
-	}
-	if upd.setChatID {
-		n.chatID = upd.chatID
-	}
-	s.cached.Store(&n)
 }
 
 func sendTelegramAlert(text string) error {
@@ -783,11 +834,44 @@ func sendTestAlert() error {
 	} else {
 		ev.Delivered = true
 	}
-	recordAlertEvent(ev)
+	alertJournalQueue.record(ev) // never waits for the DB
 	return err
 }
 
 // ── Journal (alert_events) ──
+
+// alertJournal writes journal rows on its own goroutine, in submission order, so neither the
+// delivery worker nor an admin request ever waits for the DB: lib/pq does not abort a read
+// blocked on a hung server when the context ends, so ExecContext's timeout alone is not enough.
+// While the DB hangs the queue fills up; further rows are dropped with a log line.
+type alertJournal struct {
+	write   func(ev alertEvent)
+	queue   chan alertEvent
+	dropped atomic.Int64
+}
+
+var alertJournalQueue = newAlertJournal(recordAlertEvent, alertJournalSize)
+
+func newAlertJournal(write func(ev alertEvent), size int) *alertJournal {
+	j := &alertJournal{write: write, queue: make(chan alertEvent, size)}
+	go func() {
+		for ev := range j.queue {
+			j.write(ev)
+		}
+	}()
+	return j
+}
+
+// record queues ev and returns at once.
+func (j *alertJournal) record(ev alertEvent) {
+	select {
+	case j.queue <- ev:
+	default:
+		n := j.dropped.Add(1)
+		log.Printf("[alerts] WARN: очередь записи alert_events переполнена (БД не отвечает?), событие %s/%s %s не записано (потеряно всего: %d)",
+			ev.Key, ev.Kind, ev.At.In(mskZone).Format("02.01 15:04"), n)
+	}
+}
 
 const alertEventColumns = `id, alert_key, level, kind, title, details, delivered, error, created_at`
 

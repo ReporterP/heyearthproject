@@ -812,7 +812,7 @@ func TestAlertDBHelpersSurviveNilDB(t *testing.T) {
 	}
 	old := alertTelegram
 	defer func() { alertTelegram = old }()
-	alertTelegram = newAlertTelegramSource(func(key string) (string, error) { return appSettingBounded(key, time.Second) })
+	alertTelegram = newAlertTelegramSource(appSettingWithTimeout)
 	if err := sendTelegramAlert("x"); !errors.Is(err, errAlertsNoDB) || errors.Is(err, errAlertsNotConfigured) {
 		t.Fatalf("sendTelegramAlert without DB and without a cache: %v", err)
 	}
