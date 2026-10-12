@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -2036,14 +2037,23 @@ echo "================================="
 `, config.HysteriaInstallScript(), exitIP)
 }
 
-// hubHy2ClientScript renders the Hub-side script that installs/upgrades the hysteria binary
-// and runs a Hysteria2 client to the exit node as a local SOCKS5 on 127.0.0.1:1088+serverID.
-// Pure, so tests can render it without SSH.
+// exitNodeSetupError says why exitNodeSetupScript did not complete: the script exited
+// non-zero (runErr; it runs under set -e) and/or its stdout lacks the hysteria success line
+// (config.HysteriaInstallError). nil only when both are clean.
+func exitNodeSetupError(out string, runErr error) error {
+	return errors.Join(runErr, config.HysteriaInstallError(out))
+}
+
+// hubHy2ClientScript renders the Hub-side script that runs a Hysteria2 client to the exit
+// node as a local SOCKS5 on 127.0.0.1:1088+serverID. It installs the hysteria binary only if
+// the Hub has none (config.HysteriaEnsureScript): an upgrade here would hit every Hub client
+// on its next restart while other exits may still run an older server. Pure, so tests can
+// render it without SSH.
 func hubHy2ClientScript(exitIP, serverID, tunnelSSPass string) string {
-	return fmt.Sprintf(`
+	return fmt.Sprintf(`set -e
 mkdir -p /opt/heyearth/hysteria
 
-# Установка/обновление Hysteria2 binary
+# Hysteria2 binary: только если на Hub его нет (обновление Hub — deploy --setup-hysteria2-hub)
 %s
 # Конфиг клиента для exit-ноды %s (порт 1088+%s)
 cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
@@ -2091,7 +2101,7 @@ systemctl restart hysteria2-client-%s
 sleep 2
 systemctl status hysteria2-client-%s --no-pager | head -5
 echo "Hysteria2 client for %s: port $PORT"
-`, config.HysteriaInstallScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
+`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
 }
 
 // setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
@@ -2119,8 +2129,16 @@ func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Cli
 	fmt.Println("[exit-node] Установка Xray...")
 	script := exitNodeSetupScript(exitIP)
 
-	out, _ := runSSH(exitClient, script, false)
+	// check=true: the script runs under set -e, so a non-zero exit means provisioning stopped
+	// part-way (its stderr, e.g. "[hysteria] ERROR ...", is printed by runSSH). Either that or
+	// a missing hysteria success line aborts before the exit is written to the DB and wired
+	// into the Hub.
+	out, runErr := runSSH(exitClient, script, true)
 	fmt.Println(out)
+	if err := exitNodeSetupError(out, runErr); err != nil {
+		log.Fatalf("[exit-node] ОШИБКА: развёртывание %s не завершено: %v\n"+
+			"[exit-node] Прерываю до записи в БД и настройки клиента на Hub. Исправьте причину и повторите --setup-exit-node (скрипт идемпотентен).", exitIP, err)
+	}
 	fmt.Println("[exit-node] Развёртывание завершено")
 
 	// ── Автоматическое обновление credentials в БД основного сервера ──
@@ -2213,11 +2231,12 @@ print(k.get('ssPassword', ''))
 	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
 	hy2ClientScript := hubHy2ClientScript(exitIP, serverID, tunnelSSPass)
 
-	hy2Out, err := runSSH(mainClient, hy2ClientScript, false)
+	// check=true (the script runs under set -e): a failed client setup must not end in "Готово".
+	hy2Out, err := runSSH(mainClient, hy2ClientScript, true)
+	fmt.Println(hy2Out)
 	if err != nil {
-		fmt.Printf("[exit-node] Ошибка настройки Hysteria2 клиента: %v\n", err)
-	} else {
-		fmt.Println(hy2Out)
+		log.Fatalf("[exit-node] ОШИБКА: клиент Hysteria2 на Hub для %s не настроен: %v\n"+
+			"[exit-node] Exit-нода уже в БД; heyearth-api не перезапущен. Исправьте причину и повторите --setup-exit-node.", exitIP, err)
 	}
 
 	fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")

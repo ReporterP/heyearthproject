@@ -1433,15 +1433,17 @@ systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hyste
 }
 
 // hubHy2ClientSetupScript renders step 7 of runSetupExitNode (run locally on the Hub via
-// bash -c): install/upgrade the hysteria binary, then enable + restart the per-exit client
-// unit. serviceName is server-derived ("hysteria2-client-<id>"), never user input.
+// bash -c): install the hysteria binary only if the Hub has none (config.HysteriaEnsureScript;
+// an upgrade here would hit every Hub client on its next restart while other exits may still
+// run an older server), then enable + restart the per-exit client unit. serviceName is
+// server-derived ("hysteria2-client-<id>"), never user input.
 func hubHy2ClientSetupScript(serviceName string) string {
 	return fmt.Sprintf(`set -e
 %s
 systemctl daemon-reload
 systemctl enable %s
 systemctl restart %s
-`, config.HysteriaInstallScript(), serviceName, serviceName)
+`, config.HysteriaEnsureScript(), serviceName, serviceName)
 }
 
 func runSetupExitNode(server serverResponse) {
@@ -1770,7 +1772,7 @@ WantedBy=multi-user.target
 		return
 	}
 
-	// Install/upgrade hysteria binary + enable/restart service (no user data in shell commands)
+	// Ensure hysteria binary (never upgrades the Hub's) + enable/restart service (no user data in shell commands)
 	cmd := exec.Command("bash", "-c", hubHy2ClientSetupScript(serviceName))
 	out, err := cmd.CombinedOutput()
 	if err != nil {

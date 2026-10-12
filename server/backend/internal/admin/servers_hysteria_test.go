@@ -9,29 +9,40 @@ import (
 	"github.com/heyearth/backend/internal/config"
 )
 
-// Both runSetupExitNode install paths must splice config.HysteriaInstallScript() verbatim,
-// exactly once, before anything (re)starts a hysteria unit.
+// Both runSetupExitNode install paths must splice their hysteria script verbatim, exactly
+// once, before anything (re)starts a hysteria unit. The exit side upgrades
+// (HysteriaInstallScript); the Hub side only fills in a missing binary (HysteriaEnsureScript),
+// or it would upgrade the Hub's clients ahead of the other exits.
 func TestRunSetupExitNodeHysteriaScripts(t *testing.T) {
-	install := config.HysteriaInstallScript()
+	install, ensure := config.HysteriaInstallScript(), config.HysteriaEnsureScript()
 	tests := []struct {
-		name   string
-		script string
-		want   []string
+		name    string
+		script  string
+		hubSide bool
+		want    []string
 	}{
-		{"exitHysteria2ServerScript", exitHysteria2ServerScript(), []string{
+		{"exitHysteria2ServerScript", exitHysteria2ServerScript(), false, []string{
 			"set -e\n" + install,
 			"systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2",
 		}},
-		{"hubHy2ClientSetupScript", hubHy2ClientSetupScript("hysteria2-client-7"), []string{
-			"set -e\n" + install,
+		{"hubHy2ClientSetupScript", hubHy2ClientSetupScript("hysteria2-client-7"), true, []string{
+			"set -e\n" + ensure,
 			"systemctl enable hysteria2-client-7\nsystemctl restart hysteria2-client-7\n",
 		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s := tc.script
+			// The ensure script embeds the install script once, so install counts 1 either way.
 			if n := strings.Count(s, install); n != 1 {
 				t.Fatalf("install script appears %d times, want 1", n)
+			}
+			wantEnsure := 0
+			if tc.hubSide {
+				wantEnsure = 1
+			}
+			if n := strings.Count(s, ensure); n != wantEnsure {
+				t.Fatalf("ensure script appears %d times, want %d (hub-side=%v)", n, wantEnsure, tc.hubSide)
 			}
 			for _, bad := range []string{"v2.6.1", "%!", "%%2F"} {
 				if strings.Contains(s, bad) {

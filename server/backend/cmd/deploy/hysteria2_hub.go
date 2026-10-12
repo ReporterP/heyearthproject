@@ -200,8 +200,8 @@ WorkingDirectory=/etc/hysteria
 # so re-apply it idempotently on every start. '+' runs it as root despite User=.
 ExecStartPre=+/bin/sh -c '__PORTHOP__'
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/server.yaml --disable-update-check
-# Hysteria v2.6.x does not honor SIGHUP for hot-reload (it terminates instead).
-# heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
+# SIGHUP hot-reload is not relied on (v2.6.x terminated on SIGHUP instead of
+# reloading). heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
 # ExecReload points at restart so ad-hoc systemctl reload from operators works.
 ExecReload=/bin/systemctl restart hysteria2-server
 Restart=on-failure
