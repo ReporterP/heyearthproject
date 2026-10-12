@@ -179,6 +179,9 @@ echo jwt > "$T/root/opt/heyearth/mainserver/api.env"
 echo ca > "$T/root/opt/heyearth/mainserver/certs/ca-cert.pem"
 echo le > "$T/root/etc/letsencrypt/cert.pem"
 echo sni > "$T/root/etc/nginx/stream-enabled/heyearth"
+mkdir -p "$T/root/etc/systemd/system/hysteria2-server.service.d"
+echo unit > "$T/root/etc/systemd/system/hysteria2-client-5.service"; echo unit > "$T/root/etc/systemd/system/hysteria2-client-express.service"
+echo dropin > "$T/root/etc/systemd/system/hysteria2-server.service.d/override.conf"; echo other > "$T/root/etc/systemd/system/unrelated.service"
 : > "$T/calls"
 if [ "$AGE_PUB" = 1 ]; then echo "` + testAgeRecipient + `" > "$T/age.pub"; fi
 printf 'BACKUP_DIR=%s\nKEEP=%s\nTARGET_HOST=%s\nTARGET_PORT=22\nSSH_KEY=%s\nAGE_RECIPIENT_FILE=%s\nFILES_ROOT=%s\n' \
@@ -216,10 +219,21 @@ func TestBackupScript(t *testing.T) {
 				"STATE work_at_age=",
 				"STATE members=db.dump files.tar.gz meta.txt ",
 				"STATE meta=users_count=42",
-				"STATE files=etc/letsencrypt/cert.pem etc/nginx/stream-enabled/heyearth opt/heyearth/mainserver/api.env opt/heyearth/mainserver/certs/ca-cert.pem opt/heyearth/state/reality-keys.json ",
+				// the Hub's tunnel client units and hysteria2-server drop-ins, nothing else from systemd
+				"STATE files=etc/letsencrypt/cert.pem etc/nginx/stream-enabled/heyearth etc/systemd/system/hysteria2-client-5.service etc/systemd/system/hysteria2-client-express.service " +
+					"etc/systemd/system/hysteria2-server.service.d/override.conf opt/heyearth/mainserver/api.env opt/heyearth/mainserver/certs/ca-cert.pem opt/heyearth/state/reality-keys.json ",
 			},
 			wantSub: []string{"local: ", "users=42)", "offsite: 203.0.113.7 OK (encrypted, sha256 ", "BatchMode=yes", "StrictHostKeyChecking=yes", "root@203.0.113.7 backup-"},
 			notSub:  []string{"ERROR", "WARN", "STUB-BAD"},
+		},
+		{
+			name: "no tunnel client units or drop-ins (a Hub without exits): the unmatched glob is skipped, the rest is archived",
+			pre:  `rm -rf "$T/root/etc/systemd"` + "\n",
+			want: []string{
+				"STATE exit=0", "STATE archives=1", "STATE last_error=0",
+				"STATE files=etc/letsencrypt/cert.pem etc/nginx/stream-enabled/heyearth opt/heyearth/mainserver/api.env opt/heyearth/mainserver/certs/ca-cert.pem opt/heyearth/state/reality-keys.json ",
+			},
+			notSub: []string{"ERROR", "STUB-BAD"},
 		},
 		{
 			name: "pg_dump failure: no archive, last-error written, work dir cleaned, exit 1",

@@ -14,7 +14,9 @@ go run ./cmd/deploy --setup-ops --backup-target <exit-IP> --backup-age-recipient
 - Перед запуском проверяется место: на Hub свободно должно быть ≥ 2 × размер прошлого архива + 1 GiB, иначе запуск падает с понятным `last-error` до `pg_dump` (мониторинг через 26 ч поднимет `backup-stale`).
 - Архив (`tar -tzf`): `db.dump` (`pg_dump -Fc heyearth`), `meta.txt` (`users_count`, время, хост), `files.tar.gz` — внутри (пути от `/`, существующие на момент бэкапа):
   `opt/heyearth/state` (ключи Reality), `opt/heyearth/mainserver/api.env` (секреты API: JWT, пароль админки, строка БД) и `.env` (если есть), `opt/heyearth/mainserver/certs` (mTLS CA и листы),
-  `opt/heyearth/hysteria` (client-*.yaml с паролями туннелей), `etc/letsencrypt`, `etc/nginx/{nginx.conf,conf.d,stream.d,stream-enabled}`.
+  `opt/heyearth/hysteria` (client-*.yaml с паролями туннелей), `etc/letsencrypt`, `etc/nginx/{nginx.conf,conf.d,stream.d,stream-enabled}`,
+  `etc/systemd/system/hysteria2-client-*.service` (юниты туннелей Hub → exit; их создаёт только настройка exit-ноды, никакой другой шаг деплоя их не пересоздаёт)
+  и `etc/systemd/system/hysteria2-server.service.d/` (drop-in'ы, если есть). Чего в архиве нет — см. «Что не входит в бэкап» ниже.
 - Статус: `/opt/heyearth/backups/last-success` (локальный архив готов), `last-offsite` (копия на exit подтверждена по sha256), `last-error` (есть, только если последний запуск упал; там же причина).
   Алерт «бэкап устарел» (мониторинг API) смотрит на свежесть `backup-*.tar.gz` в этом каталоге, порог 26 ч.
   Второй алерт, «копия бэкапа вне Hub устарела», срабатывает, если `TARGET_HOST` задан в `/etc/heyearth/backup.env`, а `last-offsite` старше 26 ч (после настройки или смены exit отсчёт идёт от изменения `backup.env`, то есть первой копии отводятся сутки); снимается сам, когда копия снова проходит.
@@ -77,31 +79,102 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 
 ## Полное восстановление на новом Hub
 
-Из локального архива (если Hub жив/диск цел) — сразу шаг 3. Если Hub потерян, архив берётся с exit и расшифровывается **на машине, где лежит `backup.key`** (нужен установленный `age`):
+`--main` поднимает только базу: Go, PostgreSQL, API, админку, сайт, nginx, SSL и интерфейс AmneziaWG. **Xray, hysteria2-server, маршрут AWG через exit
+(tun2socks), туннели Hub → exit и всё из `--setup-ops` он не ставит** — их ставят шаги 6–10 ниже. Порядок важен; каждый шаг идемпотентен, при обрыве SSH его можно повторить.
+Команды `go run ./cmd/deploy …` — из `server/backend` на машине оператора, остальное — root на новом Hub.
 
-1. `go run ./cmd/deploy --main` с новым `DEPLOY_HOST` в `server/.env`.
-2. На машине с ключом:
+0. **Подготовка (`server/.env` на машине оператора).** `DEPLOY_HOST=<IP нового Hub>`, `DEPLOY_SSH_PASSWORD`, `DEPLOY_HOST_KEY_FINGERPRINT` — отпечаток ключа **нового**
+   Hub (в консоли провайдера: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`; при несовпадении deploy печатает тип и отпечаток предъявленного ключа);
+   `JWT_SECRET`, `ADMIN_USER`, `ADMIN_PASS` — **прежние** (любой `--main`/`--update-main` пишет их в `api.env` из `server/.env`; другой `JWT_SECRET` разлогинит всех);
+   `EXIT_NODE_SSH_PASSWORD` и `EXIT_NODE_HOST_KEY_FINGERPRINT` exit 89.124.89.126 (для шагов 9–10; пароль Hub на exit не пробуется).
+   Архив: локальный с живого диска старого Hub или копия с exit, расшифрованная **на машине, где лежит `backup.key`** (нужен `age`):
    ```
    scp root@89.124.89.126:/var/backups/heyearth-hub/backup-<ts>.tar.gz.age .      # по паролю root exit; ключ бэкапа умеет только писать
    age -d -i backup.key -o backup-<ts>.tar.gz backup-<ts>.tar.gz.age             # sha256 при желании сверить с last-offsite/журналом
-   scp backup-<ts>.tar.gz root@<новый-Hub>:/root/
    ```
-3. `systemctl stop heyearth-api xray hysteria2-server 'hysteria2-client-*'`; `mkdir -p /root/restore && tar -C /root/restore -xzf /root/backup-<ts>.tar.gz`.
-4. БД: `OWNER=$(runuser -u postgres -- psql -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='heyearth'")`;
+1. **DNS — до SSL.** Все A-записи, смотревшие на старый Hub (`hiearth.ru`, `www`, `admin.hiearth.ru` и т. д.), перевести на новый IP и дождаться:
+   `dig +short hiearth.ru @1.1.1.1` и `dig +short admin.hiearth.ru @1.1.1.1` → новый IP. Иначе certbot в `--main` не получит сертификат (проверка домена уйдёт на старый адрес).
+2. **`go run ./cmd/deploy --main`.** На свежем Hub у роли `postgres` нет пароля — deploy генерирует случайный и пишет его только в `/opt/heyearth/mainserver/api.env`
+   (`DATABASE_URL`, файл 0600), см. «Пароль PostgreSQL» ниже.
+3. **Архив на Hub:** `scp backup-<ts>.tar.gz root@<новый-Hub>:/root/`; на Hub `systemctl stop heyearth-api`;
+   `mkdir -p /root/restore && tar -C /root/restore -xzf /root/backup-<ts>.tar.gz`.
+4. **БД:** `OWNER=$(runuser -u postgres -- psql -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='heyearth'")`;
    `runuser -u postgres -- pg_restore --clean --if-exists --no-owner --role="$OWNER" -d heyearth < /root/restore/db.dump`;
    `runuser -u postgres -- psql -d heyearth -tAc "SELECT count(*) FROM users"` = `users_count` из `/root/restore/meta.txt` (допуск как в проверке выше).
-5. Файлы: `tar -C / -xzf /root/restore/files.tar.gz` (вернёт `api.env` с прежним `JWT_SECRET` — сессии пользователей останутся валидными — ключи Reality, mTLS CA, сертификаты).
-6. `systemctl daemon-reload && systemctl start heyearth-api && sleep 5 && systemctl restart xray hysteria2-server 'hysteria2-client-*' nginx`.
-7. `go run ./cmd/deploy --status`; Берёза/Дуб/Бамбук реальным Happ; `curl -s https://hiearth.ru/api/v1/health`.
-8. `go run ./cmd/deploy --setup-ops --backup-target 89.124.89.126 --backup-age-recipient <age1…>` (таймер бэкапа, ключ, fail2ban, journald, nginx, защита xray API).
+5. **Состояние (файлы)** — прежний `api.env` из архива несёт СТАРЫЙ пароль БД, поэтому строку `DATABASE_URL` нового Hub сохранить и вернуть:
+   ```
+   NEW_DB=$(grep '^DATABASE_URL=' /opt/heyearth/mainserver/api.env)
+   tar -C / -xzf /root/restore/files.tar.gz
+   f=/opt/heyearth/mainserver/api.env; { grep -v '^DATABASE_URL=' "$f"; printf '%s\n' "$NEW_DB"; } > "$f.tmp" && chmod 600 "$f.tmp" && mv -f "$f.tmp" "$f"
+   systemctl daemon-reload && systemctl start heyearth-api
+   ```
+   Вернутся ключи Reality (`/opt/heyearth/state`), mTLS CA, сертификаты, `client-*.yaml` туннелей и их юниты `hysteria2-client-*.service`
+   (пока без бинарника hysteria — их запускают шаги 7 и 9). `curl -s http://127.0.0.1:8000/api/v1/health` → ok.
+6. **`go run ./cmd/deploy --setup-xray`** — бинарник xray, ключи Reality берутся из восстановленного `state` (ссылки клиентов остаются валидными), bootstrap-конфиг
+   (его тут ещё нет; на живом Hub существующий конфиг не трогается, перезапись — только `--force`), nginx stream. SNI из восстановленной БД не перетирается.
+   Затем на Hub `systemctl restart heyearth-api` — API сразу сгенерирует полный конфиг xray со всеми пользователями.
+7. **`go run ./cmd/deploy --setup-hysteria2-hub`** — бинарник hysteria (pinned), пользователь `hysteria`, `geoip.dat`, port hopping (DNAT только для адресов Hub),
+   юниты; ждёт, пока API запишет `/etc/hysteria/server.yaml`, и запускает `hysteria2-server`. Затем поднять восстановленные туннели ко всем exit, кроме Express
+   (им управляет API): `for u in $(systemctl list-unit-files 'hysteria2-client-*.service' --no-legend | awk '{print $1}' | grep -v express); do systemctl enable --now "$u"; done`.
+8. **`go run ./cmd/deploy --setup-awg`** — интерфейс AmneziaWG и маршрут его подсети через xray (hev-socks5-tunnel, policy routing). Ключи AWG и пиры — из БД
+   (`awg0.conf` перегенерирует API), так что у пользователей ничего не меняется.
+9. **`go run ./cmd/deploy --setup-exit-node 89.124.89.126`** (нужны `EXIT_NODE_SSH_PASSWORD` + `EXIT_NODE_HOST_KEY_FINGERPRINT`, см. шаг 0) — идемпотентно перепроверяет
+   exit (ключи на exit сохраняются), обновляет запись в БД (статус ноды не меняется: выключенная в админке не включится), заново настраивает туннель Hub → exit и
+   перезапускает API. Для остальных exit-нод — тот же шаг с их IP и их отпечатком.
+10. **`go run ./cmd/deploy --setup-ops --backup-target 89.124.89.126 --backup-age-recipient <age1…>`** — чистка ufw, таймер бэкапа и новый ключ загрузки на exit,
+    fail2ban, journald, nginx, kernel egress guard. Вывод называет фазу гарда: при API c 4ab930e+ и `server.yaml` на `127.0.0.1:8001` — фаза B.
+11. **Проверка.**
+    - `go run ./cmd/deploy --status`; `curl -s https://hiearth.ru/api/v1/health`; админка открывается.
+    - `systemctl is-active heyearth-api nginx xray hysteria2-server awg awg-tun2socks heyearth-egress-guard`; `systemctl list-units 'hysteria2-client-*'` — все `active`.
+    - Берёза/Дуб (Reality, XHTTP) — реальным Happ с обновлённой подпиской.
+    - **Бамбук — только снаружи, не с самого Hub** (ответы hysteria на адреса самого Hub и обход NAT проверку с Hub искажают). Встроенная проба API раз в минуту
+      шлёт QUIC-пакет на случайный порт hopping через SOCKS зарубежного exit и ждёт Version Negotiation: через 3–5 минут после шага 9 в админке («Алерты») не должно быть
+      `bamboo-unreachable-external` и `bamboo-probe-blind`; `journalctl -u heyearth-api --since -10min | grep -i бамбук`. И реальный клиент: Happ с Express-подпиской
+      на телефоне в мобильной сети.
+    - Бэкап: `systemctl start heyearth-backup.service` → `local: …` и `offsite: 89.124.89.126 OK`.
 
 Новый IP → клиентам нужен refresh подписки (`main_server_host`); ключи Reality из архива сохраняют ссылки валидными.
+
+## Что не входит в бэкап
+
+Восстанавливается шагами выше, а не из архива:
+
+- бинарники и конфиги xray и hysteria (`/opt/heyearth/xray`, `/usr/local/bin/hysteria`, `/etc/hysteria/server.yaml`, `client-express.yaml`, `geoip.dat`) — шаги 6–7 и API;
+- AmneziaWG: `/opt/heyearth/awg` (`awg0.conf` пишет API из БД, hev-socks5-tunnel собирается заново) — шаг 8;
+- гард, fail2ban, journald, таймер бэкапа, `/etc/heyearth/*.env`, ключ загрузки бэкапа `/root/.ssh/heyearth_backup_ed25519` (создаётся новый) — шаг 10;
+- правила ufw/iptables, sysctl-тюнинг, nginx-модуль stream, сборки админки и сайта — `--main`, шаги 6–7, 10;
+- `server/.env` (лежит у оператора) и приватный ключ `backup.key` (офлайн у владельца) — без них восстановление невозможно, храните отдельно;
+- почта (mailcow/docker), если стоит на Hub, — своим бэкапом.
 
 ## Частично
 
 - Только ключи Reality: из `files.tar.gz` взять `opt/heyearth/state/reality-keys.json` → `/opt/heyearth/state/` → `systemctl restart heyearth-api`.
-- Только БД: шаги 3–4 и 6.
+- Только БД: шаги 3–4, затем `systemctl start heyearth-api`.
 - `schema_migrations.dirty = t` — прерванная миграция, а не проблема восстановления: `journalctl -u heyearth-api`.
+
+## Пароль PostgreSQL
+
+Пароль роли `postgres` живёт **только** в `/opt/heyearth/mainserver/api.env` (`DATABASE_URL`, 0600):
+
+- `--main` / `--update-main` / `fix-db` берут `DATABASE_URL` из `api.env` на Hub и пароль роли не трогают;
+- только если у роли пароля ещё нет (свежая установка), deploy генерирует случайный (48 hex), задаёт его через stdin `psql` (не попадает ни в argv, ни в вывод) и пишет в `api.env`;
+- если пароль у роли есть, а `api.env` без `DATABASE_URL` — берётся `DATABASE_URL` из `server/.env`, а если и там нет — deploy останавливается, ничего не сбрасывая;
+- `--setup-exit-node` читает `DATABASE_URL` с Hub; `DATABASE_URL` в `server/.env` нужен только как запасной вариант.
+
+Старый Hub ставился с фиксированным паролем `HeYearthDB1` (он есть в истории git), поэтому его стоит сменить вручную, один раз, на Hub (root):
+
+```
+NEW=$(openssl rand -hex 24)
+printf "ALTER USER postgres PASSWORD '%s';\n" "$NEW" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q -d postgres
+f=/opt/heyearth/mainserver/api.env
+{ grep -v '^DATABASE_URL=' "$f"; printf 'DATABASE_URL=postgres://postgres:%s@localhost:5432/heyearth?sslmode=disable\n' "$NEW"; } > "$f.tmp" && chmod 600 "$f.tmp" && mv -f "$f.tmp" "$f"
+unset NEW
+systemctl restart heyearth-api && sleep 3 && curl -s http://127.0.0.1:8000/api/v1/health
+```
+
+`printf` — встроенная команда, пароль не виден в списке процессов. Затем удалить `DATABASE_URL` из `server/.env` (или заменить новым значением, если он нужен как запасной).
+Проверка: `runuser -u postgres -- psql -tAc "SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname='postgres'"` → `t`; следующий `--update-main` берёт
+`DATABASE_URL` из `api.env` и пароль не меняет (если `DATABASE_URL` в `server/.env` отличается, он печатает об этом `WARN`).
 
 ## Что ещё ставит `--setup-ops` и как это проверить
 
@@ -110,9 +183,11 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 | fail2ban, jail `sshd`: 5 попыток / 10 мин → бан 1 ч. `ignoreself = false`, `ignoreip` = loopback + адрес, с которого запущен `--setup-ops` (`SSH_CLIENT`); адреса самого Hub не исключаются (после правки ACL Hysteria2/xray пользователь прокси больше не может заставить Hub подключиться к самому себе). **Exit-ноды никогда не в `ignoreip`**: их IP — выходной адрес всех пользователей прокси, иначе пароль root Hub можно перебирать через наш же сервис; если вы заходите на Hub через exit, ваш адрес просто не добавляется | `/etc/fail2ban/jail.d/heyearth-sshd.conf` | `fail2ban-client status sshd`; разбан: `fail2ban-client set sshd unbanip <IP>` |
 | journald `SystemMaxUse=1G` | `/etc/systemd/journald.conf.d/heyearth.conf` | `journalctl --disk-usage` (≤ 1.0G) |
 | nginx: в блоке SNI-роутера `proxy_timeout 3600s;` (= `connIdle` xray; по умолчанию 10 мин рвало долгие сессии) и `so_keepalive=60s:10s:3` на каждом `listen` (443 и `[::]:443`) этого блока (ядро замечает пропавших клиентов за ~90 с, иначе их сессии и дескрипторы держатся час; `proxy_socket_keepalive` действовал бы только на loopback-upstream и не используется); в `nginx.conf` `worker_rlimit_nofile 65535;` и `events { worker_connections 8192; }` | файлы берутся из `nginx -T` («# configuration file …»), правятся только при отличии, оригиналы — в `/var/backups/heyearth-nginx/`, `nginx -t` до `reload`, откат при ошибке; генератор `buildNginxStreamConf` и `doNginx` держат то же состояние при переустановке | `nginx -T 2>/dev/null \| grep -E 'proxy_timeout\|so_keepalive\|worker_rlimit_nofile\|worker_connections'`; на сокете: `ss -tnoe state established '( sport = :443 )' \| head` — у соединений таймер `keepalive`; лимит воркера: `grep 'Max open files' /proc/$(pgrep -f 'nginx: worker' \| head -1)/limits` |
-| **Kernel egress guard** — последнее слово за ядром (юнит раньше назывался `xray-api-guard`, при установке мигрирует). Правила xray/Hysteria2 видят только цель, которую им показали: домен, совпавший с доменным direct-правилом (`IPIfNonMatch` пропускает IP-правила), `freedom` с `UseIP` разрешит в `127.0.0.1` или в адрес самого Hub; `finalRules` в xray 26.3.27 принимается, но не исполняется (проверено). Поэтому цепочка iptables `HEYEARTH-EGRESS` (прыжок первым правилом `OUTPUT`, загрузка одним атомарным `iptables-restore -n`) фильтрует по тому, КТО открывает соединение: **cgroup `system.slice/xray.service`** — новые TCP на `127.0.0.0/8` кроме портов туннелей `1088:1599` (SOCKS `1088+id`, id серийные), `0.0.0.0/8`, свои адреса Hub (TCP кроме 80/443, весь UDP). **UDP на loopback для xray НЕ ограничивается** (ни в IPv4, ни в IPv6): у UDP нет `--syn`, правило «UDP на 127.0.0.0/8 кроме :53» режет и ответы inbound `socks-awg` (`127.0.0.1:10808`, udp включён) на эфемерный loopback-порт hev-socks5-tunnel — у AmneziaWG-пользователей пропадают все UDP, включая DNS, — и UDP, который xray ретранслирует на эфемерный порт UDP-ASSOCIATE клиента hysteria2 к exit-N, — у VLESS-пользователей через этот exit ломаются QUIC, звонки и игры. Опасность loopback — это TCP-сервисы (sshd, PostgreSQL, API, xray API); UDP-сервисы Hub (локальный DNS-стаб, слушатели AmneziaWG и Hysteria2) ничего не отдают на неаутентифицированную датаграмму; **пользователь `hysteria`** — TCP на loopback кроме `1088:1599`, 8000 (auth-callback в API) и 53, `0.0.0.0/8`, свои адреса Hub; **все, кроме пользователя `heyearth-api`** — новые соединения на `127.0.0.1:10085` (xray API). Всё то же для IPv6 через `ip6tables` (`::1`, `::/128`, глобальные адреса Hub). Свои адреса: `ip -o addr` + адреса `main_server_host`/`hub_main_server_host` (читаются из БД при установке в `/etc/heyearth/egress-guard.env`) | цепочка `HEYEARTH-EGRESS` (`iptables -S HEYEARTH-EGRESS`, `ip6tables -S HEYEARTH-EGRESS`); cgroup-правила переприменяются после каждого старта xray drop-in'ом `xray.service.d/egress-guard.conf` (`ExecStartPost=-…`, экземпляр cgroup меняется при рестарте; пока `heyearth-egress-guard.service` выключен, drop-in ничего не делает); все вызовы `iptables -w 5`; на каждой загрузке — `heyearth-egress-guard.service` (`After=local-fs.target`, `Before=xray.service hysteria2-server.service heyearth-api.service`; без `network-online.target`: ожидание сети (`wait-online`) могло задержать xray на загрузке до двух минут, а гарду нужны только ядро и локальные файлы; `DefaultDependencies` оставлены по умолчанию — они добавляют лишь `After=basic.target`) | `iptables -S HEYEARTH-EGRESS` (число строк не растёт после повторного `heyearth-egress-guard.sh start`); `runuser -u hysteria -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' && echo OPEN \|\| echo refused` → `refused`; `runuser -u hysteria -- curl -s -m3 http://127.0.0.1:8000/api/v1/health` работает; `curl -s -m5 -x socks5h://127.0.0.1:10808 http://localhost:8000/api/v1/health` не отвечает, а `... https://ya.ru` отвечает; из cgroup xray: `bash -c 'echo $$ > /sys/fs/cgroup/system.slice/xray.service/cgroup.procs; exec 3<>/dev/tcp/127.0.0.1/8000'` → отказ |
+| **Kernel egress guard** — последнее слово за ядром (юнит раньше назывался `xray-api-guard`, при установке мигрирует). Правила xray/Hysteria2 видят только цель, которую им показали: домен, совпавший с доменным direct-правилом (`IPIfNonMatch` пропускает IP-правила), `freedom` с `UseIP` разрешит в `127.0.0.1` или в адрес самого Hub; `finalRules` в xray 26.3.27 принимается, но не исполняется (проверено). Поэтому цепочка iptables `HEYEARTH-EGRESS` (прыжок первым правилом `OUTPUT`; если ufw/docker встали раньше, следующее применение возвращает его на первое место одной транзакцией `iptables-restore`; загрузка правил — одним атомарным `iptables-restore -n`) фильтрует по тому, КТО открывает соединение. Для двух субъектов — **cgroup `system.slice/xray.service`** и **пользователь `hysteria`** — по порядку: TCP на loopback к разрешённым портам и весь UDP на loopback → `RETURN`; остальные новые TCP на `127.0.0.0/8` и всё на `0.0.0.0/8` → отказ; новые TCP на **любой локальный адрес Hub** (`-m addrtype --dst-type LOCAL`: ядро проверяет каждый пакет, поэтому адреса docker0/awg0/awgtun/DHCP, появившиеся после старта гарда, тоже закрыты) кроме 80/443 и весь UDP на них → отказ; то же для `HUB_EXTRA_IPS` (адреса `main_server_host`/`hub_main_server_host`, нужны, если публичный адрес не висит на интерфейсе — NAT); новые TCP в `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16` (IPv6: `fc00::/7`, `fe80::/10`) кроме порта 53 → отказ (Hub через xray/hysteria туда ничего не нужно: пиры AWG — только источник, их трафик идёт в xray через loopback SOCKS, DNS у них публичный; exit-ноды публичные). Разрешённые loopback-порты: у xray — порты туннелей `1088:1599` (SOCKS `1088+id`, id серийные). **UDP на loopback для xray НЕ ограничивается** (ни в IPv4, ни в IPv6): у UDP нет `--syn`, правило «UDP на 127.0.0.0/8 кроме :53» режет и ответы inbound `socks-awg` (`127.0.0.1:10808`, udp включён) на эфемерный loopback-порт hev-socks5-tunnel — у AmneziaWG-пользователей пропадают все UDP, включая DNS, — и UDP, который xray ретранслирует на эфемерный порт UDP-ASSOCIATE клиента hysteria2 к exit-N, — у VLESS-пользователей через этот exit ломаются QUIC, звонки и игры. Опасность loopback — это TCP-сервисы (sshd, PostgreSQL, API, xray API); UDP-сервисы Hub (локальный DNS-стаб, слушатели AmneziaWG и Hysteria2) ничего не отдают на неаутентифицированную датаграмму; у `hysteria` (hysteria2-server и Express-клиент; туннельные клиенты `hysteria2-client-<id>` работают от root и не затрагиваются) — `1088:1599`, 53 и порт auth-callback: **фаза B** — только `127.0.0.1:8001` (отдельный слушатель API, только `POST /internal/hysteria2/auth`), **фаза A** (переходная) — `8000` и `8001`. Фазу выбирает `--setup-ops` на Hub и пишет в `/etc/heyearth/egress-guard.env` (`HY_AUTH_PORTS`): B — если `/etc/hysteria/server.yaml` указывает auth url `http://127.0.0.1:8001/internal/hysteria2/auth` И `POST` туда получает любой HTTP-ответ; иначе A. Порядок: задеплоить API 4ab930e+ (`--update-main`; первая синхронизация переписывает `server.yaml` на 8001 и перезапускает hysteria2-server), проверить `grep url: /etc/hysteria/server.yaml`, затем повторить `--setup-ops` — 8000 для `hysteria` закроется; **все, кроме пользователя `heyearth-api`** — новые соединения на `127.0.0.1:10085` (xray API). Всё то же для IPv6 через `ip6tables` (`::1`, `::/128`, `addrtype LOCAL`, IPv6-адреса из `HUB_EXTRA_IPS`, `fc00::/7`, `fe80::/10`) | цепочка `HEYEARTH-EGRESS` (`iptables -S HEYEARTH-EGRESS`, `ip6tables -S HEYEARTH-EGRESS`); cgroup-правила переприменяются после каждого старта xray drop-in'ом `xray.service.d/egress-guard.conf` (`ExecStartPost=-…`, экземпляр cgroup меняется при рестарте; пока `heyearth-egress-guard.service` выключен, drop-in ничего не делает); все вызовы `iptables -w 5`; на каждой загрузке — `heyearth-egress-guard.service` (`After=local-fs.target`, `Before=xray.service hysteria2-server.service heyearth-api.service`; без `network-online.target`: ожидание сети (`wait-online`) могло задержать xray на загрузке до двух минут, а гарду нужны только ядро и локальные файлы; `DefaultDependencies` оставлены по умолчанию — они добавляют лишь `After=basic.target`) | `iptables -S HEYEARTH-EGRESS` (число строк не растёт после повторного `heyearth-egress-guard.sh start`); `runuser -u hysteria -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' && echo OPEN \|\| echo refused` → `refused`; фаза B: `runuser -u hysteria -- curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8001/internal/hysteria2/auth -d '{"auth":"_probe_"}'` → HTTP-код (не `000`), а `runuser -u hysteria -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/8000'` → отказ; фаза A: `runuser -u hysteria -- curl -s -m3 http://127.0.0.1:8000/api/v1/health` работает; `grep HY_AUTH_PORTS /etc/heyearth/egress-guard.env` → `8001` (B) или `8000,8001` (A); `curl -s -m5 -x socks5h://127.0.0.1:10808 http://localhost:8000/api/v1/health` не отвечает, а `... https://ya.ru` отвечает; из cgroup xray: `bash -c 'echo $$ > /sys/fs/cgroup/system.slice/xray.service/cgroup.procs; exec 3<>/dev/tcp/127.0.0.1/8000'` → отказ |
 
-При установке `--setup-ops` проверяет это сам, на живой системе, и откатывает гард, если «разрешённое» перестало работать: xray API для пользователя API, трафик xray (socks-awg → `https://ya.ru`, если работал до гарда), auth-callback hysteria на `127.0.0.1:8000`, доступ xray из своего cgroup к порту туннеля в `1088:1599` и **UDP**: из cgroup xray скрипт шлёт датаграмму на одноразовый UDP-слушатель на loopback (эфемерный порт, поднимается самим скриптом, нужен `python3`) и требует, чтобы она дошла — это тот самый путь, который ломает любое правило «UDP на loopback» (ответы `socks-awg`, UDP-ASSOCIATE). Не дошла — откат и `FAILED: a UDP datagram from xray's cgroup to a loopback listener was not delivered after the egress guard — guard rolled back`; нет `python3` или в cgroup нельзя войти — `WARN` «cannot test UDP from xray's cgroup», не отказ. Если «запрещённое» не запрещено (пользователь `nobody` → 10085, `hysteria` → loopback и свой адрес, cgroup xray → API и свой адрес), запуск заканчивается `FAILED` (правила остаются: они безвредны, но защиту нельзя принять за работающую). Обычная причина — другое правило файрвола, пропускающее loopback раньше цепочки (`ufw`): `systemctl restart heyearth-egress-guard` и повторить проверку.
+При установке `--setup-ops` проверяет это сам, на живой системе, и откатывает гард, если «разрешённое» перестало работать: xray API для пользователя API, трафик xray (socks-awg → `https://ya.ru`, если работал до гарда), auth-callback hysteria текущей фазы (B — `POST` на `127.0.0.1:8001`, любой HTTP-ответ; A — `127.0.0.1:8000/api/v1/health`), доступ xray из своего cgroup к порту туннеля в `1088:1599` и **UDP**: из cgroup xray скрипт шлёт датаграмму на одноразовый UDP-слушатель на loopback (эфемерный порт, поднимается самим скриптом, нужен `python3`) и требует, чтобы она дошла — это тот самый путь, который ломает любое правило «UDP на loopback» (ответы `socks-awg`, UDP-ASSOCIATE). Не дошла — откат и `FAILED: a UDP datagram from xray's cgroup to a loopback listener was not delivered after the egress guard — guard rolled back`; нет `python3` или в cgroup нельзя войти — `WARN` «cannot test UDP from xray's cgroup», не отказ. Если «запрещённое» не запрещено (пользователь `nobody` → 10085, `hysteria` → loopback, свой адрес и в фазе B основной API `127.0.0.1:8000`, cgroup xray → API и свой адрес), запуск заканчивается `FAILED` (правила остаются: они безвредны, но защиту нельзя принять за работающую). Обычная причина — другое правило файрвола, пропускающее loopback раньше цепочки (`ufw`): `systemctl restart heyearth-egress-guard` и повторить проверку.
+
+**Xray API не остаётся открытым ни на каком шаге установки.** Сразу после миграции старого гарда (она снимает его правила для 10085) одиночное правило владельца для `127.0.0.1:10085` ставится прямо в `OUTPUT` и держит API, где бы скрипт ни прервался (ошибка, обрыв SSH); `heyearth-egress-guard.sh start` убирает его, только когда цепочка с тем же правилом уже на месте (не загрузилась — правило остаётся). Сбой `start`, `systemctl enable --now` или неактивный юнит — откат и `FAILED`.
 
 **Откат не оставляет xray API без защиты.** При откате гард выключается (`systemctl disable --now heyearth-egress-guard`), цепочка удаляется, и после этого заново ставится старое одиночное правило владельца для `127.0.0.1:10085` (`-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner <пользователь heyearth-api> -j REJECT`, первым в `OUTPUT`, один раз). Скрипт печатает `[ops] egress guard rolled back — xray API protection kept (10085 owner rule)`; если правило поставить не удалось — `WARN … could NOT be re-applied`. Пока гард выключен, это правило не переживает перезагрузку: устраните причину отката и повторите `--setup-ops`.
 Если в iptables нет модуля `cgroup`, `--setup-ops` печатает `WARN` и ставит правила только для пользователей `hysteria`/`heyearth-api`; xray остаётся защищён лишь правилами маршрутизации.

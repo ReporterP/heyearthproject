@@ -74,8 +74,14 @@ runuser -u postgres -- pg_dump -Fc -d heyearth > "$WORK/db.dump" || fail "pg_dum
 printf 'created_at=%s\nusers_count=%s\nhost=%s\n' "$(date -Is)" "$USERS" "$(hostname)" > "$WORK/meta.txt"
 PATHS=()
 for p in opt/heyearth/state opt/heyearth/mainserver/api.env opt/heyearth/mainserver/.env opt/heyearth/mainserver/certs \
-         opt/heyearth/hysteria etc/letsencrypt etc/nginx/nginx.conf etc/nginx/conf.d etc/nginx/stream.d etc/nginx/stream-enabled; do
+         opt/heyearth/hysteria etc/letsencrypt etc/nginx/nginx.conf etc/nginx/conf.d etc/nginx/stream.d etc/nginx/stream-enabled \
+         etc/systemd/system/hysteria2-server.service.d; do
   if [ -e "$FILES_ROOT/$p" ]; then PATHS+=("$p"); fi
+done
+# The Hub's tunnel client units (hysteria2-client-<id>.service, -express) are written by exit
+# provisioning only; no other deploy step recreates them.
+for f in "$FILES_ROOT"/etc/systemd/system/hysteria2-client-*.service; do
+  if [ -e "$f" ]; then PATHS+=("${f#"$FILES_ROOT"/}"); fi
 done
 [ "${#PATHS[@]}" -gt 0 ] || fail "none of the config paths exist"
 rc=0; tar -C "${FILES_ROOT:-/}" -czf "$WORK/files.tar.gz" "${PATHS[@]}" || rc=$?
