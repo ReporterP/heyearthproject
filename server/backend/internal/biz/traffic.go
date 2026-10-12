@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -24,6 +25,9 @@ type MonthBucket struct {
 // subscription that started at startedAt. A "cycle" is one calendar month
 // from started_at, advancing monthly. If startedAt is NULL, falls back to
 // (now - 30d, now + 30d) so legacy data still produces a sensible window.
+// quotaExceededQuery computes the same cycle start in SQL (NULL → now - 30d,
+// otherwise started_at + whole months of age(now, started_at)); keep them in
+// step, the quota cutoff and the cabinet must judge the same window.
 func CycleWindow(startedAt sql.NullTime, now time.Time) (cycleStart, cycleEnd time.Time) {
 	if !startedAt.Valid {
 		return now.AddDate(0, 0, -30), now.AddDate(0, 0, 30)
@@ -34,23 +38,34 @@ func CycleWindow(startedAt sql.NullTime, now time.Time) (cycleStart, cycleEnd ti
 	return
 }
 
-// monthsBetween returns how many whole calendar months elapsed from a to b.
-// If b is before a, returns 0 (we never produce a negative cycle index).
+// monthsBetween returns how many whole calendar months elapsed from a to b,
+// like the months part of PostgreSQL's age(b, a): b is taken in a's location,
+// and the last month counts only once b reached a's day of month AND its time
+// of day (otherwise, for some hours on the anniversary day, the cycle would
+// start in the future). If b is before a, returns 0 (we never produce a
+// negative cycle index).
 func monthsBetween(a, b time.Time) int {
+	b = b.In(a.Location())
 	if b.Before(a) {
 		return 0
 	}
 	years := b.Year() - a.Year()
 	months := int(b.Month()) - int(a.Month())
 	total := years*12 + months
-	// If b's day-of-month is before a's, the last partial month doesn't count.
-	if b.Day() < a.Day() {
+	// If b's day-of-month (and time of day) is before a's, the last partial month doesn't count.
+	if b.Day() < a.Day() || (b.Day() == a.Day() && clockOf(b) < clockOf(a)) {
 		total--
 	}
 	if total < 0 {
 		total = 0
 	}
 	return total
+}
+
+// clockOf is the time of day of t (in t's location).
+func clockOf(t time.Time) time.Duration {
+	return time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute +
+		time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())
 }
 
 // addMonths returns t + n calendar months using PostgreSQL-style clamping:
@@ -241,9 +256,18 @@ func IsCycleExceeded(userDBID int, userUUID string) (bool, error) {
 // up with the UUID, as xray_sync once did, silently matches nobody.
 //
 // Computed in a single SQL query for performance — called by xray_sync on
-// every sync tick and by checkTrafficLimits after each collector iteration.
+// every sync tick and by checkTrafficLimits after each collector iteration
+// (while the cutoff is disarmed both read it at most hourly, for the log line).
+// Each limited user costs one SUM over its traffic_stats rows of the cycle:
+// idx_traffic_stats_user_time_cov (migration 000058) makes it an index-only
+// scan.
 func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
-	rows, err := db.DB.Query(quotaExceededQuery)
+	return ListQuotaExceededUserIDsContext(context.Background())
+}
+
+// ListQuotaExceededUserIDsContext is ListQuotaExceededUserIDs bounded by ctx.
+func ListQuotaExceededUserIDsContext(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := db.DB.QueryContext(ctx, quotaExceededQuery)
 	if err != nil {
 		return nil, fmt.Errorf("quota-exceeded list: %w", err)
 	}
@@ -264,7 +288,12 @@ func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
 
 // quotaExceededQuery lists the users.user_id of everyone whose current-cycle
 // usage reached the limit of their effective subscription (see
-// ListQuotaExceededUserIDs).
+// ListQuotaExceededUserIDs). The cycle start is CycleWindow's: a NULL
+// started_at means the last 30 days, otherwise started_at plus the whole
+// months elapsed. (The former COALESCE(started_at, now - 30 days) + whole
+// months of age() moved a NULL start a month forward, to about now, whenever
+// age(now, now - 30 days) reached one month — after a month of 30 days or
+// less — so those users counted almost no traffic.)
 var quotaExceededQuery = `
 		WITH active AS (
 			SELECT u.user_id, eff.started_at,
@@ -282,13 +311,16 @@ var quotaExceededQuery = `
 		),
 		cycles AS (
 			SELECT user_id, lim,
-			       GREATEST(
-			           COALESCE(started_at, NOW() - INTERVAL '30 days'),
-			           COALESCE(started_at, NOW() - INTERVAL '30 days') + (
-			             EXTRACT(YEAR  FROM age(NOW(), COALESCE(started_at, NOW() - INTERVAL '30 days'))) * 12 +
-			             EXTRACT(MONTH FROM age(NOW(), COALESCE(started_at, NOW() - INTERVAL '30 days')))
-			           )::int * INTERVAL '1 month'
-			       ) AS cycle_start
+			       CASE
+			         WHEN started_at IS NULL THEN NOW() - INTERVAL '30 days'
+			         ELSE GREATEST(
+			                started_at,
+			                started_at + (
+			                  EXTRACT(YEAR  FROM age(NOW(), started_at)) * 12 +
+			                  EXTRACT(MONTH FROM age(NOW(), started_at))
+			                )::int * INTERVAL '1 month'
+			              )
+			       END AS cycle_start
 			FROM active
 		)
 		SELECT c.user_id

@@ -66,7 +66,9 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	oldRaise, oldResolve := quotaRaiseAlert, quotaResolveAlert
 	oldMem, oldWarn, oldWatch, oldSum, oldChange := quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices
 	oldHeld := quotaHeldWarnings
+	oldSyncScan, oldCollectorScan := quotaOffSyncScan, quotaOffCollectorScan
 	t.Cleanup(func() {
+		quotaOffSyncScan, quotaOffCollectorScan = oldSyncScan, oldCollectorScan
 		getSetting, listQuotaExceeded, requestSync = oldGet, oldList, oldReq
 		quotaRaiseAlert, quotaResolveAlert = oldRaise, oldResolve
 		quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices = oldMem, oldWarn, oldWatch, oldSum, oldChange
@@ -97,6 +99,7 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	quotaSummaries = &quotaNoticeThrottle{}
 	quotaChangeNotices = &quotaNoticeThrottle{}
 	quotaHeldWarnings = &quotaWarnThrottle{}
+	quotaOffSyncScan, quotaOffCollectorScan = &quotaScanGate{}, &quotaScanGate{}
 	return env
 }
 

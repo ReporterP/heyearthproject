@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -56,15 +57,20 @@ type ExitNodeTunnel struct {
 // ListHealthyExitNodes возвращает все exit-ноды со статусом healthy.
 // Используется для генерации Xray outbound-ов на Hub.
 func ListHealthyExitNodes() ([]ExitNodeTunnel, error) {
-	return listExitNodesByStatus("healthy")
+	return listExitNodesByStatus(context.Background(), "healthy")
+}
+
+// ListHealthyExitNodesContext is ListHealthyExitNodes bounded by ctx.
+func ListHealthyExitNodesContext(ctx context.Context) ([]ExitNodeTunnel, error) {
+	return listExitNodesByStatus(ctx, "healthy")
 }
 
 // ListAllExitNodes возвращает все exit-ноды (для health-check).
 func ListAllExitNodes() ([]ExitNodeTunnel, error) {
-	return listExitNodesByStatus("")
+	return listExitNodesByStatus(context.Background(), "")
 }
 
-func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
+func listExitNodesByStatus(ctx context.Context, statusFilter string) ([]ExitNodeTunnel, error) {
 	// Defense-in-depth: only return servers whose lifecycle is 'online'.
 	// tunnel_status alone is not enough — a server marked offline in the FSM
 	// must never appear in xray routing (otherwise we get ghosts).
@@ -86,7 +92,7 @@ func listExitNodesByStatus(statusFilter string) ([]ExitNodeTunnel, error) {
 	}
 	query += ` ORDER BY id`
 
-	rows, err := db.DB.Query(query, args...)
+	rows, err := db.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list exit nodes: %w", err)
 	}

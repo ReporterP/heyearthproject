@@ -47,7 +47,7 @@ func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"today_tests":    todayTests,
 		"today_stable":   todayStable,
 		// Active params
-		"current_sni":         biz.GetSettingOrDefault("reality_sni_domain", "apple.com"),
+		"current_sni":         biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI),
 		"current_fingerprint": biz.GetSettingOrDefault("reality_fingerprint", "chrome"),
 		"current_transport":   biz.GetSettingOrDefault("reality_transport", "tcp"),
 		"current_flow":        biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision"),

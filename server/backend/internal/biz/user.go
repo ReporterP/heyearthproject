@@ -1,12 +1,15 @@
 package biz
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
+	"github.com/lib/pq"
 )
 
 // User represents a HeYearth user in the database.
@@ -94,40 +97,15 @@ func GetUserVlessUUID(userID string) (string, error) {
 	return uuid, nil
 }
 
-// ListActiveVlessUUIDs возвращает VLESS UUID всех пользователей с активной подпиской.
-// Исключает заблокированных и превысивших лимит трафика.
-func ListActiveVlessUUIDs() ([]string, error) {
-	rows, err := db.DB.Query(`
-		SELECT DISTINCT u.vless_uuid::text
-		FROM users u
-		JOIN user_subscriptions us ON us.user_id = u.id
-		WHERE u.vless_uuid IS NOT NULL
-		  AND u.is_blocked = FALSE
-		  AND us.valid_until > CURRENT_TIMESTAMP
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var uuids []string
-	for rows.Next() {
-		var uuid string
-		if err := rows.Scan(&uuid); err != nil {
-			return nil, err
-		}
-		uuids = append(uuids, uuid)
-	}
-	return uuids, rows.Err()
-}
-
 // ActiveVlessClient — VLESS клиент с информацией о premium для Xray policy level.
+// The servers of the client's plan are not part of it: the xray sync builds
+// the per-plan balancers from plan_servers itself (ListPlanServersContext),
+// independently of which users a plan currently has.
 type ActiveVlessClient struct {
-	UUID             string
-	UserID           string
-	IsPremium        bool
-	PlanID           int
-	AllowedServerIDs []int // from plan_servers; empty = all servers
+	UUID      string
+	UserID    string
+	IsPremium bool
+	PlanID    int
 }
 
 // ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
@@ -138,38 +116,43 @@ type ActiveVlessClient struct {
 // (traffic.go), the ordering shared by the routing, quota and Express-gate
 // queries (its doc lists which lookups use it and which do not).
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
-	rows, err := db.DB.Query(activeVlessClientsQuery)
+	return ListActiveVlessClientsContext(context.Background())
+}
+
+// ListActiveVlessClientsContext is ListActiveVlessClients bounded by ctx. Any
+// query, scan or iteration error is returned: the xray sync must never build a
+// config from a partial client list (that would revoke the missing users).
+func ListActiveVlessClientsContext(ctx context.Context) ([]ActiveVlessClient, error) {
+	rows, err := db.DB.QueryContext(ctx, activeVlessClientsQuery)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("active vless clients: %w", err)
 	}
 	defer rows.Close()
 	var result []ActiveVlessClient
 	for rows.Next() {
 		var c ActiveVlessClient
 		if err := rows.Scan(&c.UUID, &c.UserID, &c.IsPremium, &c.PlanID); err != nil {
-			return nil, err
-		}
-		// Load allowed server IDs from plan_servers
-		if c.PlanID > 0 {
-			srvRows, srvErr := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1 ORDER BY server_id", c.PlanID)
-			if srvErr == nil {
-				for srvRows.Next() {
-					var sid int
-					if srvRows.Scan(&sid) == nil {
-						c.AllowedServerIDs = append(c.AllowedServerIDs, sid)
-					}
-				}
-				srvRows.Close() // close immediately, not defer (inside loop)
-			}
+			return nil, fmt.Errorf("active vless clients scan: %w", err)
 		}
 		result = append(result, c)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active vless clients rows: %w", err)
+	}
+	return result, nil
 }
 
 // activeVlessClientsQuery lists the VLESS clients of ListActiveVlessClients.
 // Premium derivation: any active subscription = premium (groups removed).
 // best_plan_id is the plan of the effective subscription (effectiveSubOrderBy).
+//
+// Traffic is NOT filtered here: the per-cycle quota of Reality/XHTTP is the
+// quota cutoff of the xray sync (ListQuotaExceededUserIDs, armed only by
+// app_settings quota_cutoff_enabled). The former legacy filter
+// `us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit` judged the
+// lifetime counter traffic_used and bypassed that flag; nothing writes
+// us.traffic_limit any more. Hysteria2 (Express) keeps its own, independent
+// quota on purpose (hysteria2AuthPlanQuery, ValidateHysteria2Auth).
 var activeVlessClientsQuery = `
 		SELECT u.vless_uuid::text, u.user_id,
 		       TRUE AS is_premium,
@@ -185,10 +168,65 @@ var activeVlessClientsQuery = `
 		WHERE u.vless_uuid IS NOT NULL
 		  AND u.is_blocked = FALSE
 		  AND us.valid_until > CURRENT_TIMESTAMP
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 		GROUP BY u.vless_uuid, u.user_id, u.id
 		ORDER BY u.user_id
 	`
+
+// Revocation reasons reported by RevocationReasonsContext.
+const (
+	RevokedBlocked = "blocked" // users.is_blocked
+	RevokedExpired = "expired" // no active subscription left
+	RevokedNoUUID  = "no-uuid" // users.vless_uuid cleared
+	RevokedDeleted = "deleted" // no such user any more
+	RevokedUnknown = "unknown" // still qualifies as a VLESS client (or the lookup failed)
+)
+
+// RevocationReasonsContext explains why users (users.user_id, compared
+// case-insensitively like xray emails) are no longer VLESS clients of
+// activeVlessClientsQuery. Keys of the result are lower-cased. For logs and
+// alerts only — it decides nothing.
+func RevocationReasonsContext(ctx context.Context, userIDs []string) (map[string]string, error) {
+	lower := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		lower = append(lower, strings.ToLower(id))
+	}
+	rows, err := db.DB.QueryContext(ctx, `
+		SELECT lower(u.user_id), u.is_blocked, u.vless_uuid IS NOT NULL,
+		       EXISTS (SELECT 1 FROM user_subscriptions us
+		               WHERE us.user_id = u.id AND us.valid_until > CURRENT_TIMESTAMP)
+		FROM users u
+		WHERE lower(u.user_id) = ANY($1)
+	`, pq.Array(lower))
+	if err != nil {
+		return nil, fmt.Errorf("revocation reasons: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string, len(lower))
+	for _, id := range lower {
+		out[id] = RevokedDeleted
+	}
+	for rows.Next() {
+		var id string
+		var blocked, hasUUID, active bool
+		if err := rows.Scan(&id, &blocked, &hasUUID, &active); err != nil {
+			return nil, fmt.Errorf("revocation reasons scan: %w", err)
+		}
+		switch {
+		case blocked:
+			out[id] = RevokedBlocked
+		case !active:
+			out[id] = RevokedExpired
+		case !hasUUID:
+			out[id] = RevokedNoUUID
+		default:
+			out[id] = RevokedUnknown
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("revocation reasons rows: %w", err)
+	}
+	return out, nil
+}
 
 // effectivePlanIDQuery is best_plan_id of activeVlessClientsQuery for one user
 // (users.user_id = $1): same filters, same ordering.
@@ -217,44 +255,6 @@ func EffectivePlanID(userID string) (int, error) {
 		return 0, fmt.Errorf("effective plan: %w", err)
 	}
 	return planID, nil
-}
-
-// ActiveUserWithUUID — пара user_id + vless_uuid для активного пользователя.
-type ActiveUserWithUUID struct {
-	UserID    string
-	VlessUUID string
-}
-
-// ListActiveUsersWithUUIDs возвращает user_id и vless_uuid всех пользователей с активной подпиской.
-// Используется для генерации SOCKS5/HTTP аккаунтов в Xray конфиге.
-//
-// IMPORTANT: Mirrors the traffic_limit enforcement that VLESS already applies
-// (see ListActiveVlessClients) — over-quota users must not receive SOCKS5/HTTP
-// credentials either. Without this filter, a user on a 10 GB plan could keep
-// using SOCKS5 indefinitely after exceeding the limit.
-func ListActiveUsersWithUUIDs() ([]ActiveUserWithUUID, error) {
-	rows, err := db.DB.Query(`
-		SELECT DISTINCT u.user_id, u.vless_uuid::text
-		FROM users u
-		JOIN user_subscriptions us ON us.user_id = u.id
-		WHERE u.vless_uuid IS NOT NULL
-		  AND u.is_blocked = FALSE
-		  AND us.valid_until > CURRENT_TIMESTAMP
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []ActiveUserWithUUID
-	for rows.Next() {
-		var u ActiveUserWithUUID
-		if err := rows.Scan(&u.UserID, &u.VlessUUID); err != nil {
-			return nil, err
-		}
-		result = append(result, u)
-	}
-	return result, rows.Err()
 }
 
 func getUserByField(field, value string) (*User, error) {

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -29,7 +32,9 @@ import (
 //   - Hub (главный сервер) принимает подключения пользователей
 //   - Spoke (exit-ноды) подключены к Hub через зашифрованные туннели
 //   - Hub маршрутизирует трафик пользователей через здоровые exit-ноды
-//   - Балансировка нагрузки: leastPing по всем доступным exit-нодам
+//   - Балансировка нагрузки: стратегия из app_settings balancer_strategy (по
+//     умолчанию random) по здоровым exit-нодам; observatory пробует их для
+//     fallback (см. newBalancer)
 //   - Если exit-нод нет — пользовательский трафик блокируется (кроме явных RU-direct правил)
 //
 // Безопасность:
@@ -76,8 +81,6 @@ func loadRealityKeys() (*xrayRealityKeys, error) {
 
 // ─────────────────────── Config Generation ───────────────────────
 
-// SyncXrayConfig генерирует Xray конфиг со всеми активными пользователями,
-// exit-нодами и политиками безопасности, и перезапускает Xray.
 // RequestXraySync запрашивает синхронизацию с debounce (2 секунды тишины).
 // Множественные вызовы за 2 сек сливаются в один SyncXrayConfig.
 func RequestXraySync() {
@@ -99,14 +102,18 @@ const xraySyncAlertKey = "xray-sync-failed"
 const xraySyncAlertDetailsMax = 800
 
 // runXraySync is the single entry point of all background syncs (startup,
-// periodic, debounced): it runs SyncXrayConfig, logs a failure and keeps the
-// "xray-sync-failed" alert in step with the result.
+// periodic, debounced): it runs SyncXrayConfig, logs a failure, keeps the
+// "xray-sync-failed" alert in step with the result and, when a validated
+// config could not be put into service, schedules a quick retry.
 func runXraySync(label string) {
 	err := SyncXrayConfig()
 	if err != nil {
 		log.Printf("[xray-sync] %s: %v", label, err)
 	}
 	reportXraySync(alerts, err)
+	if d, ok := xrayApplyRetry.after(err, RequestXraySync); ok {
+		log.Printf("[xray-sync] конфиг не применён — повторная синхронизация через %s", d)
+	}
 }
 
 // reportXraySync raises a critical alert on any SyncXrayConfig error (leak
@@ -126,7 +133,81 @@ func reportXraySync(m *alertManager, err error) {
 	m.Raise(xraySyncAlertKey, AlertCritical, "Конфиг xray не применяется", string(details))
 }
 
-// SyncXrayConfig немедленно синхронизирует конфиг (для startup/periodic/forced).
+// ─────────────── Quick retry after a failed apply (M-5) ───────────────
+
+// errXrayApplyFailed marks a sync that built and validated a config but could
+// not put it into service (rename or restart failed). The runtime is stale
+// (xrayRuntimeState) or still runs the previous config: new users may be
+// missing, a revoked one may still be served. Such a sync is retried after
+// xrayRetryDelay instead of waiting for the 5-minute periodic one.
+var errXrayApplyFailed = errors.New("xray config not put into service")
+
+const (
+	xrayRetryBase = 30 * time.Second
+	xrayRetryMax  = 5 * time.Minute // the periodic sync runs every 5 minutes anyway
+)
+
+// xrayRetryDelay is the backoff of the n-th consecutive retry (n from 0):
+// 30 s, 1 min, 2 min, 4 min, then 5 min.
+func xrayRetryDelay(n int) time.Duration {
+	d := xrayRetryBase
+	for i := 0; i < n && d < xrayRetryMax; i++ {
+		d *= 2
+	}
+	if d > xrayRetryMax {
+		d = xrayRetryMax
+	}
+	return d
+}
+
+// xrayRetrySchedule keeps at most one pending quick retry.
+type xrayRetrySchedule struct {
+	mu      sync.Mutex
+	attempt int         // consecutive failed applies
+	stop    func() bool // the pending retry, nil if none
+	// afterFunc schedules f after d and returns its stop function; nil means
+	// time.AfterFunc. Injectable for tests.
+	afterFunc func(d time.Duration, f func()) func() bool
+}
+
+var xrayApplyRetry = &xrayRetrySchedule{}
+
+// after is fed the result of every sync. A failed apply schedules request
+// after the next backoff delay (unless a retry is already pending); a
+// successful sync cancels a pending retry and resets the backoff; any other
+// error (database, validation) changes nothing — the periodic sync covers it.
+func (r *xrayRetrySchedule) after(err error, request func()) (time.Duration, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case err == nil:
+		if r.stop != nil {
+			r.stop()
+			r.stop = nil
+		}
+		r.attempt = 0
+		return 0, false
+	case !errors.Is(err, errXrayApplyFailed) || r.stop != nil:
+		return 0, false
+	}
+	d := xrayRetryDelay(r.attempt)
+	r.attempt++
+	schedule := r.afterFunc
+	if schedule == nil {
+		schedule = func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop }
+	}
+	r.stop = schedule(d, func() {
+		r.mu.Lock()
+		r.stop = nil
+		r.mu.Unlock()
+		request()
+	})
+	return d, true
+}
+
+// SyncXrayConfig генерирует Xray конфиг со всеми активными пользователями,
+// exit-нодами и политиками безопасности и вводит его в работу (без изменений /
+// live через xray api / рестарт). Вызывается только через runXraySync.
 func SyncXrayConfig() error {
 	xraySyncMu.Lock()
 	defer xraySyncMu.Unlock()
@@ -152,59 +233,244 @@ func SyncXrayConfig() error {
 	return syncWithQuota(time.Now(), applyXrayConfig)
 }
 
-// applyXrayConfig builds the xray config for the quota decision, validates it
-// and puts it into service (unchanged / live / restart). excluded is the number
-// of VLESS clients the cutoff left out. Only for SyncXrayConfig (via
-// syncWithQuota, under xraySyncMu): it neither loads nor records the quota
-// decision itself.
-func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
-	keys, err := loadRealityKeys()
+// ─────────────── Inputs of the generator: strict reads ───────────────
+
+// xraySyncDBTimeout bounds every database call of the sync path: the sync runs
+// under xraySyncMu, so a hung query must not hold every later sync.
+const xraySyncDBTimeout = 15 * time.Second
+
+// withSyncTimeout runs fn with a context that expires after xraySyncDBTimeout.
+func withSyncTimeout[T any](fn func(ctx context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), xraySyncDBTimeout)
+	defer cancel()
+	return fn(ctx)
+}
+
+// settingForSync reads an app_settings value for the xray config. Only a key
+// that is absent (sql.ErrNoRows) or blank yields def; any other error is
+// returned, so the sync aborts and xray keeps running its current config.
+// biz.GetSettingOrDefault must not be used on this path: it turns a failed read
+// into the default, i.e. a one-off DB error into a structural diff and an xray
+// restart with a wrong config (an SNI no client uses, a vanished CDN inbound…).
+func settingForSync(ctx context.Context, get func(context.Context, string) (string, error), key, def string) (string, error) {
+	v, err := get(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return def, nil
+	}
 	if err != nil {
-		return 0, fmt.Errorf("load reality keys: %w", err)
+		return "", fmt.Errorf("read setting %s: %w", key, err)
 	}
+	if v = strings.TrimSpace(v); v == "" {
+		return def, nil
+	}
+	return v, nil
+}
 
-	// ── Per-user клиенты с premium-уровнями ──
-	activeClients, err := biz.ListActiveVlessClients()
+// xraySyncReads are the database reads of the generator. Every one of them
+// returns its error and load aborts on it: a config built from a partial read
+// (no exits → every user inbound blocked, no clients → everyone revoked, a
+// default SNI → every handshake fails) would be put into service with a
+// restart. Injectable for tests.
+type xraySyncReads struct {
+	setting        func(ctx context.Context, key string) (string, error) // sql.ErrNoRows = absent
+	clients        func(ctx context.Context) ([]biz.ActiveVlessClient, error)
+	exitNodes      func(ctx context.Context) ([]biz.ExitNodeTunnel, error)
+	maskingRules   func(ctx context.Context) ([]biz.TrafficMaskingRule, error)
+	directPlanIDs  func(ctx context.Context) ([]int, error)
+	directServices func(ctx context.Context) ([]biz.DirectRouteService, error)
+	planServers    func(ctx context.Context) (map[int][]int, error)
+	// hubIPs returns the Hub's own public addresses (hubOwnIPsStrict); setting
+	// reads a host setting strictly ("" when absent).
+	hubIPs func(setting func(key string) (string, error)) ([]string, error)
+}
+
+var xrayDBReads = xraySyncReads{
+	setting:        biz.GetSettingContext,
+	clients:        biz.ListActiveVlessClientsContext,
+	exitNodes:      biz.ListHealthyExitNodesContext,
+	maskingRules:   biz.ListActiveTrafficMaskingRulesContext,
+	directPlanIDs:  biz.GetPlanIDsWithDirectRoutesContext,
+	directServices: biz.ListActiveDirectRouteServicesContext,
+	planServers:    biz.ListPlanServersContext,
+	hubIPs:         hubOwnIPsStrict,
+}
+
+// xraySettings are the app_settings the generator uses, already defaulted
+// (absent/blank key only) and parsed.
+type xraySettings struct {
+	realitySNI       string   // reality_sni_domain
+	mainServerHost   string   // main_server_host (XHTTP Host header)
+	cdnEnabled       bool     // cdn_enabled
+	cdnXHPath        string   // cdn_xh_path (read only while the CDN is enabled)
+	cdnHost          string   // cdn_host (read only while the CDN is enabled)
+	balancerStrategy string   // balancer_strategy
+	dnsServers       []string // dns_servers
+	fingerprint      string   // reality_fingerprint (Hub→exit VLESS tunnels)
+	muxConcurrency   int      // mux_concurrency (Hub→exit tunnels)
+}
+
+// xrayInputs is everything buildXrayConfig needs; nothing else is read.
+type xrayInputs struct {
+	keys           xrayRealityKeys
+	settings       xraySettings
+	clients        []biz.ActiveVlessClient
+	exitNodes      []biz.ExitNodeTunnel // healthy, lifecycle online
+	maskingRules   []biz.TrafficMaskingRule
+	directPlanIDs  []int                    // active plans with direct_routing_enabled, ascending
+	directServices []biz.DirectRouteService // active services, shared by all those plans
+	planServers    map[int][]int            // plan_servers: plan id → server ids
+	hubIPs         []string
+}
+
+// Defaults of the generator settings, used only while a key is absent or blank.
+const (
+	defaultMainServerHost   = "hiearth.ru"
+	defaultCDNXHPath        = "/cdn-xh"
+	defaultCDNHost          = "cdn.hiearth.ru"
+	defaultBalancerStrategy = "random"
+	defaultDNSServers       = "8.8.8.8,1.1.1.1"
+	defaultFingerprint      = "chrome"
+	defaultMuxConcurrency   = 8
+)
+
+// load reads the generator inputs, each database call bounded by
+// xraySyncDBTimeout. The first failed read is returned (wrapped).
+func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
+	in := xrayInputs{keys: keys}
+	setting := func(key, def string) (string, error) {
+		return withSyncTimeout(func(ctx context.Context) (string, error) {
+			return settingForSync(ctx, r.setting, key, def)
+		})
+	}
+	s := &in.settings
+	var err error
+	if s.realitySNI, err = setting("reality_sni_domain", biz.DefaultRealitySNI); err != nil {
+		return in, err
+	}
+	if s.mainServerHost, err = setting("main_server_host", defaultMainServerHost); err != nil {
+		return in, err
+	}
+	cdn, err := setting("cdn_enabled", "false")
 	if err != nil {
-		return 0, fmt.Errorf("list active clients: %w", err)
+		return in, err
 	}
-
-	// Серверный UUID — для обратной совместимости и админ-доступа
-	serverUUID := keys.UUID
-	if serverUUID != "" {
-		found := false
-		for _, c := range activeClients {
-			if c.UUID == serverUUID {
-				found = true
-				break
-			}
+	if s.cdnEnabled = cdn == "true"; s.cdnEnabled {
+		if s.cdnXHPath, err = setting("cdn_xh_path", defaultCDNXHPath); err != nil {
+			return in, err
 		}
-		if !found {
-			activeClients = append([]biz.ActiveVlessClient{{UUID: serverUUID, UserID: "server@heyearth", IsPremium: true}}, activeClients...)
+		if s.cdnHost, err = setting("cdn_host", defaultCDNHost); err != nil {
+			return in, err
 		}
 	}
-
-	// Маппинг UUID → user_id для email (Xray Stats API)
-	uuidToUserID := make(map[string]string)
-	for _, c := range activeClients {
-		uuidToUserID[c.UUID] = c.UserID
+	if s.balancerStrategy, err = setting("balancer_strategy", defaultBalancerStrategy); err != nil {
+		return in, err
 	}
+	dns, err := setting("dns_servers", defaultDNSServers)
+	if err != nil {
+		return in, err
+	}
+	s.dnsServers = parseDNSServers(dns)
+	if s.fingerprint, err = setting("reality_fingerprint", defaultFingerprint); err != nil {
+		return in, err
+	}
+	mux, err := setting("mux_concurrency", strconv.Itoa(defaultMuxConcurrency))
+	if err != nil {
+		return in, err
+	}
+	s.muxConcurrency = parseMuxConcurrency(mux)
 
-	// Persist Reality public key info to app_settings for client consumption
-	_ = biz.SetSetting("reality_public_key", keys.PublicKey)
-	_ = biz.SetSetting("reality_short_id", keys.ShortID)
+	if in.clients, err = withSyncTimeout(r.clients); err != nil {
+		return in, fmt.Errorf("list active clients: %w", err)
+	}
+	if in.exitNodes, err = withSyncTimeout(r.exitNodes); err != nil {
+		return in, fmt.Errorf("list healthy exit nodes: %w", err)
+	}
+	if in.maskingRules, err = withSyncTimeout(r.maskingRules); err != nil {
+		return in, fmt.Errorf("list traffic masking rules: %w", err)
+	}
+	if in.directPlanIDs, err = withSyncTimeout(r.directPlanIDs); err != nil {
+		return in, fmt.Errorf("list plans with direct routes: %w", err)
+	}
+	if len(in.directPlanIDs) > 0 {
+		if in.directServices, err = withSyncTimeout(r.directServices); err != nil {
+			return in, fmt.Errorf("list direct route services: %w", err)
+		}
+	}
+	if in.planServers, err = withSyncTimeout(r.planServers); err != nil {
+		return in, fmt.Errorf("list plan servers: %w", err)
+	}
+	if in.hubIPs, err = r.hubIPs(func(key string) (string, error) { return setting(key, "") }); err != nil {
+		return in, fmt.Errorf("hub addresses: %w", err)
+	}
+	return in, nil
+}
+
+// parseDNSServers splits the comma-separated dns_servers value; an empty list
+// falls back to the default servers.
+func parseDNSServers(s string) []string {
+	var servers []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			servers = append(servers, p)
+		}
+	}
+	if len(servers) == 0 {
+		return parseDNSServers(defaultDNSServers)
+	}
+	return servers
+}
+
+// parseMuxConcurrency parses mux_concurrency; anything outside 1..64 is the default.
+func parseMuxConcurrency(s string) int {
+	v, _ := strconv.Atoi(s)
+	if v < 1 || v > 64 {
+		return defaultMuxConcurrency
+	}
+	return v
+}
+
+// ─────────────── The generator (pure) ───────────────
+
+// xrayServerEmail is the client "email" of the server UUID entry.
+const xrayServerEmail = "server@heyearth"
+
+// xrayBuild is a generated config plus what applyXrayConfig logs about it.
+type xrayBuild struct {
+	config       map[string]interface{}
+	vlessClients int  // VLESS clients per inbound (server entry included)
+	excluded     int  // clients the quota cutoff left out
+	exits        int  // exit outbounds (healthy exits with a valid tunnel)
+	maskRules    int  // mask-* outbounds
+	noExit       bool // no usable exit: every user inbound is blocked
+}
+
+// buildXrayConfig generates the xray config from in under the quota decision.
+// Pure: no I/O, no clock, no settings reads (everything comes from in). It ends
+// with the leak guard (checkNoDirectLeak): a config violating the routing
+// invariants is an error and is never written.
+func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
+	keys := in.keys
+	settings := in.settings
+
+	// ── Per-user клиенты ──
+	// The server UUID entry (admin access, backward compatibility) is always
+	// the first client, so no VLESS inbound is ever left without clients.
+	clients := in.clients
+	if keys.UUID != "" && !hasClientUUID(clients, keys.UUID) {
+		clients = append([]biz.ActiveVlessClient{{UUID: keys.UUID, UserID: xrayServerEmail, IsPremium: true}}, clients...)
+	}
 
 	// Policy levels: 0 = standard, 1 = premium
-	vlessClients := make([]map[string]interface{}, 0, len(activeClients))
-	skippedQuota := 0
-	for _, c := range activeClients {
+	vlessClients := make([]map[string]interface{}, 0, len(clients))
+	excluded := 0
+	for _, c := range clients {
 		if quota.excludes(c) {
-			skippedQuota++
+			excluded++
 			continue // over cycle quota — re-included when cycle resets
 		}
 		email := c.UserID
 		if email == "" {
-			email = "server@heyearth"
+			email = xrayServerEmail
 		}
 		level := 0
 		if c.IsPremium {
@@ -215,17 +481,6 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 			"flow":  "xtls-rprx-vision",
 			"email": email,
 			"level": level,
-		})
-	}
-	// The quota summary (how many were excluded) is logged by finishQuotaSync,
-	// only once this config is in service.
-
-	// (activeClients уже использованы для заполнения vlessClients и uuidToUserID)
-	if len(vlessClients) == 0 && serverUUID != "" {
-		vlessClients = append(vlessClients, map[string]interface{}{
-			"id":    serverUUID,
-			"flow":  "xtls-rprx-vision",
-			"email": "server@heyearth",
 		})
 	}
 
@@ -247,16 +502,18 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		vlessClientsXHTTP = append(vlessClientsXHTTP, cc)
 	}
 
-	// ── Reality SNI (настраивается через app_settings, по умолчанию — apple.com) ──
-	// apple.com — оптимальный SNI для обхода DPI в России (массовый трафик, нельзя заблокировать)
-	realitySNI := "apple.com"
-	if v, err := biz.GetSetting("reality_sni_domain"); err == nil && v != "" {
-		realitySNI = v
-	}
+	// ── Reality SNI ──
+	// app_settings reality_sni_domain (the auto-tuner picks it from the RU
+	// candidates); while the key is absent biz.DefaultRealitySNI, the same
+	// default the subscription URIs use. The subscription's sni= must be one of
+	// serverNames, or every handshake fails.
+	realitySNI := settings.realitySNI
 
 	// ── Inbounds ──
 	inbounds := []map[string]interface{}{
 		{
+			// Loopback behind the nginx stream SNI router (:443 → :10443); the
+			// client-facing TCP is nginx's, so no keepalive sockopt here.
 			"tag": "vless-reality", "listen": "127.0.0.1", "port": 10443, "protocol": "vless",
 			"settings": map[string]interface{}{"clients": vlessClients, "decryption": "none"},
 			"streamSettings": map[string]interface{}{
@@ -290,7 +547,7 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 					// realitySettings.serverNames (yandex.ru) but happ sends
 					// Host: hiearth.ru → silent handshake failure (Reality OK,
 					// xhttp layer rejects). This was the «н/д» bug.
-					"host":          biz.GetSettingOrDefault("main_server_host", "hiearth.ru"),
+					"host":          settings.mainServerHost,
 					"mode":          "auto",
 					"xPaddingBytes": "100-1000",
 					// R4: cap each POST chunk under 15 KB so a single TCP doesn't
@@ -313,10 +570,11 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 					"privateKey":  keys.PrivateKey,
 					"shortIds":    []string{keys.ShortID, ""},
 				},
-				// T1.2: bilateral TCP keepalive — same rationale as vless-reality
-				// inbound above. XHTTP is HTTP/1.1 long-poll over TCP, so the
-				// underlying TCP socket is just as vulnerable to mobile CGNAT
-				// idle reap as plain Reality TCP.
+				// T1.2: bilateral TCP keepalive. Unlike vless-reality (loopback
+				// behind nginx, whose client-facing socket is nginx's), this
+				// inbound faces clients directly on :2443. XHTTP is HTTP/1.1
+				// long-poll over TCP, so its socket is exposed to the mobile
+				// CGNAT idle reap like any long-lived TCP.
 				"sockopt": map[string]interface{}{
 					"tcpKeepAliveInterval": 30,
 					"tcpKeepAliveIdle":     120,
@@ -340,9 +598,7 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	// Toggle-gated via app_settings.cdn_enabled — inbound only generated when
 	// feature is enabled. Re-uses vlessClientsXHTTP (same per-user UUIDs, no
 	// flow because XHTTP is incompatible with XTLS Vision).
-	if biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
-		cdnXHPath := biz.GetSettingOrDefault("cdn_xh_path", "/cdn-xh")
-		cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
+	if settings.cdnEnabled {
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag":      "vless-xhttp-cdn",
 			"listen":   "127.0.0.1",
@@ -355,8 +611,8 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 			"streamSettings": map[string]interface{}{
 				"network": "xhttp",
 				"xhttpSettings": map[string]interface{}{
-					"path": cdnXHPath,
-					"host": cdnHost,
+					"path": settings.cdnXHPath,
+					"host": settings.cdnHost,
 					"mode": "packet-up", // CDN-friendly: separate up/down HTTP requests
 				},
 			},
@@ -421,18 +677,14 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	}
 
 	// ── Exit-ноды (Spoke outbounds) ──
-	exitNodes, err := biz.ListHealthyExitNodes()
-	if err != nil {
-		log.Printf("[xray-sync] Ошибка загрузки exit-нод: %v", err)
-		exitNodes = nil
-	}
-
 	var exitTags []string
-	for _, node := range exitNodes {
-		outbound := buildExitNodeOutbound(node)
+	healthyExit := map[string]bool{}
+	for _, node := range in.exitNodes {
+		outbound := buildExitNodeOutbound(node, settings.fingerprint, settings.muxConcurrency)
 		if outbound != nil {
 			outbounds = append(outbounds, outbound)
 			tag := fmt.Sprintf("exit-%d", node.ID)
+			healthyExit[tag] = true
 			// Weighted: duplicate tag by load_weight for proportional distribution.
 			w := node.LoadWeight
 			if w < 1 {
@@ -444,20 +696,15 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		}
 	}
 
-	// ── Traffic Masking Rules (premium only) ──
-	maskingRules, err := biz.ListActiveTrafficMaskingRules()
-	if err != nil {
-		log.Printf("[xray-sync] Ошибка загрузки правил маскировки: %v", err)
-		maskingRules = nil
-	}
-
-	// Для каждого правила маскировки создаём freedom outbound с нужным SNI
+	// ── Traffic masking rules ──
+	// Each rule gets a Hub-local freedom outbound mask-<id>; mask_domain is not
+	// used by the generated config (see the routing rules below).
 	type maskRouteEntry struct {
 		sourceDomain string
 		outboundTag  string
 	}
 	var maskRouteEntries []maskRouteEntry
-	for _, rule := range maskingRules {
+	for _, rule := range in.maskingRules {
 		tag := fmt.Sprintf("mask-%d", rule.ID)
 		outbound := map[string]interface{}{
 			"tag": tag, "protocol": "freedom",
@@ -486,56 +733,36 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	// The first rules are the security baseline (see baseSecurityRules): xray's own DNS, then
 	// everything that leads back to the Hub itself or to a private range is blocked BEFORE any
 	// direct-freedom / mask-* rule appended below can match it.
-	rules := baseSecurityRules(hubOwnIPs())
+	rules := baseSecurityRules(in.hubIPs)
 
 	// ── Per-plan direct-routing rules ──
 	// Для каждого плана с прикреплёнными direct-сервисами добавляем правила
 	// (user → direct-freedom) с фильтром по domain И/ИЛИ ip. Вставляются ДО
 	// per-plan balancer rules и ДО no-exit blackhole — поэтому при падении
 	// всех exit-нод пользователи с direct-сервисами продолжают достукиваться.
-	directPlanIDs, drErr := biz.GetPlanIDsWithDirectRoutes()
-	if drErr != nil {
-		log.Printf("[xray-sync] GetPlanIDsWithDirectRoutes error: %v (skipping direct rules)", drErr)
-		directPlanIDs = nil
-	}
-	// Accumulate the UNION of all RU direct-route domains/IPs across plans for
-	// the socks-awg inbound (AmneziaWG). The per-plan rules below are user-bound
-	// (VLESS UUID); socks-awg has no user, so it gets its own inbound-bound split
-	// rules built from the same lists (added after the loop).
-	awgDirectDomainsSet := map[string]struct{}{}
-	awgDirectIPsSet := map[string]struct{}{}
-	for _, planID := range directPlanIDs {
-		services, sErr := biz.GetDirectRouteServicesForPlan(planID)
-		if sErr != nil {
-			log.Printf("[xray-sync] GetDirectRouteServicesForPlan(plan=%d) error: %v (skipping)", planID, sErr)
+	// Services are global (a plan either has direct routing or not), so the
+	// domain/IP lists are the same for every such plan.
+	var directDomains, directIPs []string
+	for _, svc := range in.directServices {
+		if !svc.IsActive {
 			continue
 		}
-		var domains []string
-		var ips []string
-		for _, svc := range services {
-			if !svc.IsActive {
-				continue
+		for _, d := range svc.Domains {
+			if d != "" {
+				directDomains = append(directDomains, "domain:"+d)
 			}
-			for _, d := range svc.Domains {
-				if d != "" {
-					domains = append(domains, "domain:"+d)
-				}
-			}
-			ips = append(ips, svc.IP4...)
-			ips = append(ips, svc.IP6...)
-			ips = append(ips, svc.CIDR4...)
-			ips = append(ips, svc.CIDR6...)
 		}
-		// Feed the inbound-bound socks-awg split (union across all plans, deduped).
-		for _, d := range domains {
-			awgDirectDomainsSet[d] = struct{}{}
-		}
-		for _, ip := range ips {
-			awgDirectIPsSet[ip] = struct{}{}
-		}
+		directIPs = append(directIPs, svc.IP4...)
+		directIPs = append(directIPs, svc.IP6...)
+		directIPs = append(directIPs, svc.CIDR4...)
+		directIPs = append(directIPs, svc.CIDR6...)
+	}
+	for _, planID := range in.directPlanIDs {
 		var userIDs []string
-		for _, client := range activeClients {
-			if client.PlanID == planID && client.UserID != "" {
+		for _, client := range clients {
+			// A cut-off user is absent from the whole config (clients and every
+			// plan-* rule), like from the plan-<id>-users rule below.
+			if client.PlanID == planID && client.UserID != "" && !quota.excludes(client) {
 				userIDs = append(userIDs, client.UserID)
 			}
 		}
@@ -545,21 +772,21 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		// One rule per plan with a stable ruleTag (xraydiff: plan-* rules are
 		// user-only and are applied live through `xray api adrules`).
 		sort.Strings(userIDs)
-		if len(domains) > 0 {
+		if len(directDomains) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
 				"ruleTag":     fmt.Sprintf("plan-%d-direct-domains", planID),
 				"user":        userIDs,
-				"domain":      domains,
+				"domain":      directDomains,
 				"outboundTag": "direct-freedom",
 			})
 		}
-		if len(ips) > 0 {
+		if len(directIPs) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
 				"ruleTag":     fmt.Sprintf("plan-%d-direct-ip", planID),
 				"user":        userIDs,
-				"ip":          ips,
+				"ip":          directIPs,
 				"outboundTag": "direct-freedom",
 			})
 		}
@@ -569,37 +796,37 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	// The per-plan rules above are user-bound (VLESS UUID); the socks-awg SOCKS5
 	// inbound (fed by tun2socks) has no user, so it would fall straight to the
 	// catch-all exit-balancer (Amsterdam) — ALL traffic incl. RU. To match Happ's
-	// split we emit inbound-bound rules from the SAME union of RU direct domains/
-	// IPs: RU → direct-freedom (Hub Moscow), everything else falls through to the
-	// catch-all exit-balancer rule below. Sorted for deterministic config output.
-	if len(awgDirectDomainsSet) > 0 {
-		awgDomains := make([]string, 0, len(awgDirectDomainsSet))
-		for d := range awgDirectDomainsSet {
-			awgDomains = append(awgDomains, d)
+	// split we emit inbound-bound rules from the SAME RU direct domains/IPs
+	// (deduplicated) as soon as any plan has direct routing: RU → direct-freedom
+	// (Hub Moscow), everything else falls through to the catch-all exit-balancer
+	// rule below. Sorted for deterministic config output.
+	if len(in.directPlanIDs) > 0 {
+		if awgDomains := sortedUnique(directDomains); len(awgDomains) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"socks-awg"},
+				"domain":      awgDomains,
+				"outboundTag": "direct-freedom",
+			})
 		}
-		sort.Strings(awgDomains)
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"inboundTag":  []string{"socks-awg"},
-			"domain":      awgDomains,
-			"outboundTag": "direct-freedom",
-		})
-	}
-	if len(awgDirectIPsSet) > 0 {
-		awgIPs := make([]string, 0, len(awgDirectIPsSet))
-		for ip := range awgDirectIPsSet {
-			awgIPs = append(awgIPs, ip)
+		if awgIPs := sortedUnique(directIPs); len(awgIPs) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"socks-awg"},
+				"ip":          awgIPs,
+				"outboundTag": "direct-freedom",
+			})
 		}
-		sort.Strings(awgIPs)
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"inboundTag":  []string{"socks-awg"},
-			"ip":          awgIPs,
-			"outboundTag": "direct-freedom",
-		})
 	}
 
-	// Traffic masking routing rules (только для premium пользователей)
+	// Traffic masking routing rules. NOT premium-only, whatever the name
+	// suggests: each rule matches its source domain for EVERY user and inbound
+	// (socks-awg included) and sends it out of the Hub's own IP through its
+	// mask-* freedom outbound — no SNI or Host rewriting happens (mask_domain is
+	// unused). They precede the plan rules, the catch-all balancer and, with no
+	// exit up, noExitBlockRule, so such domains keep working Hub-direct like the
+	// RU-direct services. Kept as is (pre-existing behaviour, flagged for the
+	// owner); checkNoDirectLeak requires them to follow the private-range block.
 	for _, entry := range maskRouteEntries {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
@@ -614,53 +841,41 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	}
 
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
-	if len(exitTags) > 0 {
-		balancerStrategy := biz.GetSettingOrDefault("balancer_strategy", "random")
-
+	noExit := len(exitTags) == 0
+	if !noExit {
 		// Default balancer with all exit nodes
 		balancers := []map[string]interface{}{
-			newBalancer("exit-balancer", exitTags, balancerStrategy),
+			newBalancer("exit-balancer", exitTags, settings.balancerStrategy),
 		}
 
-		// Per-plan balancers: create a balancer for each unique set of allowed servers
-		planBalancers := map[int]string{}                    // planID → balancer tag
-		planBalancerDefs := map[int]map[string]interface{}{} // planID → balancer
-		for _, client := range activeClients {
-			if client.PlanID == 0 || len(client.AllowedServerIDs) == 0 {
-				continue // no plan or all servers → default balancer
-			}
-			if _, exists := planBalancers[client.PlanID]; exists {
-				continue // already created for this plan
-			}
-			// Build tag list for this plan's servers
+		// Per-plan balancers come from plan_servers and exit health only, never
+		// from the users: one per plan with at least one healthy exit, in plan-ID
+		// order, whether or not the plan has a user right now. routing.balancers
+		// is structural for xraydiff, so a balancer created by a plan's first
+		// subscriber (and dropped with its last one) would restart xray for
+		// everyone. A balancer no rule references is valid for xray (its router
+		// builds every balancer; only a rule naming a missing balancer fails).
+		// A plan without plan_servers rows, or none of them healthy, has no
+		// balancer: its users take the catch-all rule.
+		planIDs := make([]int, 0, len(in.planServers))
+		for id := range in.planServers {
+			planIDs = append(planIDs, id)
+		}
+		sort.Ints(planIDs)
+		planBalancers := map[int]string{} // planID → balancer tag
+		for _, planID := range planIDs {
 			var planTags []string
-			for _, serverID := range client.AllowedServerIDs {
-				tag := fmt.Sprintf("exit-%d", serverID)
-				// Check if this exit node is actually in our healthy list
-				for _, et := range exitTags {
-					if et == tag {
-						planTags = append(planTags, tag)
-						break
-					}
+			for _, serverID := range in.planServers[planID] {
+				if tag := fmt.Sprintf("exit-%d", serverID); healthyExit[tag] {
+					planTags = append(planTags, tag)
 				}
 			}
 			if len(planTags) == 0 {
-				continue // no healthy servers for this plan → use default
+				continue
 			}
-			balancerTag := fmt.Sprintf("plan-%d-balancer", client.PlanID)
-			planBalancers[client.PlanID] = balancerTag
-			planBalancerDefs[client.PlanID] = newBalancer(balancerTag, planTags, balancerStrategy)
-		}
-		// Plan balancers in plan-ID order, not in the order of each plan's first
-		// user (ORDER BY user_id): otherwise a new user could reorder the list, and
-		// xraydiff treats any balancer change as structural (restart).
-		balancerPlanIDs := make([]int, 0, len(planBalancerDefs))
-		for id := range planBalancerDefs {
-			balancerPlanIDs = append(balancerPlanIDs, id)
-		}
-		sort.Ints(balancerPlanIDs)
-		for _, id := range balancerPlanIDs {
-			balancers = append(balancers, planBalancerDefs[id])
+			tag := fmt.Sprintf("plan-%d-balancer", planID)
+			planBalancers[planID] = tag
+			balancers = append(balancers, newBalancer(tag, planTags, settings.balancerStrategy))
 		}
 		routing["balancers"] = balancers
 
@@ -668,8 +883,10 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		// sorted emails of its users → plan balancer. Each client has exactly one
 		// PlanID, so user sets of different plans are disjoint and the semantics equal
 		// the former one-rule-per-user list at the same position (before catch-all).
+		// These rules are the only user-dependent part of the routing (xraydiff:
+		// user-only, applied live).
 		planUsers := map[int][]string{}
-		for _, client := range activeClients {
+		for _, client := range clients {
 			if quota.excludes(client) {
 				continue // quota cutoff — user already missing from clients arrays
 			}
@@ -677,12 +894,12 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 				planUsers[client.PlanID] = append(planUsers[client.PlanID], client.UserID)
 			}
 		}
-		planIDs := make([]int, 0, len(planUsers))
+		usedPlanIDs := make([]int, 0, len(planUsers))
 		for id := range planUsers {
-			planIDs = append(planIDs, id)
+			usedPlanIDs = append(usedPlanIDs, id)
 		}
-		sort.Ints(planIDs)
-		for _, planID := range planIDs {
+		sort.Ints(usedPlanIDs)
+		for _, planID := range usedPlanIDs {
 			users := planUsers[planID]
 			sort.Strings(users)
 			rules = append(rules, map[string]interface{}{
@@ -708,15 +925,15 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		// клиенты AWG резолвят через 1.1.1.1/8.8.8.8 внутри туннеля, без ответа не
 		// откроются даже RU-direct сайты. Запрос глушит outbound dns-hijack и отвечает
 		// встроенным DNS xray (он уходит с Hub по dnsDirectRule); остальное блокируется.
-		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
 		outbounds = append(outbounds, dnsHijackOutbound())
 		rules = append(rules, noExitDNSRule(userInbounds), noExitBlockRule(userInbounds))
 		routing["rules"] = rules
 	}
 
-	// Observatory: мониторинг задержки до exit-нод для leastPing
+	// Observatory: probes the exits for the balancers. Used by leastPing, and
+	// by random/roundRobin too once a fallbackTag is set (see newBalancer).
 	var observatory map[string]interface{}
-	if len(exitTags) > 0 {
+	if !noExit {
 		observatory = map[string]interface{}{
 			"subjectSelector": []string{"exit-"},
 			"probeInterval":   "30s",
@@ -741,7 +958,7 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		"log": map[string]string{"loglevel": "warning"},
 		// DNS: только IPv4 (IPv6 сломан у многих РФ-провайдеров — убираем задержку на AAAA)
 		"dns": map[string]interface{}{
-			"servers":       getDNSServers(),
+			"servers":       settings.dnsServers,
 			"queryStrategy": "UseIPv4",
 			"disableCache":  false,
 			"tag":           xrayDNSTag,
@@ -793,7 +1010,6 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		},
 	}
 
-	// Observatory для leastPing балансировки exit-нод
 	if observatory != nil {
 		config["observatory"] = observatory
 	}
@@ -801,11 +1017,78 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	// Leak guard: never write a config whose default outbound or balancer
 	// fallback could send user traffic out via the Hub's RU IP.
 	if err := checkNoDirectLeak(inbounds, outbounds, routing); err != nil {
-		return 0, fmt.Errorf("xray config leak guard: %w", err)
+		return xrayBuild{}, fmt.Errorf("xray config leak guard: %w", err)
+	}
+	return xrayBuild{
+		config:       config,
+		vlessClients: len(vlessClients),
+		excluded:     excluded,
+		exits:        len(healthyExit),
+		maskRules:    len(maskRouteEntries),
+		noExit:       noExit,
+	}, nil
+}
+
+// hasClientUUID reports whether a client with this UUID is in the list.
+func hasClientUUID(clients []biz.ActiveVlessClient, uuid string) bool {
+	for _, c := range clients {
+		if c.UUID == uuid {
+			return true
+		}
+	}
+	return false
+}
+
+// sortedUnique returns the distinct values of s, sorted (nil for none).
+func sortedUnique(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(s))
+	for _, v := range s {
+		set[v] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for v := range set {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ─────────────── Applying (I/O around the generator) ───────────────
+
+// applyXrayConfig loads the inputs, builds the xray config for the quota
+// decision, validates it and puts it into service (unchanged / live / restart).
+// excluded is the number of VLESS clients the cutoff left out. Only for
+// SyncXrayConfig (via syncWithQuota, under xraySyncMu): it neither loads nor
+// records the quota decision itself. A failed read aborts before anything is
+// written: xray keeps its current config and runXraySync alerts.
+func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
+	keys, err := loadRealityKeys()
+	if err != nil {
+		return 0, fmt.Errorf("load reality keys: %w", err)
+	}
+	in, err := xrayDBReads.load(*keys)
+	if err != nil {
+		return 0, fmt.Errorf("xray sync aborted, xray keeps its current config: %w", err)
 	}
 
+	// Persist Reality public key info to app_settings for client consumption
+	persistRealityPublicInfo(keys)
+
+	b, err := buildXrayConfig(in, quota)
+	if err != nil {
+		return 0, err
+	}
+	if b.noExit {
+		log.Println("[xray-sync] ВНИМАНИЕ: нет здоровых exit-нод, ВЕСЬ пользовательский трафик блокируется")
+	}
+	// The quota summary (how many were excluded) is logged by finishQuotaSync,
+	// only once this config is in service.
+
 	// Сериализуем конфиг
-	configJSON, err := json.MarshalIndent(config, "", "  ")
+	configJSON, err := json.MarshalIndent(b.config, "", "  ")
 	if err != nil {
 		return 0, fmt.Errorf("marshal xray config: %w", err)
 	}
@@ -825,11 +1108,16 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		return 0, fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
+	// The config being replaced: the subscription notification (M-6) compares
+	// its client-facing part with the new one when no notified state exists yet.
+	oldJSON, oldErr := os.ReadFile(xrayConfigPath)
+
 	// ── Apply: unchanged / user-only via the xray API / restart (Task 7) ──
 	// Canonical comparison (parsed JSON, xraydiff) with the config xray runs from.
 	// User-only changes go live without a restart; structural ones, any API
 	// error and a stale runtime (failed apply or restart) restart xray.
 	start := time.Now()
+	restartCause := ""
 	action, diff, liveErr, err := xrayApplier{
 		readRunning: func() ([]byte, error) { return os.ReadFile(xrayConfigPath) },
 		applyLive:   func(d xraydiff.Result) error { return applyUserOnlyDiff(xrayCLIRunner(xrayBin), d) },
@@ -838,46 +1126,115 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 		restart:     restartXray,
 		// The restart cut every open session: forget revoked users BEFORE the
 		// stale state is cleared, so a verdict on the old list cannot re-mark it.
-		onRestart: revokedUsers.reset,
+		onRestart: func(cause string) {
+			revokedUsers.reset()
+			restartCause = cause
+		},
 	}.apply(configJSON, xrayStale)
 	if liveErr != nil {
 		RaiseAlert(xrayLiveAlertKey, AlertWarn, "Горячее применение пользователей не удалось",
 			truncateAlertDetails(liveErr.Error())+" — откат на рестарт xray")
 	}
+	if action == xrayApplyLive {
+		// rmu does not cut open sessions: watch the revoked users' traffic. Also
+		// when the rename after the live apply failed (err != nil below): the
+		// runtime already lacks them, while the restart the stale marker asks for
+		// may be delayed.
+		revoked := diff.Revoked()
+		revokedUsers.record(revoked, revocationReasons(revoked, in.clients, quota), addedEmails(diff), time.Now())
+	}
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", errXrayApplyFailed, err)
 	}
 	// xray now runs this config (installed, applied live or unchanged): the nil
 	// error lets finishQuotaSync record the quota decision it carries.
+	xraySubscriptionNotifier.afterApply(configJSON, oldJSON, oldErr, action == xrayApplyRestart)
 	switch action {
 	case xrayApplyUnchanged:
 		log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
-		return skippedQuota, nil
+		return b.excluded, nil
 	case xrayApplyLive:
-		// rmu does not cut open sessions: watch the revoked users' traffic.
-		revokedUsers.record(diff.Revoked(), addedEmails(diff), time.Now())
 		ResolveAlert(xrayLiveAlertKey, "Горячее применение пользователей снова работает")
 		added, removed := diff.UserTotals()
 		log.Printf("[xray-sync] user-only applied via API: +%d/-%d users, rules %v (routing pushed=%v), %d ms",
 			added, removed, diff.ChangedRules, diff.RoutingChanged, time.Since(start).Milliseconds())
-		return skippedQuota, nil
+		return b.excluded, nil
 	}
 
 	// Restarted: structural change, failed API apply or stale runtime.
-	recordXrayRestart()
+	recordXrayRestart(restartCause)
 
-	// Notify clients that subscription config has changed.
-	biz.BumpSubscriptionVersion()
+	log.Printf("[xray-sync] Конфиг обновлён (рестарт: %s): %d VLESS клиентов, %d exit-нод, %d правил маскировки",
+		restartCause, b.vlessClients, b.exits, b.maskRules)
 
-	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d exit-нод, %d правил маскировки",
-		len(vlessClients), len(exitTags), len(maskRouteEntries))
+	return b.excluded, nil
+}
 
-	return skippedQuota, nil
+// persistRealityPublicInfo stores the Reality public key and short id for the
+// subscription builders. A failed write is logged, not fatal: xray does not
+// depend on it, and the next sync writes again.
+func persistRealityPublicInfo(keys *xrayRealityKeys) {
+	for _, kv := range [][2]string{{"reality_public_key", keys.PublicKey}, {"reality_short_id", keys.ShortID}} {
+		_, err := withSyncTimeout(func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, biz.SetSettingContext(ctx, kv[0], kv[1])
+		})
+		if err != nil {
+			log.Printf("[xray-sync] WARN: не удалось сохранить %s: %v", kv[0], err)
+		}
+	}
+}
+
+// revocationReasonsLookup is the database lookup of revocationReasons (test seam).
+var revocationReasonsLookup = biz.RevocationReasonsContext
+
+// revocationReasons labels the users a live apply revoked, for the revoked
+// guard's logs and the restart-storm alert: "quota" when the user is still an
+// active client and only the quota cutoff left it out, otherwise what the
+// database says (blocked / expired / no-uuid / deleted). A failed lookup labels
+// them "unknown": the labels decide nothing.
+func revocationReasons(revoked []string, clients []biz.ActiveVlessClient, quota quotaCutoff) map[string]string {
+	if len(revoked) == 0 {
+		return nil
+	}
+	byEmail := make(map[string]biz.ActiveVlessClient, len(clients))
+	for _, c := range clients {
+		byEmail[strings.ToLower(c.UserID)] = c
+	}
+	reasons := make(map[string]string, len(revoked))
+	var lookup []string
+	for _, e := range revoked {
+		e = strings.ToLower(e)
+		if c, ok := byEmail[e]; ok && quota.excludes(c) {
+			reasons[e] = revokedReasonQuota
+			continue
+		}
+		lookup = append(lookup, e)
+	}
+	if len(lookup) == 0 {
+		return reasons
+	}
+	found, err := withSyncTimeout(func(ctx context.Context) (map[string]string, error) {
+		return revocationReasonsLookup(ctx, lookup)
+	})
+	if err != nil {
+		log.Printf("[xray-live] причины отзыва не прочитаны: %v", err)
+	}
+	for _, e := range lookup {
+		if r := found[e]; r != "" {
+			reasons[e] = r
+		} else {
+			reasons[e] = biz.RevokedUnknown
+		}
+	}
+	return reasons
 }
 
 // buildExitNodeOutbound создаёт Xray outbound для exit-ноды.
-// Поддерживает VLESS Reality, Shadowsocks и прокси-протоколы.
-func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
+// Поддерживает VLESS Reality, Shadowsocks и прокси-протоколы. fingerprint
+// (reality_fingerprint) and mux (mux_concurrency) come from the sync inputs.
+// nil for a node without a usable tunnel config (logged; the same on every
+// sync for the same row).
+func buildExitNodeOutbound(node biz.ExitNodeTunnel, fingerprint string, mux int) map[string]interface{} {
 	tag := fmt.Sprintf("exit-%d", node.ID)
 
 	switch node.TunnelProtocol {
@@ -912,7 +1269,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			},
 			"streamSettings": map[string]interface{}{
 				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{"fingerprint": getFingerprint(), "serverName": sni},
+				"realitySettings": map[string]interface{}{"fingerprint": fingerprint, "serverName": sni},
 				"sockopt": map[string]interface{}{
 					"tcpFastOpen":          true,
 					"tcpNoDelay":           true,
@@ -923,7 +1280,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			// Кратно снижает время установки подключения (один TLS handshake на все стримы).
 			"mux": map[string]interface{}{
 				"enabled":         true,
-				"concurrency":     getMuxConcurrency(),
+				"concurrency":     mux,
 				"xudpConcurrency": 16,      // UDP мультиплексирование (DNS, QUIC)
 				"xudpProxyUDP443": "allow", // Разрешаем QUIC/HTTP3 — ускоряет YouTube, Instagram
 			},
@@ -1017,7 +1374,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": getMuxConcurrency()},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": mux},
 		}
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
@@ -1038,7 +1395,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 					},
 				},
 			},
-			"mux": map[string]interface{}{"enabled": true, "concurrency": getMuxConcurrency()},
+			"mux": map[string]interface{}{"enabled": true, "concurrency": mux},
 		}
 		if node.TunnelUUID != "" {
 			servers := outbound["settings"].(map[string]interface{})["servers"].([]map[string]interface{})
@@ -1057,7 +1414,9 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 // ─────────────────────── Tunnel Health Monitoring ───────────────────────
 //
 // Фоновый мониторинг состояния туннелей до exit-нод.
-// Каждые 30 секунд проверяет TCP-подключение к каждой exit-ноде.
+// Каждые 30 секунд проверяет каждую exit-ноду по её протоколу (checkTunnelHealth):
+// VLESS — TCP + TLS handshake, Shadowsocks и прочие — TCP connect, Hysteria2 —
+// HTTP 204 через локальный SOCKS5 клиента (весь путь Hub → exit → интернет).
 // Hysteresis: нужно 3 consecutive неудачи → unhealthy, 2 consecutive успеха → healthy.
 // При изменении статуса — пересинхронизирует Xray конфиг.
 
@@ -1431,39 +1790,4 @@ func checkCertExpiry() {
 			log.Printf("[cert-monitor] WARNING: %s истекает через %d дней", name, daysLeft)
 		}
 	}
-}
-
-// ─── Dynamic config helpers (read from app_settings, auto-tuner writes) ───
-
-func getDNSServers() []string {
-	s := biz.GetSettingOrDefault("dns_servers", "8.8.8.8,1.1.1.1")
-	parts := strings.Split(s, ",")
-	var servers []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			servers = append(servers, p)
-		}
-	}
-	if len(servers) == 0 {
-		return []string{"8.8.8.8", "1.1.1.1"}
-	}
-	return servers
-}
-
-func getFingerprint() string {
-	fp := biz.GetSettingOrDefault("reality_fingerprint", "chrome")
-	if fp == "" {
-		return "chrome"
-	}
-	return fp
-}
-
-func getMuxConcurrency() int {
-	s := biz.GetSettingOrDefault("mux_concurrency", "8")
-	v, _ := strconv.Atoi(s)
-	if v < 1 || v > 64 {
-		return 8
-	}
-	return v
 }

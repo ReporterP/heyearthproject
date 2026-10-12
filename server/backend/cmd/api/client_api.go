@@ -187,7 +187,7 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 		// 1. VLESS Reality (максимальная защита от DPI) — only if plan allows vless
 		realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
 		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
-		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
 		if realityPubKey != "" && canVLESS {
 			flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 			flowParam := ""

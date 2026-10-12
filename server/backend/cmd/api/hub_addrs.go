@@ -87,6 +87,54 @@ func hubOwnIPs() []string {
 	})
 }
 
+// getE is get for a compute that can fail: an error is returned as is and
+// nothing is cached, so the next call computes again.
+func (c *hubIPCache) getE(compute func() ([]string, error), warn func(string)) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.ips) > 0 {
+		return c.ips, nil
+	}
+	ips, err := compute()
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		warn("no public address of the Hub could be determined — the Hub-address block is OMITTED from the generated " +
+			"hysteria2 and xray configs this time (the kernel egress guard still applies); retrying on the next sync")
+		return nil, nil
+	}
+	c.ips = ips
+	return ips, nil
+}
+
+// hubOwnIPsStrict is hubOwnIPs for the xray sync (same cache): setting reads
+// main_server_host / hub_main_server_host and returns "" for an absent key and
+// an error for a failed read. A failed read is returned instead of computing a
+// list without the NAT address (which would then be cached for the life of the
+// process) — the xray sync aborts on it and retries.
+func hubOwnIPsStrict(setting func(key string) (string, error)) ([]string, error) {
+	return hubIPs.getE(func() ([]string, error) {
+		var hosts []string
+		for _, key := range []string{"main_server_host", "hub_main_server_host"} {
+			h, err := setting(key)
+			if err != nil {
+				return nil, err
+			}
+			hosts = append(hosts, h)
+		}
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			log.Printf("[hub-addrs] net.InterfaceAddrs: %v", err)
+		}
+		return collectHubIPs(addrs, hosts, lookupIPsTimeout), nil
+	}, func(msg string) {
+		if hubIPsWarn.allow(time.Now(), time.Hour) {
+			log.Printf("[hub-addrs] WARN: %s", msg)
+		}
+	})
+}
+
 func lookupIPsTimeout(host string) ([]net.IP, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

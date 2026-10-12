@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,11 +19,16 @@ import (
 // other than "true" means DISABLED, so the default is never to cut a user off.
 const quotaCutoffSetting = "quota_cutoff_enabled"
 
-// Test seams for the quota code: its database reads, its sync request and the
-// fail-open alert.
+// Test seams for the quota code: its database reads (bounded by
+// xraySyncDBTimeout: the sync path reads them under xraySyncMu), its sync
+// request and the fail-open alert.
 var (
-	getSetting        = biz.GetSetting
-	listQuotaExceeded = biz.ListQuotaExceededUserIDs
+	getSetting = func(key string) (string, error) {
+		return withSyncTimeout(func(ctx context.Context) (string, error) { return biz.GetSettingContext(ctx, key) })
+	}
+	listQuotaExceeded = func() (map[string]struct{}, error) {
+		return withSyncTimeout(biz.ListQuotaExceededUserIDsContext)
+	}
 	requestSync       = RequestXraySync
 	quotaRaiseAlert   = RaiseAlert
 	quotaResolveAlert = ResolveAlert
@@ -66,23 +72,56 @@ func readQuotaCutoffFlag() (bool, error) {
 }
 
 // loadQuotaCutoff reads the flag and the over-quota set fresh from the database
-// for the traffic collector. The set is computed even when the cutoff is
-// disabled so the logs show who WOULD be cut off. On any read error it returns a
-// zero decision together with the error; the caller must not act on it
-// (checkTrafficLimits skips the tick: no sync request, so nothing is restored or
-// cut). SyncXrayConfig does not use this function: it resolves read failures
-// against the last decision instead (loadQuotaForSync via syncWithQuota).
-func loadQuotaCutoff() (quotaCutoff, error) {
+// for the traffic collector. While the cutoff is disabled the set only feeds the
+// hourly "who WOULD be cut off" lines, so it is read at most once per
+// quotaOffScanEvery (gate; scanned=false and an empty decision otherwise). On
+// any read error it returns a zero decision together with the error; the caller
+// must not act on it (checkTrafficLimits skips the tick: no sync request, so
+// nothing is restored or cut). SyncXrayConfig does not use this function: it
+// resolves read failures against the last decision instead (loadQuotaForSync
+// via syncWithQuota).
+func loadQuotaCutoff(now time.Time, gate *quotaScanGate) (q quotaCutoff, scanned bool, err error) {
 	enabled, err := readQuotaCutoffFlag()
 	if err != nil {
-		return quotaCutoff{}, err
+		return quotaCutoff{}, false, err
+	}
+	if !enabled && !gate.due(now, quotaOffScanEvery) {
+		return quotaCutoff{}, false, nil
 	}
 	over, err := listQuotaExceeded()
 	if err != nil {
-		return quotaCutoff{}, err
+		return quotaCutoff{}, false, err
 	}
-	return quotaCutoff{enabled: enabled, over: over}, nil
+	return quotaCutoff{enabled: enabled, over: over}, true, nil
 }
+
+// quotaOffScanEvery: while the cutoff is disarmed the over-quota set feeds only
+// log lines throttled to once an hour, and each read costs one SUM over the
+// cycle's traffic_stats per limited user — so it is read at most this often.
+const quotaOffScanEvery = quotaWarnEvery
+
+// quotaScanGate lets a disarmed pass read the over-quota set at most once per
+// interval. An attempt counts even if the read fails.
+type quotaScanGate struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func (g *quotaScanGate) due(now time.Time, every time.Duration) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.last.IsZero() && now.Sub(g.last) < every {
+		return false
+	}
+	g.last = now
+	return true
+}
+
+// The disarmed-mode gates of the two readers: they log different lines.
+var (
+	quotaOffSyncScan      = &quotaScanGate{} // loadQuotaForSync, under xraySyncMu
+	quotaOffCollectorScan = &quotaScanGate{} // checkTrafficLimits, collector goroutine
+)
 
 // excludes reports whether the client must be left out of the xray config (VLESS
 // clients and per-plan routing rules): only when the cutoff is armed AND the
@@ -138,6 +177,7 @@ const (
 	quotaOverFresh    quotaOverSource = iota // read by this sync
 	quotaOverCached                          // query failed: the last read, at most quotaDecisionMaxAge old
 	quotaOverFailOpen                        // query failed, no usable last read: empty set, nobody cut off
+	quotaOverSkipped                         // flag read "off", hourly scan not due: not read, nobody cut off
 )
 
 // quotaResolution is the decision of one sync plus where its parts came from.
@@ -333,8 +373,17 @@ func (m *quotaSyncMemory) appliedState() quotaApplied {
 // resolves read failures against quotaMemory (see resolve), logging a WARN for
 // each failure and keeping the fail-open alert in step. An error (a read failed
 // before this process applied anything) means: do not apply, abort the sync.
+// With the flag read "off" the set is read only when the hourly summary may
+// use it (quotaOffSyncScan): cutting nobody does not depend on it, and arming
+// the cutoff later reads it fresh anyway (resolve holds "on" until it is).
 func loadQuotaForSync(now time.Time) (quotaCutoff, error) {
 	flag, flagErr := readQuotaCutoffFlag()
+	if flagErr == nil && !flag && !quotaOffSyncScan.due(now, quotaOffScanEvery) {
+		r := quotaResolution{q: quotaCutoff{over: map[string]struct{}{}}, overSource: quotaOverSkipped}
+		quotaWarningLines(r, quotaHeldWarnings, now, quotaWarnEvery) // feeds the throttle; nothing to log
+		reportQuotaFailOpen(r)                                       // flag off: resolves the fail-open alert
+		return r.q, nil
+	}
 	over, overErr := listQuotaExceeded()
 	r, err := quotaMemory.resolve(flag, flagErr, over, overErr, now, quotaDecisionMaxAge)
 	if err != nil {

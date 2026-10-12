@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -163,6 +164,30 @@ func GetPlanBySlug(slug string) (*Plan, error) {
 	}
 	p.ServerIDs = getPlanServerIDs(p.ID)
 	return &p, nil
+}
+
+// ListPlanServersContext returns all of plan_servers as plan id → server ids
+// (ascending), in one query. Every plan is included, also one hidden from the
+// site (is_active = FALSE): its existing subscribers are still routed by it.
+// The xray sync builds the per-plan balancers from it.
+func ListPlanServersContext(ctx context.Context) (map[int][]int, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT plan_id, server_id FROM plan_servers ORDER BY plan_id, server_id`)
+	if err != nil {
+		return nil, fmt.Errorf("plan servers: %w", err)
+	}
+	defer rows.Close()
+	out := map[int][]int{}
+	for rows.Next() {
+		var planID, serverID int
+		if err := rows.Scan(&planID, &serverID); err != nil {
+			return nil, fmt.Errorf("plan servers scan: %w", err)
+		}
+		out[planID] = append(out[planID], serverID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("plan servers rows: %w", err)
+	}
+	return out, nil
 }
 
 func getPlanServerIDs(planID int) []int {

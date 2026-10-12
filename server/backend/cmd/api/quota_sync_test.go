@@ -228,8 +228,25 @@ func TestQuotaSyncWiring(t *testing.T) {
 	if !handsApply {
 		t.Error("SyncXrayConfig must call syncWithQuota(…, applyXrayConfig)")
 	}
-	if !refs["applyXrayConfig"]["excludes"] {
-		t.Error("applyXrayConfig no longer cuts off by the decision it gets (quota.excludes)")
+	if !refs["buildXrayConfig"]["excludes"] {
+		t.Error("buildXrayConfig no longer cuts off by the decision it gets (quota.excludes)")
+	}
+	// applyXrayConfig hands the decision it gets to the generator.
+	handsQuota := false
+	ast.Inspect(decls["applyXrayConfig"].Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "buildXrayConfig" && len(call.Args) == 2 {
+			if arg, ok := call.Args[1].(*ast.Ident); ok && arg.Name == "quota" {
+				handsQuota = true
+			}
+		}
+		return true
+	})
+	if !handsQuota {
+		t.Error("applyXrayConfig must call buildXrayConfig(…, quota)")
 	}
 }
 

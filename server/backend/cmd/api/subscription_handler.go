@@ -221,7 +221,7 @@ func buildClashConfig(userID string) (string, error) {
 	// 1. VLESS Reality (Clash.Meta / mihomo)
 	realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
 	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
-	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
 		flowLine := ""

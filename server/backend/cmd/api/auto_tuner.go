@@ -57,7 +57,7 @@ var sniByCountry = map[string][]string{
 		"yandex.ru",
 		"mail.ru",
 		"vk.com",
-		"cdn.jsdelivr.net",    // CDN, works from any IP
+		"cdn.jsdelivr.net", // CDN, works from any IP
 		"cdnjs.cloudflare.com",
 		"static.cloudflareinsights.com",
 		"fonts.googleapis.com", // Google CDN — less scrutinized than google.com
@@ -65,8 +65,8 @@ var sniByCountry = map[string][]string{
 	},
 	// Netherlands — for exit nodes in NL (Amsterdam)
 	"NL": {
-		"github.com",          // Microsoft Azure, stable, no RU servers since 2022
-		"www.twitch.tv",       // AWS, high traffic, no Russian PoP
+		"github.com",    // Microsoft Azure, stable, no RU servers since 2022
+		"www.twitch.tv", // AWS, high traffic, no Russian PoP
 		"cdn.jsdelivr.net",
 		"cdnjs.cloudflare.com",
 		"static.cloudflareinsights.com",
@@ -125,6 +125,7 @@ func candidateSNIsForCountry(countryCode string) []string {
 }
 
 var candidateFingerprints = []string{"chrome", "firefox", "safari", "edge"}
+
 // NOTE: transport and flow are FIXED for VLESS Reality (tcp + xtls-rprx-vision).
 // ws/grpc/empty-flow break Reality. Only fingerprint is tunable client-side.
 var candidateDNS = [][]string{
@@ -321,7 +322,7 @@ func randHex32() string {
 // ─── Phase 1: SNI tuning (server-side) ───
 
 func tuneSNI() string {
-	currentSNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	currentSNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
 	// Hub is in Russia — use RU-specific SNI list
 	hubCountry := biz.GetSettingOrDefault("hub_country", "RU")
 	candidates := candidateSNIsForCountry(hubCountry)
@@ -443,14 +444,14 @@ func optimizeClientParams() bool {
 	_ = biz.SetSetting("reality_transport", "tcp")
 	_ = biz.SetSetting("reality_flow", "xtls-rprx-vision")
 
-	testSNI := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	testSNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
 
 	var results []testResult
 	for _, fp := range candidateFingerprints {
 		r := testTLSWithParams(testSNI, fp)
 		r.Fingerprint = fp
-		r.Transport = "tcp"           // FIXED for Reality
-		r.Flow = "xtls-rprx-vision"   // FIXED for Reality
+		r.Transport = "tcp"         // FIXED for Reality
+		r.Flow = "xtls-rprx-vision" // FIXED for Reality
 		r.Category = "fingerprint"
 		results = append(results, r)
 		saveTestResult("client_fingerprint", 0, r)

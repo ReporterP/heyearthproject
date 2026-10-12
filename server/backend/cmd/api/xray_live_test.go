@@ -555,8 +555,12 @@ func TestXrayApplierOnRestartBeforeStaleCleared(t *testing.T) {
 	f := newFakeXray(t, liveCfgBase)
 	f.st.markStale("revoked user still online")
 	var staleDuringHook []bool
+	var causes []string
 	a := f.applier()
-	a.onRestart = func() { staleDuringHook = append(staleDuringHook, f.st.isStale()) }
+	a.onRestart = func(cause string) {
+		staleDuringHook = append(staleDuringHook, f.st.isStale())
+		causes = append(causes, cause)
+	}
 
 	f.restartErr = errors.New("restart failed")
 	f.tmp = liveCfgBase
@@ -570,5 +574,69 @@ func TestXrayApplierOnRestartBeforeStaleCleared(t *testing.T) {
 	}
 	if len(staleDuringHook) != 1 || !staleDuringHook[0] || f.st.isStale() {
 		t.Fatalf("hook saw stale=%v, after apply stale=%v; want hook once while still stale", staleDuringHook, f.st.isStale())
+	}
+	// The failed restart relabelled the stale runtime: the retry says why.
+	if len(causes) != 1 || causes[0] != xrayCauseRestartFailed {
+		t.Fatalf("restart cause = %v, want [%s]", causes, xrayCauseRestartFailed)
+	}
+}
+
+// Every restart path hands its cause to onRestart (recordXrayRestart labels the
+// restart-storm alert with it); a successful restart clears the stale cause.
+func TestXrayApplierRestartCauses(t *testing.T) {
+	cause := func(f *fakeXray, newCfg string, setup func(a *xrayApplier)) string {
+		t.Helper()
+		var got []string
+		a := f.applier()
+		a.onRestart = func(c string) { got = append(got, c) }
+		if setup != nil {
+			setup(&a)
+		}
+		f.tmp = newCfg
+		if _, _, _, err := a.apply([]byte(newCfg), f.st); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("onRestart calls = %v, want one", got)
+		}
+		return got[0]
+	}
+
+	f := newFakeXray(t, liveCfgBase)
+	if got := cause(f, liveCfgPort, nil); got != "structural (changed inbounds)" {
+		t.Errorf("structural: cause %q", got)
+	}
+
+	f = newFakeXray(t, liveCfgBase)
+	f.liveErr = errors.New("adu failed")
+	if got := cause(f, liveCfgCarol, nil); got != xrayCauseLiveFailed {
+		t.Errorf("live failure: cause %q", got)
+	}
+	if f.st.isStale() || f.st.staleCause() != xrayCauseStale {
+		t.Errorf("after the restart: stale=%v cause=%q, want clean", f.st.isStale(), f.st.staleCause())
+	}
+
+	f = newFakeXray(t, liveCfgBase)
+	f.st.markStaleCause("revoked(blocked,quota)", "revoked user still online: a (blocked), b (quota)")
+	if got := cause(f, liveCfgBase, nil); got != "revoked(blocked,quota)" {
+		t.Errorf("revocation: cause %q", got)
+	}
+
+	f = newFakeXray(t, liveCfgBase)
+	if got := cause(f, liveCfgBase, func(a *xrayApplier) {
+		a.readRunning = func() ([]byte, error) { return nil, errors.New("EACCES") }
+	}); got != "unreadable-config" {
+		t.Errorf("unreadable running config: cause %q", got)
+	}
+
+	// A marker left by a previous process.
+	f = newFakeXray(t, liveCfgBase)
+	f.st.begin("restart")
+	f.st = &xrayRuntimeState{marker: f.st.marker}
+	if !f.st.load() {
+		t.Fatal("marker not loaded")
+	}
+	if got := cause(f, liveCfgBase, nil); got != xrayCausePrevProcess {
+		t.Errorf("previous process: cause %q", got)
 	}
 }

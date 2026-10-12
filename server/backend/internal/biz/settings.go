@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,9 +9,25 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
+// DefaultRealitySNI is the Reality SNI of the Hub (dest + serverNames of its
+// VLESS inbounds, sni= of the subscription URIs) while app_settings has no
+// reality_sni_domain. It is the first RU candidate of the auto-tuner
+// (cmd/api/auto_tuner.go, sniByCountry["RU"]): the Hub is in Russia, and a
+// Russian domain served from a Russian IP shows DPI no ASN mismatch. apple.com,
+// the former default, is a bad SNI there (ASN mismatch). Every reader of the
+// key must fall back to this same constant: if the xray config and the
+// subscription disagree on the SNI, every Reality/XHTTP handshake fails.
+const DefaultRealitySNI = "yandex.ru"
+
 func GetSetting(key string) (string, error) {
+	return GetSettingContext(context.Background(), key)
+}
+
+// GetSettingContext is GetSetting bounded by ctx. A missing key is
+// sql.ErrNoRows, any other error is a failed read.
+func GetSettingContext(ctx context.Context, key string) (string, error) {
 	var value string
-	err := db.DB.QueryRow(`SELECT value FROM app_settings WHERE key = $1`, key).Scan(&value)
+	err := db.DB.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = $1`, key).Scan(&value)
 	if err != nil {
 		return "", err
 	}
@@ -18,7 +35,12 @@ func GetSetting(key string) (string, error) {
 }
 
 func SetSetting(key, value string) error {
-	_, err := db.DB.Exec(`
+	return SetSettingContext(context.Background(), key, value)
+}
+
+// SetSettingContext is SetSetting bounded by ctx.
+func SetSettingContext(ctx context.Context, key, value string) error {
+	_, err := db.DB.ExecContext(ctx, `
 		INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, CURRENT_TIMESTAMP)
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
 	`, key, value)

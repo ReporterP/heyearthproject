@@ -123,18 +123,25 @@ func GetSubscriptionVersion() int64 {
 // BumpSubscriptionVersion increments the version atomically and invalidates the cache.
 // Called from every successful Provision/Deprovision.
 func BumpSubscriptionVersion() {
-	_, err := db.DB.Exec(`
+	// non-fatal — clients will see stale version, next bump will sync
+	_ = BumpSubscriptionVersionContext(context.Background())
+}
+
+// BumpSubscriptionVersionContext is BumpSubscriptionVersion bounded by ctx; it
+// returns the database error so the caller can retry the notification.
+func BumpSubscriptionVersionContext(ctx context.Context) error {
+	_, err := db.DB.ExecContext(ctx, `
 		UPDATE app_settings
 		   SET value = (COALESCE(NULLIF(value, '')::bigint, 0) + 1)::text
 		 WHERE key = 'subscription_version'
 	`)
 	if err != nil {
-		// non-fatal — clients will see stale version, next bump will sync
-		return
+		return fmt.Errorf("bump subscription_version: %w", err)
 	}
 	subscriptionVersionCache.Lock()
 	subscriptionVersionCache.at = time.Time{} // invalidate
 	subscriptionVersionCache.Unlock()
+	return nil
 }
 
 // ── Provision/Deprovision are implemented in this file in Tasks 5 and 6 ─────

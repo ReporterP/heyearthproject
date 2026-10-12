@@ -67,8 +67,10 @@ func truncateAlertDetails(s string) string {
 // cache of the marker file:
 //   - begin writes the marker BEFORE the runtime is touched (live apply or
 //     rename + restart), so an API process dying midway leaves it behind;
-//   - markStale sets the flag (+ marker): failed live apply, rename or restart,
-//     or a revoked user still online — the next sync restarts unconditionally;
+//   - markStale / markStaleCause set the flag (+ marker): failed live apply,
+//     rename or restart, or a revoked user still online — the next sync
+//     restarts unconditionally; the cause labels that restart (logs and the
+//     restart-storm alert, xray_restarts.go);
 //   - liveApplied removes the marker after a fully verified live apply, unless
 //     the runtime was marked stale meanwhile; untouched does the same when the
 //     rename before a restart failed (file and runtime unchanged);
@@ -77,8 +79,18 @@ func truncateAlertDetails(s string) string {
 type xrayRuntimeState struct {
 	mu     sync.Mutex
 	stale  bool
+	cause  string // short label of what made it stale (latest wins); "" = unlabeled
 	marker string // "" = memory only
 }
+
+// Restart causes set by the applier (see also revokedRestartCause).
+const (
+	xrayCauseLiveFailed    = "live-apply-failed"
+	xrayCauseRenameFailed  = "rename-failed"
+	xrayCauseRestartFailed = "restart-failed"
+	xrayCausePrevProcess   = "previous-process"
+	xrayCauseStale         = "stale"
+)
 
 var xrayStale = &xrayRuntimeState{marker: xrayStaleMarkerPath}
 
@@ -90,7 +102,7 @@ func (s *xrayRuntimeState) load() bool {
 		return false
 	}
 	s.mu.Lock()
-	s.stale = true
+	s.stale, s.cause = true, xrayCausePrevProcess
 	s.mu.Unlock()
 	return true
 }
@@ -107,11 +119,27 @@ func (s *xrayRuntimeState) begin(what string) {
 	s.writeMarkerLocked("in progress: " + what)
 }
 
-func (s *xrayRuntimeState) markStale(reason string) {
+func (s *xrayRuntimeState) markStale(reason string) { s.markStaleCause("", reason) }
+
+// markStaleCause is markStale with a short cause label for the restart it forces.
+func (s *xrayRuntimeState) markStaleCause(cause, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stale = true
+	if cause != "" {
+		s.cause = cause
+	}
 	s.writeMarkerLocked("stale: " + reason)
+}
+
+// staleCause is the label of the restart a stale runtime forces.
+func (s *xrayRuntimeState) staleCause() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cause == "" {
+		return xrayCauseStale
+	}
+	return s.cause
 }
 
 func (s *xrayRuntimeState) liveApplied() { s.settledUnlessStale() }
@@ -131,7 +159,7 @@ func (s *xrayRuntimeState) settledUnlessStale() {
 func (s *xrayRuntimeState) restarted() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stale = false
+	s.stale, s.cause = false, ""
 	s.removeMarkerLocked()
 }
 
@@ -160,6 +188,11 @@ func (s *xrayRuntimeState) removeMarkerLocked() {
 func prepareXrayLiveApply() {
 	if xrayStale.load() {
 		log.Printf("[xray-sync] stale marker %s found — first sync restarts xray", xrayStaleMarkerPath)
+	}
+	if n, err := revokedUsers.load(); err != nil {
+		log.Printf("[xray-live] WARN: список отозванных %s не прочитан: %v (наблюдение начинается заново)", revokedUsers.path, err)
+	} else if n > 0 {
+		log.Printf("[xray-live] восстановлено наблюдение за %d отозванными пользователями из %s", n, revokedUsers.path)
 	}
 	if n := cleanupXrayLiveTempFiles(filepath.Dir(xrayConfigPath)); n > 0 {
 		log.Printf("[xray-sync] removed %d leftover %s file(s)", n, xrayLiveTempPattern)
@@ -330,7 +363,7 @@ type xrayApplier struct {
 	install     func() error                // atomic rename tmp → config path
 	discard     func()                      // remove the tmp file
 	restart     func() error                // systemctl restart xray
-	onRestart   func()                      // after a successful restart, before the stale state is cleared; may be nil
+	onRestart   func(cause string)          // after a successful restart, before the stale state is cleared; may be nil
 }
 
 // apply compares newJSON with the running config (canonically, xraydiff) and
@@ -340,16 +373,22 @@ type xrayApplier struct {
 // xrayRuntimeState for when it is set and cleared).
 //
 // liveErr reports a failed live apply that fell back to the restart path (the
-// caller alerts on it); err is the error of the whole apply.
+// caller alerts on it); err is the error of the whole apply. onRestart gets the
+// cause of a restart: the stale cause, "structural (<first difference>)",
+// live-apply-failed, unreadable-config or diff-error.
 func (a xrayApplier) apply(newJSON []byte, st *xrayRuntimeState) (action xrayApplyAction, diff xraydiff.Result, liveErr, err error) {
+	var cause string
 	if st.isStale() {
-		log.Println("[xray-sync] runtime stale (previous apply or restart failed, or revoked user online) — restart")
+		cause = st.staleCause()
+		log.Printf("[xray-sync] runtime stale (%s: previous apply or restart failed, or revoked user online) — restart", cause)
 	} else if running, rerr := a.readRunning(); rerr != nil {
+		cause = "unreadable-config"
 		log.Printf("[xray-sync] read running config: %v — restart", rerr)
 	} else {
 		d, derr := xraydiff.Classify(running, newJSON)
 		switch {
 		case derr != nil:
+			cause = "diff-error"
 			log.Printf("[xray-sync] diff error: %v — restart", derr)
 		case d.Kind == xraydiff.None:
 			a.discard()
@@ -357,18 +396,22 @@ func (a xrayApplier) apply(newJSON []byte, st *xrayRuntimeState) (action xrayApp
 		case d.Kind == xraydiff.UserOnly:
 			st.begin("live apply")
 			if liveErr = a.applyLive(d); liveErr != nil {
-				st.markStale("live apply failed: " + liveErr.Error()) // partially applied: the restart below heals it
+				// partially applied: the restart below heals it
+				st.markStaleCause(xrayCauseLiveFailed, "live apply failed: "+liveErr.Error())
+				cause = xrayCauseLiveFailed
 				log.Printf("[xray-sync] user-only apply via API failed: %v — fallback to restart", liveErr)
 				break
 			}
 			if ierr := a.install(); ierr != nil {
 				a.discard()
-				st.markStale("rename after live apply failed") // runtime has the new users, the file does not
+				// runtime has the new users, the file does not
+				st.markStaleCause(xrayCauseRenameFailed, "rename after live apply failed")
 				return xrayApplyLive, d, nil, fmt.Errorf("rename xray config after API apply: %w", ierr)
 			}
 			st.liveApplied()
 			return xrayApplyLive, d, nil, nil
 		default:
+			cause = "structural (" + d.Reason + ")"
 			log.Printf("[xray-sync] structural change (%s) — restart", d.Reason)
 		}
 		diff = d
@@ -382,11 +425,12 @@ func (a xrayApplier) apply(newJSON []byte, st *xrayRuntimeState) (action xrayApp
 		return xrayApplyRestart, diff, liveErr, fmt.Errorf("rename xray config: %w", ierr)
 	}
 	if rerr := a.restart(); rerr != nil {
-		st.markStale("restart failed") // the new file is in place but xray may still run the old config
+		// the new file is in place but xray may still run the old config
+		st.markStaleCause(xrayCauseRestartFailed, "restart failed")
 		return xrayApplyRestart, diff, liveErr, rerr
 	}
 	if a.onRestart != nil {
-		a.onRestart()
+		a.onRestart(cause)
 	}
 	st.restarted()
 	return xrayApplyRestart, diff, liveErr, nil

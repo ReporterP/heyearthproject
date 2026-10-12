@@ -13,6 +13,7 @@ package biz
 // который возвращает и total, и active отдельно.
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -39,8 +40,15 @@ func GetDirectRouteServicesForPlan(planID int) ([]DirectRouteService, error) {
 	if !enabled {
 		return []DirectRouteService{}, nil
 	}
+	return ListActiveDirectRouteServicesContext(context.Background())
+}
 
-	rows, err := db.DB.Query(`
+// ListActiveDirectRouteServicesContext returns every active direct-route
+// service. Services are global: a plan with direct_routing_enabled gets all of
+// them (GetDirectRouteServicesForPlan), so the xray sync reads the list once
+// for all such plans instead of once per plan.
+func ListActiveDirectRouteServicesContext(ctx context.Context) ([]DirectRouteService, error) {
+	rows, err := db.DB.QueryContext(ctx, `
 		SELECT s.id, s.slug, s.name, s.group_name, s.source,
 		       s.domains, s.ip4, s.ip6, s.cidr4, s.cidr6, s.dns_servers,
 		       s.timeout_sec, s.is_active, s.notes,
@@ -78,7 +86,12 @@ func GetDirectRouteServicesForPlan(planID int) ([]DirectRouteService, error) {
 // direct_routing_enabled=TRUE. Used by xray_sync to know which plans need
 // extra routing rules.
 func GetPlanIDsWithDirectRoutes() ([]int, error) {
-	rows, err := db.DB.Query(`
+	return GetPlanIDsWithDirectRoutesContext(context.Background())
+}
+
+// GetPlanIDsWithDirectRoutesContext is GetPlanIDsWithDirectRoutes bounded by ctx.
+func GetPlanIDsWithDirectRoutesContext(ctx context.Context) ([]int, error) {
+	rows, err := db.DB.QueryContext(ctx, `
 		SELECT id FROM plans
 		WHERE direct_routing_enabled = TRUE AND is_active = TRUE
 		ORDER BY id

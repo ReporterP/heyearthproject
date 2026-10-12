@@ -227,16 +227,20 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 // SyncXrayConfig keeps the count visible. The "decision changed" line goes
 // through quotaChangeNotices keyed by the diff: while syncs keep failing the
 // request is repeated every minute, the same line at most hourly. A failed read
-// skips the tick: no sync is requested, so nothing is restored or cut.
+// skips the tick: no sync is requested, so nothing is restored or cut. While the
+// cutoff is disarmed the over-quota set is read at most hourly
+// (quotaOffCollectorScan), only for the per-user lines.
 func checkTrafficLimits() {
-	quota, err := loadQuotaCutoff()
+	now := time.Now()
+	quota, scanned, err := loadQuotaCutoff(now, quotaOffCollectorScan)
 	if err != nil {
 		log.Printf("[traffic-stats] checkTrafficLimits: %v — проверка пропущена, синхронизация не запрошена", err)
 		return
 	}
-	now := time.Now()
-	for _, line := range quotaOffenderLines(quota, quotaWarnings, now, quotaWarnEvery) {
-		log.Print(line)
+	if scanned {
+		for _, line := range quotaOffenderLines(quota, quotaWarnings, now, quotaWarnEvery) {
+			log.Print(line)
+		}
 	}
 	// appliedState locks quotaSyncMemory.mu only for the copy: requestSync is
 	// never called with it held.

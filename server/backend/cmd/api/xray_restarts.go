@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,12 +19,13 @@ const (
 
 // slidingWindowCounter counts events within the last window. The timestamp is taken
 // under the lock, so events are always stored in non-decreasing time order even when
-// several goroutines add concurrently.
+// several goroutines add concurrently. Each event may carry a label (why it happened).
 type slidingWindowCounter struct {
 	mu     sync.Mutex
 	window time.Duration
 	clock  func() time.Time // nil → time.Now; tests inject a fake. Called with mu held.
 	events []time.Time
+	labels []string // parallel to events; "" = unlabeled
 }
 
 func (c *slidingWindowCounter) nowLocked() time.Time {
@@ -34,14 +36,30 @@ func (c *slidingWindowCounter) nowLocked() time.Time {
 }
 
 // Add records n events at the current time and returns the count within the window.
-func (c *slidingWindowCounter) Add(n int) int {
+func (c *slidingWindowCounter) Add(n int) int { return c.AddLabeled(n, "") }
+
+// AddLabeled is Add with a label on each of the n events.
+func (c *slidingWindowCounter) AddLabeled(n int, label string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.nowLocked()
 	for i := 0; i < n; i++ {
 		c.events = append(c.events, now)
+		c.labels = append(c.labels, label)
 	}
 	return c.pruneLocked(now)
+}
+
+// Breakdown returns the events within the window per label.
+func (c *slidingWindowCounter) Breakdown() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(c.nowLocked())
+	out := map[string]int{}
+	for _, l := range c.labels {
+		out[l]++
+	}
+	return out
 }
 
 // Count returns the number of events within the window.
@@ -58,14 +76,21 @@ func (c *slidingWindowCounter) pruneLocked(now time.Time) int {
 		i++
 	}
 	c.events = c.events[i:]
+	if len(c.labels) >= i {
+		c.labels = c.labels[i:]
+	}
 	return len(c.events)
 }
 
 var xrayRestarts = &slidingWindowCounter{window: xrayRestartWindow}
 
-// recordXrayRestart is called after every successful `systemctl restart xray`.
-func recordXrayRestart() {
-	evaluateXrayRestartStorm(xrayRestarts.Add(1))
+// recordXrayRestart is called after every successful `systemctl restart xray`
+// with its cause (xrayApplier: structural (…), revoked(blocked,quota), …).
+func recordXrayRestart(cause string) {
+	if cause == "" {
+		cause = "unknown"
+	}
+	evaluateXrayRestartStorm(xrayRestarts.AddLabeled(1, cause))
 }
 
 // checkXrayRestartWindow re-evaluates without a new restart so the storm alert
@@ -77,11 +102,45 @@ func checkXrayRestartWindow() {
 func evaluateXrayRestartStorm(n int) {
 	if n > xrayRestartThreshold {
 		RaiseAlert("xray-restart-storm", AlertCritical, "Шторм рестартов xray",
-			fmt.Sprintf("%d перезапусков xray за последний час (порог %d). Каждый рестарт рвёт соединения всех пользователей.",
-				n, xrayRestartThreshold))
+			fmt.Sprintf("%d перезапусков xray за последний час (порог %d). Каждый рестарт рвёт соединения всех пользователей. Причины: %s.",
+				n, xrayRestartThreshold, formatRestartCauses(xrayRestarts.Breakdown())))
 		return
 	}
 	ResolveAlert("xray-restart-storm", fmt.Sprintf("Рестарты xray в норме: %d за последний час.", n))
+}
+
+// formatRestartCauses renders a Breakdown, most frequent first:
+// "structural (changed outbounds) ×3, revoked(quota) ×1".
+func formatRestartCauses(b map[string]int) string {
+	type kv struct {
+		cause string
+		n     int
+	}
+	merged := make(map[string]int, len(b))
+	for c, n := range b {
+		if c == "" {
+			c = "unknown"
+		}
+		merged[c] += n
+	}
+	list := make([]kv, 0, len(merged))
+	for c, n := range merged {
+		list = append(list, kv{c, n})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].n != list[j].n {
+			return list[i].n > list[j].n
+		}
+		return list[i].cause < list[j].cause
+	})
+	parts := make([]string, 0, len(list))
+	for _, e := range list {
+		parts = append(parts, fmt.Sprintf("%s ×%d", e.cause, e.n))
+	}
+	if len(parts) == 0 {
+		return "нет данных"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ── restarts done by systemd itself (crash loop, Restart=on-failure) ──
@@ -144,7 +203,7 @@ func pollXraySystemdRestarts() {
 	delta := xrayNRestartsDelta(xrayNRestartsLast, cur, xrayNRestartsKnown)
 	xrayNRestartsLast, xrayNRestartsKnown = cur, true
 	if delta > 0 {
-		n := xrayRestarts.Add(delta)
+		n := xrayRestarts.AddLabeled(delta, "systemd (сам)")
 		log.Printf("[monitor] systemd перезапустил xray сам: +%d (всего за час: %d)", delta, n)
 	}
 }

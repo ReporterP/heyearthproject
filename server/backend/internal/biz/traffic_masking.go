@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"log"
 
 	"github.com/heyearth/backend/internal/db"
@@ -16,7 +17,14 @@ type TrafficMaskingRule struct {
 
 // ListActiveTrafficMaskingRules возвращает все активные правила маскировки.
 func ListActiveTrafficMaskingRules() ([]TrafficMaskingRule, error) {
-	rows, err := db.DB.Query(`
+	return ListActiveTrafficMaskingRulesContext(context.Background())
+}
+
+// ListActiveTrafficMaskingRulesContext is ListActiveTrafficMaskingRules bounded
+// by ctx. Query and iteration errors are returned; a row that cannot be scanned
+// is skipped (that is the same on every call, so the result stays stable).
+func ListActiveTrafficMaskingRulesContext(ctx context.Context) ([]TrafficMaskingRule, error) {
+	rows, err := db.DB.QueryContext(ctx, `
 		SELECT id, source_domain, mask_domain, tenant_id
 		FROM traffic_masking_rules
 		WHERE is_active = TRUE
