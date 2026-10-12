@@ -136,28 +136,38 @@ func SyncXrayConfig() error {
 		return nil // Xray не установлен — пропускаем
 	}
 
+	// Per-user quota cutoff: the decision is resolved ONCE per sync. Users over
+	// their current billing cycle quota (judged on their effective subscription,
+	// keyed by users.user_id == ActiveVlessClient.UserID) are excluded from the
+	// VLESS clients arrays and the per-plan routing rules, but ONLY while the
+	// app_settings flag quota_cutoff_enabled is "true" (default: off). The set
+	// re-computes on every sync, so cycle resets pick up automatically.
+	// syncWithQuota resolves read failures without changing the cutoff
+	// (loadQuotaForSync: the last applied flag and the last read set, up to
+	// quotaDecisionMaxAge old, are kept; before the first apply of this process
+	// the sync is aborted instead), otherwise a DB blip would restore every
+	// cut-off user and the collector would cut them again a minute later — with
+	// a forced xray restart for everyone. It records the decision as applied
+	// only after applyXrayConfig succeeded.
+	return syncWithQuota(time.Now(), applyXrayConfig)
+}
+
+// applyXrayConfig builds the xray config for the quota decision, validates it
+// and puts it into service (unchanged / live / restart). excluded is the number
+// of VLESS clients the cutoff left out. Only for SyncXrayConfig (via
+// syncWithQuota, under xraySyncMu): it neither loads nor records the quota
+// decision itself.
+func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	keys, err := loadRealityKeys()
 	if err != nil {
-		return fmt.Errorf("load reality keys: %w", err)
+		return 0, fmt.Errorf("load reality keys: %w", err)
 	}
 
 	// ── Per-user клиенты с premium-уровнями ──
 	activeClients, err := biz.ListActiveVlessClients()
 	if err != nil {
-		return fmt.Errorf("list active clients: %w", err)
+		return 0, fmt.Errorf("list active clients: %w", err)
 	}
-
-	// Per-user quota cutoff: load the decision ONCE per sync. Users over their
-	// current billing cycle quota (judged on their effective subscription, keyed
-	// by users.user_id == ActiveVlessClient.UserID) are excluded from the VLESS
-	// clients arrays and the per-plan routing rules, but ONLY while the
-	// app_settings flag quota_cutoff_enabled is "true" (default: off). The set
-	// re-computes on every sync, so cycle resets pick up automatically. A failed
-	// read does not change the cutoff (loadQuotaForSync): the last applied flag
-	// and the last read set (up to quotaDecisionMaxAge old) are kept, otherwise a
-	// DB blip would restore every cut-off user and the collector would cut them
-	// again a minute later — with a forced xray restart for everyone.
-	quota := loadQuotaForSync(time.Now())
 
 	// Серверный UUID — для обратной совместимости и админ-доступа
 	serverUUID := keys.UUID
@@ -207,13 +217,8 @@ func SyncXrayConfig() error {
 			"level": level,
 		})
 	}
-	// One summary line, logged when it changes and at most hourly otherwise (the
-	// periodic sync runs every 5 minutes). due is called on every sync, also with
-	// nothing to say, so a set that disappears and comes back is logged again.
-	quotaLine, quotaKey := quotaSyncSummary(quota, skippedQuota)
-	if quotaSummaries.due(quotaKey, time.Now(), quotaWarnEvery) && quotaLine != "" {
-		log.Print(quotaLine)
-	}
+	// The quota summary (how many were excluded) is logged by finishQuotaSync,
+	// only once this config is in service.
 
 	// (activeClients уже использованы для заполнения vlessClients и uuidToUserID)
 	if len(vlessClients) == 0 && serverUUID != "" {
@@ -796,20 +801,20 @@ func SyncXrayConfig() error {
 	// Leak guard: never write a config whose default outbound or balancer
 	// fallback could send user traffic out via the Hub's RU IP.
 	if err := checkNoDirectLeak(inbounds, outbounds, routing); err != nil {
-		return fmt.Errorf("xray config leak guard: %w", err)
+		return 0, fmt.Errorf("xray config leak guard: %w", err)
 	}
 
 	// Сериализуем конфиг
 	configJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal xray config: %w", err)
+		return 0, fmt.Errorf("marshal xray config: %w", err)
 	}
 
 	// Atomic write: tmp file → rename (prevents partial writes on crash/power loss)
 	// Xray requires .json extension for config format detection
 	tmpPath := strings.TrimSuffix(xrayConfigPath, ".json") + ".tmp.json"
 	if err := os.WriteFile(tmpPath, configJSON, 0600); err != nil {
-		return fmt.Errorf("write xray config (tmp): %w", err)
+		return 0, fmt.Errorf("write xray config (tmp): %w", err)
 	}
 
 	// Validate config before applying (same binary as the systemd unit and `xray api`)
@@ -817,7 +822,7 @@ func SyncXrayConfig() error {
 	validateCmd := exec.Command(xrayBin, "run", "-test", "-config", tmpPath)
 	if output, err := validateCmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
+		return 0, fmt.Errorf("xray config validation failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
 	// ── Apply: unchanged / user-only via the xray API / restart (Task 7) ──
@@ -840,16 +845,14 @@ func SyncXrayConfig() error {
 			truncateAlertDetails(liveErr.Error())+" — откат на рестарт xray")
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
-	// xray now runs this config (installed, applied live or unchanged): record the
-	// quota decision it carries. The traffic collector and the flag watcher
-	// request a sync only when their fresh reads differ from it.
-	quotaMemory.recordApplied(quota)
+	// xray now runs this config (installed, applied live or unchanged): the nil
+	// error lets finishQuotaSync record the quota decision it carries.
 	switch action {
 	case xrayApplyUnchanged:
 		log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
-		return nil
+		return skippedQuota, nil
 	case xrayApplyLive:
 		// rmu does not cut open sessions: watch the revoked users' traffic.
 		revokedUsers.record(diff.Revoked(), addedEmails(diff), time.Now())
@@ -857,7 +860,7 @@ func SyncXrayConfig() error {
 		added, removed := diff.UserTotals()
 		log.Printf("[xray-sync] user-only applied via API: +%d/-%d users, rules %v (routing pushed=%v), %d ms",
 			added, removed, diff.ChangedRules, diff.RoutingChanged, time.Since(start).Milliseconds())
-		return nil
+		return skippedQuota, nil
 	}
 
 	// Restarted: structural change, failed API apply or stale runtime.
@@ -869,7 +872,7 @@ func SyncXrayConfig() error {
 	log.Printf("[xray-sync] Конфиг обновлён: %d VLESS клиентов, %d exit-нод, %d правил маскировки",
 		len(vlessClients), len(exitTags), len(maskRouteEntries))
 
-	return nil
+	return skippedQuota, nil
 }
 
 // buildExitNodeOutbound создаёт Xray outbound для exit-ноды.

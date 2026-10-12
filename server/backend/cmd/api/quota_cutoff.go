@@ -18,12 +18,19 @@ import (
 // other than "true" means DISABLED, so the default is never to cut a user off.
 const quotaCutoffSetting = "quota_cutoff_enabled"
 
-// Test seams for the quota code: its database reads and its sync request.
+// Test seams for the quota code: its database reads, its sync request and the
+// fail-open alert.
 var (
 	getSetting        = biz.GetSetting
 	listQuotaExceeded = biz.ListQuotaExceededUserIDs
 	requestSync       = RequestXraySync
+	quotaRaiseAlert   = RaiseAlert
+	quotaResolveAlert = ResolveAlert
 )
+
+// quotaFailOpenAlertKey is the alert raised while the cutoff is meant to be
+// armed but the sync runs fail-open (the over-quota set cannot be read).
+const quotaFailOpenAlertKey = "quota-cutoff-failopen"
 
 // quotaCutoff is the quota decision of one pass (one xray sync, one traffic
 // collector tick): the arming flag plus the set of users over their cycle quota.
@@ -64,7 +71,7 @@ func readQuotaCutoffFlag() (bool, error) {
 // zero decision together with the error; the caller must not act on it
 // (checkTrafficLimits skips the tick: no sync request, so nothing is restored or
 // cut). SyncXrayConfig does not use this function: it resolves read failures
-// against the last decision instead (loadQuotaForSync).
+// against the last decision instead (loadQuotaForSync via syncWithQuota).
 func loadQuotaCutoff() (quotaCutoff, error) {
 	enabled, err := readQuotaCutoffFlag()
 	if err != nil {
@@ -114,8 +121,14 @@ func (q quotaCutoff) disabledNotice() string {
 // successfully read over-quota set while the quota query fails. Three periodic
 // syncs (5 min) fit in it, so a short database blip changes nothing; a longer
 // outage falls back to fail-open (nobody cut off) rather than cutting users off
-// on data that old.
+// on data that old. It is also the startup window: during the first
+// quotaDecisionMaxAge of the process a read failure before any successful apply
+// aborts the sync instead of failing open (see resolve).
 const quotaDecisionMaxAge = 15 * time.Minute
+
+// errQuotaUnresolved marks a sync aborted because a quota read failed before
+// this process applied any decision (see resolve).
+var errQuotaUnresolved = errors.New("quota decision unavailable: nothing applied yet in this process")
 
 // quotaOverSource tells where the over-quota set of a sync decision came from.
 type quotaOverSource int
@@ -129,10 +142,19 @@ const (
 // quotaResolution is the decision of one sync plus where its parts came from.
 type quotaResolution struct {
 	q          quotaCutoff
+	flagRead   bool  // the value read by this sync (meaningful only if flagErr == nil)
 	flagErr    error // flag read failed: q.enabled is the last applied value
+	flagHeld   bool  // "on" was read but the set is not fresh: q.enabled kept disarmed
 	overErr    error // quota query failed: see overSource
 	overSource quotaOverSource
 	overAge    time.Duration // age of the last read set (cached / fail-open after a read)
+}
+
+// cutoffWanted reports whether the cutoff is meant to be armed: the decision
+// arms it, or this sync read "on" and the decision holds it disarmed for lack of
+// a fresh over-quota set.
+func (r quotaResolution) cutoffWanted() bool {
+	return r.q.enabled || (r.flagErr == nil && r.flagRead)
 }
 
 // warnings are the log lines of a decision built despite read failures.
@@ -142,10 +164,17 @@ func (r quotaResolution) warnings() []string {
 		out = append(out, fmt.Sprintf("[xray-sync] WARN %v — keeping the last applied %s=%v (a read failure is not a flip)",
 			r.flagErr, quotaCutoffSetting, r.q.enabled))
 	}
+	if r.flagHeld {
+		out = append(out, fmt.Sprintf("[xray-sync] WARN %s=true read, but the last apply had the cutoff disarmed and the over-quota set is not fresh — it stays disarmed until a quota query succeeds",
+			quotaCutoffSetting))
+	}
 	switch {
 	case r.overErr == nil:
-	case r.overSource == quotaOverCached:
+	case r.overSource == quotaOverCached && r.q.enabled:
 		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — reusing the over-quota set read %s ago (%d user(s)): no restore, no new cut",
+			r.overErr, r.overAge.Round(time.Second), len(r.q.over)))
+	case r.overSource == quotaOverCached:
+		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — the over-quota set read %s ago (%d user(s)) is kept, the cutoff is disarmed: nobody is cut off",
 			r.overErr, r.overAge.Round(time.Second), len(r.q.over)))
 	case r.overAge > 0:
 		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — the last over-quota set is %s old (> %s): continuing WITHOUT cutoff (fail-open)",
@@ -166,9 +195,14 @@ type quotaApplied struct {
 
 // quotaSyncMemory is what SyncXrayConfig remembers between syncs. It is written
 // only by SyncXrayConfig (serialized by xraySyncMu) and read by the traffic
-// collector goroutine, hence the mutex. The stored sets are never mutated.
+// collector goroutine, hence the mutex. mu is a leaf lock: nothing is called
+// while it is held. The stored sets are never mutated.
 type quotaSyncMemory struct {
 	mu sync.Mutex
+
+	// started is the process start: the startup window of resolve is measured
+	// from it. Zero disables the window (tests that do not exercise it).
+	started time.Time
 
 	// The last successful read of the over-quota set (fallback on a failed query).
 	lastOver   map[string]struct{}
@@ -180,32 +214,61 @@ type quotaSyncMemory struct {
 	applied quotaApplied
 }
 
-// quotaMemory is the single decision memory of the sync path.
-var quotaMemory = &quotaSyncMemory{}
+// newQuotaSyncMemory returns an empty memory of a process started at started.
+func newQuotaSyncMemory(started time.Time) *quotaSyncMemory {
+	return &quotaSyncMemory{started: started}
+}
+
+// quotaMemory is the single decision memory of the sync path. Package
+// initialization is the process start.
+var quotaMemory = newQuotaSyncMemory(time.Now())
 
 // resolve builds the decision a sync applies from this sync's reads. A failed
 // read never changes the cutoff by itself ("no restore, no new cut"):
+//   - nothing applied yet in this process and less than maxAge since its start
+//     → any read failure returns an error wrapping errQuotaUnresolved and the
+//     sync is aborted: xray keeps running the config on disk, which still cuts
+//     off whoever the previous process cut off. Failing open here would bring
+//     them back at every deploy, the collector would cut them again and the
+//     still-open sessions would make checkRevokedStillOnline restart xray for
+//     everyone. After the window the rules below apply (fail-open with a WARN);
 //   - flag read failed → the last APPLIED flag value is kept (disarmed if nothing
 //     was applied yet); a read failure is never treated as "off";
 //   - quota query failed → the last successfully read set is reused while it is
 //     at most maxAge old; older or never read → fail-open: empty set, nobody is
-//     cut off (the warning says so).
+//     cut off (the warning says so, loadQuotaForSync alerts if the cutoff is
+//     wanted);
+//   - "on" read while the last apply had the cutoff disarmed (or nothing was
+//     applied) and the set is not fresh → the cutoff stays disarmed until a
+//     query succeeds: arming it would cut users off on a set up to maxAge old.
+//     Disarming needs no set and takes effect at once.
 //
-// A successful query refreshes the remembered set.
-func (m *quotaSyncMemory) resolve(flag bool, flagErr error, over map[string]struct{}, overErr error, now time.Time, maxAge time.Duration) quotaResolution {
+// A successful query refreshes the remembered set, also when the sync is
+// aborted because the flag read failed.
+func (m *quotaSyncMemory) resolve(flag bool, flagErr error, over map[string]struct{}, overErr error, now time.Time, maxAge time.Duration) (quotaResolution, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	r := quotaResolution{flagErr: flagErr, overErr: overErr}
-	r.q.enabled = flag
-	if flagErr != nil {
-		r.q.enabled = m.applied.ok && m.applied.flag
-	}
-	switch {
-	case overErr == nil:
+	if overErr == nil {
 		if over == nil {
 			over = map[string]struct{}{}
 		}
 		m.lastOver, m.lastOverAt = over, now
+	}
+	if (flagErr != nil || overErr != nil) && !m.applied.ok && !m.started.IsZero() {
+		if up := now.Sub(m.started); up < maxAge {
+			return quotaResolution{}, fmt.Errorf("%w (up %s, fail-open only after %s): %w — sync aborted, xray keeps its current config",
+				errQuotaUnresolved, up.Round(time.Second), maxAge, quotaReadError(flagErr, overErr))
+		}
+	}
+
+	r := quotaResolution{flagRead: flag, flagErr: flagErr, overErr: overErr}
+	appliedOn := m.applied.ok && m.applied.flag
+	r.q.enabled = flag
+	if flagErr != nil {
+		r.q.enabled = appliedOn
+	}
+	switch {
+	case overErr == nil:
 		r.q.over, r.overSource = over, quotaOverFresh
 	case !m.lastOverAt.IsZero() && now.Sub(m.lastOverAt) <= maxAge:
 		r.q.over, r.overSource, r.overAge = m.lastOver, quotaOverCached, now.Sub(m.lastOverAt)
@@ -215,7 +278,22 @@ func (m *quotaSyncMemory) resolve(flag bool, flagErr error, over map[string]stru
 			r.overAge = now.Sub(m.lastOverAt)
 		}
 	}
-	return r
+	if flagErr == nil && flag && !appliedOn && r.overSource != quotaOverFresh {
+		r.q.enabled, r.flagHeld = false, true
+	}
+	return r, nil
+}
+
+// quotaReadError combines the read failures of one sync (at least one non-nil).
+func quotaReadError(flagErr, overErr error) error {
+	switch {
+	case flagErr != nil && overErr != nil:
+		return fmt.Errorf("%w; quota query: %w", flagErr, overErr)
+	case flagErr != nil:
+		return flagErr
+	default:
+		return fmt.Errorf("quota query: %w", overErr)
+	}
 }
 
 // recordApplied stores the decision of a successful apply.
@@ -234,15 +312,75 @@ func (m *quotaSyncMemory) appliedState() quotaApplied {
 
 // loadQuotaForSync reads the flag and the over-quota set for SyncXrayConfig and
 // resolves read failures against quotaMemory (see resolve), logging a WARN for
-// each failure.
-func loadQuotaForSync(now time.Time) quotaCutoff {
+// each failure and keeping the fail-open alert in step. An error (a read failed
+// before this process applied anything) means: do not apply, abort the sync.
+func loadQuotaForSync(now time.Time) (quotaCutoff, error) {
 	flag, flagErr := readQuotaCutoffFlag()
 	over, overErr := listQuotaExceeded()
-	r := quotaMemory.resolve(flag, flagErr, over, overErr, now, quotaDecisionMaxAge)
+	r, err := quotaMemory.resolve(flag, flagErr, over, overErr, now, quotaDecisionMaxAge)
+	if err != nil {
+		return quotaCutoff{}, err
+	}
 	for _, w := range r.warnings() {
 		log.Print(w)
 	}
-	return r.q
+	reportQuotaFailOpen(r)
+	return r.q, nil
+}
+
+// reportQuotaFailOpen raises the quota-cutoff-failopen alert when a sync runs
+// fail-open while the cutoff is wanted (otherwise only a WARN line would say
+// that the cutoff silently stopped), and resolves it on the next fresh read of
+// the over-quota set. A warn alert is sent once per incident, so raising it on
+// every sync of the outage is fine. Called outside quotaSyncMemory.mu.
+func reportQuotaFailOpen(r quotaResolution) {
+	switch {
+	case r.overSource == quotaOverFresh:
+		quotaResolveAlert(quotaFailOpenAlertKey, "Список превысивших квоту снова читается — отключение по трафику работает")
+	case r.overSource == quotaOverFailOpen && r.cutoffWanted():
+		quotaRaiseAlert(quotaFailOpenAlertKey, AlertWarn, "Отключение по квоте трафика не работает (fail-open)",
+			fmt.Sprintf("%s — список превысивших квоту не читается дольше %s, %s включён, но никто не отключается до восстановления запроса",
+				truncateAlertDetails(r.overErr.Error()), quotaDecisionMaxAge, quotaCutoffSetting))
+	}
+}
+
+// ─────────────── Wiring into SyncXrayConfig ───────────────
+
+// syncWithQuota runs one xray sync under one quota decision. It resolves the
+// decision with loadQuotaForSync (never loadQuotaCutoff: a failed read must not
+// change the cutoff), hands it to apply — which builds, validates and puts the
+// xray config into service and returns how many VLESS clients the cutoff left
+// out — and finishes with finishQuotaSync. A decision that cannot be resolved
+// aborts the sync before apply: xray keeps the config it runs.
+func syncWithQuota(now time.Time, apply func(quotaCutoff) (excluded int, err error)) error {
+	quota, err := loadQuotaForSync(now)
+	if err != nil {
+		return err
+	}
+	excluded, err := apply(quota)
+	return finishQuotaSync(quota, excluded, err, now)
+}
+
+// finishQuotaSync is the post-apply step of a sync. Only a successful apply
+// (config installed, applied live or found unchanged) records the decision as
+// applied and logs the quota summary: after a failed one nothing is recorded,
+// so the traffic collector and the flag watcher keep comparing with what xray
+// really runs (and keep requesting syncs), and no "excluded" count is claimed
+// for a config that is not in service.
+func finishQuotaSync(q quotaCutoff, excluded int, applyErr error, now time.Time) error {
+	if applyErr != nil {
+		return applyErr
+	}
+	quotaMemory.recordApplied(q)
+	// One summary line, logged when it changes and at most hourly otherwise (the
+	// periodic sync runs every 5 minutes). due is called on every applied sync,
+	// also with nothing to say, so a set that disappears and comes back is
+	// logged again.
+	line, key := quotaSyncSummary(q, excluded)
+	if quotaSummaries.due(key, now, quotaWarnEvery) && line != "" {
+		log.Print(line)
+	}
+	return nil
 }
 
 // quotaSyncNeeded reports whether a fresh decision of the traffic collector
@@ -277,20 +415,39 @@ func sameUserSet(a, b map[string]struct{}) bool {
 	return true
 }
 
-// userSetDiff counts the users only in a (added) and only in b (removed).
-func userSetDiff(a, b map[string]struct{}) (added, removed int) {
+// userSetDiff returns, sorted, the users only in a (added) and only in b
+// (removed).
+func userSetDiff(a, b map[string]struct{}) (added, removed []string) {
 	for id := range a {
 		if _, ok := b[id]; !ok {
-			added++
+			added = append(added, id)
 		}
 	}
 	for id := range b {
 		if _, ok := a[id]; !ok {
-			removed++
+			removed = append(removed, id)
 		}
 	}
+	sort.Strings(added)
+	sort.Strings(removed)
 	return added, removed
 }
+
+// quotaChangeNotice is the collector's "decision changed" line and its key for
+// quotaChangeNotices: both flags and the exact users to cut off (+) and to
+// restore (-). While syncs keep failing the same diff is requested every minute
+// but logged at most hourly; a different diff is logged at once.
+func quotaChangeNotice(fresh quotaCutoff, applied quotaApplied) (line, key string) {
+	added, removed := userSetDiff(fresh.cut(), applied.cut)
+	key = fmt.Sprintf("%t|%t|+%s|-%s", fresh.enabled, applied.flag, strings.Join(added, ","), strings.Join(removed, ","))
+	line = fmt.Sprintf("[traffic-stats] quota: решение изменилось (%s=%v, применено %v; отключить +%d/вернуть %d) — запрашиваем xray sync",
+		quotaCutoffSetting, fresh.enabled, applied.flag, len(added), len(removed))
+	return line, key
+}
+
+// quotaChangeNotices throttles the "decision changed" line of checkTrafficLimits.
+// Touched only by the collector goroutine.
+var quotaChangeNotices = &quotaNoticeThrottle{}
 
 // ─────────────── Flag watcher ───────────────
 
@@ -423,8 +580,8 @@ func (t *quotaNoticeThrottle) due(key string, now time.Time, every time.Duration
 	return true
 }
 
-// quotaSummaries throttles the per-sync quota summary of SyncXrayConfig.
-// Touched only by SyncXrayConfig (serialized by xraySyncMu).
+// quotaSummaries throttles the per-sync quota summary of SyncXrayConfig
+// (finishQuotaSync). Touched only under xraySyncMu.
 var quotaSummaries = &quotaNoticeThrottle{}
 
 // quotaSyncSummary is the one-line quota summary of a sync (empty: nothing to

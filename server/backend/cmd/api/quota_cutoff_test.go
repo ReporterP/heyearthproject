@@ -45,25 +45,37 @@ func userSet(ids ...string) map[string]struct{} {
 	return m
 }
 
-// quotaTestEnv replaces the quota seams (database reads, sync request) and the
-// quota globals for one test; everything is restored by t.Cleanup.
+// quotaTestEnv replaces the quota seams (database reads, sync request, fail-open
+// alert) and the quota globals for one test; everything is restored by
+// t.Cleanup. quotaMemory starts with a zero process start (no startup window);
+// tests of the window install newQuotaSyncMemory(start) themselves.
 type quotaTestEnv struct {
 	setting    string
 	settingErr error
 	over       map[string]struct{}
 	overErr    error
 	syncs      int
+	raised     []string // "key|level" of every quotaRaiseAlert call
+	resolved   []string // key of every quotaResolveAlert call
 }
 
 func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	t.Helper()
 	env := &quotaTestEnv{setting: "false", over: userSet()}
 	oldGet, oldList, oldReq := getSetting, listQuotaExceeded, requestSync
-	oldMem, oldWarn, oldWatch, oldSum := quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries
+	oldRaise, oldResolve := quotaRaiseAlert, quotaResolveAlert
+	oldMem, oldWarn, oldWatch, oldSum, oldChange := quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices
 	t.Cleanup(func() {
 		getSetting, listQuotaExceeded, requestSync = oldGet, oldList, oldReq
-		quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries = oldMem, oldWarn, oldWatch, oldSum
+		quotaRaiseAlert, quotaResolveAlert = oldRaise, oldResolve
+		quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices = oldMem, oldWarn, oldWatch, oldSum, oldChange
 	})
+	quotaRaiseAlert = func(key string, level AlertLevel, title, details string) {
+		env.raised = append(env.raised, key+"|"+string(level))
+	}
+	quotaResolveAlert = func(key, message string) {
+		env.resolved = append(env.resolved, key)
+	}
 	getSetting = func(key string) (string, error) {
 		if key != quotaCutoffSetting {
 			t.Errorf("unexpected setting read %q", key)
@@ -81,6 +93,7 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	quotaWarnings = &quotaWarnThrottle{}
 	quotaFlagWatcher = &quotaFlagWatch{}
 	quotaSummaries = &quotaNoticeThrottle{}
+	quotaChangeNotices = &quotaNoticeThrottle{}
 	return env
 }
 
@@ -206,12 +219,14 @@ func TestQuotaCutoffDisabledNotice(t *testing.T) {
 
 // I1: a failed read inside the sync path must not change the cutoff. The flag
 // keeps its applied value; the over-quota set is the last read one while it is
-// fresh enough, and only an old (or missing) set falls back to fail-open.
+// fresh enough, and only an old (or missing) set falls back to fail-open. The
+// process started an hour ago: the startup window is over (see
+// TestQuotaSyncMemoryStartupWindow for the first quotaDecisionMaxAge).
 func TestQuotaSyncMemoryResolve(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	maxAge := 15 * time.Minute
 	dbErr := errors.New("connection reset")
-	m := &quotaSyncMemory{}
+	m := newQuotaSyncMemory(t0.Add(-time.Hour))
 
 	steps := []struct {
 		name       string
@@ -226,9 +241,9 @@ func TestQuotaSyncMemoryResolve(t *testing.T) {
 		wantSource quotaOverSource
 		wantWarn   string // substring of a warning, "" = no warnings
 	}{
-		{"first sync, nothing read yet, query fails: fail-open", 0, true, nil, nil, dbErr, false,
-			true, userSet(), quotaOverFailOpen, "no over-quota set read yet"},
-		{"first sync, nothing applied, flag read fails: disarmed, not armed", 0, true, dbErr, userSet("a"), nil, false,
+		{"first sync after the window, nothing read yet, query fails: fail-open, the read 'on' is held", 0, true, nil, nil, dbErr, false,
+			false, userSet(), quotaOverFailOpen, "no over-quota set read yet"},
+		{"first sync after the window, nothing applied, flag read fails: disarmed, not armed", 0, true, dbErr, userSet("a"), nil, false,
 			false, userSet("a"), quotaOverFresh, "a read failure is not a flip"},
 		{"fresh read: used and applied", 0, true, nil, userSet("a", "b"), nil, true,
 			true, userSet("a", "b"), quotaOverFresh, ""},
@@ -250,7 +265,10 @@ func TestQuotaSyncMemoryResolve(t *testing.T) {
 			false, userSet("c"), quotaOverFresh, "keeping the last applied quota_cutoff_enabled=false"},
 	}
 	for _, st := range steps {
-		r := m.resolve(st.flag, st.flagErr, st.over, st.overErr, t0.Add(st.at), maxAge)
+		r, err := m.resolve(st.flag, st.flagErr, st.over, st.overErr, t0.Add(st.at), maxAge)
+		if err != nil {
+			t.Fatalf("%s: resolve() error = %v, want none after the startup window", st.name, err)
+		}
 		if r.q.enabled != st.wantOn {
 			t.Errorf("%s: enabled = %v, want %v", st.name, r.q.enabled, st.wantOn)
 		}
@@ -282,25 +300,34 @@ func TestLoadQuotaForSyncKeepsCutOnReadFailure(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	trial := biz.ActiveVlessClient{UUID: "11111111-1111-1111-1111-111111111111", UserID: "trial-user"}
 
+	load := func(at time.Time) quotaCutoff {
+		t.Helper()
+		q, err := loadQuotaForSync(at)
+		if err != nil {
+			t.Fatalf("loadQuotaForSync(%s) error = %v (no startup window in this test)", at, err)
+		}
+		return q
+	}
+
 	env.setting, env.over = "true", userSet("trial-user")
-	q := loadQuotaForSync(t0)
+	q := load(t0)
 	if !q.excludes(trial) {
 		t.Fatal("fresh decision: trial-user must be cut off")
 	}
 	quotaMemory.recordApplied(q)
 
 	env.overErr = errors.New("query timeout")
-	if q := loadQuotaForSync(t0.Add(10 * time.Minute)); !q.excludes(trial) {
+	if q := load(t0.Add(10 * time.Minute)); !q.excludes(trial) {
 		t.Error("query failed 10 min later: trial-user was restored (fail-open too early)")
 	}
 
 	env.overErr, env.settingErr = nil, errors.New("flag read timeout")
-	if q := loadQuotaForSync(t0.Add(11 * time.Minute)); !q.excludes(trial) {
+	if q := load(t0.Add(11 * time.Minute)); !q.excludes(trial) {
 		t.Error("flag read failed: treated as off, trial-user was restored")
 	}
 
 	env.settingErr, env.overErr = nil, errors.New("query timeout")
-	if q := loadQuotaForSync(t0.Add(11*time.Minute + quotaDecisionMaxAge + time.Second)); q.excludes(trial) {
+	if q := load(t0.Add(11*time.Minute + quotaDecisionMaxAge + time.Second)); q.excludes(trial) {
 		t.Error("remembered set older than quotaDecisionMaxAge: must fail open")
 	}
 }

@@ -224,23 +224,31 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 // Per-user lines in both modes go through quotaWarnings: a user is logged when
 // first seen over quota (new offenders at once), then at most once per
 // quotaWarnEvery while they stay over it; the per-sync summary line of
-// SyncXrayConfig keeps the count visible. A failed read skips the tick: no sync
-// is requested, so nothing is restored or cut.
+// SyncXrayConfig keeps the count visible. The "decision changed" line goes
+// through quotaChangeNotices keyed by the diff: while syncs keep failing the
+// request is repeated every minute, the same line at most hourly. A failed read
+// skips the tick: no sync is requested, so nothing is restored or cut.
 func checkTrafficLimits() {
 	quota, err := loadQuotaCutoff()
 	if err != nil {
 		log.Printf("[traffic-stats] checkTrafficLimits: %v — проверка пропущена, синхронизация не запрошена", err)
 		return
 	}
-	for _, line := range quotaOffenderLines(quota, quotaWarnings, time.Now(), quotaWarnEvery) {
+	now := time.Now()
+	for _, line := range quotaOffenderLines(quota, quotaWarnings, now, quotaWarnEvery) {
 		log.Print(line)
 	}
+	// appliedState locks quotaSyncMemory.mu only for the copy: requestSync is
+	// never called with it held.
 	applied := quotaMemory.appliedState()
 	if !quotaSyncNeeded(quota, applied) {
+		// Nothing to say, recorded anyway: a diff that disappears (applied) and
+		// comes back is a change and is logged again.
+		quotaChangeNotices.due("", now, quotaWarnEvery)
 		return
 	}
-	added, removed := userSetDiff(quota.cut(), applied.cut)
-	log.Printf("[traffic-stats] quota: решение изменилось (%s=%v, применено %v; отключить +%d/вернуть %d) — запрашиваем xray sync",
-		quotaCutoffSetting, quota.enabled, applied.flag, added, removed)
+	if line, key := quotaChangeNotice(quota, applied); quotaChangeNotices.due(key, now, quotaWarnEvery) {
+		log.Print(line)
+	}
 	requestSync()
 }

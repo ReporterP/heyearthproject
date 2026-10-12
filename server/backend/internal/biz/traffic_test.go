@@ -53,3 +53,51 @@ func TestEffectiveSubQueries(t *testing.T) {
 		})
 	}
 }
+
+// normSQL collapses whitespace and upper-cases a query, so the filter checks
+// below do not depend on its layout or keyword case.
+func normSQL(q string) string {
+	return strings.ToUpper(strings.Join(strings.Fields(q), " "))
+}
+
+// The Express (Bamboo) plan queries switched to effectiveSubOrderBy only because
+// their inner JOIN plans makes its first key constant; the filters must stay:
+// a LEFT JOIN would let plan-less rows win the ordering, and dropping
+// status = 'active' would authorize paused/cancelled subscriptions. The auth
+// query also keeps the legacy traffic_used filter (documented in
+// hysteria2AuthPlanQuery).
+func TestHysteria2PlanQueryFilters(t *testing.T) {
+	const innerJoin = "JOIN plans p ON p.id = us.plan_id"
+	tests := []struct {
+		name  string
+		query string
+		must  []string
+	}{
+		{"ValidateHysteria2Auth", hysteria2AuthPlanQuery, []string{
+			innerJoin,
+			"us.status = 'active'",
+			"us.valid_until > NOW()",
+			"(us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)",
+		}},
+		{"CanUseHysteria2", hysteria2PlanGateQuery, []string{
+			innerJoin,
+			"us.status = 'active'",
+			"us.valid_until > NOW()",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := normSQL(tt.query)
+			for _, m := range tt.must {
+				if !strings.Contains(q, normSQL(m)) {
+					t.Errorf("query lost the filter %q:\n%s", m, tt.query)
+				}
+			}
+			for _, outer := range []string{"LEFT", "RIGHT", "FULL", "OUTER", "CROSS"} {
+				if strings.Contains(q, outer+" JOIN PLANS") {
+					t.Errorf("plans must be joined with an inner JOIN, found %s JOIN:\n%s", outer, tt.query)
+				}
+			}
+		})
+	}
+}
