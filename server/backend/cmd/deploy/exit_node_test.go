@@ -114,7 +114,7 @@ func TestDialExitNodePinned(t *testing.T) {
 }
 
 func TestExitScriptsSecrets(t *testing.T) {
-	exit := exitNodeSetupScript("203.0.113.7")
+	exit := exitNodeSetupScript("203.0.113.7", 8443)
 	if regexp.MustCompile(`echo "[^"\n]*\$SS_PASSWORD`).MatchString(exit) {
 		t.Error("the exit script prints the SS password")
 	}

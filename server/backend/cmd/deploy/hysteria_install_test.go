@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -239,7 +241,7 @@ func TestHysteriaInstallSpliced(t *testing.T) {
 				hysteria2HubMarkPending + "\n# ── 2. System user",
 			"chmod 640 /etc/hysteria/server.yaml\n\n" + hysteria2HubStartScript + "\n" + `echo "[hysteria2-hub] Setup complete."`,
 		}},
-		{"exitNodeSetupScript", exitNodeSetupScript("203.0.113.7"), false, []string{
+		{"exitNodeSetupScript", exitNodeSetupScript("203.0.113.7", 8443), false, []string{
 			"set -e\n", `echo "IP: 203.0.113.7"`,
 		}},
 		{"hubHy2ClientScript", hubHy2ClientScript("203.0.113.7", "5", "s3cret"), true, []string{
@@ -327,7 +329,7 @@ func TestExitNodeSetupError(t *testing.T) {
 // config.ExitHysteriaACL (rejects loopback/private/link-local/own IP, then direct(all)), the
 // same block the admin panel's exit provisioning writes.
 func TestExitNodeSetupScriptACL(t *testing.T) {
-	s := exitNodeSetupScript("203.0.113.7")
+	s := exitNodeSetupScript("203.0.113.7", 8443)
 	_, yaml, ok := strings.Cut(s, "cat > /opt/heyearth/hysteria/server.yaml <<'HYEOF'\n")
 	if !ok {
 		t.Fatal("no quoted server.yaml heredoc")
@@ -337,11 +339,13 @@ func TestExitNodeSetupScriptACL(t *testing.T) {
 		t.Fatal("server.yaml heredoc not terminated")
 	}
 	yaml += "\n"
-	acl := config.ExitHysteriaACL("203.0.113.7")
+	acl := config.ExitHysteriaACL("203.0.113.7", 8443)
 	if !strings.HasSuffix(yaml, "\n\n"+acl) {
 		t.Fatalf("server.yaml must end with the shared exit ACL:\n%s", yaml)
 	}
-	for _, want := range []string{"    - reject(127.0.0.0/8)\n", "    - reject(10.0.0.0/8)\n", "    - reject(203.0.113.7)\n    - direct(all)\n"} {
+	// the MTProxy on the exit's own address is allowed before the own-address reject
+	for _, want := range []string{"    - reject(127.0.0.0/8)\n", "    - reject(::/128)\n", "    - reject(10.0.0.0/8)\n",
+		"    - direct(203.0.113.7, tcp/8443)\n    - reject(203.0.113.7)\n    - direct(all)\n"} {
 		if !strings.Contains(yaml, want) {
 			t.Errorf("server.yaml lacks %q", want)
 		}
@@ -349,6 +353,31 @@ func TestExitNodeSetupScriptACL(t *testing.T) {
 	for _, keep := range []string{"listen: :50443\n", "  password: PLACEHOLDER_SS_PASSWORD\n", "bandwidth:\n  up: 1 gbps\n  down: 1 gbps\n"} {
 		if !strings.Contains(yaml, keep) {
 			t.Errorf("server.yaml lost %q", keep)
+		}
+	}
+	// the exit's xray (SS / VLESS resilience tunnels) refuses the same targets, MTProxy excepted
+	_, xr, ok := strings.Cut(s, "cat > /opt/heyearth/xray/config.json <<XRAYEOF\n")
+	if !ok {
+		t.Fatal("no xray config heredoc")
+	}
+	xr, _, _ = strings.Cut(xr, "\nXRAYEOF\n")
+	var cfg struct {
+		Routing struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"routing"`
+	}
+	// $SS_PASSWORD etc. are shell variables inside JSON strings: the document still parses
+	if err := json.Unmarshal([]byte(xr), &cfg); err != nil {
+		t.Fatalf("exit xray config does not parse: %v\n%s", err, xr)
+	}
+	rules := cfg.Routing.Rules
+	if len(rules) != 3 || rules[0]["outboundTag"] != "direct" || rules[0]["port"] != "8443" || rules[1]["outboundTag"] != "block" {
+		t.Fatalf("routing rules: %v", rules)
+	}
+	ips := fmt.Sprint(rules[1]["ip"])
+	for _, w := range []string{"geoip:private", "127.0.0.0/8", "10.0.0.0/8", "fc00::/7", "203.0.113.7"} {
+		if !strings.Contains(ips, w) {
+			t.Errorf("block rule lacks %s: %s", w, ips)
 		}
 	}
 }

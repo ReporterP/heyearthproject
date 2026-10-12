@@ -47,7 +47,7 @@ func aclRules(t *testing.T, yaml string) []string {
 // heredoc, and the script still parses.
 func TestExitHysteria2ServerScriptACL(t *testing.T) {
 	rejects := []string{
-		"reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)",
+		"reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)",
 		"reject(10.0.0.0/8)", "reject(172.16.0.0/12)", "reject(192.168.0.0/16)",
 		"reject(100.64.0.0/10)", "reject(169.254.0.0/16)", "reject(fc00::/7)", "reject(fe80::/10)",
 	}
@@ -56,16 +56,17 @@ func TestExitHysteria2ServerScriptACL(t *testing.T) {
 		exitIP string
 		want   []string
 	}{
-		{"IPv4 exit", "203.0.113.5", append(append([]string{}, rejects...), "reject(203.0.113.5)", "direct(all)")},
+		// the MTProxy on the exit's own address stays reachable through the tunnel
+		{"IPv4 exit", "203.0.113.5", append(append([]string{}, rejects...), "direct(203.0.113.5, tcp/8443)", "reject(203.0.113.5)", "direct(all)")},
 		// not an IP: no own-address rule, and nothing of the input reaches the root shell heredoc
 		{"hostname", "exit.example.com", append(append([]string{}, rejects...), "direct(all)")},
 		{"shell injection attempt", "1.2.3.4$(touch /tmp/pwned)", append(append([]string{}, rejects...), "direct(all)")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := exitHysteria2ServerScript(tc.exitIP)
+			s := exitHysteria2ServerScript(tc.exitIP, 8443)
 			yaml := exitServerYAML(t, s)
-			if !strings.HasSuffix(yaml, "bandwidth:\n  up: 100 mbps\n  down: 100 mbps\n"+config.ExitHysteriaACL(tc.exitIP)) {
+			if !strings.HasSuffix(yaml, "bandwidth:\n  up: 100 mbps\n  down: 100 mbps\n"+config.ExitHysteriaACL(tc.exitIP, 8443)) {
 				t.Fatalf("server.yaml must end with the shared exit ACL right after bandwidth:\n%s", yaml)
 			}
 			if got := aclRules(t, yaml); !reflect.DeepEqual(got, tc.want) {

@@ -1842,10 +1842,11 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 
 // exitNodeSetupScript renders the root provisioning script for a new exit node: Xray
 // (SS+WS :443, VLESS Reality :10443) + Hysteria2 server (:50443). The hysteria server.yaml
-// ends with config.ExitHysteriaACL (shared with the admin panel's exit provisioning), so the
-// tunnel egress cannot reach the exit's loopback, private neighbours or its own public IP.
+// ends with config.ExitHysteriaACL and the xray routing starts with exitXrayGuardRules, so no
+// tunnel egress reaches the exit's loopback, private neighbours or its own public IP — except
+// mtprotoPort on the own address (the MTProxy full-tunnel clients reach through the tunnel).
 // Pure, so tests can render it without SSH.
-func exitNodeSetupScript(exitIP string) string {
+func exitNodeSetupScript(exitIP string, mtprotoPort int) string {
 	return fmt.Sprintf(`set -e
 mkdir -p /opt/heyearth/xray /opt/heyearth/state
 
@@ -1978,7 +1979,7 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
-      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+      %s,
       {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
     ]
   },
@@ -2117,7 +2118,7 @@ echo "Short ID: $SHORT_ID"
 echo "SS Password: (не печатается; /opt/heyearth/state/reality-keys.json)"
 echo "SNI: microsoft.com"
 echo "================================="
-`, config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP), "\n"), exitIP)
+`, exitXrayGuardRules(exitIP, mtprotoPort), config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP, mtprotoPort), "\n"), exitIP)
 }
 
 // exitNodeSetupError says why exitNodeSetupScript did not complete: the script exited
@@ -2245,9 +2246,11 @@ func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Cli
 	fmt.Println("[exit-node] Оптимизация сетевого стека...")
 	optimizeNetworkStack(exitClient)
 
-	// Установка Xray и настройка как exit-node
-	fmt.Println("[exit-node] Установка Xray...")
-	script := exitNodeSetupScript(exitIP)
+	// Установка Xray и настройка как exit-node. MTProxy на собственном адресе exit должен
+	// оставаться доступным через туннели (ACL hysteria и routing xray его пропускают).
+	mtprotoPort := hubMTProtoPort(mainClient)
+	fmt.Printf("[exit-node] Установка Xray... (MTProxy порт %d разрешён на собственном адресе)\n", mtprotoPort)
+	script := exitNodeSetupScript(exitIP, mtprotoPort)
 
 	// check=true: the script runs under set -e, so a non-zero exit means provisioning stopped
 	// part-way (its stderr, e.g. "[hysteria] ERROR ...", is printed by runSSH). Either that or
