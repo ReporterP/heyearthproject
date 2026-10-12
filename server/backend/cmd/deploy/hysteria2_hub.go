@@ -9,9 +9,10 @@ package main
 // hitting the heyearth-api sync loop (heyearth-api runs locally and watches for
 // plan/subscription changes).
 //
-// The Hub also exposes /internal/hysteria2/auth on 127.0.0.1:8000 — nginx must
-// NOT proxy /internal/* upstream. This is enforced in nginx config (separate
-// task). The auth backend is loopback-only by handler check anyway.
+// The hysteria auth callback is heyearth-api's auth-only loopback listener
+// 127.0.0.1:8001 (POST /internal/hysteria2/auth, cmd/api/hysteria2_auth_listener.go);
+// the egress guard lets the hysteria user reach only that port once it is live
+// (ops_egress_guard.go, phase B). nginx must NOT proxy /internal/* upstream.
 
 import (
 	"errors"
@@ -75,10 +76,52 @@ func hysteria2HubSetupError(out string, runErr error) error {
 	return errors.Join(rolledBack, runErr)
 }
 
+// hysteriaGeoipURL is the geoip.dat behind the Hub ACL's geoip:ru / geoip:private and Happ's
+// Geoipurl (served by nginx from /etc/hysteria/geoip.dat).
+const hysteriaGeoipURL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+
+// hysteriaGeoipCheck defines geoip_ok FILE, a cheap sanity check of a downloaded geoip.dat (a
+// v2ray GeoIPList protobuf): larger than 1 MiB, first byte 0x0a (field 1, length-delimited), and
+// the PRIVATE and RU entries the ACL refers to are present. An HTML error page, a truncated or an
+// empty download fails it.
+const hysteriaGeoipCheck = `geoip_ok() { [ "$(stat -c %s "$1" 2>/dev/null || echo 0)" -gt 1048576 ] && [ "$(head -c 1 "$1" | od -An -tx1 | tr -d ' \n')" = 0a ] && grep -qa PRIVATE "$1" && grep -qa RU "$1"; }
+`
+
+// hysteriaGeoipCron is /etc/cron.monthly/heyearth-hysteria-geoip: download to geoip.dat.new,
+// validate (hysteriaGeoipCheck), keep the current file on any failure (exit non-zero, so cron
+// reports it), replace it only when the content differs, re-apply the nginx read ACL (mv swaps
+// the inode and drops the file ACL; the directory ACL survives) and only then restart
+// hysteria2-server. GEOIP_DST is a test hook.
+const hysteriaGeoipCron = `#!/usr/bin/env bash
+# Installed by deploy --setup-hysteria2-hub (cmd/deploy/hysteria2_hub.go). DO NOT EDIT.
+set -euo pipefail
+DST="${GEOIP_DST:-/etc/hysteria/geoip.dat}"
+NEW="$DST.new"
+trap 'rm -f "$NEW"' EXIT
+` + hysteriaGeoipCheck + `curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "` + hysteriaGeoipURL + `" -o "$NEW"
+if ! geoip_ok "$NEW"; then
+  echo "heyearth-hysteria-geoip: the download does not look like a geoip.dat ($(stat -c %s "$NEW" 2>/dev/null || echo 0) bytes), keeping $DST" >&2
+  exit 1
+fi
+if [ -f "$DST" ] && cmp -s "$NEW" "$DST"; then
+  echo "heyearth-hysteria-geoip: unchanged"
+  exit 0
+fi
+chown hysteria:hysteria "$NEW"
+chmod 644 "$NEW"
+mv -f "$NEW" "$DST"
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m u:www-data:r-- "$DST" 2>/dev/null || true
+fi
+systemctl restart hysteria2-server
+echo "heyearth-hysteria-geoip: updated, hysteria2-server restarted"
+`
+
 // hysteria2HubScript is the idempotent provisioning script run as root on the Hub.
 func hysteria2HubScript() string {
 	return strings.NewReplacer("__HYSTERIA_INSTALL__", config.HysteriaInstallScript(), "__PORTHOP__", hysteria2PortHopRule,
-		"__MARK_PENDING__", hysteria2HubMarkPending, "__START__", hysteria2HubStartScript).Replace(`set -e
+		"__MARK_PENDING__", hysteria2HubMarkPending, "__START__", hysteria2HubStartScript,
+		"__GEOIP_CHECK__", hysteriaGeoipCheck, "__GEOIP_URL__", hysteriaGeoipURL, "__GEOIP_CRON__", hysteriaGeoipCron).Replace(`set -e
 
 # ── 1. Install / upgrade hysteria binary (previous kept as hysteria.bak) ──
 __HYSTERIA_INSTALL__
@@ -128,15 +171,25 @@ fi
 # ── 3a. Hysteria2 geoip.dat ──
 # Used by ACL direct(geoip:ru) rule so RU traffic from Express users exits
 # the Hub directly (not via NL — saves a hop, avoids geoblock by RU services
-# like yandex.ru / vk.com / habr.com). direct(geoip:private) keeps RFC1918
-# traffic on-host (admin loopback probes, health checks).
-GEOIP_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
-if [ ! -f /etc/hysteria/geoip.dat ] || [ $(find /etc/hysteria/geoip.dat -mtime +30 | wc -l) -gt 0 ]; then
+# like yandex.ru / vk.com / habr.com). Private targets are REJECTED by the ACL
+# (reject(geoip:private) plus explicit ranges, cmd/api hysteria2ACLRules), never
+# sent direct. A failed or implausible download keeps the current file.
+__GEOIP_CHECK__if [ ! -f /etc/hysteria/geoip.dat ] || [ $(find /etc/hysteria/geoip.dat -mtime +30 | wc -l) -gt 0 ]; then
   echo "[hysteria2-hub] downloading geoip.dat..."
-  curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "$GEOIP_URL" -o /etc/hysteria/geoip.dat.new
-  mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
-  chown hysteria:hysteria /etc/hysteria/geoip.dat
-  chmod 644 /etc/hysteria/geoip.dat
+  rm -f /etc/hysteria/geoip.dat.new
+  if curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "__GEOIP_URL__" -o /etc/hysteria/geoip.dat.new && geoip_ok /etc/hysteria/geoip.dat.new; then
+    chown hysteria:hysteria /etc/hysteria/geoip.dat.new
+    chmod 644 /etc/hysteria/geoip.dat.new
+    mv -f /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
+  else
+    rm -f /etc/hysteria/geoip.dat.new
+    if [ -f /etc/hysteria/geoip.dat ]; then
+      echo "[hysteria2-hub] WARN: geoip.dat download failed or does not look like a geoip.dat — keeping the current file"
+    else
+      echo "[hysteria2-hub] ERROR: no usable geoip.dat (download failed or implausible); the ACL needs geoip:ru / geoip:private" >&2
+      exit 1
+    fi
+  fi
 fi
 
 # ── 3b. nginx access to geoip.dat (Happ Geoipurl) ──
@@ -158,23 +211,11 @@ else
   echo "[hysteria2-hub] WARN: setfacl not available; nginx will not serve /static/geoip.dat — Happ clients will fail"
 fi
 
-# Monthly geoip.dat refresh cron (idempotent — overwrites each time).
-# Reloads hysteria2-server after fetch so the new geoip is picked up.
-# Re-applies www-data ACL because the mv below swaps inodes and drops file ACL
-# (the dir ACL set above survives — we don't re-create the directory).
+# Monthly geoip.dat refresh cron (idempotent — the file is rewritten each run):
+# see hysteriaGeoipCron. Validated download, old file kept on failure, restart
+# of hysteria2-server only when the content changed.
 cat > /etc/cron.monthly/heyearth-hysteria-geoip <<'CRON'
-#!/usr/bin/env bash
-set -e
-curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o /etc/hysteria/geoip.dat.new
-mv /etc/hysteria/geoip.dat.new /etc/hysteria/geoip.dat
-chown hysteria:hysteria /etc/hysteria/geoip.dat
-chmod 644 /etc/hysteria/geoip.dat
-# Re-apply nginx read ACL (mv replaces inode → file ACL is lost).
-if command -v setfacl >/dev/null 2>&1; then
-  setfacl -m u:www-data:r-- /etc/hysteria/geoip.dat 2>/dev/null || true
-fi
-systemctl reload hysteria2-server 2>/dev/null || systemctl restart hysteria2-server
-CRON
+__GEOIP_CRON__CRON
 chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
 
 # ── 4. iptables UDP port-hopping range → :50443 ──

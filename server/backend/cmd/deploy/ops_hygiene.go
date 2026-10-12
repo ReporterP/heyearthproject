@@ -116,8 +116,10 @@ const (
 // The files come from `nginx -T` (the "# configuration file <path>:" headers), i.e. exactly the
 // files nginx reads — not from a search of the directory, which finds stale copies. A file is
 // only written when its content changes; originals are copied to /var/backups/heyearth-nginx
-// (never into /etc/nginx, where a copy would be included twice by a glob). nginx -t must pass
-// before the reload; if it does not, every patched file is restored and the script fails. After
+// (never into /etc/nginx, where a copy would be included twice by a glob). nginx -t and the
+// reload run on every run (also when nothing changed: an earlier run may have stopped between
+// its patch and its reload); if nginx -t fails, every file patched in this run is restored and
+// the script fails without a reload. After
 // the reload the effective config (`nginx -T` again) must contain proxy_timeout, the limits and
 // so_keepalive on every listen of the SNI router, else the script FAILS.
 //
@@ -208,11 +210,16 @@ patch_file() {
 }
 for f in $routers; do patch_file "$f" "$ROUTER_AWK" || { rollback; echo "[ops] FAILED: originals restored"; exit 1; }; done
 for f in $mains; do patch_file "$f" "$MAIN_AWK" || { rollback; echo "[ops] FAILED: originals restored"; exit 1; }; done
-if [ -n "$changed" ]; then
-  if ! nginx -t; then rollback; echo "[ops] FAILED: nginx -t rejected the patched config, originals restored"; exit 1; fi
-  systemctl reload nginx || { echo "[ops] FAILED: systemctl reload nginx"; exit 1; }
-  sleep 1
+# Validate and reload on every run, not only after a change: an earlier run may have patched the
+# files and stopped before its reload (SSH drop), and nginx -T below reads the files, not what the
+# running nginx uses.
+if ! nginx -t; then
+  if [ -n "$changed" ]; then rollback; echo "[ops] FAILED: nginx -t rejected the patched config, originals restored"
+  else echo "[ops] FAILED: nginx -t rejects the current config (not changed by this step) — nginx not reloaded"; fi
+  exit 1
 fi
+systemctl reload nginx || { echo "[ops] FAILED: systemctl reload nginx"; exit 1; }
+sleep 1
 final=$(nginx -T 2>/dev/null) || { echo "[ops] FAILED: nginx -T does not work after the patch"; exit 1; }
 bad=0
 for re in 'proxy_timeout[[:space:]]+__VALUE__;' 'worker_rlimit_nofile[[:space:]]+__RLIMIT__;' 'worker_connections[[:space:]]+__CONNS__;'; do

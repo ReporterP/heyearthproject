@@ -17,7 +17,9 @@
 #   - secret + state in /opt/mtproxy/
 #   - systemd unit mtproxy.service listening on TCP <PORT>
 
-set -euxo pipefail  # -x prints each command to stderr — verbose for diagnostics
+# No -x: tracing would print the secret (arg 2, the generated one, config.toml) into the stderr
+# the admin panel captures and logs.
+set -euo pipefail
 
 PORT="${1:-8443}"
 SECRET_ARG="${2:-}"
@@ -64,7 +66,9 @@ mkdir -p "$WORKDIR"
 # real client is silently re-targeted somewhere else. That is exactly how the
 # 2026-07/08 outage stayed invisible for days.
 PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')"
-FRONT_IPS="$(getent ahostsv4 "$FAKE_TLS_HOST" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+# || true: an unresolvable domain (getent exit 2) must reach the explicit error below, not end
+# the script silently through set -e + pipefail.
+FRONT_IPS="$(getent ahostsv4 "$FAKE_TLS_HOST" | awk '{print $1}' | sort -u | tr '\n' ' ' || true)"
 FRONT_OK=0
 for a in $FRONT_IPS; do
   if [[ "$a" == "$PUBLIC_IP" ]]; then FRONT_OK=1; fi

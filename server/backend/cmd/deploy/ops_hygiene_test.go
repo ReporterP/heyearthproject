@@ -171,15 +171,27 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		}
 	})
 
-	t.Run("a second run changes nothing and does not reload nginx", func(t *testing.T) {
+	t.Run("a second run changes nothing but still validates and reloads (an earlier run may have stopped before its reload)", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, false, false, []nginxFile{{"nginx.conf", patchedNginxConf, true}, {router, cur, true}}, router, "nginx.conf")
 		if shown(out, router) != cur || shown(out, "nginx.conf") != patchedNginxConf {
 			t.Fatalf("files changed:\n%s", out)
 		}
-		wantLines(t, out, "STATE exit=0", "STATE calls=", "STATE backups=0")
+		wantLines(t, out, "STATE exit=0", "STATE calls=nginx -t;systemctl reload nginx;", "STATE backups=0")
 		if strings.Count(out, "already as wanted") != 2 {
 			t.Errorf("both files must report 'already as wanted':\n%s", out)
+		}
+	})
+
+	t.Run("nginx -t failing on a config this run did not change: FAILED, no reload, nothing restored", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, true, false, []nginxFile{{"nginx.conf", patchedNginxConf, true}, {router, cur, true}}, router, "nginx.conf")
+		if shown(out, router) != cur || shown(out, "nginx.conf") != patchedNginxConf {
+			t.Fatalf("files changed:\n%s", out)
+		}
+		wantLines(t, out, "STATE exit=1", "STATE calls=nginx -t;", "STATE backups=0")
+		if !strings.Contains(out, "nginx -t rejects the current config (not changed by this step)") || strings.Contains(out, "originals restored") {
+			t.Errorf("wrong failure handling:\n%s", out)
 		}
 	})
 

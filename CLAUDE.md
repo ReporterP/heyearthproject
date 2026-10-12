@@ -146,9 +146,9 @@ Users → [Hub: hiearth.ru (Russia)]
               │  Inbounds:
               │    VLESS Reality  :10443 (TCP, via nginx stream :443)
               │    VLESS XHTTP    :2443  (TCP, splithttp anti-DPI)
-              │    SOCKS5         :1080  (per-user auth)
-              │    HTTP proxy     :8080  (per-user auth)
-              │    Shadowsocks    :8388
+              │    Hysteria2 (Бамбук) :50443 UDP + hop 30000-65000 (DNAT, dst-type LOCAL)
+              │    AmneziaWG      :443   UDP (awg0 → awgtun → xray socks-awg)
+              │    (SOCKS5 :1080, HTTP :8080, Shadowsocks :8388 — removed)
               │
               │  Per-plan routing (weighted balancers per plan)
               │    ↓
@@ -168,14 +168,20 @@ Users → [Hub: hiearth.ru (Russia)]
 |------|------|----------|---------|
 | Hub | 80 | TCP | HTTP redirect |
 | Hub | 443 | TCP | nginx stream SNI router |
+| Hub | 443 | UDP | AmneziaWG (awg0) |
 | Hub | 2443 | TCP | VLESS XHTTP (splithttp) |
-| Hub | 8000 | TCP | heyearth-api REST |
+| Hub | 50443 | UDP | Hysteria2 server (Бамбук); UDP 30000-65000 DNAT → :50443 for local destinations only |
+| Hub | 8000 | TCP (loopback) | heyearth-api REST (nginx upstream) |
+| Hub | 8001 | TCP (loopback) | heyearth-api auth-only listener: `POST /internal/hysteria2/auth` (hysteria auth callback) |
+| Hub | 7653 | TCP (loopback) | hysteria2-server trafficStats API |
 | Hub | 8443 | TCP | nginx HTTPS (internal) |
 | Hub | 50051 | TCP | gRPC ClientApi |
-| Hub | 10443 | TCP | Xray VLESS Reality |
-| Hub | 1080 | TCP/UDP | SOCKS5 proxy |
-| Hub | 8080 | TCP | HTTP proxy |
-| Hub | 8388 | TCP | Shadowsocks |
+| Hub | 10443 | TCP (loopback) | Xray VLESS Reality (behind nginx :443) |
+| Hub | 10085 | TCP (loopback) | Xray API (egress guard: heyearth-api's user only) |
+| Hub | 10808 | TCP/UDP (loopback) | Xray `socks-awg` inbound (AWG traffic via hev-socks5-tunnel) |
+| Hub | 1088+id | TCP/UDP (loopback) | hysteria2-client-<id> SOCKS to exit <id> |
+
+SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (ufw rules pruned by `--setup-ops`).
 | Exit | 50443 | UDP | Hysteria2 |
 | Exit | 443 | TCP | SS+WebSocket |
 | Exit | 10443 | TCP | VLESS Reality |
@@ -303,7 +309,10 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Auto-tuner**: Reality requires tcp + xtls-rprx-vision. Never change transport/flow.
 - **Per-country SNI**: Hub(RU) uses yandex.ru/vk.com. Exit(NL/LV) uses github.com/twitch.tv.
 - **apple.com bad SNI**: ASN mismatch visible to DPI. Removed from candidates.
-- **Hysteria2 port hopping**: port-only `DNAT --to-destination :50443`, never `REDIRECT` (rewrites dst to ens3's primary IP; salamander replies use the route source → conntrack clash → EPERM, Бамбук dead 2026-10-12). After any Hub IP/route/NAT change, test Бамбук from the exit node, not from the Hub.
+- **Hysteria2 port hopping**: port-only `DNAT --to-destination :50443`, never `REDIRECT` (rewrites dst to ens3's primary IP; salamander replies use the route source → conntrack clash → EPERM, Бамбук dead 2026-10-12). After any Hub IP/route/NAT change, test Бамбук from the exit node, not from the Hub. The DNAT matches `-m addrtype --dst-type LOCAL` only: unrestricted, it rewrote forwarded UDP of AWG users/docker (calls, games broke).
+- **Egress guard phases** (`--setup-ops`): the hysteria user may reach the API auth-only listener `127.0.0.1:8001`; phase A also keeps `:8000` open until the API with that listener is deployed and `/etc/hysteria/server.yaml` points at 8001 — then re-run `--setup-ops` (phase B closes 8000). The output names the phase.
+- **`--setup-xray` on a live Hub** keeps `/opt/heyearth/xray/config.json` (bootstrap only when absent; `--force` overwrites and cuts users off until the next API sync).
+- **Postgres password**: lives only in the Hub's `api.env` (`DATABASE_URL`); deploy generates it once on a fresh install and never resets it. Rotation: `docs/runbooks/restore-hub-backup.md` («Пароль PostgreSQL»).
 
 ## Code Style
 
