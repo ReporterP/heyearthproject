@@ -18,8 +18,11 @@ const journaldConf = "# Installed by deploy --setup-ops (cmd/deploy/ops_hygiene.
 // fail2banIgnoreScript computes the jail's ignoreip at run time into IGNORE. It needs
 // NEVER_IGNORE (space separated IPs, may be empty): the backup target.
 //
-// ignoreip = loopback + the Hub's own addresses (hostname -I) + the address this very SSH
-// session comes from (SSH_CLIENT), so a typo in a password can never lock the operator out.
+// ignoreip = loopback + the address this very SSH session comes from (SSH_CLIENT), so a typo
+// in a password can never lock the operator out. The Hub's own addresses are NOT whitelisted
+// (the jail sets ignoreself = false): proxy users can no longer make the Hub connect to itself
+// (the Hysteria2 ACL and the xray routing reject them, see cmd/api/hub_addrs.go), and an
+// address that may be abused to brute-force sshd must not be exempt from the ban.
 //
 // An exit node is NEVER ignored, not even as the operator's address: its IP is the egress IP of
 // every proxy user, so whitelisting it would let anybody brute-force the Hub's root password
@@ -36,9 +39,6 @@ const fail2banIgnoreScript = `is_ip() {
 }
 EXITS="$NEVER_IGNORE $(runuser -u postgres -- psql -d heyearth -tAc "SELECT ip_address FROM servers" 2>/dev/null || true)"
 IGNORE="127.0.0.1/8 ::1"
-for a in $(hostname -I 2>/dev/null || true); do
-  if is_ip "$a"; then IGNORE="$IGNORE $a"; fi
-done
 op="${SSH_CLIENT:-}"; op="${op%% *}"
 if [ -n "$op" ] && is_ip "$op"; then
   skip=0; for e in $EXITS; do if [ "$e" = "$op" ]; then skip=1; fi; done
@@ -50,7 +50,7 @@ fi
 // fail2banJailFunc renders the jail text from SSHD_PORT and IGNORE: 5 failures in 10 minutes
 // -> 1 hour ban.
 const fail2banJailFunc = `render_jail() {
-  printf '# Installed by deploy --setup-ops (cmd/deploy/ops_hygiene.go)\n[sshd]\nenabled = true\nbackend = systemd\nport = %s\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\nignoreip = %s\n' "$SSHD_PORT" "$IGNORE"
+  printf '# Installed by deploy --setup-ops (cmd/deploy/ops_hygiene.go)\n[sshd]\nenabled = true\nbackend = systemd\nport = %s\nignoreself = false\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\nignoreip = %s\n' "$SSHD_PORT" "$IGNORE"
 }
 `
 
@@ -89,14 +89,17 @@ func setupJournaldFail2ban(client *ssh.Client, sshPort int, neverIgnore string) 
 // ───────────────────────── nginx stream timeouts + limits ─────────────────────────
 
 // These are the single source for both the generator (buildNginxStreamConf, used on reinstall)
-// and the patch of the live files below; TestNginxStreamPatchEqualsGenerator keeps the two
-// byte-identical. proxy_timeout 3600s equals xray's connIdle, proxy_socket_keepalive makes the
-// kernel notice dead peers (an hour of silence would otherwise keep a vanished client's session
-// — and its file descriptors — for the full hour); the worker limits leave room for the
-// long-lived sessions (2 descriptors per proxied connection).
+// and the patch of the live files below; TestNginxStreamPatchScript keeps the two byte-identical.
+// proxy_timeout 3600s equals xray's connIdle. so_keepalive on the CLIENT-facing listen sockets
+// (idle 60 s, probe every 10 s, 3 probes ≈ 90 s) makes the kernel notice vanished clients — with
+// an hour of allowed silence a dead phone would otherwise hold its session and file descriptors
+// for the full hour (proxy_socket_keepalive would only cover the loopback upstream, which is
+// useless here). The worker limits leave room for the long-lived sessions (2 descriptors per
+// proxied connection).
 const (
 	nginxStreamTimeoutComment = "# = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router."
 	nginxStreamTimeoutValue   = "3600s"
+	nginxClientKeepalive      = "60s:10s:3"
 	nginxWorkerRlimitNofile   = "65535"
 	nginxWorkerConnections    = "8192"
 )
@@ -104,8 +107,9 @@ const (
 // nginxStreamPatchScript brings the live nginx config to the wanted state:
 //
 //   - in every file that holds the SNI router (`proxy_pass $backend;`), inside that server
-//     block: `proxy_timeout 3600s;` and `proxy_socket_keepalive on;` above the proxy_pass (an
-//     existing proxy_timeout / proxy_socket_keepalive with another value is replaced);
+//     block: `proxy_timeout 3600s;` above the proxy_pass and `so_keepalive=60s:10s:3` on every
+//     `listen` (a different proxy_timeout / so_keepalive is replaced; a stale
+//     proxy_socket_keepalive of an earlier version of this tool is dropped);
 //   - in the file with `events {`: `worker_rlimit_nofile 65535;` in the main context and
 //     `worker_connections 8192;` in events (absent -> added, different -> replaced).
 //
@@ -114,8 +118,8 @@ const (
 // only written when its content changes; originals are copied to /var/backups/heyearth-nginx
 // (never into /etc/nginx, where a copy would be included twice by a glob). nginx -t must pass
 // before the reload; if it does not, every patched file is restored and the script fails. After
-// the reload the effective config (`nginx -T` again) must contain all four directives, else the
-// script FAILS.
+// the reload the effective config (`nginx -T` again) must contain proxy_timeout, the limits and
+// so_keepalive on every listen of the SNI router, else the script FAILS.
 //
 // NGINX_BACKUP_DIR is a unit-test hook, unset in production.
 const nginxStreamPatchScript = `set -u
@@ -139,11 +143,17 @@ ROUTER_AWK='FNR == NR {
   b = blk[FNR]
   if (b != "" && router[b]) {
     if ($0 ~ /^[[:space:]]*proxy_timeout[[:space:]]/ || $0 ~ /^[[:space:]]*proxy_socket_keepalive[[:space:]]/ || index($0, "__COMMENT__") > 0) next
+    if ($0 ~ /^[[:space:]]*listen[[:space:]]/) {
+      line = $0
+      if (match(line, /so_keepalive=[^ ;]*/)) line = substr(line, 1, RSTART - 1) "so_keepalive=__KA__" substr(line, RSTART + RLENGTH)
+      else sub(/[[:space:]]*;/, " so_keepalive=__KA__;", line)
+      print line
+      next
+    }
     if ($0 ~ /^[[:space:]]*proxy_pass[[:space:]]+\$backend;/) {
       match($0, /^[[:space:]]*/); ind = substr($0, 1, RLENGTH)
       print ind "__COMMENT__"
       print ind "proxy_timeout __VALUE__;"
-      print ind "proxy_socket_keepalive on;"
     }
   }
   print
@@ -205,13 +215,19 @@ if [ -n "$changed" ]; then
 fi
 final=$(nginx -T 2>/dev/null) || { echo "[ops] FAILED: nginx -T does not work after the patch"; exit 1; }
 bad=0
-for re in 'proxy_timeout[[:space:]]+__VALUE__;' 'proxy_socket_keepalive[[:space:]]+on;' 'worker_rlimit_nofile[[:space:]]+__RLIMIT__;' 'worker_connections[[:space:]]+__CONNS__;'; do
+for re in 'proxy_timeout[[:space:]]+__VALUE__;' 'worker_rlimit_nofile[[:space:]]+__RLIMIT__;' 'worker_connections[[:space:]]+__CONNS__;'; do
   if ! printf '%s\n' "$final" | grep -Eq "^[[:space:]]*$re"; then echo "[ops] FAILED: the effective nginx config lacks '$re'"; bad=1; fi
 done
-printf '%s\n' "$final" | grep -nE '^[[:space:]]*(proxy_timeout|proxy_socket_keepalive|worker_rlimit_nofile|worker_connections)[[:space:]]' || true
+missing=$(printf '%s\n' "$final" | awk -v files="$(printf '%s' "$routers" | tr '\n' ' ')" '
+  BEGIN { n = split(files, a, " "); for (i = 1; i <= n; i++) isr[a[i]] = 1 }
+  /^# configuration file / { f = $4; sub(/:$/, "", f); next }
+  isr[f] && /^[[:space:]]*listen[[:space:]]/ { total++; if ($0 !~ /so_keepalive=__KA__/) print f ": " $0 }
+  END { if (total == 0) print "no listen directive found in the SNI router file(s)" }')
+if [ -n "$missing" ]; then echo "[ops] FAILED: the SNI router has listeners without so_keepalive=__KA__:"; printf '%s\n' "$missing"; bad=1; fi
+printf '%s\n' "$final" | grep -nE '^[[:space:]]*(proxy_timeout|worker_rlimit_nofile|worker_connections)[[:space:]]|so_keepalive' || true
 [ "$bad" = 0 ] || exit 1
 for p in $(pgrep -f 'nginx: worker' 2>/dev/null | head -n 1); do grep 'Max open files' "/proc/$p/limits" 2>/dev/null | sed 's/^/[ops] nginx worker: /' || true; done
-echo "[ops] nginx: proxy_timeout __VALUE__, proxy_socket_keepalive on, worker_rlimit_nofile __RLIMIT__, worker_connections __CONNS__ are in the effective config"
+echo "[ops] nginx: proxy_timeout __VALUE__, so_keepalive=__KA__ on the SNI router listeners, worker_rlimit_nofile __RLIMIT__, worker_connections __CONNS__ are in the effective config"
 `
 
 func renderNginxStreamPatchScript() string {
@@ -220,6 +236,7 @@ func renderNginxStreamPatchScript() string {
 		"__VALUE__", nginxStreamTimeoutValue,
 		"__RLIMIT__", nginxWorkerRlimitNofile,
 		"__CONNS__", nginxWorkerConnections,
+		"__KA__", nginxClientKeepalive,
 	).Replace(nginxStreamPatchScript)
 }
 

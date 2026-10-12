@@ -77,6 +77,7 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	exitRules := []map[string]interface{}{
 		{"type": "field", "inboundTag": []string{"api-in"}, "outboundTag": "api"},
 		dnsDirectRule(),
+		{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
 		{"type": "field", "ruleTag": "plan-3-direct-domains", "user": []string{"u1", "u2"}, "domain": []string{"domain:yandex.ru"}, "outboundTag": "direct-freedom"},
 		{"type": "field", "ruleTag": "plan-3-users", "user": []string{"u1", "u2"}, "balancerTag": "plan-3-balancer"},
 		{"type": "field", "network": "tcp,udp", "balancerTag": "exit-balancer"},

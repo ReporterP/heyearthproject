@@ -13,9 +13,9 @@ import (
 func oldNginxStreamConf(t *testing.T, domain string) string {
 	t.Helper()
 	cur := buildNginxStreamConf(domain)
-	block := "    " + nginxStreamTimeoutComment + "\n    proxy_timeout " + nginxStreamTimeoutValue + ";\n    proxy_socket_keepalive on;\n"
-	old := strings.Replace(cur, block, "", 1)
-	if old == cur || strings.Contains(old, "proxy_timeout") || strings.Contains(old, "proxy_socket_keepalive") {
+	block := "    " + nginxStreamTimeoutComment + "\n    proxy_timeout " + nginxStreamTimeoutValue + ";\n"
+	old := strings.ReplaceAll(strings.Replace(cur, block, "", 1), " so_keepalive="+nginxClientKeepalive+";", ";")
+	if old == cur || strings.Contains(old, "proxy_timeout") || strings.Contains(old, "keepalive") {
 		t.Fatalf("cannot derive the old config from the generator output:\n%s", cur)
 	}
 	return old
@@ -23,9 +23,21 @@ func oldNginxStreamConf(t *testing.T, domain string) string {
 
 func TestNginxStreamGeneratorHasTimeout(t *testing.T) {
 	conf := buildNginxStreamConf("hiearth.ru")
-	want := "    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;\n"
+	want := "    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_pass $backend;\n"
 	if !strings.Contains(conf, want) {
-		t.Fatalf("the SNI router server block must carry proxy_timeout and proxy_socket_keepalive between ssl_preread and proxy_pass:\n%s", conf)
+		t.Fatalf("the SNI router server block must carry proxy_timeout between ssl_preread and proxy_pass:\n%s", conf)
+	}
+	// client-facing keepalive on both listeners; proxy_socket_keepalive would only cover the loopback upstream
+	for _, l := range []string{"    listen 443 so_keepalive=60s:10s:3;\n", "    listen [::]:443 so_keepalive=60s:10s:3;\n"} {
+		if !strings.Contains(conf, l) {
+			t.Errorf("the generator lacks %q:\n%s", l, conf)
+		}
+	}
+	if strings.Contains(conf, "proxy_socket_keepalive") {
+		t.Errorf("proxy_socket_keepalive must be gone from the generator:\n%s", conf)
+	}
+	if nginxClientKeepalive != "60s:10s:3" {
+		t.Errorf("keepalive %s", nginxClientKeepalive)
 	}
 	if nginxStreamTimeoutValue != "3600s" {
 		t.Fatalf("proxy_timeout must equal xray connIdle (3600s), got %s", nginxStreamTimeoutValue)
@@ -151,8 +163,8 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		}
 		wantLines(t, out, "STATE exit=0", "STATE calls=nginx -t;systemctl reload nginx;", "STATE backups=2",
 			"STATE tree=./nginx.conf ./stream.d/heyearth.conf ./stream.d/heyearth.conf.bak ./unused/old.conf ")
-		for _, s := range []string{"proxy_timeout 3600s;", "proxy_socket_keepalive on;", "worker_rlimit_nofile 65535;", "worker_connections 8192;",
-			"nginx: proxy_timeout 3600s, proxy_socket_keepalive on, worker_rlimit_nofile 65535, worker_connections 8192 are in the effective config"} {
+		for _, s := range []string{"proxy_timeout 3600s;", "listen 443 so_keepalive=60s:10s:3;", "listen [::]:443 so_keepalive=60s:10s:3;", "worker_rlimit_nofile 65535;", "worker_connections 8192;",
+			"nginx: proxy_timeout 3600s, so_keepalive=60s:10s:3 on the SNI router listeners, worker_rlimit_nofile 65535, worker_connections 8192 are in the effective config"} {
 			if !strings.Contains(out, s) {
 				t.Errorf("output lacks %q:\n%s", s, out)
 			}
@@ -185,8 +197,10 @@ func TestNginxStreamPatchScript(t *testing.T) {
 
 	t.Run("values that differ are replaced, not duplicated; stale directives after proxy_pass are folded into the canonical block", func(t *testing.T) {
 		t.Parallel()
-		hand := "server {\n    listen 443;\n    ssl_preread on;\n    proxy_pass $backend;\n    proxy_timeout 10m;\n    proxy_socket_keepalive off;\n}\n"
-		wantRouter := "server {\n    listen 443;\n    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;\n}\n"
+		// a different so_keepalive is replaced, a missing one appended before the ';' (a trailing
+		// comment survives), the stale proxy_socket_keepalive of an earlier version is dropped
+		hand := "server {\n    listen 443 so_keepalive=on;\n    listen [::]:443 ipv6only=on;\n    listen 8444; # extra\n    ssl_preread on;\n    proxy_pass $backend;\n    proxy_timeout 10m;\n    proxy_socket_keepalive off;\n}\n"
+		wantRouter := "server {\n    listen 443 so_keepalive=60s:10s:3;\n    listen [::]:443 ipv6only=on so_keepalive=60s:10s:3;\n    listen 8444 so_keepalive=60s:10s:3; # extra\n    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_pass $backend;\n}\n"
 		conf := strings.Replace(strings.Replace(stockNginxConf, "worker_connections 768;", "worker_connections 100;", 1),
 			"include /etc/nginx/modules-enabled/*.conf;\n", "include /etc/nginx/modules-enabled/*.conf;\nworker_rlimit_nofile 1024;\n", 1)
 		out := run(t, false, false, []nginxFile{{"nginx.conf", conf, true}, {"stream.d/hand.conf", hand, true}}, "stream.d/hand.conf", "nginx.conf")
@@ -206,6 +220,8 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		other := "server {\n    listen 9000;\n    proxy_timeout 5s;\n    proxy_pass 127.0.0.1:9;\n}\n"
 		two := "server {\n\tlisten 443;\n\tssl_preread on;\n\tproxy_pass $backend;\n}\n" + other +
 			"server {\n    listen 8444;\n    ssl_preread on;\n    proxy_pass $backend;\n}\n"
+		wantTwo := "server {\n\tlisten 443 so_keepalive=60s:10s:3;\n\tssl_preread on;\n\t" + nginxStreamTimeoutComment + "\n\tproxy_timeout 3600s;\n\tproxy_pass $backend;\n}\n" + other +
+			"server {\n    listen 8444 so_keepalive=60s:10s:3;\n    ssl_preread on;\n    " + nginxStreamTimeoutComment + "\n    proxy_timeout 3600s;\n    proxy_pass $backend;\n}\n"
 		out := run(t, false, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {"stream.d/two.conf", two, true}}, "stream.d/two.conf")
 		got := shown(out, "stream.d/two.conf")
 		if n := strings.Count(got, "proxy_timeout 3600s;"); n != 2 {
@@ -214,9 +230,11 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		if !strings.Contains(got, other) {
 			t.Errorf("a server block that is not the SNI router must be left alone:\n%s", got)
 		}
-		if !strings.Contains(got, "\t"+nginxStreamTimeoutComment+"\n\tproxy_timeout 3600s;\n\tproxy_socket_keepalive on;\n\tproxy_pass $backend;") ||
-			!strings.Contains(got, "    "+nginxStreamTimeoutComment+"\n    proxy_timeout 3600s;\n    proxy_socket_keepalive on;\n    proxy_pass $backend;") {
-			t.Errorf("indentation not kept:\n%s", got)
+		if got != wantTwo {
+			t.Errorf("indentation / listen lines:\n--- got\n%s\n--- want\n%s", got, wantTwo)
+		}
+		if strings.Contains(got, "listen 9000 so_keepalive") {
+			t.Errorf("a listen outside the SNI router must not get so_keepalive:\n%s", got)
 		}
 	})
 
@@ -233,8 +251,8 @@ func TestNginxStreamPatchScript(t *testing.T) {
 	t.Run("the router inline in nginx.conf: one file patched twice, the backup keeps the true original", func(t *testing.T) {
 		t.Parallel()
 		inline := "events {\n\tworker_connections 768;\n}\nstream {\n\tserver {\n\t\tlisten 443;\n\t\tssl_preread on;\n\t\tproxy_pass $backend;\n\t}\n}\n"
-		want := "worker_rlimit_nofile 65535;\nevents {\n\tworker_connections 8192;\n}\nstream {\n\tserver {\n\t\tlisten 443;\n\t\tssl_preread on;\n\t\t" +
-			nginxStreamTimeoutComment + "\n\t\tproxy_timeout 3600s;\n\t\tproxy_socket_keepalive on;\n\t\tproxy_pass $backend;\n\t}\n}\n"
+		want := "worker_rlimit_nofile 65535;\nevents {\n\tworker_connections 8192;\n}\nstream {\n\tserver {\n\t\tlisten 443 so_keepalive=60s:10s:3;\n\t\tssl_preread on;\n\t\t" +
+			nginxStreamTimeoutComment + "\n\t\tproxy_timeout 3600s;\n\t\tproxy_pass $backend;\n\t}\n}\n"
 		out, _ := runBash(t, nginxHarness(false, false, []nginxFile{{"nginx.conf", inline, true}}, "nginx.conf")+`echo "STATE backup_is_original=$(cmp -s "$T"/bk/* "$T/nginx.orig/nginx.conf" && echo 1 || echo 0)"`+"\n")
 		if got := shown(out, "nginx.conf"); got != want {
 			t.Fatalf("nginx.conf:\n--- got\n%s\n--- want\n%s\n%s", got, want, out)
@@ -266,7 +284,8 @@ func TestNginxStreamPatchScript(t *testing.T) {
 		odd := "server\n{\n    listen 443;\n    proxy_pass $backend;\n}\n"
 		out := run(t, false, false, []nginxFile{{"nginx.conf", stockNginxConf, true}, {"stream.d/odd.conf", odd, true}}, "stream.d/odd.conf")
 		wantLines(t, out, "STATE exit=1")
-		if !strings.Contains(out, "FAILED: the effective nginx config lacks 'proxy_timeout") || !strings.Contains(out, "lacks 'proxy_socket_keepalive") {
+		if !strings.Contains(out, "FAILED: the effective nginx config lacks 'proxy_timeout") ||
+			!strings.Contains(out, "FAILED: the SNI router has listeners without so_keepalive=60s:10s:3:") || !strings.Contains(out, "odd.conf:     listen 443;") {
 			t.Errorf("output:\n%s", out)
 		}
 		if strings.Contains(out, "are in the effective config") {
@@ -278,10 +297,10 @@ func TestNginxStreamPatchScript(t *testing.T) {
 // ───────────────────────── journald + fail2ban ─────────────────────────
 
 func fail2banHarness(vars map[string]string, sshClient string) string {
-	base := map[string]string{"NEVER_IGNORE": "", "HOST_IPS": "", "DB_IPS": "", "DB_FAIL": "0"}
+	base := map[string]string{"NEVER_IGNORE": "", "DB_IPS": "", "DB_FAIL": "0"}
 	return assignments(mergeVars(base, vars)) + `
 export SSH_CLIENT=` + shQuote(sshClient) + `
-hostname() { echo "$HOST_IPS"; }
+hostname() { echo "STUB-HOSTNAME-CALLED" >&2; echo "138.16.181.225 10.0.0.2"; }
 runuser() { if [ "$DB_FAIL" = 1 ]; then return 1; fi; printf '%s\n' "$DB_IPS"; }
 SSHD_PORT=22
 ` + fail2banIgnoreScript + fail2banJailFunc + `echo "STATE ignore=$IGNORE"
@@ -302,55 +321,51 @@ func TestFail2banIgnore(t *testing.T) {
 		wantOut   []string
 	}{
 		{
-			name:      "loopback + the Hub's own addresses + the operator's current address",
-			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225 10.0.0.2 2001:db8::2", "DB_IPS": exit1 + "\n" + exit2},
+			name:      "loopback + the operator's current address — and nothing of the Hub's own addresses",
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "DB_IPS": exit1 + "\n" + exit2},
 			sshClient: "203.0.113.9 51234 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225 10.0.0.2 2001:db8::2 203.0.113.9",
+			want:      "127.0.0.1/8 ::1 203.0.113.9",
 			wantOut:   []string{"fail2ban: ignoring your current address 203.0.113.9"},
 		},
 		{
 			name:      "the backup target is NEVER ignored, even when the operator comes through it",
-			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_IPS": exit2},
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "DB_IPS": exit2},
 			sshClient: exit1 + " 51234 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			want:      "127.0.0.1/8 ::1",
 			wantOut:   []string{"NOT whitelisting " + exit1 + " — it is an exit node"},
 		},
 		{
 			name:      "an exit node known only from the servers table is not ignored either",
-			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_IPS": exit1 + "\n" + exit2 + "\n"},
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "DB_IPS": exit1 + "\n" + exit2 + "\n"},
 			sshClient: exit2 + " 40000 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			want:      "127.0.0.1/8 ::1",
 			wantOut:   []string{"NOT whitelisting " + exit2},
 		},
 		{
 			name:      "the servers table unreadable: the known target is still excluded, other addresses are whitelisted",
-			vars:      map[string]string{"NEVER_IGNORE": exit1, "HOST_IPS": "138.16.181.225", "DB_FAIL": "1"},
+			vars:      map[string]string{"NEVER_IGNORE": exit1, "DB_FAIL": "1"},
 			sshClient: "198.51.100.4 1 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225 198.51.100.4",
+			want:      "127.0.0.1/8 ::1 198.51.100.4",
 		},
 		{
 			name:      "an IPv6 operator address is whitelisted",
-			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
 			sshClient: "2001:db8::77 5555 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225 2001:db8::77",
+			want:      "127.0.0.1/8 ::1 2001:db8::77",
 		},
 		{
-			name:      "garbage in SSH_CLIENT and in hostname -I is never copied into the config",
-			vars:      map[string]string{"HOST_IPS": "300.1.1.1 docker0 138.16.181.225 1.2.3 ::;reboot"},
+			name:      "garbage in SSH_CLIENT is never copied into the config",
 			sshClient: "$(reboot) 1 2",
-			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			want:      "127.0.0.1/8 ::1",
 		},
 		{
 			name:      "256 in an octet is not an address",
-			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
 			sshClient: "1.2.3.256 1 22",
-			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			want:      "127.0.0.1/8 ::1",
 		},
 		{
-			name:      "no SSH_CLIENT (not an SSH session): loopback and the Hub only",
-			vars:      map[string]string{"HOST_IPS": "138.16.181.225"},
+			name:      "no SSH_CLIENT (not an SSH session): loopback only",
 			sshClient: "",
-			want:      "127.0.0.1/8 ::1 138.16.181.225",
+			want:      "127.0.0.1/8 ::1",
 		},
 	}
 	for _, c := range cases {
@@ -363,7 +378,11 @@ func TestFail2banIgnore(t *testing.T) {
 			if !hasLine(out, "STATE ignore="+c.want) {
 				t.Errorf("want ignore list %q:\n%s", c.want, out)
 			}
-			for _, l := range []string{"ignoreip = " + c.want, "[sshd]", "enabled = true", "backend = systemd", "port = 22", "maxretry = 5", "findtime = 10m", "bantime = 1h"} {
+			// the Hub's own addresses (hostname -I) are not consulted at all, and ignoreself is off
+			if strings.Contains(out, "STUB-HOSTNAME-CALLED") || strings.Contains(out, "138.16.181.225") || strings.Contains(out, "10.0.0.2") {
+				t.Errorf("the Hub's own addresses must not be whitelisted:\n%s", out)
+			}
+			for _, l := range []string{"ignoreip = " + c.want, "ignoreself = false", "[sshd]", "enabled = true", "backend = systemd", "port = 22", "maxretry = 5", "findtime = 10m", "bantime = 1h"} {
 				if !hasLine(out, l) {
 					t.Errorf("jail lacks %q:\n%s", l, out)
 				}
@@ -397,6 +416,10 @@ func TestHostHygieneScript(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
+	}
+	// the Hub's own addresses are not whitelisted: no hostname -I, and fail2ban's ignoreself is off
+	if strings.Contains(s, "hostname -I") || !strings.Contains(s, "ignoreself = false") {
+		t.Errorf("the jail must set ignoreself = false and not whitelist hostname -I")
 	}
 	// the exit address only ever appears as the "never ignore" input, not in a literal ignoreip
 	if strings.Contains(s, "ignoreip = 127.0.0.1/8 ::1 89.124.89.126") {

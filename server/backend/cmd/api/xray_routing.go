@@ -27,6 +27,7 @@ const (
 	xrayDNSTag        = "dns-out"    // dns.tag: inboundTag of xray's built-in DNS queries
 	xrayDNSHijackTag  = "dns-hijack" // no-exit mode: answers users' port-53 queries from the built-in DNS
 	xrayAPIInTag      = "api-in"
+	xrayPrivateIPTag  = "geoip:private"
 	xrayRulePortDNS   = "53"
 	xrayRuleTypeField = "field"
 )
@@ -128,6 +129,64 @@ func dnsDirectRule() map[string]interface{} {
 	}
 }
 
+// baseSecurityRules are the first routing rules, in order:
+//
+//  0. xray's own DNS client goes out of the Hub (dnsDirectRule);
+//  1. private ranges are blocked (geoip:private) — spokes and users cannot reach the Hub's
+//     internal network or each other;
+//  2. the Hub's own public addresses are blocked on every port except 80/443 (hubIPs, see
+//     hub_addrs.go): a proxy user must not be able to make the Hub connect to itself — sshd,
+//     PostgreSQL, the API on :8000, the xray API — through a freedom outbound. Omitted when
+//     the list is empty;
+//  3. BitTorrent; 4. XMPP ports 5222/5223 (Chinese stock ROMs retry the dead Google Talk
+//     endpoint endlessly, which backs up SOCKS5 i/o timeouts in the Hysteria2 client).
+//
+// DNS-over-HTTPS is deliberately not blocked: browsers resolve through it and it goes via the
+// exits. checkNoDirectLeak requires the private block to precede every freedom rule.
+func baseSecurityRules(hubIPs []string) []map[string]interface{} {
+	rules := []map[string]interface{}{
+		dnsDirectRule(),
+		{"type": xrayRuleTypeField, "ip": []string{xrayPrivateIPTag}, "outboundTag": xrayBlockTag},
+	}
+	if len(hubIPs) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"type": xrayRuleTypeField, "ip": append([]string{}, hubIPs...), "port": xrayHubBlockedPorts, "outboundTag": xrayBlockTag,
+		})
+	}
+	return append(rules,
+		map[string]interface{}{"type": xrayRuleTypeField, "protocol": []string{"bittorrent"}, "outboundTag": xrayBlockTag},
+		map[string]interface{}{"type": xrayRuleTypeField, "port": "5222,5223", "outboundTag": xrayBlockTag},
+	)
+}
+
+// isFreedomRuleTarget reports whether outbound tag is a Hub-local freedom outbound a rule
+// could send user traffic out of the Hub through: direct-freedom (RU-direct services) and the
+// per-masking-rule mask-* outbounds.
+func isFreedomRuleTarget(tag interface{}) bool {
+	s, _ := tag.(string)
+	return s == "direct-freedom" || strings.HasPrefix(s, "mask-")
+}
+
+// isPrivateBlockRule: an unconditional (no inbound / user / port restriction) rule that sends
+// geoip:private to block.
+func isPrivateBlockRule(r map[string]interface{}) bool {
+	if r["outboundTag"] != xrayBlockTag {
+		return false
+	}
+	ips, _ := r["ip"].([]string)
+	if len(ips) != 1 || ips[0] != xrayPrivateIPTag {
+		return false
+	}
+	for k := range r {
+		switch k {
+		case "type", "ip", "outboundTag":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ruleTagList reads a rule's list-of-strings field (inboundTag), nil if absent.
 func ruleTagList(rule map[string]interface{}, key string) []string {
 	v, _ := rule[key].([]string)
@@ -170,6 +229,20 @@ func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map
 	for _, r := range rules {
 		if r["outboundTag"] == xrayDirectTag && !reflect.DeepEqual(ruleTagList(r, "inboundTag"), []string{xrayDNSTag}) {
 			return fmt.Errorf("rule %v sends traffic to %q; only the %q inbound may", r, xrayDirectTag, xrayDNSTag)
+		}
+	}
+
+	// A Hub-local freedom outbound (direct-freedom, mask-*) may only be reached after the
+	// private-range block: otherwise a user could ask the Hub to connect to 127.0.0.1 / its own
+	// LAN through it.
+	privateBlocked := false
+	for _, r := range rules {
+		if isPrivateBlockRule(r) {
+			privateBlocked = true
+			continue
+		}
+		if isFreedomRuleTarget(r["outboundTag"]) && !privateBlocked {
+			return fmt.Errorf("rule %v sends traffic through a Hub-local freedom outbound before the %q block rule", r, xrayPrivateIPTag)
 		}
 	}
 

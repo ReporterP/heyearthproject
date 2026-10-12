@@ -69,6 +69,7 @@ func StartMonitor() {
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)
 		safely("бэкап", checkBackupFreshness)
+		safely("копия бэкапа", checkOffsiteBackupFreshness)
 		safely("диск", checkDiskUsage)
 	})
 	log.Printf("[monitor] запущен: loop-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
@@ -481,6 +482,91 @@ func checkBackupFreshness() {
 	default:
 		ResolveAlert("backup-stale", fmt.Sprintf("Свежий бэкап: %v назад.", time.Since(newest).Round(time.Minute)))
 	}
+}
+
+// ── offsite backup copy (the encrypted copy on the exit, written by heyearth-backup.sh) ──
+
+const (
+	backupEnvPath      = "/etc/heyearth/backup.env"
+	offsiteStampName   = "last-offsite" // written by the backup script only after the exit confirmed the sha256
+	offsiteLastErrName = "last-error"
+	offsiteMaxAge      = backupMaxAge
+)
+
+// offsiteConfigured reports whether backup.env enables the off-box copy: a non-empty TARGET_HOST.
+func offsiteConfigured(backupEnv string) bool {
+	for _, line := range strings.Split(backupEnv, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "TARGET_HOST="); ok {
+			return strings.TrimSpace(v) != ""
+		}
+	}
+	return false
+}
+
+type offsiteVerdict int
+
+const (
+	offsiteNotConfigured offsiteVerdict = iota // no TARGET_HOST: nothing to watch
+	offsiteFresh
+	offsiteStale
+)
+
+// decideOffsiteBackup judges the off-box copy. stampMod is the mtime of last-offsite (zero when
+// the file does not exist), envMod the mtime of backup.env. The reference point is the later
+// of the two: a copy that was configured (or re-pointed at another exit) a moment ago gets a
+// full period for its first run instead of an immediate alert, and a Hub that has never made a
+// copy is reported once that period has passed. age is measured from the reference point.
+func decideOffsiteBackup(configured bool, stampMod, envMod, now time.Time) (offsiteVerdict, time.Duration) {
+	if !configured {
+		return offsiteNotConfigured, 0
+	}
+	ref := stampMod
+	if envMod.After(ref) {
+		ref = envMod
+	}
+	age := now.Sub(ref)
+	if age > offsiteMaxAge {
+		return offsiteStale, age
+	}
+	return offsiteFresh, age
+}
+
+func checkOffsiteBackupFreshness() {
+	env, err := os.ReadFile(backupEnvPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			ResolveAlert("offsite-backup-stale", "Копия бэкапа вне Hub больше не настроена (нет "+backupEnvPath+").")
+		} else {
+			log.Printf("[monitor] копия бэкапа: не удалось прочитать %s: %v", backupEnvPath, err)
+		}
+		return
+	}
+	var envMod, stampMod time.Time
+	if info, err := os.Stat(backupEnvPath); err == nil {
+		envMod = info.ModTime()
+	}
+	if info, err := os.Stat(path.Join(backupDir, offsiteStampName)); err == nil && info.Mode().IsRegular() {
+		stampMod = info.ModTime()
+	}
+	verdict, age := decideOffsiteBackup(offsiteConfigured(string(env)), stampMod, envMod, time.Now())
+	switch verdict {
+	case offsiteNotConfigured:
+		ResolveAlert("offsite-backup-stale", "Копия бэкапа вне Hub отключена в "+backupEnvPath+".")
+	case offsiteStale:
+		details := fmt.Sprintf("Зашифрованная копия бэкапа на exit-ноде не обновлялась %v (порог %v); последний успех: %s. "+
+			"Проверьте journalctl -u heyearth-backup -n 30 и %s.",
+			age.Round(time.Minute), offsiteMaxAge, offsiteLastSuccess(stampMod), path.Join(backupDir, offsiteLastErrName))
+		RaiseAlert("offsite-backup-stale", AlertWarn, "Копия бэкапа вне Hub устарела", details)
+	case offsiteFresh:
+		ResolveAlert("offsite-backup-stale", fmt.Sprintf("Копия бэкапа вне Hub свежая: %v назад.", age.Round(time.Minute)))
+	}
+}
+
+func offsiteLastSuccess(stampMod time.Time) string {
+	if stampMod.IsZero() {
+		return "ни разу"
+	}
+	return stampMod.In(mskZone).Format("02.01.2006 15:04")
 }
 
 func checkDiskUsage() {

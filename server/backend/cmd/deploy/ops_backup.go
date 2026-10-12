@@ -41,7 +41,11 @@ const (
 // size and the receiver's name check all apply to the ciphertext.
 //
 // The free-space check runs before anything is written: a full disk fails the run with a clear
-// last-error and no new archive, which the monitor turns into a backup-stale alert.
+// last-error and no new archive, which the monitor turns into a backup-stale alert. Disk use is
+// built to stay within that check (2x the last archive + 1 GiB): while the archive is built the
+// dump, the config tarball and the .part coexist (about twice the archive); the intermediates
+// are deleted the moment the final tar exists, so the encrypted stream is created next to the
+// archive alone (again about twice the archive).
 //
 // users_count is taken right BEFORE pg_dump; registrations between the two make the dump a
 // few users larger, which heyearth-backup-verify.sh tolerates (see there).
@@ -77,6 +81,7 @@ done
 rc=0; tar -C "${FILES_ROOT:-/}" -czf "$WORK/files.tar.gz" "${PATHS[@]}" || rc=$?
 [ "$rc" -le 1 ] || fail "tar of config files failed (exit $rc)"
 tar -C "$WORK" -czf "$ARCHIVE.part" db.dump meta.txt files.tar.gz || fail "final tar failed"
+rm -f "$WORK/db.dump" "$WORK/meta.txt" "$WORK/files.tar.gz"
 tar -tzf "$ARCHIVE.part" > /dev/null || fail "final archive is unreadable"
 mv -f "$ARCHIVE.part" "$ARCHIVE"
 ls -1t "$BACKUP_DIR"/backup-*.tar.gz | tail -n +$((KEEP + 1)) | xargs -r rm -f --
@@ -198,32 +203,42 @@ func installBackupTimer(client *ssh.Client, bc backupConfig) error {
 //	ping
 //	backup-YYYYmmdd-HHMMSS.tar.gz.age <size> <sha256>
 //
-// The name must carry a real date that is not more than a day in the future (so a Hub that is
-// compromised cannot push "newer" names to evict good archives), the declared size is capped
-// (MAX_BYTES) and the stream is cut at that cap, the filesystem must have room for twice the
-// biggest of (newest stored archive, declared size, MIN_BYTES) before anything is written, and the
-// stream is stored as <name>.part and renamed only when size and sha256 match what was declared —
-// the archive is ciphertext, so integrity can be checked but not the content. Rotation keeps the
-// newest KEEP archives by the date in the NAME, never by mtime or by how many files were uploaded.
+// What the receiver guarantees even if the Hub (and with it the key) is compromised:
+//   - the name carries a real date, not older than KEEP_DAYS days and not more than a day in the
+//     future — a flood of "newer" names cannot push real archives out;
+//   - one upload at a time (flock -n; a second one is refused with BUSY, exit 6);
+//   - the declared size is at most MAX_BYTES and at most that many bytes (plus one, to notice an
+//     excess) are read; the filesystem must have room for twice the biggest of (newest stored
+//     archive, declared size, MIN_BYTES) before anything is written;
+//   - the stream is stored as <name>.part and renamed only when size and sha256 are exactly what
+//     was declared (the archive is ciphertext: integrity can be checked, the content cannot);
+//   - rotation never evicts by count across dates: names older than KEEP_DAYS days are deleted,
+//     and of one date only the PER_DATE newest (by name) are kept. Seven uploads dated today can
+//     thus only replace each other, never the archives of the other days.
 const backupReceiverScript = `#!/usr/bin/env bash
 # Installed by Hub deploy --setup-ops (cmd/deploy/ops_backup.go). DO NOT EDIT.
-# Forced command of the Hub backup key. Stores an age-encrypted archive as /var/backups/heyearth-hub/<name>,
-# keeps the newest 7 by the date in the name.
+# Forced command of the Hub backup key. Stores an age-encrypted archive as /var/backups/heyearth-hub/<name>:
+# at most 2 per date, nothing older than 8 days (by the date in the name).
 # receiver-version: __VERSION__
 set -euo pipefail
 umask 077
-DIR=/var/backups/heyearth-hub; KEEP=7; MAX_BYTES=4294967296; MIN_BYTES=104857600;
+DIR=/var/backups/heyearth-hub; KEEP_DAYS=8; PER_DATE=2; MAX_BYTES=4294967296; MIN_BYTES=104857600;
 CMD="${SSH_ORIGINAL_COMMAND:-}"
 reject() { echo "rejected: $1" >&2; exit "${2:-2}"; }
 if [ "$CMD" = "ping" ]; then echo "PONG __VERSION__"; exit 0; fi
 RE='^(backup-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.tar\.gz\.age) ([0-9]{1,12}) ([0-9a-f]{64})$'
+NAMERE='^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$'
 [[ "$CMD" =~ $RE ]] || reject "command not recognised"
 NAME="${BASH_REMATCH[1]}"; SIZE=$((10#${BASH_REMATCH[8]})); SUM="${BASH_REMATCH[9]}"
 WHEN=$(date -d "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]} ${BASH_REMATCH[5]}:${BASH_REMATCH[6]}:${BASH_REMATCH[7]}" +%s 2>/dev/null) || reject "the name does not carry a valid date"
 [ "$WHEN" -le $(( $(date +%s) + 86400 )) ] || reject "the date in the name is more than a day in the future"
+CUTOFF=$(date -d "-$KEEP_DAYS days" +%Y%m%d)
+[ "${NAME:7:8}" -ge "$CUTOFF" ] || reject "the date in the name is older than $KEEP_DAYS days"
 if [ "$SIZE" -lt 1 ] || [ "$SIZE" -gt "$MAX_BYTES" ]; then reject "declared size $SIZE is outside 1..$MAX_BYTES" 4; fi
 mkdir -p "$DIR"
-LASTNAME=$(ls -1 "$DIR" | grep -E '^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$' | sort | tail -n 1 || true)
+exec 9>"$DIR/.lock"
+flock -n 9 || reject "BUSY: another upload is in progress" 6
+LASTNAME=$(ls -1 "$DIR" | grep -E "$NAMERE" | sort | tail -n 1 || true)
 BASE=$MIN_BYTES
 if [ -n "$LASTNAME" ]; then LAST=$(stat -c %s "$DIR/$LASTNAME"); if [ "$LAST" -gt "$BASE" ]; then BASE=$LAST; fi; fi
 if [ "$SIZE" -gt "$BASE" ]; then BASE=$SIZE; fi
@@ -233,13 +248,16 @@ case "$AVAIL" in ''|*[!0-9]*) reject "cannot read the free space of $DIR" 5 ;; e
 PART="$DIR/$NAME.part"
 trap 'rm -f "$PART"' EXIT
 find "$DIR" -maxdepth 1 -name '*.part' -mmin +120 -delete 2>/dev/null || true
-head -c $((MAX_BYTES + 1)) > "$PART"
+head -c $((SIZE + 1)) > "$PART"
 GOT=$(stat -c %s "$PART")
-[ "$GOT" -le "$MAX_BYTES" ] || reject "the stream exceeds $MAX_BYTES bytes" 4
+[ "$GOT" -le "$SIZE" ] || reject "more data than the declared $SIZE bytes" 3
 [ "$GOT" -eq "$SIZE" ] || reject "size mismatch: declared $SIZE, received $GOT" 3
 [ "$(sha256sum "$PART" | cut -d' ' -f1)" = "$SUM" ] || reject "sha256 mismatch" 3
 mv -f "$PART" "$DIR/$NAME"
-ls -1 "$DIR" | grep -E '^backup-[0-9]{8}-[0-9]{6}\.tar\.gz\.age$' | sort -r | tail -n +$((KEEP + 1)) | while IFS= read -r old; do rm -f -- "$DIR/$old"; done
+for f in $(ls -1 "$DIR" | grep -E "$NAMERE" | sort); do
+  if [ "${f:7:8}" -lt "$CUTOFF" ]; then rm -f -- "$DIR/$f"; fi
+done
+ls -1 "$DIR" | grep -E "$NAMERE" | sort -r | awk -v n="$PER_DATE" '{ d = substr($0, 8, 8); c[d]++; if (c[d] > n) print }' | while IFS= read -r old; do rm -f -- "$DIR/$old"; done
 echo "OK $SUM"
 `
 
@@ -282,12 +300,18 @@ func renderReceiverInstallScript(authLine string) string {
 	return renderReceiverInstallScriptAt(prodReceiverPaths, authLine)
 }
 
-// renderReceiverInstallScriptAt runs on the exit: the forced-command script and the Hub key's
-// authorized_keys entry. Any older entry of the same key is replaced and other keys are kept; if
-// authorized_keys cannot be read (grep exit status above 1) the script aborts and leaves the
-// file untouched, instead of writing back a shortened file.
+// renderReceiverInstallScriptAt runs on the exit: the forced-command script, the Hub key's
+// authorized_keys entry and the cleanup of legacy plaintext archives. Any older entry of the
+// same key is replaced and other keys are kept; if authorized_keys cannot be read (grep exit
+// status above 1) the script aborts and leaves the file untouched, instead of writing back a
+// shortened file. The receiver needs flock (util-linux); a host without it is refused before
+// anything is written.
+//
+// An earlier version of the receiver accepted plain backup-*.tar.gz uploads: those files (and
+// their .part leftovers) are deleted and counted — the exit must only ever hold ciphertext.
 func renderReceiverInstallScriptAt(p receiverPaths, authLine string) string {
 	return `set -eu
+command -v flock >/dev/null 2>&1 || { echo "[ops] ABORT: flock is not installed on the exit — receiver not installed"; exit 1; }
 ` + opsPutFileFunc + `
 mkdir -p ` + p.dir + ` ` + p.sshDir + `
 chmod 700 ` + p.dir + ` ` + p.sshDir + `
@@ -298,6 +322,9 @@ if [ "$rc" -gt 1 ]; then rm -f "$AK.new"; echo "[ops] ABORT: cannot read $AK (gr
 printf '%s\n' '` + authLine + `' >> "$AK.new"
 chmod 600 "$AK.new"
 mv -f "$AK.new" "$AK"
+legacy=$(find ` + p.dir + ` -maxdepth 1 -type f \( -name 'backup-*.tar.gz' -o -name 'backup-*.tar.gz.part' \) | wc -l | tr -d ' ')
+find ` + p.dir + ` -maxdepth 1 -type f \( -name 'backup-*.tar.gz' -o -name 'backup-*.tar.gz.part' \) -delete
+echo "[ops] exit: removed $legacy legacy plaintext archive(s) from ` + p.dir + `"
 echo "[ops] exit: receiver and authorized_keys entry installed"
 `
 }

@@ -1241,12 +1241,11 @@ upstream xray_vless {
 }
 
 server {
-    listen 443;
-    listen [::]:443;
+    listen 443 so_keepalive=60s:10s:3;
+    listen [::]:443 so_keepalive=60s:10s:3;
     ssl_preread on;
     # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
     proxy_timeout 3600s;
-    proxy_socket_keepalive on;
     proxy_pass $backend;
 }
 `, domain)

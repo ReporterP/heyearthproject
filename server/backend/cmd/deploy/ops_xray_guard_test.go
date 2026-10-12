@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,9 @@ iptables() {
     if [ "$CGROUP_OK" = 1 ]; then echo "cgroup match options: [!] --path path  Match cgroup2 membership"; return 0; fi
     echo "iptables v1.8.10: Couldn't load match 'cgroup'" >&2; return 2
   fi
-  if [ "$1" = -w ]; then shift; fi
+  if [ "$1" = -w ]; then
+    shift; if [ "$1" != 5 ]; then echo "STUB-BAD-WAIT $*" >&2; return 99; fi; shift
+  fi
   op="$1"; shift
   case "$op" in
     -S) echo "-P OUTPUT ACCEPT"; cat "$T/rules" ;;
@@ -29,7 +32,12 @@ iptables() {
     *) echo "STUB-BAD-IPTABLES $op" >&2; return 99 ;;
   esac
 }
-systemctl() { if [ "$1" = show ]; then printf '%s\n' "$API_USER_STUB"; fi; }
+systemctl() {
+  case "$1" in
+    show) echo "$API_USER_STUB" ;;
+    is-enabled) [ "$GUARD_ENABLED" = 1 ] ;;
+  esac
+}
 id() { case "$2" in root) echo 0 ;; svc) echo 1234 ;; *) return 1 ;; esac; }
 guard() { ( . "$T/guard.sh" "$@" ); }
 state() {
@@ -40,7 +48,7 @@ state() {
 `
 
 func guardHarness(vars map[string]string, body string) string {
-	base := map[string]string{"API_USER_STUB": "", "CGROUP_OK": "1", "IPT_FAIL_CG": "0", "MAKE_CG": "0"}
+	base := map[string]string{"API_USER_STUB": "", "CGROUP_OK": "1", "IPT_FAIL_CG": "0", "MAKE_CG": "0", "GUARD_ENABLED": "1"}
 	return assignments(mergeVars(base, vars)) + `
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 echo "-A OUTPUT -p udp --dport 53 -j ACCEPT" > "$T/rules"; : > "$T/mut"
@@ -148,6 +156,26 @@ guard xray; state three`)
 			t.Errorf("no warning:\n%s", out)
 		}
 	})
+
+	t.Run("the xray subcommand does nothing when xray-api-guard is disabled (a rolled-back guard must not come back with the next xray start)", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, map[string]string{"MAKE_CG": "1", "GUARD_ENABLED": "0"}, `guard xray; echo "STATE rc=$?"; state s
+guard stop; guard xray; echo "STATE rc2=$?"; state t`)
+		wantLines(t, out, "STATE rc=0", "STATE s owner=0 cg=0 dns=1 mut=0", "STATE rc2=0", "STATE t owner=0 cg=0 dns=1 mut=0")
+	})
+
+	t.Run("every iptables call waits at most 5 s for the xtables lock (the stub refuses a bare -w)", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, map[string]string{"MAKE_CG": "1"}, `guard start; guard xray; guard stop; echo "STATE done"`)
+		if !hasLine(out, "STATE done") || strings.Contains(out, "STUB-BAD-WAIT") {
+			t.Errorf("output:\n%s", out)
+		}
+		for _, script := range []string{xrayAPIGuardScript, renderXrayAPIGuardInstallScript()} {
+			if regexp.MustCompile(`iptables -w (-|\$)`).MatchString(script) {
+				t.Errorf("an iptables call without a bounded wait: %q", regexp.MustCompile(`iptables -w (-|\$)[^\n]*`).FindString(script))
+			}
+		}
+	})
 }
 
 func TestXrayAPIGuardInstallScript(t *testing.T) {
@@ -177,7 +205,7 @@ func TestXrayAPIGuardInstallScript(t *testing.T) {
 	if !strings.Contains(xrayAPIGuardDropIn, "[Service]\nExecStartPost=-/opt/heyearth/bin/xray-api-guard.sh xray\n") {
 		t.Errorf("xray drop-in: %q", xrayAPIGuardDropIn)
 	}
-	for _, want := range []string{"-m owner ! --uid-owner $API_UID -j REJECT", "-o lo -p tcp --syn -d 127.0.0.1 --dport 10085", "iptables -w -C OUTPUT $SPEC", "iptables -w -I OUTPUT 1 $SPEC",
+	for _, want := range []string{"-m owner ! --uid-owner $API_UID -j REJECT", "-o lo -p tcp --syn -d 127.0.0.1 --dport 10085", "iptables -w 5 -C OUTPUT $SPEC", "iptables -w 5 -I OUTPUT 1 $SPEC",
 		"-m cgroup --path system.slice/xray.service"} {
 		if !strings.Contains(xrayAPIGuardScript, want) {
 			t.Errorf("guard script lacks %q", want)

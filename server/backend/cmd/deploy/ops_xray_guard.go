@@ -29,6 +29,11 @@ import (
 // position 1. The cgroup rule is always rebuilt. xray never fails: the xray subcommand exits 0.
 // The cgroup exists while xray's ExecStartPost runs (systemctl is-active would still say
 // "activating"), so its presence is tested as a directory; CGROUP_DIR is a unit-test hook.
+//
+// The xray subcommand is a no-op unless xray-api-guard.service is enabled: after a rollback (or
+// `systemctl disable` by hand) the drop-in must not bring the rule back on the next xray start.
+// Every iptables call waits at most 5 s for the xtables lock (-w 5) so a busy lock can never
+// hold up xray.service's start.
 const xrayAPIGuardScript = `#!/bin/sh
 # Installed by deploy --setup-ops (cmd/deploy/ops_xray_guard.go). DO NOT EDIT.
 set -eu
@@ -38,13 +43,13 @@ API_UID=$(id -u "$API_USER" 2>/dev/null || echo 0)
 SPEC="-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner $API_UID -j REJECT --reject-with tcp-reset"
 CG_SPEC="-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m cgroup --path system.slice/xray.service -j REJECT --reject-with tcp-reset"
 CGROUP_DIR="${CGROUP_DIR:-/sys/fs/cgroup/system.slice/xray.service}"
-rules_with() { iptables -w -S OUTPUT | grep -F -e '--dport 10085' | grep -F -e "$1" || true; }
-drop_rules() { while IFS= read -r r; do [ -n "$r" ] || continue; iptables -w $(printf '%s' "$r" | sed 's/^-A /-D /'); done; }
+rules_with() { iptables -w 5 -S OUTPUT | grep -F -e '--dport 10085' | grep -F -e "$1" || true; }
+drop_rules() { while IFS= read -r r; do [ -n "$r" ] || continue; iptables -w 5 $(printf '%s' "$r" | sed 's/^-A /-D /'); done; }
 apply_owner() {
   n=$(rules_with '-m owner' | wc -l | tr -d ' ')
-  if [ "$n" = 1 ] && iptables -w -C OUTPUT $SPEC 2>/dev/null; then return 0; fi
+  if [ "$n" = 1 ] && iptables -w 5 -C OUTPUT $SPEC 2>/dev/null; then return 0; fi
   rules_with '-m owner' | drop_rules
-  iptables -w -I OUTPUT 1 $SPEC
+  iptables -w 5 -I OUTPUT 1 $SPEC
 }
 apply_cgroup() {
   if ! iptables -m cgroup --help 2>&1 | grep -q -e '--path'; then
@@ -52,11 +57,11 @@ apply_cgroup() {
   fi
   if [ ! -d "$CGROUP_DIR" ]; then return 0; fi
   rules_with '-m cgroup' | drop_rules
-  iptables -w -I OUTPUT 1 $CG_SPEC || { echo "xray-api-guard: could not add the xray cgroup rule" >&2; return 0; }
+  iptables -w 5 -I OUTPUT 1 $CG_SPEC || { echo "xray-api-guard: could not add the xray cgroup rule" >&2; return 0; }
 }
 case "${1:-start}" in
   start) apply_owner; apply_cgroup || true ;;
-  xray) apply_cgroup || true; exit 0 ;;
+  xray) systemctl is-enabled --quiet xray-api-guard.service 2>/dev/null || exit 0; apply_cgroup || true; exit 0 ;;
   stop) rules_with '-m owner' | drop_rules; rules_with '-m cgroup' | drop_rules ;;
   *) echo "usage: $0 start|stop|xray" >&2; exit 2 ;;
 esac
@@ -114,7 +119,7 @@ else
   echo "[ops] WARN: nothing listens on 127.0.0.1:10085 (xray stopped?) — guard installed, not functionally verified"
 fi
 if [ "$cg" = 1 ]; then
-  if iptables -w -S OUTPUT | grep -q -e 'system.slice/xray.service'; then
+  if iptables -w 5 -S OUTPUT | grep -q -e 'system.slice/xray.service'; then
     echo "[ops] xray itself is blocked from its own API (cgroup rule, re-applied after every xray start)"
   else
     echo "[ops] WARN: the xray cgroup rule is not present (xray stopped?) — it is added when xray starts"
@@ -136,7 +141,7 @@ func renderXrayAPIGuardInstallScript() string {
 /opt/heyearth/bin/xray-api-guard.sh start
 systemctl enable --now xray-api-guard.service
 systemctl is-active xray-api-guard.service
-iptables -w -S OUTPUT | grep -F -e '--dport 10085'
+iptables -w 5 -S OUTPUT | grep -F -e '--dport 10085'
 ` + xrayAPIGuardPostScript
 }
 

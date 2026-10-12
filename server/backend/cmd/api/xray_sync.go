@@ -472,22 +472,10 @@ func SyncXrayConfig() error {
 	})
 
 	// ── Routing (политики безопасности) ──
-	rules := []map[string]interface{}{
-		// 0. Встроенный DNS xray → с Hub. Явно: default outbound теперь block.
-		dnsDirectRule(),
-		// 1. Блокировка приватных IP — inter-spoke изоляция
-		// Spoke-ноды не могут обращаться к другим spoke или к внутренней сети Hub
-		{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
-		// 2. Блокировка BitTorrent
-		{"type": "field", "protocol": []string{"bittorrent"}, "outboundTag": "block"},
-		// 3. Блокировка XMPP (port 5222/5223) — китайские стоковые ROM (OPPO/Realme/Vivo)
-		//    бесконечно retry'ят отключённый Google Talk endpoint. Generates
-		//    SOCKS5 i/o timeout backlog в Hysteria2 client → замедляет всех юзеров.
-		//    Подтверждено: 26 из 28 SOCKS5 ошибок на www.google.com:5222.
-		{"type": "field", "port": "5222,5223", "outboundTag": "block"},
-		// 4. DNS-over-HTTPS: НЕ блокируем, пусть идёт через exit-ноды
-		// Chrome/Edge используют DoH (chrome.cloudflare-dns.com), блокировка ломает DNS резолвинг
-	}
+	// The first rules are the security baseline (see baseSecurityRules): xray's own DNS, then
+	// everything that leads back to the Hub itself or to a private range is blocked BEFORE any
+	// direct-freedom / mask-* rule appended below can match it.
+	rules := baseSecurityRules(hubOwnIPs())
 
 	// ── Per-plan direct-routing rules ──
 	// Для каждого плана с прикреплёнными direct-сервисами добавляем правила

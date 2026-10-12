@@ -184,3 +184,59 @@ func TestSafelyRecoversPanicAndContinues(t *testing.T) {
 		t.Fatal("a panic in one step must not prevent the next one")
 	}
 }
+
+func TestOffsiteConfigured(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want bool
+	}{
+		{"BACKUP_DIR=/x\nKEEP=14\nTARGET_HOST=89.124.89.126\nTARGET_PORT=22\n", true},
+		{"TARGET_HOST=89.124.89.126", true},
+		{"  TARGET_HOST=2001:db8::1  \n", true},
+		{"BACKUP_DIR=/x\nTARGET_HOST=\nTARGET_PORT=22\n", false},
+		{"TARGET_HOST=   \n", false},
+		{"BACKUP_DIR=/x\nKEEP=14\n", false},
+		{"", false},
+		{"# TARGET_HOST=1.2.3.4\n", false},
+		{"XTARGET_HOST=1.2.3.4\n", false},
+	} {
+		if got := offsiteConfigured(tc.env); got != tc.want {
+			t.Errorf("offsiteConfigured(%q) = %v, want %v", tc.env, got, tc.want)
+		}
+	}
+}
+
+func TestDecideOffsiteBackup(t *testing.T) {
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	h := func(back int) time.Time { return now.Add(-time.Duration(back) * time.Hour) }
+	var never time.Time
+	cases := []struct {
+		name       string
+		configured bool
+		stamp, env time.Time
+		want       offsiteVerdict
+		wantAge    time.Duration
+	}{
+		{"offsite not configured: nothing to watch, however old the stamp", false, h(500), h(600), offsiteNotConfigured, 0},
+		{"fresh copy", true, h(3), h(2000), offsiteFresh, 3 * time.Hour},
+		{"exactly at the threshold is still fine", true, h(26), h(2000), offsiteFresh, 26 * time.Hour},
+		{"a minute over the threshold is stale", true, h(26).Add(-time.Minute), h(2000), offsiteStale, 26*time.Hour + time.Minute},
+		{"stale for days", true, h(100), h(2000), offsiteStale, 100 * time.Hour},
+		{"configured long ago, no copy ever: stale", true, never, h(48), offsiteStale, 48 * time.Hour},
+		{"configured a moment ago, no copy yet: grace period, not stale", true, never, h(1), offsiteFresh, time.Hour},
+		{"re-pointed at another exit after the last copy: the period restarts", true, h(40), h(2), offsiteFresh, 2 * time.Hour},
+		{"re-pointed long ago and still no new copy: stale from the re-pointing", true, h(90), h(30), offsiteStale, 30 * time.Hour},
+		{"backup.env older than the stamp: the stamp counts", true, h(5), h(300), offsiteFresh, 5 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, age := decideOffsiteBackup(c.configured, c.stamp, c.env, now)
+			if got != c.want || age != c.wantAge {
+				t.Fatalf("got (%v, %v), want (%v, %v)", got, age, c.want, c.wantAge)
+			}
+		})
+	}
+	if offsiteMaxAge != backupMaxAge {
+		t.Errorf("the offsite threshold must equal the local backup threshold (26 h), got %v", offsiteMaxAge)
+	}
+}

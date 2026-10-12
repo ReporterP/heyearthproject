@@ -108,6 +108,7 @@ runuser() {
 df() { printf 'Avail\n%s\n' "$DF_AVAIL"; }
 age() {
   echo "$*" >> "$T/age.args"
+  ls -A "$T"/backups/.work-*/ > "$T/work_at_age" 2>/dev/null
   if [ "$AGE_FAIL" = 1 ]; then echo "age: stub failure" >&2; return 1; fi
   out=""; in=""
   while [ $# -gt 0 ]; do
@@ -146,6 +147,7 @@ echo "STATE ssh_calls=$(cat "$T/ssh.args" 2>/dev/null | wc -l | tr -d ' ')"
 echo "STATE ssh_args=$(sed -n 1p "$T/ssh.args" 2>/dev/null)"
 echo "STATE ssh_last=$(tail -n 1 "$T/ssh.args" 2>/dev/null)"
 echo "STATE age_args=$(sed -n 1p "$T/age.args" 2>/dev/null)"
+echo "STATE work_at_age=$( [ -f "$T/work_at_age" ] && tr '\n' ' ' < "$T/work_at_age" )"
 newest=$(ls -1t "$B"/backup-*.tar.gz 2>/dev/null | sed -n 1p)
 if [ -n "$newest" ]; then
   echo "STATE members=$(tar -tzf "$newest" | sort | tr '\n' ' ')"
@@ -210,6 +212,8 @@ func TestBackupScript(t *testing.T) {
 			want: []string{
 				"STATE exit=0", "STATE archives=1", "STATE last_success=1", "STATE last_offsite=1", "STATE last_error=0",
 				"STATE stray=0", "STATE ssh_calls=1", "STATE received_head=AGE-STUB", "STATE received_is_plain_archive=0", "STATE received_wraps_archive=1",
+				// the dump, the config tarball and meta.txt are gone from the work dir before the encrypted stream is created
+				"STATE work_at_age=",
 				"STATE members=db.dump files.tar.gz meta.txt ",
 				"STATE meta=users_count=42",
 				"STATE files=etc/letsencrypt/cert.pem etc/nginx/stream-enabled/heyearth opt/heyearth/mainserver/api.env opt/heyearth/mainserver/certs/ca-cert.pem opt/heyearth/state/reality-keys.json ",
@@ -475,38 +479,52 @@ func TestBackupVerifyScript(t *testing.T) {
 
 // ───────────────────────── heyearth-backup-receive (runs on the exit) ─────────────────────────
 
-type receiverOpts struct{ keep, max, min int64 }
+type receiverOpts struct {
+	keepDays, perDate, max, min int64
+	realFlock                   bool // use the host's flock instead of the stub
+}
 
 // receiverForTest swaps the fixed directory / retention / caps of the receiver for test values.
 // The production text has no environment hooks: the receiver is a security boundary.
 func receiverForTest(t *testing.T, o receiverOpts) string {
 	t.Helper()
-	const fixed = "DIR=/var/backups/heyearth-hub; KEEP=7; MAX_BYTES=4294967296; MIN_BYTES=104857600;"
+	const fixed = "DIR=/var/backups/heyearth-hub; KEEP_DAYS=8; PER_DATE=2; MAX_BYTES=4294967296; MIN_BYTES=104857600;"
 	if !strings.Contains(backupReceiverScript, fixed) {
 		t.Fatalf("receiver no longer contains %q — update the test", fixed)
 	}
-	return strings.Replace(renderBackupReceiver(), fixed, fmt.Sprintf(`DIR="$T/store"; KEEP=%d; MAX_BYTES=%d; MIN_BYTES=%d;`, o.keep, o.max, o.min), 1)
+	return strings.Replace(renderBackupReceiver(), fixed,
+		fmt.Sprintf(`DIR="$T/store"; KEEP_DAYS=%d; PER_DATE=%d; MAX_BYTES=%d; MIN_BYTES=%d;`, o.keepDays, o.perDate, o.max, o.min), 1)
 }
 
 // receiverHarness defines: n <date-expr> -> an offsite name for that date, cmdline <name> <file>
 // -> the forced-command line for that payload, recv <command> <stdin-file> -> runs the receiver.
+// flock is a stub (exit 1 while $T/busy exists) unless the test asks for the real one: not every
+// host has util-linux's flock (the Windows dev machine does not).
 func receiverHarness(t *testing.T, o receiverOpts, body string) string {
+	flockSetup := `mkdir -p "$T/bin"
+printf '#!/bin/sh\n[ -e "$T/busy" ] && exit 1\nexit 0\n' > "$T/bin/flock"; chmod +x "$T/bin/flock"
+export PATH="$T/bin:$PATH"
+`
+	if o.realFlock {
+		flockSetup = `command -v flock >/dev/null 2>&1 || { echo SKIP-NO-FLOCK; exit 0; }
+`
+	}
 	return `
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cat > "$T/receive.sh" <<'RECEIVER_EOF'
 ` + receiverForTest(t, o) + `RECEIVER_EOF
 export T
-head -c 400 /dev/zero | tr '\0' 'x' > "$T/blob"
+` + flockSetup + `head -c 400 /dev/zero | tr '\0' 'x' > "$T/blob"
 head -c 500 /dev/zero | tr '\0' 'y' > "$T/blob500"
 head -c 3000 /dev/zero | tr '\0' 'z' > "$T/blob3000"
 n() { date -d "$1" +backup-%Y%m%d-%H%M%S.tar.gz.age; }
 cmdline() { printf '%s %s %s' "$1" "$(wc -c < "$2" | tr -d ' ')" "$(sha256sum "$2" | cut -d' ' -f1)"; }
 recv() { SSH_ORIGINAL_COMMAND="$1" bash "$T/receive.sh" < "$2"; }
-stored() { ls -A "$T/store" 2>/dev/null | wc -l | tr -d ' '; }
+stored() { ls "$T/store" 2>/dev/null | wc -l | tr -d ' '; }
 ` + body
 }
 
-var defaultReceiver = receiverOpts{keep: 7, max: 100000, min: 1}
+var defaultReceiver = receiverOpts{keepDays: 8, perDate: 2, max: 100000, min: 1}
 
 func TestBackupReceiver(t *testing.T) {
 	if !haveBash() {
@@ -537,7 +555,7 @@ func TestBackupReceiver(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `name=$(n now); recv "$(cmdline "$name" "$T/blob")" "$T/blob"; echo "STATE exit=$?"
 echo "STATE sum_ok=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" = "$(sha256sum "$T/blob" | cut -d' ' -f1)" ] && echo 1 || echo 0)"
-echo "STATE only_the_archive=$([ "$(ls -A "$T/store")" = "$name" ] && echo 1 || echo 0)"
+echo "STATE only_the_archive=$([ "$(ls "$T/store")" = "$name" ] && echo 1 || echo 0)"
 echo "STATE sha=$(sha256sum "$T/blob" | cut -d' ' -f1)"`)
 		want(t, out, "STATE exit=0", "STATE sum_ok=1", "STATE only_the_archive=1")
 		sha := strings.TrimPrefix(lineWithPrefix(out, "STATE sha="), "STATE sha=")
@@ -578,38 +596,50 @@ echo "STATE sha=$(sha256sum "$T/blob" | cut -d' ' -f1)"`)
 		want(t, out, "STATE stored=0", "STATE outside=0")
 	})
 
-	t.Run("the date in the name must be real and at most a day in the future", func(t *testing.T) {
+	t.Run("the date in the name must be real, at most a day in the future and at most KEEP_DAYS old", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, defaultReceiver, `
-f=$(n '+2 days');  recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future2d=$?"
+f=$(n '+2 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future2d=$?"
 f=$(n '+12 hours'); recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future12h=$?"
+f=$(n '-9 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE older9d=$?"
+f=$(n '-8 days');   recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE edge8d=$?"
 for bad in backup-20261301-000000 backup-20260231-000000 backup-20261012-250000 backup-99991231-235959; do
   recv "$(cmdline "$bad.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE bad[$bad]=$?"
 done
 echo "STATE stored=$(stored)"`)
-		want(t, out, "STATE future2d=2", "STATE future12h=0", "STATE bad[backup-20261301-000000]=2", "STATE bad[backup-20260231-000000]=2",
-			"STATE bad[backup-20261012-250000]=2", "STATE bad[backup-99991231-235959]=2", "STATE stored=1")
+		want(t, out, "STATE future2d=2", "STATE future12h=0", "STATE older9d=2", "STATE edge8d=0", "STATE bad[backup-20261301-000000]=2", "STATE bad[backup-20260231-000000]=2",
+			"STATE bad[backup-20261012-250000]=2", "STATE bad[backup-99991231-235959]=2", "STATE stored=2")
 	})
 
-	t.Run("size cap: the declared size is checked up front and the stream is cut at the cap", func(t *testing.T) {
+	t.Run("a declared size above MAX_BYTES is refused up front", func(t *testing.T) {
 		t.Parallel()
-		o := receiverOpts{keep: 7, max: 1000, min: 1}
-		out := run(t, o, `
-name=$(n now)
+		o := receiverOpts{keepDays: 8, perDate: 2, max: 1000, min: 1}
+		out := run(t, o, `name=$(n now)
 recv "$name 5000 $(sha256sum "$T/blob3000" | cut -d' ' -f1)" "$T/blob3000" >/dev/null 2>&1; echo "STATE declared_too_big=$? stored=$(stored)"
-recv "$name 500 $(sha256sum "$T/blob500" | cut -d' ' -f1)" "$T/blob3000" >/dev/null 2>&1; echo "STATE stream_over_cap=$? stored=$(stored)"
 recv "$(cmdline "$name" "$T/blob500")" "$T/blob500" >/dev/null 2>&1; echo "STATE within_cap=$? stored=$(stored)"`)
-		want(t, out, "STATE declared_too_big=4 stored=0", "STATE stream_over_cap=4 stored=0", "STATE within_cap=0 stored=1")
+		want(t, out, "STATE declared_too_big=4 stored=0", "STATE within_cap=0 stored=1")
 	})
 
-	t.Run("size or sha256 not matching what was declared: rejected, nothing stored, no .part", func(t *testing.T) {
+	t.Run("exactly the declared number of bytes is read: one more is refused, an endless stream cannot hang or fill the disk", func(t *testing.T) {
 		t.Parallel()
-		out := run(t, defaultReceiver, `
-name=$(n now); sum400=$(sha256sum "$T/blob" | cut -d' ' -f1)
-recv "$name 500 $sum400" "$T/blob" >/dev/null 2>&1;  echo "STATE declared_larger=$? stored=$(stored)"
-recv "$name 300 $sum400" "$T/blob" >/dev/null 2>&1;  echo "STATE declared_smaller=$? stored=$(stored)"
-recv "$name 400 $(printf '0%.0s' $(seq 64))" "$T/blob" >/dev/null 2>&1; echo "STATE wrong_sha=$? stored=$(stored)"`)
-		want(t, out, "STATE declared_larger=3 stored=0", "STATE declared_smaller=3 stored=0", "STATE wrong_sha=3 stored=0")
+		out := run(t, defaultReceiver, `name=$(n now); sum400=$(sha256sum "$T/blob" | cut -d' ' -f1)
+recv "$name 400 $sum400" "$T/blob500" >/dev/null 2>&1;  echo "STATE one_more=$? stored=$(stored)"
+recv "$name 500 $(sha256sum "$T/blob500" | cut -d' ' -f1)" "$T/blob3000" >/dev/null 2>&1; echo "STATE far_more=$? stored=$(stored)"
+recv "$name 500 $sum400" "$T/blob" >/dev/null 2>&1;  echo "STATE too_little=$? stored=$(stored)"
+recv "$name 400 $(printf '0%.0s' $(seq 64))" "$T/blob" >/dev/null 2>&1; echo "STATE wrong_sha=$? stored=$(stored)"
+recv "$(cmdline "$name" "$T/blob")" "$T/blob" >/dev/null 2>&1;  echo "STATE exact=$? stored=$(stored)"`)
+		want(t, out, "STATE one_more=3 stored=0", "STATE far_more=3 stored=0", "STATE too_little=3 stored=0", "STATE wrong_sha=3 stored=0", "STATE exact=0 stored=1")
+	})
+
+	t.Run("an endless stream is cut after SIZE+1 bytes, not after MAX_BYTES (here 1 TiB: reading that far would never finish)", func(t *testing.T) {
+		t.Parallel()
+		o := receiverOpts{keepDays: 8, perDate: 2, max: 1 << 40, min: 1}
+		out := run(t, o, `name=$(n now); sum400=$(sha256sum "$T/blob" | cut -d' ' -f1)
+yes | SSH_ORIGINAL_COMMAND="$name 500 $sum400" timeout 10 bash "$T/receive.sh" 2>&1 >/dev/null | tr -d '\0'; echo "STATE endless=${PIPESTATUS[1]} stored=$(stored)"`)
+		want(t, out, "STATE endless=3 stored=0")
+		if !strings.Contains(out, "more data than the declared 500 bytes") {
+			t.Errorf("output:\n%s", out)
+		}
 	})
 
 	t.Run("a bad re-upload of the same name does not replace the good archive", func(t *testing.T) {
@@ -623,7 +653,7 @@ echo "STATE still_the_first=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" 
 
 	t.Run("not enough free space for twice the biggest of (newest archive, declared size, minimum): rejected before anything is written", func(t *testing.T) {
 		t.Parallel()
-		o := receiverOpts{keep: 7, max: 100000, min: 1 << 50}
+		o := receiverOpts{keepDays: 8, perDate: 2, max: 100000, min: 1 << 50}
 		out := run(t, o, `name=$(n now); recv "$(cmdline "$name" "$T/blob")" "$T/blob" 2>&1; echo "STATE exit=$?"; echo "STATE stored=$(stored)"`)
 		want(t, out, "STATE exit=5", "STATE stored=0")
 		if !strings.Contains(out, "not enough free space") {
@@ -631,35 +661,65 @@ echo "STATE still_the_first=$([ "$(sha256sum "$T/store/$name" | cut -d' ' -f1)" 
 		}
 	})
 
-	t.Run("rotation keeps the newest KEEP by the date in the name, whatever the mtimes are", func(t *testing.T) {
+	t.Run("seven uploads dated today cannot evict the real archives of the other days", func(t *testing.T) {
 		t.Parallel()
-		o := receiverOpts{keep: 3, max: 100000, min: 1}
-		out := run(t, o, `mkdir -p "$T/store"
-# five stored archives whose mtimes are the REVERSE of their names: the oldest name is the newest file
+		out := run(t, defaultReceiver, `mkdir -p "$T/store"
+# five real archives of the previous days; their mtimes are the REVERSE of their names (oldest name = newest file)
 i=0
 for d in '-5 days' '-4 days' '-3 days' '-2 days' '-1 days'; do
-  i=$((i+1)); f=$(n "$d"); cp "$T/blob" "$T/store/$f"; touch -d "2026-10-0$((10-i)) 04:00:00" "$T/store/$f"; eval "name$i=$f"
+  i=$((i+1)); f=$(n "$d"); cp "$T/blob" "$T/store/$f"; touch -d "2026-10-0$((10-i)) 04:00:00" "$T/store/$f"; eval "real$i=$f"
 done
-# a decoy with an absurdly old name must not outlive the rotation either
-today=$(n now); recv "$(cmdline "$today" "$T/blob")" "$T/blob" >/dev/null; echo "STATE exit=$?"
-for i in 1 2 3 4 5; do eval "f=\$name$i"; echo "STATE exists$i=$([ -e "$T/store/$f" ] && echo 1 || echo 0)"; done
-echo "STATE today=$([ -e "$T/store/$today" ] && echo 1 || echo 0) stored=$(stored)"`)
-		want(t, out, "STATE exit=0", "STATE exists1=0", "STATE exists2=0", "STATE exists3=0", "STATE exists4=1", "STATE exists5=1", "STATE today=1 stored=3")
+today=$(date +%Y%m%d)
+for h in 01 02 03 04 05 06 07; do
+  recv "$(cmdline "backup-$today-${h}0000.tar.gz.age" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE up$h=$?"
+done
+for i in 1 2 3 4 5; do eval "f=\$real$i"; echo "STATE real$i=$([ -e "$T/store/$f" ] && echo 1 || echo 0)"; done
+echo "STATE today_kept=$(ls "$T/store" | grep "backup-$today" | sed "s/backup-$today-//; s/.tar.gz.age//" | tr '\n' ' ')"
+echo "STATE stored=$(stored)"`)
+		want(t, out, "STATE up01=0", "STATE up07=0", "STATE real1=1", "STATE real2=1", "STATE real3=1", "STATE real4=1", "STATE real5=1",
+			"STATE today_kept=060000 070000 ", "STATE stored=7")
 	})
 
-	t.Run("flooding with unrelated or old names cannot evict the newest archives", func(t *testing.T) {
+	t.Run("only names older than KEEP_DAYS days are deleted; of one date only the newest PER_DATE stay", func(t *testing.T) {
 		t.Parallel()
-		o := receiverOpts{keep: 3, max: 100000, min: 1}
-		out := run(t, o, `mkdir -p "$T/store"
-for d in '-3 days' '-2 days' '-1 days'; do f=$(n "$d"); cp "$T/blob" "$T/store/$f"; done
-for k in 1 2 3 4 5; do f="backup-2020010$k-000000.tar.gz.age"; recv "$(cmdline "$f" "$T/blob")" "$T/blob" >/dev/null; done
-recv "$(cmdline "$(n '+30 days')" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE future=$?"
-echo "STATE kept=$(ls "$T/store" | sed 's/backup-//; s/-[0-9]*\.tar\.gz\.age//' | tr '\n' ' ')"
-echo "STATE count=$(stored)"
-echo "STATE expected=$(for d in '-3 days' '-2 days' '-1 days'; do n "$d" | sed 's/backup-//; s/-[0-9]*\.tar\.gz\.age//'; done | tr '\n' ' ')"`)
-		want(t, out, "STATE future=2", "STATE count=3")
-		if k, e := lineWithPrefix(out, "STATE kept="), lineWithPrefix(out, "STATE expected="); strings.TrimPrefix(k, "STATE kept=") != strings.TrimPrefix(e, "STATE expected=") {
-			t.Errorf("the three newest archives must survive:\n%s", out)
+		out := run(t, defaultReceiver, `mkdir -p "$T/store"
+old9=$(n '-9 days'); old8=$(n '-8 days'); d3a=backup-$(date -d '-3 days' +%Y%m%d)-010000.tar.gz.age; d3b=backup-$(date -d '-3 days' +%Y%m%d)-020000.tar.gz.age; d3c=backup-$(date -d '-3 days' +%Y%m%d)-030000.tar.gz.age
+for f in $old9 $old8 $d3a $d3b $d3c; do cp "$T/blob" "$T/store/$f"; done
+recv "$(cmdline "$(n now)" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE exit=$?"
+echo "STATE old9=$([ -e "$T/store/$old9" ] && echo 1 || echo 0) old8=$([ -e "$T/store/$old8" ] && echo 1 || echo 0)"
+echo "STATE d3=$([ -e "$T/store/$d3a" ] && echo 1 || echo 0)$([ -e "$T/store/$d3b" ] && echo 1 || echo 0)$([ -e "$T/store/$d3c" ] && echo 1 || echo 0)"
+echo "STATE stored=$(stored)"`)
+		want(t, out, "STATE exit=0", "STATE old9=0 old8=1", "STATE d3=011", "STATE stored=4")
+	})
+
+	t.Run("a second upload while one is running is refused with BUSY (exit 6) and writes nothing", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, defaultReceiver, `name=$(n now); touch "$T/busy"
+recv "$(cmdline "$name" "$T/blob")" "$T/blob" 2>&1; echo "STATE busy=$? stored=$(stored)"
+rm -f "$T/busy"
+recv "$(cmdline "$name" "$T/blob")" "$T/blob" >/dev/null 2>&1; echo "STATE free=$? stored=$(stored)"`)
+		want(t, out, "STATE busy=6 stored=0", "STATE free=0 stored=1")
+		if !strings.Contains(out, "BUSY") {
+			t.Errorf("no BUSY message:\n%s", out)
+		}
+	})
+
+	t.Run("two real concurrent uploads: the second gets BUSY while the first is still streaming", func(t *testing.T) {
+		t.Parallel()
+		o := defaultReceiver
+		o.realFlock = true
+		out := run(t, o, `name=$(n now); other=$(n '-1 days')
+( sleep 2; cat "$T/blob" ) | SSH_ORIGINAL_COMMAND="$(cmdline "$name" "$T/blob")" bash "$T/receive.sh" > "$T/first.out" 2>&1 &
+sleep 0.8
+recv "$(cmdline "$other" "$T/blob")" "$T/blob" > "$T/second.out" 2>&1; echo "STATE second=$?"
+wait
+echo "STATE first=$(cut -c1-3 "$T/first.out")"; echo "STATE second_msg=$(cat "$T/second.out")"; echo "STATE stored=$(stored)"`)
+		if strings.Contains(out, "SKIP-NO-FLOCK") {
+			t.Skip("no flock on this host (the stub-based BUSY test covers the receiver's reaction)")
+		}
+		want(t, out, "STATE second=6", "STATE first=OK ", "STATE stored=1")
+		if !strings.Contains(out, "BUSY") {
+			t.Errorf("no BUSY message:\n%s", out)
 		}
 	})
 }
@@ -684,7 +744,8 @@ printf 'ssh-ed25519 AAAAother1 admin@laptop\nssh-rsa AAAAother2 ci@runner\n' > "
 cat > "$T/install.sh" <<'INSTALL_EOF'
 ` + renderReceiverInstallScriptAt(paths, auth) + `INSTALL_EOF
 cp "$T/ssh/authorized_keys" "$T/ak.before"
-( ` + stubs + `
+( flock() { :; }
+` + stubs + `
 . "$T/install.sh" )
 echo "STATE exit=$?"
 echo "STATE keys=$(grep -c . "$T/ssh/authorized_keys")"
@@ -694,13 +755,14 @@ echo "STATE unchanged=$(cmp -s "$T/ak.before" "$T/ssh/authorized_keys" && echo 1
 echo "STATE new_left=$([ -e "$T/ssh/authorized_keys.new" ] && echo 1 || echo 0)"
 echo "STATE receiver=$([ -s "$T/sbin/heyearth-backup-receive" ] && head -n 1 "$T/sbin/heyearth-backup-receive")"
 echo "STATE forced=$(grep 'heyearth-backup@hub' "$T/ssh/authorized_keys" | cut -c1-59)"
+echo "STATE store=$(ls "$T/store" 2>/dev/null | tr '\n' ' ')"
 `
 	}
 
 	t.Run("installs the receiver and adds our entry next to the other keys; a second run does not duplicate it", func(t *testing.T) {
 		t.Parallel()
 		out, _ := runBash(t, harness("", `echo 'command="/old",restrict ssh-ed25519 AAAAstale heyearth-backup@hub' >> "$T/ssh/authorized_keys"`)+`
-( . "$T/install.sh" ) >/dev/null; echo "STATE keys_after_second_run=$(grep -c . "$T/ssh/authorized_keys") ours_after_second_run=$(grep -c 'heyearth-backup@hub' "$T/ssh/authorized_keys")"`)
+( flock() { :; }; . "$T/install.sh" ) >/dev/null; echo "STATE keys_after_second_run=$(grep -c . "$T/ssh/authorized_keys") ours_after_second_run=$(grep -c 'heyearth-backup@hub' "$T/ssh/authorized_keys")"`)
 		for _, l := range []string{"STATE exit=0", "STATE keys=3", "STATE ours=1", "STATE others=2", "STATE new_left=0", "STATE receiver=#!/usr/bin/env bash",
 			`STATE forced=command="/usr/local/sbin/heyearth-backup-receive",restrict,`, "STATE keys_after_second_run=3 ours_after_second_run=1"} {
 			if !hasLine(out, l) {
@@ -721,6 +783,38 @@ echo "STATE forced=$(grep 'heyearth-backup@hub' "$T/ssh/authorized_keys" | cut -
 			}
 		}
 		if !strings.Contains(out, "ABORT: cannot read") || !strings.Contains(out, "(grep exit 2)") {
+			t.Errorf("no abort message:\n%s", out)
+		}
+	})
+
+	t.Run("legacy plaintext archives from an earlier receiver are deleted and counted; ciphertext and foreign files stay", func(t *testing.T) {
+		t.Parallel()
+		out, _ := runBash(t, harness("", `mkdir -p "$T/store"
+echo a > "$T/store/backup-20260101-000000.tar.gz"; echo b > "$T/store/backup-20260102-000000.tar.gz"; echo c > "$T/store/backup-20260103-000000.tar.gz.part"
+echo d > "$T/store/backup-20260104-000000.tar.gz.age"; echo e > "$T/store/backup-20260105-000000.tar.gz.age.part"; echo f > "$T/store/notes.txt"`)+`
+( flock() { :; }; . "$T/install.sh" ) | grep legacy; echo "STATE store_after_second_run=$(ls "$T/store" | tr '\n' ' ')"`)
+		for _, l := range []string{
+			"STATE exit=0", "STATE store=backup-20260104-000000.tar.gz.age backup-20260105-000000.tar.gz.age.part notes.txt ",
+			"STATE store_after_second_run=backup-20260104-000000.tar.gz.age backup-20260105-000000.tar.gz.age.part notes.txt ",
+		} {
+			if !hasLine(out, l) {
+				t.Errorf("missing %q:\n%s", l, out)
+			}
+		}
+		if !regexp.MustCompile(`removed 3 legacy plaintext archive\(s\) from .*/store`).MatchString(out) || !regexp.MustCompile(`removed 0 legacy plaintext archive\(s\)`).MatchString(out) {
+			t.Errorf("the first run must report 3 removed legacy files, the second 0:\n%s", out)
+		}
+	})
+
+	t.Run("a host without flock is refused before anything is written", func(t *testing.T) {
+		t.Parallel()
+		out, _ := runBash(t, harness(`command() { if [ "$1" = -v ] && [ "$2" = flock ]; then return 1; fi; builtin command "$@"; }`, ""))
+		for _, l := range []string{"STATE exit=1", "STATE unchanged=1", "STATE receiver=", "STATE store="} {
+			if !hasLine(out, l) {
+				t.Errorf("missing %q:\n%s", l, out)
+			}
+		}
+		if !strings.Contains(out, "ABORT: flock is not installed on the exit") {
 			t.Errorf("no abort message:\n%s", out)
 		}
 	})
