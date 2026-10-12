@@ -255,8 +255,10 @@ func TestQuotaSyncMemoryStartupWindow(t *testing.T) {
 		wantOn   bool
 		wantOver map[string]struct{}
 	}{
-		{"just started, query fails: abort, not fail-open", 0, true, nil, nil, dbErr, false,
+		{"just started, flag on, query fails: abort, not fail-open", 0, true, nil, nil, dbErr, false,
 			true, false, nil},
+		{"flag off, query fails, up 1m: no abort, nobody cut (needs no set)", time.Minute, false, nil, nil, dbErr, false,
+			false, false, userSet()},
 		{"flag read fails: abort, not 'off'", time.Minute, false, dbErr, userSet("a"), nil, false,
 			true, false, nil},
 		{"both reads work: a decision (its apply fails)", 2 * time.Minute, true, nil, userSet("a"), nil, false,
@@ -302,7 +304,7 @@ func TestQuotaSyncMemoryStartupWindow(t *testing.T) {
 	if err != nil || r.overSource != quotaOverFailOpen || len(r.q.cut()) != 0 {
 		t.Errorf("window over, query fails: (%+v, %v), want fail-open without error", r, err)
 	}
-	if w := strings.Join(r.warnings(), "\n"); !strings.Contains(w, "fail-open") {
+	if w := warningText(r); !strings.Contains(w, "fail-open") {
 		t.Errorf("window over, fail-open without a WARN: %q", w)
 	}
 	r, err = m.resolve(true, dbErr, userSet("a"), nil, quotaT0.Add(maxAge), maxAge)
@@ -350,7 +352,28 @@ func TestSyncWithQuotaStartupWindow(t *testing.T) {
 		t.Errorf("trial-user must be cut off by both applied syncs, apply got %+v", seen)
 	}
 
+	// The flag reads "off" right after a restart while the quota query fails:
+	// "cut nobody" does not need the set, so the sync is not blocked (new and
+	// paid users, exit failover, admin changes) and nothing is alerted.
+	quotaMemory = newQuotaSyncMemory(quotaT0)
+	seen = nil
+	env.raised = nil
+	env.setting, env.overErr = "false", errors.New("connection refused")
+	if err := syncWithQuota(quotaT0.Add(time.Minute), apply); err != nil {
+		t.Fatalf("flag off, query fails, up 1m: syncWithQuota() = %v, want no abort", err)
+	}
+	if len(seen) != 1 || len(seen[0].cut()) != 0 {
+		t.Errorf("flag off, query fails, up 1m: want one apply cutting nobody, apply got %+v", seen)
+	}
+	if a := quotaMemory.appliedState(); !a.ok || a.flag {
+		t.Errorf("flag off, query fails, up 1m: applied %+v, want {ok, off}", a)
+	}
+	if len(env.raised) != 0 {
+		t.Errorf("flag off: no fail-open alert expected, got %v", env.raised)
+	}
+
 	// A process whose reads failed for the whole window fails open, with the alert.
+	env.setting = "true"
 	quotaMemory = newQuotaSyncMemory(quotaT0)
 	seen = nil
 	env.raised = nil
@@ -388,9 +411,10 @@ func TestQuotaFailOpenAlert(t *testing.T) {
 		{"query fails, set older than maxAge, cutoff on: fail-open → raise", 16 * time.Minute, "true", nil, nil, dbErr, true, false},
 		{"still failing: raised again (a warn is sent once per incident)", 17 * time.Minute, "true", nil, nil, dbErr, true, false},
 		{"flag read fails too: the applied flag (on) is wanted → raise", 18 * time.Minute, "", errors.New("flag timeout"), nil, dbErr, true, false},
-		{"owner disarms during the outage: nothing to alert about", 19 * time.Minute, "false", nil, nil, dbErr, false, false},
+		{"owner disarms during the outage: resolved, the set is not needed", 19 * time.Minute, "false", nil, nil, dbErr, false, true},
 		{"query works again: resolve", 20 * time.Minute, "false", nil, userSet("a"), nil, false, true},
 		{"armed while the set is too old: held disarmed but wanted → raise", 40 * time.Minute, "true", nil, nil, dbErr, true, false},
+		{"flag read fails while held: not 'off', the alert stays (no raise, no resolve)", 41 * time.Minute, "", errors.New("flag timeout"), nil, dbErr, false, false},
 	}
 	for _, st := range steps {
 		env.setting, env.settingErr, env.over, env.overErr = st.setting, st.settingErr, st.over, st.overErr
@@ -459,7 +483,7 @@ func TestQuotaSyncMemoryArmingNeedsFreshSet(t *testing.T) {
 		if !st.wantOn && len(r.q.cut()) != 0 {
 			t.Errorf("%s: cuts %v off, want nobody", st.name, r.q.cut())
 		}
-		warns := strings.Join(r.warnings(), "\n")
+		warns := warningText(r)
 		switch {
 		case st.wantWarn == "" && warns != "":
 			t.Errorf("%s: unexpected warnings %q", st.name, warns)
@@ -467,6 +491,63 @@ func TestQuotaSyncMemoryArmingNeedsFreshSet(t *testing.T) {
 			t.Errorf("%s: warnings %q do not mention %q", st.name, warns, st.wantWarn)
 		}
 		m.recordApplied(r.q)
+	}
+}
+
+// While "on" is held the flag watcher requests a sync every minute: each kind of
+// WARN line is logged when it first appears and then at most hourly, a new kind
+// at once; lines of decisions that are not held are not throttled; the next
+// hold after a successful query starts over.
+func TestQuotaHeldWarningsThrottled(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	logs := captureLog(t)
+	dbErr := errors.New("query timeout")
+	const (
+		held     = "stays disarmed until a quota query succeeds"
+		cachedQ  = "the cutoff is disarmed: nobody is cut off"
+		failOpen = "continuing WITHOUT cutoff (fail-open)"
+		enforced = "no restore, no new cut"
+	)
+
+	steps := []struct {
+		name    string
+		at      time.Duration
+		setting string
+		overErr error
+		want    []string // substrings, one WARN line each
+	}{
+		{"applied off, fresh read", 0, "false", nil, nil},
+		{"owner arms it, query fails: both lines", time.Minute, "true", dbErr, []string{held, cachedQ}},
+		{"next minute: silent", 2 * time.Minute, "true", dbErr, nil},
+		{"ten minutes: silent", 10 * time.Minute, "true", dbErr, nil},
+		{"set too old: the new fail-open line at once, the held line not yet", 16 * time.Minute, "true", dbErr, []string{failOpen}},
+		{"an hour after the held line: only it", 61 * time.Minute, "true", dbErr, []string{held}},
+		{"an hour after the fail-open line: only it", 76 * time.Minute, "true", dbErr, []string{failOpen}},
+		{"query works: armed, nothing to warn", 77 * time.Minute, "true", nil, nil},
+		{"armed, query fails: not held, logged", 77*time.Minute + 30*time.Second, "true", dbErr, []string{enforced}},
+		{"armed, query fails again: not held, logged again", 77*time.Minute + 40*time.Second, "true", dbErr, []string{enforced}},
+		{"owner disarms, fresh read", 78 * time.Minute, "false", nil, nil},
+		{"armed again while failing: a new hold, logged at once", 79 * time.Minute, "true", dbErr, []string{held, cachedQ}},
+	}
+	for _, st := range steps {
+		env.setting, env.over, env.overErr = st.setting, userSet("a"), st.overErr
+		logs.Reset()
+		q, err := loadQuotaForSync(quotaT0.Add(st.at))
+		if err != nil {
+			t.Fatalf("%s: loadQuotaForSync() error = %v", st.name, err)
+		}
+		quotaMemory.recordApplied(q) // the (simulated) sync applied it
+
+		out := logs.String()
+		if got := strings.Count(out, "WARN"); got != len(st.want) {
+			t.Errorf("%s: %d WARN line(s), want %d %v:\n%s", st.name, got, len(st.want), st.want, out)
+			continue
+		}
+		for _, w := range st.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q:\n%s", st.name, w, out)
+			}
+		}
 	}
 }
 

@@ -122,8 +122,9 @@ func (q quotaCutoff) disabledNotice() string {
 // syncs (5 min) fit in it, so a short database blip changes nothing; a longer
 // outage falls back to fail-open (nobody cut off) rather than cutting users off
 // on data that old. It is also the startup window: during the first
-// quotaDecisionMaxAge of the process a read failure before any successful apply
-// aborts the sync instead of failing open (see resolve).
+// quotaDecisionMaxAge of the process a failed flag read, or a failed quota query
+// with the flag on, before any successful apply aborts the sync instead of
+// failing open (see resolve).
 const quotaDecisionMaxAge = 15 * time.Minute
 
 // errQuotaUnresolved marks a sync aborted because a quota read failed before
@@ -157,31 +158,42 @@ func (r quotaResolution) cutoffWanted() bool {
 	return r.q.enabled || (r.flagErr == nil && r.flagRead)
 }
 
+// quotaWarning is one WARN line of a decision. kind is stable across syncs
+// (the line itself carries ages and errors): it is the throttle key while the
+// flag is held (quotaHeldWarnings).
+type quotaWarning struct {
+	kind string
+	line string
+}
+
 // warnings are the log lines of a decision built despite read failures.
-func (r quotaResolution) warnings() []string {
-	var out []string
+func (r quotaResolution) warnings() []quotaWarning {
+	var out []quotaWarning
+	add := func(kind, format string, args ...any) {
+		out = append(out, quotaWarning{kind: kind, line: fmt.Sprintf(format, args...)})
+	}
 	if r.flagErr != nil {
-		out = append(out, fmt.Sprintf("[xray-sync] WARN %v — keeping the last applied %s=%v (a read failure is not a flip)",
-			r.flagErr, quotaCutoffSetting, r.q.enabled))
+		add("flag-read-failed", "[xray-sync] WARN %v — keeping the last applied %s=%v (a read failure is not a flip)",
+			r.flagErr, quotaCutoffSetting, r.q.enabled)
 	}
 	if r.flagHeld {
-		out = append(out, fmt.Sprintf("[xray-sync] WARN %s=true read, but the last apply had the cutoff disarmed and the over-quota set is not fresh — it stays disarmed until a quota query succeeds",
-			quotaCutoffSetting))
+		add("flag-held", "[xray-sync] WARN %s=true read, but the last apply had the cutoff disarmed and the over-quota set is not fresh — it stays disarmed until a quota query succeeds",
+			quotaCutoffSetting)
 	}
 	switch {
 	case r.overErr == nil:
 	case r.overSource == quotaOverCached && r.q.enabled:
-		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — reusing the over-quota set read %s ago (%d user(s)): no restore, no new cut",
-			r.overErr, r.overAge.Round(time.Second), len(r.q.over)))
+		add("query-cached", "[xray-sync] WARN quota query failed: %v — reusing the over-quota set read %s ago (%d user(s)): no restore, no new cut",
+			r.overErr, r.overAge.Round(time.Second), len(r.q.over))
 	case r.overSource == quotaOverCached:
-		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — the over-quota set read %s ago (%d user(s)) is kept, the cutoff is disarmed: nobody is cut off",
-			r.overErr, r.overAge.Round(time.Second), len(r.q.over)))
+		add("query-cached-disarmed", "[xray-sync] WARN quota query failed: %v — the over-quota set read %s ago (%d user(s)) is kept, the cutoff is disarmed: nobody is cut off",
+			r.overErr, r.overAge.Round(time.Second), len(r.q.over))
 	case r.overAge > 0:
-		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — the last over-quota set is %s old (> %s): continuing WITHOUT cutoff (fail-open)",
-			r.overErr, r.overAge.Round(time.Second), quotaDecisionMaxAge))
+		add("query-failopen", "[xray-sync] WARN quota query failed: %v — the last over-quota set is %s old (> %s): continuing WITHOUT cutoff (fail-open)",
+			r.overErr, r.overAge.Round(time.Second), quotaDecisionMaxAge)
 	default:
-		out = append(out, fmt.Sprintf("[xray-sync] WARN quota query failed: %v — no over-quota set read yet: continuing WITHOUT cutoff (fail-open)",
-			r.overErr))
+		add("query-failopen-unread", "[xray-sync] WARN quota query failed: %v — no over-quota set read yet: continuing WITHOUT cutoff (fail-open)",
+			r.overErr)
 	}
 	return out
 }
@@ -226,12 +238,19 @@ var quotaMemory = newQuotaSyncMemory(time.Now())
 // resolve builds the decision a sync applies from this sync's reads. A failed
 // read never changes the cutoff by itself ("no restore, no new cut"):
 //   - nothing applied yet in this process and less than maxAge since its start
-//     → any read failure returns an error wrapping errQuotaUnresolved and the
-//     sync is aborted: xray keeps running the config on disk, which still cuts
-//     off whoever the previous process cut off. Failing open here would bring
-//     them back at every deploy, the collector would cut them again and the
-//     still-open sessions would make checkRevokedStillOnline restart xray for
-//     everyone. After the window the rules below apply (fail-open with a WARN);
+//     → a failed flag read, or a failed quota query while the flag reads "on",
+//     returns an error wrapping errQuotaUnresolved and the sync is aborted:
+//     xray keeps running the config on disk, which still cuts off whoever the
+//     previous process cut off. Failing open here would bring them back at
+//     every deploy, the collector would cut them again and the still-open
+//     sessions would make checkRevokedStillOnline restart xray for everyone.
+//     The aborted sync also postpones everything else it would apply: new and
+//     paid users, exit failover, admin changes, and the restart a stale marker
+//     of the previous process asks for (prepareXrayLiveApply → xrayStale), all
+//     until the first successful sync, at most maxAge after the start. A
+//     failed query with the flag read "off" does not abort: "cut nobody" does
+//     not depend on the set. After the window the rules below apply (fail-open
+//     with a WARN);
 //   - flag read failed → the last APPLIED flag value is kept (disarmed if nothing
 //     was applied yet); a read failure is never treated as "off";
 //   - quota query failed → the last successfully read set is reused while it is
@@ -254,7 +273,7 @@ func (m *quotaSyncMemory) resolve(flag bool, flagErr error, over map[string]stru
 		}
 		m.lastOver, m.lastOverAt = over, now
 	}
-	if (flagErr != nil || overErr != nil) && !m.applied.ok && !m.started.IsZero() {
+	if (flagErr != nil || (flag && overErr != nil)) && !m.applied.ok && !m.started.IsZero() {
 		if up := now.Sub(m.started); up < maxAge {
 			return quotaResolution{}, fmt.Errorf("%w (up %s, fail-open only after %s): %w — sync aborted, xray keeps its current config",
 				errQuotaUnresolved, up.Round(time.Second), maxAge, quotaReadError(flagErr, overErr))
@@ -321,22 +340,58 @@ func loadQuotaForSync(now time.Time) (quotaCutoff, error) {
 	if err != nil {
 		return quotaCutoff{}, err
 	}
-	for _, w := range r.warnings() {
-		log.Print(w)
+	for _, line := range quotaWarningLines(r, quotaHeldWarnings, now, quotaWarnEvery) {
+		log.Print(line)
 	}
 	reportQuotaFailOpen(r)
 	return r.q, nil
 }
 
+// quotaHeldWarnings throttles the WARN lines of syncs while "on" is held (see
+// resolve), keyed by quotaWarning.kind. Touched only under xraySyncMu.
+var quotaHeldWarnings = &quotaWarnThrottle{}
+
+// quotaWarningLines returns the WARN lines of a decision to log now. While the
+// flag is held the flag watcher requests a sync every minute until a quota
+// query succeeds, so each kind of line goes through t: at once when it first
+// appears, then at most once per every. t is fed on every sync, also with no
+// held lines, so it forgets the kinds that are gone and the next hold is
+// logged at once. Other decisions log every line: their syncs are not
+// requested every minute.
+func quotaWarningLines(r quotaResolution, t *quotaWarnThrottle, now time.Time, every time.Duration) []string {
+	warns := r.warnings()
+	held := map[string]struct{}{}
+	if r.flagHeld {
+		for _, w := range warns {
+			held[w.kind] = struct{}{}
+		}
+	}
+	due := map[string]bool{}
+	for _, kind := range t.due(held, now, every) {
+		due[kind] = true
+	}
+	lines := make([]string, 0, len(warns))
+	for _, w := range warns {
+		if !r.flagHeld || due[w.kind] {
+			lines = append(lines, w.line)
+		}
+	}
+	return lines
+}
+
 // reportQuotaFailOpen raises the quota-cutoff-failopen alert when a sync runs
 // fail-open while the cutoff is wanted (otherwise only a WARN line would say
-// that the cutoff silently stopped), and resolves it on the next fresh read of
-// the over-quota set. A warn alert is sent once per incident, so raising it on
-// every sync of the outage is fine. Called outside quotaSyncMemory.mu.
+// that the cutoff silently stopped). It resolves it on the next fresh read of
+// the over-quota set, or as soon as the flag is read "off": a disarmed cutoff
+// does not need the set. A failed flag read resolves nothing (the owner may
+// still want the cutoff). A warn alert is sent once per incident, so raising
+// it on every sync of the outage is fine. Called outside quotaSyncMemory.mu.
 func reportQuotaFailOpen(r quotaResolution) {
 	switch {
 	case r.overSource == quotaOverFresh:
 		quotaResolveAlert(quotaFailOpenAlertKey, "Список превысивших квоту снова читается — отключение по трафику работает")
+	case r.flagErr == nil && !r.flagRead:
+		quotaResolveAlert(quotaFailOpenAlertKey, fmt.Sprintf("Отключение по квоте выключено (%s=false) — fail-open больше не важен", quotaCutoffSetting))
 	case r.overSource == quotaOverFailOpen && r.cutoffWanted():
 		quotaRaiseAlert(quotaFailOpenAlertKey, AlertWarn, "Отключение по квоте трафика не работает (fail-open)",
 			fmt.Sprintf("%s — список превысивших квоту не читается дольше %s, %s включён, но никто не отключается до восстановления запроса",
@@ -351,7 +406,8 @@ func reportQuotaFailOpen(r quotaResolution) {
 // change the cutoff), hands it to apply — which builds, validates and puts the
 // xray config into service and returns how many VLESS clients the cutoff left
 // out — and finishes with finishQuotaSync. A decision that cannot be resolved
-// aborts the sync before apply: xray keeps the config it runs.
+// aborts the sync before apply: xray keeps the config it runs, and a pending
+// stale-marker restart waits for the next successful sync (see resolve).
 func syncWithQuota(now time.Time, apply func(quotaCutoff) (excluded int, err error)) error {
 	quota, err := loadQuotaForSync(now)
 	if err != nil {

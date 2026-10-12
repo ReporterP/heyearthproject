@@ -65,10 +65,12 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	oldGet, oldList, oldReq := getSetting, listQuotaExceeded, requestSync
 	oldRaise, oldResolve := quotaRaiseAlert, quotaResolveAlert
 	oldMem, oldWarn, oldWatch, oldSum, oldChange := quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices
+	oldHeld := quotaHeldWarnings
 	t.Cleanup(func() {
 		getSetting, listQuotaExceeded, requestSync = oldGet, oldList, oldReq
 		quotaRaiseAlert, quotaResolveAlert = oldRaise, oldResolve
 		quotaMemory, quotaWarnings, quotaFlagWatcher, quotaSummaries, quotaChangeNotices = oldMem, oldWarn, oldWatch, oldSum, oldChange
+		quotaHeldWarnings = oldHeld
 	})
 	quotaRaiseAlert = func(key string, level AlertLevel, title, details string) {
 		env.raised = append(env.raised, key+"|"+string(level))
@@ -94,7 +96,17 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 	quotaFlagWatcher = &quotaFlagWatch{}
 	quotaSummaries = &quotaNoticeThrottle{}
 	quotaChangeNotices = &quotaNoticeThrottle{}
+	quotaHeldWarnings = &quotaWarnThrottle{}
 	return env
+}
+
+// warningText joins the WARN lines of a decision (all of them, unthrottled).
+func warningText(r quotaResolution) string {
+	lines := make([]string, 0, 2)
+	for _, w := range r.warnings() {
+		lines = append(lines, w.line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // captureLog redirects the standard logger for one test.
@@ -278,7 +290,7 @@ func TestQuotaSyncMemoryResolve(t *testing.T) {
 		if r.overSource != st.wantSource {
 			t.Errorf("%s: overSource = %v, want %v", st.name, r.overSource, st.wantSource)
 		}
-		warns := strings.Join(r.warnings(), "\n")
+		warns := warningText(r)
 		switch {
 		case st.wantWarn == "" && warns != "":
 			t.Errorf("%s: unexpected warnings %q", st.name, warns)
