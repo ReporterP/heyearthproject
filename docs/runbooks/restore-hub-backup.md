@@ -202,6 +202,12 @@ systemctl restart heyearth-api && sleep 3 && curl -s http://127.0.0.1:8000/api/v
 
 **Откат не оставляет xray API без защиты.** Если прежнего включённого гарда не было (первая установка) или он не поднялся, гард выключается (`systemctl disable --now heyearth-egress-guard`), цепочка удаляется, и после этого заново ставится старое одиночное правило владельца для `127.0.0.1:10085` (`-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner <пользователь heyearth-api> -j REJECT`, первым в `OUTPUT`, один раз). Скрипт печатает `[ops] egress guard rolled back — xray API protection kept (10085 owner rule)`; если правило поставить не удалось — `WARN … could NOT be re-applied`. Пока гард выключен, это правило не переживает перезагрузку: устраните причину отката и повторите `--setup-ops`.
 Если в iptables нет модуля `cgroup`, `--setup-ops` печатает `WARN` и ставит правила только для пользователей `hysteria`/`heyearth-api`; xray остаётся защищён лишь правилами маршрутизации.
+### Откат API ниже b7d653b, когда включён PROXY protocol на 443
+
+API старше b7d653b (и любая сборка без зеркала `vless-reality-pp`, например хотфикс из main до слияния) не создаёт вход xray `127.0.0.1:10444`, а в режиме
+«вкл» stream шлёт Reality именно туда. Поэтому **сначала** `go run ./cmd/deploy --stream-proxy-protocol off`, потом откат; режим видно в `go run ./cmd/deploy --status`.
+После возврата на новый API режим можно включить снова (docs/runbooks/stream-proxy-protocol.md).
+
 ### Откат API ниже 4ab930e, когда гард в фазе B
 
 В фазе B пользователю `hysteria` открыт только `127.0.0.1:8001`. API старше 4ab930e этого слушателя не имеет и при первой синхронизации переписывает

@@ -658,6 +658,46 @@ func streamModeForDeploy(out string, readErr error) (bool, error) {
 	return mode == "on", nil
 }
 
+// streamStatusCmd prints the router file (as streamRouterReadCmd), a separator and the loopback
+// listeners, for deploy --status.
+const streamStatusCmd = streamRouterReadCmd + "; echo '--- listeners'; ss -ltn 2>/dev/null | grep -E '127\\.0\\.0\\.1:(8443|8446|10443|10444) ' || true"
+
+// streamStatusReport renders deploy --status' view of the PROXY-protocol mode: the live mode of
+// the router and whether xray's two Reality inbounds and nginx's two listeners are up. With the
+// mode on and nothing on 10444 Reality is down — the typical cause is an API without the mirror.
+func streamStatusReport(out string, readErr error) []string {
+	if readErr != nil {
+		return []string{"режим: не прочитан (" + readErr.Error() + ")"}
+	}
+	router, listeners, _ := strings.Cut(out, "--- listeners")
+	var lines []string
+	pp, err := streamModeForDeploy(router, nil)
+	mode := "выкл (8443 + 10443)"
+	if pp {
+		mode = "ВКЛ (8446 + 10444, proxy_protocol on)"
+	}
+	if err != nil {
+		mode = "НЕ ОПРЕДЕЛЯЕТСЯ: " + err.Error()
+	}
+	lines = append(lines, "режим PROXY protocol на 443: "+mode)
+	up := map[string]bool{}
+	for _, p := range []string{"8443", nginxProxyProtocolPort, xrayRealityPort, xrayRealityPPPort} {
+		up[p] = strings.Contains(listeners, "127.0.0.1:"+p+" ")
+		state := "слушает"
+		if !up[p] {
+			state = "НЕ слушает"
+		}
+		lines = append(lines, fmt.Sprintf("  127.0.0.1:%s — %s", p, state))
+	}
+	if pp && !up[xrayRealityPPPort] {
+		lines = append(lines, "ВНИМАНИЕ: режим вкл, а 127.0.0.1:10444 (vless-reality-pp) не слушает — Reality не работает. Задеплойте API с зеркалом или go run ./cmd/deploy --stream-proxy-protocol off")
+	}
+	if pp && !up[nginxProxyProtocolPort] {
+		lines = append(lines, "ВНИМАНИЕ: режим вкл, а 127.0.0.1:8446 не слушает — сайт через 443 не работает")
+	}
+	return lines
+}
+
 // readRemoteFiles returns the exact bytes of paths on the Hub.
 func readRemoteFiles(run func(string) (string, error), paths []string) (map[string]string, error) {
 	out := map[string]string{}

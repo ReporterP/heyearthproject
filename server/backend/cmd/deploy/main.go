@@ -66,7 +66,7 @@ func main() {
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
 	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality) на главный сервер")
-	streamPPFlag := flag.String("stream-proxy-protocol", "", "on|off: PROXY protocol на 443 stream (реальные IP клиентов для nginx/API); переключает nginx и xray Reality вместе, на Hub отдельным юнитом")
+	streamPPFlag := flag.String("stream-proxy-protocol", "", "on|off: PROXY protocol на 443 stream (реальные IP клиентов для nginx/API); меняет только upstream'ы nginx stream (8443+10443 ↔ 8446+10444, xray слушает оба входа всегда), выполняется на Hub отдельным юнитом")
 	forceFlag := flag.Bool("force", false, "с --setup-xray: заменить существующий /opt/heyearth/xray/config.json bootstrap-конфигом (на живом Hub отрежет пользователей до синхронизации API)")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
@@ -1778,6 +1778,13 @@ SECRET=$(su - postgres -c "psql -d heyearth -tA -c \"SELECT COALESCE(value,'') F
 CLIENTS=$(curl -s -m 1 -H "Authorization: ${SECRET}" http://127.0.0.1:7653/traffic 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null)
 echo "  active clients: ${CLIENTS:-?}"`, false)
 	fmt.Println(expressOut)
+
+	// PROXY-protocol mode of the 443 stream and the four loopback entry points
+	fmt.Println("=== 443 stream: PROXY protocol ===")
+	ppOut, ppErr := runSSHQuiet(client, streamStatusCmd, "")
+	for _, l := range streamStatusReport(ppOut, ppErr) {
+		fmt.Println(l)
+	}
 
 	// nginx stream
 	fmt.Println("=== Nginx stream config ===")

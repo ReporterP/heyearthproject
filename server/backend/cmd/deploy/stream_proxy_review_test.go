@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -148,5 +150,55 @@ func TestClassifyExternalProbe(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s must be an error (non-zero exit)", name)
 		}
+	}
+}
+
+// deploy --status shows the live mode and the four entry points, and warns when the mode is on
+// but the PROXY Reality inbound is missing (an API without the mirror).
+func TestStreamStatusReport(t *testing.T) {
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	all := "LISTEN 0 511 127.0.0.1:8443 0.0.0.0:*\nLISTEN 0 511 127.0.0.1:8446 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:10443 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:10444 0.0.0.0:*\n"
+	on := strings.Join(streamStatusReport(b64(buildNginxStreamConf(sppDomain, true))+"\n--- listeners\n"+all, nil), "\n")
+	if !strings.Contains(on, "ВКЛ") || strings.Contains(on, "ВНИМАНИЕ") || !strings.Contains(on, "127.0.0.1:10444 — слушает") {
+		t.Errorf("on, all up:\n%s", on)
+	}
+	noMirror := strings.Replace(all, "LISTEN 0 4096 127.0.0.1:10444 0.0.0.0:*\n", "", 1)
+	bad := strings.Join(streamStatusReport(b64(buildNginxStreamConf(sppDomain, true))+"\n--- listeners\n"+noMirror, nil), "\n")
+	if !strings.Contains(bad, "127.0.0.1:10444 — НЕ слушает") || !strings.Contains(bad, "Reality не работает") {
+		t.Errorf("on without the mirror must warn:\n%s", bad)
+	}
+	off := strings.Join(streamStatusReport("ABSENT\n--- listeners\n"+noMirror, nil), "\n")
+	if !strings.Contains(off, "выкл") || strings.Contains(off, "ВНИМАНИЕ") {
+		t.Errorf("off without the mirror is fine:\n%s", off)
+	}
+	if r := streamStatusReport("", errors.New("ssh")); len(r) != 1 || !strings.Contains(r[0], "не прочитан") {
+		t.Errorf("read error: %v", r)
+	}
+	half := strings.Replace(buildNginxStreamConf(sppDomain, true), "127.0.0.1:10444", "127.0.0.1:10443", 1)
+	if r := strings.Join(streamStatusReport(b64(half)+"\n--- listeners\n"+all, nil), "\n"); !strings.Contains(r, "НЕ ОПРЕДЕЛЯЕТСЯ") {
+		t.Errorf("half-switched router:\n%s", r)
+	}
+}
+
+// The API-rollback warning (switch the stream off before an API without the mirror) is in the
+// PROXY runbook, the restore runbook's rollback section and CLAUDE.md.
+func TestStreamProxyRollbackDocs(t *testing.T) {
+	read := func(p string) string {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	spp := read("../../../../docs/runbooks/stream-proxy-protocol.md")
+	if !strings.Contains(spp, "Перед откатом API ниже b7d653b") || !strings.Contains(spp, "rolled-back-to-on") || !strings.Contains(spp, "go run ./cmd/deploy --status") {
+		t.Error("the PROXY runbook lacks the API-rollback warning, the rolled-back wording or --status")
+	}
+	sec := runbookSection(t, read(restoreRunbook), "### Откат API ниже b7d653b, когда включён PROXY protocol на 443")
+	if !strings.Contains(sec, "go run ./cmd/deploy --stream-proxy-protocol off") {
+		t.Error("the restore runbook's rollback section must switch the stream off first")
+	}
+	if c := read("../../../../CLAUDE.md"); !strings.Contains(c, "below b7d653b") || !strings.Contains(c, "run `--stream-proxy-protocol off` first") {
+		t.Error("CLAUDE.md lacks the API-rollback gotcha")
 	}
 }
