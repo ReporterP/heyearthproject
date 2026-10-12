@@ -16,25 +16,39 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig) {
 // Deletes ufw allow-rules of ports without a listener; a port that still has one is
 // kept and reported. Not in the list (kept): 22,80,443,2443,8444/tcp; 443,50443,51820,30000:65000/udp.
 //
-// Fail-closed: if `ss` is missing or does not support the flags used below, the script
-// aborts before touching ufw (an empty `ss` answer would otherwise read as "no listener").
+// Fail-closed, in two phases. Phase 1 asks `ss` about every port and only collects
+// candidates; the exit status of each `ss` call is checked (never hidden behind a pipe), and
+// any failure aborts the script before ufw is touched at all. Phase 2 deletes the collected
+// rules. An empty `ss` answer therefore always means "no listener", never "ss broke".
+// `ufw status` is captured once (not piped into `grep -q`, which would SIGPIPE it under pipefail).
 const pruneFirewallScript = `set -u
+set -o pipefail
 command -v ufw >/dev/null 2>&1 || { echo "[ops] ufw not installed — skip"; exit 0; }
-command -v ss >/dev/null 2>&1 || { echo "[ops] ss not installed — abort, ufw untouched"; exit 1; }
-ss -Hlnt >/dev/null 2>&1 && ss -Hlnu >/dev/null 2>&1 || { echo "[ops] ss does not support -H — abort, ufw untouched"; exit 1; }
-rc=0
-prune() {
-  rule="$1"; proto="$2"; port="${rule%%:*}"
-  if [ "$proto" = tcp ]; then n=$(ss -Hlnt "sport = :$port" | wc -l); else n=$(ss -Hlnu "sport = :$port" | wc -l); fi
-  if [ "$n" -gt 0 ]; then echo "[ops] KEEP $rule/$proto — listener:"; ss -Hlntup "sport = :$port"; return; fi
-  if ufw status | grep -qE "^$rule/$proto[[:space:]]"; then
-    if ufw --force delete allow "$rule/$proto" >/dev/null; then echo "[ops] DELETED $rule/$proto (no listener)"; else echo "[ops] FAILED to delete $rule/$proto"; rc=1; fi
+command -v ss >/dev/null 2>&1 || { echo "[ops] ABORT: ss not installed — firewall left untouched"; exit 1; }
+ss -Hlnt >/dev/null 2>&1 && ss -Hlnu >/dev/null 2>&1 || { echo "[ops] ABORT: ss does not support -H — firewall left untouched"; exit 1; }
+cands=""
+for entry in 1080/tcp 8080/tcp 8388/tcp 4443/tcp 5443/tcp 9443/tcp 44443/tcp 30443/tcp 1080/udp 8388/udp; do
+  port="${entry%%/*}"; proto="${entry##*/}"
+  if [ "$proto" = tcp ]; then
+    out=$(ss -Hlnt "sport = :$port") || { echo "[ops] ABORT: ss failed for $port/$proto — firewall left untouched"; exit 1; }
   else
-    echo "[ops] ABSENT $rule/$proto"
+    out=$(ss -Hlnu "sport = :$port") || { echo "[ops] ABORT: ss failed for $port/$proto — firewall left untouched"; exit 1; }
   fi
-}
-for p in 1080 8080 8388 4443 5443 9443 44443 30443; do prune "$p" tcp; done
-for p in 1080 8388; do prune "$p" udp; done
+  if [ -n "$out" ]; then
+    echo "[ops] KEEP $entry — listener:"; ss -Hlntup "sport = :$port" || echo "$out"
+  else
+    cands="$cands $entry"
+  fi
+done
+st=$(ufw status) || { echo "[ops] ABORT: ufw status failed — firewall left untouched"; exit 1; }
+rc=0
+for entry in $cands; do
+  if printf '%s\n' "$st" | grep -E "^$entry[[:space:]]" >/dev/null; then
+    if ufw --force delete allow "$entry" >/dev/null; then echo "[ops] DELETED $entry (no listener)"; else echo "[ops] FAILED to delete $entry"; rc=1; fi
+  else
+    echo "[ops] ABSENT $entry"
+  fi
+done
 ufw status
 exit $rc
 `

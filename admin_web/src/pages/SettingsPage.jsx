@@ -182,8 +182,6 @@ export default function SettingsPage() {
                   <div className="divide-y divide-default">
                     <SettingCard label={t.settingsHubMainServerHost} hint={t.settingsHubMainServerHostHint} value={settings.hub_main_server_host} onSave={v => saveSetting('hub_main_server_host', v)} />
                     <SettingCard label={t.settingsHubVlessPort} hint={t.settingsHubVlessPortHint} value={settings.hub_vless_port} onSave={v => saveSetting('hub_vless_port', v)} />
-                    <SettingCard label={t.settingsHubSocks5Port} hint={t.settingsHubSocks5PortHint} value={settings.hub_socks5_port} onSave={v => saveSetting('hub_socks5_port', v)} />
-                    <SettingCard label={t.settingsHubHttpProxyPort} hint={t.settingsHubHttpProxyPortHint} value={settings.hub_http_proxy_port} onSave={v => saveSetting('hub_http_proxy_port', v)} />
                     <SettingCard label={t.settingsApiEndpoints} hint={t.settingsApiEndpointsHint} value={settings.api_endpoints} onSave={v => saveSetting('api_endpoints', v)} />
                   </div>
                 )}
