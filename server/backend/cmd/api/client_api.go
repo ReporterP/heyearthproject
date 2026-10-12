@@ -319,7 +319,16 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 	//              (fixed bandwidth, ignores loss-induced backoff — beats operator
 	//              QoS that throttles UDP via packet loss injection)
 	// Both labels contain "only WiFi" — happ natively hides them on cellular.
-	if mainServerHost != "" && biz.CanUseHysteria2(userID) { // same gate as the auth backend
+	canHysteria2 := false
+	if mainServerHost != "" {
+		// Same plan gate as the auth backend. A DB failure is an error, not "no Bamboo":
+		// the caller answers 503 so clients keep their cached profiles.
+		if canHysteria2, err = biz.CanUseHysteria2(userID); err != nil {
+			log.Printf("[connection-options] user %s: hysteria2 gate failed: %v", userID, err)
+			return nil, err
+		}
+	}
+	if canHysteria2 {
 		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
 		obfsPassword := biz.GetHysteria2ObfsPassword()
 		// SNI MUST match the Hysteria2 server's TLS cert. The server uses a

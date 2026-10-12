@@ -210,7 +210,11 @@ func buildClashConfig(userID string) (string, error) {
 
 	// Check protocol permissions for this user's plan
 	canVLESS := biz.IsProtocolAllowed(userID, "vless")
-	canHysteria2 := biz.CanUseHysteria2(userID)
+	canHysteria2, err := biz.CanUseHysteria2(userID)
+	if err != nil {
+		log.Printf("[subscribe] user %s: hysteria2 gate failed: %v", userID, err)
+		return "", err
+	}
 
 	var proxies []string
 	var proxyNames []string

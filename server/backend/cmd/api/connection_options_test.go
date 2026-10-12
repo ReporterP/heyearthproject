@@ -29,7 +29,13 @@ type fakeDBConnector struct {
 	// nil -> the query fails, pointer to "" -> no rows (sql.ErrNoRows),
 	// otherwise that user_id is returned.
 	subscribeUser *string
+	// hy2Gate answers the Hysteria2 plan-gate query (p.express_enabled): nil -> the
+	// query fails like any other, otherwise it returns these {allowed_protocols,
+	// express_enabled} rows (none -> sql.ErrNoRows).
+	hy2Gate *fakeGate
 }
+
+type fakeGate struct{ rows [][]string }
 
 func (c fakeDBConnector) Connect(context.Context) (driver.Conn, error) { return fakeDBConn(c), nil }
 func (c fakeDBConnector) Driver() driver.Driver                        { return fakeDBDriver{} }
@@ -68,6 +74,8 @@ func (c fakeDBConn) QueryContext(_ context.Context, query string, args []driver.
 			rows.values = []string{*c.subscribeUser}
 		}
 		return rows, nil
+	case c.hy2Gate != nil && strings.Contains(query, "p.express_enabled"):
+		return &fakeDBRows{cols: []string{"allowed_protocols", "express_enabled"}, table: c.hy2Gate.rows}, nil
 	default:
 		return nil, errors.New("fake driver: database unavailable")
 	}
@@ -75,13 +83,24 @@ func (c fakeDBConn) QueryContext(_ context.Context, query string, args []driver.
 
 type fakeDBRows struct {
 	cols   []string
-	values []string
+	values []string   // single-column rows
+	table  [][]string // multi-column rows (used instead of values when set)
 	pos    int
 }
 
 func (r *fakeDBRows) Columns() []string { return r.cols }
 func (*fakeDBRows) Close() error        { return nil }
 func (r *fakeDBRows) Next(dest []driver.Value) error {
+	if r.table != nil {
+		if r.pos >= len(r.table) {
+			return io.EOF
+		}
+		for i, v := range r.table[r.pos] {
+			dest[i] = v
+		}
+		r.pos++
+		return nil
+	}
 	if r.pos >= len(r.values) {
 		return io.EOF
 	}
@@ -251,6 +270,35 @@ func TestHandleSubscriptionLink_DBFailureIsTemporaryNotInvalid(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), testMasterUUID) {
 				t.Errorf("master uuid leaked into the response")
+			}
+		})
+	}
+}
+
+// CanUseHysteria2 is the plan gate for the Bamboo profiles. "No such plan" is a plain
+// false; a database failure must surface as an error so the callers answer 503 instead
+// of serving a subscription that silently lacks Bamboo.
+func TestCanUseHysteria2(t *testing.T) {
+	cases := []struct {
+		name    string
+		gate    *fakeGate
+		want    bool
+		wantErr bool
+	}{
+		{"db failure is an error, not false", nil, false, true},
+		{"no active subscription", &fakeGate{}, false, false},
+		{"express plan with hysteria2", &fakeGate{[][]string{{"{vless,hysteria2}", "true"}}}, true, false},
+		{"express plan with all", &fakeGate{[][]string{{"{all}", "true"}}}, true, false},
+		{"hysteria2 allowed but express disabled", &fakeGate{[][]string{{"{vless,hysteria2}", "false"}}}, false, false},
+		{"express enabled but protocol not allowed", &fakeGate{[][]string{{"{vless}", "true"}}}, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stopLog := useFakeDB(t, fakeDBConnector{hy2Gate: c.gate})
+			got, err := biz.CanUseHysteria2("user-1")
+			stopLog()
+			if got != c.want || (err != nil) != c.wantErr {
+				t.Fatalf("CanUseHysteria2 = (%v, %v), want (%v, err=%v)", got, err, c.want, c.wantErr)
 			}
 		})
 	}

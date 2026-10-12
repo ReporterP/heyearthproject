@@ -2,7 +2,9 @@ package biz
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -148,10 +150,16 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	}
 }
 
-// CanUseHysteria2 — the same plan gate as ValidateHysteria2Auth (express_enabled AND
-// 'hysteria2'/'all' allowed). Builders use it so «Бамбук» is never offered to a plan
-// the auth backend would reject.
-func CanUseHysteria2(userID string) bool {
+// CanUseHysteria2 — the same plan gate as ValidateHysteria2Auth (an active subscription
+// whose plan has express_enabled AND 'hysteria2'/'all' allowed). Builders use it so
+// «Бамбук» is never offered to a plan the auth backend would reject. Quota and the
+// blocked flag are NOT checked here: they are enforced at auth time.
+//
+// (false, nil) means "this user has no such plan" (no active subscription included).
+// A database failure is returned as an error and must not be read as "no": callers
+// answer 503, otherwise a subscription fetched during a DB blip would silently drop
+// the Bamboo profiles and clients would overwrite their cached copy.
+func CanUseHysteria2(userID string) (bool, error) {
 	var allowed []string
 	var enabled bool
 	err := db.DB.QueryRow(`
@@ -162,7 +170,13 @@ func CanUseHysteria2(userID string) bool {
 		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
 		ORDER BY us.valid_until DESC LIMIT 1
 	`, userID).Scan(pq.Array(&allowed), &enabled)
-	return err == nil && enabled && containsProto(allowed, "hysteria2")
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("hysteria2 plan gate: %w", err)
+	}
+	return enabled && containsProto(allowed, "hysteria2"), nil
 }
 
 // Hysteria2Status — snapshot of the Express subsystem state used by the admin UI.
