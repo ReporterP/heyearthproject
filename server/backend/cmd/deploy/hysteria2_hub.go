@@ -30,10 +30,25 @@ import (
 // (138.16.181.225 since 2026-10-12). The reply then misses the conntrack entry, clashes on
 // confirm and sendto fails with EPERM: Бамбук was dark for 6.5 h after the source switch.
 // 50443 itself is inside the range, so direct dials go through this rule too.
+//
+// The DNAT only matches packets addressed to the Hub itself (-m addrtype --dst-type LOCAL).
+// PREROUTING also sees FORWARDED traffic — AWG users (awg0) and docker containers talking
+// to the internet — and an unrestricted rule rewrote the dport of their UDP flows to 50443
+// (Discord voice, WhatsApp calls, games broke). Older unrestricted DNAT rules and the
+// legacy REDIRECT are removed first (loop -D until absent: a rule can be duplicated).
+//
+// The hop range overlaps the kernel's ip_local_port_range (32768-60999). Replies to the
+// Hub's own outgoing UDP (DNS, hysteria tunnel clients) are ESTABLISHED in conntrack and
+// never traverse nat PREROUTING, so they are unaffected; only a reply arriving after its
+// conntrack entry expired would be treated as NEW and DNATed. Deliberately left as is
+// (no sysctl change): narrowing the hop range is fingerprintable, moving the ephemeral
+// range is a host-wide change.
+//
 // Shell without single quotes: it is embedded in a sh -c '...' ExecStartPre.
 const hysteria2PortHopRule = `while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; do :; done; ` +
-	`iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null || ` +
-	`iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -j DNAT --to-destination :50443`
+	`while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null; do :; done; ` +
+	`iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443 2>/dev/null || ` +
+	`iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443`
 
 // setupHysteria2Hub provisions Hysteria2 server on the main Hub.
 // Idempotent: re-runs do not break existing config, do not reissue passwords.
@@ -169,7 +184,7 @@ chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
 # listener on :50443. Protects from QoS throttling that targets a specific
 # UDP port. Port-only DNAT, see hysteria2PortHopRule for why not REDIRECT.
 __PORTHOP__
-echo "[hysteria2-hub] iptables UDP DNAT 30000:65000 → :50443 in place"
+echo "[hysteria2-hub] iptables UDP DNAT 30000:65000 → :50443 (только dst-type LOCAL) in place"
 
 # Persist iptables (Debian/Ubuntu use iptables-persistent).
 # NOTE: this block is best-effort only — on a host without iptables-persistent
