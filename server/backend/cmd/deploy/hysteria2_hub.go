@@ -4,7 +4,7 @@ package main
 //
 // Installs the official `hysteria` binary, creates the systemd unit and a
 // non-root system user, opens UDP 30000-65000 (port-hopping range, widened
-// from 50000-50100 for cell-DPI evasion) via iptables REDIRECT to the
+// from 50000-50100 for cell-DPI evasion) via a port-only iptables DNAT to the
 // canonical :50443, then triggers an initial config write by
 // hitting the heyearth-api sync loop (heyearth-api runs locally and watches for
 // plan/subscription changes).
@@ -22,12 +22,38 @@ import (
 
 const hysteria2Version = "v2.6.1"
 
+// hysteria2PortHopRule makes UDP 30000-65000 reach the single :50443 listener. It is a
+// port-only DNAT, never REDIRECT: REDIRECT rewrites the destination to the interface's
+// primary IP (45.150.39.236 on the Hub), while the server — salamander obfs hides the
+// UDPConn from quic-go, so no IP_PKTINFO — replies via plain sendto from the route source
+// (138.16.181.225 since 2026-10-12). The reply then misses the conntrack entry, clashes on
+// confirm and sendto fails with EPERM: Бамбук was dark for 6.5 h after the source switch.
+// 50443 itself is inside the range, so direct dials go through this rule too.
+// Shell without single quotes: it is embedded in a sh -c '...' ExecStartPre.
+const hysteria2PortHopRule = `while iptables -t nat -D PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; do :; done; ` +
+	`iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j DNAT --to-destination :50443 2>/dev/null || ` +
+	`iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -j DNAT --to-destination :50443`
+
 // setupHysteria2Hub provisions Hysteria2 server on the main Hub.
 // Idempotent: re-runs do not break existing config, do not reissue passwords.
 func setupHysteria2Hub(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[hysteria2-hub] Установка Hysteria2 на главный сервер...")
 
-	script := strings.ReplaceAll(`set -e
+	out, err := runSSH(client, hysteria2HubScript(), true)
+	if err != nil {
+		fmt.Println(out)
+		// Don't kill the entire deploy pipeline — operator might be re-running with
+		// migration not yet applied. Log and continue.
+		fmt.Printf("[hysteria2-hub] WARN: setup script returned error: %v\n", err)
+		return
+	}
+	fmt.Println(out)
+	fmt.Println("[hysteria2-hub] Готово. Проверь: go run ./cmd/deploy --status")
+}
+
+// hysteria2HubScript is the idempotent provisioning script run as root on the Hub.
+func hysteria2HubScript() string {
+	return strings.NewReplacer("__VERSION__", hysteria2Version, "__PORTHOP__", hysteria2PortHopRule).Replace(`set -e
 
 # ── 1. Install hysteria binary ──
 if [ ! -x /usr/local/bin/hysteria ]; then
@@ -138,15 +164,13 @@ chmod +x /etc/cron.monthly/heyearth-hysteria-geoip
 # 50000-50100 for cell-DPI evasion — narrow ranges are fingerprintable as
 # "VPN port-hopping"); iptables forwards all of those to the single hysteria
 # listener on :50443. Protects from QoS throttling that targets a specific
-# UDP port.
-if ! iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null; then
-  iptables -t nat -A PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443
-  echo "[hysteria2-hub] iptables UDP redirect 30000:65000 → 50443 added"
-fi
+# UDP port. Port-only DNAT, see hysteria2PortHopRule for why not REDIRECT.
+__PORTHOP__
+echo "[hysteria2-hub] iptables UDP DNAT 30000:65000 → :50443 in place"
 
 # Persist iptables (Debian/Ubuntu use iptables-persistent).
 # NOTE: this block is best-effort only — on a host without iptables-persistent
-# BOTH branches silently no-op, and the REDIRECT above is lost on reboot. That
+# BOTH branches silently no-op, and the NAT rule above is lost on reboot. That
 # actually happened (Hub rebooted 2026-07-11, rule vanished, every port-hopping
 # client black-holed). The authoritative guarantee is the ExecStartPre in the
 # hysteria2-server unit below, which re-applies the rule on every service start
@@ -180,11 +204,11 @@ Type=simple
 User=hysteria
 Group=hysteria
 WorkingDirectory=/etc/hysteria
-# Port-hopping REDIRECT belongs to this service's lifecycle: clients dial random
+# Port-hopping DNAT belongs to this service's lifecycle: clients dial random
 # UDP ports in 30000-65000 and only reach the listener because of this NAT rule.
 # iptables rules do not survive a reboot on this host (no iptables-persistent),
 # so re-apply it idempotently on every start. '+' runs it as root despite User=.
-ExecStartPre=+/bin/sh -c 'iptables -t nat -C PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport 30000:65000 -j REDIRECT --to-ports 50443'
+ExecStartPre=+/bin/sh -c '__PORTHOP__'
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/server.yaml --disable-update-check
 # Hysteria v2.6.x does not honor SIGHUP for hot-reload (it terminates instead).
 # heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
@@ -289,16 +313,5 @@ else
 fi
 
 echo "[hysteria2-hub] Setup complete."
-`, "__VERSION__", hysteria2Version)
-
-	out, err := runSSH(client, script, true)
-	if err != nil {
-		fmt.Println(out)
-		// Don't kill the entire deploy pipeline — operator might be re-running with
-		// migration not yet applied. Log and continue.
-		fmt.Printf("[hysteria2-hub] WARN: setup script returned error: %v\n", err)
-		return
-	}
-	fmt.Println(out)
-	fmt.Println("[hysteria2-hub] Готово. Проверь: go run ./cmd/deploy --status")
+`)
 }
