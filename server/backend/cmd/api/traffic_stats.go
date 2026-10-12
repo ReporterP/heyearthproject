@@ -203,24 +203,32 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 }
 
-// checkTrafficLimits — delegates to biz, logs offenders and requests a debounced
-// xray sync (2 s) instead of waiting for the 5-minute periodic one. That sync
+// checkTrafficLimits — delegates to biz, logs offenders and, when the cutoff is
+// armed (app_settings quota_cutoff_enabled = "true"), requests a debounced xray
+// sync (2 s) instead of waiting for the 5-minute periodic one. That sync
 // removes the user live (`xray api rmu`), which only refuses NEW connections;
 // sessions already open keep working until the soft cutoff guard sees their
 // traffic in the next full stats window and forces a restart (≈1–2 min,
 // checkRevokedStillOnline). Repeated calls while the user stays over quota are
-// no-ops: the config no longer changes.
+// no-ops: the config no longer changes. With the cutoff disarmed the sync would
+// change nothing, so over-quota users are only logged.
 func checkTrafficLimits() {
-	over, err := biz.ListQuotaExceededUUIDs()
+	quota, err := loadQuotaCutoff()
 	if err != nil {
 		log.Printf("[traffic-stats] checkTrafficLimits: %v", err)
 		return
 	}
-	if len(over) == 0 {
+	if len(quota.over) == 0 {
 		return
 	}
-	for uuid := range over {
-		log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика", uuid)
+	for userID := range quota.over {
+		if quota.enabled {
+			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика", userID)
+		} else {
+			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика (cutoff отключён: %s=false)", userID, quotaCutoffSetting)
+		}
 	}
-	RequestXraySync()
+	if quota.needsSync() {
+		RequestXraySync()
+	}
 }

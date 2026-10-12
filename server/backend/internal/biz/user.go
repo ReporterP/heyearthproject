@@ -132,6 +132,9 @@ type ActiveVlessClient struct {
 // ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
 // Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
 // plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
+// The quota cutoff (ListQuotaExceededUserIDs) and the cabinet traffic card judge
+// the SAME subscription row: keep best_plan_id below in step with
+// effectiveSubOrderBy (traffic.go).
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 	// Premium derivation: any active subscription = premium (groups removed).
 	rows, err := db.DB.Query(`

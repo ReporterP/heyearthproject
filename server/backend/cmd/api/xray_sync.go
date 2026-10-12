@@ -147,14 +147,19 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("list active clients: %w", err)
 	}
 
-	// Per-user quota cutoff: load the set ONCE per sync. Users over their
-	// current billing cycle quota are excluded from VLESS clients arrays and
-	// per-user routing rules. The set re-computes on every sync (debounced
-	// 2s), so cycle-resets pick up automatically without a flag.
-	quotaExceeded, qerr := biz.ListQuotaExceededUUIDs()
+	// Per-user quota cutoff: load the decision ONCE per sync. Users over their
+	// current billing cycle quota (judged on their effective subscription, keyed
+	// by users.user_id == ActiveVlessClient.UserID) are excluded from the VLESS
+	// clients arrays and the per-plan routing rules, but ONLY while the
+	// app_settings flag quota_cutoff_enabled is "true" (default: off). The set
+	// re-computes on every sync (debounced 2s), so cycle resets pick up
+	// automatically.
+	quota, qerr := loadQuotaCutoff()
 	if qerr != nil {
 		log.Printf("[xray-sync] WARN failed to load quota-exceeded set: %v — continuing without cutoff", qerr)
-		quotaExceeded = map[string]struct{}{}
+	}
+	if notice := quota.disabledNotice(); notice != "" {
+		log.Print(notice)
 	}
 
 	// Серверный UUID — для обратной совместимости и админ-доступа
@@ -186,7 +191,7 @@ func SyncXrayConfig() error {
 	vlessClients := make([]map[string]interface{}, 0, len(activeClients))
 	skippedQuota := 0
 	for _, c := range activeClients {
-		if _, blocked := quotaExceeded[c.UUID]; blocked {
+		if quota.excludes(c) {
 			skippedQuota++
 			continue // over cycle quota — re-included when cycle resets
 		}
@@ -659,7 +664,7 @@ func SyncXrayConfig() error {
 		// the former one-rule-per-user list at the same position (before catch-all).
 		planUsers := map[int][]string{}
 		for _, client := range activeClients {
-			if _, blocked := quotaExceeded[client.UUID]; blocked {
+			if quota.excludes(client) {
 				continue // quota cutoff — user already missing from clients arrays
 			}
 			if _, ok := planBalancers[client.PlanID]; ok && client.UserID != "" {

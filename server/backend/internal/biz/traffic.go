@@ -155,6 +155,18 @@ func PeriodBreakdownByMonth(userUUID string, from, to time.Time) ([]MonthBucket,
 	return out, nil
 }
 
+// effectiveSubOrderBy orders a user's ACTIVE subscriptions (alias "us") so the
+// first row is the user's effective subscription: the one whose plan the user
+// actually runs on. It is the row ListActiveVlessClients picks as best_plan_id
+// (plan_id IS NOT NULL, latest valid_until), extended with two tie-breakers:
+// a legacy plan-less subscription is considered only when no subscription has
+// a plan, and equal valid_until falls back to the newest row so the choice is
+// deterministic. A user may hold several active subscriptions at once (a paid
+// plan plus a not-yet-expired free trial); the quota, the cabinet traffic card
+// and the plan routing must all be judged against this ONE row, otherwise a
+// paid unlimited plan gets cut off by the trial's 10 GB limit.
+const effectiveSubOrderBy = `(us.plan_id IS NOT NULL) DESC, us.valid_until DESC, us.id DESC`
+
 // EffectiveLimit returns the effective per-cycle quota for the user's active
 // subscription. Returns 0 if user has no active sub or the plan is unlimited.
 // Priority: user_subscriptions.traffic_limit (per-row override) > plans.traffic_limit_bytes.
@@ -165,7 +177,7 @@ func EffectiveLimit(userDBID int) (limit int64, startedAt sql.NullTime, err erro
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC
+		ORDER BY `+effectiveSubOrderBy+`
 		LIMIT 1
 	`, userDBID).Scan(&limit, &startedAt)
 	if err == sql.ErrNoRows {
@@ -190,22 +202,39 @@ func IsCycleExceeded(userDBID int, userUUID string) (bool, error) {
 	return used >= limit, nil
 }
 
-// ListQuotaExceededUUIDs returns the set of user UUIDs that have an active
-// subscription AND a positive cycle limit AND cycle usage >= that limit.
+// ListQuotaExceededUserIDs returns the set of users whose current-cycle usage
+// has reached the limit of their EFFECTIVE subscription (effectiveSubOrderBy:
+// the row ListActiveVlessClients uses as the user's plan). A user is in the set
+// only if that subscription has a positive limit (COALESCE of the
+// subscription's own traffic_limit and the plan's traffic_limit_bytes; NULL or
+// 0 = unlimited, never over quota). Other active subscriptions of the user,
+// e.g. a not-yet-expired free trial next to a paid plan, are ignored.
+//
+// The set is keyed by users.user_id, the same value as
+// ActiveVlessClient.UserID, the xray client "email" and traffic_stats.user_id,
+// NOT by the VLESS UUID (users.vless_uuid): look it up with UserID. Looking it
+// up with the UUID, as xray_sync once did, silently matches nobody.
+//
 // Computed in a single SQL query for performance — called by xray_sync on
 // every sync tick and by checkTrafficLimits after each collector iteration.
-func ListQuotaExceededUUIDs() (map[string]struct{}, error) {
+func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
 	rows, err := db.DB.Query(`
 		WITH active AS (
-			SELECT u.id AS uid, u.user_id AS uuid, us.started_at,
-			       COALESCE(us.traffic_limit, p.traffic_limit_bytes, 0) AS lim
+			SELECT u.user_id, eff.started_at,
+			       COALESCE(eff.traffic_limit, p.traffic_limit_bytes, 0) AS lim
 			FROM users u
-			JOIN user_subscriptions us ON us.user_id = u.id AND us.valid_until > NOW()
-			LEFT JOIN plans p ON p.id = us.plan_id
-			WHERE COALESCE(us.traffic_limit, p.traffic_limit_bytes, 0) > 0
+			JOIN LATERAL (
+				SELECT us.plan_id, us.started_at, us.traffic_limit
+				FROM user_subscriptions us
+				WHERE us.user_id = u.id AND us.valid_until > NOW()
+				ORDER BY ` + effectiveSubOrderBy + `
+				LIMIT 1
+			) eff ON TRUE
+			LEFT JOIN plans p ON p.id = eff.plan_id
+			WHERE COALESCE(eff.traffic_limit, p.traffic_limit_bytes, 0) > 0
 		),
 		cycles AS (
-			SELECT uid, uuid, lim,
+			SELECT user_id, lim,
 			       GREATEST(
 			           COALESCE(started_at, NOW() - INTERVAL '30 days'),
 			           COALESCE(started_at, NOW() - INTERVAL '30 days') + (
@@ -215,12 +244,12 @@ func ListQuotaExceededUUIDs() (map[string]struct{}, error) {
 			       ) AS cycle_start
 			FROM active
 		)
-		SELECT uuid
+		SELECT c.user_id
 		FROM cycles c
 		WHERE (
-			SELECT COALESCE(SUM(upload_bytes + download_bytes), 0)
-			FROM traffic_stats
-			WHERE user_id = c.uuid AND recorded_at >= c.cycle_start
+			SELECT COALESCE(SUM(ts.upload_bytes + ts.download_bytes), 0)
+			FROM traffic_stats ts
+			WHERE ts.user_id = c.user_id AND ts.recorded_at >= c.cycle_start
 		) >= c.lim
 	`)
 	if err != nil {
@@ -229,11 +258,14 @@ func ListQuotaExceededUUIDs() (map[string]struct{}, error) {
 	defer rows.Close()
 	out := make(map[string]struct{})
 	for rows.Next() {
-		var uuid string
-		if err := rows.Scan(&uuid); err != nil {
-			continue
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, fmt.Errorf("quota-exceeded scan: %w", err)
 		}
-		out[uuid] = struct{}{}
+		out[userID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("quota-exceeded rows: %w", err)
 	}
 	return out, nil
 }
@@ -300,7 +332,7 @@ func BuildTrafficResponse(userDBID int, userUUID string) (TrafficResponse, error
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC
+		ORDER BY `+effectiveSubOrderBy+`
 		LIMIT 1
 	`, userDBID).Scan(&startedAt, &validUntil, &planName, &planLimit, &subLimit)
 
