@@ -1384,6 +1384,66 @@ func ServerActionProgressHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Setup exit node (async, 7 steps) ──
 
+// exitHysteria2ServerScript renders step 3 of runSetupExitNode (run as root on the exit):
+// install/upgrade the hysteria binary, write server.yaml + hysteria2.service, restart.
+// Plain concatenation, not a format string: the install script carries a literal %2F.
+func exitHysteria2ServerScript() string {
+	return "set -e\n" + config.HysteriaInstallScript() + `mkdir -p /opt/heyearth/certs /opt/heyearth/hysteria
+if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
+    -keyout /opt/heyearth/certs/hy2.key -out /opt/heyearth/certs/hy2.crt -subj "/CN=www.microsoft.com" 2>/dev/null
+fi
+SS_PASSWORD=$(python3 -c "import json; print(json.load(open('/opt/heyearth/state/reality-keys.json')).get('ssPassword',''))")
+cat > /opt/heyearth/hysteria/server.yaml << HEOF
+listen: :50443
+tls:
+  cert: /opt/heyearth/certs/hy2.crt
+  key: /opt/heyearth/certs/hy2.key
+auth:
+  type: password
+  password: $SS_PASSWORD
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com
+    rewriteHost: true
+quic:
+  initStreamReceiveWindow: 26843545
+  maxStreamReceiveWindow: 26843545
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+bandwidth:
+  up: 100 mbps
+  down: 100 mbps
+HEOF
+cat > /etc/systemd/system/hysteria2.service << 'SEOF'
+[Unit]
+Description=Hysteria2 VPN Server (HeYearth)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+SEOF
+systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2`
+}
+
+// hubHy2ClientSetupScript renders step 7 of runSetupExitNode (run locally on the Hub via
+// bash -c): install/upgrade the hysteria binary, then enable + restart the per-exit client
+// unit. serviceName is server-derived ("hysteria2-client-<id>"), never user input.
+func hubHy2ClientSetupScript(serviceName string) string {
+	return fmt.Sprintf(`set -e
+%s
+systemctl daemon-reload
+systemctl enable %s
+systemctl restart %s
+`, config.HysteriaInstallScript(), serviceName, serviceName)
+}
+
 func runSetupExitNode(server serverResponse) {
 	steps := []ProvisionStep{
 		{Name: "optimize_network", Description: "Оптимизация сетевого стека (BBR, TCP буферы)", Status: "pending"},
@@ -1559,53 +1619,7 @@ systemctl daemon-reload && systemctl enable xray && systemctl restart xray`)
 
 	// ── Шаг 3: Hysteria2 ──
 	setStep(2, "running", "")
-	_, err = runCmd(client, `set -e
-if [ ! -f /usr/local/bin/hysteria ]; then
-  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
-fi
-mkdir -p /opt/heyearth/certs /opt/heyearth/hysteria
-if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
-    -keyout /opt/heyearth/certs/hy2.key -out /opt/heyearth/certs/hy2.crt -subj "/CN=www.microsoft.com" 2>/dev/null
-fi
-SS_PASSWORD=$(python3 -c "import json; print(json.load(open('/opt/heyearth/state/reality-keys.json')).get('ssPassword',''))")
-cat > /opt/heyearth/hysteria/server.yaml << HEOF
-listen: :50443
-tls:
-  cert: /opt/heyearth/certs/hy2.crt
-  key: /opt/heyearth/certs/hy2.key
-auth:
-  type: password
-  password: $SS_PASSWORD
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.bing.com
-    rewriteHost: true
-quic:
-  initStreamReceiveWindow: 26843545
-  maxStreamReceiveWindow: 26843545
-  initConnReceiveWindow: 67108864
-  maxConnReceiveWindow: 67108864
-bandwidth:
-  up: 100 mbps
-  down: 100 mbps
-HEOF
-cat > /etc/systemd/system/hysteria2.service << 'SEOF'
-[Unit]
-Description=Hysteria2 VPN Server (HeYearth)
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-[Install]
-WantedBy=multi-user.target
-SEOF
-systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2`)
+	_, err = runCmd(client, exitHysteria2ServerScript())
 	if err != nil {
 		finishWithError(2, err)
 		return
@@ -1756,17 +1770,8 @@ WantedBy=multi-user.target
 		return
 	}
 
-	// Download hysteria binary + enable/restart service (no user data in shell commands)
-	hy2Setup := fmt.Sprintf(`set -e
-if [ ! -f /usr/local/bin/hysteria ]; then
-  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
-fi
-systemctl daemon-reload
-systemctl enable %s
-systemctl restart %s
-`, serviceName, serviceName)
-	cmd := exec.Command("bash", "-c", hy2Setup)
+	// Install/upgrade hysteria binary + enable/restart service (no user data in shell commands)
+	cmd := exec.Command("bash", "-c", hubHy2ClientSetupScript(serviceName))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		finishWithError(6, fmt.Errorf("%v: %s", err, string(out)))

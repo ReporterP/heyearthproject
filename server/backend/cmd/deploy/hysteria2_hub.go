@@ -2,7 +2,7 @@ package main
 
 // Hysteria2 Hub provisioner.
 //
-// Installs the official `hysteria` binary, creates the systemd unit and a
+// Installs/upgrades the official `hysteria` binary (config.HysteriaVersion), creates the systemd unit and a
 // non-root system user, opens UDP 30000-65000 (port-hopping range, widened
 // from 50000-50100 for cell-DPI evasion) via a port-only iptables DNAT to the
 // canonical :50443, then triggers an initial config write by
@@ -17,10 +17,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/heyearth/backend/internal/config"
 	"golang.org/x/crypto/ssh"
 )
-
-const hysteria2Version = "v2.6.1"
 
 // hysteria2PortHopRule makes UDP 30000-65000 reach the single :50443 listener. It is a
 // port-only DNAT, never REDIRECT: REDIRECT rewrites the destination to the interface's
@@ -53,19 +52,10 @@ func setupHysteria2Hub(client *ssh.Client, cfg *deployConfig) {
 
 // hysteria2HubScript is the idempotent provisioning script run as root on the Hub.
 func hysteria2HubScript() string {
-	return strings.NewReplacer("__VERSION__", hysteria2Version, "__PORTHOP__", hysteria2PortHopRule).Replace(`set -e
+	return strings.NewReplacer("__HYSTERIA_INSTALL__", config.HysteriaInstallScript(), "__PORTHOP__", hysteria2PortHopRule).Replace(`set -e
 
-# ── 1. Install hysteria binary ──
-if [ ! -x /usr/local/bin/hysteria ]; then
-  apt-get install -y -qq wget 2>/dev/null
-  cd /tmp
-  wget -q "https://github.com/apernet/hysteria/releases/download/app/__VERSION__/hysteria-linux-amd64" -O /usr/local/bin/hysteria
-  chmod +x /usr/local/bin/hysteria
-  echo "[hysteria2-hub] Binary __VERSION__ installed: $(/usr/local/bin/hysteria version 2>&1 | head -1)"
-else
-  echo "[hysteria2-hub] Binary already present: $(/usr/local/bin/hysteria version 2>&1 | head -1)"
-fi
-
+# ── 1. Install / upgrade hysteria binary (previous kept as hysteria.bak) ──
+__HYSTERIA_INSTALL__
 # ── 2. System user (non-root, no login) ──
 if ! id hysteria >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin hysteria

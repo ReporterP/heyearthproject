@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
 	_ "github.com/lib/pq"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -1759,30 +1760,11 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 	fmt.Println("  4. Then restore the DB and config from the backup")
 }
 
-// setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
-// Формат addr: "IP:TUNNEL_PORT" (напр. "1.2.3.4:443")
-func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
-	// Формат: IP или IP:PORT (порт игнорируется — используются стандартные 443/10443/50443)
-	exitIP := strings.SplitN(addr, ":", 2)[0]
-
-	if password == "" {
-		password = cfg.deployPassword // fallback на пароль основного сервера
-	}
-
-	fmt.Printf("[exit-node] Подключение к %s:%d...\n", exitIP, sshPort)
-	exitClient, err := sshDial(fmt.Sprintf("%s:%d", exitIP, sshPort), "root", password, "")
-	if err != nil {
-		log.Fatalf("[exit-node] SSH: %v", err)
-	}
-	defer exitClient.Close()
-
-	// Оптимизация сетевого стека (BBR, IPv6)
-	fmt.Println("[exit-node] Оптимизация сетевого стека...")
-	optimizeNetworkStack(exitClient)
-
-	// Установка Xray и настройка как exit-node
-	fmt.Println("[exit-node] Установка Xray...")
-	script := fmt.Sprintf(`set -e
+// exitNodeSetupScript renders the root provisioning script for a new exit node: Xray
+// (SS+WS :443, VLESS Reality :10443) + Hysteria2 server (:50443). Pure, so tests can
+// render it without SSH.
+func exitNodeSetupScript(exitIP string) string {
+	return fmt.Sprintf(`set -e
 mkdir -p /opt/heyearth/xray /opt/heyearth/state
 
 # ── 1. Скачать Xray если нет ──
@@ -1951,15 +1933,8 @@ echo "[xray] Сервис запущен"
 systemctl status xray --no-pager -l 2>&1 | head -10 || true
 
 # ── 5. Hysteria2 сервер (QUIC/UDP — нет head-of-line blocking) ──
-echo "[hy2] Установка Hysteria2..."
-if [ ! -f /usr/local/bin/hysteria ]; then
-  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
-  echo "[hy2] Binary установлен"
-else
-  echo "[hy2] Binary уже существует"
-fi
-
+echo "[hy2] Установка/обновление Hysteria2..."
+%s
 # Самоподписанный TLS-сертификат для Hysteria2
 mkdir -p /opt/heyearth/certs
 if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
@@ -2058,7 +2033,91 @@ echo "Short ID: $SHORT_ID"
 echo "SS Password: $SS_PASSWORD"
 echo "SNI: microsoft.com"
 echo "================================="
-`, exitIP)
+`, config.HysteriaInstallScript(), exitIP)
+}
+
+// hubHy2ClientScript renders the Hub-side script that installs/upgrades the hysteria binary
+// and runs a Hysteria2 client to the exit node as a local SOCKS5 on 127.0.0.1:1088+serverID.
+// Pure, so tests can render it without SSH.
+func hubHy2ClientScript(exitIP, serverID, tunnelSSPass string) string {
+	return fmt.Sprintf(`
+mkdir -p /opt/heyearth/hysteria
+
+# Установка/обновление Hysteria2 binary
+%s
+# Конфиг клиента для exit-ноды %s (порт 1088+%s)
+cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
+server: %s:50443
+
+auth: %s
+
+tls:
+  insecure: true
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+
+socks5:
+  listen: 127.0.0.1:PLACEHOLDER_PORT
+HYEOF
+
+# Подставляем порт (1088 + server_id)
+PORT=$((1088 + %s))
+sed -i "s|PLACEHOLDER_PORT|$PORT|g" /opt/heyearth/hysteria/client-%s.yaml
+
+# systemd сервис
+cat > /etc/systemd/system/hysteria2-client-%s.service <<SVCEOF
+[Unit]
+Description=Hysteria2 Client for %s (HeYearth)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%s.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable hysteria2-client-%s
+systemctl restart hysteria2-client-%s
+sleep 2
+systemctl status hysteria2-client-%s --no-pager | head -5
+echo "Hysteria2 client for %s: port $PORT"
+`, config.HysteriaInstallScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
+}
+
+// setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
+// Формат addr: "IP:TUNNEL_PORT" (напр. "1.2.3.4:443")
+func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
+	// Формат: IP или IP:PORT (порт игнорируется — используются стандартные 443/10443/50443)
+	exitIP := strings.SplitN(addr, ":", 2)[0]
+
+	if password == "" {
+		password = cfg.deployPassword // fallback на пароль основного сервера
+	}
+
+	fmt.Printf("[exit-node] Подключение к %s:%d...\n", exitIP, sshPort)
+	exitClient, err := sshDial(fmt.Sprintf("%s:%d", exitIP, sshPort), "root", password, "")
+	if err != nil {
+		log.Fatalf("[exit-node] SSH: %v", err)
+	}
+	defer exitClient.Close()
+
+	// Оптимизация сетевого стека (BBR, IPv6)
+	fmt.Println("[exit-node] Оптимизация сетевого стека...")
+	optimizeNetworkStack(exitClient)
+
+	// Установка Xray и настройка как exit-node
+	fmt.Println("[exit-node] Установка Xray...")
+	script := exitNodeSetupScript(exitIP)
 
 	out, _ := runSSH(exitClient, script, false)
 	fmt.Println(out)
@@ -2152,62 +2211,7 @@ print(k.get('ssPassword', ''))
 	}
 
 	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
-	hy2ClientScript := fmt.Sprintf(`
-mkdir -p /opt/heyearth/hysteria
-
-# Установка Hysteria2 binary если нет
-if [ ! -f /usr/local/bin/hysteria ]; then
-  curl -sL -o /usr/local/bin/hysteria https://github.com/apernet/hysteria/releases/download/app%%2Fv2.6.1/hysteria-linux-amd64
-  chmod +x /usr/local/bin/hysteria
-fi
-
-# Конфиг клиента для exit-ноды %s (порт 1088+%s)
-cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
-server: %s:50443
-
-auth: %s
-
-tls:
-  insecure: true
-
-quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-
-socks5:
-  listen: 127.0.0.1:PLACEHOLDER_PORT
-HYEOF
-
-# Подставляем порт (1088 + server_id)
-PORT=$((1088 + %s))
-sed -i "s|PLACEHOLDER_PORT|$PORT|g" /opt/heyearth/hysteria/client-%s.yaml
-
-# systemd сервис
-cat > /etc/systemd/system/hysteria2-client-%s.service <<SVCEOF
-[Unit]
-Description=Hysteria2 Client for %s (HeYearth)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%s.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-systemctl daemon-reload
-systemctl enable hysteria2-client-%s
-systemctl restart hysteria2-client-%s
-sleep 2
-systemctl status hysteria2-client-%s --no-pager | head -5
-echo "Hysteria2 client for %s: port $PORT"
-`, exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, exitIP)
+	hy2ClientScript := hubHy2ClientScript(exitIP, serverID, tunnelSSPass)
 
 	hy2Out, err := runSSH(mainClient, hy2ClientScript, false)
 	if err != nil {
