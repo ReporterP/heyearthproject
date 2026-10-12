@@ -2089,7 +2089,7 @@ echo "Protocol: hysteria2"
 echo "UUID: $UUID"
 echo "Public Key: $PUB_KEY"
 echo "Short ID: $SHORT_ID"
-echo "SS Password: $SS_PASSWORD"
+echo "SS Password: (не печатается; /opt/heyearth/state/reality-keys.json)"
 echo "SNI: microsoft.com"
 echo "================================="
 `, config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP), "\n"), exitIP)
@@ -2113,7 +2113,8 @@ mkdir -p /opt/heyearth/hysteria
 
 # Hysteria2 binary: только если на Hub его нет (обновление Hub — deploy --setup-hysteria2-hub)
 %s
-# Конфиг клиента для exit-ноды %s (порт 1088+%s)
+# Конфиг клиента для exit-ноды %s (порт 1088+%s); в нём пароль туннеля — создаётся 0600
+umask 077
 cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
 server: %s:50443
 
@@ -2135,6 +2136,8 @@ HYEOF
 # Подставляем порт (1088 + server_id)
 PORT=$((1088 + %s))
 sed -i "s|PLACEHOLDER_PORT|$PORT|g" /opt/heyearth/hysteria/client-%s.yaml
+chmod 600 /opt/heyearth/hysteria/client-%s.yaml
+umask 022
 
 # systemd сервис
 cat > /etc/systemd/system/hysteria2-client-%s.service <<SVCEOF
@@ -2163,21 +2166,51 @@ if ! systemctl is-active --quiet hysteria2-client-%s; then
   exit 1
 fi
 echo "Hysteria2 client for %s: port $PORT"
-`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, serverID, serverID, serverID, exitIP)
+`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, serverID, serverID, serverID, exitIP)
+}
+
+// parseExitNodeAddr validates --setup-exit-node: an IP address, optionally with a port (the
+// port is ignored — the exit always uses 443/10443/50443). The IP ends up in root shell scripts
+// on the exit and the Hub, so anything else (a hostname, shell metacharacters) is refused.
+func parseExitNodeAddr(addr string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	host := addr
+	if net.ParseIP(addr) == nil {
+		h, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return "", fmt.Errorf("--setup-exit-node %q: ожидается IP или IP:порт", addr)
+		}
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("--setup-exit-node %q: %q не IP-адрес", addr, host)
+	}
+	return ip.String(), nil
+}
+
+// dialExitNode connects to an exit by root password only with its ed25519 host key pinned
+// (exitAccessFor: EXIT_NODE_HOST_KEY_FINGERPRINT and the exit's own password — never the Hub's).
+func dialExitNode(addr string, access exitAccess) (*ssh.Client, error) {
+	return sshDialAlgos(addr, "root", access.password, access.fingerprint, []string{ssh.KeyAlgoED25519})
 }
 
 // setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
-// Формат addr: "IP:TUNNEL_PORT" (напр. "1.2.3.4:443")
+// Формат addr: "IP" или "IP:TUNNEL_PORT" (порт игнорируется).
 func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
-	// Формат: IP или IP:PORT (порт игнорируется — используются стандартные 443/10443/50443)
-	exitIP := strings.SplitN(addr, ":", 2)[0]
-
-	if password == "" {
-		password = cfg.deployPassword // fallback на пароль основного сервера
+	exitIP, err := parseExitNodeAddr(addr)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	// Пароль — только самой exit-ноды (--exit-node-password / EXIT_NODE_SSH_PASSWORD), host key —
+	// по EXIT_NODE_HOST_KEY_FINGERPRINT. Пароль Hub на exit не пробуется.
+	access, err := exitAccessFor(cfg.env, password)
+	if err != nil {
+		log.Fatalf("[exit-node] %v\n[exit-node] EXIT_NODE_HOST_KEY_FINGERPRINT в server/.env должен быть отпечатком ed25519 host key именно этой exit-ноды (%s).", err, exitIP)
 	}
 
-	fmt.Printf("[exit-node] Подключение к %s:%d...\n", exitIP, sshPort)
-	exitClient, err := sshDial(fmt.Sprintf("%s:%d", exitIP, sshPort), "root", password, "")
+	fmt.Printf("[exit-node] Подключение к %s:%d (host key закреплён)...\n", exitIP, sshPort)
+	exitClient, err := dialExitNode(net.JoinHostPort(exitIP, fmt.Sprintf("%d", sshPort)), access)
 	if err != nil {
 		log.Fatalf("[exit-node] SSH: %v", err)
 	}
@@ -2256,7 +2289,7 @@ print(k.get('ssPassword', ''))
 			  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
 			  tunnel_ss_password = $4, tunnel_sni = 'microsoft.com',
 			  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
-			  tunnel_status = 'unknown', status = 'active'
+			  tunnel_status = 'unknown', status = COALESCE(NULLIF(status, ''), 'active')
 			WHERE ip_address = $5`,
 			tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
 		if err != nil {
@@ -2284,14 +2317,23 @@ print(k.get('ssPassword', ''))
 	// ── Автонастройка Hysteria2 клиента на Hub ──
 	fmt.Println("[exit-node] Настраиваю Hysteria2 клиент на Hub...")
 
-	// Получаем ID сервера из БД для вычисления порта (через тот же туннель или fallback).
-	serverID := "2"
+	// ID сервера из БД задаёт порт клиента (1088+id) и имя юнита. Не угадываем: чужой id
+	// перезаписал бы клиент другой exit-ноды.
+	serverID := ""
 	if dbConn != nil {
 		var id int
-		row := dbConn.QueryRow(`SELECT id FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP)
-		if row.Scan(&id) == nil {
+		var status string
+		row := dbConn.QueryRow(`SELECT id, COALESCE(status, '') FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP)
+		if row.Scan(&id, &status) == nil {
 			serverID = fmt.Sprintf("%d", id)
+			if status != "active" && status != "online" {
+				fmt.Printf("[exit-node] статус exit-ноды в БД оставлен как есть: %q (повторный запуск не включает выключенную ноду; включить — в админке)\n", status)
+			}
 		}
+	}
+	if serverID == "" {
+		log.Fatalf("[exit-node] ОШИБКА: не удалось узнать id exit-ноды %s в БД — клиент Hysteria2 на Hub не настраиваю (порт 1088+id). "+
+			"Проверьте доступ к БД и запись в servers, затем повторите --setup-exit-node.", exitIP)
 	}
 
 	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
