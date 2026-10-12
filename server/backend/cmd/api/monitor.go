@@ -60,9 +60,9 @@ func StartMonitor() {
 	// Each step has its own recover: a panic in one must not skip the others.
 	go runEvery(90*time.Second, loopProbeInterval, func() {
 		safely("loop-проба", runLoopProbe)
-		safely("Бамбук-проба", runBambooProbe)
 		safely("NRestarts xray", pollXraySystemdRestarts)
 		safely("окно рестартов xray", checkXrayRestartWindow)
+		safely("Бамбук-проба", runBambooProbe) // last: it can wait on UDP timeouts for tens of seconds
 	})
 	go runEvery(5*time.Minute, checkHostInterval, func() {
 		safely("check-host", runCheckHostProbe)

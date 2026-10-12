@@ -18,9 +18,19 @@ import (
 // port buildExitNodeOutbound and checkTunnelHealth use (exit id 2 → :1090).
 // Anything sent there leaves the Hub through the foreign exit.
 func pickExitSocksPort() (int, bool) {
+	ports := liveExitSocksPorts(1)
+	if len(ports) == 0 {
+		return 0, false
+	}
+	return ports[0], true
+}
+
+// liveExitSocksPorts returns up to limit such ports, in pickExitSocksPort's order of preference
+// (hysteria2 exits first, then by id). Ports nobody listens on are left out.
+func liveExitSocksPorts(limit int) []int {
 	nodes, err := biz.ListHealthyExitNodes()
 	if err != nil {
-		return 0, false
+		return nil
 	}
 	sort.SliceStable(nodes, func(i, j int) bool {
 		hi, hj := nodes[i].TunnelProtocol == "hysteria2", nodes[j].TunnelProtocol == "hysteria2"
@@ -29,16 +39,20 @@ func pickExitSocksPort() (int, bool) {
 		}
 		return nodes[i].ID < nodes[j].ID
 	})
+	var ports []int
 	for _, n := range nodes {
+		if len(ports) >= limit {
+			break
+		}
 		port := 1088 + n.ID
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
 		if err != nil {
 			continue // no hysteria2 client for this exit
 		}
 		_ = conn.Close()
-		return port, true
+		ports = append(ports, port)
 	}
-	return 0, false
+	return ports
 }
 
 // exitSocksDialer dials through the exit; hostnames are resolved by the exit (SOCKS5 remote DNS).
