@@ -60,6 +60,7 @@ func StartMonitor() {
 	// Each step has its own recover: a panic in one must not skip the others.
 	go runEvery(90*time.Second, loopProbeInterval, func() {
 		safely("loop-проба", runLoopProbe)
+		safely("Бамбук-проба", runBambooProbe)
 		safely("NRestarts xray", pollXraySystemdRestarts)
 		safely("окно рестартов xray", checkXrayRestartWindow)
 	})
@@ -72,7 +73,7 @@ func StartMonitor() {
 		safely("копия бэкапа", checkOffsiteBackupFreshness)
 		safely("диск", checkDiskUsage)
 	})
-	log.Printf("[monitor] запущен: loop-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
+	log.Printf("[monitor] запущен: loop-проба и Бамбук-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
 		loopProbeInterval, checkHostInterval, housekeepingInterval)
 }
 
