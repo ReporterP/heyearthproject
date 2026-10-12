@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,12 @@ func newTestSOCKS5(t *testing.T) *testSOCKS5 {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return serveTestSOCKS5(t, ln)
+}
+
+// serveTestSOCKS5 runs testSOCKS5 on ln (closed at cleanup).
+func serveTestSOCKS5(t *testing.T, ln net.Listener) *testSOCKS5 {
+	t.Helper()
 	t.Cleanup(func() { ln.Close() })
 	s := &testSOCKS5{addr: ln.Addr().String()}
 	go func() {
@@ -318,8 +325,8 @@ func TestProbeExitNoTargets(t *testing.T) {
 	}
 }
 
-// step runs one monitor tick for a node the way checkAllTunnels does: evalExitHealth,
-// then the counter reset the caller performs after a persisted status flip.
+// step runs one monitor tick for one path the way exitPathState.fold does: evalExitHealth,
+// then the counter reset after a status flip.
 func step(status string, hc *nodeHealthCounter, probe string) (string, exitAlertAction) {
 	newStatus, act := evalExitHealth(status, probe, hc)
 	if newStatus != status {
@@ -446,5 +453,220 @@ func TestExitAlertTexts(t *testing.T) {
 	}
 	if exitDownAlertKey(2) != "exit-down-2" {
 		t.Fatalf("exitDownAlertKey(2) = %q", exitDownAlertKey(2))
+	}
+}
+
+// ─────────────── Two paths per exit (phase 1) ───────────────
+
+// «Exit мёртв, только если мертвы оба пути» and Review Focus 3, tick by tick.
+func TestExitHealthTwoPaths(t *testing.T) {
+	ok := func(ms int) pathProbe { return pathProbe{present: true, ok: true, rttMs: ms} }
+	hyFail := pathProbe{present: true, err: "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s"}
+	vrFail := pathProbe{present: true, err: "tcp-reality exit #2 via 127.0.0.1:12002: EOF"}
+	absent := pathProbe{}
+	R, S, N := exitAlertRaise, exitAlertResolve, exitAlertNone
+	type tick struct {
+		p                           exitPathProbe
+		status                      string
+		exitAlert, hyAlert, vrAlert exitAlertAction
+		hyChanged                   bool
+	}
+	cases := []struct {
+		name  string
+		db    string
+		ticks []tick
+	}{
+		{"Review Focus 3 → UDP Россия→заграница задушен, TCP жив: exit жив, тревога про путь Hysteria", "healthy", []tick{
+			{exitPathProbe{hyFail, ok(90)}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, ok(90)}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, ok(90)}, "healthy", S, R, S, true},
+			{exitPathProbe{hyFail, ok(90)}, "healthy", S, R, S, false},
+			{exitPathProbe{ok(40), ok(90)}, "healthy", S, R, S, false}, // one success is not a recovery
+			{exitPathProbe{ok(40), ok(90)}, "healthy", S, S, S, true},
+		}},
+		{"оба пути мертвы: exit мёртв, говорит только тревога exit; вернулся по TCP", "healthy", []tick{
+			{exitPathProbe{hyFail, vrFail}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, vrFail}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, vrFail}, "unhealthy", R, N, N, true},
+			{exitPathProbe{hyFail, ok(90)}, "unhealthy", R, N, N, false},
+			{exitPathProbe{hyFail, ok(90)}, "healthy", S, R, S, false},
+		}},
+		{"старый exit только с Hysteria: смерть пути — смерть exit", "healthy", []tick{
+			{exitPathProbe{hyFail, absent}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, absent}, "healthy", S, S, S, false},
+			{exitPathProbe{hyFail, absent}, "unhealthy", R, N, S, true},
+		}},
+		{"новый exit (unknown): первый успех любого пути делает его живым", "unknown", []tick{
+			{exitPathProbe{hyFail, ok(80)}, "healthy", S, N, S, false},
+			{exitPathProbe{ok(30), ok(80)}, "healthy", S, S, S, true},
+		}},
+		{"у exit нет ни одного пути", "healthy", []tick{
+			{exitPathProbe{absent, absent}, "unhealthy", R, S, S, false},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var h exitHealth
+			db := tc.db
+			for i, tk := range tc.ticks {
+				v := h.tick(db, tk.p)
+				if v.status != tk.status || v.exitAlert != tk.exitAlert || v.hyAlert != tk.hyAlert ||
+					v.vrAlert != tk.vrAlert || v.hyChanged != tk.hyChanged {
+					t.Fatalf("tick %d: got status=%s exit=%v hy=%v vr=%v hyChanged=%v, want %s %v %v %v %v",
+						i+1, v.status, v.exitAlert, v.hyAlert, v.vrAlert, v.hyChanged,
+						tk.status, tk.exitAlert, tk.hyAlert, tk.vrAlert, tk.hyChanged)
+				}
+				db = v.status // checkAllTunnels persists it; the next tick reads it back
+			}
+		})
+	}
+}
+
+func TestExitHealthLatencyAndError(t *testing.T) {
+	var h exitHealth
+	hyFail := pathProbe{present: true, err: "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s"}
+	v := h.tick("healthy", exitPathProbe{hyFail, pathProbe{present: true, ok: true, rttMs: 90}})
+	if v.latencyMs != 90 || !strings.Contains(v.errText, "timeout after 5s") {
+		t.Fatalf("Hysteria down: latency %d (want the TCP RTT 90), error %q", v.latencyMs, v.errText)
+	}
+	both := exitPathProbe{pathProbe{present: true, ok: true, rttMs: 40}, pathProbe{present: true, ok: true, rttMs: 90}}
+	if v = h.tick("healthy", both); v.latencyMs != 40 || v.errText != "" {
+		t.Fatalf("both up: latency %d (want the Hysteria RTT 40), error %q", v.latencyMs, v.errText)
+	}
+	if snap := h.snapshot(both, time.Unix(0, 0)); snap.Hy != biz.PathHealthy || snap.HyRTTms != 40 || snap.VRRTTms != 90 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}
+
+// probeExitPathsLive dials the exit's own loopback ports — Hysteria at 1088+id, TCP at xray's
+// probe inbound 12000+id — and judges each path by itself; a path the exit lacks is not dialled.
+func TestProbeExitPathsLive(t *testing.T) {
+	const id = 497 // 127.0.0.1:1585 and :12497; skipped if something on this host holds them
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", exitSocksPort(id)))
+	if err != nil {
+		t.Skipf("Hysteria test port busy: %v", err)
+	}
+	serveTestSOCKS5(t, ln) // Hysteria path alive
+	vrLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", exitProbePort(id)))
+	if err != nil {
+		t.Skipf("TCP probe test port busy: %v", err)
+	}
+	vrLn.Close() // TCP path dead: nothing listens on the probe inbound
+	saved := exitProbeTargets
+	exitProbeTargets = []exitProbeTarget{{"local", slowStatusServer(t, http.StatusNoContent, 20*time.Millisecond) + "/generate_204"}}
+	t.Cleanup(func() { exitProbeTargets = saved })
+
+	node := biz.ExitNodeTunnel{ID: id, TunnelProtocol: "hysteria2", TunnelUUID: "11111111-2222-3333-4444-555555555555",
+		TunnelPubKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), TunnelShortID: "abcd"}
+	p := probeExitPathsLive(node)
+	if !p.hy.present || !p.hy.ok || p.hy.rttMs < 1 || p.hy.err != "" {
+		t.Errorf("Hysteria path = %+v, want present, ok, an RTT", p.hy)
+	}
+	if want := fmt.Sprintf("tcp-reality exit #%d via 127.0.0.1:%d: ", id, exitProbePort(id)); !p.vr.present || p.vr.ok || !strings.HasPrefix(p.vr.err, want) {
+		t.Errorf("TCP path = %+v, want present, failed, error starting %q", p.vr, want)
+	}
+
+	node.TunnelUUID, node.TunnelPubKey = "", "" // no Reality credentials: no TCP path
+	if p = probeExitPathsLive(node); p.vr != (pathProbe{}) || !p.hy.ok {
+		t.Errorf("exit without a TCP path: %+v, want the TCP path absent and not dialled", p)
+	}
+}
+
+// Someone else wrote tunnel_status: the node wizard activated a re-provisioned exit (online +
+// healthy after checking both paths itself) whose paths the monitor last saw dead, or a re-setup
+// reset it to unknown. The paths start over from the DB status, as after an API restart; reusing
+// the old memory would flip the fresh exit back to unhealthy on its first tick (an xray restart
+// and a false exit-down alert, against «one xray restart per added exit»).
+func TestExitHealthReseedsOnStatusWrittenElsewhere(t *testing.T) {
+	ok := pathProbe{present: true, ok: true, rttMs: 50}
+	fail := pathProbe{present: true, err: "timeout after 5s"}
+	for _, tc := range []struct {
+		db        string
+		hyChanged bool // the Hysteria path flips unless it was seeded healthy
+	}{{"healthy", false}, {"unknown", true}, {"", true}} {
+		t.Run("db="+tc.db, func(t *testing.T) {
+			var h exitHealth
+			st := "healthy"
+			for range 3 {
+				st = h.tick(st, exitPathProbe{fail, fail}).status
+			}
+			if st != biz.PathUnhealthy {
+				t.Fatalf("setup: both paths dead for 3 ticks gave %q, want unhealthy", st)
+			}
+			v := h.tick(tc.db, exitPathProbe{ok, ok})
+			if v.status != biz.PathHealthy || v.exitAlert != exitAlertResolve || v.hyChanged != tc.hyChanged {
+				t.Fatalf("first tick after tunnel_status=%q: status=%s exit=%v hyChanged=%v, want healthy, resolve, hyChanged=%v",
+					tc.db, v.status, v.exitAlert, v.hyChanged, tc.hyChanged)
+			}
+		})
+	}
+}
+
+// A verdict that did not reach the DB is decided and written again on the next tick: the stale
+// DB status is not taken for a write from elsewhere (no re-seed, the hysteresis is kept).
+func TestExitHealthUnsavedVerdictIsRetried(t *testing.T) {
+	fail := pathProbe{present: true, err: "timeout after 5s"}
+	var h exitHealth
+	var v exitVerdict
+	for range 3 {
+		v = h.tick("healthy", exitPathProbe{fail, fail})
+	}
+	if v.status != biz.PathUnhealthy {
+		t.Fatalf("3 failures of both paths: %q, want unhealthy", v.status)
+	}
+	h.writeFailed("healthy") // UpdateTunnelStatusWithError failed: the DB still says healthy
+	if v = h.tick("healthy", exitPathProbe{fail, fail}); v.status != biz.PathUnhealthy || v.exitAlert != exitAlertRaise {
+		t.Fatalf("next tick after a failed write: status=%s exit=%v, want unhealthy + raise at once", v.status, v.exitAlert)
+	}
+}
+
+// An exit that left the online list (deprovisioned, failed) is forgotten: its path view no longer
+// stands for it in the admin and in Bamboo's choice, and when it comes back it starts afresh.
+func TestForgetGoneExits(t *testing.T) {
+	const gone, kept = 9001, 9002
+	t.Cleanup(func() {
+		for _, id := range []int{gone, kept} {
+			exitHealthByID.Delete(id)
+			biz.ForgetExitPaths(id)
+		}
+	})
+	for _, id := range []int{gone, kept} {
+		exitHealthFor(id).tick("healthy", exitPathProbe{})
+		biz.SetExitPaths(id, biz.ExitPaths{Hy: biz.PathHealthy, VR: biz.PathHealthy})
+	}
+	forgetGoneExits([]biz.ExitNodeTunnel{{ID: kept}})
+	if _, ok := exitHealthByID.Load(gone); ok {
+		t.Error("monitor memory of a gone exit kept")
+	}
+	if _, ok := biz.GetExitPaths(gone); ok {
+		t.Error("path view of a gone exit kept")
+	}
+	if _, ok := exitHealthByID.Load(kept); !ok {
+		t.Error("monitor memory of an online exit dropped")
+	}
+	if _, ok := biz.GetExitPaths(kept); !ok {
+		t.Error("path view of an online exit dropped")
+	}
+}
+
+func TestExitPathAlertTexts(t *testing.T) {
+	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}
+	if exitPathAlertKey(2, "hy") != "exit-path-down-2-hy" || exitPathAlertKey(20, "vr") != "exit-path-down-20-vr" {
+		t.Fatal("unexpected path alert keys")
+	}
+	title, details := exitPathDownText(node, "hy", "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s")
+	for _, want := range []string{"Hysteria", "запасному TCP-пути", "Бамбук", "hysteria2-client-2", "timeout after 5s"} {
+		if !strings.Contains(title+details, want) {
+			t.Errorf("Hysteria path alert lacks %q: %s / %s", want, title, details)
+		}
+	}
+	title, details = exitPathDownText(node, "vr", "")
+	for _, want := range []string{"TCP", "10443", "ждём подтверждения"} {
+		if !strings.Contains(title+details, want) {
+			t.Errorf("TCP path alert lacks %q: %s / %s", want, title, details)
+		}
+	}
+	if !strings.Contains(exitPathUpText(node, "vr"), "снова работает") {
+		t.Error("recovery text")
 	}
 }

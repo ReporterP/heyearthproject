@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
@@ -1249,20 +1248,16 @@ func revocationReasons(revoked []string, clients []biz.ActiveVlessClient, quota 
 
 // ─────────────────────── Tunnel Health Monitoring ───────────────────────
 //
-// Фоновый мониторинг состояния туннелей до exit-нод.
-// Каждые 30 секунд проверяет каждую exit-ноду по её протоколу (checkTunnelHealth):
-// VLESS — TCP + TLS handshake, Shadowsocks и прочие — TCP connect, Hysteria2 —
-// HTTP 204 через локальный SOCKS5 клиента (весь путь Hub → exit → интернет).
-// Hysteresis: нужно 3 consecutive неудачи → unhealthy, 2 consecutive успеха → healthy.
-// При изменении статуса — пересинхронизирует Xray конфиг.
+// Every 30 seconds each online exit is probed on both of its paths (probeExitPathsLive):
+// generate_204 through Hysteria (hysteria2-client SOCKS 1088+id) and through TCP (xray's probe
+// inbound probe-vr-<id> → VLESS Reality). Hysteresis per path (3 failures / 2 successes); the
+// exit is unhealthy only when all its paths are (exitHealth.tick). A flip of the exit status
+// resyncs xray; a flip of the Hysteria path or of the exit resyncs Hysteria2 (Bamboo).
 
 const (
 	hysteresisUnhealthy = 3 // consecutive failures before marking unhealthy
 	hysteresisHealthy   = 2 // consecutive successes before marking healthy
 )
-
-// healthCounter tracks consecutive check results per node for hysteresis.
-var healthCounter sync.Map // map[int]*nodeHealthCounter
 
 type nodeHealthCounter struct {
 	consecutiveOK   int
@@ -1294,18 +1289,39 @@ func StartTunnelHealthMonitor() {
 		hysteresisUnhealthy, hysteresisHealthy)
 }
 
-func getHealthCounter(nodeID int) *nodeHealthCounter {
-	val, _ := healthCounter.LoadOrStore(nodeID, &nodeHealthCounter{})
-	return val.(*nodeHealthCounter)
+// exitHealthByID: the monitor's per-exit path memory (map[int]*exitHealth).
+var exitHealthByID sync.Map
+
+func exitHealthFor(id int) *exitHealth {
+	v, _ := exitHealthByID.LoadOrStore(id, &exitHealth{})
+	return v.(*exitHealth)
 }
 
-// checkAllTunnels проверяет все exit-ноды и обновляет их статус.
+// forgetGoneExits drops the path memory and the biz.ExitPaths view of every exit that is not in
+// nodes (the online exits): a deprovisioned exit has no live view in the admin, and one that
+// comes back online starts afresh from its tunnel_status.
+func forgetGoneExits(nodes []biz.ExitNodeTunnel) {
+	online := make(map[int]bool, len(nodes))
+	for _, n := range nodes {
+		online[n.ID] = true
+	}
+	exitHealthByID.Range(func(k, _ any) bool {
+		if id := k.(int); !online[id] {
+			exitHealthByID.Delete(id)
+			biz.ForgetExitPaths(id)
+		}
+		return true
+	})
+}
+
+// checkAllTunnels проверяет оба пути каждой exit-ноды и обновляет статусы.
 func checkAllTunnels() {
 	nodes, err := biz.ListAllExitNodes()
 	if err != nil {
 		log.Printf("[tunnel-monitor] Ошибка загрузки exit-нод: %v", err)
 		return
 	}
+	forgetGoneExits(nodes)
 
 	if len(nodes) == 0 {
 		// No online exit at all: SyncXrayConfig blocks every user inbound.
@@ -1314,70 +1330,53 @@ func checkAllTunnels() {
 		return
 	}
 
-	statusChanged := false
+	statusChanged, hyChanged := false, false
 	healthyCount := 0
 	for _, node := range nodes {
-		probeResult, latencyMs, probeError := checkTunnelHealth(node)
+		probe := exitPathProber(node)
+		h := exitHealthFor(node.ID)
+		v := h.tick(node.TunnelStatus, probe)
 
-		// Persist per-probe RTT for adaptive Express-tunnel exit selection
-		// (biz.DecideExpressTunnel). We write last_rtt_ms/last_rtt_at on EVERY
-		// successful probe — independently of hysteresis-driven status flips —
-		// so the lowest-RTT exit selection always sees fresh data. Failures
-		// are intentionally ignored so transient blips don't poison selection.
-		if probeResult == "healthy" && latencyMs > 0 {
-			if rttErr := biz.UpdateExitRTT(node.ID, latencyMs); rttErr != nil {
+		// Bamboo's exit choice (biz.DecideExpressTunnel, last_rtt_ms) ranks exits by the RTT of
+		// their Hysteria path only.
+		if probe.hy.ok {
+			if rttErr := biz.UpdateExitRTT(node.ID, probe.hy.rttMs); rttErr != nil {
 				log.Printf("[tunnel-monitor] UpdateExitRTT(%d) failed: %v", node.ID, rttErr)
 			}
 		}
-
-		oldStatus := node.TunnelStatus
-		hc := getHealthCounter(node.ID)
-
-		// Hysteresis counters -> effective status + alert action (see evalExitHealth).
-		newStatus, alertAction := evalExitHealth(oldStatus, probeResult, hc)
-		if newStatus == "healthy" {
+		biz.SetExitPaths(node.ID, h.snapshot(probe, time.Now()))
+		// The alerts follow the STATUS on every tick, not just the flip: RaiseAlert/ResolveAlert
+		// dedup by key, so steady state is silent, while a lost delivery, a flap inside the
+		// cooldown or an API restart with the exit already down are all retried on the next tick.
+		applyExitAlerts(node, v, probe)
+		if v.hyChanged {
+			hyChanged = true
+		}
+		if v.status == biz.PathHealthy {
 			healthyCount++
 		}
 
-		// The per-exit alert follows the STATUS on every tick, not just the flip:
-		// RaiseAlert/ResolveAlert dedup by key, so steady state is silent, while a
-		// lost or failed delivery, a flap inside the cooldown or an API restart with
-		// the exit already down are all retried on the next tick.
-		switch alertAction {
-		case exitAlertRaise:
-			RaiseAlert(exitDownAlertKey(node.ID), AlertWarn,
-				fmt.Sprintf("Exit-нода %s недоступна", node.Name),
-				exitDownDetails(node, probeError))
-		case exitAlertResolve:
-			ResolveAlert(exitDownAlertKey(node.ID), exitUpMessage(node, latencyMs))
+		oldStatus := node.TunnelStatus
+		// last_tunnel_check / latency / tunnel_error on every tick, the status when it flipped.
+		if err := biz.UpdateTunnelStatusWithError(node.ID, v.status, v.latencyMs, v.errText); err != nil {
+			log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
+			h.writeFailed(oldStatus)
+			continue
 		}
-
-		if newStatus != oldStatus {
-			if err := biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError); err != nil {
-				log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
-				continue
-			}
-			// Reset counters after status flip.
-			hc.consecutiveOK = 0
-			hc.consecutiveFail = 0
-
-			statusChanged = true
-
-			if newStatus == "unhealthy" {
-				log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — туннель НЕДОСТУПЕН (после %d проверок)",
-					node.ID, node.Name, node.IPAddress, hysteresisUnhealthy)
-				biz.RecordFailedConnection(node.ID)
-			} else if newStatus == "healthy" && oldStatus == "unhealthy" {
-				log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН",
-					node.ID, node.Name, node.IPAddress)
-				biz.RecordSuccessfulConnection(node.ID)
-			} else {
-				log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s",
-					node.ID, node.Name, oldStatus, newStatus)
-			}
-		} else {
-			// Обновляем last_tunnel_check при КАЖДОЙ проверке, независимо от статуса
-			_ = biz.UpdateTunnelStatusWithError(node.ID, newStatus, latencyMs, probeError)
+		if v.status == oldStatus {
+			continue
+		}
+		statusChanged = true
+		switch {
+		case v.status == biz.PathUnhealthy:
+			log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — оба пути НЕДОСТУПНЫ: %s",
+				node.ID, node.Name, node.IPAddress, v.errText)
+			biz.RecordFailedConnection(node.ID)
+		case v.status == biz.PathHealthy && oldStatus == biz.PathUnhealthy:
+			log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН", node.ID, node.Name, node.IPAddress)
+			biz.RecordSuccessfulConnection(node.ID)
+		default:
+			log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s", node.ID, node.Name, oldStatus, v.status)
 		}
 	}
 
@@ -1391,15 +1390,17 @@ func checkAllTunnels() {
 			fmt.Sprintf("Exit-ноды снова доступны: %d из %d healthy", healthyCount, len(nodes)))
 	}
 
-	// Если статус какой-то ноды изменился — пересинхронизируем Xray (debounced)
 	if statusChanged {
 		log.Printf("[tunnel-monitor] Статус exit-нод изменился, запрос на пересинхронизацию Xray...")
 		RequestXraySync()
 	}
+	// Bamboo re-decides its exit when an exit or its Hysteria path flips; the 5-minute periodic
+	// Hysteria2 sync covers the rest.
+	if statusChanged || hyChanged {
+		RequestHysteria2Sync()
+	}
 
 	// ── MTProto :mtproto_port TCP probe ──
-	// Runs after the main tunnel loop every 30 s. Uses 3-fail / 2-success
-	// hysteresis independently of the general tunnel-health counters.
 	checkMTProtoHealth()
 }
 
@@ -1472,77 +1473,6 @@ func checkMTProtoHealth() {
 		}
 		mtprotoCountMu.Unlock()
 	}
-}
-
-// checkTunnelHealth проверяет доступность exit-ноды по протоколу.
-//   - VLESS: TCP + TLS handshake (Reality endpoint)
-//   - Shadowsocks: TCP connect (WS порт 443)
-//   - Hysteria2: GET generate_204 (gstatic, затем cloudflare) через локальный SOCKS5
-//     Hysteria2-клиента (весь путь до exit); здоров, если любой из двух отвечает 204
-//   - Остальные: TCP connect
-//
-// Возвращает статус и latency в миллисекундах.
-func checkTunnelHealth(node biz.ExitNodeTunnel) (status string, latencyMs int, errMsg string) {
-	start := time.Now()
-
-	switch node.TunnelProtocol {
-	case "vless":
-		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("vless %s: %v", addr, err)
-		}
-		sni := node.TunnelSNI
-		if sni == "" {
-			sni = node.IPAddress
-		}
-		tlsConn := tls.Client(conn, &tls.Config{
-			ServerName:         sni,
-			InsecureSkipVerify: true,
-		})
-		tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
-		if err := tlsConn.Handshake(); err != nil {
-			conn.Close()
-			return "unhealthy", 0, fmt.Sprintf("vless %s: TLS handshake failed: %v", addr, err)
-		}
-		tlsConn.Close()
-
-	case "hysteria2":
-		// C4: a listening local SOCKS port says nothing about the exit. Fetch a
-		// real 204 THROUGH the tunnel (Hub -> hysteria2 client -> exit -> internet).
-		hy2Port := 1088 + node.ID
-		localAddr := fmt.Sprintf("127.0.0.1:%d", hy2Port)
-		// gstatic first, cloudflare as a fallback: healthy if either answers 204.
-		// The error is a single line naming the exit and the SOCKS address once.
-		rtt, err := probeExitViaSOCKS5(localAddr, exitProbeTargets, exitProbeTimeout)
-		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("hysteria2 exit #%d via %s: %v", node.ID, localAddr, err)
-		}
-		ms := int(rtt.Milliseconds())
-		if ms < 1 {
-			ms = 1
-		}
-		return "healthy", ms, ""
-
-	case "shadowsocks":
-		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("shadowsocks %s: %v", addr, err)
-		}
-		conn.Close()
-
-	default:
-		addr := fmt.Sprintf("%s:%d", node.IPAddress, node.TunnelPort)
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			return "unhealthy", 0, fmt.Sprintf("%s %s: %v", node.TunnelProtocol, addr, err)
-		}
-		conn.Close()
-	}
-
-	latencyMs = int(time.Since(start).Milliseconds())
-	return "healthy", latencyMs, ""
 }
 
 // ─────────────────────── Sync Loop ───────────────────────

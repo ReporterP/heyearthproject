@@ -9,7 +9,7 @@ import (
 // Routing invariants of the generated xray config (C2, research 2026-10-11):
 //   - outbounds[0], xray's default handler, is the blackhole "block";
 //   - every balancer falls back to its first member — an exit our own health
-//     monitor (checkTunnelHealth, 3-fail/2-ok hysteresis) considers healthy —
+//     monitor (exitHealth.tick, 3-fail/2-ok hysteresis per path) considers healthy —
 //     or to "block" when it has none; never to a direct/freedom outbound.
 //     Falling back to the exit (not block) matters: xray's observatory marks
 //     the only exit "dead" ~37x/day on short probe failures, and block would
