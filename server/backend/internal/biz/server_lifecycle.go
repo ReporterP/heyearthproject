@@ -102,22 +102,43 @@ var subscriptionVersionCache struct {
 }
 
 // GetSubscriptionVersion returns the cached version, refreshing every 5 sec.
-// Cheap to call from API hot path.
+// Cheap to call from API hot path. A failed read yields the last cached value
+// (1 if none) and is not cached.
 func GetSubscriptionVersion() int64 {
+	v, err := SubscriptionVersion()
+	if err == nil {
+		return v
+	}
+	subscriptionVersionCache.Lock()
+	defer subscriptionVersionCache.Unlock()
+	if subscriptionVersionCache.value > 0 {
+		return subscriptionVersionCache.value
+	}
+	return 1
+}
+
+// SubscriptionVersion is GetSubscriptionVersion with a strict read: a failed
+// read is returned (and not cached) instead of reported as version 1, which a
+// client would take for a change ("Подписка обновлена" + refetch). An absent
+// or unparsable value is 1, as before.
+func SubscriptionVersion() (int64, error) {
 	subscriptionVersionCache.Lock()
 	defer subscriptionVersionCache.Unlock()
 	if time.Since(subscriptionVersionCache.at) < 5*time.Second && subscriptionVersionCache.value > 0 {
-		return subscriptionVersionCache.value
+		return subscriptionVersionCache.value, nil
 	}
 	var raw string
-	_ = db.DB.QueryRow(`SELECT value FROM app_settings WHERE key='subscription_version'`).Scan(&raw)
+	err := db.DB.QueryRow(`SELECT value FROM app_settings WHERE key='subscription_version'`).Scan(&raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("read subscription_version: %w", err)
+	}
 	v, _ := strconv.ParseInt(raw, 10, 64)
 	if v <= 0 {
 		v = 1
 	}
 	subscriptionVersionCache.value = v
 	subscriptionVersionCache.at = time.Now()
-	return v
+	return v, nil
 }
 
 // BumpSubscriptionVersion increments the version atomically and invalidates the cache.
@@ -138,10 +159,16 @@ func BumpSubscriptionVersionContext(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bump subscription_version: %w", err)
 	}
-	subscriptionVersionCache.Lock()
-	subscriptionVersionCache.at = time.Time{} // invalidate
-	subscriptionVersionCache.Unlock()
+	InvalidateSubscriptionVersionCache()
 	return nil
+}
+
+// InvalidateSubscriptionVersionCache makes the next SubscriptionVersion read
+// the database.
+func InvalidateSubscriptionVersionCache() {
+	subscriptionVersionCache.Lock()
+	subscriptionVersionCache.at = time.Time{}
+	subscriptionVersionCache.Unlock()
 }
 
 // ── Provision/Deprovision are implemented in this file in Tasks 5 and 6 ─────

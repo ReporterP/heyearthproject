@@ -4,8 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -113,12 +115,30 @@ func ValidateUserToken(token string) (*userJWTClaims, error) {
 		SELECT id FROM user_sessions
 		WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW()
 	`, tokenHash, claims.UserDBID).Scan(&sessionID)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session revoked or not found")
+	}
+	if err != nil {
+		// The session could not be checked: not a revoked session. Handlers
+		// that must not read a DB outage as "logged out" answer 503 for it.
+		return nil, &SessionLookupError{Err: err}
 	}
 
 	return &claims, nil
 }
+
+// ErrSessionLookup: the token is well-formed and signed, but its session could
+// not be checked because the database read failed (errors.Is target of
+// SessionLookupError).
+var ErrSessionLookup = errors.New("session lookup failed")
+
+// SessionLookupError carries the database error behind ErrSessionLookup. Its
+// message stays generic: handlers send err.Error() to clients.
+type SessionLookupError struct{ Err error }
+
+func (e *SessionLookupError) Error() string        { return ErrSessionLookup.Error() }
+func (e *SessionLookupError) Is(target error) bool { return target == ErrSessionLookup }
+func (e *SessionLookupError) Unwrap() error        { return e.Err }
 
 // RevokeUserSession deletes a user session by token (for logout).
 func RevokeUserSession(token string) error {

@@ -100,17 +100,32 @@ func xrayClientFacing(configJSON []byte) (string, error) {
 type subscriptionNotifier struct {
 	path string                          // the notified digest; "" = memory only (tests)
 	bump func(ctx context.Context) error // biz.BumpSubscriptionVersionContext
-	mem  string                          // the notified digest when path == ""
+	// known is the digest clients were last notified of as far as this process
+	// knows ("" = not yet): set on every store, so a state file that cannot be
+	// read or written still yields one decision per process instead of a bump
+	// on every sync. Touched only under xraySyncMu.
+	known       string
+	pending     bool // a needed bump failed: the next sync bumps without comparing again
+	readWarned  bool // the unreadable/corrupt-state WARN of the current incident was logged
+	writeWarned bool // the same for a failed write
 }
+
+// errDigestUnknown: no usable stored digest — the state file is absent (first
+// run of this code), unreadable or corrupt, and this process has not stored one.
+var errDigestUnknown = errors.New("no stored client-facing digest")
 
 var xraySubscriptionNotifier = &subscriptionNotifier{path: xrayClientFacingPath, bump: biz.BumpSubscriptionVersionContext}
 
 // afterApply runs after every successful apply (unchanged, live or restart)
 // with the config now in service and the one it replaced (oldErr: it could not
-// be read). Without a stored digest (first run of this code, lost state file)
-// a restart is compared with the replaced config and a non-restart only
-// records the digest. A failed bump keeps the old digest: the next sync
-// retries. It returns whether clients were notified.
+// be read). Without a stored digest (first run of this code; a lost,
+// unreadable or corrupt state file — the latter two logged once) a restart is
+// compared with the replaced config and a non-restart only records the digest;
+// either way the digest is then known in memory, so a state file that stays
+// unreadable or unwritable cannot cause a bump per sync. A failed bump keeps
+// the old digest and marks the notification pending: the next sync retries it
+// (also on the no-stored-digest path, where a later non-restart sync would
+// otherwise just record the digest). It returns whether clients were notified.
 func (n *subscriptionNotifier) afterApply(newJSON, oldJSON []byte, oldErr error, restarted bool) bool {
 	newH, err := xrayClientFacing(newJSON)
 	if err != nil {
@@ -119,11 +134,13 @@ func (n *subscriptionNotifier) afterApply(newJSON, oldJSON []byte, oldErr error,
 	}
 	stored, err := n.load()
 	switch {
+	case n.pending:
+		// a previous bump failed: retry it
 	case err == nil && stored == newH:
 		return false
 	case err == nil:
 		// changed since clients were last notified
-	case errors.Is(err, os.ErrNotExist):
+	default: // errDigestUnknown
 		changed := restarted
 		if restarted && oldErr == nil {
 			if oldH, herr := xrayClientFacing(oldJSON); herr == nil {
@@ -134,38 +151,69 @@ func (n *subscriptionNotifier) afterApply(newJSON, oldJSON []byte, oldErr error,
 			n.store(newH)
 			return false
 		}
-	default:
-		log.Printf("[xray-sync] WARN: %v — уведомляем подписки на всякий случай", err)
 	}
 	if _, err := withSyncTimeout(func(ctx context.Context) (struct{}, error) { return struct{}{}, n.bump(ctx) }); err != nil {
+		n.pending = true
 		log.Printf("[xray-sync] WARN: subscription_version не увеличен: %v (повтор при следующей синхронизации)", err)
 		return false
 	}
+	n.pending = false
 	n.store(newH)
 	log.Println("[xray-sync] клиентские параметры подписки изменились — subscription_version увеличен")
 	return true
 }
 
+// load returns the digest clients were last notified of: the state file when
+// it holds a valid digest, otherwise what this process stored (known), else
+// errDigestUnknown. An unreadable or corrupt file is logged once per incident.
 func (n *subscriptionNotifier) load() (string, error) {
-	if n.path == "" {
-		if n.mem == "" {
-			return "", os.ErrNotExist
+	if n.path != "" {
+		b, err := os.ReadFile(n.path)
+		switch {
+		case err == nil && isClientFacingDigest(strings.TrimSpace(string(b))):
+			n.readWarned = false
+			return strings.TrimSpace(string(b)), nil
+		case err == nil:
+			n.warnRead(fmt.Errorf("%s: corrupt content", n.path))
+		case !errors.Is(err, os.ErrNotExist):
+			n.warnRead(err)
 		}
-		return n.mem, nil
 	}
-	b, err := os.ReadFile(n.path)
-	if err != nil {
-		return "", err
+	if n.known != "" {
+		return n.known, nil
 	}
-	return strings.TrimSpace(string(b)), nil
+	return "", errDigestUnknown
 }
 
+func (n *subscriptionNotifier) warnRead(err error) {
+	if !n.readWarned {
+		n.readWarned = true
+		log.Printf("[xray-sync] WARN: состояние уведомлений подписки не читается: %v — считаем, что сохранённого digest нет (повторно не логируется)", err)
+	}
+}
+
+// store records h as notified: in memory always, in the state file if possible.
 func (n *subscriptionNotifier) store(h string) {
+	n.known = h
 	if n.path == "" {
-		n.mem = h
 		return
 	}
 	if err := os.WriteFile(n.path, []byte(h+"\n"), 0o600); err != nil {
-		log.Printf("[xray-sync] WARN: %s не записан: %v", n.path, err)
+		if !n.writeWarned {
+			n.writeWarned = true
+			log.Printf("[xray-sync] WARN: %s не записан: %v (digest хранится в памяти процесса)", n.path, err)
+		}
+		return
 	}
+	n.writeWarned = false
+}
+
+// isClientFacingDigest reports whether s looks like a digest of xrayClientFacing
+// (sha256, lower-case hex).
+func isClientFacingDigest(s string) bool {
+	if len(s) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil && s == strings.ToLower(s)
 }

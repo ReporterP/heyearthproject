@@ -151,3 +151,70 @@ func TestSubscriptionDefaultsForAbsentSettings(t *testing.T) {
 		t.Errorf("X-Config-Version = %q, want the default 1", got)
 	}
 }
+
+// REST /api/v1/user/connections: every read (session, access state,
+// subscription_version, config_version, plan, plan servers, options) fails to
+// 503 + Retry-After with a JSON error, never a 200 or a 401/500.
+func TestUserConnectionsFailsOnAnyReadError(t *testing.T) {
+	reads := goldenReads(t, func(t *testing.T) {
+		biz.InvalidateSubscriptionVersionCache()
+		if rec := connectionsRequest(t, goldenJWT(t)); rec.Code != http.StatusOK {
+			t.Fatalf("golden run: %d %q", rec.Code, rec.Body.String())
+		}
+	})
+	if len(reads) < 20 {
+		t.Fatalf("only %d reads observed: %v", len(reads), reads)
+	}
+	for _, read := range reads {
+		t.Run(read, func(t *testing.T) {
+			s := goldenScript()
+			s.fail = read
+			useScriptDB(t, s)
+			biz.InvalidateSubscriptionVersionCache()
+			rec := connectionsRequest(t, goldenJWT(t))
+			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "300" ||
+				!strings.Contains(rec.Body.String(), `"error"`) {
+				t.Fatalf("failed %s: status %d, Retry-After %q, body %.200q — want 503 / 300 / JSON error",
+					read, rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+			}
+			if rec.Header().Get("X-Subscription-Version") != "" || strings.Contains(rec.Body.String(), "script driver") {
+				t.Errorf("failed %s: partial response or SQL details leaked: %q", read, rec.Body.String())
+			}
+		})
+	}
+	// A revoked session is still a 401, not a 503.
+	s := goldenScript()
+	s.queries[1].rows = nil // "session": no row
+	if s.queries[1].name != "session" {
+		t.Fatalf("fixture order changed: %s", s.queries[1].name)
+	}
+	useScriptDB(t, s)
+	if rec := connectionsRequest(t, goldenJWT(t)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session: status %d, want 401", rec.Code)
+	}
+}
+
+// gRPC GetAccessState: a failed read is Unavailable (was Internal), with a
+// fixed message.
+func TestGetAccessStateUnavailableOnReadError(t *testing.T) {
+	call := func() (*heyearth_v1.AccessStateResponse, error) {
+		return (&server{}).GetAccessState(context.Background(), &heyearth_v1.GetAccessStateRequest{UserId: goldenUser})
+	}
+	reads := goldenReads(t, func(t *testing.T) {
+		resp, err := call()
+		if err != nil || !resp.GetCanConnect() {
+			t.Fatalf("golden run: (%v, %v)", resp, err)
+		}
+	})
+	for _, read := range reads {
+		t.Run(read, func(t *testing.T) {
+			s := goldenScript()
+			s.fail = read
+			useScriptDB(t, s)
+			resp, err := call()
+			if status.Code(err) != codes.Unavailable || resp != nil || strings.Contains(err.Error(), "script driver") {
+				t.Fatalf("failed %s: (%v, %v), want Unavailable with a fixed message", read, resp, err)
+			}
+		})
+	}
+}

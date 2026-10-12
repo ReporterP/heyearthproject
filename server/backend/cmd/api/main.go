@@ -573,17 +573,27 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID, err := extractUserFromToken(r)
+	if dbErr, ok := sessionLookupFailure(err); ok {
+		// The session could not be checked (DB failure): temporary, not a 401
+		// that would log the client out.
+		log.Printf("[connections] session lookup failed: %v", dbErr)
+		writeJSONUnavailable(w, "Подключения временно недоступны, попробуйте позже")
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
 
+	// Every read of this response is strict: a failed one answers 503 +
+	// Retry-After (writeJSONUnavailable) before anything is written, never a
+	// 200 with "no access", no plan, a default version or no options.
 	platform := r.URL.Query().Get("platform")
 	access, err := biz.GetUserAccessState(userID, platform)
 	if err != nil {
 		// Keep SQL details server-side; clients get a fixed message.
 		log.Printf("[connections] user %s: access state lookup failed: %v", userID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось получить состояние доступа, попробуйте позже"})
+		writeJSONUnavailable(w, "Не удалось получить состояние доступа, попробуйте позже")
 		return
 	}
 
@@ -591,8 +601,28 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	// transition. Clients compare local-stored value to this; mismatch → toast
 	// "Подписка обновлена" + refetch. Also exposed as response header so a
 	// cheap HEAD/conditional GET can be used in future.
-	subVer := biz.GetSubscriptionVersion()
-	w.Header().Set("X-Subscription-Version", fmt.Sprintf("%d", subVer))
+	subVer, err := biz.SubscriptionVersion()
+	if err != nil {
+		log.Printf("[connections] user %s: %v", userID, err)
+		writeJSONUnavailable(w, "Подключения временно недоступны, попробуйте позже")
+		return
+	}
+	configVersion, err := subscriptionSetting("config_version", "1")
+	if err != nil {
+		log.Printf("[connections] user %s: %v", userID, err)
+		writeJSONUnavailable(w, "Подключения временно недоступны, попробуйте позже")
+		return
+	}
+	// The plan of the user's latest active subscription (nil = none).
+	plan, err := biz.ActiveUserPlan(userID)
+	if err == nil && plan != nil {
+		plan.ServerIDs, err = biz.PlanServerIDs(plan.ID)
+	}
+	if err != nil {
+		log.Printf("[connections] user %s: plan lookup failed: %v", userID, err)
+		writeJSONUnavailable(w, "Подключения временно недоступны, попробуйте позже")
+		return
+	}
 
 	// Build flat fields for backward compatibility with site/app
 	resp := map[string]any{
@@ -600,7 +630,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"can_connect":               access.CanConnect,
 		"is_premium":                access.IsPremium,
 		"traffic_masking_available": access.TrafficMaskingAvailable,
-		"config_version":            biz.GetSettingOrDefault("config_version", "1"),
+		"config_version":            configVersion,
 		"subscription_version":      subVer,
 		// Palma (AmneziaWG) availability — true only for active subs on an
 		// amnezia_wg_enabled plan. Site renders the WG/QR block off this flag;
@@ -609,7 +639,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add plan info to response
-	if plan, err := biz.GetUserPlan(userID); err == nil && plan != nil {
+	if plan != nil {
 		resp["plan"] = map[string]any{
 			"id":                plan.ID,
 			"slug":              plan.Slug,
@@ -619,7 +649,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 			"traffic_limit":     plan.TrafficLimitBytes,
 			"duration_days":     plan.DurationDays,
 		}
-		// GetUserPlan only returns a plan for an active subscription, and
+		// ActiveUserPlan only returns a plan for an active subscription, and
 		// access.CanConnect already encodes the same gate used for connection_options.
 		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
 	}
@@ -629,7 +659,7 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	if access.CanConnect {
 		options, optErr := buildHubConnectionOptions(userID)
 		if optErr != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Подключения временно недоступны, попробуйте позже"})
+			writeJSONUnavailable(w, "Подключения временно недоступны, попробуйте позже")
 			return
 		}
 		resp["connection_options"] = options
@@ -639,6 +669,8 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Set only on the 200: a 503 must not announce a version.
+	w.Header().Set("X-Subscription-Version", fmt.Sprintf("%d", subVer))
 	writeJSON(w, http.StatusOK, resp)
 }
 

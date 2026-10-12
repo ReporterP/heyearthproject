@@ -123,7 +123,11 @@ func (s *server) GetAccessState(ctx context.Context, req *heyearth_v1.GetAccessS
 	}
 	access, err := biz.GetUserAccessState(userID, req.GetPlatform())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get access state: %v", err)
+		// A failed read is temporary (GetUserAccessState never turns it into
+		// "no access"): Unavailable like GetConnectionBundle, SQL details stay
+		// server-side.
+		log.Printf("[access-state] user %s: access state lookup failed: %v", userID, err)
+		return nil, status.Error(codes.Unavailable, "failed to load access state")
 	}
 	return accessToProto(access), nil
 }

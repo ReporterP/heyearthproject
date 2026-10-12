@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -158,6 +161,8 @@ func goldenScript() *scriptDB {
 		},
 		queries: []scriptQuery{
 			{name: "token", match: "WHERE subscribe_token", cols: []string{"user_id"}, rows: [][]driver.Value{{goldenUser}}},
+			{name: "session", match: "SELECT id FROM user_sessions", cols: []string{"id"}, rows: [][]driver.Value{{int64(1)}}},
+			{name: "subscription-version", match: "key='subscription_version'", cols: []string{"value"}, rows: [][]driver.Value{{"42"}}},
 			{name: "user", match: "role, COALESCE(is_blocked, FALSE)", cols: []string{"id", "user_id", "telegram_id", "username", "password_hash", "role", "is_blocked", "preferred_platform", "locale", "vless_uuid"},
 				rows: [][]driver.Value{{int64(7), goldenUser, nil, "", "", "user", false, "", "ru", goldenUUID}}},
 			{name: "subscription", match: "COALESCE(p.price_rub > 200, FALSE)", cols: []string{"id", "plan_id", "name", "premium", "slug", "price", "valid_until"},
@@ -324,4 +329,52 @@ func TestConnectionBundleGolden(t *testing.T) {
 		t.Fatalf("unscripted queries: %v", s.unknown)
 	}
 	checkGolden(t, "connection_bundle", bundleJSON(t, resp))
+}
+
+// goldenJWT is a user token for goldenUser signed with the test JWT_SECRET
+// (the session row is answered by the "session" query of goldenScript).
+func goldenJWT(t *testing.T) string {
+	t.Helper()
+	t.Setenv("JWT_SECRET", "golden-test-secret")
+	enc := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	now := time.Now()
+	input := enc(map[string]string{"alg": "HS256", "typ": "JWT"}) + "." +
+		enc(map[string]any{"user_id": goldenUser, "user_db_id": 7, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix()})
+	mac := hmac.New(sha256.New, []byte("golden-test-secret"))
+	mac.Write([]byte(input))
+	return input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func connectionsRequest(t *testing.T, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/user/connections?platform=android", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handleUserConnections(rec, req)
+	return rec
+}
+
+func TestUserConnectionsGolden(t *testing.T) {
+	s := goldenScript()
+	useScriptDB(t, s)
+	token := goldenJWT(t)
+	rec := connectionsRequest(t, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if len(s.unknown) > 0 {
+		t.Fatalf("unscripted queries: %v", s.unknown)
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, rec.Body.Bytes(), "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	pretty.WriteString("\nX-Subscription-Version: " + rec.Header().Get("X-Subscription-Version") + "\n")
+	checkGolden(t, "user_connections", pretty.Bytes())
 }

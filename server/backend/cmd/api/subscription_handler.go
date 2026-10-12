@@ -31,6 +31,25 @@ func writeSubscriptionUnavailable(w http.ResponseWriter, msg string) {
 	w.Write([]byte(msg))
 }
 
+// writeJSONUnavailable is writeSubscriptionUnavailable for the JSON API
+// (/api/v1/user/connections): 503 + Retry-After + {"error": msg}. Clients
+// must read it as "try again later", never as "no access / no profile".
+func writeJSONUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Retry-After", "300")
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": msg})
+}
+
+// sessionLookupFailure reports whether a token check failed only because its
+// session could not be read (biz.SessionLookupError) and returns the database
+// error for the log.
+func sessionLookupFailure(err error) (error, bool) {
+	var sle *biz.SessionLookupError
+	if errors.As(err, &sle) {
+		return sle.Err, true
+	}
+	return nil, false
+}
+
 func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)

@@ -199,6 +199,28 @@ func ListPlanServersContext(ctx context.Context) (map[int][]int, error) {
 	return out, nil
 }
 
+// PlanServerIDs is the strict form of Plan.ServerIDs: the plan's servers
+// (ascending, nil for none), or an error when the read failed.
+func PlanServerIDs(planID int) ([]int, error) {
+	rows, err := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1 ORDER BY server_id", planID)
+	if err != nil {
+		return nil, fmt.Errorf("plan %d servers: %w", planID, err)
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("plan %d servers scan: %w", planID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("plan %d servers: %w", planID, err)
+	}
+	return ids, nil
+}
+
 func getPlanServerIDs(planID int) []int {
 	rows, err := db.DB.Query("SELECT server_id FROM plan_servers WHERE plan_id = $1 ORDER BY server_id", planID)
 	if err != nil {
