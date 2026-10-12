@@ -133,8 +133,9 @@ type ActiveVlessClient struct {
 // Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
 // plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
 // The quota cutoff (ListQuotaExceededUserIDs) and the cabinet traffic card judge
-// the SAME subscription row: keep best_plan_id below in step with
-// effectiveSubOrderBy (traffic.go).
+// the SAME subscription row: best_plan_id below is ordered by effectiveSubOrderBy
+// (traffic.go), the one ordering every "which subscription is the user's" query
+// shares.
 func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 	// Premium derivation: any active subscription = premium (groups removed).
 	rows, err := db.DB.Query(`
@@ -144,7 +145,7 @@ func ListActiveVlessClients() ([]ActiveVlessClient, error) {
 		         (SELECT sub.plan_id FROM user_subscriptions sub
 		          WHERE sub.user_id = u.id AND sub.plan_id IS NOT NULL
 		            AND sub.valid_until > CURRENT_TIMESTAMP
-		          ORDER BY sub.valid_until DESC LIMIT 1),
+		          ORDER BY ` + effectiveSubOrderBy("sub") + ` LIMIT 1),
 		         0
 		       ) AS best_plan_id
 		FROM users u

@@ -156,7 +156,7 @@ func SyncXrayConfig() error {
 	// automatically.
 	quota, qerr := loadQuotaCutoff()
 	if qerr != nil {
-		log.Printf("[xray-sync] WARN failed to load quota-exceeded set: %v — continuing without cutoff", qerr)
+		log.Printf("[xray-sync] WARN failed to load quota state: %v — continuing without cutoff", qerr)
 	}
 	if notice := quota.disabledNotice(); notice != "" {
 		log.Print(notice)

@@ -155,17 +155,22 @@ func PeriodBreakdownByMonth(userUUID string, from, to time.Time) ([]MonthBucket,
 	return out, nil
 }
 
-// effectiveSubOrderBy orders a user's ACTIVE subscriptions (alias "us") so the
-// first row is the user's effective subscription: the one whose plan the user
-// actually runs on. It is the row ListActiveVlessClients picks as best_plan_id
-// (plan_id IS NOT NULL, latest valid_until), extended with two tie-breakers:
-// a legacy plan-less subscription is considered only when no subscription has
-// a plan, and equal valid_until falls back to the newest row so the choice is
-// deterministic. A user may hold several active subscriptions at once (a paid
-// plan plus a not-yet-expired free trial); the quota, the cabinet traffic card
-// and the plan routing must all be judged against this ONE row, otherwise a
-// paid unlimited plan gets cut off by the trial's 10 GB limit.
-const effectiveSubOrderBy = `(us.plan_id IS NOT NULL) DESC, us.valid_until DESC, us.id DESC`
+// effectiveSubOrderBy returns the ORDER BY list that puts a user's effective
+// subscription first among their ACTIVE subscriptions, for the table alias given
+// (a trusted SQL identifier, always a literal at the call sites). The effective
+// subscription is the one whose plan the user actually runs on: the row
+// ListActiveVlessClients picks as best_plan_id (plan_id IS NOT NULL, latest
+// valid_until), extended with two tie-breakers: a legacy plan-less subscription is
+// considered only when no subscription has a plan, and equal valid_until falls
+// back to the newest row so the choice is deterministic. A user may hold several
+// active subscriptions at once (a paid plan plus a not-yet-expired free trial); the
+// quota, the cabinet traffic card and the plan routing must all be judged against
+// this ONE row, otherwise a paid unlimited plan gets cut off by the trial's 10 GB
+// limit. Every query that picks "the" subscription of a user builds its ORDER BY
+// from this function (alias "us" here, "sub" in ListActiveVlessClients).
+func effectiveSubOrderBy(alias string) string {
+	return fmt.Sprintf("(%[1]s.plan_id IS NOT NULL) DESC, %[1]s.valid_until DESC, %[1]s.id DESC", alias)
+}
 
 // EffectiveLimit returns the effective per-cycle quota for the user's active
 // subscription. Returns 0 if user has no active sub or the plan is unlimited.
@@ -177,7 +182,7 @@ func EffectiveLimit(userDBID int) (limit int64, startedAt sql.NullTime, err erro
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY `+effectiveSubOrderBy+`
+		ORDER BY `+effectiveSubOrderBy("us")+`
 		LIMIT 1
 	`, userDBID).Scan(&limit, &startedAt)
 	if err == sql.ErrNoRows {
@@ -227,7 +232,7 @@ func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
 				SELECT us.plan_id, us.started_at, us.traffic_limit
 				FROM user_subscriptions us
 				WHERE us.user_id = u.id AND us.valid_until > NOW()
-				ORDER BY ` + effectiveSubOrderBy + `
+				ORDER BY ` + effectiveSubOrderBy("us") + `
 				LIMIT 1
 			) eff ON TRUE
 			LEFT JOIN plans p ON p.id = eff.plan_id
@@ -332,7 +337,7 @@ func BuildTrafficResponse(userDBID int, userUUID string) (TrafficResponse, error
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY `+effectiveSubOrderBy+`
+		ORDER BY `+effectiveSubOrderBy("us")+`
 		LIMIT 1
 	`, userDBID).Scan(&startedAt, &validUntil, &planName, &planLimit, &subLimit)
 

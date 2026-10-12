@@ -61,6 +61,12 @@ func StartTrafficStatsCollector() {
 }
 
 func collectTrafficStats() {
+	// A flip of quota_cutoff_enabled is applied at once, not with the 5-minute
+	// periodic sync. Polled here, before the early returns below, because this
+	// is the only loop that ticks every minute whether or not Xray is reachable
+	// and has traffic (checkTrafficLimits runs only on windows with traffic).
+	watchQuotaCutoffFlag()
+
 	// Быстрая проверка доступности
 	conn, err := net.DialTimeout("tcp", xrayStatsAPIAddr, 2*time.Second)
 	if err != nil {
@@ -211,7 +217,9 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 // traffic in the next full stats window and forces a restart (≈1–2 min,
 // checkRevokedStillOnline). Repeated calls while the user stays over quota are
 // no-ops: the config no longer changes. With the cutoff disarmed the sync would
-// change nothing, so over-quota users are only logged.
+// change nothing, so over-quota users are only logged, each at most once per
+// quotaWarnEvery (plus once whenever the set changes); the per-sync summary line
+// of SyncXrayConfig keeps the count visible.
 func checkTrafficLimits() {
 	quota, err := loadQuotaCutoff()
 	if err != nil {
@@ -219,12 +227,15 @@ func checkTrafficLimits() {
 		return
 	}
 	if len(quota.over) == 0 {
+		quotaWarnings.due(quota.over, time.Now(), quotaWarnEvery) // forget users who left the set
 		return
 	}
-	for userID := range quota.over {
-		if quota.enabled {
+	if quota.enabled {
+		for userID := range quota.over {
 			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика", userID)
-		} else {
+		}
+	} else {
+		for _, userID := range quotaWarnings.due(quota.over, time.Now(), quotaWarnEvery) {
 			log.Printf("[traffic-stats] ⚠ Пользователь %s превысил cycle-лимит трафика (cutoff отключён: %s=false)", userID, quotaCutoffSetting)
 		}
 	}

@@ -89,6 +89,13 @@ type Hysteria2AuthResult struct {
 //   - User has an active (valid_until > NOW) subscription whose plan contains
 //     'hysteria2' in allowed_protocols AND has express_enabled = TRUE.
 //   - Traffic limit (if any) is not exceeded.
+//
+// The cycle quota here (IsCycleExceeded) is enforced independently of the
+// app_settings flag quota_cutoff_enabled, which only arms the xray_sync cutoff
+// for Reality/XHTTP. This is pre-existing behaviour and intentionally unchanged:
+// gating it would silently let over-quota Express users back in. The subscription
+// that decides the quota is the same effective one as in the xray cutoff
+// (effectiveSubOrderBy).
 func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	password = strings.TrimSpace(password)
 	if password == "" || len(password) != 64 {
