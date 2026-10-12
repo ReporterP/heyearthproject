@@ -15,6 +15,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/email"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -72,8 +73,8 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		Promocode        string `json:"promocode"`
 		ReturnURL        string `json:"return_url"`
 		Email            string `json:"email"`
-		SaveCard         *bool  `json:"save_card"`           // nil = use plan default, true/false = explicit
-		ConfirmationType string `json:"confirmation_type"`   // "embedded" (widget) | "redirect" (default)
+		SaveCard         *bool  `json:"save_card"`         // nil = use plan default, true/false = explicit
+		ConfirmationType string `json:"confirmation_type"` // "embedded" (widget) | "redirect" (default)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -272,8 +273,10 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Защита уровень 1: IP whitelist
 	if !yookassa.IsFromYooKassa(r) {
-		log.Printf("[yookassa-webhook] REJECTED: IP not in whitelist (RemoteAddr=%s XFF=%s)",
-			r.RemoteAddr, r.Header.Get("X-Forwarded-For"))
+		// "client" is the address the decision was made on (middleware.ExtractIP); the raw
+		// headers are logged for forensics only (a forged X-Forwarded-For shows up here).
+		log.Printf("[yookassa-webhook] REJECTED: client %s not in whitelist (RemoteAddr=%s X-Real-IP=%q XFF=%q)",
+			middleware.ExtractIP(r), r.RemoteAddr, r.Header.Get("X-Real-IP"), r.Header.Get("X-Forwarded-For"))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

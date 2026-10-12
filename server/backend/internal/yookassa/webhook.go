@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/heyearth/backend/internal/middleware"
 )
 
 // IP whitelist для webhook-нотификаций ЮKassa.
@@ -42,51 +44,31 @@ func init() {
 }
 
 // IsFromYooKassa проверяет IP источника webhook по whitelist.
-// Использует X-Forwarded-For и X-Real-IP (для nginx reverse proxy) + r.RemoteAddr.
-// Если env YOOKASSA_WEBHOOK_ALLOW_LOCAL=true — также принимаем 127.0.0.1 (для тестов через curl/test shop).
+//
+// The source IP is middleware.ExtractIP, the API's single client-IP trust model: X-Real-IP or
+// the right-most X-Forwarded-For entry only for a request nginx proxied to the main listener
+// (loopback peer on a TrustProxyHeaders server), RemoteAddr otherwise. No other
+// X-Forwarded-For entry is ever looked at: everything left of the right-most one was written by
+// the client, so accepting "any entry in the whitelist" let anybody through with
+// `X-Forwarded-For: <a YooKassa address>`.
+//
+// Если env YOOKASSA_WEBHOOK_ALLOW_LOCAL=true — также принимаем loopback (для тестов через
+// curl/test shop прямо на Hub). This is judged on the extracted client IP, so a request that
+// came through nginx counts as its real client, not as nginx's 127.0.0.1.
 func IsFromYooKassa(r *http.Request) bool {
-	allowLocal := strings.EqualFold(os.Getenv("YOOKASSA_WEBHOOK_ALLOW_LOCAL"), "true")
-	for _, candidate := range extractClientIPs(r) {
-		ip := net.ParseIP(candidate)
-		if ip == nil {
-			continue
-		}
-		if allowLocal && ip.IsLoopback() {
+	ip := net.ParseIP(middleware.ExtractIP(r))
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() && strings.EqualFold(os.Getenv("YOOKASSA_WEBHOOK_ALLOW_LOCAL"), "true") {
+		return true
+	}
+	for _, ipnet := range parsedYookassaNets {
+		if ipnet.Contains(ip) {
 			return true
-		}
-		for _, ipnet := range parsedYookassaNets {
-			if ipnet.Contains(ip) {
-				return true
-			}
 		}
 	}
 	return false
-}
-
-// extractClientIPs возвращает кандидатов на IP клиента из заголовков и RemoteAddr.
-func extractClientIPs(r *http.Request) []string {
-	var ips []string
-	// X-Forwarded-For: client, proxy1, proxy2 — берём все
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for _, p := range strings.Split(xff, ",") {
-			if v := strings.TrimSpace(p); v != "" {
-				ips = append(ips, v)
-			}
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		ips = append(ips, strings.TrimSpace(xri))
-	}
-	// RemoteAddr = "ip:port"
-	if ra := r.RemoteAddr; ra != "" {
-		host, _, err := net.SplitHostPort(ra)
-		if err != nil {
-			ips = append(ips, ra)
-		} else {
-			ips = append(ips, host)
-		}
-	}
-	return ips
 }
 
 // ParseNotification парсит тело webhook-запроса.

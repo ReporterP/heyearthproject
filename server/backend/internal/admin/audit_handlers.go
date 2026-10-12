@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 )
 
 // ─────────────────────── Audit Log ───────────────────────
@@ -27,8 +29,17 @@ type auditLogEntry struct {
 	CreatedAt     string          `json:"created_at"`
 }
 
+// auditLogExec runs the audit-log INSERT; a variable so tests can capture the row.
+var auditLogExec = func(query string, args ...any) (sql.Result, error) {
+	return db.DB.Exec(query, args...)
+}
+
 // WriteAuditLog записывает действие в audit log.
 // Вызывать из handler после успешного действия.
+//
+// The IP is middleware.ExtractIP, the API's single client-IP trust model (proxy headers only
+// from nginx on the main listener, the right-most X-Forwarded-For entry at most). The left-most
+// X-Forwarded-For entry used before is whatever the client wrote, i.e. a forged audit trail.
 func WriteAuditLog(r *http.Request, action, targetType, targetID string, details any) {
 	claims, _ := ClaimsFromContext(r.Context())
 	adminID := 0
@@ -38,14 +49,14 @@ func WriteAuditLog(r *http.Request, action, targetType, targetID string, details
 		adminUsername = claims.Username
 	}
 
-	ip := extractClientIP(r)
+	ip := middleware.ExtractIP(r)
 
 	var detailsJSON []byte
 	if details != nil {
 		detailsJSON, _ = json.Marshal(details)
 	}
 
-	_, err := db.DB.Exec(`
+	_, err := auditLogExec(`
 		INSERT INTO admin_audit_log (admin_id, admin_username, action, target_type, target_id, details, ip_address)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, adminID, adminUsername, action, targetType, targetID, detailsJSON, ip)
@@ -123,16 +134,4 @@ func ListAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 		Page:     p.Page,
 		PageSize: p.PageSize,
 	})
-}
-
-func extractClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	host, _, _ := strings.Cut(r.RemoteAddr, ":")
-	return host
 }

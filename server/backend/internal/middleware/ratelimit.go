@@ -114,9 +114,11 @@ func proxyHeadersTrusted(ctx context.Context) bool {
 	return trusted
 }
 
-// ExtractIP returns the client IP used as the rate-limit key. See the trust model above: the
-// proxy headers are honoured only on a TrustProxyHeaders listener and only from a loopback
-// peer; otherwise the result is the host part of RemoteAddr.
+// ExtractIP returns the client IP of r. It is the API's one client-IP helper: the rate-limit
+// key here, the YooKassa webhook allowlist (internal/yookassa) and the admin audit log
+// (internal/admin) all use it; do not parse X-Real-IP / X-Forwarded-For anywhere else. See the
+// trust model above: the proxy headers are honoured only on a TrustProxyHeaders listener and
+// only from a loopback peer; otherwise the result is the host part of RemoteAddr.
 func ExtractIP(r *http.Request) string {
 	peer := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
