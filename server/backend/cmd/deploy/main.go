@@ -1590,12 +1590,19 @@ if [ -f /etc/hysteria/server.yaml ]; then
 else
   echo "config: absent"
 fi
-echo '--- UDP listeners ---'
-ss -ulnp 2>/dev/null | grep -E ':50(4|0)' || echo 'no UDP listeners on 50000-50100/50443'
-echo '--- iptables nat ---'
-iptables -t nat -L PREROUTING -n 2>/dev/null | grep -E '5000[0-9]:5010[0-9]|50443' || echo 'no UDP redirect rule found'
-echo '--- auth backend probe ---'
-curl -s -w 'http=%{http_code} time=%{time_total}s' -X POST http://127.0.0.1:8000/internal/hysteria2/auth -d '{"auth":"_probe_"}' 2>&1 | head -2`, false)
+echo '--- UDP listener ---'
+ss -ulnp 2>/dev/null | grep ':50443 ' || echo 'no UDP listener on :50443'
+echo '--- iptables nat (port hopping 30000:65000 -> :50443, dst-type LOCAL) ---'
+iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- '--to-destination :50443|--to-ports 50443' || echo 'no port-hop DNAT rule found'
+echo '--- auth backend probe (auth-only listener 127.0.0.1:`+egressHyAuthPort+`) ---'
+grep -E '^ *url:' /etc/hysteria/server.yaml 2>/dev/null | head -1 | sed 's/^ */server.yaml auth /' || true
+HY_AUTH_CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST `+egressHyAuthURL+` -d '{"auth":"_probe_"}' 2>/dev/null || true)
+if [ -n "$HY_AUTH_CODE" ] && [ "$HY_AUTH_CODE" != 000 ]; then
+  echo "`+egressHyAuthURL+`: http=$HY_AUTH_CODE (отвечает)"
+else
+  echo "`+egressHyAuthURL+`: НЕ отвечает — API без слушателя 8001 (нужен 4ab930e+); старый путь на 8000:"
+  curl -s -m 5 -w ' http=%{http_code}' -X POST http://127.0.0.1:`+egressAPIPort+`/internal/hysteria2/auth -d '{"auth":"_probe_"}' 2>&1 | head -2
+fi`, false)
 	fmt.Println(hy2Out)
 
 	// Express (Hysteria2) — DB-driven runtime view: tunnel mode, bound exit,
