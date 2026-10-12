@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/heyearth/backend/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -118,15 +119,84 @@ func TestExitScriptsSecrets(t *testing.T) {
 	if regexp.MustCompile(`echo "[^"\n]*\$SS_PASSWORD`).MatchString(exit) {
 		t.Error("the exit script prints the SS password")
 	}
-	hub := hubHy2ClientScript("203.0.113.7", "5", "s3cret")
-	u, c, m := strings.Index(hub, "umask 077\n"), strings.Index(hub, "cat > /opt/heyearth/hysteria/client-5.yaml"), strings.Index(hub, "chmod 600 /opt/heyearth/hysteria/client-5.yaml\n")
-	if u < 0 || c < 0 || m < 0 || u > c || c > m {
-		t.Errorf("client-5.yaml must be created under umask 077 and chmod 600 (umask %d, cat %d, chmod %d)", u, c, m)
+	hub := hubHy2ClientScript("203.0.113.7", 5, "s3cret")
+	u, p := strings.Index(hub, "umask 077\n"), strings.Index(hub, "put_file /opt/heyearth/hysteria/client-5.yaml 600 ")
+	if u < 0 || p < 0 || u > p {
+		t.Errorf("client-5.yaml must be written under umask 077 with mode 600 (umask %d, put_file %d)", u, p)
 	}
-	// the unit and the rest still render with the right ids
-	for _, w := range []string{"/etc/systemd/system/hysteria2-client-5.service", "ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-5.yaml", "PORT=$((1088 + 5))"} {
-		if !strings.Contains(hub, w) {
-			t.Errorf("hub script lacks %q", w)
+	// the tunnel password only travels inside the base64 payload, never through the shell
+	if strings.Contains(hub, "s3cret") {
+		t.Error("the tunnel password appears in the shell script")
+	}
+	// the Hub client is exactly the template heyearth-api writes (hopping, hopInterval, ACL)
+	if got := payloadFrom(t, hub, "/opt/heyearth/hysteria/client-5.yaml"); got != config.HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093) {
+		t.Errorf("client yaml is not config.HubHysteriaClientYAML:\n%s", got)
+	}
+	if got := payloadFrom(t, hub, "/etc/systemd/system/hysteria2-client-5.service"); got != config.HubHysteriaClientUnit(5, "203.0.113.7") {
+		t.Errorf("unit is not config.HubHysteriaClientUnit:\n%s", got)
+	}
+	for _, w := range []string{"server: 203.0.113.7:" + config.ExitHopRange + "\n", "    hopInterval: 30s\n", "acl:\n  inline:\n", "listen: 127.0.0.1:1093\n"} {
+		if !strings.Contains(config.HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093), w) {
+			t.Errorf("client template lacks %q", w)
 		}
+	}
+}
+
+// A re-run on an unchanged exit: the Hub client is restarted only when its files changed or it
+// is down, and the tunnel row (and heyearth-api) only when the credentials changed.
+func TestExitRerunDoesNotInterrupt(t *testing.T) {
+	want := exitTunnelCreds{UUID: "u", PublicKey: "pk", ShortID: "s", SSPassword: "p", Protocol: "hysteria2", Port: 50443, SNI: "microsoft.com"}
+	if a := decideExitDBAction(want, true, want); a != exitDBKeep || exitDBNeedsResync(a) {
+		t.Errorf("unchanged credentials: action %d, resync %v", a, exitDBNeedsResync(a))
+	}
+	for _, mut := range []func(*exitTunnelCreds){
+		func(c *exitTunnelCreds) { c.UUID = "x" }, func(c *exitTunnelCreds) { c.PublicKey = "x" }, func(c *exitTunnelCreds) { c.ShortID = "x" },
+		func(c *exitTunnelCreds) { c.SSPassword = "x" }, func(c *exitTunnelCreds) { c.Protocol = "vless" }, func(c *exitTunnelCreds) { c.Port = 443 },
+		func(c *exitTunnelCreds) { c.SNI = "x" },
+	} {
+		cur := want
+		mut(&cur)
+		if a := decideExitDBAction(cur, true, want); a != exitDBUpdate || !exitDBNeedsResync(a) {
+			t.Errorf("changed credentials %+v: action %d", cur, a)
+		}
+	}
+	if a := decideExitDBAction(exitTunnelCreds{}, false, want); a != exitDBInsert || !exitDBNeedsResync(a) {
+		t.Errorf("new exit: action %d", a)
+	}
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	// the restart block of the Hub client script, with systemctl stubbed
+	hub := hubHy2ClientScript("203.0.113.7", 5, "s3cret")
+	i, j := strings.Index(hub, "systemctl daemon-reload\n"), strings.Index(hub, "systemctl status hysteria2-client-5")
+	block := hub[i:j]
+	for _, c := range []struct{ changed, active, wantRestart string }{{"0", "0", "1"}, {"0", "1", "0"}, {"1", "1", "1"}} {
+		out, _ := runBash(t, `PUT_CHANGED=`+c.changed+`; ACTIVE=`+c.active+`
+systemctl() { case "$1" in restart) echo RESTARTED ;; is-active) [ "$ACTIVE" = 1 ] ;; esac; }
+sleep() { :; }
+`+block)
+		if got := strings.Contains(out, "RESTARTED"); got != (c.wantRestart == "1") {
+			t.Errorf("changed=%s active=%s: restarted=%v\n%s", c.changed, c.active, got, out)
+		}
+	}
+}
+
+// The exit accepts the Hub clients' hopping range: the shared nft hop script and the firewall.
+func TestExitNodeSetupScriptPortHopping(t *testing.T) {
+	s := exitNodeSetupScript("203.0.113.7", 8443)
+	hop := strings.Index(s, strings.TrimSuffix(config.ExitPortHopScript, "\n"))
+	if hop < 0 {
+		t.Fatal("the exit script does not install config.ExitPortHopScript")
+	}
+	if hy := strings.Index(s, "systemctl restart hysteria2\n"); hy < 0 || hy > hop {
+		t.Error("port hopping must follow the hysteria server setup")
+	}
+	for _, w := range []string{"ufw allow 20000:50000/udp", "iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT"} {
+		if !strings.Contains(s, w) {
+			t.Errorf("exit firewall lacks %q", w)
+		}
+	}
+	if strings.Contains(s, "%!") {
+		t.Error("format verb mismatch in the exit script")
 	}
 }

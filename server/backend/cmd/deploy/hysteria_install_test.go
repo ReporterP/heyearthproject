@@ -244,19 +244,15 @@ func TestHysteriaInstallSpliced(t *testing.T) {
 		{"exitNodeSetupScript", exitNodeSetupScript("203.0.113.7", 8443), false, []string{
 			"set -e\n", `echo "IP: 203.0.113.7"`,
 		}},
-		{"hubHy2ClientScript", hubHy2ClientScript("203.0.113.7", "5", "s3cret"), true, []string{
+		{"hubHy2ClientScript", hubHy2ClientScript("203.0.113.7", 5, "s3cret"), true, []string{
 			"set -e\n",
-			"# Конфиг клиента для exit-ноды 203.0.113.7 (порт 1088+5)",
-			"cat > /opt/heyearth/hysteria/client-5.yaml",
-			"server: 203.0.113.7:50443",
-			"auth: s3cret",
-			"PORT=$((1088 + 5))",
-			"/etc/systemd/system/hysteria2-client-5.service",
-			"Description=Hysteria2 Client for 203.0.113.7 (HeYearth)",
-			"systemctl restart hysteria2-client-5\n",
+			"# Клиент к exit-ноде 203.0.113.7 (SOCKS 127.0.0.1:1093)",
+			"put_file /opt/heyearth/hysteria/client-5.yaml 600 ",
+			"put_file /etc/systemd/system/hysteria2-client-5.service 644 ",
+			"  systemctl restart hysteria2-client-5\n",
 			"if ! systemctl is-active --quiet hysteria2-client-5; then\n",
-			"hysteria2-client-5 не активен после рестарта (см. journalctl -u hysteria2-client-5)",
-			`echo "Hysteria2 client for 203.0.113.7: port $PORT"`,
+			"hysteria2-client-5 не активен (см. journalctl -u hysteria2-client-5)",
+			`echo "Hysteria2 client for 203.0.113.7: port 1093"`,
 		}},
 	}
 	for _, tc := range tests {

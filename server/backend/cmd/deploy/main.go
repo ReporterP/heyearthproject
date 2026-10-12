@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2087,6 +2088,10 @@ sleep 2
 echo "[hy2] Hysteria2 сервис запущен"
 systemctl status hysteria2 --no-pager | head -5 || true
 
+# ── 5b. Port hopping: UDP %s → :50443 (клиенты Hub прыгают по этому диапазону) ──
+%s
+echo "[hy2] port hopping UDP %s → :50443 (nftables-hysteria)"
+
 # ── 6. Firewall: все протоколы ──
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 22/tcp 2>/dev/null || true
@@ -2094,6 +2099,7 @@ if command -v ufw >/dev/null 2>&1; then
   ufw allow 443/udp 2>/dev/null || true
   ufw allow 10443/tcp 2>/dev/null || true
   ufw allow 50443/udp 2>/dev/null || true
+  ufw allow %s/udp 2>/dev/null || true
   ufw --force enable 2>/dev/null || true
   echo "[fw] UFW правила добавлены"
 else
@@ -2101,6 +2107,7 @@ else
   iptables -I INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null || true
   iptables -I INPUT -p tcp --dport 10443 -j ACCEPT 2>/dev/null || true
   iptables -I INPUT -p udp --dport 50443 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p udp --dport %s -j ACCEPT 2>/dev/null || true
   echo "[fw] iptables правила добавлены"
 fi
 
@@ -2118,7 +2125,9 @@ echo "Short ID: $SHORT_ID"
 echo "SS Password: (не печатается; /opt/heyearth/state/reality-keys.json)"
 echo "SNI: microsoft.com"
 echo "================================="
-`, exitXrayGuardRules(exitIP, mtprotoPort), config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP, mtprotoPort), "\n"), exitIP)
+`, exitXrayGuardRules(exitIP, mtprotoPort), config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP, mtprotoPort), "\n"),
+		config.ExitHopRange, strings.TrimSuffix(config.ExitPortHopScript, "\n"), config.ExitHopRange,
+		strings.ReplaceAll(config.ExitHopRange, "-", ":"), strings.ReplaceAll(config.ExitHopRange, "-", ":"), exitIP)
 }
 
 // exitNodeSetupError says why exitNodeSetupScript did not complete: the script exited
@@ -2129,70 +2138,42 @@ func exitNodeSetupError(out string, runErr error) error {
 }
 
 // hubHy2ClientScript renders the Hub-side script that runs a Hysteria2 client to the exit
-// node as a local SOCKS5 on 127.0.0.1:1088+serverID. It installs the hysteria binary only if
-// the Hub has none (config.HysteriaEnsureScript): an upgrade here would hit every Hub client
-// on its next restart while other exits may still run an older server. Pure, so tests can
-// render it without SSH.
-func hubHy2ClientScript(exitIP, serverID, tunnelSSPass string) string {
-	return fmt.Sprintf(`set -e
-mkdir -p /opt/heyearth/hysteria
+// node as a local SOCKS5 on 127.0.0.1:1088+serverID, from the same templates heyearth-api uses
+// (config.HubHysteriaClientYAML: port hopping across the exit's range, hopInterval, client-side
+// ACL; config.HubHysteriaClientUnit). Files go through put_file (base64 payload: the tunnel
+// password never touches the shell; client-<id>.yaml 0600) and the client is restarted only
+// when a file changed or it is not running, so a re-run does not interrupt the tunnel. It
+// installs the hysteria binary only if the Hub has none (config.HysteriaEnsureScript): an
+// upgrade here would hit every Hub client on its next restart while other exits may still run
+// an older server. Prints HUB_CLIENT_CHANGED=0|1. Pure, so tests can render it without SSH.
+func hubHy2ClientScript(exitIP string, serverID int, auth string) string {
+	id := strconv.Itoa(serverID)
+	unit := "hysteria2-client-" + id
+	port := strconv.Itoa(1088 + serverID)
+	return `set -e
+mkdir -p ` + config.HubHysteriaDir + `
 
 # Hysteria2 binary: только если на Hub его нет (обновление Hub — deploy --setup-hysteria2-hub)
-%s
-# Конфиг клиента для exit-ноды %s (порт 1088+%s); в нём пароль туннеля — создаётся 0600
+` + config.HysteriaEnsureScript() + opsPutFileFunc + `# Клиент к exit-ноде ` + exitIP + ` (SOCKS 127.0.0.1:` + port + `): общий шаблон с API (port hopping, ACL)
 umask 077
-cat > /opt/heyearth/hysteria/client-%s.yaml <<'HYEOF'
-server: %s:50443
-
-auth: %s
-
-tls:
-  insecure: true
-
-quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-
-socks5:
-  listen: 127.0.0.1:PLACEHOLDER_PORT
-HYEOF
-
-# Подставляем порт (1088 + server_id)
-PORT=$((1088 + %s))
-sed -i "s|PLACEHOLDER_PORT|$PORT|g" /opt/heyearth/hysteria/client-%s.yaml
-chmod 600 /opt/heyearth/hysteria/client-%s.yaml
-umask 022
-
-# systemd сервис
-cat > /etc/systemd/system/hysteria2-client-%s.service <<SVCEOF
-[Unit]
-Description=Hysteria2 Client for %s (HeYearth)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-%s.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-systemctl daemon-reload
-systemctl enable hysteria2-client-%s
-systemctl restart hysteria2-client-%s
-sleep 2
-systemctl status hysteria2-client-%s --no-pager | head -5
-if ! systemctl is-active --quiet hysteria2-client-%s; then
-  echo "[hy2] ERROR: hysteria2-client-%s не активен после рестарта (см. journalctl -u hysteria2-client-%s)" >&2
+` + putFileCalls([]opsFile{{config.HubHysteriaDir + "/client-" + id + ".yaml", "600", config.HubHysteriaClientYAML(serverID, exitIP, auth, 1088+serverID)}}) + `umask 022
+` + putFileCalls([]opsFile{{"/etc/systemd/system/" + unit + ".service", "644", config.HubHysteriaClientUnit(serverID, exitIP)}}) + `systemctl daemon-reload
+systemctl enable ` + unit + ` >/dev/null 2>&1
+if [ "$PUT_CHANGED" = 1 ] || ! systemctl is-active --quiet ` + unit + `; then
+  systemctl restart ` + unit + `
+  sleep 2
+  echo "[hy2] ` + unit + ` (пере)запущен"
+else
+  echo "[hy2] ` + unit + `: конфиг не изменился и клиент активен — без перезапуска"
+fi
+systemctl status ` + unit + ` --no-pager | head -5 || true
+if ! systemctl is-active --quiet ` + unit + `; then
+  echo "[hy2] ERROR: ` + unit + ` не активен (см. journalctl -u ` + unit + `)" >&2
   exit 1
 fi
-echo "Hysteria2 client for %s: port $PORT"
-`, config.HysteriaEnsureScript(), exitIP, serverID, serverID, exitIP, tunnelSSPass, serverID, serverID, serverID, serverID, exitIP, serverID, serverID, serverID, serverID, serverID, serverID, serverID, exitIP)
+echo "Hysteria2 client for ` + exitIP + `: port ` + port + `"
+echo "HUB_CLIENT_CHANGED=$PUT_CHANGED"
+`
 }
 
 // parseExitNodeAddr validates --setup-exit-node: an IP address, optionally with a port (the
@@ -2305,35 +2286,54 @@ print(k.get('ssPassword', ''))
 	}
 
 	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
+	want := exitTunnelCreds{UUID: tunnelUUID, PublicKey: tunnelPubKey, ShortID: tunnelShortID, SSPassword: tunnelSSPass,
+		Protocol: "hysteria2", Port: 50443, SNI: "microsoft.com"}
+	action := exitDBUpdate // unknown state: behave as before (write and resync)
 	dbConn, closeDB, err := openDBTunnel(mainClient, dbURL)
 	if err != nil {
 		fmt.Printf("[exit-node] Ошибка подключения к БД через SSH-туннель: %v\n", err)
 		fmt.Println("[exit-node] Добавьте данные в админку вручную")
 	} else {
 		defer closeDB()
-		// Upsert: update if exists, insert if not.
-		_, err = dbConn.Exec(`
-			UPDATE servers SET
-			  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
-			  tunnel_ss_password = $4, tunnel_sni = 'microsoft.com',
-			  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
-			  tunnel_status = 'unknown', status = COALESCE(NULLIF(status, ''), 'active')
-			WHERE ip_address = $5`,
-			tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP)
-		if err != nil {
-			fmt.Printf("[exit-node] Ошибка UPDATE: %v\n", err)
-		}
-		_, err = dbConn.Exec(`
-			INSERT INTO servers (name, ip_address, country_code, is_exit_node,
-			                     tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
-			                     tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
-			SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, 'microsoft.com', 'unknown', 'active'
-			WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = $1)`,
-			exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass)
-		if err != nil {
-			fmt.Printf("[exit-node] Ошибка INSERT: %v\n", err)
+		var cur exitTunnelCreds
+		rerr := dbConn.QueryRow(`SELECT COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''), COALESCE(tunnel_short_id, ''),
+			       COALESCE(tunnel_ss_password, ''), COALESCE(tunnel_protocol, ''), COALESCE(tunnel_port, 0), COALESCE(tunnel_sni, '')
+			  FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP).
+			Scan(&cur.UUID, &cur.PublicKey, &cur.ShortID, &cur.SSPassword, &cur.Protocol, &cur.Port, &cur.SNI)
+		if rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
+			fmt.Printf("[exit-node] Ошибка чтения записи exit-ноды: %v\n", rerr)
 		} else {
-			fmt.Println("[exit-node] БД обновлена")
+			action = decideExitDBAction(cur, rerr == nil, want)
+		}
+		switch action {
+		case exitDBKeep:
+			fmt.Println("[exit-node] credentials туннеля в БД не изменились — tunnel_status не сбрасываю, heyearth-api не перезапускаю")
+		case exitDBUpdate:
+			// The tunnel changed: the health monitor re-checks it (tunnel_status unknown) and xray resyncs.
+			if _, err := dbConn.Exec(`
+				UPDATE servers SET
+				  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
+				  tunnel_ss_password = $4, tunnel_sni = 'microsoft.com',
+				  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
+				  tunnel_status = 'unknown', status = COALESCE(NULLIF(status, ''), 'active')
+				WHERE ip_address = $5`,
+				tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP); err != nil {
+				fmt.Printf("[exit-node] Ошибка UPDATE: %v\n", err)
+			} else {
+				fmt.Println("[exit-node] БД обновлена (credentials туннеля изменились)")
+			}
+		case exitDBInsert:
+			if _, err := dbConn.Exec(`
+				INSERT INTO servers (name, ip_address, country_code, is_exit_node,
+				                     tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
+				                     tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
+				SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, 'microsoft.com', 'unknown', 'active'
+				WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = $1)`,
+				exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass); err != nil {
+				fmt.Printf("[exit-node] Ошибка INSERT: %v\n", err)
+			} else {
+				fmt.Println("[exit-node] БД обновлена (новая exit-нода)")
+			}
 		}
 	}
 
@@ -2347,19 +2347,19 @@ print(k.get('ssPassword', ''))
 
 	// ID сервера из БД задаёт порт клиента (1088+id) и имя юнита. Не угадываем: чужой id
 	// перезаписал бы клиент другой exit-ноды.
-	serverID := ""
+	serverID := 0
 	if dbConn != nil {
 		var id int
 		var status string
 		row := dbConn.QueryRow(`SELECT id, COALESCE(status, '') FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP)
 		if row.Scan(&id, &status) == nil {
-			serverID = fmt.Sprintf("%d", id)
+			serverID = id
 			if status != "active" && status != "online" {
 				fmt.Printf("[exit-node] статус exit-ноды в БД оставлен как есть: %q (повторный запуск не включает выключенную ноду; включить — в админке)\n", status)
 			}
 		}
 	}
-	if serverID == "" {
+	if serverID <= 0 {
 		log.Fatalf("[exit-node] ОШИБКА: не удалось узнать id exit-ноды %s в БД — клиент Hysteria2 на Hub не настраиваю (порт 1088+id). "+
 			"Проверьте доступ к БД и запись в servers, затем повторите --setup-exit-node.", exitIP)
 	}
@@ -2368,15 +2368,21 @@ print(k.get('ssPassword', ''))
 	hy2ClientScript := hubHy2ClientScript(exitIP, serverID, tunnelSSPass)
 
 	// check=true (the script runs under set -e): a failed client setup must not end in "Готово".
-	hy2Out, err := runSSH(mainClient, hy2ClientScript, true)
+	hy2Out, err := runSSHBash(mainClient, "hub hysteria client", hy2ClientScript, true)
 	fmt.Println(hy2Out)
 	if err != nil {
 		log.Fatalf("[exit-node] ОШИБКА: клиент Hysteria2 на Hub для %s не настроен: %v\n"+
 			"[exit-node] Exit-нода уже в БД; heyearth-api не перезапущен. Исправьте причину и повторите --setup-exit-node.", exitIP, err)
 	}
 
-	fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")
-	_, _ = runSSH(mainClient, "systemctl restart heyearth-api", false)
+	// With a single exit, an API restart takes xray's and Bamboo's exit away for 30–60 s while the
+	// tunnel is re-checked: only when the tunnel credentials actually changed.
+	if exitDBNeedsResync(action) {
+		fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")
+		_, _ = runSSH(mainClient, "systemctl restart heyearth-api", false)
+	} else {
+		fmt.Println("[exit-node] heyearth-api не перезапускаю: credentials туннеля не изменились")
+	}
 
 	fmt.Printf("\n[exit-node] ✅ Готово! Exit-нода %s полностью настроена.\n", exitIP)
 	fmt.Printf("Протоколы: Hysteria2 (UDP:50443) + SS+WS (TCP:443) + VLESS (TCP:10443)\n")

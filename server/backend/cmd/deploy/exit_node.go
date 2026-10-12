@@ -24,3 +24,34 @@ func hubMTProtoPort(hub *ssh.Client) int {
 	}
 	return config.ParseMTProtoPort(out)
 }
+
+// exitTunnelCreds are the tunnel fields --setup-exit-node writes to servers.
+type exitTunnelCreds struct {
+	UUID, PublicKey, ShortID, SSPassword, Protocol string
+	Port                                           int
+	SNI                                            string
+}
+
+type exitDBAction int
+
+const (
+	exitDBKeep   exitDBAction = iota // the row already carries these credentials: nothing to write
+	exitDBUpdate                     // the row exists with other credentials
+	exitDBInsert                     // no row for this exit yet
+)
+
+// decideExitDBAction: a re-run on an unchanged exit writes nothing (no tunnel_status reset).
+func decideExitDBAction(cur exitTunnelCreds, found bool, want exitTunnelCreds) exitDBAction {
+	switch {
+	case !found:
+		return exitDBInsert
+	case cur == want:
+		return exitDBKeep
+	default:
+		return exitDBUpdate
+	}
+}
+
+// exitDBNeedsResync: heyearth-api is restarted (xray resync, tunnel re-check) only when the
+// tunnel row was written.
+func exitDBNeedsResync(a exitDBAction) bool { return a != exitDBKeep }
