@@ -11,7 +11,9 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -35,6 +37,19 @@ import (
 // check (daemon up, port listening, TCP probe) still reports healthy.
 func MTProtoFrontingDomain() string {
 	return strings.TrimSpace(GetSettingOrDefault("mtproto_fronting_domain", ""))
+}
+
+// MTProtoFrontingDomainStrict is MTProtoFrontingDomain with a strict read:
+// "" only when the key is absent or blank, an error when the read failed.
+func MTProtoFrontingDomainStrict() (string, error) {
+	v, err := GetSetting("mtproto_fronting_domain")
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read mtproto_fronting_domain: %w", err)
+	}
+	return strings.TrimSpace(v), nil
 }
 
 // BuildMTProtoSecret assembles an mtg fake-TLS secret: the "ee" marker, 16

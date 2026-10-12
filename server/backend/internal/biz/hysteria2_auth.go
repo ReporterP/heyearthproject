@@ -46,19 +46,38 @@ func GetUserHysteria2Password(userID string) (string, error) {
 	return pw, nil
 }
 
-// GetHysteria2ObfsPassword returns the shared Salamander obfuscation password.
-// Generated lazily on first call and persisted in app_settings.
+// GetHysteria2ObfsPassword returns the shared Salamander obfuscation password,
+// "" when it cannot be read or created (see Hysteria2ObfsPassword; callers
+// treat "" as unavailable).
 func GetHysteria2ObfsPassword() string {
-	pw := GetSettingOrDefault("hysteria2_obfs_password", "")
-	if pw != "" {
-		return pw
-	}
-	pw, err := generateHysteria2Password()
+	pw, err := Hysteria2ObfsPassword()
 	if err != nil {
 		return ""
 	}
-	_ = SetSetting("hysteria2_obfs_password", pw)
 	return pw
+}
+
+// Hysteria2ObfsPassword returns the shared Salamander obfuscation password.
+// Generated lazily on first call and persisted in app_settings — but only when
+// the key is really absent (sql.ErrNoRows or blank): a failed read is returned
+// as an error. Generating on a read failure (the former GetSettingOrDefault
+// path) could overwrite the live password with a new one, breaking every
+// Hysteria2 client until the server config and the cached profiles caught up.
+func Hysteria2ObfsPassword() (string, error) {
+	pw, err := GetSetting("hysteria2_obfs_password")
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read hysteria2_obfs_password: %w", err)
+	}
+	if pw = strings.TrimSpace(pw); pw != "" {
+		return pw, nil
+	}
+	if pw, err = generateHysteria2Password(); err != nil {
+		return "", err
+	}
+	if err := SetSetting("hysteria2_obfs_password", pw); err != nil {
+		return "", fmt.Errorf("persist hysteria2_obfs_password: %w", err)
+	}
+	return pw, nil
 }
 
 func generateHysteria2Password() (string, error) {

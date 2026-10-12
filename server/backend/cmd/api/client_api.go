@@ -137,9 +137,10 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 	}
 	access, err := biz.GetUserAccessState(userID, req.GetPlatform())
 	if err != nil {
-		// Keep SQL details server-side; clients get a fixed message.
+		// Keep SQL details server-side; clients get a fixed message. A failed
+		// read is temporary: Unavailable, and the app keeps its cached options.
 		log.Printf("[connection-bundle] user %s: access state lookup failed: %v", userID, err)
-		return nil, status.Error(codes.Internal, "failed to load access state")
+		return nil, status.Error(codes.Unavailable, "failed to load access state")
 	}
 	if access.IsBlocked {
 		return nil, status.Error(codes.PermissionDenied, "user is blocked")
@@ -162,34 +163,147 @@ func (s *server) GetConnectionBundle(ctx context.Context, req *heyearth_v1.GetCo
 	}, nil
 }
 
-// buildHubConnectionOptions returns connection options pointing to the main server.
-// In hub-and-spoke model, all users connect to the main server only.
-// Каждый пользователь получает уникальные подключения (per-user VLESS UUID).
-// Only VLESS is exposed to users now. SOCKS/HTTP user-facing inbounds removed (see spec 2026-05-22-socks5-removal-mtproto-perk-design.md).
-func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, error) {
-	mainServerHost := biz.GetSettingOrDefault("main_server_host", "")
+// ─────────────── Inputs of the subscription profiles: strict reads ───────────────
+// Every client profile (gRPC GetConnectionBundle, REST /api/v1/user/connections,
+// the Happ / V2Ray / Clash subscription link) is built from one
+// hubConnectionInputs. Clients REPLACE their cached profile with whatever a
+// successful answer contains, so a read that fails must fail the request (503 /
+// Unavailable, the client keeps its cache) — never fall back to a default and
+// serve a profile without VLESS or Bamboo entries, with a default SNI or host.
+// An absent or blank setting still yields its documented default.
+
+// hubConnectionInputs is everything the connection options and the Clash
+// profile of one user are built from.
+type hubConnectionInputs struct {
+	mainServerHost string // main_server_host ("" = no Hub profiles)
+	vlessUUID      string // per-user VLESS UUID, never the server master UUID
+	plan           *biz.Plan
+	canVLESS       bool // plan allows vless (no active plan = allowed)
+
+	realityPubKey  string // reality_public_key ("" = no VLESS profiles)
+	realityShortID string // reality_short_id
+	realitySNI     string // reality_sni_domain (biz.DefaultRealitySNI)
+	realityFlow    string // reality_flow (xtls-rprx-vision)
+	xhttpPort      string // xhttp_port (2443)
+
+	cdnEnabled bool   // cdn_enabled == "true"
+	cdnHost    string // cdn_host (cdn.hiearth.ru)
+	cdnPath    string // cdn_xh_path (/cdn-xh)
+
+	canHysteria2 bool   // the Express plan gate (biz.CanUseHysteria2)
+	hy2Password  string // per-user Hysteria2 password (only with canHysteria2)
+	obfsPassword string // shared Salamander password (only with canHysteria2)
+	hysteria2SNI string // hub_main_server_host (hiearth.ru): the cert domain
+}
+
+// subscriptionSetting reads an app_settings value for a client profile:
+// default only for an absent/blank key, an error for a failed read.
+func subscriptionSetting(key, def string) (string, error) {
+	return withSyncTimeout(func(ctx context.Context) (string, error) {
+		return settingForSync(ctx, biz.GetSettingContext, key, def)
+	})
+}
+
+// loadHubConnectionInputs reads the inputs of userID's profiles. The first
+// failed read is returned; nothing is defaulted on an error.
+func loadHubConnectionInputs(userID string) (hubConnectionInputs, error) {
+	var in hubConnectionInputs
+	var err error
+	if in.mainServerHost, err = subscriptionSetting("main_server_host", ""); err != nil {
+		return in, err
+	}
 
 	// Per-user UUID. NEVER fall back to the server master UUID
 	// (app_settings.vless_uuid): it bypasses per-user accounting, quota and
 	// revocation (H7). A lookup failure is an error for the caller.
-	userVlessUUID, err := biz.GetUserVlessUUID(userID)
-	if err != nil {
+	if in.vlessUUID, err = biz.GetUserVlessUUID(userID); err != nil {
 		log.Printf("[connection-options] user %s: vless uuid lookup failed: %v", userID, err)
-		return nil, fmt.Errorf("vless uuid: %w", err)
+		return in, fmt.Errorf("vless uuid: %w", err)
 	}
 
-	// Check user's plan for protocol restrictions
-	canVLESS := biz.IsProtocolAllowed(userID, "vless")
+	// The user's plan: protocol restrictions and the Express speeds (Clash).
+	if in.plan, err = biz.ActiveUserPlan(userID); err != nil {
+		log.Printf("[connection-options] user %s: plan lookup failed: %v", userID, err)
+		return in, err
+	}
+	in.canVLESS = biz.PlanAllowsProtocol(in.plan, "vless")
+
+	for _, r := range []struct {
+		dst      *string
+		key, def string
+	}{
+		{&in.realityPubKey, "reality_public_key", ""},
+		{&in.realityShortID, "reality_short_id", ""},
+		{&in.realitySNI, "reality_sni_domain", biz.DefaultRealitySNI},
+		{&in.realityFlow, "reality_flow", "xtls-rprx-vision"},
+		{&in.xhttpPort, "xhttp_port", "2443"},
+	} {
+		if *r.dst, err = subscriptionSetting(r.key, r.def); err != nil {
+			return in, err
+		}
+	}
+	cdn, err := subscriptionSetting("cdn_enabled", "false")
+	if err != nil {
+		return in, err
+	}
+	if in.cdnEnabled = cdn == "true"; in.cdnEnabled {
+		if in.cdnHost, err = subscriptionSetting("cdn_host", "cdn.hiearth.ru"); err != nil {
+			return in, err
+		}
+		if in.cdnPath, err = subscriptionSetting("cdn_xh_path", "/cdn-xh"); err != nil {
+			return in, err
+		}
+	}
+
+	// Same plan gate as the auth backend. A DB failure is an error, not "no
+	// Bamboo": the caller answers 503 so clients keep their cached profiles.
+	if in.canHysteria2, err = biz.CanUseHysteria2(userID); err != nil {
+		log.Printf("[connection-options] user %s: hysteria2 gate failed: %v", userID, err)
+		return in, err
+	}
+	if in.canHysteria2 {
+		if in.hy2Password, err = biz.GetUserHysteria2Password(userID); err != nil {
+			log.Printf("[connection-options] user %s: hysteria2 password failed: %v", userID, err)
+			return in, err
+		}
+		if in.obfsPassword, err = biz.Hysteria2ObfsPassword(); err != nil {
+			return in, err
+		}
+		// SNI MUST match the Hysteria2 server's TLS cert (see hubConnectionOptions).
+		if in.hysteria2SNI, err = subscriptionSetting("hub_main_server_host", "hiearth.ru"); err != nil {
+			return in, err
+		}
+	}
+	return in, nil
+}
+
+// buildHubConnectionOptions returns connection options pointing to the main server.
+// In hub-and-spoke model, all users connect to the main server only.
+// Каждый пользователь получает уникальные подключения (per-user VLESS UUID).
+// Only VLESS is exposed to users now. SOCKS/HTTP user-facing inbounds removed (see spec 2026-05-22-socks5-removal-mtproto-perk-design.md).
+// Any failed read is an error (see loadHubConnectionInputs): callers answer 503
+// / Unavailable.
+func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, error) {
+	in, err := loadHubConnectionInputs(userID)
+	if err != nil {
+		return nil, err
+	}
+	return hubConnectionOptions(in), nil
+}
+
+// hubConnectionOptions builds the connection options from in. Pure.
+func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOption {
+	mainServerHost, userVlessUUID, canVLESS := in.mainServerHost, in.vlessUUID, in.canVLESS
 
 	var opts []*heyearth_v1.ConnectionOption
 
 	if mainServerHost != "" && userVlessUUID != "" {
 		// 1. VLESS Reality (максимальная защита от DPI) — only if plan allows vless
-		realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
-		realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
-		realitySNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
+		realityPubKey := in.realityPubKey
+		realityShortID := in.realityShortID
+		realitySNI := in.realitySNI
 		if realityPubKey != "" && canVLESS {
-			flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
+			flow := in.realityFlow
 			flowParam := ""
 			if flow != "" {
 				flowParam = "&flow=" + flow
@@ -258,7 +372,7 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443, 2 uTLS variants.
 			// Pre-Hysteria2 working URI shape — no spx, no fragment.
-			xhttpPort := biz.GetSettingOrDefault("xhttp_port", "2443")
+			xhttpPort := in.xhttpPort
 			// Same rationale as realityFPs above (research 2026-05-27) — chrome + firefox
 			// to avoid ios/safari XTLS regressions, especially XHTTP-specific #5918.
 			xhttpFPs := []string{"chrome", "firefox"}
@@ -291,9 +405,9 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 		// Toggle-gated via app_settings.cdn_enabled. Priority 10 — displayed
 		// last; happ users try faster Reality profiles first, fall back to
 		// Облако if blocked.
-		if canVLESS && biz.GetSettingOrDefault("cdn_enabled", "false") == "true" {
-			cdnHost := biz.GetSettingOrDefault("cdn_host", "cdn.hiearth.ru")
-			cdnPath := biz.GetSettingOrDefault("cdn_xh_path", "/cdn-xh")
+		if canVLESS && in.cdnEnabled {
+			cdnHost := in.cdnHost
+			cdnPath := in.cdnPath
 			if cdnHost != "" {
 				cdnLabel := "☁️ Облако (CDN)"
 				cdnURI := fmt.Sprintf(
@@ -319,26 +433,16 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 	//              (fixed bandwidth, ignores loss-induced backoff — beats operator
 	//              QoS that throttles UDP via packet loss injection)
 	// Both labels contain "only WiFi" — happ natively hides them on cellular.
-	canHysteria2 := false
-	if mainServerHost != "" {
-		// Same plan gate as the auth backend. A DB failure is an error, not "no Bamboo":
-		// the caller answers 503 so clients keep their cached profiles.
-		if canHysteria2, err = biz.CanUseHysteria2(userID); err != nil {
-			log.Printf("[connection-options] user %s: hysteria2 gate failed: %v", userID, err)
-			return nil, err
-		}
-	}
-	if canHysteria2 {
-		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
-		obfsPassword := biz.GetHysteria2ObfsPassword()
+	if mainServerHost != "" && in.canHysteria2 {
+		hy2Password, obfsPassword := in.hy2Password, in.obfsPassword
 		// SNI MUST match the Hysteria2 server's TLS cert. The server uses a
 		// Let's Encrypt cert for hiearth.ru (SAN: hiearth.ru, www, admin — NO IP).
 		// main_server_host became the bare IP 45.150.39.236 on 2026-05-26, so using
 		// it as the URI sni with insecure=0 made every QUIC TLS handshake fail
 		// ("Бамбук не отвечает"). Connect host stays the IP (no DNS dependency),
 		// but sni uses the cert domain from hub_main_server_host.
-		hysteria2SNI := biz.GetSettingOrDefault("hub_main_server_host", "hiearth.ru")
-		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
+		hysteria2SNI := in.hysteria2SNI
+		if hy2Password != "" && obfsPassword != "" {
 			// Two Бамбук variants — identical except for the bandwidth params that
 			// flip Hysteria2's congestion control:
 			//   BBR (no bandwidth) — adaptive, learns network
@@ -375,7 +479,7 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 		}
 	}
 
-	return opts, nil
+	return opts
 }
 
 // ─────────────────────── Subscriptions & Payments ───────────────────────

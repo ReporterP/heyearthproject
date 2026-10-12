@@ -15,6 +15,7 @@ package biz
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -119,8 +120,25 @@ func buildHappDeeplinkFromProfile(profile happRoutingProfile) string {
 // Возвращает "" если для плана нет ни MTProto-IP, ни direct-сервисов.
 //
 // Если biz.GetDirectRouteServicesForPlan вернёт ошибку — логируем и обрабатываем
-// как «нет сервисов» (никогда не валим subscription endpoint из-за direct-routes).
+// как «нет сервисов». The subscription endpoint uses BuildHappRoutingDeeplinkForPlanStrict
+// instead: Happ caches the routing profile, and one built without the plan's
+// services would replace the good one until the next refresh.
 func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
+	deeplink, err := buildHappRoutingDeeplinkForPlan(planID, mtprotoIPs, false)
+	if err != nil {
+		log.Printf("[happ-routing] %v", err)
+	}
+	return deeplink
+}
+
+// BuildHappRoutingDeeplinkForPlanStrict is BuildHappRoutingDeeplinkForPlan that
+// returns a failed read (direct-route services, MTProto fronting domain) as an
+// error instead of building a profile without those entries.
+func BuildHappRoutingDeeplinkForPlanStrict(planID int, mtprotoIPs []string) (string, error) {
+	return buildHappRoutingDeeplinkForPlan(planID, mtprotoIPs, true)
+}
+
+func buildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string, strict bool) (string, error) {
 	directIPs := make([]string, 0, len(mtprotoIPs))
 	for _, ip := range mtprotoIPs {
 		if ip == "" {
@@ -150,6 +168,9 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 
 	if planID > 0 {
 		services, err := GetDirectRouteServicesForPlan(planID)
+		if err != nil && strict {
+			return "", fmt.Errorf("direct-route services of plan %d: %w", planID, err)
+		}
 		if err != nil {
 			log.Printf("[happ-routing] GetDirectRouteServicesForPlan(plan=%d) error: %v", planID, err)
 		} else {
@@ -188,7 +209,14 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 	// /32 entry can no longer match — so without this the Telegram-proxy flow
 	// is pushed into the VPN tunnel and reaches the node the long way round
 	// (client → Hub → tunnel → exit → back to itself), or not at all.
-	if fronting := MTProtoFrontingDomain(); fronting != "" {
+	fronting := MTProtoFrontingDomain()
+	if strict {
+		var err error
+		if fronting, err = MTProtoFrontingDomainStrict(); err != nil {
+			return "", err
+		}
+	}
+	if fronting != "" {
 		directSites = append(directSites, "domain:"+fronting)
 	}
 
@@ -219,7 +247,7 @@ func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
 		BlockSites:     []string{},
 		BlockIp:        []string{},
 		DomainStrategy: "AsIs",
-	})
+	}), nil
 }
 
 // BuildHappRoutingDeeplink — backwards-compat обёртка. Принимает уже отформатированные

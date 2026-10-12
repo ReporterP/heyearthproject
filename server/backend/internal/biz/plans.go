@@ -116,6 +116,16 @@ func ListAllPlans() ([]Plan, error) {
 
 // GetPlanByID returns a single plan.
 func GetPlanByID(id int) (*Plan, error) {
+	p, err := loadPlan(id)
+	if err != nil {
+		return nil, err
+	}
+	p.ServerIDs = getPlanServerIDs(p.ID)
+	return p, nil
+}
+
+// loadPlan is GetPlanByID without ServerIDs. sql.ErrNoRows for an unknown id.
+func loadPlan(id int) (*Plan, error) {
 	var p Plan
 	err := db.DB.QueryRow(`
 		SELECT id, slug, name, description, price_rub, duration_days, traffic_limit_bytes,
@@ -136,7 +146,6 @@ func GetPlanByID(id int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.ServerIDs = getPlanServerIDs(p.ID)
 	return &p, nil
 }
 
@@ -276,16 +285,48 @@ func replacePlanServers(planID int, serverIDs []int) {
 // a tie-break.
 func GetUserPlan(userID string) (*Plan, error) {
 	var planID sql.NullInt64
-	err := db.DB.QueryRow(`
-		SELECT us.plan_id FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
-		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&planID)
+	err := db.DB.QueryRow(userPlanQuery, userID).Scan(&planID)
 	if err != nil || !planID.Valid {
 		return nil, fmt.Errorf("no active plan")
 	}
 	return GetPlanByID(int(planID.Int64))
+}
+
+// userPlanQuery is the plan id of GetUserPlan / ActiveUserPlan (u.user_id = $1).
+var userPlanQuery = `
+		SELECT us.plan_id FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		ORDER BY us.valid_until DESC LIMIT 1
+	`
+
+// ActiveUserPlan is GetUserPlan with a strict error contract, for callers that
+// must not mistake a failed read for "no plan" (the subscription builders):
+// (nil, nil) when the user has no active subscription with a plan (or the plan
+// row is gone), an error only when a read failed. GetUserPlan reports every
+// failure as "no active plan", which IsProtocolAllowed reads as "free tier:
+// allow everything" and the Clash builder as "default Express speeds".
+// ServerIDs is not loaded.
+func ActiveUserPlan(userID string) (*Plan, error) {
+	var planID sql.NullInt64
+	err := db.DB.QueryRow(userPlanQuery, userID).Scan(&planID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("active plan: %w", err)
+	}
+	if !planID.Valid {
+		return nil, nil
+	}
+	p, err := loadPlan(int(planID.Int64))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("plan %d: %w", planID.Int64, err)
+	}
+	return p, nil
 }
 
 // IsProtocolAllowed checks if a protocol is available in the user's plan.
@@ -293,6 +334,16 @@ func IsProtocolAllowed(userID, protocol string) bool {
 	plan, err := GetUserPlan(userID)
 	if err != nil {
 		return true // no plan = free tier = allow all (backward compat)
+	}
+	return PlanAllowsProtocol(plan, protocol)
+}
+
+// PlanAllowsProtocol is the protocol gate of IsProtocolAllowed for an already
+// loaded plan; a nil plan (no active plan) is the free tier and allows all
+// (backward compat).
+func PlanAllowsProtocol(plan *Plan, protocol string) bool {
+	if plan == nil {
+		return true
 	}
 	for _, p := range plan.AllowedProtocols {
 		if p == "all" || strings.EqualFold(p, protocol) {

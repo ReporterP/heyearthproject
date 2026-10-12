@@ -195,7 +195,17 @@ func runLoopProbe() {
 		return
 	}
 	entry, site := monitorEntryHost(), monitorSiteHost()
-	sni := biz.GetSettingOrDefault("reality_sni_domain", "apple.com")
+	// The SNI the Hub's Reality inbound accepts; absent = the shared default the
+	// xray config and the subscriptions use. A failed read skips the probe: a
+	// handshake with a guessed SNI would report a working entry as down.
+	sni, err := settingOrEmpty(biz.GetSetting, "reality_sni_domain")
+	if err != nil {
+		logLoopProbeSkipped(fmt.Sprintf("SNI не прочитан: %v", err))
+		return
+	}
+	if sni == "" {
+		sni = biz.DefaultRealitySNI
+	}
 	var problems []string
 	if err := probeSiteHealth(dialer, entry, site); err != nil {
 		problems = append(problems, fmt.Sprintf("сайт https://%s/api/v1/health: %v", site, err))

@@ -686,6 +686,13 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 			tag := fmt.Sprintf("exit-%d", node.ID)
 			healthyExit[tag] = true
 			// Weighted: duplicate tag by load_weight for proportional distribution.
+			// NB (verified in Xray-core 26.3.27, app/proxyman/outbound Manager.Select):
+			// balancer selectors are tag PREFIXES and every outbound is listed once
+			// (break per tag), so the duplicates do not weight anything, and a
+			// selector "exit-2" also matches "exit-20".."exit-29". There is no exact
+			// or regex form; unambiguous selectors need other outbound tags (e.g.
+			// "exit-2." with selector "exit-2."), which the stats/probe code also
+			// uses — left as is, see the report of 2026-10-12.
 			w := node.LoadWeight
 			if w < 1 {
 				w = 1

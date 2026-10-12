@@ -77,13 +77,19 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем connection options (per-user)
-	options, err := buildHubConnectionOptions(userID)
+	// Every read of the profile happens BEFORE any header is written, and any
+	// failed read answers 503: the client keeps its cached profile. A 200 built
+	// from a failed read (no VLESS/Bamboo entries, a default SNI or host, a
+	// routing profile without the plan's services) would replace a good cached
+	// profile until the next refresh.
+	in, err := loadHubConnectionInputs(userID)
 	if err != nil {
 		// 503 keeps the client's cached profiles; never substitute another UUID.
+		log.Printf("[subscribe] user %s: profile inputs: %v", userID, err)
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
+	options := hubConnectionOptions(in)
 	if len(options) == 0 {
 		writeSubscriptionUnavailable(w, "no connections available")
 		return
@@ -91,41 +97,28 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	format := r.URL.Query().Get("format")
 
-	// Build the Clash profile before any header is written: if the per-user
-	// UUID cannot be resolved the client must get a clean 503 (and keep its
-	// cached profile), not a 200 with an empty "# error" body.
 	var clashConfig string
 	if format == "clash" {
-		clashConfig, err = buildClashConfig(userID)
-		if err != nil {
-			writeSubscriptionUnavailable(w, "temporarily unavailable")
-			return
-		}
+		clashConfig = clashProfile(in)
 	}
 
-	// Common headers for all formats — see spec
-	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
-	configVersion := biz.GetSettingOrDefault("config_version", "1")
-	w.Header().Set("X-Config-Version", configVersion)
-	w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(userID))
-	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
-	w.Header().Set("Profile-Title", "HiEarth")
-	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
-	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
-	// Routing-Enable: 1 — we DO want Happ's routing rules to apply, because
-	// the subscription body ships a `happ://routing/onadd/<b64>` profile with
-	// DirectIp exclusions for our MTProto-proxy IPs. Without these exclusions,
-	// when a user enables both VPN and Telegram's MTProto-proxy, the Telegram
-	// → MTProto-proxy connection loops through the VPN tunnel and breaks.
-	w.Header().Set("Routing-Enable", "1")
-
-	// Dynamic announce shown in Happ as a clickable row below the progress bar.
-	// Happ requires `base64:` prefix for non-ASCII content per their docs
-	// https://www.happ.su/main/dev-docs/app-management — Cyrillic + emoji break
-	// the URL parser otherwise (manifesting as "URL подписки не валидна" on iOS).
-	if announceText, announceURL := buildSubscriptionAnnounce(userID); announceText != "" {
-		w.Header().Set("Announce", "base64:"+base64.StdEncoding.EncodeToString([]byte(announceText)))
-		w.Header().Set("Announce-Url", announceURL)
+	configVersion, err := subscriptionSetting("config_version", "1")
+	if err != nil {
+		log.Printf("[subscribe] user %s: %v", userID, err)
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
+		return
+	}
+	userinfo, err := buildSubscriptionUserinfo(userID)
+	if err != nil {
+		log.Printf("[subscribe] user %s: %v", userID, err)
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
+		return
+	}
+	announceText, announceURL, err := buildSubscriptionAnnounce(userID)
+	if err != nil {
+		log.Printf("[subscribe] user %s: %v", userID, err)
+		writeSubscriptionUnavailable(w, "temporarily unavailable")
+		return
 	}
 
 	// Build URI list — prepend a Happ routing profile deeplink if we have
@@ -145,21 +138,30 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 
 	var uris []string
 	if wantsHappRouting {
-		mtprotoIPs, mtErr := biz.ListMTProtoExitIPs()
-		if mtErr != nil {
-			log.Printf("[subscribe] ListMTProtoExitIPs error: %v (continuing with no MTProto direct-IPs)", mtErr)
-			mtprotoIPs = nil
+		// Happ caches the routing profile too: any failed read is a 503, not a
+		// profile without the MTProto IPs or the plan's direct-route services.
+		mtprotoIPs, err := biz.ListMTProtoExitIPs()
+		if err != nil {
+			log.Printf("[subscribe] user %s: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
 		}
 		// Plan of the user's effective subscription: the plan the Hub routes the
 		// user by (best_plan_id of ListActiveVlessClients), so the deeplink's
-		// direct-route services match the Hub's per-plan rules. Errors are
-		// non-fatal — planID stays 0, BuildHappRoutingDeeplinkForPlan handles that.
-		planID, planErr := biz.EffectivePlanID(userID)
-		if planErr != nil {
-			log.Printf("[subscribe] EffectivePlanID(%s): %v (routing deeplink without plan services)", userID, planErr)
-			planID = 0
+		// direct-route services match the Hub's per-plan rules. 0 = no plan.
+		planID, err := biz.EffectivePlanID(userID)
+		if err != nil {
+			log.Printf("[subscribe] user %s: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
 		}
-		if deeplink := biz.BuildHappRoutingDeeplinkForPlan(planID, mtprotoIPs); deeplink != "" {
+		deeplink, err := biz.BuildHappRoutingDeeplinkForPlanStrict(planID, mtprotoIPs)
+		if err != nil {
+			log.Printf("[subscribe] user %s: happ routing profile: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+		if deeplink != "" {
 			uris = append(uris, deeplink)
 		}
 	}
@@ -167,6 +169,30 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		if opt.Uri != "" {
 			uris = append(uris, opt.Uri)
 		}
+	}
+
+	// Common headers for all formats — see spec
+	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
+	w.Header().Set("X-Config-Version", configVersion)
+	w.Header().Set("Subscription-Userinfo", userinfo)
+	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
+	w.Header().Set("Profile-Title", "HiEarth")
+	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
+	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+	// Routing-Enable: 1 — we DO want Happ's routing rules to apply, because
+	// the subscription body ships a `happ://routing/onadd/<b64>` profile with
+	// DirectIp exclusions for our MTProto-proxy IPs. Without these exclusions,
+	// when a user enables both VPN and Telegram's MTProto-proxy, the Telegram
+	// → MTProto-proxy connection loops through the VPN tunnel and breaks.
+	w.Header().Set("Routing-Enable", "1")
+
+	// Dynamic announce shown in Happ as a clickable row below the progress bar.
+	// Happ requires `base64:` prefix for non-ASCII content per their docs
+	// https://www.happ.su/main/dev-docs/app-management — Cyrillic + emoji break
+	// the URL parser otherwise (manifesting as "URL подписки не валидна" on iOS).
+	if announceText != "" {
+		w.Header().Set("Announce", "base64:"+base64.StdEncoding.EncodeToString([]byte(announceText)))
+		w.Header().Set("Announce-Url", announceURL)
 	}
 
 	switch format {
@@ -196,34 +222,38 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildClashConfig генерирует Clash/ClashMeta YAML конфиг.
-// Returns an error when the per-user UUID cannot be resolved; the caller must
-// answer 503 rather than ship a placeholder profile that would overwrite the
-// client's cached one.
+// Returns an error when any input cannot be read (loadHubConnectionInputs);
+// the caller must answer 503 rather than ship a placeholder or degraded
+// profile that would overwrite the client's cached one.
 func buildClashConfig(userID string) (string, error) {
-	host := biz.GetSettingOrDefault("main_server_host", "hiearth.ru")
-	vlessUUID, err := biz.GetUserVlessUUID(userID)
+	in, err := loadHubConnectionInputs(userID)
 	if err != nil {
-		log.Printf("[subscribe] user %s: vless uuid error: %v", userID, err)
-		return "", fmt.Errorf("vless uuid: %w", err)
-	}
-
-	// Check protocol permissions for this user's plan
-	canVLESS := biz.IsProtocolAllowed(userID, "vless")
-	canHysteria2, err := biz.CanUseHysteria2(userID)
-	if err != nil {
-		log.Printf("[subscribe] user %s: hysteria2 gate failed: %v", userID, err)
 		return "", err
 	}
+	return clashProfile(in), nil
+}
+
+// clashProfile builds the Clash/ClashMeta YAML from in. Pure.
+func clashProfile(in hubConnectionInputs) string {
+	host := in.mainServerHost
+	if host == "" {
+		host = "hiearth.ru"
+	}
+	vlessUUID := in.vlessUUID
+
+	// Protocol permissions of this user's plan
+	canVLESS := in.canVLESS
+	canHysteria2 := in.canHysteria2
 
 	var proxies []string
 	var proxyNames []string
 
 	// 1. VLESS Reality (Clash.Meta / mihomo)
-	realityPubKey := biz.GetSettingOrDefault("reality_public_key", "")
-	realityShortID := biz.GetSettingOrDefault("reality_short_id", "")
-	realitySNI := biz.GetSettingOrDefault("reality_sni_domain", biz.DefaultRealitySNI)
+	realityPubKey := in.realityPubKey
+	realityShortID := in.realityShortID
+	realitySNI := in.realitySNI
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
-		flow := biz.GetSettingOrDefault("reality_flow", "xtls-rprx-vision")
+		flow := in.realityFlow
 		flowLine := ""
 		if flow != "" {
 			flowLine = fmt.Sprintf("\n    flow: %s", flow)
@@ -282,11 +312,11 @@ func buildClashConfig(userID string) (string, error) {
 	// enforces plan membership server-side, so even if someone copies the URI to a base-tier
 	// account it will be rejected.
 	if canHysteria2 {
-		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
-		obfsPassword := biz.GetHysteria2ObfsPassword()
-		// Per-plan up/down. Fall back to safe defaults if plan lookup fails.
+		hy2Password, obfsPassword := in.hy2Password, in.obfsPassword
+		// Per-plan up/down; safe defaults without an Express plan (a failed
+		// plan read never gets here: loadHubConnectionInputs returns it).
 		up, down := 50, 100
-		if plan, perr := biz.GetUserPlan(userID); perr == nil && plan != nil && plan.ExpressEnabled {
+		if plan := in.plan; plan != nil && plan.ExpressEnabled {
 			if plan.ExpressUpMbps > 0 {
 				up = plan.ExpressUpMbps
 			}
@@ -294,7 +324,7 @@ func buildClashConfig(userID string) (string, error) {
 				down = plan.ExpressDownMbps
 			}
 		}
-		if hy2Err == nil && hy2Password != "" && obfsPassword != "" {
+		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
 			// Clash.Meta hysteria2 profile. Ports range matches the iptables redirect
@@ -337,16 +367,17 @@ proxy-groups:
 
 rules:
   - MATCH,HeYearth
-`, strings.Join(proxies, "\n"), namesList), nil
+`, strings.Join(proxies, "\n"), namesList)
 }
 
 // buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.
-// buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.
 // Format per v2ray/Happ de-facto standard: "upload=N; download=N; total=N; expire=UNIX".
-// `total` omitted if traffic_limit is NULL (unlimited plan).
+// `total` is 0 if traffic_limit is NULL (unlimited plan).
 // `expire` always present if there's an active subscription (Happ uses it for the
-// "Истекает: DATE" display below the progress bar).
-func buildSubscriptionUserinfo(userID string) string {
+// "Истекает: DATE" display below the progress bar). "" without an active
+// subscription; a failed read is an error (the handler answers 503 — Happ would
+// otherwise show 0 used / no expiry).
+func buildSubscriptionUserinfo(userID string) (string, error) {
 	// Resolve active subscription: started_at (for cycle math), valid_until,
 	// and the effective per-cycle limit (user override > plan default > 0/unlimited).
 	var startedAt sql.NullTime
@@ -364,8 +395,11 @@ func buildSubscriptionUserinfo(userID string) string {
 		ORDER BY us.valid_until DESC
 		LIMIT 1
 	`, userID).Scan(&userDBID, &startedAt, &validUntil, &subLimit, &planLimit)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("subscription userinfo: %w", err)
 	}
 	_ = userDBID // reserved for future per-user override path
 
@@ -379,7 +413,10 @@ func buildSubscriptionUserinfo(userID string) string {
 
 	// Cycle window — usage we report is *this cycle*, not subscription lifetime.
 	cycleStart, cycleEnd := biz.CycleWindow(startedAt, time.Now())
-	cycleUsed, _ := biz.PeriodUsage(userID, cycleStart, cycleEnd)
+	cycleUsed, err := biz.PeriodUsage(userID, cycleStart, cycleEnd)
+	if err != nil {
+		return "", fmt.Errorf("subscription userinfo: %w", err)
+	}
 
 	// expire = end of current cycle so happ shows the meaningful date (when
 	// quota resets) for monthly-cycle users. If the subscription ends before
@@ -390,7 +427,7 @@ func buildSubscriptionUserinfo(userID string) string {
 	}
 
 	return fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d",
-		cycleUsed, effLimit, expireAt.Unix())
+		cycleUsed, effLimit, expireAt.Unix()), nil
 }
 
 // handleGetSubscribeToken — REST endpoint для получения subscribe token текущего пользователя.
@@ -504,15 +541,15 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 //
 // The dashboard / checkout URL roots are taken from publicBaseURL().
 // Returns empty strings if the user has no subscription record at all
-// (handler should not emit headers in that case).
-func buildSubscriptionAnnounce(userID string) (text, url string) {
+// (handler should not emit headers in that case); a failed read is an error.
+func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 	var (
 		validUntil   time.Time
 		trafficUsed  int64
 		trafficLimit *int64
 		planSlug     sql.NullString
 	)
-	err := db.DB.QueryRow(`
+	err = db.DB.QueryRow(`
 		SELECT us.valid_until,
 		       COALESCE(us.traffic_used, 0),
 		       us.traffic_limit,
@@ -523,8 +560,11 @@ func buildSubscriptionAnnounce(userID string) (text, url string) {
 		 WHERE u.user_id = $1
 		 ORDER BY us.valid_until DESC LIMIT 1
 	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
 	if err != nil {
-		return "", ""
+		return "", "", fmt.Errorf("subscription announce: %w", err)
 	}
 
 	base := publicBaseURL()
@@ -534,7 +574,7 @@ func buildSubscriptionAnnounce(userID string) (text, url string) {
 
 	// 1. expired
 	if validUntil.Before(now) {
-		return "⚠️ Подписка истекла. Продлите →", checkout
+		return "⚠️ Подписка истекла. Продлите →", checkout, nil
 	}
 
 	daysLeft := int(validUntil.Sub(now).Hours() / 24)
@@ -542,25 +582,25 @@ func buildSubscriptionAnnounce(userID string) (text, url string) {
 
 	// 2. ≤ 1 day
 	if daysLeft <= 1 {
-		return "⏰ Подписка истекает завтра!", checkout
+		return "⏰ Подписка истекает завтра!", checkout, nil
 	}
 
 	// 3 / 4. ≤ 7 days
 	if daysLeft <= 7 {
 		if isTrial {
-			return fmt.Sprintf("⌛ Пробная подписка, осталось %dд", daysLeft), checkout
+			return fmt.Sprintf("⌛ Пробная подписка, осталось %dд", daysLeft), checkout, nil
 		}
-		return fmt.Sprintf("⌛ Истекает через %dд", daysLeft), checkout
+		return fmt.Sprintf("⌛ Истекает через %dд", daysLeft), checkout, nil
 	}
 
 	// 5. traffic ≥ 80%
 	if trafficLimit != nil && *trafficLimit > 0 {
 		pct := int(float64(trafficUsed) * 100.0 / float64(*trafficLimit))
 		if pct >= 80 {
-			return fmt.Sprintf("📊 Использовано %d%% трафика", pct), dashboard
+			return fmt.Sprintf("📊 Использовано %d%% трафика", pct), dashboard, nil
 		}
 	}
 
 	// 6. healthy default — always include link to cabinet (per spec)
-	return "Личный кабинет ↗", dashboard
+	return "Личный кабинет ↗", dashboard, nil
 }
