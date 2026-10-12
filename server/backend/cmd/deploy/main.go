@@ -65,6 +65,7 @@ func main() {
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
 	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality) на главный сервер")
+	forceFlag := flag.Bool("force", false, "с --setup-xray: заменить существующий /opt/heyearth/xray/config.json bootstrap-конфигом (на живом Hub отрежет пользователей до синхронизации API)")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
@@ -244,7 +245,7 @@ func main() {
 		doSSL(client, cfg)
 		doNginx(sftpClient, client, cfg) // перезаписать с SSL
 	case "setup-xray":
-		setupXray(client, cfg)
+		setupXray(client, cfg, *forceFlag)
 		doNginx(sftpClient, client, cfg)
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
@@ -1286,13 +1287,31 @@ func verifyServices(client *ssh.Client) {
 	_, _ = runSSH(client, "curl -s http://127.0.0.1:8000/api/v1/health || true", false)
 }
 
-// setupXray устанавливает Xray-core на сервер: VLESS Reality (10443), SOCKS5 (1080), HTTP proxy (8080).
-// Порт 443 обслуживается через nginx stream → SNI routing.
-func setupXray(client *ssh.Client, cfg *deployConfig) {
+// setupXray устанавливает Xray-core на Hub: бинарник, ключи Reality, bootstrap-конфиг (VLESS
+// Reality на 127.0.0.1:10443, только если конфига ещё нет), юнит. Порт 443 обслуживается через
+// nginx stream → SNI routing; полный конфиг генерирует heyearth-api.
+func setupXray(client *ssh.Client, cfg *deployConfig, force bool) {
 	fmt.Println("[xray] Установка Xray-core на сервер...")
+	if force {
+		fmt.Println("[xray] --force: существующий /opt/heyearth/xray/config.json будет заменён bootstrap-конфигом")
+	}
+	_, _ = runSSH(client, setupXrayScript(force), false)
+	fmt.Println("[xray] Установка завершена")
+}
 
-	script := `set -e
+// setupXrayScript renders the --setup-xray provisioning script: binary, Reality keys (kept when
+// present), the BOOTSTRAP config (only when there is no config.json yet — on a live Hub that file
+// is heyearth-api's generated config with every user; force=true replaces it anyway), the unit,
+// firewall, nginx stream module. xray is restarted only when the bootstrap was written or it is
+// not running. Pure, so tests can render it.
+func setupXrayScript(force bool) string {
+	forceVal := "0"
+	if force {
+		forceVal = "1"
+	}
+	return `set -e
 mkdir -p /opt/heyearth/xray /opt/heyearth/state
+FORCE=` + forceVal + `
 
 # ── 1. Скачать Xray если нет ──
 if [ ! -f /opt/heyearth/xray/xray ]; then
@@ -1358,53 +1377,8 @@ json.dump(d, open('$KEYS_FILE', 'w'), indent=2)
   fi
 fi
 
-# ── 3. Записать Xray конфиг (bootstrap: только VLESS Reality) ──
-cat > /opt/heyearth/xray/config.json <<XRAYEOF
-{
-  "log": {"loglevel": "warning"},
-  "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"]
-  },
-  "inbounds": [
-    {
-      "tag": "vless-reality",
-      "listen": "127.0.0.1",
-      "port": 10443,
-      "protocol": "vless",
-      "settings": {
-        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "apple.com:443",
-          "xver": 0,
-          "serverNames": ["apple.com", "www.apple.com"],
-          "privateKey": "$PRIV_KEY",
-          "shortIds": ["$SHORT_ID"]
-        }
-      },
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    }
-  ],
-  "outbounds": [
-    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}},
-    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
-      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
-    ]
-  }
-}
-XRAYEOF
-echo "[xray] Конфиг записан (VLESS:10443; остальное генерирует heyearth-api)"
-
+# ── 3. Bootstrap-конфиг Xray (только VLESS Reality) — только если конфига ещё нет ──
+` + xrayBootstrapBlock + `
 # ── 4. systemd-сервис ──
 cat > /etc/systemd/system/xray.service <<'SVCEOF'
 [Unit]
@@ -1427,9 +1401,14 @@ SVCEOF
 
 systemctl daemon-reload
 systemctl enable xray
-systemctl restart xray
-sleep 1
-echo "[xray] Сервис запущен"
+# A live Hub keeps its connections: restart only for a new bootstrap config or a stopped xray.
+if [ "$XRAY_BOOTSTRAP_WROTE" = 1 ] || ! systemctl is-active --quiet xray; then
+  systemctl restart xray
+  sleep 1
+  echo "[xray] Сервис (пере)запущен"
+else
+  echo "[xray] Сервис работает, конфиг не менялся — без перезапуска"
+fi
 systemctl status xray --no-pager -l 2>&1 | head -15 || true
 
 # ── 5. Firewall: только порты со слушателем (spec 2026-10-11, часть 4) ──
@@ -1450,9 +1429,76 @@ echo "[xray] nginx stream модуль установлен"
 echo "--- Проверка портов ---"
 ss -tlnp | grep -E ':10443\s' || echo "ВНИМАНИЕ: Xray не слушает 10443!"
 `
-	_, _ = runSSH(client, script, false)
-	fmt.Println("[xray] Установка завершена")
 }
+
+// xrayBootstrapBlock is step 3 of setupXrayScript: it writes the bootstrap config to $XRAY_CONF
+// unless that file exists and FORCE != 1 (on a live Hub it is heyearth-api's generated config
+// with every user; overwriting it would cut them all off until the next sync). Atomic: a
+// .tmp.json (xray needs the extension) checked with `xray run -test`, then mv. Sets
+// XRAY_BOOTSTRAP_WROTE=1 when it wrote. Needs UUID, PRIV_KEY, SHORT_ID. The Reality SNI is
+// config.DefaultRealitySNI, shaped like cmd/api/xray_sync.go (dest <sni>:443, serverNames <sni>
+// and www.<sni>); heyearth-api later replaces the whole file using app_settings.reality_sni_domain.
+// XRAY_CONF and XRAY_BIN are test hooks.
+const xrayBootstrapBlock = `XRAY_CONF="${XRAY_CONF:-/opt/heyearth/xray/config.json}"
+XRAY_BIN="${XRAY_BIN:-/opt/heyearth/xray/xray}"
+XRAY_BOOTSTRAP_WROTE=0
+if [ -f "$XRAY_CONF" ] && [ "${FORCE:-0}" != 1 ]; then
+  echo "[xray] $XRAY_CONF уже есть (его генерирует heyearth-api) — bootstrap НЕ записываю (перезаписать: --setup-xray --force)"
+else
+  XRAY_TMP="${XRAY_CONF%.json}.tmp.json"
+  cat > "$XRAY_TMP" <<XRAYEOF
+{
+  "log": {"loglevel": "warning"},
+  "dns": {
+    "servers": ["8.8.8.8", "1.1.1.1"]
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality",
+      "listen": "127.0.0.1",
+      "port": 10443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "` + config.DefaultRealitySNI + `:443",
+          "xver": 0,
+          "serverNames": ["` + config.DefaultRealitySNI + `", "www.` + config.DefaultRealitySNI + `"],
+          "privateKey": "$PRIV_KEY",
+          "shortIds": ["$SHORT_ID"]
+        }
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}},
+    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
+    ]
+  }
+}
+XRAYEOF
+  if [ -x "$XRAY_BIN" ] && ! "$XRAY_BIN" run -test -config "$XRAY_TMP" >/dev/null 2>&1; then
+    rm -f "$XRAY_TMP"
+    echo "[xray] ОШИБКА: bootstrap-конфиг не прошёл xray run -test — $XRAY_CONF не тронут" >&2
+    exit 1
+  fi
+  mv -f "$XRAY_TMP" "$XRAY_CONF"
+  XRAY_BOOTSTRAP_WROTE=1
+  echo "[xray] Bootstrap-конфиг записан (VLESS:10443, SNI ` + config.DefaultRealitySNI + `; остальное генерирует heyearth-api)"
+fi`
 
 // isXrayInstalled проверяет наличие Xray на сервере
 func isXrayInstalled(client *ssh.Client) bool {
@@ -1467,10 +1513,13 @@ func isXrayInstalled(client *ssh.Client) bool {
 // затем вставляет настройки подключения в app_settings через SQL.
 func seedConnectionSettings(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[seed] Автозаполнение настроек подключения...")
+	_, _ = runSSH(client, seedConnectionSettingsScript(cfg.host), false)
+}
 
-	// Скрипт читает reality-keys.json и xray config, затем вставляет в БД. psql идёт как
-	// postgres по peer auth: пароль БД (DATABASE_URL) в скрипт и argv не попадает.
-	script := fmt.Sprintf(`set -e
+// seedConnectionSettingsScript читает reality-keys.json и xray config, затем вставляет в БД.
+// psql идёт как postgres по peer auth: пароль БД (DATABASE_URL) в скрипт и argv не попадает.
+func seedConnectionSettingsScript(host string) string {
+	return fmt.Sprintf(`set -e
 MAIN_HOST="%s"
 
 # Читаем Reality-ключи
@@ -1539,14 +1588,14 @@ fi
 if [ -n "$SHORT_ID" ]; then
   runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_short_id', '$SHORT_ID', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
 fi
+# SNI — только если в БД его ещё нет: значением управляет auto-tuner/админка, а bootstrap-конфиг
+# (--setup-xray после восстановления БД) не должен его перетирать.
 if [ -n "$REALITY_SNI" ]; then
-  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;" 2>/dev/null || true
+  runuser -u postgres -- psql -d heyearth -c "INSERT INTO app_settings (key, value, updated_at) VALUES ('reality_sni_domain', '$REALITY_SNI', CURRENT_TIMESTAMP) ON CONFLICT (key) DO NOTHING;" 2>/dev/null || true
 fi
 
 echo "[seed] Готово"
-`, cfg.host)
-
-	_, _ = runSSH(client, script, false)
+`, host)
 }
 
 func doStatus(client *ssh.Client, cfg *deployConfig) {
