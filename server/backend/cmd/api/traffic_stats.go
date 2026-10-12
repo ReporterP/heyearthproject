@@ -39,6 +39,11 @@ type trafficDelta struct {
 
 const xrayStatsAPIAddr = "127.0.0.1:10085"
 
+// statsWindowStart is when the previous successful QueryStats(reset=true) was
+// issued: the deltas of the next read cover [statsWindowStart, read]. Zero until
+// the first read. Touched only by the collector goroutine.
+var statsWindowStart time.Time
+
 // StartTrafficStatsCollector запускает фоновый сборщик трафика.
 func StartTrafficStatsCollector() {
 	go func() {
@@ -63,10 +68,13 @@ func collectTrafficStats() {
 	}
 	conn.Close()
 
+	readAt := time.Now() // before the call: the counters are reset no earlier than this
 	stats, err := xraystats.QueryStats(xrayStatsAPIAddr, "user>>>", true)
 	if err != nil {
 		return
 	}
+	windowStart := statsWindowStart
+	statsWindowStart = readAt
 
 	// Группируем по user_id (тип trafficDelta — пакетный, см. выше)
 	deltas := make(map[string]*trafficDelta)
@@ -94,6 +102,11 @@ func collectTrafficStats() {
 			deltas[userID].download = stat.Value
 		}
 	}
+
+	// Soft cutoff guard: a user removed live (rmu) whose open session still
+	// carries traffic forces a restart (xray_revoked.go). Runs before the early
+	// return below so idle watch entries still expire.
+	checkRevokedStillOnline(deltas, windowStart, readAt)
 
 	if len(deltas) == 0 {
 		return
@@ -190,9 +203,13 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 }
 
-// checkTrafficLimits — delegates to biz, logs offenders, triggers an immediate
-// debounced xray sync so the cutoff lands within ~2 seconds of the offending
-// traffic_stats insert (vs waiting for the next 5-minute periodic sync).
+// checkTrafficLimits — delegates to biz, logs offenders and requests a debounced
+// xray sync (2 s) instead of waiting for the 5-minute periodic one. That sync
+// removes the user live (`xray api rmu`), which only refuses NEW connections;
+// sessions already open keep working until the soft cutoff guard sees their
+// traffic in the next full stats window and forces a restart (≈1–2 min,
+// checkRevokedStillOnline). Repeated calls while the user stays over quota are
+// no-ops: the config no longer changes.
 func checkTrafficLimits() {
 	over, err := biz.ListQuotaExceededUUIDs()
 	if err != nil {

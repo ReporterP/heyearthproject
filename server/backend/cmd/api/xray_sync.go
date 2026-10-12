@@ -857,6 +857,8 @@ func SyncXrayConfig() error {
 		log.Println("[xray-sync] Конфиг не изменился, пропускаем restart")
 		return nil
 	case xrayApplyLive:
+		// rmu does not cut open sessions: watch the revoked users' traffic.
+		revokedUsers.record(diff.Revoked(), addedEmails(diff), time.Now())
 		ResolveAlert(xrayLiveAlertKey, "Горячее применение пользователей снова работает")
 		added, removed := diff.UserTotals()
 		log.Printf("[xray-sync] user-only applied via API: +%d/-%d users, rules %v (routing pushed=%v), %d ms",
@@ -866,6 +868,7 @@ func SyncXrayConfig() error {
 
 	// Restarted: structural change, failed API apply or stale runtime.
 	recordXrayRestart()
+	revokedUsers.reset() // the restart cut every open session
 
 	// Notify clients that subscription config has changed.
 	biz.BumpSubscriptionVersion()
