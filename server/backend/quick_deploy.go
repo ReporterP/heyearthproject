@@ -34,7 +34,7 @@ func main() {
 
 	// Load host and password from .env — the Hub IP is not hardcoded
 	// (it changed on 2026-10-10 after the old one was filtered upstream).
-	password, deployHost, deployPort := "", "", "22"
+	password, deployHost, deployPort, hostKeyFP := "", "", "22", ""
 	if data, err := os.ReadFile(envFile); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -47,6 +47,8 @@ func main() {
 				if p := strings.TrimPrefix(line, "DEPLOY_PORT="); p != "" {
 					deployPort = p
 				}
+			case strings.HasPrefix(line, "DEPLOY_HOST_KEY_FINGERPRINT="):
+				hostKeyFP = strings.TrimPrefix(line, "DEPLOY_HOST_KEY_FINGERPRINT=")
 			}
 		}
 	}
@@ -55,6 +57,11 @@ func main() {
 	}
 	if deployHost == "" {
 		log.Fatal("DEPLOY_HOST not found in server/.env")
+	}
+	// The root password must never go to an unverified host: pin the Hub's host key.
+	// Get it with `ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -` and compare out of band.
+	if !strings.HasPrefix(hostKeyFP, "SHA256:") {
+		log.Fatal("DEPLOY_HOST_KEY_FINGERPRINT (SHA256:...) not found in server/.env — refusing to send the root password to an unverified host")
 	}
 	host := net.JoinHostPort(deployHost, deployPort)
 
@@ -77,8 +84,13 @@ func main() {
 	config := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			if got := ssh.FingerprintSHA256(key); got != hostKeyFP {
+				return fmt.Errorf("host key mismatch: got %s, want %s (DEPLOY_HOST_KEY_FINGERPRINT)", got, hostKeyFP)
+			}
+			return nil
+		},
+		Timeout: 10 * time.Second,
 	}
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
@@ -87,19 +99,26 @@ func main() {
 	defer client.Close()
 	fmt.Println("    Подключено.")
 
-	// 3. Загрузить бинарник через SSH pipe
+	// 3. Загрузить бинарник через SSH pipe — во временный файл рядом, на место кладёт mv.
+	// Прямой `cat >` в рабочий путь давал "Text file busy" и полузаписанный бинарник при обрыве SSH.
 	fmt.Println("[3/5] Загрузка бинарника через SSH pipe...")
 	start := time.Now()
 	remotePath := appDir + "/" + binaryName
-	if err := uploadViaPipe(client, binaryPath, remotePath); err != nil {
+	tmpPath := fmt.Sprintf("%s.new-%d", remotePath, time.Now().UnixNano())
+	if err := uploadViaPipe(client, binaryPath, tmpPath); err != nil {
+		runCmd(client, "rm -f "+tmpPath)
 		log.Fatalf("upload binary: %v", err)
 	}
 	fmt.Printf("    Загружено за %v\n", time.Since(start).Round(time.Millisecond))
 
-	// 4. Загрузить миграции
+	// 4. Загрузить миграции. Любая ошибка — стоп до рестарта: API без миграции не стартует.
 	fmt.Println("[4/5] Загрузка миграций...")
 	migrationsDir := filepath.Join(backendRoot, "migrations")
-	entries, _ := os.ReadDir(migrationsDir)
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("read migrations: %v", err)
+	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -108,18 +127,22 @@ func main() {
 		remoteMigPath := appDir + "/migrations/" + entry.Name()
 		data, err := os.ReadFile(localPath)
 		if err != nil {
-			log.Printf("  skip %s: %v", entry.Name(), err)
-			continue
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("read %s: %v", entry.Name(), err)
 		}
 		if err := uploadContentViaPipe(client, data, remoteMigPath); err != nil {
-			log.Printf("  upload %s: %v", entry.Name(), err)
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("upload %s: %v (сервис не перезапущен)", entry.Name(), err)
 		}
 	}
 	fmt.Printf("    %d файлов миграций загружено\n", len(entries))
 
-	// 5. Рестарт сервиса
+	// 5. Подменить бинарник атомарно и перезапустить
 	fmt.Println("[5/5] Перезапуск сервиса...")
-	runCmd(client, "chmod +x "+remotePath)
+	if out := runCmd(client, fmt.Sprintf("chmod +x %s && cp -p %s %s.bak 2>/dev/null; mv -f %s %s && echo SWAPPED", tmpPath, remotePath, remotePath, tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("swap binary failed: %s", strings.TrimSpace(out))
+	}
 	runCmd(client, "systemctl restart heyearth-api")
 	time.Sleep(2 * time.Second)
 
