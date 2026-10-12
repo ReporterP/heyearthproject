@@ -303,6 +303,7 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Auto-tuner**: Reality requires tcp + xtls-rprx-vision. Never change transport/flow.
 - **Per-country SNI**: Hub(RU) uses yandex.ru/vk.com. Exit(NL/LV) uses github.com/twitch.tv.
 - **apple.com bad SNI**: ASN mismatch visible to DPI. Removed from candidates.
+- **Hysteria2 port hopping**: port-only `DNAT --to-destination :50443`, never `REDIRECT` (rewrites dst to ens3's primary IP; salamander replies use the route source → conntrack clash → EPERM, Бамбук dead 2026-10-12). After any Hub IP/route/NAT change, test Бамбук from the exit node, not from the Hub.
 
 ## Code Style
 
