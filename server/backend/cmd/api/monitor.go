@@ -62,7 +62,7 @@ func StartMonitor() {
 		safely("loop-проба", runLoopProbe)
 		safely("NRestarts xray", pollXraySystemdRestarts)
 		safely("окно рестартов xray", checkXrayRestartWindow)
-		safely("Бамбук-проба", runBambooProbe) // last: it can wait on UDP timeouts for tens of seconds
+		safely("Бамбук-проба", runBambooProbe) // last: up to ~45 s worst case (see bambooMaxExits)
 	})
 	go runEvery(5*time.Minute, checkHostInterval, func() {
 		safely("check-host", runCheckHostProbe)
@@ -115,7 +115,12 @@ type loopProbeStreak struct {
 }
 
 func (s *loopProbeStreak) record(now time.Time, ok bool) int {
-	if !s.last.IsZero() && now.Sub(s.last) > loopProbeStaleAfter {
+	return s.recordWithin(now, ok, loopProbeStaleAfter)
+}
+
+// recordWithin is record with a caller-chosen stale window (the Bamboo probe uses its own).
+func (s *loopProbeStreak) recordWithin(now time.Time, ok bool, staleAfter time.Duration) int {
+	if !s.last.IsZero() && now.Sub(s.last) > staleAfter {
 		s.fails = 0
 	}
 	s.last = now

@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	crand "crypto/rand"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -304,6 +306,7 @@ func testVNReply(probe []byte) []byte {
 type fakeReply struct {
 	from    string // source named in the SOCKS header; "" = where the request went
 	payload []byte
+	raw     bool // send payload as the whole datagram, without a SOCKS header
 }
 
 // fakeHandler answers a datagram that association n (1-based) sent to dst.
@@ -432,6 +435,10 @@ func (s *fakeBambooSOCKS) relay(relay *net.UDPConn, n int) {
 		s.perAssoc[n] = append(s.perAssoc[n], dst)
 		s.mu.Unlock()
 		for _, r := range s.opts.handle(s, n, dst, bytes.Clone(payload)) {
+			if r.raw {
+				relay.WriteToUDP(r.payload, client)
+				continue
+			}
 			from := r.from
 			if from == "" {
 				from = dst
@@ -680,6 +687,27 @@ func TestProbeBambooEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.check(t, 1)
+	})
+
+	t.Run("malformed SOCKS header first, then the VN", func(t *testing.T) {
+		s := newFakeBambooSOCKS(t, fakeSOCKSOpts{handle: vnServer(psk, func(_ int, _ string, probe []byte) []fakeReply {
+			return []fakeReply{{raw: true, payload: []byte{0, 0, 0, 9, 1, 2}}, {payload: obfuscated(psk, testVNReply(probe))}}
+		})})
+		if _, _, err := fastBambooProber.probe(s.port, ipHost, psk); err != nil {
+			t.Fatal(err)
+		}
+		s.check(t, 1)
+	})
+
+	t.Run("only malformed SOCKS headers: no reply, not a wrong reply", func(t *testing.T) {
+		s := newFakeBambooSOCKS(t, fakeSOCKSOpts{handle: vnServer(psk, func(int, string, []byte) []fakeReply {
+			return []fakeReply{{raw: true, payload: []byte{0, 0, 1, 1, 127, 0, 0, 1, 0, 53, 'x'}}, {raw: true, payload: []byte{0, 0}}}
+		})})
+		_, _, err := fastBambooProber.probe(s.port, ipHost, psk)
+		if !errors.Is(err, errBambooNoReply) || errors.Is(err, errBambooWrongReply) || !strings.Contains(err.Error(), "битым заголовком SOCKS: 2") {
+			t.Fatalf("err %v, want no reply mentioning 2 malformed datagrams", err)
+		}
+		s.check(t, 2)
 	})
 
 	t.Run("first datagram lost, retry succeeds", func(t *testing.T) {
@@ -954,46 +982,72 @@ type bambooHarness struct {
 	now          time.Time
 	deployed     bool
 	psk          string
+	pskErr       error
+	host         string
+	hostErr      error
+	lookupAddr   netip.Addr
+	lookupErr    error
 	ports        []int
 	probeErr     map[int]error // by exit SOCKS port; missing = success
 	controlErr   error
-	probed       []int // exit ports probed in the last step
-	controlPorts []int // exit ports controlled in the last step
+	lookups      []string // hosts resolved in the last step
+	probed       []int    // exit ports probed in the last step
+	probedHosts  []string // probe targets in the last step
+	controlPorts []int    // exit ports controlled in the last step
 	events       []string
 	details      map[string]string
+	titles       map[string]string
 	logs         []string
 	m            *bambooMonitor
 }
 
 func newBambooHarness() *bambooHarness {
 	h := &bambooHarness{
-		now:      time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
-		deployed: true,
-		psk:      "obfs",
-		ports:    []int{1090},
-		probeErr: map[int]error{},
-		details:  map[string]string{},
+		now:        time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
+		deployed:   true,
+		psk:        "obfs",
+		host:       "138.16.181.225",
+		lookupAddr: netip.MustParseAddr("138.16.181.225"),
+		ports:      []int{1090},
+		probeErr:   map[int]error{},
+		details:    map[string]string{},
+		titles:     map[string]string{},
 	}
 	h.m = &bambooMonitor{
-		now:       func() time.Time { return h.now },
-		deployed:  func() bool { return h.deployed },
-		psk:       func() string { return h.psk },
-		host:      func() string { return "138.16.181.225" },
+		now:      func() time.Time { return h.now },
+		deployed: func() bool { return h.deployed },
+		psk: func() (string, error) { // like settingOrEmpty: an error comes with ""
+			if h.pskErr != nil {
+				return "", h.pskErr
+			}
+			return h.psk, nil
+		},
+		host: func() (string, error) {
+			if h.hostErr != nil {
+				return "", h.hostErr
+			}
+			return h.host, nil
+		},
+		lookupIP: func(host string) (netip.Addr, error) {
+			h.lookups = append(h.lookups, host)
+			return h.lookupAddr, h.lookupErr
+		},
 		exitPorts: func() []int { return h.ports },
-		probe: func(port int, _ string, psk []byte) (time.Duration, int, error) {
+		probe: func(port int, host string, psk []byte) (time.Duration, int, error) {
 			if string(psk) != h.psk {
 				panic("psk not passed through")
 			}
 			h.probed = append(h.probed, port)
+			h.probedHosts = append(h.probedHosts, host)
 			return 135 * time.Millisecond, 41234, h.probeErr[port]
 		},
 		control: func(port int) error {
 			h.controlPorts = append(h.controlPorts, port)
 			return h.controlErr
 		},
-		raise: func(key string, level AlertLevel, _, details string) {
+		raise: func(key string, level AlertLevel, title, details string) {
 			h.events = append(h.events, fmt.Sprintf("raise %s %s", key, level))
-			h.details[key] = details
+			h.titles[key], h.details[key] = title, details
 		},
 		resolve: func(key, _ string) { h.events = append(h.events, "resolve "+key) },
 		logf:    func(format string, args ...any) { h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
@@ -1004,7 +1058,7 @@ func newBambooHarness() *bambooHarness {
 // step advances the clock by d and runs the monitor once.
 func (h *bambooHarness) step(d time.Duration) *bambooHarness {
 	h.now = h.now.Add(d)
-	h.events, h.probed, h.controlPorts, h.logs = nil, nil, nil, nil
+	h.events, h.lookups, h.probed, h.probedHosts, h.controlPorts, h.logs = nil, nil, nil, nil, nil, nil
 	h.m.run()
 	return h
 }
@@ -1069,19 +1123,22 @@ func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 func TestBambooMonitorPerErrorKind(t *testing.T) {
 	wrap := func(e error) error { return fmt.Errorf("%w: x", e) }
 	ctrlDown := errors.New("DNS через exit :1090: нет ответа")
+	raiseProbeBroken := "raise " + bambooAlertKey + " warn"
 	cases := []struct {
 		name        string
 		probe, ctrl error
-		raise       bool
+		event       string // expected raise on the 3rd step, "" = none
 		controls    int    // control calls per step
 		detail      string // must appear in the alert details
+		notDetail   string // must not appear in the alert details
 	}{
-		{"socks: skip, no control", wrap(errBambooSocks), nil, false, 0, ""},
-		{"no reply, control ok: fail", wrap(errBambooNoReply), nil, true, 1, "hysteria2-server"},
-		{"no reply, control failed: skip", wrap(errBambooNoReply), ctrlDown, false, 1, ""},
-		{"wrong reply: fail without control", wrap(errBambooWrongReply), ctrlDown, true, 0, "server.yaml"},
-		{"wrong source: fail without control", wrap(errBambooWrongSource), ctrlDown, true, 0, "NAT"},
-		{"unclassified, control ok: fail", errors.New("адрес: пустой хост"), nil, true, 1, "пустой хост"},
+		{"socks: skip, no control", wrap(errBambooSocks), nil, "", 0, "", ""},
+		{"no reply, control ok: fail", wrap(errBambooNoReply), nil, raiseDown, 1, "hysteria2-server", ""},
+		{"no reply, control failed: skip", wrap(errBambooNoReply), ctrlDown, "", 1, "", ""},
+		{"wrong reply: fail without control", wrap(errBambooWrongReply), ctrlDown, raiseDown, 0, "server.yaml", ""},
+		{"wrong source: fail without control", wrap(errBambooWrongSource), ctrlDown, raiseDown, 0, "NAT", ""},
+		{"unclassified, control ok: own warn", errors.New("salamander: соль: no entropy"), nil, raiseProbeBroken, 1,
+			"ошибки на стороне Hub", "контрольный DNS-запрос"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1093,11 +1150,21 @@ func TestBambooMonitorPerErrorKind(t *testing.T) {
 					t.Fatalf("control calls %d, want %d", len(h.controlPorts), tc.controls)
 				}
 			}
-			if h.has(raiseDown) != tc.raise {
-				t.Fatalf("raise %v, want %v: %v", h.has(raiseDown), tc.raise, h.events)
+			if (tc.event == "" && h.raised()) || (tc.event != "" && !h.has(tc.event)) {
+				t.Fatalf("events %v, want %q", h.events, tc.event)
 			}
-			if tc.detail != "" && !strings.Contains(h.details[bambooAlertKey], tc.detail) {
-				t.Fatalf("details lack %q:\n%s", tc.detail, h.details[bambooAlertKey])
+			d := h.details[bambooAlertKey]
+			if tc.detail != "" && !strings.Contains(d, tc.detail) {
+				t.Fatalf("details lack %q:\n%s", tc.detail, d)
+			}
+			if tc.notDetail != "" && strings.Contains(d, tc.notDetail) {
+				t.Fatalf("details must not say %q:\n%s", tc.notDetail, d)
+			}
+			if tc.event == raiseProbeBroken && h.titles[bambooAlertKey] != "Проба Бамбука не выполняется" {
+				t.Fatalf("title %q", h.titles[bambooAlertKey])
+			}
+			if tc.event == raiseProbeBroken && !strings.Contains(strings.Join(h.logs, "\n"), "не выполнилась") {
+				t.Fatalf("log must say the probe itself failed: %v", h.logs)
 			}
 		})
 	}
@@ -1238,4 +1305,192 @@ func TestBambooMonitorSkipLog(t *testing.T) {
 	if h.step(31 * time.Minute); !logged() {
 		t.Fatalf("the same reason after an hour must be logged again: %v", h.logs)
 	}
+}
+
+func TestSettingOrEmpty(t *testing.T) {
+	get := func(v string, err error) func(string) (string, error) {
+		return func(string) (string, error) { return v, err }
+	}
+	cases := []struct {
+		name    string
+		get     func(string) (string, error)
+		want    string
+		wantErr bool
+	}{
+		{"value", get(" obfs \n", nil), "obfs", false},
+		{"blank value", get("  ", nil), "", false},
+		{"missing row", get("", sql.ErrNoRows), "", false},
+		{"db down", get("", sql.ErrConnDone), "", true},
+		{"other error", get("stale", errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")), "", true},
+	}
+	for _, tc := range cases {
+		got, err := settingOrEmpty(tc.get, "hysteria2_obfs_password")
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Fatalf("%s: %q, %v", tc.name, got, err)
+		}
+	}
+}
+
+func TestPreferIPv4(t *testing.T) {
+	a := netip.MustParseAddr
+	cases := []struct {
+		name  string
+		addrs []netip.Addr
+		want  string
+	}{
+		{"v6 first, v4 wins", []netip.Addr{a("2001:db8::1"), a("138.16.181.225")}, "138.16.181.225"},
+		{"v4-mapped is unmapped", []netip.Addr{a("::ffff:138.16.181.225")}, "138.16.181.225"},
+		{"v6 only", []netip.Addr{a("2001:db8::1")}, "2001:db8::1"},
+		{"first v4 of several", []netip.Addr{a("1.1.1.1"), a("2.2.2.2")}, "1.1.1.1"},
+	}
+	for _, tc := range cases {
+		got, ok := preferIPv4(tc.addrs)
+		if !ok || got.String() != tc.want {
+			t.Fatalf("%s: %v %v, want %s", tc.name, got, ok, tc.want)
+		}
+	}
+	if _, ok := preferIPv4(nil); ok {
+		t.Fatal("no addresses must not pick one")
+	}
+}
+
+func TestBambooMonitorDBErrorNeverResolves(t *testing.T) {
+	h := newBambooHarness()
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	h.step(time.Minute).step(time.Minute).step(time.Minute)
+	if !h.has(raiseDown) {
+		t.Fatalf("setup: alert not raised: %v", h.events)
+	}
+	h.pskErr = sql.ErrConnDone // the DB is down in the middle of the outage
+	for i := 0; i < 10; i++ {
+		if h.step(time.Minute); len(h.events) != 0 || len(h.probed) != 0 {
+			t.Fatalf("a DB error must neither resolve nor probe: events %v, probed %v", h.events, h.probed)
+		}
+		if i == 0 && (len(h.logs) != 1 || !strings.Contains(h.logs[0], "не удалось прочитать hysteria2_obfs_password")) {
+			t.Fatalf("DB skip log: %v", h.logs)
+		}
+	}
+	h.pskErr = nil
+	if h.step(time.Minute); !h.has(raiseDown) || h.has(resolveDown) {
+		t.Fatalf("the streak must survive the DB outage: %v", h.events)
+	}
+
+	// main_server_host read failure is a DB error as well
+	h.hostErr = errors.New("pq: the database system is shutting down")
+	if h.step(time.Minute); len(h.events) != 0 || len(h.probed) != 0 {
+		t.Fatalf("host DB error: events %v, probed %v", h.events, h.probed)
+	}
+}
+
+func TestBambooMonitorDBErrorKeepsBlindClock(t *testing.T) {
+	h := newBambooHarness()
+	h.pskErr = sql.ErrConnDone
+	h.step(0)
+	if len(h.logs) != 1 || !strings.Contains(h.logs[0], "не удалось прочитать hysteria2_obfs_password") {
+		t.Fatalf("DB skip must be logged with its reason: %v", h.logs)
+	}
+	if h.step(60 * time.Minute); h.raised() {
+		t.Fatalf("raised within the hour: %v", h.events)
+	}
+	if h.step(time.Minute); !h.has(raiseBlind) || h.has(resolveDown) || h.has(resolveBlind) {
+		t.Fatalf("an hour of DB errors must raise blind and resolve nothing: %v", h.events)
+	}
+}
+
+func TestBambooMonitorAllExitsSocksFail(t *testing.T) {
+	h := newBambooHarness()
+	h.ports = []int{1090, 1091, 1092}
+	for _, p := range h.ports {
+		h.probeErr[p] = fmt.Errorf("%w 127.0.0.1:%d: UDP ASSOCIATE отклонён: код 7", errBambooSocks, p)
+	}
+	for i := 0; i < 5; i++ {
+		h.step(time.Minute)
+		if fmt.Sprint(h.probed) != "[1090 1091 1092]" || len(h.controlPorts) != 0 || h.raised() {
+			t.Fatalf("probed %v, controls %v, events %v", h.probed, h.controlPorts, h.events)
+		}
+		if i == 0 && (len(h.logs) != 1 || !strings.Contains(h.logs[0], "порты [1090 1091 1092]")) {
+			t.Fatalf("skip log must list the ports tried: %v", h.logs)
+		}
+	}
+}
+
+func TestBambooMonitorSkipVerdictSkipLogs(t *testing.T) {
+	h := newBambooHarness()
+	h.controlErr = errors.New("exit lost UDP")
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	if h.step(time.Minute); len(h.logs) != 1 || !strings.Contains(h.logs[0], "пропущена") {
+		t.Fatalf("first skip: %v", h.logs)
+	}
+	h.probeErr[1090] = nil
+	h.step(time.Minute) // verdict (OK)
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	if h.step(time.Minute); len(h.logs) != 1 || !strings.Contains(h.logs[0], "пропущена") {
+		t.Fatalf("the same skip after a verdict must be logged again: %v", h.logs)
+	}
+	if h.step(time.Minute); len(h.logs) != 0 {
+		t.Fatalf("but not twice in a row: %v", h.logs)
+	}
+}
+
+func TestBambooMonitorResolvesHostOnHub(t *testing.T) {
+	h := newBambooHarness()
+	h.host = "hiearth.ru"
+	h.lookupAddr = netip.MustParseAddr("138.16.181.225")
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	h.step(time.Minute)
+	if fmt.Sprint(h.lookups) != "[hiearth.ru]" || fmt.Sprint(h.probedHosts) != "[138.16.181.225]" {
+		t.Fatalf("lookups %v, probe targets %v: a name must be resolved on the Hub and probed by IP", h.lookups, h.probedHosts)
+	}
+	h.step(time.Minute).step(time.Minute)
+	if d := h.details[bambooAlertKey]; !strings.Contains(d, "hiearth.ru (138.16.181.225)") {
+		t.Fatalf("details must name both the host and the IP:\n%s", d)
+	}
+
+	h.lookupErr = errors.New("lookup hiearth.ru: no such host")
+	if h.step(time.Minute); len(h.probed) != 0 || len(h.events) != 0 {
+		t.Fatalf("a failed lookup is a skip: probed %v, events %v", h.probed, h.events)
+	}
+	if len(h.logs) != 1 || !strings.Contains(h.logs[0], "не удалось разрешить hiearth.ru на Hub") {
+		t.Fatalf("dns skip log: %v", h.logs)
+	}
+
+	ip := newBambooHarness() // an IP literal is never looked up
+	ip.step(time.Minute)
+	if len(ip.lookups) != 0 || fmt.Sprint(ip.probedHosts) != "[138.16.181.225]" {
+		t.Fatalf("lookups %v, targets %v", ip.lookups, ip.probedHosts)
+	}
+}
+
+// Counted failures diluted by skips (here: a flaky control) must still add up, as long as the
+// gaps are shorter than bambooBlindAfter; longer gaps raise the blind alert instead.
+func TestBambooMonitorDilutedFailures(t *testing.T) {
+	run := func(gap int) *bambooHarness {
+		h := newBambooHarness()
+		h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+		var sawBlind, sawDown bool
+		for fail := 1; fail <= 3; fail++ {
+			h.controlErr = nil
+			h.step(time.Minute) // counted failure
+			sawDown = sawDown || h.has(raiseDown)
+			if fail == 3 {
+				break
+			}
+			h.controlErr = errors.New("exit lost UDP")
+			for i := 0; i < gap; i++ {
+				h.step(time.Minute) // skip
+				sawBlind = sawBlind || h.has(raiseBlind)
+			}
+		}
+		if gap < 59 && (!sawDown || sawBlind) {
+			t.Fatalf("gap %dm: down %v, blind %v; want the critical and no blind", gap, sawDown, sawBlind)
+		}
+		if gap > 61 && !sawBlind {
+			t.Fatalf("gap %dm: the probe went blind between failures, but no blind alert", gap)
+		}
+		return h
+	}
+	run(10) // the old 10-minute stale window would have reset the streak here
+	run(50)
+	run(58)
+	run(65)
 }
