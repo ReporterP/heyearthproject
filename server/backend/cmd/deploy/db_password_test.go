@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ func TestDecideDatabaseURL(t *testing.T) {
 		want            dbURLDecision
 	}{
 		{"installed Hub (every --update-main): keep api.env, whatever server/.env says", withPw, otherPw, true, dbURLKeep},
+		{"api.env written but ALTER USER never ran (interrupted first install): adopt api.env's password", withPw, otherPw, false, dbURLAdoptHub},
 		{"installed Hub, no local DATABASE_URL: keep", withPw, "", true, dbURLKeep},
 		{"fresh Hub: generate, even if server/.env carries a (legacy) password", "", otherPw, false, dbURLGenerate},
 		{"fresh Hub, nothing anywhere: generate", "", "", false, dbURLGenerate},
@@ -113,4 +115,88 @@ func TestNoHardcodedDBPassword(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fakeHubDB records the order of the Hub-side steps.
+type fakeHubDB struct {
+	hubURL      string
+	rolePw      string
+	failWrite   bool
+	failVerify  bool
+	calls       []string
+	writtenURL  string
+	verifiedURL string
+}
+
+func (f *fakeHubDB) readHubURL() (string, error) {
+	f.calls = append(f.calls, "read")
+	return f.hubURL, nil
+}
+func (f *fakeHubDB) roleHasPassword() (bool, error) { return f.rolePw != "", nil }
+func (f *fakeHubDB) setRolePassword(pw string) error {
+	f.calls = append(f.calls, "alter")
+	f.rolePw = pw
+	return nil
+}
+func (f *fakeHubDB) writeHubURL(u string) error {
+	f.calls = append(f.calls, "write")
+	if f.failWrite {
+		return errors.New("ssh: connection lost")
+	}
+	f.writtenURL, f.hubURL = u, u
+	return nil
+}
+func (f *fakeHubDB) verifyURL(u string) error {
+	f.calls = append(f.calls, "verify")
+	f.verifiedURL = u
+	if f.failVerify {
+		return errors.New("password authentication failed")
+	}
+	return nil
+}
+
+func TestResolveDatabaseURLOrder(t *testing.T) {
+	const old = "postgres://postgres:0123abcd@localhost:5432/heyearth?sslmode=disable"
+	t.Run("fresh install: api.env is written BEFORE the role gets the password", func(t *testing.T) {
+		f := &fakeHubDB{}
+		u, err := resolveDatabaseURL(f, "")
+		if err != nil || strings.Join(f.calls, ",") != "read,write,alter" || u != f.writtenURL || databaseURLPassword(u) != f.rolePw {
+			t.Fatalf("u=%q err=%v calls=%v role=%q", u, err, f.calls, f.rolePw)
+		}
+	})
+	t.Run("fresh install, api.env cannot be written: the role keeps no password", func(t *testing.T) {
+		f := &fakeHubDB{failWrite: true}
+		if _, err := resolveDatabaseURL(f, ""); err == nil || f.rolePw != "" || strings.Contains(strings.Join(f.calls, ","), "alter") {
+			t.Fatalf("err=%v calls=%v role=%q", err, f.calls, f.rolePw)
+		}
+	})
+	t.Run("a run after a drop between write and ALTER adopts api.env's password", func(t *testing.T) {
+		f := &fakeHubDB{hubURL: old}
+		u, err := resolveDatabaseURL(f, "")
+		if err != nil || u != old || f.rolePw != "0123abcd" || strings.Join(f.calls, ",") != "read,alter" {
+			t.Fatalf("u=%q err=%v calls=%v role=%q", u, err, f.calls, f.rolePw)
+		}
+	})
+	t.Run("installed Hub: nothing written, the role untouched", func(t *testing.T) {
+		f := &fakeHubDB{hubURL: old, rolePw: "0123abcd"}
+		if u, err := resolveDatabaseURL(f, ""); err != nil || u != old || strings.Join(f.calls, ",") != "read" {
+			t.Fatalf("u=%q err=%v calls=%v", u, err, f.calls)
+		}
+	})
+	t.Run("api.env lost: server/.env's URL only after a successful test connection", func(t *testing.T) {
+		f := &fakeHubDB{rolePw: "secret"}
+		local := "postgres://postgres:secret@localhost:5432/heyearth?sslmode=disable"
+		if u, err := resolveDatabaseURL(f, local); err != nil || u != local || f.verifiedURL != local || strings.Contains(strings.Join(f.calls, ","), "alter") {
+			t.Fatalf("u=%q err=%v calls=%v", u, err, f.calls)
+		}
+		f = &fakeHubDB{rolePw: "secret", failVerify: true}
+		if _, err := resolveDatabaseURL(f, local); err == nil || !strings.Contains(err.Error(), "не подключается") || strings.Contains(strings.Join(f.calls, ","), "alter") {
+			t.Fatalf("a URL that does not connect must be refused without touching the role: err=%v calls=%v", err, f.calls)
+		}
+	})
+	t.Run("a quote in an adopted password cannot end the SQL literal", func(t *testing.T) {
+		if got := alterPasswordSQL("a'b"); got != "ALTER USER postgres PASSWORD 'a''b';"+string(rune(10)) {
+			t.Fatalf("%q", got)
+		}
+	})
 }
