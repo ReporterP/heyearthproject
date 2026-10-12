@@ -260,6 +260,7 @@ cat > "$T/bin/systemctl" <<'STUB'
 R="$T/etc/nginx/stream.d/heyearth.conf"; H="$T/etc/nginx/conf.d/heyearth.conf"
 if [ "$1 $2" = "reload nginx" ]; then
   echo "reload nginx" >> "$T/calls"
+  if [ "${STALE_RELOAD:-0}" = 1 ]; then exit 0; fi
   pp=0; if grep -Eq '^[[:space:]]*proxy_protocol[[:space:]]+on' "$R"; then pp=1; fi
   hp=$(grep -A1 'upstream nginx_https' "$R" | grep -Eo '127\.0\.0\.1:[0-9]+' | cut -d: -f2)
   xp=$(grep -A1 'upstream xray_vless' "$R" | grep -Eo '127\.0\.0\.1:[0-9]+' | cut -d: -f2)
@@ -277,6 +278,7 @@ case "$url" in
 esac
 addr=${res##*:}
 echo "curl $addr" >> "$T/calls"
+if [ "${CHANGE_DURING_PREFLIGHT:-0}" = 1 ] && [ ! -e "$T/changed" ]; then echo "# edited meanwhile" >> "$T/etc/nginx/stream.d/heyearth.conf"; : > "$T/changed"; fi
 read -r pp hp xp hl < "$T/live"
 ok=0
 if [ "$pp" = 1 ] && [ "$hp" = 8446 ] && [ "$hl" = 1 ]; then ok=1; fi
@@ -284,7 +286,7 @@ if [ "$pp" = 0 ] && [ "$hp" = 8443 ]; then ok=1; fi
 if [ "${CURL_FAIL:-0}" = 1 ]; then ok=0; fi
 if [ "${VERIFY_FAIL:-0}" = 1 ] && [ "$pp" = 1 ]; then ok=0; fi
 if [ "$ok" = 1 ]; then
-  if [ -n "$ua" ]; then ip=127.0.0.1; if [ "$pp" = 1 ]; then ip="$addr"; fi; echo "$ip - - [x] \"GET /api/v1/health HTTP/2.0\" 200 2 \"-\" \"$ua\"" >> "$T/access.log"; fi
+  if [ -n "$ua" ]; then ip=127.0.0.1; if [ "$pp" = 1 ]; then ip="$addr"; if [ "${WRONG_IP:-0}" = 1 ]; then ip=10.9.9.9; fi; fi; echo "$ip - - [x] \"GET /api/v1/health HTTP/2.0\" 200 2 \"-\" \"$ua\"" >> "$T/access.log"; fi
   printf 200
 else
   printf 502
@@ -337,8 +339,9 @@ func sppScenario(t *testing.T, start, mode string, vars map[string]string, pre s
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := map[string]string{"API_DOWN": "0", "NGINX_t_FAIL": "0", "CURL_FAIL": "0", "VERIFY_FAIL": "0", "NO_MIRROR": "0"}
-	return assignments(mergeVars(base, vars)) + `export API_DOWN NGINX_t_FAIL CURL_FAIL VERIFY_FAIL NO_MIRROR
+	base := map[string]string{"API_DOWN": "0", "NGINX_t_FAIL": "0", "CURL_FAIL": "0", "VERIFY_FAIL": "0", "NO_MIRROR": "0",
+		"STALE_RELOAD": "0", "WRONG_IP": "0", "CHANGE_DURING_PREFLIGHT": "0"}
+	return assignments(mergeVars(base, vars)) + `export API_DOWN NGINX_t_FAIL CURL_FAIL VERIFY_FAIL NO_MIRROR STALE_RELOAD WRONG_IP CHANGE_DURING_PREFLIGHT
 T=$(mktemp -d); export T; trap 'rm -rf "$T"' EXIT
 ` + sppHarnessStubs + `
 cat > "$R" <<'SPP_R_EOF'
@@ -401,7 +404,7 @@ func TestStreamProxySwitch(t *testing.T) {
 		t.Parallel()
 		out := run(t, "on", "off", nil, "")
 		want(t, out, "STATE rc=0", "STATE result=RESULT: off",
-			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;",
+			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;",
 			"STATE live=0 8443 10443 1", "STATE r_orig=changed h_orig=same")
 		if r := router(out); r != buildNginxStreamConf(sppDomain, false) {
 			t.Errorf("router after off:\n%s", r)
@@ -442,11 +445,29 @@ func TestStreamProxySwitch(t *testing.T) {
 		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-off", "STATE r_orig=same h_orig=same", "STATE live=0 8443 10443 0",
 			"STATE calls="+preflight+"nginx -t;")
 	})
+	t.Run("on: nginx logs the probe with another address than the Hub's: not accepted, rolled back", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, "off", "on", map[string]string{"WRONG_IP": "1"}, "")
+		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-off", "STATE r_orig=same h_orig=same", "STATE live=0 8443 10443 0")
+	})
+	t.Run("off whose reload did not take effect (probe still logged with the real address): rolled back to on", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, "on", "off", map[string]string{"STALE_RELOAD": "1"}, "")
+		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-on", "STATE r_orig=same h_orig=same")
+	})
+	t.Run("a file edited during the preflight: re-checked right before writing, nothing written", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, "off", "on", map[string]string{"CHANGE_DURING_PREFLIGHT": "1"}, "")
+		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-off", "STATE r_orig=changed h_orig=same", "STATE live=0 8443 10443 0")
+		if strings.Contains(out, "nginx -t;") || strings.Contains(router(out), "8446") || !strings.Contains(router(out), "# edited meanwhile") {
+			t.Errorf("the edited file must be left as it is, nothing tested or reloaded:\n%s", out)
+		}
+	})
 	t.Run("the target fails verification: previous files restored, reloaded and verified", func(t *testing.T) {
 		t.Parallel()
 		out := run(t, "off", "on", map[string]string{"VERIFY_FAIL": "1"}, "")
 		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-off", "STATE r_orig=same h_orig=same", "STATE live=0 8443 10443 0",
-			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;")
+			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;")
 	})
 }
 

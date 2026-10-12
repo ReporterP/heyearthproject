@@ -160,17 +160,48 @@ var (
 
 // streamRouter describes the SNI router of one stream config file.
 type streamRouter struct {
-	routerBlocks map[int]bool     // server blocks with proxy_pass $backend
-	upstreams    map[string]int   // name -> block index of the upstreams the router's map names
-	ports        map[string][]int // upstream name -> its 127.0.0.1 server ports
-	pp           []bool           // proxy_protocol on, per router block
+	routerBlocks map[int]bool        // server blocks with proxy_pass $backend
+	upstreams    map[string]int      // name -> block index of the upstreams the router's map names
+	ports        map[string][]int    // upstream name -> its 127.0.0.1 server ports
+	servers      map[string][]string // upstream name -> every `server` address in it
+	mapEntries   [][2]string         // the `$backend` map's key -> value entries, in order
+	pp           []bool              // proxy_protocol on, per router block
+}
+
+var reAnyUpstreamServer = regexp.MustCompile(`^server\s+(\S+?)(\s[^;]*)?;$`)
+
+// streamPPPorts are the only loopback backends the router may send PROXY headers to.
+var streamPPPorts = map[string]bool{"8443": true, nginxProxyProtocolPort: true, xrayRealityPort: true, xrayRealityPPPort: true}
+
+// checkRouterProxySafe: `proxy_protocol on;` applies to the whole router server, so every target
+// of the $backend map must be one of our four loopback backends. A third upstream (an MTProxy on
+// 127.0.0.1:4443, a direct address as a map value) would silently start receiving PROXY headers.
+func checkRouterProxySafe(r streamRouter) error {
+	seen := map[string]bool{}
+	for _, e := range r.mapEntries {
+		v := e[1]
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		if _, ok := r.upstreams[v]; !ok {
+			return fmt.Errorf("the $backend map sends %q to %q, which is not one of our upstreams: proxy_protocol on would send PROXY headers there too — refusing", e[0], v)
+		}
+		for _, addr := range r.servers[v] {
+			host, port, found := strings.Cut(addr, ":")
+			if !found || host != "127.0.0.1" || !streamPPPorts[port] {
+				return fmt.Errorf("upstream %s (used by the $backend map for %q) has server %s, outside 127.0.0.1:{8443,8446,10443,10444}: proxy_protocol on is router-wide and would send PROXY headers to it — route it outside this router or switch by hand", v, e[0], addr)
+			}
+		}
+	}
+	return nil
 }
 
 // parseStreamRouter finds the router (server blocks with `proxy_pass $backend;`), the upstreams
 // named by the `map ... $backend` block and their loopback server ports.
 func parseStreamRouter(content string) (streamRouter, []nginxStmt, error) {
 	stmts, blocks := scanNginx(content)
-	r := streamRouter{routerBlocks: map[int]bool{}, upstreams: map[string]int{}, ports: map[string][]int{}}
+	r := streamRouter{routerBlocks: map[int]bool{}, upstreams: map[string]int{}, ports: map[string][]int{}, servers: map[string][]string{}}
 	names := map[string]bool{}
 	for _, s := range stmts {
 		if s.block < 0 {
@@ -183,6 +214,7 @@ func parseStreamRouter(content string) (streamRouter, []nginxStmt, error) {
 		case b.kind == "map" && isBackendMap(b.head):
 			if m := reMapEntry.FindStringSubmatch(s.code); m != nil {
 				names[m[2]] = true
+				r.mapEntries = append(r.mapEntries, [2]string{m[1], m[2]})
 			}
 		}
 	}
@@ -210,6 +242,9 @@ func parseStreamRouter(content string) (streamRouter, []nginxStmt, error) {
 				if m := reUpstreamServer.FindStringSubmatch(s.code); m != nil {
 					p, _ := strconv.Atoi(m[1])
 					r.ports[name] = append(r.ports[name], p)
+				}
+				if m := reAnyUpstreamServer.FindStringSubmatch(s.code); m != nil {
+					r.servers[name] = append(r.servers[name], m[1])
 				}
 			}
 		}
@@ -283,6 +318,11 @@ func transformStream(content, mode string) (string, error) {
 	r, stmts, err := parseStreamRouter(content)
 	if err != nil {
 		return "", err
+	}
+	if mode == "on" {
+		if err := checkRouterProxySafe(r); err != nil {
+			return "", err
+		}
 	}
 	from, to := 0, 1
 	if mode == "off" {
@@ -383,6 +423,128 @@ func addHTTPProxyListener(content string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+var (
+	reRealIPHeaderAny = regexp.MustCompile(`^real_ip_header\s+(\S+);$`)
+	reServerName      = regexp.MustCompile(`^server_name\s+([^;]+);$`)
+)
+
+// httpServerBlocks summarises the server blocks of an http config: whether a block has a plain
+// 8443 ssl listen, the PROXY listener, its real_ip_header and its server_name tokens.
+type httpServerBlock struct {
+	https8443, ppListen bool
+	realIPHeader        string
+	names               []string
+}
+
+func httpServerBlocks(content string) []httpServerBlock {
+	stmts, blocks := scanNginx(content)
+	byBlock := map[int]*httpServerBlock{}
+	var order []int
+	for _, s := range stmts {
+		if s.block < 0 || blocks[s.block].kind != "server" {
+			continue
+		}
+		b := byBlock[s.block]
+		if b == nil {
+			b = &httpServerBlock{}
+			byBlock[s.block] = b
+			order = append(order, s.block)
+		}
+		if m := reHTTPS8443Listen.FindStringSubmatch(s.code); m != nil && strings.Contains(" "+m[3]+" ", " ssl ") {
+			b.https8443 = true
+		}
+		b.ppListen = b.ppListen || rePPListen.MatchString(s.code)
+		if m := reRealIPHeaderAny.FindStringSubmatch(s.code); m != nil {
+			b.realIPHeader = m[1]
+		}
+		if m := reServerName.FindStringSubmatch(s.code); m != nil {
+			b.names = append(b.names, strings.Fields(m[1])...)
+		}
+	}
+	out := make([]httpServerBlock, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byBlock[id])
+	}
+	return out
+}
+
+// checkHTTPRealIP refuses an HTTPS vhost (plain 8443 ssl listen) that already sets another
+// real_ip_header: the PROXY listener needs real_ip_header proxy_protocol in the same block, and
+// a second real_ip_header there is an nginx error (or silently the wrong address).
+func checkHTTPRealIP(content string) error {
+	for _, b := range httpServerBlocks(content) {
+		if b.https8443 && b.realIPHeader != "" && b.realIPHeader != "proxy_protocol" {
+			return fmt.Errorf("vhost %v already has real_ip_header %s; the PROXY listener needs real_ip_header proxy_protocol — adjust it by hand first", b.names, b.realIPHeader)
+		}
+	}
+	return nil
+}
+
+// serverNameCovers: does an nginx server_name token serve sni?
+func serverNameCovers(token, sni string) bool {
+	switch {
+	case token == sni:
+		return true
+	case strings.HasPrefix(token, "*."):
+		return strings.HasSuffix(sni, token[1:])
+	case strings.HasPrefix(token, "."):
+		return sni == token[1:] || strings.HasSuffix(sni, token)
+	}
+	return false
+}
+
+// checkPPCoverage: after the switch every SNI the router's map sends to the http nginx (the
+// upstream on 127.0.0.1:8446) must have a server block on the PROXY listener with that
+// server_name; otherwise nginx would serve it from the 8446 default server (wrong certificate,
+// wrong site). Regex map keys cannot be checked and are refused.
+func checkPPCoverage(router string, httpContents []string) error {
+	r, _, err := parseStreamRouter(router)
+	if err != nil {
+		return err
+	}
+	toHTTP := map[string]bool{}
+	for name, ports := range r.ports {
+		for _, p := range ports {
+			if strconv.Itoa(p) == nginxProxyProtocolPort {
+				toHTTP[name] = true
+			}
+		}
+	}
+	var served []string
+	for _, c := range httpContents {
+		for _, b := range httpServerBlocks(c) {
+			if b.ppListen {
+				served = append(served, b.names...)
+			}
+		}
+	}
+	var missing []string
+	for _, e := range r.mapEntries {
+		key, val := e[0], e[1]
+		if !toHTTP[val] || key == "default" || key == "hostnames" {
+			continue
+		}
+		if strings.HasPrefix(key, "~") {
+			return fmt.Errorf("the $backend map has a regex key %q for the http nginx: cannot verify it has a vhost on the PROXY listener — refusing", key)
+		}
+		ok := false
+		for _, tok := range served {
+			if serverNameCovers(tok, key) || tok == key {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("no vhost on the PROXY listener 127.0.0.1:%s serves %v (the stream sends them there in mode on) — add `listen 127.0.0.1:%s ssl http2 proxy_protocol;` to their server blocks", nginxProxyProtocolPort, missing, nginxProxyProtocolPort)
+	}
+	return nil
 }
 
 // ───────────────────────── the live state ─────────────────────────
@@ -566,19 +728,24 @@ check_443() {
   fi
   log "check: site 200 and Reality handshake ($SNI) through :443"
 }
-# check_real_ip: a request to the Hub's own public address shows that address in nginx's log.
-check_real_ip() {
+# check_client_ip MODE: a request to the Hub's own public address is logged by nginx with
+# exactly that address (on: the PROXY header arrives) or as 127.0.0.1 (off: proves the reload
+# really put the plain path back).
+check_client_ip() {
   pub=$(ip -4 -o addr show scope global 2>/dev/null | head -n 1 | sed 's/.* inet \([0-9.]*\)\/.*/\1/')
-  case "$pub" in ''|*[!0-9.]*) log "ERROR: no global IPv4 address to probe the real client IP with"; return 1 ;; esac
-  ua="heyearth-spp-$(date +%s)-$$"
+  case "$pub" in ''|*[!0-9.]*) log "ERROR: no global IPv4 address to probe the client IP with"; return 1 ;; esac
+  want=127.0.0.1; [ "$1" = on ] && want="$pub"
+  ua="heyearth-spp-$(date +%s)-$$-$1"
   code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 -A "$ua" --resolve "$DOMAIN:443:$pub" "https://$DOMAIN/api/v1/health" || true)
   [ "$code" = 200 ] || { log "ERROR: https://$DOMAIN/api/v1/health via $pub:443 -> HTTP ${code:-none}"; return 1; }
   sleep 1
   seen=$(grep -F "$ua" "$ACCESS_LOG" 2>/dev/null | tail -n 1 | cut -d' ' -f1)
-  if [ -z "$seen" ] || [ "$seen" = 127.0.0.1 ]; then log "ERROR: nginx logged the probe from ${seen:-nothing}, expected $pub"; return 1; fi
-  log "check: nginx sees the real client address ($seen)"
+  if [ "$seen" != "$want" ]; then log "ERROR: nginx logged the probe from ${seen:-nothing}, expected $want (mode $1)"; return 1; fi
+  log "check: nginx logs the probe from $seen (mode $1)"
 }
-verify() { api_ready && check_443 && { [ "$1" = off ] || check_real_ip; }; }
+verify() { api_ready && check_443 && check_client_ip "$1"; }
+# same_sha PATH SHA: the file still has the content the plan was computed from.
+same_sha() { [ "$(sha256sum "$1" 2>/dev/null | cut -d' ' -f1)" = "$2" ]; }
 restore() {
   [ -n "$CHANGED" ] || return 0
   for p in $CHANGED; do cat "$BK/$(printf '%s' "$p" | tr '/' '_').$STAMP.spp" > "$p"; done
@@ -612,10 +779,24 @@ fi
 mkdir -p "$BK"; chmod 700 "$BK"
 while read -r p sha b64; do
   [ -n "$p" ] || continue
+  # the preflight can take minutes (API wait, :443 checks): check again right before writing
+  if ! same_sha "$p" "$sha"; then
+    log "ERROR: $p changed during the preflight — not writing it"
+    restore && finish "rolled-back-to-$PREV" 1
+    finish FAILED 2
+  fi
   b="$BK/$(printf '%s' "$p" | tr '/' '_').$STAMP.spp"
-  cp -p "$p" "$b" || { log "ERROR: backup of $p failed"; restore; finish FAILED 1; }
+  if ! cp -p "$p" "$b"; then
+    log "ERROR: backup of $p failed"
+    restore && finish "rolled-back-to-$PREV" 1
+    finish FAILED 2
+  fi
   CHANGED="$CHANGED $p"
-  printf '%s' "$b64" | base64 -d > "$b.new" && cat "$b.new" > "$p" && rm -f "$b.new" || { log "ERROR: writing $p failed"; restore; finish "rolled-back-to-$PREV" 1; }
+  if ! { printf '%s' "$b64" | base64 -d > "$b.new" && cat "$b.new" > "$p" && rm -f "$b.new"; }; then
+    log "ERROR: writing $p failed"
+    restore && finish "rolled-back-to-$PREV" 1
+    finish FAILED 2
+  fi
   log "nginx: $p written for PROXY $MODE (previous: $b)"
 done <<< "$FILES"
 if ! nginx -t; then
@@ -655,9 +836,9 @@ func renderStreamProxySwitchScript(mode, prev, domain, sni string, files []strea
 		"__LOG__", streamProxyLog, "__FILES__", sb.String(), "__PP_XRAY__", xrayRealityPPPort).Replace(streamProxySwitchScript), nil
 }
 
-// streamProxyStartScript installs the rendered switch and starts it as a transient unit
-// (survives the SSH session); prints the log's line count before the start ("START <n>").
-func streamProxyStartScript(payloadB64 string) string {
+// streamProxyPrepareScript installs the rendered switch and prints the log's line count
+// ("START <n>"); it refuses while a switch is running. Nothing changes nginx yet.
+func streamProxyPrepareScript(payloadB64 string) string {
 	return `set -eu
 if systemctl is-active --quiet ` + streamProxyUnit + `; then echo "[stream-proxy] ERROR: a switch is already running (systemctl status ` + streamProxyUnit + `)"; exit 1; fi
 mkdir -p "$(dirname ` + streamProxyScriptPath + `)"
@@ -666,8 +847,44 @@ printf '%s' '` + payloadB64 + `' | base64 -d > ` + streamProxyScriptPath + `.tmp
 chmod 700 ` + streamProxyScriptPath + `.tmp && mv -f ` + streamProxyScriptPath + `.tmp ` + streamProxyScriptPath + `
 touch ` + streamProxyLog + ` && chmod 600 ` + streamProxyLog + `
 echo "START $(wc -l < ` + streamProxyLog + `)"
-systemd-run --quiet --collect --unit=` + streamProxyUnit + ` /bin/bash ` + streamProxyScriptPath + `
 `
+}
+
+// streamProxyLaunchCmd starts the switch as a transient unit (it survives the SSH session).
+const streamProxyLaunchCmd = "systemd-run --quiet --collect --unit=" + streamProxyUnit + " /bin/bash " + streamProxyScriptPath
+
+// streamSwitchLaunched tells, after the launch command returned an error (the SSH connection may
+// have dropped right after systemd-run), whether the switch runs anyway: the unit is
+// active/activating, or the log has this run's start line after line start.
+func streamSwitchLaunched(run remoteRun, start int) bool {
+	out, err := run(fmt.Sprintf("systemctl is-active %s; tail -n +%d %s", streamProxyUnit, start+1, streamProxyLog))
+	if err != nil {
+		return false
+	}
+	first, rest, _ := strings.Cut(out, "\n")
+	first = strings.TrimSpace(first)
+	return first == "active" || first == "activating" || strings.Contains(rest, "[stream-proxy] start:")
+}
+
+// launchStreamSwitch starts the switch. On an SSH error it reconnects and checks whether the unit
+// started after all before declaring a failure; it returns the runner to continue with.
+func launchStreamSwitch(run remoteRun, redial func() (remoteRun, error), start int, pause func()) (remoteRun, error) {
+	_, err := run(streamProxyLaunchCmd)
+	if err == nil {
+		return run, nil
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		pause()
+		r, derr := redial()
+		if derr != nil {
+			continue
+		}
+		if streamSwitchLaunched(r, start) {
+			return r, nil
+		}
+		return r, fmt.Errorf("systemd-run: %v (the unit is not running and the log has no new start line)", err)
+	}
+	return run, fmt.Errorf("systemd-run: %v, and the Hub is not reachable to check whether the switch started — look: tail -n 20 %s", err, streamProxyLog)
 }
 
 var streamProxyResultRe = regexp.MustCompile(`\[stream-proxy\] RESULT: (\S+)`)
@@ -726,19 +943,36 @@ func planStreamSwitch(run remoteRun, mode string) (prev, sni string, files []str
 	if mode == "on" && !hasMirror {
 		return "", "", nil, errors.New("xray has no PROXY Reality inbound vless-reality-pp on 127.0.0.1:10444 — deploy the API with it first (--update-main)")
 	}
+	if mode == "on" {
+		for _, p := range https {
+			if err := checkHTTPRealIP(contents[p]); err != nil {
+				return "", "", nil, fmt.Errorf("%s: %w", p, err)
+			}
+		}
+	}
+	routerTargets := map[string]string{}
 	for _, p := range routers {
 		t, err := transformStream(contents[p], mode)
 		if err != nil {
 			return "", "", nil, fmt.Errorf("%s: %w", p, err)
 		}
+		routerTargets[p] = t
 		if t != contents[p] {
 			files = append(files, streamSwitchFile{p, sha256Hex(contents[p]), t})
 		}
 	}
 	if mode == "on" {
+		var httpTargets []string
 		for _, p := range https {
-			if t := addHTTPProxyListener(contents[p]); t != contents[p] {
+			t := addHTTPProxyListener(contents[p])
+			httpTargets = append(httpTargets, t)
+			if t != contents[p] {
 				files = append(files, streamSwitchFile{p, sha256Hex(contents[p]), t})
+			}
+		}
+		for _, p := range routers {
+			if err := checkPPCoverage(routerTargets[p], httpTargets); err != nil {
+				return "", "", nil, fmt.Errorf("%s: %w", p, err)
 			}
 		}
 	}
@@ -764,9 +998,9 @@ func switchStreamProxyProtocol(client *ssh.Client, cfg *deployConfig, mode strin
 	if err != nil {
 		log.Fatalf("[stream-proxy] %v", err)
 	}
-	out, err := runSSHBash(client, "stream proxy: start", streamProxyStartScript(base64.StdEncoding.EncodeToString([]byte(script))), true)
+	out, err := runSSHBash(client, "stream proxy: prepare", streamProxyPrepareScript(base64.StdEncoding.EncodeToString([]byte(script))), true)
 	if err != nil {
-		log.Fatalf("[stream-proxy] не удалось запустить переключение: %v", err)
+		log.Fatalf("[stream-proxy] не удалось подготовить переключение (nginx не тронут): %v", err)
 	}
 	start := 0
 	for _, l := range strings.Split(out, "\n") {
@@ -781,19 +1015,31 @@ func switchStreamProxyProtocol(client *ssh.Client, cfg *deployConfig, mode strin
 		}
 		return sshRun(c), nil
 	}
-	result, run := pollStreamSwitch(sshRun(client), redial, start, 3*time.Minute, func() { time.Sleep(2 * time.Second) }, func(s string) { fmt.Print(s) })
+	pause := func() { time.Sleep(2 * time.Second) }
+	run, err := launchStreamSwitch(sshRun(client), redial, start, pause)
+	if err != nil {
+		log.Fatalf("[stream-proxy] переключение не запущено: %v", err)
+	}
+	result, run := pollStreamSwitch(run, redial, start, streamSwitchPollTimeout, pause, func(s string) { fmt.Print(s) })
 	switch result {
 	case "on", "off":
 		fmt.Printf("[stream-proxy] Готово: PROXY protocol %s\n", result)
 	case "":
-		log.Fatalf("[stream-proxy] нет результата за отведённое время. Состояние на Hub: go run ./cmd/deploy --ssh 'tail -n 40 %s; systemctl status %s'", streamProxyLog, streamProxyUnit)
+		log.Fatalf("[stream-proxy] переключение всё ещё идёт на Hub (или связь потеряна) — результата за %v нет. Следить: "+
+			"go run ./cmd/deploy --ssh 'tail -n 40 %s; systemctl status %s' — последняя строка RESULT: … покажет итог", streamSwitchPollTimeout, streamProxyLog, streamProxyUnit)
 	default:
-		log.Fatalf("[stream-proxy] ОШИБКА: %s (подробности выше и в %s на Hub). FAILED: сначала повторите противоположную команду (--stream-proxy-protocol %s)", result, streamProxyLog, prev)
+		log.Fatalf("[stream-proxy] ОШИБКА: %s (подробности выше и в %s на Hub). При FAILED сначала выполните противоположную команду (--stream-proxy-protocol %s)", result, streamProxyLog, prev)
 	}
 	if mode == "on" {
-		checkRealClientIPFromOutside(run, cfg.siteDomain)
+		if err := checkRealClientIPFromOutside(run, cfg.siteDomain); err != nil {
+			log.Fatalf("[stream-proxy] внешняя проверка: %v", err)
+		}
 	}
 }
+
+// streamSwitchPollTimeout covers the switch's worst case: API wait 60 s and the :443 checks
+// (~25 s) in the preflight, the same after the reload, and a rollback with its own checks.
+const streamSwitchPollTimeout = 8 * time.Minute
 
 // pollStreamSwitch prints the switch's new log lines until its RESULT line. When the SSH
 // connection drops it re-dials (the switch keeps running on the Hub) and returns the runner in
@@ -801,8 +1047,13 @@ func switchStreamProxyProtocol(client *ssh.Client, cfg *deployConfig, mode strin
 func pollStreamSwitch(run remoteRun, redial func() (remoteRun, error), start int, timeout time.Duration, pause func(), print func(string)) (string, remoteRun) {
 	seen := start
 	deadline := time.Now().Add(timeout)
+	lastOut := time.Now()
 	for time.Now().Before(deadline) {
 		pause()
+		if time.Since(lastOut) > time.Minute {
+			print(fmt.Sprintf("[stream-proxy] переключение ещё идёт на Hub… (следить: go run ./cmd/deploy --ssh 'tail -n 20 %s')\n", streamProxyLog))
+			lastOut = time.Now()
+		}
 		out, err := run(fmt.Sprintf("tail -n +%d %s", seen+1, streamProxyLog))
 		if err != nil {
 			print(fmt.Sprintf("[stream-proxy] SSH: %v — переподключаюсь (переключение на Hub продолжается)\n", err))
@@ -815,6 +1066,7 @@ func pollStreamSwitch(run remoteRun, redial func() (remoteRun, error), start int
 			continue
 		}
 		print(out)
+		lastOut = time.Now()
 		seen += strings.Count(out, "\n")
 		if r := streamProxyResult(out); r != "" {
 			return r, run
@@ -825,35 +1077,46 @@ func pollStreamSwitch(run remoteRun, redial func() (remoteRun, error), start int
 
 // checkRealClientIPFromOutside requests the health endpoint from this machine (outside the Hub)
 // with a unique User-Agent and looks the request up in nginx's access log on the Hub: its client
-// address must not be 127.0.0.1.
-func checkRealClientIPFromOutside(run remoteRun, domain string) {
+// address must not be 127.0.0.1. Any failure is an error (non-zero exit of the command).
+func checkRealClientIPFromOutside(run remoteRun, domain string) error {
 	nonce := make([]byte, 6)
 	_, _ = rand.Read(nonce)
 	ua := "heyearth-spp-ext-" + hex.EncodeToString(nonce)
 	req, err := http.NewRequest(http.MethodGet, "https://"+domain+"/api/v1/health", nil)
 	if err != nil {
-		fmt.Printf("[stream-proxy] WARN: внешняя проверка: %v\n", err)
-		return
+		return err
 	}
 	req.Header.Set("User-Agent", ua)
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
-		fmt.Printf("[stream-proxy] WARN: внешняя проверка https://%s/api/v1/health не прошла: %v\n", domain, err)
-		return
+		return classifyExternalProbe("", 0, nil, err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	time.Sleep(time.Second)
-	out, err := run("grep -F '" + ua + "' /var/log/nginx/access.log | tail -n 1 | cut -d' ' -f1")
+	out, rerr := run("grep -F '" + ua + "' /var/log/nginx/access.log | tail -n 1 | cut -d' ' -f1")
 	ip := strings.TrimSpace(out)
-	switch {
-	case err != nil:
-		fmt.Printf("[stream-proxy] WARN: access.log на Hub не прочитан: %v\n", err)
-	case ip == "":
-		fmt.Printf("[stream-proxy] WARN: запрос с этой машины (HTTP %d) не найден в /var/log/nginx/access.log\n", resp.StatusCode)
-	case ip == "127.0.0.1":
-		fmt.Printf("[stream-proxy] ОШИБКА: nginx видит запрос с этой машины как 127.0.0.1 — реальный IP не доходит. Откат: go run ./cmd/deploy --stream-proxy-protocol off\n")
-	default:
-		fmt.Printf("[stream-proxy] Внешняя проверка: nginx (и API через X-Real-IP) видит клиента как %s (HTTP %d)\n", ip, resp.StatusCode)
+	if err := classifyExternalProbe(ip, resp.StatusCode, rerr, nil); err != nil {
+		return err
 	}
+	fmt.Printf("[stream-proxy] Внешняя проверка: nginx (и API через X-Real-IP) видит клиента как %s (HTTP %d)\n", ip, resp.StatusCode)
+	return nil
+}
+
+// classifyExternalProbe judges the external request: it must have reached nginx (HTTP 200) and be
+// logged with a client address other than 127.0.0.1.
+func classifyExternalProbe(ip string, status int, readErr, reqErr error) error {
+	switch {
+	case reqErr != nil:
+		return fmt.Errorf("запрос https://…/api/v1/health с этой машины не прошёл: %v", reqErr)
+	case status != http.StatusOK:
+		return fmt.Errorf("запрос с этой машины вернул HTTP %d", status)
+	case readErr != nil:
+		return fmt.Errorf("access.log на Hub не прочитан: %v", readErr)
+	case ip == "":
+		return errors.New("запрос с этой машины не найден в /var/log/nginx/access.log")
+	case ip == "127.0.0.1":
+		return errors.New("nginx видит запрос с этой машины как 127.0.0.1 — реальный IP не доходит; откат: go run ./cmd/deploy --stream-proxy-protocol off")
+	}
+	return nil
 }
