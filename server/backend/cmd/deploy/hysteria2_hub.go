@@ -14,7 +14,9 @@ package main
 // task). The auth backend is loopback-only by handler check anyway.
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/heyearth/backend/internal/config"
@@ -39,24 +41,34 @@ func setupHysteria2Hub(client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[hysteria2-hub] Установка Hysteria2 на главный сервер...")
 
 	out, err := runSSH(client, hysteria2HubScript(), true)
-	if err != nil {
-		fmt.Println(out)
-		// Don't kill the entire deploy pipeline — operator might be re-running with
-		// migration not yet applied. Log and continue.
-		fmt.Printf("[hysteria2-hub] WARN: setup script returned error: %v\n", err)
-		return
-	}
 	fmt.Println(out)
+	// --setup-hysteria2-hub is a standalone mode: a failed run or a rolled-back upgrade must
+	// exit non-zero, not look like success to whoever (or whatever) ran it.
+	if err := hysteria2HubSetupError(out, err); err != nil {
+		log.Fatalf("[hysteria2-hub] ОШИБКА: %v\n[hysteria2-hub] Исправьте причину по выводу выше и повторите --setup-hysteria2-hub (скрипт идемпотентен).", err)
+	}
 	fmt.Println("[hysteria2-hub] Готово. Проверь: go run ./cmd/deploy --status")
+}
+
+// hysteria2HubSetupError is non-nil when the Hub script failed (runErr) and/or rolled the
+// hysteria binary back (that run also exits 1; the output check keeps the reason explicit).
+func hysteria2HubSetupError(out string, runErr error) error {
+	var rolledBack error
+	if strings.Contains(out, "[hysteria2-hub] ROLLED BACK") {
+		rolledBack = errors.New("hysteria2-server не заработал на новом бинарнике, выполнен откат на hysteria.bak")
+	}
+	return errors.Join(rolledBack, runErr)
 }
 
 // hysteria2HubScript is the idempotent provisioning script run as root on the Hub.
 func hysteria2HubScript() string {
 	return strings.NewReplacer("__HYSTERIA_INSTALL__", config.HysteriaInstallScript(), "__PORTHOP__", hysteria2PortHopRule,
-		"__START__", hysteria2HubStartScript).Replace(`set -e
+		"__MARK_PENDING__", hysteria2HubMarkPending, "__START__", hysteria2HubStartScript).Replace(`set -e
 
 # ── 1. Install / upgrade hysteria binary (previous kept as hysteria.bak) ──
 __HYSTERIA_INSTALL__
+# A replaced binary stays pending until step 9 passes, so a retry can still roll it back.
+__MARK_PENDING__
 # ── 2. System user (non-root, no login) ──
 if ! id hysteria >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin hysteria
@@ -293,29 +305,45 @@ echo "[hysteria2-hub] Setup complete."
 `)
 }
 
+// hysteria2HubMarkPending runs right after step 1 of hysteria2HubScript: a binary replaced in
+// this run (HY_REPLACED=1, set by config.HysteriaInstallScript) stays pending
+// (/usr/local/bin/hysteria.pending) until step 9's health check passes. HY_REPLACED lives for
+// one run only, so without the marker a retry of a run that aborted in between (geoip
+// download, SSH drop, setfacl, ...) would see "already installed", restart the server onto
+// the new binary and never roll it back.
+const hysteria2HubMarkPending = `if [ "${HY_REPLACED:-0}" = 1 ]; then : > /usr/local/bin/hysteria.pending; fi
+`
+
 // hysteria2HubStartScript is steps 8-9 of hysteria2HubScript: (re)start hysteria2-server and
-// smoke-check it. When the server is not active, step 1 replaced the binary in THIS run
-// (HY_REPLACED=1, set by config.HysteriaInstallScript) and hysteria.bak exists, it restores
-// the previous binary (temp + mv, .bak kept), restarts, prints "ROLLED BACK" and exits 1.
-// A failing restart is not fatal by itself (set -e): the is-active check decides, so a broken
-// new binary still reaches the rollback.
+// health-check it with two NRestarts samples 6 s apart (a crash-looping server under
+// Restart=on-failure can look active at any single instant). A healthy server clears
+// hysteria.pending. An unhealthy one, when the binary was replaced in this run (HY_REPLACED=1)
+// or by an earlier aborted run (hysteria.pending) and hysteria.bak exists, gets the previous
+// binary back (temp + mv, .bak kept), is restarted and re-checked, "ROLLED BACK" is printed
+// and the script exits 1. A failing restart is not fatal by itself (set -e): the health check
+// decides, so a broken new binary still reaches the rollback.
 const hysteria2HubStartScript = `# ── 8. Enable + start the service ──
 systemctl enable hysteria2-server >/dev/null 2>&1
 systemctl restart hysteria2-server || true
-sleep 2
 
-# ── 9. Smoke check; auto-rollback of a binary replaced in this run ──
-if systemctl is-active --quiet hysteria2-server; then
-  echo "[hysteria2-hub] hysteria2-server is active"
+# ── 9. Health check (active, no automatic restarts between two samples); auto-rollback ──
+hy_healthy() {
+  sleep 3; HY_NR0=$(systemctl show -p NRestarts --value hysteria2-server) || HY_NR0=x
+  sleep 6; HY_NR1=$(systemctl show -p NRestarts --value hysteria2-server) || HY_NR1=y
+  systemctl is-active --quiet hysteria2-server && [ "$HY_NR0" = "$HY_NR1" ]
+}
+if hy_healthy; then
+  rm -f /usr/local/bin/hysteria.pending
+  echo "[hysteria2-hub] hysteria2-server is active (NRestarts $HY_NR1, stable)"
   ss -ulnp | grep -E ':(50443)' || echo "[hysteria2-hub] WARN: no UDP listener on :50443"
 else
-  echo "[hysteria2-hub] ERROR: hysteria2-server failed to start"
+  echo "[hysteria2-hub] ERROR: hysteria2-server is not running steadily (NRestarts $HY_NR0 -> $HY_NR1)"
   journalctl -u hysteria2-server -n 30 --no-pager || true
-  if [ "${HY_REPLACED:-0}" = 1 ] && [ -f /usr/local/bin/hysteria.bak ]; then
+  if { [ "${HY_REPLACED:-0}" = 1 ] || [ -f /usr/local/bin/hysteria.pending ]; } && [ -f /usr/local/bin/hysteria.bak ]; then
     if cp -p /usr/local/bin/hysteria.bak /usr/local/bin/hysteria.rollback.tmp && mv -f /usr/local/bin/hysteria.rollback.tmp /usr/local/bin/hysteria; then
+      rm -f /usr/local/bin/hysteria.pending
       systemctl restart hysteria2-server || true
-      sleep 2
-      if systemctl is-active --quiet hysteria2-server; then HY_STATE=active; else HY_STATE="NOT active"; fi
+      if hy_healthy; then HY_STATE=active; else HY_STATE="NOT active"; fi
       HY_PREV=$(/usr/local/bin/hysteria version 2>/dev/null | awk '$1=="Version:"{print $2}') || HY_PREV=""
       echo "[hysteria2-hub] ROLLED BACK to previous binary ${HY_PREV:-?} (failed: $HY_WANT); hysteria2-server is $HY_STATE"
     else
