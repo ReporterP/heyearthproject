@@ -210,9 +210,7 @@ func buildClashConfig(userID string) (string, error) {
 
 	// Check protocol permissions for this user's plan
 	canVLESS := biz.IsProtocolAllowed(userID, "vless")
-	canSOCKS := biz.IsProtocolAllowed(userID, "socks")
-	canHTTP := biz.IsProtocolAllowed(userID, "http")
-	canHysteria2 := biz.IsProtocolAllowed(userID, "hysteria2")
+	canHysteria2 := biz.CanUseHysteria2(userID)
 
 	var proxies []string
 	var proxyNames []string
@@ -312,32 +310,6 @@ func buildClashConfig(userID string) (string, error) {
     up: "%d Mbps"
     down: "%d Mbps"`, name, host, hy2Password, obfsPassword, host, up, down))
 		}
-	}
-
-	// 2. SOCKS
-	if vlessUUID != "" && canSOCKS {
-		name := "HeYearth-SOCKS"
-		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: socks5
-    server: %s
-    port: 1080
-    username: "%s"
-    password: "%s"`, name, host, userID, vlessUUID))
-	}
-
-	// 3. HTTP proxy
-	if vlessUUID != "" && canHTTP {
-		name := "HeYearth-HTTP"
-		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: http
-    server: %s
-    port: 8080
-    username: "%s"
-    password: "%s"`, name, host, userID, vlessUUID))
 	}
 
 	namesList := ""

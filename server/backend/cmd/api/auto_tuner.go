@@ -173,7 +173,7 @@ type optimalConfig struct {
 // ─── Startup ───
 
 func StartAutoTuner() {
-	enabled := biz.GetSettingOrDefault("auto_tuner_enabled", "true")
+	enabled := biz.GetSettingOrDefault("auto_tuner_enabled", "false")
 	if enabled != "true" {
 		log.Println("[auto-tuner] Disabled via setting")
 		return
@@ -204,7 +204,7 @@ func StartAutoTuner() {
 					intervalHours = h
 					ticker.Reset(time.Duration(h) * time.Hour)
 				}
-				if biz.GetSettingOrDefault("auto_tuner_enabled", "true") != "true" {
+				if biz.GetSettingOrDefault("auto_tuner_enabled", "false") != "true" {
 					continue
 				}
 				runFullTuner()

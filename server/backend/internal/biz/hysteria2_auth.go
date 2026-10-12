@@ -148,6 +148,23 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	}
 }
 
+// CanUseHysteria2 — the same plan gate as ValidateHysteria2Auth (express_enabled AND
+// 'hysteria2'/'all' allowed). Builders use it so «Бамбук» is never offered to a plan
+// the auth backend would reject.
+func CanUseHysteria2(userID string) bool {
+	var allowed []string
+	var enabled bool
+	err := db.DB.QueryRow(`
+		SELECT p.allowed_protocols, p.express_enabled
+		FROM user_subscriptions us
+		JOIN users u ON u.id = us.user_id
+		JOIN plans p ON p.id = us.plan_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		ORDER BY us.valid_until DESC LIMIT 1
+	`, userID).Scan(pq.Array(&allowed), &enabled)
+	return err == nil && enabled && containsProto(allowed, "hysteria2")
+}
+
 // Hysteria2Status — snapshot of the Express subsystem state used by the admin UI.
 type Hysteria2Status struct {
 	BinaryInstalled bool   `json:"binary_installed"`

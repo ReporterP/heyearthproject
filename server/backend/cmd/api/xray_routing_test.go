@@ -33,10 +33,10 @@ func TestRoutingBuilders(t *testing.T) {
 		t.Fatalf("unexpected no-exit dns rule: %v", nd)
 	}
 	inbounds := []map[string]interface{}{
-		{"tag": "vless-reality"}, {"tag": "vless-xhttp"}, {"tag": "shadowsocks"},
+		{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
 		{"tag": "vless-xhttp-cdn"}, {"tag": "api-in"}, {"tag": "socks-awg"},
 	}
-	want := []string{"vless-reality", "vless-xhttp", "shadowsocks", "vless-xhttp-cdn", "socks-awg"}
+	want := []string{"vless-reality", "vless-xhttp", "vless-xhttp-cdn", "socks-awg"}
 	if got := userInboundTags(inbounds); !reflect.DeepEqual(got, want) {
 		t.Fatalf("userInboundTags = %v, want %v", got, want)
 	}
@@ -53,7 +53,7 @@ func newLeakFixture() leakFixture {
 	direct := map[string]interface{}{"protocol": "freedom", "tag": "direct"}
 	return leakFixture{
 		inbounds: []map[string]interface{}{
-			{"tag": "vless-reality"}, {"tag": "vless-xhttp"}, {"tag": "shadowsocks"},
+			{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
 			{"tag": "api-in"}, {"tag": "socks-awg"},
 		},
 		good:   []map[string]interface{}{newBlockOutbound(), direct},
@@ -133,7 +133,7 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	}
 
 	// (b) no balancers: one unconditional block rule must cover every user inbound
-	noSocksAWG := []string{"vless-reality", "vless-xhttp", "shadowsocks"}
+	noSocksAWG := []string{"vless-reality", "vless-xhttp"}
 	if checkNoDirectLeak(fx.inbounds, fx.noExit,
 		routingWith([]map[string]interface{}{dnsDirectRule(), noExitBlockRule(noSocksAWG)})) == nil {
 		t.Fatal("no-exit config with socks-awg missing from the block rule accepted")

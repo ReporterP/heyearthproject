@@ -15,7 +15,7 @@ import (
 // GET /api/admin/auto-tuner/status
 func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	status := biz.GetSettingOrDefault("auto_tuner_status", "idle")
-	enabled := biz.GetSettingOrDefault("auto_tuner_enabled", "true")
+	enabled := biz.GetSettingOrDefault("auto_tuner_enabled", "false")
 	lastRun := biz.GetSettingOrDefault("auto_tuner_last_run", "")
 	interval := biz.GetSettingOrDefault("auto_tuner_interval_hours", "4")
 

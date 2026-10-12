@@ -252,10 +252,9 @@ func SyncXrayConfig() error {
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
-					"serverNames":   []string{realitySNI, "www." + realitySNI},
-					"privateKey":    keys.PrivateKey,
-					"shortIds":      []string{keys.ShortID, ""},
-					"xPaddingBytes": "100-1000", // Anti-DPI: normalize packet sizes
+					"serverNames": []string{realitySNI, "www." + realitySNI},
+					"privateKey":  keys.PrivateKey,
+					"shortIds":    []string{keys.ShortID, ""},
 				},
 			},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
@@ -299,10 +298,9 @@ func SyncXrayConfig() error {
 				},
 				"realitySettings": map[string]interface{}{
 					"show": false, "dest": realitySNI + ":443", "xver": 0,
-					"serverNames":   []string{realitySNI, "www." + realitySNI},
-					"privateKey":    keys.PrivateKey,
-					"shortIds":      []string{keys.ShortID, ""},
-					"xPaddingBytes": "100-1000",
+					"serverNames": []string{realitySNI, "www." + realitySNI},
+					"privateKey":  keys.PrivateKey,
+					"shortIds":    []string{keys.ShortID, ""},
 				},
 				// T1.2: bilateral TCP keepalive — same rationale as vless-reality
 				// inbound above. XHTTP is HTTP/1.1 long-poll over TCP, so the
@@ -315,11 +313,6 @@ func SyncXrayConfig() error {
 					"tcpNoDelay":           true,
 				},
 			},
-			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
-		},
-		{
-			"tag": "shadowsocks", "listen": "0.0.0.0", "port": 8388, "protocol": "shadowsocks",
-			"settings": map[string]interface{}{"method": "2022-blake3-aes-128-gcm", "password": keys.SSPassword, "network": "tcp,udp"},
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		},
 	}
@@ -395,7 +388,7 @@ func SyncXrayConfig() error {
 	})
 
 	// Every inbound except api-in carries user traffic; the no-exit block rule
-	// must cover all of them (C2: shadowsocks, socks-awg and CDN used to leak).
+	// must cover all of them (C2: the old shadowsocks inbound, socks-awg and CDN used to leak).
 	userInbounds := userInboundTags(inbounds)
 
 	// ── Outbounds ──
@@ -711,7 +704,7 @@ func SyncXrayConfig() error {
 
 	} else {
 		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик на всех
-		// пользовательских inbound (включая shadowsocks, socks-awg, CDN).
+		// пользовательских inbound (включая socks-awg, CDN).
 		// Явные RU-direct правила выше продолжают работать. Исключение — DNS (порт 53):
 		// клиенты AWG резолвят через 1.1.1.1/8.8.8.8 внутри туннеля, без ответа не
 		// откроются даже RU-direct сайты. Запрос глушит outbound dns-hijack и отвечает
@@ -918,11 +911,7 @@ func buildExitNodeOutbound(node biz.ExitNodeTunnel) map[string]interface{} {
 			},
 			"streamSettings": map[string]interface{}{
 				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{
-					"fingerprint":   getFingerprint(),
-					"serverName":    sni,
-					"xPaddingBytes": "100-1000", // Normalize packet sizes — anti-DPI behavioral analysis
-				},
+				"realitySettings": map[string]interface{}{"fingerprint": getFingerprint(), "serverName": sni},
 				"sockopt": map[string]interface{}{
 					"tcpFastOpen":          true,
 					"tcpNoDelay":           true,

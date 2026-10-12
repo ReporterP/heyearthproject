@@ -319,7 +319,7 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 	//              (fixed bandwidth, ignores loss-induced backoff — beats operator
 	//              QoS that throttles UDP via packet loss injection)
 	// Both labels contain "only WiFi" — happ natively hides them on cellular.
-	if mainServerHost != "" {
+	if mainServerHost != "" && biz.CanUseHysteria2(userID) { // same gate as the auth backend
 		hy2Password, hy2Err := biz.GetUserHysteria2Password(userID)
 		obfsPassword := biz.GetHysteria2ObfsPassword()
 		// SNI MUST match the Hysteria2 server's TLS cert. The server uses a

@@ -624,7 +624,8 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
 	}
 
-	// Подключения доступны только при активной подписке (per-user UUID)
+	// Подключения только при активной подписке (per-user UUID). Поля SOCKS/HTTP-прокси больше
+	// не отдаются: inbound-ы 1080/8080 удалены, site/ и flutter-app/ эти поля не читают (grep 2026-10-12).
 	if access.CanConnect {
 		options, optErr := buildHubConnectionOptions(userID)
 		if optErr != nil {
@@ -633,37 +634,8 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["connection_options"] = options
 		for _, opt := range options {
-			switch opt.Protocol {
-			case "socks":
-				resp["socks5"] = opt.Uri
-			case "http":
-				resp["http_proxy"] = opt.Uri
-			case "vless":
+			if opt.Protocol == "vless" {
 				resp["vless_reality"] = opt.Uri
-			}
-		}
-		// Structured SOCKS/HTTP fields for the client UI — so the user-facing
-		// Dashboard can show a "copy username / copy password" block without
-		// parsing URIs on the frontend. Values come from the same settings
-		// keys as buildHubConnectionOptions() so they stay in sync.
-		socksUUID, _ := biz.GetUserVlessUUID(userID)
-		hubHost := biz.GetSettingOrDefault("main_server_host", "")
-		socksPort := biz.GetSettingOrDefault("socks5_port", "1080")
-		httpPort := biz.GetSettingOrDefault("http_proxy_port", "8080")
-		canSOCKS := biz.IsProtocolAllowed(userID, "socks")
-		canHTTP := biz.IsProtocolAllowed(userID, "http")
-		if socksUUID != "" && hubHost != "" {
-			if canSOCKS {
-				resp["socks5_host"] = hubHost
-				resp["socks5_port"] = socksPort
-				resp["socks5_user"] = userID
-				resp["socks5_pass"] = socksUUID
-			}
-			if canHTTP {
-				resp["http_proxy_host"] = hubHost
-				resp["http_proxy_port"] = httpPort
-				resp["http_proxy_user"] = userID
-				resp["http_proxy_pass"] = socksUUID
 			}
 		}
 	}

@@ -62,7 +62,7 @@ func main() {
 	vueSite := flag.Bool("vue-site", false, "обновить только Vue маркетинговый сайт")
 	deploySite := flag.Bool("deploy-site", false, "обновить Vue маркетинговый сайт (алиас для --vue-site)")
 	nginxOnly := flag.Bool("nginx", false, "обновить только nginx конфиг + SSL")
-	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality + SOCKS5 + HTTP proxy) на главный сервер")
+	setupXrayFlag := flag.Bool("setup-xray", false, "установить Xray (VLESS Reality) на главный сервер")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
@@ -73,6 +73,7 @@ func main() {
 	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль для exit-ноды")
 	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды")
 	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
+	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, бэкапы, fail2ban, journald, nginx stream timeout")
 	flag.Parse()
 
 	var mode string
@@ -101,6 +102,8 @@ func main() {
 		mode = "setup-hysteria2-hub"
 	case *setupAwgFlag:
 		mode = "setup-awg"
+	case *setupOpsFlag:
+		mode = "setup-ops"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
@@ -114,7 +117,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -174,6 +177,10 @@ func main() {
 	}
 	if mode == "fix-db" {
 		doFixDB(client, cfg)
+		return
+	}
+	if mode == "setup-ops" {
+		setupOpsHub(client, cfg)
 		return
 	}
 
@@ -1302,7 +1309,7 @@ json.dump(d, open('$KEYS_FILE', 'w'), indent=2)
   fi
 fi
 
-# ── 3. Записать Xray конфиг (4 протокола) ──
+# ── 3. Записать Xray конфиг (bootstrap: только VLESS Reality) ──
 cat > /opt/heyearth/xray/config.json <<XRAYEOF
 {
   "log": {"loglevel": "warning"},
@@ -1332,34 +1339,6 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
         }
       },
       "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    },
-    {
-      "tag": "shadowsocks",
-      "listen": "0.0.0.0",
-      "port": 8388,
-      "protocol": "shadowsocks",
-      "settings": {
-        "method": "2022-blake3-aes-128-gcm",
-        "password": "$SS_PASSWORD",
-        "network": "tcp,udp"
-      },
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    },
-    {
-      "tag": "socks5-proxy",
-      "listen": "0.0.0.0",
-      "port": 1080,
-      "protocol": "socks",
-      "settings": {"auth": "password", "accounts": [{"user": "heyearth", "pass": "$UUID"}], "udp": true},
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    },
-    {
-      "tag": "http-proxy",
-      "listen": "0.0.0.0",
-      "port": 8080,
-      "protocol": "http",
-      "settings": {"allowTransparent": false, "accounts": [{"user": "heyearth", "pass": "$UUID"}]},
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}
     }
   ],
   "outbounds": [
@@ -1375,12 +1354,12 @@ cat > /opt/heyearth/xray/config.json <<XRAYEOF
   }
 }
 XRAYEOF
-echo "[xray] Конфиг записан (VLESS:10443, SS:8388, SOCKS5:1080, HTTP:8080)"
+echo "[xray] Конфиг записан (VLESS:10443; остальное генерирует heyearth-api)"
 
 # ── 4. systemd-сервис ──
 cat > /etc/systemd/system/xray.service <<'SVCEOF'
 [Unit]
-Description=Xray Service (VLESS Reality + Shadowsocks + Proxy)
+Description=Xray Service (VLESS Reality)
 After=network.target
 Wants=network-online.target
 
@@ -1404,27 +1383,14 @@ sleep 1
 echo "[xray] Сервис запущен"
 systemctl status xray --no-pager -l 2>&1 | head -15 || true
 
-# ── 5. Открыть порты в firewall ──
+# ── 5. Firewall: только порты со слушателем (spec 2026-10-11, часть 4) ──
+# 443 → nginx stream (SNI → 8443 / 10443); 2443 → Xray XHTTP. 1080/8080/8388 удалены — не открывать.
 if command -v ufw >/dev/null 2>&1; then
-  ufw allow 22/tcp 2>/dev/null || true
-  ufw allow 80/tcp 2>/dev/null || true
-  ufw allow 443/tcp 2>/dev/null || true
-  ufw allow 1080/tcp 2>/dev/null || true
-  ufw allow 1080/udp 2>/dev/null || true
-  ufw allow 8080/tcp 2>/dev/null || true
-  ufw allow 8388/tcp 2>/dev/null || true
-  ufw allow 8388/udp 2>/dev/null || true
+  for r in 22/tcp 80/tcp 443/tcp 2443/tcp; do ufw allow "$r" 2>/dev/null || true; done
   ufw --force enable 2>/dev/null || true
-  echo "[xray] UFW правила добавлены"
   ufw status numbered 2>/dev/null || true
 else
-  # Если UFW нет — убедимся что iptables не блокирует
-  iptables -I INPUT -p tcp --dport 1080 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport 1080 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p tcp --dport 8080 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p tcp --dport 8388 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport 8388 -j ACCEPT 2>/dev/null || true
-  echo "[xray] iptables правила добавлены"
+  iptables -I INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null || true
 fi
 
 # ── 6. nginx stream модуль ──
@@ -1433,7 +1399,7 @@ echo "[xray] nginx stream модуль установлен"
 
 # ── 7. Проверить что порты слушаются ──
 echo "--- Проверка портов ---"
-ss -tlnp | grep -E ':(10443|8388|1080|8080)\s' || echo "ВНИМАНИЕ: не все порты слушаются!"
+ss -tlnp | grep -E ':10443\s' || echo "ВНИМАНИЕ: Xray не слушает 10443!"
 `
 	_, _ = runSSH(client, script, false)
 	fmt.Println("[xray] Установка завершена")
@@ -1514,11 +1480,7 @@ echo "  ss_password=$SS_PASSWORD"
 psql "%s" -c "
 INSERT INTO app_settings (key, value, updated_at) VALUES
   ('main_server_host', '$MAIN_HOST', CURRENT_TIMESTAMP),
-  ('vless_port', '443', CURRENT_TIMESTAMP),
-  ('socks5_port', '1080', CURRENT_TIMESTAMP),
-  ('http_proxy_port', '8080', CURRENT_TIMESTAMP),
-  ('ss_port', '8388', CURRENT_TIMESTAMP),
-  ('ss_method', '2022-blake3-aes-128-gcm', CURRENT_TIMESTAMP)
+  ('vless_port', '443', CURRENT_TIMESTAMP)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
 " 2>/dev/null || true
 
@@ -1569,7 +1531,7 @@ else
   echo 'Xray config not found'
 fi
 echo '--- ports ---'
-ss -tlnp 2>/dev/null | grep -E '10443|:443 |8388|1080|8080' || echo 'no matching ports'`, false)
+ss -tlnp 2>/dev/null | grep -E ':(443|2443|10443) ' || echo 'no matching ports'`, false)
 	fmt.Println(xrayOut)
 
 	// Hysteria2 (Express)
