@@ -117,6 +117,8 @@ const (
 	egressGuardPath  = "/opt/heyearth/bin/heyearth-egress-guard.sh"
 	egressGuardEnv   = "/etc/heyearth/egress-guard.env"
 	egressDropInPath = "/etc/systemd/system/xray.service.d/egress-guard.conf"
+	// egressGuardPrevDir keeps the replaced guard's files for an automatic rollback.
+	egressGuardPrevDir = "/var/backups/heyearth-egress-guard/prev"
 	// egressSocksPorts: hysteria2-client-<id> listens on 127.0.0.1:(1088+id) (+ 1090/1091 of the
 	// Express tunnel); the xray `socks` outbounds and hysteria-server's via_exit outbound dial them.
 	egressSocksPorts = "1088:1599"
@@ -301,11 +303,19 @@ const egressGuardDropIn = "# Installed by deploy --setup-ops (cmd/deploy/ops_egr
 //	                      loopback UDP listener (python3) must arrive (0 = delivered, 1 = lost,
 //	                      99 = could not test)
 //	keep_api_rule         re-apply the single 10085 owner rule directly in OUTPUT
-//	rollback              take the guard away again, then keep_api_rule: a rolled-back guard
-//	                      still leaves the xray API protected (until the next reboot)
+//	keep_prev_guard       copy the files of the guard being replaced (GUARD_FILES that exist)
+//	                      and whether its unit was enabled into PREV_DIR, before the install
+//	                      writes anything
+//	restore_prev_guard    put those files back (files the previous guard did not have are
+//	                      removed); if it was enabled, start and enable it again (0 = done)
+//	rollback              take the new guard away, then restore_prev_guard; when there was no
+//	                      enabled previous guard (or it cannot be restarted), keep_api_rule: a
+//	                      rolled-back guard never leaves the xray API open
 //
-// XRAY, CGROUP_DIR and HY_YAML are unit-test hooks.
+// XRAY, CGROUP_DIR, HY_YAML, GUARD_FILES and PREV_DIR are unit-test hooks.
 const egressGuardHelpers = `GUARD=` + egressGuardPath + `
+GUARD_FILES="${GUARD_FILES:-` + egressGuardPath + ` /etc/systemd/system/` + egressGuardUnit + ` ` + egressDropInPath + ` ` + egressGuardEnv + `}"
+PREV_DIR="${PREV_DIR:-` + egressGuardPrevDir + `}"
 XRAY="${XRAY:-/opt/heyearth/xray/xray}"
 CGROUP_DIR="${CGROUP_DIR:-/sys/fs/cgroup/system.slice/xray.service}"
 HY_YAML="${HY_YAML:-/etc/hysteria/server.yaml}"
@@ -359,9 +369,31 @@ keep_api_rule() {
   spec="-o lo -p tcp --syn -d 127.0.0.1 --dport 10085 -m owner ! --uid-owner $uid -j REJECT --reject-with tcp-reset"
   iptables -w 5 -C OUTPUT $spec 2>/dev/null || iptables -w 5 -I OUTPUT 1 $spec
 }
+keep_prev_guard() {
+  rm -rf "$PREV_DIR"; mkdir -p "$PREV_DIR/files"; chmod 700 "$PREV_DIR"
+  : > "$PREV_DIR/manifest"
+  for f in $GUARD_FILES; do
+    if [ -f "$f" ]; then cp -p "$f" "$PREV_DIR/files/$(printf '%s' "$f" | tr '/' '_')"; echo "$f" >> "$PREV_DIR/manifest"; fi
+  done
+  if systemctl is-enabled --quiet heyearth-egress-guard.service 2>/dev/null; then echo 1 > "$PREV_DIR/enabled"; else echo 0 > "$PREV_DIR/enabled"; fi
+  if [ -s "$PREV_DIR/manifest" ]; then echo "[ops] egress guard: previous guard kept in $PREV_DIR (restored if this install rolls back)"; fi
+}
+restore_prev_guard() {
+  [ -s "$PREV_DIR/manifest" ] || return 1
+  for f in $GUARD_FILES; do grep -qxF "$f" "$PREV_DIR/manifest" || rm -f "$f"; done
+  while IFS= read -r f; do cp -p "$PREV_DIR/files/$(printf '%s' "$f" | tr '/' '_')" "$f" || return 1; done < "$PREV_DIR/manifest"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  echo "[ops] egress guard: the previous guard's files are restored"
+  [ "$(cat "$PREV_DIR/enabled" 2>/dev/null)" = 1 ] || return 1
+  "$GUARD" start >/dev/null 2>&1 && systemctl enable --now heyearth-egress-guard.service >/dev/null 2>&1
+}
 rollback() {
   systemctl disable --now heyearth-egress-guard.service >/dev/null 2>&1 || true
   "$GUARD" stop >/dev/null 2>&1 || true
+  if restore_prev_guard; then
+    echo "[ops] egress guard rolled back to the PREVIOUS guard (its files restored, re-applied and enabled)"
+    return 0
+  fi
   if keep_api_rule; then
     echo "[ops] egress guard rolled back — xray API protection kept (10085 owner rule)"
     echo "[ops] (that rule is not boot-persistent while the guard is off: fix the cause and re-run --setup-ops)"
@@ -473,7 +505,7 @@ if command -v ip6tables >/dev/null 2>&1; then ip6tables -w 5 -S ` + egressChain 
 // address; xray's cgroup -> the API port on loopback and -> the Hub's own address. The usual
 // reason for a failure here is another firewall rule accepting loopback ahead of the chain.
 const egressGuardPostScript = `bad=0
-refused() { echo "[ops] FAILED: $1 — another firewall rule accepts the traffic ahead of the guard (restart the guard after ufw changes)"; bad=1; }
+refused() { echo "[ops] FAILED: $1 — another firewall rule accepts the traffic ahead of the guard (after ufw changes re-apply it: heyearth-egress-guard.sh start)"; bad=1; }
 if [ "$live" = 1 ]; then
   if [ "$api_user" != root ]; then
     if ! runuser -u "$api_user" -- timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/10085' 2>/dev/null; then
@@ -581,7 +613,7 @@ func renderEgressGuardInstallScript() string {
 	return `set -eu
 ` + egressGuardPreScript + opsPutFileFunc + egressGuardMigrateScript(
 		"/etc/systemd/system/xray-api-guard.service", "/opt/heyearth/bin/xray-api-guard.sh", "/etc/systemd/system/xray.service.d/api-guard.conf") +
-		egressGuardHoldAPIScript +
+		egressGuardHoldAPIScript + "keep_prev_guard\n" +
 		`put_file ` + egressGuardEnv + ` 644 "$(printf 'HUB_EXTRA_IPS="%s"\nHY_AUTH_PORTS=%s\n' "$extra" "$hy_auth_ports" | base64 -w0)"
 ` + putFileCalls([]opsFile{
 		{egressGuardPath, "755", renderEgressGuardScript()},

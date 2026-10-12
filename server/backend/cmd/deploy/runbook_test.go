@@ -85,3 +85,30 @@ func TestRestoreRunbookSteps(t *testing.T) {
 		}
 	}
 }
+
+// Guard operations in the runbook: re-apply with the script (systemctl restart would run
+// ExecStop and drop the chain and the 10085 rule for a moment), the phase-B API rollback
+// procedure, the previous-guard rollback.
+func TestRunbookGuardProcedures(t *testing.T) {
+	b, err := os.ReadFile(restoreRunbook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(b)
+	if strings.Contains(strings.ReplaceAll(doc, "**не** `systemctl restart heyearth-egress-guard`", ""), "systemctl restart heyearth-egress-guard") {
+		t.Error("the runbook advises systemctl restart heyearth-egress-guard; use heyearth-egress-guard.sh start")
+	}
+	sec := runbookSection(t, doc, "### Откат API ниже 4ab930e, когда гард в фазе B")
+	set, start := strings.Index(sec, "HY_AUTH_PORTS=8000,8001"), strings.Index(sec, "/opt/heyearth/bin/heyearth-egress-guard.sh start")
+	if set < 0 || start < 0 || set > start || strings.Index(sec, "откатить API") < start {
+		t.Error("phase-B API rollback: switch the guard to phase A (env + script start) BEFORE rolling the API back")
+	}
+	if egressHyAuthPortsA != "8000,8001" {
+		t.Errorf("the runbook's HY_AUTH_PORTS value must be the phase-A ports %q", egressHyAuthPortsA)
+	}
+	for _, w := range []string{egressGuardPrevDir, "rolled back to the PREVIOUS guard", "Шаги 5–9 идут без kernel egress guard"} {
+		if !strings.Contains(doc, w) {
+			t.Errorf("runbook lacks %q", w)
+		}
+	}
+}

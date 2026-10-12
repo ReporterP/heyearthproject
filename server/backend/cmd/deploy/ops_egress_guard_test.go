@@ -564,11 +564,15 @@ func TestEgressGuardInstallScript(t *testing.T) {
 	if prereq < 0 || migrate < 0 || hold < 0 || firstPut < 0 || prereq > migrate || migrate > hold || hold > firstPut {
 		t.Fatalf("order must be prerequisites (%d) < migration (%d) < held 10085 rule (%d) < first put_file (%d)", prereq, migrate, hold, firstPut)
 	}
+	// the replaced guard is kept after the held API rule and before anything is overwritten
+	if k := strings.Index(s, egressGuardHoldAPIScript+"keep_prev_guard"); k < 0 || k > firstPut {
+		t.Errorf("keep_prev_guard must run right after the held 10085 rule and before the first put_file")
+	}
 	if u := idx("does not resolve"); u < 0 || u > migrate {
 		t.Errorf("the heyearth-api user must be resolved before anything is changed")
 	}
 	// the phase and the baselines are decided/taken before the rules exist
-	startAt := idx(`"$GUARD" start`)
+	startAt := idx(`"$GUARD" start || { rollback;`)
 	for _, probe := range []string{"hy_phase=A; hy_auth_ports=", "before=0; if", "xray_before=0; if", "hy_before=0; if"} {
 		if i := idx(probe); i < 0 || i > startAt {
 			t.Errorf("%q must come before the guard is applied", probe)
@@ -833,7 +837,7 @@ echo "STATE pick=$(pick_port 8000 22 5432) pick_none=$(pick_port 8000 9999 || ec
 CGROUP_DIR="$T/no-such-cgroup"; xray_cgroup_connect 127.0.0.1 1 && rc=0 || rc=$?; echo "STATE no_cgroup_rc=$rc"
 mkdir -p "$T/cg"; CGROUP_DIR="$T/cg"; xray_cgroup_connect 127.0.0.1 1 && rc=0 || rc=$?; echo "STATE closed_port_rc=$rc moved=$([ -s "$T/cg/cgroup.procs" ] && echo 1 || echo 0)"
 systemctl() { echo "systemctl $*"; }
-GUARD=/bin/true; rollback; echo "STATE rollback_rc=$?"
+GUARD=/bin/true; PREV_DIR="$T/prev"; rollback; echo "STATE rollback_rc=$?"
 `)
 	if exit != 0 {
 		t.Fatalf("exit %d:\n%s", exit, out)
@@ -907,7 +911,7 @@ func TestEgressGuardRollback(t *testing.T) {
 	run := func(prelude string) string {
 		out, exit := runBash(t, `T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 `+egressGuardHelpers+`
-GUARD="$T/guard.sh"; printf '#!/bin/sh\necho "guard $*" >> "'$T'/log"\n' > "$GUARD"; chmod +x "$GUARD"
+PREV_DIR="$T/prev"; GUARD="$T/guard.sh"; printf '#!/bin/sh\necho "guard $*" >> "'$T'/log"\n' > "$GUARD"; chmod +x "$GUARD"
 systemctl() { echo "systemctl $*" >> "$T/log"; }
 iptables() { echo "iptables $*" >> "$T/log"; case " $* " in *" -C "*) return "${IPT_HAVE:-1}";; *" -I "*) return "${IPT_INSERT:-0}";; esac; }
 id() { echo 77; }
