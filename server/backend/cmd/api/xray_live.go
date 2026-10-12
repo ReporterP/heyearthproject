@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/xraydiff"
@@ -20,18 +21,36 @@ import (
 // xraydiff.UserOnly diffs are pushed into the running xray through api-in
 // (127.0.0.1:10085) with the xray CLI (Xray-core 26.3.27):
 //   rmu  → HandlerService.AlterInbound(RemoveUser), one call per inbound
-//   adu  → HandlerService.AlterInbound(AddUser), one call for all inbounds
 //   adrules WITHOUT -append → RoutingService.AddRule: replaces ALL rules+balancers
+//   adu  → HandlerService.AlterInbound(AddUser), one call for all inbounds
 //   lsrules / inboundusercount → verification
 // Any error or mismatch is returned and SyncXrayConfig falls back to restart.
 
-// xrayRuntimeStale: the running xray may differ from the config file (failed API
-// apply / restart / rename) → next SyncXrayConfig restarts unconditionally.
-// Guarded by xraySyncMu. In-memory only: an API process restart forgets it.
-var xrayRuntimeStale bool
+const (
+	// xrayUnitBinary is the binary the systemd unit runs (ExecStart). The CLI
+	// output this file parses was verified on that binary (26.3.27) only.
+	xrayUnitBinary = "/opt/heyearth/xray/xray"
+	// xrayStaleMarkerPath persists "the running xray may differ from config.json"
+	// across API restarts (see xrayRuntimeState).
+	xrayStaleMarkerPath = "/opt/heyearth/state/xray-runtime-stale"
+	// xrayLiveTempPattern names the payload files of runXrayAPIWithFile; they may
+	// hold the Reality private key (adu carries the full inbound).
+	xrayLiveTempPattern = "live-api-*.json"
+	// xrayLiveAlertKey — alert "a user-only change could not be applied live".
+	xrayLiveAlertKey = "xray-live-apply"
+)
 
-// xrayLiveAlertKey — alert "a user-only change could not be applied live".
-const xrayLiveAlertKey = "xray-live-apply"
+// xrayBinary returns the binary for `xray run -test` and `xray api`: the one the
+// systemd unit runs; LookPath only when it is absent.
+func xrayBinary() string {
+	if _, err := os.Stat(xrayUnitBinary); err == nil {
+		return xrayUnitBinary
+	}
+	if p, err := exec.LookPath("xray"); err == nil {
+		return p
+	}
+	return xrayUnitBinary
+}
 
 // truncateAlertDetails caps CLI output quoted in an alert (Telegram: 4096 chars).
 func truncateAlertDetails(s string) string {
@@ -40,6 +59,132 @@ func truncateAlertDetails(s string) string {
 		return string(r[:xraySyncAlertDetailsMax]) + "…"
 	}
 	return s
+}
+
+// ─────────────── Runtime state: may the running xray differ from config.json? ───────────────
+
+// xrayRuntimeState is the stale flag of the running xray. stale (in memory) is a
+// cache of the marker file:
+//   - begin writes the marker BEFORE the runtime is touched (live apply or
+//     rename + restart), so an API process dying midway leaves it behind;
+//   - markStale sets the flag (+ marker): failed live apply, rename or restart,
+//     or a revoked user still online — the next sync restarts unconditionally;
+//   - liveApplied removes the marker after a fully verified live apply, unless
+//     the runtime was marked stale meanwhile;
+//   - restarted clears both: the runtime equals the file again;
+//   - load (startup) sets the flag when a previous process left the marker.
+type xrayRuntimeState struct {
+	mu     sync.Mutex
+	stale  bool
+	marker string // "" = memory only
+}
+
+var xrayStale = &xrayRuntimeState{marker: xrayStaleMarkerPath}
+
+func (s *xrayRuntimeState) load() bool {
+	if s.marker == "" {
+		return false
+	}
+	if _, err := os.Stat(s.marker); err != nil {
+		return false
+	}
+	s.mu.Lock()
+	s.stale = true
+	s.mu.Unlock()
+	return true
+}
+
+func (s *xrayRuntimeState) isStale() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stale
+}
+
+func (s *xrayRuntimeState) begin(what string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writeMarkerLocked("in progress: " + what)
+}
+
+func (s *xrayRuntimeState) markStale(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stale = true
+	s.writeMarkerLocked("stale: " + reason)
+}
+
+func (s *xrayRuntimeState) liveApplied() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.stale {
+		s.removeMarkerLocked()
+	}
+}
+
+func (s *xrayRuntimeState) restarted() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stale = false
+	s.removeMarkerLocked()
+}
+
+func (s *xrayRuntimeState) writeMarkerLocked(reason string) {
+	if s.marker == "" {
+		return
+	}
+	line := time.Now().Format(time.RFC3339) + " " + reason + "\n"
+	if err := os.WriteFile(s.marker, []byte(line), 0o600); err != nil {
+		log.Printf("[xray-sync] WARN: stale marker %s: %v (state kept in memory only)", s.marker, err)
+	}
+}
+
+func (s *xrayRuntimeState) removeMarkerLocked() {
+	if s.marker == "" {
+		return
+	}
+	if err := os.Remove(s.marker); err != nil && !os.IsNotExist(err) {
+		log.Printf("[xray-sync] WARN: remove stale marker %s: %v", s.marker, err)
+	}
+}
+
+// prepareXrayLiveApply runs once at API startup, before the first sync: a stale
+// marker left by the previous process forces a restart; leftover payload files
+// (may contain the Reality private key) are removed.
+func prepareXrayLiveApply() {
+	if xrayStale.load() {
+		log.Printf("[xray-sync] stale marker %s found — first sync restarts xray", xrayStaleMarkerPath)
+	}
+	if n := cleanupXrayLiveTempFiles(filepath.Dir(xrayConfigPath)); n > 0 {
+		log.Printf("[xray-sync] removed %d leftover %s file(s)", n, xrayLiveTempPattern)
+	}
+}
+
+func cleanupXrayLiveTempFiles(dir string) int {
+	files, _ := filepath.Glob(filepath.Join(dir, xrayLiveTempPattern))
+	n := 0
+	for _, f := range files {
+		if err := os.Remove(f); err == nil {
+			n++
+		} else {
+			log.Printf("[xray-sync] WARN: remove %s: %v", f, err)
+		}
+	}
+	return n
+}
+
+// ─────────────── xray api CLI ───────────────
+
+// xrayCLI runs one `xray api <sub> <args>` call; a non-nil payload is written to
+// a temp file whose path is appended as the last argument. Injectable for tests.
+type xrayCLI func(sub string, args []string, payload []byte) (string, error)
+
+func xrayCLIRunner(xrayBin string) xrayCLI {
+	return func(sub string, args []string, payload []byte) (string, error) {
+		if payload == nil {
+			return runXrayAPI(xrayBin, sub, args...)
+		}
+		return runXrayAPIWithFile(xrayBin, sub, payload, args...)
+	}
 }
 
 // runXrayAPI runs `xray api <sub> --server=127.0.0.1:10085 -timeout=10 <args>` and
@@ -59,9 +204,9 @@ func runXrayAPI(xrayBin, sub string, args ...string) (string, error) {
 }
 
 // runXrayAPIWithFile writes payload to a 0600 temp file next to the config,
-// runs `xray api <sub> [flags] <file>` and removes the file.
-func runXrayAPIWithFile(xrayBin, sub string, payload []byte) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(xrayConfigPath), "live-api-*.json")
+// runs `xray api <sub> <args> <file>` and removes the file.
+func runXrayAPIWithFile(xrayBin, sub string, payload []byte, args ...string) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(xrayConfigPath), xrayLiveTempPattern)
 	if err != nil {
 		return "", fmt.Errorf("%s temp file: %w", sub, err)
 	}
@@ -73,17 +218,19 @@ func runXrayAPIWithFile(xrayBin, sub string, payload []byte) (string, error) {
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("%s temp file: %w", sub, err)
 	}
-	return runXrayAPI(xrayBin, sub, f.Name())
+	return runXrayAPI(xrayBin, sub, append(append([]string{}, args...), f.Name())...)
 }
 
 // applyUserOnlyDiff applies a UserOnly diff to the running xray and verifies it.
-func applyUserOnlyDiff(xrayBin string, d xraydiff.Result) error {
+// Order: rmu → adrules → adu, so a new user exists in its plan rule before it
+// can connect (no detour via the catch-all) and a revoked one is refused first.
+func applyUserOnlyDiff(run xrayCLI, d xraydiff.Result) error {
 	// 1. Remove deleted/modified users ("--" ends flag parsing before emails).
 	for _, ic := range d.Inbounds {
 		if len(ic.Removed) == 0 {
 			continue
 		}
-		out, err := runXrayAPI(xrayBin, "rmu", append([]string{"-tag=" + ic.Tag, "--"}, ic.Removed...)...)
+		out, err := run("rmu", append([]string{"-tag=" + ic.Tag, "--"}, ic.Removed...), nil)
 		if err != nil {
 			return err
 		}
@@ -91,30 +238,16 @@ func applyUserOnlyDiff(xrayBin string, d xraydiff.Result) error {
 			return fmt.Errorf("rmu %s: removed %d of %d: %s", ic.Tag, n, len(ic.Removed), strings.TrimSpace(out))
 		}
 	}
-	// 2. Add new/modified users: one adu call, one full inbound object per tag.
-	payload, total, err := d.AddUsersPayload()
-	if err != nil {
-		return fmt.Errorf("adu payload: %w", err)
-	}
-	if total > 0 {
-		out, err := runXrayAPIWithFile(xrayBin, "adu", payload)
-		if err != nil {
-			return err
-		}
-		if n := xraydiff.ParseAddedTotal(out); n != total {
-			return fmt.Errorf("adu: added %d of %d: %s", n, total, strings.TrimSpace(out))
-		}
-	}
-	// 3. Routing: replace all rules + balancers, then live order must equal config order.
+	// 2. Routing: replace all rules + balancers, then live order must equal config order.
 	if d.RoutingChanged {
 		rp, err := d.RoutingPayload()
 		if err != nil {
 			return err
 		}
-		if _, err := runXrayAPIWithFile(xrayBin, "adrules", rp); err != nil {
+		if _, err := run("adrules", nil, rp); err != nil {
 			return err
 		}
-		out, err := runXrayAPI(xrayBin, "lsrules")
+		out, err := run("lsrules", nil, nil)
 		if err != nil {
 			return err
 		}
@@ -126,6 +259,20 @@ func applyUserOnlyDiff(xrayBin string, d xraydiff.Result) error {
 			return fmt.Errorf("lsrules order mismatch: live %v, want %v", live, d.RuleTags)
 		}
 	}
+	// 3. Add new/modified users: one adu call, one full inbound object per tag.
+	payload, total, err := d.AddUsersPayload()
+	if err != nil {
+		return fmt.Errorf("adu payload: %w", err)
+	}
+	if total > 0 {
+		out, err := run("adu", nil, payload)
+		if err != nil {
+			return err
+		}
+		if n := xraydiff.ParseAddedTotal(out); n != total {
+			return fmt.Errorf("adu: added %d of %d: %s", n, total, strings.TrimSpace(out))
+		}
+	}
 	// 4. Every inbound with clients must hold exactly the configured number of users.
 	tags := make([]string, 0, len(d.UserCounts))
 	for tag := range d.UserCounts {
@@ -133,7 +280,7 @@ func applyUserOnlyDiff(xrayBin string, d xraydiff.Result) error {
 	}
 	sort.Strings(tags)
 	for _, tag := range tags {
-		out, err := runXrayAPI(xrayBin, "inboundusercount", "-tag="+tag)
+		out, err := run("inboundusercount", []string{"-tag=" + tag}, nil)
 		if err != nil {
 			return err
 		}
@@ -180,17 +327,15 @@ type xrayApplier struct {
 
 // apply compares newJSON with the running config (canonically, xraydiff) and
 // either does nothing, applies a user-only diff live, or renames + restarts.
-//
-// *stale is xrayRuntimeStale. It is set by a failed live apply, a failed rename
-// after a successful live apply and a failed restart, and cleared only by a
-// successful restart. While it is set the runtime may differ from the file, so
-// the config is installed and xray restarted even if the file is unchanged.
+// While st is stale the runtime may differ from the file, so the config is
+// installed and xray restarted even if the file is unchanged (see
+// xrayRuntimeState for when it is set and cleared).
 //
 // liveErr reports a failed live apply that fell back to the restart path (the
 // caller alerts on it); err is the error of the whole apply.
-func (a xrayApplier) apply(newJSON []byte, stale *bool) (action xrayApplyAction, diff xraydiff.Result, liveErr, err error) {
-	if *stale {
-		log.Println("[xray-sync] runtime stale (previous apply or restart failed) — restart")
+func (a xrayApplier) apply(newJSON []byte, st *xrayRuntimeState) (action xrayApplyAction, diff xraydiff.Result, liveErr, err error) {
+	if st.isStale() {
+		log.Println("[xray-sync] runtime stale (previous apply or restart failed, or revoked user online) — restart")
 	} else if running, rerr := a.readRunning(); rerr != nil {
 		log.Printf("[xray-sync] read running config: %v — restart", rerr)
 	} else {
@@ -202,16 +347,18 @@ func (a xrayApplier) apply(newJSON []byte, stale *bool) (action xrayApplyAction,
 			a.discard()
 			return xrayApplyUnchanged, d, nil, nil
 		case d.Kind == xraydiff.UserOnly:
+			st.begin("live apply")
 			if liveErr = a.applyLive(d); liveErr != nil {
-				*stale = true // partially applied: the restart below heals it
+				st.markStale("live apply failed: " + liveErr.Error()) // partially applied: the restart below heals it
 				log.Printf("[xray-sync] user-only apply via API failed: %v — fallback to restart", liveErr)
 				break
 			}
 			if ierr := a.install(); ierr != nil {
 				a.discard()
-				*stale = true // runtime has the new users, the file does not
+				st.markStale("rename after live apply failed") // runtime has the new users, the file does not
 				return xrayApplyLive, d, nil, fmt.Errorf("rename xray config after API apply: %w", ierr)
 			}
+			st.liveApplied()
 			return xrayApplyLive, d, nil, nil
 		default:
 			log.Printf("[xray-sync] structural change (%s) — restart", d.Reason)
@@ -220,14 +367,15 @@ func (a xrayApplier) apply(newJSON []byte, stale *bool) (action xrayApplyAction,
 	}
 
 	// Restart path: structural change, failed live apply, stale runtime.
+	st.begin("restart")
 	if ierr := a.install(); ierr != nil {
 		a.discard()
 		return xrayApplyRestart, diff, liveErr, fmt.Errorf("rename xray config: %w", ierr)
 	}
 	if rerr := a.restart(); rerr != nil {
-		*stale = true // the new file is in place but xray may still run the old config
+		st.markStale("restart failed") // the new file is in place but xray may still run the old config
 		return xrayApplyRestart, diff, liveErr, rerr
 	}
-	*stale = false
+	st.restarted()
 	return xrayApplyRestart, diff, liveErr, nil
 }

@@ -825,11 +825,8 @@ func SyncXrayConfig() error {
 		return fmt.Errorf("write xray config (tmp): %w", err)
 	}
 
-	// Validate config before applying
-	xrayBin := "/opt/heyearth/xray/xray"
-	if p, err := exec.LookPath("xray"); err == nil {
-		xrayBin = p
-	}
+	// Validate config before applying (same binary as the systemd unit and `xray api`)
+	xrayBin := xrayBinary()
 	validateCmd := exec.Command(xrayBin, "run", "-test", "-config", tmpPath)
 	if output, err := validateCmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
@@ -843,11 +840,11 @@ func SyncXrayConfig() error {
 	start := time.Now()
 	action, diff, liveErr, err := xrayApplier{
 		readRunning: func() ([]byte, error) { return os.ReadFile(xrayConfigPath) },
-		applyLive:   func(d xraydiff.Result) error { return applyUserOnlyDiff(xrayBin, d) },
+		applyLive:   func(d xraydiff.Result) error { return applyUserOnlyDiff(xrayCLIRunner(xrayBin), d) },
 		install:     func() error { return os.Rename(tmpPath, xrayConfigPath) },
 		discard:     func() { _ = os.Remove(tmpPath) },
 		restart:     restartXray,
-	}.apply(configJSON, &xrayRuntimeStale)
+	}.apply(configJSON, xrayStale)
 	if liveErr != nil {
 		RaiseAlert(xrayLiveAlertKey, AlertWarn, "Горячее применение пользователей не удалось",
 			truncateAlertDetails(liveErr.Error())+" — откат на рестарт xray")
@@ -1367,6 +1364,9 @@ func StartXraySyncLoop() {
 		log.Println("[xray-sync] Xray не установлен, синхронизация отключена")
 		return
 	}
+
+	// Stale marker of the previous process + leftover API payload files.
+	prepareXrayLiveApply()
 
 	// Начальная синхронизация
 	runXraySync("Начальная синхронизация")
