@@ -73,7 +73,8 @@ func main() {
 	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль для exit-ноды")
 	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды")
 	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
-	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, бэкапы, fail2ban, journald, nginx stream timeout")
+	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, ежедневный бэкап (+копия на exit: --backup-target), fail2ban, journald, nginx stream timeout, защита xray API")
+	backupTarget := flag.String("backup-target", "", "IP exit-ноды для копии бэкапа (--setup-ops); пароль: --exit-node-password или EXIT_NODE_SSH_PASSWORD")
 	flag.Parse()
 
 	var mode string
@@ -180,7 +181,7 @@ func main() {
 		return
 	}
 	if mode == "setup-ops" {
-		setupOpsHub(client, cfg)
+		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort)
 		return
 	}
 
@@ -1229,6 +1230,8 @@ server {
     listen 443;
     listen [::]:443;
     ssl_preread on;
+    # = xray connIdle 3600s; default 10m cut idle long-lived sessions behind the SNI router.
+    proxy_timeout 3600s;
     proxy_pass $backend;
 }
 `, domain)
