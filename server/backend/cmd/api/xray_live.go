@@ -70,7 +70,8 @@ func truncateAlertDetails(s string) string {
 //   - markStale sets the flag (+ marker): failed live apply, rename or restart,
 //     or a revoked user still online — the next sync restarts unconditionally;
 //   - liveApplied removes the marker after a fully verified live apply, unless
-//     the runtime was marked stale meanwhile;
+//     the runtime was marked stale meanwhile; untouched does the same when the
+//     rename before a restart failed (file and runtime unchanged);
 //   - restarted clears both: the runtime equals the file again;
 //   - load (startup) sets the flag when a previous process left the marker.
 type xrayRuntimeState struct {
@@ -113,7 +114,13 @@ func (s *xrayRuntimeState) markStale(reason string) {
 	s.writeMarkerLocked("stale: " + reason)
 }
 
-func (s *xrayRuntimeState) liveApplied() {
+func (s *xrayRuntimeState) liveApplied() { s.settledUnlessStale() }
+
+// untouched: begin was called but the runtime was not changed (rename failed
+// before the restart) — same as a verified live apply for the marker.
+func (s *xrayRuntimeState) untouched() { s.settledUnlessStale() }
+
+func (s *xrayRuntimeState) settledUnlessStale() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.stale {
@@ -323,6 +330,7 @@ type xrayApplier struct {
 	install     func() error                // atomic rename tmp → config path
 	discard     func()                      // remove the tmp file
 	restart     func() error                // systemctl restart xray
+	onRestart   func()                      // after a successful restart, before the stale state is cleared; may be nil
 }
 
 // apply compares newJSON with the running config (canonically, xraydiff) and
@@ -370,11 +378,15 @@ func (a xrayApplier) apply(newJSON []byte, st *xrayRuntimeState) (action xrayApp
 	st.begin("restart")
 	if ierr := a.install(); ierr != nil {
 		a.discard()
+		st.untouched() // file and runtime unchanged: drop the marker unless already stale
 		return xrayApplyRestart, diff, liveErr, fmt.Errorf("rename xray config: %w", ierr)
 	}
 	if rerr := a.restart(); rerr != nil {
 		st.markStale("restart failed") // the new file is in place but xray may still run the old config
 		return xrayApplyRestart, diff, liveErr, rerr
+	}
+	if a.onRestart != nil {
+		a.onRestart()
 	}
 	st.restarted()
 	return xrayApplyRestart, diff, liveErr, nil

@@ -520,3 +520,55 @@ func TestCleanupXrayLiveTempFiles(t *testing.T) {
 		t.Fatalf("left %v", left)
 	}
 }
+
+// A failed rename on the restart path leaves file and runtime untouched: with a
+// clean in-memory state the marker written by begin("restart") is removed (no
+// spurious restart after an API restart); a stale state keeps it.
+func TestXrayApplierInstallFailureOnRestartPath(t *testing.T) {
+	f := newFakeXray(t, liveCfgBase)
+	f.installErr = errors.New("EXDEV")
+	if _, _, err := f.sync(liveCfgPort); err == nil {
+		t.Fatal("rename failure must be returned")
+	}
+	wantCalls(t, f, "read,install,discard")
+	if f.st.isStale() || markerExists(f.st) {
+		t.Fatalf("structural + rename failure: stale=%v marker=%v, want clean", f.st.isStale(), markerExists(f.st))
+	}
+	if next := (&xrayRuntimeState{marker: f.st.marker}); next.load() {
+		t.Fatal("an API restart now must not force a restart")
+	}
+
+	// Already stale (here: failed live apply) → the marker and the flag stay.
+	f.liveErr = errors.New("adu failed")
+	if _, liveErr, err := f.sync(liveCfgCarol); err == nil || liveErr == nil {
+		t.Fatalf("liveErr=%v err=%v", liveErr, err)
+	}
+	if !f.st.isStale() || !markerExists(f.st) {
+		t.Fatalf("stale + rename failure: stale=%v marker=%v, want both kept", f.st.isStale(), markerExists(f.st))
+	}
+}
+
+// onRestart (revokedUsers.reset in production) runs after a successful restart
+// and BEFORE the stale state is cleared, so a collector verdict based on the old
+// watch list cannot re-mark the fresh runtime stale.
+func TestXrayApplierOnRestartBeforeStaleCleared(t *testing.T) {
+	f := newFakeXray(t, liveCfgBase)
+	f.st.markStale("revoked user still online")
+	var staleDuringHook []bool
+	a := f.applier()
+	a.onRestart = func() { staleDuringHook = append(staleDuringHook, f.st.isStale()) }
+
+	f.restartErr = errors.New("restart failed")
+	f.tmp = liveCfgBase
+	if _, _, _, err := a.apply([]byte(liveCfgBase), f.st); err == nil || len(staleDuringHook) != 0 {
+		t.Fatalf("failed restart: err=%v hook calls=%v (want none)", err, staleDuringHook)
+	}
+	f.restartErr = nil
+	f.tmp = liveCfgBase
+	if _, _, _, err := a.apply([]byte(liveCfgBase), f.st); err != nil {
+		t.Fatal(err)
+	}
+	if len(staleDuringHook) != 1 || !staleDuringHook[0] || f.st.isStale() {
+		t.Fatalf("hook saw stale=%v, after apply stale=%v; want hook once while still stale", staleDuringHook, f.st.isStale())
+	}
+}

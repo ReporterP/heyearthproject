@@ -20,6 +20,11 @@ import (
 
 const revokedWatchTTL = 10 * time.Minute
 
+// revokedTrafficThreshold: uplink+downlink of a revoked user within one
+// post-revocation stats window (~60 s) that forces a restart. Messenger
+// heartbeats of an idle open session stay below it; real use exceeds it.
+const revokedTrafficThreshold = 64 << 10 // 64 KiB
+
 type revokedWatch struct {
 	mu sync.Mutex
 	at map[string]time.Time // lower(email) → when the live apply that revoked it finished
@@ -64,12 +69,13 @@ func (w *revokedWatch) check(deltas map[string]*trafficDelta, windowStart, now t
 //   - an entry older than ttl is dropped: it stayed at zero long enough;
 //   - a window that began before the revocation (or has no known start) also
 //     holds legitimate traffic from before it → no verdict yet, keep;
-//   - otherwise any traffic means an open session survived rmu → online
-//     (dropped: the forced restart cuts it); zero or absent → keep watching.
+//   - otherwise uplink+downlink above revokedTrafficThreshold means an open
+//     session survived rmu and is in real use → online (dropped: the forced
+//     restart cuts it); at or below it (heartbeats, zero, absent) → keep watching.
 func revokedStillOnline(watch map[string]time.Time, deltas map[string]*trafficDelta, windowStart, now time.Time, ttl time.Duration) (online []string, keep map[string]time.Time) {
 	active := make(map[string]bool, len(deltas))
 	for email, d := range deltas {
-		if d != nil && (d.upload != 0 || d.download != 0) {
+		if d != nil && d.upload+d.download > revokedTrafficThreshold {
 			active[strings.ToLower(email)] = true
 		}
 	}

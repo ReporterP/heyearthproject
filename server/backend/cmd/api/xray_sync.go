@@ -844,6 +844,9 @@ func SyncXrayConfig() error {
 		install:     func() error { return os.Rename(tmpPath, xrayConfigPath) },
 		discard:     func() { _ = os.Remove(tmpPath) },
 		restart:     restartXray,
+		// The restart cut every open session: forget revoked users BEFORE the
+		// stale state is cleared, so a verdict on the old list cannot re-mark it.
+		onRestart: revokedUsers.reset,
 	}.apply(configJSON, xrayStale)
 	if liveErr != nil {
 		RaiseAlert(xrayLiveAlertKey, AlertWarn, "Горячее применение пользователей не удалось",
@@ -868,7 +871,6 @@ func SyncXrayConfig() error {
 
 	// Restarted: structural change, failed API apply or stale runtime.
 	recordXrayRestart()
-	revokedUsers.reset() // the restart cut every open session
 
 	// Notify clients that subscription config has changed.
 	biz.BumpSubscriptionVersion()

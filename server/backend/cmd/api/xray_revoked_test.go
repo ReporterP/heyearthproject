@@ -11,8 +11,8 @@ func TestRevokedStillOnline(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	revokedAt := t0.Add(10 * time.Second)
 	watch := func() map[string]time.Time { return map[string]time.Time{"bob": revokedAt} }
-	traffic := map[string]*trafficDelta{"Bob": {upload: 0, download: 4096}, "alice": {upload: 1, download: 1}}
-	quiet := map[string]*trafficDelta{"Bob": {}, "alice": {upload: 1, download: 1}}
+	traffic := map[string]*trafficDelta{"Bob": {upload: 4096, download: 1 << 20}, "alice": {upload: 1 << 20, download: 1 << 20}}
+	quiet := map[string]*trafficDelta{"Bob": {}, "alice": {upload: 1 << 20, download: 1 << 20}}
 	ttl := 10 * time.Minute
 
 	tests := []struct {
@@ -30,7 +30,13 @@ func TestRevokedStillOnline(t *testing.T) {
 		{name: "traffic in a window after the revocation: still online (case-insensitive)",
 			deltas: traffic, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), online: []string{"bob"}},
 		{name: "upload only counts too",
-			deltas: map[string]*trafficDelta{"bob": {upload: 52}}, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), online: []string{"bob"}},
+			deltas: map[string]*trafficDelta{"bob": {upload: 100 << 10}}, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), online: []string{"bob"}},
+		{name: "messenger heartbeat below the threshold: keep watching, no restart",
+			deltas: map[string]*trafficDelta{"bob": {upload: 3 << 10, download: 5 << 10}}, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), kept: true},
+		{name: "exactly the threshold (up+down) does not exceed it",
+			deltas: map[string]*trafficDelta{"bob": {upload: revokedTrafficThreshold / 2, download: revokedTrafficThreshold / 2}}, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), kept: true},
+		{name: "one byte over the threshold (up+down): still online",
+			deltas: map[string]*trafficDelta{"bob": {upload: revokedTrafficThreshold / 2, download: revokedTrafficThreshold/2 + 1}}, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), online: []string{"bob"}},
 		{name: "zero after the revocation: keep watching until the TTL",
 			deltas: quiet, windowStart: t0.Add(time.Minute), now: t0.Add(2 * time.Minute), kept: true},
 		{name: "absent from the stats: same as zero",
@@ -71,7 +77,7 @@ func TestRevokedWatch(t *testing.T) {
 	if got := watched(); !reflect.DeepEqual(got, []string{"bob", "dave"}) {
 		t.Fatalf("watched = %v, want [bob dave]", got)
 	}
-	online := w.check(map[string]*trafficDelta{"dave": {download: 10}, "carol": {download: 10}},
+	online := w.check(map[string]*trafficDelta{"dave": {download: 1 << 20}, "carol": {download: 1 << 20}},
 		t0.Add(time.Minute), t0.Add(2*time.Minute))
 	if !reflect.DeepEqual(online, []string{"dave"}) {
 		t.Fatalf("online = %v, want [dave]", online)
