@@ -967,7 +967,7 @@ func main() {
 
 	// Auth-only loopback listener for hysteria-server (127.0.0.1:8001). Bound before the
 	// first Hysteria2 sync, which writes this address into /etc/hysteria/server.yaml.
-	if err := startHysteria2AuthListener(handleHysteria2Auth); err != nil {
+	if _, err := startHysteria2AuthListener(handleHysteria2Auth); err != nil {
 		log.Fatalf("hysteria2 auth listener: %v", err)
 	}
 

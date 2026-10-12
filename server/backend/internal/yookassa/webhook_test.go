@@ -28,7 +28,8 @@ func TestIsFromYooKassa(t *testing.T) {
 		allowLocal bool
 		want       bool
 	}{
-		// what production sees: nginx on loopback, real client in X-Real-IP / appended to XFF
+		// nginx forwarding a known client address (X-Real-IP / appended to XFF): what it does on
+		// port 80, and on 443 once the stream SNI hop to :8443 carries the client address
 		{"YooKassa via nginx (X-Real-IP)", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": ykIP, "X-Forwarded-For": ykIP}, false, true},
 		{"YooKassa IPv6 via nginx", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": ykIPv6}, false, true},
 		{"YooKassa via nginx, XFF only (right-most entry)", true, "127.0.0.1:41000", map[string]string{"X-Forwarded-For": attacker + ", " + ykIP}, false, true},
@@ -44,11 +45,22 @@ func TestIsFromYooKassa(t *testing.T) {
 		{"spoofed headers on a non-nginx listener", false, "127.0.0.1:41000", map[string]string{"X-Real-IP": ykIP, "X-Forwarded-For": ykIP}, false, false},
 		// a direct connection from YooKassa's own address
 		{"direct peer in the whitelist", false, ykIP + ":443", nil, false, true},
-		// YOOKASSA_WEBHOOK_ALLOW_LOCAL: a local curl passes, an internet client behind nginx does not
-		{"allow-local: local curl", false, "127.0.0.1:41000", nil, true, true},
-		{"allow-local: local curl to the nginx-facing listener", true, "127.0.0.1:41000", nil, true, true},
-		{"allow-local: internet client via nginx", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": attacker, "X-Forwarded-For": attacker}, true, false},
-		{"allow-local off: local curl", false, "127.0.0.1:41000", nil, false, false},
+		// Production topology today: 443 → nginx stream SNI router → 127.0.0.1:8443 without the
+		// client address, so nginx reports EVERY client as 127.0.0.1. Such a request is never
+		// "local", whatever the flag says — and it is not in the whitelist either.
+		{"prod topology, allow-local on: any client via nginx", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": "127.0.0.1", "X-Forwarded-For": "127.0.0.1"}, true, false},
+		{"prod topology, allow-local on: X-Real-IP 127.0.0.1 only", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": "127.0.0.1"}, true, false},
+		{"prod topology, allow-local on: XFF 127.0.0.1 only", true, "127.0.0.1:41000", map[string]string{"X-Forwarded-For": "127.0.0.1"}, true, false},
+		{"prod topology, allow-local on, unmarked listener", false, "127.0.0.1:41000", map[string]string{"X-Real-IP": "127.0.0.1"}, true, false},
+		{"prod topology, allow-local off", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": "127.0.0.1", "X-Forwarded-For": "127.0.0.1"}, false, false},
+		{"allow-local on: empty proxy header still means proxied", true, "127.0.0.1:41000", map[string]string{"X-Forwarded-For": ""}, true, false},
+		{"allow-local on: internet client via nginx", true, "127.0.0.1:41000", map[string]string{"X-Real-IP": attacker, "X-Forwarded-For": attacker}, true, false},
+		// YOOKASSA_WEBHOOK_ALLOW_LOCAL: only a direct curl on the Hub (loopback peer, no proxy headers)
+		{"allow-local: direct local curl", false, "127.0.0.1:41000", nil, true, true},
+		{"allow-local: direct local curl over IPv6", false, "[::1]:41000", nil, true, true},
+		{"allow-local: direct local curl to the nginx-facing listener", true, "127.0.0.1:41000", nil, true, true},
+		{"allow-local: non-loopback peer without headers", false, attacker + ":5000", nil, true, false},
+		{"allow-local off: direct local curl", false, "127.0.0.1:41000", nil, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

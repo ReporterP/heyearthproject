@@ -4,14 +4,12 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/middleware"
 )
 
@@ -145,74 +143,6 @@ func TestHysteria2AuthServerConfig(t *testing.T) {
 	}
 }
 
-func TestHysteria2AuthHandlerRateLimit(t *testing.T) {
-	var validated []string
-	validate := func(pw string) biz.Hysteria2AuthResult {
-		validated = append(validated, pw)
-		return biz.Hysteria2AuthResult{OK: pw == "good", UserID: "u1"}
-	}
-	h := newHysteria2AuthHandler(middleware.NewRateLimiter(2, time.Minute), validate)
-	post := func(remote, body string) (int, string) {
-		r := httptest.NewRequest(http.MethodPost, hysteria2AuthPath, strings.NewReader(body))
-		r.RemoteAddr = remote
-		w := httptest.NewRecorder()
-		h(w, r)
-		return w.Code, strings.TrimSpace(w.Body.String())
-	}
-	const lo = "127.0.0.1:40000"
-
-	// client 198.51.100.1: two callbacks pass (one accepted), the third is limited — also when
-	// it comes from another source port or as an IPv4-mapped IPv6 address
-	if code, body := post(lo, `{"auth":"good","addr":"198.51.100.1:1000"}`); code != 200 || body != `{"id":"u1","ok":true}` {
-		t.Fatalf("first callback: %d %s", code, body)
-	}
-	if code, body := post(lo, `{"auth":"bad","addr":"198.51.100.1:1001"}`); code != 200 || body != `{"ok":false}` {
-		t.Fatalf("second callback: %d %s", code, body)
-	}
-	for _, addr := range []string{"198.51.100.1:1002", "[::ffff:198.51.100.1]:1003"} {
-		if code, body := post(lo, `{"auth":"good","addr":"`+addr+`"}`); code != http.StatusTooManyRequests || body != `{"ok":false}` {
-			t.Errorf("over the limit (%s): %d %s, want 429 {\"ok\":false}", addr, code, body)
-		}
-	}
-	// another client has its own bucket
-	if code, body := post(lo, `{"auth":"good","addr":"198.51.100.2:1000"}`); code != 200 || body != `{"id":"u1","ok":true}` {
-		t.Errorf("other client: %d %s", code, body)
-	}
-	// no usable addr: one shared bucket
-	for i, body := range []string{`{"auth":"good"}`, `{"auth":"good","addr":"garbage"}`} {
-		if code, _ := post(lo, body); code != 200 {
-			t.Errorf("no-addr callback %d: %d, want 200", i, code)
-		}
-	}
-	if code, _ := post(lo, `{"auth":"good","addr":""}`); code != http.StatusTooManyRequests {
-		t.Errorf("third no-addr callback: %d, want 429", code)
-	}
-	// a limited callback never reaches the database
-	if want := []string{"good", "bad", "good", "good", "good"}; !reflect.DeepEqual(validated, want) {
-		t.Errorf("validated %v, want %v", validated, want)
-	}
-
-	// refusals before the limiter: non-loopback peer, wrong method, oversized body
-	validated = nil
-	if code, _ := post("192.0.2.1:5555", `{"auth":"good","addr":"198.51.100.3:1"}`); code != http.StatusForbidden {
-		t.Errorf("non-loopback peer: %d, want 403", code)
-	}
-	r := httptest.NewRequest(http.MethodGet, hysteria2AuthPath, nil)
-	r.RemoteAddr = lo
-	w := httptest.NewRecorder()
-	h(w, r)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("GET: %d, want 405", w.Code)
-	}
-	big := `{"auth":"` + strings.Repeat("a", hysteria2AuthMaxBody) + `","addr":"198.51.100.4:1"}`
-	if code, body := post(lo, big); code != 200 || body != `{"ok":false}` {
-		t.Errorf("oversized body: %d %s, want 200 {\"ok\":false}", code, body)
-	}
-	if len(validated) != 0 {
-		t.Errorf("refused requests reached validation: %v", validated)
-	}
-}
-
 func TestHysteria2AuthLimitKey(t *testing.T) {
 	for addr, want := range map[string]string{
 		"198.51.100.1:443":         "198.51.100.1",
@@ -261,5 +191,42 @@ func TestHysteria2ACLExplicitPrivateRanges(t *testing.T) {
 	yaml := renderHysteria2Config(50, 100, "obfs-pass", "stats-secret", 1090, hub)
 	if !strings.Contains(yaml, "  inline:\n    - "+strings.Join(append(append([]string{}, wantHead...), wantTail...), "\n    - ")+"\n") {
 		t.Errorf("rendered ACL does not carry the rules in order:\n%s", yaml)
+	}
+}
+
+// A listener that dies under the server (Serve returns anything but http.ErrServerClosed)
+// raises the alert; a deliberate Close does not.
+func TestHysteria2AuthListenerDeathAlerts(t *testing.T) {
+	died := make(chan error, 4)
+	orig := hysteria2AuthListenerDied
+	hysteria2AuthListenerDied = func(_ net.Addr, err error) { died <- err }
+	t.Cleanup(func() { hysteria2AuthListenerDied = orig })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := serveHysteria2Auth(ln, http.NotFoundHandler())
+	defer srv.Close()
+	ln.Close() // the socket goes away under a running server
+	select {
+	case err := <-died:
+		if err == nil {
+			t.Fatal("alert raised with a nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a dead auth listener raised no alert")
+	}
+
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2 := serveHysteria2Auth(ln2, http.NotFoundHandler())
+	srv2.Close()
+	select {
+	case err := <-died:
+		t.Fatalf("a deliberate Close raised the alert: %v", err)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

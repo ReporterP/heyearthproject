@@ -15,6 +15,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -69,12 +70,26 @@ func newHysteria2AuthServer(auth http.Handler) *http.Server {
 	}
 }
 
-// serveHysteria2Auth serves the auth-only server on an already bound listener.
+// hysteria2AuthListenerAlertKey is the alert raised when the auth-only listener dies.
+const hysteria2AuthListenerAlertKey = "hysteria-auth-listener"
+
+// hysteria2AuthListenerDied is called when Serve on the auth-only listener returns for any
+// reason other than a deliberate Close/Shutdown (http.ErrServerClosed). The rest of the API
+// keeps running, but hysteria-server can no longer authenticate anybody: every Bamboo login
+// fails until heyearth-api is restarted. A variable so tests can observe the call.
+var hysteria2AuthListenerDied = func(addr net.Addr, err error) {
+	log.Printf("[hysteria2-auth] CRITICAL: auth listener %s stopped: %v — Bamboo logins fail until heyearth-api restarts", addr, err)
+	RaiseAlert(hysteria2AuthListenerAlertKey, AlertCritical, "Бамбук: авторизация не работает",
+		fmt.Sprintf("Слушатель авторизации Hysteria2 %s остановился: %v. Все входы в «Бамбук» отклоняются до перезапуска heyearth-api (systemctl restart heyearth-api).", addr, err))
+}
+
+// serveHysteria2Auth serves the auth-only server on an already bound listener and returns the
+// server (Close/Shutdown on it ends Serve without an alert).
 func serveHysteria2Auth(ln net.Listener, auth http.Handler) *http.Server {
 	srv := newHysteria2AuthServer(auth)
 	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[hysteria2-auth] listener %s stopped: %v", ln.Addr(), err)
+		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			hysteria2AuthListenerDied(ln.Addr(), err)
 		}
 	}()
 	return srv
@@ -82,13 +97,14 @@ func serveHysteria2Auth(ln net.Listener, auth http.Handler) *http.Server {
 
 // startHysteria2AuthListener binds hysteria2AuthListenAddr synchronously (a bind failure is
 // returned, not swallowed in a goroutine) and serves the auth handler on it. main calls it
-// before the first Hysteria2 sync, which points hysteria-server at this address.
-func startHysteria2AuthListener(auth http.Handler) error {
+// before the first Hysteria2 sync, which points hysteria-server at this address. The returned
+// server is the handle for a graceful Shutdown; main has no shutdown path for any listener yet.
+func startHysteria2AuthListener(auth http.Handler) (*http.Server, error) {
 	ln, err := net.Listen("tcp", hysteria2AuthListenAddr)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	serveHysteria2Auth(ln, auth)
+	srv := serveHysteria2Auth(ln, auth)
 	log.Printf("Hysteria2 auth callback on %s%s", hysteria2AuthListenAddr, hysteria2AuthPath)
-	return nil
+	return srv, nil
 }

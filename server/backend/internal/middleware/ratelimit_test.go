@@ -53,6 +53,28 @@ func TestExtractIP(t *testing.T) {
 	}
 }
 
+// Spent peeks without consuming: only Allow uses up the bucket.
+func TestRateLimiterSpent(t *testing.T) {
+	rl := NewRateLimiter(2, time.Minute)
+	for i := 0; i < 10; i++ {
+		if rl.Spent("k") {
+			t.Fatalf("Spent on an unused key (peek %d) must be false and must not consume", i)
+		}
+	}
+	if !rl.Allow("k") || rl.Spent("k") {
+		t.Fatalf("one of two used: not spent")
+	}
+	if !rl.Allow("k") || !rl.Spent("k") {
+		t.Fatalf("two of two used: spent")
+	}
+	if rl.Allow("k") {
+		t.Errorf("Allow past the limit")
+	}
+	if rl.Spent("other") {
+		t.Errorf("another key is independent")
+	}
+}
+
 // serve starts a real HTTP server on a fresh loopback port and returns its base URL.
 func serve(t *testing.T, base func(net.Listener) context.Context, h http.Handler) string {
 	t.Helper()

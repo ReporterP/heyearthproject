@@ -52,16 +52,18 @@ func init() {
 // the client, so accepting "any entry in the whitelist" let anybody through with
 // `X-Forwarded-For: <a YooKassa address>`.
 //
-// Если env YOOKASSA_WEBHOOK_ALLOW_LOCAL=true — также принимаем loopback (для тестов через
-// curl/test shop прямо на Hub). This is judged on the extracted client IP, so a request that
-// came through nginx counts as its real client, not as nginx's 127.0.0.1.
+// Если env YOOKASSA_WEBHOOK_ALLOW_LOCAL=true — также принимаем прямой curl на самом Hub (для
+// тестов/test shop): the TCP peer is loopback AND the request carries neither X-Real-IP nor
+// X-Forwarded-For, i.e. it did not come through nginx. Judging the extracted IP instead is not
+// enough: nginx reaches the HTTPS server through the stream SNI router on 127.0.0.1:8443, so in
+// production it reports every client as 127.0.0.1 (X-Real-IP: 127.0.0.1).
 func IsFromYooKassa(r *http.Request) bool {
+	if strings.EqualFold(os.Getenv("YOOKASSA_WEBHOOK_ALLOW_LOCAL"), "true") && isDirectLocal(r) {
+		return true
+	}
 	ip := net.ParseIP(middleware.ExtractIP(r))
 	if ip == nil {
 		return false
-	}
-	if ip.IsLoopback() && strings.EqualFold(os.Getenv("YOOKASSA_WEBHOOK_ALLOW_LOCAL"), "true") {
-		return true
 	}
 	for _, ipnet := range parsedYookassaNets {
 		if ipnet.Contains(ip) {
@@ -69,6 +71,20 @@ func IsFromYooKassa(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// isDirectLocal reports a request made on the Hub itself, not through a proxy: the TCP peer is
+// a loopback address and no proxy header is present at all (an empty header line counts).
+func isDirectLocal(r *http.Request) bool {
+	if len(r.Header.Values("X-Real-IP")) > 0 || len(r.Header.Values("X-Forwarded-For")) > 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ParseNotification парсит тело webhook-запроса.

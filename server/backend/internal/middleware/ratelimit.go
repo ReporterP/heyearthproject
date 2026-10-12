@@ -61,6 +61,20 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return false
 }
 
+// Spent reports whether key has used up its requests for the current window, WITHOUT consuming
+// one. Together with Allow it lets a caller count only some outcomes against a limit: check
+// Spent before the work, call Allow only for the outcomes that count. Concurrent callers can
+// overshoot such a limit by the number of requests in flight; it is meant as a coarse cap.
+func (rl *RateLimiter) Spent(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.buckets[key]
+	if !ok || time.Since(b.lastReset) >= rl.window {
+		return false
+	}
+	return b.tokens <= 0
+}
+
 func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
