@@ -853,7 +853,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	if !noExit {
 		// Catch-all balancer: every exit path ("exit-" never matches probe-vr-*).
 		balancers := []map[string]interface{}{
-			newBalancer("exit-balancer", []string{exitAllSelector}, exitCfg.routes[0].primary, exitCosts(exitCfg.routes)),
+			newBalancer("exit-balancer", []string{exitAllSelector}, exitFallback(exitCfg.routes), exitCosts(exitCfg.routes)),
 		}
 
 		// Per-plan balancers come from plan_servers and exit health only, never
@@ -890,7 +890,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 			}
 			tag := fmt.Sprintf("plan-%d-balancer", planID)
 			planBalancers[planID] = tag
-			balancers = append(balancers, newBalancer(tag, selector, planRoutes[0].primary, exitCosts(planRoutes)))
+			balancers = append(balancers, newBalancer(tag, selector, exitFallback(planRoutes), exitCosts(planRoutes)))
 		}
 		routing["balancers"] = balancers
 
@@ -946,13 +946,16 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	}
 
 	// Observatory: probes every exit path (exit-N.hy / exit-N.vr, never probe-vr-*) for the
-	// leastLoad balancers, which drop the paths it sees dead (see newBalancer).
+	// leastLoad balancers, which drop the paths it sees dead (see newBalancer). enableConcurrency:
+	// all paths every probeInterval; without it xray probes ONE path per interval (app/observatory
+	// observer.go), i.e. with six paths each would be seen only every three minutes.
 	var observatory map[string]interface{}
 	if !noExit {
 		observatory = map[string]interface{}{
-			"subjectSelector": []string{exitAllSelector},
-			"probeInterval":   "30s",
-			"probeURL":        "https://www.google.com/generate_204",
+			"subjectSelector":   []string{exitAllSelector},
+			"probeInterval":     "30s",
+			"probeURL":          "https://www.google.com/generate_204",
+			"enableConcurrency": true,
 		}
 	}
 

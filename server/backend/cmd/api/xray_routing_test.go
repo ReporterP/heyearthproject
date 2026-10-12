@@ -12,7 +12,8 @@ func TestRoutingBuilders(t *testing.T) {
 	b := newBalancer("plan-3-balancer", []string{"exit-2."}, "exit-2.hy", costs)
 	strategy, _ := b["strategy"].(map[string]interface{})
 	if b["fallbackTag"] != "exit-2.hy" || b["tag"] != "plan-3-balancer" || !reflect.DeepEqual(b["selector"], []string{"exit-2."}) ||
-		strategy["type"] != "leastLoad" || !reflect.DeepEqual(strategy["settings"], map[string]interface{}{"costs": costs}) {
+		strategy["type"] != "leastLoad" || !reflect.DeepEqual(strategy["settings"],
+		map[string]interface{}{"costs": costs, "baselines": exitBaselines, "expected": exitLeastLoadExpected}) {
 		t.Fatalf("unexpected balancer: %v", b)
 	}
 	if e := newBalancer("plan-9-balancer", nil, "", nil); e["fallbackTag"] != "block" {

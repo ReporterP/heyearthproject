@@ -7,18 +7,27 @@
       ],
       "strategy": {
         "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
           "costs": [
             {
               "match": "^exit-2\\.hy$",
               "regexp": true,
-              "value": 10
+              "value": 1
             },
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 1000
+              "value": 100
             }
-          ]
+          ],
+          "expected": 1
         },
         "type": "leastLoad"
       },
@@ -31,18 +40,27 @@
       ],
       "strategy": {
         "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
           "costs": [
             {
               "match": "^exit-2\\.hy$",
               "regexp": true,
-              "value": 10
+              "value": 1
             },
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 1000
+              "value": 100
             }
-          ]
+          ],
+          "expected": 1
         },
         "type": "leastLoad"
       },
@@ -55,18 +73,27 @@
       ],
       "strategy": {
         "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
           "costs": [
             {
               "match": "^exit-2\\.hy$",
               "regexp": true,
-              "value": 10
+              "value": 1
             },
             {
               "match": "^exit-2\\.vr$",
               "regexp": true,
-              "value": 1000
+              "value": 100
             }
-          ]
+          ],
+          "expected": 1
         },
         "type": "leastLoad"
       },
@@ -86,6 +113,7 @@
     }
   ],
   "observatory": {
+    "enableConcurrency": true,
     "probeInterval": "30s",
     "probeURL": "https://www.google.com/generate_204",
     "subjectSelector": [

@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"math"
 	"reflect"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/xraydiff"
@@ -22,6 +25,13 @@ func exitFixture(id, weight int, status string, withVR bool) biz.ExitNodeTunnel 
 	if !withVR {
 		n.TunnelUUID, n.TunnelPubKey, n.TunnelShortID = "", "", ""
 	}
+	return n
+}
+
+// legacyVLESSExit is a primary VLESS exit from the old admin form: its own port, no Hysteria.
+func legacyVLESSExit(id int) biz.ExitNodeTunnel {
+	n := testExit(id, "vless")
+	n.TunnelPort = 8443
 	return n
 }
 
@@ -49,25 +59,30 @@ type xrayCost struct {
 	Value  float64 `json:"value"`
 }
 
+type xrayBalancerView struct {
+	Tag         string   `json:"tag"`
+	Selector    []string `json:"selector"`
+	FallbackTag string   `json:"fallbackTag"`
+	Strategy    struct {
+		Type     string `json:"type"`
+		Settings struct {
+			Costs     []xrayCost `json:"costs"`
+			Baselines []string   `json:"baselines"`
+			Expected  int32      `json:"expected"`
+		} `json:"settings"`
+	} `json:"strategy"`
+}
+
 type xrayView struct {
 	Inbounds  []map[string]any `json:"inbounds"`
 	Outbounds []map[string]any `json:"outbounds"`
 	Routing   struct {
-		Rules     []map[string]any `json:"rules"`
-		Balancers []struct {
-			Tag         string   `json:"tag"`
-			Selector    []string `json:"selector"`
-			FallbackTag string   `json:"fallbackTag"`
-			Strategy    struct {
-				Type     string `json:"type"`
-				Settings struct {
-					Costs []xrayCost `json:"costs"`
-				} `json:"settings"`
-			} `json:"strategy"`
-		} `json:"balancers"`
+		Rules     []map[string]any   `json:"rules"`
+		Balancers []xrayBalancerView `json:"balancers"`
 	} `json:"routing"`
 	Observatory struct {
-		SubjectSelector []string `json:"subjectSelector"`
+		SubjectSelector   []string `json:"subjectSelector"`
+		EnableConcurrency bool     `json:"enableConcurrency"`
 	} `json:"observatory"`
 }
 
@@ -87,6 +102,41 @@ func (v xrayView) outboundTags() []string {
 		tags = append(tags, tag)
 	}
 	return tags
+}
+
+func (v xrayView) balancer(t *testing.T, tag string) xrayBalancerView {
+	t.Helper()
+	for _, b := range v.Routing.Balancers {
+		if b.Tag == tag {
+			return b
+		}
+	}
+	t.Fatalf("balancer %s not generated", tag)
+	return xrayBalancerView{}
+}
+
+// costsByTag maps every tag of tags that a cost entry of b matches to that cost.
+func (b xrayBalancerView) costsByTag(t *testing.T, tags []string) map[string]float64 {
+	t.Helper()
+	got := map[string]float64{}
+	for _, c := range b.Strategy.Settings.Costs {
+		if !c.Regexp || !strings.HasPrefix(c.Match, "^") || !strings.HasSuffix(c.Match, "$") {
+			t.Errorf("cost %q must be an anchored regexp (a plain match is a substring match)", c.Match)
+		}
+		re := regexp.MustCompile(c.Match)
+		var hit []string
+		for _, tag := range tags {
+			if re.MatchString(tag) {
+				hit = append(hit, tag)
+			}
+		}
+		if len(hit) != 1 {
+			t.Errorf("%s: cost %q matches %v, want exactly one tag", b.Tag, c.Match, hit)
+			continue
+		}
+		got[hit[0]] = c.Value
+	}
+	return got
 }
 
 func byTag(items []map[string]any, tag string) map[string]any {
@@ -114,6 +164,14 @@ func xraySelect(tags, selectors []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// resetExitNotes gives the test a fresh "last logged" state of buildExitConfig.
+func resetExitNotes(t *testing.T) {
+	t.Helper()
+	old := exitNotes
+	exitNotes = &exitNoteLog{}
+	t.Cleanup(func() { exitNotes = old })
 }
 
 // Review Focus 1 → with exits 2, 3 and 20 a plan bound to exit 2 never selects exit-20.*; the
@@ -155,6 +213,15 @@ func TestXrayExitSelectorsAreExact(t *testing.T) {
 	}
 }
 
+// Without enableConcurrency xray probes one path per probeInterval: with six paths each would be
+// seen every three minutes, and leastLoad would route on stale verdicts.
+func TestXrayExitObservatoryProbesConcurrently(t *testing.T) {
+	cfg, _ := genConfig(t, exitsInputs(multiExits()...), quotaCutoff{})
+	if v := viewOf(t, cfg); !v.Observatory.EnableConcurrency {
+		t.Fatalf("observatory.enableConcurrency must be true: %+v", v.Observatory)
+	}
+}
+
 // Weights and the Hysteria-first order come from leastLoad costs, never from duplicated tags.
 func TestXrayExitCostsAndNoDuplicateTags(t *testing.T) {
 	cfg, _ := genConfig(t, exitsInputs(multiExits()...), quotaCutoff{})
@@ -166,42 +233,239 @@ func TestXrayExitCostsAndNoDuplicateTags(t *testing.T) {
 		}
 		seen[tag] = true
 	}
-	// weight 1 → 10, weight 5 → 6, weight 10 → 1; the TCP path of a Hysteria exit costs ×100.
-	want := map[string]float64{"exit-2.hy": 10, "exit-2.vr": 1000, "exit-3.hy": 6, "exit-3.vr": 600, "exit-20.hy": 1, "exit-20.vr": 100}
-	for _, bal := range v.Routing.Balancers {
-		if bal.Tag != "plan-6-balancer" {
-			continue
+	// Relative to the best priority of the balancer (weight 10): gap 0 → 1, gap 5 → 100,
+	// gap 9 → 324; the TCP path of a Hysteria exit costs ×100.
+	want := map[string]float64{"exit-20.hy": 1, "exit-20.vr": 100, "exit-3.hy": 100, "exit-3.vr": 10000, "exit-2.hy": 324, "exit-2.vr": 32400}
+	tags := slices.Sorted(maps.Keys(want))
+	for _, bal := range []string{"exit-balancer", "plan-6-balancer"} {
+		if got := v.balancer(t, bal).costsByTag(t, tags); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s costs = %v, want %v", bal, got, want)
 		}
-		got := map[string]float64{}
-		for _, c := range bal.Strategy.Settings.Costs {
-			if !c.Regexp || !strings.HasPrefix(c.Match, "^") || !strings.HasSuffix(c.Match, "$") {
-				t.Errorf("cost %q must be an anchored regexp (a plain match is a substring match)", c.Match)
+	}
+	// A balancer of one exit: that exit is its best priority, whatever its load_weight.
+	if got := v.balancer(t, "plan-3-balancer").costsByTag(t, tags); !reflect.DeepEqual(got, map[string]float64{"exit-2.hy": 1, "exit-2.vr": 100}) {
+		t.Errorf("plan-3 costs = %v", got)
+	}
+}
+
+// The single path of a VLESS-only exit costs as its priority: no ×100, it is not a fallback.
+func TestXrayExitVROnlyCost(t *testing.T) {
+	legacy := legacyVLESSExit(3)
+	legacy.LoadWeight = 4
+	cfg, _ := genConfig(t, exitsInputs(exitFixture(2, 5, "healthy", true), legacy), quotaCutoff{})
+	got := viewOf(t, cfg).balancer(t, "exit-balancer").costsByTag(t, []string{"exit-2.hy", "exit-2.vr", "exit-3.vr"})
+	if want := map[string]float64{"exit-2.hy": 1, "exit-2.vr": 100, "exit-3.vr": 4}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("costs = %v, want %v (exit-3.vr: one priority step below, no TCP factor)", got, want)
+	}
+	if c := exitCosts([]exitRoute{{id: 5, weight: 1, hasVR: true, primary: "exit-5.vr"}}); asJSON(c) != `[{"match":"^exit-5\\.vr$","regexp":true,"value":1}]` {
+		t.Fatalf("a lone VLESS-only exit: %s", asJSON(c))
+	}
+}
+
+// The strategy settings every balancer carries (exitBaselines explains the values).
+func TestXrayExitBalancerStrategyPinned(t *testing.T) {
+	cfg, _ := genConfig(t, exitsInputs(multiExits()...), quotaCutoff{})
+	v := viewOf(t, cfg)
+	if len(v.Routing.Balancers) != 4 {
+		t.Fatalf("balancers: %d", len(v.Routing.Balancers))
+	}
+	for _, b := range v.Routing.Balancers {
+		s := b.Strategy.Settings
+		if want := []string{"50ms", "100ms", "200ms", "400ms", "800ms", "1600ms"}; !reflect.DeepEqual(s.Baselines, want) {
+			t.Errorf("%s: baselines %v, want %v", b.Tag, s.Baselines, want)
+		}
+		if s.Expected != 1 {
+			t.Errorf("%s: expected %d, want 1 (else no path under the last baseline = fallbackTag)", b.Tag, s.Expected)
+		}
+	}
+	for _, tc := range []struct {
+		gap, cost int
+	}{{0, 1}, {1, 4}, {2, 16}, {4, 64}, {9, 324}} {
+		if got := exitTierCost(tc.gap); got != tc.cost {
+			t.Errorf("exitTierCost(%d) = %d, want %d", tc.gap, got, tc.cost)
+		}
+	}
+}
+
+// ─────────────── leastLoad as xray runs it ───────────────
+
+// leastLoadSelect reproduces, for one balancer of a generated config, the selection of
+// Xray-core v1.260327.0 (26.3.27) leastLoad with the plain observatory:
+// app/router/strategy_leastload.go getNodes (alive candidates only; RTTDeviationCost =
+// Duration(Delay × √cost)), leastloadSort and selectLeastLoad, with the cost lookup of
+// app/router/weight.go (first matching entry; regexp → FindString, plain → substring; default 1).
+// alive maps a path to its probe delay in ms, a path missing from it is dead. xray picks one of
+// the returned paths at random per connection; none means every connection takes fallbackTag.
+func leastLoadSelect(t *testing.T, v xrayView, balancer string, alive map[string]int64) []string {
+	t.Helper()
+	b := v.balancer(t, balancer)
+	s := b.Strategy.Settings
+	cost := func(tag string) float64 {
+		for _, c := range s.Costs {
+			matched := ""
+			if c.Regexp {
+				matched = regexp.MustCompile(c.Match).FindString(tag)
+			} else if strings.Contains(tag, c.Match) {
+				matched = c.Match
 			}
-			re := regexp.MustCompile(c.Match)
-			var hit []string
-			for tag := range want {
-				if re.MatchString(tag) {
-					hit = append(hit, tag)
-				}
-			}
-			if len(hit) != 1 {
-				t.Errorf("cost %q matches %v, want exactly one tag", c.Match, hit)
+			if matched == "" {
 				continue
 			}
-			got[hit[0]] = c.Value
+			if c.Value <= 0 {
+				t.Fatalf("cost %q has no positive value (xray would derive one from the tag)", c.Match)
+			}
+			return float64(float32(c.Value)) // StrategyWeight.value is a float32
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("plan-6 costs = %v, want %v", got, want)
-		}
-		return
+		return 1
 	}
-	t.Fatal("plan-6-balancer not generated")
+	type node struct {
+		tag       string
+		avg, cost time.Duration
+	}
+	var nodes []node
+	for _, tag := range xraySelect(v.outboundTags(), b.Selector) {
+		if ms, ok := alive[tag]; ok {
+			d := time.Duration(ms) * time.Millisecond
+			nodes = append(nodes, node{tag, d, time.Duration(float64(d) * math.Pow(cost(tag), 0.5))})
+		}
+	}
+	sort.Slice(nodes, func(i, j int) bool { // CountFail/CountAll are equal (1) without burst
+		if nodes[i].cost != nodes[j].cost {
+			return nodes[i].cost < nodes[j].cost
+		}
+		if nodes[i].avg != nodes[j].avg {
+			return nodes[i].avg < nodes[j].avg
+		}
+		return nodes[i].tag < nodes[j].tag
+	})
+	tags := func(sel []node) []string {
+		out := make([]string, 0, len(sel))
+		for _, n := range sel {
+			out = append(out, n.tag)
+		}
+		sort.Strings(out)
+		return out
+	}
+	// selectLeastLoad
+	if len(nodes) == 0 {
+		return nil
+	}
+	expected := int(s.Expected)
+	if expected > len(nodes) {
+		return tags(nodes)
+	}
+	if expected <= 0 {
+		expected = 1
+	}
+	if len(s.Baselines) == 0 {
+		return tags(nodes[:expected])
+	}
+	count := 0
+	for _, raw := range s.Baselines {
+		baseline, err := time.ParseDuration(raw)
+		if err != nil || baseline <= 0 {
+			t.Fatalf("baseline %q", raw)
+		}
+		for i := count; i < len(nodes); i++ {
+			if nodes[i].cost >= baseline {
+				break
+			}
+			count = i + 1
+		}
+		if count >= expected {
+			break
+		}
+	}
+	if s.Expected > 0 && count < expected {
+		count = expected
+	}
+	return tags(nodes[:count])
+}
+
+// Load sharing and priorities of the generated balancers, as xray 26.3.27 selects.
+func TestXrayExitLeastLoadSelection(t *testing.T) {
+	equal := viewOf(t, mustGen(t, exitsInputs(exitFixture(2, 1, "healthy", true), exitFixture(3, 1, "healthy", true))))
+	prio := viewOf(t, mustGen(t, exitsInputs(exitFixture(2, 5, "healthy", true), exitFixture(3, 1, "healthy", true))))
+	for _, tc := range []struct {
+		name     string
+		v        xrayView
+		balancer string
+		alive    map[string]int64
+		want     []string
+	}{
+		{"two equal exits at 60/70 ms share the load; their TCP paths stay out", equal, "exit-balancer",
+			map[string]int64{"exit-2.hy": 60, "exit-3.hy": 70, "exit-2.vr": 80, "exit-3.vr": 90},
+			[]string{"exit-2.hy", "exit-3.hy"}},
+		{"equal exits at realistic 150/190 ms share the load too", equal, "exit-balancer",
+			map[string]int64{"exit-2.hy": 150, "exit-3.hy": 190, "exit-2.vr": 160, "exit-3.vr": 200},
+			[]string{"exit-2.hy", "exit-3.hy"}},
+		{"priority 5 over priority 1: only the preferred while it lives, even if the other is faster", prio, "exit-balancer",
+			map[string]int64{"exit-2.hy": 150, "exit-3.hy": 100, "exit-2.vr": 160, "exit-3.vr": 110},
+			[]string{"exit-2.hy"}},
+		{"preferred exit dead: the reserve takes over", prio, "exit-balancer",
+			map[string]int64{"exit-3.hy": 100, "exit-3.vr": 110},
+			[]string{"exit-3.hy"}},
+		{"preferred exit nine times slower: the reserve shares", prio, "exit-balancer",
+			map[string]int64{"exit-2.hy": 900, "exit-3.hy": 100},
+			[]string{"exit-2.hy", "exit-3.hy"}},
+		{"Review Focus 3: Hysteria of the plan's exit dead → its TCP path", viewOf(t, mustGen(t, exitsInputs(multiExits()...))), "plan-3-balancer",
+			map[string]int64{"exit-2.vr": 200, "exit-20.hy": 50, "exit-20.vr": 60},
+			[]string{"exit-2.vr"}},
+		{"one exit, Hysteria dead: TCP although 10× its RTT is past every baseline", equal, "plan-3-balancer",
+			map[string]int64{"exit-2.vr": 300},
+			[]string{"exit-2.vr"}},
+		{"one exit, both paths alive: Hysteria only", equal, "plan-3-balancer",
+			map[string]int64{"exit-2.hy": 300, "exit-2.vr": 150},
+			[]string{"exit-2.hy"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := leastLoadSelect(t, tc.v, tc.balancer, tc.alive); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("selected %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func mustGen(t *testing.T, in xrayInputs) []byte {
+	t.Helper()
+	cfg, _ := genConfig(t, in, quotaCutoff{})
+	return cfg
+}
+
+// The catch-all (and every plan balancer) falls back to the primary path of its highest-priority
+// exit, the lowest id among equals; a VLESS-only exit's primary is its .vr.
+func TestXrayExitFallback(t *testing.T) {
+	legacy := legacyVLESSExit(5)
+	legacy.LoadWeight = 9
+	for _, tc := range []struct {
+		name  string
+		exits []biz.ExitNodeTunnel
+		want  map[string]string
+	}{
+		{"highest weight wins", multiExits(), map[string]string{
+			"exit-balancer": "exit-20.hy", "plan-3-balancer": "exit-2.hy", "plan-4-balancer": "exit-20.hy", "plan-6-balancer": "exit-20.hy"}},
+		{"ties: lowest id", []biz.ExitNodeTunnel{exitFixture(20, 3, "healthy", true), exitFixture(3, 3, "healthy", true)}, map[string]string{
+			"exit-balancer": "exit-3.hy", "plan-4-balancer": "exit-20.hy", "plan-6-balancer": "exit-3.hy"}},
+		{"VLESS-only exit on top: its .vr", []biz.ExitNodeTunnel{exitFixture(2, 1, "healthy", true), legacy}, map[string]string{
+			"exit-balancer": "exit-5.vr", "plan-3-balancer": "exit-2.hy", "plan-6-balancer": "exit-2.hy"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]string{}
+			for _, b := range viewOf(t, mustGen(t, exitsInputs(tc.exits...))).Routing.Balancers {
+				got[b.Tag] = b.FallbackTag
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("fallbacks %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if exitFallback(nil) != xrayBlockTag {
+		t.Fatal("no exit: block")
+	}
 }
 
 func TestXrayExitPathOutbounds(t *testing.T) {
-	legacy := testExit(5, "vless") // a primary VLESS exit from the old admin form
-	legacy.TunnelPort = 8443
-	in := exitsInputs(exitFixture(2, 1, "healthy", true), exitFixture(20, 1, "healthy", true), legacy)
+	in := exitsInputs(exitFixture(2, 1, "healthy", true), exitFixture(20, 1, "healthy", true), legacyVLESSExit(5))
 	cfg, _ := genConfig(t, in, quotaCutoff{})
 	v := viewOf(t, cfg)
 
@@ -225,6 +489,111 @@ func TestXrayExitPathOutbounds(t *testing.T) {
 	}
 	if byTag(v.Outbounds, "exit-5.hy") != nil {
 		t.Error("a VLESS exit has no Hysteria path")
+	}
+}
+
+// The VLESS Reality fields are checked as xray checks them: a row xray would reject loses only
+// its TCP path (the Hysteria path stays), a legacy VLESS exit without a valid one is skipped.
+func TestXrayExitVRValidation(t *testing.T) {
+	resetExitNotes(t)
+	captureLog(t)
+	for _, tc := range []struct {
+		name   string
+		mod    func(*biz.ExitNodeTunnel)
+		vless  bool // a legacy VLESS exit instead of a Hysteria one
+		wantVR bool
+	}{
+		{"valid", func(*biz.ExitNodeTunnel) {}, false, true},
+		{"valid: empty short id (xray allows it)", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "" }, false, true},
+		{"valid: 16-char short id", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef" }, false, true},
+		{"valid: UUID without dashes", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = strings.ReplaceAll(testExitUUID, "-", "") }, false, true},
+		{"valid: legacy VLESS", func(*biz.ExitNodeTunnel) {}, true, true},
+		{"no Reality credentials at all", func(n *biz.ExitNodeTunnel) { n.TunnelUUID, n.TunnelPubKey = "", "" }, false, false},
+		{"uuid: not hex", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "zzzzzzzz-bbbb-cccc-dddd-eeeeeeeeeeee" }, false, false},
+		{"uuid: dashes misplaced", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "aaaaaaa-abbbb-cccc-dddd-eeeeeeeeeeee" }, false, false},
+		{"uuid: 31 chars", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = strings.Repeat("a", 31) }, false, false},
+		{"uuid: a short name xray would hash", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "hub" }, false, false},
+		{"public key: empty", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = "" }, false, false},
+		{"public key: not base64url", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = strings.Repeat("+", 43) }, false, false},
+		{"public key: padded std base64", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "=" }, false, false},
+		{"public key: 31 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK[:42] }, false, false},
+		{"public key: 33 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "A" }, false, false},
+		{"short id: odd length", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "abc" }, false, false},
+		{"short id: not hex", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "zz" }, false, false},
+		{"short id: 18 chars", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef01" }, false, false},
+		{"legacy VLESS: port 0 (NULL column)", func(n *biz.ExitNodeTunnel) { n.TunnelPort = 0 }, true, false},
+		{"legacy VLESS: port 70000", func(n *biz.ExitNodeTunnel) { n.TunnelPort = 70000 }, true, false},
+		{"legacy VLESS: no public key", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = "" }, true, false},
+		{"legacy VLESS: bad uuid", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "x" }, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := exitFixture(2, 1, "healthy", true)
+			if tc.vless {
+				n = legacyVLESSExit(2)
+			}
+			tc.mod(&n)
+			if got, problem := exitHasVRPath(n), exitVRProblem(n); got != tc.wantVR || (problem == "") != tc.wantVR {
+				t.Fatalf("exitHasVRPath = %v (%q), want %v", got, problem, tc.wantVR)
+			}
+			cfg, b := genConfig(t, exitsInputs(n), quotaCutoff{}) // must still pass the leak guard
+			v := viewOf(t, cfg)
+			hasVR, hasProbe, hasHy := byTag(v.Outbounds, "exit-2.vr") != nil, byTag(v.Inbounds, "probe-vr-2") != nil, byTag(v.Outbounds, "exit-2.hy") != nil
+			if hasVR != tc.wantVR || hasProbe != tc.wantVR {
+				t.Errorf("exit-2.vr %v, probe-vr-2 %v, want %v", hasVR, hasProbe, tc.wantVR)
+			}
+			if hasHy != !tc.vless {
+				t.Errorf("exit-2.hy %v: an invalid TCP path must not cost the Hysteria path", hasHy)
+			}
+			if wantRouted := !tc.vless || tc.wantVR; b.noExit == wantRouted {
+				t.Errorf("noExit = %v, want %v", b.noExit, !wantRouted)
+			}
+		})
+	}
+}
+
+// A bad row is logged once, again only when its problem changes, and once more when it is fixed.
+func TestXrayExitNotesLoggedOnStateChange(t *testing.T) {
+	resetExitNotes(t)
+	logs := captureLog(t)
+	badSID := exitFixture(2, 1, "healthy", true)
+	badSID.TunnelShortID = "abc"
+	badKey := exitFixture(2, 1, "healthy", true)
+	badKey.TunnelPubKey = "short"
+	skipped := legacyVLESSExit(3)
+	skipped.TunnelPort = 0
+	lines := func() int { return strings.Count(logs.String(), "\n") }
+
+	for i := 0; i < 3; i++ {
+		genConfig(t, exitsInputs(badSID, skipped), quotaCutoff{})
+	}
+	if lines() != 2 || !strings.Contains(logs.String(), "exit-нода 2 (exit-2): TCP-путь (exit-2.vr) не строится: tunnel_short_id") ||
+		!strings.Contains(logs.String(), "exit-нода 3 (exit-3): пропущена") {
+		t.Fatalf("three syncs, two bad rows: want one line each\n%s", logs)
+	}
+	genConfig(t, exitsInputs(badKey, skipped), quotaCutoff{})
+	if lines() != 3 || !strings.Contains(logs.String(), "tunnel_public_key") {
+		t.Fatalf("a changed problem is logged again\n%s", logs)
+	}
+	genConfig(t, exitsInputs(exitFixture(2, 1, "healthy", true), skipped), quotaCutoff{})
+	genConfig(t, exitsInputs(exitFixture(2, 1, "healthy", true), skipped), quotaCutoff{})
+	if lines() != 4 || !strings.Contains(logs.String(), "exit-нода 2 (exit-2): снова в порядке") {
+		t.Fatalf("the fix is logged once\n%s", logs)
+	}
+}
+
+// Second line of defence: an exit that is not online never enters the config, whatever the read
+// returned.
+func TestXrayExitNotOnlineSkipped(t *testing.T) {
+	resetExitNotes(t)
+	logs := captureLog(t)
+	offline := exitFixture(3, 10, "healthy", true)
+	offline.LifecycleState = "deprovisioning"
+	cfg, b := genConfig(t, exitsInputs(exitFixture(2, 1, "healthy", true), offline), quotaCutoff{})
+	if b.exits != 1 || strings.Contains(string(cfg), "exit-3.") || strings.Contains(string(cfg), "probe-vr-3") {
+		t.Fatalf("a deprovisioning exit was generated: %d exits routed", b.exits)
+	}
+	if !strings.Contains(logs.String(), `exit-нода 3 (exit-3): пропущена — lifecycle_state "deprovisioning"`) {
+		t.Errorf("skip not logged: %s", logs)
 	}
 }
 
@@ -292,10 +661,48 @@ func TestXrayExitAddedIsOneStructuralChange(t *testing.T) {
 
 // The egress guard lets xray reach SOCKS 1088..1599 only: exits outside 1..511 are skipped.
 func TestXrayExitIDRange(t *testing.T) {
+	resetExitNotes(t)
 	captureLog(t)
-	cfg, b := genConfig(t, exitsInputs(exitFixture(2, 1, "healthy", true), exitFixture(512, 1, "healthy", true)), quotaCutoff{})
-	if b.exits != 1 || strings.Contains(string(cfg), "exit-512.") || strings.Contains(string(cfg), "probe-vr-512") {
-		t.Fatalf("exit 512 is outside the allowed SOCKS range: %d exits routed", b.exits)
+	cfg, b := genConfig(t, exitsInputs(exitFixture(0, 1, "healthy", true), exitFixture(2, 1, "healthy", true),
+		exitFixture(511, 1, "healthy", true), exitFixture(512, 1, "healthy", true)), quotaCutoff{})
+	s := string(cfg)
+	for _, id := range []int{0, 512} {
+		if strings.Contains(s, fmt.Sprintf(`"exit-%d.`, id)) || strings.Contains(s, fmt.Sprintf(`"probe-vr-%d"`, id)) {
+			t.Errorf("exit %d is outside the allowed SOCKS range but was generated", id)
+		}
+	}
+	v := viewOf(t, cfg)
+	hy := byTag(v.Outbounds, "exit-511.hy")
+	if b.exits != 2 || hy == nil || !strings.Contains(asJSON(hy), `"port":1599`) || byTag(v.Inbounds, "probe-vr-511")["port"] != float64(12511) {
+		t.Fatalf("exit 511 (SOCKS 1599, probe 12511) must be generated: %d exits routed, %s", b.exits, asJSON(hy))
+	}
+}
+
+// Invariant: inbound tags, inbound ports and outbound tags are unique (xray refuses duplicate
+// tags, a duplicate listen port fails at start).
+func TestXrayExitConfigTagsAndPortsUnique(t *testing.T) {
+	in := exitsInputs(append(multiExits(), legacyVLESSExit(5), exitFixture(511, 2, "healthy", true))...)
+	in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, "cdn.hiearth.ru", "/cdn-xh"
+	v := viewOf(t, mustGen(t, in))
+	unique := func(what string, vals []string) {
+		seen := map[string]bool{}
+		for _, x := range vals {
+			if seen[x] {
+				t.Errorf("duplicate %s %s", what, x)
+			}
+			seen[x] = true
+		}
+	}
+	var inTags, inPorts []string
+	for _, i := range v.Inbounds {
+		inTags = append(inTags, fmt.Sprint(i["tag"]))
+		inPorts = append(inPorts, fmt.Sprint(i["listen"], ":", i["port"]))
+	}
+	unique("inbound tag", inTags)
+	unique("inbound port", inPorts)
+	unique("outbound tag", v.outboundTags())
+	if len(v.Inbounds) < 10 || len(v.Outbounds) < 15 {
+		t.Fatalf("fixture too small: %d inbounds, %d outbounds", len(v.Inbounds), len(v.Outbounds))
 	}
 }
 
@@ -304,7 +711,10 @@ func TestXrayExitGoldens(t *testing.T) {
 		name  string
 		exits []biz.ExitNodeTunnel
 	}{
-		{"xray_exits_legacy_single", []biz.ExitNodeTunnel{exitFixture(2, 1, "healthy", false)}},
+		// A Hysteria exit whose row has no Reality credentials (older --setup-exit-node): .hy only.
+		{"xray_exits_hy_only", []biz.ExitNodeTunnel{exitFixture(2, 1, "healthy", false)}},
+		// A primary VLESS exit from the old admin form: one .vr (own port, mux, no flow).
+		{"xray_exits_legacy_vless", []biz.ExitNodeTunnel{legacyVLESSExit(2)}},
 		{"xray_exits_dual", []biz.ExitNodeTunnel{exitFixture(2, 1, "healthy", true)}},
 		{"xray_exits_multi", multiExits()},
 	} {

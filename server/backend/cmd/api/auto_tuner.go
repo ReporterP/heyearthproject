@@ -32,7 +32,7 @@ var autoTunerIter int
 //   - DNS servers (8.8.8.8 vs 1.1.1.1 vs DoH endpoints)
 //   - Mux concurrency settings for Hub→Exit tunnels
 //   - TCP sockopt (keepalive interval)
-//   - Balancer strategy (random vs leastPing)
+//   - Balancer strategy: not tuned — exit balancers are always leastLoad with per-path costs (xray_exits.go)
 //   - Hub→Exit tunnel SNI per exit node
 //
 // CLIENT-SIDE (changes VLESS URI → increments config_version → users must refresh subscription):

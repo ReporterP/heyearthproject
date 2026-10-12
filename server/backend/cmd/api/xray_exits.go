@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"regexp"
 	"strconv"
+	"sync"
 
 	"github.com/heyearth/backend/internal/biz"
 )
@@ -19,8 +22,9 @@ import (
 // Balancers pick exits by the prefix "exit-N." (xray selectors are tag prefixes, so "exit-2."
 // can never match exit-20.*; Beads 07f7) and the catch-all one by "exit-". The order inside an
 // exit (Hysteria first, TCP while Hysteria is dead) and load_weight between exits come from the
-// leastLoad strategy's costs (exitCosts); tags are never duplicated. An exit leaves the routing
-// only when the tunnel monitor finds BOTH of its paths dead (tunnel_probe.go).
+// leastLoad strategy's costs and baselines (exitCosts, exitBaselines); tags are never duplicated.
+// An exit leaves the routing only when the tunnel monitor finds BOTH of its paths dead
+// (tunnel_probe.go).
 //
 // Every ONLINE exit with a TCP path, healthy or not, also gets a probe pair outside every
 // selector: the loopback SOCKS inbound probe-vr-N (127.0.0.1:12000+N) routed to the outbound
@@ -40,12 +44,36 @@ const (
 	exitVRFlow         = "xtls-rprx-vision"
 	exitAllSelector    = "exit-"
 	exitProbeTagPrefix = "probe-vr-"
-	// leastLoad multiplies a node's observed RTT by sqrt(cost) and takes the cheapest live node:
-	// hy cost = 11 - load_weight (weight 10 → 1 … weight 1 → 10); the TCP path of a Hysteria exit
-	// costs ×100, i.e. it wins only while Hysteria is dead or ten times slower.
-	exitHyCostBase   = 11
-	exitVRCostFactor = 100
+	exitVRCostFactor   = 100 // see exitBaselines
 )
+
+// ─────────────── Balancer strategy: leastLoad with costs and baselines ───────────────
+//
+// leastLoad as Xray-core 26.3.27 (v1.260327.0) runs it with the plain observatory
+// (app/router/strategy_leastload.go getNodes/selectLeastLoad, app/router/weight.go):
+//   - every probe round each exit path gets Delay = the time of one HTTPS GET through it; a path
+//     the probe could not use is dead and not a candidate;
+//   - a live path's RTTDeviationCost = Delay × √cost, cost = the value of the first entry of
+//     costs that matches its tag (default 1); the paths are sorted by it;
+//   - with baselines and expected = 1 the balancer takes the smallest baseline with at least one
+//     path below it and picks, per connection, uniformly among ALL paths below that baseline; if
+//     even the cheapest path is not below the last baseline, it takes that path alone. Without
+//     expected that last case selects nothing and every connection goes to fallbackTag, a fixed
+//     path that may itself be dead (e.g. only exit-N.vr alive at 200 ms = 2 s weighted), hence
+//     expected = 1.
+//
+// The baselines double, so one band is a factor of 2 in weighted RTT:
+//   - the exits of the balancer's highest priority cost 1: their Hysteria paths share the load
+//     while their RTTs fall into the same band (60 ms and 70 ms: both under 100 ms);
+//   - an exit g priority steps lower costs (2g)², i.e. ×2g on its RTT: at an equal RTT (≥ 50 ms;
+//     a GET through an exit abroad takes longer) it lands at least one band higher, so it gets
+//     traffic only while the preferred exits are dead or at least 2g times slower;
+//   - the TCP path of a Hysteria exit costs ×100 more (×10 RTT, more than three bands): it gets
+//     traffic only while that exit's Hysteria path is dead or ten times slower. The single path
+//     of a VLESS-only exit costs as its priority.
+var exitBaselines = []string{"50ms", "100ms", "200ms", "400ms", "800ms", "1600ms"}
+
+const exitLeastLoadExpected = 1
 
 func exitOutboundTags(id int) (hy, vr string) {
 	return fmt.Sprintf("exit-%d.hy", id), fmt.Sprintf("exit-%d.vr", id)
@@ -62,17 +90,61 @@ func exitHasHyPath(n biz.ExitNodeTunnel) bool {
 	return exitIDValid(n.ID) && n.TunnelProtocol == "hysteria2"
 }
 
-// exitHasVRPath: a VLESS Reality path needs the Hub's UUID on the exit and, for a Hysteria exit
-// (whose xray always runs Reality), the exit's public key.
+// exitHasVRPath: the exit has a VLESS Reality path xray accepts (exitVRProblem).
 func exitHasVRPath(n biz.ExitNodeTunnel) bool {
-	if !exitIDValid(n.ID) || len(n.TunnelUUID) < 32 {
-		return false
+	return exitVRProblem(n) == ""
+}
+
+// exitVRProblem says why exit n has no usable TCP (VLESS Reality) path, "" when it has one. The
+// field checks are Xray-core 26.3.27's own (infra/conf/vless.go: the user id; transport_internet.go
+// REALITYConfig.Build, client side: publicKey = base64url of 32 bytes, shortId = hex, at most 16
+// characters, empty allowed): a single row xray rejects would fail `xray run -test` and block
+// every sync, so such a path is dropped instead (the exit keeps its Hysteria path).
+func exitVRProblem(n biz.ExitNodeTunnel) string {
+	if !exitIDValid(n.ID) {
+		return fmt.Sprintf("id вне 1..%d", exitMaxID)
 	}
 	switch n.TunnelProtocol {
 	case "hysteria2":
-		return len(n.TunnelPubKey) >= 40
+		if n.TunnelUUID == "" && n.TunnelPubKey == "" {
+			return "нет данных Reality (tunnel_uuid, tunnel_public_key)"
+		}
 	case "vless":
-		return n.TunnelPubKey == "" || len(n.TunnelPubKey) >= 40
+		if n.TunnelPort < 1 || n.TunnelPort > 65535 {
+			return fmt.Sprintf("tunnel_port %d вне 1..65535", n.TunnelPort)
+		}
+	default:
+		return fmt.Sprintf("протокол %q без TCP-пути", n.TunnelProtocol)
+	}
+	if !exitUUIDValid(n.TunnelUUID) {
+		return "tunnel_uuid — не UUID"
+	}
+	if k, err := base64.RawURLEncoding.DecodeString(n.TunnelPubKey); err != nil || len(k) != 32 {
+		return "tunnel_public_key — не ключ x25519 (base64url, 32 байта)"
+	}
+	if len(n.TunnelShortID) > 16 {
+		return "tunnel_short_id длиннее 16 символов"
+	}
+	if _, err := hex.DecodeString(n.TunnelShortID); err != nil {
+		return "tunnel_short_id — не hex чётной длины"
+	}
+	return ""
+}
+
+// exitUUIDValid accepts the canonical 8-4-4-4-12 form or 32 bare hex digits: both parse in
+// xray's uuid.ParseString the same way (it would also hash a 1..30 character string into an id,
+// which no exit row is meant to hold).
+func exitUUIDValid(s string) bool {
+	switch len(s) {
+	case 32:
+		_, err := hex.DecodeString(s)
+		return err == nil
+	case 36:
+		if s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+			return false
+		}
+		_, err := hex.DecodeString(s[0:8] + s[9:13] + s[14:18] + s[19:23] + s[24:36])
+		return err == nil
 	}
 	return false
 }
@@ -136,7 +208,7 @@ func exitProbeInbound(id int) map[string]interface{} {
 type exitRoute struct {
 	id           int
 	weight       int    // load_weight clamped to 1..10
-	primary      string // the fallback tag: .hy when the exit has it, else .vr
+	primary      string // .hy when the exit has it, else .vr
 	hasHy, hasVR bool
 }
 
@@ -160,16 +232,59 @@ func exitWeight(w int) int {
 	return w
 }
 
+// exitNoteLog remembers, per exit id, the problem buildExitConfig last logged (a skipped exit, a
+// dropped TCP path), so a bad row is logged once and again only when its state changes, not on
+// every sync.
+type exitNoteLog struct {
+	mu   sync.Mutex
+	last map[int]string
+}
+
+var exitNotes = &exitNoteLog{}
+
+// update logs the notes that differ from the previous call (a problem that appeared or changed,
+// or one that is gone for an exit still listed) and keeps notes as the new state; exits no longer
+// listed are forgotten.
+func (l *exitNoteLog) update(nodes []biz.ExitNodeTunnel, notes map[int]string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, n := range nodes {
+		note, prev := notes[n.ID], l.last[n.ID]
+		switch {
+		case note == prev:
+		case note != "":
+			log.Printf("[xray-sync] exit-нода %d (%s): %s", n.ID, n.Name, note)
+		default:
+			log.Printf("[xray-sync] exit-нода %d (%s): снова в порядке (было: %s)", n.ID, n.Name, prev)
+		}
+	}
+	l.last = notes
+}
+
 // buildExitConfig builds the exit outbounds of the healthy exits and the probe pairs of every
 // online exit with a TCP path, in node order (ORDER BY id).
 func buildExitConfig(nodes []biz.ExitNodeTunnel, fingerprint string, mux int) exitConfig {
 	var c exitConfig
+	notes := map[int]string{}
+	defer func() { exitNotes.update(nodes, notes) }()
 	for _, n := range nodes {
-		hy, vr := exitHasHyPath(n), exitHasVRPath(n)
-		if !hy && !vr {
-			log.Printf("[xray-sync] exit-нода %d (%s): пропущена — нет ни пути Hysteria, ни TCP-пути (протокол %q, id 1..%d)",
-				n.ID, n.Name, n.TunnelProtocol, exitMaxID)
+		// Second line of defence: the reads return online exits only.
+		if n.LifecycleState != "online" {
+			notes[n.ID] = fmt.Sprintf("пропущена — lifecycle_state %q, не online", n.LifecycleState)
 			continue
+		}
+		if !exitIDValid(n.ID) {
+			notes[n.ID] = fmt.Sprintf("пропущена — id вне 1..%d (SOCKS 1088+id вне диапазона охраны исходящих)", exitMaxID)
+			continue
+		}
+		hy, vrProblem := exitHasHyPath(n), exitVRProblem(n)
+		vr := vrProblem == ""
+		switch {
+		case !hy && !vr:
+			notes[n.ID] = fmt.Sprintf("пропущена — нет пути Hysteria (протокол %q) и нет TCP-пути: %s", n.TunnelProtocol, vrProblem)
+			continue
+		case !vr:
+			notes[n.ID] = "TCP-путь (exit-" + strconv.Itoa(n.ID) + ".vr) не строится: " + vrProblem
 		}
 		hyTag, vrTag := exitOutboundTags(n.ID)
 		if n.TunnelStatus == "healthy" {
@@ -195,12 +310,41 @@ func buildExitConfig(nodes []biz.ExitNodeTunnel, fingerprint string, mux int) ex
 	return c
 }
 
-// exitCosts are the leastLoad costs of the given routed exits (see exitHyCostBase). Anchored
-// regexps: xray's plain match is a SUBSTRING match.
+// exitFallback is a balancer's fallbackTag: the primary path (.hy, else the only one) of its exit
+// with the highest load_weight, the lowest id among equals; block for none.
+func exitFallback(routes []exitRoute) string {
+	best := -1
+	for i, r := range routes {
+		if best < 0 || r.weight > routes[best].weight || (r.weight == routes[best].weight && r.id < routes[best].id) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return xrayBlockTag
+	}
+	return routes[best].primary
+}
+
+// exitTierCost is the leastLoad cost of a path gap priority steps below the balancer's best
+// exit: 1, then (2·gap)² (see exitBaselines).
+func exitTierCost(gap int) int {
+	if gap <= 0 {
+		return 1
+	}
+	return 4 * gap * gap
+}
+
+// exitCosts are the leastLoad costs of the given routed exits, relative to the highest
+// load_weight among them (see exitBaselines). Anchored regexps: xray's plain match is a SUBSTRING
+// match.
 func exitCosts(routes []exitRoute) []map[string]interface{} {
+	top := 0
+	for _, r := range routes {
+		top = max(top, r.weight)
+	}
 	costs := make([]map[string]interface{}, 0, 2*len(routes))
 	for _, r := range routes {
-		base := exitHyCostBase - r.weight
+		base := exitTierCost(top - r.weight)
 		hy, vr := exitOutboundTags(r.id)
 		if r.hasHy {
 			costs = append(costs, exitCost(hy, base))

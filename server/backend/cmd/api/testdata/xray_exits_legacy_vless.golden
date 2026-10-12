@@ -1,0 +1,211 @@
+{
+  "balancers": [
+    {
+      "fallbackTag": "exit-2.vr",
+      "selector": [
+        "exit-"
+      ],
+      "strategy": {
+        "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
+          "costs": [
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1
+            }
+          ],
+          "expected": 1
+        },
+        "type": "leastLoad"
+      },
+      "tag": "exit-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.vr",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
+          "costs": [
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1
+            }
+          ],
+          "expected": 1
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-3-balancer"
+    },
+    {
+      "fallbackTag": "exit-2.vr",
+      "selector": [
+        "exit-2."
+      ],
+      "strategy": {
+        "settings": {
+          "baselines": [
+            "50ms",
+            "100ms",
+            "200ms",
+            "400ms",
+            "800ms",
+            "1600ms"
+          ],
+          "costs": [
+            {
+              "match": "^exit-2\\.vr$",
+              "regexp": true,
+              "value": 1
+            }
+          ],
+          "expected": 1
+        },
+        "type": "leastLoad"
+      },
+      "tag": "plan-6-balancer"
+    }
+  ],
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 12002,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-2"
+    }
+  ],
+  "observatory": {
+    "enableConcurrency": true,
+    "probeInterval": "30s",
+    "probeURL": "https://www.google.com/generate_204",
+    "subjectSelector": [
+      "exit-"
+    ]
+  },
+  "outbounds": [
+    {
+      "mux": {
+        "concurrency": 8,
+        "enabled": true,
+        "xudpConcurrency": 16,
+        "xudpProxyUDP443": "allow"
+      },
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 8443,
+            "users": [
+              {
+                "encryption": "none",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "github.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "exit-2.vr"
+    },
+    {
+      "mux": {
+        "concurrency": 8,
+        "enabled": true,
+        "xudpConcurrency": 16,
+        "xudpProxyUDP443": "allow"
+      },
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.2",
+            "port": 8443,
+            "users": [
+              {
+                "encryption": "none",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "github.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-2"
+    }
+  ],
+  "rules": [
+    {
+      "inboundTag": [
+        "probe-vr-2"
+      ],
+      "outboundTag": "probe-vr-2",
+      "type": "field"
+    },
+    {
+      "balancerTag": "plan-3-balancer",
+      "ruleTag": "plan-3-users",
+      "type": "field",
+      "user": [
+        "alice",
+        "bob"
+      ]
+    },
+    {
+      "balancerTag": "exit-balancer",
+      "network": "tcp,udp",
+      "type": "field"
+    }
+  ]
+}

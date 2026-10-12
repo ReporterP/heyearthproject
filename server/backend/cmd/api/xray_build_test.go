@@ -27,6 +27,7 @@ func testExit(id int, proto string) biz.ExitNodeTunnel {
 		ID: id, Name: fmt.Sprintf("exit-%d", id), IPAddress: fmt.Sprintf("203.0.113.%d", id),
 		TunnelProtocol: proto, TunnelPort: 10443, TunnelUUID: testExitUUID, TunnelPubKey: testExitPBK,
 		TunnelShortID: "abcd", TunnelSNI: "github.com", TunnelSSPass: "pw", TunnelStatus: "healthy", LoadWeight: 1,
+		LifecycleState: "online",
 	}
 }
 

@@ -76,11 +76,6 @@ func ListHealthyExitNodes() ([]ExitNodeTunnel, error) {
 	return listExitNodesByStatus(context.Background(), "healthy")
 }
 
-// ListHealthyExitNodesContext is ListHealthyExitNodes bounded by ctx.
-func ListHealthyExitNodesContext(ctx context.Context) ([]ExitNodeTunnel, error) {
-	return listExitNodesByStatus(ctx, "healthy")
-}
-
 // ListOnlineExitNodesContext returns every online exit whatever its tunnel status: the xray
 // generator routes the healthy ones and keeps a probe pair for each (cmd/api/xray_exits.go).
 func ListOnlineExitNodesContext(ctx context.Context) ([]ExitNodeTunnel, error) {
@@ -92,8 +87,8 @@ func ListAllExitNodes() ([]ExitNodeTunnel, error) {
 	return listExitNodesByStatus(context.Background(), "")
 }
 
-// GetExitNodeTunnel reads one exit in any lifecycle state («Проверить туннель»). sql.ErrNoRows
-// when the id is unknown or not an exit.
+// GetExitNodeTunnel reads one exit in any lifecycle state. sql.ErrNoRows when the id is unknown
+// or not an exit. Used by «Проверить туннель» (node-pool plan, Task 1.6).
 func GetExitNodeTunnel(ctx context.Context, id int) (ExitNodeTunnel, error) {
 	return scanExitNode(db.DB.QueryRowContext(ctx,
 		`SELECT `+exitNodeColumns+` FROM servers WHERE id = $1 AND is_exit_node = TRUE`, id))

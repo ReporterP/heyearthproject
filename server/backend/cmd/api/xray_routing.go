@@ -48,10 +48,11 @@ func dnsHijackOutbound() map[string]interface{} {
 }
 
 // newBalancer builds a leastLoad balancer whose fallback is never the default outbound: the
-// primary path of its first exit (an exit our own monitor reports healthy) or block when it has
-// none. leastLoad needs the observatory and drops nodes it sees dead; costs order the paths
-// (exitCosts). The old balancer_strategy setting (random) is no longer used: random would split
-// traffic between an exit's Hysteria and TCP paths instead of preferring Hysteria.
+// primary path of its preferred exit (exitFallback; an exit our own monitor reports healthy) or
+// block when it has none. leastLoad needs the observatory and drops paths it sees dead; costs and
+// baselines decide which live paths share the traffic (exitBaselines). The old balancer_strategy
+// setting (random) is no longer used: random would split traffic between an exit's Hysteria and
+// TCP paths instead of preferring Hysteria.
 func newBalancer(tag string, selector []string, fallback string, costs []map[string]interface{}) map[string]interface{} {
 	if fallback == "" {
 		fallback = xrayBlockTag
@@ -63,8 +64,12 @@ func newBalancer(tag string, selector []string, fallback string, costs []map[str
 		"tag":      tag,
 		"selector": selector,
 		"strategy": map[string]interface{}{
-			"type":     "leastLoad",
-			"settings": map[string]interface{}{"costs": costs},
+			"type": "leastLoad",
+			"settings": map[string]interface{}{
+				"costs":     costs,
+				"baselines": append([]string(nil), exitBaselines...),
+				"expected":  exitLeastLoadExpected,
+			},
 		},
 		"fallbackTag": fallback,
 	}
