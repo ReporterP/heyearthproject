@@ -237,10 +237,45 @@ func getPlanServerIDs(planID int) []int {
 	return ids
 }
 
-// CreatePlan creates a new plan.
+// planWriteTimeout bounds one plan write (the plan row and its plan_servers in one transaction).
+const planWriteTimeout = 15 * time.Second
+
+const (
+	deletePlanServersSQL = `DELETE FROM plan_servers WHERE plan_id = $1`
+	insertPlanServersSQL = `INSERT INTO plan_servers (plan_id, server_id) SELECT $1, unnest($2::int[]) ON CONFLICT DO NOTHING`
+)
+
+// replacePlanServersTx replaces a plan's exits inside the caller's transaction, so the xray sync
+// never sees a plan whose old rows are gone and the new ones not yet in (its users would fall to
+// the catch-all balancer = other plans' exits).
+func replacePlanServersTx(ctx context.Context, tx *sql.Tx, planID int, serverIDs []int) error {
+	if _, err := tx.ExecContext(ctx, deletePlanServersSQL, planID); err != nil {
+		return fmt.Errorf("delete plan_servers: %w", err)
+	}
+	if len(serverIDs) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(serverIDs))
+	for _, id := range serverIDs {
+		ids = append(ids, int64(id))
+	}
+	if _, err := tx.ExecContext(ctx, insertPlanServersSQL, planID, pq.Array(ids)); err != nil {
+		return fmt.Errorf("insert plan_servers: %w", err)
+	}
+	return nil
+}
+
+// CreatePlan creates a new plan with its exits in one transaction.
 func CreatePlan(p *Plan) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), planWriteTimeout)
+	defer cancel()
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
 	var id int
-	err := db.DB.QueryRow(`
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes,
 		                   allowed_protocols, features, is_active, direct_routing_enabled, sort_order,
 		                   auto_renew_default, max_activations_per_user,
@@ -256,15 +291,25 @@ func CreatePlan(p *Plan) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(p.ServerIDs) > 0 {
-		replacePlanServers(id, p.ServerIDs)
+	if err := replacePlanServersTx(ctx, tx, id, p.ServerIDs); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
 	}
 	return id, nil
 }
 
-// UpdatePlan updates an existing plan.
+// UpdatePlan updates a plan and replaces its exits (p.ServerIDs) in one transaction.
 func UpdatePlan(id int, p *Plan) error {
-	_, err := db.DB.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), planWriteTimeout)
+	defer cancel()
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE plans SET slug=$1, name=$2, description=$3, price_rub=$4, duration_days=$5,
 		       traffic_limit_bytes=$6, allowed_protocols=$7, features=$8::jsonb, is_active=$9,
 		       direct_routing_enabled=$10, sort_order=$11, auto_renew_default=$12,
@@ -277,11 +322,15 @@ func UpdatePlan(id int, p *Plan) error {
 		pq.Array(p.AllowedProtocols), p.Features, p.IsActive, p.DirectRoutingEnabled,
 		p.SortOrder, p.AutoRenewDefault, p.MaxActivationsPerUser,
 		p.ExpressEnabled, p.ExpressUpMbps, p.ExpressDownMbps,
-		p.AmneziaWGEnabled, id)
-	if err != nil {
+		p.AmneziaWGEnabled, id); err != nil {
 		return err
 	}
-	replacePlanServers(id, p.ServerIDs)
+	if err := replacePlanServersTx(ctx, tx, id, p.ServerIDs); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
 	return nil
 }
 
@@ -289,13 +338,6 @@ func UpdatePlan(id int, p *Plan) error {
 func DeletePlan(id int) error {
 	_, err := db.DB.Exec("DELETE FROM plans WHERE id = $1", id)
 	return err
-}
-
-func replacePlanServers(planID int, serverIDs []int) {
-	db.DB.Exec("DELETE FROM plan_servers WHERE plan_id = $1", planID)
-	for _, sid := range serverIDs {
-		db.DB.Exec("INSERT INTO plan_servers (plan_id, server_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", planID, sid)
-	}
 }
 
 // GetUserPlan returns the active plan for a user: the plan of their latest
