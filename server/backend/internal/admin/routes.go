@@ -136,7 +136,7 @@ func RegisterRoutes() {
 		}
 	}))
 
-	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(RequirePermission("servers.write", GenerateTunnelCredsHandler))))
+	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(goneHandler(tunnelCredsGoneMsg))))
 	http.HandleFunc("/api/admin/servers", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -173,7 +173,7 @@ func RegisterRoutes() {
 			case http.MethodGet:
 				RequirePermission("servers.files", ServerFileReadHandler).ServeHTTP(w, r)
 			case http.MethodPut:
-				RequirePermission("servers.write", ServerFileWriteHandler).ServeHTTP(w, r)
+				RequirePermission("servers.write", goneHandler(fileWriteGoneMsg)).ServeHTTP(w, r)
 			default:
 				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 			}

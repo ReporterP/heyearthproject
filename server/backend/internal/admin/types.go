@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/heyearth/backend/internal/biz"
 )
 
 type dashboardOverview struct {
@@ -40,12 +42,12 @@ type topUserTraffic struct {
 }
 
 type serverHealthInfo struct {
-	ID            int    `json:"id"`
-	Name          string `json:"name"`
-	IPAddress     string `json:"ip_address"`
-	Status        string `json:"status"`
-	TunnelStatus  string `json:"tunnel_status"`
-	CountryCode   string `json:"country_code"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	IPAddress    string `json:"ip_address"`
+	Status       string `json:"status"`
+	TunnelStatus string `json:"tunnel_status"`
+	CountryCode  string `json:"country_code"`
 }
 
 type trafficUserRow struct {
@@ -145,34 +147,40 @@ type paymentPayload struct {
 }
 
 type serverResponse struct {
-	ID          int             `json:"id"`
-	Name        string          `json:"name"`
-	IPAddress   string          `json:"ip_address"`
-	SSHPort     int             `json:"ssh_port"`
-	SSHUser     string          `json:"ssh_user"`
-	SSHPassword string          `json:"ssh_password,omitempty"`
-	SshKeyID    *int            `json:"ssh_key_id,omitempty"`
-	SshKeyName  string          `json:"ssh_key_name,omitempty"`
-	CountryCode string          `json:"country_code"`
-	Status      string          `json:"status"`
-	LoadMetrics      json.RawMessage `json:"load_metrics"`
-	MetricsSyncedAt  string          `json:"metrics_synced_at,omitempty"`
-	UpdatedAt        string          `json:"updated_at"`
+	ID              int             `json:"id"`
+	Name            string          `json:"name"`
+	IPAddress       string          `json:"ip_address"`
+	SSHPort         int             `json:"ssh_port"`
+	SSHUser         string          `json:"ssh_user"`
+	SSHPassword     string          `json:"ssh_password,omitempty"`
+	SshKeyID        *int            `json:"ssh_key_id,omitempty"`
+	SshKeyName      string          `json:"ssh_key_name,omitempty"`
+	CountryCode     string          `json:"country_code"`
+	Status          string          `json:"status"`
+	LoadMetrics     json.RawMessage `json:"load_metrics"`
+	MetricsSyncedAt string          `json:"metrics_synced_at,omitempty"`
+	UpdatedAt       string          `json:"updated_at"`
 	// Exit-node / tunnel
-	IsExitNode      bool   `json:"is_exit_node"`
-	TunnelStatus    string `json:"tunnel_status"`
-	TunnelProtocol  string `json:"tunnel_protocol"`
-	TunnelPort      int    `json:"tunnel_port"`
-	TunnelUUID      string `json:"tunnel_uuid,omitempty"`
+	IsExitNode       bool   `json:"is_exit_node"`
+	TunnelStatus     string `json:"tunnel_status"`
+	TunnelProtocol   string `json:"tunnel_protocol"`
+	TunnelPort       int    `json:"tunnel_port"`
+	TunnelUUID       string `json:"tunnel_uuid,omitempty"`
 	TunnelPublicKey  string `json:"tunnel_public_key,omitempty"`
 	TunnelPrivateKey string `json:"tunnel_private_key,omitempty"`
 	TunnelShortID    string `json:"tunnel_short_id,omitempty"`
-	TunnelSNI       string `json:"tunnel_sni,omitempty"`
-	TunnelSSMethod  string `json:"tunnel_ss_method,omitempty"`
-	TunnelSSPass    string `json:"tunnel_ss_password,omitempty"`
-	TunnelError     string `json:"tunnel_error,omitempty"`
-	LoadWeight      int    `json:"load_weight"`
-	AutoTune        bool   `json:"auto_tune"`
+	TunnelSNI        string `json:"tunnel_sni,omitempty"`
+	TunnelSSMethod   string `json:"tunnel_ss_method,omitempty"`
+	TunnelSSPass     string `json:"tunnel_ss_password,omitempty"`
+	TunnelError      string `json:"tunnel_error,omitempty"`
+	LoadWeight       int    `json:"load_weight"`
+	AutoTune         bool   `json:"auto_tune"`
+	// Phase 1 (node pool): truthful state, and secrets only as "is it set".
+	LifecycleState string         `json:"lifecycle_state"`
+	MTProtoStatus  string         `json:"mtproto_status"`
+	HasSSHPassword bool           `json:"has_ssh_password"`
+	HasTunnelCreds bool           `json:"has_tunnel_credentials"`
+	Paths          *biz.ExitPaths `json:"paths,omitempty"` // detail only: the tunnel monitor's view
 }
 
 type serverPayload struct {
@@ -185,17 +193,17 @@ type serverPayload struct {
 	CountryCode string `json:"country_code"`
 	Status      string `json:"status"`
 	// Exit-node / tunnel
-	IsExitNode      *bool  `json:"is_exit_node"`
-	TunnelProtocol  string `json:"tunnel_protocol"`
-	TunnelPort      int    `json:"tunnel_port"`
-	TunnelUUID      string `json:"tunnel_uuid"`
+	IsExitNode       *bool  `json:"is_exit_node"`
+	TunnelProtocol   string `json:"tunnel_protocol"`
+	TunnelPort       int    `json:"tunnel_port"`
+	TunnelUUID       string `json:"tunnel_uuid"`
 	TunnelPublicKey  string `json:"tunnel_public_key"`
 	TunnelPrivateKey string `json:"tunnel_private_key"`
 	TunnelShortID    string `json:"tunnel_short_id"`
-	TunnelSNI       string `json:"tunnel_sni"`
-	TunnelSSMethod  string `json:"tunnel_ss_method"`
-	TunnelSSPass    string `json:"tunnel_ss_password"`
-	LoadWeight      int    `json:"load_weight"`
+	TunnelSNI        string `json:"tunnel_sni"`
+	TunnelSSMethod   string `json:"tunnel_ss_method"`
+	TunnelSSPass     string `json:"tunnel_ss_password"`
+	LoadWeight       int    `json:"load_weight"`
 }
 
 type serverActionPayload struct {
