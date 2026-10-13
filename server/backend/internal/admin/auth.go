@@ -119,6 +119,7 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "promocodes.write", Name: "Promocodes Write", Description: "Create and update promocodes"},
 	{Key: "payments.read", Name: "Payments Read", Description: "View payments"},
 	{Key: "payments.write", Name: "Payments Write", Description: "Create and update payments"},
+	{Key: "payments.refund", Name: "Payments Refund", Description: "Refund, cancel, re-check and resend payments (money leaves the account)"},
 	{Key: "servers.read", Name: "Servers Read", Description: "View servers"},
 	{Key: "servers.write", Name: "Servers Write", Description: "Create and update servers"},
 	{Key: "server_ops.execute", Name: "Server Ops Execute", Description: "Run operational actions on servers"},
@@ -180,6 +181,14 @@ func GenerateToken(admin AdminUser) (string, error) {
 	return token.SignedString(key)
 }
 
+// adminIsActive reports whether the admin may still act (revocation before the token expires).
+// Tests swap it.
+var adminIsActive = func(id int) (bool, error) {
+	var active bool
+	err := db.DB.QueryRow("SELECT is_active FROM admin_users WHERE id = $1", id).Scan(&active)
+	return active, err
+}
+
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, err := jwtKey()
@@ -211,9 +220,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Verify admin is still active in DB (enables revocation without waiting for token expiry)
-		var isActive bool
-		err = db.DB.QueryRow("SELECT is_active FROM admin_users WHERE id = $1", claims.AdminID).Scan(&isActive)
-		if err != nil || !isActive {
+		if isActive, err := adminIsActive(claims.AdminID); err != nil || !isActive {
 			writeAdminError(w, http.StatusUnauthorized, "Admin account deactivated")
 			return
 		}

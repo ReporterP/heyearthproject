@@ -11,8 +11,9 @@ import (
 var adminLoginLimiter = middleware.NewRateLimiter(5, time.Minute)
 var publicLimiter = middleware.NewRateLimiter(10, time.Minute) // public endpoints: 10/min per IP
 
-// PaymentActionHandler is set by main package to handle T-Bank payment actions
-// (cancel, check-status, resend). Registered in routes to avoid pattern conflicts.
+// PaymentActionHandler is set by main package to handle the YooKassa payment actions
+// (cancel = refund, check-status, resend). Registered in routes to avoid pattern conflicts;
+// paymentsItemRouter only reaches it with payments.refund.
 var PaymentActionHandler http.HandlerFunc
 
 func RegisterRoutes() {
@@ -110,31 +111,7 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
-	http.HandleFunc("/api/admin/payments/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		// B2B reconciliation: /api/admin/payments/{id}/attach-tenant binds
-		// a previously orphaned b2b_invoice payment to a tenant + credits
-		// the wallet if the payment is already paid.
-		if strings.HasSuffix(path, "/attach-tenant") {
-			RequirePermission("tenants.write", AttachPaymentToTenantHandler).ServeHTTP(w, r)
-			return
-		}
-		if strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/check-status") || path == "/api/admin/payments/resend" {
-			// Delegate to payment action handlers registered externally
-			if PaymentActionHandler != nil {
-				PaymentActionHandler(w, r)
-			} else {
-				writeAdminError(w, http.StatusNotImplemented, "Payment actions not configured")
-			}
-			return
-		}
-		// Default: PATCH for update
-		if r.Method == http.MethodPatch {
-			RequirePermission("payments.write", UpdatePaymentHandler).ServeHTTP(w, r)
-		} else {
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
+	http.HandleFunc("/api/admin/payments/", AuthMiddleware(paymentsItemRouter))
 
 	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(goneHandler(tunnelCredsGoneMsg))))
 	http.HandleFunc("/api/admin/servers", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +433,40 @@ func RegisterRoutes() {
 
 	http.HandleFunc("/api/public/create-tenant", publicLimiter.Middleware(PublicCreateTenantHandler))
 	http.HandleFunc("/api/public/tariff/calculate", publicLimiter.Middleware(PublicTariffCalculateHandler))
+}
+
+// permPaymentsRefund guards every action that moves money or touches YooKassa for a payment.
+const permPaymentsRefund = "payments.refund"
+
+// paymentsItemRouter serves /api/admin/payments/…: the money actions (refund = /cancel,
+// /check-status, /resend) need payments.refund — payments.write is not enough.
+func paymentsItemRouter(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// B2B reconciliation: /api/admin/payments/{id}/attach-tenant binds an orphaned b2b_invoice
+	// payment to a tenant + credits the wallet if the payment is already paid.
+	if strings.HasSuffix(path, "/attach-tenant") {
+		RequirePermission("tenants.write", AttachPaymentToTenantHandler).ServeHTTP(w, r)
+		return
+	}
+	if isPaymentMoneyAction(path) {
+		RequirePermission(permPaymentsRefund, func(w http.ResponseWriter, r *http.Request) {
+			if PaymentActionHandler == nil {
+				writeAdminError(w, http.StatusNotImplemented, "Payment actions not configured")
+				return
+			}
+			PaymentActionHandler(w, r)
+		}).ServeHTTP(w, r)
+		return
+	}
+	if r.Method == http.MethodPatch {
+		RequirePermission("payments.write", UpdatePaymentHandler).ServeHTTP(w, r)
+		return
+	}
+	writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+}
+
+func isPaymentMoneyAction(path string) bool {
+	return strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/check-status") || path == "/api/admin/payments/resend"
 }
 
 func withMethod(method string, next http.HandlerFunc) http.HandlerFunc {
