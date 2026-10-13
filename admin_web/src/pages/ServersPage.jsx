@@ -15,7 +15,8 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import TunnelCheckDialog from '../components/servers/TunnelCheckDialog.jsx'
-import { LIFECYCLE_FILTER, inWork, pathView } from '../utils/serverState.js'
+import { LIFECYCLE_FILTER, inWork, isMonitored, tunnelView } from '../utils/serverState.js'
+import { startPolling, requestSequencer } from '../utils/polling.js'
 import { formatRelativeTime } from '../utils/format.js'
 import {
   Button,
@@ -55,10 +56,11 @@ const IconServer   = () => <Icon d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a
 const IconClose    = () => <Icon className="w-5 h-5" d="M6 18L18 6M6 6l12 12" />
 const IconChart    = () => <Icon d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
 
-/* ── Tunnel status badge: the monitor's verdict on the exit as a whole, in words ── */
-function TunnelBadge({ status }) {
-  if (!status) return null
-  const v = pathView(status.toLowerCase())
+/* ── Tunnel status badge: the monitor's verdict on the exit as a whole, in words; «—» where the
+   monitor does not look (not an exit, or not online: the last status would be stale) ── */
+function TunnelBadge({ server }) {
+  const v = tunnelView(server)
+  if (!v) return <span className="text-xs text-tertiary" title="Туннель проверяется только у выходов в работе">туннель: —</span>
   return (
     <Badge variant={v.variant}>
       <IconTunnel />
@@ -241,23 +243,37 @@ export default function ServersPage() {
   const [error, setError] = useState('')
   const [searchInput, setSearchInput] = useState(f.search)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setError('')
+  const [nextRequest] = useState(requestSequencer)
+
+  // quiet: a background refresh keeps the list on screen instead of a skeleton.
+  const load = useCallback(({ quiet = false } = {}) => {
+    const isCurrent = nextRequest()
+    if (!quiet) {
+      setLoading(true)
+      setError('')
+    }
     const params = { page: f.page, pageSize, search: f.search, sort: f.sort, dir: f.dir }
     if (f.lifecycle_state) params.lifecycle_state = f.lifecycle_state
     // The API answers 400 to a half-typed country: filter only by a full two-letter code.
     if (String(f.country).length === 2) params.country = f.country
     fetchServersPaged(params)
       .then(data => {
+        if (!isCurrent()) return
         setItems(data.items || data.data || [])
         setTotal(data.total || 0)
+        setError('')
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [f.page, f.search, f.sort, f.dir, f.lifecycle_state, f.country])
+      .catch(err => { if (isCurrent()) setError(err.message) })
+      .finally(() => { if (isCurrent()) setLoading(false) })
+  }, [nextRequest, f.page, f.search, f.sort, f.dir, f.lifecycle_state, f.country])
 
   useEffect(() => { load() }, [load])
+
+  // Realtime polling every 10 s while the tab is visible, always with the current filters
+  // (backend StartServerMetricsCollector обновляет metrics_synced_at).
+  const pollRef = useRef(null)
+  useEffect(() => { pollRef.current = () => load({ quiet: true }) })
+  useEffect(() => startPolling(pollRef, 10000, () => document.visibilityState === 'visible'), [])
 
   const reload = load
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -297,17 +313,6 @@ export default function ServersPage() {
       setSshKeys(keys)
     } catch {}
   }
-
-  // Realtime polling — refresh servers list every 10s when tab is visible
-  // (backend StartServerMetricsCollector обновляет metrics_synced_at)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        paged.reload()
-      }
-    }, 10000)
-    return () => clearInterval(interval)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Items already filtered by backend via ?lifecycle_state / ?country
   const filteredItems = items
@@ -473,7 +478,7 @@ export default function ServersPage() {
 
         {/* Tunnel status + protocol + lifecycle */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <TunnelBadge status={srv.tunnel_status} />
+          <TunnelBadge server={srv} />
           {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
             <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
               srv.mtproto_status === 'healthy' ? 'bg-success/15 text-success' :
@@ -491,7 +496,7 @@ export default function ServersPage() {
             <span className="text-[10px] text-secondary">:{srv.tunnel_port}</span>
           )}
         </div>
-        {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
+        {isMonitored(srv) && srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
           <p className="text-xs text-danger mb-2">{t.serverTunnelError}: {srv.tunnel_error}</p>
         )}
 
@@ -514,27 +519,27 @@ export default function ServersPage() {
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
           {can('server_ops.execute') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
-            <button key={a.key} onClick={() => doAction(srv, a)}
+            <button key={a.key} onClick={() => doAction(srv, a)} aria-label={a.label}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary hover:bg-elevated/80 transition"
               title={a.desc || a.label}>
               {a.icon}
               <span className="hidden sm:inline">{a.label}</span>
             </button>
           ))}
-          <button onClick={() => showLogs(srv)}
+          <button onClick={() => showLogs(srv)} aria-label={t.serverLogs}
             className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
             title={t.serverLogs}>
             <IconLogs />
             <span className="hidden sm:inline">{t.serverLogs}</span>
           </button>
-          <button onClick={() => showFiles(srv)}
+          <button onClick={() => showFiles(srv)} aria-label={t.serverFiles}
             className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
             title={t.serverFiles}>
             <IconFolder />
             <span className="hidden sm:inline">{t.serverFiles}</span>
           </button>
           {srv.is_exit_node && (
-            <button onClick={() => setTunnelCheck(srv)}
+            <button onClick={() => setTunnelCheck(srv)} aria-label="Проверить туннель"
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-elevated text-secondary hover:text-primary transition"
               title="Проверить туннель: generate_204 через Hysteria и через TCP, только чтение">
               <IconTunnel />
@@ -543,13 +548,13 @@ export default function ServersPage() {
           )}
           {can('servers.write') && (
             <>
-              <button onClick={() => openEdit(srv)}
+              <button onClick={() => openEdit(srv)} aria-label={t.edit}
                 className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-accent/20 text-accent hover:bg-accent/30 transition"
                 title={t.edit}>
                 <IconEdit />
                 <span className="hidden sm:inline">{t.edit}</span>
               </button>
-              <button onClick={() => setConfirm(srv)}
+              <button onClick={() => setConfirm(srv)} aria-label={t.delete}
                 className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-danger/20 text-danger hover:bg-danger/30 transition"
                 title={t.delete}>
                 <IconTrash />
@@ -585,7 +590,7 @@ export default function ServersPage() {
         <Td><ServerLifecycleBadge state={srv.lifecycle_state} /></Td>
         <Td>
           <div className="flex items-center gap-1.5 flex-wrap">
-            <TunnelBadge status={srv.tunnel_status} />
+            <TunnelBadge server={srv} />
             {srv.is_exit_node && srv.mtproto_status && srv.mtproto_status !== 'unknown' && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
                 srv.mtproto_status === 'healthy' ? 'bg-success/15 text-success' :
@@ -598,7 +603,7 @@ export default function ServersPage() {
             {srv.tunnel_protocol && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono uppercase">{srv.tunnel_protocol}</span>
             )}
-            {srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
+            {isMonitored(srv) && srv.tunnel_status === 'unhealthy' && srv.tunnel_error && (
               <span className="text-xs text-danger ml-1 truncate max-w-[200px]" title={srv.tunnel_error}>{srv.tunnel_error}</span>
             )}
           </div>

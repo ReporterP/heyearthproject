@@ -10,7 +10,7 @@ import DeleteServerDialog from '../components/DeleteServerDialog.jsx'
 import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 import TunnelCheckDialog from '../components/servers/TunnelCheckDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
-import { pathView } from '../utils/serverState.js'
+import { isMonitored, pathView, tunnelView } from '../utils/serverState.js'
 import {
   Badge,
   Button,
@@ -118,6 +118,7 @@ export default function ServerDetailPage() {
 
   const [historyVersion, setHistoryVersion] = useState(0)
 
+  // Returns 'ok', 'gone' (404: the record no longer exists) or 'error'.
   const loadServer = useCallback(async () => {
     try {
       const data = await fetchServerDetail(id)
@@ -141,8 +142,10 @@ export default function ServerDetailPage() {
         connHistory.current = [...connHistory.current.slice(-(MAX_HISTORY - 1)), Number(conns)]
       }
       setHistoryVersion(v => v + 1)
+      return 'ok'
     } catch (err) {
       setError(err.message)
+      return err.status === 404 ? 'gone' : 'error'
     } finally {
       setLoading(false)
     }
@@ -201,7 +204,7 @@ export default function ServerDetailPage() {
   const conns = m.active_connections
   const uptime = m.uptime
 
-  const tunnel = pathView(server.tunnel_status) // the monitor's verdict on the exit as a whole
+  const tunnel = tunnelView(server) // null: not an online exit, the monitor does not look at it
 
   const mtprotoVariant = server.mtproto_status === 'healthy'
     ? 'success'
@@ -232,10 +235,14 @@ export default function ServerDetailPage() {
             <StatusBadge status={server.status} />
             {server.is_exit_node && (
               <>
-                <Badge variant={tunnel.variant}>
-                  <span className="w-2 h-2 rounded-full bg-current" />
-                  туннель: {tunnel.label}
-                </Badge>
+                {tunnel ? (
+                  <Badge variant={tunnel.variant}>
+                    <span className="w-2 h-2 rounded-full bg-current" />
+                    туннель: {tunnel.label}
+                  </Badge>
+                ) : (
+                  <Badge variant="default">туннель: —</Badge>
+                )}
                 <Badge variant={mtprotoVariant} className="ml-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
                   MTP: {server.mtproto_status === 'healthy' ? 'OK' :
@@ -249,12 +256,15 @@ export default function ServerDetailPage() {
                 )}
               </>
             )}
-            {server.tunnel_error && server.tunnel_status === 'unhealthy' && (
+            {isMonitored(server) && server.tunnel_error && server.tunnel_status === 'unhealthy' && (
               <Badge variant="danger">{server.tunnel_error}</Badge>
             )}
           </div>
         )}
       />
+
+      {/* A failed refresh (or «Сервер не найден» after a delete) must not hide behind stale data */}
+      {error && <p className="text-sm text-danger mb-4">Не удалось обновить: {error}</p>}
 
       {uptime && (
         <p className="text-xs text-tertiary -mt-3 mb-4">
@@ -294,7 +304,9 @@ export default function ServerDetailPage() {
             <h3 className="text-sm font-semibold text-primary">Пути до exit</h3>
             <Button size="sm" variant="secondary" onClick={() => setTunnelCheck(true)}>Проверить туннель</Button>
           </div>
-          {server.paths ? (
+          {!isMonitored(server) ? (
+            <p className="text-xs text-tertiary">Пути проверяются только у нод в работе.</p>
+          ) : server.paths ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <PathRow name="Hysteria (UDP)" status={server.paths.hy} rtt={server.paths.hy_rtt_ms} error={server.paths.hy_error} />
               <PathRow name="TCP (VLESS Reality)" status={server.paths.vr} rtt={server.paths.vr_rtt_ms} error={server.paths.vr_error} />
@@ -357,7 +369,12 @@ export default function ServerDetailPage() {
       )}
 
       {tunnelCheck && <TunnelCheckDialog server={server} onClose={() => setTunnelCheck(false)} />}
-      {progress && <ProvisionProgressDialog open server={server} title={progress.title} onClose={() => { const leave = progress.leave; setProgress(null); if (leave) navigate('/servers'); else loadServer() }} />}
+      {progress && <ProvisionProgressDialog open server={server} title={progress.title} onClose={async () => {
+        const leave = progress.leave
+        setProgress(null)
+        // Back to the list only once the record is really gone; a failed or unfinished delete stays here.
+        if ((await loadServer()) === 'gone' && leave) navigate('/servers')
+      }} />}
 
       {confirmDelete && (
         <DeleteServerDialog
@@ -367,7 +384,7 @@ export default function ServerDetailPage() {
             setConfirmDelete(false)
             try {
               await deleteServer(server.id)
-              setProgress({ title: 'Удаление ноды', leave: true }) // the record is gone afterwards: back to the list
+              setProgress({ title: 'Удаление ноды', leave: true })
             } catch (e) {
               toast.error(`Удаление не запущено: ${e.message}`)
             }
