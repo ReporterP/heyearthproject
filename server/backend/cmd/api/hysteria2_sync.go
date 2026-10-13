@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -284,12 +285,53 @@ func (in *hysteria2Installer) restartNow() (bool, error) {
 }
 
 // recordHysteria2SyncError captures the error into app_settings so admin UI
-// can surface it without reading journalctl.
+// can surface it without reading journalctl. hysteria2_last_error is returned by the admin API
+// (/hysteria2/status) and hysteria's own output (the validation error) may quote the config, so
+// the secrets server.yaml carries are masked first. When they cannot be read, the text is not
+// stored at all (fail closed): the journal keeps the full error.
 func recordHysteria2SyncError(err error) {
 	if err == nil {
 		return
 	}
-	_ = biz.SetSetting("hysteria2_last_error", err.Error())
+	msg := err.Error()
+	secrets, serr := hysteria2ConfigSecrets()
+	if serr != nil {
+		msg = "Ошибка синхронизации Бамбука (текст скрыт: не удалось прочитать секреты для маскировки, см. journalctl -u heyearth-api)"
+	} else {
+		msg = maskSecrets(msg, secrets)
+	}
+	_ = hysteria2SaveSetting("hysteria2_last_error", msg)
+}
+
+// hysteria2SaveSetting is biz.SetSetting; tests swap it.
+var hysteria2SaveSetting = biz.SetSetting
+
+// hysteria2ConfigSecrets returns the secret values server.yaml carries: the salamander obfs
+// password and the trafficStats secret (auth is an HTTP callback without a credential). Read
+// without biz.GetHysteria2ObfsPassword, which would generate one as a side effect. Tests swap it.
+var hysteria2ConfigSecrets = func() ([]string, error) {
+	var out []string
+	for _, key := range []string{"hysteria2_obfs_password", "hysteria2_stats_secret"} {
+		v, err := settingOrEmpty(biz.GetSetting, key)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", key, err)
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// maskSecrets replaces every occurrence of each non-empty secret in s with "***", longest
+// first so a secret containing another is masked whole.
+func maskSecrets(s string, secrets []string) string {
+	sorted := append([]string(nil), secrets...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, v := range sorted {
+		if v = strings.TrimSpace(v); v != "" {
+			s = strings.ReplaceAll(s, v, "***")
+		}
+	}
+	return s
 }
 
 // renderHysteria2Config produces a deterministic YAML config so the no-op

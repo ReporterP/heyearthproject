@@ -161,3 +161,27 @@ func TestBambooServerYAMLUnchangedAtRollout(t *testing.T) {
 	checkGolden(t, "hysteria2_server_exit2",
 		[]byte(renderHysteria2Config(100, 100, "obfs", "stats", c.SocksPort, []string{"138.16.181.225"})))
 }
+
+// Review Focus 5 → hysteria2_last_error is shown by the admin API (/hysteria2/status): an error
+// quoting server.yaml (hysteria's validation output) is stored with its secrets masked, and not
+// stored at all when the secrets cannot be read to mask them.
+func TestHysteria2SyncErrorMasksSecrets(t *testing.T) {
+	oldSave, oldSecrets := hysteria2SaveSetting, hysteria2ConfigSecrets
+	t.Cleanup(func() { hysteria2SaveSetting, hysteria2ConfigSecrets = oldSave, oldSecrets })
+	stored := map[string]string{}
+	hysteria2SaveSetting = func(k, v string) error { stored[k] = v; return nil }
+	hysteria2ConfigSecrets = func() ([]string, error) { return []string{"0bf5a1c3", "", "57a75e3c"}, nil }
+
+	recordHysteria2SyncError(errors.New("hysteria rejected the config: obfs.salamander.password 0bf5a1c3 / trafficStats.secret 57a75e3c (0bf5a1c3)"))
+	got := stored["hysteria2_last_error"]
+	if strings.Contains(got, "0bf5a1c3") || strings.Contains(got, "57a75e3c") || strings.Count(got, "***") != 3 ||
+		!strings.Contains(got, "hysteria rejected the config") {
+		t.Fatalf("stored %q", got)
+	}
+
+	hysteria2ConfigSecrets = func() ([]string, error) { return nil, errors.New("db down") }
+	recordHysteria2SyncError(errors.New("password 0bf5a1c3"))
+	if got := stored["hysteria2_last_error"]; strings.Contains(got, "0bf5a1c3") || !strings.Contains(got, "текст скрыт") {
+		t.Fatalf("secrets unreadable: stored %q", got)
+	}
+}
