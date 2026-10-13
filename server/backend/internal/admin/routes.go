@@ -148,6 +148,11 @@ func RegisterRoutes() {
 		}
 	}))
 	http.HandleFunc("/api/admin/servers/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// «Проверить туннель»: read-only, so servers.read (tunnel_check.go).
+		if isCheckTunnelPath(r.URL.Path) {
+			withMethod(http.MethodPost, RequirePermission("servers.read", CheckTunnelHandler)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/actions/progress") {
 			withMethod(http.MethodGet, RequirePermission("server_ops.execute", ServerActionProgressHandler)).ServeHTTP(w, r)
 			return

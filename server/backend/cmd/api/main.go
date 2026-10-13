@@ -1163,6 +1163,7 @@ func main() {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	}
+	admin.TunnelCheckFn = checkExitTunnel // «Проверить туннель», read-only
 
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
