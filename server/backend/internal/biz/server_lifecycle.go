@@ -215,7 +215,7 @@ func HubProvisionExisting(serverID int, progressCh chan<- ProvisionEvent) error 
 		return fmt.Errorf("load server %d: %w", serverID, err)
 	}
 	if ssPassword == "" {
-		emit(progressCh, "load_server", "error", "tunnel_ss_password пуст — сначала запустите setup_exit_node")
+		emit(progressCh, "load_server", "error", "У ноды нет пароля туннеля: её нужно заново настроить — мастером «Добавить ноду» (следующее обновление админки), пока что через CLI: deploy --setup-exit-node")
 		return fmt.Errorf("server %d has no tunnel credentials yet", serverID)
 	}
 

@@ -43,6 +43,8 @@ const (
 	fileWriteGoneMsg   = "Запись файлов на серверах из админки отключена: ручная правка конфигов и ключей ломала туннели. Журналы доступны только для чтения."
 	tunnelCredsGoneMsg = "Генерация ключей туннеля в браузере отключена: ключи создаются на самой ноде при настройке."
 	setupGoneMsg       = "Настройка exit из старой формы отключена: она перезапускала API и не доделывала шаги. Новый exit настраивается мастером «Добавить ноду» (следующее обновление админки)."
+
+	sshPasswordKeyMissingMsg = "Ключ шифрования SSH не настроен — пароль не сохранён"
 )
 
 // removedServerActions answer 410: they broke the tunnel (fetch_tunnel_creds switched it to
@@ -270,7 +272,8 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	existing, err := loadServerByID(serverID, true)
+	// The stored SSH password is not needed: it is never rewritten from its decrypted value.
+	existing, err := loadServerByID(serverID, false)
 	if err == sql.ErrNoRows {
 		writeAdminError(w, http.StatusNotFound, "Server not found")
 		return
@@ -291,9 +294,6 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.SSHUser) == "" {
 		req.SSHUser = existing.SSHUser
-	}
-	if strings.TrimSpace(req.SSHPassword) == "" {
-		req.SSHPassword = existing.SSHPassword
 	}
 	if req.SshKeyID == nil {
 		req.SshKeyID = existing.SshKeyID
@@ -345,6 +345,19 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		weight = req.LoadWeight
 	}
 
+	// The SSH password columns change only when the request carries a new password; it is
+	// encrypted before anything is written, and without a working key nothing is saved.
+	var newSSHPasswordEnc []byte
+	if strings.TrimSpace(req.SSHPassword) != "" {
+		enc, err := encryptSSHPassword(req.SSHPassword)
+		if err != nil {
+			log.Printf("[servers] server %d: SSH password not saved: %v", serverID, err)
+			writeAdminError(w, http.StatusInternalServerError, sshPasswordKeyMissingMsg)
+			return
+		}
+		newSSHPasswordEnc = enc
+	}
+
 	tx, err := db.DB.Begin()
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
@@ -352,25 +365,30 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Encrypt SSH password if encryption key is configured.
-	updSshPwPlain, updSshPwEnc := encryptSSHPassword(req.SSHPassword)
-
 	if _, err := tx.Exec(`
 		UPDATE servers
-		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5,
-		    ssh_password_enc = $6, ssh_key_id = $7, country_code = $8, status = $9,
-		    is_exit_node = $10, tunnel_protocol = $11, tunnel_port = $12,
-		    tunnel_uuid = $13, tunnel_public_key = $14, tunnel_private_key = $15,
-		    tunnel_short_id = $16, tunnel_sni = $17, tunnel_ss_method = $18,
-		    tunnel_ss_password = $19, load_weight = $20, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $21
-	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser, updSshPwPlain,
-		updSshPwEnc, req.SshKeyID, req.CountryCode, req.Status,
+		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4,
+		    ssh_key_id = $5, country_code = $6, status = $7,
+		    is_exit_node = $8, tunnel_protocol = $9, tunnel_port = $10,
+		    tunnel_uuid = $11, tunnel_public_key = $12, tunnel_private_key = $13,
+		    tunnel_short_id = $14, tunnel_sni = $15, tunnel_ss_method = $16,
+		    tunnel_ss_password = $17, load_weight = $18, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $19
+	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser,
+		req.SshKeyID, req.CountryCode, req.Status,
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, weight, serverID); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
 		return
+	}
+	if newSSHPasswordEnc != nil {
+		// ssh_password is NOT NULL: the plaintext column is emptied, never set to NULL.
+		if _, err := tx.Exec(`UPDATE servers SET ssh_password = '', ssh_password_enc = $1 WHERE id = $2`,
+			newSSHPasswordEnc, serverID); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save server")
@@ -747,21 +765,20 @@ func runSSHCommand(server serverResponse, command string) error {
 	return nil
 }
 
-// encryptSSHPassword encrypts the password with AES-256-GCM if SSH_ENCRYPTION_KEY is set.
-// Returns (plaintext, nil) when key is not configured (backward-compatible).
-// Returns (nil, ciphertext) when encryption succeeds (plaintext cleared from DB).
-func encryptSSHPassword(password string) (plain *string, enc []byte) {
+// encryptSSHPassword encrypts a non-empty SSH password with AES-256-GCM (SSH_ENCRYPTION_KEY).
+// A missing or invalid key is an error: the password is never stored in plaintext.
+func encryptSSHPassword(password string) ([]byte, error) {
 	if strings.TrimSpace(password) == "" {
-		return nil, nil
+		return nil, fmt.Errorf("empty SSH password")
 	}
 	ciphertext, err := crypto.Encrypt(password)
 	if err != nil {
-		// Key not set or error — refuse to store plaintext in production.
-		log.Printf("[ERROR] SSH_ENCRYPTION_KEY not set or invalid: %v — refusing to store plaintext password", err)
-		return nil, nil
+		return nil, err
 	}
-	// Encryption succeeded: clear plaintext, store ciphertext.
-	return nil, ciphertext
+	if len(ciphertext) == 0 {
+		return nil, fmt.Errorf("encryption returned no ciphertext")
+	}
+	return ciphertext, nil
 }
 
 func sshAuthMethods(server serverResponse) ([]ssh.AuthMethod, error) {
