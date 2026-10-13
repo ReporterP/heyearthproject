@@ -1363,8 +1363,8 @@ func checkAllTunnels() {
 		h := exitHealthFor(node.ID)
 		v := h.tick(node.TunnelStatus, probe)
 
-		// Bamboo's exit choice (biz.DecideExpressTunnel, last_rtt_ms) ranks exits by the RTT of
-		// their Hysteria path only.
+		// Bamboo's exit choice (biz.ExpressExit: EWMA fed here, last_rtt_ms) ranks exits by the
+		// RTT of their Hysteria path only.
 		if probe.hy.ok {
 			if rttErr := biz.UpdateExitRTT(node.ID, probe.hy.rttMs); rttErr != nil {
 				log.Printf("[tunnel-monitor] UpdateExitRTT(%d) failed: %v", node.ID, rttErr)

@@ -133,20 +133,19 @@ func SyncHysteria2Config() error {
 		return fmt.Errorf("hysteria2_stats_secret empty (app_settings not initialised — run migration 000049)")
 	}
 
-	// Adaptive tunnel decision — picks shared (N≤1 healthy exits, reuse the
-	// per-exit hysteria2-client-<id>.service SOCKS5) vs dedicated (N≥2 exits,
-	// spin up hysteria2-client-express.service on :1091 to lowest-RTT exit).
-	// Failure here is non-fatal: fall back to the legacy shared:1090 layout
-	// so the sync still produces a config (matches pre-T6 behaviour).
-	decision, decErr := biz.DecideExpressTunnel()
-	if decErr != nil {
-		log.Printf("[hysteria2-sync] tunnel decision failed: %v — defaulting to shared:1090", decErr)
-		decision = biz.ExpressTunnelDecision{Mode: biz.ExpressTunnelModeShared, OutboundPort: 1090}
+	// Bamboo's exit (biz.ExpressExit): the hysteria2-client-<id> SOCKS of one exit, chosen by
+	// the smoothed RTT of its Hysteria path with hysteresis. A database error keeps server.yaml
+	// as it is (no restart onto a wrong port).
+	choice, err := biz.ExpressExit()
+	if err != nil {
+		return fmt.Errorf("выбор exit для Бамбука: %w (server.yaml не меняется)", err)
 	}
-	log.Printf("[hysteria2-sync] tunnel decision: mode=%s port=%d exit=%d (%s, RTT=%dms)",
-		decision.Mode, decision.OutboundPort, decision.BestExitID, decision.BestExitIP, decision.BestExitRTT)
+	if choice.Switched {
+		log.Printf("[hysteria2-sync] Бамбук → exit #%d (127.0.0.1:%d, сглаженный RTT %d мс): %s",
+			choice.ExitID, choice.SocksPort, choice.RTTms, choice.Reason)
+	}
 
-	yaml := renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, decision.OutboundPort, hubOwnIPs())
+	yaml := renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, choice.SocksPort, hubOwnIPs())
 
 	// No-op short-circuit FIRST — if content matches what's on disk, nothing
 	// changed since last sync: no validation, no rename, no restart. This is the
@@ -202,35 +201,6 @@ func SyncHysteria2Config() error {
 		return fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// ── Express dedicated-tunnel client management ──
-	// In dedicated mode (N≥2 healthy exits) we run hysteria2-client-express.service
-	// connecting to the lowest-RTT exit, exposing SOCKS5 on 127.0.0.1:1091 for
-	// hysteria2-server's outbound. In shared mode we stop+disable that unit so
-	// it doesn't fight with the per-exit client for resources. Errors here are
-	// logged but don't abort the sync — the server config has already been
-	// applied; the dedicated client is best-effort and self-heals on next probe.
-	if decision.Mode == biz.ExpressTunnelModeDedicated && decision.BestExitIP != "" {
-		if werr := writeExpressClientConfig(decision.BestExitIP); werr != nil {
-			log.Printf("[hysteria2-sync] write express client config: %v", werr)
-		} else {
-			_ = exec.Command("systemctl", "enable", "hysteria2-client-express").Run()
-			if out, rerr := exec.Command("systemctl", "restart", "hysteria2-client-express").CombinedOutput(); rerr != nil {
-				log.Printf("[hysteria2-sync] restart hysteria2-client-express: %v (%s)", rerr, strings.TrimSpace(string(out)))
-			}
-		}
-	} else {
-		// Shared mode (or fallback) — ensure dedicated client is NOT running so
-		// it doesn't fight with the per-exit client for resources. is-active/
-		// is-enabled returns non-zero (and we skip) when the unit is absent
-		// (setup script not re-run yet) — harmless no-op.
-		if exec.Command("systemctl", "is-active", "--quiet", "hysteria2-client-express").Run() == nil {
-			_ = exec.Command("systemctl", "stop", "hysteria2-client-express").Run()
-		}
-		if exec.Command("systemctl", "is-enabled", "--quiet", "hysteria2-client-express").Run() == nil {
-			_ = exec.Command("systemctl", "disable", "hysteria2-client-express").Run()
-		}
-	}
-
 	// Bump config_version so admin UI / clients can detect changes.
 	cur := biz.GetSettingOrDefault("hysteria2_config_version", "1")
 	if n := atoiSafe(cur); n > 0 {
@@ -258,14 +228,16 @@ func recordHysteria2SyncError(err error) {
 // renderHysteria2Config produces a deterministic YAML config so the no-op
 // short-circuit (bytes.Equal) works reliably across invocations.
 //
-// outboundSocksPort is the loopback SOCKS5 port that `outbounds.via_exit`
-// targets. It is chosen by biz.DecideExpressTunnel():
-//   - shared mode (N=1 exit) → 1088 + exitID (the per-exit
-//     hysteria2-client-<id>.service that already serves Xray)
-//   - dedicated mode (N≥2)   → biz.ExpressDedicatedSocksPort (1091)
-//   - fallback (N=0)         → 1090 (legacy port; outbound fails closed)
+// outboundSocksPort is the loopback SOCKS5 port `outbounds.via_exit` targets: 1088+id of the exit
+// biz.ExpressExit chose (its hysteria2-client-<id>), 1090 before any exit was chosen.
 //
 // hubIPs are the Hub's own public addresses (hubOwnIPs); see hysteria2ACLRules.
+//
+// The template text is part of the bytes compared above: any edit to it, comments included,
+// restarts hysteria2-server on every Hub once. The "biz.DecideExpressTunnel()" in the outbounds
+// comment below names the removed function on purpose — it is pinned by
+// testdata/hysteria2_server_exit2.golden so the s6yc rollout does not restart Bamboo; reword it
+// together with the next change that restarts hysteria2-server anyway.
 func renderHysteria2Config(maxUp, maxDown int, obfsPassword, statsSecret string, outboundSocksPort int, hubIPs []string) string {
 	return fmt.Sprintf(`# /etc/hysteria/server.yaml
 # Generated by heyearth-api hysteria2_sync.go. DO NOT EDIT BY HAND.
@@ -422,74 +394,6 @@ func hysteria2ACLInline(hubIPs []string) string {
 	return sb.String()
 }
 
-// writeExpressClientConfig writes /etc/hysteria/client-express.yaml pointing at
-// the lowest-RTT exit. AUTH password comes from app_settings.hub_tunnel_password
-// (set by exit-node provisioning); falls back to hysteria2_obfs_password if
-// the operator hasn't run --setup-exit-node on this exit yet (smoke env).
-//
-// We chown to hysteria:hysteria so the dedicated systemd unit (running as
-// `hysteria`) can read it, mirroring server.yaml's permissions dance above.
-func writeExpressClientConfig(exitIP string) error {
-	authKey := biz.GetSettingOrDefault("hub_tunnel_password", "")
-	if authKey == "" {
-		// Fallback: reuse the obfs password as auth so the smoke env still works.
-		// Production exits set hub_tunnel_password during --setup-exit-node.
-		authKey = biz.GetHysteria2ObfsPassword()
-	}
-	obfsPw := biz.GetHysteria2ObfsPassword()
-
-	yaml := fmt.Sprintf(`# /etc/hysteria/client-express.yaml
-# Generated by heyearth-api hysteria2_sync.go. DO NOT EDIT BY HAND.
-# Hub→Exit dedicated tunnel for Express (lowest-RTT exit selection).
-server: %s:50443
-
-auth: %s
-
-tls:
-  insecure: true
-
-socks5:
-  listen: 127.0.0.1:%d
-
-obfs:
-  type: salamander
-  salamander:
-    password: %s
-
-transport:
-  udp:
-    hopInterval: 30s
-
-quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-  maxIdleTimeout: 60s
-
-bandwidth:
-  up: 200 mbps
-  down: 200 mbps
-`, exitIP, authKey, biz.ExpressDedicatedSocksPort, obfsPw)
-
-	path := "/etc/hysteria/client-express.yaml"
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(yaml), 0o600); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
-	}
-	if hu, err := user.Lookup("hysteria"); err == nil {
-		uid, _ := strconv.Atoi(hu.Uid)
-		gid, _ := strconv.Atoi(hu.Gid)
-		_ = os.Chown(path, uid, gid)
-		_ = os.Chmod(path, 0o640)
-	}
-	return nil
-}
-
 func containsString(arr []string, want string) bool {
 	for _, s := range arr {
 		if strings.EqualFold(s, want) {
@@ -510,6 +414,19 @@ func atoiSafe(s string) int {
 	return n
 }
 
+var legacyExpressCleanup sync.Once
+
+// stopLegacyExpressClient stops the dedicated Express client of the removed "dedicated" mode
+// (s6yc): hysteria2-client-express listened on :1091, which is exit #3's own SOCKS port. Once per
+// process; every step is a no-op when the unit or the file is absent. The unit file itself is
+// removed by deploy --setup-hysteria2-hub (hysteria2_hub.go).
+func stopLegacyExpressClient() {
+	legacyExpressCleanup.Do(func() {
+		_ = exec.Command("systemctl", "disable", "--now", "hysteria2-client-express").Run()
+		_ = os.Remove("/etc/hysteria/client-express.yaml")
+	})
+}
+
 // StartHysteria2SyncLoop kicks off an initial sync and a 5-minute periodic sync.
 // Mirrors StartXraySyncLoop. Safe to call even if hysteria isn't installed:
 // SyncHysteria2Config is a no-op in that case.
@@ -518,6 +435,7 @@ func StartHysteria2SyncLoop() {
 		log.Println("[hysteria2-sync] hysteria binary not found, sync loop disabled")
 		return
 	}
+	stopLegacyExpressClient()
 
 	if err := SyncHysteria2Config(); err != nil {
 		log.Printf("[hysteria2-sync] initial sync: %v", err)

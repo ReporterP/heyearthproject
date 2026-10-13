@@ -34,11 +34,11 @@ package main
 //
 //	xray.service's cgroup (xray runs as root, so a uid match would be useless); allowed loopback
 //	  TCP: the exit tunnels' SOCKS ports.
-//	user hysteria: hysteria2-server and the dedicated Express client hysteria2-client-express
-//	  (both User=hysteria). The per-exit tunnel clients hysteria2-client-<id>.service run as
-//	  ROOT (no User=, see hubHy2ClientScript) and are not covered: they only dial their exit and
-//	  listen on loopback. Allowed loopback TCP: the SOCKS ports, the auth callback port(s) of
-//	  the current phase (below) and 53 (the Go resolver's TCP fallback to the local stub).
+//	user hysteria: hysteria2-server (User=hysteria). The per-exit tunnel clients
+//	  hysteria2-client-<id>.service run as ROOT (no User=, see hubHy2ClientScript) and are not
+//	  covered: they only dial their exit and listen on loopback. Allowed loopback TCP: the SOCKS
+//	  ports, the auth callback port(s) of the current phase (below) and 53 (the Go resolver's TCP
+//	  fallback to the local stub).
 //	everybody but the user heyearth-api runs as: new connections to 127.0.0.1:10085 (the xray
 //	  API: add users, replace routing)                                   -> REJECT
 //	and the same for IPv6 via ip6tables (no 10085 rule: the xray API listens on 127.0.0.1 only).
@@ -119,8 +119,8 @@ const (
 	egressDropInPath = "/etc/systemd/system/xray.service.d/egress-guard.conf"
 	// egressGuardPrevDir keeps the replaced guard's files for an automatic rollback.
 	egressGuardPrevDir = "/var/backups/heyearth-egress-guard/prev"
-	// egressSocksPorts: hysteria2-client-<id> listens on 127.0.0.1:(1088+id) (+ 1090/1091 of the
-	// Express tunnel); the xray `socks` outbounds and hysteria-server's via_exit outbound dial them.
+	// egressSocksPorts: hysteria2-client-<id> listens on 127.0.0.1:(1088+id); the xray `socks`
+	// outbounds and hysteria-server's via_exit outbound dial them.
 	egressSocksPorts = "1088:1599"
 	// egressAPIPort: the main heyearth-api listener (the whole REST API, nginx's upstream).
 	egressAPIPort = "8000"

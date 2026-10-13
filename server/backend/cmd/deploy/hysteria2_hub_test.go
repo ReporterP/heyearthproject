@@ -173,3 +173,20 @@ echo "STATE leftover=$(ls "$T" | grep -c '\.new$')"
 		t.Error("geoip placeholder left unreplaced")
 	}
 }
+
+// s6yc: the dedicated Express client is gone (its :1091 is exit #3's own SOCKS port); setup
+// removes a leftover unit instead of installing one.
+func TestHysteria2HubScriptRemovesDedicatedExpressClient(t *testing.T) {
+	s := hysteria2HubScript()
+	if strings.Contains(s, "cat > /etc/systemd/system/hysteria2-client-express.service") {
+		t.Fatal("setup still installs hysteria2-client-express")
+	}
+	for _, want := range []string{
+		"systemctl disable --now hysteria2-client-express",
+		"rm -f /etc/systemd/system/hysteria2-client-express.service /etc/hysteria/client-express.yaml",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("setup lacks %q", want)
+		}
+	}
+}

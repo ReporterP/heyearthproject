@@ -300,40 +300,11 @@ ReadOnlyPaths=/etc/letsencrypt
 WantedBy=multi-user.target
 UNIT
 
-# ── 6b. Dedicated Express client systemd unit (installed, NOT enabled) ──
-# heyearth-api hysteria2_sync.go enables/starts this unit dynamically when 2+
-# healthy exits exist; otherwise it stays stopped and Express shares the
-# per-exit hysteria2-client-<id>.service that already serves Xray.
-cat > /etc/systemd/system/hysteria2-client-express.service <<'UNIT'
-[Unit]
-Description=Hysteria2 client (Express dedicated tunnel to lowest-RTT exit)
-Documentation=https://v2.hysteria.network/
-After=network-online.target nss-lookup.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=hysteria
-Group=hysteria
-WorkingDirectory=/etc/hysteria
-ExecStart=/usr/local/bin/hysteria client --config /etc/hysteria/client-express.yaml --disable-update-check
-ExecReload=/bin/systemctl restart hysteria2-client-express
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=1048576
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ReadWritePaths=/etc/hysteria
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-# NOTE: not enabled at setup. heyearth-api owns the lifecycle (enables it on
-# transition to dedicated mode, disables on shared-mode fallback).
+# ── 6b. Removed: the dedicated Express client (s6yc) ──
+# Bamboo always leaves through an exit's own tunnel client hysteria2-client-<id> (127.0.0.1:1088+id);
+# the old hysteria2-client-express listened on :1091 = exit #3's port. Remove a leftover.
+systemctl disable --now hysteria2-client-express 2>/dev/null || true
+rm -f /etc/systemd/system/hysteria2-client-express.service /etc/hysteria/client-express.yaml
 
 systemctl daemon-reload
 
