@@ -252,7 +252,7 @@ func TestUpdateServerPasswordWithoutKeyChangesNothing(t *testing.T) {
 	}
 }
 
-// A new password is stored encrypted only: ssh_password = ” (never NULL), ssh_password_enc =
+// A new password is stored encrypted only: ssh_password is emptied (never NULL), ssh_password_enc =
 // the cipher, in the same transaction as the rest of the edit.
 func TestUpdateServerNewPasswordEncrypted(t *testing.T) {
 	t.Setenv("SSH_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -192,12 +193,8 @@ func MarkMTProtoStatus(serverID int, status string) error {
 // mtprotoInstallCommand runs the uploaded installer on the exit. The arguments come from
 // app_settings (admin-editable), so each one is single-quoted for the remote shell.
 func mtprotoInstallCommand(port, secret, frontingDomain string) string {
-	return "bash /tmp/install-mtproxy.sh " + shellQuote(port) + " " + shellQuote(secret) + " " + shellQuote(frontingDomain)
-}
-
-// shellQuote single-quotes s for a POSIX shell.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return "bash /tmp/install-mtproxy.sh " + shellquote.Quote(port) + " " + shellquote.Quote(secret) + " " +
+		shellquote.Quote(frontingDomain)
 }
 
 // InstallMTProtoOnExit SSHes into the exit-node and runs install-mtproxy.sh

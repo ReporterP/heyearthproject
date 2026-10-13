@@ -27,6 +27,7 @@ import (
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
+	"github.com/heyearth/backend/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -964,7 +965,7 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 	// Node paths are POSIX: path.Clean, not filepath.Clean (which turns "/" into "\" on Windows).
 	dirPath = path.Clean(dirPath)
 	if !isAllowedListPath(dirPath) {
-		writeAdminError(w, http.StatusForbidden, "Просматривать можно только /opt/heyearth и /var/log (латиница, цифры, . _ / @ + -)")
+		writeAdminError(w, http.StatusForbidden, listForbiddenMsg+" (латиница, цифры, . _ / @ + -)")
 		return
 	}
 
@@ -982,7 +983,10 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	output, _ := session.CombinedOutput(listDirCommand(dirPath))
+	output, err := session.CombinedOutput(listDirCommand(dirPath))
+	if err != nil && writeNodePathError(w, err, listForbiddenMsg) {
+		return // a symlink out of the allowed directories, or nothing there
+	}
 	entries := parseLsOutput(string(output))
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
 }
@@ -1056,10 +1060,8 @@ func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
 
 	output, err := session.CombinedOutput(logReadCommand(filePath))
 	if err != nil {
-		var exitErr *ssh.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitStatus() == logReadOutsideExit {
-			writeAdminError(w, http.StatusForbidden, logReadForbiddenMsg) // a symlink out of /var/log
-			return
+		if writeNodePathError(w, err, logReadForbiddenMsg) {
+			return // a symlink out of /var/log, or no such log
 		}
 		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("Не удалось прочитать файл: %s", strings.TrimSpace(string(output))))
 		return
@@ -1067,7 +1069,10 @@ func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": string(output)})
 }
 
-const logReadForbiddenMsg = "Можно читать только журналы в /var/log"
+const (
+	logReadForbiddenMsg = "Можно читать только журналы в /var/log"
+	listForbiddenMsg    = "Просматривать можно только /opt/heyearth и /var/log"
+)
 
 // nodePathRe: the only characters a node path may carry. Paths go into a root shell on the node,
 // so anything a shell could expand, split or quote ($, `, ', ", spaces, ;, |, *, \) is refused
@@ -1098,21 +1103,60 @@ func isAllowedListPath(p string) bool {
 	return safeNodePath(p) && (underDir(p, "/opt/heyearth") || underDir(p, "/var/log"))
 }
 
-// shQuote single-quotes s for a POSIX shell (the same as cmd/deploy's shQuote).
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+// Exit statuses of the node path commands: the path resolves (symlinks followed on the node)
+// outside the allowed directories, or it does not exist.
+const (
+	nodePathOutsideExit = 3
+	nodePathMissingExit = 4
+)
+
+const nodePathMissingMsg = "Файл не найден"
+
+// resolvedNodePathScript resolves p on the node (readlink -f), refuses a target outside the
+// case patterns (exit nodePathOutsideExit) and a missing one (exit nodePathMissingExit), then
+// runs action with the resolved path in "$p". p must already pass safeNodePath.
+func resolvedNodePathScript(p, patterns, action string) string {
+	outside, missing := strconv.Itoa(nodePathOutsideExit), strconv.Itoa(nodePathMissingExit)
+	return "p=$(readlink -f -- " + shellquote.Quote(p) + ") || exit " + missing +
+		`; case "$p" in ` + patterns + ") ;; *) exit " + outside + ";; esac" +
+		`; [ -e "$p" ] || exit ` + missing + "; " + action
 }
 
-func listDirCommand(dir string) string { return "ls -la -- " + shQuote(dir) + " 2>&1" }
-
-// logReadOutsideExit is the exit status of logReadCommand when the path resolves outside /var/log.
-const logReadOutsideExit = 3
+// listDirCommand lists a directory on the node (names only) if it resolves into /opt/heyearth
+// or /var/log.
+func listDirCommand(dir string) string {
+	return resolvedNodePathScript(dir, "/opt/heyearth|/opt/heyearth/*|/var/log|/var/log/*", `ls -la -- "$p" 2>&1`)
+}
 
 // logReadCommand reads up to 1 MiB of a log on the node. Symlinks are resolved there first: a
-// link in /var/log pointing at a config or a key is refused (exit logReadOutsideExit).
+// link in /var/log pointing at a config or a key is refused.
 func logReadCommand(p string) string {
-	return "p=$(readlink -f -- " + shQuote(p) + `); case "$p" in /var/log/*) head -c 1048576 -- "$p";; *) exit ` +
-		strconv.Itoa(logReadOutsideExit) + ";; esac"
+	return resolvedNodePathScript(p, "/var/log/*", `head -c 1048576 -- "$p"`)
+}
+
+// nodePathExitStatus maps an exit status of the node path commands to the HTTP answer; ok is
+// false for any other failure.
+func nodePathExitStatus(exit int, forbiddenMsg string) (code int, msg string, ok bool) {
+	switch exit {
+	case nodePathOutsideExit:
+		return http.StatusForbidden, forbiddenMsg, true
+	case nodePathMissingExit:
+		return http.StatusNotFound, nodePathMissingMsg, true
+	}
+	return 0, "", false
+}
+
+// writeNodePathError answers a node path command's verdict (exit 3/4); false when err is not one.
+func writeNodePathError(w http.ResponseWriter, err error, forbiddenMsg string) bool {
+	var exitErr *ssh.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	code, msg, ok := nodePathExitStatus(exitErr.ExitStatus(), forbiddenMsg)
+	if ok {
+		writeAdminError(w, code, msg)
+	}
+	return ok
 }
 
 func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {

@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/heyearth/backend/internal/shellquote"
 )
 
 // The removed actions are refused before anything else: db.DB is nil in tests, so reaching the
@@ -124,36 +126,106 @@ func TestNodePathsRejectShellAndTraversal(t *testing.T) {
 	}
 }
 
-func TestShQuote(t *testing.T) {
-	if got := shQuote("it's"); got != `'it'\''s'` {
-		t.Fatalf("shQuote(it's) = %s", got)
-	}
+// bashExit runs cmd in bash and returns its exit status (skips without bash).
+func bashExit(t *testing.T, cmd string) int {
+	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("no bash: round trip skipped")
+		t.Skip("no bash: exit-code check skipped")
 	}
-	for _, s := range []string{"it's", "'", "$(id)", "`id`", "a b", `a"b`, "a\\b", "$HOME", "x;id"} {
-		out, err := exec.Command("bash", "-c", "printf %s "+shQuote(s)).Output()
-		if err != nil || string(out) != s {
-			t.Errorf("bash round trip of %q: %q, %v", s, out, err)
-		}
+	err := exec.Command("bash", "-c", cmd).Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
 	}
+	if err != nil {
+		t.Fatalf("bash: %v", err)
+	}
+	return 0
+}
+
+// resolvesToItself: does bash's readlink -f map p to p here (so a positive run is meaningful)?
+func resolvesToItself(p string) bool {
+	out, err := exec.Command("bash", "-c", "[ -d "+p+" ] && readlink -f -- "+p).Output()
+	return err == nil && strings.TrimSpace(string(out)) == p
 }
 
 // The read command resolves symlinks on the node and reads only what lands in /var/log.
 func TestLogReadCommand(t *testing.T) {
 	cmd := logReadCommand("/var/log/syslog")
-	for _, want := range []string{"readlink -f -- '/var/log/syslog'", `/var/log/*) head -c 1048576 -- "$p"`, "exit 3"} {
+	for _, want := range []string{"readlink -f -- '/var/log/syslog'", `head -c 1048576 -- "$p"`} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command lacks %q:\n%s", want, cmd)
 		}
 	}
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("no bash: exit-code check skipped")
+	if got := bashExit(t, logReadCommand("/usr")); got != nodePathOutsideExit {
+		t.Errorf("a path resolving outside /var/log: exit %d, want %d", got, nodePathOutsideExit)
 	}
-	err := exec.Command("bash", "-c", logReadCommand("/usr")).Run()
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) || ee.ExitCode() != logReadOutsideExit {
-		t.Errorf("a path resolving outside /var/log: %v, want exit %d", err, logReadOutsideExit)
+	if got := bashExit(t, logReadCommand("/var/log/heyearth-no-such-file")); got != nodePathMissingExit {
+		t.Errorf("a missing log: exit %d, want %d", got, nodePathMissingExit)
+	}
+}
+
+// The listing resolves symlinks on the node too: only /opt/heyearth and /var/log are listed.
+func TestListDirCommand(t *testing.T) {
+	cmd := listDirCommand("/opt/heyearth")
+	for _, want := range []string{"readlink -f -- '/opt/heyearth'", `ls -la -- "$p"`} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("command lacks %q:\n%s", want, cmd)
+		}
+	}
+	if got := bashExit(t, listDirCommand("/usr")); got != nodePathOutsideExit {
+		t.Errorf("a directory resolving outside: exit %d, want %d", got, nodePathOutsideExit)
+	}
+	if got := bashExit(t, listDirCommand("/var/log/heyearth-no-such-dir")); got != nodePathMissingExit {
+		t.Errorf("a missing directory: exit %d, want %d", got, nodePathMissingExit)
+	}
+	if resolvesToItself("/var/log") {
+		if got := bashExit(t, listDirCommand("/var/log")); got != 0 {
+			t.Errorf("/var/log: exit %d, want 0", got)
+		}
+	}
+}
+
+// The resolve-then-act script on a real directory: an existing file runs the action, a missing
+// one is exit 4 even when readlink succeeds, a symlink out of the allowed tree is exit 3.
+func TestResolvedNodePathScript(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash")
+	}
+	// <tmp>/in is the allowed tree; <tmp>/out/secret lies outside it.
+	out, err := exec.Command("bash", "-c", `d=$(mktemp -d) && mkdir "$d/in" "$d/out" && touch "$d/in/f" "$d/out/secret" &&
+{ ln -s "$d/out/secret" "$d/in/link" 2>/dev/null || true; } && printf %s "$d"`).Output()
+	tmp := strings.TrimSpace(string(out))
+	if err != nil || !safeNodePath(tmp) {
+		t.Skipf("temp dir %q: %v", tmp, err)
+	}
+	t.Cleanup(func() { _ = exec.Command("bash", "-c", "rm -rf -- "+shellquote.Quote(tmp)).Run() })
+	dir := tmp + "/in"
+	allowed := dir + "|" + dir + "/*"
+	if got := bashExit(t, resolvedNodePathScript(dir+"/f", allowed, "exit 0")); got != 0 {
+		t.Errorf("existing file: exit %d, want 0", got)
+	}
+	if got := bashExit(t, resolvedNodePathScript(dir+"/missing", allowed, "exit 0")); got != nodePathMissingExit {
+		t.Errorf("missing file in an existing directory: exit %d, want %d", got, nodePathMissingExit)
+	}
+	if exec.Command("bash", "-c", "[ -L "+shellquote.Quote(dir+"/link")+" ]").Run() == nil {
+		if got := bashExit(t, resolvedNodePathScript(dir+"/link", allowed, "exit 0")); got != nodePathOutsideExit {
+			t.Errorf("symlink out of the allowed tree: exit %d, want %d", got, nodePathOutsideExit)
+		}
+	} else {
+		t.Log("no symlinks on this filesystem: the symlink case runs on Linux only")
+	}
+}
+
+func TestNodePathExitStatus(t *testing.T) {
+	if code, msg, ok := nodePathExitStatus(nodePathOutsideExit, logReadForbiddenMsg); !ok || code != http.StatusForbidden || msg != logReadForbiddenMsg {
+		t.Errorf("exit 3: %d %q %v", code, msg, ok)
+	}
+	if code, msg, ok := nodePathExitStatus(nodePathMissingExit, logReadForbiddenMsg); !ok || code != http.StatusNotFound || msg != "Файл не найден" {
+		t.Errorf("exit 4: %d %q %v", code, msg, ok)
+	}
+	if _, _, ok := nodePathExitStatus(1, logReadForbiddenMsg); ok {
+		t.Error("exit 1 is a plain failure, not a path verdict")
 	}
 }
 
