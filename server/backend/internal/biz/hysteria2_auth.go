@@ -232,6 +232,15 @@ type Hysteria2Status struct {
 	MaxUpMbps       int    `json:"max_up_mbps"`
 	MaxDownMbps     int    `json:"max_down_mbps"`
 	ActivePlans     int    `json:"active_plans"` // count of plans with express_enabled=true
+
+	// Bamboo card (admin, phase 1): the exit Bamboo leaves through (the committed choice, what
+	// server.yaml carries), obfs rotation, outside probe. Status facts only, never a secret.
+	BoundExitID    int          `json:"bound_exit_id"` // 0: no exit chosen yet
+	BoundExitName  string       `json:"bound_exit_name,omitempty"`
+	BoundExitSince string       `json:"bound_exit_since,omitempty"` // RFC3339
+	BoundExitRTTms int          `json:"bound_exit_rtt_ms"`          // smoothed, 0 = unknown
+	ObfsRotatedAt  string       `json:"obfs_rotated_at,omitempty"`  // RFC3339
+	Probe          *BambooProbe `json:"probe"`                      // null before the first verdict
 }
 
 // GetHysteria2Status reads the persisted sync snapshot from app_settings and a
@@ -272,7 +281,7 @@ func GetHysteria2Status() Hysteria2Status {
 	var activePlans int
 	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM plans WHERE express_enabled = TRUE AND is_active = TRUE`).Scan(&activePlans)
 
-	return Hysteria2Status{
+	st := Hysteria2Status{
 		BinaryInstalled: errBin == nil,
 		ConfigPresent:   errCfg == nil,
 		ConfigVersion:   GetSettingOrDefault("hysteria2_config_version", "0"),
@@ -281,7 +290,16 @@ func GetHysteria2Status() Hysteria2Status {
 		MaxUpMbps:       maxUp,
 		MaxDownMbps:     maxDn,
 		ActivePlans:     activePlans,
+		ObfsRotatedAt:   GetSettingOrDefault("hysteria2_obfs_rotated_at", ""),
+		Probe:           LastBambooProbe(),
 	}
+	cur, ok := ExpressCurrent()
+	b := bambooBoundExit(cur, ok, GetSettingOrDefault)
+	st.BoundExitID, st.BoundExitSince, st.BoundExitRTTms = b.ID, b.Since, b.RTTms
+	if st.BoundExitID > 0 {
+		_ = db.DB.QueryRow(`SELECT COALESCE(name, '') FROM servers WHERE id = $1`, st.BoundExitID).Scan(&st.BoundExitName)
+	}
+	return st
 }
 
 func containsProto(arr []string, want string) bool {

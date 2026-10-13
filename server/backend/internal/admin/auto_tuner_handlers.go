@@ -5,13 +5,31 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
+// autoTunerLoopRunning is set by cmd/api StartAutoTuner: its goroutine starts only when
+// auto_tuner_enabled was "true" at API start, and only that goroutine reads AutoTunerRunChan.
+var autoTunerLoopRunning atomic.Bool
+
+// SetAutoTunerLoopRunning is called by cmd/api once the tuner goroutine runs.
+func SetAutoTunerLoopRunning(v bool) { autoTunerLoopRunning.Store(v) }
+
+// autoTunerSetting is biz.GetSettingOrDefault; tests swap it.
+var autoTunerSetting = biz.GetSettingOrDefault
+
+const (
+	autoTunerNotRunningMsg = "Автотюнер не запущен: при старте API он был выключен. Включение начнёт действовать после следующего перезапуска API."
+	autoTunerDisabledMsg   = "Автотюнер выключен — сначала включите его (он меняет параметры, которые видят пользователи)."
+)
+
 // AutoTunerStatusHandler returns current auto-tuner state with ALL params.
+// loop_running tells whether the tuner goroutine runs in this API process: "enabled" alone
+// does not start it (see autoTunerLoopRunning).
 // GET /api/admin/auto-tuner/status
 func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	status := biz.GetSettingOrDefault("auto_tuner_status", "idle")
@@ -40,6 +58,7 @@ func AutoTunerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]any{
 		"status":         status,
 		"enabled":        enabled == "true",
+		"loop_running":   autoTunerLoopRunning.Load(),
 		"last_run":       lastRun,
 		"next_run":       nextRun,
 		"interval_hours": interval,
@@ -151,8 +170,20 @@ func AutoTunerToggleHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled {
 		val = "true"
 	}
-	_ = biz.SetSetting("auto_tuner_enabled", val)
-	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner " + val})
+	if err := biz.SetSetting("auto_tuner_enabled", val); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить настройку автотюнера")
+		return
+	}
+	running := autoTunerLoopRunning.Load()
+	msg := "Автотюнер выключен"
+	if req.Enabled {
+		msg = "Автотюнер включён"
+		if !running {
+			msg += ". Он начнёт работать после следующего перезапуска API (сейчас его горутина не запущена)"
+		}
+	}
+	WriteAuditLog(r, "auto_tuner_toggle", "setting", "auto_tuner_enabled", map[string]string{"value": val})
+	writeAdminJSON(w, http.StatusOK, map[string]any{"message": msg, "loop_running": running})
 }
 
 // AutoTunerIntervalHandler changes the run interval.
@@ -178,12 +209,22 @@ func AutoTunerIntervalHandler(w http.ResponseWriter, r *http.Request) {
 // The actual run happens in auto_tuner.go via a channel.
 var AutoTunerRunChan = make(chan struct{}, 1)
 
+// AutoTunerRunNowHandler answers 409 when nothing would run: no tuner goroutine reads the channel
+// in this process, or the tuner is switched off.
 func AutoTunerRunNowHandler(w http.ResponseWriter, r *http.Request) {
+	if !autoTunerLoopRunning.Load() {
+		writeAdminError(w, http.StatusConflict, autoTunerNotRunningMsg)
+		return
+	}
+	if autoTunerSetting("auto_tuner_enabled", "false") != "true" {
+		writeAdminError(w, http.StatusConflict, autoTunerDisabledMsg)
+		return
+	}
 	select {
 	case AutoTunerRunChan <- struct{}{}:
-		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner run triggered"})
+		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Подбор параметров запущен"})
 	default:
-		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Auto-tuner already running or pending"})
+		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Подбор уже идёт или поставлен в очередь"})
 	}
 }
 

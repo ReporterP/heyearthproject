@@ -1544,3 +1544,22 @@ func TestBambooMonitorDilutedFailures(t *testing.T) {
 	run(58)
 	run(65)
 }
+
+// The Bamboo card (admin) shows the last real verdict of the outside probe.
+func TestBambooMonitorRecordsVerdicts(t *testing.T) {
+	h := newBambooHarness()
+	var got []bool
+	var details []string
+	h.m.record = func(ok bool, _ time.Time, detail string) { got = append(got, ok); details = append(details, detail) }
+	h.step(time.Minute)
+	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
+	h.step(time.Minute)
+	if fmt.Sprint(got) != "[true false]" || !strings.Contains(details[0], "через exit :1090") {
+		t.Fatalf("records %v %q, want an OK then a failure", got, details)
+	}
+	h.deployed = false
+	h.step(time.Minute)
+	if len(got) != 2 {
+		t.Fatalf("a skip (not deployed) is not a verdict: %v", got)
+	}
+}

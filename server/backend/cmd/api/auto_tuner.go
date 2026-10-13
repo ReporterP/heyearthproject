@@ -216,6 +216,7 @@ func StartAutoTuner() {
 			}
 		}
 	}()
+	admin.SetAutoTunerLoopRunning(true) // «Запустить сейчас» has a reader now
 
 	log.Printf("[auto-tuner] Started v2 (interval: %dh, params: SNI per-country, Fingerprint×%d, DNS×%d, MuxAdaptive, xPaddingBytes)",
 		intervalHours, len(candidateFingerprints), len(candidateDNS))

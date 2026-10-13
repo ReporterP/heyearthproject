@@ -547,6 +547,7 @@ type bambooMonitor struct {
 	raise     func(key string, level AlertLevel, title, details string)
 	resolve   func(key, message string)
 	logf      func(format string, args ...any)
+	record    func(ok bool, at time.Time, detail string) // last verdict for the admin card; nil in most tests
 
 	streak     loopProbeStreak // with its own stale window, bambooBlindAfter
 	blindSince time.Time       // start of the current stretch without a verdict while deployed; zero = not deployed
@@ -571,6 +572,9 @@ var bambooMon = &bambooMonitor{
 	raise:     RaiseAlert,
 	resolve:   ResolveAlert,
 	logf:      log.Printf,
+	record: func(ok bool, at time.Time, detail string) {
+		biz.RecordBambooProbe(biz.BambooProbe{OK: ok, At: at, Detail: detail})
+	},
 }
 
 func runBambooProbe() { bambooMon.run() }
@@ -672,6 +676,7 @@ func (m *bambooMonitor) run() {
 	switch decideBamboo(err, controlErr) {
 	case bambooOK:
 		m.verdict(now)
+		m.recordVerdict(true, now, fmt.Sprintf("%s UDP :%d ответил за %v через exit :%d", label, hop, rtt.Round(time.Millisecond), socksPort))
 		m.streak.recordWithin(now, true, bambooBlindAfter)
 		if m.okLog.allow(now, time.Hour) {
 			m.logf("[monitor] Бамбук-проба OK: %s UDP :%d ответил за %v (через exit :%d)", label, hop, rtt.Round(time.Millisecond), socksPort)
@@ -687,6 +692,7 @@ func (m *bambooMonitor) run() {
 		// diluted by skips can never stay silent.
 		fails := m.streak.recordWithin(now, false, bambooBlindAfter)
 		level, title, details := bambooFailAlert(fails, label, hop, socksPort, err)
+		m.recordVerdict(false, now, fmt.Sprintf("%s: %v", title, err))
 		if level == AlertWarn {
 			m.logf("[monitor] Бамбук-проба не выполнилась (%d подряд), ошибка на стороне Hub: %v", fails, err)
 		} else {
@@ -709,6 +715,13 @@ func (m *bambooMonitor) verdict(now time.Time) {
 	m.blindSince = now
 	m.lastSkip = "" // the next skip is news again, even for the same reason
 	m.resolve(bambooBlindAlertKey, "Внешняя проба Бамбука снова даёт результат.")
+}
+
+// recordVerdict hands a verdict (never a skip) to the admin card.
+func (m *bambooMonitor) recordVerdict(ok bool, at time.Time, detail string) {
+	if m.record != nil {
+		m.record(ok, at, detail)
+	}
 }
 
 // skip records a run without a verdict while Bamboo is deployed; after bambooBlindAfter of
