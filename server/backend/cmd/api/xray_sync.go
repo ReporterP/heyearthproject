@@ -1298,8 +1298,9 @@ func exitHealthFor(id int) *exitHealth {
 }
 
 // forgetGoneExits drops the path memory and the biz.ExitPaths view of every exit that is not in
-// nodes (the online exits): a deprovisioned exit has no live view in the admin, and one that
-// comes back online starts afresh from its tunnel_status.
+// nodes (the online exits) and closes its open alerts silently: a deprovisioned exit has no live
+// view in the admin and no «снова доступна» message, and one that comes back online starts
+// afresh from its tunnel_status.
 func forgetGoneExits(nodes []biz.ExitNodeTunnel) {
 	online := make(map[int]bool, len(nodes))
 	for _, n := range nodes {
@@ -1309,9 +1310,34 @@ func forgetGoneExits(nodes []biz.ExitNodeTunnel) {
 		if id := k.(int); !online[id] {
 			exitHealthByID.Delete(id)
 			biz.ForgetExitPaths(id)
+			for _, key := range exitAlertKeys(id) {
+				ClearAlert(key, fmt.Sprintf("exit-нода #%d больше не online — тревога закрыта без уведомления", id))
+			}
 		}
 		return true
 	})
+}
+
+// saveExitStatus is the monitor's conditional status write; tests swap it.
+var saveExitStatus = biz.UpdateTunnelStatusIfUnchanged
+
+// persistExitVerdict writes the tick's verdict (status, latency, error; last_tunnel_check) unless
+// tunnel_status changed since checkAllTunnels read it, and reports whether the stored status
+// flipped. When nothing was written h forgets its verdict: after a DB error the next tick decides
+// and writes again, after a write from elsewhere it re-seeds the paths from that write.
+func persistExitVerdict(h *exitHealth, node biz.ExitNodeTunnel, v exitVerdict) (flipped bool) {
+	written, err := saveExitStatus(node.ID, node.TunnelStatus, v.status, v.latencyMs, v.errText)
+	switch {
+	case err != nil:
+		log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
+	case !written:
+		log.Printf("[tunnel-monitor] Exit-нода %d (%s): tunnel_status изменён другим процессом во время проверки — вердикт %q не записан",
+			node.ID, node.Name, v.status)
+	default:
+		return v.status != node.TunnelStatus
+	}
+	h.writeFailed(node.TunnelStatus)
+	return false
 }
 
 // checkAllTunnels проверяет оба пути каждой exit-ноды и обновляет статусы.
@@ -1358,12 +1384,7 @@ func checkAllTunnels() {
 
 		oldStatus := node.TunnelStatus
 		// last_tunnel_check / latency / tunnel_error on every tick, the status when it flipped.
-		if err := biz.UpdateTunnelStatusWithError(node.ID, v.status, v.latencyMs, v.errText); err != nil {
-			log.Printf("[tunnel-monitor] Ошибка обновления статуса ноды %d: %v", node.ID, err)
-			h.writeFailed(oldStatus)
-			continue
-		}
-		if v.status == oldStatus {
+		if !persistExitVerdict(h, node, v) {
 			continue
 		}
 		statusChanged = true

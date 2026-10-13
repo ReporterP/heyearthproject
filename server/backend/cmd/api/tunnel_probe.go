@@ -438,6 +438,16 @@ func exitPathUpText(node biz.ExitNodeTunnel, path string) string {
 	return fmt.Sprintf("Exit-нода %s (#%d): запасной TCP-путь снова работает", node.Name, node.ID)
 }
 
+// exitPathGoneText closes a path alert because the exit no longer has that path (its protocol
+// or Reality credentials changed; in phase 2 also the owner's TCP-fallback switch): nothing works
+// again, so the recovery text must not say it does.
+func exitPathGoneText(node biz.ExitNodeTunnel, path string) string {
+	if path == "hy" {
+		return fmt.Sprintf("Exit-нода %s (#%d): путь Hysteria отключён — тревога снята", node.Name, node.ID)
+	}
+	return fmt.Sprintf("Exit-нода %s (#%d): запасной TCP-путь отключён — тревога снята", node.Name, node.ID)
+}
+
 // applyExitAlerts sends the tick's alert calls (the alert manager dedups by key; resolving a key
 // that was never raised is a no-op).
 func applyExitAlerts(node biz.ExitNodeTunnel, v exitVerdict, p exitPathProbe) {
@@ -450,14 +460,21 @@ func applyExitAlerts(node biz.ExitNodeTunnel, v exitVerdict, p exitPathProbe) {
 	for _, x := range []struct {
 		path string
 		act  exitAlertAction
-		err  string
-	}{{"hy", v.hyAlert, p.hy.err}, {"vr", v.vrAlert, p.vr.err}} {
-		switch x.act {
-		case exitAlertRaise:
-			title, details := exitPathDownText(node, x.path, x.err)
+		p    pathProbe
+	}{{"hy", v.hyAlert, p.hy}, {"vr", v.vrAlert, p.vr}} {
+		switch {
+		case x.act == exitAlertRaise:
+			title, details := exitPathDownText(node, x.path, x.p.err)
 			RaiseAlert(exitPathAlertKey(node.ID, x.path), AlertWarn, title, details)
-		case exitAlertResolve:
+		case x.act == exitAlertResolve && !x.p.present:
+			ResolveAlert(exitPathAlertKey(node.ID, x.path), exitPathGoneText(node, x.path))
+		case x.act == exitAlertResolve:
 			ResolveAlert(exitPathAlertKey(node.ID, x.path), exitPathUpText(node, x.path))
 		}
 	}
+}
+
+// exitAlertKeys are every alert key the tunnel monitor raises for exit id.
+func exitAlertKeys(id int) []string {
+	return []string{exitDownAlertKey(id), exitPathAlertKey(id, "hy"), exitPathAlertKey(id, "vr")}
 }

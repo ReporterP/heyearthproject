@@ -144,6 +144,30 @@ func UpdateTunnelStatusWithLatency(serverID int, status string, latencyMs int) e
 	return err
 }
 
+// updateTunnelStatusIfQuery writes the tunnel monitor's verdict only while tunnel_status is still
+// what the monitor read ($6, through the same COALESCE as exitNodeColumns).
+const updateTunnelStatusIfQuery = `
+	UPDATE servers
+	SET tunnel_status = $1, latency_ms = $2, tunnel_error = $3,
+	    last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+	WHERE id = $4 AND COALESCE(tunnel_status, 'unknown') = $5`
+
+// UpdateTunnelStatusIfUnchanged is UpdateTunnelStatusWithError for the tunnel monitor, which reads
+// the status, probes for up to 10 s per exit and only then writes: it writes only if tunnel_status
+// is still old. written is false when someone else changed it meanwhile (the node wizard, a
+// re-setup): their write stands, the monitor starts over from it on its next tick.
+func UpdateTunnelStatusIfUnchanged(serverID int, old, status string, latencyMs int, tunnelError string) (written bool, err error) {
+	res, err := db.DB.Exec(updateTunnelStatusIfQuery, status, latencyMs, tunnelError, serverID, old)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // UpdateTunnelStatusWithError updates tunnel status + stores a human-readable error reason.
 func UpdateTunnelStatusWithError(serverID int, status string, latencyMs int, tunnelError string) error {
 	_, err := db.DB.Exec(`

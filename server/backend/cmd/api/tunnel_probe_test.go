@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -647,6 +648,182 @@ func TestForgetGoneExits(t *testing.T) {
 	if _, ok := biz.GetExitPaths(kept); !ok {
 		t.Error("path view of an online exit dropped")
 	}
+}
+
+// withExitAlertHarness routes the test's RaiseAlert/ResolveAlert/ClearAlert to a synchronous
+// harness (fake clock, fake sender, in-memory journal) and restores the global manager after.
+func withExitAlertHarness(t *testing.T) *alertHarness {
+	t.Helper()
+	old := alerts
+	t.Cleanup(func() { alerts = old })
+	h := newAlertHarness()
+	alerts = h.m
+	return h
+}
+
+// alertLog is the harness journal as "kind key" entries.
+func alertLog(h *alertHarness) string {
+	var out []string
+	for _, ev := range h.events {
+		out = append(out, ev.Kind+" "+ev.Key)
+	}
+	return strings.Join(out, ", ")
+}
+
+// exitMonitorRun is one exit through tick + applyExitAlerts, persisting the status as
+// checkAllTunnels does.
+type exitMonitorRun struct {
+	node biz.ExitNodeTunnel
+	h    exitHealth
+	db   string
+}
+
+func (r *exitMonitorRun) tick(p exitPathProbe) {
+	v := r.h.tick(r.db, p)
+	applyExitAlerts(r.node, v, p)
+	r.db = v.status
+}
+
+// Review Focus 3 at the alert manager: the Hysteria path's own key is raised once, never the
+// exit's or the TCP path's, and resolved after the hysteresis with the path's recovery text.
+func TestApplyExitAlertsHysteriaPathDown(t *testing.T) {
+	ah := withExitAlertHarness(t)
+	ok := func(ms int) pathProbe { return pathProbe{present: true, ok: true, rttMs: ms} }
+	hyFail := pathProbe{present: true, err: "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s"}
+	r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}, db: "healthy"}
+	for range 3 {
+		r.tick(exitPathProbe{hyFail, ok(90)})
+	}
+	if got := alertLog(ah); got != "raise exit-path-down-2-hy" {
+		t.Fatalf("after 3 ticks with Hysteria dead, TCP alive: journal %q, want only the raise of exit-path-down-2-hy", got)
+	}
+	if len(ah.sent) != 1 || !strings.Contains(ah.sent[0], "запасному TCP-пути") || !strings.Contains(ah.sent[0], "timeout after 5s") {
+		t.Fatalf("sent %q, want the Hysteria path message with the probe error", ah.sent)
+	}
+	for range 2 {
+		r.tick(exitPathProbe{ok(40), ok(90)})
+	}
+	if got, want := alertLog(ah), "raise exit-path-down-2-hy, resolve exit-path-down-2-hy"; got != want {
+		t.Fatalf("after 2 OK ticks: journal %q, want %q", got, want)
+	}
+	if len(ah.sent) != 2 || !strings.Contains(ah.sent[1], "путь Hysteria снова работает") {
+		t.Fatalf("sent %q, want the Hysteria path recovery", ah.sent)
+	}
+}
+
+// A path that goes away (protocol / credentials changed; in phase 2 the TCP-fallback switch) closes
+// its alert with a text that does not claim the path works again.
+func TestApplyExitAlertsPathRemoved(t *testing.T) {
+	ok := pathProbe{present: true, ok: true, rttMs: 40}
+	fail := pathProbe{present: true, err: "EOF"}
+	for _, tc := range []struct {
+		path               string
+		down, gone         exitPathProbe
+		wantText, notThere string
+	}{
+		{"hy", exitPathProbe{fail, ok}, exitPathProbe{pathProbe{}, ok}, "путь Hysteria отключён — тревога снята", "снова работает"},
+		{"vr", exitPathProbe{ok, fail}, exitPathProbe{ok, pathProbe{}}, "запасной TCP-путь отключён — тревога снята", "снова работает"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			ah := withExitAlertHarness(t)
+			r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам"}, db: "healthy"}
+			for range 3 {
+				r.tick(tc.down)
+			}
+			r.tick(tc.gone)
+			key := exitPathAlertKey(2, tc.path)
+			if got, want := alertLog(ah), "raise "+key+", resolve "+key; got != want {
+				t.Fatalf("journal %q, want %q", got, want)
+			}
+			if len(ah.sent) != 2 || !strings.Contains(ah.sent[1], tc.wantText) || strings.Contains(ah.sent[1], tc.notThere) {
+				t.Fatalf("closing message %q, want %q and no %q", ah.sent[len(ah.sent)-1], tc.wantText, tc.notThere)
+			}
+		})
+	}
+}
+
+// A forgotten exit's open alerts are closed without a message: it left the pool, it did not recover.
+func TestForgetGoneExitsClearsAlertsSilently(t *testing.T) {
+	ah := withExitAlertHarness(t)
+	const id = 9003
+	t.Cleanup(func() { exitHealthByID.Delete(id); biz.ForgetExitPaths(id) })
+	exitHealthFor(id)
+	RaiseAlert(exitDownAlertKey(id), AlertWarn, "Exit-нода недоступна", "d")
+	RaiseAlert(exitPathAlertKey(id, "hy"), AlertWarn, "путь Hysteria недоступен", "d")
+	forgetGoneExits(nil)
+	want := "raise exit-down-9003, raise exit-path-down-9003-hy, cleared exit-down-9003, cleared exit-path-down-9003-hy"
+	if got := alertLog(ah); got != want {
+		t.Fatalf("journal %q, want %q", got, want)
+	}
+	if len(ah.sent) != 2 {
+		t.Fatalf("sent %q, want only the two raises (no recovery message)", ah.sent)
+	}
+}
+
+// The status write is conditional on the status read at the start of the tick (saveExitStatus →
+// biz.UpdateTunnelStatusIfUnchanged): only a written flip resyncs xray; a write from elsewhere
+// stands and the next tick starts over from it; a DB error is retried without a re-seed.
+func TestPersistExitVerdict(t *testing.T) {
+	saved := saveExitStatus
+	t.Cleanup(func() { saveExitStatus = saved })
+	fail := pathProbe{present: true, err: "timeout after 5s"}
+	ok := pathProbe{present: true, ok: true, rttMs: 50}
+	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", TunnelStatus: "healthy"}
+	dead := func() (*exitHealth, exitVerdict) { // both paths dead 3 ticks: verdict unhealthy, DB still healthy
+		var h exitHealth
+		var v exitVerdict
+		for range 3 {
+			v = h.tick("healthy", exitPathProbe{fail, fail})
+		}
+		return &h, v
+	}
+	type call struct {
+		id                int
+		old, status, errT string
+	}
+	var calls []call
+	answer := func(written bool, err error) {
+		calls = nil
+		saveExitStatus = func(id int, old, status string, _ int, errText string) (bool, error) {
+			calls = append(calls, call{id, old, status, errText})
+			return written, err
+		}
+	}
+
+	answer(true, nil)
+	h, v := dead()
+	if !persistExitVerdict(h, node, v) {
+		t.Error("written flip healthy → unhealthy not reported")
+	}
+	if len(calls) != 1 || calls[0].id != 2 || calls[0].old != "healthy" || calls[0].status != "unhealthy" || !strings.Contains(calls[0].errT, "timeout") {
+		t.Errorf("write calls %+v, want one conditional write of unhealthy over healthy", calls)
+	}
+	if persistExitVerdict(h, node, exitVerdict{status: "healthy"}) {
+		t.Error("written, unchanged status reported as a flip")
+	}
+
+	t.Run("someone else wrote the status meanwhile", func(t *testing.T) {
+		answer(false, nil)
+		h, v := dead()
+		if persistExitVerdict(h, node, v) {
+			t.Fatal("an unwritten verdict reported as a flip (would resync xray over the other write)")
+		}
+		// the re-setup's unknown stands: the next tick starts from it (first success → healthy)
+		if v := h.tick("unknown", exitPathProbe{ok, ok}); v.status != biz.PathHealthy {
+			t.Fatalf("next tick after the other write: %q, want healthy", v.status)
+		}
+	})
+	t.Run("DB error", func(t *testing.T) {
+		answer(false, errors.New("connection refused"))
+		h, v := dead()
+		if persistExitVerdict(h, node, v) {
+			t.Fatal("a failed write reported as a flip")
+		}
+		// the DB still says healthy: the next tick decides unhealthy again at once and writes again
+		if v := h.tick("healthy", exitPathProbe{fail, fail}); v.status != biz.PathUnhealthy {
+			t.Fatalf("next tick after a failed write: %q, want unhealthy at once", v.status)
+		}
+	})
 }
 
 func TestExitPathAlertTexts(t *testing.T) {

@@ -253,6 +253,10 @@ func RaiseAlert(key string, level AlertLevel, title, details string) {
 // ResolveAlert sends a recovery message only if a raise for key was actually delivered.
 func ResolveAlert(key, message string) { alerts.Resolve(key, message) }
 
+// ClearAlert closes the open incident of key without any message (journal kind "cleared"): what
+// it was about is gone (an exit left the pool), nothing "works again". No-op for an inactive key.
+func ClearAlert(key, reason string) { alerts.Clear(key, reason) }
+
 func (m *alertManager) Raise(key string, level AlertLevel, title, details string) {
 	m.mu.Lock()
 	now := m.now()
@@ -333,6 +337,21 @@ func (m *alertManager) Resolve(key, message string) {
 	}
 	st.active, st.notified = false, false
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: kind, Title: st.title, Details: message, At: now}, send: send, inc: inc, recovery: send}
+	m.submitLocked(o, prev)
+}
+
+// Clear closes the open incident of key silently, as Resolve does for an incident nobody was told
+// about: kind "cleared", nothing sent, the flapping cooldown left as it is.
+func (m *alertManager) Clear(key, reason string) {
+	m.mu.Lock()
+	st := m.state[key]
+	if st == nil || !st.active {
+		m.mu.Unlock()
+		return
+	}
+	prev := *st
+	st.active, st.notified = false, false
+	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: "cleared", Title: st.title, Details: reason, At: m.now()}, inc: st.inc}
 	m.submitLocked(o, prev)
 }
 
