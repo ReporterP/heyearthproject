@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The refund Idempotence-Key is the caller's when given (a repeat of the same attempt is
@@ -67,5 +68,42 @@ func TestIdempotenceKeyHeader(t *testing.T) {
 				t.Fatalf("Idempotence-Key headers %q", keys)
 			}
 		})
+	}
+}
+
+// ListRefunds asks for the payment's refunds 100 per page and follows next_cursor.
+func TestListRefundsFollowsCursor(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = io.WriteString(w, `{"type":"list","items":[{"id":"rf-1","status":"succeeded","amount":{"value":"10.00","currency":"RUB"},"payment_id":"pay-1"}],"next_cursor":"c2"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"type":"list","items":[{"id":"rf-2","status":"pending","amount":{"value":"5.00","currency":"RUB"},"payment_id":"pay-1"}]}`)
+	}))
+	defer srv.Close()
+	c := NewClient("shop", "secret", true)
+	c.baseURL = srv.URL
+	got, err := c.ListRefunds("pay-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "rf-1" || got[1].ID != "rf-2" || got[1].Amount.Value != "5.00" {
+		t.Fatalf("refunds %+v", got)
+	}
+	want := []string{"GET /refunds?limit=100&payment_id=pay-1", "GET /refunds?cursor=c2&limit=100&payment_id=pay-1"}
+	if len(queries) != 2 || queries[0] != want[0] || queries[1] != want[1] {
+		t.Fatalf("queries %q, want %q", queries, want)
+	}
+}
+
+// WithTimeout gives the copy its own timeout and leaves the original client alone.
+func TestWithTimeoutCopies(t *testing.T) {
+	c := NewClient("shop", "secret", true)
+	short := c.WithTimeout(25 * time.Second)
+	if short.http.Timeout != 25*time.Second || c.http.Timeout != httpTimeout || short.shopID != "shop" || short.baseURL != c.baseURL {
+		t.Fatalf("copy timeout %v, original %v", short.http.Timeout, c.http.Timeout)
 	}
 }

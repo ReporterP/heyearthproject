@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/yookassa"
@@ -18,8 +21,8 @@ import (
 
 // handleAdminPaymentCancel — полный или частичный возврат через YooKassa Refund API.
 // Body: optional `amount` (рубли; 0 или нет — весь остаток с учётом незавершённых
-// возвратов) и `reason`. Резерв суммы, ключ идемпотентности и повтор попытки без ответа
-// ЮKassa — в admin_refund.go.
+// возвратов) и `reason` (≤250 символов). Один вызов ЮKassa на запрос; без ответа — 202
+// {"status":"pending","message":…}. Резерв, ключ идемпотентности, повтор — в refunds.go.
 func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -46,6 +49,10 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "Admin refund"
 	}
+	if utf8.RuneCountInString(reason) > refundMaxReasonRunes {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Причина возврата длиннее %d символов (ограничение ЮKassa)", refundMaxReasonRunes)})
+		return
+	}
 	requestedKop, refusal := parseRefundAmount(req.Amount)
 	if refusal != nil {
 		writeJSON(w, refusal.status, map[string]string{"error": refusal.msg})
@@ -59,8 +66,7 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The money path must finish its bookkeeping even if the admin's browser goes away.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), refundTimeout)
-	defer cancel()
+	ctx := context.WithoutCancel(r.Context())
 
 	attempt, err := reserveRefund(ctx, paymentID, requestedKop, reason)
 	if err != nil {
@@ -68,13 +74,17 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refund, err := executeRefund(ctx, attempt, client)
+	if errors.Is(err, errRefundPending) {
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending", "message": refundPendingMessage})
+		return
+	}
 	if err != nil {
 		writeRefundError(w, paymentID, err)
 		return
 	}
 
 	log.Printf("[admin-refund] Created refund %s for payment %d (%s₽, status=%s, key=%s, resumed=%v)",
-		refund.ID, paymentID, refund.Amount.Value, refund.Status, refundIdempotenceKey(attempt.PaymentID, attempt.RowID), attempt.Resumed)
+		refund.ID, paymentID, refund.Amount.Value, refund.Status, attempt.Key, attempt.Resumed)
 
 	message := "Возврат создан"
 	if attempt.Resumed {
@@ -85,7 +95,6 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 		"refund_id": refund.ID,
 		"status":    refund.Status,
 		"amount":    refund.Amount.Value,
-		"resumed":   attempt.Resumed,
 	})
 }
 
@@ -107,6 +116,7 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	started := time.Now()
 	paymentID := extractPathID(r.URL.Path, "/api/admin/payments/", "/check-status")
 	if paymentID == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payment ID"})
@@ -143,6 +153,13 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 	// Обновляем локально + прогоняем processPaymentEvent (активация подписки если succeeded)
 	if err := processPaymentEvent(payment); err != nil {
 		log.Printf("[admin-check-status] process failed: %v", err)
+	}
+	// Возвраты этого платежа: pending → актуальный статус ЮKassa, резервы без ответа →
+	// найденный возврат. Новые HTTP-вызовы — только в первые 30 с запроса (nginx ждёт 60 с).
+	if refundClient, err := newRefundClient(); err == nil {
+		if err := reconcileRefunds(context.WithoutCancel(r.Context()), refundClient, paymentID, refundListMinAgeCheck, started.Add(30*time.Second)); err != nil {
+			log.Printf("[admin-check-status] refunds of payment %d: %v", paymentID, err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

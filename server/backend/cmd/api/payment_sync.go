@@ -44,6 +44,7 @@ func StartPaymentSyncCron() {
 		time.Sleep(1 * time.Minute)
 		for {
 			syncPendingPayments()
+			reconcilePendingRefunds()
 			time.Sleep(paymentSyncInterval)
 		}
 	}()
@@ -75,9 +76,9 @@ func syncPendingPayments() {
 	defer rows.Close()
 
 	type pendingPayment struct {
-		ID              int
-		YookassaID      string
-		CreatedAt       time.Time
+		ID         int
+		YookassaID string
+		CreatedAt  time.Time
 	}
 	var pendings []pendingPayment
 	for rows.Next() {

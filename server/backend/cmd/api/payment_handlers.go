@@ -324,19 +324,11 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case yookassa.EventRefundSucceeded:
+		// Not recorded -> non-200, so YooKassa repeats the notification (refunds.go).
 		refundID, _ := notification.Object["id"].(string)
-		if refundID == "" {
-			http.Error(w, "no refund id", http.StatusBadRequest)
+		if code := refundNotificationStatus(refundID, client.VerifyRefund); code != http.StatusOK {
+			http.Error(w, http.StatusText(code), code)
 			return
-		}
-		refund, err := client.VerifyRefund(refundID)
-		if err != nil {
-			log.Printf("[yookassa-webhook] verify refund failed: %v", err)
-			http.Error(w, "verification failed", http.StatusBadGateway)
-			return
-		}
-		if err := processRefundEvent(refund); err != nil {
-			log.Printf("[yookassa-webhook] process refund %s: %v", refundID, err)
 		}
 
 	case yookassa.EventPaymentMethodActive:
@@ -595,41 +587,6 @@ func sendActivationEmail(userIDText string, plan *biz.Plan, priceRub int, isRene
 		UserIDText: userIDText,
 		PaymentID:  paymentDBID,
 	})
-}
-
-// refundTotalsSQL recomputes payments.refunded_amount from the succeeded refunds and marks
-// the payment 'refunded' once they cover its amount ($1 = payment id, $2 = status of the
-// refund just recorded). Shared by the refund webhook and the admin refund.
-const refundTotalsSQL = `
-		UPDATE payments SET
-			refunded_amount = COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0),
-			status = CASE WHEN $2 = 'succeeded' AND COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0) >= amount THEN 'refunded' ELSE status END,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`
-
-// processRefundEvent помечает платёж как возвращённый и вставляет запись в payment_refunds.
-func processRefundEvent(r *yookassa.Refund) error {
-	var paymentDBID int
-	err := db.DB.QueryRow(`SELECT id FROM payments WHERE yookassa_payment_id = $1`, r.PaymentID).Scan(&paymentDBID)
-	if err != nil {
-		return fmt.Errorf("find payment for refund: %w", err)
-	}
-
-	_, _ = db.DB.Exec(`
-		INSERT INTO payment_refunds (payment_id, yookassa_refund_id, amount, currency, status, description, updated_at)
-		VALUES ($1, $2, $3::numeric, $4, $5, $6, CURRENT_TIMESTAMP)
-		ON CONFLICT (yookassa_refund_id) DO UPDATE
-		SET status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP
-	`, paymentDBID, r.ID, r.Amount.Value, r.Amount.Currency, r.Status, r.Description)
-
-	// Обновляем payments.refunded_amount (сумма всех succeeded refunds)
-	_, err = db.DB.Exec(refundTotalsSQL, paymentDBID, r.Status)
-	if err != nil {
-		return fmt.Errorf("update refunded_amount: %w", err)
-	}
-	log.Printf("[yookassa-webhook] ✓ refund %s for payment %s: %s₽ (%s)", r.ID, r.PaymentID, r.Amount.Value, r.Status)
-	return nil
 }
 
 // saveUserPaymentMethod сохраняет способ оплаты для recurring.

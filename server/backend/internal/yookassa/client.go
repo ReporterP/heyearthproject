@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -147,6 +148,44 @@ func (c *Client) GetRefund(refundID string) (*Refund, error) {
 	return &out, nil
 }
 
+// RefundList — ответ GET /v3/refunds.
+type RefundList struct {
+	Type       string   `json:"type"` // "list"
+	Items      []Refund `json:"items"`
+	NextCursor string   `json:"next_cursor,omitempty"`
+}
+
+// ListRefunds — GET /v3/refunds?payment_id=… : every refund of a payment, following
+// next_cursor (100 per page, at most 10 pages).
+func (c *Client) ListRefunds(paymentID string) ([]Refund, error) {
+	var all []Refund
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		q := url.Values{"payment_id": {paymentID}, "limit": {"100"}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		var out RefundList
+		if err := c.doGET("/refunds?"+q.Encode(), &out); err != nil {
+			return nil, err
+		}
+		all = append(all, out.Items...)
+		if out.NextCursor == "" {
+			return all, nil
+		}
+		cursor = out.NextCursor
+	}
+	return all, fmt.Errorf("list refunds of %s: more than 10 pages", paymentID)
+}
+
+// WithTimeout returns a copy of the client whose HTTP calls give up after d; the original
+// client (and every other caller) keeps httpTimeout.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	cp := *c
+	cp.http = &http.Client{Timeout: d}
+	return &cp
+}
+
 // ChargeRecurring — удобная обёртка для recurring платежа.
 // Создаёт платёж без confirmation, используя сохранённый payment_method_id.
 // Требует активации у менеджера ЮKassa для prod.
@@ -186,8 +225,7 @@ func (c *Client) do(method, path string, body interface{}, out interface{}, idem
 		}
 		bodyReader = bytes.NewReader(buf)
 	}
-	url := c.baseURL + path
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
