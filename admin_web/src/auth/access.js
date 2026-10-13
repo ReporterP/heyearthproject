@@ -34,8 +34,8 @@ export const TENANT_HIDDEN = new Set([
 
 export function canOpen(href, { can, isTenantAdmin }) {
   if (isTenantAdmin && TENANT_HIDDEN.has(href)) return false
+  if (!Object.hasOwn(PAGE_PERMS, href)) return false // an unknown page is hidden, not shown by default
   const perm = PAGE_PERMS[href]
-  if (perm === undefined) return false // an unknown page is hidden, not shown by default
   return perm === null || can(perm)
 }
 

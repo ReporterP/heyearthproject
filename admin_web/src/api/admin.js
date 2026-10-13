@@ -2,7 +2,8 @@ import { apiFetch, pagedFetch } from './client.js'
 
 // ── Auth ──
 export function login(username, password) {
-  return apiFetch('/login', { method: 'POST', body: { username, password } })
+  // A rejected login (401/403) shows the server's reason and must not run the logout path.
+  return apiFetch('/login', { method: 'POST', body: { username, password }, sessionErrors: false })
 }
 
 // ── Dashboard ──
