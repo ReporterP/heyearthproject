@@ -6,22 +6,23 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { useUrlState } from '../hooks/useUrlState.js'
 import {
-  fetchServersPaged, createServer, updateServer, deleteServer,
+  fetchServersPaged, updateServer, deleteServer,
   runServerAction, fetchServerLogs, fetchServerFiles, fetchSshKeys,
-  fetchServerDetail, generateTunnelCreds,
+  fetchServerDetail,
 } from '../api/admin.js'
-import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
+import CrudDialog, { FormField, TextInput, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
-import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
-import ConfigEditorDialog from '../components/ConfigEditorDialog.jsx'
+import TunnelCheckDialog from '../components/servers/TunnelCheckDialog.jsx'
+import { LIFECYCLE_FILTER, inWork, pathView } from '../utils/serverState.js'
 import { formatRelativeTime } from '../utils/format.js'
 import {
   Button,
   Input,
   Select,
   Badge,
+  Card,
   PageHeader,
   Table,
   Thead,
@@ -42,8 +43,6 @@ const Icon = ({ d, className = 'w-4 h-4' }) => (
 )
 
 const IconRestart  = () => <Icon d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-const IconProvision = () => <Icon d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-const IconSync     = () => <Icon d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
 const IconTunnel   = () => <Icon d="M13 10V3L4 14h7v7l9-11h-7z" />
 const IconLogs     = () => <Icon d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
 const IconFolder   = () => <Icon d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -55,23 +54,16 @@ const IconGrid     = () => <Icon d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 
 const IconServer   = () => <Icon d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-7-4h.01M12 16h.01" />
 const IconClose    = () => <Icon className="w-5 h-5" d="M6 18L18 6M6 6l12 12" />
 const IconChart    = () => <Icon d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-const IconConfig   = () => <Icon d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
 
-/* ── Tunnel status badge (colored) ── */
+/* ── Tunnel status badge: the monitor's verdict on the exit as a whole, in words ── */
 function TunnelBadge({ status }) {
   if (!status) return null
-  const key = status.toLowerCase()
-  const colors = {
-    healthy:     'bg-success/20 text-success',
-    configuring: 'bg-yellow-500/20 text-yellow-400',
-    error:       'bg-danger/20 text-danger',
-  }
-  const cls = colors[key] || 'bg-gray-500/20 text-gray-400'
+  const v = pathView(status.toLowerCase())
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+    <Badge variant={v.variant}>
       <IconTunnel />
-      {status}
-    </span>
+      туннель: {v.label}
+    </Badge>
   )
 }
 
@@ -145,15 +137,6 @@ function MetricsPanel({ metrics }) {
     </div>
   )
 }
-
-/* ── Status filter (now via Select bound to useUrlState lifecycle_state) ── */
-const LIFECYCLE_OPTIONS = [
-  { value: '', label: 'Все состояния' },
-  { value: 'provisioning', label: 'Провижн' },
-  { value: 'online', label: 'Online' },
-  { value: 'offline', label: 'Offline' },
-  { value: 'deleted', label: 'Deleted' },
-]
 
 /* ── Logs Modal (improved) ── */
 function LogsModal({ logsModal, setLogsModal, fetchLogs, toast }) {
@@ -263,7 +246,8 @@ export default function ServersPage() {
     setError('')
     const params = { page: f.page, pageSize, search: f.search, sort: f.sort, dir: f.dir }
     if (f.lifecycle_state) params.lifecycle_state = f.lifecycle_state
-    if (f.country) params.country = f.country
+    // The API answers 400 to a half-typed country: filter only by a full two-letter code.
+    if (String(f.country).length === 2) params.country = f.country
     fetchServersPaged(params)
       .then(data => {
         setItems(data.items || data.data || [])
@@ -293,33 +277,18 @@ export default function ServersPage() {
   const [filesModal, setFilesModal] = useState(null)
   const [sshKeys, setSshKeys] = useState([])
   const [viewMode, setViewMode] = useState('cards') // 'cards' | 'list'
-  const [configServer, setConfigServer] = useState(null) // server for config editor
+  const [tunnelCheck, setTunnelCheck] = useState(null) // server for «Проверить туннель»
   const [expandedMetrics, setExpandedMetrics] = useState({}) // serverId -> detail data
-  const [progressModal, setProgressModal] = useState(null) // { id, name }
   const [actionConfirm, setActionConfirm] = useState(null) // { server, action }
 
-  // form
+  // edit form: exits are created by the node wizard (phase 2); tunnel secrets never reach the browser
   const [name, setName] = useState('')
-  const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
   const [sshUser, setSshUser] = useState('root')
   const [sshPassword, setSshPassword] = useState('')
   const [sshKeyId, setSshKeyId] = useState('')
-  const [location, setLocation] = useState('')
-  const [tags, setTags] = useState('')
   const [countryCode, setCountryCode] = useState('')
-  const [serverStatus, setServerStatus] = useState('active')
-  // Tunnel config (все серверы в админке — exit nodes)
-  const isExitNode = true
-  const [tunnelProtocol, setTunnelProtocol] = useState('vless')
-  const [tunnelPort, setTunnelPort] = useState('443')
-  const [tunnelUuid, setTunnelUuid] = useState('')
-  const [tunnelPublicKey, setTunnelPublicKey] = useState('')
-  const [tunnelPrivateKey, setTunnelPrivateKey] = useState('')
-  const [tunnelShortId, setTunnelShortId] = useState('')
-  const [tunnelSni, setTunnelSni] = useState('')
-  const [tunnelSsMethod, setTunnelSsMethod] = useState('2022-blake3-aes-128-gcm')
-  const [tunnelSsPassword, setTunnelSsPassword] = useState('')
+  const [weight, setWeight] = useState('1')
 
   async function loadSshKeys() {
     try {
@@ -343,79 +312,27 @@ export default function ServersPage() {
   // Items already filtered by backend via ?lifecycle_state / ?country
   const filteredItems = items
 
-  const onlineCount = useMemo(() =>
-    items.filter(s => (s.status || '').toLowerCase() === 'online').length,
-    [items]
-  )
-
-  async function openCreate() {
-    setName(''); setHost(''); setPort('22'); setSshUser('root')
-    setSshPassword(''); setSshKeyId(''); setLocation(''); setTags('')
-    setCountryCode(''); setServerStatus('online')
-    setTunnelProtocol('vless'); setTunnelPort('443')
-    setTunnelSni('nltimes.nl')
-    setTunnelSsMethod('2022-blake3-aes-128-gcm')
-    // Автогенерация credentials
-    try {
-      const creds = await generateTunnelCreds()
-      setTunnelUuid(creds.vless_uuid || '')
-      setTunnelPublicKey(creds.reality_public_key || '')
-      setTunnelPrivateKey(creds.reality_private_key || '')
-      setTunnelShortId(creds.reality_short_id || '')
-      setTunnelSsPassword(creds.ss_password || '')
-    } catch {
-      setTunnelUuid(''); setTunnelPublicKey(''); setTunnelPrivateKey('')
-      setTunnelShortId(''); setTunnelSsPassword('')
-    }
-    loadSshKeys()
-    setDialog({ mode: 'create' })
-  }
+  const inWorkCount = useMemo(() => items.filter(inWork).length, [items])
 
   function openEdit(item) {
-    setName(item.name || ''); setHost(item.host || item.ip_address || '')
-    setPort(String(item.port || item.ssh_port || 22)); setSshUser(item.ssh_user || 'root')
+    setName(item.name || '')
+    setPort(String(item.ssh_port || 22)); setSshUser(item.ssh_user || 'root')
     setSshPassword(''); setSshKeyId(item.ssh_key_id != null ? String(item.ssh_key_id) : '')
-    setLocation(item.location || ''); setTags((item.tags || []).join(', '))
-    setCountryCode(item.country_code || ''); setServerStatus(item.status || 'online')
-    setTunnelProtocol(item.tunnel_protocol || 'vless')
-    setTunnelPort(String(item.tunnel_port || 443))
-    setTunnelUuid(item.tunnel_uuid || '')
-    setTunnelPublicKey(item.tunnel_public_key || '')
-    setTunnelPrivateKey(item.tunnel_private_key || '')
-    setTunnelShortId(item.tunnel_short_id || '')
-    setTunnelSni(item.tunnel_sni || '')
-    setTunnelSsMethod(item.tunnel_ss_method || '2022-blake3-aes-128-gcm')
-    setTunnelSsPassword(item.tunnel_ss_password || '')
+    setCountryCode(item.country_code || ''); setWeight(String(item.load_weight || 1))
     loadSshKeys()
     setDialog({ mode: 'edit', item })
   }
 
   async function handleSave() {
+    const w = parseInt(weight, 10)
+    if (!(w >= 1 && w <= 10)) { toast.error('Приоритет — целое число от 1 до 10'); return }
     setSaving(true)
     try {
-      const payload = {
-        name, ip_address: host, ssh_port: parseInt(port), ssh_user: sshUser,
-        country_code: countryCode, status: serverStatus,
-        is_exit_node: isExitNode,
-        tunnel_protocol: tunnelProtocol,
-        tunnel_port: parseInt(tunnelPort) || 443,
-      }
+      const payload = { name, country_code: countryCode, ssh_port: parseInt(port, 10) || 22, ssh_user: sshUser, load_weight: w }
       if (sshPassword) payload.ssh_password = sshPassword
-      if (sshKeyId) payload.ssh_key_id = parseInt(sshKeyId)
-      if (tunnelUuid) payload.tunnel_uuid = tunnelUuid
-      if (tunnelPublicKey) payload.tunnel_public_key = tunnelPublicKey
-      if (tunnelPrivateKey) payload.tunnel_private_key = tunnelPrivateKey
-      if (tunnelShortId) payload.tunnel_short_id = tunnelShortId
-      if (tunnelSni) payload.tunnel_sni = tunnelSni
-      if (tunnelSsMethod) payload.tunnel_ss_method = tunnelSsMethod
-      if (tunnelSsPassword) payload.tunnel_ss_password = tunnelSsPassword
-      if (dialog.mode === 'create') {
-        await createServer(payload)
-        toast.success(t.create + ' OK')
-      } else {
-        await updateServer(dialog.item.id, payload)
-        toast.success(t.save + ' OK')
-      }
+      if (sshKeyId) payload.ssh_key_id = parseInt(sshKeyId, 10)
+      await updateServer(dialog.item.id, payload)
+      toast.success('Сохранено')
       setDialog(null)
       paged.reload()
     } catch (err) {
@@ -428,8 +345,8 @@ export default function ServersPage() {
   async function handleDelete() {
     setSaving(true)
     try {
-      await deleteServer(confirm.id)
-      toast.success(t.delete + ' OK')
+      await deleteServer(confirm.id) // 202: the API removes the node in the background
+      toast.success(`Удаление ноды «${confirm.name || confirm.ip_address}» запущено`)
       setConfirm(null)
       paged.reload()
     } catch (err) {
@@ -448,22 +365,13 @@ export default function ServersPage() {
   }
 
   async function executeAction(srv, actionDef) {
-    if (actionDef.async) {
-      try {
-        await runServerAction(srv.id, actionDef.key)
-        setProgressModal({ id: srv.id, name: srv.name })
-      } catch (err) {
-        toast.error(err.message)
-      }
-    } else {
-      try {
-        toast.info(`${actionDef.label}...`)
-        await runServerAction(srv.id, actionDef.key)
-        toast.success(`${actionDef.label} OK`)
-        paged.reload()
-      } catch (err) {
-        toast.error(err.message)
-      }
+    try {
+      toast.info(`${actionDef.label}...`)
+      await runServerAction(srv.id, actionDef.key)
+      toast.success(`${actionDef.label}: выполнено`)
+      paged.reload()
+    } catch (err) {
+      toast.error(err.message)
     }
   }
 
@@ -511,12 +419,10 @@ export default function ServersPage() {
     }
   }
 
+  // Phase 1: only harmless actions stay here; the tunnel is checked read-only («Проверить
+  // туннель»); setup, re-provision and «sync» buttons are gone (they broke tunnels or restarted the API).
   const actions = [
-    { key: 'setup_exit_node', label: t.serverSetupExitNode, desc: t.serverSetupExitNodeDesc, icon: <IconProvision />, exitOnly: true, async: true, confirm: true },
     { key: 'restart_agent', label: t.serverRestartAgent, desc: t.serverRestartAgentDesc, icon: <IconRestart />, confirm: true },
-    { key: 'sync_metrics', label: t.serverSyncMetrics, desc: t.serverSyncMetricsDesc, icon: <IconSync /> },
-    { key: 'sync_tunnel', label: t.serverSyncTunnel, desc: t.serverSyncTunnelDesc, icon: <IconTunnel /> },
-    { key: 'fetch_tunnel_creds', label: t.serverFetchCreds, desc: t.serverFetchCredsDesc, icon: <IconTunnel />, exitOnly: true },
   ]
 
   const ipAddress = (srv) => srv.ip_address || srv.host || ''
@@ -545,7 +451,7 @@ export default function ServersPage() {
               <span className="text-xs text-secondary ml-1">:{srv.port || srv.ssh_port || 22}</span>
             </div>
           </div>
-          <StatusBadge status={srv.status} />
+          <span className="flex items-center gap-1" title="Доступность node-agent на ноде — не путь трафика"><span className="text-[10px] text-tertiary">агент</span><StatusBadge status={srv.status} /></span>
         </div>
 
         {/* Details row */}
@@ -577,7 +483,7 @@ export default function ServersPage() {
               MTP
             </span>
           )}
-          {srv.is_exit_node && <ServerLifecycleBadge state={srv.lifecycle_state || 'online'} />}
+          <ServerLifecycleBadge state={srv.lifecycle_state} />
           {srv.tunnel_protocol && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono uppercase">{srv.tunnel_protocol}</span>
           )}
@@ -607,7 +513,7 @@ export default function ServersPage() {
 
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 mt-auto pt-3 border-t border-white/5">
-          {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
+          {can('server_ops.execute') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
             <button key={a.key} onClick={() => doAction(srv, a)}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary hover:bg-elevated/80 transition"
               title={a.desc || a.label}>
@@ -627,12 +533,14 @@ export default function ServersPage() {
             <IconFolder />
             <span className="hidden sm:inline">{t.serverFiles}</span>
           </button>
-          <button onClick={() => setConfigServer(srv)}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-elevated text-secondary hover:text-primary transition"
-            title="Config Editor">
-            <IconConfig />
-            <span className="hidden sm:inline">Config</span>
-          </button>
+          {srv.is_exit_node && (
+            <button onClick={() => setTunnelCheck(srv)}
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-elevated text-secondary hover:text-primary transition"
+              title="Проверить туннель: generate_204 через Hysteria и через TCP, только чтение">
+              <IconTunnel />
+              <span className="hidden sm:inline">Проверить туннель</span>
+            </button>
+          )}
           {can('servers.write') && (
             <>
               <button onClick={() => openEdit(srv)}
@@ -659,14 +567,6 @@ export default function ServersPage() {
     const ip = ipAddress(srv)
     const healthTime = lastHealthCheck(srv)
     const conns = activeConns(srv)
-    const lifecycle = srv.lifecycle_state || 'online'
-    const lifecycleBadge = (
-      lifecycle === 'provisioning' ? <Badge variant="warning">провижн</Badge> :
-      lifecycle === 'online' ? <Badge variant="success">online</Badge> :
-      lifecycle === 'offline' ? <Badge variant="danger">offline</Badge> :
-      lifecycle === 'deleted' ? <Badge variant="default">deleted</Badge> :
-      <Badge variant="default">{lifecycle}</Badge>
-    )
 
     return (
       <Tr>
@@ -682,7 +582,7 @@ export default function ServersPage() {
         </Td>
         <Td>{srv.country_code ? srv.country_code.toUpperCase() : '—'}</Td>
         <Td><StatusBadge status={srv.status} /></Td>
-        <Td>{lifecycleBadge}</Td>
+        <Td><ServerLifecycleBadge state={srv.lifecycle_state} /></Td>
         <Td>
           <div className="flex items-center gap-1.5 flex-wrap">
             <TunnelBadge status={srv.tunnel_status} />
@@ -710,7 +610,7 @@ export default function ServersPage() {
         <Td align="right" className="tabular-nums">{srv.load_weight ?? '—'}</Td>
         <Td>
           <div className="flex items-center gap-1 flex-wrap">
-            {can('servers.write') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
+            {can('server_ops.execute') && actions.filter(a => !a.exitOnly || srv.is_exit_node).map(a => (
               <button key={a.key} onClick={() => doAction(srv, a)}
                 aria-label={a.label}
                 className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary"
@@ -719,7 +619,7 @@ export default function ServersPage() {
             <span className="w-px h-4 bg-default mx-0.5" />
             <button onClick={() => showLogs(srv)} aria-label={t.serverLogs} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverLogs}><IconLogs /></button>
             <button onClick={() => showFiles(srv)} aria-label={t.serverFiles} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverFiles}><IconFolder /></button>
-            <button onClick={() => setConfigServer(srv)} aria-label="Config Editor" className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title="Config Editor"><IconConfig /></button>
+            {srv.is_exit_node && <button onClick={() => setTunnelCheck(srv)} aria-label="Проверить туннель" className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title="Проверить туннель (только чтение)"><IconTunnel /></button>}
             <button onClick={() => toggleMetrics(srv.id)} aria-label={t.serverShowMetrics || 'Metrics'} className="p-1 rounded hover:bg-elevated transition text-secondary hover:text-primary" title={t.serverShowMetrics || 'Metrics'}><IconChart /></button>
             {can('servers.write') && (
               <>
@@ -742,7 +642,7 @@ export default function ServersPage() {
     <div className="space-y-4">
       <PageHeader
         title={t.serversTitle + (total > 0 ? ` (${total})` : '')}
-        subtitle={`${t.serverOnlineCount || 'Online'}: ${onlineCount} / ${total}`}
+        subtitle={`В работе: ${inWorkCount} из ${total}`}
         actions={(
           <>
             <div className="flex items-center rounded-lg border border-default overflow-hidden">
@@ -760,11 +660,18 @@ export default function ServersPage() {
               </button>
             </div>
             {can('servers.write') && (
-              <Button variant="primary" onClick={openCreate}>+ {t.createServer}</Button>
+              <Button variant="secondary" disabled title="Появится в мастере «Добавить ноду»">+ Добавить ноду</Button>
             )}
           </>
         )}
       />
+
+      {can('servers.write') && (
+        <Card className="p-3 text-sm text-secondary">
+          Добавление нод временно отключено: старая форма делала неполную настройку и перезапускала API.
+          Мастер «Добавить ноду» с проверками появится в следующем обновлении админки; до тех пор новый exit подключает разработчик.
+        </Card>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
@@ -781,14 +688,16 @@ export default function ServersPage() {
         <Select
           value={f.lifecycle_state}
           onChange={e => setF({ lifecycle_state: e.target.value, page: 1 })}
-          aria-label="Lifecycle state"
+          aria-label="Состояние ноды"
           className="w-full sm:w-auto"
         >
-          {LIFECYCLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {LIFECYCLE_FILTER.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </Select>
         <Input
           type="text"
           placeholder="Страна (RU, NL, ...)"
+          aria-label="Страна, двухбуквенный код"
+          maxLength={2}
           value={f.country}
           onChange={e => setF({ country: e.target.value.toUpperCase(), page: 1 })}
           className="w-full sm:w-40"
@@ -803,10 +712,8 @@ export default function ServersPage() {
         <EmptyState
           icon={<Server className="w-12 h-12" />}
           title={t.noServers || 'Нет серверов'}
-          description="Добавьте первый сервер через кнопку выше."
-          action={can('servers.write') ? (
-            <Button variant="primary" onClick={openCreate}>+ {t.createServer}</Button>
-          ) : null}
+          description="Нод пока нет. Добавление появится в мастере «Добавить ноду»."
+          action={null}
         />
       ) : viewMode === 'cards' ? (
         /* ── Card grid ── */
@@ -821,12 +728,12 @@ export default function ServersPage() {
               <Th sortKey="name" sortState={sortState} onSort={onSort}>{t.fieldServerName}</Th>
               <Th>IP</Th>
               <Th sortKey="country_code" sortState={sortState} onSort={onSort}>Country</Th>
-              <Th sortKey="status" sortState={sortState} onSort={onSort}>{t.fieldStatus}</Th>
-              <Th sortKey="lifecycle_state" sortState={sortState} onSort={onSort}>Lifecycle</Th>
+              <Th sortKey="status" sortState={sortState} onSort={onSort}>Агент</Th>
+              <Th sortKey="lifecycle_state" sortState={sortState} onSort={onSort}>Состояние</Th>
               <Th>Tunnel</Th>
               <Th align="center">{t.serverActiveConns || 'Conn.'}</Th>
               <Th sortKey="last_check" sortState={sortState} onSort={onSort}>{t.serverLastHealth || 'Health'}</Th>
-              <Th sortKey="load_weight" sortState={sortState} onSort={onSort}>Weight</Th>
+              <Th sortKey="load_weight" sortState={sortState} onSort={onSort}>Приоритет</Th>
               <Th>{t.serverActionsCol || 'Actions'}</Th>
             </Tr>
           </Thead>
@@ -922,67 +829,25 @@ export default function ServersPage() {
       )}
 
       <CrudDialog
-        open={!!dialog} title={dialog?.mode === 'create' ? t.createServer : t.editServer}
+        open={!!dialog} title={t.editServer}
         onClose={() => setDialog(null)} onSubmit={handleSave} loading={saving}
       >
         <FormField label={t.fieldServerName}><TextInput value={name} onChange={setName} autoFocus /></FormField>
-        <FormField label={t.fieldHost}><TextInput value={host} onChange={setHost} /></FormField>
+        <FormField label={t.fieldCountryCode}><TextInput value={countryCode} onChange={setCountryCode} placeholder="NL" /></FormField>
+        <FormField label="Приоритет 1–10: выходы с одинаковым приоритетом делят нагрузку; выход с меньшим приоритетом подхватывает её, если остальные недоступны или заметно медленнее"><TextInput value={weight} onChange={setWeight} type="number" /></FormField>
         <FormField label={t.fieldPort}><TextInput value={port} onChange={setPort} type="number" /></FormField>
         <FormField label={t.fieldSshUser}><TextInput value={sshUser} onChange={setSshUser} /></FormField>
-        <FormField label={t.fieldSshPassword}><TextInput value={sshPassword} onChange={setSshPassword} type="password" /></FormField>
+        <FormField label="SSH-пароль — только запись (пусто = не менять)"><TextInput value={sshPassword} onChange={setSshPassword} type="password" /></FormField>
         <FormField label={t.fieldSshKey}>
-          <SelectInput value={sshKeyId} onChange={setSshKeyId}
-            placeholder={t.fieldSshKeyNone}
+          <SelectInput value={sshKeyId} onChange={setSshKeyId} placeholder={t.fieldSshKeyNone}
             options={sshKeys.map(k => ({ value: String(k.id), label: k.name }))} />
         </FormField>
-        <FormField label={t.fieldLocation}><TextInput value={location} onChange={setLocation} /></FormField>
-        <FormField label={t.fieldCountryCode}><TextInput value={countryCode} onChange={setCountryCode} /></FormField>
-        <FormField label={t.fieldTags}><TextInput value={tags} onChange={setTags} placeholder="EU, premium, fast" /></FormField>
-        <FormField label={t.fieldServerStatus}>
-          <SelectInput value={serverStatus} onChange={setServerStatus} options={[
-            { value: 'online', label: 'Онлайн' },
-            { value: 'provisioning', label: 'Настройка' },
-            { value: 'offline', label: 'Оффлайн' },
-            { value: 'maintenance', label: 'Обслуживание' },
-          ]} />
-        </FormField>
-        <div className="mt-3 mb-1 text-xs font-semibold text-secondary uppercase tracking-wider">Настройка туннеля</div>
-        <FormField label="Протокол туннеля">
-          <SelectInput value={tunnelProtocol} onChange={setTunnelProtocol} options={[
-            { value: 'hysteria2', label: 'Hysteria2 (UDP, recommended)' },
-            { value: 'vless', label: 'VLESS Reality' },
-            { value: 'shadowsocks', label: 'Shadowsocks' },
-            { value: 'socks5', label: 'SOCKS' },
-            { value: 'http', label: 'HTTP Proxy' },
-          ]} />
-        </FormField>
-        <FormField label="Порт туннеля"><TextInput value={tunnelPort} onChange={setTunnelPort} type="number" /></FormField>
-
-        {(tunnelProtocol === 'vless') && (
-          <>
-            <FormField label="VLESS UUID"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="Сгенерировано автоматически" /></FormField>
-            <FormField label="Reality Public Key"><TextInput value={tunnelPublicKey} onChange={setTunnelPublicKey} placeholder="Сгенерировано автоматически" /></FormField>
-            <FormField label="Reality Private Key"><TextInput value={tunnelPrivateKey} onChange={setTunnelPrivateKey} placeholder="Сгенерировано автоматически" /></FormField>
-            <FormField label="Reality Short ID"><TextInput value={tunnelShortId} onChange={setTunnelShortId} placeholder="Сгенерировано автоматически" /></FormField>
-            <FormField label="SNI"><TextInput value={tunnelSni} onChange={setTunnelSni} placeholder="например microsoft.com" /></FormField>
-          </>
-        )}
-
-        {(tunnelProtocol === 'shadowsocks') && (
-          <>
-            <FormField label="SS Method"><TextInput value={tunnelSsMethod} onChange={setTunnelSsMethod} /></FormField>
-            <FormField label="SS Password"><TextInput value={tunnelSsPassword} onChange={setTunnelSsPassword} placeholder="Сгенерировано автоматически" /></FormField>
-          </>
-        )}
-
-        {(tunnelProtocol === 'socks5' || tunnelProtocol === 'http') && (
-          <FormField label="Auth Password (опционально)"><TextInput value={tunnelUuid} onChange={setTunnelUuid} placeholder="Пароль для авторизации" /></FormField>
-        )}
+        <p className="text-xs text-tertiary">Ключи и пароли туннеля в админке не показываются и не редактируются: они создаются на самой ноде.</p>
       </CrudDialog>
 
       <ConfirmDialog
         open={!!confirm}
-        message={`Delete server "${confirm?.name}"?`}
+        message={`Удалить ноду «${confirm?.name}»? Она выйдет из маршрутизации, туннель на Hub остановится, запись будет удалена.`}
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} loading={saving}
       />
 
@@ -1004,11 +869,7 @@ export default function ServersPage() {
         )}
       </Dialog>
 
-      {/* Provision progress */}
-      {progressModal && <ProvisionProgressDialog open={true} server={progressModal} onClose={() => { setProgressModal(null); paged.reload() }} />}
-
-      {/* Config editor */}
-      {configServer && <ConfigEditorDialog serverId={configServer.id} serverName={configServer.name || configServer.ip_address} onClose={() => setConfigServer(null)} />}
+      {tunnelCheck && <TunnelCheckDialog server={tunnelCheck} onClose={() => setTunnelCheck(null)} />}
     </div>
   )
 }

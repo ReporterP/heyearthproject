@@ -101,12 +101,6 @@ export function fetchServerDetail(id) {
 export function fetchHysteria2Status() {
   return apiFetch('/hysteria2/status')
 }
-export function createServer(payload) {
-  return apiFetch('/servers', { method: 'POST', body: payload })
-}
-export function generateTunnelCreds() {
-  return apiFetch('/servers/generate-tunnel-creds')
-}
 export function updateServer(id, payload) {
   return apiFetch(`/servers/${id}`, { method: 'PATCH', body: payload })
 }
@@ -119,6 +113,10 @@ export function runServerAction(id, action) {
 export function fetchActionProgress(serverId) {
   return apiFetch(`/servers/${serverId}/actions/progress`)
 }
+// Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).
+export function checkServerTunnel(id) {
+  return apiFetch(`/servers/${id}/check-tunnel`, { method: 'POST' })
+}
 export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 } = {}) {
   const params = new URLSearchParams({ service, tail })
   return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')
@@ -126,13 +124,6 @@ export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 }
 export function fetchServerFiles(serverId, path) {
   const params = new URLSearchParams({ path })
   return apiFetch(`/servers/${serverId}/files?${params}`)
-}
-export function fetchFileContent(serverId, path) {
-  const params = new URLSearchParams({ path })
-  return apiFetch(`/servers/${serverId}/file-content?${params}`)
-}
-export function saveFileContent(serverId, path, content) {
-  return apiFetch(`/servers/${serverId}/file-content`, { method: 'PUT', body: { path, content } })
 }
 
 // ── SSH Keys ──
