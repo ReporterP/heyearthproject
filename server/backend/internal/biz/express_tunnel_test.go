@@ -43,12 +43,24 @@ func TestExpressFirstChoiceAndPort(t *testing.T) {
 	}
 }
 
+// feed observes n equal RTT samples of exit id.
+func feed(s *ExpressSelector, id, rtt, n int) {
+	for i := 0; i < n; i++ {
+		s.Observe(id, rtt)
+	}
+}
+
 func TestExpressHysteresis(t *testing.T) {
 	s := NewExpressSelector(2, expressT0)
+	feed(s, 2, 100, expressMinSamples)
+	feed(s, 3, 70, expressMinSamples)
 	if c := s.Choose(expressT0.Add(9*time.Minute), cands(2, 100, 3, 70)); c.Switched || c.ExitID != 2 {
 		t.Fatalf("switch inside the 10-minute hold: %+v", c)
 	}
-	if c := NewExpressSelector(2, expressT0).Choose(expressT0.Add(time.Hour), cands(2, 100, 3, 85)); c.Switched {
+	s15 := NewExpressSelector(2, expressT0)
+	feed(s15, 2, 100, expressMinSamples)
+	feed(s15, 3, 85, expressMinSamples)
+	if c := s15.Choose(expressT0.Add(time.Hour), cands(2, 100, 3, 85)); c.Switched {
 		t.Fatalf("switch for a 15%% gain: %+v", c)
 	}
 	c := s.Choose(expressT0.Add(10*time.Minute), cands(2, 100, 3, 70))
@@ -92,8 +104,10 @@ func TestExpressFlappingHealth(t *testing.T) {
 	switches = 0
 	for i := 1; i <= 120; i++ { // a flapping candidate only 10 % faster never takes over
 		cs := cands(2, 100)
+		s.Observe(2, 100)
 		if i%2 == 0 {
 			cs = cands(2, 100, 3, 90)
+			s.Observe(3, 90) // measured often enough: only the 20 % rule keeps exit 2
 		}
 		if c := s.Choose(expressT0.Add(time.Duration(i)*30*time.Second), cs); c.Switched {
 			switches++
@@ -101,6 +115,48 @@ func TestExpressFlappingHealth(t *testing.T) {
 	}
 	if switches != 0 {
 		t.Fatalf("switches = %d, want 0", switches)
+	}
+}
+
+// An optimisation switch needs expressMinSamples real measurements of both exits: neither the
+// last_rtt_ms seed after an API restart nor the first probe of a freshly activated exit may move
+// Bamboo (each move restarts hysteria2-server). Failover and the first choice need none.
+func TestExpressOptimisationNeedsMeasurements(t *testing.T) {
+	later := expressT0.Add(time.Hour) // the hold is long over
+
+	// API restart: only the DB seeds (one last_rtt_ms each), #3 looks 29 % faster.
+	s := NewExpressSelector(2, expressT0)
+	if c := s.Choose(later, cands(2, 140, 3, 100)); c.Switched || c.ExitID != 2 {
+		t.Fatalf("switch on the last_rtt_ms seeds alone after a restart: %+v", c)
+	}
+	feed(s, 2, 140, expressMinSamples-1)
+	feed(s, 3, 100, expressMinSamples)
+	if c := s.Choose(later.Add(time.Minute), cands(2, 140, 3, 100)); c.Switched {
+		t.Fatalf("switch with %d samples of the current exit: %+v", expressMinSamples-1, c)
+	}
+	s.Observe(2, 140)
+	if c := s.Choose(later.Add(2*time.Minute), cands(2, 140, 3, 100)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("want the switch once both exits have %d samples: %+v", expressMinSamples, c)
+	}
+
+	// A freshly activated exit: its first probe (70) against a well-measured current (100).
+	s = NewExpressSelector(2, expressT0)
+	feed(s, 2, 100, 20)
+	s.Observe(3, 70)
+	if c := s.Choose(later, cands(2, 100, 3, 70)); c.Switched {
+		t.Fatalf("switch 30 s after the new exit was activated: %+v", c)
+	}
+	feed(s, 3, 70, expressMinSamples-1)
+	if c := s.Choose(later.Add(3*time.Minute), cands(2, 100, 3, 70)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("want the switch after %d samples of the new exit: %+v", expressMinSamples, c)
+	}
+
+	// Failover and the first choice do not wait for samples.
+	if c := NewExpressSelector(2, expressT0).Choose(later, cands(3, 100)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("failover must not wait for samples: %+v", c)
+	}
+	if c := NewExpressSelector(0, time.Time{}).Choose(later, cands(2, 140, 3, 100)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("the first choice must not wait for samples: %+v", c)
 	}
 }
 

@@ -145,7 +145,7 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 
 Восстанавливается шагами выше, а не из архива:
 
-- бинарники и конфиги xray и hysteria (`/opt/heyearth/xray`, `/usr/local/bin/hysteria`, `/etc/hysteria/server.yaml`, `client-express.yaml`, `geoip.dat`) — шаги 6–7 и API;
+- бинарники и конфиги xray и hysteria (`/opt/heyearth/xray`, `/usr/local/bin/hysteria`, `/etc/hysteria/server.yaml`, `geoip.dat`) — шаги 6–7 и API;
 - AmneziaWG: `/opt/heyearth/awg` (`awg0.conf` пишет API из БД, hev-socks5-tunnel собирается заново) — шаг 8;
 - гард, fail2ban, journald, таймер бэкапа, `/etc/heyearth/*.env`, ключ загрузки бэкапа `/root/.ssh/heyearth_backup_ed25519` (создаётся новый) — шаг 10;
 - правила ufw/iptables, sysctl-тюнинг, nginx-модуль stream, сборки админки и сайта — `--main`, шаги 6–7, 10;

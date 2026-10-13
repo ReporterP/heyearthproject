@@ -24,6 +24,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -135,25 +136,69 @@ func SyncHysteria2Config() error {
 
 	// Bamboo's exit (biz.ExpressExit): the hysteria2-client-<id> SOCKS of one exit, chosen by
 	// the smoothed RTT of its Hysteria path with hysteresis. A database error keeps server.yaml
-	// as it is (no restart onto a wrong port).
+	// as it is (no restart onto a wrong port). A switch is committed only once server.yaml
+	// carries it (applyBambooChoice).
 	choice, err := biz.ExpressExit()
 	if err != nil {
 		return fmt.Errorf("выбор exit для Бамбука: %w (server.yaml не меняется)", err)
 	}
+	hubIPs := hubOwnIPs()
+	render := func(socksPort int) string {
+		return renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, socksPort, hubIPs)
+	}
+	changed, err := applyBambooChoice(choice, render, hysteria2Install, biz.ExpressCommit)
+	if err != nil || !changed {
+		return err
+	}
+
+	// Bump config_version so admin UI / clients can detect changes.
+	cur := biz.GetSettingOrDefault("hysteria2_config_version", "1")
+	if n := atoiSafe(cur); n > 0 {
+		_ = biz.SetSetting("hysteria2_config_version", fmt.Sprintf("%d", n+1))
+	}
+
+	_ = biz.SetSetting("hysteria2_last_sync_at", fmt.Sprintf("%d", time.Now().Unix()))
+	_ = biz.SetSetting("hysteria2_last_error", "")
+	_ = biz.SetSetting("hysteria2_max_up_mbps", fmt.Sprintf("%d", maxUp))
+	_ = biz.SetSetting("hysteria2_max_down_mbps", fmt.Sprintf("%d", maxDown))
+
+	log.Printf("[hysteria2-sync] config updated: maxUp=%d Mbps, maxDown=%d Mbps", maxUp, maxDown)
+	return nil
+}
+
+// applyBambooChoice installs the server.yaml rendered for choice and commits a switch (memory +
+// app_settings, biz.ExpressCommit) only once the file carries it: the bytes on disk already
+// match, or the new file was validated, installed and hysteria2-server restarted. On a failure
+// the old exit stays current and the next sync proposes the switch again.
+func applyBambooChoice(choice biz.ExpressChoice, render func(socksPort int) string,
+	install func(yaml string) (changed bool, err error), commit func(biz.ExpressChoice) error) (bool, error) {
+	changed, err := install(render(choice.SocksPort))
+	if err != nil {
+		return false, err
+	}
 	if choice.Switched {
+		if cerr := commit(choice); cerr != nil {
+			log.Printf("[hysteria2-sync] Бамбук: выбор exit #%d не сохранён: %v", choice.ExitID, cerr)
+		}
 		log.Printf("[hysteria2-sync] Бамбук → exit #%d (127.0.0.1:%d, сглаженный RTT %d мс): %s",
 			choice.ExitID, choice.SocksPort, choice.RTTms, choice.Reason)
 	}
+	return changed, nil
+}
 
-	yaml := renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, choice.SocksPort, hubOwnIPs())
+// hysteria2Install puts a rendered config in place as server.yaml; tests swap it.
+var hysteria2Install = installHysteria2Config
 
+// installHysteria2Config writes yaml to hysteria2ConfigPath and restarts hysteria2-server.
+// changed is false when the file already holds these bytes: no validation, no restart.
+func installHysteria2Config(yaml string) (changed bool, err error) {
 	// No-op short-circuit FIRST — if content matches what's on disk, nothing
 	// changed since last sync: no validation, no rename, no restart. This is the
 	// only change detection; any byte difference (e.g. a new auth URL) leads to
 	// exactly one validate + rename + restart, and the next sync is a no-op again.
 	if existing, err := os.ReadFile(hysteria2ConfigPath); err == nil {
 		if bytes.Equal(existing, []byte(yaml)) {
-			return nil
+			return false, nil
 		}
 	}
 
@@ -167,18 +212,18 @@ func SyncHysteria2Config() error {
 	//    into app_settings for admin UI / deploy --status.
 	tmpPath := hysteria2ConfigPath + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(yaml), 0600); err != nil {
-		return fmt.Errorf("write tmp config: %w", err)
+		return false, fmt.Errorf("write tmp config: %w", err)
 	}
 
 	if vErr := validateHysteria2Config(tmpPath); vErr != nil {
 		_ = os.Remove(tmpPath)
 		recordHysteria2SyncError(vErr)
-		return fmt.Errorf("validation failed (keeping existing config): %w", vErr)
+		return false, fmt.Errorf("validation failed (keeping existing config): %w", vErr)
 	}
 
 	if err := os.Rename(tmpPath, hysteria2ConfigPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename hysteria2 config: %w", err)
+		return false, fmt.Errorf("rename hysteria2 config: %w", err)
 	}
 
 	// Hand the file off to the hysteria service account. heyearth-api runs as
@@ -198,22 +243,9 @@ func SyncHysteria2Config() error {
 	// reload (no SIGHUP); `systemctl restart` is the one reload path. Connected
 	// clients are dropped and have to reconnect (and re-authenticate).
 	if out, err := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err != nil {
-		return fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-
-	// Bump config_version so admin UI / clients can detect changes.
-	cur := biz.GetSettingOrDefault("hysteria2_config_version", "1")
-	if n := atoiSafe(cur); n > 0 {
-		_ = biz.SetSetting("hysteria2_config_version", fmt.Sprintf("%d", n+1))
-	}
-
-	_ = biz.SetSetting("hysteria2_last_sync_at", fmt.Sprintf("%d", time.Now().Unix()))
-	_ = biz.SetSetting("hysteria2_last_error", "")
-	_ = biz.SetSetting("hysteria2_max_up_mbps", fmt.Sprintf("%d", maxUp))
-	_ = biz.SetSetting("hysteria2_max_down_mbps", fmt.Sprintf("%d", maxDown))
-
-	log.Printf("[hysteria2-sync] config updated: maxUp=%d Mbps, maxDown=%d Mbps", maxUp, maxDown)
-	return nil
+	return true, nil
 }
 
 // recordHysteria2SyncError captures the error into app_settings so admin UI
@@ -416,13 +448,23 @@ func atoiSafe(s string) int {
 
 var legacyExpressCleanup sync.Once
 
+// legacyExpressStopTimeout bounds the systemctl call: it runs in main before the first sync.
+const legacyExpressStopTimeout = 15 * time.Second
+
 // stopLegacyExpressClient stops the dedicated Express client of the removed "dedicated" mode
 // (s6yc): hysteria2-client-express listened on :1091, which is exit #3's own SOCKS port. Once per
 // process; every step is a no-op when the unit or the file is absent. The unit file itself is
 // removed by deploy --setup-hysteria2-hub (hysteria2_hub.go).
+//
+// app_settings rows of the removed mode stay in the database, nothing reads them any more:
+// hysteria2_tunnel_mode, hysteria2_bound_exit_ip, hysteria2_bound_exit_rtt_ms and
+// hub_tunnel_password (a secret, never returned by the admin API). The phase-5 settings
+// whitelist drops them from the admin UI.
 func stopLegacyExpressClient() {
 	legacyExpressCleanup.Do(func() {
-		_ = exec.Command("systemctl", "disable", "--now", "hysteria2-client-express").Run()
+		ctx, cancel := context.WithTimeout(context.Background(), legacyExpressStopTimeout)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "systemctl", "disable", "--now", "hysteria2-client-express").Run()
 		_ = os.Remove("/etc/hysteria/client-express.yaml")
 	})
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,61 @@ func TestBambooRestartsOnlyWhenTheExitChanges(t *testing.T) {
 	y := render(sel.Choose(t0.Add(3*time.Hour), []biz.ExpressCandidate{{ID: 3, RTTms: 100}}))
 	if y == last || !strings.Contains(y, "addr: 127.0.0.1:1091") {
 		t.Fatalf("failover must move via_exit to exit #3's own 127.0.0.1:1091:\n%s", y)
+	}
+}
+
+// A switch is committed (memory + app_settings) only once server.yaml carries it: a failed
+// validation or restart keeps the old exit current, and the next sync proposes the switch again.
+func TestBambooChoiceCommittedOnlyWhenServerYAMLCarriesIt(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	sel := biz.NewExpressSelector(2, t0)
+	render := func(port int) string {
+		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"138.16.181.225"})
+	}
+	var installed []string
+	installErr := errors.New("validation failed (keeping existing config)")
+	install := func(yaml string) (bool, error) {
+		if installErr != nil {
+			return false, installErr
+		}
+		installed = append(installed, yaml)
+		return true, nil
+	}
+	commits := 0
+	commit := func(c biz.ExpressChoice) error { commits++; sel.Commit(c); return nil }
+	exit3 := []biz.ExpressCandidate{{ID: 3, RTTms: 100}} // exit 2 lost its Hysteria path
+
+	c := sel.Decide(t0.Add(time.Minute), exit3)
+	if !c.Switched || c.ExitID != 3 {
+		t.Fatalf("want a proposed failover to #3: %+v", c)
+	}
+	if _, err := applyBambooChoice(c, render, install, commit); !errors.Is(err, installErr) {
+		t.Fatalf("install error not returned: %v", err)
+	}
+	if cur := sel.Current(); cur.ExitID != 2 || cur.SocksPort != 1090 || commits != 0 {
+		t.Fatalf("a failed install committed the switch: %+v, commits %d", cur, commits)
+	}
+
+	installErr = nil
+	c = sel.Decide(t0.Add(6*time.Minute), exit3)
+	if !c.Switched || c.ExitID != 3 {
+		t.Fatalf("the next sync must propose the switch again: %+v", c)
+	}
+	changed, err := applyBambooChoice(c, render, install, commit)
+	if err != nil || !changed || len(installed) != 1 || !strings.Contains(installed[0], "addr: 127.0.0.1:1091") {
+		t.Fatalf("want server.yaml on 1091 installed: changed %v, err %v, %d installs", changed, err, len(installed))
+	}
+	if cur := sel.Current(); cur.ExitID != 3 || !cur.Since.Equal(t0.Add(6*time.Minute)) || commits != 1 {
+		t.Fatalf("a successful install must commit the switch once: %+v, commits %d", cur, commits)
+	}
+
+	// Unchanged bytes (the file already carries the exit, e.g. a restart that failed after the
+	// rename): the choice is committed as well.
+	sel = biz.NewExpressSelector(2, t0)
+	c = sel.Decide(t0.Add(time.Minute), exit3)
+	unchanged := func(string) (bool, error) { return false, nil }
+	if changed, err := applyBambooChoice(c, render, unchanged, commit); err != nil || changed || sel.Current().ExitID != 3 {
+		t.Fatalf("unchanged bytes must commit: changed %v, err %v, %+v", changed, err, sel.Current())
 	}
 }
 
