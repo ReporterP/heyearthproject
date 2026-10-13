@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -15,7 +17,9 @@ import (
 // ─────────────────────── Admin Payment Actions (YooKassa) ───────────────────────
 
 // handleAdminPaymentCancel — полный или частичный возврат через YooKassa Refund API.
-// Принимает optional `amount` (в рублях) и `reason` в body. При пустом amount — полный возврат.
+// Body: optional `amount` (рубли; 0 или нет — весь остаток с учётом незавершённых
+// возвратов) и `reason`. Резерв суммы, ключ идемпотентности и повтор попытки без ответа
+// ЮKassa — в admin_refund.go.
 func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -33,73 +37,66 @@ func handleAdminPaymentCancel(w http.ResponseWriter, r *http.Request) {
 		Amount float64 `json:"amount"`
 		Reason string  `json:"reason"`
 	}
-	_ = parseJSON(r, &req)
+	// A body that does not parse must not turn into amount 0 = "refund everything".
+	if err := parseJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Некорректный запрос: amount — число (рубли), reason — строка"})
+		return
+	}
 	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
 		reason = "Admin refund"
 	}
-
-	// Найти платёж
-	var yookassaID, status, description string
-	var amount float64
-	err := db.DB.QueryRow(`
-		SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, ''),
-		       COALESCE(description, ''), COALESCE(amount, 0)
-		FROM payments WHERE id = $1
-	`, paymentID).Scan(&yookassaID, &status, &description, &amount)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment not found"})
-		return
-	}
-	if yookassaID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "нет yookassa_payment_id"})
+	requestedKop, refusal := parseRefundAmount(req.Amount)
+	if refusal != nil {
+		writeJSON(w, refusal.status, map[string]string{"error": refusal.msg})
 		return
 	}
 
-	refundAmount := req.Amount
-	if refundAmount <= 0 {
-		refundAmount = amount
-	}
-	if refundAmount > amount {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "сумма возврата больше суммы платежа"})
-		return
-	}
-
-	client, err := yookassa.NewClientFromSettings()
+	client, err := newRefundClient()
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "yookassa not configured"})
 		return
 	}
 
-	refund, err := client.CreateRefund(yookassa.CreateRefundRequest{
-		PaymentID:   yookassaID,
-		Amount:      yookassa.Amount{Value: fmt.Sprintf("%.2f", refundAmount), Currency: "RUB"},
-		Description: reason,
-	})
+	// The money path must finish its bookkeeping even if the admin's browser goes away.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), refundTimeout)
+	defer cancel()
+
+	attempt, err := reserveRefund(ctx, paymentID, requestedKop, reason)
 	if err != nil {
-		log.Printf("[admin-refund] YooKassa refund failed for payment %d: %v", paymentID, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+		writeRefundError(w, paymentID, err)
+		return
+	}
+	refund, err := executeRefund(ctx, attempt, client)
+	if err != nil {
+		writeRefundError(w, paymentID, err)
 		return
 	}
 
-	// Запись в payment_refunds (и обновление refunded_amount) — произойдёт через webhook
-	// Но для мгновенного UI-отклика — записываем сразу pending
-	_, _ = db.DB.Exec(`
-		INSERT INTO payment_refunds (payment_id, yookassa_refund_id, amount, currency, status, description)
-		VALUES ($1, $2, $3::numeric, $4, $5, $6)
-		ON CONFLICT (yookassa_refund_id) DO UPDATE
-		SET status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP
-	`, paymentID, refund.ID, refund.Amount.Value, refund.Amount.Currency, refund.Status, reason)
+	log.Printf("[admin-refund] Created refund %s for payment %d (%s₽, status=%s, key=%s, resumed=%v)",
+		refund.ID, paymentID, refund.Amount.Value, refund.Status, refundIdempotenceKey(attempt.PaymentID, attempt.RowID), attempt.Resumed)
 
-	log.Printf("[admin-refund] Created refund %s for payment %d (%s₽, status=%s)",
-		refund.ID, paymentID, refund.Amount.Value, refund.Status)
-
+	message := "Возврат создан"
+	if attempt.Resumed {
+		message = "Возврат создан (повтор попытки, оставшейся без ответа ЮKassa)"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":   "Возврат создан",
+		"message":   message,
 		"refund_id": refund.ID,
 		"status":    refund.Status,
 		"amount":    refund.Amount.Value,
+		"resumed":   attempt.Resumed,
 	})
+}
+
+func writeRefundError(w http.ResponseWriter, paymentID int, err error) {
+	var refusal *refundError
+	if errors.As(err, &refusal) {
+		writeJSON(w, refusal.status, map[string]string{"error": refusal.msg})
+		return
+	}
+	log.Printf("[admin-refund] payment %d: %v", paymentID, err)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Ошибка базы данных при возврате: " + err.Error()})
 }
 
 // handleAdminPaymentCheckStatus запрашивает актуальный статус из ЮKassa и обновляет локально.

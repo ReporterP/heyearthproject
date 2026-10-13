@@ -128,6 +128,7 @@ type paymentResponse struct {
 	PaymentMethodType    string          `json:"payment_method_type,omitempty"`
 	PaymentMethodDetails json.RawMessage `json:"payment_method_details,omitempty"`
 	RefundedAmount       float64         `json:"refunded_amount"`
+	RefundableAmount     float64         `json:"refundable_amount"` // rubles still refundable, see biz.RefundableAmountSQL
 	ReceiptRegistered    bool            `json:"receipt_registered"`
 	Test                 bool            `json:"test"`
 	Description          string          `json:"description,omitempty"`

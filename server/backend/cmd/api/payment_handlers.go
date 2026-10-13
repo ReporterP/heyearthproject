@@ -597,6 +597,17 @@ func sendActivationEmail(userIDText string, plan *biz.Plan, priceRub int, isRene
 	})
 }
 
+// refundTotalsSQL recomputes payments.refunded_amount from the succeeded refunds and marks
+// the payment 'refunded' once they cover its amount ($1 = payment id, $2 = status of the
+// refund just recorded). Shared by the refund webhook and the admin refund.
+const refundTotalsSQL = `
+		UPDATE payments SET
+			refunded_amount = COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0),
+			status = CASE WHEN $2 = 'succeeded' AND COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0) >= amount THEN 'refunded' ELSE status END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`
+
 // processRefundEvent помечает платёж как возвращённый и вставляет запись в payment_refunds.
 func processRefundEvent(r *yookassa.Refund) error {
 	var paymentDBID int
@@ -613,13 +624,7 @@ func processRefundEvent(r *yookassa.Refund) error {
 	`, paymentDBID, r.ID, r.Amount.Value, r.Amount.Currency, r.Status, r.Description)
 
 	// Обновляем payments.refunded_amount (сумма всех succeeded refunds)
-	_, err = db.DB.Exec(`
-		UPDATE payments SET
-			refunded_amount = COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0),
-			status = CASE WHEN $2 = 'succeeded' AND COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE payment_id = $1 AND status = 'succeeded'), 0) >= amount THEN 'refunded' ELSE status END,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, paymentDBID, r.Status)
+	_, err = db.DB.Exec(refundTotalsSQL, paymentDBID, r.Status)
 	if err != nil {
 		return fmt.Errorf("update refunded_amount: %w", err)
 	}

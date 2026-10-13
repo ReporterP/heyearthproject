@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -93,6 +94,7 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(p.payment_method_type, ''),
 		       COALESCE(p.payment_method_details, '{}'::jsonb),
 		       COALESCE(p.refunded_amount, 0)::float8,
+		       (`+biz.RefundableAmountSQL+`)::float8,
 		       COALESCE(p.receipt_registered, FALSE),
 		       COALESCE(p.test, FALSE),
 		       COALESCE(p.description, ''),
@@ -123,7 +125,7 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 			&createdAt, &updatedAt, &confirmedAt,
 			&item.YookassaPaymentID, &item.YookassaStatus,
 			&item.PaymentMethodType, &item.PaymentMethodDetails,
-			&item.RefundedAmount, &item.ReceiptRegistered, &item.Test,
+			&item.RefundedAmount, &item.RefundableAmount, &item.ReceiptRegistered, &item.Test,
 			&item.Description, &item.PayerEmail, &item.CancellationReason); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan payment")
 			return

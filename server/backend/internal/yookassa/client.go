@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	apiBaseURL   = "https://api.yookassa.ru/v3"
-	httpTimeout  = 30 * time.Second
+	apiBaseURL  = "https://api.yookassa.ru/v3"
+	httpTimeout = 30 * time.Second
 )
 
 // Client — тонкий HTTP-клиент YooKassa API.
@@ -120,10 +120,19 @@ func (c *Client) CancelPayment(paymentID string) (*Payment, error) {
 }
 
 // CreateRefund — POST /v3/refunds.
-// Полный или частичный возврат succeeded-платежа.
+// Полный или частичный возврат succeeded-платежа. Idempotence-Key случайный: повтор
+// этого вызова создаёт новый возврат. Для повторяемых попыток — CreateRefundWithKey.
 func (c *Client) CreateRefund(req CreateRefundRequest) (*Refund, error) {
+	return c.CreateRefundWithKey(req, "")
+}
+
+// CreateRefundWithKey is CreateRefund with a caller-chosen Idempotence-Key. Sending the
+// same key and the same body again (within YooKassa's 24 h window) returns the refund the
+// first request created instead of creating a second one — that is what makes a retry
+// after a lost response safe. An empty key falls back to a random one.
+func (c *Client) CreateRefundWithKey(req CreateRefundRequest, idempotenceKey string) (*Refund, error) {
 	var out Refund
-	if err := c.doPOST("/refunds", req, &out); err != nil {
+	if err := c.doPOSTWithKey("/refunds", req, &out, idempotenceKey); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -156,14 +165,19 @@ func (c *Client) ChargeRecurring(paymentMethodID string, amount Amount, descript
 // ─── HTTP plumbing ────────────────────────────────────────────────────────
 
 func (c *Client) doPOST(path string, body interface{}, out interface{}) error {
-	return c.do(http.MethodPost, path, body, out)
+	return c.do(http.MethodPost, path, body, out, "")
+}
+
+// doPOSTWithKey sends a POST with the given Idempotence-Key ("" = a fresh random one).
+func (c *Client) doPOSTWithKey(path string, body interface{}, out interface{}, idempotenceKey string) error {
+	return c.do(http.MethodPost, path, body, out, idempotenceKey)
 }
 
 func (c *Client) doGET(path string, out interface{}) error {
-	return c.do(http.MethodGet, path, nil, out)
+	return c.do(http.MethodGet, path, nil, out, "")
 }
 
-func (c *Client) do(method, path string, body interface{}, out interface{}) error {
+func (c *Client) do(method, path string, body interface{}, out interface{}, idempotenceKey string) error {
 	var bodyReader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -180,7 +194,10 @@ func (c *Client) do(method, path string, body interface{}, out interface{}) erro
 	req.SetBasicAuth(c.shopID, c.secretKey)
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Idempotence-Key", NewIdempotenceKey())
+		if idempotenceKey == "" {
+			idempotenceKey = NewIdempotenceKey()
+		}
+		req.Header.Set("Idempotence-Key", idempotenceKey)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
