@@ -3,10 +3,12 @@ import { Wallet, Copy as CopyIcon, Check } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchPaymentsPaged, createPayment, updatePayment, cancelPayment, checkPaymentStatus } from '../api/admin.js'
+import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
 import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../components/CrudDialog.jsx'
+import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
+import { refundableAmount } from '../utils/refund.js'
 import {
   Button,
   Input,
@@ -132,6 +134,8 @@ export default function PaymentsPage() {
 
   const [dialog, setDialog] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [refundFor, setRefundFor] = useState(null) // payment in the refund dialog
+  const canActions = can('payments.write') || can('payments.refund')
 
   const [userDbId, setUserDbId] = useState('')
   const [amount, setAmount] = useState('')
@@ -335,7 +339,7 @@ export default function PaymentsPage() {
               <Th sortKey="created_at" sortState={sortState} onSort={onSort}>{t.paymentsDate || 'Дата'}</Th>
               <Th>ЮKassa ID</Th>
               <Th>{t.fieldMetadata}</Th>
-              {can('payments.write') && <Th>Действия</Th>}
+              {canActions && <Th>Действия</Th>}
             </Tr>
           </Thead>
           <Tbody>
@@ -384,32 +388,25 @@ export default function PaymentsPage() {
                   <Td className="text-tertiary text-xs whitespace-nowrap">{formatDate(p.created_at)}</Td>
                   <Td><TruncatedId value={p.yookassa_payment_id || p.external_id} /></Td>
                   <Td><MetadataPopover data={p.metadata} /></Td>
-                  {can('payments.write') && (
+                  {canActions && (
                     <Td>
                       <div className="flex gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(p)}>{t.edit}</Button>
-                        {(p.yookassa_payment_id || p.external_id) && (
+                        {can('payments.write') && <Button size="sm" variant="ghost" onClick={() => openEdit(p)}>{t.edit}</Button>}
+                        {can('payments.refund') && (p.yookassa_payment_id || p.external_id) && (
                           <>
-                            <Button size="sm" variant="ghost" onClick={async () => {
+                            <Button size="sm" variant="ghost" title="Запросить статус в ЮKassa" onClick={async () => {
                               try {
                                 const res = await checkPaymentStatus(p.id)
                                 toast.success(`ЮKassa: ${res.yookassa_status || res.local_status}`)
                                 load()
                               } catch (e) { toast.error(e.message) }
-                            }} title="Проверить статус в ЮKassa">
-                              Status
+                            }}>
+                              Статус
                             </Button>
-                            {(p.status === 'succeeded' || p.status === 'completed') && refunded < parseFloat(p.amount) && (
-                              <Button size="sm" variant="ghost" className="text-danger" onClick={async () => {
-                                const reason = prompt('Причина возврата:', 'Admin refund')
-                                if (reason === null) return
-                                try {
-                                  const res = await cancelPayment(p.id, reason)
-                                  toast.success(`Возврат: ${res.status || 'создан'}`)
-                                  load()
-                                } catch (e) { toast.error(e.message) }
-                              }}>
-                                Refund
+                            {/* The backend refunds only payments that have a YooKassa id. */}
+                            {p.yookassa_payment_id && (p.status === 'succeeded' || p.status === 'completed') && refundableAmount(p) > 0 && (
+                              <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRefundFor(p)}>
+                                Вернуть
                               </Button>
                             )}
                           </>
@@ -470,6 +467,14 @@ export default function PaymentsPage() {
           <TextArea value={metadata} onChange={setMetadata} placeholder='{"key":"value"}' rows={2} />
         </FormField>
       </CrudDialog>
+
+      {refundFor && (
+        <RefundDialog
+          payment={refundFor}
+          onClose={() => setRefundFor(null)}
+          onDone={(msg) => { setRefundFor(null); toast.success(msg); load() }}
+        />
+      )}
     </div>
   )
 }
