@@ -10,52 +10,53 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import { Kbd } from './ui/index.js'
 import ThemePicker from './ThemePicker.jsx'
+import { visibleItems } from '../auth/access.js'
 
 const groups = [
   {
     label: 'ОБЗОР',
     items: [
-      { to: '/dashboard', icon: LayoutDashboard, label: 'navDashboard',  perm: 'dashboard.read' },
-      { to: '/traffic',   icon: BarChart3,        label: 'navTraffic',    perm: 'dashboard.read' },
+      { to: '/dashboard', icon: LayoutDashboard, label: 'navDashboard' },
+      { to: '/traffic',   icon: BarChart3,        label: 'navTraffic' },
     ],
   },
   {
     label: 'ПОЛЬЗОВАТЕЛИ',
     items: [
-      { to: '/users',         icon: Users,      label: 'navUsers',         perm: 'users.read' },
-      { to: '/subscriptions', icon: CreditCard, label: 'navSubscriptions', perm: 'subscriptions.read' },
-      { to: '/promocodes',    icon: Ticket,     label: 'navPromocodes',    perm: 'promocodes.read' },
+      { to: '/users',         icon: Users,      label: 'navUsers' },
+      { to: '/subscriptions', icon: CreditCard, label: 'navSubscriptions' },
+      { to: '/promocodes',    icon: Ticket,     label: 'navPromocodes' },
     ],
   },
   {
     label: 'ИНФРАСТРУКТУРА',
     items: [
-      { to: '/servers',          icon: Server,   label: 'navServers',        perm: 'servers.read',           hideForTenant: true },
-      { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys',        perm: 'servers.read',           hideForTenant: true },
-      { to: '/releases',         icon: Rocket,   label: 'navReleases',       perm: 'releases.read',          hideForTenant: true },
-      { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking', perm: 'traffic_masking.read',   hideForTenant: true },
-      { to: '/direct-routes',    icon: Route,    label: 'navDirectRoutes',   perm: 'routing.direct.view',    hideForTenant: true },
-      { to: '/mtproto',          icon: Send,     label: 'navMTProto',        perm: 'settings.read',          hideForTenant: true },
-      { to: '/auto-tuner',       icon: Zap,      label: 'navAutoTuner',      perm: 'settings.read',          hideForTenant: true },
-      { to: '/alerts',           icon: Bell,     label: 'navAlerts',         perm: 'settings.read',          hideForTenant: true },
+      { to: '/servers',          icon: Server,   label: 'navServers' },
+      { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys' },
+      { to: '/releases',         icon: Rocket,   label: 'navReleases' },
+      { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking' },
+      { to: '/direct-routes',    icon: Route,    label: 'navDirectRoutes' },
+      { to: '/mtproto',          icon: Send,     label: 'navMTProto' },
+      { to: '/auto-tuner',       icon: Zap,      label: 'navAutoTuner' },
+      { to: '/alerts',           icon: Bell,     label: 'navAlerts' },
     ],
   },
   {
     label: 'ДЕНЬГИ',
     items: [
-      { to: '/plans',        icon: Package,   label: 'navPlans',       perm: 'settings.read' },
-      { to: '/payments',     icon: Wallet,    label: 'navPayments',    perm: 'payments.read' },
-      { to: '/payment-ops',  icon: RotateCcw, label: 'navPaymentOps',  perm: 'payments.read' },
+      { to: '/plans',        icon: Package,   label: 'navPlans' },
+      { to: '/payments',     icon: Wallet,    label: 'navPayments' },
+      { to: '/payment-ops',  icon: RotateCcw, label: 'navPaymentOps' },
     ],
   },
   {
     label: 'АДМИН',
     items: [
-      { to: '/admins',        icon: ShieldCheck, label: 'navAdmins',       perm: 'admins.read',  hideForTenant: true },
-      { to: '/audit-log',     icon: FileText,    label: 'navAuditLog',     perm: 'audit.read',   hideForTenant: true },
-      { to: '/tenants',       icon: Building2,   label: 'navTenants',      perm: 'tenants.read', hideForTenant: true },
-      { to: '/b2b-analytics', icon: TrendingUp,  label: 'navB2BAnalytics', perm: 'tenants.read', hideForTenant: true },
-      { to: '/settings',      icon: Settings,    label: 'navSettings',     perm: null,           hideForTenant: true },
+      { to: '/admins',        icon: ShieldCheck, label: 'navAdmins' },
+      { to: '/audit-log',     icon: FileText,    label: 'navAuditLog' },
+      { to: '/tenants',       icon: Building2,   label: 'navTenants' },
+      { to: '/b2b-analytics', icon: TrendingUp,  label: 'navB2BAnalytics' },
+      { to: '/settings',      icon: Settings,    label: 'navSettings' },
     ],
   },
 ]
@@ -79,8 +80,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK, mobile = 
     localStorage.setItem(GROUPS_KEY, JSON.stringify(next))
   }
 
-  const filterItems = (items) =>
-    items.filter((i) => !(i.hideForTenant && isTenantAdmin) && !(i.perm && !can(i.perm)))
+  const filterItems = (items) => visibleItems(items, { can, isTenantAdmin })
 
   return (
     <aside

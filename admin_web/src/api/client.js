@@ -7,8 +7,23 @@ export function setLogoutCallback(fn) {
 }
 
 function getToken() {
-  return localStorage.getItem('admin_token') || ''
+  try {
+    return localStorage.getItem('admin_token') || ''
+  } catch {
+    return ''
+  }
 }
+
+// ApiError carries the HTTP status, so a page can tell «нет прав» from other failures.
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
+export const FORBIDDEN_MESSAGE = 'Нет прав на это действие'
 
 export async function apiFetch(path, { method = 'GET', body, headers = {}, raw = false } = {}) {
   const token = getToken()
@@ -28,21 +43,26 @@ export async function apiFetch(path, { method = 'GET', body, headers = {}, raw =
 
   const res = await fetch(`${API_BASE}${path}`, opts)
 
-  if (res.status === 401 || res.status === 403) {
+  // 401: the session is gone (expired or revoked) — log out. 403: the session is fine, this
+  // admin just lacks the permission — say so and stay logged in.
+  if (res.status === 401) {
     if (logoutCallback) logoutCallback()
-    throw new Error('Session expired')
+    throw new ApiError('Сессия истекла — войдите снова', 401)
+  }
+  if (res.status === 403) {
+    throw new ApiError(FORBIDDEN_MESSAGE, 403)
   }
 
   if (raw) return res
 
   const ct = res.headers.get('content-type') || ''
   if (!ct.includes('application/json')) {
-    throw new Error('Server returned non-JSON response')
+    throw new ApiError('Сервер вернул не JSON', res.status)
   }
 
   const data = await res.json()
   if (!res.ok) {
-    throw new Error(data.error || data.message || `Error ${res.status}`)
+    throw new ApiError(data.error || data.message || `Ошибка ${res.status}`, res.status)
   }
   return data
 }

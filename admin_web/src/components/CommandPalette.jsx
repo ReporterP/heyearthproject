@@ -5,10 +5,11 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useRecents } from '../hooks/useRecents.js'
 import { Kbd } from './ui/index.js'
 import { commands as ALL_COMMANDS } from './commands.js'
+import { canOpen, visibleItems } from '../auth/access.js'
 
 export default function CommandPalette({ open, onClose }) {
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, can, isTenantAdmin } = useAuth()
   const { recents } = useRecents()
 
   // Escape closes (cmdk handles arrows + enter)
@@ -28,16 +29,17 @@ export default function CommandPalette({ open, onClose }) {
     }
   }
 
-  // Group commands by their `group` field.
+  // Only what this admin may open (the same rule as the sidebar).
   const grouped = useMemo(() => {
     const out = {}
-    for (const c of ALL_COMMANDS) {
+    for (const c of visibleItems(ALL_COMMANDS, { can, isTenantAdmin })) {
       const g = c.group || 'Другое'
       if (!out[g]) out[g] = []
       out[g].push(c)
     }
     return out
-  }, [])
+  }, [can, isTenantAdmin])
+  const shownRecents = recents.filter((r) => canOpen(r.href, { can, isTenantAdmin }))
 
   if (!open) return null
 
@@ -58,9 +60,9 @@ export default function CommandPalette({ open, onClose }) {
               Ничего не найдено
             </Command.Empty>
 
-            {recents.length > 0 && (
+            {shownRecents.length > 0 && (
               <Command.Group heading="Последние">
-                {recents.slice(0, 5).map((r) => (
+                {shownRecents.slice(0, 5).map((r) => (
                   <Command.Item
                     key={`recent-${r.id}`}
                     value={`recent ${r.label}`}
