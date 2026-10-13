@@ -146,7 +146,7 @@ func SyncHysteria2Config() error {
 	render := func(socksPort int) string {
 		return renderHysteria2Config(maxUp, maxDown, obfsPassword, statsSecret, socksPort, hubIPs)
 	}
-	changed, err := applyBambooChoice(choice, render, hysteria2Install, biz.ExpressCommit)
+	changed, err := applyBambooChoice(choice, render, hysteria2Live.install, biz.ExpressCommit)
 	if err != nil || !changed {
 		return err
 	}
@@ -186,19 +186,50 @@ func applyBambooChoice(choice biz.ExpressChoice, render func(socksPort int) stri
 	return changed, nil
 }
 
-// hysteria2Install puts a rendered config in place as server.yaml; tests swap it.
-var hysteria2Install = installHysteria2Config
+// hysteria2Installer puts rendered configs in place as server.yaml. Only SyncHysteria2Config
+// uses it, under hysteria2SyncMu; tests build their own with a temp path and stub steps.
+type hysteria2Installer struct {
+	path     string
+	validate func(path string) error
+	restart  func() error
+	// pendingRestart: the file on disk was replaced but hysteria2-server did not restart, so the
+	// running server still has the old config. The next install retries the restart even when
+	// the bytes are equal (before the caller commits Bamboo's exit). In memory only.
+	pendingRestart bool
+}
 
-// installHysteria2Config writes yaml to hysteria2ConfigPath and restarts hysteria2-server.
-// changed is false when the file already holds these bytes: no validation, no restart.
-func installHysteria2Config(yaml string) (changed bool, err error) {
+// hysteria2Live is the Hub's /etc/hysteria/server.yaml and the hysteria2-server unit.
+var hysteria2Live = &hysteria2Installer{
+	path:     hysteria2ConfigPath,
+	validate: validateHysteria2Config,
+	restart:  restartHysteria2Server,
+}
+
+// restartHysteria2Server restarts the unit to pick up the new file. This code does not use a
+// signal-based hot reload (no SIGHUP); `systemctl restart` is the one reload path. Connected
+// clients are dropped and have to reconnect (and re-authenticate).
+func restartHysteria2Server() error {
+	if out, err := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err != nil {
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// install writes yaml to in.path and restarts hysteria2-server. changed is false when the file
+// already holds these bytes and no restart is pending: no validation, no restart.
+func (in *hysteria2Installer) install(yaml string) (changed bool, err error) {
 	// No-op short-circuit FIRST — if content matches what's on disk, nothing
 	// changed since last sync: no validation, no rename, no restart. This is the
 	// only change detection; any byte difference (e.g. a new auth URL) leads to
-	// exactly one validate + rename + restart, and the next sync is a no-op again.
-	if existing, err := os.ReadFile(hysteria2ConfigPath); err == nil {
+	// exactly one validate + rename + restart, and the next sync is a no-op again —
+	// unless that restart failed: then the file is already in place and only the
+	// restart is retried.
+	if existing, err := os.ReadFile(in.path); err == nil {
 		if bytes.Equal(existing, []byte(yaml)) {
-			return false, nil
+			if !in.pendingRestart {
+				return false, nil
+			}
+			return in.restartNow()
 		}
 	}
 
@@ -210,21 +241,22 @@ func installHysteria2Config(yaml string) (changed bool, err error) {
 	// 3) atomic rename only if validation passes — a rejected config never reaches
 	//    systemctl restart, the live server keeps its current file, error captured
 	//    into app_settings for admin UI / deploy --status.
-	tmpPath := hysteria2ConfigPath + ".tmp"
+	tmpPath := in.path + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(yaml), 0600); err != nil {
 		return false, fmt.Errorf("write tmp config: %w", err)
 	}
 
-	if vErr := validateHysteria2Config(tmpPath); vErr != nil {
+	if vErr := in.validate(tmpPath); vErr != nil {
 		_ = os.Remove(tmpPath)
 		recordHysteria2SyncError(vErr)
 		return false, fmt.Errorf("validation failed (keeping existing config): %w", vErr)
 	}
 
-	if err := os.Rename(tmpPath, hysteria2ConfigPath); err != nil {
+	if err := os.Rename(tmpPath, in.path); err != nil {
 		_ = os.Remove(tmpPath)
 		return false, fmt.Errorf("rename hysteria2 config: %w", err)
 	}
+	in.pendingRestart = true // the file on disk is now ahead of the running server
 
 	// Hand the file off to the hysteria service account. heyearth-api runs as
 	// root, so the renamed file is root:root 0600 by default — the hysteria
@@ -233,18 +265,21 @@ func installHysteria2Config(yaml string) (changed bool, err error) {
 	if hu, err := user.Lookup("hysteria"); err == nil {
 		uid, _ := strconv.Atoi(hu.Uid)
 		gid, _ := strconv.Atoi(hu.Gid)
-		if cerr := os.Chown(hysteria2ConfigPath, uid, gid); cerr != nil {
+		if cerr := os.Chown(in.path, uid, gid); cerr != nil {
 			log.Printf("[hysteria2-sync] chown config to hysteria failed: %v", cerr)
 		}
-		_ = os.Chmod(hysteria2ConfigPath, 0640)
+		_ = os.Chmod(in.path, 0640)
 	}
+	return in.restartNow()
+}
 
-	// Restart to pick up the new file. This code does not use a signal-based hot
-	// reload (no SIGHUP); `systemctl restart` is the one reload path. Connected
-	// clients are dropped and have to reconnect (and re-authenticate).
-	if out, err := exec.Command("systemctl", "restart", "hysteria2-server").CombinedOutput(); err != nil {
-		return false, fmt.Errorf("restart hysteria2-server: %w (%s)", err, strings.TrimSpace(string(out)))
+// restartNow restarts hysteria2-server and tracks whether a restart is still owed.
+func (in *hysteria2Installer) restartNow() (bool, error) {
+	if err := in.restart(); err != nil {
+		in.pendingRestart = true
+		return false, fmt.Errorf("restart hysteria2-server: %w", err)
 	}
+	in.pendingRestart = false
 	return true, nil
 }
 

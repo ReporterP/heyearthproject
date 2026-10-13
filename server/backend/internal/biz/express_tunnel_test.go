@@ -160,6 +160,48 @@ func TestExpressOptimisationNeedsMeasurements(t *testing.T) {
 	}
 }
 
+// An exit that dropped out of the candidates (dead Hysteria path, unhealthy, offline) starts
+// over when it returns: its old EWMA and sample count say nothing about the path it is back with.
+func TestExpressReturningExitStartsOver(t *testing.T) {
+	later := expressT0.Add(time.Hour)
+	measured := func() *ExpressSelector {
+		s := NewExpressSelector(2, expressT0)
+		feed(s, 2, 100, expressMinSamples)
+		feed(s, 3, 70, expressMinSamples)
+		return s
+	}
+	if c := measured().Choose(later, cands(2, 100, 3, 70)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("control: a measured exit 30 %% faster must win: %+v", c)
+	}
+
+	s := measured()
+	if c := s.Choose(later, cands(2, 100)); c.Switched { // exit 3 is gone for one decision
+		t.Fatalf("unexpected switch: %+v", c)
+	}
+	if c := s.Choose(later.Add(time.Minute), cands(2, 100, 3, 70)); c.Switched {
+		t.Fatalf("a returning exit switched on its stale samples: %+v", c)
+	}
+	feed(s, 3, 70, expressMinSamples-1)
+	if c := s.Choose(later.Add(2*time.Minute), cands(2, 100, 3, 70)); c.Switched {
+		t.Fatalf("switch after %d fresh samples: %+v", expressMinSamples-1, c)
+	}
+	s.Observe(3, 70)
+	if c := s.Choose(later.Add(3*time.Minute), cands(2, 100, 3, 70)); !c.Switched || c.ExitID != 3 {
+		t.Fatalf("want the switch after %d fresh samples: %+v", expressMinSamples, c)
+	}
+
+	// The stale EWMA goes too: exit 3 was very fast (20) before it left and is back at 85 — only
+	// 15 % faster. Folding the new samples into the old EWMA would give ≈77 (a 23 % gain).
+	s = NewExpressSelector(2, expressT0)
+	feed(s, 2, 100, expressMinSamples)
+	feed(s, 3, 20, expressMinSamples)
+	s.Choose(later, cands(2, 100))
+	feed(s, 3, 85, expressMinSamples)
+	if c := s.Choose(later.Add(time.Minute), cands(2, 100, 3, 85)); c.Switched || c.ExitID != 2 {
+		t.Fatalf("the returning exit was judged by its stale EWMA: %+v", c)
+	}
+}
+
 func TestExpressCandidatesNeedALiveHysteriaPath(t *testing.T) {
 	paths := map[int]ExitPaths{2: {Hy: PathUnhealthy, VR: PathHealthy}, 3: {Hy: PathHealthy}}
 	got := filterExpressCandidates(cands(2, 50, 3, 90, 5, 70), func(id int) (ExitPaths, bool) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +99,52 @@ func TestBambooChoiceCommittedOnlyWhenServerYAMLCarriesIt(t *testing.T) {
 	unchanged := func(string) (bool, error) { return false, nil }
 	if changed, err := applyBambooChoice(c, render, unchanged, commit); err != nil || changed || sel.Current().ExitID != 3 {
 		t.Fatalf("unchanged bytes must commit: changed %v, err %v, %+v", changed, err, sel.Current())
+	}
+}
+
+// The new server.yaml was renamed into place but `systemctl restart hysteria2-server` failed: the
+// running server still has the old exit. The next syncs see equal bytes, yet must retry the
+// restart and commit the switch only once it succeeds.
+func TestBambooRestartRetriedBeforeCommit(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	render := func(port int) string {
+		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"138.16.181.225"})
+	}
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	if err := os.WriteFile(path, []byte(render(1090)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restartErr := errors.New("Job for hysteria2-server.service failed")
+	restarts := 0
+	in := &hysteria2Installer{path: path, validate: func(string) error { return nil },
+		restart: func() error { restarts++; return restartErr }}
+	sel := biz.NewExpressSelector(2, t0)
+	commit := func(c biz.ExpressChoice) error { sel.Commit(c); return nil }
+	exit3 := []biz.ExpressCandidate{{ID: 3, RTTms: 100}}
+	sync := func(minute int) (bool, error) {
+		return applyBambooChoice(sel.Decide(t0.Add(time.Duration(minute)*time.Minute), exit3), render, in.install, commit)
+	}
+
+	if _, err := sync(1); !errors.Is(err, restartErr) {
+		t.Fatalf("restart error not returned: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != render(1091) {
+		t.Fatal("the new server.yaml must be in place after the rename")
+	}
+	if c := sel.Current(); c.ExitID != 2 || restarts != 1 {
+		t.Fatalf("a failed restart committed the switch: %+v, restarts %d", c, restarts)
+	}
+	if _, err := sync(6); !errors.Is(err, restartErr) || restarts != 2 || sel.Current().ExitID != 2 {
+		t.Fatalf("equal bytes after a failed restart: want a retried restart and no commit: err %v, restarts %d, %+v",
+			err, restarts, sel.Current())
+	}
+	restartErr = nil
+	if changed, err := sync(11); err != nil || !changed || restarts != 3 || sel.Current().ExitID != 3 {
+		t.Fatalf("want the retried restart to succeed and commit: changed %v, err %v, restarts %d, %+v",
+			changed, err, restarts, sel.Current())
+	}
+	if changed, err := sync(16); err != nil || changed || restarts != 3 {
+		t.Fatalf("steady state must not restart: changed %v, err %v, restarts %d", changed, err, restarts)
 	}
 }
 

@@ -151,12 +151,28 @@ func (s *ExpressSelector) commitLocked(c ExpressChoice) {
 
 func (s *ExpressSelector) decideLocked(now time.Time, cands []ExpressCandidate) ExpressChoice {
 	alive := map[int]bool{}
+	for _, c := range cands {
+		if c.ID > 0 {
+			alive[c.ID] = true
+		}
+	}
+	// An exit missing from the candidates (dead Hysteria path, unhealthy, offline) starts over
+	// when it returns: its old EWMA and sample count say nothing about the path it is back with.
+	for id := range s.ewma {
+		if !alive[id] {
+			delete(s.ewma, id)
+		}
+	}
+	for id := range s.samples {
+		if !alive[id] {
+			delete(s.samples, id)
+		}
+	}
 	best := 0
 	for _, c := range cands {
 		if c.ID <= 0 {
 			continue
 		}
-		alive[c.ID] = true
 		if _, ok := s.ewma[c.ID]; !ok {
 			if c.RTTms > 0 {
 				s.ewma[c.ID] = float64(c.RTTms)
