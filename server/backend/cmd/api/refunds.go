@@ -41,7 +41,7 @@ import (
 type refundAPI interface {
 	CreateRefundWithKey(req yookassa.CreateRefundRequest, idempotenceKey string) (*yookassa.Refund, error)
 	GetRefund(refundID string) (*yookassa.Refund, error)
-	ListRefunds(paymentID string) ([]yookassa.Refund, error)
+	ListRefunds(paymentID string, deadline time.Time) ([]yookassa.Refund, error)
 }
 
 var newRefundClient = func() (refundAPI, error) {
@@ -68,6 +68,9 @@ const (
 	// admin's «Проверить статус» after 1 min.
 	refundListMinAgeSweep = 10 * time.Minute
 	refundListMinAgeCheck = time.Minute
+	// checkStatusBudget: «Проверить статус» starts no YooKassa call (nor a ListRefunds
+	// page) after this; the last one may still take refundCallTimeout.
+	checkStatusBudget = 20 * time.Second
 	// refundSweepBatch: payments reconciled per sweep run.
 	refundSweepBatch = 50
 )
@@ -112,11 +115,11 @@ const (
 		updated_at = CURRENT_TIMESTAMP WHERE id = $1`
 	refundDeleteWebhookRowSQL = `DELETE FROM payment_refunds WHERE id = $1 AND idempotence_key IS NULL`
 	refundMarkFailedSQL       = `UPDATE payment_refunds SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status = 'pending' AND yookassa_refund_id IS NULL`
+		WHERE id = $1 AND status = 'pending' AND yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL`
 	refundSweepPaymentsSQL = `SELECT DISTINCT payment_id FROM payment_refunds
 		WHERE status = 'pending'
 		  AND ((yookassa_refund_id IS NOT NULL AND updated_at < NOW() - INTERVAL '3 minutes')
-		    OR (yookassa_refund_id IS NULL AND created_at < NOW() - INTERVAL '10 minutes'))
+		    OR (yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL AND created_at < NOW() - INTERVAL '10 minutes'))
 		ORDER BY payment_id LIMIT $1`
 )
 
@@ -372,7 +375,11 @@ const (
 	refundRejected                          // YooKassa answered 4xx: nothing was created
 )
 
-func classifyRefundCall(ref *yookassa.Refund, err error) refundCallOutcome {
+// classifyRefundCall sorts a YooKassa answer. Only an answer that certainly created nothing
+// frees the reservation: a 4xx for a new attempt (except 429), and for a repeat of an
+// open reservation only invalid_request — any other 4xx there may hide the first call's
+// refund, so it counts as no answer and is left to reconcile.
+func classifyRefundCall(ref *yookassa.Refund, err error, repeat bool) refundCallOutcome {
 	if err == nil {
 		if ref != nil && ref.ID != "" {
 			return refundCreated
@@ -381,7 +388,14 @@ func classifyRefundCall(ref *yookassa.Refund, err error) refundCallOutcome {
 	}
 	var apiErr *yookassa.APIError
 	if errors.As(err, &apiErr) && apiErr.HTTPStatus >= 400 && apiErr.HTTPStatus < 500 {
-		return refundRejected
+		switch {
+		case apiErr.HTTPStatus == http.StatusTooManyRequests:
+			return refundUnknown
+		case repeat && apiErr.Code != "invalid_request":
+			return refundUnknown
+		default:
+			return refundRejected
+		}
 	}
 	return refundUnknown // transport error, timeout, 5xx, unreadable answer
 }
@@ -390,7 +404,7 @@ func classifyRefundCall(ref *yookassa.Refund, err error) refundCallOutcome {
 // records the answer in a short locked transaction.
 func executeRefund(ctx context.Context, a refundAttempt, client refundAPI) (*yookassa.Refund, error) {
 	ref, callErr := client.CreateRefundWithKey(a.request(), a.Key)
-	switch classifyRefundCall(ref, callErr) {
+	switch classifyRefundCall(ref, callErr, a.Resumed) {
 	case refundCreated:
 		err := withPaymentLock(ctx, a.PaymentID, func(ctx context.Context, tx *sql.Tx) error {
 			return recordRefund(ctx, tx, a.PaymentID, a.RowID, ref)
@@ -611,7 +625,7 @@ func reconcileRefunds(ctx context.Context, client refundAPI, paymentID int, list
 		}
 	}
 	if len(unlinked) > 0 && ykPayment != "" && callAllowed() {
-		if listed, err = client.ListRefunds(ykPayment); err != nil {
+		if listed, err = client.ListRefunds(ykPayment, callBudget); err != nil { // budget checked per page
 			callErr = fmt.Errorf("list refunds of %s: %w", ykPayment, err)
 		} else {
 			listOK = true

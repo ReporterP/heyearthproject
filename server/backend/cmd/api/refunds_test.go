@@ -144,22 +144,30 @@ func TestRefundIdempotenceKey(t *testing.T) {
 }
 
 func TestClassifyRefundCall(t *testing.T) {
+	invalid := &yookassa.APIError{HTTPStatus: 400, Code: "invalid_request"}
 	tests := []struct {
-		name string
-		ref  *yookassa.Refund
-		err  error
-		want refundCallOutcome
+		name   string
+		ref    *yookassa.Refund
+		err    error
+		repeat bool
+		want   refundCallOutcome
 	}{
-		{"refund returned", &yookassa.Refund{ID: "rf-1"}, nil, refundCreated},
-		{"202 accepted, no refund yet", &yookassa.Refund{}, nil, refundUnknown},
-		{"400 invalid_request", nil, &yookassa.APIError{HTTPStatus: 400}, refundRejected},
-		{"429 too many requests", nil, &yookassa.APIError{HTTPStatus: 429}, refundRejected},
-		{"wrapped 401", nil, fmt.Errorf("x: %w", &yookassa.APIError{HTTPStatus: 401}), refundRejected},
-		{"500 internal", nil, &yookassa.APIError{HTTPStatus: 500}, refundUnknown},
-		{"timeout", nil, errors.New("http do: context deadline exceeded (Client.Timeout exceeded)"), refundUnknown},
+		{"refund returned", &yookassa.Refund{ID: "rf-1"}, nil, false, refundCreated},
+		{"repeat: refund returned", &yookassa.Refund{ID: "rf-1"}, nil, true, refundCreated},
+		{"202 accepted, no refund yet", &yookassa.Refund{}, nil, false, refundUnknown},
+		{"new: 400 invalid_request", nil, invalid, false, refundRejected},
+		{"new: wrapped 401", nil, fmt.Errorf("x: %w", &yookassa.APIError{HTTPStatus: 401, Code: "invalid_credentials"}), false, refundRejected},
+		{"new: 429 too many requests", nil, &yookassa.APIError{HTTPStatus: 429, Code: "too_many_requests"}, false, refundUnknown},
+		{"repeat: 429", nil, &yookassa.APIError{HTTPStatus: 429, Code: "too_many_requests"}, true, refundUnknown},
+		{"repeat: 400 invalid_request", nil, invalid, true, refundRejected},
+		{"repeat: 403 forbidden", nil, &yookassa.APIError{HTTPStatus: 403, Code: "forbidden"}, true, refundUnknown},
+		{"repeat: 404 not_found", nil, &yookassa.APIError{HTTPStatus: 404, Code: "not_found"}, true, refundUnknown},
+		{"repeat: 400 without a code", nil, &yookassa.APIError{HTTPStatus: 400}, true, refundUnknown},
+		{"500 internal", nil, &yookassa.APIError{HTTPStatus: 500}, false, refundUnknown},
+		{"timeout", nil, errors.New("http do: context deadline exceeded (Client.Timeout exceeded)"), false, refundUnknown},
 	}
 	for _, tt := range tests {
-		if got := classifyRefundCall(tt.ref, tt.err); got != tt.want {
+		if got := classifyRefundCall(tt.ref, tt.err, tt.repeat); got != tt.want {
 			t.Errorf("%s: got %d, want %d", tt.name, got, tt.want)
 		}
 	}
@@ -190,6 +198,13 @@ func TestRefundSQL(t *testing.T) {
 	}
 	if !strings.HasSuffix(norm(refundLinkSQL), "WHERE id = $1 AND (yookassa_refund_id IS NULL OR yookassa_refund_id = $2)") {
 		t.Errorf("link: %s", norm(refundLinkSQL))
+	}
+	// Rows without a refund id are reservations only with an idempotence key.
+	if !strings.HasSuffix(norm(refundMarkFailedSQL), "AND yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL") {
+		t.Errorf("mark failed: %s", norm(refundMarkFailedSQL))
+	}
+	if !strings.Contains(norm(refundSweepPaymentsSQL), "(yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL AND created_at < NOW() - INTERVAL '10 minutes')") {
+		t.Errorf("sweep: %s", norm(refundSweepPaymentsSQL))
 	}
 }
 
@@ -405,7 +420,8 @@ func (c *rfConn) QueryContext(_ context.Context, query string, args []driver.Nam
 			return nil, err
 		}
 		for _, r := range d.rows {
-			if r.status == "pending" && ((r.refundID != "" && time.Since(r.updated) > 3*time.Minute) || (r.refundID == "" && time.Since(r.created) > 10*time.Minute)) {
+			keyOK := r.key != "" || !strings.Contains(q, "yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL")
+			if r.status == "pending" && ((r.refundID != "" && time.Since(r.updated) > 3*time.Minute) || (r.refundID == "" && keyOK && time.Since(r.created) > 10*time.Minute)) {
 				return one([]string{"payment_id"}, int64(7)), nil
 			}
 		}
@@ -536,7 +552,8 @@ func (c *rfConn) ExecContext(_ context.Context, query string, args []driver.Name
 			r.refundID, r.status, r.updated, affected = "", "pending", now, 1
 		}
 	case "failed":
-		if r := d.find(id()); r != nil && r.status == "pending" && r.refundID == "" {
+		keyOK := !strings.Contains(q, "idempotence_key IS NOT NULL")
+		if r := d.find(id()); r != nil && r.status == "pending" && r.refundID == "" && (keyOK || r.key != "") {
 			r.status, r.updated, affected = "failed", now, 1
 		}
 	case "set-status":
@@ -608,21 +625,22 @@ func (d *rfDB) keyOf(id int64) string {
 
 // rfYooKassa is YooKassa's refund API: a key it has seen returns the refund it created
 // (same body) or 400 (other body). behaviour is consumed per create call: ok, ok-pending,
-// lost (refund created or found, answer lost), reject (400); down, 5xx and accepted (202)
-// never reach the refund logic. during runs while the call is in flight, after the refund
+// lost (refund created or found, answer lost), reject (400 invalid_request); down, 5xx,
+// 429, 403 and accepted (202) never reach the refund logic. during runs while the call is in flight, after the refund
 // exists — e.g. the refund webhook arriving before the answer.
 type rfYooKassa struct {
-	mu        sync.Mutex
-	behaviour []string
-	byKey     map[string]rfCreated
-	refunds   map[string]*yookassa.Refund
-	order     []string
-	calls     []string // "key=amount description"
-	listErr   error
-	getCalls  int
-	listCalls int
-	onCall    func(string)
-	during    func(ref yookassa.Refund)
+	mu           sync.Mutex
+	behaviour    []string
+	byKey        map[string]rfCreated
+	refunds      map[string]*yookassa.Refund
+	order        []string
+	calls        []string // "key=amount description"
+	listErr      error
+	listDeadline time.Time
+	getCalls     int
+	listCalls    int
+	onCall       func(string)
+	during       func(ref yookassa.Refund)
 }
 
 type rfCreated struct {
@@ -675,6 +693,10 @@ func (y *rfYooKassa) create(req yookassa.CreateRefundRequest, key string) (*yook
 		return nil, errors.New("http do: context deadline exceeded (Client.Timeout exceeded while awaiting headers)"), nil
 	case "5xx":
 		return nil, &yookassa.APIError{HTTPStatus: 500, Code: "internal_server_error"}, nil
+	case "429":
+		return nil, &yookassa.APIError{HTTPStatus: 429, Code: "too_many_requests"}, nil
+	case "403":
+		return nil, &yookassa.APIError{HTTPStatus: 403, Code: "forbidden"}, nil
 	case "accepted":
 		return &yookassa.Refund{}, nil, nil
 	}
@@ -719,10 +741,11 @@ func (y *rfYooKassa) GetRefund(id string) (*yookassa.Refund, error) {
 	return &cp, nil
 }
 
-func (y *rfYooKassa) ListRefunds(paymentID string) ([]yookassa.Refund, error) {
+func (y *rfYooKassa) ListRefunds(paymentID string, deadline time.Time) ([]yookassa.Refund, error) {
 	y.mu.Lock()
 	defer y.mu.Unlock()
 	y.listCalls++
+	y.listDeadline = deadline
 	if y.listErr != nil {
 		return nil, y.listErr
 	}
@@ -876,6 +899,26 @@ func TestAdminRefundFlows(t *testing.T) {
 				{body: `{"amount":250}`, wantCode: 409, wantText: "ещё обрабатывается"},
 			},
 			wantRows:   []string{"1:100.00:pending::reservation"},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "429 is no answer: the reservation stays, the next click repeats it",
+			steps: []rfStep{
+				{body: `{"amount":100}`, yk: []string{"429"}, wantCode: 202, wantText: refundPendingMessage, wantSent: []string{"#1=100.00 Admin refund"}},
+				{body: `{"amount":100}`, wantCode: 200, wantText: "повтор попытки", wantSent: []string{"#1=100.00 Admin refund"}},
+			},
+			wantCreated: 1, wantRows: []string{"1:100.00:succeeded:rf-1:reservation"}, wantStatus: "succeeded",
+		},
+		{
+			name: "a repeat answered 403 keeps the reservation; a repeat answered invalid_request frees it",
+			steps: []rfStep{
+				{body: `{"amount":100}`, yk: []string{"down"}, wantCode: 202, wantSent: []string{"#1=100.00 Admin refund"}},
+				{body: `{"amount":100}`, yk: []string{"403"}, wantCode: 202, wantSent: []string{"#1=100.00 Admin refund"}},
+				{body: `{"amount":250}`, wantCode: 409, wantText: "ещё обрабатывается"},
+				{body: `{"amount":100}`, yk: []string{"reject"}, wantCode: 502, wantText: "ЮKassa отклонила возврат", wantSent: []string{"#1=100.00 Admin refund"}},
+				{body: `{"amount":300.01}`, wantCode: 400, wantText: "не больше 300,00 ₽"}, // the 100 are free again
+			},
+			wantRows:   []string{"1:100.00:failed::reservation"},
 			wantStatus: "succeeded",
 		},
 		{
@@ -1218,6 +1261,18 @@ func TestReconcileRefunds(t *testing.T) {
 			wantRows: []string{"1:100.00:pending::reservation"},
 		},
 		{
+			name:     "a row without idempotence key is never marked failed",
+			rows:     []rfRow{{id: 1, amountKop: 10000, status: "pending", created: ago(24 * time.Hour)}},
+			wantRows: []string{"1:100.00:pending::webhook"},
+		},
+		{
+			name:     "within the budget: the list gets the budget as its per-page deadline",
+			rows:     []rfRow{reservation(1, 15*time.Minute)},
+			yk:       func(y *rfYooKassa) { y.add("100.00", "succeeded", ago(15*time.Minute)) },
+			budget:   time.Now().Add(time.Hour),
+			wantRows: []string{"1:100.00:succeeded:rf-1:reservation"}, wantLists: 1,
+		},
+		{
 			name:     "no HTTP call after the budget",
 			rows:     []rfRow{reservation(1, 24*time.Hour), {id: 2, refundID: "rf-1", amountKop: 10000, status: "pending", key: "k", created: ago(time.Hour)}},
 			budget:   ago(time.Second),
@@ -1253,6 +1308,9 @@ func TestReconcileRefunds(t *testing.T) {
 			if tt.wantStatus != "" && d.status != tt.wantStatus {
 				t.Errorf("payments.status %q, want %q", d.status, tt.wantStatus)
 			}
+			if y.listCalls > 0 && !y.listDeadline.Equal(tt.budget) {
+				t.Errorf("ListRefunds deadline %v, want the call budget %v (checked per page)", y.listDeadline, tt.budget)
+			}
 			if d.openTx != 0 {
 				t.Errorf("%d transactions left open", d.openTx)
 			}
@@ -1279,10 +1337,30 @@ func TestReconcilePendingRefundsSweep(t *testing.T) {
 	if got := d.summary(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("payment_refunds\n got %q\nwant %q", got, want)
 	}
-	// Nothing left to do: the sweep selects no payment and calls nothing.
+	// Nothing left to do: the sweep selects no payment and calls nothing. A pending row
+	// without a refund id AND without an idempotence key is not a reservation: ignored.
+	d.mu.Lock()
+	d.rows = append(d.rows, rfRow{id: 3, amountKop: 700, status: "pending", created: old, updated: old})
+	d.mu.Unlock()
 	y.getCalls, y.listCalls = 0, 0
+	d.mu.Lock()
+	d.journal = nil
+	d.mu.Unlock()
 	reconcilePendingRefunds()
 	if y.getCalls+y.listCalls != 0 {
 		t.Fatalf("second sweep called YooKassa %d+%d times", y.getCalls, y.listCalls)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !reflect.DeepEqual(d.journal, []string{"sweep"}) {
+		t.Fatalf("second sweep selected the payment again: %q", d.journal)
+	}
+}
+
+// «Проверить статус» starts no YooKassa call after its budget; budget + one call + the
+// lock wait fit nginx's 60 s.
+func TestCheckStatusTiming(t *testing.T) {
+	if checkStatusBudget+refundCallTimeout+refundDBTimeout > 60*time.Second || refundCallTimeout > 25*time.Second || refundDBTimeout > 10*time.Second {
+		t.Fatalf("budget %v + call %v + lock wait %v must stay under 60 s", checkStatusBudget, refundCallTimeout, refundDBTimeout)
 	}
 }

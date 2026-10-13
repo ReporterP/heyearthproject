@@ -86,7 +86,7 @@ func TestListRefundsFollowsCursor(t *testing.T) {
 	defer srv.Close()
 	c := NewClient("shop", "secret", true)
 	c.baseURL = srv.URL
-	got, err := c.ListRefunds("pay-1")
+	got, err := c.ListRefunds("pay-1", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +96,41 @@ func TestListRefundsFollowsCursor(t *testing.T) {
 	want := []string{"GET /refunds?limit=100&payment_id=pay-1", "GET /refunds?cursor=c2&limit=100&payment_id=pay-1"}
 	if len(queries) != 2 || queries[0] != want[0] || queries[1] != want[1] {
 		t.Fatalf("queries %q, want %q", queries, want)
+	}
+}
+
+// The deadline is checked before every page: a page already running finishes, the next one
+// is not requested, and a partial list is an error (never a short answer).
+func TestListRefundsDeadlinePerPage(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		pages int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		pages++
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		_, _ = io.WriteString(w, `{"type":"list","items":[{"id":"rf-1","amount":{"value":"1.00","currency":"RUB"}}],"next_cursor":"more"}`)
+	}))
+	defer srv.Close()
+	c := NewClient("shop", "secret", true)
+	c.baseURL = srv.URL
+
+	if got, err := c.ListRefunds("pay-1", time.Now().Add(-time.Second)); err == nil || got != nil {
+		t.Fatalf("spent budget: %v, %v; want an error and no list", got, err)
+	}
+	mu.Lock()
+	if pages != 0 {
+		t.Fatalf("spent budget still requested %d pages", pages)
+	}
+	mu.Unlock()
+
+	got, err := c.ListRefunds("pay-1", time.Now().Add(30*time.Millisecond))
+	mu.Lock()
+	defer mu.Unlock()
+	if err == nil || got != nil || pages != 1 {
+		t.Fatalf("budget ends during page 1: %d pages, %v, %v; want 1 page and an error", pages, got, err)
 	}
 }
 

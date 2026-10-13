@@ -392,31 +392,94 @@ func processPaymentEvent(p *yookassa.Payment) error {
 
 	receiptRegistered := p.ReceiptRegistration == "succeeded"
 
-	// Обновляем запись
-	localStatus := mapYookassaStatus(p.Status)
-	_, err = db.DB.Exec(`
-		UPDATE payments SET
-			yookassa_status = $1::text,
-			status = $2::text,
-			payment_method_id = COALESCE(NULLIF($3::text, ''), payment_method_id),
-			payment_method_type = $4::text,
-			payment_method_details = $5::jsonb,
-			receipt_registered = $6,
-			paid_at = CASE WHEN $2::text = 'succeeded' THEN NOW() ELSE paid_at END,
-			confirmed_at = CASE WHEN $2::text = 'succeeded' THEN NOW() ELSE confirmed_at END,
-			cancellation_reason = $7::text,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $8
-	`, p.Status, localStatus, paymentMethodID, methodType, methodDetails,
-		receiptRegistered, cancellationReason(p), paymentDBID)
-	if err != nil {
+	// Details only: status and paid_at are never touched here.
+	if _, err = db.DB.Exec(paymentDetailsSQL, p.Status, paymentMethodID, methodType, methodDetails,
+		receiptRegistered, cancellationReason(p), paymentDBID); err != nil {
 		return fmt.Errorf("update payment: %w", err)
 	}
 
 	if p.Status != yookassa.PaymentStatusSucceeded {
-		return nil // pending/canceled — ничего не активируем
+		// pending/waiting/canceled — never over a paid or refunded payment.
+		if _, err := db.DB.Exec(paymentSetUnpaidStatusSQL, paymentDBID, mapYookassaStatus(p.Status)); err != nil {
+			return fmt.Errorf("update payment status: %w", err)
+		}
+		return nil
 	}
 
+	// Side effects only for the call that moves the payment to paid: a repeated
+	// «Проверить статус», a duplicate webhook or the sync cron find it paid and stop.
+	applied, err := onPaidTransition(paymentDBID, func() error {
+		return paidPaymentEffects(p, paymentDBID, userID, metadata, kind, paymentMethodID)
+	})
+	if err != nil {
+		return err
+	}
+	if !applied {
+		log.Printf("[yookassa] payment %s (db %d) is already paid or refunded — nothing activated again", p.ID, paymentDBID)
+	}
+	return nil
+}
+
+const (
+	// paymentDetailsSQL refreshes what YooKassa reports about a payment without touching
+	// status or paid_at.
+	paymentDetailsSQL = `
+		UPDATE payments SET
+			yookassa_status = $1::text,
+			payment_method_id = COALESCE(NULLIF($2::text, ''), payment_method_id),
+			payment_method_type = $3::text,
+			payment_method_details = $4::jsonb,
+			receipt_registered = $5,
+			cancellation_reason = $6::text,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $7`
+	// paymentClaimPaidSQL moves a payment to 'succeeded' unless it is already paid or
+	// refunded. A returned row means THIS call made the transition and owns its side
+	// effects; a concurrent duplicate re-checks the WHERE on the committed row and gets
+	// nothing. paid_at/confirmed_at keep their first value.
+	paymentClaimPaidSQL = `
+		UPDATE payments SET
+			status = 'succeeded',
+			paid_at = COALESCE(paid_at, NOW()),
+			confirmed_at = COALESCE(confirmed_at, NOW()),
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status NOT IN (` + biz.PaidPaymentStatusesSQL + `, 'refunded')
+		RETURNING id`
+	// paymentUndoPaidSQL hands the transition back when its side effects failed, so the
+	// next webhook / check / sync cron run tries them again (the sync cron reads 'pending').
+	paymentUndoPaidSQL = `
+		UPDATE payments SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status = 'succeeded'`
+	// paymentSetUnpaidStatusSQL records pending/waiting_for_capture/canceled, never over a
+	// paid or refunded payment.
+	paymentSetUnpaidStatusSQL = `
+		UPDATE payments SET status = $2::text, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status NOT IN (` + biz.PaidPaymentStatusesSQL + `, 'refunded')`
+)
+
+// onPaidTransition moves the payment to paid and runs effects only if this call made that
+// transition. If effects fail, the transition is handed back so a later call retries.
+func onPaidTransition(paymentDBID int, effects func() error) (bool, error) {
+	var id int
+	switch err := db.DB.QueryRow(paymentClaimPaidSQL, paymentDBID).Scan(&id); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("mark payment %d paid: %w", paymentDBID, err)
+	}
+	if err := effects(); err != nil {
+		if _, uerr := db.DB.Exec(paymentUndoPaidSQL, paymentDBID); uerr != nil {
+			log.Printf("[yookassa] payment %d: effects failed (%v) and the paid mark could not be undone: %v", paymentDBID, err, uerr)
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// paidPaymentEffects is what a payment that just became paid triggers (a test seam).
+var paidPaymentEffects = applyPaidPaymentEffects
+
+func applyPaidPaymentEffects(p *yookassa.Payment, paymentDBID int, userID, metadata, kind, paymentMethodID string) error {
 	// Сохраняем payment_method для recurring если есть
 	if paymentMethodID != "" && p.PaymentMethod != nil && p.PaymentMethod.Saved {
 		saveUserPaymentMethod(userID, p.PaymentMethod)

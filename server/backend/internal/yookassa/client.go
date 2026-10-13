@@ -156,11 +156,15 @@ type RefundList struct {
 }
 
 // ListRefunds — GET /v3/refunds?payment_id=… : every refund of a payment, following
-// next_cursor (100 per page, at most 10 pages).
-func (c *Client) ListRefunds(paymentID string) ([]Refund, error) {
+// next_cursor (100 per page, at most 10 pages). No page is requested once deadline has
+// passed (zero deadline = no limit); a partial list is an error, never a short answer.
+func (c *Client) ListRefunds(paymentID string, deadline time.Time) ([]Refund, error) {
 	var all []Refund
 	cursor := ""
 	for page := 0; page < 10; page++ {
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("list refunds of %s: time budget spent before page %d", paymentID, page+1)
+		}
 		q := url.Values{"payment_id": {paymentID}, "limit": {"100"}}
 		if cursor != "" {
 			q.Set("cursor", cursor)

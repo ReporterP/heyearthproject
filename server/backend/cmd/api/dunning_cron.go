@@ -115,7 +115,13 @@ func attemptRetry(client *yookassa.Client, retry *biz.RetryRow) error {
 		paymentDBID)
 
 	if payment.Status == yookassa.PaymentStatusSucceeded {
-		_ = biz.ActivateSubscriptionWithPlan(retry.UserIDText, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew-retry")
+		// Only the call that marks the payment paid activates: the payment.succeeded
+		// webhook for this charge then finds it paid and does not extend a second time.
+		if _, err := onPaidTransition(paymentDBID, func() error {
+			return biz.ActivateSubscriptionWithPlan(retry.UserIDText, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew-retry")
+		}); err != nil {
+			log.Printf("[dunning] retry %d: charged, activation left to the webhook/sync: %v", retry.ID, err)
+		}
 		_ = biz.MarkRetrySucceeded(retry.ID, paymentDBID)
 		log.Printf("[dunning] ✓ Retry %d succeeded for user %s (plan %s)", retry.ID, retry.UserIDText, plan.Slug)
 		RequestXraySync()

@@ -109,6 +109,10 @@ func writeRefundError(w http.ResponseWriter, paymentID int, err error) {
 }
 
 // handleAdminPaymentCheckStatus запрашивает актуальный статус из ЮKassa и обновляет локально.
+// Повторный клик ничего не продлевает: подписка активируется только при переходе платежа
+// в оплаченный (processPaymentEvent). Время: каждый вызов ЮKassa ≤25 с, новые вызовы —
+// только в первые checkStatusBudget, блокировка платежа ждётся ≤10 с — ответ укладывается
+// в 60 с nginx.
 func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method != http.MethodPost {
@@ -144,7 +148,7 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, err := client.GetPayment(yookassaID)
+	payment, err := client.WithTimeout(refundCallTimeout).GetPayment(yookassaID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
 		return
@@ -155,9 +159,9 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[admin-check-status] process failed: %v", err)
 	}
 	// Возвраты этого платежа: pending → актуальный статус ЮKassa, резервы без ответа →
-	// найденный возврат. Новые HTTP-вызовы — только в первые 30 с запроса (nginx ждёт 60 с).
+	// найденный возврат.
 	if refundClient, err := newRefundClient(); err == nil {
-		if err := reconcileRefunds(context.WithoutCancel(r.Context()), refundClient, paymentID, refundListMinAgeCheck, started.Add(30*time.Second)); err != nil {
+		if err := reconcileRefunds(context.WithoutCancel(r.Context()), refundClient, paymentID, refundListMinAgeCheck, started.Add(checkStatusBudget)); err != nil {
 			log.Printf("[admin-check-status] refunds of payment %d: %v", paymentID, err)
 		}
 	}
