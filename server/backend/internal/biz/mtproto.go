@@ -189,6 +189,17 @@ func MarkMTProtoStatus(serverID int, status string) error {
 	return err
 }
 
+// mtprotoInstallCommand runs the uploaded installer on the exit. The arguments come from
+// app_settings (admin-editable), so each one is single-quoted for the remote shell.
+func mtprotoInstallCommand(port, secret, frontingDomain string) string {
+	return "bash /tmp/install-mtproxy.sh " + shellQuote(port) + " " + shellQuote(secret) + " " + shellQuote(frontingDomain)
+}
+
+// shellQuote single-quotes s for a POSIX shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // InstallMTProtoOnExit SSHes into the exit-node and runs install-mtproxy.sh
 // with the shared secret. Caller already set mtproto_status='installing'.
 // Returns nil on success; on error caller should MarkMTProtoStatus(id, 'unhealthy').
@@ -255,8 +266,7 @@ func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, 
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runSession.Run(fmt.Sprintf("bash /tmp/install-mtproxy.sh %s %s %s",
-			port, secret, frontingDomain))
+		done <- runSession.Run(mtprotoInstallCommand(port, secret, frontingDomain))
 	}()
 	select {
 	case err := <-done:

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 )
@@ -119,44 +120,76 @@ func (s *serverDBStmt) Exec(args []driver.Value) (driver.Result, error) {
 
 func (s *serverDBStmt) Query(args []driver.Value) (driver.Rows, error) {
 	s.c.d.add(serverStmtRec{q: s.q, args: args, inTx: s.c.inTx})
-	if strings.Contains(s.q, "FROM servers s") {
-		return &serverRows{withPassword: strings.Contains(s.q, "ssh_password_enc")}, nil
+	switch {
+	case strings.Contains(s.q, "COUNT(*)"):
+		return &serverRows{cols: []string{"count"}, row: []driver.Value{int64(1)}}, nil
+	case strings.Contains(s.q, "FROM servers s") && strings.Contains(s.q, "LIMIT"):
+		return serverListRows(), nil
+	case strings.Contains(s.q, "FROM servers s"):
+		return serverDetailRows(strings.Contains(s.q, "ssh_password_enc")), nil
 	}
-	return &serverRows{done: true}, nil
+	return &serverRows{}, nil
 }
 
-// serverRows is the row of loadServerByID for exit #2: 27 columns, or 29 with the SSH password
-// columns (an encrypted password under a key the test does not have).
-type serverRows struct{ done, withPassword bool }
+// Secrets of the exit #2 fixture: no admin response may ever contain them.
+const (
+	fixtureTunnelUUID  = "SECRET-UUID-7f3a"
+	fixturePrivateKey  = "SECRET-PRIV-reality"
+	fixtureHyPassword  = "SECRET-HY-pass"
+	fixtureSSHPassword = "SECRET-SSH-legacy"
+)
 
-var serverRowCols = []string{"id", "name", "ip_address", "ssh_port", "ssh_user", "country_code", "status",
-	"load_metrics", "updated_at", "metrics_synced_at", "ssh_key_id", "ssh_key_name",
-	"is_exit_node", "tunnel_status", "tunnel_protocol", "tunnel_port", "tunnel_uuid", "tunnel_public_key",
-	"tunnel_private_key", "tunnel_short_id", "tunnel_sni", "tunnel_ss_method", "tunnel_ss_password",
-	"tunnel_error", "lifecycle_state", "mtproto_status", "load_weight"}
+var fixtureSecrets = []string{fixtureTunnelUUID, fixturePrivateKey, fixtureHyPassword, fixtureSSHPassword}
 
-func (r *serverRows) Columns() []string {
-	if r.withPassword {
-		return append(append(append([]string{}, serverRowCols[:5]...), "ssh_password", "ssh_password_enc"), serverRowCols[5:]...)
-	}
-	return serverRowCols
+// serverRows answers one row (none when row is nil).
+type serverRows struct {
+	cols []string
+	row  []driver.Value
+	done bool
 }
-func (r *serverRows) Close() error { return nil }
+
+func (r *serverRows) Columns() []string { return r.cols }
+func (r *serverRows) Close() error      { return nil }
 func (r *serverRows) Next(dest []driver.Value) error {
-	if r.done {
+	if r.done || r.row == nil {
 		return io.EOF
 	}
 	r.done = true
+	copy(dest, r.row)
+	return nil
+}
+
+// serverDetailRows is the row of loadServerByID for exit #2: 27 columns, or 29 with the SSH
+// password columns (a legacy plaintext password plus a cipher the test key cannot open).
+func serverDetailRows(withPassword bool) *serverRows {
+	cols := []string{"id", "name", "ip_address", "ssh_port", "ssh_user", "country_code", "status",
+		"load_metrics", "updated_at", "metrics_synced_at", "ssh_key_id", "ssh_key_name",
+		"is_exit_node", "tunnel_status", "tunnel_protocol", "tunnel_port", "tunnel_uuid", "tunnel_public_key",
+		"tunnel_private_key", "tunnel_short_id", "tunnel_sni", "tunnel_ss_method", "tunnel_ss_password",
+		"tunnel_error", "lifecycle_state", "mtproto_status", "load_weight"}
 	row := []driver.Value{int64(2), "Амстердам", "203.0.113.7", int64(22), "root", "NL", "online",
 		[]byte("{}"), time.Now(), nil, nil, "",
-		true, "healthy", "hysteria2", int64(50443), "uuid-1", "pub",
-		"priv", "abcd", "microsoft.com", "", "hy-pass",
+		true, "healthy", "hysteria2", int64(50443), fixtureTunnelUUID, "pub-ok",
+		fixturePrivateKey, "abcd", "microsoft.com", "", fixtureHyPassword,
 		"", "online", "healthy", int64(3)}
-	if r.withPassword {
-		row = append(append(append([]driver.Value{}, row[:5]...), "", []byte("not-decryptable")), row[5:]...)
+	if withPassword {
+		cols = append(append(append([]string{}, cols[:5]...), "ssh_password", "ssh_password_enc"), cols[5:]...)
+		row = append(append(append([]driver.Value{}, row[:5]...), fixtureSSHPassword, []byte("not-decryptable")), row[5:]...)
 	}
-	copy(dest, row)
-	return nil
+	return &serverRows{cols: cols, row: row}
+}
+
+// serverListRows is the GET /servers row for exit #2: no secret columns, only "is it set".
+func serverListRows() *serverRows {
+	cols := []string{"id", "name", "ip_address", "ssh_port", "ssh_user", "country_code", "status",
+		"load_metrics", "updated_at", "metrics_synced_at", "ssh_key_id", "ssh_key_name",
+		"is_exit_node", "tunnel_status", "tunnel_protocol", "tunnel_port", "tunnel_error", "load_weight",
+		"lifecycle_state", "mtproto_status", "has_ssh_password", "has_tunnel_credentials"}
+	row := []driver.Value{int64(2), "Амстердам", "203.0.113.7", int64(22), "root", "NL", "online",
+		[]byte("{}"), time.Now(), nil, nil, "",
+		true, "healthy", "hysteria2", int64(50443), "", int64(3),
+		"online", "healthy", true, true}
+	return &serverRows{cols: cols, row: row}
 }
 
 func withServerDB(t *testing.T) *serverDB {
@@ -248,5 +281,99 @@ func TestUpdateServerNewPasswordEncrypted(t *testing.T) {
 	}
 	if !fake.has("COMMIT") {
 		t.Errorf("not committed: %+v", fake.stmts)
+	}
+}
+
+// Review Focus 5 at the handler level: GET /servers/{id} loads the secrets (it needs the SSH
+// password presence), yet the response carries none of them, only the has_* flags.
+func TestServerDetailDoesNotLeakSecrets(t *testing.T) {
+	t.Setenv("SSH_ENCRYPTION_KEY", "")
+	withServerDB(t)
+	biz.SetExitPaths(2, biz.ExitPaths{Hy: biz.PathHealthy, VR: biz.PathHealthy, CheckedAt: time.Now()})
+	t.Cleanup(func() { biz.ForgetExitPaths(2) })
+	rec := httptest.NewRecorder()
+	GetServerDetailHandler(rec, httptest.NewRequest(http.MethodGet, "/api/admin/servers/2", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, body)
+	}
+	for _, s := range fixtureSecrets {
+		if strings.Contains(body, s) {
+			t.Errorf("detail leaks %s: %s", s, body)
+		}
+	}
+	for _, want := range []string{`"has_tunnel_credentials":true`, `"has_ssh_password":true`,
+		`"tunnel_public_key":"pub-ok"`, `"lifecycle_state":"online"`, `"load_weight":3`, `"paths":{"hy":"healthy"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail lacks %s: %s", want, body)
+		}
+	}
+}
+
+func TestServerListDoesNotLeakSecrets(t *testing.T) {
+	withServerDB(t)
+	rec := httptest.NewRecorder()
+	GetServersHandler(rec, httptest.NewRequest(http.MethodGet, "/api/admin/servers?lifecycle_state=online", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, body)
+	}
+	for _, s := range fixtureSecrets {
+		if strings.Contains(body, s) {
+			t.Errorf("list leaks %s: %s", s, body)
+		}
+	}
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || len(resp.Items) != 1 {
+		t.Fatalf("items: %v %s", err, body)
+	}
+	it := resp.Items[0]
+	if it["has_tunnel_credentials"] != true || it["has_ssh_password"] != true || it["lifecycle_state"] != "online" {
+		t.Errorf("flags/state lost: %v", it)
+	}
+	for _, k := range []string{"ssh_password", "tunnel_uuid", "tunnel_private_key", "tunnel_ss_password"} {
+		if _, ok := it[k]; ok {
+			t.Errorf("list item carries %s: %v", k, it)
+		}
+	}
+}
+
+func TestServerRoutingChanged(t *testing.T) {
+	old := serverResponse{IPAddress: "203.0.113.7", Status: "online", TunnelProtocol: "hysteria2", TunnelPort: 50443,
+		TunnelUUID: "u", TunnelPublicKey: "pk", TunnelShortID: "sid", TunnelSNI: "microsoft.com", TunnelSSPass: "hy",
+		LoadWeight: 3, Name: "Амстердам", SSHUser: "root", SSHPort: 22, CountryCode: "NL"}
+	same := serverPayload{IPAddress: "203.0.113.7", Status: "online", TunnelProtocol: "hysteria2", TunnelPort: 50443,
+		TunnelUUID: "u", TunnelPublicKey: "pk", TunnelShortID: "sid", TunnelSNI: "microsoft.com", TunnelSSPass: "hy",
+		Name: "Амстердам", SSHUser: "root", SSHPort: 22, CountryCode: "NL"}
+	if serverRoutingChanged(old, same, 3) {
+		t.Fatal("nothing changed, yet a sync")
+	}
+	for name, mut := range map[string]func(*serverPayload){
+		"name": func(p *serverPayload) { p.Name = "Рига" }, "ssh_user": func(p *serverPayload) { p.SSHUser = "admin" },
+		"ssh_port": func(p *serverPayload) { p.SSHPort = 2222 }, "country": func(p *serverPayload) { p.CountryCode = "LV" },
+	} {
+		p := same
+		mut(&p)
+		if serverRoutingChanged(old, p, 3) {
+			t.Errorf("%s is not routing, yet a sync", name)
+		}
+	}
+	for name, mut := range map[string]func(*serverPayload){
+		"ip": func(p *serverPayload) { p.IPAddress = "203.0.113.8" }, "status": func(p *serverPayload) { p.Status = "offline" },
+		"protocol": func(p *serverPayload) { p.TunnelProtocol = "vless" }, "port": func(p *serverPayload) { p.TunnelPort = 10443 },
+		"uuid": func(p *serverPayload) { p.TunnelUUID = "u2" }, "public_key": func(p *serverPayload) { p.TunnelPublicKey = "pk2" },
+		"short_id": func(p *serverPayload) { p.TunnelShortID = "s2" }, "sni": func(p *serverPayload) { p.TunnelSNI = "github.com" },
+		"hy_password": func(p *serverPayload) { p.TunnelSSPass = "hy2" },
+	} {
+		p := same
+		mut(&p)
+		if !serverRoutingChanged(old, p, 3) {
+			t.Errorf("%s changed, no sync", name)
+		}
+	}
+	if !serverRoutingChanged(old, same, 4) {
+		t.Error("load_weight changed, no sync")
 	}
 }

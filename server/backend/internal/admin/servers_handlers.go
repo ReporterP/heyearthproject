@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,10 +97,11 @@ func serverListWhere(q url.Values) (string, []any, error) {
 
 // redactServer drops every secret before a server leaves the API (Review Focus 5): the SSH
 // password, the exit's private Reality key, the tunnel UUID (the Hub's VLESS credential on the
-// exit) and the Hysteria tunnel password. The browser only learns whether they are set.
+// exit) and the Hysteria tunnel password. The browser only learns whether they are set; flags a
+// loader already set from the stored columns (list SQL, loadServerByID) are kept.
 func redactServer(s serverResponse) serverResponse {
-	s.HasSSHPassword = strings.TrimSpace(s.SSHPassword) != ""
-	s.HasTunnelCreds = s.TunnelUUID != "" || s.TunnelSSPass != "" || s.TunnelPrivateKey != ""
+	s.HasSSHPassword = s.HasSSHPassword || strings.TrimSpace(s.SSHPassword) != ""
+	s.HasTunnelCreds = s.HasTunnelCreds || s.TunnelUUID != "" || s.TunnelSSPass != "" || s.TunnelPrivateKey != ""
 	s.SSHPassword, s.TunnelUUID, s.TunnelPrivateKey, s.TunnelSSPass = "", "", "", ""
 	return s
 }
@@ -116,6 +119,17 @@ func validateServerUpdate(req serverPayload) error {
 	return fmt.Errorf("протокол туннеля %q не поддерживается: только hysteria2 или vless", req.TunnelProtocol)
 }
 
+// serverRoutingChanged: does the edit (req after the fallback to stored values, weight resolved)
+// change anything the generated xray/hysteria configs are built from? Name, SSH access and
+// country do not; address, status, tunnel protocol/port/credentials/SNI and weight do.
+func serverRoutingChanged(old serverResponse, req serverPayload, weight int) bool {
+	return req.IPAddress != old.IPAddress || req.Status != old.Status ||
+		req.TunnelProtocol != old.TunnelProtocol || req.TunnelPort != old.TunnelPort ||
+		req.TunnelUUID != old.TunnelUUID || req.TunnelPublicKey != old.TunnelPublicKey ||
+		req.TunnelShortID != old.TunnelShortID || req.TunnelSNI != old.TunnelSNI ||
+		req.TunnelSSPass != old.TunnelSSPass || weight != old.LoadWeight
+}
+
 func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 	p := parsePagination(r)
 
@@ -128,7 +142,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 
 	var total int
 	if err := db.DB.QueryRow("SELECT COUNT(*) FROM servers s WHERE "+where, args...).Scan(&total); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to count servers")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось посчитать серверы")
 		return
 	}
 
@@ -166,7 +180,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		       s.ssh_key_id, COALESCE(sk.name, ''),
 		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 		       COALESCE(s.tunnel_error, ''), COALESCE(s.load_weight, 1), s.lifecycle_state, s.mtproto_status,
-		       (COALESCE(TRIM(s.ssh_password), '') <> '' OR s.ssh_password_enc IS NOT NULL),
+		       (COALESCE(TRIM(s.ssh_password), '') <> '' OR COALESCE(octet_length(s.ssh_password_enc), 0) > 0),
 		       (COALESCE(s.tunnel_uuid, '') <> '' OR COALESCE(s.tunnel_ss_password, '') <> '' OR COALESCE(s.tunnel_private_key, '') <> '')
 		FROM servers s
 		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
@@ -178,7 +192,7 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := db.DB.Query(query, args...)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to query servers")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить список серверов")
 		return
 	}
 	defer rows.Close()
@@ -189,9 +203,8 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		var updatedAt time.Time
 		var metricsSyncedAt sql.NullTime
 		var sshKeyName string
-		var hasSSHPassword, hasTunnelCreds bool
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &metricsSyncedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight, &s.LifecycleState, &s.MTProtoStatus, &hasSSHPassword, &hasTunnelCreds); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, "Failed to scan server")
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &metricsSyncedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight, &s.LifecycleState, &s.MTProtoStatus, &s.HasSSHPassword, &s.HasTunnelCreds); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать сервер из базы")
 			return
 		}
 		if len(s.LoadMetrics) == 0 {
@@ -204,10 +217,8 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		if metricsSyncedAt.Valid {
 			s.MetricsSyncedAt = metricsSyncedAt.Time.Format(time.RFC3339)
 		}
-		// The list never reads the secrets themselves, only whether they are set.
-		s = redactServer(s)
-		s.HasSSHPassword, s.HasTunnelCreds = hasSSHPassword, hasTunnelCreds
-		servers = append(servers, s)
+		// The list never reads the secrets themselves, only whether they are set (SQL above).
+		servers = append(servers, redactServer(s))
 	}
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: servers, Total: total, Page: p.Page, PageSize: p.PageSize})
 }
@@ -215,16 +226,16 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 func GetServerDetailHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	server, err := loadServerByID(serverID, true)
 	if err == sql.ErrNoRows {
-		writeAdminError(w, http.StatusNotFound, "Server not found")
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
 		return
 	}
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to load server")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить сервер")
 		return
 	}
 	if p, ok := biz.GetExitPaths(server.ID); ok {
@@ -242,11 +253,11 @@ func validateCountryCode(code string) error {
 		return nil
 	}
 	if len(c) != 2 {
-		return fmt.Errorf("country_code must be empty or a 2-letter ISO code (e.g. NL, LV)")
+		return fmt.Errorf("код страны — пусто или две латинские буквы ISO (например NL, LV)")
 	}
 	for _, r := range c {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
-			return fmt.Errorf("country_code must contain only letters")
+			return fmt.Errorf("код страны должен состоять только из латинских букв")
 		}
 	}
 	return nil
@@ -260,12 +271,12 @@ func AddServerHandler(w http.ResponseWriter, r *http.Request) {
 func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	var req serverPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
 	if err := validateServerUpdate(req); err != nil {
@@ -275,11 +286,11 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	// The stored SSH password is not needed: it is never rewritten from its decrypted value.
 	existing, err := loadServerByID(serverID, false)
 	if err == sql.ErrNoRows {
-		writeAdminError(w, http.StatusNotFound, "Server not found")
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
 		return
 	}
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to load server")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить сервер")
 		return
 	}
 
@@ -360,7 +371,7 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := db.DB.Begin()
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to begin transaction")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось начать транзакцию")
 		return
 	}
 	defer tx.Rollback()
@@ -379,24 +390,24 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, weight, serverID); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
 		return
 	}
 	if newSSHPasswordEnc != nil {
 		// ssh_password is NOT NULL: the plaintext column is emptied, never set to NULL.
 		if _, err := tx.Exec(`UPDATE servers SET ssh_password = '', ssh_password_enc = $1 WHERE id = $2`,
 			newSSHPasswordEnc, serverID); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, "Failed to update server")
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to save server")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить сервер")
 		return
 	}
 	WriteAuditLog(r, "update_server", "server", fmt.Sprintf("%d", serverID), nil)
-	if weight != existing.LoadWeight || req.TunnelProtocol != existing.TunnelProtocol {
-		biz.RequestSync() // weights and paths live in the xray config (leastLoad costs)
+	if serverRoutingChanged(existing, req, weight) {
+		biz.RequestSync() // the exit's address, paths and weight live in the xray/hysteria configs
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server updated"})
 }
@@ -404,14 +415,14 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	// Reject if another provision/deprovision is already in flight for this server.
 	if v, ok := provisionProgress.Load(serverID); ok {
 		pp := v.(*ProvisionProgress)
 		if !pp.Finished {
-			writeAdminError(w, http.StatusConflict, "Operation already in progress")
+			writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
 			return
 		}
 	}
@@ -543,20 +554,20 @@ func runHubProvisionOnly(serverID int) {
 func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/servers/"), "/")
 	if !strings.HasSuffix(path, "/actions") {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server action path")
+		writeAdminError(w, http.StatusBadRequest, "Неверный путь действия с сервером")
 		return
 	}
 	serverIDText := strings.TrimSuffix(path, "/actions")
 	serverIDText = strings.Trim(serverIDText, "/")
 	serverID, err := strconv.Atoi(serverIDText)
 	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 
 	var payload serverActionPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
 	// Removed actions are refused before the database or a node is touched.
@@ -568,11 +579,11 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 
 	server, err := loadServerByID(serverID, true)
 	if err == sql.ErrNoRows {
-		writeAdminError(w, http.StatusNotFound, "Server not found")
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
 		return
 	}
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to load server")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить сервер")
 		return
 	}
 
@@ -586,7 +597,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		if v, ok := provisionProgress.Load(serverID); ok {
 			pp := v.(*ProvisionProgress)
 			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Action already in progress")
+				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
 				return
 			}
 		}
@@ -597,7 +608,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		if v, ok := provisionProgress.Load(serverID); ok {
 			pp := v.(*ProvisionProgress)
 			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
 				return
 			}
 		}
@@ -608,7 +619,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		if v, ok := provisionProgress.Load(serverID); ok {
 			pp := v.(*ProvisionProgress)
 			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
 				return
 			}
 		}
@@ -619,7 +630,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		if v, ok := provisionProgress.Load(serverID); ok {
 			pp := v.(*ProvisionProgress)
 			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Operation already in progress")
+				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
 				return
 			}
 		}
@@ -627,7 +638,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Hub provisioning started"})
 		return
 	default:
-		writeAdminError(w, http.StatusBadRequest, "Unsupported server action")
+		writeAdminError(w, http.StatusBadRequest, "Неизвестное действие с сервером")
 		return
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server action completed"})
@@ -670,6 +681,8 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		if err != nil {
 			return server, err
 		}
+		// Set means stored, as in the list: a cipher, or a legacy plaintext.
+		server.HasSSHPassword = len(sshPwEnc) > 0 || strings.TrimSpace(server.SSHPassword) != ""
 		// Prefer decrypted password if available.
 		if len(sshPwEnc) > 0 {
 			if dec, err := crypto.Decrypt(sshPwEnc); err == nil {
@@ -851,14 +864,14 @@ func connectToNodeAgent(ctx context.Context, ip string) (pbnode.NodeAgentClient,
 func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "metrics")
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	var ipAddress string
 	var sshPort int
 	err := db.DB.QueryRow(`SELECT ip_address, ssh_port FROM servers WHERE id = $1`, serverID).Scan(&ipAddress, &sshPort)
 	if err != nil {
-		writeAdminError(w, http.StatusNotFound, "server not found")
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
 		return
 	}
 
@@ -868,7 +881,7 @@ func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	agentClient, conn, err := connectToNodeAgent(ctx, ipAddress)
 	if err != nil {
 		writeAdminJSON(w, http.StatusOK, map[string]any{
-			"error": fmt.Sprintf("cannot reach node-agent: %v", err),
+			"error": fmt.Sprintf("node-agent недоступен: %v", err),
 		})
 		return
 	}
@@ -877,7 +890,7 @@ func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	metrics, err := agentClient.GetMetrics(ctx, &pbnode.GetMetricsRequest{})
 	if err != nil {
 		writeAdminJSON(w, http.StatusOK, map[string]any{
-			"error": fmt.Sprintf("GetMetrics failed: %v", err),
+			"error": fmt.Sprintf("не удалось получить метрики: %v", err),
 		})
 		return
 	}
@@ -893,7 +906,7 @@ func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "logs")
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	service := r.URL.Query().Get("service")
@@ -912,7 +925,7 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	server, sshClient, err := sshToServer(serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH failed: %v", err))
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
 		return
 	}
 	_ = server
@@ -920,7 +933,7 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	session, err := sshClient.NewSession()
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "SSH session failed")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
 		return
 	}
 	defer session.Close()
@@ -941,46 +954,35 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "files")
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	dirPath := r.URL.Query().Get("path")
 	if dirPath == "" {
 		dirPath = "/opt/heyearth"
 	}
-	// Canonicalize to prevent traversal attacks (../../)
 	// Node paths are POSIX: path.Clean, not filepath.Clean (which turns "/" into "\" on Windows).
 	dirPath = path.Clean(dirPath)
-	// Listing shows names only; reading is limited to logs (isAllowedReadPath).
-	allowedPrefixes := []string{"/opt/heyearth", "/var/log"}
-	allowed := false
-	for _, prefix := range allowedPrefixes {
-		if dirPath == prefix || strings.HasPrefix(dirPath, prefix+"/") {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		writeAdminError(w, http.StatusForbidden, "path not allowed")
+	if !isAllowedListPath(dirPath) {
+		writeAdminError(w, http.StatusForbidden, "Просматривать можно только /opt/heyearth и /var/log (латиница, цифры, . _ / @ + -)")
 		return
 	}
 
 	_, sshClient, err := sshToServer(serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH failed: %v", err))
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
 		return
 	}
 	defer sshClient.Close()
 
 	session, err := sshClient.NewSession()
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "SSH session failed")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
 		return
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf("ls -la -- %q 2>&1", dirPath)
-	output, _ := session.CombinedOutput(cmd)
+	output, _ := session.CombinedOutput(listDirCommand(dirPath))
 	entries := parseLsOutput(string(output))
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
 }
@@ -1024,48 +1026,93 @@ func parseLsOutput(output string) []map[string]any {
 func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "file-content")
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	filePath := r.URL.Query().Get("path")
 	if filePath == "" {
-		writeAdminError(w, http.StatusBadRequest, "path is required")
+		writeAdminError(w, http.StatusBadRequest, "Не указан путь")
 		return
 	}
 	filePath = path.Clean(filePath)
 	if !isAllowedReadPath(filePath) {
-		writeAdminError(w, http.StatusForbidden, "Читать можно только журналы (/var/log)")
+		writeAdminError(w, http.StatusForbidden, logReadForbiddenMsg)
 		return
 	}
 
 	_, sshClient, err := sshToServer(serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH failed: %v", err))
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
 		return
 	}
 	defer sshClient.Close()
 
 	session, err := sshClient.NewSession()
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "SSH session failed")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
 		return
 	}
 	defer session.Close()
 
-	// Read file (limit 1MB for safety)
-	cmd := fmt.Sprintf("head -c 1048576 -- %q 2>&1", filePath)
-	output, err := session.CombinedOutput(cmd)
+	output, err := session.CombinedOutput(logReadCommand(filePath))
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("read file: %s", strings.TrimSpace(string(output))))
+		var exitErr *ssh.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitStatus() == logReadOutsideExit {
+			writeAdminError(w, http.StatusForbidden, logReadForbiddenMsg) // a symlink out of /var/log
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("Не удалось прочитать файл: %s", strings.TrimSpace(string(output))))
 		return
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": string(output)})
 }
 
+const logReadForbiddenMsg = "Можно читать только журналы в /var/log"
+
+// nodePathRe: the only characters a node path may carry. Paths go into a root shell on the node,
+// so anything a shell could expand, split or quote ($, `, ', ", spaces, ;, |, *, \) is refused
+// outright, on top of the single-quoting in the commands.
+var nodePathRe = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
+
+// safeNodePath: an absolute, already clean POSIX path of safe characters with no ".." segment.
+func safeNodePath(p string) bool {
+	if !strings.HasPrefix(p, "/") || p != path.Clean(p) || !nodePathRe.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func underDir(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
+
 // isAllowedReadPath: only logs. Configs and reality-keys.json on a node carry private keys and
 // tunnel passwords, which never leave the Hub (Review Focus 5).
-func isAllowedReadPath(p string) bool {
-	return p == "/var/log" || strings.HasPrefix(p, "/var/log/")
+func isAllowedReadPath(p string) bool { return safeNodePath(p) && underDir(p, "/var/log") }
+
+// isAllowedListPath: directory listings (names only) under /opt/heyearth and /var/log.
+func isAllowedListPath(p string) bool {
+	return safeNodePath(p) && (underDir(p, "/opt/heyearth") || underDir(p, "/var/log"))
+}
+
+// shQuote single-quotes s for a POSIX shell (the same as cmd/deploy's shQuote).
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func listDirCommand(dir string) string { return "ls -la -- " + shQuote(dir) + " 2>&1" }
+
+// logReadOutsideExit is the exit status of logReadCommand when the path resolves outside /var/log.
+const logReadOutsideExit = 3
+
+// logReadCommand reads up to 1 MiB of a log on the node. Symlinks are resolved there first: a
+// link in /var/log pointing at a config or a key is refused (exit logReadOutsideExit).
+func logReadCommand(p string) string {
+	return "p=$(readlink -f -- " + shQuote(p) + `); case "$p" in /var/log/*) head -c 1048576 -- "$p";; *) exit ` +
+		strconv.Itoa(logReadOutsideExit) + ";; esac"
 }
 
 func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {
@@ -1110,7 +1157,7 @@ func ServerActionProgressHandler(w http.ResponseWriter, r *http.Request) {
 	serverIDText := strings.SplitN(path, "/", 2)[0]
 	serverID, err := strconv.Atoi(serverIDText)
 	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid server id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
 	v, ok := provisionProgress.Load(serverID)

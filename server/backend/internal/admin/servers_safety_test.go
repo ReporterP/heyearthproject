@@ -2,9 +2,11 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"path"
 	"reflect"
 	"strings"
@@ -91,6 +93,67 @@ func TestServerFilesReadOnlyLogs(t *testing.T) {
 		if isAllowedReadPath(path.Clean(p)) {
 			t.Errorf("%s must not be readable", p)
 		}
+	}
+}
+
+// Node paths go into a root shell on the node: anything a shell could expand, split or quote
+// is refused, for reading and for listing alike.
+func TestNodePathsRejectShellAndTraversal(t *testing.T) {
+	bad := []string{"/var/log/$(id)", "/var/log/`id`", "/var/log/../etc/shadow", "/var/log/a b",
+		"/var/log/a'b", `/var/log/a"b`, "/var/log/a;id", "/var/log/a|id", "/var/log/a\nid", "/var/log/a\\b",
+		"/var/log/$HOME", "/var/log/*", "var/log/syslog", "/opt/heyearth/$(id)", "/opt/heyearth/x y"}
+	for _, p := range bad {
+		for _, q := range []string{p, path.Clean(p)} {
+			if isAllowedReadPath(q) {
+				t.Errorf("read %q allowed", q)
+			}
+			if isAllowedListPath(q) {
+				t.Errorf("list %q allowed", q)
+			}
+		}
+	}
+	for _, p := range []string{"/var/log/nginx/access.log", "/var/log/syslog.1", "/var/log/xray/error@x+y-z.log"} {
+		if !isAllowedReadPath(p) || !isAllowedListPath(p) {
+			t.Errorf("%s must be readable and listable", p)
+		}
+	}
+	for _, p := range []string{"/opt/heyearth", "/opt/heyearth/xray"} {
+		if !isAllowedListPath(p) || isAllowedReadPath(p) {
+			t.Errorf("%s: listable (names only), never readable", p)
+		}
+	}
+}
+
+func TestShQuote(t *testing.T) {
+	if got := shQuote("it's"); got != `'it'\''s'` {
+		t.Fatalf("shQuote(it's) = %s", got)
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash: round trip skipped")
+	}
+	for _, s := range []string{"it's", "'", "$(id)", "`id`", "a b", `a"b`, "a\\b", "$HOME", "x;id"} {
+		out, err := exec.Command("bash", "-c", "printf %s "+shQuote(s)).Output()
+		if err != nil || string(out) != s {
+			t.Errorf("bash round trip of %q: %q, %v", s, out, err)
+		}
+	}
+}
+
+// The read command resolves symlinks on the node and reads only what lands in /var/log.
+func TestLogReadCommand(t *testing.T) {
+	cmd := logReadCommand("/var/log/syslog")
+	for _, want := range []string{"readlink -f -- '/var/log/syslog'", `/var/log/*) head -c 1048576 -- "$p"`, "exit 3"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("command lacks %q:\n%s", want, cmd)
+		}
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash: exit-code check skipped")
+	}
+	err := exec.Command("bash", "-c", logReadCommand("/usr")).Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != logReadOutsideExit {
+		t.Errorf("a path resolving outside /var/log: %v, want exit %d", err, logReadOutsideExit)
 	}
 }
 
