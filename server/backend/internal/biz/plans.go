@@ -472,7 +472,21 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := ActivateSubscriptionWithPlanTx(tx, userID, planID, durationDays, pricePaid, promocodeUsed); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	NotifySubscriptionChange()
+	return nil
+}
 
+// ActivateSubscriptionWithPlanTx is ActivateSubscriptionWithPlan inside the caller's
+// transaction (the paid-payment claim): it neither commits nor notifies — the caller
+// commits and then calls NotifySubscriptionChange. ErrDowngradeNotAllowed comes back
+// before any write, so the transaction stays usable.
+func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
 	var dbUserID int
 	if err := tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
 		return fmt.Errorf("resolve user %s: %w", userID, err)
@@ -521,10 +535,6 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit: %w", err)
-		}
-		NotifySubscriptionChange()
 		return nil
 	}
 
@@ -540,10 +550,6 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		`, validUntilExpr), pricePaid, promocodeUsed, currentSubID); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit: %w", err)
-		}
-		NotifySubscriptionChange()
 		return nil
 	}
 
@@ -577,10 +583,6 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 	`, validUntilExpr), planID, pricePaid, promocodeUsed, currentSubID); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-	NotifySubscriptionChange()
 	return nil
 }
 

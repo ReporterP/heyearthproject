@@ -103,25 +103,14 @@ func attemptRetry(client *yookassa.Client, retry *biz.RetryRow) error {
 		return err
 	}
 
-	// Запоминаем yookassa_id в нашем payment
-	_, _ = db.DB.Exec(`
-		UPDATE payments SET
-			yookassa_payment_id = $1::text, yookassa_status = $2::text,
-			external_id = $1::text, test = $3,
-			metadata = $4::jsonb, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $5
-	`, payment.ID, payment.Status, payment.Test,
-		mustJSON(map[string]interface{}{"plan_id": plan.ID, "retry_id": retry.ID, "kind": "subscription", "auto_renew": true}),
-		paymentDBID)
+	// Запоминаем yookassa_id в нашем payment и применяем списание через paid claim
+	// (как и webhook этого списания: применит тот, кто первый).
+	if err := recordRecurringCharge(paymentDBID, payment,
+		map[string]any{"plan_id": plan.ID, "retry_id": retry.ID, "kind": "subscription", "auto_renew": true}); err != nil {
+		log.Printf("[dunning] retry %d: charge %s: %v (activation left to the webhook/sync)", retry.ID, payment.ID, err)
+	}
 
 	if payment.Status == yookassa.PaymentStatusSucceeded {
-		// Only the call that marks the payment paid activates: the payment.succeeded
-		// webhook for this charge then finds it paid and does not extend a second time.
-		if _, err := onPaidTransition(paymentDBID, func() error {
-			return biz.ActivateSubscriptionWithPlan(retry.UserIDText, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew-retry")
-		}); err != nil {
-			log.Printf("[dunning] retry %d: charged, activation left to the webhook/sync: %v", retry.ID, err)
-		}
 		_ = biz.MarkRetrySucceeded(retry.ID, paymentDBID)
 		log.Printf("[dunning] ✓ Retry %d succeeded for user %s (plan %s)", retry.ID, retry.UserIDText, plan.Slug)
 		RequestXraySync()

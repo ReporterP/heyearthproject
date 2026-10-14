@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -264,7 +263,9 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 // handleYookassaWebhook обрабатывает уведомления от ЮKassa.
 // Безопасность: IP whitelist + повторный GET /payments/{id} для верификации.
 // Если IP не ЮKassa и не из whitelist — возвращаем 403.
-// В любом случае отвечаем 200 после успешной обработки (ЮKassa ретраит 24ч при не-200).
+// 200 — обработано, или событие нам не нужно (неизвестное событие, чужой платёж).
+// 500 — платёж/возврат не удалось записать или применить: ЮKassa повторит уведомление
+// (она ретраит 24 ч при не-200), повтор безопасен — платёж применяется один раз.
 func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -306,21 +307,11 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch notification.Event {
 	case yookassa.EventPaymentSucceeded, yookassa.EventPaymentCanceled, yookassa.EventPaymentWaitingForCapture:
-		paymentID := notification.ExtractPaymentID()
-		if paymentID == "" {
-			log.Printf("[yookassa-webhook] no payment id in notification")
-			http.Error(w, "no payment id", http.StatusBadRequest)
+		// Защита уровень 2: повторный GET в ЮKassa (VerifyPayment) — payment реален.
+		// Not applied -> non-200, so YooKassa repeats the notification (payment_paid.go).
+		if code := paymentNotificationStatus(notification.ExtractPaymentID(), client.VerifyPayment); code != http.StatusOK {
+			http.Error(w, http.StatusText(code), code)
 			return
-		}
-		// Защита уровень 2: повторный запрос в ЮKassa чтобы убедиться что payment реален
-		payment, err := client.VerifyPayment(paymentID)
-		if err != nil {
-			log.Printf("[yookassa-webhook] verify failed for %s: %v", paymentID, err)
-			http.Error(w, "verification failed", http.StatusBadGateway)
-			return
-		}
-		if err := processPaymentEvent(payment); err != nil {
-			log.Printf("[yookassa-webhook] process payment %s: %v", paymentID, err)
 		}
 
 	case yookassa.EventRefundSucceeded:
@@ -341,249 +332,6 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
-}
-
-// processPaymentEvent обновляет запись в БД и активирует подписку при succeeded.
-// Если платежа нет в БД, но в YooKassa metadata есть user_id+plan_id — создаёт
-// orphan-recovery запись. Это спасает случаи когда наш backend упал после CreatePayment
-// в YooKassa, но до INSERT INTO payments.
-func processPaymentEvent(p *yookassa.Payment) error {
-	// Найти локальный payment по yookassa_payment_id
-	var paymentDBID int
-	var userID, metadata, kind string
-	err := db.DB.QueryRow(`
-		SELECT p.id, COALESCE(p.user_id_text, ''), COALESCE(p.metadata::text, '{}'), COALESCE(p.metadata->>'kind', '')
-		FROM payments p WHERE p.yookassa_payment_id = $1
-	`, p.ID).Scan(&paymentDBID, &userID, &metadata, &kind)
-	if err == sql.ErrNoRows {
-		// Orphan recovery: создать запись из metadata
-		log.Printf("[yookassa] ORPHAN payment %s not in DB — attempting recovery from metadata", p.ID)
-		recoveredID, rerr := recoverOrphanPayment(p)
-		if rerr != nil {
-			return fmt.Errorf("orphan recovery failed for %s: %w", p.ID, rerr)
-		}
-		paymentDBID = recoveredID
-		if v, ok := p.Metadata["user_id"]; ok {
-			userID = v
-		}
-		// Повторное чтение чтобы получить metadata + kind
-		_ = db.DB.QueryRow(`SELECT COALESCE(metadata::text, '{}'), COALESCE(metadata->>'kind', '') FROM payments WHERE id = $1`,
-			paymentDBID).Scan(&metadata, &kind)
-	} else if err != nil {
-		return fmt.Errorf("find payment: %w", err)
-	}
-
-	// Достаём тип способа оплаты + детали
-	methodType := ""
-	methodDetails := "{}"
-	paymentMethodID := ""
-	if p.PaymentMethod != nil {
-		methodType = p.PaymentMethod.Type
-		paymentMethodID = p.PaymentMethod.ID
-		if p.PaymentMethod.Card != nil {
-			methodDetails = mustJSON(p.PaymentMethod.Card)
-		} else {
-			methodDetails = mustJSON(map[string]string{
-				"type":  p.PaymentMethod.Type,
-				"title": p.PaymentMethod.Title,
-			})
-		}
-	}
-
-	receiptRegistered := p.ReceiptRegistration == "succeeded"
-
-	// Details only: status and paid_at are never touched here.
-	if _, err = db.DB.Exec(paymentDetailsSQL, p.Status, paymentMethodID, methodType, methodDetails,
-		receiptRegistered, cancellationReason(p), paymentDBID); err != nil {
-		return fmt.Errorf("update payment: %w", err)
-	}
-
-	if p.Status != yookassa.PaymentStatusSucceeded {
-		// pending/waiting/canceled — never over a paid or refunded payment.
-		if _, err := db.DB.Exec(paymentSetUnpaidStatusSQL, paymentDBID, mapYookassaStatus(p.Status)); err != nil {
-			return fmt.Errorf("update payment status: %w", err)
-		}
-		return nil
-	}
-
-	// Side effects only for the call that moves the payment to paid: a repeated
-	// «Проверить статус», a duplicate webhook or the sync cron find it paid and stop.
-	applied, err := onPaidTransition(paymentDBID, func() error {
-		return paidPaymentEffects(p, paymentDBID, userID, metadata, kind, paymentMethodID)
-	})
-	if err != nil {
-		return err
-	}
-	if !applied {
-		log.Printf("[yookassa] payment %s (db %d) is already paid or refunded — nothing activated again", p.ID, paymentDBID)
-	}
-	return nil
-}
-
-const (
-	// paymentDetailsSQL refreshes what YooKassa reports about a payment without touching
-	// status or paid_at.
-	paymentDetailsSQL = `
-		UPDATE payments SET
-			yookassa_status = $1::text,
-			payment_method_id = COALESCE(NULLIF($2::text, ''), payment_method_id),
-			payment_method_type = $3::text,
-			payment_method_details = $4::jsonb,
-			receipt_registered = $5,
-			cancellation_reason = $6::text,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $7`
-	// paymentClaimPaidSQL moves a payment to 'succeeded' unless it is already paid or
-	// refunded. A returned row means THIS call made the transition and owns its side
-	// effects; a concurrent duplicate re-checks the WHERE on the committed row and gets
-	// nothing. paid_at/confirmed_at keep their first value.
-	paymentClaimPaidSQL = `
-		UPDATE payments SET
-			status = 'succeeded',
-			paid_at = COALESCE(paid_at, NOW()),
-			confirmed_at = COALESCE(confirmed_at, NOW()),
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status NOT IN (` + biz.PaidPaymentStatusesSQL + `, 'refunded')
-		RETURNING id`
-	// paymentUndoPaidSQL hands the transition back when its side effects failed, so the
-	// next webhook / check / sync cron run tries them again (the sync cron reads 'pending').
-	paymentUndoPaidSQL = `
-		UPDATE payments SET status = 'pending', updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status = 'succeeded'`
-	// paymentSetUnpaidStatusSQL records pending/waiting_for_capture/canceled, never over a
-	// paid or refunded payment.
-	paymentSetUnpaidStatusSQL = `
-		UPDATE payments SET status = $2::text, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status NOT IN (` + biz.PaidPaymentStatusesSQL + `, 'refunded')`
-)
-
-// onPaidTransition moves the payment to paid and runs effects only if this call made that
-// transition. If effects fail, the transition is handed back so a later call retries.
-func onPaidTransition(paymentDBID int, effects func() error) (bool, error) {
-	var id int
-	switch err := db.DB.QueryRow(paymentClaimPaidSQL, paymentDBID).Scan(&id); {
-	case errors.Is(err, sql.ErrNoRows):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("mark payment %d paid: %w", paymentDBID, err)
-	}
-	if err := effects(); err != nil {
-		if _, uerr := db.DB.Exec(paymentUndoPaidSQL, paymentDBID); uerr != nil {
-			log.Printf("[yookassa] payment %d: effects failed (%v) and the paid mark could not be undone: %v", paymentDBID, err, uerr)
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-// paidPaymentEffects is what a payment that just became paid triggers (a test seam).
-var paidPaymentEffects = applyPaidPaymentEffects
-
-func applyPaidPaymentEffects(p *yookassa.Payment, paymentDBID int, userID, metadata, kind, paymentMethodID string) error {
-	// Сохраняем payment_method для recurring если есть
-	if paymentMethodID != "" && p.PaymentMethod != nil && p.PaymentMethod.Saved {
-		saveUserPaymentMethod(userID, p.PaymentMethod)
-	}
-
-	// Активируем подписку (только для kind=subscription)
-	if kind == "subscription" || kind == "" {
-		var metaRaw map[string]interface{}
-		_ = json.Unmarshal([]byte(metadata), &metaRaw)
-		var planID int
-		switch v := metaRaw["plan_id"].(type) {
-		case float64:
-			planID = int(v)
-		case string:
-			fmt.Sscanf(v, "%d", &planID)
-		}
-		promocode, _ := metaRaw["promocode"].(string)
-		autoRenew, _ := metaRaw["auto_renew"].(bool)
-		if planID > 0 && userID != "" {
-			plan, err := biz.GetPlanByID(planID)
-			if err == nil && plan != nil {
-				var pricePaidInt int
-				fmt.Sscanf(p.Amount.Value, "%d", &pricePaidInt)
-				if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, pricePaidInt, promocode); err != nil {
-					if errors.Is(err, biz.ErrDowngradeNotAllowed) {
-						log.Printf("[yookassa-webhook] downgrade blocked for user=%s plan=%d — skipping activation, payment refunded manually", userID, planID)
-						// Don't return — let the webhook reply 200 to YooKassa so it doesn't retry forever.
-						// Funds remain in YooKassa pending state for manual refund (ops responsibility).
-					} else {
-						return fmt.Errorf("activate plan %d: %w", planID, err)
-					}
-				} else {
-					log.Printf("[yookassa-webhook] ✓ activated plan '%s' for user %s (%s ₽)", plan.Name, userID, p.Amount.Value)
-					RequestXraySync()
-
-					// Email notification: активация или продление
-					go sendActivationEmail(userID, plan, pricePaidInt, autoRenew, paymentDBID)
-				}
-			}
-		}
-	}
-
-	// B2B kinds — credit the tenant's wallet. tenant_topup and b2b_invoice
-	// share the same shape: metadata.tenant_id + amount. Without this branch
-	// the company's money sits in YooKassa but `tenants.balance` never moves.
-	if kind == "tenant_topup" || kind == "b2b_invoice" {
-		if err := creditTenantFromPayment(p, metadata, paymentDBID, kind); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// creditTenantFromPayment runs the wallet-credit side-effect for B2B payments.
-// It is intentionally tolerant: tenant_id missing from metadata is a hard
-// configuration error (we log + return), not a silent skip — we want loud
-// telemetry when this happens because real money may be stranded.
-func creditTenantFromPayment(p *yookassa.Payment, metadata string, paymentDBID int, kind string) error {
-	var metaRaw map[string]interface{}
-	_ = json.Unmarshal([]byte(metadata), &metaRaw)
-
-	var tenantID int
-	switch v := metaRaw["tenant_id"].(type) {
-	case float64:
-		tenantID = int(v)
-	case string:
-		fmt.Sscanf(v, "%d", &tenantID)
-	}
-	if tenantID == 0 {
-		// Loud failure — admin needs to know to attach this payment manually.
-		log.Printf("[yookassa-webhook] ⚠ %s payment %s has NO tenant_id in metadata (payment_db=%d, amount=%s) — manual reconciliation required",
-			kind, p.ID, paymentDBID, p.Amount.Value)
-		return nil
-	}
-
-	// YooKassa amount.value is a decimal string like "1500.00". Parse to
-	// float64 — tenant_wallet_transactions stores NUMERIC.
-	amount, perr := strconv.ParseFloat(p.Amount.Value, 64)
-	if perr != nil || amount <= 0 {
-		log.Printf("[yookassa-webhook] ⚠ %s payment %s has invalid amount %q: %v", kind, p.ID, p.Amount.Value, perr)
-		return nil
-	}
-
-	desc := fmt.Sprintf("YooKassa %s #%s", kind, p.ID)
-	res, err := biz.CreditTenantWallet(tenantID, amount, desc, &paymentDBID)
-	if err != nil {
-		return fmt.Errorf("credit tenant %d for %s payment %s: %w", tenantID, kind, p.ID, err)
-	}
-	log.Printf("[yookassa-webhook] ✓ %s tenant_id=%d credited %.2f ₽ (balance=%.2f, activated=%v)",
-		kind, tenantID, amount, res.NewBalance, res.Activated)
-
-	// Mark the matching invoice_records row as paid (no-op for tenant_topup
-	// which doesn't have one). Best-effort — not having the row isn't fatal.
-	if kind == "b2b_invoice" {
-		_, _ = db.DB.Exec(`
-			UPDATE invoice_records
-			SET status = 'paid', paid_at = NOW(), updated_at = NOW()
-			WHERE payment_id = $1 AND status != 'paid'
-		`, paymentDBID)
-	}
-
-	// Fire-and-forget email — don't let SMTP errors block webhook ack.
-	go sendTenantCreditEmail(tenantID, amount, res.NewBalance, res.Activated, kind, paymentDBID)
-	return nil
 }
 
 // sendTenantCreditEmail informs the tenant's contact_email about a successful
@@ -1080,7 +828,7 @@ func recoverOrphanPayment(p *yookassa.Payment) (int, error) {
 		userID = p.MerchantCustomerID
 	}
 	if userID == "" {
-		return 0, fmt.Errorf("no user_id in metadata")
+		return 0, errOrphanNotOurs
 	}
 
 	// Парсим сумму
@@ -1122,7 +870,7 @@ func recoverOrphanPayment(p *yookassa.Payment) (int, error) {
 			$5, $5, $6, $7::jsonb, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 		)
 		RETURNING id
-	`, userID, amount, p.Amount.Currency, mapYookassaStatus(p.Status),
+	`, userID, amount, p.Amount.Currency, "pending", // final status only via the paid claim / unpaid setter
 		p.ID, description, metaJSON, p.Test).Scan(&newID)
 	if err != nil {
 		return 0, fmt.Errorf("insert orphan: %w", err)

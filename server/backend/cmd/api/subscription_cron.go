@@ -247,34 +247,14 @@ func processAutoRenew(userID string) error {
 		return fmt.Errorf("yookassa charge: %w", err)
 	}
 
-	// Сохраняем yookassa_payment_id + статусы
-	_, updErr := db.DB.Exec(`
-		UPDATE payments SET
-			yookassa_payment_id = $1::text,
-			yookassa_status = $2::text,
-			external_id = $1::text,
-			status = $3::text,
-			test = $4,
-			paid_at = CASE WHEN $3::text = 'succeeded' THEN NOW() ELSE paid_at END,
-			updated_at = CURRENT_TIMESTAMP,
-			metadata = $5::jsonb
-		WHERE id = $6
-	`, payment.ID, payment.Status, mapYookassaStatus(payment.Status), payment.Test,
-		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "kind": "subscription", "auto_renew": true}),
-		paymentDBID)
-	if updErr != nil {
-		log.Printf("[auto-renew] UPDATE payments id=%d failed: %v", paymentDBID, updErr)
-	}
-
+	// Сохраняем yookassa_payment_id + метаданные и применяем списание через paid claim:
+	// продлевает тот, кто первый (этот cron или webhook этого списания), второй — нет.
 	// YooKassa возвращает для recurring сразу status=succeeded (без confirmation).
-	// Активируем подписку и тут, и в webhook'е (ActivateSubscriptionWithPlan идемпотентен).
-	if payment.Status == yookassa.PaymentStatusSucceeded {
-		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, plan.PriceRub, "auto-renew"); err != nil {
-			log.Printf("[auto-renew] User %s: charge OK but activation failed: %v", userID, err)
-		} else {
-			log.Printf("[auto-renew] User %s: subscription renewed via YooKassa (plan: %s, %d₽) yk_id=%s", userID, plan.Slug, plan.PriceRub, payment.ID)
-			RequestXraySync()
-		}
+	if err := recordRecurringCharge(paymentDBID, payment,
+		map[string]any{"plan_id": plan.ID, "plan_slug": plan.Slug, "kind": "subscription", "auto_renew": true}); err != nil {
+		log.Printf("[auto-renew] User %s: charge %s: %v (activation left to the webhook/sync)", userID, payment.ID, err)
+	} else if payment.Status == yookassa.PaymentStatusSucceeded {
+		log.Printf("[auto-renew] User %s: charge %s applied (plan: %s, %d₽)", userID, payment.ID, plan.Slug, plan.PriceRub)
 	}
 	return nil
 }

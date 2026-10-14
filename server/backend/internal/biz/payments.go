@@ -10,18 +10,18 @@ import (
 )
 
 type PaymentRecord struct {
-	ID               int
-	UserID           string
-	Amount           float64
-	Currency         string
-	Status           string
-	Provider         string
-	YookassaID       string
-	YookassaStatus   string
-	Description      string
-	ConfirmationURL  string
-	PaidAt           *time.Time
-	CreatedAt        time.Time
+	ID              int
+	UserID          string
+	Amount          float64
+	Currency        string
+	Status          string
+	Provider        string
+	YookassaID      string
+	YookassaStatus  string
+	Description     string
+	ConfirmationURL string
+	PaidAt          *time.Time
+	CreatedAt       time.Time
 }
 
 func CreatePaymentRecord(userID string, amount float64, currency, provider, description string) (int, error) {
@@ -132,12 +132,23 @@ type CreditTenantWalletResult struct {
 }
 
 func CreditTenantWallet(tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
-	var res CreditTenantWalletResult
 	tx, err := db.DB.Begin()
+	if err != nil {
+		return CreditTenantWalletResult{}, err
+	}
+	defer tx.Rollback()
+	res, err := CreditTenantWalletTx(tx, tenantID, amount, description, paymentID)
 	if err != nil {
 		return res, err
 	}
-	defer tx.Rollback()
+	return res, tx.Commit()
+}
+
+// CreditTenantWalletTx is CreditTenantWallet inside the caller's transaction (the
+// paid-payment claim); the caller commits. tenant_wallet_transactions(payment_id) is
+// unique, so a second credit for the same payment fails instead of doubling the balance.
+func CreditTenantWalletTx(tx *sql.Tx, tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
+	var res CreditTenantWalletResult
 
 	// Capture the pre-credit status under FOR UPDATE so we can detect the
 	// inactive→active transition. Locking the row also serializes concurrent
@@ -170,7 +181,7 @@ func CreditTenantWallet(tenantID int, amount float64, description string, paymen
 	if oldStatus == "inactive" {
 		res.Activated = true
 	}
-	return res, tx.Commit()
+	return res, nil
 }
 
 // ── Tenant members (B2B many-to-many) ──────────────────────────────────────
@@ -419,11 +430,12 @@ func DebitTenantWallet(tenantID int, amount float64, description string) error {
 // `tenant_members` with a role parsed from the code's prefix.
 //
 // Code formats:
-//   tn-r-admin-XXX    → admin role
-//   tn-r-billing-XXX  → billing role
-//   tn-r-viewer-XXX   → viewer role
-//   tn-r-user-XXX     → user role (default)
-//   anything else     → user role
+//
+//	tn-r-admin-XXX    → admin role
+//	tn-r-billing-XXX  → billing role
+//	tn-r-viewer-XXX   → viewer role
+//	tn-r-user-XXX     → user role (default)
+//	anything else     → user role
 func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err error) {
 	tx, err := db.DB.Begin()
 	if err != nil {

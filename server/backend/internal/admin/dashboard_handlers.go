@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -55,15 +56,8 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		`, tq.interval).Scan(tq.target)
 	}
 
-	// Доход за текущий месяц — только реальные (не тестовые) succeeded платежи.
-	_ = db.DB.QueryRow(`
-		SELECT COALESCE(SUM(amount), 0)
-		FROM payments
-		WHERE status = 'completed'
-		  AND COALESCE(test, FALSE) = FALSE
-		  AND confirmed_at IS NOT NULL
-		  AND confirmed_at >= date_trunc('month', NOW())
-	`).Scan(&overview.RevenueMonth)
+	// Доход за текущий месяц — только реальные (не тестовые) оплаченные платежи.
+	_ = db.DB.QueryRow(revenueMonthSQL).Scan(&overview.RevenueMonth)
 
 	// Топ-10 пользователей по трафику за месяц
 	overview.TopUsers = loadTopUsersTraffic(10, "30 days")
@@ -73,6 +67,16 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 
 	writeAdminJSON(w, http.StatusOK, overview)
 }
+
+// revenueMonthSQL: this month's real (non-test) paid payments. Paid = the shared list
+// (YooKassa payments are 'succeeded'; 'completed' alone showed 0 ₽). Payments the old
+// auto-renew path paid carry paid_at but no confirmed_at.
+const revenueMonthSQL = `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM payments
+		WHERE status IN (` + biz.PaidPaymentStatusesSQL + `)
+		  AND COALESCE(test, FALSE) = FALSE
+		  AND COALESCE(confirmed_at, paid_at) >= date_trunc('month', NOW())`
 
 // loadTopUsersTraffic возвращает топ пользователей по трафику за период.
 func loadTopUsersTraffic(limit int, interval string) []topUserTraffic {

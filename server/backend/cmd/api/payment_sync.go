@@ -51,24 +51,54 @@ func StartPaymentSyncCron() {
 	log.Println("[payment-sync] Фоновый cron синхронизации pending платежей запущен (каждые 5 мин)")
 }
 
-// syncPendingPayments опрашивает все pending платежи старше 3 минут.
-func syncPendingPayments() {
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		// Ключи не заданы — молча выходим (настройки ещё не готовы)
-		return
-	}
-
-	rows, err := db.DB.Query(`
+const (
+	// paymentSyncSelectSQL: unpaid payments to re-check. A payment whose activation failed
+	// paymentActivationMaxFailures times is left alone (an alert went out), and the ones
+	// that failed before go after the fresh ones so they cannot starve new payments.
+	paymentSyncSelectSQL = `
 		SELECT id, yookassa_payment_id, created_at
 		FROM payments
 		WHERE yookassa_payment_id IS NOT NULL
 		  AND yookassa_payment_id != ''
 		  AND status IN ('pending', 'waiting_for_capture')
 		  AND created_at < NOW() - ($1::interval)
-		ORDER BY created_at ASC
-		LIMIT $2
-	`, paymentSyncMinAge.String(), paymentSyncBatchSize)
+		  AND activation_failures < $3
+		ORDER BY activation_failures ASC, created_at ASC
+		LIMIT $2`
+	// paymentStaleCancelSQL cancels a payment YooKassa no longer knows — never a paid one.
+	paymentStaleCancelSQL = `
+		UPDATE payments SET status = 'canceled', yookassa_status = 'canceled',
+		       cancellation_reason = 'auto-canceled: stale payment not found in YooKassa',
+		       updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status IN ('pending', 'waiting_for_capture') AND paid_at IS NULL`
+)
+
+// paymentGetter is the part of the YooKassa client the sync needs (a test seam).
+type paymentGetter interface {
+	GetPayment(paymentID string) (*yookassa.Payment, error)
+}
+
+// Test seams.
+var (
+	newPaymentSyncClient = func() (paymentGetter, error) {
+		c, err := yookassa.NewClientFromSettings()
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	syncProcessPayment = processPaymentEvent
+)
+
+// syncPendingPayments опрашивает все pending платежи старше 3 минут.
+func syncPendingPayments() {
+	client, err := newPaymentSyncClient()
+	if err != nil {
+		// Ключи не заданы — молча выходим (настройки ещё не готовы)
+		return
+	}
+
+	rows, err := db.DB.Query(paymentSyncSelectSQL, paymentSyncMinAge.String(), paymentSyncBatchSize, paymentActivationMaxFailures)
 	if err != nil {
 		log.Printf("[payment-sync] Ошибка выборки pending: %v", err)
 		return
@@ -102,12 +132,9 @@ func syncPendingPayments() {
 			// YooKassa вернула 404 или ошибку — если платёж очень старый, автоматически
 			// помечаем canceled (скорее всего он удалён или никогда не существовал).
 			if time.Since(p.CreatedAt) > paymentStaleThreshold {
-				_, _ = db.DB.Exec(`
-					UPDATE payments SET status = 'canceled', yookassa_status = 'canceled',
-					       cancellation_reason = 'auto-canceled: stale payment not found in YooKassa',
-					       updated_at = CURRENT_TIMESTAMP
-					WHERE id = $1
-				`, p.ID)
+				if _, err := db.DB.Exec(paymentStaleCancelSQL, p.ID); err != nil {
+					log.Printf("[payment-sync] stale cancel of payment %d: %v", p.ID, err)
+				}
 				stale++
 			}
 			continue
@@ -116,7 +143,7 @@ func syncPendingPayments() {
 		// Если статус изменился — processPaymentEvent обновит запись и
 		// активирует подписку если нужно.
 		if payment.Status != "pending" && payment.Status != "waiting_for_capture" {
-			if err := processPaymentEvent(payment); err != nil {
+			if err := syncProcessPayment(payment); err != nil {
 				log.Printf("[payment-sync] Ошибка обработки payment %d (yk=%s): %v", p.ID, p.YookassaID, err)
 				continue
 			}
