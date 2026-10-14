@@ -4,8 +4,8 @@ package biz
 // list, so «сколько ещё можно вернуть» is computed the same way everywhere.
 
 // PaidPaymentStatusesSQL lists the payments.status values that mean the money was received:
-// YooKassa payments are 'succeeded' (processPaymentEvent), MarkPaymentCompleted writes
-// 'completed'. A fully refunded payment becomes 'refunded' and is not refundable.
+// YooKassa payments are 'succeeded' (processPaymentEvent); 'completed' is the legacy paid
+// status. A fully refunded payment becomes 'refunded' and is not refundable.
 const PaidPaymentStatusesSQL = `'succeeded', 'completed'`
 
 // RefundHoldStatusesSQL lists the payment_refunds.status values that hold part of the

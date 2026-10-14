@@ -142,21 +142,22 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := yookassa.NewClientFromSettings()
+	client, err := newPaymentStatusClient()
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "yookassa not configured"})
 		return
 	}
 
-	payment, err := client.WithTimeout(refundCallTimeout).GetPayment(yookassaID)
+	payment, err := client.GetPayment(yookassaID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
 		return
 	}
 
 	// Обновляем локально + прогоняем processPaymentEvent (активация подписки если succeeded)
-	if err := processPaymentEvent(payment); err != nil {
-		log.Printf("[admin-check-status] process failed: %v", err)
+	applyErr := processPaymentEvent(payment)
+	if applyErr != nil {
+		log.Printf("[admin-check-status] process failed: %v", applyErr)
 	}
 	// Возвраты этого платежа: pending → актуальный статус ЮKassa, резервы без ответа →
 	// найденный возврат.
@@ -166,6 +167,13 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if applyErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf(
+			"Статус в ЮKassa: %s, но записать или применить платёж не удалось: %v. Повторите «Проверить статус» позже — повтор безопасен, платёж применяется один раз.",
+			payment.Status, applyErr)})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"local_status":    localStatus,
 		"yookassa_status": payment.Status,
@@ -173,6 +181,16 @@ func handleAdminPaymentCheckStatus(w http.ResponseWriter, r *http.Request) {
 		"amount":          payment.Amount.Value,
 		"paid":            payment.Paid,
 	})
+}
+
+// newPaymentStatusClient is the YooKassa client of «Проверить статус» (a test seam): one
+// call ≤ refundCallTimeout.
+var newPaymentStatusClient = func() (paymentGetter, error) {
+	c, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		return nil, err
+	}
+	return c.WithTimeout(refundCallTimeout), nil
 }
 
 // handleAdminPaymentResend — у ЮKassa нет ручной переотправки webhook'ов,

@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"sort"
@@ -16,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/yookassa"
 )
@@ -222,6 +226,8 @@ func (c *peConn) QueryContext(_ context.Context, query string, args []driver.Nam
 		label = "failure"
 	case strings.Contains(q, "FROM payments WHERE yookassa_payment_id IS NOT NULL"):
 		label = "sync-select"
+	case strings.HasPrefix(q, "SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, '') FROM payments WHERE id = $1"):
+		label = "check-read"
 	default:
 		return nil, fmt.Errorf("pe driver: unscripted query %s", q)
 	}
@@ -236,6 +242,11 @@ func (c *peConn) QueryContext(_ context.Context, query string, args []driver.Nam
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch label {
+	case "check-read":
+		if r := d.byID(args[0].Value.(int64)); r != nil {
+			return &rfRows{cols: []string{"yk", "status"}, rows: [][]driver.Value{{r.ykID, r.status}}}, nil
+		}
+		return &rfRows{cols: []string{"yk", "status"}}, nil
 	case "find-by-id", "find-by-yookassa":
 		for _, r := range d.rows {
 			if (label == "find-by-id" && r.id == args[0].Value.(int64)) || (label == "find-by-yookassa" && r.ykID != "" && r.ykID == args[0].Value.(string)) {
@@ -397,8 +408,8 @@ func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
 	prevDB, prevEffects, prevRaise, prevResolve, prevLog := db.DB, paidPaymentEffects, raisePaymentAlert, resolvePaymentAlert, log.Writer()
 	db.DB = fake
 	log.SetOutput(io.Discard)
-	paidPaymentEffects = func(tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
-		if _, err := tx.Exec(`UPDATE users SET fake_activation = fake_activation + 1 WHERE payment = $1`, row.ID); err != nil {
+	paidPaymentEffects = func(ctx context.Context, tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET fake_activation = fake_activation + 1 WHERE payment = $1`, row.ID); err != nil {
 			return nil, err
 		}
 		e.mu.Lock()
@@ -809,5 +820,136 @@ func TestMigration000060(t *testing.T) {
 		if !strings.Contains(down, want) {
 			t.Errorf("000060 down lacks %q", want)
 		}
+	}
+}
+
+// ─── Paid but not applied ─────────────────────────────────────────────────
+
+// A paid payment that changes nothing (no plan/user, plan deleted, downgrade refused,
+// B2B without tenant or with a bad amount) stays paid and, after COMMIT, raises
+// payment-unapplied-<id> with the payment, who paid, why, and what to do.
+func TestPaidButNotAppliedAlerts(t *testing.T) {
+	basic := &biz.Plan{ID: 3, Name: "SOCKS Basic", DurationDays: 30}
+	tests := []struct {
+		name        string
+		user, meta  string
+		amount      string
+		plan        *biz.Plan
+		planErr     error
+		activateErr error
+		wantAlert   []string // substrings; nil = no alert
+		wantActs    int
+	}{
+		{name: "no plan in the payment", user: "user-1", meta: `{"kind": "subscription"}`,
+			wantAlert: []string{"Платёж #7", "пользователь user-1", "в платеже нет тарифа или пользователя", "подписка не изменена"}},
+		{name: "no user", meta: `{"kind": "subscription", "plan_id": 3}`,
+			wantAlert: []string{"пользователь не указан", "нет тарифа или пользователя"}},
+		{name: "plan deleted", user: "user-1", meta: `{"plan_id": 3}`, planErr: sql.ErrNoRows,
+			wantAlert: []string{"тариф #3 больше не существует", "подписка не изменена"}},
+		{name: "downgrade refused", user: "user-1", meta: `{"plan_id": 3}`, plan: basic, activateErr: biz.ErrDowngradeNotAllowed,
+			wantAlert: []string{"тариф «SOCKS Basic» дешевле текущего", "подписка не изменена"}, wantActs: 1},
+		{name: "B2B without tenant_id", meta: `{"kind": "tenant_topup"}`,
+			wantAlert: []string{"компания не указана", "нет tenant_id", "баланс компании не изменён"}},
+		{name: "B2B with a bad amount", meta: `{"kind": "b2b_invoice", "tenant_id": 5}`, amount: "abc",
+			wantAlert: []string{"компания #5", "некорректная сумма", "баланс компании не изменён"}},
+		{name: "applied: no alert", user: "user-1", meta: `{"plan_id": 3}`, plan: basic, wantActs: 1},
+		{name: "donation: nothing to apply, no alert", user: "user-1", meta: `{"kind": "donation"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newPEDB(&peRow{id: 7, status: "pending", user: tt.user, ykID: "pay-1", meta: tt.meta})
+			e := usePaymentFakes(t, d)
+			prev := []any{paidPaymentEffects, getPlanByID, activatePlanTx, subscriptionActivated}
+			t.Cleanup(func() {
+				paidPaymentEffects = prev[0].(func(context.Context, *sql.Tx, *yookassa.Payment, paymentRow) (func(), error))
+				getPlanByID = prev[1].(func(int) (*biz.Plan, error))
+				activatePlanTx = prev[2].(func(context.Context, *sql.Tx, string, int, int, int, string) error)
+				subscriptionActivated = prev[3].(func(paymentRow, *biz.Plan, int, bool, string))
+			})
+			paidPaymentEffects = applyPaidPaymentEffects
+			getPlanByID = func(int) (*biz.Plan, error) { return tt.plan, tt.planErr }
+			acts, notified := 0, 0
+			activatePlanTx = func(context.Context, *sql.Tx, string, int, int, int, string) error { acts++; return tt.activateErr }
+			subscriptionActivated = func(paymentRow, *biz.Plan, int, bool, string) { notified++ }
+			var journalAtAlert []string
+			raise := raisePaymentAlert
+			raisePaymentAlert = func(key string, level AlertLevel, title, details string) {
+				d.mu.Lock()
+				journalAtAlert = append([]string(nil), d.journal...)
+				d.mu.Unlock()
+				raise(key, level, title, details)
+			}
+
+			pay := pePayment("succeeded", nil)
+			if tt.amount != "" {
+				pay.Amount.Value = tt.amount
+			}
+			if err := processPaymentEvent(pay); err != nil {
+				t.Fatalf("processPaymentEvent: %v", err)
+			}
+			if got := d.row(7).status; got != "succeeded" {
+				t.Fatalf("status %q, want succeeded (money received)", got)
+			}
+			if acts != tt.wantActs {
+				t.Fatalf("activation calls %d, want %d", acts, tt.wantActs)
+			}
+			if tt.wantAlert == nil {
+				if len(e.alerts) != 0 {
+					t.Fatalf("unexpected alert %q", e.alerts)
+				}
+				if tt.plan != nil && notified != 1 {
+					t.Fatalf("activation notifications %d, want 1", notified)
+				}
+				return
+			}
+			if len(e.alerts) != 1 || !strings.HasPrefix(e.alerts[0], "payment-unapplied-7 | critical | ") {
+				t.Fatalf("alerts %q", e.alerts)
+			}
+			for _, want := range append(tt.wantAlert, "Деньги получены", "решите вручную: вернуть или применить") {
+				if !strings.Contains(e.alerts[0], want) {
+					t.Errorf("alert lacks %q: %s", want, e.alerts[0])
+				}
+			}
+			if n := len(journalAtAlert); n == 0 || journalAtAlert[n-1] != "COMMIT" {
+				t.Errorf("alert raised before COMMIT (journal %q)", journalAtAlert)
+			}
+		})
+	}
+}
+
+// ─── «Проверить статус» ───────────────────────────────────────────────────
+
+// «Проверить статус» shows an apply failure to the admin instead of a cheerful 200.
+func TestCheckStatusSurfacesApplyError(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failing  int
+		wantCode int
+		wantText string
+	}{
+		{"apply fails: 500 with the reason", 1, http.StatusInternalServerError, "записать или применить платёж не удалось: apply paid payment 7"},
+		{"applied: 200", 0, http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newPEDB(&peRow{id: 7, status: "pending", user: "user-1", ykID: "pay-1"})
+			e := usePaymentFakes(t, d)
+			e.failing = tc.failing
+			prevStatus, prevRefund := newPaymentStatusClient, newRefundClient
+			t.Cleanup(func() { newPaymentStatusClient, newRefundClient = prevStatus, prevRefund })
+			newPaymentStatusClient = func() (paymentGetter, error) { return fakeGetter{}, nil }
+			newRefundClient = func() (refundAPI, error) { return nil, errors.New("refunds not under test") }
+
+			rec := httptest.NewRecorder()
+			handleAdminPaymentCheckStatus(rec, httptest.NewRequest(http.MethodPost, "/api/admin/payments/7/check-status", nil))
+			var m map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &m)
+			msg, _ := m["error"].(string)
+			if rec.Code != tc.wantCode || !strings.Contains(msg, tc.wantText) {
+				t.Fatalf("%d %v; want %d %q", rec.Code, m, tc.wantCode, tc.wantText)
+			}
+			if tc.wantCode == http.StatusOK && (m["yookassa_status"] != "succeeded" || d.row(7).activations != 1) {
+				t.Fatalf("200 body %v, activations %d", m, d.row(7).activations)
+			}
+		})
 	}
 }

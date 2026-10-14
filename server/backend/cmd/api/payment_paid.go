@@ -220,7 +220,7 @@ func applyPaidPayment(p *yookassa.Payment, row paymentRow) error {
 	case err != nil:
 		return fmt.Errorf("mark payment %d paid: %w", row.ID, err)
 	}
-	after, err := paidPaymentEffects(tx, p, row)
+	after, err := paidPaymentEffects(ctx, tx, p, row)
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -241,6 +241,16 @@ var (
 	paidPaymentEffects  = applyPaidPaymentEffects
 	raisePaymentAlert   = RaiseAlert
 	resolvePaymentAlert = ResolveAlert
+	getPlanByID         = biz.GetPlanByID
+	activatePlanTx      = biz.ActivateSubscriptionWithPlanTx
+	creditWalletTx      = biz.CreditTenantWalletTx
+	// subscriptionActivated runs after COMMIT of an activation: Xray sync, email.
+	subscriptionActivated = func(row paymentRow, plan *biz.Plan, pricePaid int, autoRenew bool, amount string) {
+		log.Printf("[yookassa] ✓ activated plan '%s' for user %s (%s ₽, payment %d)", plan.Name, row.UserID, amount, row.ID)
+		biz.NotifySubscriptionChange()
+		RequestXraySync()
+		go sendActivationEmail(row.UserID, plan, pricePaid, autoRenew, row.ID)
+	}
 )
 
 func paymentAlertKey(id int) string { return fmt.Sprintf("payment-activation-failed-%d", id) }
@@ -268,17 +278,17 @@ func notePaymentActivationFailure(row paymentRow, cause error) {
 
 // applyPaidPaymentEffects applies a payment that just became paid inside the claim
 // transaction and returns what runs after COMMIT.
-func applyPaidPaymentEffects(tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+func applyPaidPaymentEffects(ctx context.Context, tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
 	var after []func()
 	switch row.kind() {
 	case "subscription", "":
-		f, err := activatePaidSubscriptionTx(tx, p, row)
+		f, err := activatePaidSubscriptionTx(ctx, tx, p, row)
 		if err != nil {
 			return nil, err
 		}
 		after = append(after, f)
 	case "tenant_topup", "b2b_invoice":
-		f, err := creditTenantFromPaymentTx(tx, p, row)
+		f, err := creditTenantFromPaymentTx(ctx, tx, p, row)
 		if err != nil {
 			return nil, err
 		}
@@ -296,16 +306,34 @@ func applyPaidPaymentEffects(tx *sql.Tx, p *yookassa.Payment, row paymentRow) (f
 	}, nil
 }
 
+// paymentUnapplied is what runs after COMMIT when a paid payment changed nothing: the
+// money is in, the owner decides by hand whether to refund or apply it.
+func paymentUnapplied(row paymentRow, p *yookassa.Payment, who, reason, unchanged string) func() {
+	return func() {
+		log.Printf("[yookassa] payment %d (%s) paid but NOT applied: %s", row.ID, who, reason)
+		raisePaymentAlert(fmt.Sprintf("payment-unapplied-%d", row.ID), AlertCritical, "Оплата получена, но не применена",
+			fmt.Sprintf("Платёж #%d (%s, %s ₽): %s. Деньги получены, %s — решите вручную: вернуть или применить.",
+				row.ID, who, p.Amount.Value, reason, unchanged))
+	}
+}
+
+func userLabel(userID string) string {
+	if userID == "" {
+		return "пользователь не указан"
+	}
+	return "пользователь " + userID
+}
+
 // activatePaidSubscriptionTx extends/activates the plan the payment was for.
-func activatePaidSubscriptionTx(tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+func activatePaidSubscriptionTx(ctx context.Context, tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+	const unchanged = "подписка не изменена"
 	planID := row.metaInt("plan_id")
 	if planID <= 0 || row.UserID == "" {
-		return func() {}, nil
+		return paymentUnapplied(row, p, userLabel(row.UserID), "в платеже нет тарифа или пользователя", unchanged), nil
 	}
-	plan, err := biz.GetPlanByID(planID)
+	plan, err := getPlanByID(planID)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && plan == nil) {
-		log.Printf("[yookassa] payment %d: plan %d no longer exists — paid, nothing activated", row.ID, planID)
-		return func() {}, nil
+		return paymentUnapplied(row, p, userLabel(row.UserID), fmt.Sprintf("тариф #%d больше не существует", planID), unchanged), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load plan %d: %w", planID, err)
@@ -322,39 +350,34 @@ func activatePaidSubscriptionTx(tx *sql.Tx, p *yookassa.Payment, row paymentRow)
 	var pricePaid int
 	fmt.Sscanf(p.Amount.Value, "%d", &pricePaid)
 
-	switch err := biz.ActivateSubscriptionWithPlanTx(tx, row.UserID, plan.ID, plan.DurationDays, pricePaid, label); {
+	switch err := activatePlanTx(ctx, tx, row.UserID, plan.ID, plan.DurationDays, pricePaid, label); {
 	case errors.Is(err, biz.ErrDowngradeNotAllowed):
-		log.Printf("[yookassa] downgrade blocked for user=%s plan=%d — payment %d paid, nothing activated, refund it manually", row.UserID, planID, row.ID)
-		return func() {}, nil
+		return paymentUnapplied(row, p, userLabel(row.UserID),
+			fmt.Sprintf("тариф «%s» дешевле текущего — понижение тарифа не применяется", plan.Name), unchanged), nil
 	case err != nil:
 		return nil, fmt.Errorf("activate plan %d: %w", planID, err)
 	}
-	return func() {
-		log.Printf("[yookassa] ✓ activated plan '%s' for user %s (%s ₽, payment %d)", plan.Name, row.UserID, p.Amount.Value, row.ID)
-		biz.NotifySubscriptionChange()
-		RequestXraySync()
-		go sendActivationEmail(row.UserID, plan, pricePaid, autoRenew, row.ID)
-	}, nil
+	return func() { subscriptionActivated(row, plan, pricePaid, autoRenew, p.Amount.Value) }, nil
 }
 
 // creditTenantFromPaymentTx credits the tenant's wallet for a B2B payment (tenant_topup,
-// b2b_invoice). tenant_id missing from the metadata is a configuration error: logged
-// loudly, the payment stays paid and needs manual reconciliation.
-func creditTenantFromPaymentTx(tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+// b2b_invoice). Without tenant_id or with a bad amount the payment stays paid and an
+// alert asks for manual reconciliation.
+func creditTenantFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
+	const unchanged = "баланс компании не изменён"
 	kind := row.kind()
 	tenantID := row.metaInt("tenant_id")
 	if tenantID == 0 {
-		log.Printf("[yookassa-webhook] ⚠ %s payment %s has NO tenant_id in metadata (payment_db=%d, amount=%s) — manual reconciliation required",
-			kind, p.ID, row.ID, p.Amount.Value)
-		return func() {}, nil
+		return paymentUnapplied(row, p, "компания не указана",
+			fmt.Sprintf("в платеже %s нет tenant_id (привяжите его к компании)", kind), unchanged), nil
 	}
 	amount, perr := strconv.ParseFloat(p.Amount.Value, 64)
 	if perr != nil || amount <= 0 {
-		log.Printf("[yookassa-webhook] ⚠ %s payment %s has invalid amount %q: %v", kind, p.ID, p.Amount.Value, perr)
-		return func() {}, nil
+		return paymentUnapplied(row, p, fmt.Sprintf("компания #%d", tenantID),
+			fmt.Sprintf("некорректная сумма %q", p.Amount.Value), unchanged), nil
 	}
 	paymentDBID := row.ID
-	res, err := biz.CreditTenantWalletTx(tx, tenantID, amount, fmt.Sprintf("YooKassa %s #%s", kind, p.ID), &paymentDBID)
+	res, err := creditWalletTx(ctx, tx, tenantID, amount, fmt.Sprintf("YooKassa %s #%s", kind, p.ID), &paymentDBID)
 	if err != nil {
 		return nil, fmt.Errorf("credit tenant %d for %s payment %s: %w", tenantID, kind, p.ID, err)
 	}

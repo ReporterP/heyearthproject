@@ -1,12 +1,15 @@
 package biz
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
+	"github.com/lib/pq"
 )
 
 type PaymentRecord struct {
@@ -40,15 +43,6 @@ func UpdatePaymentYookassa(paymentDBID int, yookassaID, yookassaStatus, confirma
 		SET yookassa_payment_id = $1, yookassa_status = $2, confirmation_url = $3, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $4
 	`, yookassaID, yookassaStatus, confirmationURL, paymentDBID)
-	return err
-}
-
-func MarkPaymentCompleted(paymentDBID int) error {
-	_, err := db.DB.Exec(`
-		UPDATE payments
-		SET status = 'completed', yookassa_status = 'succeeded', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, paymentDBID)
 	return err
 }
 
@@ -131,43 +125,40 @@ type CreditTenantWalletResult struct {
 	Activated  bool
 }
 
-func CreditTenantWallet(tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return CreditTenantWalletResult{}, err
-	}
-	defer tx.Rollback()
-	res, err := CreditTenantWalletTx(tx, tenantID, amount, description, paymentID)
-	if err != nil {
-		return res, err
-	}
-	return res, tx.Commit()
-}
+// ErrPaymentAlreadyCredited: the payment was credited to a wallet before
+// (tenant_wallet_transactions(payment_id) is unique); nothing was credited again.
+var ErrPaymentAlreadyCredited = errors.New("payment already credited to a tenant wallet")
 
-// CreditTenantWalletTx is CreditTenantWallet inside the caller's transaction (the
-// paid-payment claim); the caller commits. tenant_wallet_transactions(payment_id) is
-// unique, so a second credit for the same payment fails instead of doubling the balance.
-func CreditTenantWalletTx(tx *sql.Tx, tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
+// CreditTenantWalletTx credits a tenant wallet inside the caller's transaction (the
+// paid-payment claim, the admin attach); the caller commits. Every statement runs with
+// ctx. A second credit for the same payment returns ErrPaymentAlreadyCredited instead of
+// doubling the balance — the failed INSERT leaves the transaction unusable, so the
+// caller must roll back.
+func CreditTenantWalletTx(ctx context.Context, tx *sql.Tx, tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
 	var res CreditTenantWalletResult
 
 	// Capture the pre-credit status under FOR UPDATE so we can detect the
 	// inactive→active transition. Locking the row also serializes concurrent
 	// credits against the same tenant (e.g. two webhooks racing).
 	var oldStatus string
-	if err := tx.QueryRow(`SELECT status FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&oldStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&oldStatus); err != nil {
 		return res, fmt.Errorf("lock tenant %d: %w", tenantID, err)
 	}
 
-	if _, err := tx.Exec(`
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO tenant_wallet_transactions (tenant_id, amount, direction, description, payment_id)
 		VALUES ($1, $2, 'credit', $3, $4)
 	`, tenantID, amount, description, paymentID); err != nil {
+		var pqErr *pq.Error
+		if paymentID != nil && errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return res, ErrPaymentAlreadyCredited
+		}
 		return res, fmt.Errorf("insert wallet txn: %w", err)
 	}
 
 	// Apply credit; auto-activate if tenant was inactive (first payment unlocks
 	// the account). Status stays 'suspended' or 'active' otherwise.
-	if err := tx.QueryRow(`
+	if err := tx.QueryRowContext(ctx, `
 		UPDATE tenants
 		SET balance = balance + $1,
 		    status = CASE WHEN status = 'inactive' THEN 'active' ELSE status END,
@@ -353,7 +344,7 @@ func FindTenantByINN(inn string) (*Tenant, error) {
 
 // CreateInactiveTenantFromInvoice creates a tenant in 'inactive' status when
 // someone pays a B2B invoice for a company we haven't seen before. The tenant
-// becomes 'active' on the first successful payment credit (see CreditTenantWallet).
+// becomes 'active' on the first successful payment credit (see CreditTenantWalletTx).
 // If a tenant with the same INN already exists, that one is returned (idempotent).
 func CreateInactiveTenantFromInvoice(inn, legalName, email string) (*Tenant, error) {
 	if found, err := FindTenantByINN(inn); err != nil {

@@ -472,7 +472,7 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ActivateSubscriptionWithPlanTx(tx, userID, planID, durationDays, pricePaid, promocodeUsed); err != nil {
+	if err := ActivateSubscriptionWithPlanTx(context.Background(), tx, userID, planID, durationDays, pricePaid, promocodeUsed); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -484,11 +484,12 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 
 // ActivateSubscriptionWithPlanTx is ActivateSubscriptionWithPlan inside the caller's
 // transaction (the paid-payment claim): it neither commits nor notifies — the caller
-// commits and then calls NotifySubscriptionChange. ErrDowngradeNotAllowed comes back
-// before any write, so the transaction stays usable.
-func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
+// commits and then calls NotifySubscriptionChange. Every statement runs with ctx, so
+// the caller's timeout also bounds lock waits. ErrDowngradeNotAllowed comes back before
+// any write, so the transaction stays usable.
+func ActivateSubscriptionWithPlanTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
 	var dbUserID int
-	if err := tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
 		return fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
@@ -510,7 +511,7 @@ func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durat
 	var currentDurationDays int
 	var currentValidUntil time.Time
 	hasActive := true
-	scanErr := tx.QueryRow(`
+	scanErr := tx.QueryRowContext(ctx, `
 		SELECT us.id, us.plan_id, p.price_rub, p.duration_days, us.valid_until
 		FROM user_subscriptions us
 		JOIN plans p ON p.id = us.plan_id
@@ -529,7 +530,7 @@ func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durat
 	// (1) No active subscription — fresh INSERT.
 	if !hasActive {
 		validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
-		if _, err := tx.Exec(fmt.Sprintf(`
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
 			VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
 		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed); err != nil {
@@ -541,7 +542,7 @@ func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durat
 	// (2) Same plan — extend valid_until in place.
 	if currentPlanID == planID {
 		validUntilExpr := fmt.Sprintf("valid_until + INTERVAL '%d days'", durationDays)
-		if _, err := tx.Exec(fmt.Sprintf(`
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE user_subscriptions
 			SET valid_until = %s,
 			    price_paid = $1, promocode_used = $2,
@@ -571,7 +572,7 @@ func ActivateSubscriptionWithPlanTx(tx *sql.Tx, userID string, planID int, durat
 	}
 	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPlanListPrice, durationDays)
 	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays+bonusDays)
-	if _, err := tx.Exec(fmt.Sprintf(`
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE user_subscriptions
 		SET plan_id = $1,
 		    valid_until = %s,

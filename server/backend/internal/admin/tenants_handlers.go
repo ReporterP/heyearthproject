@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,14 +14,6 @@ import (
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/email"
 )
-
-// creditTenantViaBiz wraps biz.CreditTenantWallet. Kept as a tiny indirection
-// so the call site is unambiguous about which side of the package boundary
-// owns the wallet logic.
-func creditTenantViaBiz(tenantID int, amount float64, description string, paymentID *int) error {
-	_, err := biz.CreditTenantWallet(tenantID, amount, description, paymentID)
-	return err
-}
 
 type tenantPayload struct {
 	Name               string `json:"name"`
@@ -196,11 +190,11 @@ func PublicTariffCalculateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Users            int  `json:"users"`
-		OwnServers       int  `json:"own_servers"`
-		UseOurServers    bool `json:"use_our_servers"`
-		PremiumEnabled   bool `json:"premium_enabled"`
-		Unlimited        bool `json:"unlimited"`
+		Users          int  `json:"users"`
+		OwnServers     int  `json:"own_servers"`
+		UseOurServers  bool `json:"use_our_servers"`
+		PremiumEnabled bool `json:"premium_enabled"`
+		Unlimited      bool `json:"unlimited"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid body")
@@ -232,22 +226,22 @@ func PublicTariffCalculateHandler(w http.ResponseWriter, r *http.Request) {
 // Used by admin_web /admin/b2b-analytics page (P2.2).
 func B2BAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	type tenantRow struct {
-		ID         int     `json:"id"`
-		Name       string  `json:"name"`
-		Status     string  `json:"status"`
-		Balance    float64 `json:"balance"`
-		Members    int     `json:"members"`
-		MetricBytes int64  `json:"metric_bytes,omitempty"`
+		ID          int     `json:"id"`
+		Name        string  `json:"name"`
+		Status      string  `json:"status"`
+		Balance     float64 `json:"balance"`
+		Members     int     `json:"members"`
+		MetricBytes int64   `json:"metric_bytes,omitempty"`
 		MetricRub   float64 `json:"metric_rub,omitempty"`
 	}
 	type response struct {
-		Counts        map[string]int   `json:"counts"`        // active / inactive / suspended / total
-		MembersTotal  int              `json:"members_total"` // total B2B users
-		MRR30d        float64          `json:"mrr_30d"`       // sum of debits last 30 days
-		Credits30d    float64          `json:"credits_30d"`   // sum of credits last 30 days (revenue intake)
-		TopByTraffic  []tenantRow      `json:"top_by_traffic"`
-		TopBySpend    []tenantRow      `json:"top_by_spend"`
-		RecentTopups  []map[string]any `json:"recent_topups"` // for activity feed
+		Counts       map[string]int   `json:"counts"`        // active / inactive / suspended / total
+		MembersTotal int              `json:"members_total"` // total B2B users
+		MRR30d       float64          `json:"mrr_30d"`       // sum of debits last 30 days
+		Credits30d   float64          `json:"credits_30d"`   // sum of credits last 30 days (revenue intake)
+		TopByTraffic []tenantRow      `json:"top_by_traffic"`
+		TopBySpend   []tenantRow      `json:"top_by_spend"`
+		RecentTopups []map[string]any `json:"recent_topups"` // for activity feed
 	}
 	resp := response{Counts: make(map[string]int)}
 
@@ -255,8 +249,11 @@ func B2BAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(`SELECT status, COUNT(*) FROM tenants GROUP BY status`)
 	if err == nil {
 		for rows.Next() {
-			var s string; var n int
-			if rows.Scan(&s, &n) == nil { resp.Counts[s] = n }
+			var s string
+			var n int
+			if rows.Scan(&s, &n) == nil {
+				resp.Counts[s] = n
+			}
 		}
 		rows.Close()
 	}
@@ -419,7 +416,9 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct{ TenantID int `json:"tenant_id"` }
+	var req struct {
+		TenantID int `json:"tenant_id"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.TenantID <= 0 {
 		writeAdminError(w, http.StatusBadRequest, "tenant_id required")
@@ -438,12 +437,24 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Metadata (tenant_id) and the wallet credit change in one transaction under the
+	// payment row lock (the same lock the paid-payment claim takes): a payment credited
+	// before answers 409 and keeps its metadata.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "begin: "+err.Error())
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
 	// Patch metadata: add tenant_id; preserve any existing keys.
 	var amount float64
 	var status, currentMeta string
-	if err := db.DB.QueryRow(`
+	if err := tx.QueryRowContext(ctx, `
 		SELECT amount::float8, status, COALESCE(metadata::text, '{}')
-		FROM payments WHERE id = $1
+		FROM payments WHERE id = $1 FOR UPDATE
 	`, paymentID).Scan(&amount, &status, &currentMeta); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "payment not found")
 		return
@@ -456,7 +467,7 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	meta["tenant_id"] = req.TenantID
 	metaJSON, _ := json.Marshal(meta)
-	_, err = db.DB.Exec(`UPDATE payments SET metadata = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metaJSON), paymentID)
+	_, err = tx.ExecContext(ctx, `UPDATE payments SET metadata = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metaJSON), paymentID)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "update metadata: "+err.Error())
 		return
@@ -465,17 +476,23 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	// If the payment is already paid — credit the tenant wallet now. We do
 	// this through biz to get the auto-activate side-effect for free.
 	credited := false
-	if status == "completed" || status == "succeeded" {
+	if biz.IsPaidPaymentStatus(status) {
 		paymentDBID := paymentID
 		desc := fmt.Sprintf("Admin-attached b2b_invoice payment #%d", paymentID)
-		// biz is package-level imported below; call it through a thin shim
-		// to keep this file free of import cycles. See CreditTenantWalletExt
-		// at the bottom of this handler set.
-		if err := creditTenantViaBiz(req.TenantID, amount, desc, &paymentDBID); err != nil {
+		_, err := biz.CreditTenantWalletTx(ctx, tx, req.TenantID, amount, desc, &paymentDBID)
+		if errors.Is(err, biz.ErrPaymentAlreadyCredited) {
+			writeAdminError(w, http.StatusConflict, "Этот платёж уже зачислен")
+			return
+		}
+		if err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "credit: "+err.Error())
 			return
 		}
 		credited = true
+	}
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		return
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
@@ -497,11 +514,11 @@ func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CompanyName string `json:"company_name"`
-		Email       string `json:"email"`
-		MaxUsers    int    `json:"max_users"`
-		MaxServers  int    `json:"max_servers"`
-		UsOurServers bool  `json:"use_our_servers"`
+		CompanyName  string `json:"company_name"`
+		Email        string `json:"email"`
+		MaxUsers     int    `json:"max_users"`
+		MaxServers   int    `json:"max_servers"`
+		UsOurServers bool   `json:"use_our_servers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid body")
