@@ -135,6 +135,7 @@ export default function PaymentsPage() {
   const [dialog, setDialog] = useState(null)
   const [saving, setSaving] = useState(false)
   const [refundFor, setRefundFor] = useState(null) // payment in the refund dialog
+  const [checkingId, setCheckingId] = useState(null) // payment whose YooKassa status is being fetched
   const canActions = can('payments.write') || can('payments.refund')
 
   const [userDbId, setUserDbId] = useState('')
@@ -156,6 +157,8 @@ export default function PaymentsPage() {
     })
       .then(data => {
         setItems(data.items || [])
+        // An open refund dialog follows the fresh row (refundable_amount may have changed).
+        setRefundFor(cur => cur && ((data.items || []).find(p => p.id === cur.id) || cur))
         setTotal(data.total || 0)
         setRealTotal(data.real_total_amount ?? 0)
       })
@@ -394,17 +397,24 @@ export default function PaymentsPage() {
                         {can('payments.write') && <Button size="sm" variant="ghost" onClick={() => openEdit(p)}>{t.edit}</Button>}
                         {can('payments.refund') && (p.yookassa_payment_id || p.external_id) && (
                           <>
-                            <Button size="sm" variant="ghost" title="Запросить статус в ЮKassa" onClick={async () => {
+                            <Button size="sm" variant="ghost" title="Запросить статус в ЮKassa"
+                              loading={checkingId === p.id} disabled={checkingId !== null} onClick={async () => {
+                              setCheckingId(p.id)
                               try {
                                 const res = await checkPaymentStatus(p.id)
                                 toast.success(`ЮKassa: ${res.yookassa_status || res.local_status}`)
                                 load()
-                              } catch (e) { toast.error(e.message) }
+                              } catch (e) {
+                                // The server's own text (e.g. a paid payment it could not apply).
+                                toast.error(e.message)
+                              } finally {
+                                setCheckingId(null)
+                              }
                             }}>
                               Статус
                             </Button>
-                            {/* The backend refunds only payments that have a YooKassa id. */}
-                            {p.yookassa_payment_id && (p.status === 'succeeded' || p.status === 'completed') && refundableAmount(p) > 0 && (
+                            {/* refundable_amount is 0 unless the server can refund the payment. */}
+                            {refundableAmount(p) > 0 && (
                               <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRefundFor(p)}>
                                 Вернуть
                               </Button>
@@ -472,7 +482,13 @@ export default function PaymentsPage() {
         <RefundDialog
           payment={refundFor}
           onClose={() => setRefundFor(null)}
-          onDone={(msg) => { setRefundFor(null); toast.success(msg); load() }}
+          onDone={(msg, level) => {
+            setRefundFor(null)
+            if (level === 'warn') toast.warn(msg)
+            else toast.success(msg)
+            load()
+          }}
+          onRefresh={load}
         />
       )}
     </div>
