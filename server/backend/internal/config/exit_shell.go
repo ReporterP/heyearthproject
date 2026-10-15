@@ -24,15 +24,30 @@ func opLine(op string, args ...string) string {
 	return strings.NewReplacer("\n", " ", "\r", " ").Replace(l) + "\n"
 }
 
-// BinaryPendingDir holds one file per unit whose binary an installer replaced in a run that has
-// not passed restart_checked yet; the file names the binary. UnitRollbackScript puts <binary>.bak
-// back only then: a .bak alone is never restored (exit 2 keeps hysteria 2.6.1 as
-// /usr/local/bin/hysteria.bak next to 2.13.0 — a failed config change must not downgrade it).
-// Same idea as /usr/local/bin/hysteria.pending of deploy --setup-hysteria2-hub.
+// BinaryPendingDir holds one file per unit whose binary an installer is replacing in a run that
+// has not passed restart_checked yet: "<sha256 of the new binary>  <binary path>", written BEFORE
+// the binary is moved into place. UnitRollbackScript puts <binary>.bak back only when the binary
+// on disk is exactly that new one — the replacement happened and was never confirmed. A .bak
+// alone is never restored (exit 2 keeps hysteria 2.6.1 as /usr/local/bin/hysteria.bak next to
+// 2.13.0 — a failed config change must not downgrade it), nor is it when the run was interrupted
+// before the move. Same idea as /usr/local/bin/hysteria.pending of deploy --setup-hysteria2-hub.
 const BinaryPendingDir = "/opt/heyearth/state/binary-pending"
 
 // BinaryPendingMarker is the pending-binary file of a unit (see BinaryPendingDir).
 func BinaryPendingMarker(unit string) string { return BinaryPendingDir + "/" + unit }
+
+// unitFilePath is where the recipes install a unit's file (every *UnitPath constant, the Hub's
+// hysteria2-client-<id>.service): /etc/systemd/system/<unit>.service.
+func unitFilePath(unit string) string {
+	if strings.HasSuffix(unit, ".service") {
+		return "/etc/systemd/system/" + unit
+	}
+	return "/etc/systemd/system/" + unit + ".service"
+}
+
+// PendingWrite is a file the core is about to write for a unit: its path and the sha256 (hex) of
+// the new content. MarkRestartScript records it in the unit's restart marker before the write.
+type PendingWrite struct{ Path, SHA256 string }
 
 // RestartCheckFunc defines restart_checked UNIT: restart, then two samples of NRestarts 3 s and
 // 6 s later — healthy only when the unit is active both times and NRestarts did not move (a crash
@@ -78,53 +93,80 @@ fi
 `
 }
 
-// UnitRollbackScript undoes this run for a unit: every changed file (written by PutFile in this
-// run) gets its .bak back (copied, so a repeated rollback gives the same result) or, when it had
-// no previous version, is removed; a binary replaced and still pending (BinaryPendingMarker) gets
-// its .bak back. Then: something restored → restart_checked (the previous version must run);
-// only new files → the fresh install is disabled and stopped; nothing changed in this run (e.g.
-// resumed after an SSH drop) → the unit is left exactly as it is, restart marker included.
+// UnitRollbackScript undoes this run for a unit. The files to undo are the changed ones (written
+// by PutFile in this job) plus every write recorded in the restart marker (MarkRestartScript)
+// whose file still has the recorded new content — so a rollback in a resumed job, whose in-memory
+// list is empty, still undoes config and unit, while a write that never happened (interrupted
+// before PutFile) is left alone. Each such file gets its .bak back (copied: a repeated rollback
+// gives the same result) or, without a previous version, is removed (internal/provision PutFile
+// deletes a stale <path>.bak when it creates a file, so a missing .bak means "new in this run").
+// A binary still pending (BinaryPendingMarker, sha-checked) gets its .bak back too. Then:
+//   - nothing to undo (e.g. resumed after an SSH drop) → the unit is left as it is, marker kept;
+//   - the unit file does not exist after the undo (it was new: a fresh install) → the unit is
+//     disabled and stopped FIRST, then the new files are removed;
+//   - otherwise (a restored file, or only new extra files such as a drop-in) → new files removed,
+//     restart_checked: the previous version must run.
 func UnitRollbackScript(unit string, changed []string) string {
 	var b strings.Builder
 	b.WriteString(opLine("rollback", unit) + "set -e\n" + RestartCheckFunc)
-	b.WriteString("RB_UNIT=" + shQuote(unit) + "\nRB_MARK=" + shQuote(RestartMarker(unit)) + "\nRB_BIN=" + shQuote(BinaryPendingMarker(unit)) +
-		"\nrestored=0\nremoved=0\n")
-	b.WriteString(`rb_restore() {
+	b.WriteString("RB_UNIT=" + shQuote(unit) + "\nRB_FILE=" + shQuote(unitFilePath(unit)) + "\nRB_MARK=" + shQuote(RestartMarker(unit)) +
+		"\nRB_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n")
+	b.WriteString(`restored=0
+rb_new=()
+rb_sha() { sha256sum < "$1" | cut -d' ' -f1; }
+rb_restore() {
   if [ -f "$1.bak" ]; then
     cp -p "$1.bak" "$1.rollback.tmp"
     mv -f "$1.rollback.tmp" "$1"
     restored=1
     echo "[unit] $RB_UNIT: возвращён прежний $1"
-  else
-    rm -f "$1"
-    removed=1
+  elif [ -e "$1" ]; then
+    rb_new+=("$1")
   fi
 }
 `)
 	for _, p := range changed {
 		b.WriteString("rb_restore " + shQuote(p) + "\n")
 	}
-	b.WriteString(`if [ -f "$RB_BIN" ]; then
-  rb_b=$(head -n 1 "$RB_BIN")
-  if [ -n "$rb_b" ] && [ -f "$rb_b.bak" ]; then
-    cp -p "$rb_b.bak" "$rb_b.rollback.tmp"
-    mv -f "$rb_b.rollback.tmp" "$rb_b"
-    restored=1
-    echo "[unit] $RB_UNIT: возвращён прежний бинарник $rb_b"
-  fi
+	b.WriteString(`if [ -f "$RB_MARK" ]; then
+  while IFS= read -r rb_l || [ -n "$rb_l" ]; do
+    rb_p=${rb_l#*  }
+    if [ "$rb_p" != "$rb_l" ] && [ -f "$rb_p" ] && [ "$(rb_sha "$rb_p")" = "${rb_l%%  *}" ]; then rb_restore "$rb_p"; fi
+  done < "$RB_MARK"
+fi
+if [ -f "$RB_BIN" ]; then
+  while IFS= read -r rb_l || [ -n "$rb_l" ]; do
+    rb_b=${rb_l#*  }
+    if [ "$rb_b" != "$rb_l" ] && [ -f "$rb_b" ] && [ -f "$rb_b.bak" ] && [ "$(rb_sha "$rb_b")" = "${rb_l%%  *}" ]; then
+      cp -p "$rb_b.bak" "$rb_b.rollback.tmp"
+      mv -f "$rb_b.rollback.tmp" "$rb_b"
+      restored=1
+      echo "[unit] $RB_UNIT: возвращён прежний бинарник $rb_b"
+    fi
+  done < "$RB_BIN"
   rm -f "$RB_BIN"
 fi
-systemctl daemon-reload
-if [ "$restored" = 1 ]; then
-  restart_checked "$RB_UNIT"
-  rm -f "$RB_MARK"
-  echo "[unit] $RB_UNIT: возвращена прежняя версия"
-elif [ "$removed" = 1 ]; then
+rb_gone=1
+if [ -f "$RB_FILE" ]; then
+  rb_gone=0
+  for rb_f in "${rb_new[@]}"; do
+    if [ "$rb_f" = "$RB_FILE" ]; then rb_gone=1; fi
+  done
+fi
+if [ "$restored" = 0 ] && [ "${#rb_new[@]}" = 0 ]; then
+  echo "[unit] $RB_UNIT: в этом запуске файлы не менялись — возвращать нечего"
+elif [ "$rb_gone" = 1 ]; then
   systemctl disable --now "$RB_UNIT" >/dev/null 2>&1 || true
+  rm -f -- "${rb_new[@]}"
+  systemctl daemon-reload
   rm -f "$RB_MARK"
   echo "[unit] $RB_UNIT: новая установка снята"
 else
-  echo "[unit] $RB_UNIT: в этом запуске файлы не менялись — возвращать нечего"
+  rm -f -- "${rb_new[@]}"
+  systemctl daemon-reload
+  restart_checked "$RB_UNIT"
+  rm -f "$RB_MARK"
+  echo "[unit] $RB_UNIT: возвращена прежняя версия"
 fi
 `)
 	return b.String()
@@ -138,10 +180,32 @@ if [ -f "$US_MARK" ]; then echo MARKER=1; else echo MARKER=0; fi
 `
 }
 
-// MarkRestartScript sets the unit's restart marker; the core runs it BEFORE writing a differing
-// file, so an SSH drop between the write and the restart cannot lose the restart.
-func MarkRestartScript(unit string) string {
-	return opLine("mark", unit) + "set -e\nmkdir -p " + RestartMarkerDir + "\ntouch " + shQuote(RestartMarker(unit)) + "\n"
+// MarkRestartScript sets the unit's restart marker and appends the writes about to happen
+// ("<sha256>  <path>", once each); the core runs it BEFORE writing differing files, so an SSH
+// drop between the write and the restart loses neither the restart nor the rollback
+// (UnitRollbackScript). Entries without a 64-hex sha256 are left out.
+func MarkRestartScript(unit string, writes ...PendingWrite) string {
+	var b strings.Builder
+	b.WriteString(opLine("mark", unit) + "set -e\nmkdir -p " + RestartMarkerDir + "\nMK=" + shQuote(RestartMarker(unit)) + "\ntouch \"$MK\"\n")
+	for _, w := range writes {
+		if !isSHA256Hex(w.SHA256) {
+			continue
+		}
+		b.WriteString("l=" + shQuote(w.SHA256+"  "+w.Path) + "; grep -qxF -- \"$l\" \"$MK\" || printf '%s\\n' \"$l\" >> \"$MK\"\n")
+	}
+	return b.String()
+}
+
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // SumsScript prints "<sha256>  <path>" for every path that is a regular file, the path exactly
@@ -163,15 +227,34 @@ func CatScript(p string) string {
 	return opLine("cat", p) + "cat " + shQuote(p) + " 2>/dev/null || true\n"
 }
 
-// ExitFirewallScript never switches a firewall on. If ufw is active it allows the SSH port, the
-// tunnels (hysteria UDP 50443 + the hop range, Reality TCP 10443), the MTProxy port and
-// node-agent :50052 from the Hub's addresses only (ufw skips existing rules itself). Else, if
-// iptables filters INPUT (DROP/REJECT policy or rule), the same rules are inserted once (-C
-// first); IPv6 Hub addresses are left to ufw — exits run with IPv6 disabled (ExitSysctlConf).
-// A native nftables input chain with a drop policy is not ours to edit: only a warning. Invalid
-// ports (sshPort, mtprotoPort 0 = no MTProxy) and non-IP Hub addresses are left out.
+// ufwHasPortAwk exits 0 when `ufw status [verbose]` lists any rule (any action, v4 or v6, alone,
+// with an address or in a port list) whose destination is port p.
+const ufwHasPortAwk = `/^--/ { r = 1; next }
+r && NF { t = $0; sub(/ +(ALLOW|DENY|REJECT|LIMIT)( (IN|OUT|FWD))?( .*)?$/, "", t)
+  n = split(t, w, /[ ,\/()]+/); for (i = 1; i <= n; i++) if (w[i] == p) f = 1 }
+END { exit !f }`
+
+// ExitFirewallScript never switches a firewall on. If ufw is active (asked with LC_ALL=C: the
+// status line is localized) it allows the tunnels (hysteria UDP 50443 + the hop range, Reality
+// TCP 10443), the MTProxy port and node-agent :50052 from the Hub's addresses only (ufw skips
+// existing rules itself). Else, if iptables filters INPUT (DROP/REJECT policy or rule), the same
+// rules are inserted once (-C first); IPv6 Hub addresses are left to ufw — exits run with IPv6
+// disabled (ExitSysctlConf). The SSH port is allowed only when no rule mentions it yet: the
+// session is already open, and `ufw allow` would replace a `limit` rule on it ("Rule updated")
+// while `iptables -I … ACCEPT` would jump ahead of fail2ban / -m recent drops. A native nftables
+// input chain with a drop policy is not ours to edit: only a warning. Invalid ports (sshPort,
+// mtprotoPort 0 = no MTProxy) and non-IP Hub addresses are left out.
 func ExitFirewallScript(sshPort int, hubIPs []string, mtprotoPort int) string {
-	tcp := validPorts([]int{sshPort, ExitRealityPort, mtprotoPort})
+	ssh := 0
+	if sshPort >= 1 && sshPort <= 65535 {
+		ssh = sshPort
+	}
+	var tcp []int
+	for _, p := range validPorts([]int{ExitRealityPort, mtprotoPort}) {
+		if p != ssh {
+			tcp = append(tcp, p)
+		}
+	}
 	udp := []string{strconv.Itoa(ExitHysteriaPort), strings.ReplaceAll(ExitHopRange, "-", ":")}
 	var hubs []string
 	seen := map[string]bool{}
@@ -181,15 +264,22 @@ func ExitFirewallScript(sshPort int, hubIPs []string, mtprotoPort int) string {
 			hubs = append(hubs, c)
 		}
 	}
-	ports := make([]string, 0, len(tcp))
-	for _, p := range tcp {
-		ports = append(ports, "TCP "+strconv.Itoa(p))
+	var ports []string
+	for _, p := range append([]int{ssh}, tcp...) {
+		if p > 0 {
+			ports = append(ports, "TCP "+strconv.Itoa(p))
+		}
 	}
-	need := strings.Join(ports, ", ") + ", UDP " + strconv.Itoa(ExitHysteriaPort) + ", UDP " + ExitHopRange + ", TCP " + strconv.Itoa(NodeAgentPort) + " с адресов Hub"
+	need := strings.Join(append(ports, "UDP "+strconv.Itoa(ExitHysteriaPort), "UDP "+ExitHopRange, "TCP "+strconv.Itoa(NodeAgentPort)+" с адресов Hub"), ", ")
 
 	var b strings.Builder
-	b.WriteString(opLine("firewall") + "set -e\nif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then\n" +
+	b.WriteString(opLine("firewall") + "set -e\nif command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then\n" +
 		"  echo \"[fw] ufw включён — добавляю разрешения\"\n")
+	if ssh > 0 {
+		fmt.Fprintf(&b, "  if LC_ALL=C ufw status verbose 2>/dev/null | awk -v p=%d %s; then\n"+
+			"    echo \"[fw] для SSH-порта %d в ufw уже есть правило — не трогаю\"\n  else\n    ufw allow %d/tcp >/dev/null\n  fi\n",
+			ssh, shQuote(ufwHasPortAwk), ssh, ssh)
+	}
 	for _, p := range tcp {
 		fmt.Fprintf(&b, "  ufw allow %d/tcp >/dev/null\n", p)
 	}
@@ -202,6 +292,11 @@ func ExitFirewallScript(sshPort int, hubIPs []string, mtprotoPort int) string {
 	b.WriteString("elif iptables -S INPUT 2>/dev/null | grep -qE '^-P INPUT (DROP|REJECT)|^-A INPUT .*-j (DROP|REJECT)'; then\n" +
 		"  echo \"[fw] iptables фильтрует входящие — добавляю разрешения\"\n" +
 		"  ipt_allow() { iptables -C INPUT \"$@\" -j ACCEPT 2>/dev/null || iptables -I INPUT \"$@\" -j ACCEPT; }\n")
+	if ssh > 0 {
+		fmt.Fprintf(&b, "  if iptables -S INPUT 2>/dev/null | grep -qE -e '--dports? ([0-9]+[,:])*%d([,: ]|$)'; then\n"+
+			"    echo \"[fw] для SSH-порта %d в iptables уже есть правила — не трогаю\"\n  else\n    ipt_allow -p tcp --dport %d\n  fi\n",
+			ssh, ssh, ssh)
+	}
 	for _, p := range tcp {
 		fmt.Fprintf(&b, "  ipt_allow -p tcp --dport %d\n", p)
 	}
@@ -246,10 +341,13 @@ func XrayExitInstallScript() string { return xrayExitInstallScript(XrayExitSHA25
 // unzipped the whole archive, the provisioning core must not depend on that): download to a temp
 // dir in /opt/heyearth/xray (same filesystem: atomic mv; stale dirs of a dropped run are
 // removed), sha256 before unzip and any execution, version check of the new binary, data files
-// installed from the same archive, the previous binary kept as xray.bak (temp + mv). Sets
-// XR_REPLACED=1 when the binary was replaced, XR_DATA=1 when the data files were (re)installed.
-// On failure "[xray] ERROR" goes to stderr, nothing is changed and it returns non-zero: run
-// under set -e. Does not restart anything.
+// installed from the same archive, the previous binary kept as xray.bak (temp + mv). Before
+// anything is moved into place the xray unit's restart marker is set, and before the binary the
+// pending-binary marker with the new binary's sha256 (BinaryPendingMarker): an interruption
+// right after a move is still restarted and, if unhealthy, rolled back. Sets XR_REPLACED=1 when
+// the binary was replaced, XR_DATA=1 when the data files were (re)installed. On failure
+// "[xray] ERROR" goes to stderr, nothing is changed and it returns non-zero: run under set -e.
+// Does not restart anything.
 func xrayExitInstallScript(sha string) string {
 	return `XR_WANT="` + strings.TrimPrefix(XrayExitVersion, "v") + `"
 XR_SHA256="` + sha + `"
@@ -270,6 +368,8 @@ if [ "$XR_CUR" != "$XR_WANT" ] || [ ! -s "$XR_DIR/geoip.dat" ] || [ ! -s "$XR_DI
   rm -rf "$XR_DIR"/.dl.*
   XR_TMP=$(mktemp -d "$XR_DIR/.dl.XXXXXX")
   if xr_fetch; then
+    mkdir -p ` + RestartMarkerDir + ` ` + BinaryPendingDir + `
+    touch ` + RestartMarker("xray") + `
     mv -f "$XR_TMP/geoip.dat" "$XR_DIR/geoip.dat"
     mv -f "$XR_TMP/geosite.dat" "$XR_DIR/geosite.dat"
     XR_DATA=1
@@ -278,6 +378,8 @@ if [ "$XR_CUR" != "$XR_WANT" ] || [ ! -s "$XR_DIR/geoip.dat" ] || [ ! -s "$XR_DI
         cp -p "$XR_DIR/xray" "$XR_DIR/xray.bak.tmp"
         mv -f "$XR_DIR/xray.bak.tmp" "$XR_DIR/xray.bak"
       fi
+      XR_NEW_SHA=$(sha256sum < "$XR_TMP/xray" | cut -d' ' -f1)
+      printf '%s  %s\n' "$XR_NEW_SHA" "$XR_DIR/xray" > ` + BinaryPendingMarker("xray") + `
       mv -f "$XR_TMP/xray" "$XR_DIR/xray"
       XR_REPLACED=1
       echo "[xray] installed $XR_WANT (previous: ${XR_CUR:-none})"
@@ -300,9 +402,8 @@ fi
 // after the recipe wrote config.json, xray.service and the guard files (ExitXrayGuardConfPath,
 // ExitXrayGuardUnitPath, ExitXrayResolvConfPath): the system user (ExitXrayUserScript), the
 // kernel egress guard loaded and enabled (ExitXrayGuardApplyScript — refused when its files are
-// missing, xray never starts unguarded), the pinned binary, then `xray run -test` on the config
-// before any restart. A replaced binary or data files set the restart marker; a replaced binary
-// also the pending-binary marker (UnitRollbackScript).
+// missing, xray never starts unguarded), the pinned binary (it sets the restart and
+// pending-binary markers itself), then `xray run -test` on the config before any restart.
 func ExitXrayPrepareScript() string { return exitXrayPrepareScript(XrayExitInstallScript()) }
 
 func exitXrayPrepareScript(install string) string {
@@ -310,9 +411,7 @@ func exitXrayPrepareScript(install string) string {
 		"for xr_f in " + ExitXrayGuardConfPath + " " + ExitXrayGuardUnitPath + " " + ExitXrayResolvConfPath + "; do\n" +
 		"  [ -f \"$xr_f\" ] || { echo \"[xray] ERROR: нет $xr_f — без защиты исходящих xray не запускается\" >&2; exit 1; }\ndone\n" +
 		ExitXrayGuardApplyScript + install +
-		`if [ "$XR_REPLACED" = 1 ] || [ "$XR_DATA" = 1 ]; then mkdir -p ` + RestartMarkerDir + `; touch ` + RestartMarker("xray") + `; fi
-if [ "$XR_REPLACED" = 1 ]; then mkdir -p ` + BinaryPendingDir + `; printf '%s\n' ` + ExitXrayBinary + ` > ` + BinaryPendingMarker("xray") + `; fi
-if ! XR_TEST=$(` + ExitXrayBinary + ` run -test -config ` + ExitXrayConfig + ` 2>&1); then
+		`if ! XR_TEST=$(` + ExitXrayBinary + ` run -test -config ` + ExitXrayConfig + ` 2>&1); then
   printf '%s\n' "$XR_TEST" | tail -n 20 >&2
   echo "[xray] ERROR: конфигурация не прошла проверку xray run -test — служба не перезапущена" >&2
   exit 1
@@ -322,19 +421,28 @@ echo "[xray] конфигурация прошла проверку (xray run -t
 }
 
 // ExitHysteriaPrepareScript is the converge extra of the exit hysteria (UnitConvergeScript(
-// "hysteria2", …)): the pinned hysteria (HysteriaInstallScript; a replaced binary sets the
-// restart and pending-binary markers) and the self-signed TLS pair, created only when a half is
-// missing (marker first, then key, then certificate — a drop never leaves a mismatched pair).
-func ExitHysteriaPrepareScript() string { return exitHysteriaPrepareScript(HysteriaInstallScript()) }
+// "hysteria2", …)): the pinned hysteria and the self-signed TLS pair. The shared installer
+// (HysteriaInstallScript, also used by deploy) has no hook before its final mv, so when the
+// installed version differs the restart marker and the pending-binary marker (sha256 of the
+// pinned binary, HysteriaSHA256 — the release asset is the binary itself) are set BEFORE it runs:
+// an interruption right after the mv is still restarted and rolled back, and if the install
+// fails the binary keeps its old sha256, so UnitRollbackScript never takes its .bak. The TLS
+// pair is created only when a half is missing: marker, then both old files removed, then key,
+// then certificate — an interruption never leaves a new key next to an old certificate (a
+// missing half makes the next run generate a fresh pair).
+func ExitHysteriaPrepareScript() string {
+	return exitHysteriaPrepareScript(HysteriaInstallScript(), HysteriaSHA256)
+}
 
-func exitHysteriaPrepareScript(install string) string {
+func exitHysteriaPrepareScript(install, binSHA string) string {
 	certDir := path.Dir(ExitHysteriaCert)
-	return install + `mkdir -p ` + RestartMarkerDir + ` ` + BinaryPendingDir + `
-if [ "$HY_REPLACED" = 1 ]; then
+	return `HY_PRE=$(/usr/local/bin/hysteria version 2>/dev/null | awk '$1=="Version:"{print $2}') || HY_PRE=""
+mkdir -p ` + RestartMarkerDir + ` ` + BinaryPendingDir + `
+if [ "$HY_PRE" != "` + HysteriaVersion + `" ]; then
   touch ` + RestartMarker("hysteria2") + `
-  printf '%s\n' /usr/local/bin/hysteria > ` + BinaryPendingMarker("hysteria2") + `
+  printf '%s  %s\n' ` + binSHA + ` /usr/local/bin/hysteria > ` + BinaryPendingMarker("hysteria2") + `
 fi
-mkdir -p ` + certDir + `
+` + install + `mkdir -p ` + certDir + `
 if [ ! -s ` + ExitHysteriaCert + ` ] || [ ! -s ` + ExitHysteriaKey + ` ]; then
   rm -rf ` + certDir + `/.hy2.*
   HY_CT=$(mktemp -d ` + certDir + `/.hy2.XXXXXX)
@@ -348,6 +456,7 @@ if [ ! -s ` + ExitHysteriaCert + ` ] || [ ! -s ` + ExitHysteriaKey + ` ]; then
   chmod 600 "$HY_CT/hy2.key"
   chmod 644 "$HY_CT/hy2.crt"
   touch ` + RestartMarker("hysteria2") + `
+  rm -f ` + ExitHysteriaCert + ` ` + ExitHysteriaKey + `
   mv -f "$HY_CT/hy2.key" ` + ExitHysteriaKey + `
   mv -f "$HY_CT/hy2.crt" ` + ExitHysteriaCert + `
   rm -rf "$HY_CT"
