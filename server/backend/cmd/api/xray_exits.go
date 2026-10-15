@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 )
 
 // ─────────────── Exit paths in the Hub's xray config (node pool, phase 1) ───────────────
@@ -45,6 +46,15 @@ const (
 	exitAllSelector    = "exit-"
 	exitProbeTagPrefix = "probe-vr-"
 	exitVRCostFactor   = 400 // √400 = ×20 on RTT, see exitBaselines
+
+	// exitVRFingerprint is the uTLS fingerprint of the Hub→exit TCP path (exit-N.vr and the probe
+	// outbound probe-vr-N). It is fixed, decoupled from the user-facing reality_fingerprint the
+	// auto-tuner rotates among chrome/firefox/safari/edge: against the exit's Reality inbound
+	// (dest microsoft.com:443, SNI www.microsoft.com) only some fingerprints complete the
+	// handshake — measured on prod 2026-10-15: chrome, firefox, safari ok; ios, edge, randomized
+	// fail — and every tuner rotation would otherwise rewrite these outbounds and restart xray for
+	// all users because of an internal path.
+	exitVRFingerprint = "chrome"
 )
 
 // ─────────────── Balancer strategy: leastLoad with costs and baselines ───────────────
@@ -172,18 +182,29 @@ func exitHyOutbound(id int, tag string) map[string]interface{} {
 	}
 }
 
+// exitVRServerName is the SNI of exit n's TCP path: its tunnel_sni whenever set (never rewritten).
+// Empty, a Hysteria exit's fallback goes to the xray --setup-exit-node configures, so it gets
+// config.ExitVRSNI (www.microsoft.com; the apex fails the handshake); a legacy primary VLESS exit
+// (its own inbound, not set up by deploy) keeps its old fallback, its own address.
+func exitVRServerName(n biz.ExitNodeTunnel) string {
+	switch {
+	case n.TunnelSNI != "":
+		return n.TunnelSNI
+	case n.TunnelProtocol == "vless":
+		return n.IPAddress
+	}
+	return config.ExitVRSNI
+}
+
 // exitVROutbound is VLESS Reality over TCP to the exit's xray. For a Hysteria exit it is the
 // fallback path: the exit's xray serves the Hub's UUID with flow xtls-rprx-vision (cmd/deploy
 // --setup-exit-node) and refuses requests without that flow and over mux.cool, so: Vision, no
 // mux (UDP 443/QUIC is refused by Vision, clients fall back to TCP while on this path). A legacy
-// primary VLESS exit keeps its old outbound: its own port, mux, no flow.
-func exitVROutbound(n biz.ExitNodeTunnel, tag, fingerprint string, mux int) map[string]interface{} {
-	sni := n.TunnelSNI
-	if sni == "" {
-		sni = n.IPAddress
-	}
+// primary VLESS exit keeps its old outbound: its own port, mux, no flow. The fingerprint is
+// always exitVRFingerprint, the SNI exitVRServerName.
+func exitVROutbound(n biz.ExitNodeTunnel, tag string, mux int) map[string]interface{} {
 	// publicKey is always there (exitHasVRPath); shortId is singular on the client side of Reality.
-	reality := map[string]interface{}{"fingerprint": fingerprint, "serverName": sni, "publicKey": n.TunnelPubKey}
+	reality := map[string]interface{}{"fingerprint": exitVRFingerprint, "serverName": exitVRServerName(n), "publicKey": n.TunnelPubKey}
 	if n.TunnelShortID != "" {
 		reality["shortId"] = n.TunnelShortID
 	}
@@ -275,7 +296,7 @@ func (l *exitNoteLog) update(nodes []biz.ExitNodeTunnel, notes map[int]string) {
 
 // buildExitConfig builds the exit outbounds of the healthy exits and the probe pairs of every
 // online exit with a TCP path, in node order (ORDER BY id).
-func buildExitConfig(nodes []biz.ExitNodeTunnel, fingerprint string, mux int) exitConfig {
+func buildExitConfig(nodes []biz.ExitNodeTunnel, mux int) exitConfig {
 	var c exitConfig
 	notes := map[int]string{}
 	defer func() { exitNotes.update(nodes, notes) }()
@@ -309,13 +330,13 @@ func buildExitConfig(nodes []biz.ExitNodeTunnel, fingerprint string, mux int) ex
 				c.outbounds = append(c.outbounds, exitHyOutbound(n.ID, hyTag))
 			}
 			if vr {
-				c.outbounds = append(c.outbounds, exitVROutbound(n, vrTag, fingerprint, mux))
+				c.outbounds = append(c.outbounds, exitVROutbound(n, vrTag, mux))
 			}
 			c.routes = append(c.routes, r)
 		}
 		if vr {
 			tag := exitProbeTag(n.ID)
-			c.probeOutbounds = append(c.probeOutbounds, exitVROutbound(n, tag, fingerprint, mux))
+			c.probeOutbounds = append(c.probeOutbounds, exitVROutbound(n, tag, mux))
 			c.probeInbounds = append(c.probeInbounds, exitProbeInbound(n.ID))
 			c.probeRules = append(c.probeRules, map[string]interface{}{
 				"type": xrayRuleTypeField, "inboundTag": []string{tag}, "outboundTag": tag,

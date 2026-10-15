@@ -2194,7 +2194,7 @@ echo "UUID: $UUID"
 echo "Public Key: $PUB_KEY"
 echo "Short ID: $SHORT_ID"
 echo "SS Password: (не печатается; /opt/heyearth/state/reality-keys.json)"
-echo "SNI: microsoft.com"
+echo "SNI: www.microsoft.com"
 echo "================================="
 `, exitXrayGuardRules(exitIP, mtprotoPort), config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP, mtprotoPort), "\n"),
 		config.ExitHopRange, strings.TrimSuffix(config.ExitPortHopScript, "\n"), config.ExitHopRange,
@@ -2358,7 +2358,7 @@ print(k.get('ssPassword', ''))
 
 	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
 	want := exitTunnelCreds{UUID: tunnelUUID, PublicKey: tunnelPubKey, ShortID: tunnelShortID, SSPassword: tunnelSSPass,
-		Protocol: "hysteria2", Port: 50443, SNI: "microsoft.com"}
+		Protocol: "hysteria2", Port: 50443, SNI: config.ExitVRSNI}
 	action := exitDBUpdate // unknown state: behave as before (write and resync)
 	dbConn, closeDB, err := openDBTunnel(mainClient, dbURL)
 	if err != nil {
@@ -2384,11 +2384,11 @@ print(k.get('ssPassword', ''))
 			if _, err := dbConn.Exec(`
 				UPDATE servers SET
 				  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
-				  tunnel_ss_password = $4, tunnel_sni = 'microsoft.com',
+				  tunnel_ss_password = $4, tunnel_sni = $6,
 				  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
 				  tunnel_status = 'unknown', status = COALESCE(NULLIF(status, ''), 'active')
 				WHERE ip_address = $5`,
-				tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP); err != nil {
+				tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP, want.SNI); err != nil {
 				fmt.Printf("[exit-node] Ошибка UPDATE: %v\n", err)
 			} else {
 				fmt.Println("[exit-node] БД обновлена (credentials туннеля изменились)")
@@ -2398,9 +2398,9 @@ print(k.get('ssPassword', ''))
 				INSERT INTO servers (name, ip_address, country_code, is_exit_node,
 				                     tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
 				                     tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
-				SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, 'microsoft.com', 'unknown', 'active'
+				SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, $6, 'unknown', 'active'
 				WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = $1)`,
-				exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass); err != nil {
+				exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, want.SNI); err != nil {
 				fmt.Printf("[exit-node] Ошибка INSERT: %v\n", err)
 			} else {
 				fmt.Println("[exit-node] БД обновлена (новая exit-нода)")

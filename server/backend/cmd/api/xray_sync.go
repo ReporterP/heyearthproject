@@ -301,8 +301,9 @@ type xraySettings struct {
 	cdnXHPath      string   // cdn_xh_path (read only while the CDN is enabled)
 	cdnHost        string   // cdn_host (read only while the CDN is enabled)
 	dnsServers     []string // dns_servers
-	fingerprint    string   // reality_fingerprint (Hub→exit VLESS tunnels)
 	muxConcurrency int      // mux_concurrency (Hub→exit tunnels)
+	// reality_fingerprint is deliberately not an input: the Hub→exit TCP path has its own fixed
+	// exitVRFingerprint (xray_exits.go), so the auto-tuner's rotations never restart xray.
 }
 
 // xrayInputs is everything buildXrayConfig needs; nothing else is read.
@@ -331,7 +332,6 @@ const (
 	defaultCDNXHPath      = "/cdn-xh"
 	defaultCDNHost        = "cdn.hiearth.ru"
 	defaultDNSServers     = "8.8.8.8,1.1.1.1"
-	defaultFingerprint    = "chrome"
 	defaultMuxConcurrency = 8
 )
 
@@ -369,9 +369,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 		return in, err
 	}
 	s.dnsServers = parseDNSServers(dns)
-	if s.fingerprint, err = setting("reality_fingerprint", defaultFingerprint); err != nil {
-		return in, err
-	}
 	mux, err := setting("mux_concurrency", strconv.Itoa(defaultMuxConcurrency))
 	if err != nil {
 		return in, err
@@ -673,7 +670,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 
 	// Exit paths and probe pairs (xray_exits.go). Probe inbounds are loopback-only and are not
 	// user inbounds (userInboundTags skips them).
-	exitCfg := buildExitConfig(in.exitNodes, settings.fingerprint, settings.muxConcurrency)
+	exitCfg := buildExitConfig(in.exitNodes, settings.muxConcurrency)
 	inbounds = append(inbounds, exitCfg.probeInbounds...)
 
 	// Every inbound except api-in carries user traffic; the no-exit block rule

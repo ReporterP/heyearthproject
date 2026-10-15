@@ -43,7 +43,7 @@ func baseInputs() xrayInputs {
 		keys: xrayRealityKeys{PrivateKey: "priv", PublicKey: "pub", ShortID: "sid", UUID: "server-uuid"},
 		settings: xraySettings{
 			realitySNI: "yandex.ru", mainServerHost: "hiearth.ru",
-			dnsServers: []string{"8.8.8.8", "1.1.1.1"}, fingerprint: "chrome", muxConcurrency: 8,
+			dnsServers: []string{"8.8.8.8", "1.1.1.1"}, muxConcurrency: 8,
 		},
 		clients: []biz.ActiveVlessClient{
 			testClient("alice", 3), testClient("bob", 3), testClient("carol", 5), testClient("dave", 0),
@@ -347,7 +347,7 @@ func TestXraySyncReadsDefaults(t *testing.T) {
 		t.Errorf("realitySNI = %q, want %q", s.realitySNI, biz.DefaultRealitySNI)
 	}
 	if s.mainServerHost != defaultMainServerHost || s.cdnEnabled ||
-		!reflect.DeepEqual(s.dnsServers, []string{"8.8.8.8", "1.1.1.1"}) || s.fingerprint != "chrome" || s.muxConcurrency != 8 {
+		!reflect.DeepEqual(s.dnsServers, []string{"8.8.8.8", "1.1.1.1"}) || s.muxConcurrency != 8 {
 		t.Errorf("defaults = %+v", s)
 	}
 	for _, c := range *calls {
@@ -475,8 +475,8 @@ func TestXrayClientFacing(t *testing.T) {
 		{"masking/direct/plans", func(in *xrayInputs) {
 			in.maskingRules, in.directPlanIDs, in.planServers = nil, nil, nil
 		}, quotaCutoff{}},
-		{"DNS, fingerprint, mux", func(in *xrayInputs) {
-			in.settings.dnsServers, in.settings.fingerprint = []string{"9.9.9.9"}, "firefox"
+		{"DNS, mux", func(in *xrayInputs) {
+			in.settings.dnsServers = []string{"9.9.9.9"}
 			in.settings.muxConcurrency = 4
 		}, quotaCutoff{}},
 	}

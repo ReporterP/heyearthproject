@@ -145,7 +145,7 @@ func TestExitScriptsSecrets(t *testing.T) {
 // A re-run on an unchanged exit: the Hub client is restarted only when its files changed or it
 // is down, and the tunnel row (and heyearth-api) only when the credentials changed.
 func TestExitRerunDoesNotInterrupt(t *testing.T) {
-	want := exitTunnelCreds{UUID: "u", PublicKey: "pk", ShortID: "s", SSPassword: "p", Protocol: "hysteria2", Port: 50443, SNI: "microsoft.com"}
+	want := exitTunnelCreds{UUID: "u", PublicKey: "pk", ShortID: "s", SSPassword: "p", Protocol: "hysteria2", Port: 50443, SNI: config.ExitVRSNI}
 	if a := decideExitDBAction(want, true, want); a != exitDBKeep || exitDBNeedsResync(a) {
 		t.Errorf("unchanged credentials: action %d, resync %v", a, exitDBNeedsResync(a))
 	}
@@ -178,6 +178,29 @@ sleep() { :; }
 		if got := strings.Contains(out, "RESTARTED"); got != (c.wantRestart == "1") {
 			t.Errorf("changed=%s active=%s: restarted=%v\n%s", c.changed, c.active, got, out)
 		}
+	}
+}
+
+// The SNI --setup-exit-node writes to tunnel_sni (and the Hub's generator falls back to) is one the
+// exit's Reality inbound serves: www.microsoft.com, not the apex that fails the handshake on prod.
+func TestExitNodeSetupScriptServesExitVRSNI(t *testing.T) {
+	if config.ExitVRSNI != "www.microsoft.com" {
+		t.Fatalf("config.ExitVRSNI = %q, want www.microsoft.com", config.ExitVRSNI)
+	}
+	s := exitNodeSetupScript("203.0.113.7", 8443)
+	m := regexp.MustCompile(`"serverNames": \[([^\]]*)\]`).FindStringSubmatch(s)
+	if m == nil || !strings.Contains(m[1], `"`+config.ExitVRSNI+`"`) {
+		t.Errorf("the exit's Reality serverNames %v lack %q", m, config.ExitVRSNI)
+	}
+	if !strings.Contains(s, `echo "SNI: `+config.ExitVRSNI+`"`) {
+		t.Errorf("the exit script reports another SNI than %q", config.ExitVRSNI)
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "tunnel_sni = 'microsoft.com'") || strings.Contains(string(src), `SNI: "microsoft.com"`) {
+		t.Error("setupExitNodeDeploy writes the apex microsoft.com to tunnel_sni")
 	}
 }
 

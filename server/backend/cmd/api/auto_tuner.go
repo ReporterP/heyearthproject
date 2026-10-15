@@ -491,10 +491,7 @@ func tuneExitNodeSNI(node biz.ExitNodeTunnel) bool {
 		return false
 	}
 
-	currentSNI := node.TunnelSNI
-	if currentSNI == "" {
-		currentSNI = node.IPAddress
-	}
+	currentSNI := exitVRServerName(node) // the SNI the generator puts on exit-N.vr
 
 	// Get country code for this exit node from DB
 	nodeCountry := getServerCountry(node.ID)

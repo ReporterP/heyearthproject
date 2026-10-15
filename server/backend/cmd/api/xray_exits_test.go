@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/xraydiff"
 )
 
-// exitFixture is an exit as cmd/deploy --setup-exit-node writes it: Hysteria on 50443 plus the
-// exit's VLESS Reality credentials (SNI microsoft.com); withVR=false is an older row without them.
+// exitFixture is an exit as an older cmd/deploy --setup-exit-node wrote it: Hysteria on 50443 plus
+// the exit's VLESS Reality credentials (SNI microsoft.com; deploy now writes config.ExitVRSNI);
+// withVR=false is an older row without them.
 func exitFixture(id, weight int, status string, withVR bool) biz.ExitNodeTunnel {
 	n := testExit(id, "hysteria2")
 	n.TunnelPort, n.TunnelSNI, n.LoadWeight, n.TunnelStatus, n.LifecycleState = 50443, "microsoft.com", weight, status, "online"
@@ -519,6 +521,82 @@ func TestXrayExitPathOutbounds(t *testing.T) {
 	}
 	if byTag(v.Outbounds, "exit-5.hy") != nil {
 		t.Error("a VLESS exit has no Hysteria path")
+	}
+}
+
+// realityOf returns the realitySettings of the outbound tag in v (fails the test when absent).
+func realityOf(t *testing.T, v xrayView, tag string) map[string]any {
+	t.Helper()
+	o := byTag(v.Outbounds, tag)
+	ss, _ := o["streamSettings"].(map[string]any)
+	rs, _ := ss["realitySettings"].(map[string]any)
+	if rs == nil {
+		t.Fatalf("%s: no realitySettings in %s", tag, asJSON(o))
+	}
+	return rs
+}
+
+// The Hub→exit TCP path (exit-N.vr and probe-vr-N, routed or not, legacy VLESS included) always
+// presents the fixed chrome fingerprint: a non-chrome reality_fingerprint (the auto-tuner rotates
+// it; ios/edge/randomized fail the exit's Reality handshake on prod) changes neither those
+// outbounds nor any other byte of the config, so a rotation restarts nothing. The user-facing
+// inbounds stay unaffected as before: their fingerprints never came from the xray config (they
+// are fixed in the URIs, client_api.go and subscription_handler.go).
+func TestXrayExitVRFingerprintIgnoresSetting(t *testing.T) {
+	gen := func(settings map[string]string) []byte {
+		t.Helper()
+		r, _ := fakeReads(settings, "")
+		in, err := r.load(xrayRealityKeys{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.exitNodes = []biz.ExitNodeTunnel{exitFixture(2, 1, "healthy", true), exitFixture(7, 1, "unhealthy", true), legacyVLESSExit(5)}
+		cfg, _ := genConfig(t, in, quotaCutoff{})
+		return cfg
+	}
+	base := gen(map[string]string{})
+	for _, fp := range []string{"chrome", "firefox", "safari", "edge", "ios", "randomized"} {
+		t.Run(fp, func(t *testing.T) {
+			cfg := gen(map[string]string{"reality_fingerprint": fp})
+			v := viewOf(t, cfg)
+			for _, tag := range []string{"exit-2.vr", "probe-vr-2", "probe-vr-7", "exit-5.vr", "probe-vr-5"} {
+				if got := realityOf(t, v, tag)["fingerprint"]; got != "chrome" {
+					t.Errorf("%s: fingerprint %v with reality_fingerprint=%s, want chrome", tag, got, fp)
+				}
+			}
+			if string(cfg) != string(base) {
+				t.Errorf("reality_fingerprint=%s changed the xray config (an xray restart for every user)", fp)
+			}
+		})
+	}
+}
+
+// An exit row without tunnel_sni: the TCP path of a Hysteria exit (exit-N.vr, probe-vr-N) presents
+// www.microsoft.com, one of the serverNames --setup-exit-node gives the exit's Reality inbound
+// (the apex microsoft.com fails the handshake on prod). An explicit tunnel_sni is used as is, and
+// a legacy primary VLESS exit (not set up by deploy) keeps its old fallback, its own address.
+func TestXrayExitVRDefaultSNI(t *testing.T) {
+	if config.ExitVRSNI != "www.microsoft.com" {
+		t.Fatalf("config.ExitVRSNI = %q, want www.microsoft.com", config.ExitVRSNI)
+	}
+	noSNI := exitFixture(2, 1, "healthy", true)
+	noSNI.TunnelSNI = ""
+	apex := exitFixture(3, 1, "healthy", true) // tunnel_sni microsoft.com, as older deploys wrote it
+	other := exitFixture(7, 1, "unhealthy", true)
+	other.TunnelSNI = "github.com"
+	legacy := legacyVLESSExit(5)
+	legacy.TunnelSNI = ""
+	cfg, _ := genConfig(t, exitsInputs(noSNI, apex, other, legacy), quotaCutoff{})
+	v := viewOf(t, cfg)
+	for tag, want := range map[string]string{
+		"exit-2.vr": "www.microsoft.com", "probe-vr-2": "www.microsoft.com",
+		"exit-3.vr": "microsoft.com", "probe-vr-3": "microsoft.com",
+		"probe-vr-7": "github.com",
+		"exit-5.vr":  "203.0.113.5", "probe-vr-5": "203.0.113.5",
+	} {
+		if got := realityOf(t, v, tag)["serverName"]; got != want {
+			t.Errorf("%s: serverName %v, want %s", tag, got, want)
+		}
 	}
 }
 
