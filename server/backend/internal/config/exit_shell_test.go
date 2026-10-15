@@ -42,7 +42,7 @@ const systemctlStub = `systemctl() {
     restart) echo "$2" >> ./restarts; [ "${RESTART_FAILS:-0}" = 1 ] && return 1; [ "${DEAD:-0}" = 1 ] || touch "./active.$2" ;;
     is-active) [ -f "./active.${@: -1}" ] ;;
     show) n=$(cat "./nr.${@: -1}" 2>/dev/null || echo 0); echo "$n"; [ "${FLAP:-0}" = 1 ] && echo $((n+1)) > "./nr.${@: -1}"; true ;;
-    disable) if [ -f "./etc/systemd/system/${@: -1}.service" ]; then uf=present; else uf=absent; fi
+    disable) u=${@: -1}; if [ -f "./etc/systemd/system/${u%.service}.service" ]; then uf=present; else uf=absent; fi
       echo "disable $* unitfile=$uf" >> ./calls; rm -f "./active.${@: -1}" ;;
     *) echo "$*" >> ./calls ;;
   esac
@@ -305,13 +305,34 @@ func TestUnitRollbackLiveUnitVsFreshInstall(t *testing.T) {
 	dir = t.TempDir()
 	mustWrite(t, dir, rel(ExitXrayConfig), "new", 0o600)
 	mustWrite(t, dir, rel(ExitXrayUnitPath), "new", 0o644)
+	mustWrite(t, dir, rel(ExitXrayGuardUnitPath), ExitXrayGuardUnit, 0o644)
 	mustWrite(t, dir, "active.xray", "", 0o644)
-	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayConfig, ExitXrayUnitPath})); err != nil ||
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayConfig, ExitXrayUnitPath, ExitXrayGuardUnitPath})); err != nil ||
 		!strings.Contains(out, "новая установка снята") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(readRel(dir, "calls"), "disable --now xray unitfile=present") {
-		t.Fatalf("disable must run while the unit file still exists:\n%s", readRel(dir, "calls"))
+	// Review: every new unit of the run (the guard too) is disabled while its file still exists.
+	for _, w := range []string{"disable --now xray unitfile=present", "disable --now heyearth-exit-guard.service unitfile=present"} {
+		if !strings.Contains(readRel(dir, "calls"), w) {
+			t.Fatalf("want %q before the files are removed:\n%s", w, readRel(dir, "calls"))
+		}
+	}
+	if exists(dir, rel(ExitXrayGuardUnitPath)) || exists(dir, rel(ExitXrayUnitPath)) {
+		t.Fatal("new unit files left behind")
+	}
+
+	// A live xray whose run added the guard unit: the guard is disabled and removed, xray restarted.
+	dir = t.TempDir()
+	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644)
+	mustWrite(t, dir, rel(ExitXrayGuardUnitPath), ExitXrayGuardUnit, 0o644)
+	mustWrite(t, dir, "active.xray", "", 0o644)
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayGuardUnitPath})); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	calls := readRel(dir, "calls")
+	if !strings.Contains(calls, "disable --now heyearth-exit-guard.service unitfile=present") || strings.Contains(calls, "disable --now xray") ||
+		exists(dir, rel(ExitXrayGuardUnitPath)) || count(dir, "restarts", "xray") != 1 {
+		t.Fatalf("new guard unit not disabled before removal, or xray disabled / not restarted:\n%s", calls)
 	}
 }
 
@@ -330,9 +351,9 @@ func TestUnitRollbackFromMarkerAfterResume(t *testing.T) {
 	mustWrite(t, dir, "opt/heyearth/xray/resolv.conf", "current", 0o644) // the write recorded for it never happened
 	mustWrite(t, dir, "opt/heyearth/xray/resolv.conf.bak", "older", 0o644)
 	mustWrite(t, dir, "active.xray", "", 0o644)
-	mark := MarkRestartScript("xray",
-		PendingWrite{ExitXrayConfig, sha256Hex(newCfg)}, PendingWrite{ExitXrayUnitPath, sha256Hex(newUnit)},
-		PendingWrite{ExitXrayResolvConfPath, sha256Hex("never written")})
+	mark := MarkRestartScript("xray", []PendingWrite{
+		{ExitXrayConfig, sha256Hex(newCfg)}, {ExitXrayUnitPath, sha256Hex(newUnit)},
+		{ExitXrayResolvConfPath, sha256Hex("never written")}})
 	for i := 0; i < 2; i++ { // marked twice (a retried step): entries are not duplicated
 		if out, err := shellRun(t, dir, systemctlStub, mark); err != nil {
 			t.Fatalf("%v\n%s", err, out)
@@ -405,8 +426,8 @@ func TestUnitStateAndMarkScripts(t *testing.T) {
 	if s := state(); s != "ACTIVE=0\nMARKER=0\n" {
 		t.Fatalf("%q", s)
 	}
-	if out, err := shellRun(t, dir, systemctlStub, MarkRestartScript("xray", PendingWrite{"/opt/heyearth/a b", sha256Hex("x")},
-		PendingWrite{"/opt/heyearth/c", "not-a-sha'; touch ./pwned"})); err != nil {
+	if out, err := shellRun(t, dir, systemctlStub, MarkRestartScript("xray", []PendingWrite{{"/opt/heyearth/a b", sha256Hex("x")},
+		{"/opt/heyearth/c", "not-a-sha'; touch ./pwned"}})); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	mustWrite(t, dir, "active.xray", "", 0o644)
@@ -476,11 +497,14 @@ func TestExitFirewallScript(t *testing.T) {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
-		for _, r := range []string{"allow 2222/tcp", "allow 10443/tcp", "allow 8443/tcp", "allow 50443/udp", "allow 20000:50000/udp",
-			"allow from 138.16.181.225 to any port 50052 proto tcp"} {
+		for _, r := range []string{"allow from 138.16.181.225 to any port 2222 proto tcp", "allow 10443/tcp", "allow 8443/tcp", "allow 50443/udp",
+			"allow 20000:50000/udp", "allow from 138.16.181.225 to any port 50052 proto tcp"} {
 			if count(dir, "ufw.rules", r) != 1 {
 				t.Errorf("rule %q present %d times", r, count(dir, "ufw.rules", r))
 			}
+		}
+		if count(dir, "ufw.rules", "allow 2222/tcp") != 0 {
+			t.Error("SSH allowed from anywhere")
 		}
 		if b := readRel(dir, "fw.log"); strings.Contains(b, "enable") || strings.Contains(b, "bad;id") || strings.Contains(b, "iptables -I") {
 			t.Errorf("ufw enabled, an invalid hub address passed through or iptables touched:\n%s", b)
@@ -510,7 +534,10 @@ func TestExitFirewallScript(t *testing.T) {
 		if out, err := shellRun(t, dir, fwStubs, script, "IPT_POLICY=DROP", "NFP_OK=0"); err != nil || !strings.Contains(out, "пропадут после перезагрузки") {
 			t.Errorf("a failed save must be reported: %v\n%s", err, out)
 		}
-		for _, r := range []string{"-A INPUT -p tcp --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 10443 -j ACCEPT",
+		if count(dir, "ipt.rules", "-A INPUT -p tcp --dport 2222 -j ACCEPT") != 0 {
+			t.Error("SSH allowed from anywhere")
+		}
+		for _, r := range []string{"-A INPUT -p tcp -s 138.16.181.225 --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 10443 -j ACCEPT",
 			"-A INPUT -p tcp --dport 8443 -j ACCEPT", "-A INPUT -p udp --dport 50443 -j ACCEPT",
 			"-A INPUT -p udp --dport 20000:50000 -j ACCEPT", "-A INPUT -p tcp -s 138.16.181.225 --dport 50052 -j ACCEPT"} {
 			if n := count(dir, "ipt.rules", r); n != 1 {
@@ -525,15 +552,28 @@ func TestExitFirewallScript(t *testing.T) {
 			t.Fatalf("%v\n%s", err, out)
 		}
 		if count(dir, "ufw.rules", "allow from 2001:db8::1 to any port 50052 proto tcp") != 1 ||
-			count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 50052 proto tcp") != 1 {
+			count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 50052 proto tcp") != 1 ||
+			count(dir, "ufw.rules", "allow from 2001:db8::1 to any port 22 proto tcp") != 1 ||
+			count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 22 proto tcp") != 1 {
 			t.Errorf("ufw rules:\n%s", readRel(dir, "ufw.rules"))
 		}
 		dir = t.TempDir()
 		if out, err := shellRun(t, dir, fwStubs, s, "IPT_POLICY=DROP"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
-		if strings.Contains(readRel(dir, "ipt.rules"), "2001:db8::1") || count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 50052 -j ACCEPT") != 1 {
+		if strings.Contains(readRel(dir, "ipt.rules"), "2001:db8::1") || count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 50052 -j ACCEPT") != 1 ||
+			count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 22 -j ACCEPT") != 1 {
 			t.Errorf("iptables rules:\n%s", readRel(dir, "ipt.rules"))
+		}
+	})
+	t.Run("no Hub addresses: SSH not touched", func(t *testing.T) {
+		s := ExitFirewallScript(2222, nil, 0)
+		for _, env := range []string{"UFW_ACTIVE=1", "IPT_POLICY=DROP"} {
+			dir := t.TempDir()
+			out, err := shellRun(t, dir, fwStubs, s, env)
+			if err != nil || !strings.Contains(out, "адреса Hub не заданы") || strings.Contains(readRel(dir, "ufw.rules")+readRel(dir, "ipt.rules"), "2222") {
+				t.Errorf("%s: %v\n%s\n%s%s", env, err, out, readRel(dir, "ufw.rules"), readRel(dir, "ipt.rules"))
+			}
 		}
 	})
 	t.Run("invalid ssh port and no MTProxy are left out", func(t *testing.T) {
@@ -570,6 +610,10 @@ func TestExitFirewallScript(t *testing.T) {
 			"other port only":   {2222, "22222/tcp                  ALLOW IN    Anywhere\n", false},
 			"no rules (fresh)":  {2222, "", false},
 			"rule from address": {2222, "Anywhere                   ALLOW IN    2222\n", false},
+			// Review: rules that do not name the port cannot be recognised — the allow that is then
+			// added must come from the Hub only, never from anywhere.
+			"app profile by name only": {22, "OpenSSH                    ALLOW IN    Anywhere\n", false},
+			"network allow":            {2222, "Anywhere                   ALLOW IN    10.0.0.0/8\n", false},
 		} {
 			dir := t.TempDir()
 			mustWrite(t, dir, "ufw.listed", tc.listed, 0o644)
@@ -577,9 +621,12 @@ func TestExitFirewallScript(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v\n%s", name, err, out)
 			}
-			added := count(dir, "ufw.rules", fmt.Sprintf("allow %d/tcp", tc.port)) == 1
+			added := count(dir, "ufw.rules", fmt.Sprintf("allow from 138.16.181.225 to any port %d proto tcp", tc.port)) == 1
 			if added == tc.keep || strings.Contains(out, "уже есть правило") != tc.keep {
 				t.Errorf("%s: ssh rule added=%v, want %v\n%s", name, added, !tc.keep, out)
+			}
+			if strings.Contains(readRel(dir, "fw.log"), fmt.Sprintf("ufw allow %d/tcp", tc.port)) || strings.Contains(readRel(dir, "fw.log"), "delete") {
+				t.Errorf("%s: SSH allowed from anywhere or an existing rule changed:\n%s", name, readRel(dir, "fw.log"))
 			}
 			if count(dir, "ufw.rules", "allow 10443/tcp") != 1 || count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 50052 proto tcp") != 1 {
 				t.Errorf("%s: tunnel / node-agent rules missing:\n%s", name, readRel(dir, "ufw.rules"))
@@ -588,20 +635,25 @@ func TestExitFirewallScript(t *testing.T) {
 	})
 	// Review: an iptables ACCEPT inserted on top would bypass fail2ban / -m recent drops.
 	t.Run("iptables: existing rules on the SSH port are kept", func(t *testing.T) {
-		for _, existing := range []string{
-			"-A INPUT -p tcp -m tcp --dport 2222 -m recent --name ssh --update --seconds 60 --hitcount 4 -j DROP",
-			"-A INPUT -p tcp -m multiport --dports 80,2222 -j f2b-sshd",
+		for _, tc := range []struct {
+			existing string
+			named    bool // the rule names the port: SSH left alone; otherwise an allow from the Hub only
+		}{
+			{"-A INPUT -p tcp -m tcp --dport 2222 -m recent --name ssh --update --seconds 60 --hitcount 4 -j DROP", true},
+			{"-A INPUT -p tcp -m multiport --dports 80,2222 -j f2b-sshd", true},
+			{"-A INPUT -s 10.0.0.0/8 -j ACCEPT", false},
+			{"-A INPUT -j sshguard", false},
 		} {
 			dir := t.TempDir()
-			mustWrite(t, dir, "ipt.rules", existing+"\n", 0o644)
+			mustWrite(t, dir, "ipt.rules", tc.existing+"\n", 0o644)
 			out, err := shellRun(t, dir, fwStubs, script, "IPT_POLICY=DROP")
-			if err != nil || !strings.Contains(out, "уже есть правила") {
-				t.Fatalf("%v\n%s", err, out)
+			if err != nil || strings.Contains(out, "уже есть правила") != tc.named {
+				t.Fatalf("%q: %v\n%s", tc.existing, err, out)
 			}
-			rules := readRel(dir, "ipt.rules")
-			if strings.Contains(rules, "--dport 2222 -j ACCEPT") || count(dir, "ipt.rules", existing) != 1 ||
-				count(dir, "ipt.rules", "-A INPUT -p tcp --dport 10443 -j ACCEPT") != 1 {
-				t.Errorf("ssh protection bypassed or tunnel rule missing:\n%s", rules)
+			fromHub := count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 2222 -j ACCEPT")
+			if strings.Contains(readRel(dir, "ipt.rules"), "-A INPUT -p tcp --dport 2222 -j ACCEPT") || count(dir, "ipt.rules", tc.existing) != 1 ||
+				(fromHub == 1) == tc.named || count(dir, "ipt.rules", "-A INPUT -p tcp --dport 10443 -j ACCEPT") != 1 {
+				t.Errorf("%q: ssh protection bypassed, ssh allowed from anywhere or tunnel rule missing:\n%s", tc.existing, readRel(dir, "ipt.rules"))
 			}
 		}
 	})
@@ -683,6 +735,9 @@ func TestXrayExitInstall(t *testing.T) {
 	}{
 		{name: "fresh", download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27", wantCurl: true,
 			want: []string{"XR_REPLACED=1", "XR_DATA=1", "[xray] installed 26.3.27 (previous: none)"}},
+		// Review: no binary but a leftover xray.bak — removed, a rollback cannot resurrect it.
+		{name: "fresh with a leftover bak", bak: fakeXray("24.9.30"), download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27",
+			wantCurl: true, want: []string{"XR_REPLACED=1"}},
 		{name: "fresh under pipefail", pipefail: true, download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27", wantCurl: true,
 			want: []string{"XR_REPLACED=1"}},
 		{name: "current kept", current: fakeXray("26.3.27"), dats: true, download: "zip", payload: fakeXray("26.3.27"), ok: true,
@@ -1000,6 +1055,41 @@ func TestExitHysteriaPrepare(t *testing.T) {
 	if exists(dir, marker) || exists(dir, binMarker) || exists(dir, "openssl.log") || readRel(dir, rel(ExitHysteriaKey)) != "key-old\n" {
 		t.Fatal("an unchanged exit got a restart marker or a new certificate")
 	}
+	// Review: the pinned binary is installed and hysteria.bak is the stale 2.6.1 — a rollback of a
+	// failed config change on this exit never downgrades the binary.
+	mustWrite(t, dir, rel(ExitHysteriaUnitPath), ExitHysteriaUnit, 0o644)
+	mustWrite(t, dir, rel(ExitHysteriaConfig), "new", 0o600)
+	mustWrite(t, dir, rel(ExitHysteriaConfig)+".bak", "old", 0o600)
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("hysteria2", []string{ExitHysteriaConfig})); err != nil ||
+		binVersion(t, filepath.Join(dir, "bin/hysteria")) != HysteriaVersion || readRel(dir, rel(ExitHysteriaConfig)) != "old" {
+		t.Fatalf("pinned binary downgraded by a config rollback: %v %s\n%s", err, binVersion(t, filepath.Join(dir, "bin/hysteria")), out)
+	}
+
+	// Review: the binary on disk already IS the pinned one (sha256) even though its `version` cannot
+	// be parsed — no rollback marker is written, so its .bak can never replace it.
+	dir = t.TempDir()
+	odd := "#!/bin/sh\necho 'hysteria (unparseable version output)'\n"
+	mustWrite(t, dir, "bin/hysteria", odd, 0o755)
+	mustWrite(t, dir, "bin/hysteria.bak", fakeHysteria("v2.6.1"), 0o755)
+	oddPrep := strings.ReplaceAll(exitHysteriaPrepareScript(hysteriaInstallScript(sha256Hex(odd)), sha256Hex(odd)), "/usr/local/bin/", "./bin/")
+	_, _ = shellRun(t, dir, "set -e\n"+hysteriaPrepStubs, oddPrep) // the installer then fails (no download): irrelevant here
+	if exists(dir, binMarker) || exists(dir, marker) {
+		t.Fatal("rollback markers written for a binary that already has the pinned sha256")
+	}
+
+	// Review: no binary yet but a leftover hysteria.bak (2.6.1): it is removed before the install,
+	// so rolling the fresh install back cannot resurrect it.
+	dir = t.TempDir()
+	mustWrite(t, dir, "bin/hysteria.bak", fakeHysteria("v2.6.1"), 0o755)
+	mustWrite(t, dir, "download", fakeHysteria(HysteriaVersion), 0o644)
+	mustWrite(t, dir, rel(ExitHysteriaUnitPath), ExitHysteriaUnit, 0o644)
+	mustRun(dir)
+	if exists(dir, "bin/hysteria.bak") || !exists(dir, binMarker) || binVersion(t, filepath.Join(dir, "bin/hysteria")) != HysteriaVersion {
+		t.Fatalf("fresh install: .bak kept=%v, binary marker=%v", exists(dir, "bin/hysteria.bak"), exists(dir, binMarker))
+	}
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("hysteria2", nil)); err != nil || binVersion(t, filepath.Join(dir, "bin/hysteria")) != HysteriaVersion {
+		t.Fatalf("rollback resurrected an old binary: %v %s\n%s", err, binVersion(t, filepath.Join(dir, "bin/hysteria")), out)
+	}
 
 	// Key missing: a new pair, restart marker, no binary marker.
 	dir = t.TempDir()
@@ -1299,7 +1389,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	}
 	for name, s := range map[string]string{
 		"converge": UnitConvergeScript("xray", ExitXrayPrepareScript()), "rollback": UnitRollbackScript("x", []string{"/a b"}),
-		"state": UnitStateScript("xray"), "mark": MarkRestartScript("xray"), "sums": SumsScript("/a", "/b c"), "cat": CatScript("/a"),
+		"state": UnitStateScript("xray"), "mark": MarkRestartScript("xray", nil), "sums": SumsScript("/a", "/b c"), "cat": CatScript("/a"),
 		"firewall": ExitFirewallScript(22, nil, 0), "preflight": ExitPreflightScript(), "base": ExitBaseScript, "basecheck": ExitBaseCheckScript,
 		"hop": ExitPortHopApplyScript, "hy": HysteriaCheckScript, "xr": XrayCheckScript, "hubkey": HubSSHKeyEnsureScript,
 		"hyprep": ExitHysteriaPrepareScript(), "xrprep": ExitXrayPrepareScript(),
@@ -1316,7 +1406,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	}
 	for op, s := range map[string]string{
 		"converge xray": UnitConvergeScript("xray", ""), "rollback xray": UnitRollbackScript("xray", nil), "unit-state xray": UnitStateScript("xray"),
-		"mark xray": MarkRestartScript("xray"), "sums /a /b": SumsScript("/a", "/b"), "cat /a": CatScript("/a"), "firewall": ExitFirewallScript(22, nil, 0),
+		"mark xray": MarkRestartScript("xray", nil), "sums /a /b": SumsScript("/a", "/b"), "cat /a": CatScript("/a"), "firewall": ExitFirewallScript(22, nil, 0),
 		"preflight": ExitPreflightScript(), "base": ExitBaseScript, "base-check": ExitBaseCheckScript, "hop-apply": ExitPortHopApplyScript,
 		"hy-check": HysteriaCheckScript, "xray-check": XrayCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
 		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095), "vr-probe 3095": VRProbeScript("/x", "/c", 3095),
@@ -1327,7 +1417,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	}
 	dir := t.TempDir()
 	for _, s := range []string{SumsScript("/a\ntouch ./pwned-sums"), CatScript("/a\rtouch ./pwned-cat\n"), UnitStateScript("x; touch ./pwned-unit"),
-		MarkRestartScript("x$(touch ./pwned-mark)"), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"})} {
+		MarkRestartScript("x$(touch ./pwned-mark)", nil), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"})} {
 		_, _ = shellRun(t, dir, systemctlStub, s)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "pwned-*")); len(left) != 0 {
