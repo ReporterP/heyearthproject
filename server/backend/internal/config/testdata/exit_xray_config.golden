@@ -1,0 +1,135 @@
+{
+  "dns": {
+    "queryStrategy": "UseIPv4",
+    "servers": [
+      "8.8.8.8",
+      "1.1.1.1"
+    ]
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 10443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "flow": "xtls-rprx-vision",
+            "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "dest": "microsoft.com:443",
+          "privateKey": "cHJpdmF0ZS1rZXktMzItYnl0ZXMtLS0tLS0tLS0tLS0",
+          "serverNames": [
+            "microsoft.com",
+            "www.microsoft.com"
+          ],
+          "shortIds": [
+            "0123456789abcdef"
+          ],
+          "show": false,
+          "xver": 0
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "vless-reality"
+    }
+  ],
+  "log": {
+    "loglevel": "warning"
+  },
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      },
+      "tag": "block"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "bufferSize": 512,
+        "connIdle": 300,
+        "downlinkOnly": 5,
+        "handshake": 4,
+        "uplinkOnly": 2
+      }
+    }
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "ip": [
+          "203.0.113.7"
+        ],
+        "network": "tcp",
+        "outboundTag": "direct",
+        "port": "8443",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private",
+          "127.0.0.0/8",
+          "::1/128",
+          "0.0.0.0/8",
+          "::/128",
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "100.64.0.0/10",
+          "169.254.0.0/16",
+          "fc00::/7",
+          "fe80::/10",
+          "203.0.113.7"
+        ],
+        "outboundTag": "block",
+        "type": "field"
+      },
+      {
+        "outboundTag": "block",
+        "protocol": [
+          "bittorrent"
+        ],
+        "type": "field"
+      }
+    ]
+  }
+}

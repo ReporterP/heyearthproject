@@ -84,30 +84,14 @@ WantedBy=multi-user.target
 // redirected to the hysteria server on :50443 (nft table inet hysteria_porthopping, re-applied
 // at boot by nftables-hysteria.service). Idempotent: the file creates the table if missing,
 // deletes it and defines it again in one nft transaction, so a re-run never duplicates the rule.
-// Same table, file and unit as the admin panel's exit setup step 4.
+// Same table, file and unit as the admin panel's exit setup step 4. Built from the file
+// templates the provisioning core writes (ExitPortHopConf, ExitPortHopUnit; exit_node.go).
 const ExitPortHopScript = `command -v nft >/dev/null 2>&1 || apt-get install -y -qq nftables >/dev/null 2>&1 || true
-cat > /etc/nftables-hysteria.conf << 'NEOF'
-table inet hysteria_porthopping
-delete table inet hysteria_porthopping
-table inet hysteria_porthopping {
-  chain prerouting {
-    type nat hook prerouting priority dstnat; policy accept;
-    udp dport ` + ExitHopRange + ` counter redirect to :50443
-  }
-}
-NEOF
-nft -f /etc/nftables-hysteria.conf
-cat > /etc/systemd/system/nftables-hysteria.service << 'SEOF'
-[Unit]
-Description=nftables port hopping for Hysteria2
-After=network.target
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/nft -f /etc/nftables-hysteria.conf
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-SEOF
+cat > ` + ExitPortHopConfPath + ` << 'NEOF'
+` + ExitPortHopConf + `NEOF
+nft -f ` + ExitPortHopConfPath + `
+cat > ` + ExitPortHopUnitPath + ` << 'SEOF'
+` + ExitPortHopUnit + `SEOF
 systemctl daemon-reload
 systemctl enable nftables-hysteria >/dev/null 2>&1 || true
 `

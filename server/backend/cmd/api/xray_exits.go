@@ -41,8 +41,8 @@ const (
 	exitSocksPortBase  = 1088
 	exitProbePortBase  = 12000
 	exitMaxID          = 511 // the egress guard allows xray SOCKS 1088..1599 (cmd/deploy/ops_egress_guard.go)
-	exitVRPort         = 10443
-	exitVRFlow         = "xtls-rprx-vision"
+	exitVRPort         = config.ExitRealityPort
+	exitVRFlow         = config.ExitRealityFlow
 	exitAllSelector    = "exit-"
 	exitProbeTagPrefix = "probe-vr-"
 	exitVRCostFactor   = 400 // √400 = ×20 on RTT, see exitBaselines
@@ -53,8 +53,9 @@ const (
 	// (dest microsoft.com:443, SNI www.microsoft.com) only some fingerprints complete the
 	// handshake — measured on prod 2026-10-15: chrome, firefox, safari ok; ios, edge, randomized
 	// fail — and every tuner rotation would otherwise rewrite these outbounds and restart xray for
-	// all users because of an internal path.
-	exitVRFingerprint = "chrome"
+	// all users because of an internal path. Shared with the provisioning probe
+	// (config.ExitRealityProbeConfig), so both dial the exit the same way.
+	exitVRFingerprint = config.ExitVRFingerprint
 )
 
 // ─────────────── Balancer strategy: leastLoad with costs and baselines ───────────────
