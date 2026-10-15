@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { getSettings, updateSetting } from '../api/admin.js'
 import SettingCard from '../components/SettingCard.jsx'
+import SecretSettingField from '../components/settings/SecretSettingField.jsx'
 import {
   Button,
   Card,
@@ -13,18 +14,38 @@ import {
   Skeleton,
 } from '../components/ui/index.js'
 
+// A setting shown but not edited here (its own section will own it). An unset value shows what
+// the API actually does without it.
+function ReadOnlySetting({ label, hint, value, empty, emptyWarning = false }) {
+  const isEmpty = !String(value ?? '').trim()
+  return (
+    <div className="py-3">
+      <p className="text-sm font-medium text-primary mb-1">{label}</p>
+      {hint && <p className="text-xs text-tertiary mb-2">{hint}</p>}
+      {isEmpty
+        ? <p className={`text-sm ${emptyWarning ? 'text-warning' : 'text-secondary'}`}>{empty}</p>
+        : <p className="font-mono text-sm text-secondary break-all">{value}</p>}
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const { t, locale, setLocale } = useT()
   const { admin, logout, can } = useAuth()
   const toast = useToast()
 
   const [settings, setSettings] = useState({})
+  // secret key → is it set; the values themselves never leave the API (GET /settings)
+  const [secretsSet, setSecretsSet] = useState({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (can('settings.read')) {
       getSettings()
-        .then(data => setSettings(data.settings || data || {}))
+        .then(data => {
+          setSettings(data?.settings || {})
+          setSecretsSet(data?.secrets_set || {})
+        })
         .catch(err => toast.error(err.message))
         .finally(() => setLoading(false))
     } else {
@@ -39,6 +60,19 @@ export default function SettingsPage() {
       toast.success(t.save + ' OK')
     } catch (err) {
       toast.error(err.message)
+    }
+  }
+
+  // Secrets are write-only: only the "set" flag is kept; the field clears itself on success
+  // and keeps the typed value on an error (rethrown for it).
+  async function saveSecret(key, value) {
+    try {
+      await updateSetting(key, value)
+      setSecretsSet(prev => ({ ...prev, [key]: true }))
+      toast.success('Секрет сохранён')
+    } catch (err) {
+      toast.error(err.message)
+      throw err
     }
   }
 
@@ -105,7 +139,9 @@ export default function SettingsPage() {
                 {loading ? <Skeleton className="h-24" /> : (
                   <div className="divide-y divide-default">
                     <SettingCard label="ЮKassa Shop ID" hint="shopId — идентификатор магазина в личном кабинете ЮKassa" value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
-                    <SettingCard label="ЮKassa Secret Key" hint="Секретный ключ API. Никогда не публикуйте его. ЛК ЮKassa → Интеграция → API ключ" value={settings.yookassa_secret_key} onSave={v => saveSetting('yookassa_secret_key', v)} type="password" />
+                    <SecretSettingField id="yookassa-secret" label="ЮKassa Secret Key" isSet={secretsSet.yookassa_secret_key}
+                      hint="Секретный ключ API (ЛК ЮKassa → Интеграция → API-ключи). Хранится только на сервере и в админку не возвращается."
+                      onSave={v => saveSecret('yookassa_secret_key', v)} />
                     <SettingCard label="Тестовый режим" hint="true — использовать тестовый магазин ЮKassa (реальные деньги не списываются). В ЛК тестового магазина настройте Webhook URL: https://hiearth.ru/api/v1/webhooks/yookassa" value={settings.yookassa_test_mode || 'true'} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
                     <SettingCard label="Email для чеков (fallback)" hint="Если пользователь не указал email при оплате, чек придёт на этот адрес. Фискализация по 54-ФЗ обязательна." value={settings.receipt_fallback_email} onSave={v => saveSetting('receipt_fallback_email', v)} />
                   </div>
@@ -122,7 +158,9 @@ export default function SettingsPage() {
                     <SettingCard label="SMTP Host" hint="Например smtp.yandex.ru или smtp.mail.ru" value={settings.smtp_host} onSave={v => saveSetting('smtp_host', v)} />
                     <SettingCard label="SMTP Port" hint="587 (STARTTLS) или 465 (implicit TLS)" value={settings.smtp_port || '587'} onSave={v => saveSetting('smtp_port', v)} />
                     <SettingCard label="SMTP User" hint="Обычно email-ящик полностью" value={settings.smtp_user} onSave={v => saveSetting('smtp_user', v)} />
-                    <SettingCard label="SMTP Password" hint="Пароль приложения (app password). Для Gmail/Yandex — создать в настройках почты" value={settings.smtp_password} onSave={v => saveSetting('smtp_password', v)} type="password" />
+                    <SecretSettingField id="smtp-password" label="SMTP Password" isSet={secretsSet.smtp_password}
+                      hint="Пароль приложения (app password; для Gmail/Yandex создаётся в настройках почты). Хранится только на сервере и в админку не возвращается."
+                      onSave={v => saveSecret('smtp_password', v)} />
                     <SettingCard label="From email" hint="Email отправителя (должен совпадать с SMTP User или быть в разрешённых)" value={settings.smtp_from_email} onSave={v => saveSetting('smtp_from_email', v)} />
                     <SettingCard label="From name" hint="Имя отправителя, например HiEarth" value={settings.smtp_from_name || 'HiEarth'} onSave={v => saveSetting('smtp_from_name', v)} />
                     <SettingCard label="Use TLS" hint="true для шифрования (рекомендуется)" value={settings.smtp_use_tls || 'true'} onSave={v => saveSetting('smtp_use_tls', v)} type="toggle" />
@@ -181,6 +219,12 @@ export default function SettingsPage() {
                 {loading ? <Skeleton className="h-24" /> : (
                   <div className="divide-y divide-default">
                     <SettingCard label={t.settingsHubMainServerHost} hint={t.settingsHubMainServerHostHint} value={settings.hub_main_server_host} onSave={v => saveSetting('hub_main_server_host', v)} />
+                    <ReadOnlySetting label="Адрес входа в профилях (main_server_host)"
+                      hint="Куда подключаются приложения пользователей (Берёза, Дуб, Бамбук, Пальма). Будет меняться в разделах «Входы» и «Домены»."
+                      value={settings.main_server_host}
+                      empty="не задан — в подписках нет входов через Hub" emptyWarning />
+                    <ReadOnlySetting label="Адрес сайта (site_url)" hint="Ссылки в письмах и возврат после оплаты."
+                      value={settings.site_url} empty="https://hiearth.ru (по умолчанию)" />
                     <SettingCard label={t.settingsHubVlessPort} hint={t.settingsHubVlessPortHint} value={settings.hub_vless_port} onSave={v => saveSetting('hub_vless_port', v)} />
                     <SettingCard label={t.settingsApiEndpoints} hint={t.settingsApiEndpointsHint} value={settings.api_endpoints} onSave={v => saveSetting('api_endpoints', v)} />
                   </div>

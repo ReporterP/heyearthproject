@@ -27,7 +27,7 @@ export const commands = [
   { id: 'go-traffic-masking', label: 'Маскировка трафика',   icon: EyeOff,          kind: 'page', href: '/traffic-masking', group: 'Инфраструктура' },
   { id: 'go-direct-routes',   label: 'Прямая маршрутизация', icon: Route,           kind: 'page', href: '/direct-routes',   group: 'Инфраструктура' },
   { id: 'go-mtproto',         label: 'MTProto',              icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
-  { id: 'go-auto-tuner',      label: 'Auto-Tuner',           icon: Zap,             kind: 'page', href: '/auto-tuner',      group: 'Инфраструктура' },
+  { id: 'go-auto-tuner',      label: 'Протоколы и маскировка', icon: Zap,           kind: 'page', href: '/auto-tuner',      group: 'Инфраструктура' },
   { id: 'go-alerts',          label: 'Алерты',               icon: Bell,            kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
 
   // Money

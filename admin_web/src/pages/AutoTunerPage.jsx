@@ -4,12 +4,14 @@ import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { fetchAutoTunerStatus, fetchAutoTunerHistory, toggleAutoTuner, setAutoTunerInterval, runAutoTunerNow, cleanupAutoTunerHistory } from '../api/admin.js'
+import BambooCard from '../components/protocols/BambooCard.jsx'
 import {
   Badge,
   Button,
   Card,
   CardBody,
   CardHeader,
+  Dialog,
   EmptyState,
   PageHeader,
   Select,
@@ -22,6 +24,8 @@ import {
   Tr,
 } from '../components/ui/index.js'
 
+const PAGE_SUBTITLE = 'Бамбук и автотюнер. Параметры маскировки, от которых зависят профили пользователей, меняются только с предупреждением.'
+
 export default function AutoTunerPage() {
   const { t } = useT()
   const { can } = useAuth()
@@ -31,6 +35,9 @@ export default function AutoTunerPage() {
   const [historyTotal, setHistoryTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [enableDialog, setEnableDialog] = useState(false)
+  const [understood, setUnderstood] = useState(false)
+  const canWrite = can('settings.write')
 
   const loadData = useCallback(() => {
     Promise.all([
@@ -51,20 +58,43 @@ export default function AutoTunerPage() {
     return () => clearInterval(interval)
   }, [loadData])
 
-  async function handleToggle() {
-    const newVal = !(status?.enabled)
+  async function setEnabled(newVal) {
     try {
-      await toggleAutoTuner(newVal)
-      setStatus(prev => ({ ...prev, enabled: newVal }))
-      toast.success(newVal ? 'Auto-tuner включён' : 'Auto-tuner выключен')
+      const res = await toggleAutoTuner(newVal)
+      const running = res?.loop_running ?? status?.loop_running
+      setStatus(prev => ({ ...prev, enabled: newVal, loop_running: running }))
+      const msg = res?.message || (newVal ? 'Автотюнер включён' : 'Автотюнер выключен')
+      // Enabled but no tuner goroutine in this API process: it is not working yet, say so.
+      if (newVal && !running) toast.warn(msg)
+      else toast.success(msg)
     } catch (e) {
       toast.error(e.message)
     }
   }
 
+  // Turning it off is safe; turning it on changes what users' profiles depend on: ask first.
+  function handleToggle() {
+    if (status?.enabled) { setEnabled(false); return }
+    setUnderstood(false)
+    setEnableDialog(true)
+  }
+
+  function runNow() {
+    runAutoTunerNow()
+      .then(r => { toast.success(r?.message || 'Подбор параметров запущен'); setTimeout(loadData, 2000) })
+      .catch(e => toast.error(e.message))
+  }
+
+  // Why «Запустить сейчас» is off ('' = it is on). The API answers 409 in the same cases.
+  const runNowBlocked = !canWrite ? 'Нужно право settings.write'
+    : !status ? 'Статус автотюнера не загрузился'
+    : !status.loop_running ? 'Тюнер не запущен в API: при старте API он был выключен'
+    : !status.enabled ? 'Сначала включите автотюнер'
+    : ''
+
   if (loading) return (
     <div>
-      <PageHeader title="Auto-Tuner" subtitle="Автоматический подбор оптимальных параметров прокси" />
+      <PageHeader title="Протоколы и маскировка" subtitle={PAGE_SUBTITLE} />
       <div className="flex items-center justify-center py-32">
         <Spinner size="md" />
       </div>
@@ -83,11 +113,14 @@ export default function AutoTunerPage() {
         variant="secondary"
         size="sm"
         icon={<Zap size={14} />}
-        onClick={() => { runAutoTunerNow().then(() => { toast.success('Запуск!'); setTimeout(loadData, 2000) }).catch(e => toast.error(e.message)) }}
+        disabled={!!runNowBlocked}
+        title={runNowBlocked || 'Запустить подбор параметров сейчас'}
+        onClick={runNow}
       >Запустить сейчас</Button>
       <Button
         variant="ghost"
         size="sm"
+        disabled={!canWrite}
         onClick={() => { cleanupAutoTunerHistory(7).then(d => { toast.success(`Удалено: ${d.deleted}`); loadData() }).catch(e => toast.error(e.message)) }}
         title="Очистить историю старше 7 дней"
       >Очистить</Button>
@@ -95,18 +128,30 @@ export default function AutoTunerPage() {
       <Button
         variant={status?.enabled ? 'secondary' : 'danger'}
         size="sm"
+        disabled={!status || !canWrite}
+        title={!canWrite ? 'Нужно право settings.write' : status?.enabled ? 'Выключить автотюнер' : 'Включить автотюнер (с предупреждением)'}
         onClick={handleToggle}
-      >{status?.enabled ? '● Вкл' : '○ Выкл'}</Button>
+      >{status?.enabled ? '● Автотюнер включён' : '○ Автотюнер выключен'}</Button>
     </>
   )
 
   return (
     <div>
       <PageHeader
-        title="Auto-Tuner"
-        subtitle="Автоматический подбор оптимальных параметров прокси — SNI домены, fingerprint, транспорт"
+        title="Протоколы и маскировка"
+        subtitle={PAGE_SUBTITLE}
         actions={actions}
       />
+
+      {/* GET /hysteria2/status needs servers.read; the page itself needs settings.read. */}
+      {can('servers.read') && <BambooCard />}
+
+      {status && status.enabled && !status.loop_running && (
+        <div role="status" className="mb-6 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          Автотюнер включён в настройках, но в работающем API не запущен (при старте API он был выключен).
+          Он начнёт работать после следующего перезапуска API.
+        </div>
+      )}
 
       {/* Status cards */}
       {status && (
@@ -124,6 +169,7 @@ export default function AutoTunerPage() {
               <p className="text-[10px] uppercase tracking-wider text-tertiary mb-1">Интервал (часы)</p>
               <Select
                 value={status.interval_hours}
+                disabled={!canWrite}
                 onChange={e => {
                   const h = parseInt(e.target.value)
                   setAutoTunerInterval(h).then(() => { toast.success(`Интервал: ${h}ч`); loadData() }).catch(e => toast.error(e.message))
@@ -326,9 +372,29 @@ export default function AutoTunerPage() {
         <EmptyState
           icon={<Zap size={32} />}
           title="Нет данных тестирования"
-          description={`Auto-tuner запускается каждые ${status?.interval_hours || 4} часа. Можно запустить вручную кнопкой выше.`}
+          description={`Автотюнер запускается каждые ${status?.interval_hours || 4} ч, если включён.`}
         />
       )}
+
+      <Dialog open={enableDialog} onClose={() => setEnableDialog(false)} title="Включить автотюнер?" maxWidth="max-w-md">
+        <div className="space-y-3 text-sm text-secondary">
+          <p>Автотюнер сам меняет SNI, отпечаток TLS, DNS и примерно раз в неделю пароль obfs Бамбука.</p>
+          <p className="text-warning">
+            После смены SNI или obfs у пользователей перестают работать профили, пока они не обновят подписку в приложении.
+          </p>
+          {!status?.loop_running && (
+            <p>Сейчас тюнер в API не запущен: включение начнёт действовать после следующего перезапуска API.</p>
+          )}
+          <label className="flex items-center gap-2 text-primary cursor-pointer">
+            <input type="checkbox" className="accent-accent" checked={understood} onChange={e => setUnderstood(e.target.checked)} />
+            Понимаю последствия
+          </label>
+        </div>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-6">
+          <Button variant="ghost" onClick={() => setEnableDialog(false)}>Отмена</Button>
+          <Button variant="danger" disabled={!understood} onClick={() => { setEnableDialog(false); setEnabled(true) }}>Включить</Button>
+        </div>
+      </Dialog>
     </div>
   )
 }
