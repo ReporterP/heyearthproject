@@ -22,15 +22,20 @@ import (
 
 var testNow = time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 
-// testCA mimics deploy's CA: RSA, PKCS#1 key.
+// testCA mimics deploy's CA: RSA, PKCS#1 key, ten years.
 func testCA(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	return testCAValid(t, testNow.Add(-time.Hour), testNow.AddDate(10, 0, 0))
+}
+
+func testCAValid(t *testing.T, notBefore, notAfter time.Time) (certPEM, keyPEM []byte) {
 	t.Helper()
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "HeYearth Node-Agent CA"},
-		NotBefore: testNow.Add(-time.Hour), NotAfter: testNow.AddDate(10, 0, 0), IsCA: true, BasicConstraintsValid: true,
+		NotBefore: notBefore, NotAfter: notAfter, IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
 	if err != nil {
@@ -197,6 +202,54 @@ func TestIssueNodeCertPKCS8CA(t *testing.T) {
 	}
 	if err := CheckNodeCert(cert, ca, "2001:db8::7", testNow); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The Hub CA's own validity: a leaf never outlives the CA, an ageing or not-yet-valid CA is
+// refused with its own message, and the check names the CA instead of "not from the Hub CA".
+func TestNodeCertCAValidity(t *testing.T) {
+	const ip = "203.0.113.7"
+	short, shortKey := testCAValid(t, testNow.Add(-time.Hour), testNow.AddDate(0, 0, 40))
+	shortCA, err := parseCert(short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafPEM, _, err := IssueNodeCert(short, shortKey, ip, testNow)
+	if err != nil {
+		t.Fatalf("a CA with 40 days left still signs: %v", err)
+	}
+	leaf, _ := parseCert(leafPEM)
+	if !leaf.NotAfter.Equal(shortCA.NotAfter) {
+		t.Errorf("leaf NotAfter %s, CA NotAfter %s: the leaf must be capped", leaf.NotAfter, shortCA.NotAfter)
+	}
+	if err := CheckNodeCert(leafPEM, short, ip, testNow); err != nil {
+		t.Errorf("capped leaf, 40 days left: %v", err)
+	}
+	for name, at := range map[string]time.Time{
+		"CA ageing":  testNow.AddDate(0, 0, 15),
+		"CA expired": testNow.AddDate(0, 0, 41),
+	} {
+		err := CheckNodeCert(leafPEM, short, ip, at)
+		if err == nil || !strings.Contains(err.Error(), "CA Hub истекает") || strings.Contains(err.Error(), "не от CA Hub") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if _, _, err := IssueNodeCert(short, shortKey, ip, at); err == nil || !strings.Contains(err.Error(), "CA Hub истекает") {
+			t.Errorf("%s: issued (%v)", name, err)
+		}
+	}
+	if err := CheckNodeCert(leafPEM, short, ip, testNow.Add(-2*time.Hour)); err == nil || !strings.Contains(err.Error(), "CA Hub действует только с") {
+		t.Errorf("CA not valid yet: %v", err)
+	}
+	for name, c := range map[string][2]time.Time{
+		"20 days left": {testNow.Add(-time.Hour), testNow.AddDate(0, 0, 20)},
+		"expired":      {testNow.AddDate(-2, 0, 0), testNow.AddDate(0, 0, -1)},
+		"not yet":      {testNow.Add(time.Hour), testNow.AddDate(10, 0, 0)},
+	} {
+		ca, caKey := testCAValid(t, c[0], c[1])
+		cert, key, err := IssueNodeCert(ca, caKey, ip, testNow)
+		if err == nil || cert != nil || key != nil || !strings.Contains(err.Error(), "CA Hub") {
+			t.Errorf("%s: issued (%v)", name, err)
+		}
 	}
 }
 

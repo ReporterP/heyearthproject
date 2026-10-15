@@ -27,8 +27,10 @@ const (
 // IssueNodeCert signs node-agent's server certificate for one node with the Hub CA (deploy's
 // ca-cert.pem / ca-key.pem, RSA PKCS#1; EC and PKCS#8 keys are accepted too): a fresh ECDSA
 // P-256 key, SAN node-agent + localhost (heyearth-api dials with ServerName "node-agent") and
-// the node IP, valid one year. keyPEM is the node's private key: the caller installs it 0600
-// and never logs it; errors never quote key material.
+// the node IP, valid one year but never past the CA. A CA that is not valid yet or has less than
+// 30 days left is refused (caUsable): its leaves would be renewed on every run. keyPEM is the
+// node's private key: the caller installs it 0600 and never logs it; errors never quote key
+// material.
 func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (certPEM, keyPEM []byte, err error) {
 	ip := net.ParseIP(strings.TrimSpace(nodeIP))
 	if ip == nil {
@@ -43,6 +45,9 @@ func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (ce
 	if !ca.IsCA || (ca.KeyUsage != 0 && ca.KeyUsage&x509.KeyUsageCertSign == 0) {
 		return nil, nil, errors.New("CA: сертификат не является удостоверяющим центром")
 	}
+	if err := caUsable(ca, now); err != nil {
+		return nil, nil, err
+	}
 	caKey, err := parseKey(caKeyPEM)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ключ CA: %w", err)
@@ -55,15 +60,24 @@ func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (ce
 	if err != nil {
 		return nil, nil, err
 	}
+	// A leaf never outlives its CA: past ca.NotAfter the chain fails anyway, and a capped leaf
+	// makes CheckNodeCert ask for renewal in time instead of after the CA is gone.
+	notAfter := now.AddDate(1, 0, 0)
+	if notAfter.After(ca.NotAfter) {
+		notAfter = ca.NotAfter
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: nodeAgentServerName, Organization: []string{"HeYearth"}},
-		NotBefore:    now.Add(-time.Hour), // tolerates a node clock slightly behind the Hub's
-		NotAfter:     now.AddDate(1, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{nodeAgentServerName, "localhost"},
-		IPAddresses:  []net.IP{ip},
+		// Backdated an hour: the issuing machine's clock (the Hub, or the operator's machine for
+		// the CLI) may run ahead of the verifier's (heyearth-api on the Hub); the node's own
+		// clock plays no part, node-agent never verifies its own certificate.
+		NotBefore:   now.Add(-time.Hour),
+		NotAfter:    notAfter,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{nodeAgentServerName, "localhost"},
+		IPAddresses: []net.IP{ip},
 	}
 	// CreateCertificate refuses a CA key that does not match the CA certificate.
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
@@ -81,7 +95,8 @@ func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (ce
 // CheckNodeCert is nil when certPEM (node-agent's certificate as read from the node) chains to
 // the Hub CA as a server certificate for "node-agent", names nodeIP and stays valid for at least
 // 30 more days. The old shared server-cert.pem (no IP SAN) fails, so every node gets its own
-// certificate on the next run.
+// certificate on the next run. An ageing Hub CA is reported as such («CA Hub истекает …»),
+// apart from a certificate that is not from the Hub CA.
 func CheckNodeCert(certPEM, caCertPEM []byte, nodeIP string, now time.Time) error {
 	ip := net.ParseIP(strings.TrimSpace(nodeIP))
 	if ip == nil {
@@ -94,6 +109,11 @@ func CheckNodeCert(certPEM, caCertPEM []byte, nodeIP string, now time.Time) erro
 	ca, err := parseCert(caCertPEM)
 	if err != nil {
 		return fmt.Errorf("CA: %w", err)
+	}
+	// Before the chain: an ageing CA is the owner's problem to fix on the Hub, not a node
+	// certificate "not from the Hub CA".
+	if err := caUsable(ca, now); err != nil {
+		return err
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
@@ -110,6 +130,20 @@ func CheckNodeCert(certPEM, caCertPEM []byte, nodeIP string, now time.Time) erro
 	}
 	if cert.NotAfter.Sub(now) < nodeCertRenewBefore {
 		return fmt.Errorf("сертификат истекает %s", cert.NotAfter.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// caUsable is nil while the Hub CA can still sign node certificates worth installing: it is
+// already valid and has more than nodeCertRenewBefore left. Renewing the CA is a deliberate
+// owner action (deploy --rotate-node-agent-certs re-signs only the leaves, never the CA).
+func caUsable(ca *x509.Certificate, now time.Time) error {
+	if now.Before(ca.NotBefore) {
+		return fmt.Errorf("CA Hub действует только с %s — проверьте часы Hub", ca.NotBefore.UTC().Format("2006-01-02 15:04 MST"))
+	}
+	if ca.NotAfter.Sub(now) < nodeCertRenewBefore {
+		return fmt.Errorf("CA Hub истекает %s — нужен новый CA node-agent (deploy --rotate-node-agent-certs его не продлевает, он меняет только листовые сертификаты)",
+			ca.NotAfter.UTC().Format("2006-01-02"))
 	}
 	return nil
 }
