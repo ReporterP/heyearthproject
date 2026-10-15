@@ -35,3 +35,7 @@ server/backend/heyearth-api
 server/backend/heyearth-api.bin
 .superpowers/
 .plan-tmp/
+
+# Local secrets — never commit (CA/leaf private keys, per-user Claude settings with credentials)
+.claude/settings.local.json
+server/backend/certs/*-key.pem
