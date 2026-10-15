@@ -13,8 +13,6 @@ import (
 	"io"
 	"net"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,7 +214,11 @@ func (r *SSHRemote) PutFile(ctx context.Context, path string, data []byte, mode 
 	return putFile(ctx, r.exec, path, data, mode)
 }
 
-// exec runs cmd with the login shell of the node, stdin as its standard input.
+// exec runs cmd with the login shell of the node, stdin as its standard input. A cancelled ctx
+// sends SIGKILL to the session's process — the script's own bash, since runWrapper execs it — and
+// closes the session. The script's children on the node may outlive it (OpenSSH signals only that
+// one process; a server without signal support or a dead connection gets nothing at all): every
+// step is idempotent, and a resumed job starts over from Verify.
 func (r *SSHRemote) exec(ctx context.Context, cmd string, stdin io.Reader) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -251,16 +253,15 @@ func (LocalRemote) Run(ctx context.Context, script string) (string, error) {
 }
 
 func (LocalRemote) PutFile(ctx context.Context, path string, data []byte, mode uint32) (bool, error) {
-	if runtime.GOOS == "windows" { // tests on a dev machine: Git Bash takes C:/… paths
-		path = filepath.ToSlash(path)
-	}
-	return putFile(ctx, localExec, path, data, mode)
+	return putFile(ctx, localExec, localShellPath(path), data, mode)
 }
 
+// localExec: a cancelled ctx kills the whole process group of the script (prepareLocalCmd).
 func localExec(ctx context.Context, cmd string, stdin io.Reader) (string, error) {
 	c := exec.CommandContext(ctx, "bash", "-c", cmd)
+	prepareLocalCmd(c)
 	c.Stdin = stdin
-	c.WaitDelay = 5 * time.Second // a killed script's children must not keep Run waiting on the pipes
+	c.WaitDelay = 5 * time.Second // a process that left the group must not keep Run waiting on the pipes
 	out := &outputBuffer{max: maxOutput}
 	c.Stdout, c.Stderr = out, out
 	if err := c.Run(); err != nil {
@@ -275,16 +276,18 @@ func localExec(ctx context.Context, cmd string, stdin io.Reader) (string, error)
 // execFunc runs cmd with a POSIX shell on the target, stdin as its standard input.
 type execFunc func(ctx context.Context, cmd string, stdin io.Reader) (string, error)
 
-// runWrapper is what the target's shell executes for Run: the script arrives on stdin (never in
-// argv: it may carry secrets), lands in a private temp file (mktemp creates it 0600) and runs as
-// `bash <file> </dev/null`, so a command inside cannot read the rest of the script, and under the
-// shell's usual umask.
-const runWrapper = `t=$(mktemp /tmp/heyearth-run.XXXXXX) || exit 1
-cat > "$t" || { rm -f "$t"; exit 1; }
-bash "$t" </dev/null
-rc=$?
+// runWrapper is what the target's shell executes for Run. The script arrives on stdin (never in
+// argv: it may carry secrets) and goes into a temp file (mktemp: 0600) that is unlinked before a
+// byte of it is written, so a kill at any moment leaves nothing on disk; bash reads it back via
+// /dev/fd/4 (its first line closes the inherited fd 4). The script's stdin is /dev/null (a command
+// inside cannot read the rest of the script), its umask the shell's usual one. exec: the session's
+// process IS the script's bash, so a signal to the session (or the local group) reaches it.
+const runWrapper = `t=$(mktemp "${TMPDIR:-/tmp}/heyearth-run.XXXXXX") || exit 1
+exec 3>"$t" 4<"$t"
 rm -f "$t"
-exit $rc`
+printf 'exec 4<&-; ' >&3 && cat >&3 || exit 1
+exec 3>&-
+exec bash /dev/fd/4 </dev/null`
 
 func runScript(ctx context.Context, ex execFunc, script string) (string, error) {
 	return ex(ctx, runWrapper, strings.NewReader(script))
@@ -293,8 +296,8 @@ func runScript(ctx context.Context, ex execFunc, script string) (string, error) 
 // putFile: the current sha256 and mode decide whether anything is sent; the data then travels on
 // stdin to putScript.
 func putFile(ctx context.Context, ex execFunc, path string, data []byte, mode uint32) (bool, error) {
-	if path == "" || strings.HasSuffix(path, "/") {
-		return false, fmt.Errorf("PutFile: недопустимый путь %q", path)
+	if !strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") || strings.ContainsRune(path, 0) {
+		return false, fmt.Errorf("PutFile: нужен абсолютный путь к файлу, а не %q", path)
 	}
 	if mode&^0o7777 != 0 {
 		return false, fmt.Errorf("PutFile %s: недопустимые права %o", path, mode)
@@ -320,11 +323,14 @@ if [ -f "$p" ]; then printf '%s %s\n' "$(sha256sum < "$p" | cut -c1-64)" "$(stat
 }
 
 // putScript installs stdin at path: a temp file next to the target (same filesystem → atomic
-// mv), the sha256 of what arrived checked, the owner of the previous version kept, chmod; the
-// previous version → <path>.bak (also atomically, with its own mode); a new file deletes a stale
-// <path>.bak, so a .bak always means "the version this run replaced" (UnitRollbackScript in
-// internal/config relies on that). Interrupted at any point: the target is the old or the new
-// file, never a partial one; the trap removes the temp files.
+// mv), the sha256 of what arrived checked (a cut or corrupted upload changes nothing), flushed to
+// disk, the owner of the previous version kept, chmod; the previous version → <path>.bak (also
+// atomically, with its own mode); a new file deletes a stale <path>.bak, so a .bak always means
+// "the version this run replaced" (UnitRollbackScript in internal/config relies on that). mv -T: a
+// directory at <path> or <path>.bak is an error, never a place the file is moved into.
+// Interrupted at any point: the target is the old or the new file, never a partial one; the trap
+// removes the temp files. flush_file is fsync through a write handle (`sync FILE` opens it
+// read-only, which Windows — the tests' Git Bash — refuses to flush).
 func putScript(path, sum string, mode uint32) string {
 	return "set -e\np=" + shellquote.Quote(path) + "\nsum=" + sum + "\nmode=" + modeString(mode) + `
 if [ -d "$p" ]; then echo "$p — каталог, файл туда не записать" >&2; exit 1; fi
@@ -332,19 +338,22 @@ mkdir -p "$(dirname "$p")"
 t=$(mktemp "$p.XXXXXX")
 b=
 trap 'rm -f "$t" ${b:+"$b"}' EXIT
+flush_file() { dd if=/dev/null of="$1" conv=notrunc,fsync status=none; }
 cat > "$t"
 if [ "$(sha256sum < "$t" | cut -c1-64)" != "$sum" ]; then echo "$p: контрольная сумма полученных данных не совпала" >&2; exit 1; fi
+flush_file "$t"
 if [ -e "$p" ]; then chown --reference="$p" "$t"; fi
 chmod "$mode" "$t"
 if [ -f "$p" ]; then
   b=$(mktemp "$p.XXXXXX")
   cp -p "$p" "$b"
-  mv -f "$b" "$p.bak"
+  flush_file "$b"
+  mv -fT "$b" "$p.bak"
   b=
 else
   rm -f "$p.bak"
 fi
-mv -f "$t" "$p"
+mv -fT "$t" "$p"
 trap - EXIT`
 }
 

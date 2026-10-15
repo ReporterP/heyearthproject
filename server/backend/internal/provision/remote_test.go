@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyearth/backend/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -59,6 +61,7 @@ type sshdOpts struct {
 	authorized  ssh.PublicKey // accepted client key (nil = none)
 	hostKeys    []ssh.Signer  // default: one fresh ed25519 key
 	stallGlobal bool          // never answer global requests: a peer that stopped responding
+	env         []string      // added to the environment of every command
 }
 
 type testSSHD struct {
@@ -112,13 +115,13 @@ func startSSHD(t *testing.T, dir string, o sshdOpts) *testSSHD {
 				return
 			}
 			d.accepted.Add(1)
-			go serveConn(c, cfg, dir, o.stallGlobal)
+			go serveConn(c, cfg, dir, o)
 		}
 	}()
 	return d
 }
 
-func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, stallGlobal bool) {
+func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, o sshdOpts) {
 	_, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
 		c.Close()
@@ -127,7 +130,7 @@ func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, stallGlobal bool) 
 	go func() {
 		var held []*ssh.Request // read (so the connection keeps flowing) but never answered
 		for r := range reqs {
-			if stallGlobal {
+			if o.stallGlobal {
 				held = append(held, r)
 				continue
 			}
@@ -154,9 +157,24 @@ func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, stallGlobal bool) 
 				req.Reply(true, nil)
 				cmd := exec.Command("bash", "-c", p.Command)
 				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), o.env...)
 				cmd.Stdin, cmd.Stdout, cmd.Stderr = ch, ch, ch.Stderr()
 				code := 0
-				if err := cmd.Run(); err != nil {
+				err := cmd.Start()
+				if err == nil {
+					go func() { // like OpenSSH: "signal" goes to the session's process only
+						for r := range in {
+							if r.Type == "signal" {
+								killSessionProcess(cmd.Process)
+							}
+							if r.WantReply {
+								r.Reply(false, nil)
+							}
+						}
+					}()
+					err = cmd.Wait()
+				}
+				if err != nil {
 					code = 1
 					var ee *exec.ExitError
 					if errors.As(err, &ee) {
@@ -168,6 +186,15 @@ func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, stallGlobal bool) 
 			}
 		}()
 	}
+}
+
+// killSessionProcess: on Linux the session's process is the script's bash (runWrapper execs it);
+// Git Bash runs an exec'd program as a child of the original process, so there the tree goes.
+func killSessionProcess(p *os.Process) {
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(p.Pid)).Run()
+	}
+	_ = p.Kill()
 }
 
 func (d *testSSHD) node(fp, pw string, hub ssh.Signer) Node {
@@ -363,7 +390,9 @@ func TestProbeUnreachable(t *testing.T) {
 	}
 }
 
-func putFileContract(t *testing.T, r Remote, path string, abs string) {
+// putFileContract: path is what the remote's shell sees (absolute), abs the same file for os.*,
+// cwd the shell's working directory, ex the remote's raw exec (to feed putScript a bad upload).
+func putFileContract(t *testing.T, r Remote, ex execFunc, path, abs, cwd string) {
 	t.Helper()
 	ctx := context.Background()
 	// A .bak left over from an older run must not pass for the previous version of a new file.
@@ -389,29 +418,97 @@ func putFileContract(t *testing.T, r Remote, path string, abs string) {
 			t.Fatalf("write %d: changed=%v err=%v, want changed=%v", i, ch, err, tc.changed)
 		}
 	}
-	if b, _ := os.ReadFile(abs); string(b) != "v2\n" {
-		t.Fatalf("content %q", b)
+	unchanged := func(what string) {
+		t.Helper()
+		if b, _ := os.ReadFile(abs); string(b) != "v2\n" {
+			t.Fatalf("%s: content %q", what, b)
+		}
+		if b, _ := os.ReadFile(abs + ".bak"); string(b) != "v1\n" {
+			t.Fatalf("%s: .bak %q, want the previous version", what, b)
+		}
+		if left, _ := filepath.Glob(abs + ".*"); len(left) != 1 {
+			t.Fatalf("%s: temp files left behind: %v", what, left)
+		}
 	}
-	if b, _ := os.ReadFile(abs + ".bak"); string(b) != "v1\n" {
-		t.Fatalf(".bak %q, want the previous version", b)
+	unchanged("after v2")
+
+	// A cut or corrupted upload (sha256 of what arrived differs from the expected one) changes nothing.
+	for name, body := range map[string]string{"cut": "v", "corrupted": "v4\n"} {
+		if _, err := ex(ctx, putScript(path, sha256Hex([]byte("v3\n")), 0o644), strings.NewReader(body)); err == nil {
+			t.Fatalf("%s upload accepted", name)
+		}
+		unchanged(name + " upload")
 	}
-	left, _ := filepath.Glob(abs + ".*")
-	if len(left) != 1 {
-		t.Fatalf("temp files left behind: %v", left)
-	}
-	// A directory in the way is an error, not a file moved into it.
-	dirPath := strings.TrimSuffix(path, "f.conf") + "d"
-	if err := os.MkdirAll(strings.TrimSuffix(abs, "f.conf")+"d", 0o755); err != nil {
+
+	// A directory in the way (at the target or at its .bak) is an error, never swallows the file.
+	base := strings.TrimSuffix(path, "f.conf")
+	absBase := strings.TrimSuffix(abs, "f.conf")
+	if err := os.MkdirAll(absBase+"d", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.PutFile(ctx, dirPath, []byte("x"), 0o644); err == nil {
+	if _, err := r.PutFile(ctx, base+"d", []byte("x"), 0o644); err == nil {
 		t.Fatal("PutFile over a directory succeeded")
 	}
-	if entries, _ := os.ReadDir(strings.TrimSuffix(abs, "f.conf") + "d"); len(entries) != 0 {
-		t.Fatalf("PutFile wrote into the directory: %v", entries)
+	if ch, err := r.PutFile(ctx, base+"g.conf", []byte("g1\n"), 0o644); err != nil || !ch {
+		t.Fatalf("g.conf: %v %v", ch, err)
 	}
+	if err := os.MkdirAll(absBase+"g.conf.bak", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PutFile(ctx, base+"g.conf", []byte("g2\n"), 0o644); err == nil {
+		t.Fatal("PutFile with a directory at .bak succeeded")
+	}
+	for _, d := range []string{absBase + "d", absBase + "g.conf.bak"} {
+		if entries, _ := os.ReadDir(d); len(entries) != 0 {
+			t.Fatalf("PutFile wrote into the directory %s: %v", d, entries)
+		}
+	}
+	if b, _ := os.ReadFile(absBase + "g.conf"); string(b) != "g1\n" {
+		t.Fatalf("g.conf %q after the failed write", b)
+	}
+	if left, _ := filepath.Glob(absBase + "g.conf.*"); len(left) != 1 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+
+	// Quotes, command substitution, backticks, spaces and ; in the name are just a name.
+	const hostile = "it's $(touch pwned) a;b `touch pwned2`.conf"
+	for _, v := range []string{"h1\n", "h2\n"} {
+		if ch, err := r.PutFile(ctx, base+hostile, []byte(v), 0o644); err != nil || !ch {
+			t.Fatalf("hostile name %s: %v %v", v, ch, err)
+		}
+	}
+	if b, _ := os.ReadFile(absBase + hostile); string(b) != "h2\n" {
+		t.Fatalf("hostile name: content %q", b)
+	}
+	if b, _ := os.ReadFile(absBase + hostile + ".bak"); string(b) != "h1\n" {
+		t.Fatalf("hostile name: .bak %q", b)
+	}
+	for _, d := range []string{cwd, filepath.Dir(abs)} {
+		for _, f := range []string{"pwned", "pwned2"} {
+			if _, err := os.Stat(filepath.Join(d, f)); err == nil {
+				os.Remove(filepath.Join(d, f))
+				t.Fatalf("the path was executed: %s created in %s", f, d)
+			}
+		}
+	}
+
 	if _, err := r.PutFile(ctx, path, []byte("x"), 0o10644); err == nil {
 		t.Fatal("a mode beyond the permission bits was accepted")
+	}
+}
+
+// PutFile takes only absolute paths: a relative one depends on the login directory, and one that
+// starts with "-" would be an option to mkdir/mktemp. Refused before anything runs.
+func TestPutFileRefusesBadPaths(t *testing.T) {
+	calls := 0
+	ex := func(context.Context, string, io.Reader) (string, error) { calls++; return "", nil }
+	for _, p := range []string{"", "sub/f.conf", "-rf", "./f", "f.conf", "/etc/", "/", "/etc/x\x00y"} {
+		if _, err := putFile(context.Background(), ex, p, []byte("x"), 0o644); err == nil {
+			t.Errorf("PutFile(%q) accepted", p)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("%d commands ran for refused paths", calls)
 	}
 }
 
@@ -426,7 +523,8 @@ func TestSSHRemoteContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer Close(r)
-	putFileContract(t, r, "sub/f.conf", filepath.Join(dir, "sub", "f.conf"))
+	abs := filepath.Join(dir, "sub", "f.conf")
+	putFileContract(t, r, r.(*SSHRemote).exec, localShellPath(abs), abs, dir)
 	out, err := r.Run(context.Background(), "echo out; echo err >&2; exit 3")
 	if err == nil || !strings.Contains(out, "out") || !strings.Contains(out, "err") {
 		t.Fatalf("failing script: %q %v", out, err)
@@ -444,7 +542,8 @@ func TestLocalRemoteContract(t *testing.T) {
 		t.Skip("no bash")
 	}
 	p := filepath.Join(t.TempDir(), "sub", "f.conf")
-	putFileContract(t, LocalRemote{}, p, p)
+	cwd, _ := os.Getwd()
+	putFileContract(t, LocalRemote{}, localExec, localShellPath(p), p, cwd)
 	if runtime.GOOS != "windows" {
 		if ch, err := (LocalRemote{}).PutFile(context.Background(), p, []byte("v2\n"), 0o600); err != nil || !ch {
 			t.Fatalf("a mode change must count as a change: %v %v", ch, err)
@@ -458,26 +557,77 @@ func TestLocalRemoteContract(t *testing.T) {
 	}
 }
 
-// A hung script or a cancelled job returns at once; the error says why.
-func TestRunHonoursContext(t *testing.T) {
+// The script file holds secrets: it is unlinked before the script runs, so neither a finished nor
+// a killed Run leaves it behind. A cancelled Run returns at once and the script stops writing (on
+// the Hub with everything it started: the job's Rollback/Resume must not race a leftover).
+func TestRunCancelStopsScriptAndLeavesNoFile(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
-	d := startSSHD(t, t.TempDir(), sshdOpts{password: "pw"})
+	tmp, work := t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", localShellPath(tmp)) // the local bash; the sshd gets it explicitly
+	d := startSSHD(t, work, sshdOpts{password: "pw", env: []string{"TMPDIR=" + localShellPath(tmp)}})
 	sr, err := DialNode(d.node(d.fp, "pw", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer Close(sr)
-	for name, r := range map[string]Remote{"ssh": sr, "local": LocalRemote{}} {
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		start := time.Now()
-		_, err := r.Run(ctx, "sleep 20")
-		cancel()
-		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 10*time.Second {
-			t.Fatalf("%s: err=%v after %v", name, err, time.Since(start))
+	remotes := map[string]Remote{"ssh": sr, "local": LocalRemote{}}
+	for name, r := range remotes {
+		out, err := r.Run(context.Background(), "echo SECRET=1 >/dev/null\nls -A \"$TMPDIR\"\necho done")
+		if err != nil || strings.TrimSpace(out) != "done" {
+			t.Fatalf("%s: the script file is visible while the script runs: %q %v", name, out, err)
 		}
 	}
+	pids := map[string]string{}
+	for name, r := range remotes {
+		pidFile, marker := filepath.Join(work, name+".pid"), filepath.Join(work, name+".late")
+		script := "sleep 30 >/dev/null 2>&1 &\necho $! > " + shellquote.Quote(localShellPath(pidFile)) +
+			"\nsleep 2\necho late > " + shellquote.Quote(localShellPath(marker)) + "\n"
+		ctx, cancel := context.WithCancel(context.Background())
+		res := make(chan error, 1)
+		go func() { _, err := r.Run(ctx, script); res <- err }()
+		pids[name] = waitForFile(t, pidFile, 15*time.Second) // the script is running
+		cancel()
+		select {
+		case err := <-res:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s: err = %v, want context.Canceled", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: Run did not return after cancel", name)
+		}
+	}
+	t.Cleanup(func() { // the ssh side's background child may outlive the session (documented)
+		_ = exec.Command("bash", "-c", "kill "+pids["ssh"]+" "+pids["local"]+" 2>/dev/null").Run()
+	})
+	time.Sleep(3 * time.Second)
+	for name := range remotes {
+		if _, err := os.Stat(filepath.Join(work, name+".late")); !os.IsNotExist(err) {
+			t.Errorf("%s: the cancelled script kept running and wrote its marker", name)
+		}
+	}
+	// The process group exists where the Hub runs (Linux); Git Bash's emulated fork/exec on a
+	// developer's Windows machine has no real one.
+	if runtime.GOOS != "windows" {
+		if err := exec.Command("bash", "-c", "kill -0 "+pids["local"]+" 2>/dev/null").Run(); err == nil {
+			t.Error("local: a child of the cancelled script survived (process group not killed)")
+		}
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Errorf("script files left in TMPDIR: %v", left)
+	}
+}
+
+func waitForFile(t *testing.T, path string, limit time.Duration) string {
+	t.Helper()
+	for end := time.Now().Add(limit); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(path); err == nil && strings.HasSuffix(string(b), "\n") {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	t.Fatalf("%s did not appear in %v", path, limit)
+	return ""
 }
 
 // A node that stops answering (SSH dropped without a FIN) fails the running script instead of
