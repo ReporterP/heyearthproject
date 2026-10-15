@@ -129,7 +129,10 @@ WantedBy=multi-user.target
 // ExitXrayUnit is /etc/systemd/system/xray.service on an exit: xray runs as ExitXrayUser, the
 // subject of the kernel egress guard it Requires= (exit_xray_guard.go). The config is written
 // by root as 0600 (the provisioning core compares content and mode, not the owner), so the
-// privileged ("+") ExecStartPre hands it to the user on every start; :10443 needs no capability.
+// privileged ("+") ExecStartPre — outside the service's namespace and restrictions — hands it to
+// the user on every start. xray sees ExitXrayResolvConf as /etc/resolv.conf (the guard leaves it
+// no local resolver). Hardening: no capabilities at all (:10443 needs none), no new privileges,
+// read-only system, no /home, private /tmp; xray writes nothing (logs go to the journal).
 const ExitXrayUnit = `[Unit]
 Description=Xray Exit Node (HeYearth)
 After=network.target ` + ExitXrayGuardService + `.service
@@ -140,6 +143,13 @@ User=` + ExitXrayUser + `
 Group=` + ExitXrayUser + `
 ExecStartPre=+/bin/chown ` + ExitXrayUser + `:` + ExitXrayUser + ` ` + ExitXrayConfig + `
 ExecStart=` + ExitXrayBinary + ` run -config ` + ExitXrayConfig + `
+BindReadOnlyPaths=` + ExitXrayResolvConfPath + `:/etc/resolv.conf
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
@@ -244,7 +254,7 @@ func ExitXrayConfigJSON(k ExitRealityKeys, exitIP string, mtprotoPort int) ([]by
 	sockopt := map[string]any{"tcpFastOpen": true, "tcpNoDelay": true, "tcpKeepAliveInterval": 30}
 	cfg := map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
-		"dns": map[string]any{"servers": []string{"8.8.8.8", "1.1.1.1"}, "queryStrategy": "UseIPv4"},
+		"dns": map[string]any{"servers": exitXrayDNSServers, "queryStrategy": "UseIPv4"},
 		"inbounds": []any{map[string]any{
 			"tag": "vless-reality", "listen": "0.0.0.0", "port": ExitRealityPort, "protocol": "vless",
 			"settings": map[string]any{"decryption": "none",

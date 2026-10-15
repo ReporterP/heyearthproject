@@ -1,6 +1,7 @@
 [Unit]
 Description=Kernel egress guard of the exit xray (HeYearth)
-After=network.target
+After=network.target nftables.service
+PartOf=nftables.service
 Before=xray.service
 [Service]
 Type=oneshot
