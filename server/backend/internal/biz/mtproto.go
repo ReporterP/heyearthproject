@@ -146,17 +146,22 @@ func ListMTProtoExitIPs() ([]string, error) {
 	return ips, rows.Err()
 }
 
+// exitsNeedingMTProtoQuery: online exits without a daemon yet. 'disabled' = the owner switched
+// MTProxy off for this node in the wizard.
+const exitsNeedingMTProtoQuery = `
+	SELECT id, ip_address, COALESCE(load_weight, 1)
+	  FROM servers
+	 WHERE is_exit_node = TRUE
+	   AND lifecycle_state = 'online'
+	   AND mtproto_installed_at IS NULL
+	   AND mtproto_status NOT IN ('installing', 'disabled')
+`
+
 // ListExitsNeedingMTProto returns online exits that have no daemon installed
-// yet (mtproto_installed_at IS NULL). Used by Ghost Reconciler.
+// yet (mtproto_installed_at IS NULL) and whose MTProxy is not switched off.
+// Used by Ghost Reconciler.
 func ListExitsNeedingMTProto() ([]MTProtoExit, error) {
-	rows, err := db.DB.Query(`
-		SELECT id, ip_address, COALESCE(load_weight, 1)
-		  FROM servers
-		 WHERE is_exit_node = TRUE
-		   AND lifecycle_state = 'online'
-		   AND mtproto_installed_at IS NULL
-		   AND mtproto_status != 'installing'
-	`)
+	rows, err := db.DB.Query(exitsNeedingMTProtoQuery)
 	if err != nil {
 		return nil, fmt.Errorf("list exits needing mtproto: %w", err)
 	}

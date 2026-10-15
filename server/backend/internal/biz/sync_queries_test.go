@@ -74,3 +74,11 @@ func TestCycleWindow(t *testing.T) {
 		})
 	}
 }
+
+// A MTProxy the owner switched off in the wizard is never installed behind his back.
+func TestExitsNeedingMTProtoSkipsDisabled(t *testing.T) {
+	q := normSQL(exitsNeedingMTProtoQuery)
+	if !strings.Contains(q, normSQL("mtproto_status NOT IN ('installing', 'disabled')")) {
+		t.Errorf("query:\n%s", exitsNeedingMTProtoQuery)
+	}
+}
