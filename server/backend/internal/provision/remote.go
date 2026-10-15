@@ -419,7 +419,7 @@ func tail(s string, n int) string {
 	cut := len(s) - n
 	if s[cut-1] != '\n' {
 		i := strings.IndexByte(s[cut:], '\n')
-		if i < 0 {
+		if i < 0 || cut+i+1 == len(s) { // no line starts in the kept bytes
 			if len(cutLineMarker) <= n {
 				return cutLineMarker
 			}

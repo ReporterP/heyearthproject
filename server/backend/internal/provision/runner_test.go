@@ -13,12 +13,14 @@ import (
 )
 
 // memStore is the Store of the runner tests; it keeps SQLStore's rules: one running job per
-// node, only the node's latest interrupted/failed job reopens, every write needs the run token
-// of the running job (ErrJobLost otherwise), InterruptRunning revokes the tokens.
+// node, only the node's latest interrupted/failed job (or a stale CLI run) reopens, every write
+// needs the run token of the running job (ErrJobLost otherwise), the interrupts revoke tokens.
 type memJob struct {
 	Job
-	Error string
-	Steps []StepView
+	Error  string
+	Steps  []StepView
+	Runner string // "" = RunnerAPI
+	Stale  bool   // older than staleRunAge
 }
 
 type memStore struct {
@@ -66,7 +68,8 @@ func (m *memStore) ReopenJob(_ context.Context, id int64) (Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	j := m.jobs[id]
-	if j == nil || (j.Status != JobInterrupted && j.Status != JobFailed) {
+	staleCLI := j != nil && j.Status == JobRunning && j.Runner == RunnerCLI && j.Stale
+	if j == nil || (j.Status != JobInterrupted && j.Status != JobFailed && !staleCLI) {
 		return Job{}, ErrJobNotResumable
 	}
 	for _, o := range m.jobs {
@@ -74,7 +77,7 @@ func (m *memStore) ReopenJob(_ context.Context, id int64) (Job, error) {
 			return Job{}, ErrJobNotResumable
 		}
 	}
-	j.Status, j.Error, j.Token = JobRunning, "", m.token()
+	j.Status, j.Error, j.Token, j.Runner, j.Stale = JobRunning, "", m.token(), RunnerAPI, false
 	return j.Job, nil
 }
 func (m *memStore) SetSteps(_ context.Context, run Job, names []string) error {
@@ -111,11 +114,17 @@ func (m *memStore) FinishJob(_ context.Context, run Job, status, msg string) err
 	return nil
 }
 func (m *memStore) InterruptRunning(context.Context) (int64, error) {
+	return m.interrupt(func(j *memJob) bool { return j.Runner != RunnerCLI || j.Stale })
+}
+func (m *memStore) InterruptStale(context.Context) (int64, error) {
+	return m.interrupt(func(j *memJob) bool { return j.Runner == RunnerCLI && j.Stale })
+}
+func (m *memStore) interrupt(which func(*memJob) bool) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var n int64
 	for _, j := range m.jobs {
-		if j.Status == JobRunning {
+		if j.Status == JobRunning && which(j) {
 			j.Status, j.Token = JobInterrupted, ""
 			n++
 			for i := range j.Steps {
@@ -1114,5 +1123,92 @@ func TestActivateApplyOnlyWarnsOnceOnline(t *testing.T) {
 	id2, _ := r2.Start(context.Background(), 7, KindProvision)
 	if store2.jobs[id2].Status != JobFailed || h2.syncs != 0 || h2.bumps != 0 {
 		t.Fatalf("refused activate: job=%s syncs=%d bumps=%d", store2.jobs[id2].Status, h2.syncs, h2.bumps)
+	}
+}
+
+// ── dead CLI runs ────────────────────────────────────────────────────────────────────────────
+
+// deadCLIJob is what a CLI run killed in the middle (Ctrl-C, dropped DB tunnel) leaves: the job
+// "running" under its token, a step "running", the node "provisioning".
+func deadCLIJob(store *memStore, stale bool) int64 {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.next++
+	store.jobs[store.next] = &memJob{Job: Job{ID: store.next, ServerID: 7, Kind: KindProvision, Status: JobRunning, Token: "cli-run"},
+		Runner: RunnerCLI, Stale: stale, Steps: []StepView{{Idx: 0, Name: "base", Status: StepRunning}}}
+	return store.next
+}
+
+func TestRunnerTakesOverADeadCLIRun(t *testing.T) {
+	ctx := context.Background()
+	h := &fakeHooks{lifecycle: "provisioning"}
+	store := newMemStore(Node{ID: 7}, h)
+	recipe := func(_ string, st *State) Recipe {
+		st.Begin = func(ctx context.Context) error {
+			return st.Hooks.SetLifecycle(ctx, 7, []string{"pending", "failed", "provisioning"}, "provisioning")
+		}
+		return Recipe{{Name: "base", Apply: func(context.Context, Remote, *State) error { return nil }},
+			{Name: "activate", Apply: activateApply}}
+	}
+	r := testRunner(store, h, recipe)
+	young := deadCLIJob(store, false) // it may still be running: hands off
+	if err := r.Resume(ctx, young); !errors.Is(err, ErrJobNotResumable) {
+		t.Fatalf("a live CLI run was taken over: %v", err)
+	}
+	if n, _ := store.InterruptRunning(ctx); n != 0 || store.jobs[young].Status != JobRunning {
+		t.Fatalf("an API restart interrupted a live CLI run: n=%d %s", n, store.jobs[young].Status)
+	}
+	store.jobs[young].Stale = true // 50 minutes later
+	if err := r.Resume(ctx, young); err != nil {
+		t.Fatal(err)
+	}
+	if j := store.jobs[young]; j.Status != JobSucceeded || h.lifecycle != "online" || h.syncs != 1 || j.Runner != RunnerAPI {
+		t.Fatalf("takeover: job=%s runner=%s lifecycle=%s syncs=%d", j.Status, j.Runner, h.lifecycle, h.syncs)
+	}
+}
+
+// The API's sweep frees the node of a dead CLI run without an API restart; it stops with ctx.
+func TestRunnerSweepStale(t *testing.T) {
+	h := &fakeHooks{lifecycle: "provisioning"}
+	store := newMemStore(Node{ID: 7}, h)
+	live, dead := deadCLIJob(store, false), int64(0)
+	store.jobs[live].ServerID = 8
+	dead = deadCLIJob(store, true)
+	var mu sync.Mutex
+	var logs []string
+	r := testRunner(store, h, nil)
+	r.Logf = func(f string, a ...any) { mu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); mu.Unlock() }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.SweepStale(ctx, 5*time.Millisecond); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		store.mu.Lock()
+		st := store.jobs[dead].Status
+		store.mu.Unlock()
+		if st == JobInterrupted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sweep never interrupted the dead CLI run")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("SweepStale ignores ctx")
+	}
+	if store.jobs[live].Status != JobRunning || store.statuses(dead)[0] != "base=interrupted" {
+		t.Fatalf("live=%s dead steps=%v", store.jobs[live].Status, store.statuses(dead))
+	}
+	if _, err := store.CreateJob(context.Background(), 7, KindProvision); err != nil {
+		t.Fatalf("the node is still locked: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(strings.Join(logs, "\n"), "прервано зависших задач командной строки: 1") {
+		t.Fatalf("logs %q", logs)
 	}
 }

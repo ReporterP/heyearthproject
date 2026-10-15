@@ -37,6 +37,8 @@ const (
 	JobTimeout    = 40 * time.Minute // first MTProxy build alone may take 12 min
 	// RollbackTimeout: a rollback gets its own time — the job's context may be what just expired.
 	RollbackTimeout = 2 * time.Minute
+	// StaleSweepEvery: how often the API's SweepStale frees nodes of dead CLI runs.
+	StaleSweepEvery = 5 * time.Minute
 )
 
 var (
@@ -67,14 +69,17 @@ type Store interface {
 	// CreateJob inserts a running job under a fresh run token; ErrJobActive.
 	CreateJob(ctx context.Context, serverID int, kind string) (Job, error)
 	// ReopenJob puts the node's latest job back to running under a fresh run token if it was
-	// interrupted or failed; ErrJobNotResumable / ErrJobActive.
+	// interrupted or failed, or is a CLI run too old to be alive; ErrJobNotResumable / ErrJobActive.
 	ReopenJob(ctx context.Context, jobID int64) (Job, error)
 	// SetSteps, MarkStep and FinishJob write only while job.Token owns the running job; otherwise
 	// ErrJobLost.
 	SetSteps(ctx context.Context, job Job, names []string) error
 	MarkStep(ctx context.Context, job Job, idx int, status, outputTail string) error
 	FinishJob(ctx context.Context, job Job, status, errMsg string) error
+	// InterruptRunning: at API start, every job a run of the old process owned (and stale CLI runs).
 	InterruptRunning(ctx context.Context) (int64, error)
+	// InterruptStale: the jobs of CLI runs too old to be alive (Ctrl-C, a dropped DB tunnel).
+	InterruptStale(ctx context.Context) (int64, error)
 }
 
 // Runner runs jobs: one goroutine per job, steps in order, every state change persisted, so a
@@ -143,6 +148,30 @@ func (r *Runner) Resume(ctx context.Context, jobID int64) error {
 	}
 	r.spawn(func() { r.run(job, n, recipe, st) })
 	return nil
+}
+
+// SweepStale interrupts, every `every` until ctx ends, the jobs of CLI runs that cannot be alive
+// any more, so their nodes take new jobs and «Продолжить» without waiting for an API restart.
+// The API runs it once in the background (Task 2.10: go runner.SweepStale(ctx, StaleSweepEvery)).
+func (r *Runner) SweepStale(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		n, err := r.Store.InterruptStale(sctx)
+		cancel()
+		switch {
+		case err != nil:
+			r.logf("[provision] зависшие задачи командной строки: %v", err)
+		case n > 0:
+			r.logf("[provision] прервано зависших задач командной строки: %d — их можно продолжить", n)
+		}
+	}
 }
 
 func stepNames(rc Recipe) []string {
@@ -333,6 +362,11 @@ func (r *Runner) logPanic(jobID int64, where string, err error, secrets []string
 // inconclusive: a Verify error that says nothing about the node — Verify panicked, the node
 // could not be reached or the connection dropped, the job ran out of time. Neither drift nor a
 // reason to Apply.
+//
+// Recipes: a Verify that times out on its own (a sub-context of its own, the node reachable) is
+// caught here too when it returns or wraps context.DeadlineExceeded. If that case should lead to
+// Apply (e.g. "the service did not answer in 5 s" = not set up yet), return a recipe error that
+// does not wrap the context error.
 func inconclusive(ctx context.Context, err error) bool {
 	var pe *panicError
 	return errors.As(err, &pe) || ctx.Err() != nil ||

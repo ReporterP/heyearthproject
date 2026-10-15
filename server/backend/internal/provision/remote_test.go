@@ -718,6 +718,8 @@ func TestTailStartsAtALine(t *testing.T) {
 		"cut mid-line":      {"aaaa\nbbbb\ncc\n", 7, "cc\n"},
 		"cut at line start": {"aaaa\nbbbb\ncc\n", 8, "bbbb\ncc\n"},
 		"one long line":     {strings.Repeat("x", 200), 100, cutLineMarker},
+		"long last line":    {strings.Repeat("x", 200) + "\n", 100, cutLineMarker},
+		"long line, then":   {strings.Repeat("x", 200) + "\nok\n", 100, "ok\n"},
 		"marker too long":   {strings.Repeat("x", 20), 10, ""},
 		"cyrillic":          {"ширина\nдлина\n", 12, "длина\n"},
 	} {

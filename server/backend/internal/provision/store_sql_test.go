@@ -32,9 +32,12 @@ func TestSQLShapes(t *testing.T) {
 		"resume only interrupted/failed":  {reopenJobQuery, "status IN ('interrupted', 'failed')"},
 		"resume takes the run over":       {reopenJobQuery, "run_token = $2, runner = $3"},
 		"resume only the latest job":      {reopenJobQuery, "AND id = (SELECT max(j.id) FROM provision_jobs j WHERE j.server_id = provision_jobs.server_id)"},
+		"resume takes over dead CLI runs": {reopenJobQuery, "OR (status = 'running' AND runner = 'cli' AND COALESCE(started_at, created_at) < NOW() - interval '50 minutes'))"},
+		"sweep: only stale CLI runs":      {interruptStaleQuery, "WHERE status IN ('queued', 'running') AND runner = 'cli' AND COALESCE(started_at, created_at) < NOW() - interval '50 minutes'"},
+		"sweep revokes the run":           {interruptStaleQuery, "SET status = 'interrupted', run_token = NULL"},
 		"restart interrupts active jobs":  {interruptJobsQuery, "WHERE status IN ('queued', 'running')"},
 		"restart revokes the run":         {interruptJobsQuery, "SET status = 'interrupted', run_token = NULL"},
-		"live CLI runs are left alone":    {interruptJobsQuery, "AND (runner = 'api' OR COALESCE(started_at, created_at) < NOW() - interval '45 minutes')"},
+		"live CLI runs are left alone":    {interruptJobsQuery, "AND (runner = 'api' OR COALESCE(started_at, created_at) < NOW() - interval '50 minutes')"},
 		"step writes need the run":        {markStepQuery, "AND EXISTS (SELECT 1 FROM provision_jobs WHERE id = $1 AND run_token = $5 AND status = 'running')"},
 		"finish needs the run":            {finishJobQuery, "WHERE id = $1 AND run_token = $4 AND status = 'running'"},
 		"steps replaced by the owner":     {ownJobQuery, "WHERE id = $1 AND run_token = $2 AND status = 'running' FOR UPDATE"},
@@ -383,15 +386,39 @@ func TestSQLStoreRunOwnership(t *testing.T) {
 	}
 }
 
-// No run can outlive staleRunAge: the job's time, the failing step's rollback, the Fail hook
-// (10 s) and the final bookkeeping (3 attempts × 10 s + backoff); the query says the same age.
+// No run can outlive staleRunAge: the job's time; an SSH dial started just before the deadline
+// (it takes no context: every host key probe and the final dial, each a TCP connect plus a
+// handshake); a Hub script's kill wait; the failing step's rollback; the Fail hook (10 s); the
+// final bookkeeping (3 attempts × 10 s + backoff). The queries say the same age.
 func TestStaleRunAgeCoversARun(t *testing.T) {
-	worst := JobTimeout + RollbackTimeout + 10*time.Second + bookkeepingAttempts*10*time.Second + 3*bookkeepingBackoff
+	dial := time.Duration(len(hostKeyFamilies)+1) * (dialTimeout + handshakeLimit)
+	worst := JobTimeout + dial + 5*time.Second + RollbackTimeout + 10*time.Second +
+		bookkeepingAttempts*10*time.Second + 3*bookkeepingBackoff
 	if worst+time.Minute > staleRunAge {
 		t.Fatalf("a run may last %v; staleRunAge %v leaves under a minute of margin", worst, staleRunAge)
 	}
-	if want := fmt.Sprintf("interval '%d minutes'", int(staleRunAge/time.Minute)); !strings.Contains(interruptJobsQuery, want) {
-		t.Fatalf("interruptJobsQuery must use %s", want)
+	want := fmt.Sprintf("interval '%d minutes'", int(staleRunAge/time.Minute))
+	for name, q := range map[string]string{"reopen": reopenJobQuery, "interrupt": interruptJobsQuery, "sweep": interruptStaleQuery} {
+		if !strings.Contains(q, want) || strings.Count(q, "interval") != 1 {
+			t.Errorf("%s query must use exactly %s", name, want)
+		}
+	}
+}
+
+func TestSQLStoreInterruptStale(t *testing.T) {
+	d := &recDB{}
+	d.query = func(q string, _ []driver.Value) (driver.Rows, error) {
+		if q == interruptStaleQuery {
+			return rows(1, []driver.Value{int64(9)}), nil
+		}
+		return rows(1), nil
+	}
+	if n, err := (&SQLStore{DB: openRec(d)}).InterruptStale(context.Background()); err != nil || n != 1 {
+		t.Fatalf("sweep: %d %v", n, err)
+	}
+	if got := d.trace(); !slices.Equal(got, []string{"BEGIN", "UPDATE provision_jobs SET", "UPDATE provision_steps SET", "COMMIT"}) ||
+		d.log[1].q != interruptStaleQuery || d.log[2].args[0] != "{9}" {
+		t.Fatalf("sweep: %v %v", got, d.log[2].args)
 	}
 }
 

@@ -34,10 +34,11 @@ type SQLStore struct {
 	BumpSubscription func(ctx context.Context) error
 }
 
-// staleRunAge is the age after which no run can still own a job: JobTimeout, the failing step's
-// RollbackTimeout and the final bookkeeping fit well inside it (TestStaleRunAgeCoversARun). It
-// is spelled out in interruptJobsQuery.
-const staleRunAge = 45 * time.Minute
+// staleRunAge is the age after which no run can still own a job: JobTimeout, an SSH dial that
+// started just before it (dial and handshake take no context), the failing step's
+// RollbackTimeout and the final bookkeeping fit inside it (TestStaleRunAgeCoversARun). It is
+// spelled out in reopenJobQuery, interruptJobsQuery and interruptStaleQuery.
+const staleRunAge = 50 * time.Minute
 
 // StepView is one provision_steps row as the admin API returns it.
 type StepView struct {
@@ -129,10 +130,14 @@ func LoadHubSigner(path string) (ssh.Signer, error) {
 const (
 	createJobQuery = `INSERT INTO provision_jobs (server_id, kind, status, started_at, run_token, runner)
 VALUES ($1, $2, 'running', NOW(), $3, $4) RETURNING id`
-	// Only the node's latest job: resuming an older one would undo what a later job did.
+	// Only the node's latest job (resuming an older one would undo what a later job did): an
+	// interrupted or failed one, or a CLI run that cannot be alive any more (Ctrl-C, a dropped DB
+	// tunnel), taken over under a fresh token.
 	reopenJobQuery = `UPDATE provision_jobs SET status = 'running', error = '', started_at = NOW(), finished_at = NULL,
        run_token = $2, runner = $3
- WHERE id = $1 AND status IN ('interrupted', 'failed')
+ WHERE id = $1
+   AND (status IN ('interrupted', 'failed')
+        OR (status = 'running' AND runner = 'cli' AND COALESCE(started_at, created_at) < NOW() - interval '50 minutes'))
    AND id = (SELECT max(j.id) FROM provision_jobs j WHERE j.server_id = provision_jobs.server_id)
  RETURNING server_id, kind`
 	ownJobQuery      = `SELECT 1 FROM provision_jobs WHERE id = $1 AND run_token = $2 AND status = 'running' FOR UPDATE`
@@ -151,7 +156,14 @@ SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) W
        error = CASE WHEN runner = 'api' THEN 'API перезапустился во время задачи — нажмите «Продолжить»'
                     ELSE 'Запуск из командной строки не завершил задачу — нажмите «Продолжить»' END
  WHERE status IN ('queued', 'running')
-   AND (runner = 'api' OR COALESCE(started_at, created_at) < NOW() - interval '45 minutes')
+   AND (runner = 'api' OR COALESCE(started_at, created_at) < NOW() - interval '50 minutes')
+ RETURNING id`
+	// The API's periodic sweep (Runner.SweepStale): only CLI runs that cannot be alive any more,
+	// so their nodes are not locked until the next API restart.
+	interruptStaleQuery = `UPDATE provision_jobs SET status = 'interrupted', run_token = NULL, finished_at = NOW(),
+       error = 'Запуск из командной строки не завершил задачу — нажмите «Продолжить»'
+ WHERE status IN ('queued', 'running')
+   AND runner = 'cli' AND COALESCE(started_at, created_at) < NOW() - interval '50 minutes'
  RETURNING id`
 	interruptStepsQuery = `UPDATE provision_steps SET status = 'interrupted', finished_at = NOW() WHERE status = 'running' AND job_id = ANY($1::bigint[])`
 	jobQuery            = `SELECT id, server_id, kind, status, error, created_at, started_at, finished_at FROM provision_jobs`
@@ -290,14 +302,26 @@ func (s *SQLStore) FinishJob(ctx context.Context, job Job, status, msg string) e
 	return owned(s.DB.ExecContext(ctx, finishJobQuery, job.ID, status, msg, job.Token))
 }
 
-// InterruptRunning is called once at API start: a job that was running died with the old process.
+// InterruptRunning is called once at API start: a job that was running died with the old process
+// (a CLI run only once it is older than staleRunAge).
 func (s *SQLStore) InterruptRunning(ctx context.Context) (int64, error) {
+	return s.interrupt(ctx, interruptJobsQuery)
+}
+
+// InterruptStale interrupts the jobs of CLI runs older than staleRunAge (Runner.SweepStale).
+func (s *SQLStore) InterruptStale(ctx context.Context) (int64, error) {
+	return s.interrupt(ctx, interruptStaleQuery)
+}
+
+// interrupt runs one of the interrupt queries and marks the running steps of exactly those jobs
+// interrupted, in one transaction.
+func (s *SQLStore) interrupt(ctx context.Context, jobsQuery string) (int64, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, interruptJobsQuery)
+	rows, err := tx.QueryContext(ctx, jobsQuery)
 	if err != nil {
 		return 0, err
 	}
