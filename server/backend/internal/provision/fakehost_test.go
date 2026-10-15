@@ -209,20 +209,20 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 		return "UNIT=" + b01(h.files["/etc/systemd/system/"+u+".service"] != nil) + "\nCONFIG=" + b01(h.files[config.HubClientConfigPath(atoi(f[1]))] != nil) +
 			"\nACTIVE=" + b01(h.active[u]) + "\nLINK=" + b01(h.enabled[u]) + "\n", nil
 	case "rotate-password":
-		pw := between(script, "NEW='", "'")
+		pw, line := between(script, "NEW='", "'"), between(script, "RP_LINE='", "'")
 		if y, ok := h.files[config.ExitHysteriaConfig]; ok {
-			h.files[config.ExitHysteriaConfig] = []byte(fakeYAMLPassword.ReplaceAllString(string(y), "  password: "+pw))
+			h.files[config.ExitHysteriaConfig] = []byte(fakeYAMLPassword.ReplaceAllLiteralString(string(y), line))
 		}
 		if k, ok := h.files[config.ExitKeysPath]; ok {
-			h.files[config.ExitKeysPath] = []byte(fakeJSONPassword.ReplaceAllString(string(k), `"ssPassword": "`+pw+`"`))
+			h.files[config.ExitKeysPath] = []byte(fakeJSONPassword.ReplaceAllLiteralString(string(k), `"ssPassword": "`+pw+`"`))
 		}
 		h.remove(config.ExitHysteriaConfig+".bak", config.ExitKeysPath+".bak")
 	case "password-check":
-		pw := between(script, "NEW='", "'")
+		pw, line := between(script, "NEW='", "'"), between(script, "RP_LINE='", "'")
 		y, k := "absent", "absent"
 		if d, ok := h.files[config.ExitHysteriaConfig]; ok {
 			y = "old"
-			if strings.Contains(string(d), "  password: "+pw+"\n") {
+			if strings.Contains(string(d), "\n"+line+"\n") {
 				y = "new"
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -147,6 +148,68 @@ func TestExitRotatePasswordRewritesBothFiles(t *testing.T) {
 				t.Fatalf("check with another password: %q", chk)
 			}
 		})
+	}
+}
+
+// The rotated server.yaml line is exactly what the template renders for that password: YAML
+// would read a bare null / true / 123 as no string at all (hysteria would get another password).
+func TestExitRotatePasswordYAMLScalars(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	lineRe := regexp.MustCompile(`(?m)^  password: .*$`)
+	for _, pw := range []string{"null", "true", "123", "bmV3LXBhc3N3b3JkLXl5eQ=="} {
+		dir := t.TempDir()
+		mustWrite(t, dir, rel(ExitHysteriaConfig), ExitHysteriaServerYAML("b2xkLXBhc3N3b3JkLXh4eA==", "203.0.113.7", 0), 0o600)
+		mustWrite(t, dir, rel(ExitKeysPath), `{"ssPassword": "b2xkLXBhc3N3b3JkLXh4eA=="}`, 0o600)
+		if out, err := shellRun(t, dir, "", ExitRotatePasswordScript(pw)); err != nil {
+			t.Fatalf("%s: %v\n%s", pw, err, out)
+		}
+		want := lineRe.FindString(ExitHysteriaServerYAML(pw, "203.0.113.7", 0))
+		got := lineRe.FindAllString(readRel(dir, rel(ExitHysteriaConfig)), -1)
+		if len(got) != 1 || got[0] != want || (pw != "bmV3LXBhc3N3b3JkLXl5eQ==" && want != `  password: "`+pw+`"`) {
+			t.Fatalf("%s: yaml line %q, the template renders %q", pw, got, want)
+		}
+		if k := readRel(dir, rel(ExitKeysPath)); k != `{"ssPassword": "`+pw+`"}`+"\n" {
+			t.Fatalf("%s: keys %q", pw, k)
+		}
+		if out, _ := shellRun(t, dir, "", ExitPasswordCheckScript(pw)); out != "YAML=new\nKEYS=new\n" {
+			t.Fatalf("%s: check %q", pw, out)
+		}
+	}
+	// A plain `password: null` line is not the rotated "null".
+	dir := t.TempDir()
+	mustWrite(t, dir, rel(ExitHysteriaConfig), "auth:\n  type: password\n  password: null\n", 0o600)
+	if out, _ := shellRun(t, dir, "", ExitPasswordCheckScript("null")); out != "YAML=old\nKEYS=absent\n" {
+		t.Fatalf("bare null accepted: %q", out)
+	}
+}
+
+// The names deprovision removes are the ones the templates install: a renamed constant or
+// table cannot leave a rule set behind unnoticed.
+func TestTeardownNamesMatchTemplates(t *testing.T) {
+	guard, err := ExitXrayGuardConf("203.0.113.7", 8443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, ok := range map[string]bool{
+		"hop table":       strings.Contains(ExitPortHopConf, "table inet "+ExitPortHopTable+" {"),
+		"hop conf":        strings.Contains(ExitPortHopUnit, "nft -f "+ExitPortHopConfPath+"\n"),
+		"hop unit path":   ExitPortHopUnitPath == unitFilePath(ExitPortHopService),
+		"hop check":       strings.Contains(HysteriaCheckScript, "table inet "+ExitPortHopTable+" "),
+		"guard table":     strings.Contains(guard, "table inet "+ExitXrayGuardTable+" {"),
+		"guard conf":      strings.Contains(ExitXrayGuardUnit, "nft -f "+ExitXrayGuardConfPath+"\n"),
+		"guard unit path": ExitXrayGuardUnitPath == unitFilePath(ExitXrayGuardService),
+		"xray requires":   strings.Contains(ExitXrayUnit, "Requires="+ExitXrayGuardService+".service"),
+		"service units": slices.Equal(ExitServiceUnits()[:3], []string{"hysteria2", "xray", "node-agent"}) &&
+			ExitHysteriaUnitPath == unitFilePath("hysteria2") && ExitXrayUnitPath == unitFilePath("xray") && NodeAgentUnitPath == unitFilePath("node-agent"),
+		"hub client": strings.Contains(HubHysteriaClientUnit(7, "203.0.113.7"), " -c "+HubClientConfigPath(7)+"\n") &&
+			strings.Contains(HubHysteriaClientYAML(7, "203.0.113.7", "x", 1095), "server id=7"),
+		"probe path": strings.Contains(VRProbeConfigPath(7), "vr-probe-7.json"),
+	} {
+		if !ok {
+			t.Errorf("%s: teardown and template disagree", name)
+		}
 	}
 }
 

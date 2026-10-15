@@ -114,7 +114,7 @@ func findHostKeyType(ctx context.Context, addr, fp string) (string, error) {
 		}
 		seen = append(seen, k.Type+" "+k.Fingerprint)
 	}
-	return "", fmt.Errorf("ключ хоста %s не совпадает с подтверждённым %s (сервер предъявил: %s)", addr, fp, strings.Join(seen, ", "))
+	return "", fmt.Errorf("%w: %s, подтверждён %s (сервер предъявил: %s)", ErrHostKeyMismatch, addr, fp, strings.Join(seen, ", "))
 }
 
 // scanHostKeys runs one handshake per key family until stop returns true. The first family the

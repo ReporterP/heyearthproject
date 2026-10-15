@@ -32,8 +32,13 @@ type Remote interface {
 }
 
 var (
+	// ErrHostKeyNotConfirmed: no usable owner-confirmed host key (none, or one that cannot be
+	// pinned) — nothing is sent to the node.
 	ErrHostKeyNotConfirmed = errors.New("отпечаток ключа хоста не подтверждён владельцем")
 	ErrNoCredentials       = errors.New("нет SSH-доступа: ни ключа Hub, ни пароля")
+	// ErrHostKeyMismatch: the server presented a key other than the confirmed one (reinstalled,
+	// or not our server) — no password or key was offered to it.
+	ErrHostKeyMismatch = errors.New("ключ хоста не совпадает с подтверждённым")
 	// ErrConnectionLost: what the command did on the node is unknown — the SSH session could not
 	// be opened, or it ended without an exit status (connection dropped, keepalive gave up).
 	// A script that ran and exited non-zero is not this error.
@@ -82,7 +87,7 @@ func (n Node) GoString() string { return "provision.Node{" + n.String() + "}" }
 func pinned(fp string) ssh.HostKeyCallback {
 	return func(host string, _ net.Addr, key ssh.PublicKey) error {
 		if got := ssh.FingerprintSHA256(key); got != fp {
-			return fmt.Errorf("ключ хоста %s не совпадает с подтверждённым (%s %s ≠ %s)", host, key.Type(), got, fp)
+			return fmt.Errorf("%w: %s (%s %s ≠ %s)", ErrHostKeyMismatch, host, key.Type(), got, fp)
 		}
 		return nil
 	}
@@ -97,7 +102,7 @@ func DialNode(n Node) (Remote, error) {
 		return nil, ErrHostKeyNotConfirmed
 	}
 	if !ValidFingerprint(fp) {
-		return nil, fmt.Errorf("подтверждённый отпечаток ключа хоста %q — не SHA256:… из ssh-keygen -lf", fp)
+		return nil, fmt.Errorf("%w: сохранённый отпечаток %q — не SHA256:… из ssh-keygen -lf", ErrHostKeyNotConfirmed, fp)
 	}
 	var signers []ssh.Signer
 	for _, s := range []ssh.Signer{n.HubSigner, n.KeySigner} {
@@ -124,7 +129,7 @@ func DialNode(n Node) (Remote, error) {
 	}
 	algos, err := hostKeyAlgorithms(keyType)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrHostKeyNotConfirmed, err)
 	}
 	user := n.SSHUser
 	if user == "" {

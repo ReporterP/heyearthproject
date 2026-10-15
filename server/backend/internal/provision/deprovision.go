@@ -21,8 +21,9 @@ type stepFunc = func(ctx context.Context, r Remote, s *State) error
 // config.ExitStopServicesScript). The row ends 'offline'; deleting it is DELETE /servers/{id}.
 //
 // Every step converges: Verify passes → nothing is done; on a resumed job the finished steps
-// only verify. A node that cannot be reached skips its steps (the job still ends offline); a
-// connection lost in the middle fails the job instead — «Продолжить» finishes it.
+// only verify. A node that cannot be reached skips its steps (the job still ends offline); an
+// unconfirmed host key, missing credentials or a connection lost in the middle fail the job
+// instead, the node out of routing — «Продолжить» finishes it (bestEffort).
 func DeprovisionRecipe(role string) Recipe {
 	r := Recipe{{Name: "exclude", Apply: excludeApply, Verify: lifecycleIs("deprovisioning")}}
 	if role == "exit" {
@@ -205,12 +206,35 @@ func runPrint(script string) stepFunc {
 	}
 }
 
-// bestEffort turns "the node is unreachable" into a skipped step (the job goes on). A connection
-// lost in the middle is not this: it fails the step, and «Продолжить» finishes the job.
+// needsOwner: the Hub would not even try to log in — the host key is not confirmed (exit 2
+// right after 000061: its TOFU key is migrated without confirmed_at) or there are no
+// credentials. The node is most likely alive and still serving with the old tunnel password, so
+// such a step must not be skipped: it fails, the node stays deprovisioning (out of routing), and
+// «Продолжить» finishes the job once the owner fixed the access.
+func needsOwner(err error) bool {
+	return errors.Is(err, ErrHostKeyNotConfirmed) || errors.Is(err, ErrNoCredentials)
+}
+
+const fixAccessHint = "Подтвердите отпечаток ключа хоста (или задайте доступ к ноде) в карточке ноды, затем нажмите «Продолжить». " +
+	"Нода уже исключена из маршрутизации, но сервисы на ней ещё работают со старым паролем туннеля."
+
+// bestEffort turns "the node is unreachable" into a skipped step (the job goes on): the VPS may
+// already be gone. A host key other than the confirmed one is skipped too, with its own message
+// (nothing is sent to that server). Missing access the owner can fix (needsOwner) and a
+// connection lost in the middle fail the step instead; «Продолжить» finishes the job.
 func bestEffort(f stepFunc) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		err := f(ctx, r, s)
-		if errors.Is(err, ErrNodeUnreachable) {
+		switch {
+		case err == nil:
+			return nil
+		case needsOwner(err):
+			return fmt.Errorf("%w. %s", err, fixAccessHint)
+		case errors.Is(err, ErrHostKeyMismatch):
+			s.Printf("сервер предъявил ключ хоста, отличный от подтверждённого (%v) — к нему не подключаюсь, шаг пропущен. "+
+				"Если сервер переустановлен, подтвердите новый отпечаток и повторите вывод; если нет — адрес, возможно, уже не ваш.", err)
+			return fmt.Errorf("%w: %v", ErrSkipped, err)
+		case errors.Is(err, ErrNodeUnreachable):
 			s.Printf("нода недоступна (%v) — пропускаю. Если сервер ещё работает, повторите вывод, когда он будет доступен.", err)
 			return fmt.Errorf("%w: %v", ErrSkipped, err)
 		}
@@ -218,13 +242,21 @@ func bestEffort(f stepFunc) stepFunc {
 	}
 }
 
-// bestEffortVerify is the Verify of a bestEffort step: on an unreachable node it says nothing
-// about the node, but must not fail the step either (the runner treats ErrNodeUnreachable as
-// inconclusive), so the error loses it and the runner goes on to Apply, which skips the step.
+// bestEffortVerify is the Verify of a bestEffort step. On a node the Hub cannot dial it says
+// nothing about the node, but must not fail the step either (the runner treats
+// ErrNodeUnreachable as inconclusive), so the error loses it and the runner goes on to Apply,
+// which skips the step — except for needsOwner, which stays inconclusive: the step fails.
 func bestEffortVerify(f stepFunc) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		err := f(ctx, r, s)
-		if errors.Is(err, ErrNodeUnreachable) {
+		switch {
+		case err == nil:
+			return nil
+		case needsOwner(err):
+			return fmt.Errorf("%w. %s", err, fixAccessHint)
+		case errors.Is(err, ErrHostKeyMismatch):
+			return errors.New("сервер предъявил ключ хоста, отличный от подтверждённого, — состояние ноды не проверено")
+		case errors.Is(err, ErrNodeUnreachable):
 			return fmt.Errorf("состояние ноды не проверено: %s", err.Error())
 		}
 		return err

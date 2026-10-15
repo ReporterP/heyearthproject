@@ -117,30 +117,33 @@ func HubClientStateScript(id int) string {
 		"if [ -e " + w + " ] || [ -L " + w + " ]; then echo LINK=1; else echo LINK=0; fi\n"
 }
 
-// rotateVars: the new password and the two files that carry the tunnel password on an exit.
+// rotateVars: the new password, its server.yaml line rendered in Go exactly as the templates do
+// (ExitHysteriaServerYAML: yamlPassword — "null", "true", "123" become quoted strings), and the
+// two files that carry the tunnel password on an exit.
 func rotateVars(op, newPassword string) string {
-	return opLine(op) + "NEW=" + shQuote(newPassword) + "\nRP_YAML=" + shQuote(ExitHysteriaConfig) + "\nRP_KEYS=" + shQuote(ExitKeysPath) + "\n" +
+	return opLine(op) + "NEW=" + shQuote(newPassword) + "\nRP_LINE=" + shQuote("  password: "+yamlPassword(newPassword)) +
+		"\nRP_YAML=" + shQuote(ExitHysteriaConfig) + "\nRP_KEYS=" + shQuote(ExitKeysPath) + "\n" +
 		`RP_JSON_RE='^(.*"ssPassword"[[:space:]]*:[[:space:]]*")([^"]*)(".*)$'
 `
 }
 
 // ExitRotatePasswordScript makes a retired exit refuse the old tunnel password: in the hysteria
-// server config (the auth "  password:" line) and in reality-keys.json (ssPassword, read by a
-// later «Настроить») it becomes newPassword, which nobody keeps. Only base64 is accepted (a YAML
-// plain scalar and a JSON string as is). Files are rewritten by bash itself (the password never
-// reaches a command line), via temp file + mv with owner and mode kept; their .bak copies (old
-// password) are deleted. A server.yaml without the password line is an unknown format: nothing
-// is changed and the script fails. Never prints the password.
+// server config (the auth "  password:" line becomes RP_LINE) and in reality-keys.json
+// (ssPassword, read by a later «Настроить») it becomes newPassword, which nobody keeps. Only the
+// base64 alphabet is accepted (a JSON string as is). Files are rewritten by bash itself (the
+// password never reaches a command line), via temp file + mv with owner and mode kept; their
+// .bak copies (old password) are deleted. A server.yaml without the password line is an unknown
+// format: nothing is changed and the script fails. Never prints the password.
 func ExitRotatePasswordScript(newPassword string) string {
 	return rotateVars("rotate-password", newPassword) + `set -e
 case "$NEW" in ""|*[!A-Za-z0-9+/=]*) echo "[exit] ERROR: новый пароль туннеля — не base64" >&2; exit 1 ;; esac
 RP_TMP=""
 trap 'rm -f "$RP_TMP"' EXIT
-rp_line() { # $1 line, $2 yaml|json → the line with $NEW; RP_HIT=1 when it carried the password
+rp_line() { # $1 line, $2 yaml|json → the line with the new password; RP_HIT=1 when it carried one
   RP_HIT=0
   RP_OUT=$1
   if [ "$2" = yaml ]; then
-    case "$1" in "  password: "*) RP_OUT="  password: $NEW"; RP_HIT=1 ;; esac
+    case "$1" in "  password: "*) RP_OUT=$RP_LINE; RP_HIT=1 ;; esac
   elif [[ $1 =~ $RP_JSON_RE ]]; then
     RP_OUT="${BASH_REMATCH[1]}$NEW${BASH_REMATCH[3]}"; RP_HIT=1
   fi
@@ -176,7 +179,7 @@ fi
 }
 
 // ExitPasswordCheckScript prints YAML=absent|new|old|none (server.yaml: missing; only
-// password lines with newPassword; another password; no password line) and
+// password lines equal to RP_LINE; another password; no password line) and
 // KEYS=absent|new|old|none (reality-keys.json ssPassword). Compares inside bash.
 func ExitPasswordCheckScript(newPassword string) string {
 	return rotateVars("password-check", newPassword) + `pc_state() { # $1 file, $2 yaml|json
@@ -184,7 +187,9 @@ func ExitPasswordCheckScript(newPassword string) string {
   [ -f "$1" ] || { echo absent; return; }
   while IFS= read -r l || [ -n "$l" ]; do
     if [ "$2" = yaml ]; then
-      case "$l" in "  password: $NEW") [ "$r" = old ] || r=new ;; "  password: "*) r=old ;; esac
+      if [ "$l" = "$RP_LINE" ]; then [ "$r" = old ] || r=new
+      else case "$l" in "  password: "*) r=old ;; esac
+      fi
     elif [[ $l =~ $RP_JSON_RE ]]; then
       if [ "${BASH_REMATCH[2]}" = "$NEW" ]; then [ "$r" = old ] || r=new; else r=old; fi
     fi

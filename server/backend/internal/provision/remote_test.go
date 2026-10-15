@@ -215,10 +215,10 @@ func TestDialNodeRefusesBeforeNetwork(t *testing.T) {
 	}{
 		{"unconfirmed", func(n *Node) { n.HostKeyConfirmed = false }, ErrHostKeyNotConfirmed},
 		{"no fingerprint", func(n *Node) { n.HostKeyFP = " " }, ErrHostKeyNotConfirmed},
-		{"malformed fingerprint", func(n *Node) { n.HostKeyFP = "SHA256:short" }, nil},
-		{"md5 fingerprint", func(n *Node) { n.HostKeyFP = "MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48" }, nil},
+		{"malformed fingerprint", func(n *Node) { n.HostKeyFP = "SHA256:short" }, ErrHostKeyNotConfirmed},
+		{"md5 fingerprint", func(n *Node) { n.HostKeyFP = "MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48" }, ErrHostKeyNotConfirmed},
 		{"no credentials", func(n *Node) { n.Password = "" }, ErrNoCredentials},
-		{"unsupported key type", func(n *Node) { n.HostKeyType = "ssh-dss" }, nil},
+		{"unsupported key type", func(n *Node) { n.HostKeyType = "ssh-dss" }, ErrHostKeyNotConfirmed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := d.node(d.fp, "pw", nil)
@@ -263,11 +263,11 @@ func TestDialNodePinnedAndAuthOrder(t *testing.T) {
 	for _, keyType := range []string{ssh.KeyAlgoED25519, ""} {
 		n := pwOnly.node(wrongFP, "pw", nil)
 		n.HostKeyType = keyType
-		if r, err := DialNode(n); err == nil || !strings.Contains(err.Error(), "не совпадает") {
+		if r, err := DialNode(n); err == nil || !errors.Is(err, ErrHostKeyMismatch) || !strings.Contains(err.Error(), "не совпадает") {
 			if err == nil {
 				Close(r)
 			}
-			t.Fatalf("type %q: wrong fingerprint accepted: %v", keyType, err)
+			t.Fatalf("type %q: wrong fingerprint accepted or not recognisable: %v", keyType, err)
 		}
 	}
 	if pwOnly.passwordUsed.Load() != 1 {
@@ -308,7 +308,7 @@ func TestDialNodeNegotiatesTheConfirmedKeyType(t *testing.T) {
 	before := d.passwordUsed.Load()
 	n := d.node(ecdsaFP, "pw", nil)
 	n.HostKeyType = ssh.KeyAlgoED25519
-	if r, err := DialNode(n); err == nil || !strings.Contains(err.Error(), "не совпадает") {
+	if r, err := DialNode(n); err == nil || !errors.Is(err, ErrHostKeyMismatch) {
 		if err == nil {
 			Close(r)
 		}
