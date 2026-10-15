@@ -178,20 +178,24 @@ const (
 	ExitPortHopUnitPath = "/etc/systemd/system/nftables-hysteria.service"
 )
 
-// ExitPortHopConf redirects UDP ExitHopRange to the hysteria server on :50443; create + delete +
-// define in one nft transaction, so re-applying never duplicates the rule. This is the nft
-// `redirect` every exit already runs (deploy --setup-exit-node and the old admin setup wrote the
-// same rule). The Hub's rule — port-only DNAT matching only local destinations, never REDIRECT
-// (CLAUDE.md, Бамбук) — answers two Hub-only conditions: REDIRECT rewrote the destination to the
-// interface's primary address while the salamander-obfuscated replies left from the route
-// source, and an unrestricted rule caught forwarded AWG/docker UDP. Exit servers run no
-// salamander and forward nothing; revisit if an exit gets a second address or starts forwarding.
+// ExitPortHopConf redirects UDP ExitHopRange (20000-50000, the range the Hub's clients hop
+// across, HubHysteriaClientYAML) addressed to the exit itself to the hysteria server on :50443;
+// create + delete + define in one nft transaction, so re-applying never duplicates the rule.
+//
+// Decision (closes Beads tte5): `redirect` is kept deliberately — it is what the exits run
+// (exit 2, checked live 2026-10-15: one global IPv4 on ens3, docker0 without containers, this
+// table with `redirect to :50443`), and on a single-address exit it rewrites to that very
+// address. The Hub's REDIRECT failure (CLAUDE.md, Бамбук) needed a second address plus
+// salamander-obfuscated replies leaving from the route source; exits run no salamander. What
+// the Hub's lesson does carry over is the guard: `fib daddr type local` (iptables
+// `-m addrtype --dst-type LOCAL`) — only packets addressed to the exit are redirected, forwarded
+// UDP (docker0, any routing) is never hijacked. Revisit `redirect` if an exit gets a second address.
 const ExitPortHopConf = `table inet hysteria_porthopping
 delete table inet hysteria_porthopping
 table inet hysteria_porthopping {
   chain prerouting {
     type nat hook prerouting priority dstnat; policy accept;
-    udp dport ` + ExitHopRange + ` counter redirect to :50443
+    udp dport ` + ExitHopRange + ` fib daddr type local counter redirect to :50443
   }
 }
 `

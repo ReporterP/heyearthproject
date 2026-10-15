@@ -230,6 +230,15 @@ func TestPortHopPartsAreTheScript(t *testing.T) {
 	if !strings.HasPrefix(ExitPortHopConf, "table inet hysteria_porthopping\ndelete table inet hysteria_porthopping\n") {
 		t.Error("the nft file must create-then-delete the table (idempotent re-apply)")
 	}
+	// Live exit 2 (2026-10-15): redirect over 20000-50000, the range the Hub's clients hop across;
+	// guarded so only UDP addressed to the exit itself is redirected (Beads tte5).
+	if ExitHopRange != "20000-50000" || !strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090), "server: 203.0.113.7:"+ExitHopRange+"\n") {
+		t.Errorf("exit hop range %q must be the live 20000-50000 and the Hub clients' range", ExitHopRange)
+	}
+	if !strings.Contains(ExitPortHopConf, "\n    udp dport 20000-50000 fib daddr type local counter redirect to :50443\n") {
+		t.Errorf("hop rule must redirect only locally addressed UDP:\n%s", ExitPortHopConf)
+	}
+	golden(t, "exit_porthop_nft.golden", []byte(ExitPortHopConf))
 	if !strings.Contains(ExitPortHopUnit, "ExecStart=/usr/sbin/nft -f "+ExitPortHopConfPath+"\n") {
 		t.Errorf("hop unit does not load %s:\n%s", ExitPortHopConfPath, ExitPortHopUnit)
 	}
@@ -297,6 +306,9 @@ apt-get() { echo "apt-get $*" >> ./apt.log; }
 		}
 		if string(got) != want {
 			t.Errorf("%s:\n%s\nwant\n%s", path, got, want)
+		}
+		if path == ExitPortHopConfPath && !strings.Contains(string(got), " fib daddr type local counter redirect to :50443\n") {
+			t.Errorf("%s on the node lacks the local-destination guard:\n%s", path, got)
 		}
 	}
 	nftLog, _ := os.ReadFile(filepath.Join(dir, "nft.log"))
