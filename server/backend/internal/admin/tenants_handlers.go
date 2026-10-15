@@ -407,11 +407,19 @@ const attachLockPaymentSQL = `
 		SELECT ROUND(amount * 100)::bigint, status, COALESCE(metadata::text, '{}')
 		FROM payments WHERE id = $1 FOR UPDATE`
 
+// attachRefundsSQL reads, under that lock, the succeeded refunds of payment $1 in kopecks
+// and how many refunds are still pending.
+const attachRefundsSQL = `
+		SELECT COALESCE(SUM(ROUND(amount * 100)) FILTER (WHERE status = 'succeeded'), 0)::bigint,
+		       COUNT(*) FILTER (WHERE status = 'pending')
+		FROM payment_refunds WHERE payment_id = $1`
+
 // AttachPaymentToTenantHandler binds a B2B payment (kind b2b_invoice or tenant_topup) that
-// came without a tenant to a tenant; any other payment answers 409. A paid payment is
-// credited to the tenant wallet in the same transaction (biz.CreditTenantWalletTx) with
-// what refunds left of it — amount − succeeded − pending refunds, 409 when nothing is left —
-// and loses its "paid but not applied" mark; that alert is resolved after COMMIT.
+// came without a tenant to a tenant; any other payment answers 409. A paid payment with a
+// pending refund answers 409 (its outcome decides what is left); otherwise it is credited to
+// the tenant wallet in the same transaction (biz.CreditTenantWalletTx) with amount −
+// succeeded refunds, 409 when nothing is left, and loses its "paid but not applied" mark;
+// that alert is resolved after COMMIT.
 //
 // Path: POST /api/admin/payments/{id}/attach-tenant
 // Body: {"tenant_id": 42}
@@ -479,17 +487,22 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A paid payment is credited with what refunds left of it; a refunded one has nothing left.
+	// A paid payment is credited with what succeeded refunds left of it, never while a refund
+	// is pending; a refunded one has nothing left.
 	paid := biz.IsPaidPaymentStatus(status)
 	var creditKop int64
 	if paid || status == "refunded" {
-		var heldKop int64
-		if err := tx.QueryRowContext(ctx, biz.RefundHeldKopSQL, paymentID).Scan(&heldKop); err != nil {
+		var refundedKop, pending int64
+		if err := tx.QueryRowContext(ctx, attachRefundsSQL, paymentID).Scan(&refundedKop, &pending); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "refunds: "+err.Error())
 			return
 		}
-		if creditKop = amountKop - heldKop; creditKop <= 0 {
-			writeAdminError(w, http.StatusConflict, "Зачислять нечего: платёж возвращён или возврат ещё обрабатывается")
+		if pending > 0 {
+			writeAdminError(w, http.StatusConflict, "Дождитесь завершения возврата по этому платежу")
+			return
+		}
+		if creditKop = amountKop - refundedKop; creditKop <= 0 {
+			writeAdminError(w, http.StatusConflict, "Зачислять нечего: платёж возвращён")
 			return
 		}
 	}
