@@ -190,7 +190,8 @@ var titles = map[string]string{
 	"path_hy": "Проверка пути: основной туннель", "path_tcp": "Проверка пути: запасной TCP",
 	"activate": "Включение в маршрутизацию", "exclude": "Исключение из маршрутизации",
 	"hub_client_remove": "Удаление клиента туннеля на Hub", "rotate_password": "Смена пароля туннеля",
-	"stop_services": "Остановка сервисов на ноде", "remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
+	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих xray",
+	"remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
 }
 
 // Title is the owner-facing name of a step (admin UI and CLI).

@@ -1,0 +1,287 @@
+package config
+
+import (
+	"strconv"
+	"strings"
+)
+
+// Taking an exit out of service (internal/provision DeprovisionRecipe) and its Telegram proxy.
+//
+// The units are the real ones on the exits (checked on exit 2, 2026-10-15): the services
+// hysteria2, xray, node-agent, mtproxy; the oneshots nftables-hysteria (port hop, loads
+// ExitPortHopConfPath) and heyearth-exit-guard (xray's kernel egress guard); the hand-made
+// heyearth-agent-guard (node-agent :50052 from the Hub only). No hysteria2-server /
+// hysteria-server unit exists; nftables.service is not ours (inactive on the exits) and is never
+// touched. Every script tolerates a unit or table that does not exist.
+//
+// Deprovision parks the node: services stopped and disabled, the xray guard and the port hop
+// removed, the tunnel password rotated — binaries, unit files and the Hub's SSH key stay, so
+// «Настроить» can bring it back. The node-agent Hub-only guard stays too: a parked node keeps
+// :50052 closed to the world. Deleting the record (DELETE /servers/{id}) never touches the node.
+
+const (
+	// ExitPortHopService / ExitPortHopTable: the boot unit and the nft table of ExitPortHopConf.
+	ExitPortHopService = "nftables-hysteria"
+	ExitPortHopTable   = "hysteria_porthopping"
+
+	// The node-agent Hub-only guard (Beads cudk.77; made by hand on exit 2, 2026-10-15). Kept by
+	// deprovision; the exit template that adds it must use these names.
+	ExitAgentGuardService  = "heyearth-agent-guard"
+	ExitAgentGuardTable    = "heyearth_agent_guard"
+	ExitAgentGuardConfPath = "/etc/nftables-heyearth-agent.conf"
+
+	// HubServerArchiveDir keeps a removed Hub client's config, unit and journal tail
+	// (<id>-<unix time>/, mode 0700: the config carries the retired tunnel password).
+	HubServerArchiveDir = "/opt/heyearth/state/server-archive"
+
+	// MTProxy (mtg) on an exit, as cmd/deploy/install-mtproxy.sh installs it.
+	MTProxyService       = "mtproxy"
+	MTProxyInstallerPath = "/opt/heyearth/mtproxy/install-mtproxy.sh"
+	MTProxyConfigPath    = "/opt/mtproxy/config.toml"
+	MTProxyBinary        = "/usr/local/bin/mtg"
+
+	systemdWantsDir     = "/etc/systemd/system/multi-user.target.wants"
+	exitServiceUnitList = "hysteria2 xray node-agent " + MTProxyService
+)
+
+// ExitServiceUnits are the long-running services of an exit, stopped and disabled by deprovision.
+func ExitServiceUnits() []string { return strings.Fields(exitServiceUnitList) }
+
+// HubClientUnit is the Hub's hysteria client unit of exit id (HubHysteriaClientUnit).
+func HubClientUnit(id int) string { return "hysteria2-client-" + strconv.Itoa(id) }
+
+// HubClientConfigPath is that client's config (HubHysteriaClientYAML).
+func HubClientConfigPath(id int) string {
+	return HubHysteriaDir + "/client-" + strconv.Itoa(id) + ".yaml"
+}
+
+// VRProbeConfigPath is the Hub's short-lived TCP-path probe config of exit id (VRProbeScript; it
+// carries the tunnel UUID and is removed after every probe).
+func VRProbeConfigPath(id int) string {
+	return "/opt/heyearth/state/vr-probe-" + strconv.Itoa(id) + ".json"
+}
+
+// unitOffFunc: unit_off UNIT stops and disables a unit (a missing one is fine) and removes a
+// leftover enable link, so it neither runs nor starts at boot.
+const unitOffFunc = `unit_off() {
+  systemctl disable --now "$1" >/dev/null 2>&1 || true
+  systemctl stop "$1" >/dev/null 2>&1 || true
+  rm -f ` + systemdWantsDir + `/"$1".service
+}
+`
+
+// HubClientRemoveScript (Hub): stop and disable the client of exit id (a stray process of it is
+// killed too), move its config and unit into a fresh HubServerArchiveDir/<id>-<time> with the
+// journal tail (only when there is something to archive), delete the .bak copies (they carry the
+// tunnel password), its restart markers and a leftover TCP-path probe config, daemon-reload.
+// Fails if the client still runs.
+func HubClientRemoveScript(id int) string {
+	n := strconv.Itoa(id)
+	u := HubClientUnit(id)
+	return opLine("hub-client-remove", n) + "set -e\n" + unitOffFunc +
+		"HC_UNIT=" + u + "\nHC_CFG=" + shQuote(HubClientConfigPath(id)) + "\nHC_FILE=" + shQuote(unitFilePath(u)) + "\n" +
+		"HC_ARCHIVE=" + shQuote(HubServerArchiveDir+"/"+n) + "-$(date +%s)\n" +
+		`unit_off "$HC_UNIT"
+pkill -9 -f '(^|[ /])client-` + n + `[.]yaml( |$)' 2>/dev/null || true
+hc_files=()
+for f in "$HC_CFG" "$HC_FILE"; do
+  if [ -f "$f" ]; then hc_files+=("$f"); fi
+done
+if [ "${#hc_files[@]}" -gt 0 ]; then
+  (umask 077 && mkdir -p "$HC_ARCHIVE")
+  journalctl -u "$HC_UNIT" -n 100 --no-pager > "$HC_ARCHIVE/journal-snapshot.log" 2>&1 || true
+  mv -f "${hc_files[@]}" "$HC_ARCHIVE/"
+  echo "[hub] конфигурация и юнит клиента перенесены в архив $HC_ARCHIVE"
+fi
+rm -f "$HC_CFG.bak" "$HC_FILE.bak" ` + shQuote(RestartMarker(u)) + " " + shQuote(BinaryPendingMarker(u)) + " " +
+		shQuote(VRProbeConfigPath(id)) + " " + shQuote(VRProbeConfigPath(id)+".bak") + `
+systemctl daemon-reload
+systemctl reset-failed "$HC_UNIT" >/dev/null 2>&1 || true
+if systemctl is-active --quiet "$HC_UNIT"; then
+  echo "[hub] ERROR: $HC_UNIT всё ещё работает" >&2
+  exit 1
+fi
+echo "[hub] клиент туннеля $HC_UNIT снят"
+`
+}
+
+// HubClientStateScript (Hub) prints UNIT, CONFIG (files present), ACTIVE and LINK (an enable
+// link left) of exit id's client, each 0|1.
+func HubClientStateScript(id int) string {
+	u := HubClientUnit(id)
+	w := shQuote(systemdWantsDir + "/" + u + ".service")
+	return opLine("hub-client-state", strconv.Itoa(id)) +
+		"if [ -f " + shQuote(unitFilePath(u)) + " ]; then echo UNIT=1; else echo UNIT=0; fi\n" +
+		"if [ -f " + shQuote(HubClientConfigPath(id)) + " ]; then echo CONFIG=1; else echo CONFIG=0; fi\n" +
+		"if systemctl is-active --quiet " + u + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
+		"if [ -e " + w + " ] || [ -L " + w + " ]; then echo LINK=1; else echo LINK=0; fi\n"
+}
+
+// rotateVars: the new password and the two files that carry the tunnel password on an exit.
+func rotateVars(op, newPassword string) string {
+	return opLine(op) + "NEW=" + shQuote(newPassword) + "\nRP_YAML=" + shQuote(ExitHysteriaConfig) + "\nRP_KEYS=" + shQuote(ExitKeysPath) + "\n" +
+		`RP_JSON_RE='^(.*"ssPassword"[[:space:]]*:[[:space:]]*")([^"]*)(".*)$'
+`
+}
+
+// ExitRotatePasswordScript makes a retired exit refuse the old tunnel password: in the hysteria
+// server config (the auth "  password:" line) and in reality-keys.json (ssPassword, read by a
+// later «Настроить») it becomes newPassword, which nobody keeps. Only base64 is accepted (a YAML
+// plain scalar and a JSON string as is). Files are rewritten by bash itself (the password never
+// reaches a command line), via temp file + mv with owner and mode kept; their .bak copies (old
+// password) are deleted. A server.yaml without the password line is an unknown format: nothing
+// is changed and the script fails. Never prints the password.
+func ExitRotatePasswordScript(newPassword string) string {
+	return rotateVars("rotate-password", newPassword) + `set -e
+case "$NEW" in ""|*[!A-Za-z0-9+/=]*) echo "[exit] ERROR: новый пароль туннеля — не base64" >&2; exit 1 ;; esac
+RP_TMP=""
+trap 'rm -f "$RP_TMP"' EXIT
+rp_line() { # $1 line, $2 yaml|json → the line with $NEW; RP_HIT=1 when it carried the password
+  RP_HIT=0
+  RP_OUT=$1
+  if [ "$2" = yaml ]; then
+    case "$1" in "  password: "*) RP_OUT="  password: $NEW"; RP_HIT=1 ;; esac
+  elif [[ $1 =~ $RP_JSON_RE ]]; then
+    RP_OUT="${BASH_REMATCH[1]}$NEW${BASH_REMATCH[3]}"; RP_HIT=1
+  fi
+}
+rp_count() {
+  local l n=0
+  while IFS= read -r l || [ -n "$l" ]; do rp_line "$l" "$2"; n=$((n + RP_HIT)); done < "$1"
+  echo "$n"
+}
+rp_rewrite() {
+  local l
+  RP_TMP=$(mktemp "$1.XXXXXX")
+  while IFS= read -r l || [ -n "$l" ]; do rp_line "$l" "$2"; printf '%s\n' "$RP_OUT"; done < "$1" > "$RP_TMP"
+  chown --reference="$1" "$RP_TMP" 2>/dev/null || true
+  chmod --reference="$1" "$RP_TMP"
+  mv -f "$RP_TMP" "$1"
+  RP_TMP=""
+}
+if [ -f "$RP_YAML" ] && [ "$(rp_count "$RP_YAML" yaml)" = 0 ]; then
+  echo "[exit] ERROR: в $RP_YAML нет строки «  password:» — формат неизвестен, пароль не меняю" >&2
+  exit 1
+fi
+rp_done=""
+if [ -f "$RP_KEYS" ] && [ "$(rp_count "$RP_KEYS" json)" != 0 ]; then rp_rewrite "$RP_KEYS" json; rp_done="$rp_done reality-keys.json"; fi
+if [ -f "$RP_YAML" ]; then rp_rewrite "$RP_YAML" yaml; rp_done="$rp_done server.yaml"; fi
+rm -f "$RP_YAML.bak" "$RP_KEYS.bak"
+if [ -n "$rp_done" ]; then
+  echo "[exit] пароль туннеля заменён случайным, которого никто не хранит:$rp_done"
+else
+  echo "[exit] пароля туннеля на ноде нет — менять нечего"
+fi
+`
+}
+
+// ExitPasswordCheckScript prints YAML=absent|new|old|none (server.yaml: missing; only
+// password lines with newPassword; another password; no password line) and
+// KEYS=absent|new|old|none (reality-keys.json ssPassword). Compares inside bash.
+func ExitPasswordCheckScript(newPassword string) string {
+	return rotateVars("password-check", newPassword) + `pc_state() { # $1 file, $2 yaml|json
+  local l r=none
+  [ -f "$1" ] || { echo absent; return; }
+  while IFS= read -r l || [ -n "$l" ]; do
+    if [ "$2" = yaml ]; then
+      case "$l" in "  password: $NEW") [ "$r" = old ] || r=new ;; "  password: "*) r=old ;; esac
+    elif [[ $l =~ $RP_JSON_RE ]]; then
+      if [ "${BASH_REMATCH[2]}" = "$NEW" ]; then [ "$r" = old ] || r=new; else r=old; fi
+    fi
+  done < "$1"
+  echo "$r"
+}
+echo "YAML=$(pc_state "$RP_YAML" yaml)"
+echo "KEYS=$(pc_state "$RP_KEYS" json)"
+`
+}
+
+// ExitStopServicesScript stops and disables the exit's services (ExitServiceUnits); fails if
+// one still runs.
+const ExitStopServicesScript = `# hp:stop-services
+` + unitOffFunc + `for u in ` + exitServiceUnitList + `; do unit_off "$u"; done
+left=""
+for u in ` + exitServiceUnitList + `; do
+  if systemctl is-active --quiet "$u"; then left="$left $u"; fi
+done
+if [ -n "$left" ]; then
+  echo "[exit] ERROR: всё ещё работают:$left" >&2
+  exit 1
+fi
+echo "[exit] остановлены и выключены: ` + exitServiceUnitList + `"
+`
+
+// nftSetRemoveBody removes one of our nft rule sets: its boot unit (NS_UNIT, file NS_FILE) off,
+// the table NS_TABLE deleted, the files (NS_CONF, NS_FILE and their .bak) gone; fails if the
+// table is still loaded.
+const nftSetRemoveBody = unitOffFunc + `unit_off "$NS_UNIT"
+if command -v nft >/dev/null 2>&1; then nft delete table inet "$NS_TABLE" >/dev/null 2>&1 || true; fi
+rm -f "$NS_CONF" "$NS_CONF.bak" "$NS_FILE" "$NS_FILE.bak"
+systemctl daemon-reload >/dev/null 2>&1 || true
+if command -v nft >/dev/null 2>&1 && nft list table inet "$NS_TABLE" >/dev/null 2>&1; then
+  echo "[exit] ERROR: таблица inet $NS_TABLE осталась в nftables" >&2
+  exit 1
+fi
+echo "[exit] сняты $NS_WHAT (table inet $NS_TABLE, $NS_UNIT)"
+`
+
+// ExitRemoveGuardScript removes xray's kernel egress guard (ExitXrayGuardConf/Unit) — never
+// while xray runs (it would run unguarded). xray.service Requires= the guard unit, so without it
+// xray cannot be started by hand either.
+const ExitRemoveGuardScript = `# hp:remove-guard
+if systemctl is-active --quiet xray; then
+  echo "[exit] ERROR: xray ещё работает — защиту исходящих не снимаю" >&2
+  exit 1
+fi
+NS_UNIT=` + ExitXrayGuardService + `
+NS_TABLE=` + ExitXrayGuardTable + `
+NS_CONF=` + ExitXrayGuardConfPath + `
+NS_FILE=` + ExitXrayGuardUnitPath + `
+NS_WHAT='правила защиты исходящих xray'
+` + nftSetRemoveBody
+
+// ExitRemoveHopScript removes the port hop (ExitPortHopConf / ExitPortHopUnit).
+const ExitRemoveHopScript = `# hp:remove-hop
+NS_UNIT=` + ExitPortHopService + `
+NS_TABLE=` + ExitPortHopTable + `
+NS_CONF=` + ExitPortHopConfPath + `
+NS_FILE=` + ExitPortHopUnitPath + `
+NS_WHAT='правила прыжков портов'
+` + nftSetRemoveBody
+
+// ExitTeardownStateScript prints, for the exit services and both oneshots, ACTIVE_<unit> and
+// ENABLED_<unit> (0|1), and GUARD_TABLE/GUARD_FILES, HOP_TABLE/HOP_FILES (0|1).
+const ExitTeardownStateScript = `# hp:teardown-state
+for u in ` + exitServiceUnitList + ` ` + ExitXrayGuardService + ` ` + ExitPortHopService + `; do
+  if systemctl is-active --quiet "$u"; then echo "ACTIVE_$u=1"; else echo "ACTIVE_$u=0"; fi
+  case "$(systemctl is-enabled "$u" 2>/dev/null)" in enabled|enabled-runtime) echo "ENABLED_$u=1" ;; *) echo "ENABLED_$u=0" ;; esac
+done
+ts_table() { if command -v nft >/dev/null 2>&1 && nft list table inet "$1" >/dev/null 2>&1; then echo 1; else echo 0; fi; }
+ts_files() { local f; for f in "$@"; do if [ -e "$f" ]; then echo 1; return; fi; done; echo 0; }
+echo "GUARD_TABLE=$(ts_table ` + ExitXrayGuardTable + `)"
+echo "GUARD_FILES=$(ts_files ` + ExitXrayGuardConfPath + ` ` + ExitXrayGuardUnitPath + `)"
+echo "HOP_TABLE=$(ts_table ` + ExitPortHopTable + `)"
+echo "HOP_FILES=$(ts_files ` + ExitPortHopConfPath + ` ` + ExitPortHopUnitPath + `)"
+`
+
+// MTProxyRunScript runs install-mtproxy.sh at path (idempotent; port, secret and domain are
+// validated by the caller) with $1..$3 = port, secret, domain. The installer is sourced in a
+// subshell instead of `bash path args`: the secret is shared by every exit and must not sit in a
+// process's argv for the minutes a first build takes. Its exit ends only the subshell and fails
+// the script.
+func MTProxyRunScript(path string, port int, secret, domain string) string {
+	return opLine("mtproxy-install") + "set -e\nMT_SCRIPT=" + shQuote(path) + "\nset -- " + shQuote(strconv.Itoa(port)) + " " +
+		shQuote(secret) + " " + shQuote(domain) + "\n( . \"$MT_SCRIPT\" )\n"
+}
+
+// MTProxyCheckScript prints ACTIVE (mtproxy.service), LISTEN (mtg on TCP port), SECRET
+// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, and VERSION (mtg's).
+func MTProxyCheckScript(port int, secret string) string {
+	return opLine("mtproxy-check") + "S=" + shQuote(secret) + "\n" +
+		"if systemctl is-active --quiet " + MTProxyService + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
+		"if ss -Htlnp 'sport = :" + strconv.Itoa(port) + "' 2>/dev/null | grep -q '\"mtg\"'; then echo LISTEN=1; else echo LISTEN=0; fi\n" +
+		"mc=0\nif [ -r " + MTProxyConfigPath + " ]; then\n" +
+		"  while IFS= read -r l || [ -n \"$l\" ]; do if [ \"$l\" = \"secret = \\\"$S\\\"\" ]; then mc=1; fi; done < " + MTProxyConfigPath + "\nfi\n" +
+		"echo \"SECRET=$mc\"\n" +
+		"echo \"VERSION=$(" + MTProxyBinary + " --version 2>/dev/null | awk 'NR==1{print $1}')\"\n"
+}
