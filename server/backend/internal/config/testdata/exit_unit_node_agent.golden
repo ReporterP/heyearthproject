@@ -1,0 +1,16 @@
+[Unit]
+Description=HeYearth Node Agent
+After=network.target
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/heyearth
+ExecStart=/opt/heyearth/node-agent
+Restart=always
+RestartSec=5
+Environment="PORT=50052"
+Environment="TLS_CERT_FILE=/opt/heyearth/certs/server-cert.pem"
+Environment="TLS_KEY_FILE=/opt/heyearth/certs/server-key.pem"
+Environment="TLS_CA_FILE=/opt/heyearth/certs/ca-cert.pem"
+[Install]
+WantedBy=multi-user.target

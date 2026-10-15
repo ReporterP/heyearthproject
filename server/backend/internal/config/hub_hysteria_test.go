@@ -7,7 +7,7 @@ import (
 
 func TestHubHysteriaClientTemplates(t *testing.T) {
 	y := HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093)
-	for _, w := range []string{"server: 203.0.113.7:20000-50000\n", "auth: s3cret\n", "transport:\n  udp:\n    hopInterval: 30s\n",
+	for _, w := range []string{"server: 203.0.113.7:20000-50000\n", "auth: \"s3cret\"\n", "transport:\n  udp:\n    hopInterval: 30s\n",
 		"listen: 127.0.0.1:1093\n", "acl:\n  inline:\n", "    - reject(10.0.0.0/8)\n", "    - reject(all, tcp/6881-6889)\n", "    - direct(all)\n"} {
 		if !strings.Contains(y, w) {
 			t.Errorf("client yaml lacks %q", w)

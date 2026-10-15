@@ -1,0 +1,15 @@
+[Unit]
+Description=Xray Exit Node (HeYearth)
+After=network.target heyearth-exit-guard.service
+Requires=heyearth-exit-guard.service
+[Service]
+Type=simple
+User=xray
+Group=xray
+ExecStartPre=+/bin/chown xray:xray /opt/heyearth/xray/config.json
+ExecStart=/opt/heyearth/xray/xray run -config /opt/heyearth/xray/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target

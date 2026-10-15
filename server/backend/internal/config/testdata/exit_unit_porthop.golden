@@ -1,0 +1,9 @@
+[Unit]
+Description=nftables port hopping for Hysteria2
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables-hysteria.conf
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
