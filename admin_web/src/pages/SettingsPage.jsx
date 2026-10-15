@@ -37,6 +37,8 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState({})
   // secret key → is it set; the values themselves never leave the API (GET /settings)
   const [secretsSet, setSecretsSet] = useState({})
+  // POST /settings needs settings.write; without it the secret fields are locked, saying why
+  const secretLock = can('settings.write') ? '' : 'Нужно право settings.write'
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -139,7 +141,7 @@ export default function SettingsPage() {
                 {loading ? <Skeleton className="h-24" /> : (
                   <div className="divide-y divide-default">
                     <SettingCard label="ЮKassa Shop ID" hint="shopId — идентификатор магазина в личном кабинете ЮKassa" value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
-                    <SecretSettingField id="yookassa-secret" label="ЮKassa Secret Key" isSet={secretsSet.yookassa_secret_key}
+                    <SecretSettingField id="yookassa-secret" label="ЮKassa Secret Key" isSet={secretsSet.yookassa_secret_key} disabledReason={secretLock}
                       hint="Секретный ключ API (ЛК ЮKassa → Интеграция → API-ключи). Хранится только на сервере и в админку не возвращается."
                       onSave={v => saveSecret('yookassa_secret_key', v)} />
                     <SettingCard label="Тестовый режим" hint="true — использовать тестовый магазин ЮKassa (реальные деньги не списываются). В ЛК тестового магазина настройте Webhook URL: https://hiearth.ru/api/v1/webhooks/yookassa" value={settings.yookassa_test_mode || 'true'} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
@@ -158,7 +160,7 @@ export default function SettingsPage() {
                     <SettingCard label="SMTP Host" hint="Например smtp.yandex.ru или smtp.mail.ru" value={settings.smtp_host} onSave={v => saveSetting('smtp_host', v)} />
                     <SettingCard label="SMTP Port" hint="587 (STARTTLS) или 465 (implicit TLS)" value={settings.smtp_port || '587'} onSave={v => saveSetting('smtp_port', v)} />
                     <SettingCard label="SMTP User" hint="Обычно email-ящик полностью" value={settings.smtp_user} onSave={v => saveSetting('smtp_user', v)} />
-                    <SecretSettingField id="smtp-password" label="SMTP Password" isSet={secretsSet.smtp_password}
+                    <SecretSettingField id="smtp-password" label="SMTP Password" isSet={secretsSet.smtp_password} disabledReason={secretLock}
                       hint="Пароль приложения (app password; для Gmail/Yandex создаётся в настройках почты). Хранится только на сервере и в админку не возвращается."
                       onSave={v => saveSecret('smtp_password', v)} />
                     <SettingCard label="From email" hint="Email отправителя (должен совпадать с SMTP User или быть в разрешённых)" value={settings.smtp_from_email} onSave={v => saveSetting('smtp_from_email', v)} />

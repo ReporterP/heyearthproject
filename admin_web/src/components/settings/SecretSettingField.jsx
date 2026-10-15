@@ -1,20 +1,32 @@
 import { useState } from 'react'
+import { prepareSecret } from '../../utils/secret.js'
 import { Badge, Button, Input } from '../ui/index.js'
 
 // A write-only secret (like the bot token on «Алерты»): GET /settings never returns the value,
 // only whether it is set, so the field always starts empty and saving sends only a newly typed
-// value (the API rejects an empty secret with 400). On a failed save the typed value stays.
-export default function SecretSettingField({ id, label, hint, isSet, onSave }) {
+// value, trimmed (prepareSecret); an all-whitespace value is refused like the API refuses an
+// empty one. On a failed save the typed value stays. disabledReason (e.g. no settings.write)
+// locks the field and says why.
+export default function SecretSettingField({ id, label, hint, isSet, onSave, disabledReason = '' }) {
   const [value, setValue] = useState('')
+  const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const disabled = !!disabledReason
   const hintId = hint ? `${id}-hint` : undefined
+  const errorId = error ? `${id}-error` : undefined
+  const describedBy = [hintId, errorId].filter(Boolean).join(' ') || undefined
 
   async function save(e) {
     e.preventDefault()
-    if (!value.trim() || saving) return
+    if (disabled || !value || saving) return
+    const secret = prepareSecret(value)
+    if (secret.error) {
+      setError(secret.error)
+      return
+    }
     setSaving(true)
     try {
-      await onSave(value)
+      await onSave(secret.value)
       setValue('')
     } catch {
       // onSave already showed the error; keep the typed value for another try
@@ -32,13 +44,17 @@ export default function SecretSettingField({ id, label, hint, isSet, onSave }) {
       {hint && <p id={hintId} className="text-xs text-tertiary mb-2">{hint}</p>}
       <div className="flex flex-col sm:flex-row gap-2">
         <Input id={id} type="password" autoComplete="new-password" spellCheck={false}
-          value={value} onChange={(e) => setValue(e.target.value)} aria-describedby={hintId}
+          value={value} onChange={(e) => { setValue(e.target.value); setError('') }}
+          aria-describedby={describedBy} aria-invalid={error ? true : undefined} error={!!error}
+          disabled={disabled} title={disabledReason || undefined}
           placeholder={isSet ? 'Сохранён на сервере — введите новый, чтобы заменить' : 'Введите значение'}
           className="font-mono sm:flex-1" />
-        <Button type="submit" variant="secondary" disabled={!value.trim()} loading={saving} className="w-full sm:w-auto">
+        <Button type="submit" variant="secondary" disabled={disabled || !value} loading={saving}
+          title={disabledReason || undefined} className="w-full sm:w-auto">
           Сохранить
         </Button>
       </div>
+      {error && <p id={errorId} role="alert" className="text-xs text-danger mt-1">{error}</p>}
     </form>
   )
 }

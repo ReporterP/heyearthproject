@@ -378,7 +378,10 @@ export default function AutoTunerPage() {
 
       <Dialog open={enableDialog} onClose={() => setEnableDialog(false)} title="Включить автотюнер?" maxWidth="max-w-md">
         <div className="space-y-3 text-sm text-secondary">
-          <p>Автотюнер сам меняет SNI, отпечаток TLS, DNS и примерно раз в неделю пароль obfs Бамбука.</p>
+          <p>
+            Автотюнер сам меняет SNI, отпечаток TLS, DNS и пароль obfs Бамбука — раз в 42 запуска тюнера (≈ неделя при интервале
+            4 ч; счётчик сбрасывается при перезапуске API).
+          </p>
           <p className="text-warning">
             После смены SNI или obfs у пользователей перестают работать профили, пока они не обновят подписку в приложении.
           </p>
