@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type peRow struct {
 	id                  int64
 	status, ykID, user  string
 	ykStatus, meta      string
+	amount              string    // payments.amount::text; "" = 300.00
 	paidAt, confirmedAt time.Time // zero = NULL
 	created             time.Time
 	failures            int64
@@ -60,6 +62,9 @@ func newPEDB(rows ...*peRow) *peDB {
 		}
 		if r.meta == "" {
 			r.meta = "{}"
+		}
+		if r.amount == "" {
+			r.amount = "300.00"
 		}
 		d.rows = append(d.rows, r)
 		d.nextID = max(d.nextID, r.id)
@@ -175,7 +180,15 @@ var (
 	peNotIn        = regexp.MustCompile(`status NOT IN \(([^)]*)\)`)
 	peStatusIn     = regexp.MustCompile(`AND status IN \(([^)]*)\)`)
 	peStatusAssign = regexp.MustCompile(`(SET|,) status = \$(\d)`)
+	peAnyStatusIn  = regexp.MustCompile(`status IN \(([^)]*)\)`)
 )
+
+// peMeta decodes a row's metadata.
+func peMeta(r *peRow) map[string]any {
+	m := map[string]any{}
+	_ = json.Unmarshal([]byte(r.meta), &m)
+	return m
+}
 
 func (r *peRow) excludedBy(q string) bool {
 	if m := peNotIn.FindStringSubmatch(q); m != nil && strings.Contains(m[1], "'"+r.status+"'") {
@@ -228,6 +241,8 @@ func (c *peConn) QueryContext(_ context.Context, query string, args []driver.Nam
 		label = "sync-select"
 	case strings.HasPrefix(q, "SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, '') FROM payments WHERE id = $1"):
 		label = "check-read"
+	case strings.Contains(q, "metadata ? 'unapplied_reason'"):
+		label = "unapplied-select"
 	default:
 		return nil, fmt.Errorf("pe driver: unscripted query %s", q)
 	}
@@ -304,6 +319,20 @@ func (c *peConn) QueryContext(_ context.Context, query string, args []driver.Nam
 			res.rows = append(res.rows, []driver.Value{r.id, r.ykID, r.created})
 		}
 		return res, nil
+	case "unapplied-select": // the status filter is read from the SQL
+		m := peAnyStatusIn.FindStringSubmatch(q)
+		var out []*peRow
+		for _, r := range d.rows {
+			if _, marked := peMeta(r)["unapplied_reason"]; marked && (m == nil || strings.Contains(m[1], "'"+r.status+"'")) {
+				out = append(out, r)
+			}
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
+		res := &rfRows{cols: []string{"id", "user", "meta", "amount"}}
+		for _, r := range out {
+			res.rows = append(res.rows, []driver.Value{r.id, r.user, r.meta, r.amount})
+		}
+		return res, nil
 	}
 	return nil, errors.New("unreachable")
 }
@@ -325,6 +354,8 @@ func (c *peConn) ExecContext(_ context.Context, query string, args []driver.Name
 		label = "stale-cancel"
 	case strings.HasPrefix(q, "UPDATE users SET fake_activation"):
 		label = "activation"
+	case strings.HasPrefix(q, "UPDATE payments SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('unapplied_reason', $2::text)"):
+		label = "mark-unapplied"
 	default:
 		return nil, fmt.Errorf("pe driver: unscripted statement %s", q)
 	}
@@ -377,6 +408,12 @@ func (c *peConn) ExecContext(_ context.Context, query string, args []driver.Name
 	case "activation":
 		c.write(r)
 		r.activations++
+	case "mark-unapplied":
+		meta := peMeta(r)
+		meta["unapplied_reason"] = args[1].Value.(string)
+		b, _ := json.Marshal(meta)
+		c.write(r)
+		r.meta = string(b)
 	}
 	return driver.RowsAffected(1), nil
 }
@@ -399,6 +436,7 @@ type peEffects struct {
 	seen    []paymentRow
 	alerts  []string
 	resolve []string
+	open    []string // what openUnappliedAlerts answers
 }
 
 func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
@@ -406,6 +444,7 @@ func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
 	fake := sql.OpenDB(d)
 	e := &peEffects{}
 	prevDB, prevEffects, prevRaise, prevResolve, prevLog := db.DB, paidPaymentEffects, raisePaymentAlert, resolvePaymentAlert, log.Writer()
+	prevUnapplied, prevOpen := raiseUnappliedAlert, openUnappliedAlerts
 	db.DB = fake
 	log.SetOutput(io.Discard)
 	paidPaymentEffects = func(ctx context.Context, tx *sql.Tx, p *yookassa.Payment, row paymentRow) (func(), error) {
@@ -426,9 +465,12 @@ func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
 		e.alerts = append(e.alerts, key+" | "+string(level)+" | "+title+" | "+details)
 		e.mu.Unlock()
 	}
+	raiseUnappliedAlert = raisePaymentAlert
 	resolvePaymentAlert = func(key, msg string) { e.mu.Lock(); e.resolve = append(e.resolve, key); e.mu.Unlock() }
+	openUnappliedAlerts = func() []string { e.mu.Lock(); defer e.mu.Unlock(); return append([]string(nil), e.open...) }
 	t.Cleanup(func() {
 		db.DB, paidPaymentEffects, raisePaymentAlert, resolvePaymentAlert = prevDB, prevEffects, prevRaise, prevResolve
+		raiseUnappliedAlert, openUnappliedAlerts = prevUnapplied, prevOpen
 		log.SetOutput(prevLog)
 		_ = fake.Close()
 	})
@@ -826,8 +868,10 @@ func TestMigration000060(t *testing.T) {
 // ─── Paid but not applied ─────────────────────────────────────────────────
 
 // A paid payment that changes nothing (no plan/user, plan deleted, downgrade refused,
-// B2B without tenant or with a bad amount) stays paid and, after COMMIT, raises
-// payment-unapplied-<id> with the payment, who paid, why, and what to do.
+// B2B without tenant or with a bad amount) stays paid, keeps the reason in its metadata —
+// written in the claim transaction — and, after COMMIT, raises payment-unapplied-<id> with
+// the payment, who paid, why, and what to do. The payment sync cron re-raises exactly that
+// alert from the row. A failed mark fails the claim: nothing is paid, nothing raised.
 func TestPaidButNotAppliedAlerts(t *testing.T) {
 	basic := &biz.Plan{ID: 3, Name: "SOCKS Basic", DurationDays: 30}
 	tests := []struct {
@@ -837,27 +881,35 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 		plan        *biz.Plan
 		planErr     error
 		activateErr error
+		failOn      string
+		wantReason  string   // metadata.unapplied_reason; "" = no mark
 		wantAlert   []string // substrings; nil = no alert
 		wantActs    int
+		wantErr     bool
 	}{
 		{name: "no plan in the payment", user: "user-1", meta: `{"kind": "subscription"}`,
-			wantAlert: []string{"Платёж #7", "пользователь user-1", "в платеже нет тарифа или пользователя", "подписка не изменена"}},
+			wantReason: "в платеже нет тарифа или пользователя",
+			wantAlert:  []string{"Платёж #7 (пользователь user-1, 300.00 ₽)", "в платеже нет тарифа или пользователя", "подписка не изменена"}},
 		{name: "no user", meta: `{"kind": "subscription", "plan_id": 3}`,
-			wantAlert: []string{"пользователь не указан", "нет тарифа или пользователя"}},
+			wantReason: "в платеже нет тарифа или пользователя", wantAlert: []string{"пользователь не указан", "нет тарифа или пользователя"}},
 		{name: "plan deleted", user: "user-1", meta: `{"plan_id": 3}`, planErr: sql.ErrNoRows,
-			wantAlert: []string{"тариф #3 больше не существует", "подписка не изменена"}},
+			wantReason: "тариф #3 больше не существует", wantAlert: []string{"тариф #3 больше не существует", "подписка не изменена"}},
 		{name: "downgrade refused", user: "user-1", meta: `{"plan_id": 3}`, plan: basic, activateErr: biz.ErrDowngradeNotAllowed,
-			wantAlert: []string{"тариф «SOCKS Basic» дешевле текущего", "подписка не изменена"}, wantActs: 1},
+			wantReason: "тариф «SOCKS Basic» дешевле текущего — понижение тарифа не применяется",
+			wantAlert:  []string{"тариф «SOCKS Basic» дешевле текущего", "подписка не изменена"}, wantActs: 1},
 		{name: "B2B without tenant_id", meta: `{"kind": "tenant_topup"}`,
-			wantAlert: []string{"компания не указана", "нет tenant_id", "баланс компании не изменён"}},
+			wantReason: "в платеже tenant_topup нет tenant_id (привяжите его к компании)",
+			wantAlert:  []string{"компания не указана", "нет tenant_id", "баланс компании не изменён"}},
 		{name: "B2B with a bad amount", meta: `{"kind": "b2b_invoice", "tenant_id": 5}`, amount: "abc",
-			wantAlert: []string{"компания #5", "некорректная сумма", "баланс компании не изменён"}},
+			wantReason: `некорректная сумма "abc"`, wantAlert: []string{"компания #5", "некорректная сумма", "баланс компании не изменён"}},
 		{name: "applied: no alert", user: "user-1", meta: `{"plan_id": 3}`, plan: basic, wantActs: 1},
 		{name: "donation: nothing to apply, no alert", user: "user-1", meta: `{"kind": "donation"}`},
+		{name: "the mark fails: the claim rolls back", user: "user-1", meta: `{"kind": "subscription"}`, failOn: "mark-unapplied", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := newPEDB(&peRow{id: 7, status: "pending", user: tt.user, ykID: "pay-1", meta: tt.meta})
+			d.failOn = tt.failOn
 			e := usePaymentFakes(t, d)
 			prev := []any{paidPaymentEffects, getPlanByID, activatePlanTx, subscriptionActivated}
 			t.Cleanup(func() {
@@ -872,8 +924,8 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 			activatePlanTx = func(context.Context, *sql.Tx, string, int, int, int, string) error { acts++; return tt.activateErr }
 			subscriptionActivated = func(paymentRow, *biz.Plan, int, bool, string) { notified++ }
 			var journalAtAlert []string
-			raise := raisePaymentAlert
-			raisePaymentAlert = func(key string, level AlertLevel, title, details string) {
+			raise := raiseUnappliedAlert
+			raiseUnappliedAlert = func(key string, level AlertLevel, title, details string) {
 				d.mu.Lock()
 				journalAtAlert = append([]string(nil), d.journal...)
 				d.mu.Unlock()
@@ -884,7 +936,15 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 			if tt.amount != "" {
 				pay.Amount.Value = tt.amount
 			}
-			if err := processPaymentEvent(pay); err != nil {
+			err := processPaymentEvent(pay)
+			if tt.wantErr {
+				got := d.row(7)
+				if err == nil || got.status != "pending" || len(e.alerts) != 0 || got.failures != 1 || strings.Contains(got.meta, "unapplied_reason") {
+					t.Fatalf("err %v, row %+v, alerts %q; want an error, the claim rolled back, no alert", err, got, e.alerts)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("processPaymentEvent: %v", err)
 			}
 			if got := d.row(7).status; got != "succeeded" {
@@ -892,6 +952,10 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 			}
 			if acts != tt.wantActs {
 				t.Fatalf("activation calls %d, want %d", acts, tt.wantActs)
+			}
+			row := d.row(7)
+			if reason, _ := peMeta(&row)["unapplied_reason"].(string); reason != tt.wantReason {
+				t.Fatalf("unapplied_reason %q, want %q", reason, tt.wantReason)
 			}
 			if tt.wantAlert == nil {
 				if len(e.alerts) != 0 {
@@ -902,7 +966,7 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 				}
 				return
 			}
-			if len(e.alerts) != 1 || !strings.HasPrefix(e.alerts[0], "payment-unapplied-7 | critical | ") {
+			if len(e.alerts) != 1 || !strings.HasPrefix(e.alerts[0], "payment-unapplied-7 | critical | Оплата получена, но не применена | ") {
 				t.Fatalf("alerts %q", e.alerts)
 			}
 			for _, want := range append(tt.wantAlert, "Деньги получены", "решите вручную: вернуть или применить") {
@@ -910,11 +974,77 @@ func TestPaidButNotAppliedAlerts(t *testing.T) {
 					t.Errorf("alert lacks %q: %s", want, e.alerts[0])
 				}
 			}
-			if n := len(journalAtAlert); n == 0 || journalAtAlert[n-1] != "COMMIT" {
+			n := len(journalAtAlert)
+			if n == 0 || journalAtAlert[n-1] != "COMMIT" {
 				t.Errorf("alert raised before COMMIT (journal %q)", journalAtAlert)
+			}
+			if i := slices.Index(journalAtAlert, "tx:mark-unapplied"); i < 0 || i > slices.Index(journalAtAlert, "COMMIT") {
+				t.Errorf("mark not written inside the claim transaction (journal %q)", journalAtAlert)
+			}
+
+			// The cron raises the same alert again from what the row keeps.
+			syncUnappliedPaymentAlerts()
+			if tt.amount == "" && (len(e.alerts) != 2 || e.alerts[1] != e.alerts[0]) {
+				t.Fatalf("cron re-raise differs from the claim's alert:\n%q", e.alerts)
 			}
 		})
 	}
+}
+
+// The payment sync cron follows the mark: every paid payment that carries it raises its
+// alert again (whatever the Telegram outcome of the first raise was); an open alert whose
+// payment lost the mark or is no longer paid is resolved; the open alerts are read before
+// the payments; a failed read changes nothing.
+func TestUnappliedAlertsFollowTheMark(t *testing.T) {
+	rows := func() []*peRow {
+		return []*peRow{
+			{id: 7, status: "succeeded", user: "user-1", meta: `{"kind": "subscription", "plan_id": 3, "unapplied_reason": "тариф #3 больше не существует"}`},
+			{id: 8, status: "completed", amount: "1500.00", meta: `{"kind": "b2b_invoice", "tenant_id": 5, "unapplied_reason": "некорректная сумма"}`},
+			{id: 9, status: "refunded", user: "user-2", meta: `{"plan_id": 3, "unapplied_reason": "тариф #3 больше не существует"}`},
+			{id: 10, status: "succeeded", user: "user-3", meta: `{"plan_id": 3}`},
+			{id: 11, status: "pending", user: "user-4", meta: `{"unapplied_reason": "x"}`},
+		}
+	}
+	open := []string{"payment-unapplied-10", "payment-unapplied-12", "payment-unapplied-7", "payment-unapplied-9"}
+
+	t.Run("raise the marked, resolve the rest", func(t *testing.T) {
+		d := newPEDB(rows()...)
+		e := usePaymentFakes(t, d)
+		var journalAtOpen []string
+		openUnappliedAlerts = func() []string {
+			d.mu.Lock()
+			journalAtOpen = append([]string(nil), d.journal...)
+			d.mu.Unlock()
+			return open
+		}
+		syncUnappliedPaymentAlerts()
+		want := []string{
+			"payment-unapplied-7 | critical | Оплата получена, но не применена | Платёж #7 (пользователь user-1, 300.00 ₽): тариф #3 больше не существует. " +
+				"Деньги получены, подписка не изменена — решите вручную: вернуть или применить.",
+			"payment-unapplied-8 | critical | Оплата получена, но не применена | Платёж #8 (компания #5, 1500.00 ₽): некорректная сумма. " +
+				"Деньги получены, баланс компании не изменён — решите вручную: вернуть или применить.",
+		}
+		if !slices.Equal(e.alerts, want) {
+			t.Errorf("raised\n%q\nwant\n%q", e.alerts, want)
+		}
+		if wantResolved := []string{"payment-unapplied-10", "payment-unapplied-12", "payment-unapplied-9"}; !slices.Equal(e.resolve, wantResolved) {
+			t.Errorf("resolved %q, want %q", e.resolve, wantResolved)
+		}
+		if slices.Contains(journalAtOpen, "unapplied-select") {
+			t.Errorf("open alerts read after the payments (journal %q)", journalAtOpen)
+		}
+	})
+
+	t.Run("a failed read raises and resolves nothing", func(t *testing.T) {
+		d := newPEDB(rows()...)
+		d.failOn = "unapplied-select"
+		e := usePaymentFakes(t, d)
+		e.open = open
+		syncUnappliedPaymentAlerts()
+		if len(e.alerts) != 0 || len(e.resolve) != 0 {
+			t.Fatalf("alerts %q, resolved %q; want nothing", e.alerts, e.resolve)
+		}
+	})
 }
 
 // ─── «Проверить статус» ───────────────────────────────────────────────────

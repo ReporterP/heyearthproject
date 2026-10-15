@@ -1164,6 +1164,8 @@ func main() {
 		}
 	}
 	admin.TunnelCheckFn = checkExitTunnel // «Проверить туннель», read-only
+	// attach-tenant applied a paid-but-unapplied payment: close its alert after COMMIT.
+	admin.PaymentUnappliedResolvedFn = resolveUnappliedAlert
 
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))

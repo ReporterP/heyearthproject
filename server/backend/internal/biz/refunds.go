@@ -14,6 +14,12 @@ const PaidPaymentStatusesSQL = `'succeeded', 'completed'`
 // (YooKassa canceled the refund) and 'failed' (YooKassa rejected the request) hold nothing.
 const RefundHoldStatusesSQL = `'pending', 'succeeded'`
 
+// RefundHeldKopSQL sums, in kopecks, what refunds took or may still take from payment $1
+// (RefundHoldStatusesSQL). Run it under the payment row lock: every refund writer takes that
+// lock before touching payment_refunds.
+const RefundHeldKopSQL = `SELECT COALESCE(SUM(ROUND(amount * 100)), 0)::bigint FROM payment_refunds
+		WHERE payment_id = $1 AND status IN (` + RefundHoldStatusesSQL + `)`
+
 // RefundableAmountSQL is the SQL expression (payments aliased as p) for what can still be
 // refunded through YooKassa, in rubles with 2 decimals: 0 unless the payment is paid and has
 // a YooKassa id, otherwise amount minus every pending or succeeded refund, never below 0.

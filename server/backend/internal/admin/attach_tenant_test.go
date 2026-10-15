@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -19,13 +21,21 @@ import (
 	"github.com/lib/pq"
 )
 
-// atState is one payment, tenants and their wallet rows; tenant_wallet_transactions
-// (payment_id) is unique like the 000060 index.
+// atRefund is a payment_refunds row of the payment.
+type atRefund struct {
+	kop    int64
+	status string
+}
+
+// atState is one payment, its refunds, tenants and their wallet rows;
+// tenant_wallet_transactions (payment_id) is unique like the 000060 index.
 type atState struct {
 	payStatus, payMeta string
 	payAmount          float64
+	refunds            []atRefund
 	balance            map[int64]float64
 	wallet             []int64 // payment ids credited
+	commits            int
 }
 
 type atDB struct {
@@ -60,7 +70,13 @@ func (c *atConn) Prepare(string) (driver.Stmt, error) {
 }
 func (c *atConn) Close() error              { return nil }
 func (c *atConn) Begin() (driver.Tx, error) { c.inTx, c.undo = true, nil; return c, nil }
-func (c *atConn) Commit() error             { c.inTx, c.undo = false, nil; return nil }
+func (c *atConn) Commit() error {
+	c.d.mu.Lock()
+	c.d.st.commits++
+	c.d.mu.Unlock()
+	c.inTx, c.undo = false, nil
+	return nil
+}
 func (c *atConn) Rollback() error {
 	c.d.mu.Lock()
 	for i := len(c.undo) - 1; i >= 0; i-- {
@@ -70,6 +86,8 @@ func (c *atConn) Rollback() error {
 	c.inTx, c.undo = false, nil
 	return nil
 }
+
+var atStatusIn = regexp.MustCompile(`status IN \(([^)]*)\)`)
 
 func (c *atConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	q := strings.Join(strings.Fields(query), " ")
@@ -85,7 +103,19 @@ func (c *atConn) QueryContext(_ context.Context, query string, args []driver.Nam
 	case strings.HasPrefix(q, "SELECT name FROM tenants WHERE id = $1"):
 		return one([]string{"name"}, fmt.Sprintf("Tenant %d", args[0].Value.(int64))), nil
 	case strings.Contains(q, "FROM payments WHERE id = $1 FOR UPDATE"):
-		return one([]string{"amount", "status", "meta"}, st.payAmount, st.payStatus, st.payMeta), nil
+		return one([]string{"amount", "status", "meta"}, int64(math.Round(st.payAmount*100)), st.payStatus, st.payMeta), nil
+	case strings.Contains(q, "FROM payment_refunds"): // the status list is read from the SQL
+		m := atStatusIn.FindStringSubmatch(q)
+		if m == nil {
+			return nil, fmt.Errorf("at driver: refunds query without a status list: %s", q)
+		}
+		var sum int64
+		for _, r := range st.refunds {
+			if strings.Contains(m[1], "'"+r.status+"'") {
+				sum += r.kop
+			}
+		}
+		return one([]string{"sum"}, sum), nil
 	case strings.HasPrefix(q, "SELECT status FROM tenants WHERE id = $1 FOR UPDATE"):
 		return one([]string{"status"}, "active"), nil
 	case strings.HasPrefix(q, "UPDATE tenants SET balance = balance + $1"):
@@ -125,33 +155,54 @@ func (c *atConn) ExecContext(_ context.Context, query string, args []driver.Name
 	return nil, fmt.Errorf("at driver: unscripted %s", q)
 }
 
+// useAttachFake routes db.DB to a fake holding st and records PaymentUnappliedResolvedFn
+// calls (with the number of COMMITs seen at that moment).
+func useAttachFake(t *testing.T, st atState) (*atDB, *[]string) {
+	t.Helper()
+	if st.balance == nil {
+		st.balance = map[int64]float64{}
+	}
+	d := &atDB{st: st}
+	fake := sql.OpenDB(d)
+	prev, prevLog, prevResolved := db.DB, log.Writer(), PaymentUnappliedResolvedFn
+	db.DB = fake
+	log.SetOutput(io.Discard)
+	var resolved []string
+	PaymentUnappliedResolvedFn = func(paymentID int, message string) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		resolved = append(resolved, fmt.Sprintf("%d after %d commit(s): %s", paymentID, d.st.commits, message))
+	}
+	t.Cleanup(func() {
+		db.DB, PaymentUnappliedResolvedFn = prev, prevResolved
+		log.SetOutput(prevLog)
+		_ = fake.Close()
+	})
+	return d, &resolved
+}
+
+func postAttach(tenant int) (int, map[string]any) {
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/payments/12/attach-tenant", strings.NewReader(fmt.Sprintf(`{"tenant_id": %d}`, tenant)))
+	req = req.WithContext(context.WithValue(req.Context(), adminClaimsContextKey, &Claims{AdminID: 1}))
+	rec := httptest.NewRecorder()
+	AttachPaymentToTenantHandler(rec, req)
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	return rec.Code, m
+}
+
 // Attaching an already credited payment again answers 409 «Этот платёж уже зачислен» and
 // changes nothing: neither the payment's tenant_id nor any balance.
 func TestAttachPaymentToTenantCreditsOnce(t *testing.T) {
-	d := &atDB{st: atState{payStatus: "succeeded", payMeta: "{}", payAmount: 1500, balance: map[int64]float64{}}}
-	fake := sql.OpenDB(d)
-	prev, prevLog := db.DB, log.Writer()
-	db.DB = fake
-	log.SetOutput(io.Discard)
-	t.Cleanup(func() { db.DB = prev; log.SetOutput(prevLog); _ = fake.Close() })
+	d, _ := useAttachFake(t, atState{payStatus: "succeeded", payMeta: `{"kind":"b2b_invoice"}`, payAmount: 1500})
 
-	attach := func(tenant int) (int, map[string]any) {
-		req := httptest.NewRequest(http.MethodPost, "/api/admin/payments/12/attach-tenant", strings.NewReader(fmt.Sprintf(`{"tenant_id": %d}`, tenant)))
-		req = req.WithContext(context.WithValue(req.Context(), adminClaimsContextKey, &Claims{AdminID: 1}))
-		rec := httptest.NewRecorder()
-		AttachPaymentToTenantHandler(rec, req)
-		var m map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &m)
-		return rec.Code, m
-	}
-
-	if code, m := attach(5); code != http.StatusOK || m["credited"] != true {
+	if code, m := postAttach(5); code != http.StatusOK || m["credited"] != true {
 		t.Fatalf("first attach: %d %v", code, m)
 	}
 	if d.st.balance[5] != 1500 || len(d.st.wallet) != 1 || !strings.Contains(d.st.payMeta, `"tenant_id":5`) {
 		t.Fatalf("after the first attach: %+v", d.st)
 	}
-	code, m := attach(6)
+	code, m := postAttach(6)
 	if code != http.StatusConflict || m["error"] != "Этот платёж уже зачислен" {
 		t.Fatalf("second attach: %d %v, want 409 «Этот платёж уже зачислен»", code, m)
 	}
@@ -160,7 +211,84 @@ func TestAttachPaymentToTenantCreditsOnce(t *testing.T) {
 	}
 
 	d.st.payStatus, d.st.wallet = "pending", nil
-	if code, m := attach(7); code != http.StatusOK || m["credited"] != false || len(d.st.wallet) != 0 {
+	if code, m := postAttach(7); code != http.StatusOK || m["credited"] != false || len(d.st.wallet) != 0 {
 		t.Fatalf("unpaid payment: %d %v, wallet %v", code, m, d.st.wallet)
+	}
+}
+
+// Only a B2B payment can be attached; a paid one is credited with what refunds left of it
+// (succeeded and pending refunds count, failed/canceled do not) and 409 when nothing is left;
+// a paid-but-unapplied mark goes with the credit and its alert is resolved after COMMIT.
+func TestAttachPaymentToTenantRules(t *testing.T) {
+	const b2b = `{"kind":"b2b_invoice","inn":"7707083893"}`
+	const marked = `{"kind":"tenant_topup","unapplied_reason":"в платеже tenant_topup нет tenant_id (привяжите его к компании)"}`
+	tests := []struct {
+		name         string
+		st           atState
+		wantCode     int
+		wantErr      string
+		wantBalance  float64
+		wantAmount   any    // credited_amount in the answer
+		wantMeta     string // substring of the metadata afterwards ("" = unchanged)
+		wantResolved []string
+	}{
+		{name: "subscription payment", st: atState{payStatus: "succeeded", payMeta: `{"kind":"subscription","plan_id":3}`, payAmount: 300},
+			wantCode: http.StatusConflict, wantErr: "Этот платёж нельзя зачислить компании"},
+		{name: "payment without a kind", st: atState{payStatus: "succeeded", payMeta: `{}`, payAmount: 300},
+			wantCode: http.StatusConflict, wantErr: "Этот платёж нельзя зачислить компании"},
+		{name: "unpaid subscription payment is not bound either", st: atState{payStatus: "pending", payMeta: `{"kind":"subscription"}`, payAmount: 300},
+			wantCode: http.StatusConflict, wantErr: "Этот платёж нельзя зачислить компании"},
+		{name: "tenant_topup: credited in full", st: atState{payStatus: "succeeded", payMeta: `{"kind":"tenant_topup"}`, payAmount: 1500},
+			wantCode: http.StatusOK, wantBalance: 1500, wantAmount: 1500.0, wantMeta: `"tenant_id":5`},
+		{name: "partly refunded: amount − succeeded − pending refunds", st: atState{payStatus: "succeeded", payMeta: b2b, payAmount: 1500,
+			refunds: []atRefund{{50000, "succeeded"}, {20000, "pending"}, {30000, "failed"}, {10000, "canceled"}}},
+			wantCode: http.StatusOK, wantBalance: 800, wantAmount: 800.0, wantMeta: `"tenant_id":5`},
+		{name: "kopecks stay exact", st: atState{payStatus: "completed", payMeta: b2b, payAmount: 1000.10, refunds: []atRefund{{30, "succeeded"}}},
+			wantCode: http.StatusOK, wantBalance: 999.80, wantAmount: 999.80, wantMeta: `"tenant_id":5`},
+		{name: "refunds hold everything: 409", st: atState{payStatus: "succeeded", payMeta: b2b, payAmount: 1500,
+			refunds: []atRefund{{100000, "succeeded"}, {50000, "pending"}}},
+			wantCode: http.StatusConflict, wantErr: "Зачислять нечего: платёж возвращён или возврат ещё обрабатывается"},
+		{name: "refunded payment: 409", st: atState{payStatus: "refunded", payMeta: b2b, payAmount: 1500, refunds: []atRefund{{150000, "succeeded"}}},
+			wantCode: http.StatusConflict, wantErr: "Зачислять нечего"},
+		{name: "paid but unapplied: credited, mark cleared, alert resolved after COMMIT", st: atState{payStatus: "succeeded", payMeta: marked, payAmount: 1500},
+			wantCode: http.StatusOK, wantBalance: 1500, wantAmount: 1500.0, wantMeta: `"tenant_id":5`,
+			wantResolved: []string{"12 after 1 commit(s): Платёж #12 вручную зачислен компании «Tenant 5» (#5): 1500.00 ₽."}},
+		{name: "unpaid B2B payment: bound, nothing credited", st: atState{payStatus: "pending", payMeta: b2b, payAmount: 1500},
+			wantCode: http.StatusOK, wantMeta: `"tenant_id":5`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, resolved := useAttachFake(t, tt.st)
+			code, m := postAttach(5)
+			if code != tt.wantCode {
+				t.Fatalf("%d %v, want %d", code, m, tt.wantCode)
+			}
+			if tt.wantErr != "" {
+				if msg, _ := m["error"].(string); !strings.Contains(msg, tt.wantErr) {
+					t.Fatalf("error %q, want %q", msg, tt.wantErr)
+				}
+			}
+			if got := d.st.balance[5]; math.Abs(got-tt.wantBalance) > 1e-9 {
+				t.Fatalf("balance %v, want %v", got, tt.wantBalance)
+			}
+			if tt.wantAmount != nil && m["credited_amount"] != tt.wantAmount {
+				t.Fatalf("credited_amount %v, want %v", m["credited_amount"], tt.wantAmount)
+			}
+			if tt.wantMeta == "" && d.st.payMeta != tt.st.payMeta {
+				t.Fatalf("metadata changed: %s", d.st.payMeta)
+			}
+			if tt.wantMeta != "" && !strings.Contains(d.st.payMeta, tt.wantMeta) {
+				t.Fatalf("metadata %s lacks %s", d.st.payMeta, tt.wantMeta)
+			}
+			if code == http.StatusOK && m["credited"] == true && strings.Contains(d.st.payMeta, "unapplied_reason") {
+				t.Fatalf("credited but still marked unapplied: %s", d.st.payMeta)
+			}
+			if code == http.StatusOK && m["credited"] == false && strings.Contains(tt.st.payMeta, "unapplied_reason") != strings.Contains(d.st.payMeta, "unapplied_reason") {
+				t.Fatalf("an unpaid attach touched the mark: %s", d.st.payMeta)
+			}
+			if strings.Join(*resolved, "\n") != strings.Join(tt.wantResolved, "\n") {
+				t.Fatalf("resolved %q, want %q", *resolved, tt.wantResolved)
+			}
+		})
 	}
 }

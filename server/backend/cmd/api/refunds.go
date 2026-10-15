@@ -89,9 +89,8 @@ const (
 	refundLockPaymentSQL = `SELECT COALESCE(yookassa_payment_id, ''), COALESCE(status, ''), ROUND(amount * 100)::bigint
 		FROM payments WHERE id = $1 FOR UPDATE`
 	refundLockPaymentByYookassaSQL = `SELECT id FROM payments WHERE yookassa_payment_id = $1 FOR UPDATE`
-	refundHeldSQL                  = `SELECT COALESCE(SUM(ROUND(amount * 100)), 0)::bigint FROM payment_refunds
-		WHERE payment_id = $1 AND status IN (` + biz.RefundHoldStatusesSQL + `)`
-	refundOpenReservationSQL = `SELECT ` + refundRowColumns + ` FROM payment_refunds
+	refundHeldSQL                  = biz.RefundHeldKopSQL
+	refundOpenReservationSQL       = `SELECT ` + refundRowColumns + ` FROM payment_refunds
 		WHERE payment_id = $1 AND status = 'pending' AND yookassa_refund_id IS NULL AND idempotence_key IS NOT NULL
 		  AND created_at > NOW() - INTERVAL '23 hours'
 		ORDER BY id LIMIT 1`
@@ -133,6 +132,12 @@ const refundTotalsSQL = `
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 	`
+
+// refundClearUnappliedSQL: a payment that became fully refunded no longer waits for a
+// decision — its "paid but not applied" mark (biz.UnappliedReasonKey) goes in the same
+// transaction as the refund that completed it.
+const refundClearUnappliedSQL = `UPDATE payments SET metadata = metadata - 'unapplied_reason', updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status = 'refunded' AND metadata ? 'unapplied_reason'`
 
 // ─── Small pure helpers ──────────────────────────────────────────────────
 
@@ -277,8 +282,28 @@ func decideRefund(st refundState, requestedKop int64) (int64, *refundRow, *refun
 
 // ─── Locked transactions ─────────────────────────────────────────────────
 
+// paymentLockTx is a short transaction holding the payment row lock (withPaymentLock,
+// processRefundEvent); the refund recorder notes in it what to announce after COMMIT.
+type paymentLockTx struct {
+	*sql.Tx
+	paymentID int
+	// unappliedCleared: a refund completed the payment and cleared its "paid but not
+	// applied" mark; the alert is resolved once that is committed.
+	unappliedCleared bool
+}
+
+func (t *paymentLockTx) commit() error {
+	if err := t.Tx.Commit(); err != nil {
+		return err
+	}
+	if t.unappliedCleared {
+		resolveUnappliedAlert(t.paymentID, fmt.Sprintf("Платёж #%d полностью возвращён — решение больше не требуется.", t.paymentID))
+	}
+	return nil
+}
+
 // withPaymentLock runs fn in a short transaction that first locks the payment row.
-func withPaymentLock(ctx context.Context, paymentID int, fn func(context.Context, *sql.Tx) error) error {
+func withPaymentLock(ctx context.Context, paymentID int, fn func(context.Context, *paymentLockTx) error) error {
 	ctx, cancel := context.WithTimeout(ctx, refundDBTimeout)
 	defer cancel()
 	tx, err := db.DB.BeginTx(ctx, nil)
@@ -291,10 +316,11 @@ func withPaymentLock(ctx context.Context, paymentID int, fn func(context.Context
 	if err := tx.QueryRowContext(ctx, refundLockPaymentSQL, paymentID).Scan(&ykID, &status, &amountKop); err != nil {
 		return fmt.Errorf("lock payment %d: %w", paymentID, err)
 	}
-	if err := fn(ctx, tx); err != nil {
+	ltx := &paymentLockTx{Tx: tx, paymentID: paymentID}
+	if err := fn(ctx, ltx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return ltx.commit()
 }
 
 // refundAttempt is one refund attempt: a reservation row and the YooKassa request it sends.
@@ -406,7 +432,7 @@ func executeRefund(ctx context.Context, a refundAttempt, client refundAPI) (*yoo
 	ref, callErr := client.CreateRefundWithKey(a.request(), a.Key)
 	switch classifyRefundCall(ref, callErr, a.Resumed) {
 	case refundCreated:
-		err := withPaymentLock(ctx, a.PaymentID, func(ctx context.Context, tx *sql.Tx) error {
+		err := withPaymentLock(ctx, a.PaymentID, func(ctx context.Context, tx *paymentLockTx) error {
 			return recordRefund(ctx, tx, a.PaymentID, a.RowID, ref)
 		})
 		if err != nil {
@@ -416,7 +442,7 @@ func executeRefund(ctx context.Context, a refundAttempt, client refundAPI) (*yoo
 		}
 		return ref, nil
 	case refundRejected:
-		err := withPaymentLock(ctx, a.PaymentID, func(ctx context.Context, tx *sql.Tx) error {
+		err := withPaymentLock(ctx, a.PaymentID, func(ctx context.Context, tx *paymentLockTx) error {
 			_, err := tx.ExecContext(ctx, refundMarkFailedSQL, a.RowID)
 			return err
 		})
@@ -442,7 +468,7 @@ func executeRefund(ctx context.Context, a refundAttempt, client refundAPI) (*yoo
 //   - r already sits in a row the webhook inserted -> that row is merged into the reservation;
 //   - r sits in ANOTHER reservation -> that one goes back to pending (its own call is open);
 //   - the reservation holds another refund D -> D moves to a row of its own.
-func recordRefund(ctx context.Context, tx *sql.Tx, paymentID int, reservationID int64, r *yookassa.Refund) error {
+func recordRefund(ctx context.Context, tx *paymentLockTx, paymentID int, reservationID int64, r *yookassa.Refund) error {
 	amountKop, err := parseYKAmount(r.Amount.Value)
 	if err != nil {
 		return fmt.Errorf("refund %s: %w", r.ID, err)
@@ -516,9 +542,16 @@ func recordRefund(ctx context.Context, tx *sql.Tx, paymentID int, reservationID 
 	return updateRefundTotals(ctx, tx, paymentID, status)
 }
 
-func updateRefundTotals(ctx context.Context, tx *sql.Tx, paymentID int, status string) error {
+func updateRefundTotals(ctx context.Context, tx *paymentLockTx, paymentID int, status string) error {
 	if _, err := tx.ExecContext(ctx, refundTotalsSQL, paymentID, status); err != nil {
 		return fmt.Errorf("update refunded_amount: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, refundClearUnappliedSQL, paymentID)
+	if err != nil {
+		return fmt.Errorf("clear unapplied mark: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		tx.unappliedCleared = true
 	}
 	return nil
 }
@@ -541,10 +574,11 @@ func processRefundEvent(r *yookassa.Refund) error {
 	case err != nil:
 		return fmt.Errorf("lock payment for refund: %w", err)
 	}
-	if err := recordRefund(ctx, tx, paymentDBID, 0, r); err != nil {
+	ltx := &paymentLockTx{Tx: tx, paymentID: paymentDBID}
+	if err := recordRefund(ctx, ltx, paymentDBID, 0, r); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := ltx.commit(); err != nil {
 		return fmt.Errorf("commit refund %s: %w", r.ID, err)
 	}
 	log.Printf("[yookassa-webhook] ✓ refund %s for payment %s: %s₽ (%s)", r.ID, r.PaymentID, r.Amount.Value, r.Status)
@@ -635,7 +669,7 @@ func reconcileRefunds(ctx context.Context, client refundAPI, paymentID int, list
 		return callErr
 	}
 
-	err = withPaymentLock(ctx, paymentID, func(ctx context.Context, tx *sql.Tx) error {
+	err = withPaymentLock(ctx, paymentID, func(ctx context.Context, tx *paymentLockTx) error {
 		for _, ref := range fetched {
 			if err := recordRefund(ctx, tx, paymentID, 0, ref); err != nil {
 				return err

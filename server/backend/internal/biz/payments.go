@@ -115,6 +115,23 @@ func GetTenantByID(id int) (*Tenant, error) {
 	return t, nil
 }
 
+// Payment kinds (payments.metadata.kind) that credit a tenant wallet, not a subscription.
+const (
+	PaymentKindTenantTopup = "tenant_topup"
+	PaymentKindB2BInvoice  = "b2b_invoice"
+)
+
+// IsTenantPaymentKind reports whether a payment of this kind is credited to a tenant wallet.
+func IsTenantPaymentKind(kind string) bool {
+	return kind == PaymentKindTenantTopup || kind == PaymentKindB2BInvoice
+}
+
+// UnappliedReasonKey is the payments.metadata key that marks a paid payment which changed
+// nothing (no plan, downgrade refused, no tenant…): it holds the reason, in Russian, until
+// the payment is applied by hand or fully refunded. The payment sync cron keeps the
+// «Оплата получена, но не применена» alert open while the mark is there.
+const UnappliedReasonKey = "unapplied_reason"
+
 // Tenant wallet
 
 // CreditTenantWalletResult tells the caller what happened so they can fire

@@ -2,9 +2,13 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/yookassa"
 )
@@ -45,6 +49,7 @@ func StartPaymentSyncCron() {
 		for {
 			syncPendingPayments()
 			reconcilePendingRefunds()
+			syncUnappliedPaymentAlerts()
 			time.Sleep(paymentSyncInterval)
 		}
 	}()
@@ -71,6 +76,13 @@ const (
 		       cancellation_reason = 'auto-canceled: stale payment not found in YooKassa',
 		       updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND status IN ('pending', 'waiting_for_capture') AND paid_at IS NULL`
+	// paymentUnappliedSQL: paid payments still marked "paid but not applied". No LIMIT: the
+	// set is what waits for a person, and an open alert missing from it gets resolved.
+	paymentUnappliedSQL = `
+		SELECT id, COALESCE(user_id_text, ''), COALESCE(metadata::text, '{}'), amount::text
+		FROM payments
+		WHERE status IN (` + biz.PaidPaymentStatusesSQL + `) AND metadata ? 'unapplied_reason'
+		ORDER BY id`
 )
 
 // paymentGetter is the part of the YooKassa client the sync needs (a test seam).
@@ -158,6 +170,53 @@ func syncPendingPayments() {
 
 	if synced > 0 || stale > 0 {
 		log.Printf("[payment-sync] ✓ Синхронизировано: %d, помечено stale: %d", synced, stale)
+	}
+}
+
+// syncUnappliedPaymentAlerts keeps payment-unapplied-<id> in line with the payments'
+// "paid but not applied" mark (see paymentUnapplied), every payment sync run:
+//   - a paid payment that still carries the mark raises its alert again: a raise Telegram
+//     never got is re-sent once the delivery backoff is over, a delivered one is not repeated;
+//   - an open alert whose payment no longer carries the mark (applied, fully refunded, edited
+//     by an admin) is resolved. The open keys are read BEFORE the payments, so an alert a
+//     claim raises meanwhile is not resolved on a read that predates its mark.
+func syncUnappliedPaymentAlerts() {
+	open := openUnappliedAlerts()
+	rows, err := db.DB.Query(paymentUnappliedSQL)
+	if err != nil {
+		log.Printf("[payment-sync] unapplied payments: %v", err)
+		return
+	}
+	defer rows.Close()
+	type marked struct{ key, details string }
+	var list []marked
+	for rows.Next() {
+		var row paymentRow
+		var metaText, amount string
+		if err := rows.Scan(&row.ID, &row.UserID, &metaText, &amount); err != nil {
+			log.Printf("[payment-sync] unapplied payments: %v", err)
+			return // a partial list must not resolve anything
+		}
+		row.Meta = map[string]any{}
+		_ = json.Unmarshal([]byte(metaText), &row.Meta)
+		reason, _ := row.Meta[biz.UnappliedReasonKey].(string)
+		list = append(list, marked{unappliedAlertKey(row.ID),
+			unappliedAlertDetails(row.ID, row.kind(), row.UserID, row.metaInt("tenant_id"), amount, reason)})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[payment-sync] unapplied payments: %v", err)
+		return
+	}
+	still := make(map[string]bool, len(list))
+	for _, m := range list {
+		still[m.key] = true
+		raiseUnappliedAlert(m.key, AlertCritical, unappliedAlertTitle, m.details)
+	}
+	for _, key := range open {
+		if !still[key] {
+			resolvePaymentAlert(key, fmt.Sprintf("Платёж #%s больше не ждёт решения: отметка «не применён» снята (платёж применён, возвращён или исправлен вручную).",
+				strings.TrimPrefix(key, unappliedAlertPrefix)))
+		}
 	}
 }
 

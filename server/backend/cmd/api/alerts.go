@@ -250,6 +250,13 @@ func RaiseAlert(key string, level AlertLevel, title, details string) {
 	alerts.Raise(key, level, title, details)
 }
 
+// RaiseAlertNoRepeat is RaiseAlert for a condition a cron re-raises until a person acts on it:
+// once a message of the incident reached Telegram it is not repeated while the key stays
+// active; a failed delivery is retried exactly as with RaiseAlert.
+func RaiseAlertNoRepeat(key string, level AlertLevel, title, details string) {
+	alerts.raise(key, level, title, details, false)
+}
+
 // ResolveAlert sends a recovery message only if a raise for key was actually delivered.
 func ResolveAlert(key, message string) { alerts.Resolve(key, message) }
 
@@ -258,6 +265,11 @@ func ResolveAlert(key, message string) { alerts.Resolve(key, message) }
 func ClearAlert(key, reason string) { alerts.Clear(key, reason) }
 
 func (m *alertManager) Raise(key string, level AlertLevel, title, details string) {
+	m.raise(key, level, title, details, true)
+}
+
+// raise is Raise; repeat false never sends a "repeat" of a delivered critical alert.
+func (m *alertManager) raise(key string, level AlertLevel, title, details string, repeat bool) {
 	m.mu.Lock()
 	now := m.now()
 	st := m.state[key]
@@ -283,7 +295,7 @@ func (m *alertManager) Raise(key string, level AlertLevel, title, details string
 		kind = "raise" // escalation warn → critical: never delayed by the cooldown
 	case !st.notified && coolOK:
 		kind = "raise" // previous attempt failed or was suppressed
-	case st.notified && coolOK && level == AlertCritical:
+	case repeat && st.notified && coolOK && level == AlertCritical:
 		kind = "repeat"
 	}
 	if kind == "" {
@@ -470,6 +482,20 @@ func (m *alertManager) retryNow() {
 	for _, st := range m.state {
 		st.retryAt = time.Time{}
 	}
+}
+
+// activeKeys lists the keys starting with prefix that have an open incident, sorted.
+func (m *alertManager) activeKeys(prefix string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for key, st := range m.state {
+		if st.active && strings.HasPrefix(key, prefix) {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // alertUndelivered describes an active incident that has not reached Telegram yet.

@@ -28,7 +28,7 @@ import (
 //   2. Otherwise we look up tenants.inn — keeps repeat customers connected to
 //      their previous tenant.
 //   3. Otherwise we create a NEW tenant with status='inactive'. The webhook
-//      auto-activates it on successful credit (see CreditTenantWallet).
+//      auto-activates it on successful credit (see biz.CreditTenantWalletTx).
 //
 // We ALWAYS write tenant_id into payment metadata so the webhook can credit
 // the right wallet. Before this fix, public invoices left tenant_id empty and

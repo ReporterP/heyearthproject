@@ -61,7 +61,7 @@ created_at
 ```
 
 Audit trail кошелька. **Единственный валидный путь** изменения баланса:
-`biz.CreditTenantWallet` / `biz.DebitTenantWallet` (FOR UPDATE lock + UPDATE баланса в одной транзакции).
+`biz.CreditTenantWalletTx` (в транзакции вызывающего: claim оплаченного платежа или admin attach-tenant; повторное зачисление того же `payment_id` → `ErrPaymentAlreadyCredited`) / `biz.DebitTenantWallet` (FOR UPDATE lock + UPDATE баланса в одной транзакции).
 
 ### `invoice_records` (000037)
 
@@ -119,7 +119,7 @@ admin_users.assigned_tenants INT[] NULL
 ### Бизнес-логика (`server/backend/internal/biz/`)
 
 - `GetTenantByID`, `FindTenantByINN`, `CreateInactiveTenantFromInvoice`
-- `CreditTenantWallet(tenantID, amount, description, paymentID)` — atomic + auto-activate (`inactive → active`)
+- `CreditTenantWalletTx(ctx, tx, tenantID, amount, description, paymentID)` — в транзакции вызывающего + auto-activate (`inactive → active`)
 - `DebitTenantWallet` — для monthly billing, отказ если balance < amount
 - `AddTenantMember`, `RemoveTenantMember`, `GetTenantMember`, `ListTenantMembers`, `PrimaryTenantForUser`
 - `CalculateTenantMonthlyCharge(info)` — pricing: super-план 20 000 ₽ или `users*250 + servers*100 + provider*1000`
@@ -148,14 +148,14 @@ admin_users.assigned_tenants INT[] NULL
 - `POST/PATCH/DELETE /api/admin/tenants[/{id}]`
 - `GET /api/admin/b2b-analytics` — KPI, MRR, top-10 by spend / traffic, wallet feed
 - `GET /api/admin/payments/unassigned-b2b-invoices` — orphan-платежи (P1)
-- `POST /api/admin/payments/{id}/attach-tenant` — ретроактивная привязка + credit
+- `POST /api/admin/payments/{id}/attach-tenant` — ретроактивная привязка + credit; только `kind` `b2b_invoice`/`tenant_topup` (иначе 409), зачисляется `amount − succeeded − pending` возвратов (≤ 0 → 409), снимает отметку `unapplied_reason`
 
 ### Webhook (фикс из P0)
 
 `/api/webhooks/yookassa` → `handleYookassaWebhook` → `processPaymentEvent`:
 - `kind='subscription'` → активация B2C-подписки
-- `kind='b2b_invoice' | 'tenant_topup'` → `CreditTenantWallet` (фикс money-loss из 5e440d5)
-- При отсутствии `metadata.tenant_id` пишется WARN в лог.
+- `kind='b2b_invoice' | 'tenant_topup'` → `CreditTenantWalletTx` в транзакции claim (фикс money-loss из 5e440d5)
+- При отсутствии `metadata.tenant_id` платёж остаётся оплаченным с `metadata.unapplied_reason`, алерт `payment-unapplied-<id>` (payment sync cron повторяет недоставленный и закрывает его, когда отметка снята).
 
 ## 4. Frontend
 
@@ -193,7 +193,7 @@ API клиент: `site/src/api/business.js` (`getBusinessMe`, `initBusinessTopu
      │
      │ первый успешный платёж (webhook YooKassa)
      ▼
-[Активный]  → status='active'    (CreditTenantWallet auto-promote)
+[Активный]  → status='active'    (CreditTenantWalletTx auto-promote)
      │
      │ monthly cron, balance < monthly_charge
      ▼

@@ -82,6 +82,54 @@ func TestAlertWarnNotRepeated(t *testing.T) {
 	}
 }
 
+// A no-repeat raise (payment-unapplied-<id>, re-raised by a cron every 5 min) retries a failed
+// delivery after the backoff but never repeats a delivered critical alert; after a recovery it
+// is a new incident again.
+func TestAlertNoRepeatRetriesButDoesNotRepeat(t *testing.T) {
+	h := newAlertHarness()
+	raise := func() {
+		h.m.raise("payment-unapplied-7", AlertCritical, "Оплата получена, но не применена", "Платёж #7", false)
+	}
+	h.failSends = 1
+	raise() // Telegram down
+	h.advance(time.Minute)
+	raise() // inside the backoff: nothing
+	if h.attempts != 1 || len(h.sent) != 0 {
+		t.Fatalf("attempts %d, sent %q; want one failed attempt", h.attempts, h.sent)
+	}
+	h.advance(alertRetryBackoff)
+	raise() // retried
+	if len(h.sent) != 1 || !strings.Contains(h.sent[0], "КРИТИЧНО") {
+		t.Fatalf("the failed raise must be retried after the backoff: %q", h.sent)
+	}
+	for i := 0; i < 12; i++ { // an hour of cron runs
+		h.advance(5 * time.Minute)
+		raise()
+	}
+	if len(h.sent) != 1 {
+		t.Fatalf("a delivered no-repeat alert was repeated: %q", h.sent)
+	}
+	h.m.Resolve("payment-unapplied-7", "Платёж #7 возвращён")
+	h.advance(alertCooldown)
+	raise()
+	if len(h.sent) != 3 || !strings.Contains(h.sent[1], "ВОССТАНОВЛЕНО") || !strings.Contains(h.sent[2], "КРИТИЧНО") {
+		t.Fatalf("after a recovery the key raises again: %q", h.sent)
+	}
+}
+
+func TestAlertActiveKeys(t *testing.T) {
+	h := newAlertHarness()
+	h.m.Raise("payment-unapplied-12", AlertCritical, "t", "d")
+	h.m.Raise("payment-unapplied-3", AlertCritical, "t", "d")
+	h.m.Raise("payment-unapplied-5", AlertCritical, "t", "d")
+	h.m.Raise("disk-usage", AlertWarn, "t", "d")
+	h.m.Resolve("payment-unapplied-5", "ok")
+	got := h.m.activeKeys("payment-unapplied-")
+	if want := []string{"payment-unapplied-12", "payment-unapplied-3"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("activeKeys = %q, want %q", got, want)
+	}
+}
+
 func TestAlertResolveOnlyIfRaised(t *testing.T) {
 	h := newAlertHarness()
 	h.m.Resolve("never", "ok")

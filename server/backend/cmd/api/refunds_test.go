@@ -231,6 +231,7 @@ type rfDB struct {
 	status      string
 	amountKop   int64
 	refundedKop int64
+	unapplied   bool // metadata carries the "paid but not applied" mark
 
 	payLock sync.Mutex
 
@@ -257,6 +258,7 @@ type rfSnapshot struct {
 	rows                []rfRow
 	status              string
 	refundedKop, nextID int64
+	unapplied           bool
 }
 
 type rfConn struct {
@@ -288,7 +290,7 @@ func (c *rfConn) end(what string, undo bool) {
 	d := c.d
 	d.mu.Lock()
 	if undo && c.snap != nil {
-		d.rows, d.status, d.refundedKop, d.nextID = c.snap.rows, c.snap.status, c.snap.refundedKop, c.snap.nextID
+		d.rows, d.status, d.refundedKop, d.nextID, d.unapplied = c.snap.rows, c.snap.status, c.snap.refundedKop, c.snap.nextID, c.snap.unapplied
 	}
 	c.inTx, c.snap = false, nil
 	d.openTx--
@@ -304,7 +306,7 @@ func (c *rfConn) end(what string, undo bool) {
 func (c *rfConn) write() {
 	if c.inTx && c.snap == nil {
 		d := c.d
-		c.snap = &rfSnapshot{rows: append([]rfRow(nil), d.rows...), status: d.status, refundedKop: d.refundedKop, nextID: d.nextID}
+		c.snap = &rfSnapshot{rows: append([]rfRow(nil), d.rows...), status: d.status, refundedKop: d.refundedKop, nextID: d.nextID, unapplied: d.unapplied}
 	}
 }
 
@@ -514,6 +516,8 @@ func (c *rfConn) ExecContext(_ context.Context, query string, args []driver.Name
 		label = "delete-webhook-row"
 	case strings.HasPrefix(q, "UPDATE payments SET refunded_amount"):
 		label = "totals"
+	case strings.HasPrefix(q, "UPDATE payments SET metadata = metadata - 'unapplied_reason'"):
+		label = "clear-unapplied"
 	default:
 		return nil, fmt.Errorf("rf driver: unscripted statement %s", q)
 	}
@@ -579,6 +583,10 @@ func (c *rfConn) ExecContext(_ context.Context, query string, args []driver.Name
 			d.status = "refunded"
 		}
 		affected = 1
+	case "clear-unapplied": // the guard is read from the SQL
+		if d.unapplied && (d.status == "refunded" || !strings.Contains(q, "status = 'refunded'")) {
+			d.unapplied, affected = false, 1
+		}
 	}
 	return driver.RowsAffected(affected), nil
 }
@@ -1091,13 +1099,79 @@ func TestRefundTransactions(t *testing.T) {
 	want := []string{
 		"BEGIN", "tx:lock", "tx:held", "tx:open-reservation", "tx:reserve", "tx:set-key", "COMMIT",
 		"yookassa refund-7-1-1760000000 open-tx=0",
-		"BEGIN", "tx:lock", "tx:row-by-refund-id", "tx:row-by-id", "tx:link", "tx:totals", "COMMIT",
-		"BEGIN", "tx:lock-by-yookassa", "tx:row-by-refund-id", "tx:set-status", "tx:totals", "COMMIT",
+		"BEGIN", "tx:lock", "tx:row-by-refund-id", "tx:row-by-id", "tx:link", "tx:totals", "tx:clear-unapplied", "COMMIT",
+		"BEGIN", "tx:lock-by-yookassa", "tx:row-by-refund-id", "tx:set-status", "tx:totals", "tx:clear-unapplied", "COMMIT",
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !reflect.DeepEqual(d.journal, want) {
 		t.Fatalf("journal\n got %q\nwant %q", d.journal, want)
+	}
+}
+
+// A refund that completes a paid-but-unapplied payment clears its mark in the same
+// transaction and resolves payment-unapplied-7 after COMMIT — through the admin refund or the
+// refund webhook alike; a partial refund leaves the payment waiting for a decision.
+func TestRefundClearsUnappliedMark(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		yk           []string
+		webhook      bool // YooKassa answers "pending"; the webhook then reports the refund succeeded
+		wantMarked   bool
+		wantResolved string
+	}{
+		{name: "partial refund: still waiting for a decision", body: `{"amount":100}`, wantMarked: true},
+		{name: "full refund by the admin", body: `{}`, wantResolved: "payment-unapplied-7"},
+		{name: "full refund completed by the webhook", body: `{}`, yk: []string{"ok-pending"}, webhook: true, wantResolved: "payment-unapplied-7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newRFDB()
+			d.unapplied = true
+			y := &rfYooKassa{behaviour: tt.yk}
+			useRefundFakes(t, d, y)
+			var resolved, messages []string
+			prev := resolvePaymentAlert
+			t.Cleanup(func() { resolvePaymentAlert = prev })
+			resolvePaymentAlert = func(key, msg string) {
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				if d.openTx != 0 || d.journal[len(d.journal)-1] != "COMMIT" {
+					t.Errorf("%s resolved before COMMIT (open tx %d, journal %q)", key, d.openTx, d.journal)
+				}
+				resolved, messages = append(resolved, key), append(messages, msg)
+			}
+
+			if code, m := postRefund(t, tt.body); code != http.StatusOK {
+				t.Fatalf("refund: %d %v", code, m)
+			}
+			if tt.webhook {
+				if len(resolved) != 0 {
+					t.Fatalf("resolved while the refund is still pending: %q", resolved)
+				}
+				y.setStatus("rf-1", "succeeded")
+				if code := refundNotificationStatus("rf-1", y.GetRefund); code != http.StatusOK {
+					t.Fatalf("webhook %d", code)
+				}
+			}
+			d.mu.Lock()
+			marked := d.unapplied
+			d.mu.Unlock()
+			if marked != tt.wantMarked {
+				t.Fatalf("mark %v, want %v", marked, tt.wantMarked)
+			}
+			want := []string(nil)
+			if tt.wantResolved != "" {
+				want = []string{tt.wantResolved}
+			}
+			if !reflect.DeepEqual(resolved, want) {
+				t.Fatalf("resolved %q, want %q", resolved, want)
+			}
+			if len(messages) == 1 && !strings.Contains(messages[0], "Платёж #7 полностью возвращён") {
+				t.Errorf("resolve message %q", messages[0])
+			}
+		})
 	}
 }
 

@@ -403,12 +403,13 @@ export default function PaymentsPage() {
                               try {
                                 const res = await checkPaymentStatus(p.id)
                                 toast.success(`ЮKassa: ${res.yookassa_status || res.local_status}`)
-                                load()
                               } catch (e) {
                                 // The server's own text (e.g. a paid payment it could not apply).
                                 toast.error(e.message)
                               } finally {
                                 setCheckingId(null)
+                                // A 500 may still have recorded the YooKassa status or a refund.
+                                load()
                               }
                             }}>
                               Статус

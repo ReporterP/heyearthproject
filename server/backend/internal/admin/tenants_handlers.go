@@ -396,9 +396,22 @@ func UnassignedB2BInvoicesHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-// AttachPaymentToTenantHandler binds a previously-orphaned b2b_invoice payment
-// to a tenant. If the payment is already completed, also fires CreditTenantWallet
-// so the company's balance updates retroactively.
+// PaymentUnappliedResolvedFn is set by cmd/api (the admin package cannot import it): it
+// resolves the «Оплата получена, но не применена» alert of a payment an admin has just
+// applied by hand. Called after COMMIT; nil leaves the alert to the payment sync cron.
+var PaymentUnappliedResolvedFn func(paymentID int, message string)
+
+// attachLockPaymentSQL locks the payment being attached (the lock the paid-payment claim and
+// every refund writer take) and reads it: amount in kopecks, status, metadata.
+const attachLockPaymentSQL = `
+		SELECT ROUND(amount * 100)::bigint, status, COALESCE(metadata::text, '{}')
+		FROM payments WHERE id = $1 FOR UPDATE`
+
+// AttachPaymentToTenantHandler binds a B2B payment (kind b2b_invoice or tenant_topup) that
+// came without a tenant to a tenant; any other payment answers 409. A paid payment is
+// credited to the tenant wallet in the same transaction (biz.CreditTenantWalletTx) with
+// what refunds left of it — amount − succeeded − pending refunds, 409 when nothing is left —
+// and loses its "paid but not applied" mark; that alert is resolved after COMMIT.
 //
 // Path: POST /api/admin/payments/{id}/attach-tenant
 // Body: {"tenant_id": 42}
@@ -449,23 +462,45 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
 
-	// Patch metadata: add tenant_id; preserve any existing keys.
-	var amount float64
+	var amountKop int64
 	var status, currentMeta string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT amount::float8, status, COALESCE(metadata::text, '{}')
-		FROM payments WHERE id = $1 FOR UPDATE
-	`, paymentID).Scan(&amount, &status, &currentMeta); err != nil {
+	if err := tx.QueryRowContext(ctx, attachLockPaymentSQL, paymentID).Scan(&amountKop, &status, &currentMeta); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "payment not found")
 		return
 	}
-	// Re-serialize metadata with tenant_id added.
 	var meta map[string]interface{}
 	_ = json.Unmarshal([]byte(currentMeta), &meta)
 	if meta == nil {
 		meta = make(map[string]interface{})
 	}
+	kind, _ := meta["kind"].(string)
+	if !biz.IsTenantPaymentKind(kind) {
+		writeAdminError(w, http.StatusConflict, "Этот платёж нельзя зачислить компании")
+		return
+	}
+
+	// A paid payment is credited with what refunds left of it; a refunded one has nothing left.
+	paid := biz.IsPaidPaymentStatus(status)
+	var creditKop int64
+	if paid || status == "refunded" {
+		var heldKop int64
+		if err := tx.QueryRowContext(ctx, biz.RefundHeldKopSQL, paymentID).Scan(&heldKop); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "refunds: "+err.Error())
+			return
+		}
+		if creditKop = amountKop - heldKop; creditKop <= 0 {
+			writeAdminError(w, http.StatusConflict, "Зачислять нечего: платёж возвращён или возврат ещё обрабатывается")
+			return
+		}
+	}
+
+	// Patch metadata: add tenant_id, keep the other keys. A paid payment is applied below in
+	// this transaction, so its "paid but not applied" mark goes with it.
 	meta["tenant_id"] = req.TenantID
+	_, wasUnapplied := meta[biz.UnappliedReasonKey]
+	if paid {
+		delete(meta, biz.UnappliedReasonKey)
+	}
 	metaJSON, _ := json.Marshal(meta)
 	_, err = tx.ExecContext(ctx, `UPDATE payments SET metadata = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, string(metaJSON), paymentID)
 	if err != nil {
@@ -475,11 +510,10 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If the payment is already paid — credit the tenant wallet now. We do
 	// this through biz to get the auto-activate side-effect for free.
-	credited := false
-	if biz.IsPaidPaymentStatus(status) {
+	if paid {
 		paymentDBID := paymentID
-		desc := fmt.Sprintf("Admin-attached b2b_invoice payment #%d", paymentID)
-		_, err := biz.CreditTenantWalletTx(ctx, tx, req.TenantID, amount, desc, &paymentDBID)
+		desc := fmt.Sprintf("Admin-attached %s payment #%d", kind, paymentID)
+		_, err := biz.CreditTenantWalletTx(ctx, tx, req.TenantID, float64(creditKop)/100, desc, &paymentDBID)
 		if errors.Is(err, biz.ErrPaymentAlreadyCredited) {
 			writeAdminError(w, http.StatusConflict, "Этот платёж уже зачислен")
 			return
@@ -488,19 +522,27 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusInternalServerError, "credit: "+err.Error())
 			return
 		}
-		credited = true
 	}
 	if err := tx.Commit(); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "commit: "+err.Error())
 		return
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]any{
+	credited := fmt.Sprintf("%d.%02d", creditKop/100, creditKop%100)
+	if paid && wasUnapplied && PaymentUnappliedResolvedFn != nil {
+		PaymentUnappliedResolvedFn(paymentID, fmt.Sprintf("Платёж #%d вручную зачислен компании «%s» (#%d): %s ₽.",
+			paymentID, tenantName, req.TenantID, credited))
+	}
+	resp := map[string]any{
 		"ok":          true,
 		"payment_id":  paymentID,
 		"tenant_id":   req.TenantID,
 		"tenant_name": tenantName,
-		"credited":    credited,
-	})
+		"credited":    paid,
+	}
+	if paid {
+		resp["credited_amount"] = float64(creditKop) / 100
+	}
+	writeAdminJSON(w, http.StatusOK, resp)
 }
 
 // PublicCreateTenantHandler is a public endpoint for the promo site to create a new tenant.
