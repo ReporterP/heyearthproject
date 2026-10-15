@@ -1,0 +1,196 @@
+package provision
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/heyearth/backend/internal/config"
+)
+
+// Step is one idempotent unit of a recipe. Runner: Verify passed → the step is "ok" and nothing
+// is touched; otherwise Apply, then Verify again; a failure after Apply → Rollback (when set).
+// A verify job runs Verify only. Any of the three may be nil.
+type Step struct {
+	Name     string
+	Apply    func(ctx context.Context, r Remote, s *State) error
+	Verify   func(ctx context.Context, r Remote, s *State) error
+	Rollback func(ctx context.Context, r Remote, s *State) error
+}
+
+// Recipe is the ordered steps of one job kind for one node role.
+type Recipe []Step
+
+// ErrSkipped from Apply: the step deliberately did nothing (it printed why); the job goes on.
+var ErrSkipped = errors.New("шаг пропущен")
+
+// Tunnel is what servers.tunnel_* must say about an exit. Stale: a legacy private key or a
+// protocol/port other than hysteria2:50443 is still stored.
+type Tunnel struct {
+	UUID, PublicKey, ShortID, SNI, Password string
+	Stale                                   bool
+}
+
+// Hooks are the database/Hub side effects of recipes (SQLStore.Hooks in the API and the CLI).
+type Hooks struct {
+	Lifecycle    func(ctx context.Context, serverID int) (string, error)
+	SetLifecycle func(ctx context.Context, serverID int, from []string, to string) error
+	LoadTunnel   func(ctx context.Context, serverID int) (Tunnel, error)
+	SaveTunnel   func(ctx context.Context, serverID int, t Tunnel) (changed bool, err error)
+	ForgetTunnel func(ctx context.Context, serverID int) error
+	// Activate: provisioning → online AND tunnel_status healthy in ONE write, after the recipe
+	// checked both paths itself (phase-1 contract: adding an exit costs exactly one Xray restart).
+	Activate         func(ctx context.Context, serverID int) error
+	MarkMTProto      func(ctx context.Context, serverID int, status string) error
+	BumpSubscription func(ctx context.Context) error
+	RequestSync      func()                                     // xray + hysteria sync; never restarts the API
+	ProbeAgent       func(ctx context.Context, ip string) error // nil: not checked (deploy CLI)
+}
+
+// ExitOptions: everything an exit recipe needs besides the node row (filled by the API / CLI wiring).
+type ExitOptions struct {
+	HubIPs      []string        // node-agent :50052 is allowed only from these
+	MTProtoPort int             // allowed through the ACL / guard rules
+	MTProto     *MTProtoOptions // nil: no MTProxy (mtproto_status = 'disabled')
+	NodeAgent   func() ([]byte, error)
+	CA          func() (cert, key []byte, err error)
+	HubXray     string // the Hub's xray for the TCP path check
+}
+
+// MTProtoOptions: the exit's Telegram proxy (Secret is redacted from every step output).
+type MTProtoOptions struct {
+	Port           int
+	Secret, Domain string
+	Script         []byte // cmd/deploy/install-mtproxy.sh
+}
+
+// State is one job run: the node, the Hub, options, and what steps learnt (keys, changed files).
+type State struct {
+	Node  Node
+	Kind  string
+	Hub   Remote
+	Exit  ExitOptions
+	Hooks Hooks
+	Keys  config.ExitRealityKeys
+	Begin func(ctx context.Context) error // before the first step (lifecycle → provisioning)
+	Fail  func(ctx context.Context)       // after a failed step (provisioning → failed)
+	Now   func() time.Time
+	Sleep func(ctx context.Context, d time.Duration) error
+
+	out     *tailBuffer
+	secrets []string
+	changed map[string][]string // unit → files written in this run (rollback restores only these)
+}
+
+// NewState starts the state of one run; hub is where Hub-side steps run (LocalRemote in the API).
+func NewState(kind string, n Node, hub Remote, h Hooks) *State {
+	return &State{Node: n, Kind: kind, Hub: hub, Hooks: h, Now: time.Now, Sleep: sleepCtx, changed: map[string][]string{}}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Printf appends a line to the current step's output (redacted and trimmed before it is stored).
+func (s *State) Printf(format string, a ...any) {
+	msg := strings.TrimRight(fmt.Sprintf(format, a...), "\n")
+	if s.out != nil && msg != "" {
+		s.out.WriteString(msg + "\n")
+	}
+}
+
+// AddSecret registers values that must never reach a step's output or the job's error.
+func (s *State) AddSecret(v ...string) { s.secrets = append(s.secrets, v...) }
+
+// Secrets never reach provision_steps.output_tail, provision_jobs.error or the log: the SSH
+// password, the tunnel keys (the VLESS UUID is a credential too), the MTProxy secret and every
+// AddSecret value. Read at the end of each step, so keys a step learnt are covered.
+func (s *State) Secrets() []string {
+	all := append([]string{s.Node.Password, s.Keys.PrivateKey, s.Keys.SSPassword, s.Keys.UUID}, s.secrets...)
+	if s.Exit.MTProto != nil {
+		all = append(all, s.Exit.MTProto.Secret)
+	}
+	var out []string
+	for _, v := range all {
+		if len(v) >= minSecretLen {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// minSecretLen: shorter values are not secrets the recipes handle (generated keys and passwords
+// are far longer) and replacing them everywhere would garble the output.
+const minSecretLen = 6
+
+func (s *State) noteChanged(unit, path string) { s.changed[unit] = append(s.changed[unit], path) }
+
+func (s *State) needKeys() error {
+	if s.Keys.UUID == "" || s.Keys.SSPassword == "" || s.Keys.PrivateKey == "" {
+		return errors.New("ключи туннеля не прочитаны (шаг «Ключи туннеля»)")
+	}
+	return nil
+}
+
+// redact replaces every secret with ***, the longest first (a secret containing another is
+// replaced whole).
+func redact(text string, secrets []string) string {
+	sorted := append([]string(nil), secrets...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, sec := range sorted {
+		if sec != "" {
+			text = strings.ReplaceAll(text, sec, "***")
+		}
+	}
+	return text
+}
+
+// tailBuffer keeps the last max bytes (rune-aligned). The runner keeps 8× the stored tail, redacts
+// and only then cuts to MaxOutputTail: a cut never splits a secret that redaction then misses.
+type tailBuffer struct {
+	max int
+	b   []byte
+}
+
+func (t *tailBuffer) WriteString(s string) {
+	t.b = append(t.b, s...)
+	if len(t.b) > t.max {
+		cut := len(t.b) - t.max
+		for cut < len(t.b) && !utf8.RuneStart(t.b[cut]) {
+			cut++
+		}
+		t.b = append([]byte(nil), t.b[cut:]...)
+	}
+}
+
+func (t *tailBuffer) String() string { return string(t.b) }
+
+var titles = map[string]string{
+	"preflight": "Предпроверка сервера", "hub_key": "Ключ Hub на ноде", "reality_keys": "Ключи туннеля",
+	"base": "Сеть и пакеты", "firewall": "Фаервол", "hysteria": "Основной туннель (Hysteria) и прыжки портов",
+	"xray": "Запасной TCP-туннель (Reality)", "mtproxy": "Telegram-прокси (MTProxy)", "node_agent": "Агент мониторинга",
+	"save_tunnel": "Данные туннеля в базе", "hub_client": "Клиент туннеля на Hub",
+	"path_hy": "Проверка пути: основной туннель", "path_tcp": "Проверка пути: запасной TCP",
+	"activate": "Включение в маршрутизацию", "exclude": "Исключение из маршрутизации",
+	"hub_client_remove": "Удаление клиента туннеля на Hub", "rotate_password": "Смена пароля туннеля",
+	"stop_services": "Остановка сервисов на ноде", "remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
+}
+
+// Title is the owner-facing name of a step (admin UI and CLI).
+func Title(name string) string {
+	if t, ok := titles[name]; ok {
+		return t
+	}
+	return name
+}
