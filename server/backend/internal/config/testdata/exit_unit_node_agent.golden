@@ -1,6 +1,7 @@
 [Unit]
 Description=HeYearth Node Agent
-After=network.target
+After=network.target heyearth-agent-guard.service
+Requires=heyearth-agent-guard.service
 [Service]
 Type=simple
 User=root

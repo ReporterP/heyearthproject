@@ -291,7 +291,10 @@ func randomPassword() (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-// RecipeFor picks the recipe of a job kind (Task 2.8 adds the setup kinds).
+// RecipeFor picks the recipe of a job kind for a node: DeprovisionRecipe for deprovision, the
+// role's setup recipe for provision / reprovision / verify (recipeForSetup, exit.go). A refusal
+// happens before any job exists. st is the run's state (st.Exit filled by the wiring); the setup
+// recipes set st.Begin / st.Fail.
 func RecipeFor(kind string, n Node, st *State) (Recipe, error) {
 	if n.ID < 1 || n.ID > 511 {
 		return nil, fmt.Errorf("id ноды %d вне 1..511: порт 1088+id выходит за диапазон egress guard", n.ID)
@@ -303,9 +306,4 @@ func RecipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return DeprovisionRecipe(n.Role), nil
 	}
 	return recipeForSetup(kind, n, st)
-}
-
-// recipeForSetup: until Task 2.8 the core only takes nodes out of service.
-func recipeForSetup(kind string, n Node, _ *State) (Recipe, error) {
-	return nil, fmt.Errorf("задача «%s» для ноды %d пока не поддерживается ядром (Task 2.8)", kind, n.ID)
 }

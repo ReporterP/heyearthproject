@@ -1,0 +1,11 @@
+[Unit]
+Description=node-agent (TCP 50052) only from the Hub (HeYearth)
+After=network-pre.target nftables.service
+PartOf=nftables.service
+Before=node-agent.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables-heyearth-agent.conf
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

@@ -31,18 +31,27 @@ type fakeHost struct {
 	writes      int
 	active      map[string]bool
 	enabled     map[string]bool
+	retry       map[string]bool // in the pause of a crash loop (SubState auto-restart)
 	nft         map[string]bool // nft tables (inet) loaded in the kernel
 	marker      map[string]bool
+	markWrites  map[string]map[string]string // unit → path → sha256 recorded by MarkRestartScript
 	restarts    map[string]int
 	authKeys    []string
 	ops         []string
-	seen        func(op string) // called for every op before it runs (tests watch the routing state)
-	dropOnce    string          // the first op with this prefix loses the SSH connection…
+	scripts     map[string]string // op → the last script run with it
+	seen        func(op string)   // called for every op before it runs (tests watch the routing state)
+	dropOnce    string            // the first op with this prefix loses the SSH connection…
 	dropped     bool
 	down        bool // …and everything after it fails too (no rollback) until the next job dials again
 	mtproxyFail bool
 	mtSecret    string // the secret mtproxy runs with (set by mtproxy-install)
 	mtgVersion  string
+	// Hub: UDP to the exits is choked — a hysteria client crash-loops after every (re)start (the
+	// real client exits when its first connection fails) and nothing answers through its SOCKS.
+	udpChoked bool
+	vrFail    bool // Hub: the TCP path probe gets no 204
+	// dropAfterPut: the first write of one of these paths lands, then the connection is lost.
+	dropAfterPut []string
 }
 
 // errLost is what a dropped SSH session returns (DialNode's SSHRemote wraps ErrConnectionLost).
@@ -50,7 +59,49 @@ var errLost = fmt.Errorf("%w: ssh: connection lost", ErrConnectionLost)
 
 func newFakeHost() *fakeHost {
 	return &fakeHost{files: map[string][]byte{}, modes: map[string]uint32{}, active: map[string]bool{}, enabled: map[string]bool{},
-		nft: map[string]bool{}, marker: map[string]bool{}, restarts: map[string]int{}, mtgVersion: "2.2.8"}
+		retry: map[string]bool{}, nft: map[string]bool{}, marker: map[string]bool{}, markWrites: map[string]map[string]string{},
+		restarts: map[string]int{}, scripts: map[string]string{}, mtgVersion: "2.2.8"}
+}
+
+var fakeMarkLine = regexp.MustCompile(`(?m)^l='([0-9a-f]{64})  ([^']*)'`)
+
+// converge models UnitConvergeScript / UnitConvergeSoftScript: the extra loads the unit's guard
+// (xray: the egress guard, node-agent: the Hub-only guard) when its file is there; the unit is
+// restarted when marked or down. A Hub client under udpChoked crash-loops after the restart: the
+// strict converge fails with the marker kept, the soft one reports HEALTH=0 and drops it.
+func (h *fakeHost) converge(u string, soft bool) (string, error) {
+	switch u {
+	case "xray":
+		if h.files[config.ExitXrayGuardConfPath] != nil {
+			h.nft[config.ExitXrayGuardTable] = true
+			h.enabled[config.ExitXrayGuardService] = true
+		}
+	case "node-agent":
+		if h.files[config.ExitAgentGuardConfPath] != nil {
+			h.nft[config.ExitAgentGuardTable] = true
+			h.active[config.ExitAgentGuardService], h.enabled[config.ExitAgentGuardService] = true, true
+		}
+	}
+	h.enabled[u] = true
+	if !h.marker[u] && h.active[u] {
+		return "[unit] " + u + ": без изменений и работает — без перезапуска\n", nil
+	}
+	h.restarts[u]++
+	if h.udpChoked && strings.HasPrefix(u, "hysteria2-client-") {
+		h.active[u], h.retry[u] = false, true
+		if !soft {
+			h.marker[u] = true
+			return "", errors.New("exit status 1: [unit] " + u + " перезапускается сам (NRestarts 1 -> 2)")
+		}
+		delete(h.marker, u)
+		return "HEALTH=0\n", nil
+	}
+	h.active[u], h.retry[u] = true, false
+	delete(h.marker, u)
+	if soft {
+		return "HEALTH=1\n", nil
+	}
+	return "", nil
 }
 
 func (h *fakeHost) PutFile(_ context.Context, path string, data []byte, mode uint32) (bool, error) {
@@ -70,6 +121,10 @@ func (h *fakeHost) PutFile(_ context.Context, path string, data []byte, mode uin
 	}
 	h.files[path], h.modes[path] = append([]byte(nil), data...), mode
 	h.writes++
+	if slices.Contains(h.dropAfterPut, path) {
+		h.dropAfterPut, h.down = nil, true
+		return false, errLost
+	}
 	return true, nil
 }
 
@@ -132,6 +187,7 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 	first, _, _ := strings.Cut(script, "\n")
 	op := strings.TrimPrefix(first, "# hp:")
 	h.ops = append(h.ops, op)
+	h.scripts[op] = script
 	if h.seen != nil {
 		h.seen(op)
 	}
@@ -156,27 +212,40 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 		var b strings.Builder
 		for _, p := range f[1:] {
 			if d, ok := h.files[p]; ok {
-				fmt.Fprintf(&b, "%s  %s\n", sha256Hex(d), p)
+				fmt.Fprintf(&b, "%s %s  %s\n", sha256Hex(d), modeString(h.modes[p]), p)
 			}
 		}
 		return b.String(), nil
 	case "mark":
 		h.marker[f[1]] = true
-	case "converge":
-		if h.marker[f[1]] || !h.active[f[1]] {
-			h.restarts[f[1]]++
-			h.active[f[1]] = true
-			delete(h.marker, f[1])
+		for _, m := range fakeMarkLine.FindAllStringSubmatch(script, -1) {
+			if h.markWrites[f[1]] == nil {
+				h.markWrites[f[1]] = map[string]string{}
+			}
+			h.markWrites[f[1]][m[2]] = m[1]
 		}
-		h.enabled[f[1]] = true
+	case "private":
+		for _, p := range f[1:] {
+			for _, q := range []string{p, p + ".bak"} {
+				if _, ok := h.files[q]; ok {
+					h.modes[q] &= 0o700
+				}
+			}
+		}
+	case "converge":
+		return h.converge(f[1], len(f) > 2 && f[2] == "soft")
 	case "unit-state":
-		return "ACTIVE=" + b01(h.active[f[1]]) + "\nMARKER=" + b01(h.marker[f[1]]) + "\n", nil
+		return "ACTIVE=" + b01(h.active[f[1]]) + "\nENABLED=" + b01(h.enabled[f[1]]) + "\nRETRY=" + b01(h.retry[f[1]]) +
+			"\nMARKER=" + b01(h.marker[f[1]]) + "\n", nil
 	case "rollback":
 		h.active[f[1]] = false
 	case "hy-check":
 		return "VERSION=" + config.HysteriaVersion + "\nLISTEN=" + b01(h.active["hysteria2"]) + "\nHOP=" + b01(h.files[config.ExitPortHopConfPath] != nil) + "\n", nil
 	case "xray-check":
-		return "VERSION=" + strings.TrimPrefix(config.XrayExitVersion, "v") + "\nLISTEN=" + b01(h.active["xray"]) + "\n", nil
+		return "VERSION=" + strings.TrimPrefix(config.XrayExitVersion, "v") + "\nLISTEN=" + b01(h.active["xray"]) +
+			"\nGUARD=" + b01(h.nft[config.ExitXrayGuardTable]) + "\n", nil
+	case "agent-check":
+		return "LISTEN=" + b01(h.active["node-agent"]) + "\nGUARD=" + b01(h.nft[config.ExitAgentGuardTable]) + "\n", nil
 	case "base-check":
 		return "BBR=1\nPKGS=1\n", nil
 	case "authkey":
@@ -187,7 +256,17 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 		return "PRESENT=" + b01(slices.Contains(h.authKeys, between(script, "KEY='", "'"))) + "\n", nil
 	case "hub-key":
 		return testHubPub + " heyearth-hub\n", nil
-	case "socks-probe", "vr-probe":
+	case "socks-probe":
+		if h.udpChoked {
+			return "HTTP=000\n", nil
+		}
+		return "HTTP=204\n", nil
+	case "vr-probe": // the probe config carries the tunnel UUID: the script removes it
+		cfg := between(script, "VR_CFG='", "'")
+		h.remove(cfg)
+		if h.vrFail {
+			return "[vr-probe] xray: connection refused\nHTTP=000\n", nil
+		}
 		return "HTTP=204\n", nil
 	case "mtproxy-install":
 		args := installMTProxyArgs(script)

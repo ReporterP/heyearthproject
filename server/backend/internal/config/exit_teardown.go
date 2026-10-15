@@ -24,8 +24,8 @@ const (
 	ExitPortHopService = "nftables-hysteria"
 	ExitPortHopTable   = "hysteria_porthopping"
 
-	// The node-agent Hub-only guard (Beads cudk.77; made by hand on exit 2, 2026-10-15). Kept by
-	// deprovision; the exit template that adds it must use these names.
+	// The node-agent Hub-only guard (Beads cudk.77; made by hand on exit 2, 2026-10-15, now the
+	// exit template ExitAgentGuardConf / ExitAgentGuardUnit, exit_agent_guard.go). Kept by deprovision.
 	ExitAgentGuardService  = "heyearth-agent-guard"
 	ExitAgentGuardTable    = "heyearth_agent_guard"
 	ExitAgentGuardConfPath = "/etc/nftables-heyearth-agent.conf"

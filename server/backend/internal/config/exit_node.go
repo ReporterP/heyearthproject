@@ -158,10 +158,12 @@ WantedBy=multi-user.target
 `
 
 // NodeAgentUnit: mTLS gRPC on :50052 (NodeAgentPort) with the node's own certificate
-// (internal/provision IssueNodeCert).
+// (internal/provision IssueNodeCert), never without the Hub-only guard it Requires=
+// (ExitAgentGuardUnit, exit_agent_guard.go).
 const NodeAgentUnit = `[Unit]
 Description=HeYearth Node Agent
-After=network.target
+After=network.target ` + ExitAgentGuardService + `.service
+Requires=` + ExitAgentGuardService + `.service
 [Service]
 Type=simple
 User=root

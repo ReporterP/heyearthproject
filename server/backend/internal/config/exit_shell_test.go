@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -36,12 +37,16 @@ func shellRun(t *testing.T, dir, prelude, script string, env ...string) (string,
 // systemctl stub: ./active.<unit> = running; restart appends the unit to ./restarts; FLAP=1 makes
 // NRestarts grow between the two samples; DEAD=1 keeps units down after restart; RESTART_FAILS=1
 // makes `systemctl restart` itself fail; disable records whether the unit file still existed at
-// that moment. Everything else is logged to ./calls.
+// that moment. enable (logged) creates ./enabled.<unit>, which is-enabled reports; SubState is
+// ./substate.<unit> ("running" without it). Everything else is logged to ./calls.
 const systemctlStub = `systemctl() {
   case "$1" in
     restart) echo "$2" >> ./restarts; [ "${RESTART_FAILS:-0}" = 1 ] && return 1; [ "${DEAD:-0}" = 1 ] || touch "./active.$2" ;;
     is-active) [ -f "./active.${@: -1}" ] ;;
-    show) n=$(cat "./nr.${@: -1}" 2>/dev/null || echo 0); echo "$n"; [ "${FLAP:-0}" = 1 ] && echo $((n+1)) > "./nr.${@: -1}"; true ;;
+    is-enabled) if [ -f "./enabled.${@: -1}" ]; then echo enabled; else echo disabled; return 1; fi ;;
+    enable) echo "$*" >> ./calls; touch "./enabled.${@: -1}" ;;
+    show) if [ "$3" = SubState ]; then cat "./substate.${@: -1}" 2>/dev/null || echo running; return 0; fi
+      n=$(cat "./nr.${@: -1}" 2>/dev/null || echo 0); echo "$n"; [ "${FLAP:-0}" = 1 ] && echo $((n+1)) > "./nr.${@: -1}"; true ;;
     disable) u=${@: -1}; if [ -f "./etc/systemd/system/${u%.service}.service" ]; then uf=present; else uf=absent; fi
       echo "disable $* unitfile=$uf" >> ./calls; rm -f "./active.${@: -1}" ;;
     *) echo "$*" >> ./calls ;;
@@ -423,7 +428,7 @@ func TestUnitStateAndMarkScripts(t *testing.T) {
 		}
 		return out
 	}
-	if s := state(); s != "ACTIVE=0\nMARKER=0\n" {
+	if s := state(); s != "ACTIVE=0\nENABLED=0\nRETRY=0\nMARKER=0\n" {
 		t.Fatalf("%q", s)
 	}
 	if out, err := shellRun(t, dir, systemctlStub, MarkRestartScript("xray", []PendingWrite{{"/opt/heyearth/a b", sha256Hex("x")},
@@ -431,7 +436,14 @@ func TestUnitStateAndMarkScripts(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	mustWrite(t, dir, "active.xray", "", 0o644)
-	if s := state(); s != "ACTIVE=1\nMARKER=1\n" {
+	mustWrite(t, dir, "enabled.xray", "", 0o644)
+	if s := state(); s != "ACTIVE=1\nENABLED=1\nRETRY=0\nMARKER=1\n" {
+		t.Fatalf("%q", s)
+	}
+	// The pause of a crash loop: not active, systemd will start it again.
+	os.Remove(filepath.Join(dir, "active.xray"))
+	mustWrite(t, dir, "substate.xray", "auto-restart\n", 0o644)
+	if s := state(); s != "ACTIVE=0\nENABLED=1\nRETRY=1\nMARKER=1\n" {
 		t.Fatalf("%q", s)
 	}
 	if got := readRel(dir, rel(RestartMarker("xray"))); got != sha256Hex("x")+"  ./opt/heyearth/a b\n" || exists(dir, "pwned") {
@@ -450,10 +462,15 @@ func TestSumsAndCatScripts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	// "<sha256>  <path as given>" per existing file (the path is the rewritten one here).
-	want := sha256Hex("alpha\n") + "  ./opt/heyearth/a.conf\n" + sha256Hex("beta") + "  ./etc/b c.conf\n"
+	// "<sha256> <mode>  <path as given>" per existing file (the path is the rewritten one here;
+	// the mode as this filesystem keeps it — Git Bash on NTFS reports 644 for both).
+	want := sha256Hex("alpha\n") + " " + statMode(t, dir, "opt/heyearth/a.conf") + "  ./opt/heyearth/a.conf\n" +
+		sha256Hex("beta") + " " + statMode(t, dir, "etc/b c.conf") + "  ./etc/b c.conf\n"
 	if out != want {
 		t.Fatalf("sums:\n%q\nwant\n%q", out, want)
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(out, sha256Hex("alpha\n")+" 600  ") {
+		t.Fatalf("the mode must be reported: %q", out)
 	}
 	if out, err := shellRun(t, dir, "", SumsScript()); err != nil || out != "" {
 		t.Fatalf("no paths: %v %q", err, out)
@@ -463,6 +480,90 @@ func TestSumsAndCatScripts(t *testing.T) {
 	}
 	if out, err := shellRun(t, dir, "", CatScript("/opt/heyearth/missing")); err != nil || out != "" {
 		t.Fatalf("cat of a missing file: %v %q", err, out)
+	}
+}
+
+// statMode is the permission bits of dir/rel as the test host's stat reports them.
+func statMode(t *testing.T, dir, rel string) string {
+	t.Helper()
+	out, err := exec.Command("bash", "-c", `stat -L -c %a "$1"`, "_", filepath.Join(dir, filepath.FromSlash(rel))).Output()
+	if err != nil {
+		t.Fatalf("stat %s: %v", rel, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Before a private file is replaced, it and its .bak lose their group/other bits (an exit set up
+// by hand kept keys world-readable; PutFile's .bak would keep them so); missing files are fine.
+func TestPrivateModeScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("NTFS under Git Bash keeps no group/other bits")
+	}
+	dir := t.TempDir()
+	mustWrite(t, dir, "opt/heyearth/state/k.json", "k", 0o644)
+	mustWrite(t, dir, "opt/heyearth/state/k.json.bak", "old", 0o664)
+	mustWrite(t, dir, "opt/heyearth/x.conf", "x", 0o640)
+	out, err := shellRun(t, dir, "", PrivateModeScript("/opt/heyearth/state/k.json", "/opt/heyearth/x.conf", "/opt/heyearth/missing"))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for rel, want := range map[string]string{"opt/heyearth/state/k.json": "600", "opt/heyearth/state/k.json.bak": "600", "opt/heyearth/x.conf": "600"} {
+		if got := statMode(t, dir, rel); got != want {
+			t.Errorf("%s: mode %s, want %s", rel, got, want)
+		}
+	}
+	if readRel(dir, "opt/heyearth/state/k.json") != "k" || readRel(dir, "opt/heyearth/state/k.json.bak") != "old" {
+		t.Error("the content must not change")
+	}
+}
+
+// The Hub's hysteria client converge (Review Focus 3): restarted exactly when UnitConvergeScript
+// would, the markers gone after the restart, but a client that does not hold (UDP to the exit
+// choked: it crash-loops) only reports HEALTH=0 instead of failing; a failing extra still fails.
+func TestUnitConvergeSoft(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	const u = "hysteria2-client-7"
+	marker, binMarker := rel(RestartMarker(u)), rel(BinaryPendingMarker(u))
+	run := func(dir, extra string, env ...string) (string, error) {
+		return shellRun(t, dir, systemctlStub, UnitConvergeSoftScript(u, extra), env...)
+	}
+	for _, tc := range []struct {
+		name, env, health string
+	}{{"stable", "X=1", "HEALTH=1\n"}, {"crash loop", "FLAP=1", "HEALTH=0\n"}, {"never up", "DEAD=1", "HEALTH=0\n"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			mustWrite(t, dir, marker, "", 0o644)
+			mustWrite(t, dir, binMarker, "", 0o644)
+			if tc.env != "DEAD=1" {
+				mustWrite(t, dir, "active."+u, "", 0o644)
+			}
+			out, err := run(dir, "", tc.env)
+			if err != nil || !strings.Contains(out, tc.health) || count(dir, "restarts", u) != 1 {
+				t.Fatalf("err=%v restarts=%q\n%s", err, readRel(dir, "restarts"), out)
+			}
+			if exists(dir, marker) || exists(dir, binMarker) {
+				t.Fatal("the restart happened: the markers must go")
+			}
+			if count(dir, "calls", "enable --quiet "+u) != 1 || count(dir, "calls", "reset-failed "+u) != 1 {
+				t.Fatalf("enable / reset-failed before the restart:\n%s", readRel(dir, "calls"))
+			}
+		})
+	}
+	// Running, no marker: untouched, no HEALTH line.
+	dir := t.TempDir()
+	mustWrite(t, dir, "active."+u, "", 0o644)
+	if out, err := run(dir, ""); err != nil || strings.Contains(out, "HEALTH=") || exists(dir, "restarts") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// A failing extra (the hysteria install) fails it before any restart, the marker kept.
+	mustWrite(t, dir, marker, "", 0o644)
+	if out, err := run(dir, "echo extra-ran\nfalse\n"); err == nil || !strings.Contains(out, "extra-ran") || exists(dir, "restarts") || !exists(dir, marker) {
+		t.Fatalf("err=%v\n%s", err, out)
 	}
 }
 
@@ -1396,6 +1497,8 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"auth": AuthorizedKeyScript("ssh-ed25519 AAAA"), "authc": AuthorizedKeyCheckScript("ssh-ed25519 AAAA"),
 		"socks": SocksProbeScript(1095), "vr": VRProbeScript("/opt/heyearth/xray/xray", "/opt/heyearth/state/vr-probe-7.json", 3095),
 		"hyconv": UnitConvergeScript("hysteria2", ExitHysteriaPrepareScript()),
+		"soft":   UnitConvergeSoftScript("hysteria2-client-7", HysteriaEnsureScript()), "private": PrivateModeScript("/a", "/b c"),
+		"agentcheck": NodeAgentCheckScript, "agentconv": UnitConvergeScript("node-agent", ExitAgentGuardApplyScript),
 	} {
 		if name != "hyprep" && name != "xrprep" && !strings.HasPrefix(s, "# hp:") {
 			t.Errorf("%s: no marker line", name)
@@ -1410,6 +1513,8 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"preflight": ExitPreflightScript(), "base": ExitBaseScript, "base-check": ExitBaseCheckScript, "hop-apply": ExitPortHopApplyScript,
 		"hy-check": HysteriaCheckScript, "xray-check": XrayCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
 		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095), "vr-probe 3095": VRProbeScript("/x", "/c", 3095),
+		"converge hysteria2-client-7 soft": UnitConvergeSoftScript("hysteria2-client-7", ""), "private /a /b": PrivateModeScript("/a", "/b"),
+		"agent-check": NodeAgentCheckScript,
 	} {
 		if first, _, _ := strings.Cut(s, "\n"); first != "# hp:"+op {
 			t.Errorf("marker %q, want %q", first, "# hp:"+op)
@@ -1417,7 +1522,8 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	}
 	dir := t.TempDir()
 	for _, s := range []string{SumsScript("/a\ntouch ./pwned-sums"), CatScript("/a\rtouch ./pwned-cat\n"), UnitStateScript("x; touch ./pwned-unit"),
-		MarkRestartScript("x$(touch ./pwned-mark)", nil), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"})} {
+		MarkRestartScript("x$(touch ./pwned-mark)", nil), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"}),
+		UnitConvergeSoftScript("x$(touch ./pwned-soft)", ""), PrivateModeScript("./a'; touch ./pwned-private; '")} {
 		_, _ = shellRun(t, dir, systemctlStub, s)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "pwned-*")); len(left) != 0 {

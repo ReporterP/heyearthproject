@@ -350,8 +350,10 @@ func TestRecipeForGuards(t *testing.T) {
 			t.Errorf("%+v accepted", n)
 		}
 	}
+	// Setup recipes check what they render first (TestRecipeForSetupGuards): an exit without an
+	// address or the wiring's options is refused.
 	if _, err := RecipeFor(KindProvision, Node{ID: 7, Role: "exit"}, st); err == nil {
-		t.Error("setup recipes come with Task 2.8")
+		t.Error("an exit without an address was accepted")
 	}
 	// A refused recipe creates no job.
 	e := deproFixture(t)

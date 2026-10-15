@@ -93,6 +93,35 @@ fi
 `
 }
 
+// UnitConvergeSoftScript is UnitConvergeScript for a unit whose health depends on a path outside
+// the host: the Hub's hysteria client of an exit (hysteria2-client-<id>). hysteria's client exits
+// when its first connection fails, so while UDP to the exit is choked it crash-loops under
+// Restart=always — the client is set up right, the path is down (Review Focus 3). The restart
+// happens exactly as in UnitConvergeScript (a failed start is reset first, so a start limit cannot
+// block it) and the markers are removed after it: every start of the loop reads the new files.
+// The two-sample check only reports: HEALTH=1 (stable) or HEALTH=0 (not holding — the caller
+// checks the path end to end), nothing when no restart was needed. A failing extra, daemon-reload
+// or enable still fails the script, markers kept.
+func UnitConvergeSoftScript(unit, extra string) string {
+	return opLine("converge", unit, "soft") + "set -e\n" + RestartCheckFunc +
+		"CV_UNIT=" + shQuote(unit) + "\nCV_MARK=" + shQuote(RestartMarker(unit)) + "\nCV_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n" +
+		"mkdir -p " + RestartMarkerDir + " " + BinaryPendingDir + "\nsystemctl daemon-reload\n" + extra +
+		`systemctl enable --quiet "$CV_UNIT"
+if [ -f "$CV_MARK" ] || ! systemctl is-active --quiet "$CV_UNIT"; then
+  systemctl reset-failed "$CV_UNIT" >/dev/null 2>&1 || true
+  if restart_checked "$CV_UNIT"; then
+    echo HEALTH=1
+  else
+    echo "[unit] $CV_UNIT перезапущен с новыми файлами, но не держится — systemd продолжает попытки, путь проверяется отдельно" >&2
+    echo HEALTH=0
+  fi
+  rm -f "$CV_MARK" "$CV_BIN"
+else
+  echo "[unit] $CV_UNIT: без изменений и работает — без перезапуска"
+fi
+`
+}
+
 // UnitRollbackScript undoes this run for a unit. The files to undo are the changed ones (written
 // by PutFile in this job) plus every write recorded in the restart marker (MarkRestartScript)
 // whose file still has the recorded new content — so a rollback in a resumed job, whose in-memory
@@ -183,10 +212,14 @@ fi
 	return b.String()
 }
 
-// UnitStateScript prints ACTIVE=0|1 (is-active) and MARKER=0|1 (restart pending).
+// UnitStateScript prints ACTIVE=0|1 (is-active), ENABLED=0|1 (is-enabled says exactly
+// "enabled": it starts at boot), RETRY=0|1 (waiting to be restarted by systemd: SubState
+// auto-restart, the pause of a crash loop) and MARKER=0|1 (restart pending).
 func UnitStateScript(unit string) string {
 	return opLine("unit-state", unit) + "US_UNIT=" + shQuote(unit) + "\nUS_MARK=" + shQuote(RestartMarker(unit)) + "\n" +
 		`if systemctl is-active --quiet "$US_UNIT"; then echo ACTIVE=1; else echo ACTIVE=0; fi
+if [ "$(systemctl is-enabled "$US_UNIT" 2>/dev/null)" = enabled ]; then echo ENABLED=1; else echo ENABLED=0; fi
+if [ "$(systemctl show -p SubState --value "$US_UNIT" 2>/dev/null)" = auto-restart ]; then echo RETRY=1; else echo RETRY=0; fi
 if [ -f "$US_MARK" ]; then echo MARKER=1; else echo MARKER=0; fi
 `
 }
@@ -222,8 +255,10 @@ func isSHA256Hex(s string) bool {
 	return true
 }
 
-// SumsScript prints "<sha256>  <path>" for every path that is a regular file, the path exactly
-// as given (hashed from stdin, so sha256sum never escapes or prefixes it).
+// SumsScript prints "<sha256> <mode>  <path>" for every path that is a regular file: the content
+// hash (from stdin, so sha256sum never escapes or prefixes the path), the permission bits as
+// `stat -L -c %a` prints them (PutFile's "unchanged" is content AND mode, so is a recipe's
+// Verify) and the path exactly as given.
 func SumsScript(paths ...string) string {
 	if len(paths) == 0 {
 		return opLine("sums") + "true\n"
@@ -233,7 +268,21 @@ func SumsScript(paths ...string) string {
 		q[i] = shQuote(p)
 	}
 	return opLine("sums", paths...) + "for p in " + strings.Join(q, " ") + "; do\n" +
-		"  if [ -f \"$p\" ] && s=$(sha256sum < \"$p\"); then printf '%s  %s\\n' \"${s%% *}\" \"$p\"; fi\ndone\ntrue\n"
+		"  if [ -f \"$p\" ] && s=$(sha256sum < \"$p\") && m=$(stat -L -c %a \"$p\"); then printf '%s %s  %s\\n' \"${s%% *}\" \"$m\" \"$p\"; fi\ndone\ntrue\n"
+}
+
+// PrivateModeScript takes the group and other permission bits away from each path and from its
+// <path>.bak. The core runs it before it replaces a file whose new mode is private (keys,
+// passwords): PutFile keeps the previous version as .bak with that version's mode, and an exit
+// set up by hand may have had these files world-readable — the copy must not stay so. Missing
+// files are skipped.
+func PrivateModeScript(paths ...string) string {
+	q := make([]string, len(paths))
+	for i, p := range paths {
+		q[i] = shQuote(p)
+	}
+	return opLine("private", paths...) + "set -e\nfor p in " + strings.Join(q, " ") + "; do\n" +
+		"  for f in \"$p\" \"$p.bak\"; do\n    if [ -f \"$f\" ]; then chmod go= -- \"$f\"; fi\n  done\ndone\n"
 }
 
 // CatScript prints the file, nothing when it is absent.
