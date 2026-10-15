@@ -162,7 +162,7 @@ func serveConn(c net.Conn, cfg *ssh.ServerConfig, dir string, o sshdOpts) {
 				code := 0
 				err := cmd.Start()
 				if err == nil {
-					go func() { // like OpenSSH: "signal" goes to the session's process only
+					go func() { // "signal": OpenSSH killpg()s the session group; this kills the process only (weaker)
 						for r := range in {
 							if r.Type == "signal" {
 								killSessionProcess(cmd.Process)

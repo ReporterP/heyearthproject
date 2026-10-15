@@ -215,9 +215,10 @@ func (r *SSHRemote) PutFile(ctx context.Context, path string, data []byte, mode 
 }
 
 // exec runs cmd with the login shell of the node, stdin as its standard input. A cancelled ctx
-// sends SIGKILL to the session's process — the script's own bash, since runWrapper execs it — and
-// closes the session. The script's children on the node may outlive it (OpenSSH signals only that
-// one process; a server without signal support or a dead connection gets nothing at all): every
+// sends SIGKILL to the session and closes it. sshd (OpenSSH ≥ 7.9) delivers the signal with
+// killpg() to the session's process group — the script's bash (runWrapper execs it) and the
+// children that stayed in that group; detached ones (setsid, units started through systemd)
+// survive, and a server without signal support or a dead connection gets nothing at all: every
 // step is idempotent, and a resumed job starts over from Verify.
 func (r *SSHRemote) exec(ctx context.Context, cmd string, stdin io.Reader) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -278,8 +279,10 @@ type execFunc func(ctx context.Context, cmd string, stdin io.Reader) (string, er
 
 // runWrapper is what the target's shell executes for Run. The script arrives on stdin (never in
 // argv: it may carry secrets) and goes into a temp file (mktemp: 0600) that is unlinked before a
-// byte of it is written, so a kill at any moment leaves nothing on disk; bash reads it back via
-// /dev/fd/4 (its first line closes the inherited fd 4). The script's stdin is /dev/null (a command
+// byte of it is written, so a kill at any moment leaves no named file behind; the content lives
+// only in that unlinked file (page cache, which the kernel may flush to free blocks for a long
+// script) until the last descriptor closes. bash reads it back via /dev/fd/4 (its first line
+// closes the inherited fd 4). The script's stdin is /dev/null (a command
 // inside cannot read the rest of the script), its umask the shell's usual one. exec: the session's
 // process IS the script's bash, so a signal to the session (or the local group) reaches it.
 const runWrapper = `t=$(mktemp "${TMPDIR:-/tmp}/heyearth-run.XXXXXX") || exit 1
@@ -330,11 +333,14 @@ if [ -f "$p" ]; then printf '%s %s\n' "$(sha256sum < "$p" | cut -c1-64)" "$(stat
 // directory at <path> or <path>.bak is an error, never a place the file is moved into.
 // Interrupted at any point: the target is the old or the new file, never a partial one; the trap
 // removes the temp files. flush_file is fsync through a write handle (`sync FILE` opens it
-// read-only, which Windows — the tests' Git Bash — refuses to flush).
+// read-only, which Windows — the tests' Git Bash — refuses to flush). The directory is synced
+// after the renames; that only makes them durable, so its failure is a warning, not an error
+// (the file is already in place).
 func putScript(path, sum string, mode uint32) string {
 	return "set -e\np=" + shellquote.Quote(path) + "\nsum=" + sum + "\nmode=" + modeString(mode) + `
 if [ -d "$p" ]; then echo "$p — каталог, файл туда не записать" >&2; exit 1; fi
-mkdir -p "$(dirname "$p")"
+d=$(dirname "$p")
+mkdir -p "$d"
 t=$(mktemp "$p.XXXXXX")
 b=
 trap 'rm -f "$t" ${b:+"$b"}' EXIT
@@ -354,7 +360,8 @@ else
   rm -f "$p.bak"
 fi
 mv -fT "$t" "$p"
-trap - EXIT`
+trap - EXIT
+sync "$d" || echo "$d: sync каталога не удался, файл уже на месте" >&2`
 }
 
 // outputBuffer collects a command's interleaved stdout and stderr (written from two goroutines)
