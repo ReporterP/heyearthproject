@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// memStore is the Store of the runner tests; it keeps SQLStore's rules: one running job per
+// node, only the node's latest interrupted/failed job reopens, every write needs the run token
+// of the running job (ErrJobLost otherwise), InterruptRunning revokes the tokens.
 type memJob struct {
 	Job
 	Error string
@@ -19,15 +22,27 @@ type memJob struct {
 }
 
 type memStore struct {
-	mu    sync.Mutex
-	node  Node
-	hooks *fakeHooks
-	jobs  map[int64]*memJob
-	next  int64
+	mu     sync.Mutex
+	node   Node
+	hooks  *fakeHooks
+	jobs   map[int64]*memJob
+	next   int64
+	tokens int
 }
 
 func newMemStore(n Node, h *fakeHooks) *memStore {
 	return &memStore{node: n, hooks: h, jobs: map[int64]*memJob{}}
+}
+
+func (m *memStore) token() string { m.tokens++; return fmt.Sprintf("run-%d", m.tokens) }
+
+// owner is the job when run still owns it (m.mu held).
+func (m *memStore) owner(run Job) (*memJob, error) {
+	j := m.jobs[run.ID]
+	if j == nil || j.Token != run.Token || j.Status != JobRunning {
+		return nil, ErrJobLost
+	}
+	return j, nil
 }
 
 func (m *memStore) LoadNode(context.Context, int) (Node, error) {
@@ -35,17 +50,17 @@ func (m *memStore) LoadNode(context.Context, int) (Node, error) {
 	n.Lifecycle = m.hooks.lifecycle
 	return n, nil
 }
-func (m *memStore) CreateJob(_ context.Context, sid int, kind string) (int64, error) {
+func (m *memStore) CreateJob(_ context.Context, sid int, kind string) (Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.jobs {
 		if j.ServerID == sid && j.Status == JobRunning {
-			return 0, ErrJobActive
+			return Job{}, ErrJobActive
 		}
 	}
 	m.next++
-	m.jobs[m.next] = &memJob{Job: Job{ID: m.next, ServerID: sid, Kind: kind, Status: JobRunning}}
-	return m.next, nil
+	m.jobs[m.next] = &memJob{Job: Job{ID: m.next, ServerID: sid, Kind: kind, Status: JobRunning, Token: m.token()}}
+	return m.jobs[m.next].Job, nil
 }
 func (m *memStore) ReopenJob(_ context.Context, id int64) (Job, error) {
 	m.mu.Lock()
@@ -54,28 +69,45 @@ func (m *memStore) ReopenJob(_ context.Context, id int64) (Job, error) {
 	if j == nil || (j.Status != JobInterrupted && j.Status != JobFailed) {
 		return Job{}, ErrJobNotResumable
 	}
-	j.Status, j.Error = JobRunning, ""
+	for _, o := range m.jobs {
+		if o.ServerID == j.ServerID && o.ID > j.ID {
+			return Job{}, ErrJobNotResumable
+		}
+	}
+	j.Status, j.Error, j.Token = JobRunning, "", m.token()
 	return j.Job, nil
 }
-func (m *memStore) SetSteps(_ context.Context, id int64, names []string) error {
+func (m *memStore) SetSteps(_ context.Context, run Job, names []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.jobs[id].Steps = nil
+	j, err := m.owner(run)
+	if err != nil {
+		return err
+	}
+	j.Steps = nil
 	for i, n := range names {
-		m.jobs[id].Steps = append(m.jobs[id].Steps, StepView{Idx: i, Name: n, Status: StepPending})
+		j.Steps = append(j.Steps, StepView{Idx: i, Name: n, Status: StepPending})
 	}
 	return nil
 }
-func (m *memStore) MarkStep(_ context.Context, id int64, idx int, status, out string) error {
+func (m *memStore) MarkStep(_ context.Context, run Job, idx int, status, out string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.jobs[id].Steps[idx].Status, m.jobs[id].Steps[idx].OutputTail = status, out
+	j, err := m.owner(run)
+	if err != nil {
+		return err
+	}
+	j.Steps[idx].Status, j.Steps[idx].OutputTail = status, out
 	return nil
 }
-func (m *memStore) FinishJob(_ context.Context, id int64, status, msg string) error {
+func (m *memStore) FinishJob(_ context.Context, run Job, status, msg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.jobs[id].Status, m.jobs[id].Error = status, msg
+	j, err := m.owner(run)
+	if err != nil {
+		return err
+	}
+	j.Status, j.Error, j.Token = status, msg, ""
 	return nil
 }
 func (m *memStore) InterruptRunning(context.Context) (int64, error) {
@@ -84,7 +116,7 @@ func (m *memStore) InterruptRunning(context.Context) (int64, error) {
 	var n int64
 	for _, j := range m.jobs {
 		if j.Status == JobRunning {
-			j.Status = JobInterrupted
+			j.Status, j.Token = JobInterrupted, ""
 			n++
 			for i := range j.Steps {
 				if j.Steps[i].Status == StepRunning {
@@ -390,12 +422,12 @@ type flakyStore struct {
 	finishFails int
 }
 
-func (f *flakyStore) FinishJob(ctx context.Context, id int64, status, msg string) error {
+func (f *flakyStore) FinishJob(ctx context.Context, job Job, status, msg string) error {
 	if f.finishFails > 0 {
 		f.finishFails--
 		return errors.New("driver: bad connection")
 	}
-	return f.memStore.FinishJob(ctx, id, status, msg)
+	return f.memStore.FinishJob(ctx, job, status, msg)
 }
 
 func TestRunnerRetriesBookkeeping(t *testing.T) {
@@ -804,4 +836,283 @@ func TestRunnerInterruptedProvisioningResumes(t *testing.T) {
 		notRoutable(t, f, "after the restart")
 		f.resumedClean(t, f.runner(), id, 2, resumed)
 	})
+}
+
+// ── run ownership ──────────────────────────────────────────────────────────────────────────
+
+// A run that lost its job — interrupted (API restart, or a CLI run past staleRunAge) and resumed
+// by another run — stops at its next write: it neither overwrites the job nor fails the node
+// that the other run already put online, and runs no further step.
+func TestRunnerLostJobStopsWithoutTouchingIt(t *testing.T) {
+	ctx := context.Background()
+	h := &fakeHooks{lifecycle: "pending"}
+	store := newMemStore(Node{ID: 7}, h)
+	entered, release, oldDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	first, activations := true, 0
+	recipe := func(_ string, st *State) Recipe {
+		st.Begin = func(ctx context.Context) error {
+			return st.Hooks.SetLifecycle(ctx, 7, []string{"pending", "provisioning"}, "provisioning")
+		}
+		// From online too: a stale run calling Fail would visibly break the node.
+		st.Fail = func(ctx context.Context) {
+			_ = st.Hooks.SetLifecycle(ctx, 7, []string{"provisioning", "online"}, "failed")
+		}
+		return Recipe{
+			{Name: "base", Apply: func(context.Context, Remote, *State) error {
+				if first { // the first run hangs here (a stuck SSH session), then fails
+					first = false
+					close(entered)
+					<-release
+					return errLostConn
+				}
+				return nil
+			}},
+			{Name: "activate", Apply: func(ctx context.Context, r Remote, s *State) error {
+				activations++
+				return activateApply(ctx, r, s)
+			}},
+		}
+	}
+	old := testRunner(store, h, recipe)
+	old.Go = func(f func()) { go func() { defer close(oldDone); f() }() }
+	id, err := old.Start(ctx, 7, KindProvision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first run never started its step")
+	}
+	if n, _ := store.InterruptRunning(ctx); n != 1 {
+		t.Fatalf("interrupted %d jobs", n)
+	}
+	if err := testRunner(store, h, recipe).Resume(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if store.jobs[id].Status != JobSucceeded || h.lifecycle != "online" {
+		t.Fatalf("second run: job=%s lifecycle=%s", store.jobs[id].Status, h.lifecycle)
+	}
+	close(release)
+	select {
+	case <-oldDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first run never stopped")
+	}
+	if j := store.jobs[id]; j.Status != JobSucceeded || j.Error != "" || h.lifecycle != "online" || activations != 1 || h.syncs != 1 ||
+		!slices.Equal(store.statuses(id), []string{"base=done", "activate=done"}) {
+		t.Fatalf("the lost run touched the job: job=%s err=%q lifecycle=%s activations=%d syncs=%d steps=%v",
+			j.Status, j.Error, h.lifecycle, activations, h.syncs, store.statuses(id))
+	}
+}
+
+// lostStore: every step write finds the job owned by another run.
+type lostStore struct {
+	*memStore
+	marks, finishes int
+}
+
+func (l *lostStore) MarkStep(context.Context, Job, int, string, string) error {
+	l.marks++
+	return ErrJobLost
+}
+func (l *lostStore) FinishJob(ctx context.Context, job Job, status, msg string) error {
+	l.finishes++
+	return l.memStore.FinishJob(ctx, job, status, msg)
+}
+
+func TestRunnerLostJobIsNotRetried(t *testing.T) {
+	defer func(d time.Duration) { bookkeepingBackoff = d }(bookkeepingBackoff)
+	bookkeepingBackoff = time.Millisecond
+	h := &fakeHooks{lifecycle: "pending"}
+	store := &lostStore{memStore: newMemStore(Node{ID: 7}, h)}
+	failed := false
+	r := testRunner(store, h, func(_ string, st *State) Recipe {
+		st.Fail = func(context.Context) { failed = true }
+		return Recipe{{Name: "a", Apply: func(context.Context, Remote, *State) error { t.Fatal("a step ran for a lost job"); return nil }}}
+	})
+	if _, err := r.Start(context.Background(), 7, KindProvision); err != nil {
+		t.Fatal(err)
+	}
+	if store.marks != 1 || store.finishes != 0 || failed {
+		t.Fatalf("marks=%d finishes=%d fail=%v", store.marks, store.finishes, failed)
+	}
+}
+
+// ── secrets ────────────────────────────────────────────────────────────────────────────────
+
+// A step that rotates a secret: the old value stays masked in that step and in every later one.
+func TestRunnerRotatedSecretsStayMasked(t *testing.T) {
+	h := &fakeHooks{lifecycle: "online"}
+	store := newMemStore(Node{ID: 7}, h)
+	const oldPW, newPW, oldUUID = "old-tunnel-pass==", "new-tunnel-pass==", "11111111-2222-4333-8444-555555555555"
+	r := testRunner(store, h, func(_ string, st *State) Recipe {
+		st.Keys.SSPassword, st.Keys.UUID = oldPW, oldUUID
+		return Recipe{
+			{Name: "rotate_password", Apply: func(_ context.Context, _ Remote, s *State) error {
+				s.Printf("пароль %s → %s", oldPW, newPW)
+				s.Keys.SSPassword, s.Keys.UUID = newPW, ""
+				return nil
+			}},
+			{Name: "after", Apply: func(_ context.Context, _ Remote, s *State) error {
+				s.Printf("в старом конфиге всё ещё %s и %s", oldPW, oldUUID)
+				return fmt.Errorf("клиент отверг %s", oldPW)
+			}},
+		}
+	})
+	id, _ := r.Start(context.Background(), 7, KindDeprovision)
+	j := store.jobs[id]
+	all := j.Error + j.Steps[0].OutputTail + j.Steps[1].OutputTail
+	for _, sec := range []string{oldPW, newPW, oldUUID} {
+		if strings.Contains(all, sec) {
+			t.Fatalf("%q leaked: %q", sec, all)
+		}
+	}
+	if !strings.Contains(j.Steps[0].OutputTail, "пароль *** → ***") {
+		t.Fatalf("tail %q", j.Steps[0].OutputTail)
+	}
+}
+
+// ── verify jobs that cannot see the node ─────────────────────────────────────────────────────
+
+// A verify job that cannot reach the node (dial failed, connection dropped, out of time) knows
+// nothing about it: that is a failure, never "drift" in a succeeded job. A provision job does
+// not Apply on such a Verify error either.
+func TestRunnerInconclusiveVerifyFails(t *testing.T) {
+	for name, c := range map[string]struct {
+		dialErr   error
+		verifyErr error
+	}{
+		"unreachable":     {dialErr: errors.New("dial tcp 203.0.113.7:22: i/o timeout")},
+		"connection lost": {verifyErr: fmt.Errorf("hy-check: %w: wait: remote command exited without exit status", ErrConnectionLost)},
+		"out of time":     {verifyErr: fmt.Errorf("hy-check: %w", context.DeadlineExceeded)},
+	} {
+		for _, kind := range []string{KindVerify, KindReprovision} {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				h := &fakeHooks{lifecycle: "online"}
+				store := newMemStore(Node{ID: 2}, h)
+				r := testRunner(store, h, func(string, *State) Recipe {
+					return Recipe{{Name: "hysteria",
+						Verify: func(ctx context.Context, rm Remote, _ *State) error {
+							if _, err := rm.Run(ctx, "# hp:hy-check"); err != nil {
+								return fmt.Errorf("hy-check: %w", err)
+							}
+							return c.verifyErr
+						},
+						Apply: func(context.Context, Remote, *State) error { t.Fatal("Apply on an inconclusive Verify"); return nil }}}
+				})
+				if c.dialErr != nil {
+					r.Dial = func(Node) (Remote, error) { return nil, c.dialErr }
+				}
+				id, _ := r.Start(context.Background(), 2, kind)
+				if j := store.jobs[id]; j.Status != JobFailed || !slices.Equal(store.statuses(id), []string{"hysteria=failed"}) {
+					t.Fatalf("job=%s err=%q steps=%v", j.Status, j.Error, store.statuses(id))
+				}
+			})
+		}
+	}
+	// A plain Verify error stays drift.
+	h := &fakeHooks{lifecycle: "online"}
+	store := newMemStore(Node{ID: 2}, h)
+	r := testRunner(store, h, func(string, *State) Recipe {
+		return Recipe{{Name: "hysteria", Verify: func(context.Context, Remote, *State) error { return errors.New("bandwidth 1 gbps ≠ 100 mbps") }}}
+	})
+	id, _ := r.Start(context.Background(), 2, KindVerify)
+	if store.jobs[id].Status != JobSucceeded || !slices.Equal(store.statuses(id), []string{"hysteria=drift"}) {
+		t.Fatalf("drift: %s %v", store.jobs[id].Status, store.statuses(id))
+	}
+}
+
+// ── job timeout ──────────────────────────────────────────────────────────────────────────────
+
+// A step cut off by the job's deadline still rolls back — with its own time, not the expired
+// job context.
+func TestRunnerRollbackOutlivesTheJobTimeout(t *testing.T) {
+	defer func(d time.Duration) { jobTimeout = d }(jobTimeout)
+	jobTimeout = 50 * time.Millisecond
+	h := &fakeHooks{lifecycle: "pending"}
+	store := newMemStore(Node{ID: 7}, h)
+	var rollbackCtxErr error = errors.New("rollback never ran")
+	failed := false
+	r := testRunner(store, h, func(_ string, st *State) Recipe {
+		st.Fail = func(context.Context) { failed = true }
+		return Recipe{{Name: "xray",
+			Apply: func(ctx context.Context, _ Remote, _ *State) error { <-ctx.Done(); return ctx.Err() },
+			Rollback: func(ctx context.Context, _ Remote, _ *State) error {
+				rollbackCtxErr = ctx.Err()
+				if dl, ok := ctx.Deadline(); !ok || time.Until(dl) < RollbackTimeout-time.Minute {
+					return errors.New("rollback without its own time")
+				}
+				return nil
+			}}}
+	})
+	id, _ := r.Start(context.Background(), 7, KindProvision)
+	if rollbackCtxErr != nil || !failed || store.jobs[id].Status != JobFailed || !slices.Equal(store.statuses(id), []string{"xray=rolled_back"}) {
+		t.Fatalf("rollback ctx=%v fail=%v job=%s steps=%v", rollbackCtxErr, failed, store.jobs[id].Status, store.statuses(id))
+	}
+}
+
+// Out of time between steps: the next step is not verified or applied; the job fails at it.
+func TestRunnerStopsWhenOutOfTime(t *testing.T) {
+	defer func(d time.Duration) { jobTimeout = d }(jobTimeout)
+	jobTimeout = 50 * time.Millisecond
+	h := &fakeHooks{lifecycle: "pending"}
+	store := newMemStore(Node{ID: 7}, h)
+	failed := false
+	r := testRunner(store, h, func(_ string, st *State) Recipe {
+		st.Fail = func(context.Context) { failed = true }
+		never := func(context.Context, Remote, *State) error { t.Fatal("a step ran after the deadline"); return nil }
+		return Recipe{
+			{Name: "slow", Apply: func(context.Context, Remote, *State) error { time.Sleep(150 * time.Millisecond); return nil }},
+			{Name: "xray", Verify: never, Apply: never},
+		}
+	})
+	id, _ := r.Start(context.Background(), 7, KindProvision)
+	j := store.jobs[id]
+	if !failed || j.Status != JobFailed || !strings.Contains(j.Error, Title("xray")) ||
+		!slices.Equal(store.statuses(id), []string{"slow=done", "xray=failed"}) || !strings.Contains(j.Steps[1].OutputTail, "истекло") {
+		t.Fatalf("fail=%v job=%s err=%q steps=%v", failed, j.Status, j.Error, store.statuses(id))
+	}
+}
+
+// ── activate ─────────────────────────────────────────────────────────────────────────────────
+
+// Once Activate put the node online, a failed bump or sync request is a warning, not a failed
+// step (the job would say "failed" about an online node); a refused Activate fails the step.
+func TestActivateApplyOnlyWarnsOnceOnline(t *testing.T) {
+	h := &fakeHooks{lifecycle: "pending"}
+	store := newMemStore(Node{ID: 7}, h)
+	var logs []string
+	isOnline := func(ctx context.Context, _ Remote, s *State) error {
+		if lc, _ := s.Hooks.Lifecycle(ctx, s.Node.ID); lc != "online" {
+			return fmt.Errorf("нода «%s»", lc)
+		}
+		return nil
+	}
+	r := testRunner(store, h, func(_ string, st *State) Recipe {
+		st.Begin = func(ctx context.Context) error {
+			return st.Hooks.SetLifecycle(ctx, 7, []string{"pending"}, "provisioning")
+		}
+		st.Hooks.BumpSubscription = func(context.Context) error { return errors.New("driver: bad connection") }
+		st.Hooks.RequestSync = func() { panic("sync loop stopped") }
+		return Recipe{{Name: "activate", Apply: activateApply, Verify: isOnline}}
+	})
+	r.Logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	id, _ := r.Start(context.Background(), 7, KindProvision)
+	out := store.jobs[id].Steps[0].OutputTail
+	if store.jobs[id].Status != JobSucceeded || h.lifecycle != "online" || h.tunnelStatus != "healthy" ||
+		!strings.Contains(out, "bad connection") || !strings.Contains(out, "sync loop stopped") ||
+		!strings.Contains(strings.Join(logs, "\n"), "bad connection") {
+		t.Fatalf("job=%s lifecycle=%s tail=%q logs=%q", store.jobs[id].Status, h.lifecycle, out, logs)
+	}
+
+	h2 := &fakeHooks{lifecycle: "failed"} // Activate refuses: the node is not provisioning
+	store2 := newMemStore(Node{ID: 7}, h2)
+	r2 := testRunner(store2, h2, func(string, *State) Recipe {
+		return Recipe{{Name: "activate", Apply: activateApply, Verify: isOnline}}
+	})
+	id2, _ := r2.Start(context.Background(), 7, KindProvision)
+	if store2.jobs[id2].Status != JobFailed || h2.syncs != 0 || h2.bumps != 0 {
+		t.Fatalf("refused activate: job=%s syncs=%d bumps=%d", store2.jobs[id2].Status, h2.syncs, h2.bumps)
+	}
 }

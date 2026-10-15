@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/heyearth/backend/internal/config"
 )
@@ -82,6 +81,7 @@ type State struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 
 	out     *tailBuffer
+	logf    func(format string, a ...any) // the runner's log (Runner.Logf), set by the run
 	secrets []string
 	changed map[string][]string // unit → files written in this run (rollback restores only these)
 }
@@ -107,6 +107,16 @@ func (s *State) Printf(format string, a ...any) {
 	msg := strings.TrimRight(fmt.Sprintf(format, a...), "\n")
 	if s.out != nil && msg != "" {
 		s.out.WriteString(msg + "\n")
+	}
+}
+
+// warnf reports a problem that does not fail the step: in its output and in the runner's log
+// (redacted).
+func (s *State) warnf(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	s.Printf("предупреждение: %s", msg)
+	if s.logf != nil {
+		s.logf("[provision] node %d (%s): %s", s.Node.ID, s.Kind, redact(msg, s.Secrets()))
 	}
 }
 
@@ -156,8 +166,8 @@ func redact(text string, secrets []string) string {
 	return text
 }
 
-// tailBuffer keeps the last max bytes (rune-aligned). The runner keeps 8× the stored tail, redacts
-// and only then cuts to MaxOutputTail: a cut never splits a secret that redaction then misses.
+// tailBuffer keeps at most the last max bytes, cut at a line start (tail). The runner keeps 8×
+// the stored tail and redacts before and after cutting it to MaxOutputTail.
 type tailBuffer struct {
 	max int
 	b   []byte
@@ -165,16 +175,12 @@ type tailBuffer struct {
 
 func (t *tailBuffer) WriteString(s string) {
 	t.b = append(t.b, s...)
-	if len(t.b) > t.max {
-		cut := len(t.b) - t.max
-		for cut < len(t.b) && !utf8.RuneStart(t.b[cut]) {
-			cut++
-		}
-		t.b = append([]byte(nil), t.b[cut:]...)
+	if len(t.b) > 2*t.max { // trim in batches: amortised O(1) per byte
+		t.b = []byte(tail(string(t.b), t.max))
 	}
 }
 
-func (t *tailBuffer) String() string { return string(t.b) }
+func (t *tailBuffer) String() string { return tail(string(t.b), t.max) }
 
 var titles = map[string]string{
 	"preflight": "Предпроверка сервера", "hub_key": "Ключ Hub на ноде", "reality_keys": "Ключи туннеля",

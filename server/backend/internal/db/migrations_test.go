@@ -49,6 +49,8 @@ func TestMigration000061Shape(t *testing.T) {
 		`server_id INT NOT NULL REFERENCES servers\(id\) ON DELETE CASCADE`,
 		`job_id BIGINT NOT NULL REFERENCES provision_jobs\(id\) ON DELETE CASCADE`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_provision_jobs_active\s+ON provision_jobs \(server_id\) WHERE status IN \('queued', 'running'\)`,
+		`(?m)^\s*run_token TEXT,$`,
+		`runner TEXT NOT NULL DEFAULT 'api' CHECK \(runner IN \('api', 'cli'\)\)`,
 		`'unhealthy', 'disabled'`,
 		`\('nodes\.provision',`,
 	} {

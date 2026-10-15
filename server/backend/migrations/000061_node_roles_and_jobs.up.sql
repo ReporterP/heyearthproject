@@ -32,7 +32,12 @@ CREATE TABLE IF NOT EXISTS provision_jobs (
   error TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   started_at TIMESTAMPTZ,
-  finished_at TIMESTAMPTZ
+  finished_at TIMESTAMPTZ,
+  -- The current run's ownership: a fresh random token per start/resume; step and finish writes
+  -- carry it, so a run that lost the job (interrupted, resumed elsewhere) can no longer write.
+  run_token TEXT,
+  -- Who runs it: the API, or deploy --setup-exit-node (the API's restart leaves a live CLI run alone).
+  runner TEXT NOT NULL DEFAULT 'api' CHECK (runner IN ('api', 'cli'))
 );
 -- One job per node at a time, enforced by the database (two admins, a double click, the CLI).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_provision_jobs_active

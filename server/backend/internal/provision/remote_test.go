@@ -526,8 +526,8 @@ func TestSSHRemoteContract(t *testing.T) {
 	abs := filepath.Join(dir, "sub", "f.conf")
 	putFileContract(t, r, r.(*SSHRemote).exec, localShellPath(abs), abs, dir)
 	out, err := r.Run(context.Background(), "echo out; echo err >&2; exit 3")
-	if err == nil || !strings.Contains(out, "out") || !strings.Contains(out, "err") {
-		t.Fatalf("failing script: %q %v", out, err)
+	if err == nil || !strings.Contains(out, "out") || !strings.Contains(out, "err") || errors.Is(err, ErrConnectionLost) {
+		t.Fatalf("failing script (it ran: not a lost connection): %q %v", out, err)
 	}
 	if out, err := r.Run(context.Background(), "cat\necho after\n"); err != nil || strings.TrimSpace(out) != "after" {
 		t.Fatalf("a command inside the script read the script itself: %q %v", out, err)
@@ -647,8 +647,8 @@ func TestKeepAliveDropsDeadConnection(t *testing.T) {
 	}
 	defer Close(r)
 	start := time.Now()
-	if _, err := r.Run(context.Background(), "sleep 20"); err == nil || time.Since(start) > 10*time.Second {
-		t.Fatalf("err=%v after %v", err, time.Since(start))
+	if _, err := r.Run(context.Background(), "sleep 20"); !errors.Is(err, ErrConnectionLost) || time.Since(start) > 10*time.Second {
+		t.Fatalf("want ErrConnectionLost: err=%v after %v", err, time.Since(start))
 	}
 
 	healthy := startSSHD(t, t.TempDir(), sshdOpts{password: "pw"})
@@ -705,5 +705,55 @@ func TestNodeStringHidesSecrets(t *testing.T) {
 		if strings.Contains(s, "hunter2-secret") || !strings.Contains(s, "203.0.113.7") {
 			t.Fatalf("%q", s)
 		}
+	}
+}
+
+func TestTailStartsAtALine(t *testing.T) {
+	for name, c := range map[string]struct {
+		s    string
+		n    int
+		want string
+	}{
+		"short":             {"a\nb\n", 10, "a\nb\n"},
+		"cut mid-line":      {"aaaa\nbbbb\ncc\n", 7, "cc\n"},
+		"cut at line start": {"aaaa\nbbbb\ncc\n", 8, "bbbb\ncc\n"},
+		"one long line":     {strings.Repeat("x", 200), 100, cutLineMarker},
+		"marker too long":   {strings.Repeat("x", 20), 10, ""},
+		"cyrillic":          {"ширина\nдлина\n", 12, "длина\n"},
+	} {
+		if got := tail(c.s, c.n); got != c.want || len(got) > c.n {
+			t.Errorf("%s: tail(%q, %d) = %q, want %q", name, c.s, c.n, got, c.want)
+		}
+	}
+}
+
+// The tail quoted in a failed script's error must not begin inside a secret: the cut part could
+// no longer be redacted.
+func TestRunErrorQuotesNoPartialSecret(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	const secret = "Zq9-SECRET-tunnel-pass-Kx7Wv"
+	line := "pw=" + secret + "\n"
+	filler := strings.Repeat("y", errTail-len(line)+10-2) // the cut lands 10 bytes into the line
+	script := "printf '%s\n' " + shellquote.Quote(strings.Repeat("x", 100)) + " " + shellquote.Quote("pw="+secret) + " " +
+		shellquote.Quote(filler[:len(filler)/2]) + " " + shellquote.Quote(filler[len(filler)/2:]) + "\nexit 1\n"
+	out, err := LocalRemote{}.Run(context.Background(), script)
+	if err == nil || !strings.Contains(out, secret) {
+		t.Fatalf("setup: err=%v out has the secret: %v", err, strings.Contains(out, secret))
+	}
+	if cut := len(out) - errTail; cut <= strings.Index(out, secret) || cut >= strings.Index(out, secret)+len(secret) {
+		t.Fatalf("setup: the cut (%d) must fall inside the secret (at %d)", cut, strings.Index(out, secret))
+	}
+	msg := redact(err.Error(), []string{secret})
+	for i := 0; i+6 <= len(secret); i++ {
+		for j := i + 6; j <= len(secret); j++ {
+			if strings.Contains(msg, secret[i:j]) {
+				t.Fatalf("a part of the secret survived redaction: %q in %q", secret[i:j], msg[:min(len(msg), 200)])
+			}
+		}
+	}
+	if !strings.Contains(msg, "yyyy") {
+		t.Fatalf("the output after the secret is still quoted: %q", msg[:min(len(msg), 200)])
 	}
 }

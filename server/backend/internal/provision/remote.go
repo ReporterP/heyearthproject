@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/heyearth/backend/internal/shellquote"
 	"golang.org/x/crypto/ssh"
@@ -35,6 +34,10 @@ type Remote interface {
 var (
 	ErrHostKeyNotConfirmed = errors.New("отпечаток ключа хоста не подтверждён владельцем")
 	ErrNoCredentials       = errors.New("нет SSH-доступа: ни ключа Hub, ни пароля")
+	// ErrConnectionLost: what the command did on the node is unknown — the SSH session could not
+	// be opened, or it ended without an exit status (connection dropped, keepalive gave up).
+	// A script that ran and exited non-zero is not this error.
+	ErrConnectionLost = errors.New("соединение с нодой потеряно")
 )
 
 const (
@@ -226,7 +229,7 @@ func (r *SSHRemote) exec(ctx context.Context, cmd string, stdin io.Reader) (stri
 	}
 	sess, err := r.client.NewSession()
 	if err != nil {
-		return "", fmt.Errorf("ssh-сессия: %w", err)
+		return "", fmt.Errorf("%w: ssh-сессия: %w", ErrConnectionLost, err)
 	}
 	defer sess.Close()
 	out := &outputBuffer{max: maxOutput}
@@ -236,6 +239,10 @@ func (r *SSHRemote) exec(ctx context.Context, cmd string, stdin io.Reader) (stri
 	select {
 	case err := <-done:
 		if err != nil {
+			var exit *ssh.ExitError
+			if !errors.As(err, &exit) { // no exit status: the session died, not the script
+				err = fmt.Errorf("%w: %w", ErrConnectionLost, err)
+			}
 			return out.String(), fmt.Errorf("%w: %s", err, tail(out.String(), errTail))
 		}
 		return out.String(), nil
@@ -399,16 +406,28 @@ func (o *outputBuffer) String() string {
 	return fmt.Sprintf("[…пропущено %d байт вывода]\n", dropped) + string(b)
 }
 
-// tail returns the last n bytes of s, starting on a rune boundary.
+// cutLineMarker replaces output whose last n bytes hold no line start (one very long line).
+const cutLineMarker = "[…длинная строка вывода опущена]"
+
+// tail returns at most the last n bytes of s, starting at a line start: a cut never leaves a
+// partial line, where a cut secret could no longer be redacted. When those bytes hold no line
+// start, only cutLineMarker remains (or nothing, if even it is longer than n).
 func tail(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	i := len(s) - n
-	for i < len(s) && !utf8.RuneStart(s[i]) {
-		i++
+	cut := len(s) - n
+	if s[cut-1] != '\n' {
+		i := strings.IndexByte(s[cut:], '\n')
+		if i < 0 {
+			if len(cutLineMarker) <= n {
+				return cutLineMarker
+			}
+			return ""
+		}
+		cut += i + 1
 	}
-	return s[i:]
+	return s[cut:]
 }
 
 func modeString(m uint32) string { return strconv.FormatUint(uint64(m), 8) }

@@ -151,7 +151,15 @@ func BumpSubscriptionVersion() {
 // BumpSubscriptionVersionContext is BumpSubscriptionVersion bounded by ctx; it
 // returns the database error so the caller can retry the notification.
 func BumpSubscriptionVersionContext(ctx context.Context) error {
-	_, err := db.DB.ExecContext(ctx, `
+	return BumpSubscriptionVersionOn(ctx, db.DB)
+}
+
+// BumpSubscriptionVersionOn is BumpSubscriptionVersionContext on the given database: the deploy
+// CLI reaches the Hub's through an SSH tunnel (internal/provision SQLStore), the API passes db.DB.
+func BumpSubscriptionVersionOn(ctx context.Context, q interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}) error {
+	_, err := q.ExecContext(ctx, `
 		UPDATE app_settings
 		   SET value = (COALESCE(NULLIF(value, '')::bigint, 0) + 1)::text
 		 WHERE key = 'subscription_version'

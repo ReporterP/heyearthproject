@@ -35,30 +35,45 @@ const (
 
 	MaxOutputTail = 8 << 10
 	JobTimeout    = 40 * time.Minute // first MTProxy build alone may take 12 min
+	// RollbackTimeout: a rollback gets its own time — the job's context may be what just expired.
+	RollbackTimeout = 2 * time.Minute
 )
 
 var (
 	ErrJobActive       = errors.New("для этой ноды уже выполняется задача")
-	ErrJobNotResumable = errors.New("задачу нельзя продолжить: она не прервана и не завершилась ошибкой")
+	ErrJobNotResumable = errors.New("задачу нельзя продолжить: продолжить можно только последнюю задачу ноды, если она прервана или завершилась ошибкой")
 	ErrNodeUnreachable = errors.New("нода недоступна по SSH")
+	// ErrJobLost: this run no longer owns the job (it was interrupted, then resumed by another
+	// run); the run stops without touching the job or the node's lifecycle.
+	ErrJobLost = errors.New("задача больше не принадлежит этому запуску: её прервали или продолжили заново")
 )
 
-// Job is the part of a provision_jobs row the runner needs to (re)start it.
+// jobTimeout is JobTimeout (tests shorten it).
+var jobTimeout = JobTimeout
+
+// Job is the part of a provision_jobs row a run needs. Token is the run's ownership of the job
+// (provision_jobs.run_token), fresh on every start and resume.
 type Job struct {
 	ID       int64
 	ServerID int
 	Kind     string
 	Status   string
+	Token    string
 }
 
 // Store persists jobs (SQLStore; an in-memory one in tests).
 type Store interface {
 	LoadNode(ctx context.Context, serverID int) (Node, error)
-	CreateJob(ctx context.Context, serverID int, kind string) (int64, error) // ErrJobActive
-	ReopenJob(ctx context.Context, jobID int64) (Job, error)                 // ErrJobActive / ErrJobNotResumable
-	SetSteps(ctx context.Context, jobID int64, names []string) error
-	MarkStep(ctx context.Context, jobID int64, idx int, status, outputTail string) error
-	FinishJob(ctx context.Context, jobID int64, status, errMsg string) error
+	// CreateJob inserts a running job under a fresh run token; ErrJobActive.
+	CreateJob(ctx context.Context, serverID int, kind string) (Job, error)
+	// ReopenJob puts the node's latest job back to running under a fresh run token if it was
+	// interrupted or failed; ErrJobNotResumable / ErrJobActive.
+	ReopenJob(ctx context.Context, jobID int64) (Job, error)
+	// SetSteps, MarkStep and FinishJob write only while job.Token owns the running job; otherwise
+	// ErrJobLost.
+	SetSteps(ctx context.Context, job Job, names []string) error
+	MarkStep(ctx context.Context, job Job, idx int, status, outputTail string) error
+	FinishJob(ctx context.Context, job Job, status, errMsg string) error
 	InterruptRunning(ctx context.Context) (int64, error)
 }
 
@@ -95,16 +110,16 @@ func (r *Runner) Start(ctx context.Context, serverID int, kind string) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.Store.CreateJob(ctx, serverID, kind)
+	job, err := r.Store.CreateJob(ctx, serverID, kind)
 	if err != nil {
 		return 0, err
 	}
-	if err := r.Store.SetSteps(ctx, id, stepNames(recipe)); err != nil {
-		r.finish(id, JobFailed, err.Error())
-		return id, err
+	if err := r.Store.SetSteps(ctx, job, stepNames(recipe)); err != nil {
+		_ = r.finish(job, JobFailed, err.Error())
+		return job.ID, err
 	}
-	r.spawn(func() { r.run(id, n, recipe, st) })
-	return id, nil
+	r.spawn(func() { r.run(job, n, recipe, st) })
+	return job.ID, nil
 }
 
 // Resume re-runs an interrupted or failed job from its first step (steps are idempotent: the
@@ -114,7 +129,7 @@ func (r *Runner) Resume(ctx context.Context, jobID int64) error {
 	if err != nil {
 		return err
 	}
-	fail := func(err error) error { r.finish(jobID, JobFailed, err.Error()); return err }
+	fail := func(err error) error { _ = r.finish(job, JobFailed, err.Error()); return err }
 	n, err := r.Store.LoadNode(ctx, job.ServerID)
 	if err != nil {
 		return fail(err)
@@ -123,10 +138,10 @@ func (r *Runner) Resume(ctx context.Context, jobID int64) error {
 	if err != nil {
 		return fail(err)
 	}
-	if err := r.Store.SetSteps(ctx, jobID, stepNames(recipe)); err != nil {
+	if err := r.Store.SetSteps(ctx, job, stepNames(recipe)); err != nil {
 		return fail(err)
 	}
-	r.spawn(func() { r.run(jobID, n, recipe, st) })
+	r.spawn(func() { r.run(job, n, recipe, st) })
 	return nil
 }
 
@@ -154,12 +169,12 @@ func (r *Runner) logf(format string, a ...any) {
 
 // Bookkeeping writes get their own short context (they must land even when the job's expired)
 // and a few attempts: a final status lost to a database blip would leave the job "running" — the
-// node locked for new jobs and not resumable — until the API restarts.
+// node locked for new jobs and not resumable — until the API restarts. ErrJobLost is final.
 const bookkeepingAttempts = 3
 
 var bookkeepingBackoff = time.Second
 
-func (r *Runner) bookkeep(what string, f func(ctx context.Context) error) {
+func (r *Runner) bookkeep(what string, f func(ctx context.Context) error) error {
 	var err error
 	for i := range bookkeepingAttempts {
 		if i > 0 {
@@ -168,68 +183,121 @@ func (r *Runner) bookkeep(what string, f func(ctx context.Context) error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err = f(ctx)
 		cancel()
-		if err == nil {
-			return
+		if err == nil || errors.Is(err, ErrJobLost) {
+			return err
 		}
 	}
 	r.logf("[provision] %s: %v", what, err)
+	return err
 }
 
-func (r *Runner) finish(id int64, status, msg string) {
-	r.bookkeep(fmt.Sprintf("job %d finish", id), func(ctx context.Context) error {
-		return r.Store.FinishJob(ctx, id, status, msg)
+func (r *Runner) finish(job Job, status, msg string) error {
+	return r.bookkeep(fmt.Sprintf("job %d finish", job.ID), func(ctx context.Context) error {
+		return r.Store.FinishJob(ctx, job, status, msg)
 	})
 }
 
-func (r *Runner) mark(id int64, idx int, status, out string) {
-	r.bookkeep(fmt.Sprintf("job %d step %d", id, idx), func(ctx context.Context) error {
-		return r.Store.MarkStep(ctx, id, idx, status, out)
+func (r *Runner) mark(job Job, idx int, status, out string) error {
+	return r.bookkeep(fmt.Sprintf("job %d step %d", job.ID, idx), func(ctx context.Context) error {
+		return r.Store.MarkStep(ctx, job, idx, status, out)
 	})
 }
 
-func (r *Runner) run(jobID int64, n Node, recipe Recipe, st *State) {
-	ctx, cancel := context.WithTimeout(context.Background(), JobTimeout)
+// secretSet is every secret a run has seen: a value rotated by a step (the tunnel password, keys)
+// stays masked in later output.
+type secretSet struct {
+	seen map[string]bool
+	list []string
+}
+
+func (s *secretSet) add(v ...string) {
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	for _, x := range v {
+		if !s.seen[x] {
+			s.seen[x] = true
+			s.list = append(s.list, x)
+		}
+	}
+}
+
+func (r *Runner) run(job Job, n Node, recipe Recipe, st *State) {
+	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
 	defer cancel()
 	node := &lazyRemote{dial: func() (Remote, error) { return r.Dial(n) }}
 	defer node.close()
+	st.logf = r.logf
+	var secrets secretSet
+	secrets.add(st.Secrets()...)
+	logJob := func(msg string) { r.logf("[provision] job %d (node %d, %s): %s", job.ID, n.ID, st.Kind, msg) }
+	lost := func(err error) bool {
+		if errors.Is(err, ErrJobLost) {
+			logJob("задача перешла к другому запуску — этот запуск остановлен")
+			return true
+		}
+		return false
+	}
+	// failJob: the step's own status is already stored (so this run still owned the job).
+	failJob := func(msg string) {
+		if st.Fail != nil {
+			fctx, fcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := protect(func() error { st.Fail(fctx); return nil }); err != nil {
+				r.logPanic(job.ID, "fail", err, secrets.list)
+			}
+			fcancel()
+		}
+		msg = redact(msg, secrets.list)
+		if !lost(r.finish(job, JobFailed, msg)) {
+			logJob(msg)
+		}
+	}
 	if st.Begin != nil {
 		if err := protect(func() error { return st.Begin(ctx) }); err != nil {
-			r.logPanic(jobID, "begin", err, st.Secrets())
-			msg := redact(err.Error(), st.Secrets())
-			r.finish(jobID, JobFailed, msg)
-			r.logf("[provision] job %d (node %d, %s): %s", jobID, n.ID, st.Kind, msg)
+			r.logPanic(job.ID, "begin", err, secrets.list)
+			msg := redact(err.Error(), secrets.list)
+			if !lost(r.finish(job, JobFailed, msg)) {
+				logJob(msg)
+			}
 			return
 		}
 	}
 	for i, step := range recipe {
+		secrets.add(st.Secrets()...)
+		if ctx.Err() != nil { // out of time: no Verify→Apply on a node the job no longer watches
+			msg := fmt.Sprintf("время задачи (%s) истекло до шага «%s»", jobTimeout, Title(step.Name))
+			if lost(r.mark(job, i, StepFailed, msg)) {
+				return
+			}
+			failJob(msg)
+			return
+		}
 		buf := &tailBuffer{max: 8 * MaxOutputTail}
 		st.out = buf
-		r.mark(jobID, i, StepRunning, "")
+		if lost(r.mark(job, i, StepRunning, "")) {
+			st.out = nil
+			return
+		}
 		status, err := runStep(ctx, st.Kind, step, node, st)
 		st.out = nil
+		secrets.add(st.Secrets()...) // keys the step learnt are secrets too
 		text := buf.String()
 		if err != nil {
 			text += err.Error()
 		}
-		secrets := st.Secrets() // after the step: keys it learnt are secrets too
-		r.mark(jobID, i, status, tail(redact(strings.TrimSpace(text), secrets), MaxOutputTail))
+		out := redact(tail(redact(strings.TrimSpace(text), secrets.list), MaxOutputTail), secrets.list)
+		if lost(r.mark(job, i, status, out)) {
+			return
+		}
 		if status == StepFailed || status == StepRolledBack {
-			r.logPanic(jobID, step.Name, err, secrets)
-			if st.Fail != nil {
-				fctx, fcancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if ferr := protect(func() error { st.Fail(fctx); return nil }); ferr != nil {
-					r.logPanic(jobID, "fail", ferr, secrets)
-				}
-				fcancel()
-			}
-			msg := redact(fmt.Sprintf("шаг «%s»: %v", Title(step.Name), err), secrets)
-			r.finish(jobID, JobFailed, msg)
-			r.logf("[provision] job %d (node %d, %s): %s", jobID, n.ID, st.Kind, msg)
+			r.logPanic(job.ID, step.Name, err, secrets.list)
+			failJob(fmt.Sprintf("шаг «%s»: %v", Title(step.Name), err))
 			return
 		}
 	}
-	r.finish(jobID, JobSucceeded, "")
-	r.logf("[provision] job %d (node %d, %s): готово", jobID, n.ID, st.Kind)
+	if !lost(r.finish(job, JobSucceeded, "")) {
+		logJob("готово")
+	}
 }
 
 // panicError is a recipe callback that panicked: the job fails at that step (rollback included)
@@ -262,20 +330,30 @@ func (r *Runner) logPanic(jobID int64, where string, err error, secrets []string
 	}
 }
 
-// runStep: verify → (apply → verify) with rollback on failure; verify jobs never apply. A
-// panicking Verify is a failed step, never "drift" or "needs apply" (the state is unknown).
+// inconclusive: a Verify error that says nothing about the node — Verify panicked, the node
+// could not be reached or the connection dropped, the job ran out of time. Neither drift nor a
+// reason to Apply.
+func inconclusive(ctx context.Context, err error) bool {
+	var pe *panicError
+	return errors.As(err, &pe) || ctx.Err() != nil ||
+		errors.Is(err, ErrNodeUnreachable) || errors.Is(err, ErrConnectionLost) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+type stepCall func(ctx context.Context, f func(context.Context, Remote, *State) error) error
+
+// runStep: verify → (apply → verify) with rollback on failure; verify jobs never apply.
 func runStep(ctx context.Context, kind string, s Step, r Remote, st *State) (string, error) {
-	cb := func(f func(context.Context, Remote, *State) error) error {
+	call := func(ctx context.Context, f func(context.Context, Remote, *State) error) error {
 		return protect(func() error { return f(ctx, r, st) })
 	}
-	var pe *panicError
 	if kind == KindVerify {
 		if s.Verify == nil {
 			st.Printf("в режиме проверки этот шаг не выполняется")
 			return StepSkipped, nil
 		}
-		if err := cb(s.Verify); err != nil {
-			if errors.As(err, &pe) {
+		if err := call(ctx, s.Verify); err != nil {
+			if inconclusive(ctx, err) {
 				return StepFailed, err
 			}
 			st.Printf("расхождение: %v", err)
@@ -284,11 +362,11 @@ func runStep(ctx context.Context, kind string, s Step, r Remote, st *State) (str
 		return StepOK, nil
 	}
 	if s.Verify != nil {
-		verr := cb(s.Verify)
+		verr := call(ctx, s.Verify)
 		if verr == nil {
 			return StepOK, nil
 		}
-		if s.Apply == nil || errors.As(verr, &pe) {
+		if s.Apply == nil || inconclusive(ctx, verr) {
 			return StepFailed, verr
 		}
 		st.Printf("нужна настройка: %v", verr)
@@ -296,25 +374,27 @@ func runStep(ctx context.Context, kind string, s Step, r Remote, st *State) (str
 	if s.Apply == nil {
 		return StepOK, nil
 	}
-	if err := cb(s.Apply); err != nil {
+	if err := call(ctx, s.Apply); err != nil {
 		if errors.Is(err, ErrSkipped) {
 			return StepSkipped, nil
 		}
-		return rollback(cb, s, st, err)
+		return rollback(call, s, st, err)
 	}
 	if s.Verify != nil {
-		if err := cb(s.Verify); err != nil {
-			return rollback(cb, s, st, fmt.Errorf("после настройки проверка не прошла: %w", err))
+		if err := call(ctx, s.Verify); err != nil {
+			return rollback(call, s, st, fmt.Errorf("после настройки проверка не прошла: %w", err))
 		}
 	}
 	return StepDone, nil
 }
 
-func rollback(cb func(func(context.Context, Remote, *State) error) error, s Step, st *State, cause error) (string, error) {
+func rollback(call stepCall, s Step, st *State, cause error) (string, error) {
 	if s.Rollback == nil {
 		return StepFailed, cause
 	}
-	if err := cb(s.Rollback); err != nil {
+	rctx, cancel := context.WithTimeout(context.Background(), RollbackTimeout)
+	defer cancel()
+	if err := call(rctx, s.Rollback); err != nil {
 		return StepFailed, fmt.Errorf("%w; откат не удался: %w", cause, err)
 	}
 	st.Printf("изменения шага откачены")

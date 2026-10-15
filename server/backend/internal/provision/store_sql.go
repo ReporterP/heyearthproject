@@ -2,14 +2,23 @@ package provision
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
+)
+
+// Who runs a job (provision_jobs.runner).
+const (
+	RunnerAPI = "api"
+	RunnerCLI = "cli" // deploy --setup-exit-node
 )
 
 // SQLStore is the PostgreSQL Store (and Hooks) of the API and of deploy --setup-exit-node.
@@ -17,7 +26,18 @@ type SQLStore struct {
 	DB         *sql.DB
 	HubKeyPath string                       // "" = this machine has no Hub key (deploy CLI)
 	Decrypt    func([]byte) (string, error) // internal/crypto.Decrypt
+	// JobRunner is who runs the jobs this store creates or reopens: RunnerAPI ("" too) or
+	// RunnerCLI. InterruptRunning at API start takes over a CLI job only once no run can still be
+	// alive (staleRunAge).
+	JobRunner string
+	// BumpSubscription is Hooks.BumpSubscription; nil: biz.BumpSubscriptionVersionOn on DB.
+	BumpSubscription func(ctx context.Context) error
 }
+
+// staleRunAge is the age after which no run can still own a job: JobTimeout, the failing step's
+// RollbackTimeout and the final bookkeeping fit well inside it (TestStaleRunAgeCoversARun). It
+// is spelled out in interruptJobsQuery.
+const staleRunAge = 45 * time.Minute
 
 // StepView is one provision_steps row as the admin API returns it.
 type StepView struct {
@@ -107,20 +127,32 @@ func LoadHubSigner(path string) (ssh.Signer, error) {
 }
 
 const (
-	createJobQuery = `INSERT INTO provision_jobs (server_id, kind, status, started_at) VALUES ($1, $2, 'running', NOW()) RETURNING id`
-	reopenJobQuery = `UPDATE provision_jobs SET status = 'running', error = '', started_at = NOW(), finished_at = NULL
- WHERE id = $1 AND status IN ('interrupted', 'failed') RETURNING server_id, kind`
+	createJobQuery = `INSERT INTO provision_jobs (server_id, kind, status, started_at, run_token, runner)
+VALUES ($1, $2, 'running', NOW(), $3, $4) RETURNING id`
+	// Only the node's latest job: resuming an older one would undo what a later job did.
+	reopenJobQuery = `UPDATE provision_jobs SET status = 'running', error = '', started_at = NOW(), finished_at = NULL,
+       run_token = $2, runner = $3
+ WHERE id = $1 AND status IN ('interrupted', 'failed')
+   AND id = (SELECT max(j.id) FROM provision_jobs j WHERE j.server_id = provision_jobs.server_id)
+ RETURNING server_id, kind`
+	ownJobQuery      = `SELECT 1 FROM provision_jobs WHERE id = $1 AND run_token = $2 AND status = 'running' FOR UPDATE`
 	deleteStepsQuery = `DELETE FROM provision_steps WHERE job_id = $1`
 	insertStepsQuery = `INSERT INTO provision_steps (job_id, idx, name, status)
 SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) WITH ORDINALITY AS t(name, ord)`
 	markStepQuery = `UPDATE provision_steps SET status = $3, output_tail = $4,
        started_at = CASE WHEN $3::text = 'running' THEN NOW() ELSE COALESCE(started_at, NOW()) END,
        finished_at = CASE WHEN $3::text = 'running' THEN NULL ELSE NOW() END
- WHERE job_id = $1 AND idx = $2`
-	finishJobQuery     = `UPDATE provision_jobs SET status = $2, error = $3, finished_at = NOW() WHERE id = $1`
-	interruptJobsQuery = `UPDATE provision_jobs SET status = 'interrupted', finished_at = NOW(),
-       error = 'API перезапустился во время задачи — нажмите «Продолжить»'
- WHERE status IN ('queued', 'running') RETURNING id`
+ WHERE job_id = $1 AND idx = $2
+   AND EXISTS (SELECT 1 FROM provision_jobs WHERE id = $1 AND run_token = $5 AND status = 'running')`
+	finishJobQuery = `UPDATE provision_jobs SET status = $2, error = $3, finished_at = NOW(), run_token = NULL
+ WHERE id = $1 AND run_token = $4 AND status = 'running'`
+	// A live CLI run is left alone; one older than staleRunAge is dead whatever ran it.
+	interruptJobsQuery = `UPDATE provision_jobs SET status = 'interrupted', run_token = NULL, finished_at = NOW(),
+       error = CASE WHEN runner = 'api' THEN 'API перезапустился во время задачи — нажмите «Продолжить»'
+                    ELSE 'Запуск из командной строки не завершил задачу — нажмите «Продолжить»' END
+ WHERE status IN ('queued', 'running')
+   AND (runner = 'api' OR COALESCE(started_at, created_at) < NOW() - interval '45 minutes')
+ RETURNING id`
 	interruptStepsQuery = `UPDATE provision_steps SET status = 'interrupted', finished_at = NOW() WHERE status = 'running' AND job_id = ANY($1::bigint[])`
 	jobQuery            = `SELECT id, server_id, kind, status, error, created_at, started_at, finished_at FROM provision_jobs`
 	jobStepsQuery       = `SELECT idx, name, status, output_tail, started_at, finished_at FROM provision_steps WHERE job_id = $1 ORDER BY idx`
@@ -144,10 +176,10 @@ SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) W
 	markMTProtoQuery = `UPDATE servers SET mtproto_status = $1, mtproto_last_check = NOW(),
        mtproto_installed_at = COALESCE(mtproto_installed_at, CASE WHEN $1::text = 'healthy' THEN NOW() END), updated_at = NOW()
  WHERE id = $2`
-	bumpSubscriptionQuery = `UPDATE app_settings SET value = (COALESCE(NULLIF(value, '')::bigint, 0) + 1)::text WHERE key = 'subscription_version'`
-	paidPlansQuery        = `SELECT id FROM plans WHERE is_active = TRUE AND price_rub > 0 ORDER BY sort_order, id`
-	unbindPlansQuery      = `DELETE FROM plan_servers WHERE server_id = $1`
-	bindPlansQuery        = `INSERT INTO plan_servers (plan_id, server_id) SELECT unnest($2::int[]), $1::int ON CONFLICT DO NOTHING`
+	paidPlansQuery   = `SELECT id FROM plans WHERE is_active = TRUE AND price_rub > 0 ORDER BY sort_order, id`
+	lockServerQuery  = `SELECT 1 FROM servers WHERE id = $1 FOR UPDATE`
+	unbindPlansQuery = `DELETE FROM plan_servers WHERE server_id = $1`
+	bindPlansQuery   = `INSERT INTO plan_servers (plan_id, server_id) SELECT unnest($2::int[]), $1::int ON CONFLICT DO NOTHING`
 )
 
 // mapActive: a unique violation here can only be uq_provision_jobs_active (one active job per node).
@@ -159,17 +191,50 @@ func mapActive(err error) error {
 	return err
 }
 
-func (s *SQLStore) CreateJob(ctx context.Context, serverID int, kind string) (int64, error) {
-	var id int64
-	err := s.DB.QueryRowContext(ctx, createJobQuery, serverID, kind).Scan(&id)
-	return id, mapActive(err)
+// newRunToken is a fresh run's ownership of its job.
+func newRunToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
-// ReopenJob puts an interrupted or failed job back to running (ErrJobActive while another job of
-// the node is active).
+// newRun is the token and the runner of a run about to own a job.
+func (s *SQLStore) newRun() (token, runner string, err error) {
+	switch s.JobRunner {
+	case "", RunnerAPI:
+		runner = RunnerAPI
+	case RunnerCLI:
+		runner = RunnerCLI
+	default:
+		return "", "", fmt.Errorf("неизвестный исполнитель задач %q", s.JobRunner)
+	}
+	token, err = newRunToken()
+	return token, runner, err
+}
+
+func (s *SQLStore) CreateJob(ctx context.Context, serverID int, kind string) (Job, error) {
+	token, runner, err := s.newRun()
+	if err != nil {
+		return Job{}, err
+	}
+	j := Job{ServerID: serverID, Kind: kind, Status: JobRunning, Token: token}
+	if err := s.DB.QueryRowContext(ctx, createJobQuery, serverID, kind, token, runner).Scan(&j.ID); err != nil {
+		return Job{}, mapActive(err)
+	}
+	return j, nil
+}
+
+// ReopenJob puts the node's latest job back to running under a fresh run token if it was
+// interrupted or failed (ErrJobActive while another job of the node is active).
 func (s *SQLStore) ReopenJob(ctx context.Context, jobID int64) (Job, error) {
-	j := Job{ID: jobID, Status: JobRunning}
-	err := s.DB.QueryRowContext(ctx, reopenJobQuery, jobID).Scan(&j.ServerID, &j.Kind)
+	token, runner, err := s.newRun()
+	if err != nil {
+		return Job{}, err
+	}
+	j := Job{ID: jobID, Status: JobRunning, Token: token}
+	err = s.DB.QueryRowContext(ctx, reopenJobQuery, jobID, token, runner).Scan(&j.ServerID, &j.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrJobNotResumable
 	}
@@ -179,30 +244,50 @@ func (s *SQLStore) ReopenJob(ctx context.Context, jobID int64) (Job, error) {
 	return j, nil
 }
 
-// SetSteps replaces the job's steps with names, all pending (one transaction).
-func (s *SQLStore) SetSteps(ctx context.Context, jobID int64, names []string) error {
+// SetSteps replaces the job's steps with names, all pending (one transaction; the job row locked
+// and still owned by job.Token, else ErrJobLost).
+func (s *SQLStore) SetSteps(ctx context.Context, job Job, names []string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, deleteStepsQuery, jobID); err != nil {
+	var one int
+	if err := tx.QueryRowContext(ctx, ownJobQuery, job.ID, job.Token).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return ErrJobLost
+	} else if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, insertStepsQuery, jobID, pq.Array(names)); err != nil {
+	if _, err := tx.ExecContext(ctx, deleteStepsQuery, job.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, insertStepsQuery, job.ID, pq.Array(names)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (s *SQLStore) MarkStep(ctx context.Context, jobID int64, idx int, status, out string) error {
-	_, err := s.DB.ExecContext(ctx, markStepQuery, jobID, idx, status, out)
-	return err
+// owned: an UPDATE guarded by the run token that changed nothing means the run lost the job.
+func owned(res sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrJobLost
+	}
+	return nil
 }
 
-func (s *SQLStore) FinishJob(ctx context.Context, jobID int64, status, msg string) error {
-	_, err := s.DB.ExecContext(ctx, finishJobQuery, jobID, status, msg)
-	return err
+func (s *SQLStore) MarkStep(ctx context.Context, job Job, idx int, status, out string) error {
+	return owned(s.DB.ExecContext(ctx, markStepQuery, job.ID, idx, status, out, job.Token))
+}
+
+func (s *SQLStore) FinishJob(ctx context.Context, job Job, status, msg string) error {
+	return owned(s.DB.ExecContext(ctx, finishJobQuery, job.ID, status, msg, job.Token))
 }
 
 // InterruptRunning is called once at API start: a job that was running died with the old process.
@@ -350,16 +435,21 @@ func (s *SQLStore) Hooks(requestSync func(), probeAgent func(context.Context, st
 			_, err := s.DB.ExecContext(ctx, markMTProtoQuery, status, id)
 			return err
 		},
-		BumpSubscription: func(ctx context.Context) error {
-			_, err := s.DB.ExecContext(ctx, bumpSubscriptionQuery)
-			return err
-		},
-		RequestSync: requestSync,
-		ProbeAgent:  probeAgent,
+		BumpSubscription: s.bumpSubscription(),
+		RequestSync:      requestSync,
+		ProbeAgent:       probeAgent,
 	}
 }
 
-// BindPlans makes planIDs exactly the plans that route through serverID (one transaction).
+func (s *SQLStore) bumpSubscription() func(context.Context) error {
+	if s.BumpSubscription != nil {
+		return s.BumpSubscription
+	}
+	return func(ctx context.Context) error { return biz.BumpSubscriptionVersionOn(ctx, s.DB) }
+}
+
+// BindPlans makes planIDs exactly the plans that route through serverID (one transaction; the
+// server row is locked first, so two bindings of one node cannot interleave).
 func BindPlans(ctx context.Context, db *sql.DB, serverID int, planIDs []int) error {
 	ids := make([]int64, len(planIDs))
 	for i, p := range planIDs {
@@ -370,6 +460,12 @@ func BindPlans(ctx context.Context, db *sql.DB, serverID int, planIDs []int) err
 		return err
 	}
 	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, lockServerQuery, serverID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("нода %d не найдена", serverID)
+	} else if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, unbindPlansQuery, serverID); err != nil {
 		return err
 	}
