@@ -30,6 +30,14 @@ func key() ([]byte, error) {
 	return k, nil
 }
 
+// Ready reports whether SSH_ENCRYPTION_KEY is set and valid (base64 of 32 bytes); checked at API
+// start (a critical alert without it), and the admin panel refuses a password it could not store
+// encrypted. The error names the variable, never its value.
+func Ready() error {
+	_, err := key()
+	return err
+}
+
 // Encrypt encrypts plaintext with AES-256-GCM.
 // Returns nil if plaintext is empty.
 func Encrypt(plaintext string) ([]byte, error) {

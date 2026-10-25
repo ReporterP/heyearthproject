@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/provision"
 )
 
@@ -197,5 +201,228 @@ func TestNoUnpinnedSSHAnywhere(t *testing.T) {
 		if _, err := os.Stat(gone); err == nil {
 			t.Errorf("%s (unpinned SSH) must be gone", gone)
 		}
+	}
+}
+
+func outboundsByTag(t *testing.T, cfg []byte) map[string]json.RawMessage {
+	t.Helper()
+	var c struct {
+		Outbounds []json.RawMessage `json:"outbounds"`
+	}
+	if err := json.Unmarshal(cfg, &c); err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]json.RawMessage{}
+	for _, o := range c.Outbounds {
+		var tag struct{ Tag string }
+		_ = json.Unmarshal(o, &tag)
+		m[tag.Tag] = o
+	}
+	return m
+}
+
+type vlessUser struct {
+	ID   string `json:"id"`
+	Flow string `json:"flow"`
+}
+
+type vlessOutbound struct {
+	Settings struct {
+		Vnext []struct {
+			Address string      `json:"address"`
+			Port    int         `json:"port"`
+			Users   []vlessUser `json:"users"`
+		} `json:"vnext"`
+	} `json:"settings"`
+	StreamSettings struct {
+		Network         string `json:"network"`
+		Security        string `json:"security"`
+		RealitySettings struct {
+			Fingerprint string `json:"fingerprint"`
+			ServerName  string `json:"serverName"`
+			PublicKey   string `json:"publicKey"`
+			ShortID     string `json:"shortId"`
+		} `json:"realitySettings"`
+	} `json:"streamSettings"`
+}
+
+// The wizard's TCP path check dials exactly what Xray's exit-<id>.vr outbound (phase 1) dials.
+func TestVRProbeMatchesXrayOutbound(t *testing.T) {
+	ex := testExit(2, "hysteria2")
+	ex.TunnelSNI = config.ExitRealitySNI
+	ex.TunnelPort = 50443 // production: tunnel_port is the hysteria port, the .vr path must still dial :10443
+	in := baseInputs()
+	in.exitNodes = []biz.ExitNodeTunnel{ex}
+	cfg, _ := genConfig(t, in, quotaCutoff{})
+	_, vrTag := exitOutboundTags(2)
+	raw, ok := outboundsByTag(t, cfg)[vrTag]
+	if !ok {
+		t.Fatalf("no %s outbound", vrTag)
+	}
+	probeCfg, err := config.ExitRealityProbeConfig(config.VRProbeSocksPort(2), config.RealityProbe{ExitIP: ex.IPAddress,
+		UUID: ex.TunnelUUID, PublicKey: ex.TunnelPubKey, ShortID: ex.TunnelShortID, SNI: ex.TunnelSNI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe struct {
+		Outbounds []vlessOutbound `json:"outbounds"`
+	}
+	var x vlessOutbound
+	if json.Unmarshal(probeCfg, &probe) != nil || json.Unmarshal(raw, &x) != nil || len(probe.Outbounds) != 1 {
+		t.Fatal("unparsable")
+	}
+	p := probe.Outbounds[0]
+	if len(p.Settings.Vnext) != 1 || len(x.Settings.Vnext) != 1 || len(p.Settings.Vnext[0].Users) != 1 || len(x.Settings.Vnext[0].Users) != 1 {
+		t.Fatalf("xray %+v\nprobe %+v", x, p)
+	}
+	xv, pv := x.Settings.Vnext[0], p.Settings.Vnext[0]
+	if xv.Port != config.ExitRealityPort || xv.Users[0].Flow != config.ExitRealityFlow || x.StreamSettings.Network != "tcp" ||
+		xv.Address != pv.Address || xv.Port != pv.Port || xv.Users[0] != pv.Users[0] ||
+		x.StreamSettings.Network != p.StreamSettings.Network || x.StreamSettings.Security != p.StreamSettings.Security ||
+		x.StreamSettings.RealitySettings != p.StreamSettings.RealitySettings {
+		t.Fatalf("xray %+v\nprobe %+v", x, p)
+	}
+}
+
+// The owner's TCP-fallback switch (servers.tunnel_fallback_enabled) drops exactly that exit's
+// exit-<id>.vr and its probe pair; its Hysteria path, the other exits and legacy VLESS exits
+// (TCP is their only path) are untouched.
+func TestFallbackSwitchDropsVROutbound(t *testing.T) {
+	resetExitNotes(t)
+	on, off, legacy := testExit(2, "hysteria2"), testExit(3, "hysteria2"), legacyVLESSExit(4)
+	off.FallbackEnabled = false
+	legacy.FallbackEnabled = false
+	in := baseInputs()
+	in.exitNodes = []biz.ExitNodeTunnel{on, off, legacy}
+	cfg, _ := genConfig(t, in, quotaCutoff{})
+	tags := outboundsByTag(t, cfg)
+	_, vr2 := exitOutboundTags(2)
+	hy3, vr3 := exitOutboundTags(3)
+	_, vr4 := exitOutboundTags(4)
+	if _, ok := tags[vr2]; !ok {
+		t.Error("exit 2 lost its TCP fallback")
+	}
+	if _, ok := tags[vr3]; ok {
+		t.Error("exit 3 has the fallback switched off")
+	}
+	if _, ok := tags[exitProbeTag(3)]; ok {
+		t.Error("exit 3: no probe outbound for a switched-off path")
+	}
+	if _, ok := tags[hy3]; !ok {
+		t.Error("exit 3 must keep its hysteria path")
+	}
+	if _, ok := tags[vr4]; !ok {
+		t.Error("a legacy VLESS exit's only path is not a fallback: the switch must not drop it")
+	}
+	if v := viewOf(t, cfg); byTag(v.Inbounds, exitProbeTag(3)) != nil || byTag(v.Inbounds, exitProbeTag(2)) == nil {
+		t.Error("probe inbounds: exit 3 must have none, exit 2 its own")
+	}
+}
+
+func TestLegacyPasswordAction(t *testing.T) {
+	good := func([]byte) (string, error) { return "pw", nil }
+	bad := func([]byte) (string, error) { return "", errors.New("auth failed") }
+	for _, tc := range []struct {
+		enc  []byte
+		dec  func([]byte) (string, error)
+		want string
+	}{{nil, good, "encrypt"}, {[]byte{}, good, "encrypt"}, {[]byte{1}, good, "clear"}, {[]byte{1}, bad, "keep"}} {
+		if got := legacyPasswordAction(tc.enc, tc.dec); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.enc, got, tc.want)
+		}
+	}
+}
+
+type legacyExec struct {
+	query string
+	args  []any
+}
+
+// The migration writes each row only while it is as read, empties the NOT NULL plaintext column
+// (the empty string, never NULL), keeps a plaintext whose ciphertext does not decrypt, and logs
+// no password.
+func TestMigrateLegacySSHPasswords(t *testing.T) {
+	var execs []legacyExec
+	affected := map[int]int64{1: 1, 2: 1, 4: 0}
+	exec := func(_ context.Context, q string, args ...any) (int64, error) {
+		execs = append(execs, legacyExec{q, args})
+		return affected[args[0].(int)], nil
+	}
+	encrypt := func(p string) ([]byte, error) {
+		if p == "plain-secret-5" {
+			return nil, errors.New("encryption unavailable")
+		}
+		return []byte("enc:" + p), nil
+	}
+	decrypt := func(b []byte) (string, error) {
+		if string(b) == "readable" {
+			return "plain-secret-2", nil
+		}
+		return "", errors.New("crypto: decrypt: cipher: message authentication failed")
+	}
+	var logs bytes.Buffer
+	logf := func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }
+	migrateLegacyPasswords(context.Background(), []legacyPassword{
+		{id: 1, plain: "plain-secret-1"},                          // plaintext only: encrypt
+		{id: 2, plain: "plain-secret-2", enc: []byte("readable")}, // readable ciphertext: drop the plaintext
+		{id: 3, plain: "plain-secret-3", enc: []byte("foreign")},  // another key's ciphertext: keep both
+		{id: 4, plain: "plain-secret-4"},                          // changed meanwhile: the guarded write hits nothing
+		{id: 5, plain: "plain-secret-5"},                          // encryption fails: nothing written
+	}, exec, encrypt, decrypt, logf)
+
+	if len(execs) != 3 {
+		t.Fatalf("writes %+v, want rows 1, 2, 4", execs)
+	}
+	if e := execs[0]; e.query != encryptLegacyPasswordQuery || e.args[0] != 1 || e.args[1] != "plain-secret-1" || string(e.args[2].([]byte)) != "enc:plain-secret-1" {
+		t.Errorf("row 1: %+v", e)
+	}
+	if e := execs[1]; e.query != clearLegacyPasswordQuery || e.args[0] != 2 || e.args[1] != "plain-secret-2" || string(e.args[2].([]byte)) != "readable" {
+		t.Errorf("row 2: %+v", e)
+	}
+	if e := execs[2]; e.query != encryptLegacyPasswordQuery || e.args[0] != 4 {
+		t.Errorf("row 4: %+v", e)
+	}
+	out := logs.String()
+	if strings.Contains(out, "plain-secret") || strings.Contains(out, "enc:") || strings.Contains(out, "readable") {
+		t.Fatalf("a password reached the log:\n%s", out)
+	}
+	for _, want := range []string{"сервер 1: открытый пароль SSH зашифрован", "сервер 2: открытая копия", "сервер 3: зашифрованный пароль не читается",
+		"сервер 4: строка изменилась", "сервер 5: не удалось зашифровать"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	// ssh_password is NOT NULL DEFAULT '' (000004); each write is guarded by what was read.
+	nullPlain := regexp.MustCompile(`(?i)ssh_password\s*=\s*NULL`)
+	for _, q := range []string{encryptLegacyPasswordQuery, clearLegacyPasswordQuery} {
+		if nullPlain.MatchString(q) || !strings.Contains(q, "ssh_password = ''") ||
+			!strings.Contains(q, "ssh_password = $2") || !strings.Contains(q, "id = $1") {
+			t.Errorf("query %s", q)
+		}
+	}
+	if !strings.Contains(encryptLegacyPasswordQuery, "COALESCE(octet_length(ssh_password_enc), 0) = 0") ||
+		!strings.Contains(clearLegacyPasswordQuery, "ssh_password_enc = $3") {
+		t.Error("the writes must re-check the ciphertext they decided on")
+	}
+	if !strings.Contains(legacyPasswordsQuery, "ssh_password <> ''") {
+		t.Errorf("read: %s", legacyPasswordsQuery)
+	}
+}
+
+// No SSH_ENCRYPTION_KEY (or a bad one): a critical alert that says what to run; a good key resolves it.
+func TestSSHEncryptionKeyAlert(t *testing.T) {
+	ah := withExitAlertHarness(t)
+	if checkSSHEncryptionKey(func() error { return errors.New("SSH_ENCRYPTION_KEY env not set") }) {
+		t.Fatal("a missing key reported as ready")
+	}
+	if len(ah.events) != 1 || ah.events[0].Kind != "raise" || ah.events[0].Key != sshKeyAlertKey || ah.events[0].Level != AlertCritical ||
+		!strings.Contains(ah.events[0].Details, "--ensure-hub-provisioning") || !strings.Contains(ah.events[0].Details, "env not set") {
+		t.Fatalf("alerts: %+v", ah.events)
+	}
+	if !checkSSHEncryptionKey(func() error { return nil }) {
+		t.Fatal("a valid key reported as missing")
+	}
+	if got := alertLog(ah); got != "raise "+sshKeyAlertKey+", resolve "+sshKeyAlertKey {
+		t.Fatalf("alerts: %s", got)
 	}
 }

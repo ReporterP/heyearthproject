@@ -1422,19 +1422,25 @@ func checkAllTunnels() {
 	checkMTProtoHealth()
 }
 
-// checkMTProtoHealth probes the MTProto port on every online exit node that
-// has MTProto installed (mtproto_installed_at IS NOT NULL) and updates
-// mtproto_status via biz.MarkMTProtoStatus with 3-fail / 2-success hysteresis.
-func checkMTProtoHealth() {
-	mtprotoPort := biz.GetSettingOrDefault("mtproto_port", "8443")
-
-	rows, err := db.DB.Query(`
+// mtprotoHealthQuery: the exits whose MTProxy the health monitor probes — online, installed, and
+// not switched off by the owner ('disabled': a verdict would turn it back into healthy/unhealthy
+// and PickMTProtoExit would hand it out to users again).
+const mtprotoHealthQuery = `
 		SELECT id, ip_address, mtproto_status
 		  FROM servers
 		 WHERE is_exit_node = TRUE
 		   AND lifecycle_state = 'online'
 		   AND mtproto_installed_at IS NOT NULL
-	`)
+		   AND mtproto_status <> 'disabled'
+	`
+
+// checkMTProtoHealth probes the MTProto port on every online exit node that
+// has MTProto installed (mtproto_installed_at IS NOT NULL) and not switched off,
+// and updates mtproto_status via biz.MarkMTProtoStatus with 3-fail / 2-success hysteresis.
+func checkMTProtoHealth() {
+	mtprotoPort := biz.GetSettingOrDefault("mtproto_port", "8443")
+
+	rows, err := db.DB.Query(mtprotoHealthQuery)
 	if err != nil {
 		log.Printf("[mtproto-health] query error: %v", err)
 		return

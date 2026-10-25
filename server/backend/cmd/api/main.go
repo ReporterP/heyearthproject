@@ -985,8 +985,9 @@ func main() {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
 	admin.InitCORS()
-	// Node provisioning core: interrupted jobs, the admin handlers' runner, the MTProxy installer
-	// (before StartGhostReconciler and admin.RegisterRoutes, which use them).
+	// Node provisioning core: interrupted jobs, SSH_ENCRYPTION_KEY check (critical alert) and
+	// encryption of legacy plaintext SSH passwords, the admin handlers' runner, the MTProxy
+	// installer (before StartGhostReconciler and admin.RegisterRoutes, which use them).
 	initProvisioning()
 
 	// Wire the biz-layer sync orchestrator. biz.RequestSync() debounces

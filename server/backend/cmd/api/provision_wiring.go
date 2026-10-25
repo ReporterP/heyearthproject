@@ -30,8 +30,9 @@ var (
 )
 
 // initProvisioning: jobs the previous process left running become interrupted (resumable with
-// «Продолжить»), dead CLI runs are swept periodically, the admin handlers get the runner. It
-// restarts nothing — the API never restarts itself.
+// «Продолжить»), SSH_ENCRYPTION_KEY is checked (a critical alert without it) and legacy plaintext
+// SSH passwords get encrypted, dead CLI runs are swept periodically, the admin handlers get the
+// runner. It restarts nothing — the API never restarts itself.
 func initProvisioning() {
 	nodeStore.DB = db.DB
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -40,6 +41,9 @@ func initProvisioning() {
 		log.Printf("[provision] не удалось пометить прерванные задачи: %v", err)
 	} else if n > 0 {
 		log.Printf("[provision] %d задач(и) прервано перезапуском API — их можно продолжить в карточке ноды", n)
+	}
+	if checkSSHEncryptionKey(crypto.Ready) {
+		migrateLegacySSHPasswords(ctx)
 	}
 	nodeRunner = &provision.Runner{Store: nodeStore, Dial: provision.DialNode, Recipe: apiRecipe, Logf: log.Printf}
 	go nodeRunner.SweepStale(context.Background(), provision.StaleSweepEvery)
@@ -51,6 +55,128 @@ func initProvisioning() {
 
 // nodeRunner runs every node job of the API (admin handlers and the reconciler's MTProxy backfill).
 var nodeRunner *provision.Runner
+
+// sshKeyAlertKey: the critical alert while SSH_ENCRYPTION_KEY is missing or invalid.
+const sshKeyAlertKey = "ssh-encryption-key"
+
+// checkSSHEncryptionKey raises sshKeyAlertKey (critical) when ready fails — node passwords can be
+// neither stored nor read, so adding and setting up nodes from the admin panel cannot work — and
+// resolves it otherwise. The error names the variable, never the key (crypto.Ready).
+func checkSSHEncryptionKey(ready func() error) bool {
+	if err := ready(); err != nil {
+		RaiseAlert(sshKeyAlertKey, AlertCritical, "На Hub не задан SSH_ENCRYPTION_KEY",
+			"Пароли нод нельзя сохранить и прочитать — добавление и настройка нод из админки не работают, "+
+				"открытые пароли SSH старых записей не зашифрованы. Выполните go run ./cmd/deploy --ensure-hub-provisioning "+
+				"и перезапустите API деплоем. Ошибка: "+err.Error())
+		log.Printf("[provision] SSH_ENCRYPTION_KEY: %v — пароли нод недоступны, миграция открытых паролей пропущена", err)
+		return false
+	}
+	ResolveAlert(sshKeyAlertKey, "SSH_ENCRYPTION_KEY на месте")
+	return true
+}
+
+// legacyPasswordsQuery: rows that still hold a plaintext SSH password (ssh_password is NOT NULL,
+// default the empty string = none; migration 000004).
+const legacyPasswordsQuery = `SELECT id, ssh_password, ssh_password_enc FROM servers WHERE ssh_password <> ''`
+
+// The migration's writes. ssh_password is NOT NULL: the plaintext is emptied (set to the empty
+// string), never NULLed. Each write re-checks what the decision was made on — the plaintext read
+// ($2) and, for the encryption, that there is still no ciphertext; for the clean-up, the very
+// ciphertext that decrypted ($3) — so a password the owner changed meanwhile is never overwritten
+// or lost.
+const (
+	encryptLegacyPasswordQuery = `UPDATE servers SET ssh_password_enc = $3, ssh_password = ''
+ WHERE id = $1 AND ssh_password = $2 AND COALESCE(octet_length(ssh_password_enc), 0) = 0`
+	clearLegacyPasswordQuery = `UPDATE servers SET ssh_password = ''
+ WHERE id = $1 AND ssh_password = $2 AND ssh_password_enc = $3`
+)
+
+// legacyPassword is one row of legacyPasswordsQuery.
+type legacyPassword struct {
+	id    int
+	plain string
+	enc   []byte
+}
+
+// legacyPasswordAction: encrypt a plaintext-only password; drop the plaintext once a readable
+// ciphertext exists; keep it while the ciphertext does not decrypt (it may be the only copy).
+func legacyPasswordAction(enc []byte, decrypt func([]byte) (string, error)) string {
+	if len(enc) == 0 {
+		return "encrypt"
+	}
+	if _, err := decrypt(enc); err == nil {
+		return "clear"
+	}
+	return "keep"
+}
+
+// migrateLegacySSHPasswords moves plaintext SSH passwords (servers.ssh_password, from before
+// SSH_ENCRYPTION_KEY) into ssh_password_enc at API start — the provisioning store reads only the
+// ciphertext. Idempotent: a migrated row no longer matches legacyPasswordsQuery. Logs server ids
+// only, never a password.
+func migrateLegacySSHPasswords(ctx context.Context) {
+	rows, err := db.DB.QueryContext(ctx, legacyPasswordsQuery)
+	if err != nil {
+		log.Printf("[provision] открытые пароли SSH не прочитаны: %v", err)
+		return
+	}
+	var todo []legacyPassword
+	for rows.Next() {
+		var r legacyPassword
+		if err := rows.Scan(&r.id, &r.plain, &r.enc); err != nil {
+			log.Printf("[provision] открытые пароли SSH: строка не прочитана: %v", err)
+			continue
+		}
+		todo = append(todo, r)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		log.Printf("[provision] открытые пароли SSH не прочитаны: %v", err)
+		return
+	}
+	exec := func(ctx context.Context, q string, args ...any) (int64, error) {
+		res, err := db.DB.ExecContext(ctx, q, args...)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected()
+	}
+	migrateLegacyPasswords(ctx, todo, exec, crypto.Encrypt, crypto.Decrypt, log.Printf)
+}
+
+// migrateLegacyPasswords applies legacyPasswordAction to each row with the guarded writes above.
+// exec returns the rows a write changed (0: the row changed since it was read — left as it is).
+func migrateLegacyPasswords(ctx context.Context, todo []legacyPassword,
+	exec func(ctx context.Context, query string, args ...any) (int64, error),
+	encrypt func(string) ([]byte, error), decrypt func([]byte) (string, error), logf func(string, ...any)) {
+	for _, r := range todo {
+		var query, done string
+		var args []any
+		switch legacyPasswordAction(r.enc, decrypt) {
+		case "encrypt":
+			enc, err := encrypt(r.plain)
+			if err != nil || len(enc) == 0 {
+				logf("[provision] сервер %d: не удалось зашифровать открытый пароль SSH (%v) — открытую копию не трогаю", r.id, err)
+				continue
+			}
+			query, args, done = encryptLegacyPasswordQuery, []any{r.id, r.plain, enc}, "открытый пароль SSH зашифрован"
+		case "clear":
+			query, args, done = clearLegacyPasswordQuery, []any{r.id, r.plain, r.enc}, "открытая копия пароля SSH удалена (зашифрованный пароль читается)"
+		default:
+			logf("[provision] сервер %d: зашифрованный пароль не читается этим SSH_ENCRYPTION_KEY — открытую копию не трогаю", r.id)
+			continue
+		}
+		switch n, err := exec(ctx, query, args...); {
+		case err != nil:
+			logf("[provision] сервер %d: пароль SSH не перенесён: %v", r.id, err)
+		case n == 0:
+			logf("[provision] сервер %d: строка изменилась после чтения — пароль SSH не тронут, повтор при следующем старте", r.id)
+		default:
+			logf("[provision] сервер %d: %s", r.id, done)
+		}
+	}
+}
 
 // apiHooks binds recipe side effects to the API's database: syncs go through biz.RequestSync
 // (never an API restart), the agent check is the Hub's own mTLS call (admin.ProbeNodeAgent,

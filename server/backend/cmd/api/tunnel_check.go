@@ -72,13 +72,9 @@ func exitHyAbsentReason(n biz.ExitNodeTunnel) string {
 	return fmt.Sprintf("пути Hysteria нет: протокол туннеля %q, не hysteria2", n.TunnelProtocol)
 }
 
-// exitVRAbsentReason: why exitHasVRPath says no, in the generator's words (exitVRProblem).
+// exitVRAbsentReason: why exitHasVRPath says no, in the generator's words (exitVRAbsentWhy).
 func exitVRAbsentReason(n biz.ExitNodeTunnel) string {
-	why := exitVRProblem(n)
-	if why == "" {
-		why = "путь выключен" // exitHasVRPath said no for a reason of its own (the owner's switch)
-	}
-	return "TCP-пути нет: " + why
+	return "TCP-пути нет: " + exitVRAbsentWhy(n)
 }
 
 func tunnelPathWord(status string) string {

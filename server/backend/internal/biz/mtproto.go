@@ -173,19 +173,26 @@ func ListExitsNeedingMTProto() ([]MTProtoExit, error) {
 	return out, rows.Err()
 }
 
-// MarkMTProtoStatus sets mtproto_status and updates last_check timestamp.
-// mtproto_installed_at is set to NOW() ONLY on first 'healthy' observation —
-// preserves retry semantics: if install never succeeded, installed_at stays
-// NULL and the reconciler keeps retrying until success.
-func MarkMTProtoStatus(serverID int, status string) error {
-	_, err := db.DB.Exec(`
+// markMTProtoStatusQuery never touches a row whose MTProxy the owner switched off ('disabled'):
+// the health monitor reads the row, probes for up to 3 s and only then writes, so a switch-off in
+// between would otherwise be turned back into healthy/unhealthy. Only the admin switch
+// (internal/admin mtproxyEnableQuery) leaves 'disabled'.
+const markMTProtoStatusQuery = `
 		UPDATE servers
 		   SET mtproto_status = $1,
 		       mtproto_last_check = NOW(),
 		       mtproto_installed_at = COALESCE(mtproto_installed_at,
 		                                       CASE WHEN $1 = 'healthy' THEN NOW() END),
 		       updated_at = NOW()
-		 WHERE id = $2
-	`, status, serverID)
+		 WHERE id = $2 AND mtproto_status <> 'disabled'
+	`
+
+// MarkMTProtoStatus sets mtproto_status and updates last_check timestamp (the MTProto health
+// monitor's write; a 'disabled' row is left alone, see markMTProtoStatusQuery).
+// mtproto_installed_at is set to NOW() ONLY on first 'healthy' observation —
+// preserves retry semantics: if install never succeeded, installed_at stays
+// NULL and the reconciler keeps retrying until success.
+func MarkMTProtoStatus(serverID int, status string) error {
+	_, err := db.DB.Exec(markMTProtoStatusQuery, status, serverID)
 	return err
 }

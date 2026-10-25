@@ -82,3 +82,12 @@ func TestExitsNeedingMTProtoSkipsDisabled(t *testing.T) {
 		t.Errorf("query:\n%s", exitsNeedingMTProtoQuery)
 	}
 }
+
+// The health monitor's write never overwrites the owner's switch: a probe that read the row just
+// before MTProxy was switched off must not turn 'disabled' back into healthy/unhealthy.
+func TestMarkMTProtoStatusKeepsDisabled(t *testing.T) {
+	q := normSQL(markMTProtoStatusQuery)
+	if !strings.Contains(q, normSQL("WHERE id = $2 AND mtproto_status <> 'disabled'")) {
+		t.Errorf("query:\n%s", markMTProtoStatusQuery)
+	}
+}

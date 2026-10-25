@@ -113,11 +113,29 @@ func exitHasHyPath(n biz.ExitNodeTunnel) bool {
 }
 
 // exitHasVRPath is THE predicate of an exit's TCP path, shared by the generator (buildExitConfig),
-// the tunnel monitor and «Проверить туннель»: a VLESS Reality path xray accepts (exitVRProblem).
-// The owner's TCP-fallback switch (node-pool plan, Task 2.10) is added here as
-// `n.FallbackEnabled && …`; the callers need no change.
+// the tunnel monitor and «Проверить туннель»: a VLESS Reality path xray accepts (exitVRProblem)
+// that the owner did not switch off.
 func exitHasVRPath(n biz.ExitNodeTunnel) bool {
+	// The owner may switch this exit's TCP fallback off (servers.tunnel_fallback_enabled): then the
+	// generator builds neither exit-<id>.vr nor the probe pair, and the monitor / «Проверить туннель»
+	// report the path as absent instead of probing an inbound that does not exist. A legacy vless
+	// exit's TCP path is its only one, not a fallback: the switch does not apply to it.
+	if n.TunnelProtocol == "hysteria2" && !n.FallbackEnabled {
+		return false
+	}
 	return exitVRProblem(n) == ""
+}
+
+// exitVRSwitchedOffWhy is the reason given for a TCP path that is valid but switched off.
+const exitVRSwitchedOffWhy = "запасной путь выключен в карточке ноды («Запасной TCP-путь»)"
+
+// exitVRAbsentWhy says why exitHasVRPath says no: the field problem (exitVRProblem) when there is
+// one — the path would be missing even with the switch on — else the owner's switch.
+func exitVRAbsentWhy(n biz.ExitNodeTunnel) string {
+	if why := exitVRProblem(n); why != "" {
+		return why
+	}
+	return exitVRSwitchedOffWhy
 }
 
 // exitVRProblem says why exit n has no usable TCP (VLESS Reality) path, "" when it has one. The
@@ -313,10 +331,7 @@ func buildExitConfig(nodes []biz.ExitNodeTunnel, mux int) exitConfig {
 		}
 		hy, vr := exitHasHyPath(n), exitHasVRPath(n)
 		if !vr {
-			why := exitVRProblem(n)
-			if why == "" {
-				why = "путь выключен" // exitHasVRPath said no for a reason of its own (the owner's switch)
-			}
+			why := exitVRAbsentWhy(n)
 			if !hy {
 				notes[n.ID] = fmt.Sprintf("пропущена — нет пути Hysteria (протокол %q) и нет TCP-пути: %s", n.TunnelProtocol, why)
 				continue

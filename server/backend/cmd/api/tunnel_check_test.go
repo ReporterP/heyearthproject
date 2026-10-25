@@ -77,6 +77,14 @@ func TestTunnelCheckResultAbsentReasons(t *testing.T) {
 		!strings.Contains(r.Summary, "пути Hysteria у этого exit нет") {
 		t.Errorf("hy: %+v, summary %q", r.Paths[0], r.Summary)
 	}
+	// A valid TCP path the owner switched off: absent, and the reason says it is his switch.
+	off := testExit(4, "hysteria2")
+	off.FallbackEnabled = false
+	r = tunnelCheckResult(off, exitPathProbe{hy: pathProbe{present: true, ok: true, rttMs: 70}}, now)
+	if r.Paths[1].Status != "absent" || !strings.Contains(r.Paths[1].Error, "выключен в карточке ноды") ||
+		!strings.Contains(r.Summary, "Запасного TCP-пути нет") {
+		t.Errorf("switched off: %+v, summary %q", r.Paths[1], r.Summary)
+	}
 	r = tunnelCheckResult(biz.ExitNodeTunnel{ID: 600, TunnelProtocol: "hysteria2", LifecycleState: "online"}, exitPathProbe{}, now)
 	if !strings.Contains(r.Paths[0].Error, "id вне 1..511") || !strings.Contains(r.Paths[1].Error, "id вне 1..511") {
 		t.Errorf("id 600: %+v", r.Paths)
@@ -90,10 +98,10 @@ func TestCheckExitTunnelIsReadOnly(t *testing.T) {
 	const id = 47
 	const uuid, hyPass = "0f9e8d7c-6b5a-4433-8211-00aa11bb22cc", "hy-secret-password"
 	row := []driver.Value{int64(id), "Рига", "203.0.113.47", "hysteria2", int64(0), uuid, "pubkey-not-checked-here",
-		"ab12", "", "", hyPass, "healthy", int64(3), "online"}
+		"ab12", "", "", hyPass, "healthy", int64(3), "online", true}
 	exitQuery := func(rows ...[]driver.Value) []scriptQuery {
 		return []scriptQuery{{name: "exit", match: "FROM servers WHERE id = $1 AND is_exit_node = TRUE",
-			cols: []string{"id", "name", "ip", "proto", "port", "uuid", "pbk", "sid", "sni", "ssm", "ssp", "status", "w", "lc"}, rows: rows}}
+			cols: []string{"id", "name", "ip", "proto", "port", "uuid", "pbk", "sid", "sni", "ssm", "ssp", "status", "w", "lc", "fb"}, rows: rows}}
 	}
 	ah := withExitAlertHarness(t)
 	oldProber := exitPathProber
@@ -113,7 +121,8 @@ func TestCheckExitTunnelIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
-	if len(probed) != 1 || probed[0].ID != id || probed[0].LifecycleState != "online" || probed[0].TunnelUUID != uuid {
+	if len(probed) != 1 || probed[0].ID != id || probed[0].LifecycleState != "online" || probed[0].TunnelUUID != uuid ||
+		!probed[0].FallbackEnabled {
 		t.Fatalf("the prober must get the exit as read: %+v", probed)
 	}
 	if res.ServerID != id || res.Paths[0].Status != "fail" || res.Paths[1].Status != "ok" || res.Paths[1].RTTms != 95 ||

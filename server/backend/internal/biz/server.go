@@ -53,6 +53,9 @@ type ExitNodeTunnel struct {
 	TunnelStatus   string // healthy, unhealthy, unknown
 	LoadWeight     int    // 1-10: preference of the exit in the leastLoad balancers
 	LifecycleState string // pending, provisioning, online, failed, deprovisioning, offline
+	// FallbackEnabled is servers.tunnel_fallback_enabled (migration 000061, NOT NULL DEFAULT true):
+	// the owner's switch of a Hysteria exit's TCP fallback path exit-<id>.vr (cmd/api exitHasVRPath).
+	FallbackEnabled bool
 }
 
 // exitNodeColumns is the select list scanExitNode reads.
@@ -61,13 +64,15 @@ const exitNodeColumns = `id, COALESCE(name, ''), ip_address,
 	       COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''),
 	       COALESCE(tunnel_short_id, ''), COALESCE(tunnel_sni, ''),
 	       COALESCE(tunnel_ss_method, ''), COALESCE(tunnel_ss_password, ''),
-	       COALESCE(tunnel_status, 'unknown'), COALESCE(load_weight, 1), lifecycle_state`
+	       COALESCE(tunnel_status, 'unknown'), COALESCE(load_weight, 1), lifecycle_state,
+	       tunnel_fallback_enabled`
 
 func scanExitNode(row interface{ Scan(dest ...any) error }) (ExitNodeTunnel, error) {
 	var n ExitNodeTunnel
 	err := row.Scan(&n.ID, &n.Name, &n.IPAddress, &n.TunnelProtocol, &n.TunnelPort,
 		&n.TunnelUUID, &n.TunnelPubKey, &n.TunnelShortID, &n.TunnelSNI,
-		&n.TunnelSSMethod, &n.TunnelSSPass, &n.TunnelStatus, &n.LoadWeight, &n.LifecycleState)
+		&n.TunnelSSMethod, &n.TunnelSSPass, &n.TunnelStatus, &n.LoadWeight, &n.LifecycleState,
+		&n.FallbackEnabled)
 	return n, err
 }
 

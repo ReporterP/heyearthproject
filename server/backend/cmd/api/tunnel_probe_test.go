@@ -558,7 +558,7 @@ func TestProbeExitPathsLive(t *testing.T) {
 	t.Cleanup(func() { exitProbeTargets = saved })
 
 	node := biz.ExitNodeTunnel{ID: id, TunnelProtocol: "hysteria2", TunnelUUID: "11111111-2222-3333-4444-555555555555",
-		TunnelPubKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), TunnelShortID: "abcd"}
+		TunnelPubKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), TunnelShortID: "abcd", FallbackEnabled: true}
 	p := probeExitPathsLive(node)
 	if !p.hy.present || !p.hy.ok || p.hy.rttMs < 1 || p.hy.err != "" {
 		t.Errorf("Hysteria path = %+v, want present, ok, an RTT", p.hy)
@@ -566,6 +566,14 @@ func TestProbeExitPathsLive(t *testing.T) {
 	if want := fmt.Sprintf("tcp-reality exit #%d via 127.0.0.1:%d: ", id, exitProbePort(id)); !p.vr.present || p.vr.ok || !strings.HasPrefix(p.vr.err, want) {
 		t.Errorf("TCP path = %+v, want present, failed, error starting %q", p.vr, want)
 	}
+
+	// The owner switched the TCP fallback off: the path is absent (xray has no probe inbound for
+	// it), not dead — never dialled, so the monitor resolves its alert as gone, not as recovered.
+	node.FallbackEnabled = false
+	if p = probeExitPathsLive(node); p.vr != (pathProbe{}) || !p.hy.ok {
+		t.Errorf("switched-off TCP path: %+v, want it absent and not dialled", p)
+	}
+	node.FallbackEnabled = true
 
 	node.TunnelUUID, node.TunnelPubKey = "", "" // no Reality credentials: no TCP path
 	if p = probeExitPathsLive(node); p.vr != (pathProbe{}) || !p.hy.ok {
@@ -845,5 +853,16 @@ func TestExitPathAlertTexts(t *testing.T) {
 	}
 	if !strings.Contains(exitPathUpText(node, "vr"), "снова работает") {
 		t.Error("recovery text")
+	}
+}
+
+// MTProxy the owner switched off (mtproto_status = 'disabled') is not probed: a health verdict
+// would turn it back into healthy/unhealthy, i.e. hand it out to users again.
+func TestMTProtoHealthSkipsDisabled(t *testing.T) {
+	q := strings.Join(strings.Fields(mtprotoHealthQuery), " ")
+	for _, want := range []string{"mtproto_status <> 'disabled'", "mtproto_installed_at IS NOT NULL", "lifecycle_state = 'online'"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("query lacks %q: %s", want, q)
+		}
 	}
 }
