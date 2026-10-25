@@ -206,6 +206,11 @@ func TestTeardownNamesMatchTemplates(t *testing.T) {
 		"hub client": strings.Contains(HubHysteriaClientUnit(7, "203.0.113.7"), " -c "+HubClientConfigPath(7)+"\n") &&
 			strings.Contains(HubHysteriaClientYAML(7, "203.0.113.7", "x", 1095), "server id=7"),
 		"probe path": strings.Contains(VRProbeConfigPath(7), "vr-probe-7.json"),
+		// The Hub client's markers are the ones its converge and rollback use (the path check of a live exit included).
+		"hub client markers": strings.Contains(HubClientRemoveScript(7), shQuote(RestartMarker(HubClientUnit(7)))) &&
+			strings.Contains(HubClientRemoveScript(7), shQuote(PathCheckMarker(HubClientUnit(7)))) &&
+			strings.Contains(UnitConvergeSoftScript(HubClientUnit(7), ""), shQuote(PathCheckMarker(HubClientUnit(7)))) &&
+			strings.Contains(UnitRollbackScript(HubClientUnit(7), nil), shQuote(PathCheckMarker(HubClientUnit(7)))),
 	} {
 		if !ok {
 			t.Errorf("%s: teardown and template disagree", name)
@@ -264,6 +269,7 @@ func TestHubClientRemoveArchivesAndCleans(t *testing.T) {
 		mustWrite(t, dir, "etc/systemd/system/hysteria2-client-"+id+".service.bak", "[Unit]", 0o644)
 		mustWrite(t, dir, "etc/systemd/system/multi-user.target.wants/hysteria2-client-"+id+".service", "", 0o644)
 		mustWrite(t, dir, rel(RestartMarker("hysteria2-client-"+id)), "", 0o644)
+		mustWrite(t, dir, rel(PathCheckMarker("hysteria2-client-"+id)), "BEFORE=1\n", 0o644)
 		mustWrite(t, dir, "opt/heyearth/state/vr-probe-"+id+".json", `{"uuid":"x"}`, 0o600)
 		mustWrite(t, dir, "opt/heyearth/state/vr-probe-"+id+".json.bak", `{"uuid":"y"}`, 0o600)
 	}
@@ -279,13 +285,13 @@ func TestHubClientRemoveArchivesAndCleans(t *testing.T) {
 	for _, gone := range []string{"opt/heyearth/hysteria/client-7.yaml", "opt/heyearth/hysteria/client-7.yaml.bak",
 		"etc/systemd/system/hysteria2-client-7.service", "etc/systemd/system/hysteria2-client-7.service.bak",
 		"etc/systemd/system/multi-user.target.wants/hysteria2-client-7.service", "active.hysteria2-client-7", "enabled.hysteria2-client-7",
-		rel(RestartMarker("hysteria2-client-7")), "opt/heyearth/state/vr-probe-7.json", "opt/heyearth/state/vr-probe-7.json.bak"} {
+		rel(RestartMarker("hysteria2-client-7")), rel(PathCheckMarker("hysteria2-client-7")), "opt/heyearth/state/vr-probe-7.json", "opt/heyearth/state/vr-probe-7.json.bak"} {
 		if exists(dir, gone) {
 			t.Errorf("%s left behind", gone)
 		}
 	}
 	for _, kept := range []string{"opt/heyearth/hysteria/client-17.yaml", "etc/systemd/system/hysteria2-client-17.service",
-		"active.hysteria2-client-17", "enabled.hysteria2-client-17", "opt/heyearth/state/vr-probe-17.json"} {
+		"active.hysteria2-client-17", "enabled.hysteria2-client-17", "opt/heyearth/state/vr-probe-17.json", rel(PathCheckMarker("hysteria2-client-17"))} {
 		if !exists(dir, kept) {
 			t.Errorf("another exit's %s removed", kept)
 		}

@@ -476,6 +476,8 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		u := "hysteria2-client-" + f[1]
 		h.remove("/etc/systemd/system/"+u+".service", config.HubClientConfigPath(atoi(f[1])))
 		h.active[u], h.enabled[u] = false, false
+		h.clearMarker(u)
+		delete(h.pathMark, u)
 	case "hub-client-state":
 		u := "hysteria2-client-" + f[1]
 		return "UNIT=" + b01(h.files["/etc/systemd/system/"+u+".service"] != nil) + "\nCONFIG=" + b01(h.files[config.HubClientConfigPath(atoi(f[1]))] != nil) +

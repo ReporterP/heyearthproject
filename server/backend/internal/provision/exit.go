@@ -875,11 +875,19 @@ func hubClientRollback(ctx context.Context, _ Remote, s *State) error {
 
 // ── end-to-end paths: the probes, and the guard around a live exit's risky restarts ──
 
-// pathCheck is one end-to-end path users' traffic rides on: its owner-facing name and its probe
-// from the Hub (ok: generate_204 answered; code: what came back).
+// pathCheck is one end-to-end path users' traffic rides on: its owner-facing name, its probe
+// from the Hub (ok: generate_204 answered; code: what came back) and the units whose guarded
+// steps change it (their path-check markers judge the same path).
 type pathCheck struct {
 	name  string
 	probe func(ctx context.Context, s *State) (ok bool, code string, err error)
+	units func(s *State) []pathUnit
+}
+
+// pathUnit is a guarded unit and where it lives (onHub: the Hub, else the node).
+type pathUnit struct {
+	unit  string
+	onHub bool
 }
 
 // hyPath: the main tunnel — generate_204 through the Hub's hysteria client of the exit (SOCKS
@@ -890,7 +898,7 @@ var hyPath = pathCheck{"основной туннель", func(ctx context.Conte
 		return false, "", err
 	}
 	return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
-}}
+}, func(s *State) []pathUnit { return []pathUnit{{"hysteria2", false}, {hubUnit(s), true}} }}
 
 // vrPath: the TCP fallback — generate_204 through a short-lived xray on the Hub over VLESS
 // Reality to the exit's :10443 (exit-<id>.vr). The probe config carries the tunnel UUID: it is
@@ -915,7 +923,7 @@ func vrPath(o ExitOptions) pathCheck {
 			return false, "", err
 		}
 		return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
-	}}
+	}, func(*State) []pathUnit { return []pathUnit{{"xray", false}} }}
 }
 
 // liveExit: the job converges an exit that carries users (reprovision runs only on online nodes).
@@ -974,6 +982,28 @@ func probeBefore(ctx context.Context, s *State, p pathCheck) (bool, error) {
 	return ok, err
 }
 
+// otherUnitBefore: another unit on the same path (hysteria ↔ the Hub's client) whose change is
+// still unverified and recorded a path that answered before it ("" when none).
+func otherUnitBefore(ctx context.Context, node Remote, s *State, p pathCheck, self pathUnit) (string, error) {
+	for _, o := range p.units(s) {
+		if o == self {
+			continue
+		}
+		host := node
+		if o.onHub {
+			host = s.Hub
+		}
+		pc, err := readPathCheck(ctx, host, o.unit)
+		if err != nil {
+			return "", err
+		}
+		if pc.present && pc.before {
+			return o.unit, nil
+		}
+	}
+	return "", nil
+}
+
 func noRollback(format string, a ...any) error {
 	return fmt.Errorf("%w: %w", ErrNoRollback, fmt.Errorf(format, a...))
 }
@@ -999,7 +1029,10 @@ func answered(ok bool) string {
 // (config.PathCheckMarker) until the check after the change passed: a job interrupted in between
 // (an API restart) leaves it, the step's Verify then fails (PATHCHECK=1), and the resumed Apply
 // judges the after-probe against the recorded before-result instead of probing "before" a change
-// already made; a rollback there still undoes the recorded writes. A check that cannot run before
+// already made; a rollback there still undoes the recorded writes. hysteria and the Hub's client
+// share the main tunnel: a step that finds the other unit's unverified change recorded with a
+// path that answered judges its own change by that record, not by a fresh probe (otherUnitBefore).
+// A check that cannot run before
 // the change, or a marker that cannot be cleared after a good check, fails the step without a
 // rollback (ErrNoRollback). Elsewhere (provision: the node is not in routing; verify never
 // applies) apply runs as it is, a stale marker of an earlier live run removed first.
@@ -1023,8 +1056,20 @@ func guardPath(p pathCheck, unit func(*State) string, onHub bool, apply stepFunc
 		if pc.present {
 			s.Printf("проверка пути после изменений прерванного запуска не завершена: до них %s %s — сужу по этому", p.name, answered(before))
 		} else {
-			if before, err = probeBefore(ctx, s, p); err != nil {
+			other, err := otherUnitBefore(ctx, r, s, p, pathUnit{u, onHub})
+			switch {
+			case err != nil:
 				return noRollback("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
+			case other != "":
+				// Another unit's unverified change on this path may be what killed it: a fresh
+				// "dead" would leave this change unguarded.
+				before = true
+				s.Printf("проверка пути после изменений %s (прерванный запуск) не завершена, до них %s отвечал — сужу по этой записи, "+
+					"а не по новой пробе", other, p.name)
+			default:
+				if before, err = probeBefore(ctx, s, p); err != nil {
+					return noRollback("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
+				}
 			}
 			if _, err := host.Run(ctx, config.PathCheckStartScript(u, before)); err != nil {
 				return noRollback("отметка проверки пути %s не записана — ничего не меняю: %w", u, err)

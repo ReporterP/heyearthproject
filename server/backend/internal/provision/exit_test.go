@@ -625,6 +625,58 @@ func TestExitLivePathCheckSurvivesAPIRestart(t *testing.T) {
 	}
 }
 
+// A node out of routing (provision) with path-check markers left by an earlier live run: no
+// path checks, the stale markers go before the steps converge — they never fail a Verify after
+// Apply nor turn into a rollback of the files they recorded.
+func TestExitProvisionClearsStalePathCheckMarkers(t *testing.T) {
+	e := exitFixture(t, false)
+	e.start(t, KindProvision)
+	e.h.lifecycle = "failed"
+	stale := func(h *fakeHost, unit, path string) {
+		h.pathMark[unit] = &fakePathMark{before: true, writes: map[string]string{path: sha256Hex(h.files[path])}}
+	}
+	stale(e.node, "hysteria2", config.ExitHysteriaConfig)
+	stale(e.node, "xray", config.ExitXrayConfig)
+	stale(e.hub, config.HubClientUnit(7), config.HubClientConfigPath(7))
+	writes, restarts, hubRestarts := e.node.writes, maps.Clone(e.node.restarts), maps.Clone(e.hub.restarts)
+	probes := e.hub.count("socks-probe 1095")
+	id := e.start(t, KindProvision)
+	st := e.steps(id)
+	if e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["xray"] != StepDone || st["hub_client"] != StepDone || e.h.lifecycle != "online" {
+		t.Fatalf("%q %v", e.store.jobs[id].Error, e.store.statuses(id))
+	}
+	if len(e.node.pathMark)+len(e.hub.pathMark) != 0 || e.node.writes != writes || !maps.Equal(e.node.restarts, restarts) || !maps.Equal(e.hub.restarts, hubRestarts) ||
+		e.node.count("rollback hysteria2")+e.node.count("rollback xray")+e.hub.count("rollback "+config.HubClientUnit(7)) != 0 ||
+		e.hub.count("socks-probe 1095") != probes+1 {
+		t.Fatalf("markers %v %v, writes %d, restarts %v %v, ops %v", e.node.pathMark, e.hub.pathMark, e.node.writes-writes, e.node.restarts, e.hub.restarts, e.hub.ops)
+	}
+}
+
+// hysteria and the Hub's client ride the same main tunnel: the hysteria step that finds the
+// client's unfinished check (an interrupted run, the path answering before that change) judges
+// its own change by that recorded result, not by a fresh probe — the client's unverified change
+// may be what killed the path, and a fresh "dead" would leave the hysteria change unguarded.
+func TestExitLiveSharedPathUsesTheOtherUnitsRecord(t *testing.T) {
+	e, _ := legacyExit(t)
+	legacyYAML := string(e.node.files[config.ExitHysteriaConfig])
+	u := config.HubClientUnit(7)
+	e.hub.pathMark[u] = &fakePathMark{before: true, writes: map[string]string{config.HubClientConfigPath(7): sha256Hex(e.hub.files[config.HubClientConfigPath(7)])}}
+	e.hub.probeDead = func(op string) bool { return strings.HasPrefix(op, "socks-probe") } // dead since the client's change
+	e.trace = nil
+	id := e.start(t, KindReprovision)
+	conv := slices.Index(e.trace, "node: converge hysteria2")
+	if e.steps(id)["hysteria"] != StepRolledBack || string(e.node.files[config.ExitHysteriaConfig]) != legacyYAML || conv < 0 ||
+		slices.Contains(e.trace[:conv], "hub: socks-probe 1095") || !strings.Contains(e.tail(id, "hysteria"), u) || e.h.lifecycle != "online" {
+		t.Fatalf("%q %v\n%q\n%v", e.store.jobs[id].Error, e.store.statuses(id), e.tail(id, "hysteria"), e.trace)
+	}
+	if pm := e.hub.pathMark[u]; pm == nil || !pm.before {
+		t.Fatal("the client's own check is the hub_client step's to finish")
+	}
+	if pm := e.node.pathMark["hysteria2"]; pm != nil {
+		t.Fatalf("hysteria's marker must be gone with its rollback: %+v", pm)
+	}
+}
+
 // Review Focus → 2 (node-agent): a guard that locks the Hub out (ProbeAgent fails after the
 // change) is rolled back in the kernel too — the previous rules are loaded again, not only the
 // previous file put back.

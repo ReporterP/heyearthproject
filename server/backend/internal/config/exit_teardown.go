@@ -73,7 +73,8 @@ const unitOffFunc = `unit_off() {
 // HubClientRemoveScript (Hub): stop and disable the client of exit id (a stray process of it is
 // killed too), move its config and unit into a fresh HubServerArchiveDir/<id>-<time> with the
 // journal tail (only when there is something to archive), delete the .bak copies (they carry the
-// tunnel password), its restart markers and a leftover TCP-path probe config, daemon-reload.
+// tunnel password), its restart, pending-binary and path-check markers and a leftover TCP-path
+// probe config, daemon-reload.
 // Fails if the client still runs.
 func HubClientRemoveScript(id int) string {
 	n := strconv.Itoa(id)
@@ -93,7 +94,7 @@ if [ "${#hc_files[@]}" -gt 0 ]; then
   mv -f "${hc_files[@]}" "$HC_ARCHIVE/"
   echo "[hub] конфигурация и юнит клиента перенесены в архив $HC_ARCHIVE"
 fi
-rm -f "$HC_CFG.bak" "$HC_FILE.bak" ` + shQuote(RestartMarker(u)) + " " + shQuote(BinaryPendingMarker(u)) + " " +
+rm -f "$HC_CFG.bak" "$HC_FILE.bak" ` + shQuote(RestartMarker(u)) + " " + shQuote(BinaryPendingMarker(u)) + " " + shQuote(PathCheckMarker(u)) + " " +
 		shQuote(VRProbeConfigPath(id)) + " " + shQuote(VRProbeConfigPath(id)+".bak") + `
 systemctl daemon-reload
 systemctl reset-failed "$HC_UNIT" >/dev/null 2>&1 || true
