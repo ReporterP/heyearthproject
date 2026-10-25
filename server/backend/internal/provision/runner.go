@@ -54,6 +54,32 @@ var (
 	ErrJobLost = errors.New("задача больше не принадлежит этому запуску: её прервали или продолжили заново")
 )
 
+// RefusalError: a job was refused before it existed, for a reason the owner can act on (the node's
+// state, the Hub's settings or assets); its text is meant for the admin panel. Any other error of
+// Start / Resume (database, network) is internal and is not shown as is.
+type RefusalError struct{ Err error }
+
+func (e *RefusalError) Error() string { return e.Err.Error() }
+func (e *RefusalError) Unwrap() error { return e.Err }
+
+// Refusal marks err as a RefusalError (nil stays nil; sentinels inside stay visible to errors.Is).
+func Refusal(err error) error {
+	if err == nil {
+		return nil
+	}
+	var re *RefusalError
+	if errors.As(err, &re) {
+		return err
+	}
+	return &RefusalError{Err: err}
+}
+
+// IsRefusal reports whether err is a RefusalError.
+func IsRefusal(err error) bool {
+	var re *RefusalError
+	return errors.As(err, &re)
+}
+
 // jobTimeout is JobTimeout (tests shorten it).
 var jobTimeout = JobTimeout
 
@@ -109,7 +135,7 @@ func ValidKind(k string) bool {
 // Start creates the job (one active job per node, enforced by the database) and runs it in the background.
 func (r *Runner) Start(ctx context.Context, serverID int, kind string) (int64, error) {
 	if !ValidKind(kind) {
-		return 0, fmt.Errorf("неизвестный вид задачи %q", kind)
+		return 0, Refusal(fmt.Errorf("неизвестный вид задачи %q", kind))
 	}
 	n, err := r.Store.LoadNode(ctx, serverID)
 	if err != nil {

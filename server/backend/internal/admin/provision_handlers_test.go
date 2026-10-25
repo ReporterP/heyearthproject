@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -269,7 +270,9 @@ func TestValidateNodeAddr(t *testing.T) {
 	t.Cleanup(func() { HubOwnIPs = old })
 	for _, bad := range []string{"", "x", "exit.example.com", "127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.1",
 		"100.64.0.1", "100.127.255.254", "169.254.1.1", "fe80::1", "0.0.0.0", "::", "0.1.2.3", "224.0.0.1", "ff02::1",
-		"255.255.255.255", "fd00::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "198.51.100.1", "2001:db8::1"} {
+		"255.255.255.255", "fd00::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "198.51.100.1", "2001:db8::1",
+		// IPv6 that embeds an IPv4 host (IPv4-compatible, NAT64, 6to4) or is documentation.
+		"::1.2.3.4", "::a00:1", "64:ff9b::a00:1", "2002:a00:1::1", "2001:db8:5::7"} {
 		if _, _, err := validateNodeAddr(bad, 22); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
@@ -280,8 +283,8 @@ func TestValidateNodeAddr(t *testing.T) {
 	if ip, _, err := validateNodeAddr("::ffff:203.0.113.7", 2222); err != nil || ip != "203.0.113.7" {
 		t.Errorf("v4-mapped: %q %v", ip, err)
 	}
-	if _, _, err := validateNodeAddr("2001:db8:5::7", 22); err != nil {
-		t.Errorf("public v6: %v", err)
+	if ip, _, err := validateNodeAddr("2a01:4f8:c17:1::7", 22); err != nil || ip != "2a01:4f8:c17:1::7" {
+		t.Errorf("public v6: %q %v", ip, err)
 	}
 	for _, port := range []int{-1, 65536} {
 		if _, _, err := validateNodeAddr("203.0.113.7", port); err == nil {
@@ -384,7 +387,7 @@ func TestCreateNodeStoresChosenProbeKey(t *testing.T) {
 		return nil
 	}})
 	rec := call(CreateNodeHandler, "POST", "/api/admin/servers",
-		`{"name":"Франкфурт","ip_address":"203.0.113.7","country_code":"de","ssh_password":"root-pw","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`)
+		`{"name":"Франкфурт","ip_address":" ::ffff:203.0.113.7 ","country_code":"de","ssh_password":"root-pw","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`)
 	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"id":9`) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
@@ -395,6 +398,10 @@ func TestCreateNodeStoresChosenProbeKey(t *testing.T) {
 	q, args := ins[0].q, ins[0].args
 	if !strings.Contains(q, "ssh_host_key_confirmed_at") || !strings.Contains(q, "NOW()") || strings.Contains(q, "ssh_password,") {
 		t.Errorf("insert:\n%s", q)
+	}
+	// The address is stored normalized (the unique index sees one spelling per host).
+	if !slices.Contains(args, driver.Value("203.0.113.7")) || !slices.Contains(d.matching("SELECT EXISTS")[0].args, driver.Value("203.0.113.7")) {
+		t.Errorf("address not normalized: %v", args)
 	}
 	var sawBlob, sawFP, sawCountry bool
 	for _, a := range args {
@@ -705,6 +712,48 @@ func TestNodeRoutingValidation(t *testing.T) {
 	up := d.matching("UPDATE servers SET load_weight = $2")
 	if len(up) != 1 || up[0].args[2] != false {
 		t.Fatalf("routing write: %+v", d.stmts)
+	}
+}
+
+// Only refusals reach the owner as text (409); a database or network failure of Start / Resume
+// is logged and answered with one 500 text, an SSH failure with one 502 text.
+func TestJobAndAccessErrorsHideInternals(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		code int
+		text string
+	}{
+		{provision.Refusal(errors.New("публичные адреса Hub не определены")), 409, "публичные адреса Hub"},
+		{fmt.Errorf("x: %w", provision.ErrJobNotResumable), 409, "продолжить"},
+		{provision.ErrJobActive, 409, "уже выполняется"},
+		{fmt.Errorf("нода 7 %w", provision.ErrNodeNotFound), 404, "не найдена"},
+		{errors.New("pq: relation \"provision_jobs\" does not exist"), 500, "Не удалось запустить задачу"},
+		{errors.New("dial tcp 127.0.0.1:5432: connect: connection refused"), 500, "Не удалось запустить задачу"},
+	} {
+		rec := httptest.NewRecorder()
+		writeJobError(rec, c.err)
+		if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.text) || strings.Contains(rec.Body.String(), "pq:") || strings.Contains(rec.Body.String(), "5432") {
+			t.Errorf("%v: %d %s", c.err, rec.Code, rec.Body)
+		}
+	}
+	// Through a handler: a store failure inside Runner.Start.
+	p := &fakeProvisioner{err: errors.New("pq: could not serialize access SECRET-DSN")}
+	withProvisioning(t, p, provision.Node{ID: 7, Lifecycle: "pending", HostKeyConfirmed: true})
+	if rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/7/provision", ""); rec.Code != 500 || strings.Contains(rec.Body.String(), "SECRET") {
+		t.Errorf("start failure: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range []error{
+		errors.New("ssh 10.0.0.1:113: dial tcp 10.0.0.1:113: connect: connection refused"),
+		errors.New("ssh 203.0.113.7:22: ssh: handshake failed: EOF"),
+		fmt.Errorf("%w: 203.0.113.7:22 (ssh-ed25519 SHA256:x ≠ SHA256:y)", provision.ErrHostKeyMismatch),
+		fmt.Errorf("ssh 203.0.113.7:22: %w: cipher: message authentication failed", provision.ErrNoCredentials),
+	} {
+		rec := httptest.NewRecorder()
+		writeNodeAccessError(rec, e)
+		if (rec.Code != 502 && rec.Code != 409) || strings.Contains(rec.Body.String(), "203.0.113.7") || strings.Contains(rec.Body.String(), "10.0.0.1") ||
+			strings.Contains(rec.Body.String(), "refused") || strings.Contains(rec.Body.String(), "cipher") {
+			t.Errorf("%v: %d %s", e, rec.Code, rec.Body)
+		}
 	}
 }
 

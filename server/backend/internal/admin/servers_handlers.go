@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -258,6 +259,21 @@ func validateCountryCode(code string) error {
 	return nil
 }
 
+// clearHostKeyQuery drops a node's host key and its confirmation (its address changed).
+const clearHostKeyQuery = `UPDATE servers SET ssh_host_key = NULL, ssh_host_key_fp = NULL, ssh_host_key_confirmed_at = NULL, updated_at = NOW() WHERE id = $1`
+
+// sameNodeAddr: the same host (IPs compared as addresses: "::ffff:1.2.3.4" is 1.2.3.4) and port.
+func sameNodeAddr(ipA string, portA int, ipB string, portB int) bool {
+	if portA != portB {
+		return false
+	}
+	a, b := net.ParseIP(strings.TrimSpace(ipA)), net.ParseIP(strings.TrimSpace(ipB))
+	if a == nil || b == nil {
+		return strings.TrimSpace(ipA) == strings.TrimSpace(ipB)
+	}
+	return a.Equal(b)
+}
+
 func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
@@ -292,6 +308,19 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SSHPort == 0 {
 		req.SSHPort = existing.SSHPort
+	}
+	// A changed address is checked and normalized like a new node's (validateNodeAddr), and drops
+	// the host key confirmation: another machine may answer there, so the owner confirms again.
+	addrChanged := false
+	if sameNodeAddr(existing.IPAddress, existing.SSHPort, req.IPAddress, req.SSHPort) {
+		req.IPAddress, req.SSHPort = existing.IPAddress, existing.SSHPort
+	} else {
+		ip, port, err := validateNodeAddr(req.IPAddress, req.SSHPort)
+		if err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.IPAddress, req.SSHPort, addrChanged = ip, port, true
 	}
 	if strings.TrimSpace(req.SSHUser) == "" {
 		req.SSHUser = existing.SSHUser
@@ -380,8 +409,18 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, weight, serverID); err != nil {
+		if isUniqueViolation(err) {
+			writeAdminError(w, http.StatusConflict, nodeIPExistsMsg)
+			return
+		}
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
 		return
+	}
+	if addrChanged {
+		if _, err := tx.Exec(clearHostKeyQuery, serverID); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
+			return
+		}
 	}
 	if newSSHPasswordEnc != nil {
 		// ssh_password is NOT NULL: the plaintext column is emptied, never set to NULL.
@@ -395,11 +434,15 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить сервер")
 		return
 	}
-	WriteAuditLog(r, "update_server", "server", fmt.Sprintf("%d", serverID), nil)
+	WriteAuditLog(r, "update_server", "server", fmt.Sprintf("%d", serverID), map[string]bool{"address_changed": addrChanged})
 	if serverRoutingChanged(existing, req, weight) {
 		biz.RequestSync() // the exit's address, paths and weight live in the xray/hysteria configs
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server updated"})
+	msg := "Server updated"
+	if addrChanged {
+		msg = "Сохранено. Адрес или SSH-порт изменились — подтвердите ключ сервера заново, иначе Hub к нему не подключится"
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
 // movedServerActionMsg answers the old in-memory flows (hub_provision, deprovision_*): every change

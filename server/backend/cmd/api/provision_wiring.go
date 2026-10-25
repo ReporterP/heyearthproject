@@ -60,17 +60,18 @@ func apiHooks() provision.Hooks { return nodeStore.Hooks(biz.RequestSync, admin.
 // apiRecipe is the runner's recipe source: the Hub side runs locally (the API is on the Hub).
 func apiRecipe(_ context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
 	st := provision.NewState(kind, n, provision.LocalRemote{}, apiHooks())
+	// The options' errors name what the owner fixes on the Hub (addresses, assets): refusals.
 	switch {
 	case kind == provision.KindMTProxy: // MTProxy only: no Hub address list needed
 		mt, err := apiMTProtoOptions(n)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit.MTProto = mt
 	case kind != provision.KindDeprovision && n.Role == "exit":
 		opts, err := apiExitOptions(n)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit = opts
 	}
@@ -159,6 +160,9 @@ func (b mtproxyBackfill) run(ctx context.Context, needing []int) int {
 		if err != nil {
 			b.logf("[ghost-reconciler] mtproxy %d: задачи не прочитаны: %v", id, err)
 			continue
+		}
+		if len(jobs) > 0 && (jobs[0].Status == provision.JobRunning || jobs[0].Status == "queued") {
+			continue // the node is busy; the next tick looks again
 		}
 		if len(jobs) > 0 && jobs[0].Kind == provision.KindMTProxy && b.now().Sub(jobs[0].CreatedAt) < mtproxyRetryAfter {
 			b.logf("[ghost-reconciler] mtproxy %d: последняя попытка %s — следующая не раньше чем через %s", id,

@@ -294,8 +294,14 @@ func randomPassword() (string, error) {
 // RecipeFor picks the recipe of a job kind for a node: DeprovisionRecipe for deprovision,
 // mtproxyRecipe for mtproxy, the role's setup recipe for provision / reprovision / verify
 // (recipeForSetup, exit.go). A refusal happens before any job exists. st is the run's state
-// (st.Exit filled by the wiring); the setup recipes set st.Begin / st.Fail.
+// (st.Exit filled by the wiring); the setup recipes set st.Begin / st.Fail. RecipeFor does no
+// I/O, so every error it returns is a RefusalError (the owner's text).
 func RecipeFor(kind string, n Node, st *State) (Recipe, error) {
+	rc, err := recipeFor(kind, n, st)
+	return rc, Refusal(err)
+}
+
+func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 	if n.ID < 1 || n.ID > 511 {
 		return nil, fmt.Errorf("id ноды %d вне 1..511: порт 1088+id выходит за диапазон egress guard", n.ID)
 	}

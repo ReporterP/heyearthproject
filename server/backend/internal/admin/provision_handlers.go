@@ -67,6 +67,7 @@ const (
 	confirmNameMsg     = "Введите название ноды точно — так подтверждается опасное действие"
 	planIDsPositiveMsg = "plan_ids — номера тарифов (целые числа больше нуля)"
 	nodeIPExistsMsg    = "Нода с этим IP уже есть"
+	nodeUnreachableMsg = "Не удалось подключиться к серверу по SSH — подробности в журнале API"
 	jobActiveMsg       = "Для этой ноды уже выполняется задача — дождитесь её окончания"
 	// probeFailedMsg is the only answer to a failed probe: refused, filtered, not SSH, no
 	// supported key all look the same, so the endpoint tells nothing about other ports or hosts.
@@ -93,8 +94,11 @@ func writeJobError(w http.ResponseWriter, err error) {
 		writeAdminError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, provision.ErrHostKeyNotConfirmed):
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
-	default:
-		writeAdminError(w, http.StatusBadRequest, err.Error())
+	case provision.IsRefusal(err): // the node's state, the Hub's settings or assets: the owner's text
+		writeAdminError(w, http.StatusConflict, err.Error())
+	default: // database, network: never shown as is
+		log.Printf("[nodes] job: %v", err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось запустить задачу")
 	}
 }
 
@@ -106,11 +110,15 @@ func writeNodeAccessError(w http.ResponseWriter, err error) {
 	case errors.Is(err, provision.ErrHostKeyNotConfirmed):
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
 	case errors.Is(err, provision.ErrHostKeyMismatch):
-		writeAdminError(w, http.StatusConflict, "Сервер предъявил не тот ключ, что подтверждён (переустановлен или это не ваш сервер): "+err.Error())
+		log.Printf("[nodes] ssh: %v", err)
+		writeAdminError(w, http.StatusConflict, "Сервер предъявил не тот ключ, что подтверждён: он переустановлен или это не ваш сервер. "+
+			"Проверьте подключение и подтвердите ключ заново в карточке ноды")
 	case errors.Is(err, provision.ErrNoCredentials):
-		writeAdminError(w, http.StatusConflict, err.Error())
-	default:
-		writeAdminError(w, http.StatusBadGateway, "Не удалось войти на сервер: "+err.Error())
+		log.Printf("[nodes] ssh: %v", err)
+		writeAdminError(w, http.StatusConflict, "Нет доступа к серверу: пароль не расшифровывается или не подходит, а ключа Hub на сервере нет — задайте пароль заново")
+	default: // refused, timed out, no SSH: one answer, details in the log (no port probing)
+		log.Printf("[nodes] ssh: %v", err)
+		writeAdminError(w, http.StatusBadGateway, nodeUnreachableMsg)
 	}
 }
 
@@ -129,6 +137,12 @@ func validPlanIDs(ids []int) bool {
 		}
 	}
 	return true
+}
+
+// isUniqueViolation: the write hit a unique index (servers: uq_servers_ip_address).
+func isUniqueViolation(err error) bool {
+	var pe *pq.Error
+	return errors.As(err, &pe) && pe.Code == "23505"
 }
 
 // unknownPlan: a plan_servers insert hit the plans foreign key.
@@ -178,11 +192,14 @@ func refuseIfJobActive(w http.ResponseWriter, ctx context.Context, id int) bool 
 }
 
 // blockedNodeNets: addresses that are never a node — "this network", CGNAT, IETF protocol
-// assignments, benchmarking, reserved (with broadcast). Loopback, private (RFC 1918, ULA),
-// link-local, multicast and unspecified are refused by class.
+// assignments, benchmarking, reserved (with broadcast); IPv6 ranges that embed an IPv4 host or
+// are for documentation. Non-global-unicast, loopback, private (RFC 1918, ULA), link-local,
+// multicast and unspecified are refused by class.
 var blockedNodeNets = func() []*net.IPNet {
 	var out []*net.IPNet
-	for _, c := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4"} {
+	for _, c := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4",
+		// IPv6: IPv4-compatible, NAT64, 6to4 (both map to an IPv4 host, possibly internal), documentation.
+		"::/96", "64:ff9b::/96", "2002::/16", "2001:db8::/32"} {
 		_, n, _ := net.ParseCIDR(c)
 		out = append(out, n)
 	}
@@ -200,7 +217,7 @@ func validateNodeAddr(ipText string, port int) (string, int, error) {
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
 	}
-	bad := ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() ||
+	bad := !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast()
 	for _, n := range blockedNodeNets {
 		bad = bad || n.Contains(ip)
@@ -444,8 +461,7 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	var id int
 	if err := db.DB.QueryRowContext(r.Context(), insertNodeQuery, name, req.Role, req.Role == "exit", ip, port, user,
 		enc, country, key.Key, key.Fingerprint).Scan(&id); err != nil {
-		var pe *pq.Error
-		if errors.As(err, &pe) && pe.Code == "23505" {
+		if isUniqueViolation(err) {
 			writeAdminError(w, http.StatusConflict, nodeIPExistsMsg)
 			return
 		}

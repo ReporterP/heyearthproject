@@ -20,14 +20,16 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/lib/pq"
 )
 
 // serverDB is a database/sql connector for UpdateServerHandler: it answers the server SELECT
 // with one row, journals every statement, and — like production — refuses NULL in the
 // NOT NULL column servers.ssh_password.
 type serverDB struct {
-	mu    sync.Mutex
-	stmts []serverStmtRec
+	mu      sync.Mutex
+	stmts   []serverStmtRec
+	execErr func(q string) error // nil: statements succeed
 }
 
 type serverStmtRec struct {
@@ -105,6 +107,11 @@ var sshPasswordAssign = regexp.MustCompile(`(?i)\bssh_password\s*=\s*(\$\d+|NULL
 
 func (s *serverDBStmt) Exec(args []driver.Value) (driver.Result, error) {
 	s.c.d.add(serverStmtRec{q: s.q, args: args, inTx: s.c.inTx})
+	if s.c.d.execErr != nil {
+		if err := s.c.d.execErr(s.q); err != nil {
+			return nil, err
+		}
+	}
 	if m := sshPasswordAssign.FindStringSubmatch(s.q); m != nil {
 		isNull := strings.EqualFold(m[1], "NULL")
 		if !isNull {
@@ -375,5 +382,52 @@ func TestServerRoutingChanged(t *testing.T) {
 	}
 	if !serverRoutingChanged(old, same, 4) {
 		t.Error("load_weight changed, no sync")
+	}
+}
+
+// A changed address is validated and normalized like a new node's and drops the host key
+// confirmation in the same transaction (another machine may answer there); the same address in
+// another spelling is no change.
+func TestUpdateServerAddress(t *testing.T) {
+	t.Setenv("SSH_ENCRYPTION_KEY", "")
+	cleared := func(fake *serverDB) bool {
+		for _, u := range fake.updates() {
+			if strings.Contains(u.q, "ssh_host_key_confirmed_at = NULL") && u.inTx {
+				return true
+			}
+		}
+		return false
+	}
+	for _, bad := range []string{`{"ip_address":"127.0.0.1"}`, `{"ip_address":"10.0.0.5"}`, `{"ip_address":"100.64.0.9"}`, `{"ssh_port":70000}`} {
+		fake := withServerDB(t)
+		if rec := patchServer(bad); rec.Code != http.StatusBadRequest || len(fake.updates()) != 0 {
+			t.Errorf("%s: %d %s", bad, rec.Code, rec.Body)
+		}
+	}
+	fake := withServerDB(t)
+	if rec := patchServer(`{"ip_address":" ::ffff:203.0.113.8 "}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "подтвердите ключ") {
+		t.Fatalf("new address: %d %s", rec.Code, rec.Body)
+	}
+	if ups := fake.updates(); len(ups) < 1 || ups[0].args[1] != "203.0.113.8" || !cleared(fake) {
+		t.Fatalf("normalized address + cleared confirmation: %+v", fake.updates())
+	}
+	fake = withServerDB(t)
+	if rec := patchServer(`{"ssh_port":2222}`); rec.Code != http.StatusOK || !cleared(fake) {
+		t.Fatalf("new port: %d %s", rec.Code, rec.Body)
+	}
+	fake = withServerDB(t)
+	if rec := patchServer(`{"ip_address":"::ffff:203.0.113.7","load_weight":5}`); rec.Code != http.StatusOK || cleared(fake) ||
+		fake.updates()[0].args[1] != "203.0.113.7" {
+		t.Fatalf("same address, other spelling: %d %+v", rec.Code, fake.updates())
+	}
+	fake = withServerDB(t)
+	fake.execErr = func(q string) error {
+		if strings.Contains(q, "SET name = $1, ip_address = $2") {
+			return &pq.Error{Code: "23505", Constraint: "uq_servers_ip_address"}
+		}
+		return nil
+	}
+	if rec := patchServer(`{"ip_address":"203.0.113.9"}`); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Нода с этим IP уже есть") {
+		t.Fatalf("duplicate address: %d %s", rec.Code, rec.Body)
 	}
 }

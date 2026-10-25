@@ -1212,3 +1212,55 @@ func TestRunnerSweepStale(t *testing.T) {
 		t.Fatalf("logs %q", logs)
 	}
 }
+
+// failingStore is a memStore whose LoadNode or CreateJob fails like a database would.
+type failingStore struct {
+	*memStore
+	loadErr, createErr error
+}
+
+func (f failingStore) LoadNode(ctx context.Context, id int) (Node, error) {
+	if f.loadErr != nil {
+		return Node{}, f.loadErr
+	}
+	return f.memStore.LoadNode(ctx, id)
+}
+func (f failingStore) CreateJob(ctx context.Context, id int, kind string) (Job, error) {
+	if f.createErr != nil {
+		return Job{}, f.createErr
+	}
+	return f.memStore.CreateJob(ctx, id, kind)
+}
+
+// Only refusals (the owner's text) are RefusalError — RecipeFor's errors and an unknown kind,
+// sentinels still visible; a database failure is not, so the admin panel never shows it as is.
+func TestStartRefusalsAreTyped(t *testing.T) {
+	ctx := context.Background()
+	h := &fakeHooks{lifecycle: "online"}
+	node := Node{ID: 7, Role: "exit", IP: "203.0.113.7", MTProtoStatus: "disabled", HostKeyConfirmed: true}
+	recipe := func(_ context.Context, n Node, kind string) (Recipe, *State, error) {
+		st := NewState(kind, n, newFakeHost(), h.Hooks())
+		rc, err := RecipeFor(kind, n, st)
+		return rc, st, err
+	}
+	r := &Runner{Store: newMemStore(node, h), Go: func(f func()) {}, Recipe: recipe}
+	_, err := r.Start(ctx, 7, KindMTProxy)
+	if !IsRefusal(err) || !errors.Is(err, ErrMTProxyDisabled) {
+		t.Fatalf("recipe refusal: %v", err)
+	}
+	if _, err := r.Start(ctx, 7, "reboot"); !IsRefusal(err) {
+		t.Fatalf("unknown kind: %v", err)
+	}
+	for name, st := range map[string]failingStore{
+		"load":   {memStore: newMemStore(node, h), loadErr: errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")},
+		"create": {memStore: newMemStore(node, h), createErr: errors.New("pq: relation \"provision_jobs\" does not exist")},
+	} {
+		r := &Runner{Store: st, Go: func(f func()) {}, Recipe: recipe}
+		if _, err := r.Start(ctx, 7, KindDeprovision); err == nil || IsRefusal(err) {
+			t.Errorf("%s: %v must be an internal error, not a refusal", name, err)
+		}
+	}
+	if Refusal(nil) != nil {
+		t.Error("Refusal(nil)")
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -112,8 +113,8 @@ func TestApiRecipe(t *testing.T) {
 	}
 	// Without a Hub address no setup job is created; taking a node out of service needs none.
 	withExitWiring(t, nil, mtSettings, "x")
-	if _, _, err := apiRecipe(context.Background(), n, provision.KindReprovision); err == nil {
-		t.Fatal("setup without Hub addresses")
+	if _, _, err := apiRecipe(context.Background(), n, provision.KindReprovision); !provision.IsRefusal(err) {
+		t.Fatalf("setup without Hub addresses must be a refusal (the owner's text): %v", err)
 	}
 	if rc, _, err := apiRecipe(context.Background(), n, provision.KindDeprovision); err != nil || stepNames(rc)[0] != "exclude" {
 		t.Fatalf("deprovision: %v %v", stepNames(rc), err)
@@ -142,10 +143,12 @@ func TestApiRecipeMTProxyJob(t *testing.T) {
 func TestMTProxyBackfill(t *testing.T) {
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	var started []int
+	var logs []string
 	last := map[int][]provision.JobView{
 		2: {{ID: 1, Kind: provision.KindMTProxy, Status: provision.JobFailed, CreatedAt: now.Add(-time.Hour)}},      // retried too soon
 		3: {{ID: 2, Kind: provision.KindProvision, Status: provision.JobSucceeded, CreatedAt: now.Add(-time.Hour)}}, // refused by the recipe
 		4: {{ID: 3, Kind: provision.KindMTProxy, Status: provision.JobFailed, CreatedAt: now.Add(-7 * time.Hour)}},
+		6: {{ID: 4, Kind: provision.KindVerify, Status: provision.JobRunning, CreatedAt: now.Add(-48 * time.Hour)}}, // busy
 	}
 	b := mtproxyBackfill{
 		start: func(_ context.Context, id int, kind string) (int64, error) {
@@ -160,7 +163,11 @@ func TestMTProxyBackfill(t *testing.T) {
 		},
 		jobs: func(_ context.Context, id, _ int) ([]provision.JobView, error) { return last[id], nil },
 		now:  func() time.Time { return now },
-		logf: t.Logf,
+		logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+	}
+	// A node whose latest job still runs is skipped silently (no job, no log line).
+	if got := b.run(context.Background(), []int{6}); got != 0 || len(started) != 0 || len(logs) != 0 {
+		t.Fatalf("busy node: started %v logs %v", started, logs)
 	}
 	if got := b.run(context.Background(), []int{2, 3, 4, 5}); got != 4 || !slices.Equal(started, []int{4}) {
 		t.Fatalf("started %v (returned %d), want only node 4 — one job per tick", started, got)
