@@ -104,15 +104,25 @@ export function fetchHysteria2Status() {
 export function updateServer(id, payload) {
   return apiFetch(`/servers/${id}`, { method: 'PATCH', body: payload })
 }
-export function deleteServer(id) {
-  return apiFetch(`/servers/${id}`, { method: 'DELETE' })
-}
 export function runServerAction(id, action) {
   return apiFetch(`/servers/${id}/actions`, { method: 'POST', body: { action } })
 }
-export function fetchActionProgress(serverId) {
-  return apiFetch(`/servers/${serverId}/actions/progress`)
-}
+
+// ── Nodes: provisioning core (jobs survive an API restart; reads servers.read, changes nodes.provision) ──
+export const fetchNodes = (role) => apiFetch(`/nodes?role=${encodeURIComponent(role || '')}`)
+export const probeNode = (payload) => apiFetch('/servers/probe', { method: 'POST', body: payload })
+export const createNode = (payload) => apiFetch('/servers', { method: 'POST', body: payload })
+export const confirmHostKey = (id, fingerprint) => apiFetch(`/servers/${id}/host-key`, { method: 'POST', body: { fingerprint } })
+export const preflightNode = (id) => apiFetch(`/servers/${id}/preflight`, { method: 'POST' })
+export const provisionNode = (id, options = {}) => apiFetch(`/servers/${id}/provision`, { method: 'POST', body: options })
+export const verifyNode = (id) => apiFetch(`/servers/${id}/verify`, { method: 'POST' })
+export const deprovisionNode = (id, confirmName) => apiFetch(`/servers/${id}/deprovision`, { method: 'POST', body: { confirm_name: confirmName } })
+export const deleteNode = (id, confirmName) => apiFetch(`/servers/${id}`, { method: 'DELETE', body: { confirm_name: confirmName } })
+export const updateNodeRouting = (id, payload) => apiFetch(`/servers/${id}/routing`, { method: 'PUT', body: payload })
+export const fetchJob = (id) => apiFetch(`/provision-jobs/${id}`)
+export const fetchNodeJobs = (serverId) => apiFetch(`/provision-jobs?server_id=${serverId}`)
+export const resumeJob = (id) => apiFetch(`/provision-jobs/${id}/resume`, { method: 'POST' })
+export const fetchHubKey = () => apiFetch('/ssh-keys/hub')
 // Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).
 export function checkServerTunnel(id) {
   return apiFetch(`/servers/${id}/check-tunnel`, { method: 'POST' })

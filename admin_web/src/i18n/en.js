@@ -30,6 +30,7 @@ export default {
   navPayments: 'Payments',
   navPaymentOps: 'Email & Retry',
   navServers: 'Servers',
+  navNodes: 'Nodes',
   navSshKeys: 'SSH Keys',
   navReleases: 'Releases',
   navAdmins: 'Admins',

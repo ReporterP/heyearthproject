@@ -31,7 +31,7 @@ const groups = [
   {
     label: 'ИНФРАСТРУКТУРА',
     items: [
-      { to: '/servers',          icon: Server,   label: 'navServers' },
+      { to: '/nodes',            icon: Server,   label: 'navNodes' },
       { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys' },
       { to: '/releases',         icon: Rocket,   label: 'navReleases' },
       { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking' },

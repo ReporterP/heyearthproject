@@ -21,7 +21,7 @@ export const commands = [
   { id: 'go-promocodes',    label: 'Промокоды',              icon: Ticket,          kind: 'page', href: '/promocodes',    group: 'Пользователи' },
 
   // Infrastructure
-  { id: 'go-servers',         label: 'Серверы',              icon: Server,          kind: 'page', href: '/servers',         group: 'Инфраструктура' },
+  { id: 'go-nodes',           label: 'Ноды',                 icon: Server,          kind: 'page', href: '/nodes',           group: 'Инфраструктура' },
   { id: 'go-ssh-keys',        label: 'SSH Ключи',            icon: Key,             kind: 'page', href: '/ssh-keys',        group: 'Инфраструктура' },
   { id: 'go-releases',        label: 'Релизы',               icon: Rocket,          kind: 'page', href: '/releases',        group: 'Инфраструктура' },
   { id: 'go-traffic-masking', label: 'Маскировка трафика',   icon: EyeOff,          kind: 'page', href: '/traffic-masking', group: 'Инфраструктура' },

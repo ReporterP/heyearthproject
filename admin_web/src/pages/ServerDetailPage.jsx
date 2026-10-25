@@ -4,10 +4,8 @@ import { ArrowLeft } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchServerDetail, fetchServerLogs, runServerAction, deleteServer } from '../api/admin.js'
+import { fetchServerDetail, fetchServerLogs, runServerAction } from '../api/admin.js'
 import StatusBadge from '../components/StatusBadge.jsx'
-import DeleteServerDialog from '../components/DeleteServerDialog.jsx'
-import ProvisionProgressDialog from '../components/ProvisionProgressDialog.jsx'
 import TunnelCheckDialog from '../components/servers/TunnelCheckDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
 import { isMonitored, pathView, tunnelView } from '../utils/serverState.js'
@@ -83,12 +81,10 @@ function PathRow({ name, status, rtt, error }) {
   )
 }
 
-// Node actions left in phase 1, each behind a confirmation that says what happens.
+// The one node action left here, behind a confirmation that says what happens. Setting up,
+// checking, re-installing, switching off and deleting a node are jobs of the node card (/nodes).
 const ACTIONS = {
   restart_agent: { label: 'Перезапустить агент', confirm: 'Перезапустить node-agent на ноде? Трафик пользователей это не затрагивает.' },
-  reinstall_mtproxy: { label: 'Переустановить Telegram-прокси', confirm: 'Переустановить MTProxy на ноде? Telegram-прокси этой ноды будет недоступен 1–2 минуты.', progress: true, exitOnly: true },
-  hub_provision: { label: 'Поднять туннель на Hub', confirm: 'Пересоздать клиент туннеля на Hub для этой ноды? Нужно, если нода настроена, а Hub её не видит.', progress: true, exitOnly: true },
-  deprovision_soft: { label: 'Отключить ноду', confirm: 'Отключить ноду? Она выйдет из маршрутизации (трафик уйдёт на другие exit), туннель на Hub остановится, запись останется.', progress: true, exitOnly: true, danger: true },
 }
 
 export default function ServerDetailPage() {
@@ -106,9 +102,7 @@ export default function ServerDetailPage() {
   //   hub node          → heyearth-api (the API daemon)
   //   exit / other node → node-agent   (heyearth-api is not installed there)
   const [logsService, setLogsService] = useState(null)
-  const [confirmDelete, setConfirmDelete] = useState(false)
   const [tunnelCheck, setTunnelCheck] = useState(false)
-  const [progress, setProgress] = useState(null) // { title, leave? }
   const [confirmAction, setConfirmAction] = useState(null)
 
   // In-memory history buffer for charts
@@ -175,8 +169,7 @@ export default function ServerDetailPage() {
     const a = ACTIONS[key]
     try {
       await runServerAction(id, key)
-      if (a.progress) setProgress({ title: a.label })
-      else toast.success(`${a.label}: выполнено`)
+      toast.success(`${a.label}: выполнено`)
       setTimeout(loadServer, 3000)
     } catch (err) {
       toast.error(err.message)
@@ -192,7 +185,7 @@ export default function ServerDetailPage() {
   if (error && !server) return (
     <div className="text-center py-32">
       <p className="text-danger mb-4">{error}</p>
-      <Button variant="secondary" onClick={() => navigate('/servers')}>
+      <Button variant="secondary" onClick={() => navigate('/nodes')}>
         <ArrowLeft className="w-4 h-4" /> К списку нод
       </Button>
     </div>
@@ -214,9 +207,9 @@ export default function ServerDetailPage() {
   return (
     <div className="max-w-6xl mx-auto">
       {/* Back link */}
-      <Link to="/servers" className="inline-flex items-center gap-1.5 text-sm text-tertiary hover:text-primary mb-4 transition-colors">
+      <Link to="/nodes" className="inline-flex items-center gap-1.5 text-sm text-tertiary hover:text-primary mb-4 transition-colors">
         <ArrowLeft className="w-4 h-4" />
-        {t.serversTitle || 'Servers'}
+        {t.navNodes || 'Nodes'}
       </Link>
 
       <PageHeader
@@ -231,6 +224,7 @@ export default function ServerDetailPage() {
         )}
         actions={(
           <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="secondary" size="sm" onClick={() => navigate(`/nodes?node=${id}`)}>Управление нодой</Button>
             <ServerLifecycleBadge state={server.lifecycle_state} />
             <StatusBadge status={server.status} />
             {server.is_exit_node && (
@@ -322,18 +316,13 @@ export default function ServerDetailPage() {
       <Card className="p-4 mb-6">
         <h3 className="text-sm font-semibold text-primary mb-3">Действия</h3>
         <div className="flex flex-wrap gap-2">
-          {can('server_ops.execute') && Object.entries(ACTIONS)
-            .filter(([, a]) => server.is_exit_node || !a.exitOnly)
-            .map(([key, a]) => (
-              <Button key={key} size="sm" variant={a.danger ? 'danger' : 'secondary'} onClick={() => setConfirmAction(key)}>{a.label}</Button>
-            ))}
-          {can('servers.write') && server.is_exit_node && (
-            <Button size="sm" variant="danger" onClick={() => setConfirmDelete(true)}>Удалить ноду</Button>
-          )}
+          {can('server_ops.execute') && Object.entries(ACTIONS).map(([key, a]) => (
+            <Button key={key} size="sm" variant="secondary" onClick={() => setConfirmAction(key)}>{a.label}</Button>
+          ))}
           <Button size="sm" variant="ghost" onClick={loadServer}>Обновить</Button>
         </div>
         <p className="text-[11px] text-tertiary mt-2">
-          Переустановка ноды целиком и добавление новых появятся в мастере «Добавить ноду». Страница обновляется каждые {REFRESH_INTERVAL / 1000} с.
+          Настройка, проверка, переустановка, отключение и удаление ноды — в карточке ноды («Управление нодой»). Страница обновляется каждые {REFRESH_INTERVAL / 1000} с.
         </p>
       </Card>
 
@@ -362,36 +351,13 @@ export default function ServerDetailPage() {
           <p className="text-sm text-secondary mb-6">{ACTIONS[confirmAction].confirm}</p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmAction(null)}>Отмена</Button>
-            <Button variant={ACTIONS[confirmAction].danger ? 'danger' : 'primary'}
+            <Button variant="primary"
               onClick={() => { const k = confirmAction; setConfirmAction(null); doAction(k) }}>Выполнить</Button>
           </div>
         </Dialog>
       )}
 
       {tunnelCheck && <TunnelCheckDialog server={server} onClose={() => setTunnelCheck(false)} />}
-      {progress && <ProvisionProgressDialog open server={server} title={progress.title} onClose={async () => {
-        const leave = progress.leave
-        setProgress(null)
-        // Back to the list only once the record is really gone; a failed or unfinished delete stays here.
-        if ((await loadServer()) === 'gone' && leave) navigate('/servers')
-      }} />}
-
-      {confirmDelete && (
-        <DeleteServerDialog
-          serverId={server.id}
-          serverName={server.name || server.ip_address}
-          onConfirm={async () => {
-            setConfirmDelete(false)
-            try {
-              await deleteServer(server.id)
-              setProgress({ title: 'Удаление ноды', leave: true })
-            } catch (e) {
-              toast.error(`Удаление не запущено: ${e.message}`)
-            }
-          }}
-          onCancel={() => setConfirmDelete(false)}
-        />
-      )}
     </div>
   )
 }
