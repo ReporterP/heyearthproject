@@ -101,23 +101,32 @@ func TestRelayUnit(t *testing.T) {
 		// of nftables re-runs the unit (PartOf=), a reload re-applies the file (ReloadPropagatedFrom=).
 		"After=network-pre.target nftables.service ufw.service\n", "PartOf=nftables.service\n",
 		"ReloadPropagatedFrom=nftables.service\n",
-		"ExecStartPre=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1\n",
-		"ExecStart=/usr/sbin/nft -f /etc/heyearth/relay.nft\n", "ExecReload=/usr/sbin/nft -f /etc/heyearth/relay.nft\n",
+		// Forwarding on only after the filter loaded, off after every stop / failed start.
+		"ExecStart=/usr/sbin/nft -f /etc/heyearth/relay.nft\nExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1\n",
+		"ExecReload=/usr/sbin/nft -f /etc/heyearth/relay.nft\n",
 		// "-": a table already gone (flush ruleset) must not fail the stop of a restart.
 		"ExecStop=-/usr/sbin/nft delete table ip heyearth_relay\n",
+		"ExecStopPost=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0\n",
 		"WantedBy=multi-user.target\n",
 	} {
 		if !strings.Contains(u, must) {
 			t.Errorf("unit lacks %q:\n%s", must, u)
 		}
 	}
+	if strings.Contains(u, "ExecStartPre") || strings.Count(u, "ip_forward=1") != 1 {
+		t.Errorf("ip_forward=1 only in ExecStartPost (never before the rules):\n%s", u)
+	}
 	golden(t, "relay_unit.golden", []byte(u))
 }
 
 func TestRelaySysctl(t *testing.T) {
 	s := RelaySysctl()
-	for _, must := range []string{"net.ipv4.ip_forward = 1\n", "net.ipv4.conf.all.send_redirects = 0\n",
-		"net.ipv4.conf.default.send_redirects = 0\n", "net.netfilter.nf_conntrack_max = 262144\n",
+	// ip_forward belongs to the unit (on only with the filter loaded): never in sysctl.d.
+	if strings.Contains(s, "net.ipv4.ip_forward") {
+		t.Errorf("sysctl must not set ip_forward:\n%s", s)
+	}
+	for _, must := range []string{"net.ipv4.conf.all.send_redirects = 0\n",
+		"net.ipv4.conf.default.send_redirects = 0\n", "net.ipv6.conf.all.forwarding = 0\n", "net.netfilter.nf_conntrack_max = 262144\n",
 		"net.netfilter.nf_conntrack_udp_timeout = 60\n", "net.netfilter.nf_conntrack_udp_timeout_stream = 180\n",
 		"net.netfilter.nf_conntrack_tcp_timeout_established = 7440\n"} {
 		if !strings.Contains(s, must) {
@@ -149,23 +158,42 @@ func TestRelayJail(t *testing.T) {
 	}
 }
 
-// unitExec returns the command of the unit's key= line ("ExecStart=" …), without systemd's "-"
-// prefix and with /usr/sbin/ dropped (the test host's PATH finds nft and sysctl).
+// unitExec returns the command of the unit's key= line ("ExecStart=" …) as a shell command, with
+// /usr/sbin/ dropped (the test host's PATH finds nft and sysctl); systemd's "-" prefix (failure
+// ignored) becomes "|| true".
 func unitExec(t *testing.T, unit, key string) string {
 	t.Helper()
 	for _, l := range strings.Split(unit, "\n") {
 		if cmd, ok := strings.CutPrefix(l, key); ok {
-			return strings.ReplaceAll(strings.TrimPrefix(cmd, "-"), "/usr/sbin/", "")
+			cmd = strings.ReplaceAll(cmd, "/usr/sbin/", "")
+			if c, dash := strings.CutPrefix(cmd, "-"); dash {
+				return c + " || true"
+			}
+			return cmd
 		}
 	}
 	t.Fatalf("unit has no %s line:\n%s", key, unit)
 	return ""
 }
 
+// unitShell renders shell functions unit_start / unit_reload / unit_stop with systemd's oneshot
+// semantics for the unit u: ExecStartPost runs only after ExecStart succeeded; ExecStopPost runs
+// after a stop and after a failed start.
+func unitShell(t *testing.T, name, u string) string {
+	t.Helper()
+	stopPost := unitExec(t, u, "ExecStopPost=")
+	return name + "_start() { if " + unitExec(t, u, "ExecStart=") + "; then " + unitExec(t, u, "ExecStartPost=") +
+		"; else " + stopPost + "; return 1; fi; }\n" +
+		name + "_reload() { " + unitExec(t, u, "ExecReload=") + "; }\n" +
+		name + "_stop() { " + unitExec(t, u, "ExecStop=") + "; " + stopPost + "; }\n"
+}
+
 // The ruleset and the unit's commands with the real nft and bash, in a throwaway network
-// namespace (unshare -rn: nothing on the test host changes): the start replaces a previous
-// ruleset atomically, a reload does not duplicate, `nft list` shows what the relay recipe's
-// Verify and the netns lab grep (Task 3.3/3.4), and the stop removes the table.
+// namespace (unshare -rn: nothing on the test host changes): a failed load leaves forwarding off;
+// the start replaces a previous ruleset atomically and only then turns ip_forward on; a reload
+// does not duplicate; `nft list` shows what the relay recipe's Verify and the netns lab grep
+// (Task 3.3/3.4); the stop removes the table and turns ip_forward off (a second stop, table
+// already gone, does not fail).
 func TestRelayNftInNetns(t *testing.T) {
 	if runtime.GOOS != "linux" || !haveBash() {
 		t.Skip("needs Linux and bash")
@@ -187,27 +215,36 @@ func TestRelayNftInNetns(t *testing.T) {
 	}
 	mustWrite(t, dir, "old.nft", old, 0o644)
 	mustWrite(t, dir, "relay.nft", rs, 0o644)
-	u := RelayUnit(filepath.ToSlash(filepath.Join(dir, "relay.nft")))
-	script := "set -eu\nnft -f ./old.nft\n" +
-		unitExec(t, u, "ExecStartPre=") + "\n" +
-		unitExec(t, u, "ExecStart=") + "\n" +
-		unitExec(t, u, "ExecReload=") + "\n" +
-		"sysctl -n net.ipv4.ip_forward > ./forward\n" +
-		"nft list ruleset > ./loaded\n" +
-		unitExec(t, u, "ExecStop=") + "\n" +
-		"nft list ruleset > ./stopped\n"
+	mustWrite(t, dir, "broken.nft", strings.Replace(rs, "masquerade", "masquerad", 1), 0o644)
+	unit := func(f string) string { return RelayUnit(filepath.ToSlash(filepath.Join(dir, f))) }
+	script := "set -eu\n" + unitShell(t, "broken", unit("broken.nft")) + unitShell(t, "relay", unit("relay.nft")) +
+		// Forwarding left on (by hand, an old image): a failed load turns it off, loads nothing.
+		"sysctl -q -w net.ipv4.ip_forward=1\n" +
+		"if broken_start; then echo 'broken rules loaded'; exit 1; fi\n" +
+		"sysctl -n net.ipv4.ip_forward > ./forward.failed; nft list ruleset > ./failed\n" +
+		"nft -f ./old.nft\n" +
+		"relay_start\nrelay_reload\n" +
+		"sysctl -n net.ipv4.ip_forward > ./forward.started; nft list ruleset > ./loaded\n" +
+		"relay_stop\n" +
+		"sysctl -n net.ipv4.ip_forward > ./forward.stopped; nft list ruleset > ./stopped\n" +
+		"relay_stop\n"
 	out, err := shellRunArgv(t, dir, []string{"unshare", "-rn", "bash", "-s"}, "", script)
-	loaded, stopped := readRel(dir, "loaded"), readRel(dir, "stopped")
-	if err != nil || strings.TrimSpace(readRel(dir, "forward")) != "1" {
+	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if strings.Count(loaded, "table ip "+RelayNftTable) != 1 || countLines(loaded, "dnat to "+labHub) != 2 ||
+	fwd := func(f string) string { return strings.TrimSpace(readRel(dir, f)) }
+	if fwd("forward.failed") != "0" || strings.Contains(readRel(dir, "failed"), RelayNftTable) {
+		t.Errorf("failed load: ip_forward %q, ruleset:\n%s", fwd("forward.failed"), readRel(dir, "failed"))
+	}
+	loaded := readRel(dir, "loaded")
+	if fwd("forward.started") != "1" || strings.Count(loaded, "table ip "+RelayNftTable) != 1 ||
+		countLines(loaded, "dnat to "+labHub) != 2 ||
 		countLines(loaded, "ip daddr "+labHub+" ct status dnat masquerade") != 1 ||
 		countLines(loaded, "ct status dnat ct reply ip saddr "+labHub+" accept") != 1 ||
 		strings.Contains(loaded, "203.0.113.77") {
-		t.Errorf("live ruleset after start + reload:\n%s", loaded)
+		t.Errorf("after start + reload: ip_forward %q, ruleset:\n%s", fwd("forward.started"), loaded)
 	}
-	if strings.Contains(stopped, RelayNftTable) {
-		t.Errorf("table left after stop:\n%s", stopped)
+	if fwd("forward.stopped") != "0" || strings.Contains(readRel(dir, "stopped"), RelayNftTable) {
+		t.Errorf("after stop: ip_forward %q, ruleset:\n%s", fwd("forward.stopped"), readRel(dir, "stopped"))
 	}
 }
