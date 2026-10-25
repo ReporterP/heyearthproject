@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,7 +26,8 @@ type exitEnv struct {
 	opts      *ExitOptions
 	probe     func(ctx context.Context, ip string) error // Hooks.ProbeAgent (nil: not checked)
 	logs      []string
-	trace     []string // every op of the node and the Hub, in order ("node: …", "hub: …")
+	trace     []string // every op of the node and the Hub and every State.Sleep, in order ("node: …", "hub: …", "sleep 35s")
+	onSleep   func(d time.Duration)
 }
 
 var testExitHubIPs = []string{"138.16.181.225", "45.150.39.236", "109.172.86.40"}
@@ -51,7 +53,13 @@ func exitFixture(t *testing.T, mtproto bool) *exitEnv {
 			st := NewState(kind, n, e.hub, e.h.Hooks())
 			st.Hooks.ProbeAgent = e.probe
 			st.Exit, st.Now = *e.opts, func() time.Time { return testNow }
-			st.Sleep = func(context.Context, time.Duration) error { return nil }
+			st.Sleep = func(_ context.Context, d time.Duration) error {
+				e.trace = append(e.trace, "sleep "+d.String())
+				if e.onSleep != nil {
+					e.onSleep(d)
+				}
+				return nil
+			}
 			rc, err := RecipeFor(kind, n, st)
 			return rc, st, err
 		}}
@@ -368,6 +376,11 @@ func TestExitLivePathGuards(t *testing.T) {
 		if !strings.Contains(e.tail(id, "hysteria"), "до изменений не отвечает") {
 			t.Fatalf("output: %q", e.tail(id, "hysteria"))
 		}
+		// Dead only after a second round 15 s later.
+		conv := slices.Index(e.trace, "node: converge hysteria2")
+		if n := slices.Index(e.trace, "sleep "+pathRetryPause.String()); n < 0 || n > conv || strings.Count(strings.Join(e.trace[:conv], "\n"), "hub: socks-probe 1095") != 2 {
+			t.Fatalf("before the change: %v", e.trace[:conv])
+		}
 	})
 
 	t.Run("xray ok→dead after hysteria answered", func(t *testing.T) {
@@ -406,7 +419,7 @@ func TestExitLivePathGuards(t *testing.T) {
 				hyProbes = append(hyProbes, i)
 			}
 		}
-		if hyConv < 0 || xrMark < 0 || len(hyProbes) != 2 || hyProbes[0] > hyConv || hyProbes[1] < hyConv ||
+		if hyConv < 0 || xrMark < 0 || len(hyProbes) != 2 || hyProbes[0] > hyConv || hyProbes[1] < hyConv || slices.Contains(e.trace, "sleep "+hopSettle.String()) ||
 			slices.Index(e.trace, "hub: vr-probe 3095") > xrMark || !slices.Contains(e.trace[xrConv:], "hub: vr-probe 3095") {
 			t.Fatalf("order: %v", e.trace)
 		}
@@ -453,6 +466,163 @@ func TestExitLivePathGuards(t *testing.T) {
 			t.Fatalf("verify: %v", e.hub.ops)
 		}
 	})
+}
+
+// A change of the hop rules reaches the Hub client's traffic only at its next hop: until then
+// the client rides its old conntrack flow, NATed by the old rules, and a probe over it passes
+// whatever the new rules do. The check after the change waits longer than the client's hop
+// interval; broken rules then fail it and the step rolls back (hop file and kernel rules back).
+func TestExitLiveHopChangeWaitsForAHop(t *testing.T) {
+	const oldHop = "table inet hysteria_porthopping {\n  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n" +
+		"    udp dport 20000-50000 redirect to :50443\n  }\n}\n"
+	for _, broken := range []bool{true, false} {
+		e := exitFixture(t, false)
+		e.start(t, KindProvision)
+		e.node.files[config.ExitPortHopConfPath] = []byte(oldHop) // only the hop differs: no hysteria restart
+		e.node.loadNft(config.ExitPortHopTable, config.ExitPortHopConfPath)
+		flow := oldHop // the rules the client's current flow was NATed by
+		e.onSleep = func(d time.Duration) {
+			if d > config.HubClientHopInterval { // the client hopped: a new flow under the rules in force
+				flow = e.node.nftRules[config.ExitPortHopTable]
+			}
+		}
+		e.hub.probeDead = func(op string) bool {
+			return broken && strings.HasPrefix(op, "socks-probe") && flow == config.ExitPortHopConf
+		}
+		restarts := maps.Clone(e.node.restarts)
+		e.trace = nil
+		id := e.start(t, KindReprovision)
+		apply, wait := slices.Index(e.trace, "node: hop-apply"), slices.Index(e.trace, "sleep "+hopSettle.String())
+		probe := slices.Index(e.trace[max(wait, 0):], "hub: socks-probe 1095")
+		if apply < 0 || wait < apply || probe < 0 || hopSettle <= config.HubClientHopInterval {
+			t.Fatalf("broken=%v: the check after a hop change must wait longer than a hop (%s): %v", broken, hopSettle, e.trace)
+		}
+		st := e.steps(id)
+		if !broken {
+			if e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || e.node.restarts["hysteria2"] != restarts["hysteria2"] {
+				t.Fatalf("good rules: %v restarts %v", e.store.statuses(id), e.node.restarts)
+			}
+			continue
+		}
+		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["xray"] != StepPending ||
+			string(e.node.files[config.ExitPortHopConfPath]) != oldHop || e.node.nftRules[config.ExitPortHopTable] != oldHop || e.h.lifecycle != "online" {
+			t.Fatalf("broken rules: %q %v", e.store.jobs[id].Error, e.store.statuses(id))
+		}
+	}
+}
+
+// The check before the change cannot run (the SSH session to the Hub dropped): the step fails
+// WITHOUT a rollback — one would restore and restart, unchecked, what an interrupted earlier run
+// left behind (here: a written config and its restart marker).
+func TestExitLiveBeforeProbeFailureDoesNotRollBack(t *testing.T) {
+	e := exitFixture(t, false)
+	e.start(t, KindProvision)
+	cfg := config.ExitHysteriaConfig
+	left := string(e.node.files[cfg]) + "# an earlier run's write\n"
+	e.node.files[cfg+".bak"], e.node.files[cfg] = e.node.files[cfg], []byte(left)
+	e.node.marker["hysteria2"], e.node.markFile["hysteria2"] = true, map[string]string{cfg: sha256Hex([]byte(left))}
+	restarts := maps.Clone(e.node.restarts)
+	e.hub.dropOnce = "socks-probe"
+	id := e.start(t, KindReprovision)
+	j := e.store.jobs[id]
+	if j.Status != JobFailed || e.steps(id)["hysteria"] != StepFailed || e.node.count("rollback hysteria2") != 0 || !e.node.marker["hysteria2"] ||
+		string(e.node.files[cfg]) != left || !maps.Equal(e.node.restarts, restarts) || !strings.Contains(j.Error, ErrNoRollback.Error()) {
+		t.Fatalf("job %s %q %v restarts %v", j.Status, j.Error, e.store.statuses(id), e.node.restarts)
+	}
+
+	// The runner's contract: ErrNoRollback from Apply → failed, Rollback never called.
+	called := false
+	st := NewState(KindProvision, Node{ID: 7}, nopRemote{}, Hooks{})
+	status, err := runStep(context.Background(), KindProvision, Step{
+		Verify:   func(context.Context, Remote, *State) error { return errors.New("drift") },
+		Apply:    func(context.Context, Remote, *State) error { return fmt.Errorf("%w: x", ErrNoRollback) },
+		Rollback: func(context.Context, Remote, *State) error { called = true; return nil },
+	}, nopRemote{}, st)
+	if status != StepFailed || !errors.Is(err, ErrNoRollback) || called {
+		t.Fatalf("status %s err %v rollback called %v", status, err, called)
+	}
+}
+
+// A path that does not answer before the change is probed once more, 15 s later, before it
+// counts as dead: a false "dead" would leave the change unguarded.
+func TestExitLiveBeforeProbeRetried(t *testing.T) {
+	e, _ := legacyExit(t)
+	legacyYAML := string(e.node.files[config.ExitHysteriaConfig])
+	probes := 0
+	e.hub.probeDead = func(op string) bool {
+		if !strings.HasPrefix(op, "socks-probe") {
+			return false
+		}
+		probes++
+		return probes == 1 || e.node.nftRules[config.ExitPortHopTable] == config.ExitPortHopConf // a blink, then the new rules break it
+	}
+	e.trace = nil
+	id := e.start(t, KindReprovision)
+	first := slices.Index(e.trace, "hub: socks-probe 1095")
+	retry := slices.Index(e.trace[first+1:], "hub: socks-probe 1095") + first + 1
+	if e.steps(id)["hysteria"] != StepRolledBack || string(e.node.files[config.ExitHysteriaConfig]) != legacyYAML ||
+		!slices.Contains(e.trace[first:retry], "sleep "+pathRetryPause.String()) || slices.Index(e.trace, "node: converge hysteria2") < retry {
+		t.Fatalf("a blink before the change must not disarm the guard: %v\n%v", e.store.statuses(id), e.trace)
+	}
+}
+
+// An API restart between the converge and the check after it: the path-check marker on the node
+// keeps the before-result and the writes. On resume the step's Verify does not pass, the after
+// check runs against the recorded before-result (no new "before" probe of a change already
+// made), and a dead path still rolls back the recorded writes — or a working one clears the
+// marker without another restart.
+func TestExitLivePathCheckSurvivesAPIRestart(t *testing.T) {
+	ctx := context.Background()
+	for _, dead := range []bool{true, false} {
+		e, _ := legacyExit(t)
+		legacyYAML, legacyHop := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitPortHopConfPath])
+		crash := true
+		e.hub.seen = func(op string) { // the API process dies right before the check after hysteria's converge
+			if crash && op == "socks-probe 1095" && e.node.count("converge hysteria2") > 0 {
+				crash = false
+				runtime.Goexit()
+			}
+		}
+		e.r.Go = func(f func()) {
+			done := make(chan struct{})
+			go func() { defer close(done); f() }()
+			<-done
+		}
+		id := e.start(t, KindReprovision)
+		pm := e.node.pathMark["hysteria2"]
+		if e.store.jobs[id].Status != JobRunning || pm == nil || !pm.before || pm.writes[config.ExitHysteriaConfig] == "" ||
+			pm.writes[config.ExitPortHopConfPath] == "" || e.node.marker["hysteria2"] || e.node.restarts["hysteria2"] != 1 {
+			t.Fatalf("dead=%v: after the crash: job %s marker %+v restart marker %v restarts %v", dead, e.store.jobs[id].Status, pm,
+				e.node.marker["hysteria2"], e.node.restarts)
+		}
+		if n, _ := e.store.InterruptRunning(ctx); n != 1 {
+			t.Fatal("the API restart must interrupt the job")
+		}
+		e.hub.probeDead = func(op string) bool {
+			return dead && strings.HasPrefix(op, "socks-probe") && e.node.nftRules[config.ExitPortHopTable] == config.ExitPortHopConf
+		}
+		e.trace = nil
+		if err := e.r.Resume(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		tl := e.tail(id, "hysteria")
+		if !strings.Contains(tl, "проверка пути после изменений не завершена") || !strings.Contains(tl, "прерванного запуска") ||
+			slices.Index(e.trace, "hub: socks-probe 1095") < slices.Index(e.trace, "node: converge hysteria2") || e.node.pathMark["hysteria2"] != nil {
+			t.Fatalf("dead=%v: resume must judge the recorded change: %q\n%v", dead, tl, e.trace)
+		}
+		st := e.steps(id)
+		if dead {
+			if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["xray"] != StepPending || e.h.lifecycle != "online" ||
+				string(e.node.files[config.ExitHysteriaConfig]) != legacyYAML || string(e.node.files[config.ExitPortHopConfPath]) != legacyHop ||
+				e.node.nftRules[config.ExitPortHopTable] != legacyHop || !e.node.active["hysteria2"] {
+				t.Fatalf("dead: the recorded writes must be undone: %q %v", e.store.jobs[id].Error, e.store.statuses(id))
+			}
+			continue
+		}
+		if e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || e.node.restarts["hysteria2"] != 1 {
+			t.Fatalf("alive: %q %v restarts %v", e.store.jobs[id].Error, e.store.statuses(id), e.node.restarts)
+		}
+	}
 }
 
 // Review Focus → 2 (node-agent): a guard that locks the Hub out (ProbeAgent fails after the

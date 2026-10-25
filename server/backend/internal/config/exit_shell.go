@@ -75,17 +75,91 @@ const RestartCheckFunc = `restart_checked() {
 }
 `
 
+// PathCheckDir holds one file per unit whose change on a live exit still awaits its end-to-end
+// path check (internal/provision guardPath): "BEFORE=1|0" (the path answered before the change),
+// then the writes of the change as "<sha256>  <path>" (as in the restart marker), then the
+// binaries the converge confirmed meanwhile as "BIN <sha256>  <binary>" (the pending-binary
+// marker's lines) — all a later job's UnitRollbackScript needs once the converge has removed the
+// restart and pending-binary markers. Removed when the path answered after the change
+// (PathCheckDoneScript) or by the rollback.
+const PathCheckDir = "/opt/heyearth/state/path-check-pending"
+
+// PathCheckMarker is the path-check marker of a unit (see PathCheckDir).
+func PathCheckMarker(unit string) string { return PathCheckDir + "/" + unit }
+
+// PathCheckStateScript prints PRESENT=0|1 and, for a marker, BEFORE=0|1 (a marker without a
+// readable BEFORE line says 1: the change is then judged as one that may have broken a working
+// path) and FILE=<path> for every recorded write.
+func PathCheckStateScript(unit string) string {
+	return opLine("path-state", unit) + "PC=" + shQuote(PathCheckMarker(unit)) + "\n" +
+		`if [ ! -f "$PC" ]; then echo PRESENT=0; exit 0; fi
+echo PRESENT=1
+pc_b=1
+while IFS= read -r l || [ -n "$l" ]; do
+  case "$l" in
+    BEFORE=0) pc_b=0 ;;
+    BEFORE=*|"BIN "*) ;;
+    *"  "*) echo "FILE=${l#*  }" ;;
+  esac
+done < "$PC"
+echo "BEFORE=$pc_b"
+`
+}
+
+// PathCheckStartScript records whether the path answered before the change — unless the unit's
+// marker exists: an interrupted run's, whose BEFORE (the state before its first unchecked
+// change) and writes are kept.
+func PathCheckStartScript(unit string, before bool) string {
+	b := "0"
+	if before {
+		b = "1"
+	}
+	return opLine("path-start", unit, b) + "set -e\nmkdir -p " + PathCheckDir + "\nPC=" + shQuote(PathCheckMarker(unit)) + "\n" +
+		`if [ ! -f "$PC" ]; then printf 'BEFORE=` + b + `\n' > "$PC.tmp"; mv -f "$PC.tmp" "$PC"; fi
+`
+}
+
+// PathCheckRecordScript appends the writes about to happen to the unit's path-check marker, once
+// each (as MarkRestartScript does to the restart marker), when the marker exists. Entries without
+// a 64-hex sha256 are left out.
+func PathCheckRecordScript(unit string, writes []PendingWrite) string {
+	var b strings.Builder
+	b.WriteString(opLine("path-record", unit) + "set -e\nPC=" + shQuote(PathCheckMarker(unit)) + "\n[ -f \"$PC\" ] || exit 0\n")
+	for _, w := range writes {
+		if isSHA256Hex(w.SHA256) {
+			b.WriteString("l=" + shQuote(w.SHA256+"  "+w.Path) + "; grep -qxF -- \"$l\" \"$PC\" || printf '%s\\n' \"$l\" >> \"$PC\"\n")
+		}
+	}
+	return b.String()
+}
+
+// PathCheckDoneScript removes the unit's path-check marker: the path answered after the change.
+func PathCheckDoneScript(unit string) string {
+	return opLine("path-done", unit) + "rm -f " + shQuote(PathCheckMarker(unit)) + "\n"
+}
+
+// convergeKeepBin: before the converge removes the pending-binary marker of a unit whose path
+// check is pending, its lines go into the path-check marker ("BIN " + line): a rollback after a
+// dead path check still takes the binary back.
+const convergeKeepBin = `cv_keep_bin() {
+  if [ -f "$CV_PATH" ] && [ -f "$CV_BIN" ]; then sed 's/^/BIN /' "$CV_BIN" >> "$CV_PATH"; fi
+}
+`
+
 // UnitConvergeScript runs extra (installers, config tests; they may set the markers), enables the
 // unit and restarts it only when its restart marker exists or it is not running. The markers are
 // removed only after restart_checked passed; a failure anywhere leaves them for the next run and
-// for UnitRollbackScript.
+// for UnitRollbackScript. A confirmed binary of a unit whose path check is pending stays recorded
+// in its path-check marker (convergeKeepBin).
 func UnitConvergeScript(unit, extra string) string {
-	return opLine("converge", unit) + "set -e\n" + RestartCheckFunc +
-		"CV_UNIT=" + shQuote(unit) + "\nCV_MARK=" + shQuote(RestartMarker(unit)) + "\nCV_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n" +
+	return opLine("converge", unit) + "set -e\n" + RestartCheckFunc + convergeKeepBin +
+		"CV_UNIT=" + shQuote(unit) + "\nCV_MARK=" + shQuote(RestartMarker(unit)) + "\nCV_BIN=" + shQuote(BinaryPendingMarker(unit)) +
+		"\nCV_PATH=" + shQuote(PathCheckMarker(unit)) + "\n" +
 		"mkdir -p " + RestartMarkerDir + " " + BinaryPendingDir + "\nsystemctl daemon-reload\n" + extra +
 		`systemctl enable --quiet "$CV_UNIT"
 if [ -f "$CV_MARK" ] || ! systemctl is-active --quiet "$CV_UNIT"; then
   restart_checked "$CV_UNIT"
+  cv_keep_bin
   rm -f "$CV_MARK" "$CV_BIN"
 else
   echo "[unit] $CV_UNIT: без изменений и работает — без перезапуска"
@@ -103,8 +177,9 @@ fi
 // checks the path end to end), nothing when no restart was needed. A failing extra, daemon-reload
 // or enable still fails the script, markers kept.
 func UnitConvergeSoftScript(unit, extra string) string {
-	return opLine("converge", unit, "soft") + "set -e\n" + RestartCheckFunc +
-		"CV_UNIT=" + shQuote(unit) + "\nCV_MARK=" + shQuote(RestartMarker(unit)) + "\nCV_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n" +
+	return opLine("converge", unit, "soft") + "set -e\n" + RestartCheckFunc + convergeKeepBin +
+		"CV_UNIT=" + shQuote(unit) + "\nCV_MARK=" + shQuote(RestartMarker(unit)) + "\nCV_BIN=" + shQuote(BinaryPendingMarker(unit)) +
+		"\nCV_PATH=" + shQuote(PathCheckMarker(unit)) + "\n" +
 		"mkdir -p " + RestartMarkerDir + " " + BinaryPendingDir + "\nsystemctl daemon-reload\n" + extra +
 		`systemctl enable --quiet "$CV_UNIT"
 if [ -f "$CV_MARK" ] || ! systemctl is-active --quiet "$CV_UNIT"; then
@@ -115,6 +190,7 @@ if [ -f "$CV_MARK" ] || ! systemctl is-active --quiet "$CV_UNIT"; then
     echo "[unit] $CV_UNIT перезапущен с новыми файлами, но не держится — systemd продолжает попытки, путь проверяется отдельно" >&2
     echo HEALTH=0
   fi
+  cv_keep_bin
   rm -f "$CV_MARK" "$CV_BIN"
 else
   echo "[unit] $CV_UNIT: без изменений и работает — без перезапуска"
@@ -145,15 +221,33 @@ fi
 // The load is one nft transaction that drops the table first, so a hand-made previous file
 // without its own `delete table` replaces the rules instead of adding to them. A file that was
 // new in the run and is removed leaves its table loaded (fail closed: it only ever restricts).
+//
+// The unit's path-check marker (PathCheckMarker: a live exit's change whose end-to-end check is
+// still pending) is read like the restart marker — its writes and its "BIN" lines (binaries the
+// converge already confirmed) are undone the same way — and removed: the rollback concludes the
+// pending check.
 func UnitRollbackScript(unit string, changed []string) string {
 	var b strings.Builder
 	b.WriteString(opLine("rollback", unit) + "set -e\n" + RestartCheckFunc)
 	b.WriteString("RB_UNIT=" + shQuote(unit) + "\nRB_FILE=" + shQuote(unitFilePath(unit)) + "\nRB_MARK=" + shQuote(RestartMarker(unit)) +
-		"\nRB_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n")
+		"\nRB_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\nRB_PATH=" + shQuote(PathCheckMarker(unit)) + "\n")
 	b.WriteString(`restored=0
 rb_new=()
 rb_back=()
 rb_sha() { sha256sum < "$1" | cut -d' ' -f1; }
+rb_marked() { # "<sha256>  <path>": a recorded write whose file still has that content is undone
+  local p=${1#*  }
+  if [ "$p" != "$1" ] && [ -f "$p" ] && [ "$(rb_sha "$p")" = "${1%%  *}" ]; then rb_restore "$p"; fi
+}
+rb_bin() { # "<sha256>  <binary>": a binary still exactly that new one gets its .bak back
+  local p=${1#*  }
+  if [ "$p" != "$1" ] && [ -f "$p" ] && [ -f "$p.bak" ] && [ "$(rb_sha "$p")" = "${1%%  *}" ]; then
+    cp -p "$p.bak" "$p.rollback.tmp"
+    mv -f "$p.rollback.tmp" "$p"
+    restored=1
+    echo "[unit] $RB_UNIT: возвращён прежний бинарник $p"
+  fi
+}
 rb_restore() {
   if [ -f "$1.bak" ]; then
     cp -p "$1.bak" "$1.rollback.tmp"
@@ -180,21 +274,19 @@ rb_reload_nft() { # $1 rule file, $2 its table: reload when this rollback restor
 		b.WriteString("rb_restore " + shQuote(p) + "\n")
 	}
 	b.WriteString(`if [ -f "$RB_MARK" ]; then
+  while IFS= read -r rb_l || [ -n "$rb_l" ]; do rb_marked "$rb_l"; done < "$RB_MARK"
+fi
+if [ -f "$RB_PATH" ]; then
   while IFS= read -r rb_l || [ -n "$rb_l" ]; do
-    rb_p=${rb_l#*  }
-    if [ "$rb_p" != "$rb_l" ] && [ -f "$rb_p" ] && [ "$(rb_sha "$rb_p")" = "${rb_l%%  *}" ]; then rb_restore "$rb_p"; fi
-  done < "$RB_MARK"
+    case "$rb_l" in
+      BEFORE=*) ;;
+      "BIN "*) rb_bin "${rb_l#BIN }" ;;
+      *) rb_marked "$rb_l" ;;
+    esac
+  done < "$RB_PATH"
 fi
 if [ -f "$RB_BIN" ]; then
-  while IFS= read -r rb_l || [ -n "$rb_l" ]; do
-    rb_b=${rb_l#*  }
-    if [ "$rb_b" != "$rb_l" ] && [ -f "$rb_b" ] && [ -f "$rb_b.bak" ] && [ "$(rb_sha "$rb_b")" = "${rb_l%%  *}" ]; then
-      cp -p "$rb_b.bak" "$rb_b.rollback.tmp"
-      mv -f "$rb_b.rollback.tmp" "$rb_b"
-      restored=1
-      echo "[unit] $RB_UNIT: возвращён прежний бинарник $rb_b"
-    fi
-  done < "$RB_BIN"
+  while IFS= read -r rb_l || [ -n "$rb_l" ]; do rb_bin "$rb_l"; done < "$RB_BIN"
   rm -f "$RB_BIN"
 fi
 `)
@@ -217,18 +309,19 @@ rb_remove_new() {
   rm -f -- "${rb_new[@]}"
 }
 if [ "$restored" = 0 ] && [ "${#rb_new[@]}" = 0 ]; then
+  rm -f "$RB_PATH"
   echo "[unit] $RB_UNIT: в этом запуске файлы не менялись — возвращать нечего"
 elif [ "$rb_gone" = 1 ]; then
   systemctl disable --now "$RB_UNIT" >/dev/null 2>&1 || true
   rb_remove_new
   systemctl daemon-reload
-  rm -f "$RB_MARK"
+  rm -f "$RB_MARK" "$RB_PATH"
   echo "[unit] $RB_UNIT: новая установка снята"
 else
   rb_remove_new
   systemctl daemon-reload
   restart_checked "$RB_UNIT"
-  rm -f "$RB_MARK"
+  rm -f "$RB_MARK" "$RB_PATH"
   echo "[unit] $RB_UNIT: возвращена прежняя версия"
 fi
 `)
@@ -245,13 +338,16 @@ var nftRuleFiles = []struct{ path, table string }{
 
 // UnitStateScript prints ACTIVE=0|1 (is-active), ENABLED=0|1 (is-enabled says exactly
 // "enabled": it starts at boot), RETRY=0|1 (waiting to be restarted by systemd: SubState
-// auto-restart, the pause of a crash loop) and MARKER=0|1 (restart pending).
+// auto-restart, the pause of a crash loop), MARKER=0|1 (restart pending) and PATHCHECK=0|1 (the
+// end-to-end check of a live exit's change is pending: PathCheckMarker).
 func UnitStateScript(unit string) string {
-	return opLine("unit-state", unit) + "US_UNIT=" + shQuote(unit) + "\nUS_MARK=" + shQuote(RestartMarker(unit)) + "\n" +
+	return opLine("unit-state", unit) + "US_UNIT=" + shQuote(unit) + "\nUS_MARK=" + shQuote(RestartMarker(unit)) +
+		"\nUS_PATH=" + shQuote(PathCheckMarker(unit)) + "\n" +
 		`if systemctl is-active --quiet "$US_UNIT"; then echo ACTIVE=1; else echo ACTIVE=0; fi
 if [ "$(systemctl is-enabled "$US_UNIT" 2>/dev/null)" = enabled ]; then echo ENABLED=1; else echo ENABLED=0; fi
 if [ "$(systemctl show -p SubState --value "$US_UNIT" 2>/dev/null)" = auto-restart ]; then echo RETRY=1; else echo RETRY=0; fi
 if [ -f "$US_MARK" ]; then echo MARKER=1; else echo MARKER=0; fi
+if [ -f "$US_PATH" ]; then echo PATHCHECK=1; else echo PATHCHECK=0; fi
 `
 }
 

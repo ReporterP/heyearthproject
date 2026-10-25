@@ -117,7 +117,7 @@ func keysApply(ctx context.Context, r Remote, s *State) error {
 	if err != nil {
 		return err
 	}
-	if err := prepareWrites(ctx, r, "", []File{f}, states); err != nil {
+	if err := prepareWrites(ctx, r, s, "", []File{f}, states); err != nil {
 		return err
 	}
 	if _, err := r.PutFile(ctx, f.Path, f.Data, f.Mode); err != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +38,8 @@ func ExitRecipe(o ExitOptions) Recipe {
 		{Name: "reality_keys", Apply: keysApply, Verify: keysVerify},
 		{Name: "base", Apply: baseApply, Verify: baseVerify},
 		{Name: "firewall", Apply: firewallApply(o)},
-		{Name: "hysteria", Apply: guardPath(hyPath, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
-		{Name: "xray", Apply: guardPath(vrPath(o), xrayApply(o)), Verify: xrayVerify(o), Rollback: unitRollback("xray")},
+		{Name: "hysteria", Apply: guardPath(hyPath, onNode("hysteria2"), false, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
+		{Name: "xray", Apply: guardPath(vrPath(o), onNode("xray"), false, xrayApply(o)), Verify: xrayVerify(o), Rollback: unitRollback("xray")},
 	}
 	if o.MTProto != nil {
 		r = append(r, Step{Name: "mtproxy", Apply: mtproxyApply(*o.MTProto), Verify: mtproxyVerify(*o.MTProto)})
@@ -46,7 +47,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 	return append(r,
 		Step{Name: "node_agent", Apply: agentApply(o), Verify: agentVerify(o), Rollback: unitRollback("node-agent")},
 		Step{Name: "save_tunnel", Apply: tunnelApply, Verify: tunnelVerify},
-		Step{Name: "hub_client", Apply: guardPath(hyPath, hubClientApply), Verify: hubClientVerify, Rollback: hubClientRollback},
+		Step{Name: "hub_client", Apply: guardPath(hyPath, hubUnit, true, hubClientApply), Verify: hubClientVerify, Rollback: hubClientRollback},
 		Step{Name: "path_hy", Apply: pathHyDegraded(&hyDown), Verify: pathHysteria},
 		Step{Name: "path_tcp", Verify: pathTCP(o, &hyDown)},
 		Step{Name: "activate", Apply: activateApply, Verify: lifecycleIs("online")},
@@ -341,21 +342,21 @@ func filesMatch(ctx context.Context, r Remote, files []File) error {
 // they need neither a restart nor an undo, and a marker entry whose "new" content is already on
 // disk would make a rollback restore a stale .bak. An existing file whose new mode is private but
 // whose current one is not loses its group/other bits first, .bak included (PutFile's .bak keeps
-// the previous mode). unit "" = no marker (a file no service reads at start).
-func prepareWrites(ctx context.Context, r Remote, unit string, files []File, states map[string]fileState) error {
-	var writes []config.PendingWrite
+// the previous mode). unit "" = no marker (a file no service reads at start). A unit whose path
+// check is pending (guardPath) gets the writes recorded in its path-check marker too.
+func prepareWrites(ctx context.Context, r Remote, s *State, unit string, files []File, states map[string]fileState) error {
+	writes := pendingWrites(files, states)
 	var private []string
 	for _, f := range files {
-		cur, ok := states[f.Path]
-		if sum := sha256Hex(f.Data); !ok || cur.sum != sum {
-			writes = append(writes, config.PendingWrite{Path: f.Path, SHA256: sum})
-		}
-		if ok && f.Mode&0o077 == 0 && !privateMode(cur.mode) {
+		if cur, ok := states[f.Path]; ok && f.Mode&0o077 == 0 && !privateMode(cur.mode) {
 			private = append(private, f.Path)
 		}
 	}
 	if unit != "" && len(writes) > 0 {
 		if _, err := r.Run(ctx, config.MarkRestartScript(unit, writes)); err != nil {
+			return err
+		}
+		if err := recordPathWrites(ctx, r, s, unit, writes); err != nil {
 			return err
 		}
 	}
@@ -367,6 +368,28 @@ func prepareWrites(ctx context.Context, r Remote, unit string, files []File, sta
 	return nil
 }
 
+// pendingWrites: the files whose content differs from states — about to be written.
+func pendingWrites(files []File, states map[string]fileState) []config.PendingWrite {
+	var writes []config.PendingWrite
+	for _, f := range files {
+		if cur, ok := states[f.Path]; !ok || cur.sum != sha256Hex(f.Data) {
+			writes = append(writes, config.PendingWrite{Path: f.Path, SHA256: sha256Hex(f.Data)})
+		}
+	}
+	return writes
+}
+
+// recordPathWrites: the writes about to happen for a unit whose path check is pending also go
+// into its path-check marker — a later job's rollback still undoes them after the converge
+// removed the restart marker.
+func recordPathWrites(ctx context.Context, r Remote, s *State, unit string, writes []config.PendingWrite) error {
+	if !s.pathPending[unit] || len(writes) == 0 {
+		return nil
+	}
+	_, err := r.Run(ctx, config.PathCheckRecordScript(unit, writes))
+	return err
+}
+
 // installUnit writes a unit's files (prepareWrites first) and runs converge — the unit's
 // config.UnitConvergeScript or UnitConvergeSoftScript, which restarts it only when its marker is
 // set or it is down. Returns converge's output (also printed).
@@ -375,7 +398,7 @@ func installUnit(ctx context.Context, r Remote, s *State, unit string, files []F
 	if err != nil {
 		return "", err
 	}
-	if err := prepareWrites(ctx, r, unit, files, states); err != nil {
+	if err := prepareWrites(ctx, r, s, unit, files, states); err != nil {
 		return "", err
 	}
 	for _, f := range files {
@@ -404,12 +427,20 @@ func unitVerify(ctx context.Context, r Remote, unit string, files []File) error 
 	switch {
 	case kv["MARKER"] == "1":
 		return fmt.Errorf("%s ждёт перезапуска с новой конфигурацией", unit)
+	case kv["PATHCHECK"] == "1":
+		return errPathCheckPending(unit)
 	case kv["ACTIVE"] != "1":
 		return fmt.Errorf("%s не запущен", unit)
 	case kv["ENABLED"] != "1":
 		return fmt.Errorf("%s не включён в автозапуск", unit)
 	}
 	return nil
+}
+
+// errPathCheckPending: a live exit's change of unit was never checked end to end (the job was
+// interrupted between the converge and the check) — Apply re-runs the check (guardPath).
+func errPathCheckPending(unit string) error {
+	return fmt.Errorf("%s: проверка пути после изменений не завершена (запуск прервался) — проверю снова", unit)
 }
 
 func unitRollback(unit string) stepFunc {
@@ -454,7 +485,17 @@ func hysteriaApply(o ExitOptions) stepFunc {
 		// The hop is nft only: a changed rule set is reloaded atomically, hysteria is not restarted
 		// (no restart marker). Its files belong to this run's rollback of the step all the same: a
 		// hop that breaks the main tunnel goes back with it, rules reloaded (UnitRollbackScript).
-		// Not being in the marker, a rollback resumed in a later job leaves them.
+		// On a live exit they are recorded in the path-check marker, so a later job's rollback
+		// undoes them too (guardPath).
+		if s.pathPending["hysteria2"] {
+			states, err := remoteStates(ctx, r, hopFiles)
+			if err != nil {
+				return err
+			}
+			if err := recordPathWrites(ctx, r, s, "hysteria2", pendingWrites(hopFiles, states)); err != nil {
+				return err
+			}
+		}
 		for _, f := range hopFiles {
 			changed, err := r.PutFile(ctx, f.Path, f.Data, f.Mode)
 			if err != nil {
@@ -816,6 +857,8 @@ func hubClientVerify(ctx context.Context, _ Remote, s *State) error {
 	switch {
 	case kv["MARKER"] == "1":
 		return fmt.Errorf("%s ждёт перезапуска с новой конфигурацией", u)
+	case kv["PATHCHECK"] == "1":
+		return errPathCheckPending(u)
 	case kv["ENABLED"] != "1":
 		return fmt.Errorf("%s не включён в автозапуск", u)
 	case kv["ACTIVE"] != "1" && kv["RETRY"] != "1":
@@ -878,62 +921,161 @@ func vrPath(o ExitOptions) pathCheck {
 // liveExit: the job converges an exit that carries users (reprovision runs only on online nodes).
 func liveExit(s *State) bool { return s.Kind == KindReprovision && s.Node.Lifecycle == "online" }
 
-// After a change the path gets pathAfterRounds probe runs (each up to three generate_204) with
-// pathAfterPause between: the Hub's hysteria client notices a restarted server only when its QUIC
-// connection times out (about 30 s), then reconnects. A rollback must not hang on that.
 var (
+	// pathAfterRounds probe runs (each up to three generate_204) judge a path after a change,
+	// pathRetryPause apart; a path that does not answer before the change gets one more run
+	// pathRetryPause later before it counts as dead (a false "dead" would leave the change
+	// unguarded).
 	pathAfterRounds = 2
-	pathAfterPause  = 15 * time.Second
+	pathRetryPause  = 15 * time.Second
+	// hopSettle: after a change of the hop rules the main tunnel is judged only once the Hub's
+	// client hopped under them — until its next hop (HubClientHopInterval) its traffic rides the
+	// old conntrack flow, NATed by the old rules, and a probe over it proves nothing.
+	hopSettle = config.HubClientHopInterval + 5*time.Second
 )
 
-// guardPath wraps the Apply of a step whose restart can cut a path users ride on. On a live exit
-// the path is probed end to end before the change and after it: a path that answered before and
-// is dead after fails the step, and the runner rolls it back (the previous files, nft rules
-// included, return and the service restarts with them — the node stays online). A path already
-// dead before — UDP «Россия → заграница» choked (Review Focus 3) — is no reason for a rollback;
+// pathCheckState is a unit's path-check marker as config.PathCheckStateScript reports it.
+type pathCheckState struct {
+	present, before bool
+	files           []string // the writes it recorded
+}
+
+func readPathCheck(ctx context.Context, host Remote, unit string) (pathCheckState, error) {
+	out, err := host.Run(ctx, config.PathCheckStateScript(unit))
+	if err != nil {
+		return pathCheckState{}, err
+	}
+	var st pathCheckState
+	for _, l := range strings.Split(out, "\n") {
+		switch k, v, _ := strings.Cut(strings.TrimSpace(l), "="); k {
+		case "PRESENT":
+			st.present = v == "1"
+		case "BEFORE":
+			st.before = v == "1"
+		case "FILE":
+			st.files = append(st.files, v)
+		}
+	}
+	return st, nil
+}
+
+// probeBefore: the path's state before a change; a path that does not answer is probed once
+// more, pathRetryPause later, before it counts as dead.
+func probeBefore(ctx context.Context, s *State, p pathCheck) (bool, error) {
+	ok, code, err := p.probe(ctx, s)
+	if err != nil || ok {
+		return ok, err
+	}
+	s.Printf("%s до изменений не ответил (код %s) — повторю через %s", p.name, code, pathRetryPause)
+	if err := s.Sleep(ctx, pathRetryPause); err != nil {
+		return false, err
+	}
+	ok, _, err = p.probe(ctx, s)
+	return ok, err
+}
+
+func noRollback(format string, a ...any) error {
+	return fmt.Errorf("%w: %w", ErrNoRollback, fmt.Errorf(format, a...))
+}
+
+func answered(ok bool) string {
+	if ok {
+		return "отвечал"
+	}
+	return "не отвечал"
+}
+
+// guardPath wraps the Apply of a step whose restart can cut a path users ride on; the step
+// converges unit (unit(s)), on the Hub when onHub, else on the node. On a live exit the path is
+// probed end to end before the change and after it: a path that answered before and is dead
+// after fails the step, and the runner rolls it back (the previous files, nft rules and confirmed
+// binaries return, the service restarts with them — the node stays online). A path already dead
+// before — UDP «Россия → заграница» choked (Review Focus 3) — is no reason for a rollback;
 // path_hy / path_tcp judge it. The check after the change is part of the step and the steps run
 // one after another, so the next risky restart (xray after hysteria) begins only once this one's
-// path answers again: users always keep a working path. Elsewhere (provision: the node is not in
-// routing; verify never applies) apply runs as it is.
-func guardPath(p pathCheck, apply stepFunc) stepFunc {
+// path answers again: users always keep a working path.
+//
+// The before-result and the change's writes live in the unit's path-check marker on its host
+// (config.PathCheckMarker) until the check after the change passed: a job interrupted in between
+// (an API restart) leaves it, the step's Verify then fails (PATHCHECK=1), and the resumed Apply
+// judges the after-probe against the recorded before-result instead of probing "before" a change
+// already made; a rollback there still undoes the recorded writes. A check that cannot run before
+// the change, or a marker that cannot be cleared after a good check, fails the step without a
+// rollback (ErrNoRollback). Elsewhere (provision: the node is not in routing; verify never
+// applies) apply runs as it is, a stale marker of an earlier live run removed first.
+func guardPath(p pathCheck, unit func(*State) string, onHub bool, apply stepFunc) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
+		u, host := unit(s), r
+		if onHub {
+			host = s.Hub
+		}
 		if !liveExit(s) {
+			if _, err := host.Run(ctx, config.PathCheckDoneScript(u)); err != nil {
+				return noRollback("отметка проверки пути %s не снята: %w", u, err)
+			}
 			return apply(ctx, r, s)
 		}
-		before, code, err := p.probe(ctx, s)
+		pc, err := readPathCheck(ctx, host, u)
 		if err != nil {
-			return fmt.Errorf("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
+			return noRollback("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
 		}
-		if before {
-			s.Printf("%s отвечает до изменений — проверю его и после", p.name)
+		before := pc.before
+		if pc.present {
+			s.Printf("проверка пути после изменений прерванного запуска не завершена: до них %s %s — сужу по этому", p.name, answered(before))
 		} else {
-			s.Printf("%s до изменений не отвечает (код %s) — откатывать по нему не буду, путь проверит отдельный шаг", p.name, code)
+			if before, err = probeBefore(ctx, s, p); err != nil {
+				return noRollback("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
+			}
+			if _, err := host.Run(ctx, config.PathCheckStartScript(u, before)); err != nil {
+				return noRollback("отметка проверки пути %s не записана — ничего не меняю: %w", u, err)
+			}
+			if before {
+				s.Printf("%s отвечает до изменений — проверю его и после", p.name)
+			} else {
+				s.Printf("%s до изменений не отвечает — откатывать по нему не буду, путь проверит отдельный шаг", p.name)
+			}
 		}
+		if s.pathPending == nil {
+			s.pathPending = map[string]bool{}
+		}
+		s.pathPending[u] = true
+		defer delete(s.pathPending, u)
 		if err := apply(ctx, r, s); err != nil {
 			return err
 		}
-		if !before {
-			return nil
-		}
-		for i := range pathAfterRounds {
-			if i > 0 {
-				if err := s.Sleep(ctx, pathAfterPause); err != nil {
+		if before {
+			if slices.Contains(s.changed[u], config.ExitPortHopConfPath) || slices.Contains(pc.files, config.ExitPortHopConfPath) {
+				s.Printf("правила прыжков портов изменились — жду %s (клиент Hub прыгает раз в %s; до прыжка он ходит по старому потоку conntrack)",
+					hopSettle, config.HubClientHopInterval)
+				if err := s.Sleep(ctx, hopSettle); err != nil {
 					return err
 				}
 			}
-			ok, c, err := p.probe(ctx, s)
-			if err != nil {
-				return fmt.Errorf("%s не проверен после изменений: %w", p.name, err)
+			ok, code := false, ""
+			for i := 0; i < pathAfterRounds && !ok; i++ {
+				if i > 0 {
+					if err := s.Sleep(ctx, pathRetryPause); err != nil {
+						return err
+					}
+				}
+				if ok, code, err = p.probe(ctx, s); err != nil {
+					return fmt.Errorf("%s не проверен после изменений: %w", p.name, err)
+				}
 			}
-			if ok {
-				s.Printf("%s отвечает и после изменений", p.name)
-				return nil
+			if !ok {
+				return fmt.Errorf("%s отвечал до изменений и перестал после них (код %s) — изменения шага откатываются", p.name, code)
 			}
-			code = c
+			s.Printf("%s отвечает и после изменений", p.name)
 		}
-		return fmt.Errorf("%s отвечал до изменений и перестал после них (код %s) — изменения шага откатываются", p.name, code)
+		if _, err := host.Run(ctx, config.PathCheckDoneScript(u)); err != nil {
+			return noRollback("путь проверен, но отметка проверки %s не снята (следующий запуск проверит снова): %w", u, err)
+		}
+		return nil
 	}
 }
+
+// onNode: a guarded step's unit on the node.
+func onNode(unit string) func(*State) string { return func(*State) string { return unit } }
 
 func pathHysteria(ctx context.Context, _ Remote, s *State) error {
 	port := 1088 + s.Node.ID

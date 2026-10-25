@@ -409,8 +409,11 @@ func runStep(ctx context.Context, kind string, s Step, r Remote, st *State) (str
 		return StepOK, nil
 	}
 	if err := call(ctx, s.Apply); err != nil {
-		if errors.Is(err, ErrSkipped) {
+		switch {
+		case errors.Is(err, ErrSkipped):
 			return StepSkipped, nil
+		case errors.Is(err, ErrNoRollback):
+			return StepFailed, err
 		}
 		return rollback(call, s, st, err)
 	}

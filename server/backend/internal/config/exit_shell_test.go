@@ -393,6 +393,116 @@ func TestUnitRollbackFromMarkerAfterResume(t *testing.T) {
 	}
 }
 
+// The path-check marker: created with the result before the change unless one is there (an
+// interrupted run's BEFORE and writes are kept), writes recorded once each and only into an
+// existing marker, the state lists BEFORE and the recorded files, done removes it.
+func TestPathCheckScripts(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	run := func(s string) string {
+		t.Helper()
+		out, err := shellRun(t, dir, "", s)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return out
+	}
+	w := []PendingWrite{{ExitHysteriaConfig, sha256Hex("new")}, {ExitPortHopConfPath, sha256Hex("hop")}, {"/opt/heyearth/x", "junk'; touch ./pwned"}}
+	if run(PathCheckRecordScript("hysteria2", w)); exists(dir, rel(PathCheckMarker("hysteria2"))) {
+		t.Fatal("record must not create the marker")
+	}
+	if got := run(PathCheckStateScript("hysteria2")); got != "PRESENT=0\n" {
+		t.Fatalf("absent: %q", got)
+	}
+	run(PathCheckStartScript("hysteria2", true))
+	run(PathCheckRecordScript("hysteria2", w))
+	run(PathCheckRecordScript("hysteria2", w[:1])) // a retried step: no duplicates
+	run(PathCheckStartScript("hysteria2", false))  // a resumed run keeps the first BEFORE and the writes
+	want := "BEFORE=1\n" + sha256Hex("new") + "  ./opt/heyearth/hysteria/server.yaml\n" + sha256Hex("hop") + "  ./etc/nftables-hysteria.conf\n"
+	if got := readRel(dir, rel(PathCheckMarker("hysteria2"))); got != want || exists(dir, "pwned") {
+		t.Fatalf("marker:\n%q\nwant\n%q", got, want)
+	}
+	if got := run(PathCheckStateScript("hysteria2")); got != "PRESENT=1\nFILE=./opt/heyearth/hysteria/server.yaml\nFILE=./etc/nftables-hysteria.conf\nBEFORE=1\n" {
+		t.Fatalf("state: %q", got)
+	}
+	mustWrite(t, dir, rel(PathCheckMarker("xray")), "BEFORE=0\nBIN "+sha256Hex("b")+"  ./bin/xray\n", 0o644)
+	if got := run(PathCheckStateScript("xray")); got != "PRESENT=1\nBEFORE=0\n" {
+		t.Fatalf("dead before, a BIN line is no file: %q", got)
+	}
+	mustWrite(t, dir, rel(PathCheckMarker("xray")), "garbage\n", 0o644)
+	if got := run(PathCheckStateScript("xray")); got != "PRESENT=1\nBEFORE=1\n" {
+		t.Fatalf("an unreadable BEFORE counts as a working path: %q", got)
+	}
+	run(PathCheckDoneScript("hysteria2"))
+	if exists(dir, rel(PathCheckMarker("hysteria2"))) {
+		t.Fatal("done must remove the marker")
+	}
+}
+
+// A rollback in a later job, after the converge removed the restart and pending-binary markers:
+// the path-check marker's writes and confirmed binary are undone, the marker removed, the unit
+// restarted once. Nothing left to undo: the marker is removed all the same (the check is over).
+func TestUnitRollbackFromPathCheckMarker(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	newBin := fakeXray("26.3.27")
+	dir := t.TempDir()
+	mustWrite(t, dir, rel(ExitXrayConfig), "new-cfg", 0o600)
+	mustWrite(t, dir, rel(ExitXrayConfig)+".bak", "old-cfg", 0o600)
+	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644)
+	mustWrite(t, dir, "bin/xray", newBin, 0o755)
+	mustWrite(t, dir, "bin/xray.bak", fakeXray("25.1.1"), 0o755)
+	mustWrite(t, dir, "active.xray", "", 0o644)
+	mustWrite(t, dir, rel(PathCheckMarker("xray")), "BEFORE=1\n"+sha256Hex("new-cfg")+"  ./opt/heyearth/xray/config.json\nBIN "+sha256Hex(newBin)+"  ./bin/xray\n", 0o644)
+	out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", nil))
+	if err != nil || readRel(dir, rel(ExitXrayConfig)) != "old-cfg" || readRel(dir, "bin/xray") != fakeXray("25.1.1") ||
+		count(dir, "restarts", "xray") != 1 || exists(dir, rel(PathCheckMarker("xray"))) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", nil)); err != nil || count(dir, "restarts", "xray") != 1 {
+		t.Fatalf("a second rollback has nothing to do: %v\n%s", err, out)
+	}
+	mustWrite(t, dir, rel(PathCheckMarker("xray")), "BEFORE=1\n"+sha256Hex("other")+"  ./opt/heyearth/xray/config.json\n", 0o644)
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", nil)); err != nil || exists(dir, rel(PathCheckMarker("xray"))) ||
+		readRel(dir, rel(ExitXrayConfig)) != "old-cfg" || count(dir, "restarts", "xray") != 1 {
+		t.Fatalf("nothing to undo: %v\n%s", err, out)
+	}
+}
+
+// The converge keeps a confirmed binary in the path-check marker (only when there is one) before
+// it removes the pending-binary marker.
+func TestUnitConvergeKeepsBinaryForPathCheck(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	for _, soft := range []bool{false, true} {
+		for _, pending := range []bool{false, true} {
+			dir := t.TempDir()
+			line := sha256Hex("bin") + "  ./bin/xray\n"
+			mustWrite(t, dir, rel(RestartMarker("xray")), "", 0o644)
+			mustWrite(t, dir, rel(BinaryPendingMarker("xray")), line, 0o644)
+			if pending {
+				mustWrite(t, dir, rel(PathCheckMarker("xray")), "BEFORE=1\n", 0o644)
+			}
+			s := UnitConvergeScript("xray", "")
+			if soft {
+				s = UnitConvergeSoftScript("xray", "")
+			}
+			out, err := shellRun(t, dir, systemctlStub, s)
+			want := ""
+			if pending {
+				want = "BEFORE=1\nBIN " + line
+			}
+			if err != nil || readRel(dir, rel(PathCheckMarker("xray"))) != want || exists(dir, rel(BinaryPendingMarker("xray"))) || exists(dir, rel(RestartMarker("xray"))) {
+				t.Fatalf("soft=%v pending=%v: %v %q\n%s", soft, pending, err, readRel(dir, rel(PathCheckMarker("xray"))), out)
+			}
+		}
+	}
+}
+
 // A restored nftables file of ours is loaded into the kernel again — in one transaction that
 // drops the table first (a hand-made previous file has no `delete table`) — before the unit
 // restarts; a rule file that was new in the run is removed and its table left loaded; a failing
@@ -504,7 +614,7 @@ func TestUnitStateAndMarkScripts(t *testing.T) {
 		}
 		return out
 	}
-	if s := state(); s != "ACTIVE=0\nENABLED=0\nRETRY=0\nMARKER=0\n" {
+	if s := state(); s != "ACTIVE=0\nENABLED=0\nRETRY=0\nMARKER=0\nPATHCHECK=0\n" {
 		t.Fatalf("%q", s)
 	}
 	if out, err := shellRun(t, dir, systemctlStub, MarkRestartScript("xray", []PendingWrite{{"/opt/heyearth/a b", sha256Hex("x")},
@@ -513,13 +623,20 @@ func TestUnitStateAndMarkScripts(t *testing.T) {
 	}
 	mustWrite(t, dir, "active.xray", "", 0o644)
 	mustWrite(t, dir, "enabled.xray", "", 0o644)
-	if s := state(); s != "ACTIVE=1\nENABLED=1\nRETRY=0\nMARKER=1\n" {
+	if s := state(); s != "ACTIVE=1\nENABLED=1\nRETRY=0\nMARKER=1\nPATHCHECK=0\n" {
 		t.Fatalf("%q", s)
 	}
 	// The pause of a crash loop: not active, systemd will start it again.
 	os.Remove(filepath.Join(dir, "active.xray"))
 	mustWrite(t, dir, "substate.xray", "auto-restart\n", 0o644)
-	if s := state(); s != "ACTIVE=0\nENABLED=1\nRETRY=1\nMARKER=1\n" {
+	if s := state(); s != "ACTIVE=0\nENABLED=1\nRETRY=1\nMARKER=1\nPATHCHECK=0\n" {
+		t.Fatalf("%q", s)
+	}
+	// A live exit's change awaiting its path check.
+	if out, err := shellRun(t, dir, "", PathCheckStartScript("xray", true)); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if s := state(); !strings.HasSuffix(s, "\nPATHCHECK=1\n") {
 		t.Fatalf("%q", s)
 	}
 	if got := readRel(dir, rel(RestartMarker("xray"))); got != sha256Hex("x")+"  ./opt/heyearth/a b\n" || exists(dir, "pwned") {
@@ -608,33 +725,41 @@ func TestUnitRollbackNftReloadInNetns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const oldHop = "table inet hysteria_porthopping {\n  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n" +
+		"    udp dport 20000-50000 redirect to :50443\n  }\n}\n"
 	for name, c := range map[string]struct {
 		unit, conf, table, newRules, previous, want, gone string
+		resumed                                           bool // the write known only from the path-check marker (a later job)
 	}{
 		"agent guard": {"node-agent", ExitAgentGuardConfPath, ExitAgentGuardTable, newGuard,
 			"table inet heyearth_agent_guard {\n  chain input {\n    type filter hook input priority 0; policy accept;\n" +
 				"    tcp dport 50052 ip saddr != { 138.16.181.225, 127.0.0.1 } drop\n  }\n}\n",
-			"tcp dport 50052 ip saddr != { 127.0.0.1, 138.16.181.225 } drop", "203.0.113.9"},
-		"port hop": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf,
-			"table inet hysteria_porthopping {\n  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n" +
-				"    udp dport 20000-50000 redirect to :50443\n  }\n}\n",
-			"udp dport 20000-50000 redirect to :50443", "fib daddr"},
+			"tcp dport 50052 ip saddr != { 127.0.0.1, 138.16.181.225 } drop", "203.0.113.9", false},
+		"port hop": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf, oldHop,
+			"udp dport 20000-50000 redirect to :50443", "fib daddr", false},
+		"port hop, resumed": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf, oldHop,
+			"udp dport 20000-50000 redirect to :50443", "fib daddr", true},
 	} {
 		dir := t.TempDir()
 		mustWrite(t, dir, rel(c.conf), c.newRules, 0o644)
 		mustWrite(t, dir, rel(c.conf)+".bak", c.previous, 0o644)
 		mustWrite(t, dir, rel(unitFilePath(c.unit)), "[Unit]\n", 0o644)
 		mustWrite(t, dir, "active."+c.unit, "", 0o644)
+		changed := []string{c.conf}
+		if c.resumed {
+			changed = nil
+			mustWrite(t, dir, rel(PathCheckMarker(c.unit)), "BEFORE=1\n"+sha256Hex(c.newRules)+"  ./"+rel(c.conf)+"\n", 0o644)
+		}
 		// In the namespace: the run's rules loaded, the ruleset recorded when the rollback calls
 		// systemctl restart (the reload must be done by then) and at the end.
 		prelude := systemctlStub + "nft -f ./" + rel(c.conf) + "\n" +
 			`eval "$(declare -f systemctl | sed '1s/systemctl/rb_systemctl/')"` + "\n" +
 			`systemctl() { [ "$1" = restart ] && nft list ruleset > ./ruleset.at-restart; rb_systemctl "$@"; }` + "\n" +
 			"trap 'nft list ruleset > ./ruleset' EXIT\n"
-		out, err := shellRunArgv(t, dir, []string{"unshare", "-rn", "bash", "-s"}, prelude, UnitRollbackScript(c.unit, []string{c.conf}))
+		out, err := shellRunArgv(t, dir, []string{"unshare", "-rn", "bash", "-s"}, prelude, UnitRollbackScript(c.unit, changed))
 		final, atRestart := readRel(dir, "ruleset"), readRel(dir, "ruleset.at-restart")
 		if err != nil || final != atRestart || !strings.Contains(final, c.want) || strings.Contains(final, c.gone) ||
-			strings.Count(final, "table inet "+c.table) != 1 || count(dir, "restarts", c.unit) != 1 {
+			strings.Count(final, "table inet "+c.table) != 1 || count(dir, "restarts", c.unit) != 1 || exists(dir, rel(PathCheckMarker(c.unit))) {
 			t.Fatalf("%s: %v\n%s\nruleset at restart:\n%s\nfinal:\n%s", name, err, out, atRestart, final)
 		}
 	}
@@ -1656,7 +1781,8 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"hyconv": UnitConvergeScript("hysteria2", ExitHysteriaPrepareScript()),
 		"soft":   UnitConvergeSoftScript("hysteria2-client-7", HysteriaEnsureScript()), "private": PrivateModeScript("/a", "/b c"),
 		"agentcheck": NodeAgentCheckScript, "agentconv": UnitConvergeScript("node-agent", ExitAgentGuardApplyScript),
-		"keypub": KeyPublicScript("/a b"),
+		"keypub": KeyPublicScript("/a b"), "pcstate": PathCheckStateScript("xray"), "pcstart": PathCheckStartScript("xray", true),
+		"pcrecord": PathCheckRecordScript("xray", []PendingWrite{{"/a b", sha256Hex("x")}}), "pcdone": PathCheckDoneScript("xray"),
 	} {
 		if name != "hyprep" && name != "xrprep" && !strings.HasPrefix(s, "# hp:") {
 			t.Errorf("%s: no marker line", name)
@@ -1672,7 +1798,8 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"hy-check": HysteriaCheckScript, "xray-check": XrayCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
 		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095), "vr-probe 3095": VRProbeScript("/x", "/c", 3095),
 		"converge hysteria2-client-7 soft": UnitConvergeSoftScript("hysteria2-client-7", ""), "private /a /b": PrivateModeScript("/a", "/b"),
-		"agent-check": NodeAgentCheckScript, "key-pub /a": KeyPublicScript("/a"),
+		"agent-check": NodeAgentCheckScript, "key-pub /a": KeyPublicScript("/a"), "path-state xray": PathCheckStateScript("xray"),
+		"path-start xray 0": PathCheckStartScript("xray", false), "path-record xray": PathCheckRecordScript("xray", nil), "path-done xray": PathCheckDoneScript("xray"),
 	} {
 		if first, _, _ := strings.Cut(s, "\n"); first != "# hp:"+op {
 			t.Errorf("marker %q, want %q", first, "# hp:"+op)
@@ -1681,7 +1808,9 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	dir := t.TempDir()
 	for _, s := range []string{SumsScript("/a\ntouch ./pwned-sums"), CatScript("/a\rtouch ./pwned-cat\n"), UnitStateScript("x; touch ./pwned-unit"),
 		MarkRestartScript("x$(touch ./pwned-mark)", nil), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"}),
-		UnitConvergeSoftScript("x$(touch ./pwned-soft)", ""), PrivateModeScript("./a'; touch ./pwned-private; '"), KeyPublicScript("/a'; touch ./pwned-key; '")} {
+		UnitConvergeSoftScript("x$(touch ./pwned-soft)", ""), PrivateModeScript("./a'; touch ./pwned-private; '"), KeyPublicScript("/a'; touch ./pwned-key; '"),
+		PathCheckStateScript("x$(touch ./pwned-pcs)"), PathCheckStartScript("x`touch ./pwned-pcst`", true), PathCheckDoneScript("x; touch ./pwned-pcd"),
+		PathCheckRecordScript("x$(touch ./pwned-pcr)", []PendingWrite{{"./a'; touch ./pwned-pcrp; '", sha256Hex("x")}})} {
 		_, _ = shellRun(t, dir, systemctlStub, s)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "pwned-*")); len(left) != 0 {

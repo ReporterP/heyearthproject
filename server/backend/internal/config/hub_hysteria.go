@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // HubHysteriaDir holds the Hub's per-exit hysteria client configs (client-<id>.yaml).
 const HubHysteriaDir = "/opt/heyearth/hysteria"
@@ -8,6 +11,12 @@ const HubHysteriaDir = "/opt/heyearth/hysteria"
 // ExitHopRange is the UDP range every exit redirects to its hysteria server (:50443) and the
 // Hub's clients hop across (ExitPortHopScript, HubHysteriaClientYAML).
 const ExitHopRange = "20000-50000"
+
+// HubClientHopInterval is how often a Hub client hops to another port of ExitHopRange (a new UDP
+// socket and destination port: a fresh conntrack flow on the exit). A change of the exit's hop
+// rules reaches a client's traffic only after its next hop — internal/provision waits longer than
+// this before it judges the main tunnel after such a change.
+const HubClientHopInterval = 30 * time.Second
 
 // HubHysteriaClientYAML renders /opt/heyearth/hysteria/client-<id>.yaml, the Hub's hysteria
 // client to exit <id>: port hopping across the exit's ExitHopRange (hopInterval 30 s), the
@@ -30,7 +39,7 @@ tls:
 
 transport:
   udp:
-    hopInterval: 30s
+    hopInterval: `+HubClientHopInterval.String()+`
 
 quic:
   initStreamReceiveWindow: 26843545

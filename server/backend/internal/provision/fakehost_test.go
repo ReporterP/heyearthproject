@@ -41,6 +41,7 @@ type fakeHost struct {
 	marker     map[string]bool
 	markWrites map[string]map[string]string // unit → path → sha256 ever recorded by MarkRestartScript (history)
 	markFile   map[string]map[string]string // unit → path → sha256 in the marker file now (gone with the marker)
+	pathMark   map[string]*fakePathMark     // unit → its path-check marker (config.PathCheckMarker)
 	restarts   map[string]int
 	authKeys   []string
 	ops        []string
@@ -79,8 +80,14 @@ var errLost = fmt.Errorf("%w: ssh: connection lost", ErrConnectionLost)
 func newFakeHost() *fakeHost {
 	return &fakeHost{files: map[string][]byte{}, modes: map[string]uint32{}, active: map[string]bool{}, enabled: map[string]bool{},
 		retry: map[string]bool{}, nft: map[string]bool{}, nftRules: map[string]string{}, marker: map[string]bool{},
-		markWrites: map[string]map[string]string{}, markFile: map[string]map[string]string{},
+		markWrites: map[string]map[string]string{}, markFile: map[string]map[string]string{}, pathMark: map[string]*fakePathMark{},
 		restarts: map[string]int{}, scripts: map[string]string{}, mtgVersion: "2.2.8"}
+}
+
+// fakePathMark is a path-check marker: the path's state before the change and its writes.
+type fakePathMark struct {
+	before bool
+	writes map[string]string // path → sha256
 }
 
 func (h *fakeHost) note(op string) {
@@ -179,12 +186,18 @@ func (h *fakeHost) rollback(u, script string) (string, error) {
 	for _, m := range fakeRestoreLine.FindAllStringSubmatch(script, -1) {
 		undo = append(undo, m[1])
 	}
-	if h.marker[u] {
-		for _, p := range slices.Sorted(maps.Keys(h.markFile[u])) {
-			if d, ok := h.files[p]; ok && sha256Hex(d) == h.markFile[u][p] {
+	recorded := func(writes map[string]string) {
+		for _, p := range slices.Sorted(maps.Keys(writes)) {
+			if d, ok := h.files[p]; ok && sha256Hex(d) == writes[p] {
 				undo = append(undo, p)
 			}
 		}
+	}
+	if h.marker[u] {
+		recorded(h.markFile[u])
+	}
+	if pm := h.pathMark[u]; pm != nil {
+		recorded(pm.writes)
 	}
 	var back, fresh []string
 	for _, p := range undo {
@@ -217,18 +230,21 @@ func (h *fakeHost) rollback(u, script string) (string, error) {
 	unitFile := "/etc/systemd/system/" + u + ".service"
 	switch {
 	case len(back) == 0 && len(fresh) == 0:
+		delete(h.pathMark, u)
 		return "[unit] " + u + ": в этом запуске файлы не менялись — возвращать нечего\n", nil
 	case h.files[unitFile] == nil || slices.Contains(fresh, unitFile):
 		h.active[u], h.enabled[u] = false, false
 		removeFresh()
 		h.clearMarker(u)
+		delete(h.pathMark, u)
 		return "[unit] " + u + ": новая установка снята\n", nil
 	}
 	removeFresh()
 	if err := h.start(u); err != nil {
-		return "", err
+		return "", err // set -e: both markers kept
 	}
 	h.clearMarker(u)
+	delete(h.pathMark, u)
 	return "[unit] " + u + ": возвращена прежняя версия\n", nil
 }
 
@@ -388,7 +404,30 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		return h.converge(f[1], len(f) > 2 && f[2] == "soft")
 	case "unit-state":
 		return "ACTIVE=" + b01(h.active[f[1]]) + "\nENABLED=" + b01(h.enabled[f[1]]) + "\nRETRY=" + b01(h.retry[f[1]]) +
-			"\nMARKER=" + b01(h.marker[f[1]]) + "\n", nil
+			"\nMARKER=" + b01(h.marker[f[1]]) + "\nPATHCHECK=" + b01(h.pathMark[f[1]] != nil) + "\n", nil
+	case "path-state":
+		pm := h.pathMark[f[1]]
+		if pm == nil {
+			return "PRESENT=0\n", nil
+		}
+		var b strings.Builder
+		b.WriteString("PRESENT=1\n")
+		for _, p := range slices.Sorted(maps.Keys(pm.writes)) {
+			b.WriteString("FILE=" + p + "\n")
+		}
+		return b.String() + "BEFORE=" + b01(pm.before) + "\n", nil
+	case "path-start":
+		if h.pathMark[f[1]] == nil {
+			h.pathMark[f[1]] = &fakePathMark{before: f[2] == "1", writes: map[string]string{}}
+		}
+	case "path-record":
+		if pm := h.pathMark[f[1]]; pm != nil {
+			for _, m := range fakeMarkLine.FindAllStringSubmatch(script, -1) {
+				pm.writes[m[2]] = m[1]
+			}
+		}
+	case "path-done":
+		delete(h.pathMark, f[1])
 	case "rollback":
 		return h.rollback(f[1], script)
 	case "hop-apply":

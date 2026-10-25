@@ -27,6 +27,12 @@ type Recipe []Step
 // ErrSkipped from Apply: the step deliberately did nothing (it printed why); the job goes on.
 var ErrSkipped = errors.New("шаг пропущен")
 
+// ErrNoRollback from Apply: a failure a Rollback must not answer — before the step changed anything
+// (a check it needs first could not run), or after its change was checked good (only the cleanup
+// failed). The step fails without a Rollback, which would only undo, unchecked, what an interrupted
+// earlier run left behind or a good change.
+var ErrNoRollback = errors.New("без отката")
+
 // Tunnel is what servers.tunnel_* must say about an exit. Stale: a legacy private key or a
 // protocol/port other than hysteria2:50443 is still stored.
 type Tunnel struct {
@@ -84,6 +90,9 @@ type State struct {
 	logf    func(format string, a ...any) // the runner's log (Runner.Logf), set by the run
 	secrets []string
 	changed map[string][]string // unit → files written in this run (rollback restores only these)
+	// pathPending: units whose change on a live exit awaits its end-to-end check (guardPath); their
+	// writes go into the path-check marker too (recordPathWrites).
+	pathPending map[string]bool
 }
 
 // NewState starts the state of one run; hub is where Hub-side steps run (LocalRemote in the API).
