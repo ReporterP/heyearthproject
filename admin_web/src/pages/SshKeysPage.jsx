@@ -1,14 +1,17 @@
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useState } from 'react'
 import { Key } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchSshKeys, createSshKey, updateSshKey, deleteSshKey } from '../api/admin.js'
+import { fetchSshKeys, createSshKey, updateSshKey, deleteSshKey, fetchHubKey } from '../api/admin.js'
 import CrudDialog, { FormField, TextInput, TextArea } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import {
   Button,
   Card,
+  CardHeader,
+  CardBody,
+  CopyButton,
   PageHeader,
   Skeleton,
   EmptyState,
@@ -25,6 +28,42 @@ function reducer(state, action) {
 }
 
 const init = { keys: [], loading: true, error: '', dialog: null, confirm: null, saving: false, name: '', privateKey: '' }
+
+// HubKeyCard: the Hub's public SSH key (GET /ssh-keys/hub, servers.read) — the private one never
+// leaves the Hub.
+function HubKeyCard() {
+  const [k, setK] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let alive = true
+    fetchHubKey()
+      .then((r) => { if (alive) setK(r) })
+      .catch((e) => { if (alive) setErr(e?.message || 'ошибка') })
+    return () => { alive = false }
+  }, [])
+  return (
+    <Card className="mb-4">
+      <CardHeader><div className="text-sm font-medium text-primary">Ключ Hub</div></CardHeader>
+      <CardBody>
+        <p className="text-xs text-tertiary mb-3">Hub ставит этот ключ на каждую ноду при настройке и дальше входит по нему; пароль root остаётся запасным.</p>
+        {err && <p role="alert" className="text-xs text-danger break-words">Не удалось загрузить ключ Hub: {err}</p>}
+        {!k && !err && <Skeleton className="h-10 w-full" />}
+        {k && (
+          <div className="space-y-2">
+            <div className="flex items-start gap-1">
+              <code className="flex-1 min-w-0 font-mono text-xs text-primary break-all">{k.public_key}</code>
+              <CopyButton text={k.public_key} label="Скопировать открытый ключ Hub" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-tertiary">Отпечаток</span>
+              <code className="font-mono text-secondary break-all">{k.fingerprint}</code>
+            </div>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  )
+}
 
 export default function SshKeysPage() {
   const { t } = useT()
@@ -96,6 +135,7 @@ export default function SshKeysPage() {
   return (
     <div>
       <PageHeader title={t.sshKeysTitle} actions={headerActions} />
+      {can('servers.read') && <HubKeyCard />}
 
       {s.error && <p className="text-danger text-sm mb-4">{s.error}</p>}
 
