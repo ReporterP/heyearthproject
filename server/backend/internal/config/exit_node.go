@@ -221,13 +221,18 @@ table inet hysteria_porthopping {
 }
 `
 
-// ExitPortHopUnit re-applies ExitPortHopConf at boot.
+// ExitPortHopUnit re-applies ExitPortHopConf at boot and whenever nftables.service is restarted
+// (PartOf=) or reloaded (ReloadPropagatedFrom= + ExecReload=): both run `flush ruleset` on
+// Ubuntu, which would silently end the port hopping of every Hub client.
 const ExitPortHopUnit = `[Unit]
 Description=nftables port hopping for Hysteria2
-After=network.target
+After=network.target nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/nft -f ` + ExitPortHopConfPath + `
+ExecReload=/usr/sbin/nft -f ` + ExitPortHopConfPath + `
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target

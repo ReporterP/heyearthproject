@@ -1,6 +1,7 @@
 package config
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,6 +74,34 @@ func TestExitAgentGuardUnits(t *testing.T) {
 		t.Errorf("unit path %s", ExitAgentGuardUnitPath)
 	}
 	golden(t, "exit_unit_agent_guard.golden", []byte(ExitAgentGuardUnit))
+}
+
+// Every nft unit of an exit survives both `systemctl restart nftables` (PartOf=) and
+// `systemctl reload nftables` (ReloadPropagatedFrom= + ExecReload=; Ubuntu's reload runs
+// `nft -f /etc/nftables.conf`, which starts with `flush ruleset`, and PartOf= does not propagate a
+// reload), and is ordered after nftables.service so its load lands after the flush.
+func TestNftUnitsSurviveNftablesReloadAndRestart(t *testing.T) {
+	for name, u := range map[string]struct{ unit, conf string }{
+		"agent guard": {ExitAgentGuardUnit, ExitAgentGuardConfPath},
+		"xray guard":  {ExitXrayGuardUnit, ExitXrayGuardConfPath},
+		"port hop":    {ExitPortHopUnit, ExitPortHopConfPath},
+	} {
+		load := "/usr/sbin/nft -f " + u.conf + "\n"
+		for _, w := range []string{"\nPartOf=nftables.service\n", "\nReloadPropagatedFrom=nftables.service\n", "\nExecStart=" + load, "\nExecReload=" + load,
+			"\nType=oneshot\n", "\nRemainAfterExit=yes\n"} {
+			if !strings.Contains(u.unit, w) {
+				t.Errorf("%s unit lacks %q", name, strings.TrimSpace(w))
+			}
+		}
+		if !regexp.MustCompile(`(?m)^After=.*\bnftables\.service\b`).MatchString(u.unit) {
+			t.Errorf("%s unit is not ordered after nftables.service", name)
+		}
+		if i, j := strings.Index(u.unit, "ReloadPropagatedFrom="), strings.Index(u.unit, "[Service]"); i > j {
+			t.Errorf("%s: ReloadPropagatedFrom= belongs to [Unit]", name)
+		}
+	}
+	golden(t, "exit_unit_porthop.golden", []byte(ExitPortHopUnit))
+	golden(t, "exit_unit_xray_guard.golden", []byte(ExitXrayGuardUnit))
 }
 
 // node-agent's converge with the guard as its extra: the guard is loaded, enabled and started

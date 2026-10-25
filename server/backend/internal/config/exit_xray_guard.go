@@ -39,8 +39,9 @@ import (
 // unit, so xray never runs without the guard; re-applying uses `nft -f` (a restart of the guard
 // unit restarts xray too). The guard unit is PartOf= nftables.service and ordered after it: a
 // `systemctl restart nftables` (its config starts with `flush ruleset`) re-applies the guard
-// and restarts xray; stopping nftables stops xray. Rules name the user, not a uid: the user must
-// exist before the file is loaded (ExitXrayUserScript).
+// and restarts xray; a `systemctl reload nftables` (the same flush) re-applies it through
+// ReloadPropagatedFrom= + ExecReload= without touching xray; stopping nftables stops xray. Rules
+// name the user, not a uid: the user must exist before the file is loaded (ExitXrayUserScript).
 
 const (
 	ExitXrayUser          = "xray"
@@ -126,15 +127,19 @@ func ExitXrayGuardConf(exitIP string, mtprotoPort int) (string, error) {
 }
 
 // ExitXrayGuardUnit loads ExitXrayGuardConfPath at boot, before xray (which Requires= it), and
-// again whenever nftables.service is restarted (PartOf=; its ruleset flush would drop the guard).
+// again whenever nftables.service is restarted (PartOf=) or reloaded (ReloadPropagatedFrom= +
+// ExecReload=: a reload's `flush ruleset` would drop the guard, and PartOf= does not propagate
+// reloads). Ordered after nftables.service, so the reload lands after its flush.
 const ExitXrayGuardUnit = `[Unit]
 Description=Kernel egress guard of the exit xray (HeYearth)
 After=network.target nftables.service
 PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
 Before=xray.service
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/nft -f ` + ExitXrayGuardConfPath + `
+ExecReload=/usr/sbin/nft -f ` + ExitXrayGuardConfPath + `
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target

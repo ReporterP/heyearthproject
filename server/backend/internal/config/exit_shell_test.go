@@ -2,6 +2,11 @@ package config
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,11 +25,17 @@ var leftoverAbs = regexp.MustCompile(`(^|[^.\w])/(opt/heyearth|etc)(/|\b)`)
 // to run when an absolute path survived the rewrite. Returns stdout+stderr.
 func shellRun(t *testing.T, dir, prelude, script string, env ...string) (string, error) {
 	t.Helper()
+	return shellRunArgv(t, dir, []string{"bash", "-s"}, prelude, script, env...)
+}
+
+// shellRunArgv is shellRun with the shell started as argv (e.g. inside `unshare -rn`).
+func shellRunArgv(t *testing.T, dir string, argv []string, prelude, script string, env ...string) (string, error) {
+	t.Helper()
 	s := strings.NewReplacer("/opt/heyearth/", "./opt/heyearth/", "/etc/", "./etc/").Replace(script)
 	if m := leftoverAbs.FindString(s); m != "" {
 		t.Fatalf("path rewrite incomplete (%q); refusing to run against the real filesystem", m)
 	}
-	cmd := exec.Command("bash", "-s")
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), append([]string{"RESTART_CHECK_SLEEP=0", "RESTART_CHECK_SLEEP2=0"}, env...)...)
 	cmd.Stdin = strings.NewReader(prelude + s)
@@ -382,6 +393,71 @@ func TestUnitRollbackFromMarkerAfterResume(t *testing.T) {
 	}
 }
 
+// A restored nftables file of ours is loaded into the kernel again — in one transaction that
+// drops the table first (a hand-made previous file has no `delete table`) — before the unit
+// restarts; a rule file that was new in the run is removed and its table left loaded; a failing
+// load fails the rollback.
+func TestUnitRollbackReloadsRestoredNftRules(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	const nftStub = `nft() { echo "nft $*" >> ./restarts; [ "$2" = - ] && cat >> ./nft.stdin; [ ! -f ./nft-fails ]; }
+`
+	const handMade = "table inet heyearth_agent_guard {\n  chain input {\n    tcp dport 50052 ip saddr != { 138.16.181.225 } drop\n  }\n}\n"
+	setup := func() string {
+		dir := t.TempDir()
+		mustWrite(t, dir, rel(ExitAgentGuardConfPath), "new rules", 0o644)
+		mustWrite(t, dir, rel(ExitAgentGuardConfPath)+".bak", handMade, 0o644)
+		mustWrite(t, dir, rel(NodeAgentUnitPath), "new unit", 0o644)
+		mustWrite(t, dir, rel(NodeAgentUnitPath)+".bak", "old unit", 0o644)
+		mustWrite(t, dir, rel(NodeAgentCACert), "new ca", 0o644) // not a rule file: no load for it
+		mustWrite(t, dir, rel(NodeAgentCACert)+".bak", "old ca", 0o644)
+		mustWrite(t, dir, "active.node-agent", "", 0o644)
+		return dir
+	}
+	dir := setup()
+	out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("node-agent", []string{ExitAgentGuardConfPath, NodeAgentUnitPath, NodeAgentCACert}))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	want := "table inet heyearth_agent_guard\ndelete table inet heyearth_agent_guard\n" + handMade
+	if got := readRel(dir, "nft.stdin"); got != want || readRel(dir, rel(ExitAgentGuardConfPath)) != handMade {
+		t.Fatalf("loaded:\n%q\nwant\n%q", got, want)
+	}
+	if got := readRel(dir, "restarts"); got != "nft -f -\nnode-agent\n" {
+		t.Fatalf("the previous rules must be in force before node-agent restarts:\n%s", got)
+	}
+
+	// Resumed rollback (no in-memory list): the hop file restored from the marker is reloaded too.
+	dir = t.TempDir()
+	mustWrite(t, dir, rel(ExitPortHopConfPath), ExitPortHopConf, 0o644)
+	mustWrite(t, dir, rel(ExitPortHopConfPath)+".bak", "old hop", 0o644)
+	mustWrite(t, dir, rel(ExitHysteriaUnitPath), ExitHysteriaUnit, 0o644)
+	mustWrite(t, dir, rel(RestartMarker("hysteria2")), sha256Hex(ExitPortHopConf)+"  ./etc/nftables-hysteria.conf\n", 0o644)
+	if out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("hysteria2", nil)); err != nil ||
+		readRel(dir, "nft.stdin") != "table inet hysteria_porthopping\ndelete table inet hysteria_porthopping\nold hop" {
+		t.Fatalf("resumed: %v %q\n%s", err, readRel(dir, "nft.stdin"), out)
+	}
+
+	// A guard new in this run: removed with its unit, its table stays (it only ever restricts).
+	dir = t.TempDir()
+	mustWrite(t, dir, rel(ExitXrayGuardConfPath), "new guard", 0o644)
+	mustWrite(t, dir, rel(ExitXrayUnitPath), "new unit", 0o644)
+	mustWrite(t, dir, rel(ExitXrayUnitPath)+".bak", "old unit", 0o644)
+	if out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("xray", []string{ExitXrayGuardConfPath, ExitXrayUnitPath})); err != nil ||
+		exists(dir, rel(ExitXrayGuardConfPath)) || exists(dir, "nft.stdin") {
+		t.Fatalf("new guard: %v\n%s", err, out)
+	}
+
+	// The previous rules cannot be loaded: the rollback fails (the step reports it), nothing restarted.
+	dir = setup()
+	mustWrite(t, dir, "nft-fails", "", 0o644)
+	if out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("node-agent", []string{ExitAgentGuardConfPath})); err == nil ||
+		count(dir, "restarts", "node-agent") != 0 {
+		t.Fatalf("a failed load must fail the rollback: %v\n%s", err, out)
+	}
+}
+
 func TestUnitRollbackFreshInstallAndNothingChanged(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
@@ -480,6 +556,87 @@ func TestSumsAndCatScripts(t *testing.T) {
 	}
 	if out, err := shellRun(t, dir, "", CatScript("/opt/heyearth/missing")); err != nil || out != "" {
 		t.Fatalf("cat of a missing file: %v %q", err, out)
+	}
+}
+
+// KeyPublicScript gives the key's public half (openssl on the node), nothing for a missing key,
+// NO_OPENSSL without openssl — never the private key.
+func TestKeyPublicScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("no openssl")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalECPrivateKey(key)
+	dir := t.TempDir()
+	mustWrite(t, dir, "opt/heyearth/certs/server-key.pem", string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})), 0o600)
+	out, err := shellRun(t, dir, "", KeyPublicScript("/opt/heyearth/certs/server-key.pem"))
+	b, _ := pem.Decode([]byte(out))
+	want, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil || b == nil || b.Type != "PUBLIC KEY" || !bytes.Equal(b.Bytes, want) || strings.Contains(out, "PRIVATE") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := shellRun(t, dir, "", KeyPublicScript("/opt/heyearth/certs/missing.pem")); err != nil || out != "" {
+		t.Fatalf("missing key: %v %q", err, out)
+	}
+	if out, err := shellRun(t, dir, "", KeyPublicScript("/opt/heyearth/certs/server-key.pem"), "PATH=/nonexistent"); err != nil || out != "NO_OPENSSL\n" {
+		t.Fatalf("no openssl: %v %q", err, out)
+	}
+}
+
+// A restored rule file is loaded with the real nft, in a throwaway network namespace (unshare
+// -rn: an unprivileged user + network namespace with its own empty ruleset; the host's rules are
+// never touched — Linux only): the run's new rules are in the kernel, the rollback puts the
+// previous file back (hand-made, without `delete table`) and the kernel then holds exactly the
+// previous rules, before the unit restarts.
+func TestUnitRollbackNftReloadInNetns(t *testing.T) {
+	if runtime.GOOS != "linux" || !haveBash() {
+		t.Skip("needs Linux and bash")
+	}
+	if _, err := exec.LookPath("nft"); err != nil {
+		t.Skip("no nft")
+	}
+	if out, err := exec.Command("unshare", "-rn", "nft", "list", "ruleset").CombinedOutput(); err != nil {
+		t.Skipf("no unprivileged network namespace with nft: %v %s", err, out)
+	}
+	newGuard, err := ExitAgentGuardConf([]string{"203.0.113.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		unit, conf, table, newRules, previous, want, gone string
+	}{
+		"agent guard": {"node-agent", ExitAgentGuardConfPath, ExitAgentGuardTable, newGuard,
+			"table inet heyearth_agent_guard {\n  chain input {\n    type filter hook input priority 0; policy accept;\n" +
+				"    tcp dport 50052 ip saddr != { 138.16.181.225, 127.0.0.1 } drop\n  }\n}\n",
+			"tcp dport 50052 ip saddr != { 127.0.0.1, 138.16.181.225 } drop", "203.0.113.9"},
+		"port hop": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf,
+			"table inet hysteria_porthopping {\n  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n" +
+				"    udp dport 20000-50000 redirect to :50443\n  }\n}\n",
+			"udp dport 20000-50000 redirect to :50443", "fib daddr"},
+	} {
+		dir := t.TempDir()
+		mustWrite(t, dir, rel(c.conf), c.newRules, 0o644)
+		mustWrite(t, dir, rel(c.conf)+".bak", c.previous, 0o644)
+		mustWrite(t, dir, rel(unitFilePath(c.unit)), "[Unit]\n", 0o644)
+		mustWrite(t, dir, "active."+c.unit, "", 0o644)
+		// In the namespace: the run's rules loaded, the ruleset recorded when the rollback calls
+		// systemctl restart (the reload must be done by then) and at the end.
+		prelude := systemctlStub + "nft -f ./" + rel(c.conf) + "\n" +
+			`eval "$(declare -f systemctl | sed '1s/systemctl/rb_systemctl/')"` + "\n" +
+			`systemctl() { [ "$1" = restart ] && nft list ruleset > ./ruleset.at-restart; rb_systemctl "$@"; }` + "\n" +
+			"trap 'nft list ruleset > ./ruleset' EXIT\n"
+		out, err := shellRunArgv(t, dir, []string{"unshare", "-rn", "bash", "-s"}, prelude, UnitRollbackScript(c.unit, []string{c.conf}))
+		final, atRestart := readRel(dir, "ruleset"), readRel(dir, "ruleset.at-restart")
+		if err != nil || final != atRestart || !strings.Contains(final, c.want) || strings.Contains(final, c.gone) ||
+			strings.Count(final, "table inet "+c.table) != 1 || count(dir, "restarts", c.unit) != 1 {
+			t.Fatalf("%s: %v\n%s\nruleset at restart:\n%s\nfinal:\n%s", name, err, out, atRestart, final)
+		}
 	}
 }
 
@@ -1499,6 +1656,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"hyconv": UnitConvergeScript("hysteria2", ExitHysteriaPrepareScript()),
 		"soft":   UnitConvergeSoftScript("hysteria2-client-7", HysteriaEnsureScript()), "private": PrivateModeScript("/a", "/b c"),
 		"agentcheck": NodeAgentCheckScript, "agentconv": UnitConvergeScript("node-agent", ExitAgentGuardApplyScript),
+		"keypub": KeyPublicScript("/a b"),
 	} {
 		if name != "hyprep" && name != "xrprep" && !strings.HasPrefix(s, "# hp:") {
 			t.Errorf("%s: no marker line", name)
@@ -1514,7 +1672,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"hy-check": HysteriaCheckScript, "xray-check": XrayCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
 		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095), "vr-probe 3095": VRProbeScript("/x", "/c", 3095),
 		"converge hysteria2-client-7 soft": UnitConvergeSoftScript("hysteria2-client-7", ""), "private /a /b": PrivateModeScript("/a", "/b"),
-		"agent-check": NodeAgentCheckScript,
+		"agent-check": NodeAgentCheckScript, "key-pub /a": KeyPublicScript("/a"),
 	} {
 		if first, _, _ := strings.Cut(s, "\n"); first != "# hp:"+op {
 			t.Errorf("marker %q, want %q", first, "# hp:"+op)
@@ -1523,7 +1681,7 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 	dir := t.TempDir()
 	for _, s := range []string{SumsScript("/a\ntouch ./pwned-sums"), CatScript("/a\rtouch ./pwned-cat\n"), UnitStateScript("x; touch ./pwned-unit"),
 		MarkRestartScript("x$(touch ./pwned-mark)", nil), UnitRollbackScript("x`touch ./pwned-rb`", []string{"./a'; touch ./pwned-path; '"}),
-		UnitConvergeSoftScript("x$(touch ./pwned-soft)", ""), PrivateModeScript("./a'; touch ./pwned-private; '")} {
+		UnitConvergeSoftScript("x$(touch ./pwned-soft)", ""), PrivateModeScript("./a'; touch ./pwned-private; '"), KeyPublicScript("/a'; touch ./pwned-key; '")} {
 		_, _ = shellRun(t, dir, systemctlStub, s)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "pwned-*")); len(left) != 0 {

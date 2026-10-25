@@ -138,6 +138,13 @@ fi
 //
 // Every new unit file of the run (a .service next to the unit's own, e.g. heyearth-exit-guard
 // for xray) is disabled and stopped before it is removed, so no enable symlink is left dangling.
+//
+// A restored nftables file of ours (nftRuleFiles: the port hop, the xray guard, the node-agent
+// guard) is loaded into the kernel again before any restart — the file alone would leave the
+// rejected run's rules in force (e.g. a Hub address list that locked the Hub out of node-agent).
+// The load is one nft transaction that drops the table first, so a hand-made previous file
+// without its own `delete table` replaces the rules instead of adding to them. A file that was
+// new in the run and is removed leaves its table loaded (fail closed: it only ever restricts).
 func UnitRollbackScript(unit string, changed []string) string {
 	var b strings.Builder
 	b.WriteString(opLine("rollback", unit) + "set -e\n" + RestartCheckFunc)
@@ -145,16 +152,28 @@ func UnitRollbackScript(unit string, changed []string) string {
 		"\nRB_BIN=" + shQuote(BinaryPendingMarker(unit)) + "\n")
 	b.WriteString(`restored=0
 rb_new=()
+rb_back=()
 rb_sha() { sha256sum < "$1" | cut -d' ' -f1; }
 rb_restore() {
   if [ -f "$1.bak" ]; then
     cp -p "$1.bak" "$1.rollback.tmp"
     mv -f "$1.rollback.tmp" "$1"
     restored=1
+    rb_back+=("$1")
     echo "[unit] $RB_UNIT: возвращён прежний $1"
   elif [ -e "$1" ]; then
     rb_new+=("$1")
   fi
+}
+rb_reload_nft() { # $1 rule file, $2 its table: reload when this rollback restored the file
+  local f
+  for f in "${rb_back[@]}"; do
+    if [ "$f" = "$1" ] && [ -f "$1" ]; then
+      { printf 'table inet %s\ndelete table inet %s\n' "$2" "$2"; cat "$1"; } | nft -f -
+      echo "[unit] $RB_UNIT: правила nftables из прежнего $1 снова загружены"
+      return
+    fi
+  done
 }
 `)
 	for _, p := range changed {
@@ -178,7 +197,11 @@ if [ -f "$RB_BIN" ]; then
   done < "$RB_BIN"
   rm -f "$RB_BIN"
 fi
-rb_gone=1
+`)
+	for _, nf := range nftRuleFiles {
+		b.WriteString("rb_reload_nft " + shQuote(nf.path) + " " + shQuote(nf.table) + "\n")
+	}
+	b.WriteString(`rb_gone=1
 if [ -f "$RB_FILE" ]; then
   rb_gone=0
   for rb_f in "${rb_new[@]}"; do
@@ -210,6 +233,14 @@ else
 fi
 `)
 	return b.String()
+}
+
+// nftRuleFiles are the nftables files the exit recipe installs, with the table each defines
+// (UnitRollbackScript reloads a restored one).
+var nftRuleFiles = []struct{ path, table string }{
+	{ExitPortHopConfPath, ExitPortHopTable},
+	{ExitXrayGuardConfPath, ExitXrayGuardTable},
+	{ExitAgentGuardConfPath, ExitAgentGuardTable},
 }
 
 // UnitStateScript prints ACTIVE=0|1 (is-active), ENABLED=0|1 (is-enabled says exactly
@@ -285,9 +316,20 @@ func PrivateModeScript(paths ...string) string {
 		"  for f in \"$p\" \"$p.bak\"; do\n    if [ -f \"$f\" ]; then chmod go= -- \"$f\"; fi\n  done\ndone\n"
 }
 
-// CatScript prints the file, nothing when it is absent.
+// CatScript prints the file, nothing when it is absent. A file with secrets (the tunnel keys) must
+// be read through a caller that never lets a failed Run's output into an error: the SSH remote
+// quotes the output tail in its errors (internal/provision readSecretFile).
 func CatScript(p string) string {
 	return opLine("cat", p) + "cat " + shQuote(p) + " 2>/dev/null || true\n"
+}
+
+// KeyPublicScript prints the public key (SubjectPublicKeyInfo PEM, `openssl pkey -pubout`) of the
+// private key file p, nothing when it is absent or unreadable, NO_OPENSSL without openssl (the
+// base step installs it): the core checks a certificate and its key are a pair without the
+// private key ever leaving the node.
+func KeyPublicScript(p string) string {
+	return opLine("key-pub", p) + "command -v openssl >/dev/null 2>&1 || { echo NO_OPENSSL; exit 0; }\n" +
+		"openssl pkey -in " + shQuote(p) + " -pubout 2>/dev/null || true\n"
 }
 
 // ufwHasPortAwk exits 0 when `ufw status [verbose]` lists any rule (any action, v4 or v6, alone,

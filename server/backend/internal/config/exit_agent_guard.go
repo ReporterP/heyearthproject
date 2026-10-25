@@ -16,8 +16,9 @@ import (
 // (2026-10-15: 138.16.181.225, 45.150.39.236, 109.172.86.40, 127.0.0.1, ::1). Like the xray
 // guard (exit_xray_guard.go) the file creates, deletes and defines the table in one nft
 // transaction, the oneshot ExitAgentGuardUnit loads it at boot and again after
-// `systemctl restart nftables` (PartOf=), and node-agent Requires= it (NodeAgentUnit): the agent
-// never listens unguarded. Deprovision keeps the guard (a parked node keeps 50052 closed).
+// `systemctl restart nftables` (PartOf=) or `systemctl reload nftables` (ReloadPropagatedFrom=),
+// and node-agent Requires= it (NodeAgentUnit): the agent never listens unguarded. Deprovision
+// keeps the guard (a parked node keeps 50052 closed).
 
 // ExitAgentGuardUnitPath is the guard's boot unit.
 const ExitAgentGuardUnitPath = "/etc/systemd/system/" + ExitAgentGuardService + ".service"
@@ -65,15 +66,19 @@ func ExitAgentGuardConf(hubIPs []string) (string, error) {
 }
 
 // ExitAgentGuardUnit loads ExitAgentGuardConfPath at boot, before node-agent (which Requires= it),
-// and again whenever nftables.service is restarted (PartOf=; its ruleset flush would drop it).
+// and again whenever nftables.service is restarted (PartOf=) or reloaded (ReloadPropagatedFrom=:
+// Ubuntu's reload is `nft -f /etc/nftables.conf`, which starts with `flush ruleset` — PartOf=
+// does not propagate a reload). Ordered after nftables.service, so the reload lands after its flush.
 const ExitAgentGuardUnit = `[Unit]
 Description=node-agent (TCP ` + "50052" + `) only from the Hub (HeYearth)
 After=network-pre.target nftables.service
 PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
 Before=node-agent.service
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/nft -f ` + ExitAgentGuardConfPath + `
+ExecReload=/usr/sbin/nft -f ` + ExitAgentGuardConfPath + `
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
