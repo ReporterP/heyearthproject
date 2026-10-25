@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   POLL_MS, stepView, stepTitle, autoOpenStep, openStep, jobHeadline, jobProgress, pathVerdict, nextPollDelay,
+  jobStateKey, keepResumeError,
 } from './jobModel.js'
 
 const step = (idx, name, status, extra = {}) => ({ idx, name, title: '', status, output_tail: '', ...extra })
@@ -114,4 +115,17 @@ test('polling: every 2 s, backing off on errors, stopping on 401/403/404', () =>
   assert.equal(nextPollDelay(1, 404), null)
   assert.equal(nextPollDelay(1, 403), null)
   assert.equal(nextPollDelay(1, 401), null)
+})
+
+test('a «Продолжить» error survives polls of the same job state and goes when the job changes', () => {
+  const failed = { id: 7, status: 'failed', started_at: 't1', finished_at: 't2', steps: [step(0, 'a', 'failed')] }
+  // the same failed job polled again (its step output may differ): the error stays
+  assert.equal(keepResumeError(failed, { ...failed, steps: [step(0, 'a', 'failed', { output_tail: 'more' })] }), true)
+  // resumed (here or elsewhere): running, then finished anew — the old error is stale
+  assert.equal(keepResumeError(failed, { ...failed, status: 'running', finished_at: null, started_at: 't3' }), false)
+  assert.equal(keepResumeError(failed, { ...failed, started_at: 't3', finished_at: 't4' }), false)
+  assert.equal(keepResumeError(failed, { ...failed, id: 8 }), false, 'another job')
+  assert.equal(keepResumeError(null, failed), true, 'nothing seen before: nothing to compare')
+  assert.equal(jobStateKey(failed), jobStateKey({ ...failed }))
+  assert.notEqual(jobStateKey(failed), jobStateKey({ ...failed, status: 'interrupted' }))
 })

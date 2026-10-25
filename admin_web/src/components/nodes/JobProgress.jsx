@@ -3,7 +3,9 @@ import { ChevronRight } from 'lucide-react'
 import { fetchJob, resumeJob } from '../../api/admin.js'
 import { Badge, Button, Skeleton, Spinner } from '../ui/index.js'
 import { JOB_KIND, jobFinished, canResume } from './nodeModel.js'
-import { POLL_MS, stepView, stepTitle, openStep, jobHeadline, jobProgress, pathVerdict, nextPollDelay } from './jobModel.js'
+import {
+  POLL_MS, stepView, stepTitle, openStep, jobHeadline, jobProgress, pathVerdict, nextPollDelay, jobStateKey, keepResumeError,
+} from './jobModel.js'
 
 const TONE = { success: 'text-success', warning: 'text-warning', danger: 'text-danger', info: 'text-info', default: 'text-tertiary' }
 
@@ -33,7 +35,8 @@ function StepOutput({ id, text }) {
  */
 export default function JobProgress({ jobId, canProvision = false, tcpEnabled = true, onFinished }) {
   const [job, setJob] = useState(null)
-  const [error, setError] = useState('')
+  const [error, setError] = useState('') // polling; cleared by the next good poll
+  const [resumeError, setResumeError] = useState('') // «Продолжить»; polls never clear it (keepResumeError)
   const [stopped, setStopped] = useState(false)
   const [choice, setChoice] = useState(undefined) // undefined = automatic (see openStep)
   const [busy, setBusy] = useState(false)
@@ -42,10 +45,17 @@ export default function JobProgress({ jobId, canProvision = false, tcpEnabled = 
   const busyRef = useRef(false)
   const finishedRef = useRef(onFinished)
   const reported = useRef('')
+  const lastJob = useRef(null)
   useEffect(() => { finishedRef.current = onFinished })
 
   // Another job: nothing of the previous one is shown as this one's.
-  useEffect(() => { setJob(null); setChoice(undefined); setError('') }, [jobId])
+  useEffect(() => {
+    setJob(null)
+    setChoice(undefined)
+    setError('')
+    setResumeError('')
+    lastJob.current = null
+  }, [jobId])
 
   useEffect(() => {
     let alive = true
@@ -59,10 +69,12 @@ export default function JobProgress({ jobId, canProvision = false, tcpEnabled = 
         const j = await fetchJob(jobId)
         if (!alive) return
         failures = 0
+        if (!keepResumeError(lastJob.current, j)) setResumeError('')
+        lastJob.current = j
         setJob(j)
         setError('')
         if (jobFinished(j)) {
-          const key = `${j.id}:${j.status}:${j.finished_at || ''}`
+          const key = jobStateKey(j)
           if (reported.current !== key) { reported.current = key; finishedRef.current?.(j) }
           return
         }
@@ -84,12 +96,12 @@ export default function JobProgress({ jobId, canProvision = false, tcpEnabled = 
     if (busyRef.current) return
     busyRef.current = true
     setBusy(true)
-    setError('')
+    setResumeError('')
     try {
       await resumeJob(jobId)
       setChoice(undefined)
     } catch (e) {
-      setError(e.message)
+      setResumeError(e?.message || 'Не удалось продолжить задачу')
     } finally {
       busyRef.current = false
       setBusy(false)
@@ -175,6 +187,7 @@ export default function JobProgress({ jobId, canProvision = false, tcpEnabled = 
       ) : (
         <p className="mt-3 text-xs text-tertiary">Продолжить задачу может администратор с правом настройки нод.</p>
       ))}
+      {resumeError && <p role="alert" className="mt-2 text-sm text-danger break-words">Не удалось продолжить: {resumeError}</p>}
     </div>
   )
 }

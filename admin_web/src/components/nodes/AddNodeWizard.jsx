@@ -3,10 +3,11 @@ import { ShieldCheck, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.jsx'
 import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting, fetchPlans } from '../../api/admin.js'
 import { Dialog, Stepper, Button, Input, Select, Switch, CopyButton, Badge, Skeleton, Spinner, useFocusTrap } from '../ui/index.js'
-import { wizardCanAdvance, keyTypeLabel, hostKeyFile, PRIORITY_HINT } from './nodeModel.js'
+import { keyTypeLabel, hostKeyFile, PRIORITY_HINT } from './nodeModel.js'
 import {
   WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid, matchPasted,
-  pasteVerdict, canConfirmKey, canCreate, probeRequest, createRequest, provisionRequest, routingRequest, closeNeedsConfirm,
+  pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, routingRequest,
+  closeNeedsConfirm,
 } from './wizardModel.js'
 import JobProgress from './JobProgress.jsx'
 
@@ -69,7 +70,7 @@ function RoleStep({ s, set, ids, countryRef }) {
 
 // KeyChooser: every host key the server presented, how to compare it in the provider's console,
 // an optional paste of the console output and the explicit confirmation.
-function KeyChooser({ s, dispatch, ids }) {
+function KeyChooser({ s, dispatch, ids, busy }) {
   const keys = s.probe?.keys || []
   const saved = !!s.serverId
   const chosen = keys.find((k) => k.fingerprint === s.fingerprint)
@@ -97,7 +98,7 @@ function KeyChooser({ s, dispatch, ids }) {
               className={`rounded border px-3 py-2 ${selected ? 'border-accent bg-accent/10' : 'border-default'} ${saved && !selected ? 'opacity-50' : ''}`}>
               <div className="flex items-start gap-1">
                 <label className={`flex items-start gap-2 min-w-0 flex-1 ${saved ? '' : 'cursor-pointer'}`}>
-                  <input type="radio" name={ids.keys} checked={selected} disabled={saved} className="mt-1 accent-accent"
+                  <input type="radio" name={ids.keys} checked={selected} disabled={saved || !!busy} className="mt-1 accent-accent"
                     onChange={() => dispatch({ type: 'selectKey', fingerprint: k.fingerprint })} />
                   <span className="min-w-0 flex-1">
                     <span className="block text-xs text-secondary">{keyTypeLabel(k.type) || 'Ключ'}</span>
@@ -122,12 +123,12 @@ function KeyChooser({ s, dispatch, ids }) {
       ) : (
         <>
           <Field label="Вывод команды из консоли хостера (необязательно)" htmlFor={ids.paste} className="mt-3 mb-3"
-            hint="Вставьте строку целиком — мастер сам найдёт ключ с этим отпечатком.">
-            <Input id={ids.paste} value={s.pasted} onChange={(e) => dispatch({ type: 'paste', text: e.target.value })}
+            hint="Вставьте строку целиком — мастер выберет ключ с этим отпечатком; подтверждаете вы сами, переключателем ниже.">
+            <Input id={ids.paste} value={s.pasted} disabled={!!busy} onChange={(e) => dispatch({ type: 'paste', text: e.target.value })}
               placeholder="256 SHA256:… root@server (ED25519)" autoComplete="off" spellCheck={false} className="font-mono text-xs" />
           </Field>
           {verdict === 'match' && (
-            <p className="-mt-2 mb-3 text-xs text-success">Совпадает с ключом {keyTypeLabel(chosen?.type)} — ключ выбран и подтверждён.</p>
+            <p className="-mt-2 mb-3 text-xs text-success">Совпадает с ключом {keyTypeLabel(chosen?.type)} — ключ выбран. Подтвердите его переключателем ниже.</p>
           )}
           {verdict === 'mismatch' && (
             <p role="alert" className="-mt-2 mb-3 text-xs text-danger">
@@ -136,7 +137,7 @@ function KeyChooser({ s, dispatch, ids }) {
                 : 'Не совпадает ни с одним ключом, который предъявил сервер. Не сохраняйте ноду: проверьте IP-адрес — или подключение кто-то подменяет.'}
             </p>
           )}
-          <Switch checked={s.fingerprintConfirmed} disabled={!canConfirmKey(s)}
+          <Switch checked={s.fingerprintConfirmed} disabled={!!busy || !canConfirmKey(s)}
             onChange={(v) => dispatch({ type: 'confirmKey', value: v })}
             label={`Отпечаток ${keyTypeLabel(chosen?.type) || 'ключа'} совпадает с консолью хостера`}
             description="Подтверждая, вы разрешаете Hub подключаться к серверу только с этим ключом." />
@@ -155,12 +156,12 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-2">
         <div className="sm:col-span-2">
           <Field label="IP-адрес сервера" htmlFor={ids.ip}>
-            <Input id={ids.ip} value={s.ip} disabled={saved} autoComplete="off" autoCapitalize="none" spellCheck={false}
+            <Input id={ids.ip} value={s.ip} disabled={saved || !!busy} autoComplete="off" autoCapitalize="none" spellCheck={false}
               placeholder="203.0.113.10" onChange={(e) => set({ ip: e.target.value })} className="font-mono" />
           </Field>
         </div>
         <Field label="SSH-порт" htmlFor={ids.port} error={portBad ? 'От 1 до 65535' : ''}>
-          <Input id={ids.port} value={s.sshPort} disabled={saved} inputMode="numeric" autoComplete="off" placeholder="22"
+          <Input id={ids.port} value={s.sshPort} disabled={saved || !!busy} inputMode="numeric" autoComplete="off" placeholder="22"
             onChange={(e) => set({ sshPort: e.target.value })} className="font-mono tabular-nums" aria-invalid={portBad || undefined} />
         </Field>
       </div>
@@ -169,9 +170,9 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
       ) : (
         <Field label="Пароль root" htmlFor={ids.password}
           hint="Отправляется только при сохранении — после подтверждения ключа. Хранится зашифрованным; после настройки Hub входит по своему ключу, пароль остаётся запасным.">
-          {/* Uncontrolled on purpose: the password is never in React state nor in a value attribute. */}
+          {/* Uncontrolled on purpose: the password is never in React state, a value attribute or an action. */}
           <Input id={ids.password} ref={passwordRef} type="password" name={ids.password} autoComplete="new-password" spellCheck={false}
-            defaultValue="" onChange={(e) => set({ password: e.target.value })} />
+            defaultValue="" disabled={!!busy} onChange={(e) => dispatch({ type: 'passwordFlags', ...passwordFlags(e.target.value) })} />
         </Field>
       )}
       {!saved && (
@@ -182,7 +183,7 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
           <span className="text-xs text-tertiary">Только обмен ключами SSH — пароль на этом шаге не отправляется.</span>
         </div>
       )}
-      {s.probe && <KeyChooser s={s} dispatch={dispatch} ids={ids} />}
+      {s.probe && <KeyChooser s={s} dispatch={dispatch} ids={ids} busy={busy} />}
     </div>
   )
 }
@@ -350,7 +351,7 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
     dispatch({ type: 'preflight', result: await preflightNode(s.serverId) })
   })
   const start = () => act('start', async () => {
-    if (!wizardCanAdvance(3, s)) return
+    if (!canStart(s)) return
     const routing = routingRequest(s)
     if (routing) {
       await updateNodeRouting(s.serverId, routing)
@@ -380,7 +381,10 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
   if (s.step === 1 && !s.serverId) {
     primary = <Button onClick={create} loading={busy === 'create'} disabled={!!busy || !canCreate(s)}>Подтвердить и сохранить</Button>
   } else if (s.step === 3) {
-    primary = <Button onClick={start} loading={busy === 'start'} disabled={!!busy || !wizardCanAdvance(3, s)}>Установить</Button>
+    primary = (
+      <Button onClick={start} loading={busy === 'start'} disabled={!!busy || !canStart(s)}
+        title={s.plansState === 'loading' ? 'Загружаются тарифы…' : undefined}>Установить</Button>
+    )
   } else {
     primary = <Button onClick={() => go(s.step + 1)} disabled={!!busy || !canGo(s, s.step + 1)}>Далее</Button>
   }

@@ -91,6 +91,14 @@ export function pathVerdict(job, { tcpEnabled = true } = {}) {
     : 'Ни один путь туннеля не ответил — выход не включён в маршрутизацию')
 }
 
+// jobStateKey: one run's state of a job — the same key means nothing happened to it (only its
+// step output may have grown). Used for onFinished (once per finish) and keepResumeError.
+export const jobStateKey = (job) => (job ? `${job.id}:${job.status}:${job.started_at || ''}:${job.finished_at || ''}` : '')
+
+// keepResumeError: a failed «Продолжить» keeps its message while polls return the job unchanged;
+// once the job's state changes (resumed here or elsewhere, finished anew) the message is stale.
+export const keepResumeError = (prev, next) => !prev || jobStateKey(prev) === jobStateKey(next)
+
 // nextPollDelay: 2 s; after failed requests back off up to 15 s; null = stop (session gone, no
 // permission, job deleted with its node).
 export function nextPollDelay(failures, status) {

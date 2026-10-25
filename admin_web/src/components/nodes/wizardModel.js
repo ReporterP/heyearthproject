@@ -1,8 +1,9 @@
 // «Добавить ноду» as a pure state machine (node --test): the component only renders the state and
 // sends the requests built here. Steps advance only through wizardCanAdvance (nodeModel.js), the
 // install step is entered only by starting the job and never left. The root password never enters
-// the state: its field is uncontrolled (no value attribute in the DOM, nothing in React state), the
-// state only knows whether one was typed, and the component reads it once — for createNode.
+// the state: its field is uncontrolled (no value attribute in the DOM, nothing in React state), only
+// passwordFlags() of it is dispatched, and the component reads it once — for createNode. A pasted
+// fingerprint only selects a key: confirming it is always the owner's own switch.
 import { wizardCanAdvance, defaultPlanIds } from './nodeModel.js'
 
 export const WIZARD_STEPS = ['Роль и страна', 'Доступ и ключ', 'Предпроверка', 'Настройки', 'Установка']
@@ -48,6 +49,12 @@ export function parsePort(text) {
 
 export const countryValid = (c) => /^[A-Za-z]{2}$/.test(String(c ?? '').trim())
 
+// passwordFlags: all the state may know of the typed password (action «passwordFlags»).
+export function passwordFlags(text) {
+  const t = String(text ?? '')
+  return { entered: t !== '', valid: t.trim() !== '' }
+}
+
 const FP_TOKEN = /(?<![A-Za-z0-9+/])(?:SHA256:)?([A-Za-z0-9+/]{43})(?![A-Za-z0-9+/=])/g
 
 // matchPasted: the probed key whose SHA256 fingerprint appears in the pasted text (the whole line
@@ -84,6 +91,10 @@ export function canCreate(s) {
     s.fingerprintConfirmed === true && s.passwordValid === true
 }
 
+// canStart: «Установить» — the options are valid and the plans are no longer loading (without
+// them plan_ids would silently be left out: the node would get the common pool only).
+export const canStart = (s) => !!s.serverId && s.plansState !== 'loading' && wizardCanAdvance(3, s)
+
 // canGo: back to any earlier step until the install starts; forward only through finished steps;
 // the install step itself only by starting the job (action «started»).
 export function canGo(s, target) {
@@ -103,8 +114,8 @@ export function normalizePlans(p) {
   return []
 }
 
-const EDITABLE = ['role', 'country', 'name', 'ip', 'sshPort', 'password', 'mtproxy', 'loadWeight', 'fallback']
-const LOCKED_AFTER_SAVE = ['role', 'country', 'name', 'ip', 'sshPort', 'password']
+const EDITABLE = ['role', 'country', 'name', 'ip', 'sshPort', 'mtproxy', 'loadWeight', 'fallback']
+const LOCKED_AFTER_SAVE = ['role', 'country', 'name', 'ip', 'sshPort']
 
 function applySet(s, patch) {
   const next = { ...s }
@@ -115,12 +126,6 @@ function applySet(s, patch) {
       case 'country': next.country = String(v ?? '').toUpperCase(); break
       case 'loadWeight': next.loadWeight = typeof v === 'number' ? v : parseInt(v, 10); break
       case 'mtproxy': case 'fallback': next[k] = v === true; break
-      case 'password': { // only whether one was typed — the text itself stays in its field
-        const text = String(v ?? '')
-        next.passwordEntered = text !== ''
-        next.passwordValid = text.trim() !== ''
-        break
-      }
       default: next[k] = String(v ?? '')
     }
   }
@@ -149,17 +154,21 @@ export function wizardReducer(s, action) {
       return applySet(s, action.patch)
     case 'probed':
       return applyProbe(s, action)
-    case 'selectKey': {
-      if (s.serverId || !hasKey(s, action.fingerprint)) return s
-      const pastedKey = matchPasted(s.pasted, s.probe.keys)
-      return { ...s, fingerprint: action.fingerprint, fingerprintConfirmed: pastedKey?.fingerprint === action.fingerprint }
-    }
+    case 'passwordFlags':
+      if (s.serverId) return s
+      return { ...s, passwordEntered: action.entered === true, passwordValid: action.entered === true && action.valid === true }
+    case 'selectKey':
+      if (s.serverId || !hasKey(s, action.fingerprint) || action.fingerprint === s.fingerprint) return s
+      return { ...s, fingerprint: action.fingerprint, fingerprintConfirmed: false }
     case 'paste': {
+      // Selects the matching key only: a fingerprint copied from the wizard itself and pasted back
+      // must not confirm anything. A confirmation survives only if the paste keeps the same key.
       if (s.serverId || !s.probe) return s
       const text = String(action.text ?? '')
       if (!text.trim()) return { ...s, pasted: '' }
       const k = matchPasted(text, s.probe.keys)
-      return k ? { ...s, pasted: text, fingerprint: k.fingerprint, fingerprintConfirmed: true } : { ...s, pasted: text, fingerprintConfirmed: false }
+      if (!k) return { ...s, pasted: text, fingerprintConfirmed: false }
+      return { ...s, pasted: text, fingerprint: k.fingerprint, fingerprintConfirmed: k.fingerprint === s.fingerprint && s.fingerprintConfirmed }
     }
     case 'confirmKey':
       if (s.serverId) return s

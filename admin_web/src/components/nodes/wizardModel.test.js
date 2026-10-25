@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid,
-  matchPasted, pasteVerdict, canConfirmKey, canCreate, probeRequest, createRequest, provisionRequest,
+  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest,
   routingRequest, closeNeedsConfirm, normalizePlans,
 } from './wizardModel.js'
 
@@ -19,9 +19,10 @@ const PROBE = {
 }
 
 const run = (state, ...actions) => actions.reduce(wizardReducer, state)
+const pw = (text) => ({ type: 'passwordFlags', ...passwordFlags(text) })
 // A wizard filled up to a probed address with a typed password.
 const probed = () => run(initialWizard(),
-  { type: 'set', patch: { country: 'de', ip: ' 203.0.113.7 ', sshPort: '2222', password: 'hunter2' } },
+  { type: 'set', patch: { country: 'de', ip: ' 203.0.113.7 ', sshPort: '2222' } }, pw('hunter2'),
   { type: 'probed', ip: '203.0.113.7', port: 2222, result: PROBE })
 const created = () => run(probed(), { type: 'confirmKey', value: true }, { type: 'created', id: 9 })
 
@@ -97,15 +98,28 @@ test('choosing another key drops the confirmation; unknown fingerprints are refu
   assert.equal(bad.fingerprint, FP_A)
 })
 
-test('pasted ssh-keygen output selects and confirms the matching key', () => {
+test('pasted ssh-keygen output selects the matching key; confirming stays the owner’s explicit act', () => {
   const line = `256 ${FP_B} root@vps (ECDSA)`
   assert.equal(matchPasted(line, PROBE.keys)?.fingerprint, FP_B)
   assert.equal(matchPasted(FP_C.slice(7), PROBE.keys)?.fingerprint, FP_C, 'without the SHA256: prefix')
   assert.equal(matchPasted('', PROBE.keys), null)
   const s = run(probed(), { type: 'paste', text: line })
   assert.equal(s.fingerprint, FP_B)
-  assert.equal(s.fingerprintConfirmed, true)
   assert.equal(pasteVerdict(s), 'match')
+  assert.equal(s.fingerprintConfirmed, false, 'a paste never confirms')
+  assert.equal(run(s, { type: 'confirmKey', value: true }).fingerprintConfirmed, true)
+})
+
+test('copying a fingerprint from the wizard and pasting it back does not self-confirm', () => {
+  const s = run(probed(), { type: 'paste', text: FP_A })
+  assert.equal(pasteVerdict(s), 'match')
+  assert.equal(s.fingerprintConfirmed, false)
+  assert.equal(canCreate(s), false)
+  // an already confirmed key stays confirmed when the paste only re-selects it
+  const confirmed = run(probed(), { type: 'confirmKey', value: true }, { type: 'paste', text: FP_A })
+  assert.equal(confirmed.fingerprintConfirmed, true)
+  // a paste that moves the choice to another key drops the confirmation
+  assert.equal(run(probed(), { type: 'confirmKey', value: true }, { type: 'paste', text: FP_B }).fingerprintConfirmed, false)
 })
 
 test('a pasted fingerprint must be a whole token, not a slice of a longer base64 string', () => {
@@ -124,11 +138,16 @@ test('a pasted fingerprint that matches no key blocks the confirmation', () => {
   assert.equal(cleared.fingerprintConfirmed, true)
 })
 
-test('a matching paste keeps the confirmation only for its own key', () => {
-  const s = run(probed(), { type: 'paste', text: FP_B }, { type: 'selectKey', fingerprint: FP_A })
+test('choosing another key than the pasted one is a mismatch; choosing it back needs a new confirmation', () => {
+  const s = run(probed(), { type: 'paste', text: FP_B }, { type: 'confirmKey', value: true }, { type: 'selectKey', fingerprint: FP_A })
   assert.equal(s.fingerprintConfirmed, false)
   assert.equal(pasteVerdict(s), 'mismatch', 'the pasted fingerprint is not the chosen key')
-  assert.equal(run(s, { type: 'selectKey', fingerprint: FP_B }).fingerprintConfirmed, true)
+  const back = run(s, { type: 'selectKey', fingerprint: FP_B })
+  assert.equal(back.fingerprintConfirmed, false)
+  assert.equal(pasteVerdict(back), 'match')
+  // re-selecting the key already chosen changes nothing
+  const same = run(probed(), { type: 'confirmKey', value: true }, { type: 'selectKey', fingerprint: FP_A })
+  assert.equal(same.fingerprintConfirmed, true)
 })
 
 test('no confirmation without a probe', () => {
@@ -136,20 +155,28 @@ test('no confirmation without a probe', () => {
   assert.equal(s.fingerprintConfirmed, false)
 })
 
-test('the typed password is never kept in the state — only whether one was entered', () => {
+test('the typed password is never kept in the state nor dispatched — only whether one was entered', () => {
+  assert.deepEqual(passwordFlags('hunter2'), { entered: true, valid: true })
+  assert.deepEqual(passwordFlags('   '), { entered: true, valid: false })
+  assert.deepEqual(passwordFlags(''), { entered: false, valid: false })
+  assert.deepEqual(passwordFlags(undefined), { entered: false, valid: false })
   const s = probed()
   assert.equal(JSON.stringify(s).includes('hunter2'), false)
   assert.equal(s.passwordEntered, true)
   assert.equal(s.passwordValid, true)
-  const blank = run(s, { type: 'set', patch: { password: '   ' } })
+  const blank = run(s, pw('   '))
   assert.equal(blank.passwordEntered, true)
   assert.equal(blank.passwordValid, false)
-  assert.equal(run(s, { type: 'set', patch: { password: '' } }).passwordEntered, false)
+  assert.equal(run(s, pw('')).passwordEntered, false)
+  // the text is not an editable field any more
+  const viaSet = run(initialWizard(), { type: 'set', patch: { password: 'hunter2' } })
+  assert.equal(JSON.stringify(viaSet).includes('hunter2'), false)
+  assert.equal(viaSet.passwordEntered, false)
 })
 
 test('leaving the access step before saving forgets the password (its field is empty again)', () => {
   const onAccess = run(initialWizard(), { type: 'set', patch: { country: 'DE' } }, { type: 'go', step: 1 },
-    { type: 'set', patch: { password: 'hunter2' } })
+    pw('hunter2'))
   assert.equal(onAccess.passwordValid, true)
   const back = run(onAccess, { type: 'go', step: 0 })
   assert.equal(back.passwordEntered, false)
@@ -160,7 +187,7 @@ test('the node is saved only with a confirmed key of the current probe and a pas
   assert.equal(canCreate(probed()), false, 'not confirmed')
   const ok = run(probed(), { type: 'confirmKey', value: true })
   assert.equal(canCreate(ok), true)
-  assert.equal(canCreate(run(ok, { type: 'set', patch: { password: '   ' } })), false, 'blank password')
+  assert.equal(canCreate(run(ok, pw('   '))), false, 'blank password')
   assert.equal(canCreate(run(ok, { type: 'set', patch: { country: 'D' } })), false, 'no country')
   assert.equal(canCreate({ ...ok, role: 'relay' }), false, 'relays come with phase 3')
   assert.equal(canCreate({ ...ok, probe: { ...ok.probe, ip: '203.0.113.99' } }), false, 'probe of another address')
@@ -184,7 +211,7 @@ test('after saving: the password flags are cleared and the access fields are loc
   assert.equal(s.passwordEntered, false)
   assert.equal(s.passwordValid, false)
   assert.equal(s.step, 2, 'goes straight to the preflight')
-  const locked = run(s, { type: 'set', patch: { ip: '198.51.100.1', password: 'x', country: 'FR', role: 'relay', name: 'n' } })
+  const locked = run(s, { type: 'set', patch: { ip: '198.51.100.1', country: 'FR', role: 'relay', name: 'n' } }, pw('x'))
   assert.equal(locked.ip, s.ip)
   assert.equal(locked.passwordEntered, false)
   assert.equal(locked.country, 'DE')
@@ -279,7 +306,7 @@ test('the TCP fallback switch is saved through routing only when it differs from
 test('closing asks first once something would be lost; never during the install', () => {
   assert.equal(closeNeedsConfirm(initialWizard()), false)
   assert.equal(closeNeedsConfirm(run(initialWizard(), { type: 'set', patch: { country: 'DE' } })), false)
-  assert.equal(closeNeedsConfirm(run(initialWizard(), { type: 'set', patch: { password: 'x' } })), true)
+  assert.equal(closeNeedsConfirm(run(initialWizard(), pw('x'))), true)
   assert.equal(closeNeedsConfirm(probed()), true)
   assert.equal(closeNeedsConfirm(created()), true)
   const installing = run(created(), { type: 'preflight', result: { ok: true, checks: [] } }, { type: 'started', jobId: 5 })
@@ -290,4 +317,14 @@ test('the reducer ignores unknown actions and fields', () => {
   const s = initialWizard()
   assert.equal(wizardReducer(s, { type: 'nope' }), s)
   assert.equal(run(s, { type: 'set', patch: { serverId: 5, step: 4, jobId: 1 } }).serverId, null)
+})
+
+test('«Установить» waits for the plans: never a silent common-pool node while they load', () => {
+  const ready = run(created(), { type: 'preflight', result: { ok: true, checks: [] } }, { type: 'go', step: 3 })
+  assert.equal(ready.plansState, 'loading')
+  assert.equal(canStart(ready), false)
+  assert.equal(canStart(run(ready, { type: 'plans', plans: [] })), true)
+  assert.equal(canStart(run(ready, { type: 'plansFailed', error: 'Нет прав на это действие' })), true, 'a failure is shown and explained')
+  assert.equal(canStart(run(ready, { type: 'plans', plans: [] }, { type: 'set', patch: { loadWeight: 0 } })), false)
+  assert.equal(canStart({ ...run(ready, { type: 'plans', plans: [] }), serverId: null }), false)
 })
