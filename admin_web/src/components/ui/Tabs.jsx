@@ -7,7 +7,8 @@ const panelId = (id, key) => `${id}-panel-${key}`
 /**
  * Tabs — underline tabs (WAI-ARIA tabs, automatic activation).
  * Props: tabs [{key, label, count?}], value (selected key), onChange(key), className,
- *        id? (enables aria-controls ↔ <TabPanel tabsId={id} tabKey=…>), label? (aria-label of the list).
+ *        id? (enables aria-controls ↔ <TabPanel tabsId={id} tabKey=…>),
+ *        label (aria-label of the list — pass what the tabs switch, e.g. «Роль ноды»; fallback «Вкладки»).
  * Keyboard: ←/→ move and select (wrapping), Home/End jump; only the selected tab is in the Tab order.
  */
 export function Tabs({ tabs, value, onChange, className = '', id, label }) {
@@ -23,7 +24,7 @@ export function Tabs({ tabs, value, onChange, className = '', id, label }) {
   }
 
   return (
-    <div role="tablist" aria-label={label} aria-orientation="horizontal"
+    <div role="tablist" aria-label={label || 'Вкладки'} aria-orientation="horizontal"
       className={`flex gap-1 border-b border-default overflow-x-auto ${className}`}>
       {tabs.map((t, i) => {
         const active = t.key === value

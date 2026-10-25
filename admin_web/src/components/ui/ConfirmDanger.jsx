@@ -4,6 +4,7 @@ import { Dialog } from './Dialog'
 import { Button } from './Button'
 import { Input } from './Input'
 import { confirmMatches } from './confirm.js'
+import { escapeAction } from './a11y.js'
 import { useFocusTrap } from './useFocusTrap.js'
 
 /**
@@ -11,8 +12,9 @@ import { useFocusTrap } from './useFocusTrap.js'
  * Props: open, onClose, title, consequences (string[]), confirmText (what must be typed, e.g. the node name),
  *        actionLabel, onConfirm (async; a throw keeps the dialog open and shows the error inside).
  * The action button is enabled only when confirmMatches(typed, confirmText). Enter submits once it matches.
- * While onConfirm runs, Escape/backdrop/«Отмена» do nothing. Focus is trapped inside and returns on close
- * (alertdialog semantics live here: the base Dialog renders no role and no trap).
+ * While onConfirm runs, Escape/backdrop/«Отмена» do nothing and a second submit is ignored. Escape is
+ * swallowed here, so a Drawer underneath (e.g. NodeDrawer) does not close with it. Focus is trapped inside
+ * and returns on close (alertdialog semantics live here: the base Dialog renders no role and no trap).
  */
 export function ConfirmDanger({ open, onClose, title, consequences = [], confirmText, actionLabel, onConfirm }) {
   const [typed, setTyped] = useState('')
@@ -21,15 +23,21 @@ export function ConfirmDanger({ open, onClose, title, consequences = [], confirm
   const uid = useId()
   const rootRef = useRef(null)
   const inputRef = useRef(null)
-  useEffect(() => { if (open) { setTyped(''); setError(''); setBusy(false) } }, [open])
-  useFocusTrap(rootRef, open, inputRef)
+  // The in-flight guard is a ref: state updates land a render later, a second Enter/click would slip through.
+  const busyRef = useRef(false)
+  // A fresh form on every opening — unless the previous action is still running (keep its state and guard).
+  useEffect(() => { if (open && !busyRef.current) { setTyped(''); setError('') } }, [open])
+
+  const close = () => { if (escapeAction(busyRef.current) === 'close') onClose() }
+  useFocusTrap(rootRef, open, { initialFocus: inputRef, onEscape: close })
 
   const matches = confirmMatches(typed, confirmText)
   const ids = { title: `${uid}-title`, body: `${uid}-body`, input: `${uid}-input`, error: `${uid}-error` }
 
   async function run(e) {
     e.preventDefault()
-    if (busy || !matches) return
+    if (busyRef.current || !matches) return
+    busyRef.current = true
     setBusy(true)
     setError('')
     try {
@@ -38,10 +46,10 @@ export function ConfirmDanger({ open, onClose, title, consequences = [], confirm
     } catch (err) {
       setError(err?.message || 'Не удалось выполнить действие')
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
-  const close = () => { if (!busy) onClose() }
 
   return (
     <Dialog open={open} onClose={close} maxWidth="max-w-lg">

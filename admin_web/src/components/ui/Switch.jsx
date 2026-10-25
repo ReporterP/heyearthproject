@@ -5,6 +5,7 @@ import { useId } from 'react'
  * Props: checked, onChange(bool), disabled, label, description, id, className (wrapper);
  *        other props (e.g. aria-label when there is no visible label) go to the switch button.
  * Keyboard: it is a native button — Space and Enter toggle; clicking the label toggles too.
+ * The 32×18 track has an invisible 4px halo (::before), so the touch target is 40×26 even without a label.
  */
 export function Switch({ checked, onChange, disabled = false, label, description, id, className = '', ...rest }) {
   const autoId = useId()
@@ -16,7 +17,7 @@ export function Switch({ checked, onChange, disabled = false, label, description
       <button id={switchId} type="button" role="switch" aria-checked={!!checked} disabled={disabled}
         aria-labelledby={label ? labelId : undefined} aria-describedby={description ? descId : undefined}
         onClick={() => onChange?.(!checked)} {...rest}
-        className={`relative flex-shrink-0 mt-0.5 w-8 h-[18px] rounded border transition-colors
+        className={`relative flex-shrink-0 mt-0.5 w-8 h-[18px] rounded border transition-colors before:absolute before:-inset-1
           focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-canvas
           ${checked ? 'bg-accent border-accent' : 'bg-hover border-strong'} ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
         <span aria-hidden="true"

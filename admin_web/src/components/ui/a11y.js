@@ -36,3 +36,47 @@ export function focusTrapTarget(count, index, shift) {
   if (!shift && index === count - 1) return 0
   return null
 }
+
+/**
+ * escapeAction — what Escape does in a modal that owns it: 'close', or 'ignore' while its action runs.
+ * Either way the key is swallowed, so a Drawer/Dialog underneath (window listeners) does not close too.
+ */
+export function escapeAction(busy) {
+  return busy ? 'ignore' : 'close'
+}
+
+/**
+ * createModalKeyHandler — the keydown handler of a modal (useFocusTrap), DOM-free so it can be tested.
+ *   focusables() — focusable elements inside the modal, active() — the focused element,
+ *   onEscape()   — returns the current Escape callback or undefined (then Escape is left alone and
+ *                  the base Dialog's own window listener handles it).
+ * Must be registered in the capture phase on `document`: stopPropagation() there keeps Escape away from
+ * window listeners of a Drawer/Dialog underneath.
+ */
+export function createModalKeyHandler({ focusables, active, onEscape }) {
+  return function onKeyDown(e) {
+    if (e.key === 'Escape') {
+      const fn = onEscape()
+      if (!fn) return
+      e.stopPropagation()
+      e.preventDefault()
+      fn()
+      return
+    }
+    if (e.key !== 'Tab') return
+    const items = focusables()
+    const target = focusTrapTarget(items.length, items.indexOf(active()), e.shiftKey)
+    if (target === null) return
+    e.preventDefault()
+    if (target >= 0) items[target].focus()
+  }
+}
+
+/**
+ * copyAnnouncement — live-region text of CopyButton. `n` counts clicks: odd and even clicks differ by a
+ * trailing no-break space, so screen readers announce a repeated «Скопировано» again.
+ */
+export function copyAnnouncement(status, n) {
+  const text = status === 'done' ? 'Скопировано' : status === 'failed' ? 'Не удалось скопировать — выделите текст вручную' : ''
+  return text && n % 2 === 0 ? `${text}\u00A0` : text
+}

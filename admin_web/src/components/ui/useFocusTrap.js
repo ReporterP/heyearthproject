@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { focusTrapTarget } from './a11y.js'
+import { useEffect, useRef } from 'react'
+import { createModalKeyHandler } from './a11y.js'
 
 const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
@@ -7,8 +7,16 @@ const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tab
  * useFocusTrap — keeps Tab/Shift+Tab inside `ref` while `active`, focuses `initialFocus`
  * (or the first focusable element) on activation and returns focus to the previously
  * focused element afterwards. The base ui/Dialog has no trap of its own; wrap its content.
+ *
+ * options.initialFocus — ref of the element to focus first (read once per activation).
+ * options.onEscape     — when given, the modal owns Escape: the key is caught in the capture phase on
+ *                        `document` and stopped there, so window listeners of a Drawer/Dialog underneath
+ *                        never see it; then onEscape() runs (latest callback, no re-subscription).
  */
-export function useFocusTrap(ref, active, initialFocus) {
+export function useFocusTrap(ref, active, { initialFocus, onEscape } = {}) {
+  const escRef = useRef(onEscape)
+  useEffect(() => { escRef.current = onEscape })
+
   useEffect(() => {
     if (!active) return undefined
     const root = ref.current
@@ -19,14 +27,7 @@ export function useFocusTrap(ref, active, initialFocus) {
     const first = initialFocus?.current || focusables()[0]
     first?.focus()
 
-    function onKeyDown(e) {
-      if (e.key !== 'Tab') return
-      const items = focusables()
-      const target = focusTrapTarget(items.length, items.indexOf(document.activeElement), e.shiftKey)
-      if (target === null) return
-      e.preventDefault()
-      if (target >= 0) items[target].focus()
-    }
+    const onKeyDown = createModalKeyHandler({ focusables, active: () => document.activeElement, onEscape: () => escRef.current })
     document.addEventListener('keydown', onKeyDown, true)
     return () => {
       document.removeEventListener('keydown', onKeyDown, true)
