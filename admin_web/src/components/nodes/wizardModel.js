@@ -233,11 +233,12 @@ export function provisionRequest(s) {
 }
 
 // routingRequest: the TCP fallback switch is not a provision option — PUT /servers/{id}/routing
-// stores it (the recipe reads it when the job loads the node). Only when it differs from what is
-// stored; null otherwise.
+// stores it (the recipe reads it when the job loads the node). Only the switch (every routing
+// field is optional; plans and priority go with provisionRequest) and only when it differs from
+// what is stored; null otherwise.
 export function routingRequest(s) {
   if (s.fallback === s.fallbackStored) return null
-  return { plan_ids: s.plansState === 'ready' ? (s.planIds || []) : [], load_weight: s.loadWeight, tunnel_fallback_enabled: s.fallback }
+  return { tunnel_fallback_enabled: s.fallback }
 }
 
 // closeNeedsConfirm: closing would lose a typed password, a probe or leave a saved node half way;

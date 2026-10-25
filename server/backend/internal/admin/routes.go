@@ -151,6 +151,7 @@ func RegisterRoutes() {
 			{"/deprovision", RequirePermission("nodes.provision", DeprovisionNodeHandler)},
 			{"/host-key", RequirePermission("nodes.provision", ConfirmHostKeyHandler)},
 			{"/preflight", RequirePermission("nodes.provision", PreflightNodeHandler)},
+			{"/mtproxy", RequirePermission("nodes.provision", MTProxyNodeHandler)},
 		} {
 			if strings.HasSuffix(r.URL.Path, a.suffix) {
 				withMethod(http.MethodPost, a.h).ServeHTTP(w, r)

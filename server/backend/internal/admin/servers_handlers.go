@@ -54,7 +54,11 @@ var removedServerActions = map[string]string{
 	"sync_metrics":       "Действие «Синхронизировать метрики» удалено: оно перезаписывало протокол туннеля. Метрики обновляются автоматически.",
 	"setup_exit_node":    setupGoneMsg,
 	"reprovision":        setupGoneMsg,
+	"reinstall_mtproxy":  mtproxyMovedMsg,
 }
+
+// mtproxyMovedMsg: the MTProxy reinstall is POST /servers/{id}/mtproxy now (nodes.provision only).
+const mtproxyMovedMsg = "Переустановка Telegram-прокси перенесена: кнопка «Переустановить Telegram-прокси» в карточке ноды (POST /api/admin/servers/{id}/mtproxy)."
 
 // serverLifecycleStates are the values of servers.lifecycle_state (migration 000040).
 var serverLifecycleStates = map[string]bool{
@@ -450,8 +454,9 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 const movedServerActionMsg = "Действие перенесено в задачи ноды: «Настроить» / «Переустановить», «Проверить», «Отключить» в карточке ноды"
 
 // ServerActionHandler: what is left of the old actions — restarting node-agent over the pinned
-// SSH connection and reinstalling MTProxy as a job (both refused while a job works on the node);
-// the removed actions answer phase 1's 410s, the provisioning flows a 410 pointing at the jobs.
+// SSH connection (refused while a job works on the node); the removed actions answer phase 1's
+// 410s (reinstall_mtproxy: a 410 pointing at POST /servers/{id}/mtproxy), the provisioning flows
+// a 410 pointing at the jobs.
 func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "actions")
 	if !ok {
@@ -492,18 +497,6 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		WriteAuditLog(r, "restart_agent", "server", strconv.Itoa(id), nil)
 		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "node-agent перезапущен"})
-	case "reinstall_mtproxy":
-		// Installs software on the node: the provisioning right, not just server_ops.execute.
-		if !hasPermission(r, permNodesProvision) {
-			writeAdminError(w, http.StatusForbidden, "Нужно право «Provision Nodes» (nodes.provision)")
-			return
-		}
-		if !provisionReady(w) {
-			return
-		}
-		// A job of its own (provision.KindMTProxy): the node's one-job lock keeps it apart from
-		// any other job, its steps are visible and resumable like every job's.
-		startJob(w, r, id, provision.KindMTProxy)
 	default:
 		writeAdminError(w, http.StatusGone, movedServerActionMsg)
 	}

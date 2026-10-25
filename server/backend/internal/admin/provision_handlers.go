@@ -676,6 +676,38 @@ func VerifyNodeHandler(w http.ResponseWriter, r *http.Request) {
 	startJob(w, r, id, provision.KindVerify)
 }
 
+// mtproxyNotOnlineMsg: the MTProxy job installs only on a working exit (mtproxyRecipe refuses
+// the rest too; answered here before a job is attempted).
+const mtproxyNotOnlineMsg = "Telegram-прокси ставится только на работающую ноду — сначала «Настроить»"
+
+// MTProxyNodeHandler starts «Переустановить Telegram-прокси»: a job of its own (KindMTProxy, the
+// node's one-job lock), verify → reinstall only if the check fails → verify. The guards of
+// «Проверить» (a confirmed host key) plus a working node; the recipe refuses a non-exit and a
+// node whose MTProxy is switched off (409 with its text).
+func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "mtproxy")
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
+		return
+	}
+	if !provisionReady(w) {
+		return
+	}
+	n, ok := loadNodeMeta(w, r.Context(), id)
+	if !ok {
+		return
+	}
+	if !n.HostKeyConfirmed {
+		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
+		return
+	}
+	if n.Lifecycle != "online" {
+		writeAdminError(w, http.StatusConflict, mtproxyNotOnlineMsg)
+		return
+	}
+	startJob(w, r, id, provision.KindMTProxy)
+}
+
 type confirmPayload struct {
 	ConfirmName string `json:"confirm_name"`
 }
@@ -760,15 +792,22 @@ func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Нода удалена"})
 }
 
+// routingPayload: every field is optional — an absent one keeps what is stored, so the card's TCP
+// switch sends only tunnel_fallback_enabled and a priority saved without the plan list (no
+// settings.read) sends only load_weight. plan_ids [] (present, empty) = the common pool only.
 type routingPayload struct {
 	PlanIDs         *[]int `json:"plan_ids"`
-	LoadWeight      int    `json:"load_weight"`
+	LoadWeight      *int   `json:"load_weight"`
 	FallbackEnabled *bool  `json:"tunnel_fallback_enabled"`
 }
 
-const routingQuery = `UPDATE servers SET load_weight = $2, tunnel_fallback_enabled = COALESCE($3, tunnel_fallback_enabled), updated_at = NOW() WHERE id = $1`
+const routingQuery = `UPDATE servers SET load_weight = COALESCE($2, load_weight), tunnel_fallback_enabled = COALESCE($3, tunnel_fallback_enabled), updated_at = NOW() WHERE id = $1`
 
-// NodeRoutingHandler sets which plans route through the node, its priority and the TCP fallback switch.
+// routingNothingMsg: a body without any of the fields would only touch updated_at.
+const routingNothingMsg = "Нечего сохранять: нужен хотя бы один из plan_ids, load_weight, tunnel_fallback_enabled"
+
+// NodeRoutingHandler sets which plans route through the node, its priority and the TCP fallback
+// switch — only the fields present in the body.
 func NodeRoutingHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "routing")
 	var req routingPayload
@@ -776,14 +815,19 @@ func NodeRoutingHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверный запрос")
 		return
 	}
-	if req.LoadWeight < 1 || req.LoadWeight > 10 || req.PlanIDs == nil {
-		writeAdminError(w, http.StatusBadRequest, "Нужны plan_ids (пустой список — только общий пул) и приоритет от 1 до 10")
+	if req.PlanIDs == nil && req.LoadWeight == nil && req.FallbackEnabled == nil {
+		writeAdminError(w, http.StatusBadRequest, routingNothingMsg)
 		return
 	}
-	if !validPlanIDs(*req.PlanIDs) {
+	if req.LoadWeight != nil && (*req.LoadWeight < 1 || *req.LoadWeight > 10) {
+		writeAdminError(w, http.StatusBadRequest, "Приоритет — от 1 до 10")
+		return
+	}
+	if req.PlanIDs != nil && !validPlanIDs(*req.PlanIDs) {
 		writeAdminError(w, http.StatusBadRequest, planIDsPositiveMsg)
 		return
 	}
+	// Always run (with nothing but plan_ids it only touches updated_at): it tells a missing node.
 	res, err := db.DB.ExecContext(r.Context(), routingQuery, id, req.LoadWeight, req.FallbackEnabled)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить ноду")
@@ -793,13 +837,15 @@ func NodeRoutingHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusNotFound, "Нода не найдена")
 		return
 	}
-	if err := provision.BindPlans(r.Context(), db.DB, id, *req.PlanIDs); err != nil {
-		if unknownPlan(err) {
-			writeAdminError(w, http.StatusBadRequest, unknownPlanMsg)
+	if req.PlanIDs != nil {
+		if err := provision.BindPlans(r.Context(), db.DB, id, *req.PlanIDs); err != nil {
+			if unknownPlan(err) {
+				writeAdminError(w, http.StatusBadRequest, unknownPlanMsg)
+				return
+			}
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить тарифы ноды")
 			return
 		}
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить тарифы ноды")
-		return
 	}
 	biz.RequestSync()
 	WriteAuditLog(r, "node_routing", "server", strconv.Itoa(id), req)

@@ -294,13 +294,13 @@ test('the TCP fallback switch is saved through routing only when it differs from
   const s = run(created(), { type: 'plans', plans: [{ id: 2, is_active: true, price_rub: 250 }] })
   assert.equal(routingRequest(s), null, 'default on: nothing to save')
   const off = run(s, { type: 'set', patch: { fallback: false, loadWeight: 3 } })
-  assert.deepEqual(routingRequest(off), { plan_ids: [2], load_weight: 3, tunnel_fallback_enabled: false })
+  assert.deepEqual(routingRequest(off), { tunnel_fallback_enabled: false }, 'the switch only: plans and priority go with provision')
   const saved = run(off, { type: 'fallbackStored', value: false })
   assert.equal(routingRequest(saved), null)
   const backOn = run(saved, { type: 'set', patch: { fallback: true } })
   assert.equal(routingRequest(backOn).tunnel_fallback_enabled, true)
   const noPlans = run(created(), { type: 'plansFailed', error: 'x' }, { type: 'set', patch: { fallback: false } })
-  assert.deepEqual(routingRequest(noPlans).plan_ids, [], 'routing needs a list: a new node has no bindings anyway')
+  assert.deepEqual(routingRequest(noPlans), { tunnel_fallback_enabled: false }, 'no plan list: nothing about plans is sent')
 })
 
 test('closing asks first once something would be lost; never during the install', () => {

@@ -18,7 +18,7 @@ import (
 // The removed actions are refused before anything else: db.DB is nil in tests, so reaching the
 // database (loadServerByID) would panic instead of answering 410.
 func TestRemovedServerActionsAnswer410(t *testing.T) {
-	for _, a := range []string{"fetch_tunnel_creds", "sync_tunnel", "sync_metrics", "setup_exit_node", "reprovision"} {
+	for _, a := range []string{"fetch_tunnel_creds", "sync_tunnel", "sync_metrics", "setup_exit_node", "reprovision", "reinstall_mtproxy"} {
 		t.Run(a, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			ServerActionHandler(rec, httptest.NewRequest(http.MethodPost, "/api/admin/servers/2/actions", strings.NewReader(`{"action":"`+a+`"}`)))

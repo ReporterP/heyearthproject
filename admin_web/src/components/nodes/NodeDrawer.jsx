@@ -5,7 +5,7 @@ import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
 import {
   verifyNode, provisionNode, deprovisionNode, deleteNode, updateNodeRouting, fetchNodeJobs, fetchPlans, fetchServerLogs,
-  probeNode, confirmHostKey, runServerAction,
+  probeNode, confirmHostKey, reinstallMTProxy,
 } from '../../api/admin.js'
 import { formatDate, formatRelativeRu } from '../../utils/format.js'
 import {
@@ -17,7 +17,7 @@ import {
   PRIORITIES, PLANS_HINT, LOG_SERVICES, drawerTabs, initialTab, initialJobId, nodeActions, clampPriority, sortedPlanIds,
   routingBody, fallbackBody, routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, keyRows, initialKeyCheck,
   keyCheckReducer, canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences,
-  deprovisionConsequences, deleteConsequences, fallbackOffConsequences,
+  deprovisionConsequences, deleteConsequences, fallbackOffConsequences, plansNote, plansFailure,
 } from './drawerModel.js'
 import JobProgress from './JobProgress.jsx'
 import TunnelCheckDialog from '../servers/TunnelCheckDialog.jsx'
@@ -324,16 +324,13 @@ function RoutingTab({ node, can, busy, plans, planIds, weight, error, onTogglePl
   const uid = useId()
   const plansLoaded = plans.state === 'ready'
   const dirty = routingDirty(node, { planIds, weight, plansLoaded })
+  const note = plansNote(plans, node)
   return (
     <div className="space-y-5">
       <fieldset>
         <legend className="text-xs text-secondary mb-1">Тарифы, которые идут через эту ноду</legend>
         {plans.state === 'loading' && <TableSkeleton rows={2} cols={2} />}
-        {plans.state === 'failed' && (
-          <p className="text-xs text-warning">
-            Тарифы не загрузились ({plans.error}). Привязка останется прежней — тарифов: <span className="font-mono tabular-nums">{node.plan_ids?.length ?? 0}</span>; приоритет можно сохранить.
-          </p>
-        )}
+        {note && <p className={`text-xs ${plans.state === 'failed' ? 'text-warning' : 'text-secondary'}`}>{note}</p>}
         {plansLoaded && plans.items.length === 0 && <p className="text-xs text-tertiary">Тарифов пока нет — нода получает общий пул.</p>}
         {plansLoaded && plans.items.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
@@ -493,11 +490,13 @@ export default function NodeDrawer(props) {
 function NodeCard({ node, onClose, onChanged }) {
   const { can } = useAuth()
   const toast = useToast()
-  const perms = { manage: can('nodes.provision'), ops: can('server_ops.execute'), logs: can('servers.logs') }
+  const perms = { manage: can('nodes.provision'), logs: can('servers.logs') }
+  const canPlans = can('settings.read') // GET /plans
   const acts = nodeActions(node, perms)
   const tabs = drawerTabs(node, perms)
   const exit = node.role !== 'relay'
   const tabsId = `node-card-${node.id}`
+  const jobsTabId = `${tabsId}-tab-jobs` // the «Задачи» tab: ui/Tabs gives tab buttons the id <id>-tab-<key>
 
   const [tabChoice, setTab] = useState(() => initialTab(node))
   const tab = tabs.some((t) => t.key === tabChoice) ? tabChoice : 'overview'
@@ -508,21 +507,22 @@ function NodeCard({ node, onClose, onChanged }) {
   const [busy, setBusy] = useState('')
   const [fallbackPending, setFallbackPending] = useState(null)
   const busyRef = useRef(false)
+  const focusJobs = useRef(false) // a job just started: focus goes to the «Задачи» tab
 
   // «Тарифы и приоритет» edits live here, so switching tabs keeps them.
-  const [plans, setPlans] = useState({ state: 'loading', items: [], error: '' })
+  const [plans, setPlans] = useState(() => ({ state: canPlans ? 'loading' : 'forbidden', items: [], error: '' }))
   const [planIds, setPlanIds] = useState(() => sortedPlanIds(node.plan_ids))
   const [weight, setWeight] = useState(() => String(clampPriority(node.load_weight)))
   const [routingError, setRoutingError] = useState('')
 
   useEffect(() => {
-    if (!exit) return undefined
+    if (!exit || !canPlans) return undefined // without settings.read: plansNote says so, nothing is requested
     let alive = true
     fetchPlans()
       .then((p) => { if (alive) setPlans({ state: 'ready', items: normalizePlans(p), error: '' }) })
-      .catch((e) => { if (alive) setPlans({ state: 'failed', items: [], error: e?.message || 'ошибка' }) })
+      .catch((e) => { if (alive) setPlans(plansFailure(e)) })
     return () => { alive = false }
-  }, [exit])
+  }, [exit, canPlans])
 
   const loadJobs = useCallback(async () => {
     try {
@@ -535,6 +535,15 @@ function NodeCard({ node, onClose, onChanged }) {
   // The list follows the node's last job (a job started elsewhere, one that finished).
   const lastJobKey = `${node.last_job?.id ?? ''}:${node.last_job?.status ?? ''}`
   useEffect(() => { if (tab === 'jobs') loadJobs() }, [tab, loadJobs, lastJobKey])
+
+  // The button that started the job unmounts with its tab (and ConfirmDanger's focus return finds it
+  // gone): focus goes to the «Задачи» tab once no dialog is open — passive cleanups (the dialog's
+  // focus return) run before this effect in the same commit.
+  useEffect(() => {
+    if (!focusJobs.current || danger !== null || tab !== 'jobs') return
+    focusJobs.current = false
+    document.getElementById(jobsTabId)?.focus()
+  }, [danger, tab, jobsTabId])
 
   const closeDanger = useCallback(() => setDanger(null), [])
   const closeTunnelCheck = useCallback(() => setTunnelCheck(false), [])
@@ -558,6 +567,7 @@ function NodeCard({ node, onClose, onChanged }) {
     if (r?.job_id != null) {
       setJobId(r.job_id)
       setTab('jobs')
+      focusJobs.current = true
     }
     onChanged?.()
     loadJobs()
@@ -622,7 +632,7 @@ function NodeCard({ node, onClose, onChanged }) {
               onTunnelCheck={() => setTunnelCheck(true)}
               onVerify={() => startJob('verify', () => verifyNode(node.id))}
               onSetup={onSetup}
-              onMtproxy={() => startJob('mtproxy', () => runServerAction(node.id, 'reinstall_mtproxy'))} />
+              onMtproxy={() => startJob('mtproxy', () => reinstallMTProxy(node.id))} />
           )}
           {tab === 'routing' && (
             <RoutingTab node={node} can={acts.routing.show} busy={busy} plans={plans} planIds={planIds} weight={weight} error={routingError}

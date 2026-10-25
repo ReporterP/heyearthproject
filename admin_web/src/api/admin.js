@@ -123,6 +123,8 @@ export const fetchJob = (id) => apiFetch(`/provision-jobs/${id}`)
 export const fetchNodeJobs = (serverId) => apiFetch(`/provision-jobs?server_id=${serverId}`)
 export const resumeJob = (id) => apiFetch(`/provision-jobs/${id}/resume`, { method: 'POST' })
 export const fetchHubKey = () => apiFetch('/ssh-keys/hub')
+// «Переустановить Telegram-прокси»: a job of its own → 202 {job_id, kind: 'mtproxy'} (nodes.provision).
+export const reinstallMTProxy = (id) => apiFetch(`/servers/${id}/mtproxy`, { method: 'POST' })
 // Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).
 export function checkServerTunnel(id) {
   return apiFetch(`/servers/${id}/check-tunnel`, { method: 'POST' })

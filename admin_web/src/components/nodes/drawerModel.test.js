@@ -4,14 +4,14 @@ import {
   jobActive, drawerTabs, initialTab, initialJobId, nodeActions, parsePriority, clampPriority, routingBody, fallbackBody,
   routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, probeKeyList, keyRows, initialKeyCheck, keyCheckReducer,
   canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences, deprovisionConsequences,
-  deleteConsequences, fallbackOffConsequences, LOG_SERVICES,
+  deleteConsequences, fallbackOffConsequences, LOG_SERVICES, plansNote, plansFailure,
 } from './drawerModel.js'
 
 const FP_ED = 'SHA256:' + 'E'.repeat(43)
 const FP_EC = 'SHA256:' + 'C'.repeat(43)
 const FP_RSA = 'SHA256:' + 'r1+/'.repeat(10) + 'xyz'
 
-const ALL = { manage: true, ops: true, logs: true }
+const ALL = { manage: true, logs: true }
 const exit = {
   id: 2, name: 'Амстердам', role: 'exit', lifecycle_state: 'online', tunnel_status: 'healthy', tunnel_fallback_enabled: true,
   mtproto_status: 'healthy', load_weight: 3, plan_ids: [4, 2], host_key: { fingerprint: FP_ED, key_type: 'ssh-ed25519', confirmed: true },
@@ -79,10 +79,9 @@ test('verify only where there is something to compare', () => {
   assert.notEqual(nodeActions(node({ lifecycle_state: 'offline' }), ALL).verify.reason, '')
 })
 
-test('Telegram proxy reinstall: online exit, both rights (nodes.provision + server_ops.execute), not switched off', () => {
-  assert.equal(nodeActions(node(), ALL).mtproxy.reason, '')
-  assert.equal(nodeActions(node(), { manage: true }).mtproxy.show, false) // /actions needs server_ops.execute too
-  assert.equal(nodeActions(node(), { ops: true }).mtproxy.show, false)
+test('Telegram proxy reinstall: online exit, nodes.provision only (POST /servers/{id}/mtproxy), not switched off', () => {
+  assert.equal(nodeActions(node(), { manage: true }).mtproxy.reason, '')
+  assert.equal(nodeActions(node(), { logs: true }).mtproxy.show, false)
   assert.equal(nodeActions(node({ lifecycle_state: 'pending' }), ALL).mtproxy.show, false)
   assert.match(nodeActions(node({ mtproto_status: 'disabled' }), ALL).mtproxy.reason, /выключен/)
 })
@@ -112,7 +111,7 @@ test('logs: servers.logs and a confirmed key; tunnel check only for an online ex
   assert.deepEqual(LOG_SERVICES.map((s) => s.key), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
 })
 
-test('priority is an integer 1..10; routing keeps the stored plans when the plans did not load', () => {
+test('priority is an integer 1..10; routing sends only what changed', () => {
   assert.equal(parsePriority('7'), 7)
   for (const bad of ['0', '11', '2.5', '', 'x', ' ']) assert.equal(parsePriority(bad), null, bad)
   assert.equal(clampPriority(0), 1)
@@ -120,15 +119,30 @@ test('priority is an integer 1..10; routing keeps the stored plans when the plan
   assert.equal(clampPriority(undefined), 1)
 
   assert.deepEqual(routingBody(node(), { planIds: [5, 1, 5], weight: '4', plansLoaded: true }), { body: { plan_ids: [1, 5], load_weight: 4 } })
-  assert.deepEqual(routingBody(node(), { planIds: [9], weight: '4', plansLoaded: false }).body.plan_ids, [2, 4])
+  // plans not loaded (no settings.read, a failed request): only the priority, the binding is kept by the backend
+  assert.deepEqual(routingBody(node(), { planIds: [9], weight: '4', plansLoaded: false }), { body: { load_weight: 4 } })
+  assert.deepEqual(routingBody(node(), { planIds: [2, 4, 5], weight: '3', plansLoaded: true }), { body: { plan_ids: [2, 4, 5] } })
+  assert.deepEqual(routingBody(node(), { planIds: [], weight: '3', plansLoaded: true }), { body: { plan_ids: [] } }) // [] = common pool only
+  assert.match(routingBody(node(), { planIds: [4, 2], weight: '3', plansLoaded: true }).error, /изменений нет/)
   assert.match(routingBody(node(), { planIds: [], weight: '0', plansLoaded: true }).error, /от 1 до 10/)
   // the routing save never touches the TCP switch (the backend keeps it when the field is absent)
   assert.equal('tunnel_fallback_enabled' in routingBody(node(), { planIds: [], weight: '1', plansLoaded: true }).body, false)
 })
 
-test('the TCP switch saves the stored plans and priority, never unsaved edits', () => {
-  assert.deepEqual(fallbackBody(node(), false), { plan_ids: [2, 4], load_weight: 3, tunnel_fallback_enabled: false })
-  assert.deepEqual(fallbackBody(node({ plan_ids: null, load_weight: 0 }), true), { plan_ids: [], load_weight: 1, tunnel_fallback_enabled: true })
+test('without the plan list the owner is told why and what is kept', () => {
+  assert.equal(plansNote({ state: 'ready' }, node()), '')
+  assert.equal(plansNote({ state: 'loading' }, node()), '')
+  const forbidden = plansNote({ state: 'forbidden' }, node())
+  assert.match(forbidden, /settings\.read/)
+  assert.match(forbidden, /2/) // the stored binding count
+  assert.match(plansNote({ state: 'failed', error: 'Нет связи с сервером' }, node()), /Нет связи с сервером/)
+  assert.equal(plansFailure({ status: 403, message: 'Нет прав' }).state, 'forbidden')
+  assert.deepEqual(plansFailure({ status: 0, message: 'Нет связи' }), { state: 'failed', items: [], error: 'Нет связи' })
+})
+
+test('the TCP switch sends only itself — never the plans or the priority, saved or not', () => {
+  assert.deepEqual(fallbackBody(node(), false), { tunnel_fallback_enabled: false })
+  assert.deepEqual(fallbackBody(node({ plan_ids: null, load_weight: 0 }), true), { tunnel_fallback_enabled: true })
 })
 
 test('unsaved routing edits are noticed', () => {

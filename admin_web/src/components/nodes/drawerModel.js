@@ -19,7 +19,7 @@ const isExit = (n) => n?.role !== 'relay'
 
 export const jobActive = (n) => ['running', 'queued'].includes(n?.last_job?.status)
 
-// drawerTabs: perms = { manage: nodes.provision, ops: server_ops.execute, logs: servers.logs }.
+// drawerTabs: perms = { manage: nodes.provision, logs: servers.logs }.
 export function drawerTabs(node, { manage = false, logs = false } = {}) {
   return [
     { key: 'overview', label: 'Обзор' },
@@ -77,7 +77,7 @@ function setupAction(n, gate) {
 // nodeActions: every action of the card → { show, reason } (reason '' = available). Starting a
 // job needs nodes.provision; actions over SSH also a confirmed host key (deprovision does not: the
 // node leaves routing first, its node-side steps wait for the key — see deprovisionConsequences).
-export function nodeActions(node, { manage = false, ops = false, logs = false } = {}) {
+export function nodeActions(node, { manage = false, logs = false } = {}) {
   const n = node || {}
   const exit = isExit(n)
   const life = n.lifecycle_state
@@ -96,7 +96,7 @@ export function nodeActions(node, { manage = false, ops = false, logs = false } 
     out.fallback = { show: true, reason: '' }
     out.verify = { show: true, reason: gate(Object.hasOwn(VERIFY_STATE, life) ? VERIFY_STATE[life] : '') }
     out.setup = setupAction(n, gate)
-    if (ops && life === 'online') {
+    if (life === 'online') { // POST /servers/{id}/mtproxy: nodes.provision only
       out.mtproxy = { show: true, reason: gate(n.mtproto_status === 'disabled' ? 'Telegram-прокси для этой ноды выключен' : '') }
     }
   }
@@ -113,7 +113,8 @@ export function nodeActions(node, { manage = false, ops = false, logs = false } 
   return out
 }
 
-// ── routing: PUT /servers/{id}/routing {plan_ids, load_weight, tunnel_fallback_enabled?} ──
+// ── routing: PUT /servers/{id}/routing {plan_ids?, load_weight?, tunnel_fallback_enabled?} — an
+// absent field keeps what is stored, so the card sends only what the owner changed ──
 
 export function parsePriority(v) {
   const t = String(v ?? '').trim()
@@ -130,18 +131,37 @@ export function clampPriority(v) {
 const cleanIds = (ids) => [...new Set((ids || []).map(Number).filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b)
 export const sortedPlanIds = cleanIds
 
-// routingBody: the «Тарифы и приоритет» save. Without the plan list (no settings.read, a failed
-// request) the stored binding is sent back as it is. The TCP switch is left out: the backend keeps it.
+// routingBody: the «Тарифы и приоритет» save — only the changed fields. Without the plan list (no
+// settings.read, a failed request) plan_ids is never sent: the backend keeps the binding. The TCP
+// switch is left out too.
 export function routingBody(node, { planIds, weight, plansLoaded }) {
   const w = parsePriority(weight)
   if (w === null) return { error: 'Приоритет — целое число от 1 до 10' }
-  return { body: { plan_ids: cleanIds(plansLoaded ? planIds : node?.plan_ids), load_weight: w } }
+  const body = {}
+  if (w !== node?.load_weight) body.load_weight = w
+  if (plansLoaded && cleanIds(planIds).join(',') !== cleanIds(node?.plan_ids).join(',')) body.plan_ids = cleanIds(planIds)
+  if (Object.keys(body).length === 0) return { error: 'Нечего сохранять — изменений нет' }
+  return { body }
 }
 
-// fallbackBody: the TCP switch saves only itself — the stored plans and priority, never edits
-// still unsaved on the other tab.
+// fallbackBody: the TCP switch saves only itself — never the plans or the priority (saved or not).
 export function fallbackBody(node, enabled) {
-  return { plan_ids: cleanIds(node?.plan_ids), load_weight: clampPriority(node?.load_weight), tunnel_fallback_enabled: enabled === true }
+  return { tunnel_fallback_enabled: enabled === true }
+}
+
+// plansFailure: GET /plans failed — 403 is a missing settings.read (said plainly), the rest an error.
+export function plansFailure(e) {
+  return e?.status === 403
+    ? { state: 'forbidden', items: [], error: '' }
+    : { state: 'failed', items: [], error: e?.message || 'ошибка' }
+}
+
+// plansNote: why the plan list is missing and what stays as it is ('' while loading or loaded).
+export function plansNote(plans, node) {
+  const kept = `Привязка к тарифам не меняется — сейчас тарифов: ${node?.plan_ids?.length ?? 0}; приоритет можно изменить.`
+  if (plans?.state === 'forbidden') return `Список тарифов виден только с правом просмотра настроек (settings.read). ${kept}`
+  if (plans?.state === 'failed') return `Тарифы не загрузились (${plans.error || 'ошибка'}). ${kept}`
+  return ''
 }
 
 export function routingDirty(node, { planIds, weight, plansLoaded }) {

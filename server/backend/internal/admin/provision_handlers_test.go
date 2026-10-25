@@ -694,24 +694,51 @@ func TestDeleteServerOnlyRetiredNodes(t *testing.T) {
 
 func TestNodeRoutingValidation(t *testing.T) {
 	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
-	for _, body := range []string{`{"load_weight":3}`, `{"plan_ids":[1],"load_weight":0}`, `{"plan_ids":[1],"load_weight":11}`, `{"plan_ids":[-1],"load_weight":3}`, `x`} {
+	for _, body := range []string{`{}`, `{"load_weight":null}`, `{"plan_ids":[1],"load_weight":0}`, `{"load_weight":11}`, `{"plan_ids":[-1]}`,
+		`{"plan_ids":[1],"load_weight":"3"}`, `x`} {
 		if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", body); rec.Code != 400 {
 			t.Errorf("%s: %d", body, rec.Code)
 		}
 	}
-	d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
-		if strings.Contains(q, "FROM servers WHERE id = $1 FOR UPDATE") {
-			return one([]string{"one"}, int64(1))
-		}
-		return nil
-	}})
-	rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", `{"plan_ids":[],"load_weight":5,"tunnel_fallback_enabled":false}`)
-	if rec.Code != 200 {
-		t.Fatalf("%d %s", rec.Code, rec.Body)
+}
+
+// Every routing field is optional: an absent one keeps what is stored (the card's TCP switch sends
+// only itself; a priority saved without the plan list sends only load_weight and keeps the binding).
+func TestNodeRoutingOptionalFields(t *testing.T) {
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
+	cases := []struct {
+		body             string
+		weight, fallback driver.Value
+		binds            bool
+	}{
+		{`{"plan_ids":[],"load_weight":5,"tunnel_fallback_enabled":false}`, int64(5), false, true},
+		{`{"tunnel_fallback_enabled":true}`, nil, true, false},
+		{`{"load_weight":4}`, int64(4), nil, false},
+		{`{"plan_ids":[2,3]}`, nil, nil, true},
 	}
-	up := d.matching("UPDATE servers SET load_weight = $2")
-	if len(up) != 1 || up[0].args[2] != false {
-		t.Fatalf("routing write: %+v", d.stmts)
+	for _, c := range cases {
+		d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
+			if strings.Contains(q, "FROM servers WHERE id = $1 FOR UPDATE") {
+				return one([]string{"one"}, int64(1))
+			}
+			return nil
+		}})
+		rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", c.body)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", c.body, rec.Code, rec.Body)
+		}
+		up := d.matching("UPDATE servers SET load_weight = COALESCE($2, load_weight)", "COALESCE($3, tunnel_fallback_enabled)")
+		if len(up) != 1 || up[0].args[1] != c.weight || up[0].args[2] != c.fallback {
+			t.Errorf("%s: routing write %+v", c.body, d.stmts)
+		}
+		if got := len(d.matching("plan_servers")) > 0; got != c.binds {
+			t.Errorf("%s: plan binding touched=%v, want %v (%+v)", c.body, got, c.binds, d.stmts)
+		}
+	}
+	// A missing node is still told apart when only plan_ids come (the UPDATE always runs).
+	withProvDB(t, &provDB{affected: func(string) int64 { return 0 }})
+	if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", `{"plan_ids":[1]}`); rec.Code != 404 {
+		t.Fatalf("missing node: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -920,25 +947,47 @@ func TestServerActionsAfterJobs(t *testing.T) {
 			t.Errorf("%s: %d %s", a, rec.Code, rec.Body)
 		}
 	}
-	// MTProxy installs software: nodes.provision, not only server_ops.execute.
-	if rec := post("reinstall_mtproxy", "server_ops.execute"); rec.Code != 403 || len(p.kinds) != 0 {
-		t.Errorf("reinstall without nodes.provision: %d %v", rec.Code, p.kinds)
-	}
-	// A job of its own: the node's one-job lock (Runner.Start) keeps it apart from other jobs.
-	if rec := post("reinstall_mtproxy", "server_ops.execute", "nodes.provision"); rec.Code != 202 ||
-		!slices.Equal(p.kinds, []string{provision.KindMTProxy}) || !strings.Contains(rec.Body.String(), `"kind":"mtproxy"`) {
-		t.Errorf("reinstall: %d %s %v", rec.Code, rec.Body, p.kinds)
-	}
-	for _, err := range []error{provision.ErrJobActive, provision.ErrMTProxyDisabled, provision.ErrHostKeyNotConfirmed} {
-		p.err = err
-		if rec := post("reinstall_mtproxy", "*"); rec.Code != 409 {
-			t.Errorf("%v: %d", err, rec.Code)
-		}
+	// The MTProxy reinstall moved to POST /servers/{id}/mtproxy: the old action is a 410 pointing there.
+	if rec := post("reinstall_mtproxy", "*"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "/mtproxy") || len(p.kinds) != 0 {
+		t.Errorf("old reinstall_mtproxy: %d %s %v", rec.Code, rec.Body, p.kinds)
 	}
 	// node-agent is not restarted while a job works on the node (refused before any SSH).
 	NodeJobs = fakeJobs{node: provision.Node{ID: 2}, list: []provision.JobView{{ID: 9, Status: provision.JobRunning}}}
 	if rec := post("restart_agent", "server_ops.execute"); rec.Code != 409 || !strings.Contains(rec.Body.String(), "задача") {
 		t.Errorf("restart during a job: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// «Переустановить Telegram-прокси»: a job of its own (the node's one-job lock), behind the guards of
+// «Проверить» plus a working node; metadata only (fakeJobs.LoadNode fails: no credentials read).
+func TestMTProxyNodeHandler(t *testing.T) {
+	p := &fakeProvisioner{}
+	withProvisioning(t, p, provision.Node{ID: 2, Role: "exit", Lifecycle: "online"})
+	path := "/api/admin/servers/2/mtproxy"
+	if rec := call(MTProxyNodeHandler, "POST", path, ""); rec.Code != 409 || !strings.Contains(rec.Body.String(), "отпечаток") {
+		t.Errorf("unconfirmed key: %d %s", rec.Code, rec.Body)
+	}
+	NodeJobs = fakeJobs{node: provision.Node{ID: 2, Role: "exit", Lifecycle: "pending", HostKeyConfirmed: true}}
+	if rec := call(MTProxyNodeHandler, "POST", path, ""); rec.Code != 409 || rec.Body.String() == "" {
+		t.Errorf("not online: %d %s", rec.Code, rec.Body)
+	}
+	if len(p.kinds) != 0 {
+		t.Fatalf("a job despite the guards: %v", p.kinds)
+	}
+	NodeJobs = fakeJobs{node: provision.Node{ID: 2, Role: "exit", Lifecycle: "online", HostKeyConfirmed: true}}
+	rec := call(MTProxyNodeHandler, "POST", path, "")
+	if rec.Code != 202 || !slices.Equal(p.kinds, []string{provision.KindMTProxy}) || !strings.Contains(rec.Body.String(), `"kind":"mtproxy"`) ||
+		!strings.Contains(rec.Body.String(), `"job_id":42`) {
+		t.Fatalf("reinstall: %d %s %v", rec.Code, rec.Body, p.kinds)
+	}
+	for _, err := range []error{provision.ErrJobActive, provision.ErrMTProxyDisabled, provision.ErrHostKeyNotConfirmed} {
+		p.err = err
+		if rec := call(MTProxyNodeHandler, "POST", path, ""); rec.Code != 409 {
+			t.Errorf("%v: %d", err, rec.Code)
+		}
+	}
+	if rec := call(MTProxyNodeHandler, "POST", "/api/admin/servers/x/mtproxy", ""); rec.Code != 400 {
+		t.Errorf("bad id: %d", rec.Code)
 	}
 }
 
@@ -951,7 +1000,7 @@ func TestNodeRoutesUseProvisionPermission(t *testing.T) {
 	}
 	src := string(b)
 	for _, h := range []string{"ProbeNodeHandler", "CreateNodeHandler", "ConfirmHostKeyHandler", "PreflightNodeHandler", "ProvisionNodeHandler",
-		"VerifyNodeHandler", "DeprovisionNodeHandler", "DeleteServerHandler", "NodeRoutingHandler", "ResumeJobHandler"} {
+		"VerifyNodeHandler", "DeprovisionNodeHandler", "DeleteServerHandler", "NodeRoutingHandler", "ResumeJobHandler", "MTProxyNodeHandler"} {
 		if !strings.Contains(src, `RequirePermission("nodes.provision", `+h+`)`) {
 			t.Errorf("%s is not behind nodes.provision", h)
 		}
