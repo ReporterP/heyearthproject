@@ -291,10 +291,10 @@ func randomPassword() (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-// RecipeFor picks the recipe of a job kind for a node: DeprovisionRecipe for deprovision, the
-// role's setup recipe for provision / reprovision / verify (recipeForSetup, exit.go). A refusal
-// happens before any job exists. st is the run's state (st.Exit filled by the wiring); the setup
-// recipes set st.Begin / st.Fail.
+// RecipeFor picks the recipe of a job kind for a node: DeprovisionRecipe for deprovision,
+// mtproxyRecipe for mtproxy, the role's setup recipe for provision / reprovision / verify
+// (recipeForSetup, exit.go). A refusal happens before any job exists. st is the run's state
+// (st.Exit filled by the wiring); the setup recipes set st.Begin / st.Fail.
 func RecipeFor(kind string, n Node, st *State) (Recipe, error) {
 	if n.ID < 1 || n.ID > 511 {
 		return nil, fmt.Errorf("id ноды %d вне 1..511: порт 1088+id выходит за диапазон egress guard", n.ID)
@@ -302,8 +302,11 @@ func RecipeFor(kind string, n Node, st *State) (Recipe, error) {
 	if n.Role != "exit" && n.Role != "relay" {
 		return nil, fmt.Errorf("неизвестная роль ноды %q", n.Role)
 	}
-	if kind == KindDeprovision {
+	switch kind {
+	case KindDeprovision:
 		return DeprovisionRecipe(n.Role), nil
+	case KindMTProxy:
+		return mtproxyRecipe(n, st)
 	}
 	return recipeForSetup(kind, n, st)
 }

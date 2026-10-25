@@ -130,7 +130,13 @@ func setMTProto(ctx context.Context, s *State, status string) error {
 // mtproxyApply never fails the exit: a MTProxy problem is reported and the step is skipped
 // (mtproto_status=unhealthy; the reconciler retries every 30 min). A node whose MTProxy the
 // owner switched off is never installed.
-func mtproxyApply(o MTProtoOptions) stepFunc {
+func mtproxyApply(o MTProtoOptions) stepFunc { return installMTProxyStep(o, true) }
+
+// mtproxyJobApply is the step of a KindMTProxy job: installing MTProxy is the whole job, so a
+// failed install fails it (still marked unhealthy; the job is resumable).
+func mtproxyJobApply(o MTProtoOptions) stepFunc { return installMTProxyStep(o, false) }
+
+func installMTProxyStep(o MTProtoOptions, skipOnFailure bool) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		if s.Node.MTProtoStatus == "disabled" {
 			s.Printf("Telegram-прокси выключен для этой ноды — не ставлю")
@@ -142,6 +148,9 @@ func mtproxyApply(o MTProtoOptions) stepFunc {
 		s.Printf("%s", tail(out, 2000))
 		if err != nil {
 			_ = setMTProto(ctx, s, "unhealthy")
+			if !skipOnFailure {
+				return fmt.Errorf("Telegram-прокси не установлен: %w", err)
+			}
 			s.Printf("MTProxy не установлен: %v. Выход работает и без него; повтор — «Переустановить» в карточке ноды.", err)
 			return fmt.Errorf("%w: %v", ErrSkipped, err)
 		}
@@ -155,6 +164,27 @@ func mtproxyApply(o MTProtoOptions) stepFunc {
 		}
 		return nil
 	}
+}
+
+// mtproxyRecipe is a KindMTProxy job: one step, verify → (re)install → verify, on an online exit
+// whose MTProxy is not switched off and whose host key the owner confirmed. Everything is
+// checked here, so a refusal creates no job (the reconciler's backfill does not pile up failed jobs).
+func mtproxyRecipe(n Node, st *State) (Recipe, error) {
+	switch {
+	case n.Role != "exit":
+		return nil, fmt.Errorf("Telegram-прокси ставится только на выход за рубежом, а нода — «%s»", n.Role)
+	case n.Lifecycle != "online":
+		return nil, fmt.Errorf("нода в состоянии «%s»: Telegram-прокси ставится только на работающий выход", n.Lifecycle)
+	case n.MTProtoStatus == "disabled" || st.Exit.MTProto == nil:
+		return nil, ErrMTProxyDisabled
+	case !n.HostKeyConfirmed:
+		return nil, ErrHostKeyNotConfirmed
+	}
+	o := *st.Exit.MTProto
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	return Recipe{{Name: "mtproxy", Apply: mtproxyJobApply(o), Verify: mtproxyVerify(o)}}, nil
 }
 
 // mtproxyVerify: mtproxy runs, mtg listens on the port with the configured secret and the

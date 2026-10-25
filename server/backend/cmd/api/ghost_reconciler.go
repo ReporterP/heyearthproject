@@ -161,19 +161,18 @@ func runAutoRepair(serverID int) {
 	}
 }
 
-// startMTProxyBackfill starts the MTProxy install of the first exit that passes the checks
-// (online, MTProxy not switched off, host key confirmed, no job running) over the pinned SSH
-// connection — the same installer as «Переустановить Telegram-прокси»; one per tick. A node whose
-// key is not confirmed is skipped with a log line, never dialled.
+// startMTProxyBackfill starts at most one MTProxy job per tick (mtproxyBackfill): the same job as
+// «Переустановить Telegram-прокси», never beside another job of the node, never on a node whose
+// host key is not confirmed.
 func startMTProxyBackfill(needing []biz.MTProtoExit) {
-	for _, exit := range needing {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := nodeMTProxy.start(ctx, exit.ID)
-		cancel()
-		if err == nil {
-			log.Printf("[ghost-reconciler] mtproxy %d: установка запущена", exit.ID)
-			return
-		}
-		log.Printf("[ghost-reconciler] mtproxy %d: пропущено: %v", exit.ID, err)
+	if nodeRunner == nil {
+		return
 	}
+	ids := make([]int, len(needing))
+	for i, e := range needing {
+		ids[i] = e.ID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	mtproxyBackfill{start: nodeRunner.Start, jobs: nodeStore.ListJobs, now: time.Now, logf: log.Printf}.run(ctx, ids)
 }

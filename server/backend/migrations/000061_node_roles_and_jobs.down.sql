@@ -8,6 +8,7 @@ ALTER TABLE servers DROP CONSTRAINT IF EXISTS servers_mtproto_status_check;
 ALTER TABLE servers ADD CONSTRAINT servers_mtproto_status_check
   CHECK (mtproto_status IN ('unknown', 'installing', 'healthy', 'unhealthy'));
 ALTER TABLE servers ALTER COLUMN lifecycle_state SET DEFAULT 'online';
+DROP INDEX IF EXISTS uq_servers_ip_address;
 ALTER TABLE servers DROP CONSTRAINT IF EXISTS chk_servers_role;
 ALTER TABLE servers DROP COLUMN IF EXISTS tunnel_fallback_enabled;
 ALTER TABLE servers DROP COLUMN IF EXISTS ssh_host_key_confirmed_at;

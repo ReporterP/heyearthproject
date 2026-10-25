@@ -406,9 +406,9 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 // to a node is a persisted, resumable job now.
 const movedServerActionMsg = "Действие перенесено в задачи ноды: «Настроить» / «Переустановить», «Проверить», «Отключить» в карточке ноды"
 
-// ServerActionHandler: what is left of the old actions — restarting node-agent and reinstalling
-// MTProxy, both over the pinned SSH connection; the removed actions answer phase 1's 410s, the
-// provisioning flows a 410 pointing at the node's jobs.
+// ServerActionHandler: what is left of the old actions — restarting node-agent over the pinned
+// SSH connection and reinstalling MTProxy as a job (both refused while a job works on the node);
+// the removed actions answer phase 1's 410s, the provisioning flows a 410 pointing at the jobs.
 func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "actions")
 	if !ok {
@@ -428,6 +428,13 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "restart_agent":
+		if !provisionReady(w) {
+			return
+		}
+		// Not while a job works on the node (it may be restarting or replacing node-agent itself).
+		if refuseIfJobActive(w, r.Context(), id) {
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		rm, err := nodeRemote(ctx, id)
@@ -443,25 +450,17 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		WriteAuditLog(r, "restart_agent", "server", strconv.Itoa(id), nil)
 		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "node-agent перезапущен"})
 	case "reinstall_mtproxy":
-		if StartMTProxyReinstall == nil {
-			writeAdminError(w, http.StatusServiceUnavailable, notInitializedMsg)
+		// Installs software on the node: the provisioning right, not just server_ops.execute.
+		if !hasPermission(r, permNodesProvision) {
+			writeAdminError(w, http.StatusForbidden, "Нужно право «Provision Nodes» (nodes.provision)")
 			return
 		}
-		if err := StartMTProxyReinstall(r.Context(), id); err != nil {
-			switch {
-			case errors.Is(err, provision.ErrMTProxyDisabled), errors.Is(err, ErrMTProxyInstalling):
-				writeAdminError(w, http.StatusConflict, err.Error())
-			case errors.Is(err, provision.ErrJobActive):
-				writeAdminError(w, http.StatusConflict, "Для этой ноды выполняется задача — переустановите Telegram-прокси после её окончания")
-			case errors.Is(err, provision.ErrHostKeyNotConfirmed):
-				writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
-			default:
-				writeAdminError(w, http.StatusBadRequest, err.Error())
-			}
+		if !provisionReady(w) {
 			return
 		}
-		WriteAuditLog(r, "reinstall_mtproxy", "server", strconv.Itoa(id), nil)
-		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Переустановка Telegram-прокси запущена (до 12 минут) — состояние видно в поле «Telegram-прокси» ноды"})
+		// A job of its own (provision.KindMTProxy): the node's one-job lock keeps it apart from
+		// any other job, its steps are visible and resumable like every job's.
+		startJob(w, r, id, provision.KindMTProxy)
 	default:
 		writeAdminError(w, http.StatusGone, movedServerActionMsg)
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
-	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"github.com/heyearth/backend/internal/provision"
@@ -31,8 +31,10 @@ type Provisioner interface {
 	Resume(ctx context.Context, jobID int64) error
 }
 
-// NodeJobStore reads nodes and jobs (*provision.SQLStore, set by cmd/api).
+// NodeJobStore reads nodes and jobs (*provision.SQLStore, set by cmd/api). NodeMeta is the node
+// without credentials (decisions that do not connect); LoadNode decrypts them (a connection).
 type NodeJobStore interface {
+	NodeMeta(ctx context.Context, serverID int) (provision.Node, error)
 	LoadNode(ctx context.Context, serverID int) (provision.Node, error)
 	JobView(ctx context.Context, jobID int64) (provision.JobView, error)
 	ListJobs(ctx context.Context, serverID, limit int) ([]provision.JobView, error)
@@ -47,15 +49,11 @@ var (
 	NodeDial = provision.DialNode
 	// HubPublicKey returns the Hub's own SSH public key, creating it once (cmd/api).
 	HubPublicKey func(ctx context.Context) (string, error)
-	// StartMTProxyReinstall checks a node and (re)installs its MTProxy in the background over the
-	// pinned connection (cmd/api: provision.InstallMTProxyOnNode). Shared with the reconciler.
-	StartMTProxyReinstall func(ctx context.Context, serverID int) error
+	// HubOwnIPs are the Hub's public addresses (cmd/api: hubOwnIPs); a node cannot be the Hub.
+	HubOwnIPs func() []string
 
 	saveNodeOptions = saveNodeOptionsDB
 )
-
-// ErrMTProxyInstalling: an MTProxy install of this node is already running outside a job.
-var ErrMTProxyInstalling = errors.New("Telegram-прокси на этой ноде уже устанавливается — дождитесь окончания")
 
 const (
 	// probeTimeout bounds a host key scan (one handshake per key type the node offers).
@@ -68,6 +66,11 @@ const (
 	unknownPlanMsg     = "В plan_ids есть несуществующий тариф"
 	confirmNameMsg     = "Введите название ноды точно — так подтверждается опасное действие"
 	planIDsPositiveMsg = "plan_ids — номера тарифов (целые числа больше нуля)"
+	nodeIPExistsMsg    = "Нода с этим IP уже есть"
+	jobActiveMsg       = "Для этой ноды уже выполняется задача — дождитесь её окончания"
+	// probeFailedMsg is the only answer to a failed probe: refused, filtered, not SSH, no
+	// supported key all look the same, so the endpoint tells nothing about other ports or hosts.
+	probeFailedMsg = "Не удалось получить ключ SSH сервера: проверьте IP-адрес и SSH-порт, что сервер включён и SSH на нём доступен"
 )
 
 func provisionReady(w http.ResponseWriter) bool {
@@ -81,7 +84,11 @@ func provisionReady(w http.ResponseWriter) bool {
 func writeJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, provision.ErrJobActive):
-		writeAdminError(w, http.StatusConflict, "Для этой ноды уже выполняется задача — дождитесь её окончания")
+		writeAdminError(w, http.StatusConflict, jobActiveMsg)
+	case errors.Is(err, provision.ErrNodeNotFound):
+		writeAdminError(w, http.StatusNotFound, "Нода не найдена")
+	case errors.Is(err, provision.ErrMTProxyDisabled):
+		writeAdminError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, provision.ErrJobNotResumable):
 		writeAdminError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, provision.ErrHostKeyNotConfirmed):
@@ -94,6 +101,8 @@ func writeJobError(w http.ResponseWriter, err error) {
 // writeNodeAccessError answers a failed SSH connection to a node.
 func writeNodeAccessError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, provision.ErrNodeNotFound):
+		writeAdminError(w, http.StatusNotFound, "Нода не найдена")
 	case errors.Is(err, provision.ErrHostKeyNotConfirmed):
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
 	case errors.Is(err, provision.ErrHostKeyMismatch):
@@ -126,6 +135,104 @@ func validPlanIDs(ids []int) bool {
 func unknownPlan(err error) bool {
 	var pe *pq.Error
 	return errors.As(err, &pe) && pe.Code == "23503"
+}
+
+// loadNodeMeta reads the node without credentials and answers 404 / 500 itself (a database
+// error's text stays in the log).
+func loadNodeMeta(w http.ResponseWriter, ctx context.Context, id int) (provision.Node, bool) {
+	n, err := NodeJobs.NodeMeta(ctx, id)
+	switch {
+	case errors.Is(err, provision.ErrNodeNotFound):
+		writeAdminError(w, http.StatusNotFound, "Нода не найдена")
+		return n, false
+	case err != nil:
+		log.Printf("[nodes] node %d: %v", id, err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить ноду")
+		return n, false
+	}
+	return n, true
+}
+
+// nodeHasActiveJob: the node's latest job is still queued or running.
+func nodeHasActiveJob(ctx context.Context, id int) (bool, error) {
+	jobs, err := NodeJobs.ListJobs(ctx, id, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(jobs) > 0 && (jobs[0].Status == provision.JobRunning || jobs[0].Status == "queued"), nil
+}
+
+// refuseIfJobActive answers 409 (or 500) and returns true when a job runs on the node.
+func refuseIfJobActive(w http.ResponseWriter, ctx context.Context, id int) bool {
+	active, err := nodeHasActiveJob(ctx, id)
+	if err != nil {
+		log.Printf("[nodes] node %d jobs: %v", id, err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить задачи ноды")
+		return true
+	}
+	if active {
+		writeAdminError(w, http.StatusConflict, jobActiveMsg)
+		return true
+	}
+	return false
+}
+
+// blockedNodeNets: addresses that are never a node — "this network", CGNAT, IETF protocol
+// assignments, benchmarking, reserved (with broadcast). Loopback, private (RFC 1918, ULA),
+// link-local, multicast and unspecified are refused by class.
+var blockedNodeNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4"} {
+		_, n, _ := net.ParseCIDR(c)
+		out = append(out, n)
+	}
+	return out
+}()
+
+// validateNodeAddr is the one check of a node's address for every endpoint that connects to it
+// (probe, create, a stored node's probe): a public unicast host that is not the Hub, port 1..65535
+// (0 = 22). It keeps the probe from reaching the Hub's own or internal services.
+func validateNodeAddr(ipText string, port int) (string, int, error) {
+	ip := net.ParseIP(strings.TrimSpace(ipText))
+	if ip == nil {
+		return "", 0, errors.New("IP-адрес сервера некорректен")
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	bad := ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast()
+	for _, n := range blockedNodeNets {
+		bad = bad || n.Contains(ip)
+	}
+	if bad {
+		return "", 0, errors.New("IP-адрес сервера некорректен: нужен публичный адрес (не локальный, не частный, не CGNAT)")
+	}
+	if HubOwnIPs != nil {
+		for _, h := range HubOwnIPs() {
+			if hip := net.ParseIP(strings.TrimSpace(h)); hip != nil && hip.Equal(ip) {
+				return "", 0, errors.New("это адрес самого Hub — нода должна быть отдельным сервером")
+			}
+		}
+	}
+	if port == 0 {
+		port = 22
+	}
+	if port < 1 || port > 65535 {
+		return "", 0, errors.New("SSH-порт должен быть от 1 до 65535")
+	}
+	return ip.String(), port, nil
+}
+
+// probeNode runs the probe, logging the real failure and answering probeFailedMsg (502).
+func probeNode(w http.ResponseWriter, ctx context.Context, ip string, port int) (provision.ProbeResult, bool) {
+	res, err := NodeProbe(ctx, ip, port)
+	if err != nil {
+		log.Printf("[nodes] probe %s:%d: %v", ip, port, err)
+		writeAdminError(w, http.StatusBadGateway, probeFailedMsg)
+		return res, false
+	}
+	return res, true
 }
 
 // nodeRemote opens the pinned SSH connection to a node (the caller closes it).
@@ -211,9 +318,8 @@ func ProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 		if !provisionReady(w) {
 			return
 		}
-		n, err := NodeJobs.LoadNode(r.Context(), req.ServerID)
-		if err != nil {
-			writeAdminError(w, http.StatusNotFound, err.Error())
+		n, ok := loadNodeMeta(w, r.Context(), req.ServerID)
+		if !ok {
 			return
 		}
 		req.IPAddress, req.SSHPort = n.IP, n.SSHPort
@@ -221,23 +327,15 @@ func ProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 			stored = &storedKeyView{Fingerprint: n.HostKeyFP, KeyType: n.HostKeyType, Confirmed: n.HostKeyConfirmed}
 		}
 	}
-	ip := net.ParseIP(strings.TrimSpace(req.IPAddress))
-	if ip == nil {
-		writeAdminError(w, http.StatusBadRequest, "IP-адрес сервера некорректен")
-		return
-	}
-	if req.SSHPort == 0 {
-		req.SSHPort = 22
-	}
-	if req.SSHPort < 1 || req.SSHPort > 65535 {
-		writeAdminError(w, http.StatusBadRequest, "SSH-порт должен быть от 1 до 65535")
+	ip, port, err := validateNodeAddr(req.IPAddress, req.SSHPort)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 	defer cancel()
-	res, err := NodeProbe(ctx, ip.String(), req.SSHPort)
-	if err != nil {
-		writeAdminError(w, http.StatusBadGateway, err.Error())
+	res, ok := probeNode(w, ctx, ip, port)
+	if !ok {
 		return
 	}
 	if stored != nil {
@@ -279,13 +377,9 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
-	ip := net.ParseIP(strings.TrimSpace(req.IPAddress))
-	if ip == nil {
-		writeAdminError(w, http.StatusBadRequest, "IP-адрес сервера некорректен")
-		return
-	}
-	if config.ValidateExitIP(ip.String()) != nil {
-		writeAdminError(w, http.StatusBadRequest, "IP-адрес сервера некорректен: нужен обычный адрес хоста, не loopback/multicast")
+	ip, port, err := validateNodeAddr(req.IPAddress, req.SSHPort)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Role == "" {
@@ -302,13 +396,6 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateCountryCode(country); err != nil {
 		writeAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.SSHPort == 0 {
-		req.SSHPort = 22
-	}
-	if req.SSHPort < 1 || req.SSHPort > 65535 {
-		writeAdminError(w, http.StatusBadRequest, "SSH-порт должен быть от 1 до 65535")
 		return
 	}
 	user := strings.TrimSpace(req.SSHUser)
@@ -333,20 +420,20 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Выход " + country
 	}
+	// A fast answer before the probe; the unique index (uq_servers_ip_address) decides a race.
 	var exists bool
-	if err := db.DB.QueryRowContext(r.Context(), nodeIPExistsQuery, ip.String()).Scan(&exists); err != nil {
+	if err := db.DB.QueryRowContext(r.Context(), nodeIPExistsQuery, ip).Scan(&exists); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить список серверов")
 		return
 	}
 	if exists {
-		writeAdminError(w, http.StatusConflict, "Сервер с этим IP уже добавлен")
+		writeAdminError(w, http.StatusConflict, nodeIPExistsMsg)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 	defer cancel()
-	res, err := NodeProbe(ctx, ip.String(), req.SSHPort)
-	if err != nil {
-		writeAdminError(w, http.StatusBadGateway, "Не удалось проверить ключ сервера: "+err.Error())
+	res, ok := probeNode(w, ctx, ip, port)
+	if !ok {
 		return
 	}
 	key, ok := findHostKey(res, fp)
@@ -355,12 +442,17 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id int
-	if err := db.DB.QueryRowContext(r.Context(), insertNodeQuery, name, req.Role, req.Role == "exit", ip.String(), req.SSHPort, user,
+	if err := db.DB.QueryRowContext(r.Context(), insertNodeQuery, name, req.Role, req.Role == "exit", ip, port, user,
 		enc, country, key.Key, key.Fingerprint).Scan(&id); err != nil {
+		var pe *pq.Error
+		if errors.As(err, &pe) && pe.Code == "23505" {
+			writeAdminError(w, http.StatusConflict, nodeIPExistsMsg)
+			return
+		}
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить сервер")
 		return
 	}
-	WriteAuditLog(r, "create_node", "server", strconv.Itoa(id), map[string]string{"name": name, "ip": ip.String(), "fingerprint": fp, "key_type": key.Type})
+	WriteAuditLog(r, "create_node", "server", strconv.Itoa(id), map[string]string{"name": name, "ip": ip, "fingerprint": fp, "key_type": key.Type})
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -386,14 +478,17 @@ func ConfirmHostKeyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 	defer cancel()
-	n, err := NodeJobs.LoadNode(ctx, id)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, err.Error())
+	n, ok := loadNodeMeta(w, ctx, id)
+	if !ok {
 		return
 	}
-	live, err := NodeProbe(ctx, n.IP, n.SSHPort)
+	ip, port, err := validateNodeAddr(n.IP, n.SSHPort)
 	if err != nil {
-		writeAdminError(w, http.StatusBadGateway, err.Error())
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	live, ok := probeNode(w, ctx, ip, port)
+	if !ok {
 		return
 	}
 	fp := strings.TrimSpace(req.Fingerprint)
@@ -502,13 +597,17 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if !provisionReady(w) {
 		return
 	}
-	n, err := NodeJobs.LoadNode(r.Context(), id)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, err.Error())
+	n, ok := loadNodeMeta(w, r.Context(), id)
+	if !ok {
 		return
 	}
 	if !n.HostKeyConfirmed {
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
+		return
+	}
+	// A running job keeps the node: 409 before the options are touched or a sync is requested
+	// (Runner.Start's unique index still decides a race).
+	if refuseIfJobActive(w, r.Context(), id) {
 		return
 	}
 	kind := provision.KindProvision
@@ -520,7 +619,8 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 			writeAdminError(w, http.StatusBadRequest, unknownPlanMsg)
 			return
 		}
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить настройки ноды: "+err.Error())
+		log.Printf("[nodes] node %d options: %v", id, err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить настройки ноды")
 		return
 	}
 	if n.Lifecycle == "online" && (req.PlanIDs != nil || req.LoadWeight != nil) {
@@ -549,9 +649,8 @@ func VerifyNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if !provisionReady(w) {
 		return
 	}
-	n, err := NodeJobs.LoadNode(r.Context(), id)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, err.Error())
+	n, ok := loadNodeMeta(w, r.Context(), id)
+	if !ok {
 		return
 	}
 	if !n.HostKeyConfirmed {
@@ -565,9 +664,9 @@ type confirmPayload struct {
 	ConfirmName string `json:"confirm_name"`
 }
 
-// confirmedNode loads the node and checks the typed name (ConfirmDanger in the UI, enforced here
-// too); suffix "" = the id is the last path segment.
-func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (int, bool) {
+// confirmedNode loads the node (no credentials) and checks the typed name (ConfirmDanger in the
+// UI, enforced here too); suffix "" = the id is the last path segment.
+func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provision.Node, bool) {
 	var id int
 	var ok bool
 	if suffix == "" {
@@ -578,53 +677,70 @@ func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (int, 
 	var req confirmPayload
 	if !ok || decodeOptional(r, &req) != nil {
 		writeAdminError(w, http.StatusBadRequest, "Неверный запрос")
-		return 0, false
+		return provision.Node{}, false
 	}
 	if !provisionReady(w) {
-		return 0, false
+		return provision.Node{}, false
 	}
-	n, err := NodeJobs.LoadNode(r.Context(), id)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, err.Error())
-		return 0, false
+	n, ok := loadNodeMeta(w, r.Context(), id)
+	if !ok {
+		return provision.Node{}, false
 	}
 	if strings.TrimSpace(req.ConfirmName) != n.Name {
 		writeAdminError(w, http.StatusBadRequest, confirmNameMsg)
-		return 0, false
+		return provision.Node{}, false
 	}
-	return id, true
+	return n, true
 }
 
 // DeprovisionNodeHandler starts «Отключить»: out of routing first, then the Hub side, then the
 // node (best effort); the row stays offline. An unconfirmed key does not block it.
 func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
-	if id, ok := confirmedNode(w, r, "deprovision"); ok {
-		startJob(w, r, id, provision.KindDeprovision)
+	if n, ok := confirmedNode(w, r, "deprovision"); ok {
+		startJob(w, r, n.ID, provision.KindDeprovision)
 	}
 }
 
-const deleteNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state IN ('pending', 'offline', 'failed')
+const deleteNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state IN ('pending', 'offline')
    AND NOT EXISTS (SELECT 1 FROM provision_jobs WHERE server_id = $1 AND status IN ('queued', 'running'))`
 
-// DeleteServerHandler removes the row of a node that is out of service (its jobs go with it,
-// ON DELETE CASCADE); a live node is first switched off by the deprovision job. Hub-only: the
-// node itself is not touched (it keeps its agent guard).
+// failedNodeDeleteMsg: a failed setup may have left the Hub's tunnel client (hysteria2-client-<id>,
+// its path marker) and services on the node; «Отключить» (the deprovision job, which works from
+// failed) removes the Hub side and parks the node, persisted and resumable — then the row goes.
+const failedNodeDeleteMsg = "Сначала отключите ноду («Отключить»): после неудачной настройки на Hub мог остаться клиент туннеля, " +
+	"а на сервере — запущенные сервисы; отключение их уберёт, затем запись можно удалить"
+
+// DeleteServerHandler removes the row of a node with nothing left behind: pending (never set up)
+// or offline (taken out by the deprovision job); its jobs go with it (ON DELETE CASCADE). A failed
+// node is refused (failedNodeDeleteMsg) rather than cleaned up here: the deprovision job already
+// does the Hub side and the node side, step by step and resumable — a second, synchronous copy of
+// the Hub-side cleanup in this handler could only be less complete. Hub-only: the node itself is
+// not touched (it keeps its agent guard).
 func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := confirmedNode(w, r, "")
+	n, ok := confirmedNode(w, r, "")
 	if !ok {
 		return
 	}
-	res, err := db.DB.ExecContext(r.Context(), deleteNodeQuery, id)
+	switch n.Lifecycle {
+	case "pending", "offline":
+	case "failed":
+		writeAdminError(w, http.StatusConflict, failedNodeDeleteMsg)
+		return
+	default:
+		writeAdminError(w, http.StatusConflict, "Удалить можно только отключённую или ещё не настроенную ноду — сначала «Отключить»")
+		return
+	}
+	res, err := db.DB.ExecContext(r.Context(), deleteNodeQuery, n.ID)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось удалить сервер")
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		writeAdminError(w, http.StatusConflict, "Удалить можно только отключённую, ожидающую или неудачно настроенную ноду без активной задачи — сначала «Отключить»")
+	if cnt, _ := res.RowsAffected(); cnt == 0 {
+		writeAdminError(w, http.StatusConflict, "Нода изменилась или для неё выполняется задача — обновите страницу; удалить можно только отключённую или ещё не настроенную ноду")
 		return
 	}
 	biz.BumpSubscriptionVersion()
-	WriteAuditLog(r, "delete_server", "server", strconv.Itoa(id), nil)
+	WriteAuditLog(r, "delete_server", "server", strconv.Itoa(n.ID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Нода удалена"})
 }
 
@@ -727,9 +843,23 @@ func ResumeJobHandler(w http.ResponseWriter, r *http.Request) {
 	if !provisionReady(w) {
 		return
 	}
-	// A setup or verify job would only fail again on its first node step without a confirmed key.
-	if j, err := NodeJobs.JobView(r.Context(), int64(id)); err == nil && j.Kind != provision.KindDeprovision && j.ServerID > 0 {
-		if n, err := NodeJobs.LoadNode(r.Context(), j.ServerID); err == nil && !n.HostKeyConfirmed {
+	j, err := NodeJobs.JobView(r.Context(), int64(id))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeAdminError(w, http.StatusNotFound, "Задача не найдена")
+		return
+	}
+	if err != nil {
+		log.Printf("[nodes] job %d: %v", id, err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить задачу")
+		return
+	}
+	// A job that connects would only fail again on its first node step without a confirmed key.
+	if j.Kind != provision.KindDeprovision {
+		n, ok := loadNodeMeta(w, r.Context(), j.ServerID)
+		if !ok {
+			return
+		}
+		if !n.HostKeyConfirmed {
 			writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
 			return
 		}

@@ -25,6 +25,7 @@ import (
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -58,13 +59,24 @@ func (f *fakeProvisioner) Resume(_ context.Context, id int64) error {
 	return f.err
 }
 
+// fakeJobs: NodeMeta answers the node (or metaErr); LoadNode — the credential load, which
+// decrypts the password — is an error unless allowLoad: every metadata-only path must do
+// without it.
 type fakeJobs struct {
-	node provision.Node
-	job  provision.JobView
-	list []provision.JobView
+	node      provision.Node
+	job       provision.JobView
+	list      []provision.JobView
+	metaErr   error
+	allowLoad bool
 }
 
-func (f fakeJobs) LoadNode(context.Context, int) (provision.Node, error) { return f.node, nil }
+func (f fakeJobs) NodeMeta(context.Context, int) (provision.Node, error) { return f.node, f.metaErr }
+func (f fakeJobs) LoadNode(context.Context, int) (provision.Node, error) {
+	if !f.allowLoad {
+		return provision.Node{}, errors.New("LoadNode (credentials) on a metadata-only path")
+	}
+	return f.node, nil
+}
 func (f fakeJobs) JobView(context.Context, int64) (provision.JobView, error) {
 	if f.job.ID == 0 {
 		return provision.JobView{ID: 42, Status: "running"}, nil
@@ -96,12 +108,22 @@ func call(h http.HandlerFunc, method, path, body string) *httptest.ResponseRecor
 	return rec
 }
 
+// callAs is call with an admin session holding perms (handlers that check a permission themselves).
+func callAs(h http.HandlerFunc, method, path, body string, perms ...string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminClaimsContextKey, &Claims{AdminID: 1, Permissions: perms}))
+	h(rec, req)
+	return rec
+}
+
 // ── a scripted database for the handlers that write SQL themselves ──
 
 type provDB struct {
 	mu       sync.Mutex
 	stmts    []provStmt
 	query    func(q string, args []driver.Value) *provRows // nil result: no rows
+	queryErr func(q string) error                          // nil: no error
 	affected func(q string) int64                          // nil: 1
 }
 
@@ -167,6 +189,11 @@ func (s provStmtH) Exec(args []driver.Value) (driver.Result, error) {
 }
 func (s provStmtH) Query(args []driver.Value) (driver.Rows, error) {
 	s.d.record(s.q, args)
+	if s.d.queryErr != nil {
+		if err := s.d.queryErr(s.q); err != nil {
+			return nil, err
+		}
+	}
 	if s.d.query != nil {
 		if r := s.d.query(s.q, args); r != nil {
 			return r, nil
@@ -221,11 +248,60 @@ func TestProbeNodeHandler(t *testing.T) {
 	if rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":"exit.example.com"}`); rec.Code != 400 {
 		t.Fatalf("hostname: %d", rec.Code)
 	}
-	NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) {
-		return provision.ProbeResult{}, errors.New("нет TCP-соединения")
+	// Refused, filtered, not SSH: one answer — the probe is no port scanner.
+	var bodies []string
+	for _, e := range []error{errors.New("нет TCP-соединения с 203.0.113.7:22: connection refused"), errors.New("SSH-рукопожатие с 203.0.113.7:22: EOF")} {
+		NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) { return provision.ProbeResult{}, e }
+		rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":"203.0.113.7"}`)
+		if rec.Code != 502 {
+			t.Fatalf("probe failure: %d", rec.Code)
+		}
+		bodies = append(bodies, rec.Body.String())
 	}
-	if rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":"203.0.113.7"}`); rec.Code != 502 {
-		t.Fatalf("probe failure: %d", rec.Code)
+	if bodies[0] != bodies[1] || strings.Contains(bodies[0], "refused") || strings.Contains(bodies[0], "EOF") {
+		t.Fatalf("probe failures must look alike: %v", bodies)
+	}
+}
+
+func TestValidateNodeAddr(t *testing.T) {
+	old := HubOwnIPs
+	HubOwnIPs = func() []string { return []string{"198.51.100.1", "2001:db8::1"} }
+	t.Cleanup(func() { HubOwnIPs = old })
+	for _, bad := range []string{"", "x", "exit.example.com", "127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.1",
+		"100.64.0.1", "100.127.255.254", "169.254.1.1", "fe80::1", "0.0.0.0", "::", "0.1.2.3", "224.0.0.1", "ff02::1",
+		"255.255.255.255", "fd00::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "198.51.100.1", "2001:db8::1"} {
+		if _, _, err := validateNodeAddr(bad, 22); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if ip, port, err := validateNodeAddr(" 203.0.113.7 ", 0); err != nil || ip != "203.0.113.7" || port != 22 {
+		t.Errorf("public v4: %q %d %v", ip, port, err)
+	}
+	if ip, _, err := validateNodeAddr("::ffff:203.0.113.7", 2222); err != nil || ip != "203.0.113.7" {
+		t.Errorf("v4-mapped: %q %v", ip, err)
+	}
+	if _, _, err := validateNodeAddr("2001:db8:5::7", 22); err != nil {
+		t.Errorf("public v6: %v", err)
+	}
+	for _, port := range []int{-1, 65536} {
+		if _, _, err := validateNodeAddr("203.0.113.7", port); err == nil {
+			t.Errorf("port %d accepted", port)
+		}
+	}
+	// Probe and create refuse such an address before any network.
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
+	NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) {
+		t.Fatal("probe of a refused address")
+		return provision.ProbeResult{}, nil
+	}
+	testEncryptionKey(t)
+	for _, body := range []string{`{"ip_address":"10.0.0.5"}`, `{"ip_address":"198.51.100.1"}`, `{"ip_address":"203.0.113.7","ssh_port":70000}`} {
+		if rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", body); rec.Code != 400 {
+			t.Errorf("probe %s: %d", body, rec.Code)
+		}
+	}
+	if rec := call(CreateNodeHandler, "POST", "/api/admin/servers", `{"ip_address":"100.64.1.1","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`); rec.Code != 400 {
+		t.Errorf("create CGNAT: %d", rec.Code)
 	}
 }
 
@@ -341,6 +417,32 @@ func TestCreateNodeStoresChosenProbeKey(t *testing.T) {
 	}
 }
 
+// Two «Добавить ноду» for one IP: the unique index (uq_servers_ip_address) decides, 409.
+func TestCreateNodeDuplicateIP(t *testing.T) {
+	testEncryptionKey(t)
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
+	NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) { return twoKeys(), nil }
+	withProvDB(t, &provDB{
+		query: func(q string, _ []driver.Value) *provRows {
+			if strings.Contains(q, "SELECT EXISTS") {
+				return one([]string{"exists"}, false) // the other request has not inserted yet
+			}
+			return nil
+		},
+		queryErr: func(q string) error {
+			if strings.Contains(q, "INSERT INTO servers") {
+				return &pq.Error{Code: "23505", Constraint: "uq_servers_ip_address"}
+			}
+			return nil
+		},
+	})
+	rec := call(CreateNodeHandler, "POST", "/api/admin/servers",
+		`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "Нода с этим IP уже есть") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
 // A fingerprint the server does not present (now) is never stored.
 func TestCreateNodeRefusesKeyNotPresented(t *testing.T) {
 	testEncryptionKey(t)
@@ -437,6 +539,64 @@ func TestProvisionNodeKindsAndErrors(t *testing.T) {
 	}
 }
 
+// A job running on the node: 409 before the wizard's options are written or a sync requested.
+func TestProvisionRefusedWhileJobRuns(t *testing.T) {
+	p := &fakeProvisioner{}
+	saved := withProvisioning(t, p, provision.Node{})
+	NodeJobs = fakeJobs{node: provision.Node{ID: 7, Lifecycle: "online", HostKeyConfirmed: true},
+		list: []provision.JobView{{ID: 41, Kind: provision.KindVerify, Status: provision.JobRunning}}}
+	rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/7/provision", `{"mtproxy":false,"plan_ids":[1],"load_weight":3}`)
+	if rec.Code != 409 || len(*saved) != 0 || len(p.kinds) != 0 {
+		t.Fatalf("%d %s saved=%+v kinds=%v", rec.Code, rec.Body, *saved, p.kinds)
+	}
+}
+
+// Metadata-only paths never load credentials (fakeJobs.LoadNode fails): a missing node is a 404,
+// any other store error a 500 whose text stays in the log.
+func TestNodePathsUseMetadataOnly(t *testing.T) {
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
+	NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) { return twoKeys(), nil }
+	paths := []struct {
+		h          http.HandlerFunc
+		method     string
+		path, body string
+	}{
+		{ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"server_id":7}`},
+		{ConfirmHostKeyHandler, "POST", "/api/admin/servers/7/host-key", `{"fingerprint":"` + ecKey.Fingerprint + `"}`},
+		{ProvisionNodeHandler, "POST", "/api/admin/servers/7/provision", ``},
+		{VerifyNodeHandler, "POST", "/api/admin/servers/7/verify", ``},
+		{DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт"}`},
+		{DeleteServerHandler, "DELETE", "/api/admin/servers/7", `{"confirm_name":"Франкфурт"}`},
+	}
+	for _, c := range paths {
+		NodeJobs = fakeJobs{metaErr: provision.ErrNodeNotFound}
+		if rec := call(c.h, c.method, c.path, c.body); rec.Code != 404 {
+			t.Errorf("%s not found: %d %s", c.path, rec.Code, rec.Body)
+		}
+		NodeJobs = fakeJobs{metaErr: errors.New("pq: connection refused SECRET-DSN")}
+		if rec := call(c.h, c.method, c.path, c.body); rec.Code != 500 || strings.Contains(rec.Body.String(), "SECRET-DSN") {
+			t.Errorf("%s store error: %d %s", c.path, rec.Code, rec.Body)
+		}
+	}
+	// With the metadata only, the paths work (no LoadNode): deprovision of a node whose password
+	// does not decrypt still starts — its Hub-side steps need no credentials.
+	p := &fakeProvisioner{}
+	NodeProvisioner = p
+	NodeJobs = fakeJobs{node: provision.Node{ID: 7, Name: "Франкфурт", Lifecycle: "online", HostKeyConfirmed: true}}
+	for _, c := range paths[2:5] {
+		if rec := call(c.h, c.method, c.path, c.body); rec.Code != 202 {
+			t.Errorf("%s: %d %s", c.path, rec.Code, rec.Body)
+		}
+	}
+	if !slices.Equal(p.kinds, []string{provision.KindReprovision, provision.KindVerify, provision.KindDeprovision}) {
+		t.Fatalf("kinds %v", p.kinds)
+	}
+	NodeJobs = fakeJobs{job: provision.JobView{ID: 42, ServerID: 7, Kind: provision.KindProvision, Status: "failed"}, metaErr: provision.ErrNodeNotFound}
+	if rec := call(ResumeJobHandler, "POST", "/api/admin/provision-jobs/42/resume", ""); rec.Code != 404 {
+		t.Errorf("resume of a vanished node: %d", rec.Code)
+	}
+}
+
 // The wizard's options are stored before the job starts (the run reads mtproto_status when the
 // runner loads the node: a 'disabled' left in place would skip the MTProxy step).
 func TestProvisionSavesOptionsBeforeStart(t *testing.T) {
@@ -485,19 +645,39 @@ func TestDeprovisionNeedsTypedName(t *testing.T) {
 }
 
 func TestDeleteServerOnlyRetiredNodes(t *testing.T) {
-	withProvisioning(t, &fakeProvisioner{}, provision.Node{ID: 7, Name: "Франкфурт", Lifecycle: "online"})
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
 	d := withProvDB(t, &provDB{affected: func(q string) int64 {
 		if strings.Contains(q, "DELETE FROM servers") {
 			return 0
 		}
 		return 1
 	}})
+	node := func(state string) {
+		NodeJobs = fakeJobs{node: provision.Node{ID: 7, Name: "Франкфурт", Lifecycle: state}}
+	}
+	// A failed setup may have left the Hub's tunnel client: «Отключить» first, nothing deleted.
+	node("failed")
+	if rec := call(DeleteServerHandler, "DELETE", "/api/admin/servers/7", `{"confirm_name":"Франкфурт"}`); rec.Code != 409 ||
+		!strings.Contains(rec.Body.String(), "Сначала отключите ноду") {
+		t.Fatalf("failed node: %d %s", rec.Code, rec.Body)
+	}
+	for _, state := range []string{"online", "provisioning", "deprovisioning"} {
+		node(state)
+		if rec := call(DeleteServerHandler, "DELETE", "/api/admin/servers/7", `{"confirm_name":"Франкфурт"}`); rec.Code != 409 {
+			t.Fatalf("%s node deleted: %d %s", state, rec.Code, rec.Body)
+		}
+	}
+	if del := d.matching("DELETE FROM servers"); len(del) != 0 {
+		t.Fatalf("a DELETE ran for a node in service: %+v", del)
+	}
+	// offline: the guarded DELETE runs; changed meanwhile (0 rows) → 409.
+	node("offline")
 	if rec := call(DeleteServerHandler, "DELETE", "/api/admin/servers/7", `{"confirm_name":"Франкфурт"}`); rec.Code != 409 {
-		t.Fatalf("live node deleted: %d %s", rec.Code, rec.Body)
+		t.Fatalf("raced delete: %d %s", rec.Code, rec.Body)
 	}
 	del := d.matching("DELETE FROM servers")
-	if len(del) != 1 || !strings.Contains(del[0].q, "lifecycle_state IN ('pending', 'offline', 'failed')") ||
-		!strings.Contains(del[0].q, "status IN ('queued', 'running')") {
+	if len(del) != 1 || !strings.Contains(del[0].q, "lifecycle_state IN ('pending', 'offline')") ||
+		!strings.Contains(del[0].q, "status IN ('queued', 'running')") || strings.Contains(del[0].q, "'failed'") {
 		t.Fatalf("delete guard: %+v", del)
 	}
 	if rec := call(DeleteServerHandler, "DELETE", "/api/admin/servers/7", `{"confirm_name":"Frankfurt"}`); rec.Code != 400 {
@@ -680,32 +860,36 @@ func TestHubKeyHandlerPublicOnly(t *testing.T) {
 // ── node actions that remain ──
 
 func TestServerActionsAfterJobs(t *testing.T) {
-	withProvisioning(t, &fakeProvisioner{}, provision.Node{})
-	old := StartMTProxyReinstall
-	t.Cleanup(func() { StartMTProxyReinstall = old })
-	post := func(action string) *httptest.ResponseRecorder {
-		return call(ServerActionHandler, "POST", "/api/admin/servers/2/actions", `{"action":"`+action+`"}`)
+	p := &fakeProvisioner{}
+	withProvisioning(t, p, provision.Node{ID: 2})
+	post := func(action string, perms ...string) *httptest.ResponseRecorder {
+		return callAs(ServerActionHandler, "POST", "/api/admin/servers/2/actions", `{"action":"`+action+`"}`, perms...)
 	}
 	// The old in-memory flows answer 410 before touching anything (db.DB is nil here).
 	for _, a := range []string{"hub_provision", "deprovision_soft", "deprovision_hard", "anything"} {
-		if rec := post(a); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "задачи ноды") {
+		if rec := post(a, "server_ops.execute"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "задачи ноды") {
 			t.Errorf("%s: %d %s", a, rec.Code, rec.Body)
 		}
 	}
-	StartMTProxyReinstall = nil
-	if rec := post("reinstall_mtproxy"); rec.Code != 503 {
-		t.Errorf("unwired reinstall: %d", rec.Code)
+	// MTProxy installs software: nodes.provision, not only server_ops.execute.
+	if rec := post("reinstall_mtproxy", "server_ops.execute"); rec.Code != 403 || len(p.kinds) != 0 {
+		t.Errorf("reinstall without nodes.provision: %d %v", rec.Code, p.kinds)
 	}
-	var got []int
-	StartMTProxyReinstall = func(_ context.Context, id int) error { got = append(got, id); return nil }
-	if rec := post("reinstall_mtproxy"); rec.Code != 202 || !slices.Equal(got, []int{2}) {
-		t.Errorf("reinstall: %d %s %v", rec.Code, rec.Body, got)
+	// A job of its own: the node's one-job lock (Runner.Start) keeps it apart from other jobs.
+	if rec := post("reinstall_mtproxy", "server_ops.execute", "nodes.provision"); rec.Code != 202 ||
+		!slices.Equal(p.kinds, []string{provision.KindMTProxy}) || !strings.Contains(rec.Body.String(), `"kind":"mtproxy"`) {
+		t.Errorf("reinstall: %d %s %v", rec.Code, rec.Body, p.kinds)
 	}
-	for _, err := range []error{provision.ErrMTProxyDisabled, provision.ErrJobActive, ErrMTProxyInstalling, provision.ErrHostKeyNotConfirmed} {
-		StartMTProxyReinstall = func(context.Context, int) error { return err }
-		if rec := post("reinstall_mtproxy"); rec.Code != 409 {
+	for _, err := range []error{provision.ErrJobActive, provision.ErrMTProxyDisabled, provision.ErrHostKeyNotConfirmed} {
+		p.err = err
+		if rec := post("reinstall_mtproxy", "*"); rec.Code != 409 {
 			t.Errorf("%v: %d", err, rec.Code)
 		}
+	}
+	// node-agent is not restarted while a job works on the node (refused before any SSH).
+	NodeJobs = fakeJobs{node: provision.Node{ID: 2}, list: []provision.JobView{{ID: 9, Status: provision.JobRunning}}}
+	if rec := post("restart_agent", "server_ops.execute"); rec.Code != 409 || !strings.Contains(rec.Body.String(), "задача") {
+		t.Errorf("restart during a job: %d %s", rec.Code, rec.Body)
 	}
 }
 

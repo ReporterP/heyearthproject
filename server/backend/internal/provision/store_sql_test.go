@@ -180,17 +180,23 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	if err := os.WriteFile(hubPath, hubPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	meta := []driver.Value{int64(7), "nl-1", "exit", "NL", "203.0.113.7", int64(2222), "root", fp, blob, true, "pending", int64(3), "unknown", false}
 	row := func(enc any) []driver.Value {
-		return []driver.Value{int64(7), "nl-1", "exit", "NL", "203.0.113.7", int64(2222), "root", enc, string(legacyKey),
-			fp, blob, true, "pending", int64(3), "unknown", false}
+		return append(append([]driver.Value{}, meta...), enc, string(legacyKey))
 	}
 	d := &recDB{}
 	var enc any = []byte("ciphertext")
 	d.query = func(q string, args []driver.Value) (driver.Rows, error) {
-		if norm(q) != norm(loadNodeQuery) || len(args) != 1 || args[0] != int64(7) {
+		if len(args) != 1 || args[0] != int64(7) {
 			return &recRows{}, nil
 		}
-		return rows(16, row(enc)), nil
+		switch norm(q) {
+		case norm(loadNodeQuery):
+			return rows(16, row(enc)), nil
+		case norm(nodeMetaQuery):
+			return rows(14, meta), nil
+		}
+		return &recRows{}, nil
 	}
 	s := &SQLStore{DB: openRec(d), HubKeyPath: hubPath, Decrypt: func(b []byte) (string, error) {
 		if string(b) != "ciphertext" {
@@ -211,22 +217,62 @@ func TestSQLStoreLoadNode(t *testing.T) {
 		t.Fatalf("hub key %q, want %q", got, hubPub)
 	}
 
+	if n.CredentialsError() != nil {
+		t.Fatalf("credentials: %v", n.CredentialsError())
+	}
+
 	enc = nil // no stored password: no decryption needed
-	if n, err := (&SQLStore{DB: openRec(d)}).LoadNode(context.Background(), 7); err != nil || n.Password != "" || n.HubSigner != nil {
+	if n, err := (&SQLStore{DB: openRec(d)}).LoadNode(context.Background(), 7); err != nil || n.Password != "" || n.HubSigner != nil || n.CredentialsError() != nil {
 		t.Fatalf("no password: %v %q", err, n.Password)
 	}
+	// An unusable credential does not fail the load (deprovision's Hub-side steps need none): it
+	// is kept and reported by DialNode.
 	enc = []byte("ciphertext")
-	if _, err := (&SQLStore{DB: openRec(d)}).LoadNode(context.Background(), 7); err == nil {
-		t.Fatal("an encrypted password without Decrypt must be an error")
+	if n, err := (&SQLStore{DB: openRec(d)}).LoadNode(context.Background(), 7); err != nil || n.Password != "" || n.CredentialsError() == nil {
+		t.Fatalf("an encrypted password without Decrypt: %v %q %v", err, n.Password, n.CredentialsError())
 	}
-	if _, err := s.LoadNode(context.Background(), 8); err == nil || !strings.Contains(err.Error(), "не найдена") {
+	wrongKey := &SQLStore{DB: openRec(d), Decrypt: func([]byte) (string, error) { return "", errors.New("cipher: message authentication failed") }}
+	if n, err := wrongKey.LoadNode(context.Background(), 7); err != nil || n.Password != "" ||
+		n.CredentialsError() == nil || !strings.Contains(n.CredentialsError().Error(), "SSH_ENCRYPTION_KEY") {
+		t.Fatalf("undecryptable password: %v %v", err, n.CredentialsError())
+	}
+	if _, err := s.LoadNode(context.Background(), 8); !errors.Is(err, ErrNodeNotFound) || !strings.Contains(err.Error(), "нода 8 не найдена") {
 		t.Fatalf("missing node: %v", err)
 	}
 	if err := os.WriteFile(hubPath, []byte("garbage"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.LoadNode(context.Background(), 7); err == nil || !strings.Contains(err.Error(), "повреждён") {
-		t.Fatalf("corrupt hub key: %v", err)
+	if n, err := s.LoadNode(context.Background(), 7); err != nil || n.HubSigner != nil || n.Password != "root-Pa55word" ||
+		n.CredentialsError() == nil || !strings.Contains(n.CredentialsError().Error(), "повреждён") {
+		t.Fatalf("corrupt hub key: %v %v", err, n.CredentialsError())
+	}
+
+	// NodeMeta: the same public fields, never a credential (no decryption, no Hub key read).
+	noDecrypt := &SQLStore{DB: openRec(d), HubKeyPath: hubPath, Decrypt: func([]byte) (string, error) {
+		t.Fatal("NodeMeta decrypted the password")
+		return "", nil
+	}}
+	m, err := noDecrypt.NodeMeta(context.Background(), 7)
+	if err != nil || m.ID != 7 || m.IP != "203.0.113.7" || m.SSHPort != 2222 || m.HostKeyFP != fp || m.HostKeyType != host.PublicKey().Type() ||
+		!m.HostKeyConfirmed || m.Lifecycle != "pending" || m.Password != "" || m.KeySigner != nil || m.HubSigner != nil {
+		t.Fatalf("meta %#v %v", m, err)
+	}
+	if regexp.MustCompile(`ssh_password|private_key`).MatchString(nodeMetaQuery) {
+		t.Errorf("nodeMetaQuery reads a credential: %s", nodeMetaQuery)
+	}
+	if _, err := noDecrypt.NodeMeta(context.Background(), 8); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("missing node meta: %v", err)
+	}
+}
+
+// A credential that could not be loaded is named when the login depends on it, as
+// ErrNoCredentials — the owner has to fix the access (deprovision's needsOwner), not a dead node.
+func TestDialNodeReportsCredentialProblem(t *testing.T) {
+	n := Node{ID: 7, IP: "203.0.113.7", SSHPort: 22, HostKeyFP: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", HostKeyConfirmed: true,
+		credErr: errors.New("пароль SSH ноды 7 не расшифровывается (SSH_ENCRYPTION_KEY на Hub)")}
+	_, err := DialNode(n)
+	if !errors.Is(err, ErrNoCredentials) || !needsOwner(err) || !strings.Contains(err.Error(), "SSH_ENCRYPTION_KEY") {
+		t.Fatalf("dial: %v", err)
 	}
 }
 

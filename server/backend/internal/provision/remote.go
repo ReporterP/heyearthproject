@@ -72,7 +72,14 @@ type Node struct {
 	KeySigner                         ssh.Signer // legacy ssh_keys row
 	HubSigner                         ssh.Signer // the Hub's own key, nil until created
 	HostKeyConfirmed, FallbackEnabled bool
+	// credErr: why a stored credential is unusable (a password that does not decrypt, a corrupt
+	// Hub key). LoadNode does not fail on it — Hub-side steps (deprovision) need no credentials —
+	// and DialNode reports it when the login cannot succeed without that credential.
+	credErr error
 }
+
+// CredentialsError is why a stored credential of the node could not be loaded (nil: none).
+func (n Node) CredentialsError() error { return n.credErr }
 
 func (n Node) addr() string { return net.JoinHostPort(n.IP, strconv.Itoa(n.SSHPort)) }
 
@@ -118,6 +125,9 @@ func DialNode(n Node) (Remote, error) {
 		auth = append(auth, ssh.Password(n.Password))
 	}
 	if len(auth) == 0 {
+		if n.credErr != nil {
+			return nil, fmt.Errorf("%w: %w", ErrNoCredentials, n.credErr)
+		}
 		return nil, ErrNoCredentials
 	}
 	keyType := n.HostKeyType
@@ -137,6 +147,11 @@ func DialNode(n Node) (Remote, error) {
 	}
 	c, err := dialSSH(n.addr(), &ssh.ClientConfig{User: user, Auth: auth, HostKeyCallback: pinned(fp), HostKeyAlgorithms: algos})
 	if err != nil {
+		// The node is up and its key matched, but it refused what we could offer while a stored
+		// credential was unusable: the owner has to fix the access (needsOwner), not a dead VPS.
+		if n.credErr != nil && strings.Contains(err.Error(), "unable to authenticate") {
+			return nil, fmt.Errorf("ssh %s: %w: %w (%v)", n.addr(), ErrNoCredentials, n.credErr, err)
+		}
 		return nil, fmt.Errorf("ssh %s: %w", n.addr(), err)
 	}
 	keepAlive(c, keepAliveEvery, keepAliveTimeout)

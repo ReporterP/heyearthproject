@@ -17,6 +17,10 @@ const (
 	KindReprovision = "reprovision"
 	KindDeprovision = "deprovision"
 	KindVerify      = "verify"
+	// KindMTProxy (re)installs an online exit's MTProxy as a job of its own: «Переустановить
+	// Telegram-прокси» and the reconciler's backfill share the node's job lock (one active job per
+	// node) with every other job instead of running beside them.
+	KindMTProxy = "mtproxy"
 
 	JobRunning     = "running"
 	JobSucceeded   = "succeeded"
@@ -96,7 +100,7 @@ type Runner struct {
 // ValidKind reports whether k is a job kind.
 func ValidKind(k string) bool {
 	switch k {
-	case KindProvision, KindReprovision, KindDeprovision, KindVerify:
+	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy:
 		return true
 	}
 	return false

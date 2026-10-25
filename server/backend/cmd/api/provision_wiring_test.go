@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/provision"
 )
 
@@ -120,83 +120,54 @@ func TestApiRecipe(t *testing.T) {
 	}
 }
 
-type mtRun struct {
-	marks    []string
-	installs []provision.MTProtoOptions
-	bumps    int
-}
-
-func testInstaller(n provision.Node, jobs []provision.JobView, installErr error, r *mtRun) *mtproxyInstaller {
-	return &mtproxyInstaller{
-		load: func(context.Context, int) (provision.Node, error) { return n, nil },
-		jobs: func(context.Context, int, int) ([]provision.JobView, error) { return jobs, nil },
-		options: func(provision.Node) (*provision.MTProtoOptions, error) {
-			return &provision.MTProtoOptions{Port: 9443, Secret: testMTSecret, Domain: "example.com"}, nil
-		},
-		mark: func(_ context.Context, _ int, s string) error { r.marks = append(r.marks, s); return nil },
-		install: func(_ context.Context, _ provision.Node, dial func(provision.Node) (provision.Remote, error), o provision.MTProtoOptions) (string, error) {
-			if dial != nil {
-				return "", errors.New("only DialNode (the confirmed key) may connect")
-			}
-			r.installs = append(r.installs, o)
-			return "", installErr
-		},
-		bump:  func(context.Context) error { r.bumps++; return nil },
-		spawn: func(f func()) { f() },
+// «Переустановить Telegram-прокси» / the backfill: a one-step MTProxy job, no Hub address list
+// needed; refused (no job) for a node with an unconfirmed key or MTProxy switched off.
+func TestApiRecipeMTProxyJob(t *testing.T) {
+	withExitWiring(t, nil, mtSettings, "x")
+	n := provision.Node{ID: 3, Role: "exit", IP: "203.0.113.9", SSHPort: 22, Lifecycle: "online", MTProtoStatus: "unhealthy", HostKeyConfirmed: true}
+	rc, st, err := apiRecipe(context.Background(), n, provision.KindMTProxy)
+	if err != nil || !slices.Equal(stepNames(rc), []string{"mtproxy"}) || st.Exit.MTProto == nil || st.Exit.MTProto.Port != 9443 {
+		t.Fatalf("mtproxy job: %v %v", stepNames(rc), err)
+	}
+	n.HostKeyConfirmed = false
+	if _, _, err := apiRecipe(context.Background(), n, provision.KindMTProxy); !errors.Is(err, provision.ErrHostKeyNotConfirmed) {
+		t.Fatalf("unconfirmed key: %v", err)
+	}
+	n.HostKeyConfirmed, n.MTProtoStatus = true, "disabled"
+	if _, _, err := apiRecipe(context.Background(), n, provision.KindMTProxy); !errors.Is(err, provision.ErrMTProxyDisabled) {
+		t.Fatalf("disabled: %v", err)
 	}
 }
 
-func TestMTProxyInstallerOutsideJobs(t *testing.T) {
-	online := provision.Node{ID: 3, Role: "exit", Lifecycle: "online", MTProtoStatus: "unhealthy", HostKeyConfirmed: true}
-	var r mtRun
-	if err := testInstaller(online, nil, nil, &r).start(context.Background(), 3); err != nil {
-		t.Fatal(err)
+func TestMTProxyBackfill(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	var started []int
+	last := map[int][]provision.JobView{
+		2: {{ID: 1, Kind: provision.KindMTProxy, Status: provision.JobFailed, CreatedAt: now.Add(-time.Hour)}},      // retried too soon
+		3: {{ID: 2, Kind: provision.KindProvision, Status: provision.JobSucceeded, CreatedAt: now.Add(-time.Hour)}}, // refused by the recipe
+		4: {{ID: 3, Kind: provision.KindMTProxy, Status: provision.JobFailed, CreatedAt: now.Add(-7 * time.Hour)}},
 	}
-	if !slices.Equal(r.marks, []string{"installing", "healthy"}) || len(r.installs) != 1 || r.installs[0].Port != 9443 || r.bumps != 1 {
-		t.Fatalf("install: %+v", r)
-	}
-	r = mtRun{}
-	if err := testInstaller(online, nil, errors.New("mtg: build failed"), &r).start(context.Background(), 3); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(r.marks, []string{"installing", "unhealthy"}) || r.bumps != 0 {
-		t.Fatalf("failed install: %+v", r)
-	}
-	// Refusals happen before any mark or connection.
-	for name, tc := range map[string]struct {
-		mut  func(*provision.Node)
-		jobs []provision.JobView
-		want error
-	}{
-		"switched off":   {func(n *provision.Node) { n.MTProtoStatus = "disabled" }, nil, provision.ErrMTProxyDisabled},
-		"not confirmed":  {func(n *provision.Node) { n.HostKeyConfirmed = false }, nil, provision.ErrHostKeyNotConfirmed},
-		"job running":    {func(*provision.Node) {}, []provision.JobView{{ID: 5, Status: provision.JobRunning}}, provision.ErrJobActive},
-		"not online":     {func(n *provision.Node) { n.Lifecycle = "failed" }, nil, nil},
-		"not an exit":    {func(n *provision.Node) { n.Role = "relay" }, nil, nil},
-		"old job is ok?": {func(*provision.Node) {}, []provision.JobView{{ID: 5, Status: provision.JobFailed}}, nil},
-	} {
-		n := online
-		tc.mut(&n)
-		r := mtRun{}
-		err := testInstaller(n, tc.jobs, nil, &r).start(context.Background(), 3)
-		if name == "old job is ok?" {
-			if err != nil || len(r.installs) != 1 {
-				t.Errorf("%s: a finished job does not block: %v %+v", name, err, r)
+	b := mtproxyBackfill{
+		start: func(_ context.Context, id int, kind string) (int64, error) {
+			if kind != provision.KindMTProxy {
+				t.Fatalf("kind %s", kind)
 			}
-			continue
-		}
-		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || len(r.marks) != 0 || len(r.installs) != 0 {
-			t.Errorf("%s: %v %+v", name, err, r)
-		}
+			if id == 3 {
+				return 0, provision.ErrHostKeyNotConfirmed
+			}
+			started = append(started, id)
+			return 10, nil
+		},
+		jobs: func(_ context.Context, id, _ int) ([]provision.JobView, error) { return last[id], nil },
+		now:  func() time.Time { return now },
+		logf: t.Logf,
 	}
-	// One install per node at a time.
-	m := testInstaller(online, nil, nil, &mtRun{})
-	m.spawn = func(func()) {} // the first install stays "running"
-	if err := m.start(context.Background(), 3); err != nil {
-		t.Fatal(err)
+	if got := b.run(context.Background(), []int{2, 3, 4, 5}); got != 4 || !slices.Equal(started, []int{4}) {
+		t.Fatalf("started %v (returned %d), want only node 4 — one job per tick", started, got)
 	}
-	if err := m.start(context.Background(), 3); !errors.Is(err, admin.ErrMTProxyInstalling) {
-		t.Fatalf("second install: %v", err)
+	started = nil
+	if got := b.run(context.Background(), []int{2, 3}); got != 0 || len(started) != 0 {
+		t.Fatalf("nothing to start: %v", started)
 	}
 }
 

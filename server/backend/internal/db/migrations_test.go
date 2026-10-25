@@ -53,6 +53,9 @@ func TestMigration000061Shape(t *testing.T) {
 		`runner TEXT NOT NULL DEFAULT 'api' CHECK \(runner IN \('api', 'cli'\)\)`,
 		`'unhealthy', 'disabled'`,
 		`\('nodes\.provision',`,
+		// One row per host (no two provisioning jobs on one machine); the MTProxy job kind.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_servers_ip_address ON servers \(ip_address\);`,
+		`CHECK \(kind IN \('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy'\)\)`,
 	} {
 		if !regexp.MustCompile(re).MatchString(up) {
 			t.Errorf("000061 up lacks /%s/", re)
@@ -64,7 +67,8 @@ func TestMigration000061Shape(t *testing.T) {
 	}
 	down := readMigration(t, "000061_node_roles_and_jobs.down.sql")
 	for _, want := range []string{"DROP TABLE IF EXISTS provision_steps", "DROP TABLE IF EXISTS provision_jobs",
-		"SET DEFAULT 'online'", "DROP COLUMN IF EXISTS role", "permission_key = 'nodes.provision'"} {
+		"SET DEFAULT 'online'", "DROP COLUMN IF EXISTS role", "permission_key = 'nodes.provision'",
+		"DROP INDEX IF EXISTS uq_servers_ip_address"} {
 		if !strings.Contains(down, want) {
 			t.Errorf("000061 down lacks %q", want)
 		}

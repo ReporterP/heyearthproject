@@ -186,3 +186,67 @@ func TestMTProxyStep(t *testing.T) {
 		t.Fatalf("Apply on a disabled node: %v %v", err, off.ops)
 	}
 }
+
+// A KindMTProxy job (node card «Переустановить Telegram-прокси», the reconciler's backfill):
+// refused before any job unless the node is an online exit with MTProxy on, a confirmed host key
+// and valid settings; the install is the whole job, so a failed install fails it.
+func TestMTProxyJob(t *testing.T) {
+	ctx := context.Background()
+	online := Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "unhealthy", HostKeyConfirmed: true}
+	recipe := func(n Node, o *MTProtoOptions) (Recipe, error) {
+		st := NewState(KindMTProxy, n, newFakeHost(), (&fakeHooks{}).Hooks())
+		st.Exit.MTProto = o
+		return RecipeFor(KindMTProxy, n, st)
+	}
+	o := testMTOptions()
+	if rc, err := recipe(online, &o); err != nil || len(rc) != 1 || rc[0].Name != "mtproxy" {
+		t.Fatalf("recipe: %v %v", rc, err)
+	}
+	bad := o
+	bad.Secret = ""
+	for name, c := range map[string]struct {
+		n      Node
+		o      *MTProtoOptions
+		target error
+	}{
+		"disabled":      {n: Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "disabled", HostKeyConfirmed: true}, o: &o, target: ErrMTProxyDisabled},
+		"no options":    {n: online, o: nil, target: ErrMTProxyDisabled},
+		"not confirmed": {n: Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "unknown"}, o: &o, target: ErrHostKeyNotConfirmed},
+		"not online":    {n: Node{ID: 7, Role: "exit", Lifecycle: "failed", MTProtoStatus: "unknown", HostKeyConfirmed: true}, o: &o},
+		"relay":         {n: Node{ID: 7, Role: "relay", Lifecycle: "online", HostKeyConfirmed: true}, o: &o},
+		"bad settings":  {n: online, o: &bad},
+	} {
+		if _, err := recipe(c.n, c.o); err == nil || (c.target != nil && !errors.Is(err, c.target)) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	run := func(host *fakeHost) (*memStore, *fakeHooks, int64) {
+		h := &fakeHooks{lifecycle: "online"}
+		store := newMemStore(online, h)
+		r := &Runner{Store: store, Go: func(f func()) { f() }, Dial: func(Node) (Remote, error) { return host, nil },
+			Recipe: func(_ context.Context, n Node, kind string) (Recipe, *State, error) {
+				st := NewState(kind, n, newFakeHost(), h.Hooks())
+				st.Exit.MTProto = &o
+				rc, err := RecipeFor(kind, n, st)
+				return rc, st, err
+			}}
+		id, err := r.Start(ctx, 7, KindMTProxy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store, h, id
+	}
+	store, h, id := run(newFakeHost())
+	if got := store.statuses(id); !slices.Equal(got, []string{"mtproxy=done"}) || store.jobs[id].Status != JobSucceeded ||
+		!slices.Equal(h.mtproto, []string{"installing", "healthy"}) || h.bumps != 1 {
+		t.Fatalf("install job: %v %s %v", got, store.jobs[id].Status, h.mtproto)
+	}
+	failing := newFakeHost()
+	failing.mtproxyFail = true
+	store, h, id = run(failing)
+	if got := store.statuses(id); !slices.Equal(got, []string{"mtproxy=failed"}) || store.jobs[id].Status != JobFailed ||
+		!slices.Equal(h.mtproto, []string{"installing", "unhealthy"}) || strings.Contains(store.jobs[id].Error, testMTSecret) {
+		t.Fatalf("failed install job: %v %s %v %q", got, store.jobs[id].Status, h.mtproto, store.jobs[id].Error)
+	}
+}

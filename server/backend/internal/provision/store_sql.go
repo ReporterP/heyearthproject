@@ -64,38 +64,70 @@ type JobView struct {
 	Steps      []StepView `json:"steps,omitempty"`
 }
 
-// loadNodeQuery reads only the encrypted password (the plaintext column is migrated away at API
-// start) and the stored host key blob, whose type DialNode negotiates when it has the fingerprint.
-const loadNodeQuery = `
-SELECT s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_address,
-       COALESCE(s.ssh_port, 22), COALESCE(s.ssh_user, 'root'), s.ssh_password_enc,
-       COALESCE(sk.private_key, ''), COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''),
+// ErrNodeNotFound: no servers row with that id.
+var ErrNodeNotFound = errors.New("не найдена")
+
+// nodeMetaColumns are the public columns of a node (no credentials), shared by NodeMeta and LoadNode.
+const nodeMetaColumns = `s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_address,
+       COALESCE(s.ssh_port, 22), COALESCE(s.ssh_user, 'root'), COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''),
        s.ssh_host_key_confirmed_at IS NOT NULL,
-       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled
+       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled`
+
+// nodeMetaQuery: what the admin panel needs to decide about a node — no password, no key.
+const nodeMetaQuery = `SELECT ` + nodeMetaColumns + `
+  FROM servers s
+ WHERE s.id = $1`
+
+// loadNodeQuery adds the credentials: only the encrypted password (the plaintext column is
+// migrated away at API start) and a legacy ssh_keys key.
+const loadNodeQuery = `SELECT ` + nodeMetaColumns + `,
+       s.ssh_password_enc, COALESCE(sk.private_key, '')
   FROM servers s LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
  WHERE s.id = $1`
 
-// LoadNode reads a node with its credentials decrypted (and the Hub's key when HubKeyPath is set).
-func (s *SQLStore) LoadNode(ctx context.Context, id int) (Node, error) {
+// scanNodeMeta scans nodeMetaColumns (then extra) and fills HostKeyType from the stored blob.
+func scanNodeMeta(row *sql.Row, id int, extra ...any) (Node, error) {
 	var n Node
-	var enc []byte
-	var keyPEM, hostKeyBlob string
-	err := s.DB.QueryRowContext(ctx, loadNodeQuery, id).Scan(&n.ID, &n.Name, &n.Role, &n.CountryCode, &n.IP,
-		&n.SSHPort, &n.SSHUser, &enc, &keyPEM, &n.HostKeyFP, &hostKeyBlob, &n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight,
-		&n.MTProtoStatus, &n.FallbackEnabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Node{}, fmt.Errorf("нода %d не найдена", id)
-	}
-	if err != nil {
+	var hostKeyBlob string
+	dest := append([]any{&n.ID, &n.Name, &n.Role, &n.CountryCode, &n.IP, &n.SSHPort, &n.SSHUser, &n.HostKeyFP, &hostKeyBlob,
+		&n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight, &n.MTProtoStatus, &n.FallbackEnabled}, extra...)
+	if err := row.Scan(dest...); errors.Is(err, sql.ErrNoRows) {
+		return Node{}, fmt.Errorf("нода %d %w", id, ErrNodeNotFound)
+	} else if err != nil {
 		return Node{}, err
 	}
 	n.HostKeyType = StoredHostKeyType(hostKeyBlob, n.HostKeyFP)
+	return n, nil
+}
+
+// NodeMeta reads a node without its credentials (no decryption, no Hub key): for decisions that
+// do not connect (the admin panel's checks, host key confirmation, deletion).
+func (s *SQLStore) NodeMeta(ctx context.Context, id int) (Node, error) {
+	return scanNodeMeta(s.DB.QueryRowContext(ctx, nodeMetaQuery, id), id)
+}
+
+// LoadNode reads a node with its credentials (and the Hub's key when HubKeyPath is set). A
+// credential that cannot be used — a password that does not decrypt (no or another
+// SSH_ENCRYPTION_KEY), a corrupt Hub key — does not fail the load: the Hub-side steps of a job
+// need none (taking a node out of service must work without them); it is kept in the node and
+// DialNode reports it as ErrNoCredentials (needsOwner) when the login depends on it.
+func (s *SQLStore) LoadNode(ctx context.Context, id int) (Node, error) {
+	var enc []byte
+	var keyPEM string
+	n, err := scanNodeMeta(s.DB.QueryRowContext(ctx, loadNodeQuery, id), id, &enc, &keyPEM)
+	if err != nil {
+		return Node{}, err
+	}
+	var problems []error
 	if len(enc) > 0 {
-		if s.Decrypt == nil {
-			return Node{}, errors.New("нет функции расшифровки пароля SSH")
-		}
-		if n.Password, err = s.Decrypt(enc); err != nil {
-			return Node{}, fmt.Errorf("пароль SSH ноды %d не расшифровывается (SSH_ENCRYPTION_KEY на Hub): %w", id, err)
+		switch {
+		case s.Decrypt == nil:
+			problems = append(problems, errors.New("нет функции расшифровки пароля SSH"))
+		default:
+			if n.Password, err = s.Decrypt(enc); err != nil {
+				n.Password = ""
+				problems = append(problems, fmt.Errorf("пароль SSH ноды %d не расшифровывается (SSH_ENCRYPTION_KEY на Hub): %w", id, err))
+			}
 		}
 	}
 	if keyPEM != "" {
@@ -105,9 +137,11 @@ func (s *SQLStore) LoadNode(ctx context.Context, id int) (Node, error) {
 	}
 	if s.HubKeyPath != "" {
 		if n.HubSigner, err = LoadHubSigner(s.HubKeyPath); err != nil {
-			return Node{}, err
+			n.HubSigner = nil
+			problems = append(problems, err)
 		}
 	}
+	n.credErr = errors.Join(problems...)
 	return n, nil
 }
 

@@ -11,6 +11,9 @@ ALTER TABLE servers ADD COLUMN IF NOT EXISTS ssh_host_key_confirmed_at TIMESTAMP
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS tunnel_fallback_enabled BOOLEAN NOT NULL DEFAULT true;
 -- New rows wait for the provisioning wizard; existing rows keep their state.
 ALTER TABLE servers ALTER COLUMN lifecycle_state SET DEFAULT 'pending';
+-- One row per host: two «Добавить ноду» for one IP (a double click, two admins) would run two
+-- provisioning jobs on the same machine.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_servers_ip_address ON servers (ip_address);
 
 -- The key TOFU stored (base64 of the wire blob) becomes a fingerprint the owner still has to confirm.
 UPDATE servers
@@ -27,7 +30,8 @@ ALTER TABLE servers ADD CONSTRAINT servers_mtproto_status_check
 CREATE TABLE IF NOT EXISTS provision_jobs (
   id BIGSERIAL PRIMARY KEY,
   server_id INT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify')),
+  -- mtproxy: «Переустановить Telegram-прокси» / the reconciler's backfill, under the same one-job lock.
+  kind TEXT NOT NULL CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy')),
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'interrupted')),
   error TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

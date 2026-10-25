@@ -233,6 +233,20 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// permNodesProvision: adding, setting up, retiring nodes and installing software on them.
+const permNodesProvision = "nodes.provision"
+
+// claimsAllow: the session holds the permission (or "*").
+func claimsAllow(claims *Claims, permission string) bool {
+	return slices.Contains(claims.Permissions, "*") || slices.Contains(claims.Permissions, permission)
+}
+
+// hasPermission is the permission check inside a handler (an action that needs more than its route).
+func hasPermission(r *http.Request, permission string) bool {
+	claims, ok := ClaimsFromContext(r.Context())
+	return ok && claimsAllow(claims, permission)
+}
+
 func RequirePermission(permission string, next http.HandlerFunc) http.HandlerFunc {
 	return AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := ClaimsFromContext(r.Context())
@@ -240,7 +254,7 @@ func RequirePermission(permission string, next http.HandlerFunc) http.HandlerFun
 			writeAdminError(w, http.StatusUnauthorized, "Missing admin session")
 			return
 		}
-		if slices.Contains(claims.Permissions, "*") || slices.Contains(claims.Permissions, permission) {
+		if claimsAllow(claims, permission) {
 			next.ServeHTTP(w, r)
 			return
 		}
