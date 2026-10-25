@@ -36,10 +36,17 @@ const NOT_CHECKED = { label: 'не проверялся', variant: 'default' }
 // healthy|unhealthy|unknown|absent — one wording with ServerDetailPage, utils/serverState.js; GET
 // /nodes prefers them once the monitor saw the exit) or the last job's path step
 // (ok|done|failed|drift|rolled_back, and for the main path «skipped»: it did not answer while the
-// TCP path decided — a warning, not an error). enabled=false: the owner switched the TCP path off.
+// TCP path decided — a warning, not an error). enabled=false: the owner switched the TCP path off
+// (off: true). The switch does not act on a legacy vless exit — TCP is its only path, so the
+// monitor still reports it: a monitor status other than «absent» is shown as it is.
 export function pathView(path, { enabled = true } = {}) {
-  if (!enabled) return { label: 'выключен', variant: 'default', hint: 'Запасной TCP-путь отключён в настройках ноды' }
   const s = path?.status
+  if (!enabled) {
+    if (path?.source === 'monitor' && s !== 'absent' && Object.hasOwn(PATH, s)) {
+      return { ...PATH[s], hint: 'Единственный путь этого выхода — выключатель запасного TCP на него не действует' }
+    }
+    return { label: 'выключен', variant: 'default', off: true, hint: 'Запасной TCP-путь отключён в настройках ноды' }
+  }
   if (Object.hasOwn(PATH, s)) return { ...PATH[s] }
   switch (s) {
     case 'ok': case 'done': return { ...PATH.healthy }
@@ -56,12 +63,13 @@ function mainPathDown(path) {
   return path?.status === 'skipped' || pathView(path).variant === 'danger'
 }
 
-const RUNNING = { deprovision: 'Отключается…', verify: 'Проверяется…' }
+// A verify job is worded apart from the monitor's «Проверяется» (an exit not judged yet).
+const RUNNING = { deprovision: 'Отключается…', verify: 'Идёт проверка (задача)' }
 const INTERRUPTED = { deprovision: 'Отключение прервано', verify: 'Проверка прервана' }
 
 // nodeState: one badge that never says «Работает» when it does not. Order: a job at work, an
-// interrupted job, a dead exit, the unconfirmed host key, an exit not judged yet, the fallback,
-// then the stored lifecycle.
+// interrupted job, a dead exit, the unconfirmed host key, an exit not judged yet, a dead main
+// path (working over TCP, or TCP not confirmed), then the stored lifecycle.
 export function nodeState(n) {
   const job = n.last_job
   if (job?.status === 'running') {
@@ -82,9 +90,14 @@ export function nodeState(n) {
     if (n.tunnel_status !== 'healthy') {
       return { label: 'Проверяется', variant: 'info', hint: 'Монитор ещё не признал туннель рабочим — трафик через этот выход пока не идёт' }
     }
-    const tcp = pathView(n.paths?.tcp, { enabled: n.tunnel_fallback_enabled !== false })
-    if (mainPathDown(n.paths?.hy) && tcp.variant === 'success') {
-      return { label: 'Работает по запасному TCP', variant: 'warning', hint: 'Основной туннель (UDP) при последней проверке не ответил — трафик идёт по TCP' }
+    if (mainPathDown(n.paths?.hy)) {
+      const tcp = pathView(n.paths?.tcp, { enabled: n.tunnel_fallback_enabled !== false })
+      if (tcp.variant === 'success') {
+        return { label: 'Работает по запасному TCP', variant: 'warning', hint: 'Основной туннель (UDP) при последней проверке не ответил — трафик идёт по TCP' }
+      }
+      return { label: 'Основной туннель не работает', variant: 'warning', hint: tcp.off
+        ? 'Основной туннель (UDP) не отвечает, запасной TCP-путь отключён'
+        : 'Основной туннель (UDP) не отвечает, запасной TCP-путь ещё не подтверждён' }
     }
   }
   return lifecycleState(n.lifecycle_state)
@@ -92,6 +105,9 @@ export function nodeState(n) {
 
 // pathsStale: a switched-off node is not checked; its last path results are history, not state.
 export const pathsStale = (n) => n.lifecycle_state === 'offline'
+
+// nodeHref: the node card on «Ноды», on the tab of its role (exit unless it is known to be a relay).
+export const nodeHref = (id, role) => `/nodes?role=${role === 'relay' ? 'relay' : 'exit'}&node=${encodeURIComponent(id)}`
 
 export const STEP_STATUS = {
   pending: { label: 'ждёт', variant: 'default' }, running: { label: 'выполняется', variant: 'info' },

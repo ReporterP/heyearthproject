@@ -9,6 +9,7 @@ import StatusBadge from '../components/StatusBadge.jsx'
 import TunnelCheckDialog from '../components/servers/TunnelCheckDialog.jsx'
 import ServerLifecycleBadge from '../components/ServerLifecycleBadge.jsx'
 import { isMonitored, pathView, tunnelView } from '../utils/serverState.js'
+import { nodeHref } from '../components/nodes/nodeModel.js'
 import {
   Badge,
   Button,
@@ -224,7 +225,7 @@ export default function ServerDetailPage() {
         )}
         actions={(
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="secondary" size="sm" onClick={() => navigate(`/nodes?node=${id}`)}>Управление нодой</Button>
+            <Button variant="secondary" size="sm" onClick={() => navigate(nodeHref(id, server.role))}>Управление нодой</Button>
             <ServerLifecycleBadge state={server.lifecycle_state} />
             <StatusBadge status={server.status} />
             {server.is_exit_node && (

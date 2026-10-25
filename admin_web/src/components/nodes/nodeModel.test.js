@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   nodeState, pathView, wizardCanAdvance, defaultPlanIds, canResume, jobFinished,
-  pathsStale, keyTypeLabel, hostKeyFile, unconfirmedKeys,
+  pathsStale, keyTypeLabel, hostKeyFile, unconfirmedKeys, nodeHref,
 } from './nodeModel.js'
 
 const base = { lifecycle_state: 'online', tunnel_status: 'healthy', tunnel_fallback_enabled: true,
@@ -120,4 +120,37 @@ test('unconfirmedKeys lists every node whose host key the owner has not confirme
   const items = [{ id: 1, host_key: { confirmed: true } }, { id: 2, host_key: { confirmed: false } }, { id: 3 }]
   assert.deepEqual(unconfirmedKeys(items).map((n) => n.id), [2, 3])
   assert.deepEqual(unconfirmedKeys(null), [])
+})
+
+// ── Review of 3b80d88 ──
+
+test('main path down and TCP not confirmed: never a green «Работает»', () => {
+  const s = nodeState({ ...base, paths: { hy: { status: 'unhealthy', source: 'monitor' }, tcp: { status: 'unknown', source: 'monitor' } } })
+  assert.equal(s.label, 'Основной туннель не работает')
+  assert.equal(s.variant, 'warning')
+  const jobFailed = nodeState({ ...base, paths: { hy: { status: 'failed', source: 'job' }, tcp: {} } })
+  assert.equal(jobFailed.label, 'Основной туннель не работает')
+  const tcpOff = nodeState({ ...base, tunnel_fallback_enabled: false, paths: { hy: { status: 'unhealthy' }, tcp: { status: 'absent', source: 'monitor' } } })
+  assert.equal(tcpOff.label, 'Основной туннель не работает')
+  assert.match(tcpOff.hint, /отключён/)
+})
+test('legacy vless exit: the TCP switch does not hide the monitor’s verdict on its only path', () => {
+  assert.equal(pathView({ status: 'healthy', source: 'monitor' }, { enabled: false }).label, 'работает')
+  assert.equal(pathView({ status: 'unhealthy', source: 'monitor' }, { enabled: false }).variant, 'danger')
+  assert.equal(pathView({ status: 'absent', source: 'monitor' }, { enabled: false }).label, 'выключен')
+  assert.equal(pathView({ status: 'ok', source: 'job' }, { enabled: false }).label, 'выключен')
+  // a vless exit whose Hysteria path is absent: TCP alive is plain «Работает»
+  assert.deepEqual(nodeState({ ...base, tunnel_fallback_enabled: false,
+    paths: { hy: { status: 'absent', source: 'monitor' }, tcp: { status: 'healthy', source: 'monitor' } } }), { label: 'Работает', variant: 'success' })
+})
+test('a verify job is worded apart from the monitor’s «Проверяется»', () => {
+  const job = nodeState({ ...base, last_job: { status: 'running', kind: 'verify' } }).label
+  const monitor = nodeState({ ...base, tunnel_status: 'unknown' }).label
+  assert.equal(job, 'Идёт проверка (задача)')
+  assert.notEqual(job.replace(/…$/, ''), monitor)
+})
+test('nodeHref opens the card on the tab of the node’s role', () => {
+  assert.equal(nodeHref(2), '/nodes?role=exit&node=2')
+  assert.equal(nodeHref(7, 'relay'), '/nodes?role=relay&node=7')
+  assert.equal(nodeHref(3, 'weird'), '/nodes?role=exit&node=3')
 })

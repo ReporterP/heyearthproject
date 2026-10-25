@@ -20,12 +20,13 @@ const PLANS_HINT = 'Без привязки нода получает тольк
 function PathCell({ path, enabled = true, stale }) {
   if (stale) return <span className="text-xs text-tertiary" title="Нода отключена — пути не проверяются">—</span>
   const v = pathView(path, { enabled })
-  const title = [v.hint, path?.error].filter(Boolean).join(' · ')
+  const live = !v.off // a switched-off path has no RTT or check time to show
+  const title = [v.hint, live && path?.error].filter(Boolean).join(' · ')
   return (
     <div className="flex items-center gap-2 whitespace-nowrap" title={title || undefined}>
       <Badge variant={v.variant}>{v.label}</Badge>
-      {enabled && path?.rtt_ms > 0 && <span className="font-mono tabular-nums text-xs text-secondary">{path.rtt_ms} мс</span>}
-      {enabled && path?.checked_at && (
+      {live && path?.rtt_ms > 0 && <span className="font-mono tabular-nums text-xs text-secondary">{path.rtt_ms} мс</span>}
+      {live && path?.checked_at && (
         <span className="font-mono tabular-nums text-xs text-tertiary" title={`Проверено ${formatDate(path.checked_at)}`}>
           {formatRelativeRu(path.checked_at)}
         </span>

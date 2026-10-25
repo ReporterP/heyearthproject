@@ -187,7 +187,7 @@ export default function DashboardPage() {
 
   const cards = [
     { label: t.dashUsers, value: data?.users_count, sub: `${data?.active_users_count ?? 0} ${t.dashActiveUsers}`, to: '/users' },
-    { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}`, to: '/servers' },
+    { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}`, to: '/nodes' },
     { label: t.dashTrafficToday, value: formatBytes(data?.traffic_today), to: '/traffic' },
     { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), to: '/traffic' },
     { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), to: '/payments' },
