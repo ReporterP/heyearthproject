@@ -1,0 +1,14 @@
+[Unit]
+Description=HiEarth reserve entry: forward TCP 443/2443 and UDP 30000-65000 to the Hub
+After=network-pre.target nftables.service ufw.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
+ExecStart=/usr/sbin/nft -f /etc/heyearth/relay.nft
+ExecReload=/usr/sbin/nft -f /etc/heyearth/relay.nft
+ExecStop=-/usr/sbin/nft delete table ip heyearth_relay
+[Install]
+WantedBy=multi-user.target
