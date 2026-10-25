@@ -190,17 +190,29 @@ const (
 	settingFailoverSince  = "entry_failover_since"
 )
 
+// entryFailoverQuery reads the three failover keys in one statement: one snapshot, so a target
+// and a since written together by SetEntryFailover are never mixed with an older pair.
+const entryFailoverQuery = `SELECT key, value FROM app_settings WHERE key IN ($1, $2, $3)`
+
 // GetEntryFailover reads the auto-swap state; a failed read is an error, absent keys are inactive.
 func GetEntryFailover(ctx context.Context) (EntryFailover, error) {
-	var raw [3]string
-	for i, k := range []string{settingFailoverActive, settingFailoverTarget, settingFailoverSince} {
-		v, err := entrySetting(ctx, k, "")
-		if err != nil {
-			return EntryFailover{}, err
-		}
-		raw[i] = v
+	rows, err := db.DB.QueryContext(ctx, entryFailoverQuery, settingFailoverActive, settingFailoverTarget, settingFailoverSince)
+	if err != nil {
+		return EntryFailover{}, fmt.Errorf("read entry failover: %w", err)
 	}
-	return ParseEntryFailover(raw[0], raw[1], raw[2]), nil
+	defer rows.Close()
+	raw := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return EntryFailover{}, fmt.Errorf("read entry failover: %w", err)
+		}
+		raw[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return EntryFailover{}, fmt.Errorf("read entry failover: %w", err)
+	}
+	return ParseEntryFailover(raw[settingFailoverActive], raw[settingFailoverTarget], raw[settingFailoverSince]), nil
 }
 
 // ParseEntryFailover: active only with "true" and a positive target; a broken since is zero.
@@ -241,16 +253,21 @@ func EntryIsFailoverTarget(ctx context.Context, id int) (bool, error) {
 	return err == nil && st.Active && st.Target == id, err
 }
 
+// entryCheckQueries: one upsert per check kind. The WHERE keeps the newest check: a slow probe
+// that finishes after a newer one (or a write retried late) never overwrites it.
 var entryCheckQueries = map[string]string{
 	"ext": `INSERT INTO entry_state (entry_id, ext_status, ext_checked_at, ext_error) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (entry_id) DO UPDATE SET ext_status = EXCLUDED.ext_status, ext_checked_at = EXCLUDED.ext_checked_at,
-		ext_error = EXCLUDED.ext_error, updated_at = NOW()`,
+		ext_error = EXCLUDED.ext_error, updated_at = NOW()
+		WHERE entry_state.ext_checked_at IS NULL OR entry_state.ext_checked_at <= EXCLUDED.ext_checked_at`,
 	"udp": `INSERT INTO entry_state (entry_id, udp_status, udp_checked_at, udp_error) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (entry_id) DO UPDATE SET udp_status = EXCLUDED.udp_status, udp_checked_at = EXCLUDED.udp_checked_at,
-		udp_error = EXCLUDED.udp_error, updated_at = NOW()`,
+		udp_error = EXCLUDED.udp_error, updated_at = NOW()
+		WHERE entry_state.udp_checked_at IS NULL OR entry_state.udp_checked_at <= EXCLUDED.udp_checked_at`,
 	"ru": `INSERT INTO entry_state (entry_id, ru_status, ru_checked_at, ru_link) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (entry_id) DO UPDATE SET ru_status = EXCLUDED.ru_status, ru_checked_at = EXCLUDED.ru_checked_at,
-		ru_link = EXCLUDED.ru_link, updated_at = NOW()`,
+		ru_link = EXCLUDED.ru_link, updated_at = NOW()
+		WHERE entry_state.ru_checked_at IS NULL OR entry_state.ru_checked_at <= EXCLUDED.ru_checked_at`,
 }
 
 // entryCheckStatuses mirrors the CHECKs of entry_state (migration 000062): a wrong status is
@@ -279,7 +296,8 @@ func entryDetail(s string) string {
 	return s[:cut]
 }
 
-// SaveEntryCheck persists one check of kind ext|udp|ru for an entry (0 = Hub).
+// SaveEntryCheck persists one check of kind ext|udp|ru for an entry (0 = Hub). At is when the
+// check ran (required); a check older than the stored one is silently dropped.
 func SaveEntryCheck(ctx context.Context, entryID int, kind string, c EntryCheck) error {
 	q, ok := entryCheckQueries[kind]
 	if !ok {
@@ -287,6 +305,9 @@ func SaveEntryCheck(ctx context.Context, entryID int, kind string, c EntryCheck)
 	}
 	if !slices.Contains(entryCheckStatuses[kind], c.Status) {
 		return fmt.Errorf("entry check %s: unknown status %q", kind, c.Status)
+	}
+	if c.At.IsZero() {
+		return fmt.Errorf("entry check %s: no check time", kind)
 	}
 	if _, err := db.DB.ExecContext(ctx, q, entryID, c.Status, c.At, entryDetail(c.Detail)); err != nil {
 		return fmt.Errorf("save entry %d %s check: %w", entryID, kind, err)
