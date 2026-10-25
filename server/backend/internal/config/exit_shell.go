@@ -756,8 +756,7 @@ ok=1; for p in ` + exitPackages + `; do have_pkg "$p" || ok=0; done; echo PKGS=$
 const hopRuleGrep = `grep -q 'fib daddr type local .*redirect to :` + "50443" + `'`
 
 // ExitPortHopApplyScript loads ExitPortHopConf and enables its boot unit (both written by the
-// recipe), then checks the kernel has the guarded rule. ExitPortHopScript is the CLI variant
-// that also writes the files.
+// recipe), then checks the kernel has the guarded rule.
 const ExitPortHopApplyScript = `# hp:hop-apply
 set -e
 nft -f ` + ExitPortHopConfPath + `

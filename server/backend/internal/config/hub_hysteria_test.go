@@ -18,9 +18,9 @@ func TestHubHysteriaClientTemplates(t *testing.T) {
 		t.Errorf("unit:\n%s", u)
 	}
 	// idempotent nft file: create-if-missing, delete, define in one transaction
-	if !strings.Contains(ExitPortHopScript, "table inet hysteria_porthopping\ndelete table inet hysteria_porthopping\ntable inet hysteria_porthopping {\n") ||
-		!strings.Contains(ExitPortHopScript, "udp dport 20000-50000 fib daddr type local counter redirect to :50443") {
-		t.Errorf("hop script:\n%s", ExitPortHopScript)
+	if !strings.HasPrefix(ExitPortHopConf, "table inet hysteria_porthopping\ndelete table inet hysteria_porthopping\ntable inet hysteria_porthopping {\n") ||
+		!strings.Contains(ExitPortHopConf, "udp dport 20000-50000 fib daddr type local counter redirect to :50443") {
+		t.Errorf("hop rules:\n%s", ExitPortHopConf)
 	}
 }
 

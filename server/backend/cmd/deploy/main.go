@@ -3,18 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
+	"context"
 	"database/sql"
-	"encoding/pem"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -22,11 +16,12 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/config"
+	sshcrypto "github.com/heyearth/backend/internal/crypto"
+	"github.com/heyearth/backend/internal/provision"
 	_ "github.com/lib/pq"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -73,10 +68,15 @@ func main() {
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
 	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
-	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перегенерировать листовые mTLS-сертификаты (client, server) без замены CA")
-	setupExitNode := flag.String("setup-exit-node", "", "развернуть exit-ноду (IP:порт_туннеля, напр. 1.2.3.4:443)")
-	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль для exit-ноды")
-	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды")
+	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перевыпустить на Hub клиентский mTLS-сертификат API от CA Hub (CA и сертификаты нод не меняются; сертификаты нод обновляет их настройка)")
+	ensureHubProv := flag.Bool("ensure-hub-provisioning", false, "подготовить живой Hub к настройке нод (админка и --setup-exit-node): SSH_ENCRYPTION_KEY в api.env, ключ SSH Hub, node-agent, install-mtproxy.sh, собственный CA node-agent на Hub (прежний — как legacy до сведения exit); ничего не перезапускает")
+	setupExitNode := flag.String("setup-exit-node", "", "настроить exit-ноду ядром провижининга (IP или IP:порт; порт игнорируется)")
+	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль root exit-ноды (иначе EXIT_NODE_SSH_PASSWORD или сохранённый в базе)")
+	exitNodeSSHPort := flag.Int("exit-node-ssh-port", 22, "SSH порт exit-ноды (по умолчанию: сохранённый в базе, для новой — 22)")
+	exitNodeName := flag.String("exit-node-name", "", "название новой exit-ноды (--setup-exit-node; по умолчанию «Выход <страна>»)")
+	exitNodeCountry := flag.String("exit-node-country", "", "код страны новой exit-ноды, напр. DE (--setup-exit-node)")
+	exitNodePlans := flag.String("exit-node-plans", "", "тарифы exit: all-paid | none | keep | 1,2,3 (по умолчанию: новой — all-paid, существующей — keep)")
+	exitNodeMTProxy := flag.Bool("exit-node-mtproxy", true, "MTProxy на exit (--setup-exit-node; без флага выключатель ноды не меняется, у новой — включён)")
 	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
 	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, ежедневный бэкап (+копия на exit: --backup-target), fail2ban, journald, nginx stream timeout, защита xray API")
 	backupTarget := flag.String("backup-target", "", "IP exit-ноды для копии бэкапа (--setup-ops); пароль: --exit-node-password или EXIT_NODE_SSH_PASSWORD")
@@ -85,6 +85,8 @@ func main() {
 
 	var mode string
 	switch {
+	case *ensureHubProv:
+		mode = "ensure-hub-provisioning"
 	case *rotateCerts:
 		mode = "rotate-certs"
 	case *setupExitNode != "":
@@ -126,7 +128,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -151,15 +153,6 @@ func main() {
 	}
 
 	validateLocalConfig(mode, cfg)
-	if mode != "status" {
-		ensureLocalMTLSAssets(cfg)
-	}
-
-	if mode == "rotate-certs" {
-		rotateNodeAgentCerts(cfg)
-		log.Println("Листовые сертификаты перегенерированы локально. Запусти --update-main для загрузки на сервер.")
-		return
-	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.deployPort)
 	client, err := sshDial(addr, cfg.deployUser, cfg.deployPassword, cfg.hostKeyFingerprint)
@@ -197,8 +190,26 @@ func main() {
 		return
 	}
 
+	if mode == "ensure-hub-provisioning" {
+		ensureHubProvisioning(client, cfg)
+		return
+	}
+	if mode == "rotate-certs" {
+		rotateHubClientCert(client)
+		return
+	}
 	if mode == "setup-exit-node" {
-		setupExitNodeDeploy(*setupExitNode, *exitNodePassword, *exitNodeSSHPort, client, cfg)
+		// Flags not given keep what the database has (port, MTProxy switch).
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		opts := exitCLIOptions{name: *exitNodeName, country: *exitNodeCountry, plans: *exitNodePlans, password: *exitNodePassword}
+		if set["exit-node-ssh-port"] {
+			opts.sshPort = *exitNodeSSHPort
+		}
+		if set["exit-node-mtproxy"] {
+			opts.mtproxy = exitNodeMTProxy
+		}
+		setupExitNodeDeploy(*setupExitNode, client, cfg, opts)
 		return
 	}
 
@@ -382,26 +393,33 @@ func findRepoRoot() string {
 	return ""
 }
 
+// sshDial connects to the Hub by password only with its host key pinned by
+// DEPLOY_HOST_KEY_FINGERPRINT (the key Go negotiates by default — ECDSA on the Hub). Without a
+// well-formed fingerprint nothing is dialled: the deploy password would go to whoever answers.
 func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, error) {
+	if !fingerprintRe.MatchString(strings.TrimSpace(expectedFingerprint)) {
+		return nil, fmt.Errorf("DEPLOY_HOST_KEY_FINGERPRINT в server/.env не задан или не вида SHA256:<43 символа> (%q) — "+
+			"подключение к Hub без закреплённого ключа хоста запрещено: пароль ушёл бы любому, кто ответит на %s. "+
+			"Отпечаток — в консоли хостера: ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub -E sha256", expectedFingerprint, addr)
+	}
 	return sshDialAlgos(addr, user, password, expectedFingerprint, nil)
 }
 
 // sshDialAlgos is sshDial with an optional list of accepted host key algorithms. A pinned
 // fingerprint is only meaningful for one key type, so callers that pin an ed25519 fingerprint
-// restrict the negotiation to ssh-ed25519 (otherwise the server may present its RSA key).
+// restrict the negotiation to ssh-ed25519 (otherwise the server may present its RSA key). There
+// is no unpinned mode.
 func sshDialAlgos(addr, user, password, expectedFingerprint string, hostKeyAlgorithms []string) (*ssh.Client, error) {
-	var callback ssh.HostKeyCallback
-	if strings.TrimSpace(expectedFingerprint) != "" {
-		callback = func(hostname string, remoteAddr net.Addr, key ssh.PublicKey) error {
-			got := ssh.FingerprintSHA256(key)
-			if got != expectedFingerprint {
-				return fmt.Errorf("unexpected host key fingerprint for %s: got %s", hostname, got)
-			}
-			return nil
+	expectedFingerprint = strings.TrimSpace(expectedFingerprint)
+	if !fingerprintRe.MatchString(expectedFingerprint) {
+		return nil, fmt.Errorf("ssh %s: нужен закреплённый отпечаток ключа хоста SHA256:…, а не %q", addr, expectedFingerprint)
+	}
+	callback := func(hostname string, remoteAddr net.Addr, key ssh.PublicKey) error {
+		got := ssh.FingerprintSHA256(key)
+		if got != expectedFingerprint {
+			return fmt.Errorf("unexpected host key fingerprint for %s: got %s", hostname, got)
 		}
-	} else {
-		log.Println("DEPLOY_HOST_KEY_FINGERPRINT not set — accepting any host key (insecure, OK for initial deploy)")
-		callback = ssh.InsecureIgnoreHostKey()
+		return nil
 	}
 
 	cfg := &ssh.ClientConfig{
@@ -679,172 +697,29 @@ apt-get install -y -qq ansible sshpass
 	_, _ = runSSH(client, script, true)
 }
 
-func ensureLocalMTLSAssets(cfg *deployConfig) {
-	certDir := filepath.Join(cfg.backendRoot, "certs")
-	required := []string{"ca-cert.pem", "ca-key.pem", "client-cert.pem", "client-key.pem", "server-cert.pem", "server-key.pem"}
-	missing := false
-	for _, name := range required {
-		if _, err := os.Stat(filepath.Join(certDir, name)); err != nil {
-			missing = true
-			break
-		}
-	}
-	if !missing {
-		checkLeafCertExpiry(certDir)
-		return
-	}
-
-	if err := os.MkdirAll(certDir, 0755); err != nil {
-		log.Fatal(err)
-	}
-
-	caKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		log.Fatal(err)
-	}
-	caTemplate := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "HeYearth Node-Agent CA", Organization: []string{"HeYearth"}},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-	writePEM(filepath.Join(certDir, "ca-cert.pem"), "CERTIFICATE", caDER)
-	writePrivateKey(filepath.Join(certDir, "ca-key.pem"), caKey)
-
-	caCert, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	generateSignedCert(certDir, "client", pkix.Name{CommonName: "main-api", Organization: []string{"HeYearth"}}, []string{"main-api"}, nil, x509.ExtKeyUsageClientAuth, caCert, caKey, 2)
-	generateSignedCert(certDir, "server", pkix.Name{CommonName: "node-agent", Organization: []string{"HeYearth"}}, []string{"node-agent", "localhost"}, nil, x509.ExtKeyUsageServerAuth, caCert, caKey, 3)
-}
-
-const leafCertValidityYears = 1
-
-func generateSignedCert(certDir, prefix string, subject pkix.Name, dnsNames []string, ipAddresses []net.IP, usage x509.ExtKeyUsage, caCert *x509.Certificate, caKey *rsa.PrivateKey, serial int64) {
-	key, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		log.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(serial),
-		Subject:      subject,
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(leafCertValidityYears, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{usage},
-		DNSNames:     dnsNames,
-		IPAddresses:  ipAddresses,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-	writePEM(filepath.Join(certDir, prefix+"-cert.pem"), "CERTIFICATE", der)
-	writePrivateKey(filepath.Join(certDir, prefix+"-key.pem"), key)
-}
-
-func checkLeafCertExpiry(certDir string) {
-	certPath := filepath.Join(certDir, "client-cert.pem")
-	pemData, err := os.ReadFile(certPath)
-	if err != nil {
-		return
-	}
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		return
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return
-	}
-	daysLeft := time.Until(cert.NotAfter).Hours() / 24
-	if daysLeft < 30 {
-		log.Printf("ВНИМАНИЕ: листовой сертификат client-cert.pem истекает через %.0f дней! Запусти --rotate-node-agent-certs", daysLeft)
-	}
-}
-
-func loadCAFromDisk(certDir string) (*x509.Certificate, *rsa.PrivateKey) {
-	caPEM, err := os.ReadFile(filepath.Join(certDir, "ca-cert.pem"))
-	if err != nil {
-		log.Fatalf("read CA cert: %v", err)
-	}
-	block, _ := pem.Decode(caPEM)
-	if block == nil {
-		log.Fatal("ca-cert.pem: no PEM block found")
-	}
-	caCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		log.Fatalf("parse CA cert: %v", err)
-	}
-
-	keyPEM, err := os.ReadFile(filepath.Join(certDir, "ca-key.pem"))
-	if err != nil {
-		log.Fatalf("read CA key: %v", err)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		log.Fatal("ca-key.pem: no PEM block found")
-	}
-	caKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-	if err != nil {
-		log.Fatalf("parse CA key: %v", err)
-	}
-	return caCert, caKey
-}
-
-func rotateNodeAgentCerts(cfg *deployConfig) {
-	certDir := filepath.Join(cfg.backendRoot, "certs")
-	caCert, caKey := loadCAFromDisk(certDir)
-
-	log.Println("Ротация: перегенерация листовых сертификатов (client, server) тем же Node-Agent CA…")
-	serial := time.Now().Unix()
-	generateSignedCert(certDir, "client", pkix.Name{CommonName: "main-api", Organization: []string{"HeYearth"}}, []string{"main-api"}, nil, x509.ExtKeyUsageClientAuth, caCert, caKey, serial)
-	generateSignedCert(certDir, "server", pkix.Name{CommonName: "node-agent", Organization: []string{"HeYearth"}}, []string{"node-agent", "localhost"}, nil, x509.ExtKeyUsageServerAuth, caCert, caKey, serial+1)
-	log.Println("Новые client-cert.pem, client-key.pem, server-cert.pem, server-key.pem сгенерированы.")
-}
-
-func writePEM(path, blockType string, der []byte) {
-	f, err := os.Create(path)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func writePrivateKey(path string, key *rsa.PrivateKey) {
-	writePEM(path, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(key))
-}
-
+// uploadNodeProvisioningAssets: node-agent and the MTProxy installer for the API's provisioning,
+// ansible, and the node-agent CA, which is made on the Hub itself (ensureHubNodeCA): no
+// certificate or key goes from this machine to the Hub any more (Beads cudk.77). A deploy only
+// creates a CA on a Hub without one and renews the API's client certificate; replacing an old CA
+// is --ensure-hub-provisioning.
 func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+appDir+"/ansible "+appDir+"/certs", true)
+	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+appDir+"/ansible "+hubCertsDir+" "+path.Dir(hubMTProxyScript), true)
 
 	nodeAgentPath := buildGoBinary(cfg.backendRoot, "node-agent", "node-agent")
-	if err := uploadFile(c, nodeAgentPath, appDir+"/artifacts/node-agent"); err != nil {
+	if err := uploadFile(c, nodeAgentPath, hubNodeAgentArtifact); err != nil {
 		log.Fatal(err)
 	}
-
-	for _, name := range []string{"ca-cert.pem", "server-cert.pem", "server-key.pem", "client-cert.pem", "client-key.pem"} {
-		local := filepath.Join(cfg.backendRoot, "certs", name)
-		if err := uploadFile(c, local, path.Join(appDir, "certs", name)); err != nil {
-			log.Fatalf("upload cert %s: %v", name, err)
-		}
+	if err := uploadFile(c, filepath.Join(cfg.backendRoot, "cmd", "deploy", "install-mtproxy.sh"), hubMTProxyScript); err != nil {
+		log.Fatalf("upload install-mtproxy.sh: %v", err)
 	}
+	_, _ = runSSH(client, "chmod 755 "+hubMTProxyScript, true)
 
 	if err := uploadDir(c, cfg.ansibleRoot, appDir+"/ansible"); err != nil {
 		log.Fatalf("upload ansible: %v", err)
 	}
+	ctx, hub := context.Background(), provision.NewSSHRemote(client)
+	p, err := ensureHubNodeCA(ctx, hub, hubCertsDir, hubClock(ctx, hub)(), caKeep, false)
+	reportHubCA(p, err, false)
 }
 
 func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
@@ -876,6 +751,19 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		"TLS_CLIENT_CERT_FILE": path.Join(appDir, "certs", "client-cert.pem"),
 		"TLS_CLIENT_KEY_FILE":  path.Join(appDir, "certs", "client-key.pem"),
 		"TLS_CA_FILE":          path.Join(appDir, "certs", "ca-cert.pem"),
+	}
+	// SSH_ENCRYPTION_KEY survives every deploy (api.env is rewritten from this whitelist); a Hub
+	// without one gets it here only while no ciphertext exists. A key that cannot be decided does
+	// not stop the deploy: the API raises its critical alert and --ensure-hub-provisioning explains.
+	if hubEnv, _, err := readHubAPIEnv(client); err != nil {
+		fmt.Printf("[hub] WARN: api.env не прочитан (%v) — SSH_ENCRYPTION_KEY не записан\n", err)
+	} else if key, generated, err := resolveSSHEncryptionKey(client, cfg, hubEnv); err != nil {
+		fmt.Printf("[hub] WARN: SSH_ENCRYPTION_KEY не записан в api.env: %v\n", err)
+	} else {
+		apiEnv["SSH_ENCRYPTION_KEY"] = key
+		if generated {
+			fmt.Println("[hub] SSH_ENCRYPTION_KEY сгенерирован (зашифрованных паролей в БД не было); хранится только в api.env на Hub и в его бэкапах")
+		}
 	}
 	if err := uploadFileContent(c, []byte(serializeEnv(apiEnv)), appDir+"/api.env"); err != nil {
 		log.Fatal(err)
@@ -1847,6 +1735,7 @@ func serializeEnv(values map[string]string) string {
 		"TLS_CLIENT_CERT_FILE",
 		"TLS_CLIENT_KEY_FILE",
 		"TLS_CA_FILE",
+		"SSH_ENCRYPTION_KEY",
 	}
 	var b strings.Builder
 	for _, key := range keys {
@@ -1912,341 +1801,6 @@ func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
 	fmt.Println("  4. Then restore the DB and config from the backup")
 }
 
-// exitNodeSetupScript renders the root provisioning script for a new exit node: Xray
-// (SS+WS :443, VLESS Reality :10443) + Hysteria2 server (:50443). The hysteria server.yaml
-// ends with config.ExitHysteriaACL and the xray routing starts with exitXrayGuardRules, so no
-// tunnel egress reaches the exit's loopback, private neighbours or its own public IP — except
-// mtprotoPort on the own address (the MTProxy full-tunnel clients reach through the tunnel).
-// Pure, so tests can render it without SSH.
-func exitNodeSetupScript(exitIP string, mtprotoPort int) string {
-	return fmt.Sprintf(`set -e
-mkdir -p /opt/heyearth/xray /opt/heyearth/state
-
-# ── 1. Скачать Xray если нет ──
-if [ ! -f /opt/heyearth/xray/xray ]; then
-  apt-get update -qq
-  apt-get install -y -qq wget unzip 2>/dev/null
-  cd /tmp
-  wget -q https://github.com/XTLS/Xray-core/releases/download/v25.1.1/Xray-linux-64.zip -O xray.zip
-  unzip -o xray.zip -d /opt/heyearth/xray
-  chmod +x /opt/heyearth/xray/xray
-  rm -f xray.zip
-  echo "[xray] Binary v25.1.1 установлен"
-else
-  echo "[xray] Binary уже существует: $(/opt/heyearth/xray/xray version 2>&1 | head -1)"
-fi
-
-# ── 2. Сгенерировать/обновить ключи ──
-KEYS_FILE="/opt/heyearth/state/reality-keys.json"
-if [ ! -f "$KEYS_FILE" ]; then
-  KEYS=$(/opt/heyearth/xray/xray x25519 2>&1)
-  PRIV_KEY=$(echo "$KEYS" | grep 'Private key:' | awk '{print $3}')
-  PUB_KEY=$(echo "$KEYS" | grep 'Public key:' | awk '{print $3}')
-  SHORT_ID=$(head -c 8 /dev/urandom | xxd -p)
-  UUID=$(cat /proc/sys/kernel/random/uuid)
-  SS_PASSWORD=$(openssl rand -base64 16)
-
-  cat > "$KEYS_FILE" <<KEYSEOF
-{
-  "privateKey": "$PRIV_KEY",
-  "publicKey": "$PUB_KEY",
-  "shortId": "$SHORT_ID",
-  "uuid": "$UUID",
-  "ssPassword": "$SS_PASSWORD"
-}
-KEYSEOF
-  echo "[xray] Ключи сгенерированы"
-else
-  echo "[xray] Ключи уже существуют, проверяю полноту..."
-  # Дополняем недостающие поля (uuid, ssPassword) если их нет
-  python3 -c "
-import json, subprocess, os
-with open('$KEYS_FILE') as f:
-    k = json.load(f)
-changed = False
-if 'uuid' not in k or not k['uuid']:
-    k['uuid'] = open('/proc/sys/kernel/random/uuid').read().strip()
-    changed = True
-if 'ssPassword' not in k or not k['ssPassword']:
-    import base64; k['ssPassword'] = base64.b64encode(os.urandom(16)).decode()
-    changed = True
-if changed:
-    with open('$KEYS_FILE', 'w') as f:
-        json.dump(k, f, indent=2)
-    print('[xray] Ключи дополнены (uuid/ssPassword)')
-else:
-    print('[xray] Все поля присутствуют')
-"
-fi
-
-# Читаем ключи
-PRIV_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['privateKey'])")
-PUB_KEY=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['publicKey'])")
-SHORT_ID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['shortId'])")
-UUID=$(python3 -c "import json; print(json.load(open('$KEYS_FILE'))['uuid'])")
-SS_PASSWORD=$(python3 -c "import json; print(json.load(open('$KEYS_FILE')).get('ssPassword', ''))")
-
-# ── 3. Остановить конфликтующие сервисы ──
-systemctl stop ss-server 2>/dev/null || true
-systemctl disable ss-server 2>/dev/null || true
-echo "[xray] Конфликтующие сервисы остановлены"
-
-# ── 4. Xray конфиг: SS+WebSocket (TCP:443) + VLESS Reality (10443) ──
-cat > /opt/heyearth/xray/config.json <<XRAYEOF
-{
-  "log": {"loglevel": "warning"},
-  "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"],
-    "queryStrategy": "UseIPv4",
-    "disableCache": false
-  },
-  "inbounds": [
-    {
-      "tag": "shadowsocks-ws",
-      "listen": "0.0.0.0",
-      "port": 443,
-      "protocol": "shadowsocks",
-      "settings": {
-        "method": "2022-blake3-aes-128-gcm",
-        "password": "$SS_PASSWORD",
-        "network": "tcp,udp"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {"path": "/stream"},
-        "sockopt": {"tcpFastOpen": true, "tcpNoDelay": true, "tcpKeepAliveInterval": 30}
-      },
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    },
-    {
-      "tag": "vless-reality",
-      "listen": "0.0.0.0",
-      "port": 10443,
-      "protocol": "vless",
-      "settings": {
-        "clients": [{"id": "$UUID", "flow": "xtls-rprx-vision"}],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false, "dest": "microsoft.com:443", "xver": 0,
-          "serverNames": ["microsoft.com", "www.microsoft.com"],
-          "privateKey": "$PRIV_KEY",
-          "shortIds": ["$SHORT_ID"]
-        }
-      },
-      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom", "tag": "direct",
-      "settings": {"domainStrategy": "UseIPv4"},
-      "streamSettings": {"sockopt": {"tcpFastOpen": true, "tcpNoDelay": true, "tcpKeepAliveInterval": 30}}
-    },
-    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "none"}}}
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      %s,
-      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
-    ]
-  },
-  "policy": {"levels": {"0": {"handshake": 4, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5, "bufferSize": 512}}}
-}
-XRAYEOF
-echo "[xray] Exit-node конфиг записан (SS+WS:443, VLESS:10443)"
-
-# ── 4b. Xray systemd ──
-cat > /etc/systemd/system/xray.service <<'SVCEOF'
-[Unit]
-Description=Xray Exit Node (HeYearth)
-After=network.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/heyearth/xray
-ExecStart=/opt/heyearth/xray/xray run -config /opt/heyearth/xray/config.json
-Restart=always
-RestartSec=5
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
-sleep 1
-echo "[xray] Сервис запущен"
-systemctl status xray --no-pager -l 2>&1 | head -10 || true
-
-# ── 5. Hysteria2 сервер (QUIC/UDP — нет head-of-line blocking) ──
-echo "[hy2] Установка/обновление Hysteria2..."
-%s
-# Самоподписанный TLS-сертификат для Hysteria2
-mkdir -p /opt/heyearth/certs
-if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -days 3650 -nodes \
-    -keyout /opt/heyearth/certs/hy2.key \
-    -out /opt/heyearth/certs/hy2.crt \
-    -subj "/CN=www.microsoft.com" 2>/dev/null
-  echo "[hy2] TLS-сертификат сгенерирован"
-else
-  echo "[hy2] TLS-сертификат уже существует"
-fi
-
-mkdir -p /opt/heyearth/hysteria
-cat > /opt/heyearth/hysteria/server.yaml <<'HYEOF'
-listen: :50443
-
-tls:
-  cert: /opt/heyearth/certs/hy2.crt
-  key: /opt/heyearth/certs/hy2.key
-
-auth:
-  type: password
-  password: PLACEHOLDER_SS_PASSWORD
-
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.microsoft.com
-    rewriteHost: true
-
-quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-
-bandwidth:
-  up: 1 gbps
-  down: 1 gbps
-
-%s
-HYEOF
-# Подставляем пароль
-sed -i "s|PLACEHOLDER_SS_PASSWORD|$SS_PASSWORD|g" /opt/heyearth/hysteria/server.yaml
-
-cat > /etc/systemd/system/hysteria2.service <<'SVCEOF'
-[Unit]
-Description=Hysteria2 VPN Server (HeYearth)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-systemctl daemon-reload
-systemctl enable hysteria2
-systemctl restart hysteria2
-sleep 2
-echo "[hy2] Hysteria2 сервис запущен"
-systemctl status hysteria2 --no-pager | head -5 || true
-
-# ── 5b. Port hopping: UDP %s → :50443 (клиенты Hub прыгают по этому диапазону) ──
-%s
-echo "[hy2] port hopping UDP %s → :50443 (nftables-hysteria)"
-
-# ── 6. Firewall: все протоколы ──
-if command -v ufw >/dev/null 2>&1; then
-  ufw allow 22/tcp 2>/dev/null || true
-  ufw allow 443/tcp 2>/dev/null || true
-  ufw allow 443/udp 2>/dev/null || true
-  ufw allow 10443/tcp 2>/dev/null || true
-  ufw allow 50443/udp 2>/dev/null || true
-  ufw allow %s/udp 2>/dev/null || true
-  ufw --force enable 2>/dev/null || true
-  echo "[fw] UFW правила добавлены"
-else
-  iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p tcp --dport 10443 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport 50443 -j ACCEPT 2>/dev/null || true
-  iptables -I INPUT -p udp --dport %s -j ACCEPT 2>/dev/null || true
-  echo "[fw] iptables правила добавлены"
-fi
-
-# ── 7. Итоги ──
-echo ""
-echo "===== EXIT NODE CREDENTIALS ====="
-echo "IP: %s"
-echo "Tunnel Port: 50443 (Hysteria2 UDP)"
-echo "Fallback SS+WS: 443 (TCP)"
-echo "Fallback VLESS: 10443 (TCP)"
-echo "Protocol: hysteria2"
-echo "UUID: $UUID"
-echo "Public Key: $PUB_KEY"
-echo "Short ID: $SHORT_ID"
-echo "SS Password: (не печатается; /opt/heyearth/state/reality-keys.json)"
-echo "SNI: www.microsoft.com"
-echo "================================="
-`, exitXrayGuardRules(exitIP, mtprotoPort), config.HysteriaInstallScript(), strings.TrimSuffix(config.ExitHysteriaACL(exitIP, mtprotoPort), "\n"),
-		config.ExitHopRange, strings.TrimSuffix(config.ExitPortHopScript, "\n"), config.ExitHopRange,
-		strings.ReplaceAll(config.ExitHopRange, "-", ":"), strings.ReplaceAll(config.ExitHopRange, "-", ":"), exitIP)
-}
-
-// exitNodeSetupError says why exitNodeSetupScript did not complete: the script exited
-// non-zero (runErr; it runs under set -e) and/or its stdout lacks the hysteria success line
-// (config.HysteriaInstallError). nil only when both are clean.
-func exitNodeSetupError(out string, runErr error) error {
-	return errors.Join(runErr, config.HysteriaInstallError(out))
-}
-
-// hubHy2ClientScript renders the Hub-side script that runs a Hysteria2 client to the exit
-// node as a local SOCKS5 on 127.0.0.1:1088+serverID, from the same templates heyearth-api uses
-// (config.HubHysteriaClientYAML: port hopping across the exit's range, hopInterval, client-side
-// ACL; config.HubHysteriaClientUnit). Files go through put_file (base64 payload: the tunnel
-// password never touches the shell; client-<id>.yaml 0600) and the client is restarted only
-// when a file changed or it is not running, so a re-run does not interrupt the tunnel. It
-// installs the hysteria binary only if the Hub has none (config.HysteriaEnsureScript): an
-// upgrade here would hit every Hub client on its next restart while other exits may still run
-// an older server. Prints HUB_CLIENT_CHANGED=0|1. Pure, so tests can render it without SSH.
-func hubHy2ClientScript(exitIP string, serverID int, auth string) string {
-	id := strconv.Itoa(serverID)
-	unit := "hysteria2-client-" + id
-	port := strconv.Itoa(1088 + serverID)
-	return `set -e
-mkdir -p ` + config.HubHysteriaDir + `
-
-# Hysteria2 binary: только если на Hub его нет (обновление Hub — deploy --setup-hysteria2-hub)
-` + config.HysteriaEnsureScript() + opsPutFileFunc + `# Клиент к exit-ноде ` + exitIP + ` (SOCKS 127.0.0.1:` + port + `): общий шаблон с API (port hopping, ACL)
-umask 077
-` + putFileCalls([]opsFile{{config.HubHysteriaDir + "/client-" + id + ".yaml", "600", config.HubHysteriaClientYAML(serverID, exitIP, auth, 1088+serverID)}}) + `umask 022
-` + putFileCalls([]opsFile{{"/etc/systemd/system/" + unit + ".service", "644", config.HubHysteriaClientUnit(serverID, exitIP)}}) + `systemctl daemon-reload
-systemctl enable ` + unit + ` >/dev/null 2>&1
-if [ "$PUT_CHANGED" = 1 ] || ! systemctl is-active --quiet ` + unit + `; then
-  systemctl restart ` + unit + `
-  sleep 2
-  echo "[hy2] ` + unit + ` (пере)запущен"
-else
-  echo "[hy2] ` + unit + `: конфиг не изменился и клиент активен — без перезапуска"
-fi
-systemctl status ` + unit + ` --no-pager | head -5 || true
-if ! systemctl is-active --quiet ` + unit + `; then
-  echo "[hy2] ERROR: ` + unit + ` не активен (см. journalctl -u ` + unit + `)" >&2
-  exit 1
-fi
-echo "Hysteria2 client for ` + exitIP + `: port ` + port + `"
-echo "HUB_CLIENT_CHANGED=$PUT_CHANGED"
-`
-}
-
 // parseExitNodeAddr validates --setup-exit-node: an IP address, optionally with a port (the
 // port is ignored — the exit always uses 443/10443/50443). The IP ends up in root shell scripts
 // on the exit and the Hub, so anything else (a hostname, shell metacharacters) is refused.
@@ -2267,197 +1821,185 @@ func parseExitNodeAddr(addr string) (string, error) {
 	return ip.String(), nil
 }
 
-// dialExitNode connects to an exit by root password only with its ed25519 host key pinned
-// (exitAccessFor: EXIT_NODE_HOST_KEY_FINGERPRINT and the exit's own password — never the Hub's).
-func dialExitNode(addr string, access exitAccess) (*ssh.Client, error) {
-	return sshDialAlgos(addr, "root", access.password, access.fingerprint, []string{ssh.KeyAlgoED25519})
-}
-
-// setupExitNodeDeploy разворачивает exit-ноду: устанавливает Xray, настраивает конфиг.
-// Формат addr: "IP" или "IP:TUNNEL_PORT" (порт игнорируется).
-func setupExitNodeDeploy(addr, password string, sshPort int, mainClient *ssh.Client, cfg *deployConfig) {
+// setupExitNodeDeploy — the emergency path: the same provisioning core as the admin panel
+// (internal/provision, jobs owned by the CLI runner), run from this machine. The exit is reached
+// by its root password only with its host key pinned (EXIT_NODE_HOST_KEY_FINGERPRINT or the key
+// confirmed in the database — presented by the exit right now), the Hub over this deploy session,
+// the database through an SSH tunnel. The node-agent CA key stays on the Hub: node certificates
+// are signed there. Nothing outside the recipe is restarted: the API picks the exit up at its
+// periodic sync (≤ 5 min). A new exit is written 'pending' (as the admin wizard does) and the job
+// takes it to online — or failed, resumable with «Продолжить» or by running this again.
+func setupExitNodeDeploy(addr string, mainClient *ssh.Client, cfg *deployConfig, opts exitCLIOptions) {
 	exitIP, err := parseExitNodeAddr(addr)
 	if err != nil {
 		log.Fatalf("[exit-node] %v", err)
 	}
-	// Пароль — только самой exit-ноды (--exit-node-password / EXIT_NODE_SSH_PASSWORD), host key —
-	// по EXIT_NODE_HOST_KEY_FINGERPRINT. Пароль Hub на exit не пробуется.
-	access, err := exitAccessFor(cfg.env, password)
+	if err := config.ValidateExitIP(exitIP); err != nil {
+		log.Fatalf("[exit-node] адрес не подходит для выхода: %v", err)
+	}
+	password, envFP, err := exitNodeCredentials(cfg.env, opts.password)
 	if err != nil {
-		log.Fatalf("[exit-node] %v\n[exit-node] EXIT_NODE_HOST_KEY_FINGERPRINT в server/.env должен быть отпечатком ed25519 host key именно этой exit-ноды (%s).", err, exitIP)
+		log.Fatalf("[exit-node] %v", err)
 	}
+	ctx := context.Background()
+	hub := provision.NewSSHRemote(mainClient)
 
-	fmt.Printf("[exit-node] Подключение к %s:%d (host key закреплён)...\n", exitIP, sshPort)
-	exitClient, err := dialExitNode(net.JoinHostPort(exitIP, fmt.Sprintf("%d", sshPort)), access)
+	// 1. The Hub is prepared (--ensure-hub-provisioning): the key for node passwords, its own CA.
+	hubEnv, exists, err := readHubAPIEnv(mainClient)
+	if err != nil || !exists {
+		log.Fatalf("[exit-node] %s на Hub не прочитан (%v)", hubAPIEnv, err)
+	}
+	key := envFileValue(hubEnv, "SSH_ENCRYPTION_KEY")
+	if !validSSHKey(key) {
+		log.Fatal("[exit-node] в api.env на Hub нет SSH_ENCRYPTION_KEY — сначала go run ./cmd/deploy --ensure-hub-provisioning")
+	}
+	if err := os.Setenv("SSH_ENCRYPTION_KEY", key); err != nil {
+		log.Fatal(err)
+	}
+	// Node certificates are dated and checked by the Hub's clock (the Hub's API verifies them).
+	now := hubClock(ctx, hub)
+	caFiles, err := readHubCAFiles(ctx, hub, hubCertsDir)
 	if err != nil {
-		log.Fatalf("[exit-node] SSH: %v", err)
+		log.Fatalf("[exit-node] CA на Hub: %v", err)
 	}
-	defer exitClient.Close()
-
-	// Оптимизация сетевого стека (BBR, IPv6)
-	fmt.Println("[exit-node] Оптимизация сетевого стека...")
-	optimizeNetworkStack(exitClient)
-
-	// Установка Xray и настройка как exit-node. MTProxy на собственном адресе exit должен
-	// оставаться доступным через туннели (ACL hysteria и routing xray его пропускают).
-	mtprotoPort := hubMTProtoPort(mainClient)
-	fmt.Printf("[exit-node] Установка Xray... (MTProxy порт %d разрешён на собственном адресе)\n", mtprotoPort)
-	script := exitNodeSetupScript(exitIP, mtprotoPort)
-
-	// check=true: the script runs under set -e, so a non-zero exit means provisioning stopped
-	// part-way (its stderr, e.g. "[hysteria] ERROR ...", is printed by runSSH). Either that or
-	// a missing hysteria success line aborts before the exit is written to the DB and wired
-	// into the Hub.
-	out, runErr := runSSH(exitClient, script, true)
-	fmt.Println(out)
-	if err := exitNodeSetupError(out, runErr); err != nil {
-		log.Fatalf("[exit-node] ОШИБКА: развёртывание %s не завершено: %v\n"+
-			"[exit-node] Прерываю до записи в БД и настройки клиента на Hub. Исправьте причину и повторите --setup-exit-node (скрипт идемпотентен).", exitIP, err)
+	if _, err := hubCAUsable(caFiles, now()); err != nil {
+		log.Fatalf("[exit-node] CA node-agent на Hub не готов (%v) — сначала go run ./cmd/deploy --ensure-hub-provisioning", err)
 	}
-	fmt.Println("[exit-node] Развёртывание завершено")
 
-	// ── Автоматическое обновление credentials в БД основного сервера ──
-	fmt.Println("[exit-node] Читаю credentials с exit-ноды...")
-	credsScript := `python3 -c "
-import json
-k = json.load(open('/opt/heyearth/state/reality-keys.json'))
-print(k['uuid'])
-print(k['publicKey'])
-print(k['shortId'])
-print(k.get('ssPassword', ''))
-"`
-	credsOut, err := runSSH(exitClient, credsScript, true)
+	// 2. The database and the exit's row as it is now.
+	db, closeDB, err := openDBTunnel(mainClient, envFileValue(hubEnv, "DATABASE_URL"))
 	if err != nil {
-		fmt.Printf("[exit-node] Не удалось прочитать credentials: %v\n", err)
-		fmt.Println("[exit-node] Добавьте данные в админку вручную")
-		return
+		log.Fatalf("[exit-node] БД через SSH-туннель: %v", err)
 	}
-
-	lines := strings.Split(strings.TrimSpace(credsOut), "\n")
-	if len(lines) < 3 {
-		fmt.Println("[exit-node] Неожиданный формат credentials, обновите вручную")
-		return
-	}
-	tunnelUUID := strings.TrimSpace(lines[0])
-	tunnelPubKey := strings.TrimSpace(lines[1])
-	tunnelShortID := strings.TrimSpace(lines[2])
-	tunnelSSPass := ""
-	if len(lines) > 3 {
-		tunnelSSPass = strings.TrimSpace(lines[3])
-	}
-
-	// DATABASE_URL lives in the Hub's api.env (db_password.go); server/.env is the fallback.
-	dbURL, err := readHubDatabaseURL(mainClient)
-	if err != nil || dbURL == "" {
-		dbURL = cfg.env.get("DATABASE_URL", "")
-	}
-	if dbURL == "" {
-		fmt.Println("[exit-node] ОШИБКА: DATABASE_URL не найден ни в api.env на Hub, ни в server/.env — нужен для записи exit-ноды в БД")
-		return
-	}
-
-	fmt.Println("[exit-node] Обновляю запись в БД основного сервера...")
-	want := exitTunnelCreds{UUID: tunnelUUID, PublicKey: tunnelPubKey, ShortID: tunnelShortID, SSPassword: tunnelSSPass,
-		Protocol: "hysteria2", Port: 50443, SNI: config.ExitVRSNI}
-	action := exitDBUpdate // unknown state: behave as before (write and resync)
-	dbConn, closeDB, err := openDBTunnel(mainClient, dbURL)
+	defer closeDB()
+	cur, err := loadExitRow(ctx, db, exitIP, sshcrypto.Decrypt)
 	if err != nil {
-		fmt.Printf("[exit-node] Ошибка подключения к БД через SSH-туннель: %v\n", err)
-		fmt.Println("[exit-node] Добавьте данные в админку вручную")
-	} else {
-		defer closeDB()
-		var cur exitTunnelCreds
-		rerr := dbConn.QueryRow(`SELECT COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''), COALESCE(tunnel_short_id, ''),
-			       COALESCE(tunnel_ss_password, ''), COALESCE(tunnel_protocol, ''), COALESCE(tunnel_port, 0), COALESCE(tunnel_sni, '')
-			  FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP).
-			Scan(&cur.UUID, &cur.PublicKey, &cur.ShortID, &cur.SSPassword, &cur.Protocol, &cur.Port, &cur.SNI)
-		if rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
-			fmt.Printf("[exit-node] Ошибка чтения записи exit-ноды: %v\n", rerr)
-		} else {
-			action = decideExitDBAction(cur, rerr == nil, want)
+		log.Fatalf("[exit-node] %v", err)
+	}
+	if password == "" && !cur.HasPassword {
+		log.Fatal("[exit-node] нужен пароль root самой exit-ноды (--exit-node-password или EXIT_NODE_SSH_PASSWORD): " +
+			"в базе его нет или он не расшифровывается ключом Hub")
+	}
+
+	// 3. The host key the owner confirmed, presented by the exit right now (key exchanges only,
+	// no password is sent before the key matched).
+	port := opts.sshPort
+	if port == 0 {
+		port = 22
+		if cur.Found {
+			port = cur.SSHPort
 		}
-		switch action {
-		case exitDBKeep:
-			fmt.Println("[exit-node] credentials туннеля в БД не изменились — tunnel_status не сбрасываю, heyearth-api не перезапускаю")
-		case exitDBUpdate:
-			// The tunnel changed: the health monitor re-checks it (tunnel_status unknown) and xray resyncs.
-			if _, err := dbConn.Exec(`
-				UPDATE servers SET
-				  tunnel_uuid = $1, tunnel_public_key = $2, tunnel_short_id = $3,
-				  tunnel_ss_password = $4, tunnel_sni = $6,
-				  tunnel_protocol = 'hysteria2', tunnel_port = 50443,
-				  tunnel_status = 'unknown', status = COALESCE(NULLIF(status, ''), 'active')
-				WHERE ip_address = $5`,
-				tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, exitIP, want.SNI); err != nil {
-				fmt.Printf("[exit-node] Ошибка UPDATE: %v\n", err)
-			} else {
-				fmt.Println("[exit-node] БД обновлена (credentials туннеля изменились)")
-			}
-		case exitDBInsert:
-			if _, err := dbConn.Exec(`
-				INSERT INTO servers (name, ip_address, country_code, is_exit_node,
-				                     tunnel_protocol, tunnel_port, tunnel_uuid, tunnel_public_key,
-				                     tunnel_short_id, tunnel_ss_password, tunnel_sni, tunnel_status, status)
-				SELECT 'Exit Node', $1, 'NL', true, 'hysteria2', 50443, $2, $3, $4, $5, $6, 'unknown', 'active'
-				WHERE NOT EXISTS (SELECT 1 FROM servers WHERE ip_address = $1)`,
-				exitIP, tunnelUUID, tunnelPubKey, tunnelShortID, tunnelSSPass, want.SNI); err != nil {
-				fmt.Printf("[exit-node] Ошибка INSERT: %v\n", err)
-			} else {
-				fmt.Println("[exit-node] БД обновлена (новая exit-нода)")
-			}
+	}
+	probe, err := provision.Probe(ctx, exitIP, port)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	hostKey, err := chooseExitHostKey(cur, envFP, probe)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	fmt.Printf("[exit-node] %s:%d, ключ хоста %s %s\n", exitIP, port, hostKey.Type, hostKey.Fingerprint)
+	if password != "" { // a new password is stored only once it logs in (with that key pinned)
+		r, err := provision.DialNode(provision.Node{IP: exitIP, SSHPort: port, SSHUser: "root", HostKeyFP: hostKey.Fingerprint,
+			HostKeyType: hostKey.Type, HostKeyConfirmed: true, Password: password})
+		if err != nil {
+			log.Fatalf("[exit-node] вход на exit с этим паролем не удался: %v", err)
+		}
+		provision.Close(r)
+	}
+
+	// 4. Everything the job takes, checked before the row is written: a refused recipe leaves no row.
+	hubIPs, err := cliHubIPs(ctx, mainClient, db, cfg.host)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	eo, err := cliExitOptions(ctx, mainClient, hub, db, hubIPs)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	kind, lifecycle, role := provision.KindProvision, "pending", "exit"
+	if cur.Found {
+		lifecycle, role = cur.Lifecycle, cur.Role
+	}
+	if lifecycle == "online" {
+		kind = provision.KindReprovision
+	}
+	dry := provision.NewState(kind, provision.Node{ID: max(cur.ID, 1), Role: role, IP: exitIP, Lifecycle: lifecycle}, hub, provision.Hooks{})
+	dry.Exit = eo
+	if _, err := provision.RecipeFor(kind, dry.Node, dry); err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	spec := opts.plans
+	if spec == "" {
+		spec = map[bool]string{false: "all-paid", true: "keep"}[cur.Found]
+	}
+	planKind, planIDs, err := parsePlanSpec(spec)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	if planKind == "all-paid" {
+		if planIDs, err = provision.PaidPlanIDs(ctx, db); err != nil {
+			log.Fatalf("[exit-node] тарифы: %v", err)
 		}
 	}
 
-	// Проверяем статус Xray + Hysteria2 на exit-ноде
-	fmt.Println("[exit-node] Проверяю сервисы на exit-ноде...")
-	xrayCheck, _ := runSSH(exitClient, "systemctl is-active xray; systemctl is-active hysteria2; echo '---'; ss -tulnp | grep -E '443|10443|50443'", true)
-	fmt.Println(xrayCheck)
-
-	// ── Автонастройка Hysteria2 клиента на Hub ──
-	fmt.Println("[exit-node] Настраиваю Hysteria2 клиент на Hub...")
-
-	// ID сервера из БД задаёт порт клиента (1088+id) и имя юнита. Не угадываем: чужой id
-	// перезаписал бы клиент другой exit-ноды.
-	serverID := 0
-	if dbConn != nil {
-		var id int
-		var status string
-		row := dbConn.QueryRow(`SELECT id, COALESCE(status, '') FROM servers WHERE ip_address = $1 LIMIT 1`, exitIP)
-		if row.Scan(&id, &status) == nil {
-			serverID = id
-			if status != "active" && status != "online" {
-				fmt.Printf("[exit-node] статус exit-ноды в БД оставлен как есть: %q (повторный запуск не включает выключенную ноду; включить — в админке)\n", status)
-			}
+	// 5. The row, its plans and MTProxy switch.
+	id, err := ensureExitRow(ctx, db, exitRow{IP: exitIP, Password: password, Key: hostKey, Name: opts.name, Country: opts.country, SSHPort: opts.sshPort}, cur)
+	if err != nil {
+		log.Fatalf("[exit-node] %v", err)
+	}
+	stranded := func() {
+		if !cur.Found {
+			fmt.Printf("[exit-node] запись id %d в базе — «ожидает настройки» (pending): повторите команду (продолжит) или удалите её в админке\n", id)
 		}
 	}
-	if serverID <= 0 {
-		log.Fatalf("[exit-node] ОШИБКА: не удалось узнать id exit-ноды %s в БД — клиент Hysteria2 на Hub не настраиваю (порт 1088+id). "+
-			"Проверьте доступ к БД и запись в servers, затем повторите --setup-exit-node.", exitIP)
+	if planKind != "keep" {
+		if err := provision.BindPlans(ctx, db, id, planIDs); err != nil {
+			stranded()
+			log.Fatalf("[exit-node] тарифы: %v", err)
+		}
+	}
+	if opts.mtproxy != nil {
+		if _, err := db.ExecContext(ctx, exitMTProxySwitchQuery, id, *opts.mtproxy); err != nil {
+			stranded()
+			log.Fatalf("[exit-node] MTProxy: %v", err)
+		}
 	}
 
-	// Hysteria2 клиент на Hub: подключается к exit-ноде, даёт локальный SOCKS5
-	hy2ClientScript := hubHy2ClientScript(exitIP, serverID, tunnelSSPass)
-
-	// check=true (the script runs under set -e): a failed client setup must not end in "Готово".
-	hy2Out, err := runSSHBash(mainClient, "hub hysteria client", hy2ClientScript, true)
-	fmt.Println(hy2Out)
+	// 6. The job: the provisioning core under the CLI runner (synchronous here).
+	store := &provision.SQLStore{DB: db, Decrypt: sshcrypto.Decrypt, JobRunner: provision.RunnerCLI}
+	runner := &provision.Runner{Store: store, Dial: provision.DialNode, Go: func(f func()) { f() }, Logf: log.Printf,
+		Recipe: func(ctx context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
+			st := provision.NewState(kind, n, hub, store.Hooks(func() {
+				fmt.Println("[exit-node] Xray и монитор туннелей на Hub подхватят изменения при периодической синхронизации API (≤ 5 мин)")
+			}, nil))
+			st.Exit, st.Now = eo, now
+			if n.MTProtoStatus == "disabled" { // switched off by the owner: no MTProxy step
+				st.Exit.MTProto = nil
+			}
+			rc, err := provision.RecipeFor(kind, n, st)
+			return rc, st, err
+		}}
+	jobID, err := runner.Start(ctx, id, kind)
 	if err != nil {
-		log.Fatalf("[exit-node] ОШИБКА: клиент Hysteria2 на Hub для %s не настроен: %v\n"+
-			"[exit-node] Exit-нода уже в БД; heyearth-api не перезапущен. Исправьте причину и повторите --setup-exit-node.", exitIP, err)
+		stranded()
+		log.Fatalf("[exit-node] задача не запущена: %v", err)
 	}
-
-	// With a single exit, an API restart takes xray's and Bamboo's exit away for 30–60 s while the
-	// tunnel is re-checked: only when the tunnel credentials actually changed.
-	if exitDBNeedsResync(action) {
-		fmt.Println("[exit-node] Перезапускаю heyearth-api для пересинхронизации Xray...")
-		_, _ = runSSH(mainClient, "systemctl restart heyearth-api", false)
-	} else {
-		fmt.Println("[exit-node] heyearth-api не перезапускаю: credentials туннеля не изменились")
+	job, err := store.JobView(ctx, jobID)
+	if err != nil {
+		log.Fatalf("[exit-node] задача %d: %v", jobID, err)
 	}
-
-	fmt.Printf("\n[exit-node] ✅ Готово! Exit-нода %s полностью настроена.\n", exitIP)
-	fmt.Printf("Протоколы: Hysteria2 (UDP:50443) + SS+WS (TCP:443) + VLESS (TCP:10443)\n")
-	fmt.Printf("UUID: %s\nPublic Key: %s\nShort ID: %s\n", tunnelUUID, tunnelPubKey, tunnelShortID)
+	for _, s := range job.Steps {
+		fmt.Printf("[exit-node] %-11s %s\n", s.Status, s.Title)
+		if s.Status == provision.StepFailed || s.Status == provision.StepRolledBack {
+			fmt.Println("    " + strings.ReplaceAll(s.OutputTail, "\n", "\n    "))
+		}
+	}
+	if job.Status != provision.JobSucceeded {
+		log.Fatalf("[exit-node] задача %d (%s): %s — исправьте причину и повторите команду или нажмите «Продолжить» в карточке ноды (шаги идемпотентны)",
+			jobID, job.Status, job.Error)
+	}
+	fmt.Printf("[exit-node] готово: %s (id %d) — основной туннель и запасной TCP проверены\n", exitIP, id)
 }
 
 // openDBTunnel creates an SSH port-forward from a random local port to the

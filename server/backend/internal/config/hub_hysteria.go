@@ -9,7 +9,7 @@ import (
 const HubHysteriaDir = "/opt/heyearth/hysteria"
 
 // ExitHopRange is the UDP range every exit redirects to its hysteria server (:50443) and the
-// Hub's clients hop across (ExitPortHopScript, HubHysteriaClientYAML).
+// Hub's clients hop across (ExitPortHopConf, HubHysteriaClientYAML).
 const ExitHopRange = "20000-50000"
 
 // HubClientHopInterval is how often a Hub client hops to another port of ExitHopRange (a new UDP
@@ -89,19 +89,3 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 `, serverID, exitIP, HubHysteriaDir, serverID)
 }
-
-// ExitPortHopScript makes an exit accept the Hub clients' port hopping: UDP ExitHopRange addressed
-// to the exit itself is redirected to the hysteria server on :50443, forwarded UDP is untouched
-// (nft table inet hysteria_porthopping, see ExitPortHopConf; re-applied at boot by
-// nftables-hysteria.service). Idempotent: the file creates the table if missing, deletes it and
-// defines it again in one nft transaction, so a re-run never duplicates the rule. Built from the
-// file templates the provisioning core writes (ExitPortHopConf, ExitPortHopUnit; exit_node.go).
-const ExitPortHopScript = `command -v nft >/dev/null 2>&1 || apt-get install -y -qq nftables >/dev/null 2>&1 || true
-cat > ` + ExitPortHopConfPath + ` << 'NEOF'
-` + ExitPortHopConf + `NEOF
-nft -f ` + ExitPortHopConfPath + `
-cat > ` + ExitPortHopUnitPath + ` << 'SEOF'
-` + ExitPortHopUnit + `SEOF
-systemctl daemon-reload
-systemctl enable nftables-hysteria >/dev/null 2>&1 || true
-`

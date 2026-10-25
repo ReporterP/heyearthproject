@@ -32,6 +32,22 @@ const (
 // node's private key: the caller installs it 0600 and never logs it; errors never quote key
 // material.
 func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (certPEM, keyPEM []byte, err error) {
+	return issueNodeCert(caCertPEM, nodeIP, now, func() (crypto.Signer, error) { return parseKey(caKeyPEM) })
+}
+
+// IssueNodeCertWith is IssueNodeCert with the CA key as a crypto.Signer — the deploy CLI's
+// HubCASigner, whose key stays on the Hub. Same certificate, same checks; a signer that is not
+// the CA certificate's key is refused (x509.CreateCertificate compares them).
+func IssueNodeCertWith(caCertPEM []byte, caKey crypto.Signer, nodeIP string, now time.Time) (certPEM, keyPEM []byte, err error) {
+	return issueNodeCert(caCertPEM, nodeIP, now, func() (crypto.Signer, error) {
+		if caKey == nil {
+			return nil, errors.New("ключ CA не задан")
+		}
+		return caKey, nil
+	})
+}
+
+func issueNodeCert(caCertPEM []byte, nodeIP string, now time.Time, signer func() (crypto.Signer, error)) (certPEM, keyPEM []byte, err error) {
 	ip := net.ParseIP(strings.TrimSpace(nodeIP))
 	if ip == nil {
 		return nil, nil, fmt.Errorf("IP ноды %q некорректен", nodeIP)
@@ -48,7 +64,7 @@ func IssueNodeCert(caCertPEM, caKeyPEM []byte, nodeIP string, now time.Time) (ce
 	if err := caUsable(ca, now); err != nil {
 		return nil, nil, err
 	}
-	caKey, err := parseKey(caKeyPEM)
+	caKey, err := signer()
 	if err != nil {
 		return nil, nil, fmt.Errorf("ключ CA: %w", err)
 	}

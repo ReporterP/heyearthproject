@@ -1,0 +1,289 @@
+package main
+
+// --ensure-hub-provisioning puts on a LIVE Hub what node provisioning (admin panel and
+// --setup-exit-node) needs, idempotently, and restarts nothing (Bamboo, xray and the API keep
+// running; the API is restarted by the operator only when SSH_ENCRYPTION_KEY was just added):
+//
+//  1. SSH_ENCRYPTION_KEY in api.env — kept when present; otherwise taken from server/.env or, only
+//     while the database holds no encrypted SSH password, generated once (32 random bytes,
+//     base64, the format internal/crypto reads). api.env keeps every other line, its mode and
+//     owner; the previous file is backed up next to it; the write is refused if api.env changed
+//     since it was read. The key goes over SSH stdin only, never into an argv or the output.
+//  2. The Hub's own SSH key (provision.EnsureHubKey: created once, on the Hub).
+//  3. artifacts/node-agent and /opt/heyearth/scripts/install-mtproxy.sh (written only when different).
+//  4. The node-agent CA made on the Hub (hub_ca.go) — the previous CA kept as legacy so the exits
+//     not converged yet stay reachable. Replacing a CA waits for an API that serves the legacy
+//     pair (otherwise the running API would lose those exits): the first run then says so, and
+//     the run after the API deploy replaces it.
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/heyearth/backend/internal/provision"
+	"golang.org/x/crypto/ssh"
+)
+
+const (
+	hubNodeAgentArtifact = appDir + "/artifacts/node-agent"
+	hubMTProxyScript     = "/opt/heyearth/scripts/install-mtproxy.sh"
+	hubAPIBinary         = appDir + "/heyearth-api"
+)
+
+// validSSHKey: base64 (standard) of exactly 32 bytes — what internal/crypto accepts.
+func validSSHKey(v string) bool {
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v))
+	return err == nil && len(b) == 32
+}
+
+// decideSSHEncryptionKey: the Hub's api.env value, else server/.env's, else — only while the
+// database holds no ciphertext — a new key (generated=true). Never a new key over existing
+// ciphertexts: they would become unreadable. Errors never quote a key.
+func decideSSHEncryptionKey(hub, local string, dbHasCiphertext bool) (key string, generated bool, err error) {
+	hub, local = strings.TrimSpace(hub), strings.TrimSpace(local)
+	switch {
+	case validSSHKey(hub):
+		if validSSHKey(local) && local != hub {
+			fmt.Println("[hub] WARN: SSH_ENCRYPTION_KEY в server/.env отличается от api.env на Hub — используется ключ Hub")
+		}
+		return hub, false, nil
+	case validSSHKey(local):
+		return local, false, nil
+	case dbHasCiphertext:
+		return "", false, errors.New("в БД есть зашифрованные пароли нод, а годного SSH_ENCRYPTION_KEY нет ни в api.env на Hub, ни в server/.env — " +
+			"новый ключ сделал бы их нечитаемыми; верните прежний ключ из бэкапа api.env (в api.env на Hub или в server/.env) и повторите")
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", false, err
+	}
+	return base64.StdEncoding.EncodeToString(b), true, nil
+}
+
+// sshCiphertextCountScript counts stored SSH ciphertexts (psql as postgres, peer auth): 0 while
+// the servers table does not exist yet (a fresh Hub before the API's first migrations).
+const sshCiphertextCountScript = `set -euo pipefail
+t=$(runuser -u postgres -- psql -d heyearth -tAc "SELECT to_regclass('public.servers') IS NOT NULL")
+if [ "$t" != t ]; then echo 0; exit 0; fi
+runuser -u postgres -- psql -d heyearth -tAc "SELECT count(*) FROM servers WHERE COALESCE(octet_length(ssh_password_enc), 0) > 0"
+`
+
+// parseCount reads the single non-negative number the count script prints.
+func parseCount(out string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("неожиданный ответ psql: %q", strings.TrimSpace(out))
+	}
+	return n, nil
+}
+
+// readHubAPIEnv returns api.env ("" and exists=false when the Hub has none yet).
+func readHubAPIEnv(client *ssh.Client) (content string, exists bool, err error) {
+	out, err := runSSHQuiet(client, "if [ -f "+hubAPIEnv+" ]; then echo EXISTS; cat "+hubAPIEnv+"; fi", "")
+	if err != nil {
+		return "", false, err
+	}
+	rest, ok := strings.CutPrefix(out, "EXISTS\n")
+	return rest, ok, nil
+}
+
+// resolveSSHEncryptionKey applies decideSSHEncryptionKey against the live Hub.
+func resolveSSHEncryptionKey(client *ssh.Client, cfg *deployConfig, hubEnv string) (string, bool, error) {
+	hubKey := envFileValue(hubEnv, "SSH_ENCRYPTION_KEY")
+	if validSSHKey(hubKey) {
+		return decideSSHEncryptionKey(hubKey, cfg.env.get("SSH_ENCRYPTION_KEY", ""), true)
+	}
+	out, err := runSSHQuiet(client, "bash -c "+shQuote(sshCiphertextCountScript), "")
+	if err != nil {
+		return "", false, fmt.Errorf("не удалось проверить зашифрованные пароли в БД: %w", err)
+	}
+	n, err := parseCount(out)
+	if err != nil {
+		return "", false, err
+	}
+	return decideSSHEncryptionKey(hubKey, cfg.env.get("SSH_ENCRYPTION_KEY", ""), n > 0)
+}
+
+// writeSSHKeyScript replaces api.env's SSH_ENCRYPTION_KEY lines with the line read from stdin:
+// only if api.env still has the sha256 it had when the decision was made; a backup first; every
+// other line, the mode and the owner kept; temp + mv.
+func writeSSHKeyScript(envPath, backup, sum string) string {
+	return `set -euo pipefail
+umask 077
+f=` + shQuote(envPath) + `
+b=` + shQuote(backup) + `
+[ -f "$f" ] || { echo "[hub] ERROR: $f нет — сначала go run ./cmd/deploy --main" >&2; exit 1; }
+echo "` + sum + `  $f" | sha256sum -c --status - || { echo "[hub] ERROR: $f изменился после чтения — ничего не записано, повторите команду" >&2; exit 1; }
+cp -p "$f" "$b"
+{ grep -v '^SSH_ENCRYPTION_KEY=' "$f" || true; cat; } > "$f.tmp"
+chmod --reference="$f" "$f.tmp"
+chown --reference="$f" "$f.tmp" 2>/dev/null || true
+mv -f "$f.tmp" "$f"
+echo "[hub] SSH_ENCRYPTION_KEY записан в $f (прежний файл: $b)"
+`
+}
+
+// ensureSSHEncryptionKey makes sure api.env carries a valid key; true when it was written now
+// (the API must be restarted to read it).
+func ensureSSHEncryptionKey(client *ssh.Client, cfg *deployConfig) bool {
+	hubEnv, exists, err := readHubAPIEnv(client)
+	if err != nil {
+		log.Fatalf("[hub] чтение %s: %v", hubAPIEnv, err)
+	}
+	if !exists {
+		log.Fatalf("[hub] %s нет — Hub не установлен: сначала go run ./cmd/deploy --main", hubAPIEnv)
+	}
+	if validSSHKey(envFileValue(hubEnv, "SSH_ENCRYPTION_KEY")) {
+		fmt.Println("[hub] SSH_ENCRYPTION_KEY в api.env на месте — не меняю")
+		return false
+	}
+	key, generated, err := resolveSSHEncryptionKey(client, cfg, hubEnv)
+	if err != nil {
+		log.Fatalf("[hub] %v", err)
+	}
+	sum := sha256.Sum256([]byte(hubEnv))
+	backup := hubAPIEnv + ".bak-" + time.Now().Format("20060102-150405")
+	if out, err := runSSHQuiet(client, "bash -c "+shQuote(writeSSHKeyScript(hubAPIEnv, backup, hex.EncodeToString(sum[:]))), "SSH_ENCRYPTION_KEY="+key+"\n"); err != nil {
+		log.Fatalf("[hub] SSH_ENCRYPTION_KEY → api.env: %v", err)
+	} else {
+		fmt.Print(out)
+	}
+	after, _, err := readHubAPIEnv(client)
+	if err != nil || envFileValue(after, "SSH_ENCRYPTION_KEY") != key {
+		log.Fatalf("[hub] SSH_ENCRYPTION_KEY не читается из api.env после записи (%v) — прежний файл: %s", err, backup)
+	}
+	if generated {
+		fmt.Println("[hub] SSH_ENCRYPTION_KEY сгенерирован (зашифрованных паролей в БД не было); он хранится только в api.env на Hub и в его бэкапах")
+	} else {
+		fmt.Println("[hub] SSH_ENCRYPTION_KEY взят из server/.env")
+	}
+	return true
+}
+
+// putHubFile writes data to dst on the Hub over SSH stdin (temp + mv; no SFTP — it hangs), only
+// when the content or mode differs.
+func putHubFile(client *ssh.Client, dst, mode string, data []byte) {
+	sum := sha256.Sum256(data)
+	want := hex.EncodeToString(sum[:]) + " " + mode
+	cur, _ := runSSHQuiet(client, "if [ -f "+shQuote(dst)+" ]; then echo \"$(sha256sum < "+shQuote(dst)+" | cut -d' ' -f1) $(stat -c %a "+shQuote(dst)+")\"; fi", "")
+	if strings.TrimSpace(cur) == want {
+		fmt.Printf("[hub] %s без изменений\n", dst)
+		return
+	}
+	cmd := "set -e; umask 077; mkdir -p " + shQuote(path.Dir(dst)) + "; cat > " + shQuote(dst+".tmp") + "; chmod " + mode + " " + shQuote(dst+".tmp") +
+		"; mv -f " + shQuote(dst+".tmp") + " " + shQuote(dst)
+	if _, err := runSSHQuiet(client, cmd, string(data)); err != nil {
+		log.Fatalf("[hub] запись %s: %v", dst, err)
+	}
+	fmt.Printf("[hub] %s записан (%d байт)\n", dst, len(data))
+}
+
+// apiServesLegacyCA: the API binary on the Hub reads the legacy client pair (its loader names the
+// file), so replacing the CA does not cut off agents of the old CA.
+func apiServesLegacyCA(client *ssh.Client) bool {
+	out, err := runSSHQuiet(client, "if grep -qaF "+shQuote(provision.LegacyClientCertFile)+" "+hubAPIBinary+" 2>/dev/null; then echo yes; else echo no; fi", "")
+	return err == nil && strings.TrimSpace(out) == "yes"
+}
+
+// reportHubCA prints what ensureHubNodeCA did; fatal=false only warns on an error (deploys go on).
+func reportHubCA(p hubCAPlan, err error, fatal bool) {
+	switch {
+	case err != nil && fatal:
+		log.Fatalf("[ca] %v", err)
+	case err != nil:
+		fmt.Printf("[ca] WARN: CA node-agent на Hub не проверен: %v\n", err)
+		return
+	}
+	if p.keepLegacyCA || p.keepLegacyClient {
+		fmt.Printf("[ca] прежний CA сохранён как %s (+ прежняя клиентская пара: %v)\n", provision.LegacyCACertFile, p.keepLegacyClient)
+	}
+	switch {
+	case p.newCA:
+		fmt.Println("[ca] на Hub создан собственный CA node-agent (ключ не покидал Hub) и клиентский сертификат API")
+	case p.newClient:
+		fmt.Println("[ca] клиентский сертификат API перевыпущен CA Hub")
+	case p.notOurs:
+	default:
+		fmt.Println("[ca] CA node-agent на Hub в порядке — без изменений")
+	}
+	if p.note != "" {
+		fmt.Println("[ca] " + p.note)
+	}
+}
+
+// ensureHubProvisioning — see the file comment. Restarts nothing.
+func ensureHubProvisioning(client *ssh.Client, cfg *deployConfig) {
+	ctx := context.Background()
+	hub := provision.NewSSHRemote(client)
+
+	fmt.Println("[hub] 1/4 SSH_ENCRYPTION_KEY в api.env")
+	keyWritten := ensureSSHEncryptionKey(client, cfg)
+
+	fmt.Println("[hub] 2/4 ключ SSH Hub для нод")
+	pub, err := provision.EnsureHubKey(ctx, hub)
+	if err != nil {
+		log.Fatalf("[hub] %v", err)
+	}
+	fmt.Printf("[hub] ключ Hub: %s (%s)\n", provision.HubKeyFingerprint(pub), pub)
+
+	fmt.Println("[hub] 3/4 node-agent и установщик MTProxy")
+	agent, err := os.ReadFile(buildGoBinary(cfg.backendRoot, "node-agent", "node-agent"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	putHubFile(client, hubNodeAgentArtifact, "755", agent)
+	mt, err := os.ReadFile(filepath.Join(cfg.backendRoot, "cmd", "deploy", "install-mtproxy.sh"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	putHubFile(client, hubMTProxyScript, "755", mt)
+
+	fmt.Println("[hub] 4/4 CA node-agent на Hub")
+	mode := caRotate
+	if !apiServesLegacyCA(client) {
+		mode = caKeep
+	}
+	p, err := ensureHubNodeCA(ctx, hub, hubCertsDir, hubClock(ctx, hub)(), mode, false)
+	reportHubCA(p, err, true)
+	if p.notOurs {
+		fmt.Println("[ca] CA пока прежний: API на Hub ещё не умеет держать прежнюю клиентскую пару (exit без сведения потеряли бы связь с Hub). " +
+			"Выкатите API этой ветки (deploy_api.sh), затем повторите go run ./cmd/deploy --ensure-hub-provisioning — CA будет заменён без обрыва связи с агентами.")
+	}
+	if f, err := readHubCAFiles(ctx, hub, hubCertsDir); err == nil && len(f.legacyCA) > 0 {
+		fmt.Println("[ca] прежний CA ещё доверен Hub (" + provision.LegacyCACertFile + "). Сведите каждый exit (карточка ноды → «Переустановить» или --setup-exit-node), " +
+			"проверьте метрики нод в админке, затем удалите прежние файлы:\n" +
+			"    go run ./cmd/deploy --ssh 'rm -f " + hubCertsDir + "/" + provision.LegacyCACertFile + " " + hubCertsDir + "/" + provision.LegacyClientCertFile + " " +
+			hubCertsDir + "/" + provision.LegacyClientKeyFile + "'")
+	}
+
+	fmt.Println("[hub] готово: Бамбук, xray и API не перезапускались.")
+	if keyWritten {
+		fmt.Println("[hub] Чтобы API прочитал новый SSH_ENCRYPTION_KEY, перезапустите только его (деплоем API или так):\n" +
+			"    go run ./cmd/deploy --ssh 'systemctl restart heyearth-api'\n" +
+			"  (не --restart: он перезапускает и xray). После старта API зашифрует открытые пароли SSH старых записей.")
+	}
+}
+
+// rotateHubClientCert (--rotate-node-agent-certs): a new client certificate for the API from the
+// Hub's CA. Node certificates are per node and renewed by the exit recipe; the CA is replaced only
+// by --ensure-hub-provisioning.
+func rotateHubClientCert(client *ssh.Client) {
+	ctx, hub := context.Background(), provision.NewSSHRemote(client)
+	p, err := ensureHubNodeCA(ctx, hub, hubCertsDir, hubClock(ctx, hub)(), caKeep, true)
+	reportHubCA(p, err, true)
+	if p.notOurs {
+		log.Fatal("[ca] клиентский сертификат не перевыпущен: CA на Hub ещё прежний — сначала go run ./cmd/deploy --ensure-hub-provisioning")
+	}
+}

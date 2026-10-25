@@ -35,7 +35,7 @@ package main
 //	xray.service's cgroup (xray runs as root, so a uid match would be useless); allowed loopback
 //	  TCP: the exit tunnels' SOCKS ports.
 //	user hysteria: hysteria2-server (User=hysteria). The per-exit tunnel clients
-//	  hysteria2-client-<id>.service run as ROOT (no User=, see hubHy2ClientScript) and are not
+//	  hysteria2-client-<id>.service run as ROOT (no User=, see config.HubHysteriaClientUnit, written by internal/provision hub_client) and are not
 //	  covered: they only dial their exit and listen on loopback. Allowed loopback TCP: the SOCKS
 //	  ports, the auth callback port(s) of the current phase (below) and 53 (the Go resolver's TCP
 //	  fallback to the local stub).

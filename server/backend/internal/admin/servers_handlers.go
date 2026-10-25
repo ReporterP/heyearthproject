@@ -2,8 +2,6 @@ package admin
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -615,29 +613,16 @@ func encryptSSHPassword(password string) ([]byte, error) {
 
 // ── mTLS connection to node-agent ────────────────────────
 
+// loadClientTLSCredentials: the Hub's client pair and CA, plus — while the node-agent CA is being
+// replaced — the legacy pair and CA next to them (provision.NodeAgentClientTLS), so agents not
+// yet converged stay reachable.
 func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
-	certFile := resolveRuntimePath("TLS_CLIENT_CERT_FILE", "client-cert.pem")
-	keyFile := resolveRuntimePath("TLS_CLIENT_KEY_FILE", "client-key.pem")
-	caFile := resolveRuntimePath("TLS_CA_FILE", "ca-cert.pem")
-
-	clientCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	cfg, err := provision.NodeAgentClientTLS(resolveRuntimePath("TLS_CLIENT_CERT_FILE", "client-cert.pem"),
+		resolveRuntimePath("TLS_CLIENT_KEY_FILE", "client-key.pem"), resolveRuntimePath("TLS_CA_FILE", "ca-cert.pem"))
 	if err != nil {
-		return nil, fmt.Errorf("load client key pair: %w", err)
+		return nil, err
 	}
-	pemServerCA, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file: %w", err)
-	}
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(pemServerCA) {
-		return nil, fmt.Errorf("append CA certs")
-	}
-	return credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      certPool,
-		ServerName:   "node-agent",
-		MinVersion:   tls.VersionTLS13,
-	}), nil
+	return credentials.NewTLS(cfg), nil
 }
 
 func resolveRuntimePath(envKey string, certFileName string) string {

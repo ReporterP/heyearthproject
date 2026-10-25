@@ -698,7 +698,7 @@ func agentApply(o ExitOptions) stepFunc {
 			if why == nil {
 				why = errors.New("нет закрытого ключа")
 			}
-			cert, k, err := IssueNodeCert(ca, caKey, exitIP(s), s.Now())
+			cert, k, err := o.issueNodeCert(ctx, ca, caKey, exitIP(s), s.Now())
 			if err != nil {
 				return err
 			}
@@ -715,6 +715,23 @@ func agentApply(o ExitOptions) stepFunc {
 		_, err = installUnit(ctx, r, s, "node-agent", files, config.UnitConvergeScript("node-agent", config.ExitAgentGuardApplyScript))
 		return err
 	}
+}
+
+// issueNodeCert signs the node's certificate with CASigner when the wiring set one (the CA key on
+// the Hub), else with the key CA() returned.
+func (o ExitOptions) issueNodeCert(ctx context.Context, ca, caKey []byte, ip string, now time.Time) ([]byte, []byte, error) {
+	if o.CASigner == nil {
+		return IssueNodeCert(ca, caKey, ip, now)
+	}
+	c, err := parseCert(ca)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CA: %w", err)
+	}
+	signer, err := o.CASigner(ctx, c)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ключ CA на Hub: %w", err)
+	}
+	return IssueNodeCertWith(ca, signer, ip, now)
 }
 
 func agentVerify(o ExitOptions) stepFunc {

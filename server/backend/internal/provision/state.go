@@ -2,6 +2,8 @@ package provision
 
 import (
 	"context"
+	"crypto"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"sort"
@@ -65,7 +67,11 @@ type ExitOptions struct {
 	MTProto     *MTProtoOptions // nil: no MTProxy (mtproto_status = 'disabled')
 	NodeAgent   func() ([]byte, error)
 	CA          func() (cert, key []byte, err error)
-	HubXray     string // the Hub's xray for the TCP path check
+	// CASigner, when set, signs node certificates instead of CA()'s key (CA() may then return no
+	// key): the deploy CLI's HubCASigner — the CA key stays on the Hub. nil: the key from CA()
+	// (the API, which runs on the Hub).
+	CASigner func(ctx context.Context, ca *x509.Certificate) (crypto.Signer, error)
+	HubXray  string // the Hub's xray for the TCP path check
 }
 
 // MTProtoOptions: the exit's Telegram proxy (Secret is redacted from every step output).

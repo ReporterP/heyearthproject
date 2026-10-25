@@ -1,11 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -224,9 +222,6 @@ func TestExitRealityProbeConfig(t *testing.T) {
 }
 
 func TestPortHopPartsAreTheScript(t *testing.T) {
-	if !strings.Contains(ExitPortHopScript, ExitPortHopConf) || !strings.Contains(ExitPortHopScript, ExitPortHopUnit) {
-		t.Fatal("ExitPortHopScript must be built from ExitPortHopConf and ExitPortHopUnit")
-	}
 	if !strings.HasPrefix(ExitPortHopConf, "table inet hysteria_porthopping\ndelete table inet hysteria_porthopping\n") {
 		t.Error("the nft file must create-then-delete the table (idempotent re-apply)")
 	}
@@ -264,60 +259,6 @@ func TestPortHopPartsAreTheScript(t *testing.T) {
 	}
 	if RestartMarker("xray") != "/opt/heyearth/state/restart-pending/xray" {
 		t.Error(RestartMarker("xray"))
-	}
-}
-
-// TestExitPortHopScriptWritesTheParts runs ExitPortHopScript twice in a real bash with /etc/
-// rewritten to a temp ./etc/ and nft/systemctl/apt-get stubbed: the files it leaves are exactly
-// ExitPortHopConf / ExitPortHopUnit at ExitPortHopConfPath / ExitPortHopUnitPath (what the
-// provisioning core writes and compares), and nft loads that file each run.
-func TestExitPortHopScriptWritesTheParts(t *testing.T) {
-	if !haveBash() {
-		t.Skip("no working bash")
-	}
-	// Only the shell's own paths move; the unit body keeps its real /etc/ path (compared below).
-	script := strings.ReplaceAll(ExitPortHopScript, "cat > /etc/", "cat > ./etc/")
-	script = strings.ReplaceAll(script, "\nnft -f /etc/", "\nnft -f ./etc/")
-	if strings.Contains(script, "> /etc/") || strings.Contains(script, "\nnft -f /etc/") || strings.Count(script, "./etc/") != 3 {
-		t.Fatal("path rewrite incomplete; refusing to run against the real /etc")
-	}
-	const stubs = `nft() { echo "nft $*" >> ./nft.log; }
-systemctl() { echo "systemctl $*" >> ./systemctl.log; }
-apt-get() { echo "apt-get $*" >> ./apt.log; }
-`
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "etc", "systemd", "system"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for run := 1; run <= 2; run++ {
-		cmd := exec.Command("bash", "-s")
-		cmd.Dir = dir
-		cmd.Stdin = strings.NewReader("set -e\n" + stubs + script)
-		var out bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &out, &out
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("run %d: %v\n%s", run, err, out.String())
-		}
-	}
-	for path, want := range map[string]string{ExitPortHopConfPath: ExitPortHopConf, ExitPortHopUnitPath: ExitPortHopUnit} {
-		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(path, "/"))))
-		if err != nil {
-			t.Fatalf("%s not written: %v", path, err)
-		}
-		if string(got) != want {
-			t.Errorf("%s:\n%s\nwant\n%s", path, got, want)
-		}
-		if path == ExitPortHopConfPath && !strings.Contains(string(got), " fib daddr type local counter redirect to :50443\n") {
-			t.Errorf("%s on the node lacks the local-destination guard:\n%s", path, got)
-		}
-	}
-	nftLog, _ := os.ReadFile(filepath.Join(dir, "nft.log"))
-	if string(nftLog) != "nft -f ./etc/nftables-hysteria.conf\nnft -f ./etc/nftables-hysteria.conf\n" {
-		t.Errorf("nft calls:\n%s", nftLog)
-	}
-	sysLog, _ := os.ReadFile(filepath.Join(dir, "systemctl.log"))
-	if strings.Count(string(sysLog), "systemctl enable nftables-hysteria\n") != 2 {
-		t.Errorf("systemctl calls:\n%s", sysLog)
 	}
 }
 

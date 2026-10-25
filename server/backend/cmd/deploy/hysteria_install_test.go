@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -241,19 +239,6 @@ func TestHysteriaInstallSpliced(t *testing.T) {
 				hysteria2HubMarkPending + "\n# ── 2. System user",
 			"chmod 640 /etc/hysteria/server.yaml\n\n" + hysteria2HubStartScript + "\n" + `echo "[hysteria2-hub] Setup complete."`,
 		}},
-		{"exitNodeSetupScript", exitNodeSetupScript("203.0.113.7", 8443), false, []string{
-			"set -e\n", `echo "IP: 203.0.113.7"`,
-		}},
-		{"hubHy2ClientScript", hubHy2ClientScript("203.0.113.7", 5, "s3cret"), true, []string{
-			"set -e\n",
-			"# Клиент к exit-ноде 203.0.113.7 (SOCKS 127.0.0.1:1093)",
-			"put_file /opt/heyearth/hysteria/client-5.yaml 600 ",
-			"put_file /etc/systemd/system/hysteria2-client-5.service 644 ",
-			"  systemctl restart hysteria2-client-5\n",
-			"if ! systemctl is-active --quiet hysteria2-client-5; then\n",
-			"hysteria2-client-5 не активен (см. journalctl -u hysteria2-client-5)",
-			`echo "Hysteria2 client for 203.0.113.7: port 1093"`,
-		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,91 +274,5 @@ func TestHysteriaInstallSpliced(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestExitNodeSetupError(t *testing.T) {
-	ok := "[xray] Сервис запущен\n[hysteria] installed " + config.HysteriaVersion + " (previous: none -> /usr/local/bin/hysteria.bak)\n[hy2] Hysteria2 сервис запущен\n"
-	runErr := errors.New("set -e: Process exited with status 1")
-	tests := []struct {
-		name   string
-		out    string
-		runErr error
-		wantOK bool
-	}{
-		{"clean", ok, nil, true},
-		{"already current", "[hysteria] " + config.HysteriaVersion + " already installed\n", nil, true},
-		{"script failed after install", ok, runErr, false},
-		{"stopped before hysteria", "[xray] Сервис запущен\n", runErr, false},
-		{"no success line, exit 0", "[xray] Сервис запущен\n", nil, false},
-		{"error line in stdout", ok + "[hysteria] ERROR: x\n", nil, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := exitNodeSetupError(tc.out, tc.runErr)
-			if (err == nil) != tc.wantOK {
-				t.Fatalf("exitNodeSetupError = %v, want ok=%v", err, tc.wantOK)
-			}
-			if tc.runErr != nil && !errors.Is(err, tc.runErr) {
-				t.Errorf("error %v does not wrap the script error", err)
-			}
-		})
-	}
-}
-
-// The exit's hysteria server is the tunnel egress: server.yaml must close with the shared
-// config.ExitHysteriaACL (rejects loopback/private/link-local/own IP, then direct(all)), the
-// same block the admin panel's exit provisioning writes.
-func TestExitNodeSetupScriptACL(t *testing.T) {
-	s := exitNodeSetupScript("203.0.113.7", 8443)
-	_, yaml, ok := strings.Cut(s, "cat > /opt/heyearth/hysteria/server.yaml <<'HYEOF'\n")
-	if !ok {
-		t.Fatal("no quoted server.yaml heredoc")
-	}
-	yaml, _, ok = strings.Cut(yaml, "\nHYEOF\n")
-	if !ok {
-		t.Fatal("server.yaml heredoc not terminated")
-	}
-	yaml += "\n"
-	acl := config.ExitHysteriaACL("203.0.113.7", 8443)
-	if !strings.HasSuffix(yaml, "\n\n"+acl) {
-		t.Fatalf("server.yaml must end with the shared exit ACL:\n%s", yaml)
-	}
-	// the MTProxy on the exit's own address is allowed before the own-address reject
-	for _, want := range []string{"    - reject(127.0.0.0/8)\n", "    - reject(::/128)\n", "    - reject(10.0.0.0/8)\n",
-		"    - direct(203.0.113.7, tcp/8443)\n    - reject(203.0.113.7)\n    - direct(all)\n"} {
-		if !strings.Contains(yaml, want) {
-			t.Errorf("server.yaml lacks %q", want)
-		}
-	}
-	for _, keep := range []string{"listen: :50443\n", "  password: PLACEHOLDER_SS_PASSWORD\n", "bandwidth:\n  up: 1 gbps\n  down: 1 gbps\n"} {
-		if !strings.Contains(yaml, keep) {
-			t.Errorf("server.yaml lost %q", keep)
-		}
-	}
-	// the exit's xray (SS / VLESS resilience tunnels) refuses the same targets, MTProxy excepted
-	_, xr, ok := strings.Cut(s, "cat > /opt/heyearth/xray/config.json <<XRAYEOF\n")
-	if !ok {
-		t.Fatal("no xray config heredoc")
-	}
-	xr, _, _ = strings.Cut(xr, "\nXRAYEOF\n")
-	var cfg struct {
-		Routing struct {
-			Rules []map[string]any `json:"rules"`
-		} `json:"routing"`
-	}
-	// $SS_PASSWORD etc. are shell variables inside JSON strings: the document still parses
-	if err := json.Unmarshal([]byte(xr), &cfg); err != nil {
-		t.Fatalf("exit xray config does not parse: %v\n%s", err, xr)
-	}
-	rules := cfg.Routing.Rules
-	if len(rules) != 3 || rules[0]["outboundTag"] != "direct" || rules[0]["port"] != "8443" || rules[1]["outboundTag"] != "block" {
-		t.Fatalf("routing rules: %v", rules)
-	}
-	ips := fmt.Sprint(rules[1]["ip"])
-	for _, w := range []string{"geoip:private", "127.0.0.0/8", "10.0.0.0/8", "fc00::/7", "203.0.113.7"} {
-		if !strings.Contains(ips, w) {
-			t.Errorf("block rule lacks %s: %s", w, ips)
-		}
 	}
 }

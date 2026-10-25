@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/provision"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -79,147 +79,199 @@ func testSSHServer(t *testing.T) (string, string) {
 	return ln.Addr().String(), ssh.FingerprintSHA256(signer.PublicKey())
 }
 
-// --setup-exit-node reaches the exit only with the pinned ed25519 host key and the exit's own
-// password; there is no unpinned fallback and no Hub-password fallback.
+// The deploy tool reaches a host by password only with its host key pinned: the right fingerprint
+// connects, a wrong one is refused, and without DEPLOY_HOST_KEY_FINGERPRINT the Hub is not even
+// dialled (no InsecureIgnoreHostKey anywhere). The exit's password is never the Hub's.
 func TestDialExitNodePinned(t *testing.T) {
 	addr, fp := testSSHServer(t)
-	c, err := dialExitNode(addr, exitAccess{password: "pw", fingerprint: fp})
+	c, err := sshDialAlgos(addr, "root", "pw", fp, []string{ssh.KeyAlgoED25519})
 	if err != nil {
 		t.Fatalf("pinned dial with the right fingerprint: %v", err)
 	}
 	c.Close()
-	if c, err := dialExitNode(addr, exitAccess{password: "pw", fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}); err == nil {
+	if c, err := sshDialAlgos(addr, "root", "pw", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil); err == nil {
 		c.Close()
 		t.Fatal("a wrong host key fingerprint was accepted")
 	} else if !strings.Contains(err.Error(), "unexpected host key fingerprint") {
 		t.Errorf("error: %v", err)
 	}
-	// no fingerprint, or only the Hub's password in server/.env: refused before any dial
+	for _, fp := range []string{"", "  ", "md5:aa:bb"} {
+		c, err := sshDial(addr, "root", "pw", fp)
+		if err == nil {
+			c.Close()
+			t.Fatalf("fingerprint %q: dialled without a pinned host key", fp)
+		}
+		if !strings.Contains(err.Error(), "DEPLOY_HOST_KEY_FINGERPRINT") {
+			t.Errorf("fingerprint %q: the refusal must name DEPLOY_HOST_KEY_FINGERPRINT: %v", fp, err)
+		}
+	}
 	if _, err := exitAccessFor(envMap{"EXIT_NODE_SSH_PASSWORD": "pw"}, ""); err == nil {
 		t.Error("exitAccessFor without EXIT_NODE_HOST_KEY_FINGERPRINT must fail")
 	}
 	if _, err := exitAccessFor(envMap{"DEPLOY_SSH_PASSWORD": "hub", "EXIT_NODE_HOST_KEY_FINGERPRINT": fp}, ""); err == nil {
 		t.Error("the Hub's deploy password must never be used for the exit")
 	}
-	// the source keeps it that way: no unpinned dial and no deployPassword in setupExitNodeDeploy
-	b, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
-	i := strings.Index(src, "func setupExitNodeDeploy(")
-	body := src[i : i+strings.Index(src[i:], "\n}\n")]
-	if strings.Contains(body, "deployPassword") || regexp.MustCompile(`sshDial\([^)]*""\)`).MatchString(body) || !strings.Contains(body, "dialExitNode(") {
-		t.Error("setupExitNodeDeploy must dial through dialExitNode with exitAccessFor, never sshDial(..., \"\") or the Hub password")
-	}
-}
-
-func TestExitScriptsSecrets(t *testing.T) {
-	exit := exitNodeSetupScript("203.0.113.7", 8443)
-	if regexp.MustCompile(`echo "[^"\n]*\$SS_PASSWORD`).MatchString(exit) {
-		t.Error("the exit script prints the SS password")
-	}
-	hub := hubHy2ClientScript("203.0.113.7", 5, "s3cret")
-	u, p := strings.Index(hub, "umask 077\n"), strings.Index(hub, "put_file /opt/heyearth/hysteria/client-5.yaml 600 ")
-	if u < 0 || p < 0 || u > p {
-		t.Errorf("client-5.yaml must be written under umask 077 with mode 600 (umask %d, put_file %d)", u, p)
-	}
-	// the tunnel password only travels inside the base64 payload, never through the shell
-	if strings.Contains(hub, "s3cret") {
-		t.Error("the tunnel password appears in the shell script")
-	}
-	// the Hub client is exactly the template heyearth-api writes (hopping, hopInterval, ACL)
-	if got := payloadFrom(t, hub, "/opt/heyearth/hysteria/client-5.yaml"); got != config.HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093) {
-		t.Errorf("client yaml is not config.HubHysteriaClientYAML:\n%s", got)
-	}
-	if got := payloadFrom(t, hub, "/etc/systemd/system/hysteria2-client-5.service"); got != config.HubHysteriaClientUnit(5, "203.0.113.7") {
-		t.Errorf("unit is not config.HubHysteriaClientUnit:\n%s", got)
-	}
-	for _, w := range []string{"server: 203.0.113.7:" + config.ExitHopRange + "\n", "    hopInterval: 30s\n", "acl:\n  inline:\n", "listen: 127.0.0.1:1093\n"} {
-		if !strings.Contains(config.HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093), w) {
-			t.Errorf("client template lacks %q", w)
-		}
-	}
-}
-
-// A re-run on an unchanged exit: the Hub client is restarted only when its files changed or it
-// is down, and the tunnel row (and heyearth-api) only when the credentials changed.
-func TestExitRerunDoesNotInterrupt(t *testing.T) {
-	want := exitTunnelCreds{UUID: "u", PublicKey: "pk", ShortID: "s", SSPassword: "p", Protocol: "hysteria2", Port: 50443, SNI: config.ExitVRSNI}
-	if a := decideExitDBAction(want, true, want); a != exitDBKeep || exitDBNeedsResync(a) {
-		t.Errorf("unchanged credentials: action %d, resync %v", a, exitDBNeedsResync(a))
-	}
-	for _, mut := range []func(*exitTunnelCreds){
-		func(c *exitTunnelCreds) { c.UUID = "x" }, func(c *exitTunnelCreds) { c.PublicKey = "x" }, func(c *exitTunnelCreds) { c.ShortID = "x" },
-		func(c *exitTunnelCreds) { c.SSPassword = "x" }, func(c *exitTunnelCreds) { c.Protocol = "vless" }, func(c *exitTunnelCreds) { c.Port = 443 },
-		func(c *exitTunnelCreds) { c.SNI = "x" },
-	} {
-		cur := want
-		mut(&cur)
-		if a := decideExitDBAction(cur, true, want); a != exitDBUpdate || !exitDBNeedsResync(a) {
-			t.Errorf("changed credentials %+v: action %d", cur, a)
-		}
-	}
-	if a := decideExitDBAction(exitTunnelCreds{}, false, want); a != exitDBInsert || !exitDBNeedsResync(a) {
-		t.Errorf("new exit: action %d", a)
-	}
-	if !haveBash() {
-		t.Skip("no working bash")
-	}
-	// the restart block of the Hub client script, with systemctl stubbed
-	hub := hubHy2ClientScript("203.0.113.7", 5, "s3cret")
-	i, j := strings.Index(hub, "systemctl daemon-reload\n"), strings.Index(hub, "systemctl status hysteria2-client-5")
-	block := hub[i:j]
-	for _, c := range []struct{ changed, active, wantRestart string }{{"0", "0", "1"}, {"0", "1", "0"}, {"1", "1", "1"}} {
-		out, _ := runBash(t, `PUT_CHANGED=`+c.changed+`; ACTIVE=`+c.active+`
-systemctl() { case "$1" in restart) echo RESTARTED ;; is-active) [ "$ACTIVE" = 1 ] ;; esac; }
-sleep() { :; }
-`+block)
-		if got := strings.Contains(out, "RESTARTED"); got != (c.wantRestart == "1") {
-			t.Errorf("changed=%s active=%s: restarted=%v\n%s", c.changed, c.active, got, out)
-		}
-	}
-}
-
-// The SNI --setup-exit-node writes to tunnel_sni (and the Hub's generator falls back to) is one the
-// exit's Reality inbound serves: www.microsoft.com, not the apex that fails the handshake on prod.
-func TestExitNodeSetupScriptServesExitVRSNI(t *testing.T) {
-	if config.ExitVRSNI != "www.microsoft.com" {
-		t.Fatalf("config.ExitVRSNI = %q, want www.microsoft.com", config.ExitVRSNI)
-	}
-	s := exitNodeSetupScript("203.0.113.7", 8443)
-	m := regexp.MustCompile(`"serverNames": \[([^\]]*)\]`).FindStringSubmatch(s)
-	if m == nil || !strings.Contains(m[1], `"`+config.ExitVRSNI+`"`) {
-		t.Errorf("the exit's Reality serverNames %v lack %q", m, config.ExitVRSNI)
-	}
-	if !strings.Contains(s, `echo "SNI: `+config.ExitVRSNI+`"`) {
-		t.Errorf("the exit script reports another SNI than %q", config.ExitVRSNI)
+	if pw, _, _ := exitNodeCredentials(envMap{"DEPLOY_SSH_PASSWORD": "hub"}, ""); pw != "" {
+		t.Error("--setup-exit-node must never take the Hub's deploy password")
 	}
 	src, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(src), "tunnel_sni = 'microsoft.com'") || strings.Contains(string(src), `SNI: "microsoft.com"`) {
-		t.Error("setupExitNodeDeploy writes the apex microsoft.com to tunnel_sni")
+	if strings.Contains(string(src), "InsecureIgnoreHostKey") {
+		t.Error("main.go still accepts any host key")
 	}
 }
 
-// The exit accepts the Hub clients' hopping range: the shared nft hop script and the firewall.
-func TestExitNodeSetupScriptPortHopping(t *testing.T) {
-	s := exitNodeSetupScript("203.0.113.7", 8443)
-	hop := strings.Index(s, strings.TrimSuffix(config.ExitPortHopScript, "\n"))
-	if hop < 0 {
-		t.Fatal("the exit script does not install config.ExitPortHopScript")
-	}
-	if hy := strings.Index(s, "systemctl restart hysteria2\n"); hy < 0 || hy > hop {
-		t.Error("port hopping must follow the hysteria server setup")
-	}
-	for _, w := range []string{"ufw allow 20000:50000/udp", "iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT"} {
-		if !strings.Contains(s, w) {
-			t.Errorf("exit firewall lacks %q", w)
+func TestExitNodeCredentials(t *testing.T) {
+	fp := "SHA256:" + strings.Repeat("A", 43)
+	for name, tc := range map[string]struct {
+		env     envMap
+		flag    string
+		pw, wfp string
+		wantErr bool
+	}{
+		"flag wins":               {envMap{"EXIT_NODE_SSH_PASSWORD": "env"}, "flag", "flag", "", false},
+		"env password":            {envMap{"EXIT_NODE_SSH_PASSWORD": "env", "EXIT_NODE_HOST_KEY_FINGERPRINT": fp}, "", "env", fp, false},
+		"nothing: the DB decides": {envMap{}, "", "", "", false},
+		"bad fingerprint refused": {envMap{"EXIT_NODE_HOST_KEY_FINGERPRINT": "SHA256:short"}, "", "", "", true},
+	} {
+		pw, gotFP, err := exitNodeCredentials(tc.env, tc.flag)
+		if (err != nil) != tc.wantErr || (!tc.wantErr && (pw != tc.pw || gotFP != tc.wfp)) {
+			t.Errorf("%s: %q %q %v", name, pw, gotFP, err)
 		}
 	}
-	if strings.Contains(s, "%!") {
-		t.Error("format verb mismatch in the exit script")
+}
+
+// Which host key --setup-exit-node pins: server/.env's fingerprint, else the one confirmed in the
+// database — always one the exit presents right now; a different confirmed key must be presented
+// too (exit 2 has ed25519 and ECDSA), otherwise the server is not the one the owner confirmed.
+func TestChooseExitHostKey(t *testing.T) {
+	ed := provision.HostKey{Type: ssh.KeyAlgoED25519, Fingerprint: "SHA256:" + strings.Repeat("E", 43), Key: "ed-blob"}
+	ec := provision.HostKey{Type: ssh.KeyAlgoECDSA256, Fingerprint: "SHA256:" + strings.Repeat("C", 43), Key: "ec-blob"}
+	stranger := "SHA256:" + strings.Repeat("X", 43)
+	both := provision.ProbeResult{Keys: []provision.HostKey{ed, ec}}
+	onlyEd := provision.ProbeResult{Keys: []provision.HostKey{ed}}
+	for name, tc := range map[string]struct {
+		row   exitRowState
+		env   string
+		probe provision.ProbeResult
+		want  provision.HostKey
+		err   string
+	}{
+		"new exit, .env fingerprint":                  {exitRowState{}, ed.Fingerprint, both, ed, ""},
+		"new exit without a fingerprint":              {exitRowState{}, "", both, provision.HostKey{}, "EXIT_NODE_HOST_KEY_FINGERPRINT"},
+		"known exit, DB-confirmed key":                {exitRowState{Found: true, FP: ec.Fingerprint, Confirmed: true}, "", both, ec, ""},
+		"known exit, unconfirmed key":                 {exitRowState{Found: true, FP: ec.Fingerprint}, "", both, provision.HostKey{}, "не подтверждён"},
+		"another key of the same server":              {exitRowState{Found: true, FP: ec.Fingerprint, Confirmed: true}, ed.Fingerprint, both, ed, ""},
+		"confirmed key gone: reinstalled or not ours": {exitRowState{Found: true, FP: ec.Fingerprint, Confirmed: true}, ed.Fingerprint, onlyEd, provision.HostKey{}, ec.Fingerprint},
+		"fingerprint not presented":                   {exitRowState{}, stranger, both, provision.HostKey{}, "предъявляет"},
+	} {
+		got, err := chooseExitHostKey(tc.row, tc.env, tc.probe)
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("%s: %+v %v, want an error with %q", name, got, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s: %+v %v, want %+v", name, got, err, tc.want)
+		}
+	}
+}
+
+// The rows --setup-exit-node writes are the admin wizard's: a new exit is 'pending' with its host
+// key confirmed and only an encrypted password; an update drops a plaintext password only when it
+// stores a new encrypted one (ssh_password is NOT NULL: emptied, never NULLed).
+func TestExitRowQueries(t *testing.T) {
+	ins := norm(insertExitRowQuery)
+	for _, w := range []string{"'pending'", "ssh_host_key_confirmed_at", "ssh_password_enc", "ssh_host_key, ssh_host_key_fp", "'exit', TRUE"} {
+		if !strings.Contains(ins, w) {
+			t.Errorf("insert lacks %q:\n%s", w, ins)
+		}
+	}
+	if regexp.MustCompile(`ssh_password[,) ]`).MatchString(insertExitRowQuery) {
+		t.Errorf("insert writes a plaintext password:\n%s", ins)
+	}
+	upd := norm(updateExitRowQuery)
+	for _, w := range []string{"ssh_password = CASE WHEN $5::bytea IS NULL THEN ssh_password ELSE '' END", "ssh_password_enc = COALESCE($5::bytea, ssh_password_enc)",
+		"ssh_host_key_confirmed_at = CASE WHEN ssh_host_key_fp IS NOT DISTINCT FROM $4", "WHERE id = $1"} {
+		if !strings.Contains(upd, w) {
+			t.Errorf("update lacks %q:\n%s", w, upd)
+		}
+	}
+	if strings.Contains(upd, "ssh_password = NULL") {
+		t.Error("ssh_password is NOT NULL")
+	}
+}
+
+func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func TestCollectCLIHubIPs(t *testing.T) {
+	ipOut := "2: ens3    inet 138.16.181.225/24 brd 138.16.181.255 scope global ens3\n" +
+		"2: ens3    inet 45.150.39.236/32 scope global ens3\n" +
+		"3: awg0    inet 10.66.66.1/24 scope global awg0\n" +
+		"4: docker0    inet 172.17.0.1/16 scope global docker0\n" +
+		"2: ens3    inet6 2a03:6f00::5/64 scope global\n"
+	lookup := func(h string) ([]net.IP, error) {
+		if h == "hiearth.ru" {
+			return []net.IP{net.ParseIP("138.16.181.225")}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	got := collectCLIHubIPs(ipOut, []string{"hiearth.ru", "109.172.86.40", "", "broken.invalid"}, lookup)
+	want := []string{"109.172.86.40", "138.16.181.225", "2a03:6f00::5", "45.150.39.236"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+func TestParsePlanSpec(t *testing.T) {
+	for spec, want := range map[string]string{"all-paid": "all-paid", "none": "none", "keep": "keep", "1, 2,3": "ids"} {
+		kind, ids, err := parsePlanSpec(spec)
+		if err != nil || kind != want || (want == "ids" && len(ids) != 3) {
+			t.Errorf("%q: %s %v %v", spec, kind, ids, err)
+		}
+	}
+	for _, bad := range []string{"all", "1,x", "-1", "0"} {
+		if _, _, err := parsePlanSpec(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+// --setup-exit-node is the provisioning core, not a second provisioning path.
+func TestSetupExitNodeUsesTheCore(t *testing.T) {
+	b, _ := os.ReadFile("main.go")
+	src := string(b)
+	i := strings.Index(src, "func setupExitNodeDeploy(")
+	if i < 0 {
+		t.Fatal("setupExitNodeDeploy not found")
+	}
+	body := src[i : i+strings.Index(src[i:], "\n}\n")]
+	for _, must := range []string{"exitNodeCredentials(", "provision.Runner{", "provision.RecipeFor(", "ensureExitRow(",
+		"JobRunner: provision.RunnerCLI", "provision.DialNode", "provision.Probe(", "cliExitOptions("} {
+		if !strings.Contains(body, must) {
+			t.Errorf("setupExitNodeDeploy lacks %s", must)
+		}
+	}
+	for _, banned := range []string{"restart heyearth-api", "exitNodeSetupScript", "sshDial(", "sshDialAlgos(", "deployPassword", "ca-key.pem\")", "InsecureIgnoreHostKey"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("setupExitNodeDeploy still uses %s", banned)
+		}
+	}
+	for _, gone := range []string{"func exitNodeSetupScript(", "func hubHy2ClientScript(", "func exitNodeSetupError(", "func ensureLocalMTLSAssets("} {
+		if strings.Contains(src, gone) {
+			t.Errorf("main.go still has %s", gone)
+		}
+	}
+	// The CA key never comes to this machine: node certificates are signed on the Hub.
+	b, _ = os.ReadFile("exit_node.go")
+	src = string(b)
+	i = strings.Index(src, "func cliExitOptions(")
+	body = src[i : i+strings.Index(src[i:], "\n}\n")]
+	if !strings.Contains(body, "CASigner: ") || !strings.Contains(body, "provision.HubCASigner(") || strings.Contains(body, "ca-key.pem\")") ||
+		!strings.Contains(body, "return []byte(ca), nil, nil") {
+		t.Errorf("cliExitOptions must hand over the CA certificate without its key and sign on the Hub:\n%s", body)
 	}
 }
