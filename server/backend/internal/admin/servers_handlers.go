@@ -42,7 +42,9 @@ const (
 	tunnelCredsGoneMsg = "Генерация ключей туннеля в браузере отключена: ключи создаются на самой ноде при настройке."
 	setupGoneMsg       = "Настройка exit из старой формы отключена: она перезапускала API и не доделывала шаги. Новый exit настраивается мастером «Добавить ноду» (следующее обновление админки)."
 
-	sshPasswordKeyMissingMsg = "Ключ шифрования SSH не настроен — пароль не сохранён"
+	// sshPasswordKeyMissingMsg: a password cannot be stored without SSH_ENCRYPTION_KEY (503 — the
+	// Hub is not set up for it; the same answer for «Добавить ноду» and a password change).
+	sshPasswordKeyMissingMsg = "На Hub не задан SSH_ENCRYPTION_KEY — пароль нельзя сохранить зашифрованно. Выполните go run ./cmd/deploy --ensure-hub-provisioning"
 )
 
 // removedServerActions answer 410: they broke the tunnel (fetch_tunnel_creds switched it to
@@ -382,7 +384,7 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		enc, err := encryptSSHPassword(req.SSHPassword)
 		if err != nil {
 			log.Printf("[servers] server %d: SSH password not saved: %v", serverID, err)
-			writeAdminError(w, http.StatusInternalServerError, sshPasswordKeyMissingMsg)
+			writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
 			return
 		}
 		newSSHPasswordEnc = enc

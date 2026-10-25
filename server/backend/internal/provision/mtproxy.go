@@ -118,13 +118,23 @@ func redactErr(err error, secrets []string) error {
 }
 
 // setMTProto records the node's MTProxy state, also in the run's view of the node (mtproxyVerify
-// reads it).
+// reads it). ErrMTProxyDisabled: the owner switched MTProxy off while the step ran — nothing was
+// written and the run's view becomes 'disabled'.
 func setMTProto(ctx context.Context, s *State, status string) error {
 	if err := s.Hooks.MarkMTProto(ctx, s.Node.ID, status); err != nil {
+		if errors.Is(err, ErrMTProxyDisabled) {
+			s.Node.MTProtoStatus = "disabled"
+		}
 		return err
 	}
 	s.Node.MTProtoStatus = status
 	return nil
+}
+
+// mtproxySwitchedOff ends the step when a status write found MTProxy switched off by the owner.
+func mtproxySwitchedOff(s *State, what string) error {
+	s.Printf("Telegram-прокси выключен владельцем, пока шла задача: %s", what)
+	return fmt.Errorf("%w: %w", ErrSkipped, ErrMTProxyDisabled)
 }
 
 // mtproxyApply never fails the exit: a MTProxy problem is reported and the step is skipped
@@ -143,18 +153,26 @@ func installMTProxyStep(o MTProtoOptions, skipOnFailure bool) stepFunc {
 			return fmt.Errorf("%w: %w", ErrSkipped, ErrMTProxyDisabled)
 		}
 		s.AddSecret(o.Secret)
-		_ = setMTProto(ctx, s, "installing")
+		// Other write errors of "installing" do not stop the install (the final mark decides).
+		if err := setMTProto(ctx, s, "installing"); errors.Is(err, ErrMTProxyDisabled) {
+			return mtproxySwitchedOff(s, "не ставлю")
+		}
 		out, err := InstallMTProxy(ctx, r, o)
 		s.Printf("%s", tail(out, 2000))
 		if err != nil {
-			_ = setMTProto(ctx, s, "unhealthy")
+			if merr := setMTProto(ctx, s, "unhealthy"); errors.Is(merr, ErrMTProxyDisabled) {
+				s.Printf("MTProxy не установлен: %v", err)
+				return mtproxySwitchedOff(s, "установка не удалась, состояние не меняю")
+			}
 			if !skipOnFailure {
 				return fmt.Errorf("Telegram-прокси не установлен: %w", err)
 			}
 			s.Printf("MTProxy не установлен: %v. Выход работает и без него; повтор — «Переустановить» в карточке ноды.", err)
 			return fmt.Errorf("%w: %v", ErrSkipped, err)
 		}
-		if err := setMTProto(ctx, s, "healthy"); err != nil {
+		if err := setMTProto(ctx, s, "healthy"); errors.Is(err, ErrMTProxyDisabled) {
+			return mtproxySwitchedOff(s, "на ноде он уже установлен, но клиентам не выдаётся")
+		} else if err != nil {
 			return err
 		}
 		if s.Hooks.BumpSubscription != nil {

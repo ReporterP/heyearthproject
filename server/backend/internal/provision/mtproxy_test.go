@@ -187,6 +187,51 @@ func TestMTProxyStep(t *testing.T) {
 	}
 }
 
+// The owner switches MTProxy off while the step runs: the status write hits nothing
+// (ErrMTProxyDisabled), the run's view of the node becomes 'disabled', the step ends skipped —
+// no install after a refused "installing", no subscription bump, never a failed exit or job.
+func TestMTProxyStepSwitchedOffMidway(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		at       string // the status whose write finds 'disabled'
+		fail     bool   // the install fails
+		job      bool   // a KindMTProxy job (a failed install would fail it)
+		installs int
+	}{
+		{at: "installing", installs: 0},
+		{at: "installing", job: true, installs: 0},
+		{at: "healthy", installs: 1},
+		{at: "healthy", job: true, installs: 1},
+		{at: "unhealthy", fail: true, installs: 1},
+		{at: "unhealthy", fail: true, job: true, installs: 1},
+	} {
+		host := newFakeHost()
+		host.mtproxyFail = c.fail
+		h := &fakeHooks{}
+		hooks := h.Hooks()
+		var marks []string
+		hooks.MarkMTProto = func(_ context.Context, _ int, s string) error {
+			marks = append(marks, s)
+			if s == c.at {
+				return ErrMTProxyDisabled
+			}
+			return nil
+		}
+		st := NewState(KindProvision, Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "unknown"}, nil, hooks)
+		apply := mtproxyApply(testMTOptions())
+		if c.job {
+			apply = mtproxyJobApply(testMTOptions())
+		}
+		err := apply(ctx, host, st)
+		if !errors.Is(err, ErrSkipped) || !errors.Is(err, ErrMTProxyDisabled) {
+			t.Errorf("%+v: %v, want skipped (switched off)", c, err)
+		}
+		if st.Node.MTProtoStatus != "disabled" || h.bumps != 0 || host.count("mtproxy-install") != c.installs || marks[len(marks)-1] != c.at {
+			t.Errorf("%+v: status %q bumps %d installs %d marks %v", c, st.Node.MTProtoStatus, h.bumps, host.count("mtproxy-install"), marks)
+		}
+	}
+}
+
 // A KindMTProxy job (node card «Переустановить Telegram-прокси», the reconciler's backfill):
 // refused before any job unless the node is an online exit with MTProxy on, a confirmed host key
 // and valid settings; the install is the whole job, so a failed install fails it.

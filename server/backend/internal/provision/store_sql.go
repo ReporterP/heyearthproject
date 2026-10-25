@@ -219,9 +219,11 @@ SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) W
 	activateQuery     = `UPDATE servers SET lifecycle_state = 'online', tunnel_status = 'healthy', tunnel_error = '',
        lifecycle_updated_at = NOW(), updated_at = NOW()
  WHERE id = $1 AND lifecycle_state = 'provisioning'`
+	// markMTProtoQuery never overwrites the owner's switch: MTProxy switched off ('disabled')
+	// while a step runs stays off (the hook reports ErrMTProxyDisabled).
 	markMTProtoQuery = `UPDATE servers SET mtproto_status = $1, mtproto_last_check = NOW(),
        mtproto_installed_at = COALESCE(mtproto_installed_at, CASE WHEN $1::text = 'healthy' THEN NOW() END), updated_at = NOW()
- WHERE id = $2`
+ WHERE id = $2 AND mtproto_status <> 'disabled'`
 	paidPlansQuery   = `SELECT id FROM plans WHERE is_active = TRUE AND price_rub > 0 ORDER BY sort_order, id`
 	lockServerQuery  = `SELECT 1 FROM servers WHERE id = $1 FOR UPDATE`
 	unbindPlansQuery = `DELETE FROM plan_servers WHERE server_id = $1`
@@ -490,8 +492,16 @@ func (s *SQLStore) Hooks(requestSync func(), probeAgent func(context.Context, st
 			return nil
 		},
 		MarkMTProto: func(ctx context.Context, id int, status string) error {
-			_, err := s.DB.ExecContext(ctx, markMTProtoQuery, status, id)
-			return err
+			res, err := s.DB.ExecContext(ctx, markMTProtoQuery, status, id)
+			if err != nil {
+				return err
+			}
+			if n, err := res.RowsAffected(); err != nil {
+				return err
+			} else if n == 0 {
+				return ErrMTProxyDisabled // the owner switched it off meanwhile (a job holds the node: it exists)
+			}
+			return nil
 		},
 		BumpSubscription: s.bumpSubscription(),
 		RequestSync:      requestSync,

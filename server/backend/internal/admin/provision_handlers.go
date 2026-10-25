@@ -430,7 +430,7 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := encryptSSHPassword(req.SSHPassword)
 	if err != nil {
-		writeAdminError(w, http.StatusServiceUnavailable, "На Hub не задан SSH_ENCRYPTION_KEY — пароль нельзя сохранить зашифрованно. Выполните go run ./cmd/deploy --ensure-hub-provisioning")
+		writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
 		return
 	}
 	name := strings.TrimSpace(req.Name)

@@ -426,3 +426,35 @@ func TestSSHEncryptionKeyAlert(t *testing.T) {
 		t.Fatalf("alerts: %s", got)
 	}
 }
+
+// A valid but DIFFERENT SSH_ENCRYPTION_KEY passes crypto.Ready: the stored ciphertexts it cannot
+// read are counted at start and reported (warning, with the server ids — no secret); none
+// unreadable resolves the alert.
+func TestUnreadableSSHCiphertexts(t *testing.T) {
+	decrypt := func(b []byte) (string, error) {
+		if string(b) == "ours" {
+			return "pw", nil
+		}
+		return "", errors.New("crypto: decrypt: cipher: message authentication failed")
+	}
+	got := unreadableCiphertexts([]storedCipher{{2, []byte("ours")}, {3, []byte("foreign")}, {9, []byte("foreign-too")}}, decrypt)
+	if !slices.Equal(got, []int{3, 9}) {
+		t.Fatalf("unreadable %v, want [3 9]", got)
+	}
+
+	ah := withExitAlertHarness(t)
+	reportUnreadableCiphertexts(got)
+	if len(ah.events) != 1 || ah.events[0].Kind != "raise" || ah.events[0].Key != sshCiphertextsAlertKey || ah.events[0].Level != AlertWarn {
+		t.Fatalf("alerts: %+v", ah.events)
+	}
+	if e := ah.events[0]; !strings.Contains(e.Title, "2") || !strings.Contains(e.Details, "3, 9") || strings.Contains(e.Title+e.Details, "foreign") {
+		t.Fatalf("alert text: %q / %q", e.Title, e.Details)
+	}
+	reportUnreadableCiphertexts(nil)
+	if got := alertLog(ah); got != "raise "+sshCiphertextsAlertKey+", resolve "+sshCiphertextsAlertKey {
+		t.Fatalf("alerts: %s", got)
+	}
+	if q := strings.Join(strings.Fields(storedCiphertextsQuery), " "); !strings.Contains(q, "COALESCE(octet_length(ssh_password_enc), 0) > 0") {
+		t.Errorf("query: %s", q)
+	}
+}

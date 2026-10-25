@@ -244,15 +244,17 @@ func TestUpdateServerWithoutPasswordLeavesSSHColumns(t *testing.T) {
 	}
 }
 
-// A new password with no encryption key is refused: 500 with the explanation, nothing written.
+// A new password with no encryption key is refused: 503 (the Hub is not set up, as for «Добавить
+// ноду») with the same explanation and what to run, nothing written.
 func TestUpdateServerPasswordWithoutKeyChangesNothing(t *testing.T) {
 	t.Setenv("SSH_ENCRYPTION_KEY", "")
 	fake := withServerDB(t)
 	rec := patchServer(`{"ssh_password":"new-secret","load_weight":5}`)
 	var resp map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	if rec.Code != http.StatusInternalServerError || resp["error"] != sshPasswordKeyMissingMsg {
-		t.Fatalf("status %d body %s, want 500 %q", rec.Code, rec.Body.String(), sshPasswordKeyMissingMsg)
+	if rec.Code != http.StatusServiceUnavailable || resp["error"] != sshPasswordKeyMissingMsg ||
+		!strings.Contains(resp["error"], "SSH_ENCRYPTION_KEY") || !strings.Contains(resp["error"], "--ensure-hub-provisioning") {
+		t.Fatalf("status %d body %s, want 503 %q", rec.Code, rec.Body.String(), sshPasswordKeyMissingMsg)
 	}
 	if ups := fake.updates(); len(ups) != 0 || fake.has("BEGIN") {
 		t.Errorf("something was written: %+v", fake.stmts)

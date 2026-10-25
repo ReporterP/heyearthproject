@@ -358,7 +358,7 @@ func TestCreateNodeValidation(t *testing.T) {
 		"no fingerprint":    {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p"}`, 400, "отпечаток"},
 		"bad fingerprint":   {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"MD5:aa"}`, 400, "отпечаток"},
 		"no password":       {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_host_key_fp":"` + fp + `"}`, 400, "пароль"},
-		"no encryption key": {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 503, "SSH_ENCRYPTION_KEY"},
+		"no encryption key": {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 503, sshPasswordKeyMissingMsg},
 	} {
 		rec := call(CreateNodeHandler, "POST", "/api/admin/servers", tc.body)
 		if rec.Code != tc.code || !strings.Contains(rec.Body.String(), tc.msg) {

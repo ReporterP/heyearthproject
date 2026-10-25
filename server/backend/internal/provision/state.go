@@ -49,7 +49,9 @@ type Hooks struct {
 	ForgetTunnel func(ctx context.Context, serverID int) error
 	// Activate: provisioning → online AND tunnel_status healthy in ONE write, after the recipe
 	// checked both paths itself (phase-1 contract: adding an exit costs exactly one Xray restart).
-	Activate         func(ctx context.Context, serverID int) error
+	Activate func(ctx context.Context, serverID int) error
+	// MarkMTProto writes mtproto_status unless the owner switched MTProxy off ('disabled'):
+	// then it writes nothing and returns ErrMTProxyDisabled.
 	MarkMTProto      func(ctx context.Context, serverID int, status string) error
 	BumpSubscription func(ctx context.Context) error
 	RequestSync      func()                                     // xray + hysteria sync; never restarts the API

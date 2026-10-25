@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ func initProvisioning() {
 	}
 	if checkSSHEncryptionKey(crypto.Ready) {
 		migrateLegacySSHPasswords(ctx)
+		checkSSHCiphertexts(ctx)
 	}
 	nodeRunner = &provision.Runner{Store: nodeStore, Dial: provision.DialNode, Recipe: apiRecipe, Logf: log.Printf}
 	go nodeRunner.SweepStale(context.Background(), provision.StaleSweepEvery)
@@ -73,6 +75,76 @@ func checkSSHEncryptionKey(ready func() error) bool {
 	}
 	ResolveAlert(sshKeyAlertKey, "SSH_ENCRYPTION_KEY на месте")
 	return true
+}
+
+// sshCiphertextsAlertKey: the warning while stored SSH passwords do not decrypt with the key the
+// API runs with.
+const sshCiphertextsAlertKey = "ssh-ciphertexts-unreadable"
+
+// storedCiphertextsQuery: every stored encrypted SSH password.
+const storedCiphertextsQuery = `SELECT id, ssh_password_enc FROM servers
+ WHERE COALESCE(octet_length(ssh_password_enc), 0) > 0 ORDER BY id`
+
+// storedCipher is one row of storedCiphertextsQuery.
+type storedCipher struct {
+	id  int
+	enc []byte
+}
+
+// unreadableCiphertexts returns the ids whose ciphertext decrypt refuses.
+func unreadableCiphertexts(rows []storedCipher, decrypt func([]byte) (string, error)) []int {
+	var ids []int
+	for _, r := range rows {
+		if _, err := decrypt(r.enc); err != nil {
+			ids = append(ids, r.id)
+		}
+	}
+	return ids
+}
+
+// reportUnreadableCiphertexts raises sshCiphertextsAlertKey (warning) for the given server ids —
+// a valid but DIFFERENT SSH_ENCRYPTION_KEY passes crypto.Ready, and nothing else would tell — and
+// resolves it when there are none. Only ids and the count, never a ciphertext.
+func reportUnreadableCiphertexts(ids []int) {
+	if len(ids) == 0 {
+		ResolveAlert(sshCiphertextsAlertKey, "Все сохранённые пароли SSH расшифровываются текущим SSH_ENCRYPTION_KEY")
+		return
+	}
+	list := make([]string, len(ids))
+	for i, id := range ids {
+		list[i] = strconv.Itoa(id)
+	}
+	RaiseAlert(sshCiphertextsAlertKey, AlertWarn,
+		fmt.Sprintf("Пароли SSH %d нод(ы) не расшифровываются ключом Hub", len(ids)),
+		"Серверы "+strings.Join(list, ", ")+": сохранённый пароль SSH не расшифровывается текущим SSH_ENCRYPTION_KEY — "+
+			"вероятно, ключ в api.env сменили. Ноды без ключа Hub не смогут подключиться по паролю (настройка, проверка, отключение). "+
+			"Верните прежний ключ в api.env и перезапустите API деплоем либо введите пароли этих нод заново.")
+	log.Printf("[provision] пароли SSH серверов %s не расшифровываются текущим SSH_ENCRYPTION_KEY", strings.Join(list, ", "))
+}
+
+// checkSSHCiphertexts counts, at API start, the stored SSH passwords the current key cannot read.
+func checkSSHCiphertexts(ctx context.Context) {
+	rows, err := db.DB.QueryContext(ctx, storedCiphertextsQuery)
+	if err != nil {
+		log.Printf("[provision] зашифрованные пароли SSH не прочитаны: %v", err)
+		return
+	}
+	var all []storedCipher
+	for rows.Next() {
+		var r storedCipher
+		if err := rows.Scan(&r.id, &r.enc); err != nil {
+			log.Printf("[provision] зашифрованные пароли SSH: строка не прочитана: %v", err)
+			continue
+		}
+		all = append(all, r)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		log.Printf("[provision] зашифрованные пароли SSH не прочитаны: %v", err)
+		return
+	}
+	reportUnreadableCiphertexts(unreadableCiphertexts(all, crypto.Decrypt))
 }
 
 // legacyPasswordsQuery: rows that still hold a plaintext SSH password (ssh_password is NOT NULL,

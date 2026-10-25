@@ -49,6 +49,7 @@ func TestSQLShapes(t *testing.T) {
 		"tunnel write only on change":     {saveTunnelQuery, "tunnel_ss_password IS DISTINCT FROM $6"},
 		"paid plans":                      {paidPlansQuery, "is_active = TRUE AND price_rub > 0"},
 		"steps interrupted with the jobs": {interruptStepsQuery, "WHERE status = 'running' AND job_id = ANY($1::bigint[])"},
+		"MTProxy mark keeps the switch":   {markMTProtoQuery, "WHERE id = $2 AND mtproto_status <> 'disabled'"},
 	} {
 		if !strings.Contains(norm(c.q), norm(c.want)) {
 			t.Errorf("%s: %q lacks %q", name, norm(c.q), c.want)
@@ -555,6 +556,19 @@ func TestSQLStoreHooks(t *testing.T) {
 	}
 	if h.RequestSync(); syncs != 1 || h.ProbeAgent != nil {
 		t.Fatalf("syncs=%d", syncs)
+	}
+	// MarkMTProto never overwrites the owner's switch: a write that hits no row (mtproto_status
+	// became 'disabled' meanwhile) is ErrMTProxyDisabled, never a silent success.
+	affected = 1
+	if err := h.MarkMTProto(ctx, 7, "healthy"); err != nil {
+		t.Fatal(err)
+	}
+	if m := d.log[len(d.log)-1]; m.q != markMTProtoQuery || m.args[0] != "healthy" || m.args[1] != int64(7) {
+		t.Fatalf("mark args %v", m.args)
+	}
+	affected = 0
+	if err := h.MarkMTProto(ctx, 7, "healthy"); !errors.Is(err, ErrMTProxyDisabled) {
+		t.Fatalf("mark of a switched-off MTProxy: %v", err)
 	}
 }
 
