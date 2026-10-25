@@ -25,6 +25,7 @@ type exitEnv struct {
 	opts      *ExitOptions
 	probe     func(ctx context.Context, ip string) error // Hooks.ProbeAgent (nil: not checked)
 	logs      []string
+	trace     []string // every op of the node and the Hub, in order ("node: …", "hub: …")
 }
 
 var testExitHubIPs = []string{"138.16.181.225", "45.150.39.236", "109.172.86.40"}
@@ -33,6 +34,7 @@ func exitFixture(t *testing.T, mtproto bool) *exitEnv {
 	t.Helper()
 	ca, caKey := testCA(t)
 	e := &exitEnv{node: newFakeHost(), hub: newFakeHost(), h: &fakeHooks{lifecycle: "pending"}, ca: ca, caKey: caKey}
+	e.node.name, e.hub.name, e.node.trace, e.hub.trace = "node", "hub", &e.trace, &e.trace
 	e.store = newMemStore(Node{ID: 7, Name: "Франкфурт", Role: "exit", IP: "203.0.113.7", SSHPort: 22, Password: "root-Pa55word",
 		HostKeyFP: "SHA256:x", HostKeyConfirmed: true, FallbackEnabled: true}, e.h)
 	e.opts = &ExitOptions{HubIPs: testExitHubIPs, MTProtoPort: 8443, HubXray: "/opt/heyearth/xray/xray",
@@ -284,6 +286,196 @@ func TestExitRecipeDropAndResume(t *testing.T) {
 	}
 }
 
+// A live exit whose new config does not start (reprovision; restart_checked fails): the step is
+// rolled back — the previous files are back and the service runs with them; the node stays
+// online, the other units are untouched (the job stops at the failed step).
+func TestExitReprovisionRestartFailsRollsBack(t *testing.T) {
+	e := exitFixture(t, false)
+	e.start(t, KindProvision)
+	prevYAML, prevXray := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitXrayConfig])
+	restarts, xrayWrites := maps.Clone(e.node.restarts), e.node.count("put "+config.ExitXrayConfig)
+	e.opts.MTProtoPort = 9443 // changes hysteria's ACL and xray's rules
+	e.node.healthy = func(u string) bool {
+		return u != "hysteria2" || !strings.Contains(string(e.node.files[config.ExitHysteriaConfig]), "tcp/9443")
+	}
+	id := e.start(t, KindReprovision)
+	j := e.store.jobs[id]
+	if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["xray"] != StepPending || e.h.lifecycle != "online" || len(e.h.history) != 2 {
+		t.Fatalf("job %s %q %v lifecycle %s", j.Status, j.Error, e.store.statuses(id), e.h.lifecycle)
+	}
+	if string(e.node.files[config.ExitHysteriaConfig]) != prevYAML || !e.node.active["hysteria2"] || e.node.marker["hysteria2"] ||
+		e.node.restarts["hysteria2"] != restarts["hysteria2"]+2 {
+		t.Fatalf("hysteria: previous config back %v, running %v, marker %v, restarts %d", string(e.node.files[config.ExitHysteriaConfig]) == prevYAML,
+			e.node.active["hysteria2"], e.node.marker["hysteria2"], e.node.restarts["hysteria2"])
+	}
+	if string(e.node.files[config.ExitXrayConfig]) != prevXray || e.node.count("put "+config.ExitXrayConfig) != xrayWrites ||
+		e.node.restarts["xray"] != restarts["xray"] || e.node.restarts["node-agent"] != restarts["node-agent"] || !e.node.active["xray"] {
+		t.Fatalf("the other units must be untouched: restarts %v", e.node.restarts)
+	}
+	if !strings.Contains(e.tail(id, "hysteria"), "откачены") || !strings.Contains(j.Error, "не запустился") {
+		t.Fatalf("the owner must see the rollback: %q / %q", e.tail(id, "hysteria"), j.Error)
+	}
+}
+
+// A live exit (reprovision) carries users: a step whose restart can cut a path is checked end to
+// end — the path is probed before the change and after it. A path that answered before and is
+// dead after rolls the step back (previous files, nft rules and service); a path already dead
+// before does not (UDP choked — Review Focus 3). The hysteria step is fully checked — its path
+// answers again — before xray is touched, so users always keep a working path.
+func TestExitLivePathGuards(t *testing.T) {
+	notTouched := func(t *testing.T, e *exitEnv, unit string, files ...string) {
+		t.Helper()
+		for _, op := range e.node.ops {
+			if op == "mark "+unit || op == "converge "+unit || slices.ContainsFunc(files, func(f string) bool { return op == "put "+f }) {
+				t.Fatalf("%s touched: %s", unit, op)
+			}
+		}
+	}
+	probes := func(e *exitEnv, op string) int { return e.hub.count(op) }
+
+	t.Run("hysteria ok→dead", func(t *testing.T) {
+		e, _ := legacyExit(t)
+		legacyYAML, legacyHop := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitPortHopConfPath])
+		// The new hop rules break the main tunnel: nothing answers through the Hub's client while they are loaded.
+		e.hub.probeDead = func(op string) bool {
+			return strings.HasPrefix(op, "socks-probe") && e.node.nftRules[config.ExitPortHopTable] == config.ExitPortHopConf
+		}
+		id := e.start(t, KindReprovision)
+		j := e.store.jobs[id]
+		if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["xray"] != StepPending || e.h.lifecycle != "online" ||
+			!strings.Contains(j.Error, "перестал") {
+			t.Fatalf("job %s %q %v", j.Status, j.Error, e.store.statuses(id))
+		}
+		if string(e.node.files[config.ExitHysteriaConfig]) != legacyYAML || string(e.node.files[config.ExitPortHopConfPath]) != legacyHop ||
+			e.node.nftRules[config.ExitPortHopTable] != legacyHop || !e.node.active["hysteria2"] || e.node.count("nft-reload "+config.ExitPortHopConfPath) != 1 {
+			t.Fatalf("hysteria not back: yaml %v hop file %v hop rules %v running %v", string(e.node.files[config.ExitHysteriaConfig]) == legacyYAML,
+				string(e.node.files[config.ExitPortHopConfPath]) == legacyHop, e.node.nftRules[config.ExitPortHopTable] == legacyHop, e.node.active["hysteria2"])
+		}
+		notTouched(t, e, "xray", config.ExitXrayConfig, config.ExitXrayUnitPath, config.ExitXrayGuardConfPath)
+		if kv, _ := runKV(context.Background(), e.hub, config.SocksProbeScript(1095)); kv["HTTP"] != "204" || e.node.restarts["xray"] != 0 {
+			t.Fatalf("the main tunnel must answer again after the rollback: %v", kv)
+		}
+	})
+
+	t.Run("hysteria dead before", func(t *testing.T) {
+		e, _ := legacyExit(t)
+		e.hub.udpChoked = true
+		id := e.start(t, KindReprovision)
+		if st := e.steps(id); e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["xray"] != StepDone || st["path_hy"] != StepSkipped ||
+			e.node.count("rollback hysteria2") != 0 || e.hub.count("rollback "+config.HubClientUnit(7)) != 0 {
+			t.Fatalf("an already dead path is no reason to roll back: %s %v", e.store.jobs[id].Error, e.store.statuses(id))
+		}
+		if !strings.Contains(e.tail(id, "hysteria"), "до изменений не отвечает") {
+			t.Fatalf("output: %q", e.tail(id, "hysteria"))
+		}
+	})
+
+	t.Run("xray ok→dead after hysteria answered", func(t *testing.T) {
+		e := exitFixture(t, false)
+		e.start(t, KindProvision)
+		running := string(e.node.files[config.ExitXrayConfig])
+		e.node.onStart = func(u string) {
+			if u == "xray" {
+				running = string(e.node.files[config.ExitXrayConfig])
+			}
+		}
+		e.hub.probeDead = func(op string) bool { return strings.HasPrefix(op, "vr-probe") && strings.Contains(running, "9443") }
+		prevXray, prevGuard := string(e.node.files[config.ExitXrayConfig]), string(e.node.files[config.ExitXrayGuardConfPath])
+		restarts := maps.Clone(e.node.restarts)
+		e.opts.MTProtoPort = 9443
+		e.trace = nil
+		id := e.start(t, KindReprovision)
+		st := e.steps(id)
+		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepDone || st["xray"] != StepRolledBack || st["node_agent"] != StepPending || e.h.lifecycle != "online" {
+			t.Fatalf("job %q %v", e.store.jobs[id].Error, e.store.statuses(id))
+		}
+		if string(e.node.files[config.ExitXrayConfig]) != prevXray || string(e.node.files[config.ExitXrayGuardConfPath]) != prevGuard ||
+			e.node.nftRules[config.ExitXrayGuardTable] != prevGuard || !e.node.active["xray"] || strings.Contains(running, "9443") {
+			t.Fatal("xray, its guard file and its kernel rules must be the previous ones, running")
+		}
+		if !strings.Contains(string(e.node.files[config.ExitHysteriaConfig]), "tcp/9443") || e.node.restarts["hysteria2"] != restarts["hysteria2"]+1 ||
+			e.node.restarts["xray"] != restarts["xray"]+2 || e.node.restarts["node-agent"] != restarts["node-agent"] {
+			t.Fatalf("restarts %v (before %v)", e.node.restarts, restarts)
+		}
+		// Never overlapping: hysteria restarted, then its path answered (probed before and after),
+		// and only then the first change of xray; the TCP path was probed around xray's restart.
+		hyConv, xrMark, xrConv := slices.Index(e.trace, "node: converge hysteria2"), slices.Index(e.trace, "node: mark xray"), slices.Index(e.trace, "node: converge xray")
+		hyProbes := []int{}
+		for i, op := range e.trace[:max(xrMark, 0)] {
+			if op == "hub: socks-probe 1095" {
+				hyProbes = append(hyProbes, i)
+			}
+		}
+		if hyConv < 0 || xrMark < 0 || len(hyProbes) != 2 || hyProbes[0] > hyConv || hyProbes[1] < hyConv ||
+			slices.Index(e.trace, "hub: vr-probe 3095") > xrMark || !slices.Contains(e.trace[xrConv:], "hub: vr-probe 3095") {
+			t.Fatalf("order: %v", e.trace)
+		}
+	})
+
+	t.Run("xray dead before", func(t *testing.T) {
+		e := exitFixture(t, false)
+		e.start(t, KindProvision)
+		e.hub.vrFail = true
+		e.opts.MTProtoPort = 9443
+		id := e.start(t, KindReprovision)
+		if st := e.steps(id); st["xray"] != StepDone || st["path_tcp"] != StepFailed || e.node.count("rollback xray") != 0 ||
+			!strings.Contains(string(e.node.files[config.ExitXrayConfig]), "9443") || e.h.lifecycle != "online" {
+			t.Fatalf("%v", e.store.statuses(id))
+		}
+	})
+
+	t.Run("hub client ok→dead", func(t *testing.T) {
+		e, _ := legacyExit(t)
+		u := config.HubClientUnit(7)
+		legacy := string(e.hub.files[config.HubClientConfigPath(7)])
+		running := legacy
+		e.hub.onStart = func(unit string) {
+			if unit == u {
+				running = string(e.hub.files[config.HubClientConfigPath(7)])
+			}
+		}
+		e.hub.probeDead = func(op string) bool { return strings.HasPrefix(op, "socks-probe") && running != legacy }
+		id := e.start(t, KindReprovision)
+		if st := e.steps(id); e.store.jobs[id].Status != JobFailed || st["hub_client"] != StepRolledBack || st["path_hy"] != StepPending ||
+			string(e.hub.files[config.HubClientConfigPath(7)]) != legacy || running != legacy || !e.hub.active[u] || e.h.lifecycle != "online" {
+			t.Fatalf("%q %v", e.store.jobs[id].Error, e.store.statuses(id))
+		}
+	})
+
+	t.Run("not live: no probes around changes", func(t *testing.T) {
+		e := exitFixture(t, false)
+		e.start(t, KindProvision)
+		if probes(e, "socks-probe 1095") != 1 || probes(e, "vr-probe 3095") != 1 {
+			t.Fatalf("a node out of routing is probed only by path_hy/path_tcp: %v", e.hub.ops)
+		}
+		e.start(t, KindVerify)
+		if probes(e, "socks-probe 1095") != 2 || probes(e, "vr-probe 3095") != 2 {
+			t.Fatalf("verify: %v", e.hub.ops)
+		}
+	})
+}
+
+// Review Focus → 2 (node-agent): a guard that locks the Hub out (ProbeAgent fails after the
+// change) is rolled back in the kernel too — the previous rules are loaded again, not only the
+// previous file put back.
+func TestExitAgentRollbackReloadsPreviousGuard(t *testing.T) {
+	e, _ := legacyExit(t)
+	handMade := string(e.node.files[config.ExitAgentGuardConfPath])
+	e.probe = func(context.Context, string) error { return errors.New("connection refused") }
+	id := e.start(t, KindReprovision)
+	if j := e.store.jobs[id]; j.Status != JobFailed || e.steps(id)["node_agent"] != StepRolledBack || e.h.lifecycle != "online" {
+		t.Fatalf("job %s %q %v", j.Status, j.Error, e.store.statuses(id))
+	}
+	if e.node.nftRules[config.ExitAgentGuardTable] != handMade || string(e.node.files[config.ExitAgentGuardConfPath]) != handMade ||
+		!e.node.active["node-agent"] || e.node.count("nft-reload "+config.ExitAgentGuardConfPath) != 1 {
+		t.Fatalf("kernel rules %q, file %q, node-agent running %v", e.node.nftRules[config.ExitAgentGuardTable],
+			e.node.files[config.ExitAgentGuardConfPath], e.node.active["node-agent"])
+	}
+	if i, j := opIndex(e.node.ops, "nft-reload "+config.ExitAgentGuardConfPath), slices.Index(e.node.ops, "rollback node-agent"); i < j {
+		t.Fatal("the reload is part of the rollback")
+	}
+}
+
 // verify-only on a live exit with a hand-edited config: drift is reported, nothing is touched.
 func TestExitVerifyOnlyReportsDrift(t *testing.T) {
 	e := exitFixture(t, false)
@@ -457,7 +649,8 @@ func legacyExit(t *testing.T) (*exitEnv, config.ExitRealityKeys) {
 	for _, u := range []string{"hysteria2", "xray", "node-agent", config.ExitAgentGuardService, config.ExitPortHopService} {
 		n.active[u], n.enabled[u] = true, true
 	}
-	n.nft[config.ExitPortHopTable], n.nft[config.ExitAgentGuardTable] = true, true
+	n.loadNft(config.ExitPortHopTable, config.ExitPortHopConfPath)
+	n.loadNft(config.ExitAgentGuardTable, config.ExitAgentGuardConfPath)
 	u := config.HubClientUnit(7)
 	put(e.hub, config.HubClientConfigPath(7), "server: 203.0.113.7:20000-50000\nauth: "+k.SSPassword+"\nsocks5:\n  listen: 127.0.0.1:1095\n", 0o600)
 	put(e.hub, "/etc/systemd/system/"+u+".service", "[Unit]\nDescription=old\n", 0o644)
@@ -542,6 +735,62 @@ func TestExitAgentKeyPairSurvivesACut(t *testing.T) {
 	}
 	if err := CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow); err != nil || e.node.restarts["node-agent"] != 1 {
 		t.Fatalf("cert %v, restarts %d", err, e.node.restarts["node-agent"])
+	}
+}
+
+// The node's certificate and key must be a pair: a certificate that is fine by itself (Hub CA,
+// this node, a year left) next to a key that is not its own — replaced, or the new key of a pair
+// whose write was cut after the key — would keep node-agent from starting. The pair is checked on
+// the node (the public half of the key, openssl), the key never leaves it.
+func TestExitAgentCertAndKeyArePair(t *testing.T) {
+	pairOK := func(e *exitEnv) error {
+		_, err := tls.X509KeyPair(e.node.files[config.NodeAgentCert], e.node.files[config.NodeAgentKey])
+		return err
+	}
+	// A valid certificate, a foreign key: drift; «Переустановить» issues a fresh pair.
+	e := exitFixture(t, false)
+	e.start(t, KindProvision)
+	_, otherKey, err := IssueNodeCert(e.ca, e.caKey, "203.0.113.7", testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.node.files[config.NodeAgentKey] = otherKey
+	id := e.start(t, KindVerify)
+	if st := e.steps(id); st["node_agent"] != StepDrift || !strings.Contains(e.tail(id, "node_agent"), "не пара") {
+		t.Fatalf("foreign key: %v %q", st, e.tail(id, "node_agent"))
+	}
+	if strings.Contains(e.tail(id, "node_agent"), "PRIVATE KEY") || e.node.count("cat "+config.NodeAgentKey) != 0 {
+		t.Fatal("the private key must never be read off the node")
+	}
+	id = e.start(t, KindReprovision)
+	if e.store.jobs[id].Status != JobSucceeded || pairOK(e) != nil || e.node.restarts["node-agent"] != 2 ||
+		CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow) != nil {
+		t.Fatalf("re-issue: %v pair %v restarts %d", e.store.statuses(id), pairOK(e), e.node.restarts["node-agent"])
+	}
+
+	// A valid certificate whose key is gone: a fresh pair, cut after the key is written; the
+	// resumed job must not take the old certificate for the new key's.
+	e = exitFixture(t, false)
+	e.start(t, KindProvision)
+	e.node.remove(config.NodeAgentKey)
+	e.node.dropAfterPut = []string{config.NodeAgentKey}
+	id = e.start(t, KindReprovision)
+	if j := e.store.jobs[id]; j.Status != JobFailed || CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow) != nil || pairOK(e) == nil {
+		t.Fatalf("the cut must leave a valid old certificate next to the new key: %s %v", j.Status, pairOK(e))
+	}
+	if err := e.r.Resume(context.Background(), id); err != nil || e.store.jobs[id].Status != JobSucceeded || pairOK(e) != nil {
+		t.Fatalf("resume: %v %v pair %v", err, e.store.statuses(id), pairOK(e))
+	}
+
+	// Without openssl the pair cannot be checked: the step says so and issues nothing (a pair
+	// issued on every run would restart node-agent every time).
+	e = exitFixture(t, false)
+	e.start(t, KindProvision)
+	e.node.noOpenSSL = true
+	cert, writes := string(e.node.files[config.NodeAgentCert]), e.node.writes
+	id = e.start(t, KindReprovision)
+	if j := e.store.jobs[id]; j.Status != JobFailed || !strings.Contains(j.Error, "openssl") || string(e.node.files[config.NodeAgentCert]) != cert || e.node.writes != writes {
+		t.Fatalf("no openssl: %s %q writes %d", j.Status, j.Error, e.node.writes-writes)
 	}
 }
 
@@ -676,6 +925,77 @@ func TestExitAgentProbeTimeoutLeadsToApply(t *testing.T) {
 		t.Fatalf("the job's own context: %v", err)
 	}
 }
+
+// The keys file is all secrets, and none of them is known to the run's redaction before it is
+// parsed: an SSH drop right after `cat` (the SSH remote's error quotes the output tail) must not
+// carry it into provision_jobs.error, output_tail or the log. The error keeps its kind (connection
+// lost: inconclusive, no Apply) and «Продолжить» finishes the job.
+func TestExitKeysReadErrorNeverQuotesTheFile(t *testing.T) {
+	e := exitFixture(t, false)
+	e.start(t, KindProvision)
+	k := e.keys(t)
+	e.node.dropAfterOutput = "cat " + config.ExitKeysPath
+	id := e.start(t, KindReprovision)
+	j := e.store.jobs[id]
+	if j.Status != JobFailed || e.steps(id)["reality_keys"] != StepFailed || !strings.Contains(j.Error, ErrConnectionLost.Error()) ||
+		e.node.dropAfterOutput != "" {
+		t.Fatalf("job %s %q %v", j.Status, j.Error, e.store.statuses(id))
+	}
+	texts := append([]string{j.Error}, e.logs...)
+	for _, st := range j.Steps {
+		texts = append(texts, st.OutputTail)
+	}
+	for _, txt := range texts {
+		for _, sec := range []string{k.PrivateKey, k.SSPassword, k.UUID, k.ShortID, "privateKey"} {
+			if strings.Contains(txt, sec) {
+				t.Fatalf("the keys file leaked (%q) into %q", sec, txt)
+			}
+		}
+	}
+	if err := e.r.Resume(context.Background(), id); err != nil || e.store.jobs[id].Status != JobSucceeded || e.keys(t) != k {
+		t.Fatalf("resume: %v %v", err, e.store.statuses(id))
+	}
+}
+
+// readKeys never passes a failed Run's error text or output on, whatever the failure; the kinds
+// the runner and the recipes branch on stay visible to errors.Is.
+func TestReadKeysErrorsCarryNoOutput(t *testing.T) {
+	k, err := completeKeys(config.ExitRealityKeys{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(k)
+	content := string(b)
+	for name, c := range map[string]struct {
+		err  error
+		kind []error
+	}{
+		"connection lost": {errLost, []error{ErrConnectionLost}},
+		"unreachable":     {fmt.Errorf("%w: %w: ssh 203.0.113.7:22", ErrNodeUnreachable, ErrHostKeyMismatch), []error{ErrNodeUnreachable, ErrHostKeyMismatch}},
+		"cancelled":       {context.Canceled, []error{context.Canceled}},
+		"exit status":     {errors.New("Process exited with status 1"), nil},
+	} {
+		r := runFunc(func(context.Context, string) (string, error) { return content, fmt.Errorf("%w: %s", c.err, content) })
+		_, _, err := readKeys(context.Background(), r)
+		if err == nil || strings.Contains(err.Error(), k.PrivateKey) || strings.Contains(err.Error(), k.SSPassword) || strings.Contains(err.Error(), "Process exited") {
+			t.Errorf("%s: %v", name, err)
+		}
+		for _, want := range c.kind {
+			if !errors.Is(err, want) {
+				t.Errorf("%s: %v is not %v", name, err, want)
+			}
+		}
+		if c.kind == nil && inconclusive(context.Background(), err) {
+			t.Errorf("%s: a script failure is not inconclusive: %v", name, err)
+		}
+	}
+}
+
+// runFunc is a Remote whose Run is the function (PutFile does nothing).
+type runFunc func(ctx context.Context, script string) (string, error)
+
+func (f runFunc) Run(ctx context.Context, s string) (string, error)           { return f(ctx, s) }
+func (runFunc) PutFile(context.Context, string, []byte, uint32) (bool, error) { return false, nil }
 
 // The tunnel keys: everything present is kept (exit 2 keeps its tunnel), the missing parts are
 // generated, a file that cannot be read or carries invalid values is never overwritten.

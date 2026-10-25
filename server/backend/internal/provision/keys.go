@@ -26,17 +26,48 @@ var (
 	tunnelPwRe = regexp.MustCompile(`^[A-Za-z0-9+/=]{16,}$`)
 )
 
-// readKeys reads the keys file; ok false when it is absent or empty.
+// errKeysCorrupt: the keys file is there but is not JSON — never overwritten.
+var errKeysCorrupt = errors.New("файл ключей " + config.ExitKeysPath + " не читается как JSON")
+
+// readKeys reads the keys file; ok false when it is absent or empty. It is all secrets and none
+// of them is known to the run's redaction before it is parsed, so it goes through readSecretFile.
 func readKeys(ctx context.Context, r Remote) (config.ExitRealityKeys, bool, error) {
 	var k config.ExitRealityKeys
-	out, err := r.Run(ctx, config.CatScript(config.ExitKeysPath))
+	out, err := readSecretFile(ctx, r, config.ExitKeysPath, "файл ключей туннеля")
 	if err != nil || strings.TrimSpace(out) == "" {
 		return k, false, err
 	}
 	if err := json.Unmarshal([]byte(out), &k); err != nil {
-		return config.ExitRealityKeys{}, true, fmt.Errorf("файл ключей %s не читается как JSON", config.ExitKeysPath)
+		return config.ExitRealityKeys{}, true, errKeysCorrupt // json's error quotes the content
 	}
 	return k, true, nil
+}
+
+// secretReadKinds are the error kinds a failed read keeps (the runner's inconclusive, the
+// bestEffort branches of deprovision); nothing else of the failed Run survives.
+var secretReadKinds = []error{context.Canceled, context.DeadlineExceeded, ErrNodeUnreachable, ErrHostKeyNotConfirmed,
+	ErrNoCredentials, ErrHostKeyMismatch, ErrConnectionLost}
+
+// readSecretFile prints a file whose content must never reach an error, a step's output or the
+// log (config.CatScript; "" when absent). A failed Run's error is dropped, not wrapped: the SSH
+// remote quotes the output tail in it — an SSH drop right after `cat` would carry the whole file.
+// The returned error names the file and keeps only the kinds of secretReadKinds.
+func readSecretFile(ctx context.Context, r Remote, path, what string) (string, error) {
+	out, err := r.Run(ctx, config.CatScript(path))
+	if err == nil {
+		return out, nil
+	}
+	format, args := "", []any{}
+	for _, kind := range secretReadKinds {
+		if errors.Is(err, kind) {
+			format += "%w: "
+			args = append(args, kind)
+		}
+	}
+	if len(args) == 0 {
+		format += "команда на ноде завершилась с ошибкой: "
+	}
+	return "", fmt.Errorf(format+"%s %s не прочитан (вывод не показан: в нём секреты)", append(args, what, path)...)
 }
 
 // keysVerify: the file is there with valid keys and is readable by root only. Valid keys are
@@ -68,8 +99,11 @@ func keysVerify(ctx context.Context, r Remote, s *State) error {
 // that cannot be read is never overwritten.
 func keysApply(ctx context.Context, r Remote, s *State) error {
 	k, _, err := readKeys(ctx, r)
-	if err != nil {
+	switch {
+	case errors.Is(err, errKeysCorrupt):
 		return fmt.Errorf("%w — не перезаписываю, нужна ручная проверка", err)
+	case err != nil:
+		return err
 	}
 	if k, err = completeKeys(k); err != nil {
 		return err

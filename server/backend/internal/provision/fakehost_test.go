@@ -5,8 +5,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,32 +30,47 @@ var testHubPub = func() string {
 // PutFile exactly: same content and mode → unchanged; a differing previous version → <path>.bak
 // (with its mode); a new file deletes a stale <path>.bak.
 type fakeHost struct {
-	files       map[string][]byte
-	modes       map[string]uint32
-	writes      int
-	active      map[string]bool
-	enabled     map[string]bool
-	retry       map[string]bool // in the pause of a crash loop (SubState auto-restart)
-	nft         map[string]bool // nft tables (inet) loaded in the kernel
-	marker      map[string]bool
-	markWrites  map[string]map[string]string // unit → path → sha256 recorded by MarkRestartScript
-	restarts    map[string]int
-	authKeys    []string
-	ops         []string
-	scripts     map[string]string // op → the last script run with it
-	seen        func(op string)   // called for every op before it runs (tests watch the routing state)
-	dropOnce    string            // the first op with this prefix loses the SSH connection…
-	dropped     bool
-	down        bool // …and everything after it fails too (no rollback) until the next job dials again
-	mtproxyFail bool
-	mtSecret    string // the secret mtproxy runs with (set by mtproxy-install)
-	mtgVersion  string
+	files      map[string][]byte
+	modes      map[string]uint32
+	writes     int
+	active     map[string]bool
+	enabled    map[string]bool
+	retry      map[string]bool   // in the pause of a crash loop (SubState auto-restart)
+	nft        map[string]bool   // nft tables (inet) loaded in the kernel
+	nftRules   map[string]string // table → the rule file content last loaded into the kernel
+	marker     map[string]bool
+	markWrites map[string]map[string]string // unit → path → sha256 ever recorded by MarkRestartScript (history)
+	markFile   map[string]map[string]string // unit → path → sha256 in the marker file now (gone with the marker)
+	restarts   map[string]int
+	authKeys   []string
+	ops        []string
+	scripts    map[string]string // op → the last script run with it
+	seen       func(op string)   // called for every op before it runs (tests watch the routing state)
+	dropOnce   string            // the first op with this prefix loses the SSH connection…
+	dropped    bool
+	down       bool // …and everything after it fails too (no rollback) until the next job dials again
+	// dropAfterOutput: the first op with this prefix runs and prints, then the session is lost —
+	// the error quotes the output tail, as SSHRemote's does.
+	dropAfterOutput string
+	mtproxyFail     bool
+	mtSecret        string // the secret mtproxy runs with (set by mtproxy-install)
+	mtgVersion      string
+	noOpenSSL       bool // key-pub answers NO_OPENSSL
 	// Hub: UDP to the exits is choked — a hysteria client crash-loops after every (re)start (the
 	// real client exits when its first connection fails) and nothing answers through its SOCKS.
 	udpChoked bool
 	vrFail    bool // Hub: the TCP path probe gets no 204
+	// probeDead: a path probe (op "socks-probe <port>" or "vr-probe <port>") gets no 204 when it says so —
+	// tests tie a path to what the node runs.
+	probeDead func(op string) bool
 	// dropAfterPut: the first write of one of these paths lands, then the connection is lost.
 	dropAfterPut []string
+	// healthy decides whether a (re)started unit runs (nil: always); onStart runs after every
+	// successful (re)start — tests tie the Hub's paths to the configs the node's services run with.
+	healthy func(unit string) bool
+	onStart func(unit string)
+	name    string    // trace prefix
+	trace   *[]string // every op of this host (and of others sharing it) in order: "<name>: <op>"
 }
 
 // errLost is what a dropped SSH session returns (DialNode's SSHRemote wraps ErrConnectionLost).
@@ -59,26 +78,54 @@ var errLost = fmt.Errorf("%w: ssh: connection lost", ErrConnectionLost)
 
 func newFakeHost() *fakeHost {
 	return &fakeHost{files: map[string][]byte{}, modes: map[string]uint32{}, active: map[string]bool{}, enabled: map[string]bool{},
-		retry: map[string]bool{}, nft: map[string]bool{}, marker: map[string]bool{}, markWrites: map[string]map[string]string{},
+		retry: map[string]bool{}, nft: map[string]bool{}, nftRules: map[string]string{}, marker: map[string]bool{},
+		markWrites: map[string]map[string]string{}, markFile: map[string]map[string]string{},
 		restarts: map[string]int{}, scripts: map[string]string{}, mtgVersion: "2.2.8"}
+}
+
+func (h *fakeHost) note(op string) {
+	h.ops = append(h.ops, op)
+	if h.trace != nil {
+		*h.trace = append(*h.trace, h.name+": "+op)
+	}
 }
 
 var fakeMarkLine = regexp.MustCompile(`(?m)^l='([0-9a-f]{64})  ([^']*)'`)
 
+// start (re)starts u as systemctl restart + restart_checked would: it runs when healthy says so
+// (the journal's "не запустился" otherwise), onStart after a successful start.
+func (h *fakeHost) start(u string) error {
+	h.restarts[u]++
+	if h.healthy != nil && !h.healthy(u) {
+		h.active[u] = false
+		return errors.New("exit status 1: [unit] " + u + " не запустился")
+	}
+	h.active[u], h.retry[u] = true, false
+	if h.onStart != nil {
+		h.onStart(u)
+	}
+	return nil
+}
+
+// loadNft loads a rule file into the kernel (nft -f).
+func (h *fakeHost) loadNft(table, path string) {
+	h.nft[table], h.nftRules[table] = true, string(h.files[path])
+}
+
 // converge models UnitConvergeScript / UnitConvergeSoftScript: the extra loads the unit's guard
 // (xray: the egress guard, node-agent: the Hub-only guard) when its file is there; the unit is
-// restarted when marked or down. A Hub client under udpChoked crash-loops after the restart: the
-// strict converge fails with the marker kept, the soft one reports HEALTH=0 and drops it.
+// restarted when marked or down. A failed restart keeps the marker (strict) or reports HEALTH=0
+// and drops it (soft). A Hub client under udpChoked crash-loops after the restart.
 func (h *fakeHost) converge(u string, soft bool) (string, error) {
 	switch u {
 	case "xray":
 		if h.files[config.ExitXrayGuardConfPath] != nil {
-			h.nft[config.ExitXrayGuardTable] = true
+			h.loadNft(config.ExitXrayGuardTable, config.ExitXrayGuardConfPath)
 			h.enabled[config.ExitXrayGuardService] = true
 		}
 	case "node-agent":
 		if h.files[config.ExitAgentGuardConfPath] != nil {
-			h.nft[config.ExitAgentGuardTable] = true
+			h.loadNft(config.ExitAgentGuardTable, config.ExitAgentGuardConfPath)
 			h.active[config.ExitAgentGuardService], h.enabled[config.ExitAgentGuardService] = true, true
 		}
 	}
@@ -86,26 +133,107 @@ func (h *fakeHost) converge(u string, soft bool) (string, error) {
 	if !h.marker[u] && h.active[u] {
 		return "[unit] " + u + ": без изменений и работает — без перезапуска\n", nil
 	}
-	h.restarts[u]++
 	if h.udpChoked && strings.HasPrefix(u, "hysteria2-client-") {
+		h.restarts[u]++
 		h.active[u], h.retry[u] = false, true
 		if !soft {
 			h.marker[u] = true
 			return "", errors.New("exit status 1: [unit] " + u + " перезапускается сам (NRestarts 1 -> 2)")
 		}
-		delete(h.marker, u)
+		h.clearMarker(u)
 		return "HEALTH=0\n", nil
 	}
-	h.active[u], h.retry[u] = true, false
-	delete(h.marker, u)
+	err := h.start(u)
+	switch {
+	case err != nil && !soft:
+		return "", err
+	case err != nil:
+		h.clearMarker(u)
+		return "HEALTH=0\n", nil
+	}
+	h.clearMarker(u)
 	if soft {
 		return "HEALTH=1\n", nil
 	}
 	return "", nil
 }
 
+func (h *fakeHost) clearMarker(u string) {
+	delete(h.marker, u)
+	delete(h.markFile, u)
+}
+
+var (
+	fakeRestoreLine = regexp.MustCompile(`(?m)^rb_restore '([^']*)'$`)
+	fakeReloadLine  = regexp.MustCompile(`(?m)^rb_reload_nft '([^']*)' '([^']*)'$`)
+)
+
+// rollback models config.UnitRollbackScript: the files to undo are the run's changed ones (the
+// script's rb_restore lines) and the marker's writes whose file still has the recorded content;
+// each gets its .bak back or, new in the run, is removed (a new unit file of the run disabled and
+// stopped first). A restored nft rule file of ours is loaded into the kernel again. A unit whose
+// own file was new is disabled and stopped; otherwise it restarts with the previous files —
+// healthy decides whether it runs, a failed restart fails the rollback with the marker kept.
+func (h *fakeHost) rollback(u, script string) (string, error) {
+	var undo []string
+	for _, m := range fakeRestoreLine.FindAllStringSubmatch(script, -1) {
+		undo = append(undo, m[1])
+	}
+	if h.marker[u] {
+		for _, p := range slices.Sorted(maps.Keys(h.markFile[u])) {
+			if d, ok := h.files[p]; ok && sha256Hex(d) == h.markFile[u][p] {
+				undo = append(undo, p)
+			}
+		}
+	}
+	var back, fresh []string
+	for _, p := range undo {
+		if slices.Contains(back, p) || slices.Contains(fresh, p) {
+			continue
+		}
+		if b, ok := h.files[p+".bak"]; ok {
+			h.files[p], h.modes[p] = append([]byte(nil), b...), h.modes[p+".bak"]
+			back = append(back, p)
+		} else if _, ok := h.files[p]; ok {
+			fresh = append(fresh, p)
+		}
+	}
+	for _, m := range fakeReloadLine.FindAllStringSubmatch(script, -1) {
+		if slices.Contains(back, m[1]) {
+			h.note("nft-reload " + m[1])
+			h.loadNft(m[2], m[1])
+		}
+	}
+	removeFresh := func() {
+		for _, p := range fresh {
+			if dir, file := path.Split(p); dir == "/etc/systemd/system/" && strings.HasSuffix(file, ".service") {
+				nu := strings.TrimSuffix(file, ".service")
+				h.active[nu], h.enabled[nu] = false, false
+			}
+			delete(h.files, p)
+			delete(h.modes, p)
+		}
+	}
+	unitFile := "/etc/systemd/system/" + u + ".service"
+	switch {
+	case len(back) == 0 && len(fresh) == 0:
+		return "[unit] " + u + ": в этом запуске файлы не менялись — возвращать нечего\n", nil
+	case h.files[unitFile] == nil || slices.Contains(fresh, unitFile):
+		h.active[u], h.enabled[u] = false, false
+		removeFresh()
+		h.clearMarker(u)
+		return "[unit] " + u + ": новая установка снята\n", nil
+	}
+	removeFresh()
+	if err := h.start(u); err != nil {
+		return "", err
+	}
+	h.clearMarker(u)
+	return "[unit] " + u + ": возвращена прежняя версия\n", nil
+}
+
 func (h *fakeHost) PutFile(_ context.Context, path string, data []byte, mode uint32) (bool, error) {
-	h.ops = append(h.ops, "put "+path)
+	h.note("put " + path)
 	if h.down {
 		return false, errLost
 	}
@@ -186,7 +314,7 @@ var (
 func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 	first, _, _ := strings.Cut(script, "\n")
 	op := strings.TrimPrefix(first, "# hp:")
-	h.ops = append(h.ops, op)
+	h.note(op)
 	h.scripts[op] = script
 	if h.seen != nil {
 		h.seen(op)
@@ -198,6 +326,15 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 		h.dropped, h.down = true, true
 		return "", errLost
 	}
+	out, err := h.run(op, script)
+	if h.dropAfterOutput != "" && strings.HasPrefix(op, h.dropAfterOutput) {
+		h.dropAfterOutput, h.down = "", true
+		return out, fmt.Errorf("%w: ssh: connection lost: %s", ErrConnectionLost, tail(out, errTail))
+	}
+	return out, err
+}
+
+func (h *fakeHost) run(op, script string) (string, error) {
 	f := strings.Fields(op)
 	if len(f) == 0 {
 		return "", nil
@@ -219,11 +356,26 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 	case "mark":
 		h.marker[f[1]] = true
 		for _, m := range fakeMarkLine.FindAllStringSubmatch(script, -1) {
-			if h.markWrites[f[1]] == nil {
-				h.markWrites[f[1]] = map[string]string{}
+			for _, mw := range []map[string]map[string]string{h.markWrites, h.markFile} {
+				if mw[f[1]] == nil {
+					mw[f[1]] = map[string]string{}
+				}
+				mw[f[1]][m[2]] = m[1]
 			}
-			h.markWrites[f[1]][m[2]] = m[1]
 		}
+	case "key-pub": // openssl pkey -pubout on the node: the public half only
+		if h.noOpenSSL {
+			return "NO_OPENSSL\n", nil
+		}
+		k, err := parseKey(h.files[f[1]])
+		if err != nil {
+			return "", nil
+		}
+		der, err := x509.MarshalPKIXPublicKey(k.Public())
+		if err != nil {
+			return "", nil
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
 	case "private":
 		for _, p := range f[1:] {
 			for _, q := range []string{p, p + ".bak"} {
@@ -238,7 +390,9 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 		return "ACTIVE=" + b01(h.active[f[1]]) + "\nENABLED=" + b01(h.enabled[f[1]]) + "\nRETRY=" + b01(h.retry[f[1]]) +
 			"\nMARKER=" + b01(h.marker[f[1]]) + "\n", nil
 	case "rollback":
-		h.active[f[1]] = false
+		return h.rollback(f[1], script)
+	case "hop-apply":
+		h.loadNft(config.ExitPortHopTable, config.ExitPortHopConfPath)
 	case "hy-check":
 		return "VERSION=" + config.HysteriaVersion + "\nLISTEN=" + b01(h.active["hysteria2"]) + "\nHOP=" + b01(h.files[config.ExitPortHopConfPath] != nil) + "\n", nil
 	case "xray-check":
@@ -257,14 +411,14 @@ func (h *fakeHost) Run(_ context.Context, script string) (string, error) {
 	case "hub-key":
 		return testHubPub + " heyearth-hub\n", nil
 	case "socks-probe":
-		if h.udpChoked {
+		if h.udpChoked || (h.probeDead != nil && h.probeDead(op)) {
 			return "HTTP=000\n", nil
 		}
 		return "HTTP=204\n", nil
 	case "vr-probe": // the probe config carries the tunnel UUID: the script removes it
 		cfg := between(script, "VR_CFG='", "'")
 		h.remove(cfg)
-		if h.vrFail {
+		if h.vrFail || (h.probeDead != nil && h.probeDead(op)) {
 			return "[vr-probe] xray: connection refused\nHTTP=000\n", nil
 		}
 		return "HTTP=204\n", nil

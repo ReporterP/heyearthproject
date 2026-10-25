@@ -2,6 +2,9 @@ package provision
 
 import (
 	"context"
+	"crypto"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -23,7 +26,9 @@ type File struct {
 // file is written only when its content or mode differs, a service restarts only when its files
 // or binary changed (restart marker first, then the two-sample check), and the node goes into
 // routing only after this job checked both paths — or the TCP path alone when UDP to the exit is
-// choked (Review Focus 3). A second run on a converged exit writes and restarts nothing.
+// choked (Review Focus 3). A second run on a converged exit writes and restarts nothing. On a
+// live exit the steps that restart a path users ride on (hysteria, xray, the Hub's client) are
+// checked end to end around the change (guardPath), one after another.
 func ExitRecipe(o ExitOptions) Recipe {
 	var hyDown error // set by path_hy's Apply when the main tunnel does not answer; path_tcp decides
 	r := Recipe{
@@ -32,8 +37,8 @@ func ExitRecipe(o ExitOptions) Recipe {
 		{Name: "reality_keys", Apply: keysApply, Verify: keysVerify},
 		{Name: "base", Apply: baseApply, Verify: baseVerify},
 		{Name: "firewall", Apply: firewallApply(o)},
-		{Name: "hysteria", Apply: hysteriaApply(o), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
-		{Name: "xray", Apply: xrayApply(o), Verify: xrayVerify(o), Rollback: unitRollback("xray")},
+		{Name: "hysteria", Apply: guardPath(hyPath, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
+		{Name: "xray", Apply: guardPath(vrPath(o), xrayApply(o)), Verify: xrayVerify(o), Rollback: unitRollback("xray")},
 	}
 	if o.MTProto != nil {
 		r = append(r, Step{Name: "mtproxy", Apply: mtproxyApply(*o.MTProto), Verify: mtproxyVerify(*o.MTProto)})
@@ -41,7 +46,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 	return append(r,
 		Step{Name: "node_agent", Apply: agentApply(o), Verify: agentVerify(o), Rollback: unitRollback("node-agent")},
 		Step{Name: "save_tunnel", Apply: tunnelApply, Verify: tunnelVerify},
-		Step{Name: "hub_client", Apply: hubClientApply, Verify: hubClientVerify, Rollback: hubClientRollback},
+		Step{Name: "hub_client", Apply: guardPath(hyPath, hubClientApply), Verify: hubClientVerify, Rollback: hubClientRollback},
 		Step{Name: "path_hy", Apply: pathHyDegraded(&hyDown), Verify: pathHysteria},
 		Step{Name: "path_tcp", Verify: pathTCP(o, &hyDown)},
 		Step{Name: "activate", Apply: activateApply, Verify: lifecycleIs("online")},
@@ -446,10 +451,18 @@ func hysteriaApply(o ExitOptions) stepFunc {
 		if _, err := installUnit(ctx, r, s, "hysteria2", files, config.UnitConvergeScript("hysteria2", config.ExitHysteriaPrepareScript())); err != nil {
 			return err
 		}
-		// The hop is nft only: a changed rule set is reloaded atomically, hysteria is not restarted.
+		// The hop is nft only: a changed rule set is reloaded atomically, hysteria is not restarted
+		// (no restart marker). Its files belong to this run's rollback of the step all the same: a
+		// hop that breaks the main tunnel goes back with it, rules reloaded (UnitRollbackScript).
+		// Not being in the marker, a rollback resumed in a later job leaves them.
 		for _, f := range hopFiles {
-			if _, err := r.PutFile(ctx, f.Path, f.Data, f.Mode); err != nil {
+			changed, err := r.PutFile(ctx, f.Path, f.Data, f.Mode)
+			if err != nil {
 				return err
+			}
+			if changed {
+				s.noteChanged("hysteria2", f.Path)
+				s.Printf("записан %s", f.Path)
 			}
 		}
 		return runPrint(config.ExitPortHopApplyScript)(ctx, r, s)
@@ -580,8 +593,9 @@ func agentFiles(o ExitOptions) (files []File, ca, caKey []byte, err error) {
 }
 
 // agentCert reads the node's certificate and its key's state: certErr is why the certificate is
-// not good for this node (nil: chains to the Hub CA, names the node, 30+ days left), key the
-// key file's state (ok false: missing).
+// not good for this node (nil: chains to the Hub CA, names the node, 30+ days left, and is the
+// pair of the key on the node), key the key file's state (ok false: missing). The pair is
+// compared through the key's public half (config.KeyPublicScript): the key never leaves the node.
 func agentCert(ctx context.Context, r Remote, s *State, ca []byte) (certErr error, key fileState, keyOK bool, err error) {
 	cur, err := r.Run(ctx, config.CatScript(config.NodeAgentCert))
 	if err != nil {
@@ -592,7 +606,39 @@ func agentCert(ctx context.Context, r Remote, s *State, ca []byte) (certErr erro
 		return nil, fileState{}, false, err
 	}
 	key, keyOK = states[config.NodeAgentKey]
-	return CheckNodeCert([]byte(cur), ca, exitIP(s), s.Now()), key, keyOK, nil
+	if certErr = CheckNodeCert([]byte(cur), ca, exitIP(s), s.Now()); certErr != nil || !keyOK {
+		return certErr, key, keyOK, nil
+	}
+	pub, err := r.Run(ctx, config.KeyPublicScript(config.NodeAgentKey))
+	if err != nil {
+		return nil, fileState{}, false, err
+	}
+	if strings.TrimSpace(pub) == "NO_OPENSSL" {
+		// Not a reason to issue: a pair issued on every run would restart node-agent every time.
+		return nil, fileState{}, false, errors.New("на ноде нет openssl — пару сертификат/ключ агента не проверить (его ставит шаг «" + Title("base") + "»)")
+	}
+	return keyPairErr([]byte(cur), pub), key, keyOK, nil
+}
+
+// keyPairErr is nil when pubPEM (the "PUBLIC KEY" PEM KeyPublicScript printed for the node's
+// key) is the public key of certPEM.
+func keyPairErr(certPEM []byte, pubPEM string) error {
+	b, _ := pem.Decode([]byte(pubPEM))
+	if b == nil || b.Type != "PUBLIC KEY" {
+		return errors.New("закрытый ключ агента не читается")
+	}
+	pub, err := x509.ParsePKIXPublicKey(b.Bytes)
+	if err != nil {
+		return errors.New("закрытый ключ агента не читается")
+	}
+	cert, err := parseCert(certPEM)
+	if err != nil {
+		return fmt.Errorf("сертификата нет или он повреждён: %w", err)
+	}
+	if cp, ok := cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !cp.Equal(pub) {
+		return errors.New("сертификат и закрытый ключ агента — не пара (ключ заменён или запись пары прервалась)")
+	}
+	return nil
 }
 
 func agentApply(o ExitOptions) stepFunc {
@@ -616,8 +662,8 @@ func agentApply(o ExitOptions) stepFunc {
 				return err
 			}
 			s.Printf("сертификат агента: %v — выпускаю собственный для %s", why, exitIP(s))
-			// The key before the certificate: cut in between, the old certificate fails the check
-			// and the next run issues a fresh pair.
+			// The key before the certificate: cut in between, the old certificate is not the new
+			// key's pair (agentCert compares them) and the next run issues a fresh pair.
 			files = append(files, File{config.NodeAgentKey, k, 0o600}, File{config.NodeAgentCert, cert, 0o644})
 		case !privateMode(key.mode):
 			if _, err := r.Run(ctx, config.PrivateModeScript(config.NodeAgentKey)); err != nil {
@@ -784,14 +830,119 @@ func hubClientRollback(ctx context.Context, _ Remote, s *State) error {
 	return runPrint(config.UnitRollbackScript(hubUnit(s), s.changed[hubUnit(s)]))(ctx, s.Hub, s)
 }
 
+// ── end-to-end paths: the probes, and the guard around a live exit's risky restarts ──
+
+// pathCheck is one end-to-end path users' traffic rides on: its owner-facing name and its probe
+// from the Hub (ok: generate_204 answered; code: what came back).
+type pathCheck struct {
+	name  string
+	probe func(ctx context.Context, s *State) (ok bool, code string, err error)
+}
+
+// hyPath: the main tunnel — generate_204 through the Hub's hysteria client of the exit (SOCKS
+// 127.0.0.1:1088+id).
+var hyPath = pathCheck{"основной туннель", func(ctx context.Context, s *State) (bool, string, error) {
+	kv, err := runKV(ctx, s.Hub, config.SocksProbeScript(1088+s.Node.ID))
+	if err != nil {
+		return false, "", err
+	}
+	return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
+}}
+
+// vrPath: the TCP fallback — generate_204 through a short-lived xray on the Hub over VLESS
+// Reality to the exit's :10443 (exit-<id>.vr). The probe config carries the tunnel UUID: it is
+// put at VRProbeConfigPath and removed by the probe script.
+func vrPath(o ExitOptions) pathCheck {
+	return pathCheck{"запасной TCP-путь", func(ctx context.Context, s *State) (bool, string, error) {
+		if err := s.needKeys(); err != nil {
+			return false, "", err
+		}
+		port := config.VRProbeSocksPort(s.Node.ID)
+		cfg, err := config.ExitRealityProbeConfig(port, config.RealityProbe{ExitIP: exitIP(s), UUID: s.Keys.UUID,
+			PublicKey: s.Keys.PublicKey, ShortID: s.Keys.ShortID, SNI: config.ExitRealitySNI})
+		if err != nil {
+			return false, "", err
+		}
+		path := config.VRProbeConfigPath(s.Node.ID)
+		if _, err := s.Hub.PutFile(ctx, path, cfg, 0o600); err != nil {
+			return false, "", err
+		}
+		kv, err := runKV(ctx, s.Hub, config.VRProbeScript(o.HubXray, path, port))
+		if err != nil {
+			return false, "", err
+		}
+		return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
+	}}
+}
+
+// liveExit: the job converges an exit that carries users (reprovision runs only on online nodes).
+func liveExit(s *State) bool { return s.Kind == KindReprovision && s.Node.Lifecycle == "online" }
+
+// After a change the path gets pathAfterRounds probe runs (each up to three generate_204) with
+// pathAfterPause between: the Hub's hysteria client notices a restarted server only when its QUIC
+// connection times out (about 30 s), then reconnects. A rollback must not hang on that.
+var (
+	pathAfterRounds = 2
+	pathAfterPause  = 15 * time.Second
+)
+
+// guardPath wraps the Apply of a step whose restart can cut a path users ride on. On a live exit
+// the path is probed end to end before the change and after it: a path that answered before and
+// is dead after fails the step, and the runner rolls it back (the previous files, nft rules
+// included, return and the service restarts with them — the node stays online). A path already
+// dead before — UDP «Россия → заграница» choked (Review Focus 3) — is no reason for a rollback;
+// path_hy / path_tcp judge it. The check after the change is part of the step and the steps run
+// one after another, so the next risky restart (xray after hysteria) begins only once this one's
+// path answers again: users always keep a working path. Elsewhere (provision: the node is not in
+// routing; verify never applies) apply runs as it is.
+func guardPath(p pathCheck, apply stepFunc) stepFunc {
+	return func(ctx context.Context, r Remote, s *State) error {
+		if !liveExit(s) {
+			return apply(ctx, r, s)
+		}
+		before, code, err := p.probe(ctx, s)
+		if err != nil {
+			return fmt.Errorf("%s не проверен до изменений — ничего не меняю: %w", p.name, err)
+		}
+		if before {
+			s.Printf("%s отвечает до изменений — проверю его и после", p.name)
+		} else {
+			s.Printf("%s до изменений не отвечает (код %s) — откатывать по нему не буду, путь проверит отдельный шаг", p.name, code)
+		}
+		if err := apply(ctx, r, s); err != nil {
+			return err
+		}
+		if !before {
+			return nil
+		}
+		for i := range pathAfterRounds {
+			if i > 0 {
+				if err := s.Sleep(ctx, pathAfterPause); err != nil {
+					return err
+				}
+			}
+			ok, c, err := p.probe(ctx, s)
+			if err != nil {
+				return fmt.Errorf("%s не проверен после изменений: %w", p.name, err)
+			}
+			if ok {
+				s.Printf("%s отвечает и после изменений", p.name)
+				return nil
+			}
+			code = c
+		}
+		return fmt.Errorf("%s отвечал до изменений и перестал после них (код %s) — изменения шага откатываются", p.name, code)
+	}
+}
+
 func pathHysteria(ctx context.Context, _ Remote, s *State) error {
 	port := 1088 + s.Node.ID
-	kv, err := runKV(ctx, s.Hub, config.SocksProbeScript(port))
+	ok, code, err := hyPath.probe(ctx, s)
 	if err != nil {
 		return err
 	}
-	if kv["HTTP"] != "204" {
-		return fmt.Errorf("через основной туннель (127.0.0.1:%d) нет ответа 204 (код %s)", port, orNone(kv["HTTP"]))
+	if !ok {
+		return fmt.Errorf("через основной туннель (127.0.0.1:%d) нет ответа 204 (код %s)", port, code)
 	}
 	s.Printf("generate_204 через 127.0.0.1:%d — 204", port)
 	return nil
@@ -820,28 +971,15 @@ func pathTCP(o ExitOptions, hyDown *error) stepFunc {
 			s.Printf("запасной TCP-путь выключен владельцем — не проверяю")
 			return nil
 		}
-		if err := s.needKeys(); err != nil {
-			return err
-		}
-		port := config.VRProbeSocksPort(s.Node.ID)
-		cfg, err := config.ExitRealityProbeConfig(port, config.RealityProbe{ExitIP: exitIP(s), UUID: s.Keys.UUID,
-			PublicKey: s.Keys.PublicKey, ShortID: s.Keys.ShortID, SNI: config.ExitRealitySNI})
+		ok, code, err := vrPath(o).probe(ctx, s)
 		if err != nil {
 			return err
 		}
-		path := config.VRProbeConfigPath(s.Node.ID) // removed by the probe script
-		if _, err := s.Hub.PutFile(ctx, path, cfg, 0o600); err != nil {
-			return err
-		}
-		kv, err := runKV(ctx, s.Hub, config.VRProbeScript(o.HubXray, path, port))
-		if err != nil {
-			return err
-		}
-		if kv["HTTP"] != "204" {
+		if !ok {
 			if *hyDown != nil {
-				return fmt.Errorf("не отвечают оба пути: основной туннель и запасной TCP (код %s) — выход не включаю", orNone(kv["HTTP"]))
+				return fmt.Errorf("не отвечают оба пути: основной туннель и запасной TCP (код %s) — выход не включаю", code)
 			}
-			return fmt.Errorf("через запасной TCP-путь нет ответа 204 (код %s)", orNone(kv["HTTP"]))
+			return fmt.Errorf("через запасной TCP-путь нет ответа 204 (код %s)", code)
 		}
 		s.Printf("generate_204 через VLESS Reality %s:%d — 204", exitIP(s), config.ExitRealityPort)
 		if *hyDown != nil {
