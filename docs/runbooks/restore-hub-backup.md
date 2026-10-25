@@ -182,6 +182,10 @@ systemctl restart heyearth-api && sleep 3 && curl -s http://127.0.0.1:8000/api/v
 ```
 
 `printf` — встроенная команда, пароль не виден в списке процессов. Затем удалить `DATABASE_URL` из `server/.env` (или заменить новым значением, если он нужен как запасной).
+
+Копии `api.env`, которые оставляет deploy (`api.env.bak-<время>` перед каждой перезаписью и `api.env.key-<время>` после добавления
+`SSH_ENCRYPTION_KEY`; 0600, хранятся только 5 последних каждого вида), содержат **прежний** пароль. После смены пароля (убедившись, что
+`SSH_ENCRYPTION_KEY` сохранён офлайн и есть в текущем `api.env`) удалить их на Hub: `rm -f /opt/heyearth/mainserver/api.env.bak-* /opt/heyearth/mainserver/api.env.key-*`.
 Проверка: `runuser -u postgres -- psql -tAc "SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname='postgres'"` → `t`; следующий `--update-main` берёт
 `DATABASE_URL` из `api.env` и пароль не меняет (если `DATABASE_URL` в `server/.env` отличается, он печатает об этом `WARN`).
 

@@ -104,19 +104,27 @@ func readHubAPIEnv(client *ssh.Client) (content string, exists bool, err error) 
 
 // resolveSSHEncryptionKey applies decideSSHEncryptionKey against the live Hub.
 func resolveSSHEncryptionKey(client *ssh.Client, cfg *deployConfig, hubEnv string) (string, bool, error) {
+	return resolveSSHKeyWith(hubEnv, cfg.env.get("SSH_ENCRYPTION_KEY", ""), func() (int, error) {
+		out, err := runSSHQuiet(client, "bash -c "+shQuote(sshCiphertextCountScript), "")
+		if err != nil {
+			return 0, fmt.Errorf("не удалось проверить зашифрованные пароли в БД: %w", err)
+		}
+		return parseCount(out)
+	})
+}
+
+// resolveSSHKeyWith: a valid key on the Hub or in server/.env decides without the database (a
+// psql hiccup never stops a deploy then); only without one are the ciphertexts counted.
+func resolveSSHKeyWith(hubEnv, local string, count func() (int, error)) (string, bool, error) {
 	hubKey := envFileValue(hubEnv, "SSH_ENCRYPTION_KEY")
-	if validSSHKey(hubKey) {
-		return decideSSHEncryptionKey(hubKey, cfg.env.get("SSH_ENCRYPTION_KEY", ""), true)
+	if validSSHKey(hubKey) || validSSHKey(local) {
+		return decideSSHEncryptionKey(hubKey, local, true) // a valid key is returned before the ciphertext branch
 	}
-	out, err := runSSHQuiet(client, "bash -c "+shQuote(sshCiphertextCountScript), "")
-	if err != nil {
-		return "", false, fmt.Errorf("не удалось проверить зашифрованные пароли в БД: %w", err)
-	}
-	n, err := parseCount(out)
+	n, err := count()
 	if err != nil {
 		return "", false, err
 	}
-	return decideSSHEncryptionKey(hubKey, cfg.env.get("SSH_ENCRYPTION_KEY", ""), n > 0)
+	return decideSSHEncryptionKey(hubKey, local, n > 0)
 }
 
 // apiEnvSSHKey is the SSH_ENCRYPTION_KEY doAPI writes into api.env (rewritten from the
@@ -151,10 +159,10 @@ if ! echo "` + sum + `  $f.tmp" | sha256sum -c --status -; then
   echo "[hub] ERROR: api.env пришёл не целиком — прежний файл не тронут" >&2
   exit 1
 fi
-if [ -f "$f" ]; then cp -p "$f" "$b"; fi
+if [ -f "$f" ]; then cp -p "$f" "$b"; chmod 600 "$b"; fi
 chmod 600 "$f.tmp"
 mv -f "$f.tmp" "$f"
-echo "[hub] $f записан (прежний: $b)"
+` + pruneEnvCopies + `echo "[hub] $f записан (прежний: $b)"
 `
 }
 
@@ -169,10 +177,26 @@ func writeHubAPIEnv(client *ssh.Client, content string) {
 	fmt.Print(out)
 }
 
+// keepEnvCopies: deploy's copies of api.env kept per kind (api.env.bak-<ts>, api.env.key-<ts>).
+const keepEnvCopies = 5
+
+// pruneEnvCopies (bash, $f = api.env) removes all but the newest keepEnvCopies api.env.bak-* and
+// api.env.key-* (the timestamp sorts by time): they hold secrets, the DB password among them.
+var pruneEnvCopies = `prune_env_copies() {
+  local -a all old
+  all=( "$1"-* )
+  [ -e "${all[0]}" ] || return 0
+  mapfile -t old < <(printf '%s\n' "${all[@]}" | sort -r | tail -n +` + strconv.Itoa(keepEnvCopies+1) + `)
+  [ "${#old[@]}" -eq 0 ] || rm -f -- "${old[@]}"
+}
+prune_env_copies "$f.bak"
+prune_env_copies "$f.key"
+`
+
 // keyCopyScript copies api.env (now with the key) to copyPath, 0600: the copy made before the
 // key was added has none.
 func keyCopyScript(envPath, copyPath string) string {
-	return "set -euo pipefail\numask 077\ncp -p " + shQuote(envPath) + " " + shQuote(copyPath) + "\nchmod 600 " + shQuote(copyPath) + "\n"
+	return "set -euo pipefail\numask 077\nf=" + shQuote(envPath) + "\ncp -p \"$f\" " + shQuote(copyPath) + "\nchmod 600 " + shQuote(copyPath) + "\n" + pruneEnvCopies
 }
 
 // keepKeyCopy runs keyCopyScript and tells the owner where the key is, to save it offline.
@@ -206,11 +230,12 @@ b=` + shQuote(backup) + `
 [ -f "$f" ] || { echo "[hub] ERROR: $f нет — сначала go run ./cmd/deploy --main" >&2; exit 1; }
 echo "` + sum + `  $f" | sha256sum -c --status - || { echo "[hub] ERROR: $f изменился после чтения — ничего не записано, повторите команду" >&2; exit 1; }
 cp -p "$f" "$b"
+chmod 600 "$b"
 { grep -v '^SSH_ENCRYPTION_KEY=' "$f" || true; cat; } > "$f.tmp"
 chmod --reference="$f" "$f.tmp"
 chown --reference="$f" "$f.tmp" 2>/dev/null || true
 mv -f "$f.tmp" "$f"
-echo "[hub] SSH_ENCRYPTION_KEY записан в $f (прежний файл: $b)"
+` + pruneEnvCopies + `echo "[hub] SSH_ENCRYPTION_KEY записан в $f (прежний файл: $b)"
 `
 }
 

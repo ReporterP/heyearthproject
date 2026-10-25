@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -186,7 +187,7 @@ func TestAPIEnvSSHKey(t *testing.T) {
 		t.Error("doAPI must stop when api.env cannot be read")
 	}
 	hp, _ := os.ReadFile("hub_provisioning.go")
-	if strings.Contains(body, "uploadFileContent(c, []byte(serializeEnv") || !strings.Contains(body, "writeHubAPIEnv(client, serializeEnv(apiEnv))") ||
+	if strings.Contains(body, "uploadFileContent(c, []byte(serializeEnv") || !strings.Contains(body, "writeHubAPIEnv(client, content)") ||
 		!strings.Contains(string(hp), "runSSHQuiet(client, \"bash -c \"+shQuote(writeAPIEnvScript(") {
 		t.Error("doAPI must write api.env on the Hub (temp + mv, backup), not over SFTP")
 	}
@@ -319,5 +320,146 @@ func TestLegacyCleanupCommand(t *testing.T) {
 		if strings.Contains(c, hubCertsDir+keep) {
 			t.Errorf("cleanup removes the current %s", keep)
 		}
+	}
+}
+
+// Every api.env copy is 0600 (cp -p would keep a looser mode of the source), and only the newest
+// five api.env.bak-* and five api.env.key-* stay (they hold secrets, the DB password among them).
+func TestAPIEnvCopiesPrivateAndPruned(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	seed := func(t *testing.T) (string, string) {
+		dir := t.TempDir()
+		env := filepath.Join(dir, "api.env")
+		if err := os.WriteFile(env, []byte("APP_DIR=/x\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		for i := 1; i <= 7; i++ {
+			for _, kind := range []string{"bak", "key"} {
+				_ = os.WriteFile(filepath.Join(dir, "api.env."+kind+"-20260101-00000"+strconv.Itoa(i)), []byte("old"), 0o600)
+			}
+		}
+		_ = os.WriteFile(filepath.Join(dir, "api.env.backup-keep-me"), []byte("x"), 0o600) // not ours: untouched
+		return dir, env
+	}
+	check := func(t *testing.T, dir, newest string) {
+		t.Helper()
+		for _, kind := range []string{"bak", "key"} {
+			m, _ := filepath.Glob(filepath.Join(dir, "api.env."+kind+"-*"))
+			if len(m) != 5 {
+				t.Errorf("%d api.env.%s-* left, want the newest 5: %v", len(m), kind, m)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "api.env."+kind+"-20260101-000001")); err == nil {
+				t.Errorf("the oldest api.env.%s-* was kept", kind)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "api.env.backup-keep-me")); err != nil {
+			t.Error("a file that is not a deploy copy was removed")
+		}
+		st, err := os.Stat(filepath.Join(dir, newest))
+		if err != nil {
+			t.Fatalf("the new copy %s is gone: %v", newest, err)
+		}
+		if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %v, want 0600", newest, st.Mode().Perm())
+		}
+	}
+	// the mode is also pinned in the text (on Windows the bash chmod is a no-op): every cp -p copy
+	// is followed by chmod 600 of that copy
+	for name, s := range map[string]string{"writeAPIEnvScript": writeAPIEnvScript("/e", "/e.bak-1", "00"),
+		"writeSSHKeyScript": writeSSHKeyScript("/e", "/e.bak-1", "00"), "keyCopyScript": keyCopyScript("/e", "/e.key-1")} {
+		cps := regexp.MustCompile(`cp -p \S+ (\S+?);?\s`).FindAllStringSubmatchIndex(s, -1)
+		if len(cps) == 0 {
+			t.Errorf("%s: no cp -p", name)
+		}
+		for _, m := range cps {
+			dst := strings.TrimSuffix(s[m[2]:m[3]], ";")
+			if !strings.Contains(s[m[1]:], "chmod 600 "+dst) {
+				t.Errorf("%s: copy %s is not made 0600", name, dst)
+			}
+		}
+	}
+	newEnv := "APP_DIR=/y\n"
+	sum := sha256.Sum256([]byte(newEnv))
+	t.Run("writeAPIEnvScript", func(t *testing.T) {
+		dir, env := seed(t)
+		s := writeAPIEnvScript(shellDir(env), shellDir(env)+".bak-20261026-120000", hex.EncodeToString(sum[:]))
+		if out, code := runBashStdin(t, "printf '%s' "+shQuote(newEnv)+" | bash -c "+shQuote(s)+"\n"); code != 0 {
+			t.Fatalf("%d %s", code, out)
+		}
+		check(t, dir, "api.env.bak-20261026-120000")
+	})
+	t.Run("writeSSHKeyScript", func(t *testing.T) {
+		dir, env := seed(t)
+		old := sha256.Sum256([]byte("APP_DIR=/x\n"))
+		s := writeSSHKeyScript(shellDir(env), shellDir(env)+".bak-20261026-120000", hex.EncodeToString(old[:]))
+		if out, code := runBashStdin(t, "printf '%s\n' 'SSH_ENCRYPTION_KEY="+key32+"' | bash -c "+shQuote(s)+"\n"); code != 0 {
+			t.Fatalf("%d %s", code, out)
+		}
+		check(t, dir, "api.env.bak-20261026-120000")
+	})
+	t.Run("keyCopyScript", func(t *testing.T) {
+		dir, env := seed(t)
+		if out, code := runBashStdin(t, "bash -c "+shQuote(keyCopyScript(shellDir(env), shellDir(env)+".key-20261026-120000"))+"\n"); code != 0 {
+			t.Fatalf("%d %s", code, out)
+		}
+		check(t, dir, "api.env.key-20261026-120000")
+	})
+}
+
+// A psql hiccup must not stop a deploy when the key is known: server/.env's valid key (or the
+// Hub's) decides without counting ciphertexts; only an unknown key needs the count.
+func TestResolveSSHKeyCountsOnlyWhenNeeded(t *testing.T) {
+	broken := func() (int, error) { return 0, errors.New("psql: connection refused") }
+	for name, tc := range map[string]struct {
+		hub, local string
+		want       string
+		count      bool
+	}{
+		"Hub key":                    {"SSH_ENCRYPTION_KEY=" + key32 + "\n", "", key32, false},
+		"server/.env key":            {"", key32, key32, false},
+		"broken Hub key, local good": {"SSH_ENCRYPTION_KEY=zzz\n", key32, key32, false},
+	} {
+		called := false
+		got, _, err := resolveSSHKeyWith(tc.hub, tc.local, func() (int, error) { called = true; return broken() })
+		if err != nil || got != tc.want || called != tc.count {
+			t.Errorf("%s: %q %v, count called %v", name, got, err, called)
+		}
+	}
+	if _, _, err := resolveSSHKeyWith("", "", broken); err == nil {
+		t.Error("an unknown key with an unreadable count must be an error")
+	}
+	if _, gen, err := resolveSSHKeyWith("", "", func() (int, error) { return 0, nil }); err != nil || !gen {
+		t.Errorf("a clean Hub generates: %v %v", gen, err)
+	}
+	if _, _, err := resolveSSHKeyWith("", "", func() (int, error) { return 2, nil }); !errors.Is(err, errKeyUndecidable) {
+		t.Errorf("ciphertexts without a key: %v", err)
+	}
+}
+
+// api.env is rewritten from the whitelist, but keys the tool does not manage (set on the Hub by
+// hand) are kept unchanged and named; managed keys come only from the tool.
+func TestPreserveUnmanagedEnv(t *testing.T) {
+	managed := serializeEnv(map[string]string{"APP_DIR": "/opt/heyearth/mainserver", "DATABASE_URL": "postgres://new", "SSH_ENCRYPTION_KEY": key32})
+	live := "APP_DIR=/old\r\nDATABASE_URL=postgres://old\n# comment\n\nCORS_ALLOWED_ORIGINS=\"https://a, https://b\"\n" +
+		"YOOKASSA_WEBHOOK_ALLOW_LOCAL=1\nnot a line\nCORS_ALLOWED_ORIGINS=https://c\nSSH_ENCRYPTION_KEY=stale\n"
+	got, kept := preserveUnmanagedEnv(managed, live)
+	want := managed + "CORS_ALLOWED_ORIGINS=\"https://a, https://b\"\nYOOKASSA_WEBHOOK_ALLOW_LOCAL=1\nCORS_ALLOWED_ORIGINS=https://c\n"
+	if got != want {
+		t.Fatalf("api.env:\n%s\nwant\n%s", got, want)
+	}
+	if strings.Join(kept, ",") != "CORS_ALLOWED_ORIGINS,YOOKASSA_WEBHOOK_ALLOW_LOCAL" {
+		t.Fatalf("kept %v", kept)
+	}
+	if got, kept := preserveUnmanagedEnv(managed, managed); got != managed || len(kept) != 0 {
+		t.Fatalf("a whitelist-only api.env must stay as is: %q %v", got, kept)
+	}
+	b, _ := os.ReadFile("main.go")
+	src := string(b)
+	i := strings.Index(src, "func doAPI(")
+	body := src[i : i+strings.Index(src[i:], "\n}\n")]
+	if !strings.Contains(body, "preserveUnmanagedEnv(serializeEnv(apiEnv), hubEnv)") {
+		t.Error("doAPI must keep the unmanaged keys of the live api.env")
 	}
 }

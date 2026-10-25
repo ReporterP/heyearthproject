@@ -15,7 +15,9 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -767,7 +769,11 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	apiEnv["SSH_ENCRYPTION_KEY"] = sshKey
 	// api.env carries the DB password, the JWT secret, the admin password and the key: written on
 	// the Hub (exact content, timestamped copy of the previous file, 0600, temp + mv), not over SFTP.
-	writeHubAPIEnv(client, serializeEnv(apiEnv))
+	content, kept := preserveUnmanagedEnv(serializeEnv(apiEnv), hubEnv)
+	if len(kept) > 0 {
+		fmt.Println("[hub] api.env: сохраняю ключи, которыми deploy не управляет: " + strings.Join(kept, ", "))
+	}
+	writeHubAPIEnv(client, content)
 	if generated {
 		fmt.Println("[hub] SSH_ENCRYPTION_KEY сгенерирован (зашифрованных паролей в БД не было)")
 		keepKeyCopy(client)
@@ -1723,22 +1729,49 @@ func filterEnv(env []string, removeKey string) []string {
 	return out
 }
 
-func serializeEnv(values map[string]string) string {
-	keys := []string{
-		"APP_DIR",
-		"DATABASE_URL",
-		"ADMIN_USER",
-		"ADMIN_PASS",
-		"JWT_SECRET",
-		"SITE_DOMAIN",
-		"PUBLIC_BASE_URL",
-		"TLS_CLIENT_CERT_FILE",
-		"TLS_CLIENT_KEY_FILE",
-		"TLS_CA_FILE",
-		"SSH_ENCRYPTION_KEY",
-	}
+// managedEnvKeys are the api.env keys deploy writes (serializeEnv); every other key of the live
+// api.env is the owner's and is kept as it is (preserveUnmanagedEnv).
+var managedEnvKeys = []string{
+	"APP_DIR",
+	"DATABASE_URL",
+	"ADMIN_USER",
+	"ADMIN_PASS",
+	"JWT_SECRET",
+	"SITE_DOMAIN",
+	"PUBLIC_BASE_URL",
+	"TLS_CLIENT_CERT_FILE",
+	"TLS_CLIENT_KEY_FILE",
+	"TLS_CA_FILE",
+	"SSH_ENCRYPTION_KEY",
+}
+
+var envLineRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=`)
+
+// preserveUnmanagedEnv appends to env (serializeEnv's output) the lines of the live api.env whose
+// keys deploy does not manage (CORS_ALLOWED_ORIGINS, YOOKASSA_WEBHOOK_ALLOW_LOCAL, …), unchanged
+// and in their order, and returns those key names (for a note; never the values). Comments, blank
+// and malformed lines are not carried; managed keys come only from deploy.
+func preserveUnmanagedEnv(env, live string) (string, []string) {
 	var b strings.Builder
-	for _, key := range keys {
+	b.WriteString(env)
+	var names []string
+	for _, line := range strings.Split(live, "\n") {
+		line = strings.TrimRight(line, "\r")
+		m := envLineRe.FindStringSubmatch(line)
+		if m == nil || slices.Contains(managedEnvKeys, m[1]) {
+			continue
+		}
+		b.WriteString(line + "\n")
+		if !slices.Contains(names, m[1]) {
+			names = append(names, m[1])
+		}
+	}
+	return b.String(), names
+}
+
+func serializeEnv(values map[string]string) string {
+	var b strings.Builder
+	for _, key := range managedEnvKeys {
 		if value, ok := values[key]; ok && strings.TrimSpace(value) != "" {
 			b.WriteString(key)
 			b.WriteString("=")
