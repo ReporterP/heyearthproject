@@ -22,6 +22,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/provision"
 	"github.com/heyearth/backend/internal/xraydiff"
 )
 
@@ -1551,11 +1552,15 @@ func StartCertExpiryMonitor() {
 	}()
 }
 
+// certExpiryFiles: the Hub's node-agent CA and the API's client certificate, plus the previous CA
+// and client pair while the CA change lasts (provision.Legacy*; absent files are skipped). Node
+// certificates are per node and renewed by their setup; the old shared server-cert.pem is unused.
+var certExpiryFiles = []string{"ca-cert.pem", "client-cert.pem", provision.LegacyCACertFile, provision.LegacyClientCertFile}
+
 func checkCertExpiry() {
 	certsDir := filepath.Join(config.AppDir(), "certs")
-	certFiles := []string{"ca-cert.pem", "client-cert.pem", "server-cert.pem"}
 
-	for _, name := range certFiles {
+	for _, name := range certExpiryFiles {
 		path := filepath.Join(certsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {

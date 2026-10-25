@@ -753,24 +753,24 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		"TLS_CA_FILE":          path.Join(appDir, "certs", "ca-cert.pem"),
 	}
 	// SSH_ENCRYPTION_KEY survives every deploy (api.env is rewritten from this whitelist); a Hub
-	// without one gets it here only while no ciphertext exists. A key that cannot be decided does
-	// not stop the deploy: the API raises its critical alert and --ensure-hub-provisioning explains.
-	if hubEnv, _, err := readHubAPIEnv(client); err != nil {
-		fmt.Printf("[hub] WARN: api.env не прочитан (%v) — SSH_ENCRYPTION_KEY не записан\n", err)
-	} else if key, generated, err := resolveSSHEncryptionKey(client, cfg, hubEnv); err != nil {
-		fmt.Printf("[hub] WARN: SSH_ENCRYPTION_KEY не записан в api.env: %v\n", err)
-	} else {
-		apiEnv["SSH_ENCRYPTION_KEY"] = key
-		if generated {
-			fmt.Println("[hub] SSH_ENCRYPTION_KEY сгенерирован (зашифрованных паролей в БД не было); хранится только в api.env на Hub и в его бэкапах")
-		}
+	// without one gets it here only while no ciphertext exists. An api.env or a key state that
+	// cannot be read stops the deploy before api.env is touched and the API restarted: without the
+	// key the API could no longer decrypt node passwords whose plaintext copies it already emptied.
+	hubEnv, _, err := readHubAPIEnv(client)
+	if err != nil {
+		log.Fatalf("[hub] чтение %s: %v — api.env не перезаписываю, API не перезапускаю (SSH_ENCRYPTION_KEY пропал бы)", hubAPIEnv, err)
 	}
-	if err := uploadFileContent(c, []byte(serializeEnv(apiEnv)), appDir+"/api.env"); err != nil {
-		log.Fatal(err)
+	sshKey, generated, err := apiEnvSSHKey(hubEnv, func(e string) (string, bool, error) { return resolveSSHEncryptionKey(client, cfg, e) })
+	if err != nil {
+		log.Fatalf("[hub] SSH_ENCRYPTION_KEY: %v — api.env не перезаписываю, API не перезапускаю", err)
 	}
-	// api.env carries the DB password, the JWT secret and the admin password.
-	if _, err := runSSH(client, "chmod 600 "+appDir+"/api.env", true); err != nil {
-		log.Fatal(err)
+	apiEnv["SSH_ENCRYPTION_KEY"] = sshKey
+	// api.env carries the DB password, the JWT secret, the admin password and the key: written on
+	// the Hub (exact content, timestamped copy of the previous file, 0600, temp + mv), not over SFTP.
+	writeHubAPIEnv(client, serializeEnv(apiEnv))
+	if generated {
+		fmt.Println("[hub] SSH_ENCRYPTION_KEY сгенерирован (зашифрованных паролей в БД не было)")
+		keepKeyCopy(client)
 	}
 
 	service := fmt.Sprintf(`[Unit]
@@ -1972,7 +1972,7 @@ func setupExitNodeDeploy(addr string, mainClient *ssh.Client, cfg *deployConfig,
 		Recipe: func(ctx context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
 			st := provision.NewState(kind, n, hub, store.Hooks(func() {
 				fmt.Println("[exit-node] Xray и монитор туннелей на Hub подхватят изменения при периодической синхронизации API (≤ 5 мин)")
-			}, nil))
+			}, cliProbeAgent(hub, hubCertsDir))) // the Hub's own mTLS check of the agent
 			st.Exit, st.Now = eo, now
 			if n.MTProtoStatus == "disabled" { // switched off by the owner: no MTProxy step
 				st.Exit.MTProto = nil

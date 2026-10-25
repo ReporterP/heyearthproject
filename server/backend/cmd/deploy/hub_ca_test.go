@@ -394,3 +394,121 @@ func tlsHandshake(client, server *tls.Config) error {
 	}
 	return serr
 }
+
+// The CLI's agent check is the Hub's own mTLS call (the API's ProbeAgent is not in this process):
+// openssl s_client on the Hub with the Hub's client pair — then the legacy one, as heyearth-api
+// presents both — against both CA generations, verifying the agent's certificate (node-agent).
+// A refusal by the agent (an alert after the TLS 1.3 handshake) or a bad certificate fails it.
+func TestAgentProbeScriptStub(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	s := agentProbeScript("/opt/heyearth/mainserver/certs", "203.0.113.7", 50052)
+	for _, w := range []string{"-connect '203.0.113.7:50052'", "-servername node-agent", "-verify_return_error", "-verify_hostname node-agent", "-alpn h2"} {
+		if !strings.Contains(s, w) {
+			t.Errorf("probe lacks %q", w)
+		}
+	}
+	if !strings.Contains(agentProbeScript("/c", "2001:db8::7", 50052), "-connect '[2001:db8::7]:50052'") {
+		t.Error("IPv6 address not bracketed")
+	}
+	stub := `openssl() {
+  local cert= ca=
+  while [ $# -gt 0 ]; do case "$1" in -cert) cert=$2; shift ;; -CAfile) ca=$2; shift ;; esac; shift; done
+  cat "$ca" >> "$LOG/ca"; echo "$cert" >> "$LOG/certs"
+  case "$cert" in *legacy-client-cert.pem) r=$LEGACY ;; *) r=$NEW ;; esac
+  case "$r" in
+    ok) echo 'Verify return code: 0 (ok)' ;;
+    alert) echo 'Verify return code: 0 (ok)'; echo 'C0:error:0A00045C:SSL routines:ssl3_read_bytes:tlsv13 alert certificate required:rec_layer_s3.c:916:SSL alert number 116' ;;
+    verify) echo 'verify error:num=20:unable to get local issuer certificate'; return 1 ;;
+  esac
+}
+timeout() { shift; "$@"; }
+sleep() { :; }
+`
+	for name, tc := range map[string]struct {
+		newR, legacyR string
+		legacy        bool
+		want, detail  string
+	}{
+		"converged agent":                 {"ok", "", true, "PROBE=ok", ""},
+		"old agent: legacy pair":          {"alert", "ok", true, "PROBE=ok-legacy", ""},
+		"refused by both":                 {"alert", "alert", true, "PROBE=fail", "alert certificate required"},
+		"bad agent cert, no legacy files": {"verify", "", false, "PROBE=fail", "verify error"},
+	} {
+		dir, logDir := t.TempDir(), t.TempDir()
+		files := map[string]string{"ca-cert.pem": "NEWCA\n", "client-cert.pem": "c", "client-key.pem": "k"}
+		if tc.legacy {
+			files[provision.LegacyCACertFile], files[provision.LegacyClientCertFile], files[provision.LegacyClientKeyFile] = "OLDCA\n", "lc", "lk"
+		}
+		for f, c := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, _ := runBashStdin(t, "LOG="+shQuote(shellDir(logDir))+"; NEW="+tc.newR+"; LEGACY="+tc.legacyR+"\n"+stub+agentProbeScript(shellDir(dir), "203.0.113.7", 50052))
+		if !hasLine(out, tc.want) || (tc.detail != "" && !strings.Contains(out, tc.detail)) {
+			t.Errorf("%s:\n%s", name, out)
+		}
+		ca, _ := os.ReadFile(filepath.Join(logDir, "ca"))
+		if !strings.Contains(string(ca), "NEWCA") || (tc.legacy && !strings.Contains(string(ca), "OLDCA")) {
+			t.Errorf("%s: CA bundle %q must hold both generations", name, ca)
+		}
+	}
+	// the verdict → Hooks.ProbeAgent
+	for out, ok := range map[string]bool{"PROBE=ok\n": true, "PROBE=ok-legacy\n": true, "x alert\nPROBE=fail\n": false, "PROBE=no-openssl\n": false, "": false} {
+		err := cliProbeAgent(fakeClockHub{out: out}, "/c")(context.Background(), "203.0.113.7")
+		if (err == nil) != ok {
+			t.Errorf("%q: %v", out, err)
+		}
+	}
+}
+
+// The same check against real TLS 1.3 agents (Go, like node-agent) with the real openssl.
+func TestAgentProbeScriptOpenSSL(t *testing.T) {
+	if !haveOpenSSL() {
+		t.Skip("no bash/openssl")
+	}
+	old, hub, other := genOldCA(t), genHubCA(t, time.Now()), genHubCA(t, time.Now())
+	newCli, _, newCliKey := hub.client(t, time.Now().AddDate(1, 0, 0))
+	oldCli, _, oldCliKey := old.client(t, time.Now().AddDate(1, 0, 0))
+	dir := t.TempDir()
+	for f, b := range map[string][]byte{"ca-cert.pem": hub.certPEM, "client-cert.pem": newCli, "client-key.pem": newCliKey,
+		provision.LegacyCACertFile: old.certPEM, provision.LegacyClientCertFile: oldCli, provision.LegacyClientKeyFile: oldCliKey} {
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := func(ca genCA, trust *x509.Certificate) int {
+		cert, key := serverCert(t, ca.cert, ca.key, "127.0.0.1")
+		ln, err := tls.Listen("tcp", "127.0.0.1:0", agentTLS(t, cert, key, trust))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() { defer c.Close(); _, _ = io.Copy(io.Discard, c) }()
+			}
+		}()
+		return ln.Addr().(*net.TCPAddr).Port
+	}
+	for name, tc := range map[string]struct {
+		port int
+		want string
+	}{
+		"converged agent (new CA)":   {agent(hub, hub.cert), "PROBE=ok"},
+		"unconverged agent (old CA)": {agent(old, old.cert), "PROBE=ok-legacy"},
+		"agent of a foreign CA":      {agent(other, other.cert), "PROBE=fail"},
+		"agent trusting another CA":  {agent(hub, other.cert), "PROBE=fail"},
+	} {
+		out, err := provision.LocalRemote{}.Run(context.Background(), agentProbeScript(shellDir(dir), "127.0.0.1", tc.port))
+		if !hasLine(out, tc.want) {
+			t.Errorf("%s: %v\n%s", name, err, out)
+		}
+	}
+}

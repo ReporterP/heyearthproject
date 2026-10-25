@@ -4,11 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/heyearth/backend/internal/provision"
 )
 
 var key32 = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
@@ -144,5 +148,176 @@ func TestEnsureHubProvisioningRestartsNothing(t *testing.T) {
 	// in the API binary is the file name the API's loader reads.
 	if !strings.Contains(src, "provision.LegacyClientCertFile") {
 		t.Error("the API capability check must look for provision.LegacyClientCertFile")
+	}
+}
+
+// doAPI rewrites api.env from the whitelist: the key it carries must be decided, never guessed —
+// an unknown state stops the deploy (the API already emptied the plaintext SSH passwords, so a
+// dropped key would lose every node password for good).
+func TestAPIEnvSSHKey(t *testing.T) {
+	fail := errors.New("ssh: connection lost")
+	for name, tc := range map[string]struct {
+		hubEnv  string
+		key     string
+		gen     bool
+		err     error
+		want    string
+		wantErr bool
+	}{
+		"kept":                          {"SSH_ENCRYPTION_KEY=" + key32 + "\n", key32, false, nil, key32, false},
+		"generated on a clean Hub":      {"", key32, true, nil, key32, false},
+		"count unknown: stop":           {"", "", false, fail, "", true},
+		"undecidable: carried as it is": {"SSH_ENCRYPTION_KEY=broken\n", "", false, errKeyUndecidable, "broken", false},
+		"undecidable, none: nothing":    {"", "", false, errKeyUndecidable, "", false},
+	} {
+		got, gen, err := apiEnvSSHKey(tc.hubEnv, func(string) (string, bool, error) { return tc.key, tc.gen, tc.err })
+		if (err != nil) != tc.wantErr || got != tc.want || gen != (tc.gen && tc.err == nil) {
+			t.Errorf("%s: %q %v %v", name, got, gen, err)
+		}
+	}
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "func doAPI(")
+	body := src[i : i+strings.Index(src[i:], "\n}\n")]
+	if !regexp.MustCompile(`readHubAPIEnv\(client\)\s*\n\s*if err != nil \{\s*\n\s*log\.Fatalf`).MatchString(body) {
+		t.Error("doAPI must stop when api.env cannot be read")
+	}
+	hp, _ := os.ReadFile("hub_provisioning.go")
+	if strings.Contains(body, "uploadFileContent(c, []byte(serializeEnv") || !strings.Contains(body, "writeHubAPIEnv(client, serializeEnv(apiEnv))") ||
+		!strings.Contains(string(hp), "runSSHQuiet(client, \"bash -c \"+shQuote(writeAPIEnvScript(") {
+		t.Error("doAPI must write api.env on the Hub (temp + mv, backup), not over SFTP")
+	}
+}
+
+// api.env is replaced atomically on the Hub with a timestamped copy of the previous file; the
+// content travels on stdin only.
+func TestWriteAPIEnvScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	dir := t.TempDir()
+	env := filepath.Join(dir, "api.env")
+	old := "DATABASE_URL=postgres://x\nSSH_ENCRYPTION_KEY=" + key32 + "\n"
+	if err := os.WriteFile(env, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newEnv := "APP_DIR=/opt/heyearth/mainserver\nSSH_ENCRYPTION_KEY=" + key32 + "\n"
+	sum := sha256.Sum256([]byte(newEnv))
+	script := writeAPIEnvScript(shellDir(env), shellDir(env)+".bak-1", hex.EncodeToString(sum[:]))
+	if strings.Contains(script, key32) {
+		t.Fatal("api.env content in the script")
+	}
+	out, code := runBashStdin(t, "printf '%s' "+shQuote(newEnv)+" | bash -c "+shQuote(script)+"\n")
+	if code != 0 || strings.Contains(out, key32) {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if got, _ := os.ReadFile(env); string(got) != newEnv {
+		t.Fatalf("api.env:\n%s", got)
+	}
+	if bak, _ := os.ReadFile(env + ".bak-1"); string(bak) != old {
+		t.Fatalf("backup:\n%s", bak)
+	}
+	if _, err := os.Stat(env + ".tmp"); err == nil {
+		t.Error("temp file left behind")
+	}
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(env); st.Mode().Perm() != 0o600 {
+			t.Errorf("mode %v", st.Mode().Perm())
+		}
+	}
+	// a dropped session (here: nothing on stdin) never leaves a truncated api.env
+	if out, code := runBashStdin(t, "bash -c "+shQuote(writeAPIEnvScript(shellDir(env), shellDir(env)+".bak-2", hex.EncodeToString(sum[:])))+" </dev/null\n"); code == 0 {
+		t.Fatalf("an empty api.env was accepted: %s", out)
+	}
+	if got, _ := os.ReadFile(env); string(got) != newEnv {
+		t.Fatal("a refused write changed api.env")
+	}
+}
+
+// Right after the key is added a copy of api.env WITH the key exists (the copy made before the
+// write has none), and the owner is told where the key is to save it offline.
+func TestKeyCopyScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	dir := t.TempDir()
+	env := filepath.Join(dir, "api.env")
+	if err := os.WriteFile(env, []byte("SSH_ENCRYPTION_KEY="+key32+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runBashStdin(t, "bash -c "+shQuote(keyCopyScript(shellDir(env), shellDir(env)+".key-1"))+"\n")
+	if code != 0 || strings.Contains(out, key32) {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if cp, _ := os.ReadFile(env + ".key-1"); envFileValue(string(cp), "SSH_ENCRYPTION_KEY") != key32 {
+		t.Fatal("the copy lacks the key")
+	}
+	b, _ := os.ReadFile("hub_provisioning.go")
+	src := string(b)
+	fn := func(name string) string {
+		i := strings.Index(src, "func "+name+"(")
+		return src[i : i+strings.Index(src[i:], "\n}\n")]
+	}
+	if !strings.Contains(fn("ensureSSHEncryptionKey"), "keepKeyCopy(client)") ||
+		!strings.Contains(fn("keepKeyCopy"), "keyCopyScript(") || !strings.Contains(fn("keepKeyCopy"), "офлайн") {
+		t.Error("a key just added must be copied with api.env and the owner told where it is, to save it offline")
+	}
+	if m, _ := os.ReadFile("main.go"); !strings.Contains(string(m), "keepKeyCopy(client)") {
+		t.Error("doAPI must keep a copy too when it generates the key")
+	}
+}
+
+// The CA is swapped only when the RUNNING API serves the legacy pair: its process image
+// (/proc/<MainPID>/exe), not the binary on disk (deployed but not restarted yet).
+func TestAPIServesLegacyCAScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	dir := t.TempDir()
+	write := func(rel, s string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(s), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := "xx" + provision.LegacyClientCertFile + "xx"
+	for name, tc := range map[string]struct {
+		pid, running, disk, want string
+	}{
+		"running API serves it":               {"4242", marker, "old", "yes"},
+		"new binary on disk, old one running": {"4242", "old binary", marker, "no"},
+		"API stopped: the disk binary starts": {"0", "", marker, "yes"},
+		"API stopped, old binary":             {"0", "", "old", "no"},
+	} {
+		_ = os.RemoveAll(filepath.Join(dir, "proc"))
+		if tc.running != "" {
+			write("proc/"+tc.pid+"/exe", tc.running)
+		}
+		write("heyearth-api", tc.disk)
+		stub := "systemctl() { [ \"$*\" = 'show -p MainPID --value heyearth-api' ] && echo " + tc.pid + "; }\n"
+		out, code := runBashStdin(t, stub+apiServesLegacyCAScript(shellDir(filepath.Join(dir, "proc")), shellDir(filepath.Join(dir, "heyearth-api"))))
+		if code != 0 || strings.TrimSpace(out) != tc.want {
+			t.Errorf("%s: %d %q, want %s", name, code, out, tc.want)
+		}
+	}
+}
+
+// Once every exit is converged, the cleanup the owner is given also removes the old shared
+// node-agent certificate of the leaked CA.
+func TestLegacyCleanupCommand(t *testing.T) {
+	c := legacyCleanupCommand()
+	for _, f := range []string{provision.LegacyCACertFile, provision.LegacyClientCertFile, provision.LegacyClientKeyFile, "server-cert.pem", "server-key.pem"} {
+		if !strings.Contains(c, hubCertsDir+"/"+f) {
+			t.Errorf("cleanup lacks %s: %s", f, c)
+		}
+	}
+	for _, keep := range []string{"/ca-cert.pem", "/ca-key.pem", "/client-cert.pem", "/client-key.pem"} {
+		if strings.Contains(c, hubCertsDir+keep) {
+			t.Errorf("cleanup removes the current %s", keep)
+		}
 	}
 }

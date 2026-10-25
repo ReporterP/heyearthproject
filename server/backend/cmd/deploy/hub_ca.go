@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -447,4 +448,64 @@ func ensureHubNodeCA(ctx context.Context, hub provision.Remote, dir string, now 
 		return p, errors.New("legacy-ca-cert.pem не совпадает с прежним CA")
 	}
 	return p, nil
+}
+
+// agentProbeScript is the deploy CLI's Hooks.ProbeAgent, run on the Hub: the Hub's own mTLS call
+// to node-agent at ip:port with openssl s_client — the API's client pair, then the legacy one
+// (heyearth-api presents both, TLS picks), against both CA generations, the agent's certificate
+// verified (node-agent, -verify_return_error). A TLS 1.3 client is done before the agent checked
+// its certificate, so s_client reads for two seconds: an agent that refuses the client answers
+// with an alert, which fails the try. Prints PROBE=ok | ok-legacy | fail | no-openssl (fail with
+// up to three lines of why, printable characters only).
+func agentProbeScript(dir, ip string, port int) string {
+	d := shellquote.Quote(dir)
+	return "# hp:agent-probe " + ip + "\n" + `set -uo pipefail
+command -v openssl >/dev/null 2>&1 || { echo PROBE=no-openssl; exit 0; }
+d=` + d + `
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT
+cat "$d/ca-cert.pem" > "$t/ca.pem" 2>/dev/null
+if [ -f "$d/` + provision.LegacyCACertFile + `" ]; then cat "$d/` + provision.LegacyCACertFile + `" >> "$t/ca.pem"; fi
+try() {
+  sleep 2 | timeout 8 openssl s_client -connect ` + shellquote.Quote(net.JoinHostPort(ip, strconv.Itoa(port))) + ` -servername node-agent -alpn h2 \
+    -cert "$1" -key "$2" -CAfile "$t/ca.pem" -verify_return_error -verify_hostname node-agent > "$t/out" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ] && grep -aq 'Verify return code: 0 (ok)' "$t/out" && ! grep -aqi 'alert' "$t/out"; then return 0; fi
+  grep -aiE 'alert|verify error|errno|refused|timed out|error' "$t/out" | tr -cd '[:print:]\n' | head -3
+  [ "$rc" -eq 124 ] && echo "нет ответа за 8 с"
+  return 1
+}
+if try "$d/client-cert.pem" "$d/client-key.pem"; then echo PROBE=ok; exit 0; fi
+if [ -f "$d/` + provision.LegacyClientCertFile + `" ] && try "$d/` + provision.LegacyClientCertFile + `" "$d/` + provision.LegacyClientKeyFile + `"; then
+  echo PROBE=ok-legacy; exit 0
+fi
+echo PROBE=fail
+`
+}
+
+// cliProbeAgent: Hooks.ProbeAgent of --setup-exit-node — agentProbeScript on the Hub (the
+// certificates and keys there never leave it). nil only for PROBE=ok / ok-legacy.
+func cliProbeAgent(hub provision.Remote, dir string) func(ctx context.Context, ip string) error {
+	return func(ctx context.Context, ip string) error {
+		out, err := hub.Run(ctx, agentProbeScript(dir, ip, config.NodeAgentPort))
+		if err != nil {
+			return err
+		}
+		var why []string
+		for _, line := range strings.Split(out, "\n") {
+			switch line = strings.TrimSpace(line); line {
+			case "PROBE=ok", "PROBE=ok-legacy":
+				return nil
+			case "PROBE=no-openssl":
+				return errors.New("на Hub нет openssl — проверить агент по mTLS нечем")
+			case "PROBE=fail", "":
+			default:
+				why = append(why, line)
+			}
+		}
+		if len(why) == 0 {
+			why = []string{"нет ответа"}
+		}
+		return fmt.Errorf("mTLS Hub → агент %s не прошло: %s", ip, strings.Join(why, "; "))
+	}
 }

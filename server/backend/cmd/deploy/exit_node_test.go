@@ -275,3 +275,14 @@ func TestSetupExitNodeUsesTheCore(t *testing.T) {
 		t.Errorf("cliExitOptions must hand over the CA certificate without its key and sign on the Hub:\n%s", body)
 	}
 }
+
+// --setup-exit-node checks the agent over the Hub's mTLS before it reports success.
+func TestSetupExitNodeProbesTheAgent(t *testing.T) {
+	b, _ := os.ReadFile("main.go")
+	src := string(b)
+	i := strings.Index(src, "func setupExitNodeDeploy(")
+	body := src[i : i+strings.Index(src[i:], "\n}\n")]
+	if !strings.Contains(body, "cliProbeAgent(hub, hubCertsDir)") || strings.Contains(body, "}, nil))") {
+		t.Error("the CLI recipe must get Hooks.ProbeAgent = cliProbeAgent(hub, hubCertsDir)")
+	}
+}

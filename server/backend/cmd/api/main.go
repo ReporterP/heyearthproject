@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
 	"embed"
 	"encoding/base64"
@@ -14,21 +12,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
-	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
-	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
@@ -38,61 +32,6 @@ var openAPIFS embed.FS
 
 type server struct {
 	heyearth_v1.UnimplementedClientApiServer
-}
-
-// ─────────────────────── TLS / Node Agent ───────────────────────
-
-func loadClientTLSCredentials() (credentials.TransportCredentials, error) {
-	certFile := strings.TrimSpace(os.Getenv("TLS_CLIENT_CERT_FILE"))
-	keyFile := strings.TrimSpace(os.Getenv("TLS_CLIENT_KEY_FILE"))
-	caFile := strings.TrimSpace(os.Getenv("TLS_CA_FILE"))
-
-	if certFile == "" {
-		certFile = filepath.Join(config.AppDir(), "certs", "client-cert.pem")
-	}
-	if keyFile == "" {
-		keyFile = filepath.Join(config.AppDir(), "certs", "client-key.pem")
-	}
-	if caFile == "" {
-		caFile = filepath.Join(config.AppDir(), "certs", "ca-cert.pem")
-	}
-
-	clientCert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load client key pair: %w", err)
-	}
-
-	pemServerCA, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file: %w", err)
-	}
-
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(pemServerCA) {
-		return nil, fmt.Errorf("append CA certs")
-	}
-
-	return credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      certPool,
-		ServerName:   "node-agent",
-		MinVersion:   tls.VersionTLS13,
-	}), nil
-}
-
-func connectToNodeAgent(ctx context.Context, ip string) (pbnode.NodeAgentClient, *grpc.ClientConn, error) {
-	tlsCredentials, err := loadClientTLSCredentials()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	address := fmt.Sprintf("%s:50052", ip)
-	conn, err := grpc.DialContext(ctx, address, grpc.WithTransportCredentials(tlsCredentials))
-	if err != nil {
-		return nil, nil, fmt.Errorf("dial node-agent %s: %w", address, err)
-	}
-
-	return pbnode.NewNodeAgentClient(conn), conn, nil
 }
 
 // ─────────────────────── gRPC Implementations ───────────────────────
