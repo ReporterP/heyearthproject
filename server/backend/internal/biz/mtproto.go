@@ -1,6 +1,7 @@
 // Package biz — MTProto-proxy helpers: balancer (PickMTProtoExit),
-// install-state queries (ListExitsNeedingMTProto), status mutation
-// (MarkMTProtoStatus), and the SSH-based installer (InstallMTProtoOnExit).
+// install-state queries (ListExitsNeedingMTProto) and status mutation
+// (MarkMTProtoStatus). The installer runs over the node's pinned SSH connection:
+// internal/provision InstallMTProxy / InstallMTProxyOnNode.
 //
 // "Healthy" definition: is_exit_node=TRUE AND lifecycle_state='online' AND
 // mtproto_status='healthy'. The Tunnel-health-monitor maintains the status
@@ -8,8 +9,6 @@
 package biz
 
 import (
-	"bytes"
-	"context"
 	crand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -17,13 +16,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/shellquote"
-	"golang.org/x/crypto/ssh"
 )
 
 // MTProtoFrontingDomain returns the configured fake-TLS fronting domain.
@@ -193,102 +188,4 @@ func MarkMTProtoStatus(serverID int, status string) error {
 		 WHERE id = $2
 	`, status, serverID)
 	return err
-}
-
-// mtprotoInstallCommand runs the uploaded installer on the exit. The arguments come from
-// app_settings (admin-editable), so each one is single-quoted for the remote shell.
-func mtprotoInstallCommand(port, secret, frontingDomain string) string {
-	return "bash /tmp/install-mtproxy.sh " + shellquote.Quote(port) + " " + shellquote.Quote(secret) + " " +
-		shellquote.Quote(frontingDomain)
-}
-
-// InstallMTProtoOnExit SSHes into the exit-node and runs install-mtproxy.sh
-// with the shared secret. Caller already set mtproto_status='installing'.
-// Returns nil on success; on error caller should MarkMTProtoStatus(id, 'unhealthy').
-//
-// The script source is uploaded fresh every call (it's tiny) — keeps the exit
-// always running the current version of the installer.
-func InstallMTProtoOnExit(serverID int, ipAddress, sshUser, sshPassword string, sshPort int, scriptBytes []byte) error {
-	port := GetSettingOrDefault("mtproto_port", "8443")
-	secret := GetSettingOrDefault("mtproto_secret", "")
-	if secret == "" {
-		return fmt.Errorf("mtproto_secret is empty in app_settings")
-	}
-	frontingDomain := MTProtoFrontingDomain()
-	if frontingDomain == "" {
-		return fmt.Errorf("mtproto_fronting_domain is empty in app_settings — " +
-			"set a domain whose A record points at the exit nodes (see 000054 migration)")
-	}
-
-	cfg := &ssh.ClientConfig{
-		User:            sshUser,
-		Auth:            []ssh.AuthMethod{ssh.Password(sshPassword)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         20 * time.Second,
-	}
-	addr := fmt.Sprintf("%s:%d", ipAddress, sshPort)
-	client, err := ssh.Dial("tcp", addr, cfg)
-	if err != nil {
-		return fmt.Errorf("ssh dial %s: %w", addr, err)
-	}
-	defer client.Close()
-
-	uploadSession, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh upload session: %w", err)
-	}
-	defer uploadSession.Close()
-
-	b64Cmd := exec.Command("base64", "-w0")
-	b64Cmd.Stdin = bytes.NewReader(scriptBytes)
-	var b64Out bytes.Buffer
-	b64Cmd.Stdout = &b64Out
-	if err := b64Cmd.Run(); err != nil {
-		return fmt.Errorf("base64 local: %w", err)
-	}
-	uploadCmd := fmt.Sprintf(
-		"echo '%s' | base64 -d > /tmp/install-mtproxy.sh && chmod +x /tmp/install-mtproxy.sh",
-		b64Out.String(),
-	)
-	if err := uploadSession.Run(uploadCmd); err != nil {
-		return fmt.Errorf("ssh upload exec: %w", err)
-	}
-
-	runSession, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh run session: %w", err)
-	}
-	defer runSession.Close()
-	var stdout, stderr bytes.Buffer
-	runSession.Stdout = &stdout
-	runSession.Stderr = &stderr
-	// First-time install on a slow VPS = apt install + git clone + make on 2 vCPU,
-	// can take 8-10 min. Subsequent runs are seconds (script idempotently skips build).
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- runSession.Run(mtprotoInstallCommand(port, secret, frontingDomain))
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			// Capture TAIL of each stream — the failure happens at the end, so
-			// last 4KB is what matters. set -x stderr is long; first lines are
-			// just dependency-install noise.
-			tail := func(s string, n int) string {
-				if len(s) > n {
-					return "...[head-truncated]" + s[len(s)-n:]
-				}
-				return s
-			}
-			return fmt.Errorf("install-mtproxy script failed: %w; stdout=%q stderr=%q",
-				err, tail(stdout.String(), 4000), tail(stderr.String(), 4000))
-		}
-	case <-ctx.Done():
-		return fmt.Errorf("install-mtproxy timeout after 12min")
-	}
-
-	log.Printf("[mtproto] InstallMTProtoOnExit server=%d (%s): success", serverID, ipAddress)
-	return nil
 }

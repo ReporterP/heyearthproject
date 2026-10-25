@@ -123,6 +123,9 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "servers.read", Name: "Servers Read", Description: "View servers"},
 	{Key: "servers.write", Name: "Servers Write", Description: "Create and update servers"},
 	{Key: "server_ops.execute", Name: "Server Ops Execute", Description: "Run operational actions on servers"},
+	// Also seeded by migration 000061; listed here because ensureSuperAdminRole rebuilds
+	// super_admin from this catalog on every login.
+	{Key: "nodes.provision", Name: "Provision Nodes", Description: "Add, set up, verify and retire exit and relay nodes over SSH"},
 	{Key: "releases.read", Name: "Releases Read", Description: "View releases"},
 	{Key: "releases.write", Name: "Releases Write", Description: "Upload and activate releases"},
 	{Key: "admins.read", Name: "Admins Read", Description: "View admins and roles"},

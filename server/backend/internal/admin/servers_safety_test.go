@@ -231,7 +231,6 @@ func TestNodePathExitStatus(t *testing.T) {
 
 func TestOldServerFormAndFileWritesAreGone(t *testing.T) {
 	for name, h := range map[string]http.HandlerFunc{
-		"POST /servers":             AddServerHandler,
 		"PUT /servers/{id}/file":    goneHandler(fileWriteGoneMsg),
 		"GET generate-tunnel-creds": goneHandler(tunnelCredsGoneMsg),
 	} {

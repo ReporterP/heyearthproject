@@ -1,13 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
-	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 )
 
@@ -111,9 +110,8 @@ func runGhostReconciler() {
 		if err != nil {
 			log.Printf("[ghost-reconciler] mtproto list: %v", err)
 		} else if len(needing) > 0 {
-			log.Printf("[ghost-reconciler] %d exit(s) need mtproto-proxy install; firing 1 (rate-limit)", len(needing))
-			exit := needing[0]
-			go installMTProtoForExit(exit.ID)
+			log.Printf("[ghost-reconciler] %d exit(s) need mtproto-proxy install; starting at most 1 (rate-limit)", len(needing))
+			startMTProxyBackfill(needing)
 		}
 	}
 }
@@ -163,61 +161,19 @@ func runAutoRepair(serverID int) {
 	}
 }
 
-// installMTProtoForExit fetches the full server row from DB, then invokes
-// the same SSH-based installer used by runSetupExitNode's Step 8.
-// Runs asynchronously; errors are logged but don't crash the reconciler.
-func installMTProtoForExit(serverID int) {
-	var (
-		ipAddress         string
-		sshUser           string
-		sshPort           int
-		sshPasswordPlain  string
-		sshPasswordEnc    []byte
-	)
-	err := db.DB.QueryRow(`
-		SELECT ip_address, COALESCE(ssh_user,'root'), COALESCE(ssh_port,22),
-		       COALESCE(ssh_password, ''),
-		       COALESCE(ssh_password_enc, ''::bytea)
-		  FROM servers WHERE id = $1
-	`, serverID).Scan(&ipAddress, &sshUser, &sshPort, &sshPasswordPlain, &sshPasswordEnc)
-	if err != nil {
-		log.Printf("[ghost-reconciler] load server %d: %v", serverID, err)
-		return
-	}
-
-	// Prefer encrypted (newer servers), fall back to plaintext (legacy rows
-	// like the Amsterdam exit predating the AES-GCM migration).
-	sshPass := ""
-	if len(sshPasswordEnc) > 0 {
-		dec, derr := crypto.Decrypt(sshPasswordEnc)
-		if derr == nil {
-			sshPass = dec
-		} else {
-			log.Printf("[ghost-reconciler] decrypt password %d: %v", serverID, derr)
+// startMTProxyBackfill starts the MTProxy install of the first exit that passes the checks
+// (online, MTProxy not switched off, host key confirmed, no job running) over the pinned SSH
+// connection — the same installer as «Переустановить Telegram-прокси»; one per tick. A node whose
+// key is not confirmed is skipped with a log line, never dialled.
+func startMTProxyBackfill(needing []biz.MTProtoExit) {
+	for _, exit := range needing {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := nodeMTProxy.start(ctx, exit.ID)
+		cancel()
+		if err == nil {
+			log.Printf("[ghost-reconciler] mtproxy %d: установка запущена", exit.ID)
+			return
 		}
+		log.Printf("[ghost-reconciler] mtproxy %d: пропущено: %v", exit.ID, err)
 	}
-	if sshPass == "" && sshPasswordPlain != "" {
-		sshPass = sshPasswordPlain
-	}
-
-	scriptBytes, sErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
-	if sErr != nil {
-		scriptBytes, sErr = os.ReadFile("server/backend/cmd/deploy/install-mtproxy.sh")
-	}
-	if sErr != nil {
-		log.Printf("[ghost-reconciler] script not found: %v", sErr)
-		return
-	}
-
-	if err := biz.MarkMTProtoStatus(serverID, "installing"); err != nil {
-		log.Printf("[ghost-reconciler] mark installing %d: %v", serverID, err)
-	}
-	if instErr := biz.InstallMTProtoOnExit(serverID, ipAddress, sshUser, sshPass, sshPort, scriptBytes); instErr != nil {
-		_ = biz.MarkMTProtoStatus(serverID, "unhealthy")
-		log.Printf("[ghost-reconciler] install mtproxy on %d (%s): %v", serverID, ipAddress, instErr)
-		return
-	}
-	_ = biz.MarkMTProtoStatus(serverID, "healthy")
-	biz.BumpSubscriptionVersion()
-	log.Printf("[ghost-reconciler] install mtproxy on %d (%s): success", serverID, ipAddress)
 }

@@ -13,7 +13,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -298,8 +297,9 @@ const (
 	DeprovisionHard DeprovisionMode = "hard"
 )
 
-// Deprovision tears down a server's hub-side artefacts, attempts a best-effort
-// exit-side teardown, and either marks the row offline (soft) or deletes it (hard).
+// Deprovision tears down a server's hub-side artefacts and either marks the row offline (soft)
+// or deletes it (hard). The node is not touched (the ghost reconciler's hub-only cleanup); the
+// admin panel takes a node out of service with the provisioning job instead.
 //
 // Order (matters):
 //  1. transition online → deprovisioning
@@ -308,7 +308,7 @@ const (
 //  4. systemctl stop hysteria2-client-N (with kill -9 fallback)
 //  5. archive .yaml + .service + journal snapshot
 //  6. systemctl disable + remove .service + daemon-reload
-//  7. best-effort SSH teardown of exit-node services
+//  7. (the node's services: the deprovision job of internal/provision, not here)
 //  8. if hard: DELETE FROM servers; if soft: TransitionState → offline
 //
 // progressCh is optional (may be nil).
@@ -364,14 +364,9 @@ func Deprovision(serverID int, mode DeprovisionMode, progressCh chan<- Provision
 		emit(progressCh, "remove_unit", "done", "")
 	}
 
-	// 7: best-effort exit-side teardown.
-	emit(progressCh, "exit_teardown", "running", "Лучшая попытка остановить сервисы на exit")
-	if err := TeardownExitNode(serverID); err != nil {
-		log.Printf("[deprovision] server %d: exit teardown failed (best-effort): %v", serverID, err)
-		emit(progressCh, "exit_teardown", "skipped", err.Error())
-	} else {
-		emit(progressCh, "exit_teardown", "done", "")
-	}
+	// 7: the node itself is not touched here (this path has no owner-confirmed host key): its
+	// services are stopped by the deprovision job (internal/provision, «Отключить» in the admin panel).
+	emit(progressCh, "exit_teardown", "skipped", "сервисы на ноде останавливает задача «Отключить» в админке")
 
 	// 8: finalize.
 	if mode == DeprovisionHard {

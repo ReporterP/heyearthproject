@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +17,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -27,14 +24,12 @@ import (
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
+	"github.com/heyearth/backend/internal/provision"
 	"github.com/heyearth/backend/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
-
-// provisionProgress хранит текущий прогресс провижининга серверов (in-memory)
-var provisionProgress sync.Map // map[int]*ProvisionProgress
 
 // goneHandler answers 410 Gone with a Russian explanation: endpoints phase 1 removed.
 func goneHandler(msg string) http.HandlerFunc {
@@ -42,7 +37,6 @@ func goneHandler(msg string) http.HandlerFunc {
 }
 
 const (
-	addServerGoneMsg   = "Добавление сервера через старую форму отключено: она делала неполную настройку и перезапускала API. Новый exit добавляется мастером «Добавить ноду» (следующее обновление админки)."
 	fileWriteGoneMsg   = "Запись файлов на серверах из админки отключена: ручная правка конфигов и ключей ломала туннели. Журналы доступны только для чтения."
 	tunnelCredsGoneMsg = "Генерация ключей туннеля в браузере отключена: ключи создаются на самой ноде при настройке."
 	setupGoneMsg       = "Настройка exit из старой формы отключена: она перезапускала API и не доделывала шаги. Новый exit настраивается мастером «Добавить ноду» (следующее обновление админки)."
@@ -264,11 +258,6 @@ func validateCountryCode(code string) error {
 	return nil
 }
 
-// AddServerHandler: the old form is gone (phase 1); the node wizard adds POST /servers in phase 2.
-func AddServerHandler(w http.ResponseWriter, r *http.Request) {
-	writeAdminError(w, http.StatusGone, addServerGoneMsg)
-}
-
 func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
@@ -413,159 +402,19 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server updated"})
 }
 
-func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
-	serverID, ok := parseLastPathInt(r.URL.Path)
+// movedServerActionMsg answers the old in-memory flows (hub_provision, deprovision_*): every change
+// to a node is a persisted, resumable job now.
+const movedServerActionMsg = "Действие перенесено в задачи ноды: «Настроить» / «Переустановить», «Проверить», «Отключить» в карточке ноды"
+
+// ServerActionHandler: what is left of the old actions — restarting node-agent and reinstalling
+// MTProxy, both over the pinned SSH connection; the removed actions answer phase 1's 410s, the
+// provisioning flows a 410 pointing at the node's jobs.
+func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "actions")
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
-	// Reject if another provision/deprovision is already in flight for this server.
-	if v, ok := provisionProgress.Load(serverID); ok {
-		pp := v.(*ProvisionProgress)
-		if !pp.Finished {
-			writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
-			return
-		}
-	}
-	WriteAuditLog(r, "delete_server", "server", fmt.Sprintf("%d", serverID), nil)
-	// Async hard deprovision: hub-side cleanup + best-effort exit teardown +
-	// archive + DELETE FROM servers. Progress visible via /actions/progress.
-	go runDeprovision(serverID, biz.DeprovisionHard)
-	writeAdminJSON(w, http.StatusAccepted, map[string]string{
-		"message":   "Deprovisioning started",
-		"server_id": fmt.Sprintf("%d", serverID),
-	})
-}
-
-// runDeprovision wraps biz.Deprovision with the same ProvisionProgress reporting
-// pattern as runReinstallMTProto, so the existing /actions/progress endpoint
-// keeps working unchanged for the frontend.
-func runDeprovision(serverID int, mode biz.DeprovisionMode) {
-	steps := []ProvisionStep{
-		{Name: "transition_deprovisioning", Description: "Перевод в deprovisioning", Status: "pending"},
-		{Name: "subscription_bump", Description: "Bump subscription_version", Status: "pending"},
-		{Name: "drain", Description: "Drain 3 sec", Status: "pending"},
-		{Name: "hub_stop", Description: "Остановка hysteria2-client-N", Status: "pending"},
-		{Name: "archive", Description: "Архивирование .yaml + .service", Status: "pending"},
-		{Name: "remove_unit", Description: "Удаление systemd-юнита", Status: "pending"},
-		{Name: "exit_teardown", Description: "Лучшая попытка остановки на exit", Status: "pending"},
-		{Name: "delete_row", Description: "Удаление записи из БД (hard)", Status: "pending"},
-		{Name: "transition_offline", Description: "Переход в offline (soft)", Status: "pending"},
-		{Name: "done", Description: "Готово", Status: "pending"},
-	}
-	progress := &ProvisionProgress{
-		ServerID: serverID,
-		Action:   fmt.Sprintf("deprovision_%s", string(mode)),
-		Steps:    steps,
-		Started:  time.Now(),
-	}
-	provisionProgress.Store(serverID, progress)
-
-	stepIdx := map[string]int{}
-	for i, s := range steps {
-		stepIdx[s.Name] = i
-	}
-	ch := make(chan biz.ProvisionEvent, 32)
-
-	doneCh := make(chan struct{})
-	go func() {
-		defer close(doneCh)
-		for ev := range ch {
-			idx, ok := stepIdx[ev.Stage]
-			if !ok {
-				continue
-			}
-			progress.Steps[idx].Status = ev.Status
-			if ev.Message != "" {
-				progress.Steps[idx].Error = ev.Message
-			}
-			provisionProgress.Store(serverID, progress)
-		}
-	}()
-
-	err := biz.Deprovision(serverID, mode, ch)
-	close(ch)
-	<-doneCh
-
-	if err != nil {
-		log.Printf("[deprovision] server %d (%s): error: %v", serverID, mode, err)
-	} else {
-		log.Printf("[deprovision] server %d (%s): completed", serverID, mode)
-	}
-	progress.Finished = true
-	provisionProgress.Store(serverID, progress)
-}
-
-// runHubProvisionOnly is the async wrapper for biz.HubProvisionExisting.
-// Used by the admin "Provision" button when the exit-side has already been set up
-// (e.g. server row was created with credentials but hub-side wasn't synced, OR
-// after a soft deprovision when re-enabling the same server).
-func runHubProvisionOnly(serverID int) {
-	steps := []ProvisionStep{
-		{Name: "load_server", Description: "Загрузка данных сервера", Status: "pending"},
-		{Name: "write_config", Description: "Создание client-N.yaml", Status: "pending"},
-		{Name: "install_unit", Description: "Установка systemd-юнита", Status: "pending"},
-		{Name: "start_unit", Description: "Запуск туннеля", Status: "pending"},
-		{Name: "subscription_bump", Description: "Bump subscription_version", Status: "pending"},
-		{Name: "transition_online", Description: "Переход в online", Status: "pending"},
-		{Name: "done", Description: "Готово", Status: "pending"},
-	}
-	progress := &ProvisionProgress{
-		ServerID: serverID,
-		Action:   "hub_provision",
-		Steps:    steps,
-		Started:  time.Now(),
-	}
-	provisionProgress.Store(serverID, progress)
-
-	stepIdx := map[string]int{}
-	for i, s := range steps {
-		stepIdx[s.Name] = i
-	}
-	ch := make(chan biz.ProvisionEvent, 32)
-	doneCh := make(chan struct{})
-	go func() {
-		defer close(doneCh)
-		for ev := range ch {
-			idx, ok := stepIdx[ev.Stage]
-			if !ok {
-				continue
-			}
-			progress.Steps[idx].Status = ev.Status
-			if ev.Message != "" {
-				progress.Steps[idx].Error = ev.Message
-			}
-			provisionProgress.Store(serverID, progress)
-		}
-	}()
-
-	err := biz.HubProvisionExisting(serverID, ch)
-	close(ch)
-	<-doneCh
-
-	if err != nil {
-		log.Printf("[hub-provision] server %d: %v", serverID, err)
-	} else {
-		log.Printf("[hub-provision] server %d: ok", serverID)
-	}
-	progress.Finished = true
-	provisionProgress.Store(serverID, progress)
-}
-
-func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
-	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/servers/"), "/")
-	if !strings.HasSuffix(path, "/actions") {
-		writeAdminError(w, http.StatusBadRequest, "Неверный путь действия с сервером")
-		return
-	}
-	serverIDText := strings.TrimSuffix(path, "/actions")
-	serverIDText = strings.Trim(serverIDText, "/")
-	serverID, err := strconv.Atoi(serverIDText)
-	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
-		return
-	}
-
 	var payload serverActionPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
@@ -577,72 +426,45 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusGone, msg)
 		return
 	}
-
-	server, err := loadServerByID(serverID, true)
-	if err == sql.ErrNoRows {
-		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
-		return
-	}
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить сервер")
-		return
-	}
-
 	switch action {
 	case "restart_agent":
-		if err := restartNodeAgent(server); err != nil {
-			writeAdminError(w, http.StatusBadGateway, err.Error())
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		rm, err := nodeRemote(ctx, id)
+		if err != nil {
+			writeNodeAccessError(w, err)
 			return
 		}
+		defer provision.Close(rm)
+		if _, err := rm.Run(ctx, "systemctl restart node-agent"); err != nil {
+			writeAdminError(w, http.StatusBadGateway, "node-agent не перезапущен: "+err.Error())
+			return
+		}
+		WriteAuditLog(r, "restart_agent", "server", strconv.Itoa(id), nil)
+		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "node-agent перезапущен"})
 	case "reinstall_mtproxy":
-		if v, ok := provisionProgress.Load(serverID); ok {
-			pp := v.(*ProvisionProgress)
-			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
-				return
-			}
+		if StartMTProxyReinstall == nil {
+			writeAdminError(w, http.StatusServiceUnavailable, notInitializedMsg)
+			return
 		}
-		go runReinstallMTProto(server)
-		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "MTProto reinstall started"})
-		return
-	case "deprovision_soft":
-		if v, ok := provisionProgress.Load(serverID); ok {
-			pp := v.(*ProvisionProgress)
-			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
-				return
+		if err := StartMTProxyReinstall(r.Context(), id); err != nil {
+			switch {
+			case errors.Is(err, provision.ErrMTProxyDisabled), errors.Is(err, ErrMTProxyInstalling):
+				writeAdminError(w, http.StatusConflict, err.Error())
+			case errors.Is(err, provision.ErrJobActive):
+				writeAdminError(w, http.StatusConflict, "Для этой ноды выполняется задача — переустановите Telegram-прокси после её окончания")
+			case errors.Is(err, provision.ErrHostKeyNotConfirmed):
+				writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
+			default:
+				writeAdminError(w, http.StatusBadRequest, err.Error())
 			}
+			return
 		}
-		go runDeprovision(serverID, biz.DeprovisionSoft)
-		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Deprovisioning (soft) started"})
-		return
-	case "deprovision_hard":
-		if v, ok := provisionProgress.Load(serverID); ok {
-			pp := v.(*ProvisionProgress)
-			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
-				return
-			}
-		}
-		go runDeprovision(serverID, biz.DeprovisionHard)
-		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Deprovisioning (hard) started"})
-		return
-	case "hub_provision":
-		if v, ok := provisionProgress.Load(serverID); ok {
-			pp := v.(*ProvisionProgress)
-			if !pp.Finished {
-				writeAdminError(w, http.StatusConflict, "Операция с этим сервером уже выполняется")
-				return
-			}
-		}
-		go runHubProvisionOnly(serverID)
-		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Hub provisioning started"})
-		return
+		WriteAuditLog(r, "reinstall_mtproxy", "server", strconv.Itoa(id), nil)
+		writeAdminJSON(w, http.StatusAccepted, map[string]string{"message": "Переустановка Telegram-прокси запущена (до 12 минут) — состояние видно в поле «Telegram-прокси» ноды"})
 	default:
-		writeAdminError(w, http.StatusBadRequest, "Неизвестное действие с сервером")
-		return
+		writeAdminError(w, http.StatusGone, movedServerActionMsg)
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Server action completed"})
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -731,54 +553,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 	return server, nil
 }
 
-// ── Server actions (restart) ─────────────────────────────
-
-func restartNodeAgent(server serverResponse) error {
-	if err := runSSHCommand(server, "systemctl restart node-agent"); err != nil {
-		return fmt.Errorf("restart node-agent: %w", err)
-	}
-	if _, err := db.DB.Exec(`UPDATE servers SET status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, server.ID); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ── SSH ──────────────────────────────────────────────────
-
-// runSSHCommand connects to the server via SSH (key-based if ssh_key_id is set,
-// password-based otherwise) and runs a single command.
-func runSSHCommand(server serverResponse, command string) error {
-	authMethods, err := sshAuthMethods(server)
-	if err != nil {
-		return err
-	}
-	cfg := &ssh.ClientConfig{
-		User:            server.SSHUser,
-		Auth:            authMethods,
-		HostKeyCallback: toFUHostKeyCallback(server.ID),
-		Timeout:         30 * time.Second,
-	}
-	addr := net.JoinHostPort(server.IPAddress, fmt.Sprintf("%d", server.SSHPort))
-	client, err := ssh.Dial("tcp", addr, cfg)
-	if err != nil {
-		return fmt.Errorf("ssh dial %s: %w", addr, err)
-	}
-	defer client.Close()
-
-	sess, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh session: %w", err)
-	}
-	defer sess.Close()
-
-	var errBuf bytes.Buffer
-	sess.Stderr = &errBuf
-	if err := sess.Run(command); err != nil {
-		return fmt.Errorf("command %q: %v: %s", command, err, strings.TrimSpace(errBuf.String()))
-	}
-	return nil
-}
-
 // encryptSSHPassword encrypts a non-empty SSH password with AES-256-GCM (SSH_ENCRYPTION_KEY).
 // A missing or invalid key is an error: the password is never stored in plaintext.
 func encryptSSHPassword(password string) ([]byte, error) {
@@ -793,25 +567,6 @@ func encryptSSHPassword(password string) ([]byte, error) {
 		return nil, fmt.Errorf("encryption returned no ciphertext")
 	}
 	return ciphertext, nil
-}
-
-func sshAuthMethods(server serverResponse) ([]ssh.AuthMethod, error) {
-	if server.SshKeyID != nil && *server.SshKeyID > 0 {
-		key, err := biz.GetSshKeyByID(*server.SshKeyID)
-		if err != nil {
-			return nil, fmt.Errorf("load ssh key %d: %w", *server.SshKeyID, err)
-		}
-		signer, err := ssh.ParsePrivateKey([]byte(key.PrivateKey))
-		if err != nil {
-			return nil, fmt.Errorf("parse ssh key: %w", err)
-		}
-		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
-	}
-	pw := strings.TrimSpace(server.SSHPassword)
-	if pw == "" {
-		return nil, fmt.Errorf("neither ssh_key_id nor ssh_password is set for this server")
-	}
-	return []ssh.AuthMethod{ssh.Password(pw)}, nil
 }
 
 // ── mTLS connection to node-agent ────────────────────────
@@ -903,7 +658,10 @@ func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetServerLogsHandler fetches recent service logs via SSH.
+// nodeLogServices are the units on a node whose journal the admin panel may read.
+var nodeLogServices = map[string]bool{"node-agent": true, "xray": true, "hysteria2": true, config.MTProxyService: true}
+
+// GetServerLogsHandler reads a node unit's journal over the pinned SSH connection.
 func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "logs")
 	if !ok {
@@ -911,44 +669,27 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	service := r.URL.Query().Get("service")
-	allowedServices := map[string]bool{
-		"node-agent": true, "xray": true, "hysteria2": true,
-		"nginx": true, "heyearth-api": true,
-	}
-	if !allowedServices[service] {
+	if !nodeLogServices[service] {
 		service = "node-agent"
 	}
-	tailStr := r.URL.Query().Get("tail")
-	tailN, err := strconv.Atoi(tailStr)
+	tailN, err := strconv.Atoi(r.URL.Query().Get("tail"))
 	if err != nil || tailN < 1 || tailN > 5000 {
 		tailN = 100
 	}
-
-	server, sshClient, err := sshToServer(serverID)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	rm, err := nodeRemote(ctx, serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
+		writeNodeAccessError(w, err)
 		return
 	}
-	_ = server
-	defer sshClient.Close()
-
-	session, err := sshClient.NewSession()
+	defer provision.Close(rm)
+	out, err := rm.Run(ctx, fmt.Sprintf("journalctl -u %s --no-pager -n %d --output=short-iso 2>&1", service, tailN))
+	resp := map[string]string{"logs": out}
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
-		return
+		resp["error"] = err.Error()
 	}
-	defer session.Close()
-
-	cmd := fmt.Sprintf("journalctl -u %s --no-pager -n %d --output=short-iso 2>&1", service, tailN)
-	output, err := session.CombinedOutput(cmd)
-	if err != nil {
-		writeAdminJSON(w, http.StatusOK, map[string]string{
-			"logs":  string(output),
-			"error": err.Error(),
-		})
-		return
-	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"logs": string(output)})
+	writeAdminJSON(w, http.StatusOK, resp)
 }
 
 // ServerFileBrowserHandler lists files at a given path on the server.
@@ -969,25 +710,19 @@ func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, sshClient, err := sshToServer(serverID)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	rm, err := nodeRemote(ctx, serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
+		writeNodeAccessError(w, err)
 		return
 	}
-	defer sshClient.Close()
-
-	session, err := sshClient.NewSession()
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
-		return
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(listDirCommand(dirPath))
+	defer provision.Close(rm)
+	output, err := rm.Run(ctx, listDirCommand(dirPath))
 	if err != nil && writeNodePathError(w, err, listForbiddenMsg) {
 		return // a symlink out of the allowed directories, or nothing there
 	}
-	entries := parseLsOutput(string(output))
+	entries := parseLsOutput(output)
 	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
 }
 
@@ -1044,29 +779,23 @@ func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, sshClient, err := sshToServer(serverID)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	rm, err := nodeRemote(ctx, serverID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("SSH-подключение не удалось: %v", err))
+		writeNodeAccessError(w, err)
 		return
 	}
-	defer sshClient.Close()
-
-	session, err := sshClient.NewSession()
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось открыть SSH-сессию")
-		return
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(logReadCommand(filePath))
+	defer provision.Close(rm)
+	output, err := rm.Run(ctx, logReadCommand(filePath))
 	if err != nil {
 		if writeNodePathError(w, err, logReadForbiddenMsg) {
 			return // a symlink out of /var/log, or no such log
 		}
-		writeAdminError(w, http.StatusInternalServerError, fmt.Sprintf("Не удалось прочитать файл: %s", strings.TrimSpace(string(output))))
+		writeAdminError(w, http.StatusBadGateway, fmt.Sprintf("Не удалось прочитать файл: %s", strings.TrimSpace(output)))
 		return
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": string(output)})
+	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": output})
 }
 
 const (
@@ -1146,7 +875,8 @@ func nodePathExitStatus(exit int, forbiddenMsg string) (code int, msg string, ok
 	return 0, "", false
 }
 
-// writeNodePathError answers a node path command's verdict (exit 3/4); false when err is not one.
+// writeNodePathError answers a node path command's verdict (exit 3/4); false when err is not one
+// (provision.SSHRemote.Run wraps the *ssh.ExitError of a script that exited non-zero).
 func writeNodePathError(w http.ResponseWriter, err error, forbiddenMsg string) bool {
 	var exitErr *ssh.ExitError
 	if !errors.As(err, &exitErr) {
@@ -1157,178 +887,4 @@ func writeNodePathError(w http.ResponseWriter, err error, forbiddenMsg string) b
 		writeAdminError(w, code, msg)
 	}
 	return ok
-}
-
-func sshToServer(serverID int) (serverResponse, *ssh.Client, error) {
-	var srv serverResponse
-	var sshPwEnc []byte
-	err := db.DB.QueryRow(`
-		SELECT id, ip_address, ssh_port, ssh_user, COALESCE(ssh_password, ''), ssh_password_enc, ssh_key_id
-		FROM servers WHERE id = $1
-	`, serverID).Scan(&srv.ID, &srv.IPAddress, &srv.SSHPort, &srv.SSHUser, &srv.SSHPassword, &sshPwEnc, &srv.SshKeyID)
-	if err != nil {
-		return srv, nil, fmt.Errorf("server not found: %w", err)
-	}
-	if len(sshPwEnc) > 0 {
-		if dec, decErr := crypto.Decrypt(sshPwEnc); decErr == nil {
-			srv.SSHPassword = dec
-		}
-	}
-
-	auths, err := sshAuthMethods(srv)
-	if err != nil {
-		return srv, nil, err
-	}
-	sshConfig := &ssh.ClientConfig{
-		User:            srv.SSHUser,
-		Auth:            auths,
-		HostKeyCallback: toFUHostKeyCallback(srv.ID),
-		Timeout:         10 * time.Second,
-	}
-	addr := fmt.Sprintf("%s:%d", srv.IPAddress, srv.SSHPort)
-	client, err := ssh.Dial("tcp", addr, sshConfig)
-	if err != nil {
-		return srv, nil, fmt.Errorf("ssh dial: %w", err)
-	}
-	return srv, client, nil
-}
-
-// ── Provision progress endpoint ──
-
-func ServerActionProgressHandler(w http.ResponseWriter, r *http.Request) {
-	// Извлекаем server ID из пути: /api/admin/servers/{id}/actions/progress
-	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/servers/"), "/")
-	serverIDText := strings.SplitN(path, "/", 2)[0]
-	serverID, err := strconv.Atoi(serverIDText)
-	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
-		return
-	}
-	v, ok := provisionProgress.Load(serverID)
-	if !ok {
-		writeAdminJSON(w, http.StatusOK, map[string]interface{}{"server_id": serverID, "active": false})
-		return
-	}
-	writeAdminJSON(w, http.StatusOK, v)
-}
-
-// ── Exit hysteria scripts (the old setup is gone; phase 2 moves these to internal/config) ──
-
-// exitHysteria2ServerScript renders the exit-side hysteria step of the old exit setup (run as
-// root on the exit): install/upgrade the hysteria binary, write server.yaml (ending with the shared
-// config.ExitHysteriaACL block for exitIP, with the exit's MTProxy port allowed on its own
-// address) + hysteria2.service, restart.
-// Plain concatenation, not a format string: the install script carries a literal %2F.
-func exitHysteria2ServerScript(exitIP string, mtprotoPort int) string {
-	if net.ParseIP(strings.TrimSpace(exitIP)) == nil {
-		log.Printf("[provision] exit address %q is not an IP address: hysteria ACL written without the own-address reject", exitIP)
-	}
-	return "set -e\n" + config.HysteriaInstallScript() + `mkdir -p /opt/heyearth/certs /opt/heyearth/hysteria
-if [ ! -f /opt/heyearth/certs/hy2.crt ]; then
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
-    -keyout /opt/heyearth/certs/hy2.key -out /opt/heyearth/certs/hy2.crt -subj "/CN=www.microsoft.com" 2>/dev/null
-fi
-SS_PASSWORD=$(python3 -c "import json; print(json.load(open('/opt/heyearth/state/reality-keys.json')).get('ssPassword',''))")
-cat > /opt/heyearth/hysteria/server.yaml << HEOF
-listen: :50443
-tls:
-  cert: /opt/heyearth/certs/hy2.crt
-  key: /opt/heyearth/certs/hy2.key
-auth:
-  type: password
-  password: $SS_PASSWORD
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.bing.com
-    rewriteHost: true
-quic:
-  initStreamReceiveWindow: 26843545
-  maxStreamReceiveWindow: 26843545
-  initConnReceiveWindow: 67108864
-  maxConnReceiveWindow: 67108864
-bandwidth:
-  up: 100 mbps
-  down: 100 mbps
-` + config.ExitHysteriaACL(exitIP, mtprotoPort) + `HEOF
-cat > /etc/systemd/system/hysteria2.service << 'SEOF'
-[Unit]
-Description=Hysteria2 VPN Server (HeYearth)
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hysteria server -c /opt/heyearth/hysteria/server.yaml
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-[Install]
-WantedBy=multi-user.target
-SEOF
-systemctl daemon-reload && systemctl enable hysteria2 && systemctl restart hysteria2`
-}
-
-// hubHy2ClientSetupScript renders the Hub-side client step of the old exit setup (run locally on
-// the Hub via bash -c): install the hysteria binary only if the Hub has none (config.HysteriaEnsureScript;
-// an upgrade here would hit every Hub client on its next restart while other exits may still
-// run an older server), then enable + restart the per-exit client unit. serviceName is
-// server-derived ("hysteria2-client-<id>"), never user input.
-func hubHy2ClientSetupScript(serviceName string) string {
-	return fmt.Sprintf(`set -e
-%s
-systemctl daemon-reload
-systemctl enable %s
-systemctl restart %s
-`, config.HysteriaEnsureScript(), serviceName, serviceName)
-}
-
-// runReinstallMTProto re-runs the install-mtproxy.sh on the exit's VPS.
-// Reuses provisionProgress with a single-step progress for UI continuity.
-func runReinstallMTProto(server serverResponse) {
-	progress := &ProvisionProgress{
-		ServerID: server.ID,
-		Action:   "reinstall_mtproxy",
-		Steps: []ProvisionStep{
-			{Name: "install_mtproxy", Description: "Переустановка MTProto-прокси", Status: "running"},
-		},
-		Started: time.Now(),
-	}
-	provisionProgress.Store(server.ID, progress)
-	finalize := func(status, msg string) {
-		progress.Steps[0].Status = status
-		if msg != "" {
-			progress.Steps[0].Error = msg
-		}
-		progress.Finished = true
-		provisionProgress.Store(server.ID, progress)
-	}
-
-	if err := biz.MarkMTProtoStatus(server.ID, "installing"); err != nil {
-		log.Printf("[reinstall-mtproxy] mark installing %d: %v", server.ID, err)
-	}
-	scriptBytes, scriptErr := os.ReadFile("/opt/heyearth/scripts/install-mtproxy.sh")
-	if scriptErr != nil {
-		scriptBytes, scriptErr = os.ReadFile("server/backend/cmd/deploy/install-mtproxy.sh")
-	}
-	if scriptErr != nil {
-		_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
-		finalize("error", "install-mtproxy.sh not found on hub: "+scriptErr.Error())
-		return
-	}
-	sshPort := server.SSHPort
-	if sshPort == 0 {
-		sshPort = 22
-	}
-	sshUser := server.SSHUser
-	if sshUser == "" {
-		sshUser = "root"
-	}
-	if instErr := biz.InstallMTProtoOnExit(server.ID, server.IPAddress, sshUser, server.SSHPassword, sshPort, scriptBytes); instErr != nil {
-		_ = biz.MarkMTProtoStatus(server.ID, "unhealthy")
-		finalize("error", instErr.Error())
-		return
-	}
-	_ = biz.MarkMTProtoStatus(server.ID, "healthy")
-	biz.BumpSubscriptionVersion()
-	finalize("done", "")
-	log.Printf("[reinstall-mtproxy] %d (%s): success", server.ID, server.Name)
 }

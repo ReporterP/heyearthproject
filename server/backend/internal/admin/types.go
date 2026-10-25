@@ -210,22 +210,3 @@ type serverPayload struct {
 type serverActionPayload struct {
 	Action string `json:"action"`
 }
-
-// ── Provision progress (in-memory) ──
-
-// ProvisionStep — один шаг провижининга exit-ноды
-type ProvisionStep struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // pending, running, done, error
-	Error       string `json:"error,omitempty"`
-}
-
-// ProvisionProgress — текущий прогресс провижининга сервера
-type ProvisionProgress struct {
-	ServerID int             `json:"server_id"`
-	Action   string          `json:"action"`
-	Steps    []ProvisionStep `json:"steps"`
-	Started  time.Time       `json:"started"`
-	Finished bool            `json:"finished"`
-}

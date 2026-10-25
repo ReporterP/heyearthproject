@@ -114,12 +114,24 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/payments/", AuthMiddleware(paymentsItemRouter))
 
 	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(goneHandler(tunnelCredsGoneMsg))))
+	// Node provisioning (provision_handlers.go): reads servers.read, every change nodes.provision.
+	http.HandleFunc("/api/admin/servers/probe", withMethod(http.MethodPost, RequirePermission("nodes.provision", ProbeNodeHandler)))
+	http.HandleFunc("/api/admin/nodes", withMethod(http.MethodGet, RequirePermission("servers.read", ListNodesHandler)))
+	http.HandleFunc("/api/admin/provision-jobs", withMethod(http.MethodGet, RequirePermission("servers.read", ListJobsHandler)))
+	http.HandleFunc("/api/admin/provision-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/resume") {
+			withMethod(http.MethodPost, RequirePermission("nodes.provision", ResumeJobHandler)).ServeHTTP(w, r)
+			return
+		}
+		withMethod(http.MethodGet, RequirePermission("servers.read", GetJobHandler)).ServeHTTP(w, r)
+	})
+	http.HandleFunc("/api/admin/ssh-keys/hub", withMethod(http.MethodGet, RequirePermission("servers.read", HubKeyHandler)))
 	http.HandleFunc("/api/admin/servers", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			RequirePermission("servers.read", GetServersHandler).ServeHTTP(w, r)
 		case http.MethodPost:
-			RequirePermission("servers.write", AddServerHandler).ServeHTTP(w, r)
+			RequirePermission("nodes.provision", CreateNodeHandler).ServeHTTP(w, r)
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
@@ -130,8 +142,23 @@ func RegisterRoutes() {
 			withMethod(http.MethodPost, RequirePermission("servers.read", CheckTunnelHandler)).ServeHTTP(w, r)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/actions/progress") {
-			withMethod(http.MethodGet, RequirePermission("server_ops.execute", ServerActionProgressHandler)).ServeHTTP(w, r)
+		for _, a := range []struct {
+			suffix string
+			h      http.HandlerFunc
+		}{
+			{"/provision", RequirePermission("nodes.provision", ProvisionNodeHandler)},
+			{"/verify", RequirePermission("nodes.provision", VerifyNodeHandler)},
+			{"/deprovision", RequirePermission("nodes.provision", DeprovisionNodeHandler)},
+			{"/host-key", RequirePermission("nodes.provision", ConfirmHostKeyHandler)},
+			{"/preflight", RequirePermission("nodes.provision", PreflightNodeHandler)},
+		} {
+			if strings.HasSuffix(r.URL.Path, a.suffix) {
+				withMethod(http.MethodPost, a.h).ServeHTTP(w, r)
+				return
+			}
+		}
+		if strings.HasSuffix(r.URL.Path, "/routing") {
+			withMethod(http.MethodPut, RequirePermission("nodes.provision", NodeRoutingHandler)).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/actions") {
@@ -167,7 +194,7 @@ func RegisterRoutes() {
 		case http.MethodPatch:
 			RequirePermission("servers.write", UpdateServerHandler).ServeHTTP(w, r)
 		case http.MethodDelete:
-			RequirePermission("servers.write", DeleteServerHandler).ServeHTTP(w, r)
+			RequirePermission("nodes.provision", DeleteServerHandler).ServeHTTP(w, r)
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}

@@ -985,6 +985,9 @@ func main() {
 		log.Fatalf("invalid admin configuration: %v", err)
 	}
 	admin.InitCORS()
+	// Node provisioning core: interrupted jobs, the admin handlers' runner, the MTProxy installer
+	// (before StartGhostReconciler and admin.RegisterRoutes, which use them).
+	initProvisioning()
 
 	// Wire the biz-layer sync orchestrator. biz.RequestSync() debounces
 	// 2s and fans out to both Xray and Hysteria2. All subscription/plan

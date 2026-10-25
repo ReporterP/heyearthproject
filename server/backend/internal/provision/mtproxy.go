@@ -55,7 +55,7 @@ func (o MTProtoOptions) validate() error {
 }
 
 // InstallMTProxy uploads install-mtproxy.sh and runs it over r — the node's pinned connection
-// (it was biz.InstallMTProtoOnExit with InsecureIgnoreHostKey). Idempotent; a first build takes
+// (it was biz.InstallMTProtoOnExit, which accepted any host key). Idempotent; a first build takes
 // minutes. Options are validated before the node is touched. The secret is redacted from the
 // output and the error (the installer prints it).
 func InstallMTProxy(ctx context.Context, r Remote, o MTProtoOptions) (string, error) {
