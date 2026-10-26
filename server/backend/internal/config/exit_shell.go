@@ -435,6 +435,10 @@ r && NF { t = $0; sub(/ +(ALLOW|DENY|REJECT|LIMIT)( (IN|OUT|FWD))?( .*)?$/, "", 
   n = split(t, w, /[ ,\/()]+/); for (i = 1; i <= n; i++) if (w[i] == p) f = 1 }
 END { exit !f }`
 
+// UfwHasPortAwk is ufwHasPortAwk for the relay's firewall step (internal/provision relay.go): the
+// same "does any rule name the SSH port" decision as on an exit.
+const UfwHasPortAwk = ufwHasPortAwk
+
 // ExitFirewallScript never switches a firewall on. If ufw is active (asked with LC_ALL=C: the
 // status line is localized) it allows the tunnels (hysteria UDP 50443 + the hop range, Reality
 // TCP 10443), the MTProxy port and node-agent :50052 from the Hub's addresses only (ufw skips

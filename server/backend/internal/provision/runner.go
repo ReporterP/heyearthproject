@@ -390,8 +390,8 @@ func (r *Runner) logPanic(jobID int64, where string, err error, secrets []string
 }
 
 // inconclusive: a Verify error that says nothing about the node — Verify panicked, the node
-// could not be reached or the connection dropped, the job ran out of time. Neither drift nor a
-// reason to Apply.
+// could not be reached or the connection dropped, the job ran out of time, a check from outside
+// could not run at all (ErrProbeUnavailable). Neither drift nor a reason to Apply.
 //
 // Recipes: a Verify that times out on its own (a sub-context of its own, the node reachable) is
 // caught here too when it returns or wraps context.DeadlineExceeded. If that case should lead to
@@ -400,7 +400,7 @@ func (r *Runner) logPanic(jobID int64, where string, err error, secrets []string
 func inconclusive(ctx context.Context, err error) bool {
 	var pe *panicError
 	return errors.As(err, &pe) || ctx.Err() != nil ||
-		errors.Is(err, ErrNodeUnreachable) || errors.Is(err, ErrConnectionLost) ||
+		errors.Is(err, ErrNodeUnreachable) || errors.Is(err, ErrConnectionLost) || errors.Is(err, ErrProbeUnavailable) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 

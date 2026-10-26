@@ -336,7 +336,7 @@ func TestRecipeForGuards(t *testing.T) {
 	if got := names(DeprovisionRecipe("exit")); !slices.Equal(got, deproSteps) {
 		t.Fatalf("exit: %v", got)
 	}
-	if got := names(DeprovisionRecipe("relay")); !slices.Equal(got, []string{"exclude", "finalize"}) {
+	if got := names(DeprovisionRecipe("relay")); !slices.Equal(got, []string{"exclude", "relay_teardown", "relay_firewall_remove", "finalize"}) {
 		t.Fatalf("relay: %v", got)
 	}
 	for _, s := range DeprovisionRecipe("exit") {

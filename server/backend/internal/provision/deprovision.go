@@ -18,7 +18,9 @@ type stepFunc = func(ctx context.Context, r Remote, s *State) error
 // (best effort — the VPS may already be gone) the node, which is parked: services stopped and
 // disabled, the xray egress guard and the port hop removed, the tunnel password rotated. The
 // node-agent Hub-only guard, binaries, unit files and the Hub's SSH key stay (see
-// config.ExitStopServicesScript). The row ends 'offline'; deleting it is DELETE /servers/{id}.
+// config.ExitStopServicesScript). A relay gets its forwarding taken off instead
+// (RelayDeprovisionRecipe: rules, unit, ip_forward, sysctl, jail, ufw route rules). The row ends
+// 'offline'; deleting it is DELETE /servers/{id}.
 //
 // Every step converges: Verify passes → nothing is done; on a resumed job the finished steps
 // only verify. A node that cannot be reached skips its steps (the job still ends offline); an
@@ -36,6 +38,10 @@ func DeprovisionRecipe(role string) Recipe {
 			Step{Name: "remove_guard", Apply: bestEffort(runPrint(config.ExitRemoveGuardScript)), Verify: bestEffortVerify(guardRemoved)},
 			Step{Name: "remove_hop", Apply: bestEffort(runPrint(config.ExitRemoveHopScript)), Verify: bestEffortVerify(hopRemoved)},
 		)
+	}
+	if role == "relay" {
+		// Between exclude and finalize: out of the subscriptions first, the row still ends offline.
+		r = append(r, RelayDeprovisionRecipe()...)
 	}
 	return append(r, Step{Name: "finalize", Apply: finalizeApply, Verify: lifecycleIs("offline")})
 }

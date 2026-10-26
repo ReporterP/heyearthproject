@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -121,6 +123,50 @@ func TestApiRecipe(t *testing.T) {
 		t.Fatalf("setup without Hub addresses must be a refusal (the owner's text): %v", err)
 	}
 	if rc, _, err := apiRecipe(context.Background(), n, provision.KindDeprovision); err != nil || stepNames(rc)[0] != "exclude" {
+		t.Fatalf("deprovision: %v %v", stepNames(rc), err)
+	}
+}
+
+// The relay's DNAT target is main_server_host — never another of the Hub's interface addresses
+// (hubOwnIPs also lists one filtered upstream); SSH may come from all of them. No usable address
+// is a refusal (no job), a failed read an internal error; taking a relay out needs no address.
+func TestApiRelayOptions(t *testing.T) {
+	hubAll := []string{"198.51.100.2", "192.0.2.10"} // 192.0.2.10: an interface address, never the target
+	withExitWiring(t, hubAll, mtSettings, "x")
+	oldHost, oldLookup := relayHubHost, relayHubLookup
+	t.Cleanup(func() { relayHubHost, relayHubLookup = oldHost, oldLookup })
+	setHost := func(v string, err error) { relayHubHost = func(context.Context) (string, error) { return v, err } }
+	relayHubLookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "hub.example.test" {
+			return []netip.Addr{netip.MustParseAddr("198.51.100.2")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	ctx := context.Background()
+	n := provision.Node{ID: 5, Role: "relay", IP: "203.0.113.50", SSHPort: 22, Lifecycle: "pending", HostKeyConfirmed: true}
+	for _, host := range []string{"198.51.100.2", "hub.example.test"} {
+		setHost(host, nil)
+		rc, st, err := apiRecipe(ctx, n, provision.KindProvision)
+		if err != nil || st.Relay.HubIP != "198.51.100.2" || st.Relay.RelayIP != n.IP || !slices.Equal(st.Relay.HubIPs, hubAll) ||
+			st.Relay.VerifyPath == nil || len(rc) == 0 || rc[0].Name != "relay_preflight" || rc[len(rc)-1].Name != "activate" {
+			t.Fatalf("%s: %+v %v %v", host, st, stepNames(rc), err)
+		}
+	}
+	for name, c := range map[string]struct {
+		v   string
+		err error
+	}{"absent": {"", sql.ErrNoRows}, "blank": {" ", nil}, "private": {"10.0.0.1", nil}, "unresolvable": {"nohost.example.test", nil}} {
+		setHost(c.v, c.err)
+		if _, _, err := apiRecipe(ctx, n, provision.KindProvision); !provision.IsRefusal(err) {
+			t.Errorf("%s: want a refusal, got %v", name, err)
+		}
+	}
+	setHost("", errors.New("db down"))
+	if _, _, err := apiRecipe(ctx, n, provision.KindProvision); err == nil || provision.IsRefusal(err) {
+		t.Fatalf("a failed read is internal, not the owner's text: %v", err)
+	}
+	n.Lifecycle = "online"
+	if rc, _, err := apiRecipe(ctx, n, provision.KindDeprovision); err != nil || !slices.Contains(stepNames(rc), "relay_teardown") {
 		t.Fatalf("deprovision: %v %v", stepNames(rc), err)
 	}
 }

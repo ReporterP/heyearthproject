@@ -54,14 +54,14 @@ func ExitRecipe(o ExitOptions) Recipe {
 	)
 }
 
-// recipeForSetup: the setup kinds of an exit. provision takes a node that is not in service
-// (pending, failed, offline, or provisioning when resumed) through provisioning → online, a
-// failure leaves it failed; reprovision converges a working (online) exit and never touches its
-// lifecycle; verify only compares. Everything the recipe renders is checked here, so a refused
-// recipe creates no job.
+// recipeForSetup: the setup kinds of an exit or a relay (relaySetup, relay.go). provision takes a
+// node that is not in service (pending, failed, offline, or provisioning when resumed) through
+// provisioning → online, a failure leaves it failed; reprovision converges a working (online)
+// node and never touches its lifecycle; verify only compares. Everything the recipe renders is
+// checked here, so a refused recipe creates no job.
 func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
-	if n.Role != "exit" {
-		return nil, fmt.Errorf("настройка роли «%s» появится вместе с резервными входами", n.Role)
+	if n.Role != "exit" && n.Role != "relay" {
+		return nil, fmt.Errorf("неизвестная роль ноды %q", n.Role)
 	}
 	switch kind {
 	case KindProvision:
@@ -76,13 +76,22 @@ func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
 	default:
 		return nil, fmt.Errorf("неизвестный вид задачи %q", kind)
 	}
-	// The renderers' contract (config.ValidateExitIP): ExitHysteriaServerYAML cannot fail and would
-	// silently leave out the rules that refuse the exit's own address.
-	if err := config.ValidateExitIP(n.IP); err != nil {
-		return nil, fmt.Errorf("адрес ноды не подходит для выхода: %w", err)
-	}
-	if err := st.Exit.validate(); err != nil {
-		return nil, err
+	var rc Recipe
+	if n.Role == "relay" {
+		var err error
+		if rc, err = relaySetup(n, st); err != nil {
+			return nil, err
+		}
+	} else {
+		// The renderers' contract (config.ValidateExitIP): ExitHysteriaServerYAML cannot fail and
+		// would silently leave out the rules that refuse the exit's own address.
+		if err := config.ValidateExitIP(n.IP); err != nil {
+			return nil, fmt.Errorf("адрес ноды не подходит для выхода: %w", err)
+		}
+		if err := st.Exit.validate(); err != nil {
+			return nil, err
+		}
+		rc = ExitRecipe(st.Exit)
 	}
 	if kind == KindProvision {
 		st.Begin = func(ctx context.Context) error {
@@ -90,7 +99,7 @@ func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
 		}
 		st.Fail = func(ctx context.Context) { _ = st.Hooks.SetLifecycle(ctx, n.ID, []string{"provisioning"}, "failed") }
 	}
-	return ExitRecipe(st.Exit), nil
+	return rc, nil
 }
 
 // validate: what every exit recipe needs from the wiring (API / CLI).

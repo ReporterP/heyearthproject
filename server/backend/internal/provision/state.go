@@ -87,6 +87,7 @@ type State struct {
 	Kind  string
 	Hub   Remote
 	Exit  ExitOptions
+	Relay RelayOptions // role relay: filled by the API wiring (RelayOptionsFor)
 	Hooks Hooks
 	Keys  config.ExitRealityKeys
 	Begin func(ctx context.Context) error // before the first step (lifecycle → provisioning)
@@ -209,6 +210,11 @@ var titles = map[string]string{
 	"hub_client_remove": "Удаление клиента туннеля на Hub", "rotate_password": "Смена пароля туннеля",
 	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих xray",
 	"remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
+	// The reserve entry (relay.go).
+	"relay_preflight": "Предпроверка", "relay_packages": "Пакеты", "relay_sysctl": "Пересылка и conntrack",
+	"relay_rules": "Правила nftables", "relay_unit": "Юнит heyearth-relay", "relay_firewall": "Фаервол",
+	"relay_fail2ban": "fail2ban для SSH", "relay_path": "Проверка входа снаружи",
+	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",
 }
 
 // Title is the owner-facing name of a step (admin UI and CLI).

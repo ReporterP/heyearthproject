@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -28,6 +29,10 @@ var (
 	exitHubIPs        = hubOwnIPs
 	exitSetting       = biz.GetSettingOrDefault
 	mtproxyScriptPath = "/opt/heyearth/scripts/install-mtproxy.sh"
+	// relayHubHost reads main_server_host strictly: sql.ErrNoRows when absent, any other error a
+	// failed read (never a default — a guessed DNAT target would forward users elsewhere).
+	relayHubHost   = func(ctx context.Context) (string, error) { return biz.GetSettingContext(ctx, "main_server_host") }
+	relayHubLookup = provision.DefaultHubLookup
 )
 
 // initProvisioning: jobs the previous process left running become interrupted (resumable with
@@ -256,7 +261,7 @@ func migrateLegacyPasswords(ctx context.Context, todo []legacyPassword,
 func apiHooks() provision.Hooks { return nodeStore.Hooks(biz.RequestSync, admin.ProbeNodeAgent) }
 
 // apiRecipe is the runner's recipe source: the Hub side runs locally (the API is on the Hub).
-func apiRecipe(_ context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
+func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
 	st := provision.NewState(kind, n, provision.LocalRemote{}, apiHooks())
 	// The options' errors name what the owner fixes on the Hub (addresses, assets): refusals.
 	switch {
@@ -266,15 +271,43 @@ func apiRecipe(_ context.Context, n provision.Node, kind string) (provision.Reci
 			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit.MTProto = mt
-	case kind != provision.KindDeprovision && n.Role == "exit":
+	case kind == provision.KindDeprovision: // taking a node out of service needs no options
+	case n.Role == "exit":
 		opts, err := apiExitOptions(n)
 		if err != nil {
 			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit = opts
+	case n.Role == "relay":
+		opts, err := apiRelayOptions(ctx, n)
+		if err != nil {
+			return nil, nil, err // a refusal, or an internal error (the setting could not be read)
+		}
+		st.Relay = opts
 	}
 	rc, err := provision.RecipeFor(kind, n, st)
 	return rc, st, err
+}
+
+// apiRelayOptions: what a relay recipe takes from the Hub. The DNAT target is main_server_host —
+// the address users reach the Hub at today, which its replies come from (the relay's conntrack
+// matches only replies from the address it sent to) — and never hubOwnIPs: that list also holds
+// the Hub's other interface addresses, among them one filtered upstream. hubOwnIPs is only where
+// SSH to the relay may come from (an active ufw without a rule for the SSH port).
+func apiRelayOptions(ctx context.Context, n provision.Node) (provision.RelayOptions, error) {
+	host, err := relayHubHost(ctx)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		host = "" // RelayOptionsFor refuses: no Hub address, no relay
+	case err != nil:
+		return provision.RelayOptions{}, fmt.Errorf("main_server_host не прочитан: %w", err)
+	}
+	o, err := provision.RelayOptionsFor(ctx, n.IP, n.SSHPort, host, relayHubLookup)
+	if err != nil {
+		return provision.RelayOptions{}, provision.Refusal(err)
+	}
+	o.HubIPs = exitHubIPs()
+	return o, nil
 }
 
 // apiExitOptions: what an exit recipe takes from the Hub. HubIPs is ONE list for the node's
