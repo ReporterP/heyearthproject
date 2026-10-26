@@ -109,14 +109,14 @@ func TestLegacyKeysAdoptedFromDatabase(t *testing.T) {
 	st := legacyKeysState(KindVerify, dbTunnel(k), nil)
 	err := keysVerify(ctx, node, st)
 	if err == nil || !strings.HasPrefix(err.Error(), legacyKeysDrift) || strings.Contains(err.Error(), "некорректен") ||
-		!strings.Contains(err.Error(), "UUID туннеля — из базы, совпадает с "+config.ExitXrayConfig) ||
-		!strings.Contains(err.Error(), "пароль туннеля — из базы, совпадает с "+config.ExitHysteriaConfig) {
+		!strings.Contains(err.Error(), "UUID туннеля — из базы (servers.tunnel_uuid), совпадает с id клиента Reality (inbound :10443) в "+config.ExitXrayConfig) ||
+		!strings.Contains(err.Error(), "пароль туннеля — из базы (servers.tunnel_ss_password), совпадает с «password:» блока auth в "+config.ExitHysteriaConfig) {
 		t.Fatalf("verify: %v", err)
 	}
 	if st.Keys != k || node.writes != 0 || string(node.files[config.ExitKeysPath]) != legacy {
 		t.Fatalf("verify must take the adopted keys and write nothing: keys ok %v, writes %d", st.Keys == k, node.writes)
 	}
-	for _, p := range []string{config.ExitXrayConfig, config.ExitHysteriaConfig, legacyHysteriaConfig} {
+	for _, p := range []string{config.ExitXrayConfig, config.ExitHysteriaConfig, config.ExitHysteriaConfigLegacy} {
 		if node.count("cat "+p) != 1 {
 			t.Errorf("the live copy %s was not cross-checked", p)
 		}
@@ -153,9 +153,19 @@ func TestLegacyKeysAdoptedFromDatabase(t *testing.T) {
 	}
 }
 
-// A disagreement between the database and the exit (or among the exit's own copies), or a value
-// that is not a valid credential, refuses — in verify and apply alike: no value is picked, none
-// generated, the file stays as it is, and the error names the place, never the values.
+// The exact places the refusals and notes name (the owner compares them by hand).
+var (
+	wantXrayWhere    = "id клиента Reality (inbound :10443) в " + config.ExitXrayConfig
+	wantHyWhere      = "«password:» блока auth в " + config.ExitHysteriaConfig
+	wantHyEtcWhere   = "«password:» блока auth в " + config.ExitHysteriaConfigLegacy
+	wantUUIDInDB     = "UUID туннеля в базе (servers.tunnel_uuid)"
+	wantPasswordInDB = "пароль туннеля в базе (servers.tunnel_ss_password)"
+)
+
+// A disagreement between the database and the exit (or among the exit's own copies), a value
+// that is not a valid credential, or a live config that is there but cannot be read refuses — in
+// verify and apply alike: no value is picked, none generated, the file stays as it is, and the
+// error names the exact places to compare, never a value or the content.
 func TestLegacyKeysRefusedOnMismatch(t *testing.T) {
 	ctx := context.Background()
 	k := testKeys(t)
@@ -168,25 +178,48 @@ func TestLegacyKeysRefusedOnMismatch(t *testing.T) {
 		want  string
 	}{
 		"uuid: database ≠ xray": {db: Tunnel{UUID: o.UUID, Password: k.SSPassword},
-			want: "UUID туннеля в базе не совпадает с " + config.ExitXrayConfig},
+			want: wantUUIDInDB + " не совпадает с " + wantXrayWhere},
 		"password: database ≠ hysteria": {db: Tunnel{UUID: k.UUID, Password: o.SSPassword},
-			want: "пароль туннеля в базе не совпадает с " + config.ExitHysteriaConfig},
+			want: wantPasswordInDB + " не совпадает с " + wantHyWhere},
 		"password: database ≠ the copy in /etc/hysteria": {db: dbTunnel(k),
 			setup: func(n *fakeHost) {
-				n.files[legacyHysteriaConfig] = []byte("listen: :50443\nauth:\n  type: password\n  password: " + o.SSPassword + "\n")
+				n.files[config.ExitHysteriaConfigLegacy] = []byte("listen: :50443\nauth:\n  type: password\n  password: " + o.SSPassword + "\n")
 			},
-			want: "пароль туннеля в базе не совпадает с " + legacyHysteriaConfig},
+			want: wantPasswordInDB + " не совпадает с " + wantHyEtcWhere},
 		"uuid: no database value, two different live clients": {db: Tunnel{Password: k.SSPassword},
 			setup: func(n *fakeHost) { n.files[config.ExitXrayConfig] = []byte(twoClients) },
-			want:  "UUID туннеля в базе нет, а на ноде разные значения"},
+			want:  wantUUIDInDB + " пуст, а на ноде разные значения: " + wantXrayWhere},
 		"password: no database value, the exit's copies differ": {db: Tunnel{UUID: k.UUID},
 			setup: func(n *fakeHost) {
-				n.files[legacyHysteriaConfig] = []byte("auth:\n  type: password\n  password: " + o.SSPassword + "\n")
+				n.files[config.ExitHysteriaConfigLegacy] = []byte("auth:\n  type: password\n  password: " + o.SSPassword + "\n")
 			},
-			want: "пароль туннеля в базе нет, а на ноде разные значения"},
+			want: wantPasswordInDB + " пуст, а на ноде разные значения: " + wantHyWhere + ", " + wantHyEtcWhere},
 		"uuid: malformed database value, nothing live": {db: Tunnel{UUID: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", Password: k.SSPassword},
 			setup: func(n *fakeHost) { n.remove(config.ExitXrayConfig) },
-			want:  "UUID туннеля в базе некорректен"},
+			want:  wantUUIDInDB + " некорректен"},
+		// Unreadable live copies: never "no copy" (that would create a new value without a
+		// database one, and skip the cross-check with it).
+		"xray config not JSON, no database value": {db: Tunnel{Password: k.SSPassword},
+			setup: func(n *fakeHost) { n.files[config.ExitXrayConfig] = []byte(`{"inbounds": [ not json ` + k.UUID) },
+			want:  config.ExitXrayConfig + " на ноде не разобран (содержимое не показано) — UUID туннеля по нему не сверить"},
+		"xray config not JSON, database value": {db: dbTunnel(k),
+			setup: func(n *fakeHost) { n.files[config.ExitXrayConfig] = []byte("inbounds = [] # toml?") },
+			want:  config.ExitXrayConfig + " на ноде не разобран"},
+		"hysteria: another auth type": {db: Tunnel{UUID: k.UUID},
+			setup: func(n *fakeHost) {
+				n.files[config.ExitHysteriaConfig] = []byte("auth:\n  type: userpass\n  userpass:\n    hub: " + k.SSPassword + "\n")
+			},
+			want: config.ExitHysteriaConfig + " на ноде не разобран (содержимое не показано) — пароль туннеля по нему не сверить"},
+		"hysteria: /etc copy without auth": {db: dbTunnel(k),
+			setup: func(n *fakeHost) {
+				n.files[config.ExitHysteriaConfigLegacy] = []byte("listen: :50443\nmasquerade:\n  type: proxy\n")
+			},
+			want: config.ExitHysteriaConfigLegacy + " на ноде не разобран"},
+		"hysteria: unterminated quote": {db: Tunnel{UUID: k.UUID},
+			setup: func(n *fakeHost) {
+				n.files[config.ExitHysteriaConfig] = []byte("auth:\n  type: password\n  password: \"" + k.SSPassword + "\n")
+			},
+			want: config.ExitHysteriaConfig + " на ноде не разобран"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			node := legacyKeysNode(t, k)
@@ -202,13 +235,14 @@ func TestLegacyKeysRefusedOnMismatch(t *testing.T) {
 				}
 				err := f(ctx, node, st)
 				if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "не перенимаю и новый не создаю") ||
-					strings.Contains(err.Error(), legacyKeysDrift) {
+					strings.Contains(err.Error(), legacyKeysDrift) || inconclusive(ctx, err) {
 					t.Fatalf("%s: %v", kind, err)
 				}
 				if st.Keys != (config.ExitRealityKeys{}) {
 					t.Fatalf("%s: a refused run must not take keys", kind)
 				}
-				noSecrets(t, []string{err.Error(), st.out.String()}, k.UUID, k.SSPassword, o.UUID, o.SSPassword, k.PrivateKey)
+				noSecrets(t, []string{err.Error(), st.out.String()}, k.UUID, k.SSPassword, o.UUID, o.SSPassword, k.PrivateKey,
+					"not json", "toml", "userpass", "masquerade")
 			}
 			if node.writes != 0 || string(node.files[config.ExitKeysPath]) != legacy {
 				t.Fatalf("refused, yet the keys file changed (writes %d)", node.writes)
@@ -217,13 +251,21 @@ func TestLegacyKeysRefusedOnMismatch(t *testing.T) {
 	}
 }
 
-// Where the database has no value the one the exit runs with is taken; where the exit has no
-// readable copy the database's is; a value found nowhere is created (there is no tunnel to keep)
-// and verify says so instead of promising to keep it.
+// Where the database has no value the one the exit runs with is taken; where the exit has no copy
+// the database's is; a value found nowhere is created (there is no tunnel to keep) and verify says
+// so instead of promising to keep it. Live copies are read in the forms xray and hysteria accept:
+// JSON with comments, a YAML flow map, quotes and comments.
 func TestLegacyKeysOtherSources(t *testing.T) {
 	ctx := context.Background()
 	k := testKeys(t)
 	quoted := "# by hand\nlisten: :50443\nauth:\n  type: password # one shared password\n  password: \"" + k.SSPassword + "\"  # tunnel\n"
+	commented := fmt.Sprintf(`// xray, edited by hand
+{
+  /* the Hub's TCP fallback */
+  "inbounds": [{"tag": "vless-reality", "port": "10443", // a string port
+    "settings": {"clients": [{"id": %q, "flow": "xtls-rprx-vision"}]}}]
+}`, k.UUID)
+	flow := "listen: :50443\nauth: {type: password, password: '" + k.SSPassword + "'} # tunnel\n"
 	for name, c := range map[string]struct {
 		db       Tunnel
 		setup    func(n *fakeHost)
@@ -231,16 +273,26 @@ func TestLegacyKeysOtherSources(t *testing.T) {
 		generate bool // UUID and password are created
 	}{
 		"database only, no live copy": {db: dbTunnel(k), setup: func(n *fakeHost) { n.remove(config.ExitXrayConfig, config.ExitHysteriaConfig) },
-			notes: []string{"UUID туннеля — из базы (на ноде не найден, сверить не с чем)", "пароль туннеля — из базы (на ноде не найден, сверить не с чем)"}},
+			notes: []string{"UUID туннеля — из базы (servers.tunnel_uuid); на ноде его копии нет, сверить не с чем",
+				"пароль туннеля — из базы (servers.tunnel_ss_password); на ноде его копии нет, сверить не с чем"}},
 		"live only, database empty": {
-			notes: []string{"UUID туннеля — с ноды (" + config.ExitXrayConfig + " (клиент Reality)), в базе его нет",
-				"пароль туннеля — с ноды (" + config.ExitHysteriaConfig + "), в базе его нет"}},
+			notes: []string{"UUID туннеля — с ноды (" + wantXrayWhere + "); в базе (servers.tunnel_uuid) пусто",
+				"пароль туннеля — с ноды (" + wantHyWhere + "); в базе (servers.tunnel_ss_password) пусто"}},
 		"password only in /etc/hysteria, quoted": {db: dbTunnel(k), setup: func(n *fakeHost) {
 			n.remove(config.ExitHysteriaConfig)
-			n.files[legacyHysteriaConfig] = []byte(quoted)
-		}, notes: []string{"пароль туннеля — из базы, совпадает с " + legacyHysteriaConfig}},
+			n.files[config.ExitHysteriaConfigLegacy] = []byte(quoted)
+		}, notes: []string{"пароль туннеля — из базы (servers.tunnel_ss_password), совпадает с " + wantHyEtcWhere}},
+		"live only: xray JSON with comments, hysteria flow map": {setup: func(n *fakeHost) {
+			n.files[config.ExitXrayConfig] = []byte(commented)
+			n.files[config.ExitHysteriaConfig] = []byte(flow)
+		}, notes: []string{"UUID туннеля — с ноды (" + wantXrayWhere + ")", "пароль туннеля — с ноды (" + wantHyWhere + ")"}},
+		"empty live files are no copies": {db: dbTunnel(k), setup: func(n *fakeHost) {
+			n.files[config.ExitXrayConfig], n.files[config.ExitHysteriaConfigLegacy] = []byte(" \n"), []byte("\n")
+			n.remove(config.ExitHysteriaConfig)
+		}, notes: []string{"UUID туннеля — из базы (servers.tunnel_uuid); на ноде его копии нет"}},
 		"nowhere": {setup: func(n *fakeHost) { n.remove(config.ExitXrayConfig, config.ExitHysteriaConfig) }, generate: true,
-			notes: []string{"UUID туннеля — нет ни в базе, ни на ноде: будет создан новый", "пароль туннеля — нет ни в базе, ни на ноде: будет создан новый"}},
+			notes: []string{"UUID туннеля — нет ни в базе (servers.tunnel_uuid), ни на ноде: будет создан новый",
+				"пароль туннеля — нет ни в базе (servers.tunnel_ss_password), ни на ноде: будет создан новый"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			node := legacyKeysNode(t, k)
@@ -272,6 +324,80 @@ func TestLegacyKeysOtherSources(t *testing.T) {
 				t.Fatalf("UUID/password kept %v, want %v", kept, !c.generate)
 			}
 		})
+	}
+}
+
+// No keys file (or one without the Reality key pair) on an exit that has a tunnel — in its
+// database row or in a live config, readable or not: new keys would cut it, so verify says so and
+// apply refuses, writing nothing. Only an exit with no tunnel anywhere gets new keys.
+func TestNoKeysFileRefusedWhileATunnelExists(t *testing.T) {
+	ctx := context.Background()
+	k := testKeys(t)
+	noFile := "файла ключей туннеля " + config.ExitKeysPath + " нет, а туннель у этого выхода уже есть"
+	for name, c := range map[string]struct {
+		db    Tunnel
+		setup func(n *fakeHost)
+		want  []string
+	}{
+		"database uuid only":     {db: Tunnel{UUID: k.UUID}, want: []string{noFile, "(в базе servers.tunnel_uuid)"}},
+		"database password only": {db: Tunnel{Password: k.SSPassword}, want: []string{noFile, "(в базе servers.tunnel_ss_password)"}},
+		"live xray only": {setup: func(n *fakeHost) {
+			xc, _ := config.ExitXrayConfigJSON(k, "203.0.113.7", 8443)
+			n.files[config.ExitXrayConfig] = xc
+		}, want: []string{noFile, "(на ноде " + wantXrayWhere + ")"}},
+		"live /etc hysteria only": {setup: func(n *fakeHost) {
+			n.files[config.ExitHysteriaConfigLegacy] = []byte("auth:\n  type: password\n  password: " + k.SSPassword + "\n")
+		}, want: []string{noFile, "(на ноде " + wantHyEtcWhere + ")"}},
+		"an unreadable live config": {setup: func(n *fakeHost) { n.files[config.ExitHysteriaConfig] = []byte("auth: password\n") },
+			want: []string{noFile, "(на ноде " + config.ExitHysteriaConfig + " (не разобран))"}},
+		"everything (an online exit whose file was deleted)": {db: dbTunnel(k), setup: func(n *fakeHost) {
+			xc, _ := config.ExitXrayConfigJSON(k, "203.0.113.7", 8443)
+			n.files[config.ExitXrayConfig] = xc
+			n.files[config.ExitHysteriaConfig] = []byte(config.ExitHysteriaServerYAML(k.SSPassword, "203.0.113.7", 8443))
+		}, want: []string{noFile, "в базе servers.tunnel_uuid, servers.tunnel_ss_password; на ноде " + wantXrayWhere + ", " + wantHyWhere,
+			"Верните файл ключей из резервной копии"}},
+		"a file without the key pair": {db: dbTunnel(k), setup: func(n *fakeHost) {
+			n.files[config.ExitKeysPath] = []byte(fmt.Sprintf(`{"uuid": %q, "ssPassword": %q}`, k.UUID, k.SSPassword))
+			n.modes[config.ExitKeysPath] = 0o600
+		}, want: []string{"в файле ключей туннеля " + config.ExitKeysPath + " нет ключей Reality, а туннель у этого выхода уже есть"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			node := newFakeHost()
+			if c.setup != nil {
+				c.setup(node)
+			}
+			before := maps.Clone(node.files)
+			for _, kind := range []string{KindVerify, KindReprovision} {
+				st := legacyKeysState(kind, c.db, nil)
+				f := keysVerify
+				if kind == KindReprovision {
+					f = keysApply
+				}
+				err := f(ctx, node, st)
+				if err == nil || inconclusive(ctx, err) || !strings.Contains(err.Error(), "новые ключи разорвали бы его, не создаю") {
+					t.Fatalf("%s: %v", kind, err)
+				}
+				for _, w := range c.want {
+					if !strings.Contains(err.Error(), w) {
+						t.Fatalf("%s: %q lacks %q", kind, err, w)
+					}
+				}
+				noSecrets(t, []string{err.Error(), st.out.String()}, k.UUID, k.SSPassword, k.PrivateKey)
+			}
+			if node.writes != 0 || !maps.EqualFunc(node.files, before, func(a, b []byte) bool { return string(a) == string(b) }) {
+				t.Fatalf("refused, yet something was written (writes %d)", node.writes)
+			}
+		})
+	}
+
+	// No tunnel anywhere: a fresh exit gets new keys.
+	node := newFakeHost()
+	st := legacyKeysState(KindProvision, Tunnel{}, nil)
+	if err := keysVerify(ctx, node, st); err == nil || err.Error() != "файла ключей туннеля ещё нет" {
+		t.Fatalf("verify of a fresh exit: %v", err)
+	}
+	if err := keysApply(ctx, node, st); err != nil || validKeys(fileKeys(t, node)) != nil || node.modes[config.ExitKeysPath] != 0o600 {
+		t.Fatalf("a fresh exit must get keys: %v", err)
 	}
 }
 
@@ -338,6 +464,19 @@ func TestHysteriaAuthPassword(t *testing.T) {
 		"deeper level only":  {"auth:\n  type: password\n  http:\n    password: " + pw + "\n", "", false},
 		"empty":              {"", "", false},
 		"broken quote":       {"auth:\n  type: password\n  password: \"abc\n", "", false},
+		// Trailing comments, the flow-map form, and what this parser refuses to guess.
+		"quoted, comment with quotes": {"auth:\n  type: password\n  password: \"" + pw + "\" # \"old\" one\n", pw, true},
+		"plain, # without a blank":    {"auth:\n  type: password\n  password: abc#def # c\n", "abc#def", true},
+		"flow map":                    {"listen: :50443\nauth: {type: password, password: " + pw + "} # tunnel\n", pw, true},
+		"flow map, quoted":            {"auth: { password: \"a, b}\" , type: \"password\" }\n", "a, b}", true},
+		"flow map, empty password":    {"auth: {type: password, password: }\n", "", false},
+		"flow map, nested":            {"auth: {type: http, http: {url: http://127.0.0.1:8001}}\n", "", false},
+		"flow map, unterminated":      {"auth: {type: password, password: " + pw + "\n", "", false},
+		"flow map, junk after":        {"auth: {type: password, password: " + pw + "} x\n", "", false},
+		"auth as a scalar":            {"auth: password\n", "", false},
+		"two auth keys":               {"auth:\n  type: password\n  password: a\nauth:\n  type: password\n  password: b\n", "", false},
+		"anchor":                      {"auth:\n  type: password\n  password: &pw " + pw + "\n", "", false},
+		"block scalar":                {"auth:\n  type: password\n  password: |\n    " + pw + "\n", "", false},
 	} {
 		if got, ok := hysteriaAuthPassword(c.yaml); got != c.want || ok != c.ok {
 			t.Errorf("%s: %q %v, want %q %v", name, got, ok, c.want, c.ok)
@@ -364,7 +503,8 @@ func tieTunnelToCredentials(e *exitEnv, probed *[]string) {
 		switch {
 		case strings.HasPrefix(op, "socks-probe"):
 			pw, ok := hysteriaAuthPassword(string(e.node.files[config.ExitHysteriaConfig]))
-			return !ok || yamlScalar(between(string(e.hub.files[config.HubClientConfigPath(7)]), "\nauth: ", "\n")) != pw
+			hub, hubOK := yamlScalar(between(string(e.hub.files[config.HubClientConfigPath(7)]), "\nauth: ", "\n"))
+			return !ok || !hubOK || hub != pw
 		case strings.HasPrefix(op, "vr-probe"):
 			m := jsonClientID.FindStringSubmatch(probeCfg)
 			if m == nil {
@@ -421,6 +561,38 @@ func TestExitLegacyKeysFileOnConvergedExit(t *testing.T) {
 	for _, st := range e.store.jobs[id].Steps {
 		noSecrets(t, []string{st.OutputTail}, k.UUID, k.SSPassword, k.PrivateKey)
 	}
+}
+
+// An online exit whose keys file was deleted: verify reports that new keys would cut its tunnel,
+// «Переустановить» stops at the keys — nothing is written, no service restarts, the database row
+// and the configs keep the running credentials (before the fix it regenerated all of them).
+func TestExitDeletedKeysFileNeverRegenerated(t *testing.T) {
+	e := exitFixture(t, false)
+	var probed []string
+	tieTunnelToCredentials(e, &probed)
+	if id := e.start(t, KindProvision); e.store.jobs[id].Status != JobSucceeded {
+		t.Fatalf("provision: %s %v", e.store.jobs[id].Error, e.store.statuses(id))
+	}
+	k := e.keys(t)
+	e.node.remove(config.ExitKeysPath)
+	writes, restarts, hubRestarts, tunnel, syncs := e.node.writes, maps.Clone(e.node.restarts), maps.Clone(e.hub.restarts), e.h.tunnel, e.h.syncs
+	yaml, xc := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitXrayConfig])
+
+	id := e.start(t, KindVerify)
+	if st := e.steps(id); st["reality_keys"] != StepDrift || !strings.Contains(e.tail(id, "reality_keys"), "новые ключи разорвали бы его, не создаю") {
+		t.Fatalf("verify: %v %q", st, e.tail(id, "reality_keys"))
+	}
+	id = e.start(t, KindReprovision)
+	j := e.store.jobs[id]
+	if j.Status != JobFailed || e.steps(id)["reality_keys"] != StepFailed || !strings.Contains(j.Error, "туннель у этого выхода уже есть") {
+		t.Fatalf("%s %q %v", j.Status, j.Error, e.store.statuses(id))
+	}
+	if e.node.writes != writes || e.node.files[config.ExitKeysPath] != nil || string(e.node.files[config.ExitHysteriaConfig]) != yaml ||
+		string(e.node.files[config.ExitXrayConfig]) != xc || !maps.Equal(e.node.restarts, restarts) || !maps.Equal(e.hub.restarts, hubRestarts) ||
+		e.h.tunnel != tunnel || e.h.syncs != syncs || e.h.lifecycle != "online" {
+		t.Fatalf("the refused converge changed something: writes %d, keys file %v", e.node.writes-writes, e.node.files[config.ExitKeysPath] != nil)
+	}
+	noSecrets(t, append([]string{j.Error, e.tail(id, "reality_keys")}, e.logs...), k.UUID, k.SSPassword, k.PrivateKey)
 }
 
 // exitTwoOldKeys is exit 2 as the verify of 2026-10-26 found it: legacyExit's old deploy, with

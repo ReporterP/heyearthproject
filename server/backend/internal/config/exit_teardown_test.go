@@ -151,6 +151,80 @@ func TestExitRotatePasswordRewritesBothFiles(t *testing.T) {
 	}
 }
 
+// The tunnel password has a second copy wherever a hysteria server config sits at
+// ExitHysteriaConfigLegacy (exit 2, 2026-10-26): deprovision rotates it too — a copy left with the
+// old password would make a later «Настроить» find two different passwords on the node and
+// refuse. The check reports the worse of the two copies; an unknown format in either copy
+// changes nothing at all.
+func TestExitRotatePasswordRotatesBothHysteriaCopies(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	const oldPW, newPW = "b2xkLXBhc3N3b3JkLXh4eA==", "bmV3LXBhc3N3b3JkLXl5eQ=="
+	if ExitHysteriaConfigLegacy != "/etc/hysteria/server.yaml" || ExitHysteriaConfigLegacy == ExitHysteriaConfig {
+		t.Fatal(ExitHysteriaConfigLegacy)
+	}
+	legacyYAML := "listen: :50443\nauth:\n  type: password\n  password: " + oldPW + "\nobfs:\n  salamander:\n    password: keep-me\n"
+	for name, withMain := range map[string]bool{"both copies": true, "only the /etc copy": false} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if withMain {
+				mustWrite(t, dir, rel(ExitHysteriaConfig), ExitHysteriaServerYAML(oldPW, "203.0.113.7", 8443), 0o600)
+			}
+			mustWrite(t, dir, rel(ExitHysteriaConfigLegacy), legacyYAML, 0o640)
+			mustWrite(t, dir, rel(ExitHysteriaConfigLegacy)+".bak", "  password: "+oldPW+"\n", 0o640)
+			mustWrite(t, dir, rel(ExitKeysPath), `{"privateKey": "priv", "publicKey": "pub", "shortId": "ab"}`, 0o600)
+			if chk, _ := shellRun(t, dir, "", ExitPasswordCheckScript(newPW)); chk != "YAML=old\nKEYS=none\n" {
+				t.Fatalf("check before rotation: %q", chk)
+			}
+			out, err := shellRun(t, dir, "", ExitRotatePasswordScript(newPW))
+			if err != nil || strings.Contains(out, "bmV3") || !strings.Contains(out, ExitHysteriaConfigLegacy) {
+				t.Fatalf("err=%v:\n%s", err, out)
+			}
+			copies := []string{ExitHysteriaConfigLegacy}
+			if withMain {
+				copies = append(copies, ExitHysteriaConfig)
+			}
+			for _, p := range copies {
+				y := readRel(dir, rel(p))
+				if strings.Contains(y, oldPW) || !strings.Contains(y, "\n  password: "+newPW+"\n") || exists(dir, rel(p)+".bak") {
+					t.Fatalf("%s not rotated (.bak left %v):\n%s", p, exists(dir, rel(p)+".bak"), y)
+				}
+			}
+			if y := readRel(dir, rel(ExitHysteriaConfigLegacy)); !strings.Contains(y, "\n    password: keep-me\n") {
+				t.Fatalf("the nested obfs password must stay:\n%s", y)
+			}
+			if fi, err := os.Stat(filepath.Join(dir, rel(ExitHysteriaConfigLegacy))); runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm() != 0o640) {
+				t.Errorf("mode of the /etc copy not kept: %v %v", fi.Mode(), err)
+			}
+			if chk, _ := shellRun(t, dir, "", ExitPasswordCheckScript(newPW)); chk != "YAML=new\nKEYS=none\n" {
+				t.Fatalf("check after rotation: %q", chk)
+			}
+			// One copy back on the old password: the check sees it whichever copy it is.
+			mustWrite(t, dir, rel(ExitHysteriaConfigLegacy), legacyYAML, 0o640)
+			if chk, _ := shellRun(t, dir, "", ExitPasswordCheckScript(newPW)); chk != "YAML=old\nKEYS=none\n" {
+				t.Fatalf("an old /etc copy must count: %q", chk)
+			}
+		})
+	}
+	// An /etc copy of an unknown format (no "  password:" line): nothing is rotated, not even the
+	// main copy or the keys.
+	dir := t.TempDir()
+	mainYAML := ExitHysteriaServerYAML(oldPW, "203.0.113.7", 8443)
+	mustWrite(t, dir, rel(ExitHysteriaConfig), mainYAML, 0o600)
+	mustWrite(t, dir, rel(ExitHysteriaConfigLegacy), "auth:\n    type: password\n    password: "+oldPW+"\n", 0o600)
+	mustWrite(t, dir, rel(ExitKeysPath), `{"ssPassword": "`+oldPW+`"}`, 0o600)
+	if out, err := shellRun(t, dir, "", ExitRotatePasswordScript(newPW)); err == nil || !strings.Contains(out, ExitHysteriaConfigLegacy) {
+		t.Fatalf("unknown /etc copy accepted: %v\n%s", err, out)
+	}
+	if readRel(dir, rel(ExitHysteriaConfig)) != mainYAML || !strings.Contains(readRel(dir, rel(ExitKeysPath)), oldPW) {
+		t.Fatal("a refused rotation changed a file")
+	}
+	if chk, _ := shellRun(t, dir, "", ExitPasswordCheckScript(newPW)); chk != "YAML=old\nKEYS=old\n" {
+		t.Fatalf("%q", chk)
+	}
+}
+
 // The rotated server.yaml line is exactly what the template renders for that password: YAML
 // would read a bare null / true / 123 as no string at all (hysteria would get another password).
 func TestExitRotatePasswordYAMLScalars(t *testing.T) {

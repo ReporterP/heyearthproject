@@ -78,11 +78,17 @@ func readSecretFile(ctx context.Context, r Remote, path, what string) (string, e
 // taken into the run even when only the mode is wrong, so the later steps (and a verify job)
 // compare against the node's real keys. A file of the old format is drift, not a broken file: the
 // run takes the values keysApply would adopt (adoptLegacyKeys), so the later steps compare
-// against them and show only what really differs.
+// against them and show only what really differs. Without the Reality key pair (no file) it says
+// whether keysApply could create new keys (refuseNewKeys).
 func keysVerify(ctx context.Context, r Remote, s *State) error {
 	k, ok, err := readKeys(ctx, r)
 	if err != nil {
 		return err
+	}
+	if k.PrivateKey == "" {
+		if err := refuseNewKeys(ctx, r, s, ok); err != nil {
+			return err
+		}
 	}
 	if !ok {
 		return errors.New("файла ключей туннеля ещё нет")
@@ -118,14 +124,20 @@ func keysVerify(ctx context.Context, r Remote, s *State) error {
 // keysApply keeps every existing key (exit 2 keeps its tunnel) and only adds missing ones; a file
 // that cannot be read is never overwritten. A file of the old format gets the tunnel's running
 // UUID and password (adoptLegacyKeys) and is rewritten in the full format with the same values —
-// atomically (PutFile), root-only.
+// atomically (PutFile), root-only. New keys are created only for an exit that has no tunnel
+// anywhere (refuseNewKeys).
 func keysApply(ctx context.Context, r Remote, s *State) error {
-	k, _, err := readKeys(ctx, r)
+	k, ok, err := readKeys(ctx, r)
 	switch {
 	case errors.Is(err, errKeysCorrupt):
 		return fmt.Errorf("%w — не перезаписываю, нужна ручная проверка", err)
 	case err != nil:
 		return err
+	}
+	if k.PrivateKey == "" {
+		if err := refuseNewKeys(ctx, r, s, ok); err != nil {
+			return err
+		}
 	}
 	k, adopted, err := adoptLegacyKeys(ctx, r, s, k)
 	if err != nil {
@@ -157,15 +169,43 @@ func keysApply(ctx context.Context, r Remote, s *State) error {
 	return nil
 }
 
-// ── a keys file of the old format: adopt, never rotate ──
+// ── credentials the keys file lacks: adopt or refuse, never rotate ──
 
 // legacyKeysDrift: a verify job's word for a keys file of the old format (adoptLegacyKeys).
 const legacyKeysDrift = "старый формат файла ключей — значения сохранятся"
 
-// legacyHysteriaConfig is where the Hub keeps its hysteria server config. An exit's server runs
-// with config.ExitHysteriaConfig; a copy here is read only to cross-check a password being adopted
-// — every copy on the exit must carry the same one.
-const legacyHysteriaConfig = "/etc/hysteria/server.yaml"
+// tunnelCred is one tunnel credential of the keys file: its database column (what the Hub dials
+// with) and its live copies on the exit.
+type tunnelCred struct {
+	what, column string
+	valid        *regexp.Regexp
+	live         func(ctx context.Context, r Remote) ([]liveValues, error)
+}
+
+const (
+	whatUUID     = "UUID туннеля"
+	whatPassword = "пароль туннеля"
+)
+
+var (
+	credUUID     = tunnelCred{whatUUID, "servers.tunnel_uuid", uuidRe, liveRealityClients}
+	credPassword = tunnelCred{whatPassword, "servers.tunnel_ss_password", tunnelPwRe, liveHysteriaPasswords}
+)
+
+// liveValues: one live copy of a credential on the exit — where names the exact place — and the
+// values it carries.
+type liveValues struct {
+	where string
+	vals  []string
+}
+
+// unparsedConfig: a live config is there (not empty) but its credential cannot be read from it.
+// It never carries the content.
+type unparsedConfig struct{ path, what string }
+
+func (e *unparsedConfig) Error() string {
+	return fmt.Sprintf("%s на ноде не разобран (содержимое не показано) — %s по нему не сверить", e.path, e.what)
+}
 
 // legacyKeys: the old deploy's keys file — the Reality key pair and short id without the tunnel
 // UUID and/or password (exit 2, measured 2026-10-26: those two live only in its xray and hysteria
@@ -174,111 +214,163 @@ func legacyKeys(k config.ExitRealityKeys) bool {
 	return k.PrivateKey != "" && (k.UUID == "" || k.SSPassword == "")
 }
 
-// liveValues: where on the exit a tunnel credential was found and the values it carries there.
-type liveValues struct {
-	where string
-	vals  []string
+// loadDBTunnel: the node's servers.tunnel_* (zero without the hook), its credentials registered
+// as secrets of the run.
+func loadDBTunnel(ctx context.Context, s *State) (Tunnel, error) {
+	if s.Hooks.LoadTunnel == nil {
+		return Tunnel{}, nil
+	}
+	t, err := s.Hooks.LoadTunnel(ctx, s.Node.ID)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	s.AddSecret(t.UUID, t.Password)
+	return t, nil
+}
+
+// refuseNewKeys guards the creation of new Reality keys — the keys file is absent or has no key
+// pair (fileThere: which of the two): new keys are created only when this exit has no tunnel
+// anywhere, neither in its database row (servers.tunnel_uuid / tunnel_ss_password) nor in a live
+// config (the Reality client of the xray config, the hysteria auth password; a config that cannot
+// be read counts too — it may well carry one). Otherwise new keys would cut a tunnel the Hub
+// dials: refused, nothing written. Values never reach the error.
+func refuseNewKeys(ctx context.Context, r Remote, s *State, fileThere bool) error {
+	db, err := loadDBTunnel(ctx, s)
+	if err != nil {
+		return fmt.Errorf("ключей туннеля на ноде нет, а данные туннеля в базе не прочитаны — ничего не создаю: %w", err)
+	}
+	var inDB, onNode []string
+	if db.UUID != "" {
+		inDB = append(inDB, credUUID.column)
+	}
+	if db.Password != "" {
+		inDB = append(inDB, credPassword.column)
+	}
+	for _, c := range []tunnelCred{credUUID, credPassword} {
+		live, err := c.live(ctx, r)
+		var bad *unparsedConfig
+		switch {
+		case errors.As(err, &bad):
+			onNode = append(onNode, bad.path+" (не разобран)")
+		case err != nil:
+			return err
+		}
+		for _, l := range live {
+			s.AddSecret(l.vals...)
+			onNode = append(onNode, l.where)
+		}
+	}
+	if len(inDB)+len(onNode) == 0 {
+		return nil
+	}
+	var found []string
+	if len(inDB) > 0 {
+		found = append(found, "в базе "+strings.Join(inDB, ", "))
+	}
+	if len(onNode) > 0 {
+		found = append(found, "на ноде "+strings.Join(onNode, ", "))
+	}
+	what := "файла ключей туннеля " + config.ExitKeysPath + " нет"
+	if fileThere {
+		what = "в файле ключей туннеля " + config.ExitKeysPath + " нет ключей Reality"
+	}
+	return fmt.Errorf("%s, а туннель у этого выхода уже есть (%s) — новые ключи разорвали бы его, не создаю. "+
+		"Верните файл ключей из резервной копии; если сервер переустановлен и старый туннель не нужен — удалите ноду и добавьте её заново",
+		what, strings.Join(found, "; "))
 }
 
 // adoptLegacyKeys completes a keys file of the old format with the values the tunnel already runs
 // with, never with new ones: a new UUID or password would cut the Hub off the exit until every
 // side is rewritten. Each missing value comes from the database (what the Hub dials with),
-// cross-checked against the exit's live configs where they carry it — the Reality inbound's
-// clients of the xray config, the auth password of every hysteria server config; without a
-// database value the one value the live configs agree on is taken. A disagreement or a malformed
-// value refuses: nothing is chosen, nothing generated. A value found nowhere stays missing
-// (completeKeys creates it: there is no tunnel to keep). adopted says, per credential, where its
-// value came from (nil: the file is not of the old format); values never reach it, an error or a
-// step's output, and every value read is registered as a secret of the run.
+// cross-checked against every live copy on the exit (tunnelCred.live); without a database value
+// the one value the live copies agree on is taken. A disagreement, a malformed value or a live
+// config that cannot be read refuses: nothing is chosen, nothing generated. A value found nowhere
+// stays missing (completeKeys creates it: there is no tunnel to keep). adopted says, per
+// credential, where its value came from (nil: the file is not of the old format); values never
+// reach it, an error or a step's output, and every value read is registered as a secret of the run.
 func adoptLegacyKeys(ctx context.Context, r Remote, s *State, k config.ExitRealityKeys) (_ config.ExitRealityKeys, adopted []string, _ error) {
 	if !legacyKeys(k) {
 		return k, nil, nil
 	}
-	var db Tunnel
-	if s.Hooks.LoadTunnel != nil {
-		t, err := s.Hooks.LoadTunnel(ctx, s.Node.ID)
-		if err != nil {
-			return k, nil, fmt.Errorf("старый формат файла ключей, а данные туннеля в базе не прочитаны — ничего не меняю: %w", err)
-		}
-		db = t
+	db, err := loadDBTunnel(ctx, s)
+	if err != nil {
+		return k, nil, fmt.Errorf("старый формат файла ключей, а данные туннеля в базе не прочитаны — ничего не меняю: %w", err)
 	}
-	s.AddSecret(db.UUID, db.Password)
-	adopt := func(what string, valid *regexp.Regexp, db string, read func(context.Context, Remote) ([]liveValues, error)) (string, error) {
-		live, err := read(ctx, r)
+	for _, c := range []struct {
+		cred tunnelCred
+		dst  *string
+		db   string
+	}{{credUUID, &k.UUID, db.UUID}, {credPassword, &k.SSPassword, db.Password}} {
+		if *c.dst != "" {
+			continue
+		}
+		v, note, err := c.cred.adopt(ctx, r, s, c.db)
 		if err != nil {
-			return "", err
-		}
-		for _, l := range live {
-			s.AddSecret(l.vals...)
-		}
-		v, note, err := adoptValue(what, valid, db, live)
-		if err != nil {
-			return "", err
-		}
-		adopted = append(adopted, note)
-		return v, nil
-	}
-	var err error
-	if k.UUID == "" {
-		if k.UUID, err = adopt("UUID туннеля", uuidRe, db.UUID, liveRealityClients); err != nil {
 			return k, nil, err
 		}
-	}
-	if k.SSPassword == "" {
-		if k.SSPassword, err = adopt("пароль туннеля", tunnelPwRe, db.Password, liveHysteriaPasswords); err != nil {
-			return k, nil, err
-		}
+		*c.dst, adopted = v, append(adopted, note)
 	}
 	return k, adopted, nil
 }
 
-// adoptValue picks one credential missing from the keys file: the database's value when it has
-// one (every live copy must carry it), else the one value the live copies agree on; "" when there
-// is none anywhere. note says where it came from, without the value.
-func adoptValue(what string, valid *regexp.Regexp, db string, live []liveValues) (v, note string, err error) {
-	var where []string
-	for _, l := range live {
-		where = append(where, l.where)
-	}
+// adopt picks the credential's value: the database's when it has one (every live copy must carry
+// it), else the one value the live copies agree on; "" when there is none anywhere. note says
+// where it came from, without the value.
+func (c tunnelCred) adopt(ctx context.Context, r Remote, s *State, db string) (v, note string, err error) {
 	refuse := func(format string, a ...any) error {
 		return fmt.Errorf("старый формат файла ключей: "+format+" — не перенимаю и новый не создаю, нужна ручная проверка", a...)
 	}
-	if db != "" {
-		for _, l := range live {
-			if !slices.Contains(l.vals, db) {
-				return "", "", refuse("%s в базе не совпадает с %s на ноде", what, l.where)
-			}
-		}
-		switch {
-		case !valid.MatchString(db):
-			return "", "", refuse("%s в базе некорректен", what)
-		case len(live) == 0:
-			return db, what + " — из базы (на ноде не найден, сверить не с чем)", nil
-		}
-		return db, what + " — из базы, совпадает с " + strings.Join(where, ", "), nil
+	live, err := c.live(ctx, r)
+	var bad *unparsedConfig
+	switch {
+	case errors.As(err, &bad):
+		return "", "", refuse("%v", err)
+	case err != nil:
+		return "", "", err
 	}
-	var seen []string
+	var where, seen []string
 	for _, l := range live {
+		s.AddSecret(l.vals...)
+		where = append(where, l.where)
 		for _, x := range l.vals {
 			if !slices.Contains(seen, x) {
 				seen = append(seen, x)
 			}
 		}
 	}
+	inDB := c.what + " в базе (" + c.column + ")"
+	if db != "" {
+		for _, l := range live {
+			if !slices.Contains(l.vals, db) {
+				return "", "", refuse("%s не совпадает с %s", inDB, l.where)
+			}
+		}
+		switch {
+		case !c.valid.MatchString(db):
+			return "", "", refuse("%s некорректен", inDB)
+		case len(live) == 0:
+			return db, c.what + " — из базы (" + c.column + "); на ноде его копии нет, сверить не с чем", nil
+		}
+		return db, c.what + " — из базы (" + c.column + "), совпадает с " + strings.Join(where, ", "), nil
+	}
 	switch {
 	case len(seen) == 0:
-		return "", what + " — нет ни в базе, ни на ноде: будет создан новый", nil
+		return "", c.what + " — нет ни в базе (" + c.column + "), ни на ноде: будет создан новый", nil
 	case len(seen) > 1:
-		return "", "", refuse("%s в базе нет, а на ноде разные значения (%s)", what, strings.Join(where, ", "))
-	case !valid.MatchString(seen[0]):
-		return "", "", refuse("%s в базе нет, а на ноде (%s) он некорректен", what, strings.Join(where, ", "))
+		return "", "", refuse("%s пуст, а на ноде разные значения: %s", inDB, strings.Join(where, ", "))
+	case !c.valid.MatchString(seen[0]):
+		return "", "", refuse("%s пуст, а значение на ноде (%s) некорректно", inDB, strings.Join(where, ", "))
 	}
-	return seen[0], what + " — с ноды (" + strings.Join(where, ", ") + "), в базе его нет", nil
+	return seen[0], c.what + " — с ноды (" + strings.Join(where, ", ") + "); в базе (" + c.column + ") пусто", nil
 }
 
+// realityClientWhere: the place of the tunnel UUID in the exit's xray config, as the texts name it.
+var realityClientWhere = "id клиента Reality (inbound :" + strconv.Itoa(config.ExitRealityPort) + ") в " + config.ExitXrayConfig
+
 // liveRealityClients: the client ids of the exit's Reality inbound (TCP 10443 or tag
-// vless-reality of config.ExitXrayConfig); none when the file is absent or not readable as an
-// xray config. The file carries the private key: read through readSecretFile.
+// vless-reality of config.ExitXrayConfig, comments allowed as xray allows them); none when the
+// file is absent or empty or no such inbound has clients; *unparsedConfig when it is not JSON of
+// that shape. The file carries the private key: read through readSecretFile.
 func liveRealityClients(ctx context.Context, r Remote) ([]liveValues, error) {
 	out, err := readSecretFile(ctx, r, config.ExitXrayConfig, "конфиг xray")
 	if err != nil || strings.TrimSpace(out) == "" {
@@ -295,8 +387,8 @@ func liveRealityClients(ctx context.Context, r Remote) ([]liveValues, error) {
 			} `json:"settings"`
 		} `json:"inbounds"`
 	}
-	if json.Unmarshal([]byte(out), &cfg) != nil { // never passed on: its error may quote the content
-		return nil, nil
+	if json.Unmarshal(stripJSONComments(out), &cfg) != nil { // never passed on: its error may quote the content
+		return nil, &unparsedConfig{config.ExitXrayConfig, whatUUID}
 	}
 	var ids []string
 	for _, in := range cfg.Inbounds {
@@ -312,30 +404,80 @@ func liveRealityClients(ctx context.Context, r Remote) ([]liveValues, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return []liveValues{{config.ExitXrayConfig + " (клиент Reality)", ids}}, nil
+	return []liveValues{{realityClientWhere, ids}}, nil
 }
 
-// liveHysteriaPasswords: the auth password of every hysteria server config on the exit that has
-// one (config.ExitHysteriaConfig, legacyHysteriaConfig).
+// stripJSONComments removes // and /* */ comments outside strings (xray reads its config so).
+func stripJSONComments(s string) []byte {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '"':
+			j := i + 1
+			for ; j < len(s) && s[j] != '"'; j++ {
+				if s[j] == '\\' {
+					j++
+				}
+			}
+			if j >= len(s) {
+				j = len(s) - 1
+			}
+			out = append(out, s[i:j+1]...)
+			i = j
+		case c == '/' && i+1 < len(s) && s[i+1] == '/':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			if i < len(s) {
+				out = append(out, '\n')
+			}
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				return append(out, "/*"...) // unterminated: left for json to refuse
+			}
+			out = append(out, ' ')
+			i += end + 3
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// liveHysteriaPasswords: the auth password of every hysteria server config on the exit
+// (config.ExitHysteriaConfig, config.ExitHysteriaConfigLegacy) that is there and not empty;
+// *unparsedConfig for one whose password cannot be read (hysteriaAuthPassword).
 func liveHysteriaPasswords(ctx context.Context, r Remote) ([]liveValues, error) {
 	var live []liveValues
-	for _, p := range []string{config.ExitHysteriaConfig, legacyHysteriaConfig} {
+	for _, p := range []string{config.ExitHysteriaConfig, config.ExitHysteriaConfigLegacy} {
 		out, err := readSecretFile(ctx, r, p, "конфиг hysteria")
 		if err != nil {
 			return nil, err
 		}
-		if pw, ok := hysteriaAuthPassword(out); ok {
-			live = append(live, liveValues{p, []string{pw}})
+		if strings.TrimSpace(out) == "" {
+			continue
 		}
+		pw, ok := hysteriaAuthPassword(out)
+		if !ok {
+			return nil, &unparsedConfig{p, whatPassword}
+		}
+		live = append(live, liveValues{"«password:» блока auth в " + p, []string{pw}})
 	}
 	return live, nil
 }
 
-// hysteriaAuthPassword: the password of a hysteria server config's top-level `auth:` block of
-// type password — as config.ExitHysteriaServerYAML renders it and as hand-written configs have it
-// (plain, double- or single-quoted, comments); ok false when there is none.
+// hysteriaAuthPassword: the password of a hysteria server config's top-level `auth:` of type
+// password — a block (as config.ExitHysteriaServerYAML renders it) or a flow map
+// (`auth: {type: password, password: …}`), scalars plain, double- or single-quoted, comments
+// anywhere YAML allows them. ok false when there is no such password or the config has a form
+// this parser does not know (another auth type included): the caller then refuses to guess.
 func hysteriaAuthPassword(y string) (string, bool) {
-	inAuth, indent, typ, pw, have := false, "", "", "", false
+	var (
+		inAuth, seen bool
+		indent       string
+		fields       = map[string]string{}
+	)
 	for _, line := range strings.Split(y, "\n") {
 		line = strings.TrimRight(line, "\r")
 		t := strings.TrimSpace(line)
@@ -344,8 +486,26 @@ func hysteriaAuthPassword(y string) (string, bool) {
 		}
 		lead := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 		if lead == "" {
-			key, _, _ := strings.Cut(t, ":")
+			key, val, _ := strings.Cut(t, ":")
 			inAuth, indent = key == "auth", ""
+			if !inAuth {
+				continue
+			}
+			if seen {
+				return "", false // a second auth key
+			}
+			seen = true
+			switch v := strings.TrimSpace(val); {
+			case v == "" || strings.HasPrefix(v, "#"): // a block follows
+			case strings.HasPrefix(v, "{"):
+				m, ok := yamlFlowMap(v)
+				if !ok {
+					return "", false
+				}
+				fields, inAuth = m, false
+			default:
+				return "", false
+			}
 			continue
 		}
 		if !inAuth {
@@ -354,46 +514,124 @@ func hysteriaAuthPassword(y string) (string, bool) {
 		if indent == "" {
 			indent = lead
 		}
-		key, val, ok := strings.Cut(t, ":")
-		if lead != indent || !ok { // a deeper level: not one of the block's own keys
+		key, raw, ok := strings.Cut(t, ":")
+		if lead != indent || !ok || (key != "type" && key != "password") { // deeper levels, other keys
 			continue
 		}
-		switch key {
-		case "type":
-			typ = yamlScalar(val)
-		case "password":
-			pw, have = yamlScalar(val), true
+		v, ok := yamlScalar(raw)
+		if !ok {
+			return "", false
 		}
+		fields[key] = v
 	}
-	if !have || pw == "" || typ != "password" {
+	if fields["type"] != "password" || fields["password"] == "" {
 		return "", false
 	}
-	return pw, true
+	return fields["password"], true
+}
+
+// yamlQuotedEnd: the index of the quote that closes the quoted scalar s starts with (-1: none) —
+// a backslash escapes in double quotes, a doubled quote is one in single quotes.
+func yamlQuotedEnd(s string) int {
+	q := s[0]
+	for i := 1; i < len(s); i++ {
+		switch {
+		case q == '"' && s[i] == '\\':
+			i++
+		case s[i] == q && q == '\'' && i+1 < len(s) && s[i+1] == '\'':
+			i++
+		case s[i] == q:
+			return i
+		}
+	}
+	return -1
 }
 
 // yamlScalar: the value of a one-line YAML scalar — double-quoted (Go escapes, as config's
-// yamlPassword renders), single-quoted (a doubled quote stands for one) or plain (" #" starts a
-// comment); "" when a quoted one is malformed.
-func yamlScalar(v string) string {
-	v = strings.TrimSpace(v)
+// yamlPassword renders), single-quoted (a doubled quote stands for one) or plain (a # after a
+// blank starts a comment); ok false for a malformed quoted one or what is no scalar (a flow
+// collection, an anchor, a block indicator).
+func yamlScalar(raw string) (string, bool) {
+	v := strings.TrimSpace(raw)
 	switch {
-	case strings.HasPrefix(v, `"`):
-		if j := strings.LastIndex(v, `"`); j > 0 {
-			if u, err := strconv.Unquote(v[:j+1]); err == nil {
-				return u
-			}
+	case v == "":
+		return "", true
+	case v[0] == '"' || v[0] == '\'':
+		end := yamlQuotedEnd(v)
+		if end < 0 {
+			return "", false
 		}
-		return ""
-	case strings.HasPrefix(v, "'"):
-		if j := strings.LastIndex(v, "'"); j > 0 {
-			return strings.ReplaceAll(v[1:j], "''", "'")
+		if tail := strings.TrimSpace(v[end+1:]); tail != "" && !strings.HasPrefix(tail, "#") {
+			return "", false
 		}
-		return ""
+		if v[0] == '\'' {
+			return strings.ReplaceAll(v[1:end], "''", "'"), true
+		}
+		u, err := strconv.Unquote(v[:end+1])
+		return u, err == nil
+	case strings.ContainsRune("{[&*!|>%@`", rune(v[0])):
+		return "", false
 	}
-	if i := strings.Index(v, " #"); i >= 0 {
-		v = strings.TrimSpace(v[:i])
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return strings.TrimSpace(v[:i]), true
+		}
 	}
-	return v
+	return v, true
+}
+
+// yamlFlowMap: the scalar entries of a one-line YAML flow map ({k: v, k: "v"}, a comment after
+// it allowed); ok false for anything else (nested collections included).
+func yamlFlowMap(v string) (map[string]string, bool) {
+	m := map[string]string{}
+	i := 1 // after "{"
+	skip := func() {
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t') {
+			i++
+		}
+	}
+	for {
+		skip()
+		if i < len(v) && v[i] == '}' {
+			i++
+			break
+		}
+		j := strings.IndexAny(v[i:], ":,{}[]\"'")
+		if j < 0 || v[i+j] != ':' {
+			return nil, false
+		}
+		key := strings.TrimSpace(v[i : i+j])
+		i += j + 1
+		skip()
+		end := strings.IndexAny(v[i:], ",}")
+		if i < len(v) && (v[i] == '"' || v[i] == '\'') {
+			end = yamlQuotedEnd(v[i:]) + 1
+		}
+		if key == "" || end <= 0 {
+			return nil, false
+		}
+		val, ok := yamlScalar(v[i : i+end])
+		if !ok {
+			return nil, false
+		}
+		m[key] = val
+		i += end
+		skip()
+		switch {
+		case i < len(v) && v[i] == ',':
+			i++
+			continue
+		case i < len(v) && v[i] == '}':
+			i++
+		default:
+			return nil, false
+		}
+		break
+	}
+	if tail := strings.TrimSpace(v[i:]); tail != "" && !strings.HasPrefix(tail, "#") {
+		return nil, false
+	}
+	return m, true
 }
 
 func derivePublic(priv string) (string, error) {

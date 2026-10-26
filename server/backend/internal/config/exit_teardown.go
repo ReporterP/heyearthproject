@@ -118,23 +118,34 @@ func HubClientStateScript(id int) string {
 		"if [ -e " + w + " ] || [ -L " + w + " ]; then echo LINK=1; else echo LINK=0; fi\n"
 }
 
+// ExitHysteriaConfigLegacy is the other place a hysteria server config may sit on an exit (the
+// Hub's layout; exit 2 was found with its tunnel password there, 2026-10-26). The exit's unit
+// (ExitHysteriaUnit) reads ExitHysteriaConfig; a copy here is never written by the recipes, but it
+// carries the tunnel password all the same: deprovision rotates it with the other copy, and the
+// keys step cross-checks it (internal/provision adoptLegacyKeys).
+const ExitHysteriaConfigLegacy = "/etc/hysteria/server.yaml"
+
 // rotateVars: the new password, its server.yaml line rendered in Go exactly as the templates do
 // (ExitHysteriaServerYAML: yamlPassword — "null", "true", "123" become quoted strings), and the
-// two files that carry the tunnel password on an exit.
+// files that carry the tunnel password on an exit: both hysteria server configs and the keys.
 func rotateVars(op, newPassword string) string {
 	return opLine(op) + "NEW=" + shQuote(newPassword) + "\nRP_LINE=" + shQuote("  password: "+yamlPassword(newPassword)) +
-		"\nRP_YAML=" + shQuote(ExitHysteriaConfig) + "\nRP_KEYS=" + shQuote(ExitKeysPath) + "\n" +
+		"\nRP_YAML=" + shQuote(ExitHysteriaConfig) + "\nRP_YAML2=" + shQuote(ExitHysteriaConfigLegacy) +
+		"\nRP_KEYS=" + shQuote(ExitKeysPath) + "\n" +
 		`RP_JSON_RE='^(.*"ssPassword"[[:space:]]*:[[:space:]]*")([^"]*)(".*)$'
 `
 }
 
-// ExitRotatePasswordScript makes a retired exit refuse the old tunnel password: in the hysteria
-// server config (the auth "  password:" line becomes RP_LINE) and in reality-keys.json
-// (ssPassword, read by a later «Настроить») it becomes newPassword, which nobody keeps. Only the
-// base64 alphabet is accepted (a JSON string as is). Files are rewritten by bash itself (the
-// password never reaches a command line), via temp file + mv with owner and mode kept; their
-// .bak copies (old password) are deleted. A server.yaml without the password line is an unknown
-// format: nothing is changed and the script fails. Never prints the password.
+// ExitRotatePasswordScript makes a retired exit refuse the old tunnel password: in both hysteria
+// server configs (ExitHysteriaConfig and ExitHysteriaConfigLegacy, whichever exist: the auth
+// "  password:" line becomes RP_LINE) and in reality-keys.json (ssPassword, read by a later
+// «Настроить») it becomes newPassword, which nobody keeps — one copy left with the old password
+// would also make a later «Настроить» find two different passwords on the node. Only the base64
+// alphabet is accepted (a JSON string as is). Files are rewritten by bash itself (the password
+// never reaches a command line), via temp file + mv with owner and mode kept; their .bak copies
+// (old password) are deleted. A server config without the password line is an unknown format:
+// nothing is changed (checked for both before any write) and the script fails. Never prints the
+// password.
 func ExitRotatePasswordScript(newPassword string) string {
 	return rotateVars("rotate-password", newPassword) + `set -e
 case "$NEW" in ""|*[!A-Za-z0-9+/=]*) echo "[exit] ERROR: новый пароль туннеля — не base64" >&2; exit 1 ;; esac
@@ -163,14 +174,18 @@ rp_rewrite() {
   mv -f "$RP_TMP" "$1"
   RP_TMP=""
 }
-if [ -f "$RP_YAML" ] && [ "$(rp_count "$RP_YAML" yaml)" = 0 ]; then
-  echo "[exit] ERROR: в $RP_YAML нет строки «  password:» — формат неизвестен, пароль не меняю" >&2
-  exit 1
-fi
+for y in "$RP_YAML" "$RP_YAML2"; do
+  if [ -f "$y" ] && [ "$(rp_count "$y" yaml)" = 0 ]; then
+    echo "[exit] ERROR: в $y нет строки «  password:» — формат неизвестен, пароль не меняю" >&2
+    exit 1
+  fi
+done
 rp_done=""
 if [ -f "$RP_KEYS" ] && [ "$(rp_count "$RP_KEYS" json)" != 0 ]; then rp_rewrite "$RP_KEYS" json; rp_done="$rp_done reality-keys.json"; fi
-if [ -f "$RP_YAML" ]; then rp_rewrite "$RP_YAML" yaml; rp_done="$rp_done server.yaml"; fi
-rm -f "$RP_YAML.bak" "$RP_KEYS.bak"
+for y in "$RP_YAML" "$RP_YAML2"; do
+  if [ -f "$y" ]; then rp_rewrite "$y" yaml; rp_done="$rp_done $y"; fi
+done
+rm -f "$RP_YAML.bak" "$RP_YAML2.bak" "$RP_KEYS.bak"
 if [ -n "$rp_done" ]; then
   echo "[exit] пароль туннеля заменён случайным, которого никто не хранит:$rp_done"
 else
@@ -179,9 +194,10 @@ fi
 `
 }
 
-// ExitPasswordCheckScript prints YAML=absent|new|old|none (server.yaml: missing; only
-// password lines equal to RP_LINE; another password; no password line) and
-// KEYS=absent|new|old|none (reality-keys.json ssPassword). Compares inside bash.
+// ExitPasswordCheckScript prints YAML=absent|new|old|none (the hysteria server configs: none
+// there; only password lines equal to RP_LINE; another password; no password line — of the two
+// copies the worse state counts: old, none, new, absent) and KEYS=absent|new|old|none
+// (reality-keys.json ssPassword). Compares inside bash.
 func ExitPasswordCheckScript(newPassword string) string {
 	return rotateVars("password-check", newPassword) + `pc_state() { # $1 file, $2 yaml|json
   local l r=none
@@ -197,7 +213,15 @@ func ExitPasswordCheckScript(newPassword string) string {
   done < "$1"
   echo "$r"
 }
-echo "YAML=$(pc_state "$RP_YAML" yaml)"
+pc_yaml() { # both copies: the worse state
+  local a b r
+  a=$(pc_state "$RP_YAML" yaml)
+  b=$(pc_state "$RP_YAML2" yaml)
+  for r in old none new absent; do
+    if [ "$a" = "$r" ] || [ "$b" = "$r" ]; then echo "$r"; return; fi
+  done
+}
+echo "YAML=$(pc_yaml)"
 echo "KEYS=$(pc_state "$RP_KEYS" json)"
 `
 }
