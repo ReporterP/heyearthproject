@@ -566,8 +566,9 @@ func (l relayLayout) rulesVerify(o RelayOptions) stepFunc {
 
 // rulesRollback: the previous file back and loaded (one transaction that drops the table first, so
 // a hand-made file without its own `delete table` replaces the rules instead of adding to them),
-// or — the file was new — the table dropped and the file removed; a running unit is stopped first
-// (ExecStopPost turns ip_forward off: never forwarding without the filter).
+// or — the file was new — the table dropped and the file removed: a running unit is stopped first
+// (its first ExecStop turns ip_forward off before the second drops the table) and ip_forward is
+// set off once more before the table goes — never a moment of forwarding without the filter.
 func (l relayLayout) rulesRollback(o RelayOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		return l.run(ctx, r, s, "rules-rollback", o, undoSh(relayMarkRules, `"$NFT"`, len(s.changed[relayChangedKey(relayMarkRules)]) > 0)+`case "$UNDO" in
@@ -576,6 +577,7 @@ restored)
   echo "возвращены и загружены прежние правила $NFT" ;;
 removed)
   if systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null; then systemctl stop "$UNIT_NAME"; fi
+  sysctl -q -w net.ipv4.ip_forward=0
   nft delete table ip "$TABLE" 2>/dev/null || true
   rm -f "$NFT"
   echo "новые правила сняты: таблицы $TABLE нет" ;;
@@ -652,7 +654,7 @@ func (l relayLayout) unitVerify(o RelayOptions) stepFunc {
 }
 
 // unitRollback: the previous unit back and restarted (it must run), or — the unit was new —
-// stopped and disabled (ExecStop drops the table, ExecStopPost turns ip_forward off) and removed.
+// stopped and disabled (ExecStop: ip_forward off, then the table dropped) and removed.
 func (l relayLayout) unitRollback(o RelayOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		return l.run(ctx, r, s, "unit-rollback", o, undoSh(relayMarkUnit, `"$UNIT"`, len(s.changed[relayChangedKey(relayMarkUnit)]) > 0)+`case "$UNDO" in
@@ -857,13 +859,14 @@ func relaySetup(n Node, st *State) (Recipe, error) {
 
 // ── deprovision ──
 
-// relayTeardownSh: forwarding off first — the unit stopped and disabled (ExecStop drops the
-// table, ExecStopPost turns ip_forward off), the table dropped and ip_forward off even without the
-// unit — then every file of the relay (with PutFile's .bak) and the pending markers removed and
-// fail2ban restarted without the relay's jail. The packages stay.
-const relayTeardownSh = `systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
+// relayTeardownSh: ip_forward off FIRST — before anything drops the forward filter (with the table
+// gone and forwarding still on the relay would route transit unfiltered, if only for a moment) —
+// then the unit stopped and disabled (its ExecStop keeps the same order), the table dropped even
+// without the unit, every file of the relay (with PutFile's .bak) and the pending markers removed
+// and fail2ban restarted without the relay's jail. The packages stay.
+const relayTeardownSh = `sysctl -q -w net.ipv4.ip_forward=0
+systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
 nft delete table ip "$TABLE" >/dev/null 2>&1 || true
-sysctl -q -w net.ipv4.ip_forward=0
 jail=0
 if [ -e "$JAIL" ]; then jail=1; fi
 for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL"; do rm -f "$f" "$f.bak" "$f.rollback.tmp"; done

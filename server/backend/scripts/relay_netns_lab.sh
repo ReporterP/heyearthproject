@@ -13,7 +13,7 @@
 # Needs ip, nft, iptables (iptables-nft), python3 and unshare.
 #
 #   bash server/backend/scripts/relay_netns_lab.sh       # last line LAB PASS (n/n), exit 0
-#   LAB_MUTATE=no-masq|dup|no-drop|keep-forward bash …   # breaks a template: LAB FAIL, exit 1
+#   LAB_MUTATE=no-masq|dup|no-drop|keep-forward|late-forward-off bash …   # breaks a template: LAB FAIL, exit 1
 #   RULES_SRC=/dev/null bash …                           # no rules at all: LAB FAIL, exit 1
 #
 # LAB_MUTATE=same-port (UDP hop ports DNATed to the same Hub port instead of :50443) is
@@ -99,21 +99,35 @@ case "${LAB_MUTATE:-}" in
   same-port) sed -i "s/dnat to $HUB:50443/dnat to $HUB/" "$tmp/relay.nft" ;;
   dup) sed -i '/^delete table/d' "$tmp/relay.nft" ;;
   no-drop) sed -i '/counter drop/d' "$tmp/relay.nft" ;;
-  keep-forward) sed -i '/^ExecStopPost=/d' "$tmp/relay.service" ;;
+  keep-forward) sed -i '/ip_forward=0/d' "$tmp/relay.service" ;;
+  late-forward-off) sed -i '/^ExecStop=.*ip_forward=0/d' "$tmp/relay.service" ;; # only ExecStopPost turns it off
   *) echo "неизвестный LAB_MUTATE"; exit 2 ;;
 esac
 
-unit_run() { # unit_run KEY: the unit's KEY= line in hel-r, as systemd runs it ("-" = failure ignored)
-  local cmd ign=
-  cmd=$(sed -n "s/^$1=//p" "$tmp/relay.service")
-  [ -n "$cmd" ] || return 0
-  if [ "${cmd#-}" != "$cmd" ]; then ign=1; cmd=${cmd#-}; fi
-  # shellcheck disable=SC2086 # config.RelayUnit's command lines carry no quoting
-  ip netns exec hel-r $cmd || [ -n "$ign" ]
+# unit_run KEY [HOOK]: every KEY= line of the unit, in order, in hel-r, as systemd runs them ("-" =
+# failure ignored; a failing line without it stops the rest); HOOK runs after each line.
+unit_run() {
+  local cmd ign line
+  while IFS= read -r line; do
+    cmd=$line ign=
+    if [ "${cmd#-}" != "$cmd" ]; then ign=1; cmd=${cmd#-}; fi
+    # shellcheck disable=SC2086 # config.RelayUnit's command lines carry no quoting
+    ip netns exec hel-r $cmd || [ -n "$ign" ] || return 1
+    if [ -n "${2:-}" ]; then "$2"; fi
+  done < <(sed -n "s/^$1=//p" "$tmp/relay.service")
+}
+# stop_window: after every stop command, the table gone while ip_forward is still on = a moment in
+# which the relay routes transit without its filter (the order in the unit decides it).
+windows=0
+stop_window() {
+  if [ "$(tables)" = 0 ] && [ "$(x r sysctl -n net.ipv4.ip_forward)" = 1 ]; then
+    windows=$((windows + 1))
+    echo "  окно: таблицы нет, ip_forward=1 — $(transit)"
+  fi
 }
 unit_start() { if unit_run ExecStart; then unit_run ExecStartPost; else unit_run ExecStopPost; return 1; fi; }
 unit_reload() { unit_run ExecReload; }
-unit_stop() { unit_run ExecStop; unit_run ExecStopPost; }
+unit_stop() { unit_run ExecStop stop_window; unit_run ExecStopPost stop_window; }
 
 # The Hub's real hop rule (cmd/deploy hysteria2PortHopRule).
 x h iptables -t nat -I PREROUTING 1 -p udp --dport 30000:65000 -m addrtype --dst-type LOCAL -j DNAT --to-destination :50443
@@ -207,8 +221,9 @@ drops=$(x r nft list chain ip heyearth_relay forward 2>/dev/null |
   awk '/counter packets/ && / drop/ { n++; for (i = 1; i < NF; i++) if ($i == "packets") s += $(i + 1) } END { if (n) print s }' || true)
 check "транзит посчитан правилом counter drop" "counter drop: ${drops:-нет правила}" "counter drop: [1-9]*"
 
-echo "== юнит остановлен (ExecStop + ExecStopPost)"
+echo "== юнит остановлен (ExecStop по порядку + ExecStopPost)"
 unit_stop || echo "(stop упал)"
+check "stop: ни на одном шаге таблица не снята при включённом ip_forward" "окон: $windows" "окон: 0"
 check "после stop таблицы нет" "$(tables)" "0"
 check "после stop ip_forward выключен" "$(x r sysctl -n net.ipv4.ip_forward)" "0"
 check "после stop TCP 443 не пересылается" "$(probe tcp $C1 $R_C 443)" "ERR*"

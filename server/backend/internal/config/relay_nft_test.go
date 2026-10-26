@@ -104,8 +104,9 @@ func TestRelayUnit(t *testing.T) {
 		// Forwarding on only after the filter loaded, off after every stop / failed start.
 		"ExecStart=/usr/sbin/nft -f /etc/heyearth/relay.nft\nExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1\n",
 		"ExecReload=/usr/sbin/nft -f /etc/heyearth/relay.nft\n",
-		// "-": a table already gone (flush ruleset) must not fail the stop of a restart.
-		"ExecStop=-/usr/sbin/nft delete table ip heyearth_relay\n",
+		// Stop: forwarding off FIRST, then the table (never a moment of routing without the
+		// filter); "-": a table already gone (flush ruleset) must not fail the stop of a restart.
+		"ExecStop=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0\nExecStop=-/usr/sbin/nft delete table ip heyearth_relay\n",
 		"ExecStopPost=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0\n",
 		"WantedBy=multi-user.target\n",
 	} {
@@ -115,6 +116,16 @@ func TestRelayUnit(t *testing.T) {
 	}
 	if strings.Contains(u, "ExecStartPre") || strings.Count(u, "ip_forward=1") != 1 {
 		t.Errorf("ip_forward=1 only in ExecStartPost (never before the rules):\n%s", u)
+	}
+	// The order of the stop commands as systemd runs them: no "delete table" before ip_forward=0.
+	var stops []string
+	for _, l := range strings.Split(u, "\n") {
+		if c, ok := strings.CutPrefix(l, "ExecStop="); ok {
+			stops = append(stops, c)
+		}
+	}
+	if len(stops) != 2 || !strings.Contains(stops[0], "ip_forward=0") || !strings.Contains(stops[1], "delete table") {
+		t.Errorf("ExecStop order %q: ip_forward must go off before the table is dropped", stops)
 	}
 	golden(t, "relay_unit.golden", []byte(u))
 }
@@ -158,34 +169,47 @@ func TestRelayJail(t *testing.T) {
 	}
 }
 
-// unitExec returns the command of the unit's key= line ("ExecStart=" …) as a shell command, with
-// /usr/sbin/ dropped (the test host's PATH finds nft and sysctl); systemd's "-" prefix (failure
-// ignored) becomes "|| true".
-func unitExec(t *testing.T, unit, key string) string {
+// unitExecs returns the commands of every key= line of the unit ("ExecStop=" …), in order, as
+// shell commands, with /usr/sbin/ dropped (the test host's PATH finds nft and sysctl); systemd's
+// "-" prefix (failure ignored) becomes "|| true".
+func unitExecs(t *testing.T, unit, key string) []string {
 	t.Helper()
+	var cmds []string
 	for _, l := range strings.Split(unit, "\n") {
 		if cmd, ok := strings.CutPrefix(l, key); ok {
 			cmd = strings.ReplaceAll(cmd, "/usr/sbin/", "")
 			if c, dash := strings.CutPrefix(cmd, "-"); dash {
-				return c + " || true"
+				cmd = "{ " + c + " || true; }"
 			}
-			return cmd
+			cmds = append(cmds, cmd)
 		}
 	}
-	t.Fatalf("unit has no %s line:\n%s", key, unit)
-	return ""
+	if len(cmds) == 0 {
+		t.Fatalf("unit has no %s line:\n%s", key, unit)
+	}
+	return cmds
+}
+
+// unitExec: the unit's key= lines as one shell command list (in order).
+func unitExec(t *testing.T, unit, key string) string {
+	return strings.Join(unitExecs(t, unit, key), " && ")
 }
 
 // unitShell renders shell functions unit_start / unit_reload / unit_stop with systemd's oneshot
 // semantics for the unit u: ExecStartPost runs only after ExecStart succeeded; ExecStopPost runs
-// after a stop and after a failed start.
+// after a stop and after a failed start; the ExecStop lines run in order. After every stop command
+// unit_window (defined by the caller, may be ":") looks at the state in between.
 func unitShell(t *testing.T, name, u string) string {
 	t.Helper()
 	stopPost := unitExec(t, u, "ExecStopPost=")
+	var stop []string
+	for _, c := range append(unitExecs(t, u, "ExecStop="), stopPost) {
+		stop = append(stop, c+"; unit_window")
+	}
 	return name + "_start() { if " + unitExec(t, u, "ExecStart=") + "; then " + unitExec(t, u, "ExecStartPost=") +
 		"; else " + stopPost + "; return 1; fi; }\n" +
 		name + "_reload() { " + unitExec(t, u, "ExecReload=") + "; }\n" +
-		name + "_stop() { " + unitExec(t, u, "ExecStop=") + "; " + stopPost + "; }\n"
+		name + "_stop() { " + strings.Join(stop, "; ") + "; }\n"
 }
 
 // The ruleset and the unit's commands with the real nft and bash, in a throwaway network
@@ -217,7 +241,11 @@ func TestRelayNftInNetns(t *testing.T) {
 	mustWrite(t, dir, "relay.nft", rs, 0o644)
 	mustWrite(t, dir, "broken.nft", strings.Replace(rs, "masquerade", "masquerad", 1), 0o644)
 	unit := func(f string) string { return RelayUnit(filepath.ToSlash(filepath.Join(dir, f))) }
-	script := "set -eu\n" + unitShell(t, "broken", unit("broken.nft")) + unitShell(t, "relay", unit("relay.nft")) +
+	// unit_window: after every stop command, a moment with the table gone and ip_forward on (the
+	// relay routing transit without its filter) is recorded.
+	window := "unit_window() { if ! nft list table ip " + RelayNftTable + " >/dev/null 2>&1 && [ \"$(sysctl -n net.ipv4.ip_forward)\" = 1 ]; then " +
+		"echo open >> ./window; fi; }\n"
+	script := "set -eu\n" + window + unitShell(t, "broken", unit("broken.nft")) + unitShell(t, "relay", unit("relay.nft")) +
 		// Forwarding left on (by hand, an old image): a failed load turns it off, loads nothing.
 		"sysctl -q -w net.ipv4.ip_forward=1\n" +
 		"if broken_start; then echo 'broken rules loaded'; exit 1; fi\n" +
@@ -246,5 +274,8 @@ func TestRelayNftInNetns(t *testing.T) {
 	}
 	if fwd("forward.stopped") != "0" || strings.Contains(readRel(dir, "stopped"), RelayNftTable) {
 		t.Errorf("after stop: ip_forward %q, ruleset:\n%s", fwd("forward.stopped"), readRel(dir, "stopped"))
+	}
+	if w := readRel(dir, "window"); w != "" {
+		t.Errorf("the stop dropped the table while ip_forward was on (%d times): the relay routed without its filter", strings.Count(w, "open"))
 	}
 }

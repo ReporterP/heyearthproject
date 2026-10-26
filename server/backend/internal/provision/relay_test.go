@@ -65,7 +65,11 @@ case "$*" in
   sed -e '/^#/d' -e '/^table ip heyearth_relay$/d' -e '/^delete table/d' -e 's/^ */\t/' -e 's/counter drop/counter packets 0 bytes 0 drop/' "$L" ;;
 "list ruleset") if [ -f "$L" ]; then cat "$L"; fi
   if [ "${NFT_FWD_DROP:-0}" = 1 ]; then printf 'table inet filter {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n'; fi ;;
-"delete table ip heyearth_relay") if [ -f "$L" ]; then rm -f "$L"; else echo "Error: No such file or directory" >&2; exit 1; fi ;;
+"delete table ip heyearth_relay") if [ -f "$L" ]; then
+    # The filter goes while forwarding is on: the relay routes transit unfiltered (noWindow).
+    if [ "$(cat "$T/state/sysctl/net.ipv4.ip_forward" 2>/dev/null)" = 1 ]; then echo "nft delete table" >> "$T/state/window"; fi
+    rm -f "$L"
+  else echo "Error: No such file or directory" >&2; exit 1; fi ;;
 *) echo "nft stub: $*" >&2; exit 2 ;;
 esac`,
 	"systemctl": `S="$T/state"; mkdir -p "$S/sysctl"
@@ -75,7 +79,7 @@ for a; do case "$a" in --now) now=1 ;; -*) ;; *) if [ -z "$u" ]; then u=$a; fi ;
 R=heyearth-relay.service
 fwd() { echo "$1" > "$S/sysctl/net.ipv4.ip_forward"; }
 r_start() { if [ -f "$RELAY_NFT" ] && [ "${NFT_LOAD_FAIL:-0}" != 1 ]; then cp "$RELAY_NFT" "$S/live.nft"; fwd 1; else fwd 0; echo "Job for $R failed" >&2; return 1; fi; }
-r_stop() { rm -f "$S/live.nft"; fwd 0; }
+r_stop() { fwd 0; rm -f "$S/live.nft"; } # config.RelayUnit's ExecStop order (TestRelayUnit)
 f_start() {
   if [ "${F2B_FAIL:-0}" = 1 ]; then rm -f "$S/active-fail2ban"; echo "Job for fail2ban.service failed" >&2; return 1; fi
   if [ -f "$RELAY_JAIL" ]; then cp "$RELAY_JAIL" "$S/f2b-loaded"; else printf '[sshd]\nport = ssh\n' > "$S/f2b-loaded"; fi
@@ -217,6 +221,14 @@ func (h *relayHost) ipForward() string {
 		return v
 	}
 	return "0"
+}
+
+// noWindow: the forward filter (the table) was never dropped while ip_forward was on.
+func (h *relayHost) noWindow(t *testing.T) {
+	t.Helper()
+	if w := h.file("/state/window"); w != "" {
+		t.Errorf("the table was dropped while ip_forward was on — the relay routed unfiltered:\n%s", w)
+	}
 }
 
 // markers: the pending markers left on the relay.
@@ -555,10 +567,14 @@ func TestRelayRulesRollback(t *testing.T) {
 	})
 	t.Run("a new file is removed with its table", func(t *testing.T) {
 		h := newRelayHost(t, map[string]string{"NFT_LOAD_FAIL": "1"})
+		// An old table and forwarding left on by hand (no unit): the table goes only after ip_forward.
+		h.write(t, rLive, oldRelayRules)
+		h.write(t, "/state/sysctl/net.ipv4.ip_forward", "1\n")
 		_, got, err := runRelaySteps(t, h, o, "relay_rules")
-		if got["relay_rules"] != StepRolledBack || err == nil || h.exists(rNft) || h.exists(rLive) {
-			t.Fatalf("%v %v file=%v live=%v", got, err, h.exists(rNft), h.exists(rLive))
+		if got["relay_rules"] != StepRolledBack || err == nil || h.exists(rNft) || h.exists(rLive) || h.ipForward() != "0" {
+			t.Fatalf("%v %v file=%v live=%v ip_forward=%s", got, err, h.exists(rNft), h.exists(rLive), h.ipForward())
 		}
+		h.noWindow(t)
 	})
 	t.Run("a checked change of an earlier job stays", func(t *testing.T) {
 		h := newRelayHost(t, nil)
@@ -807,14 +823,19 @@ func TestRelayDeprovision(t *testing.T) {
 	if !strings.Contains(h.calls(), "systemctl restart fail2ban") || h.file("/state/f2b-loaded") == config.RelayJail(2222, tHub) {
 		t.Fatalf("fail2ban still runs the relay's jail")
 	}
-	// Forwarding left on without the unit (unit file deleted by hand): the teardown turns it off.
+	h.noWindow(t)
+	// Forwarding and the table left without the unit (unit file deleted by hand): the teardown
+	// turns ip_forward off BEFORE it drops the table — never a moment of routing unfiltered.
 	h = newRelayHost(t, nil)
+	rules, _ := config.RelayNftRuleset(tHub)
+	h.write(t, rLive, rules)
 	h.write(t, "/state/sysctl/net.ipv4.ip_forward", "1\n")
 	td := relayStepOf(t, relayDeprovision(h.layout()), "relay_teardown")
 	if status, err := runStep(context.Background(), KindDeprovision, td, h, NewState(KindDeprovision, Node{}, nopRemote{}, Hooks{})); err != nil ||
-		status != StepDone || h.ipForward() != "0" {
+		status != StepDone || h.ipForward() != "0" || h.exists(rLive) {
 		t.Fatalf("teardown without the unit: %s %v ip_forward %s", status, err, h.ipForward())
 	}
+	h.noWindow(t)
 	// A VPS that is gone: its steps are skipped, the row still ends offline.
 	e = relayFixture(t, nil)
 	e.hooks.lifecycle = "online"

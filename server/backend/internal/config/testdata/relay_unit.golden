@@ -9,6 +9,7 @@ RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/heyearth/relay.nft
 ExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
 ExecReload=/usr/sbin/nft -f /etc/heyearth/relay.nft
+ExecStop=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
 ExecStop=-/usr/sbin/nft delete table ip heyearth_relay
 ExecStopPost=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
 [Install]

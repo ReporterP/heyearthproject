@@ -119,13 +119,17 @@ func RelayNftRuleset(hubIP string) (string, error) {
 // file nftPath (an absolute path without spaces; RelayNftPath on a relay). Ordered after
 // nftables.service and ufw.service, so their flushes land before our load; a restart of nftables
 // re-runs it (PartOf=), a reload re-applies the file (ReloadPropagatedFrom= + ExecReload=: PartOf=
-// does not propagate reloads). reload = the same atomic replace; stop removes the table — "-"
-// because a table someone already flushed must not fail the stop half of a restart.
+// does not propagate reloads). reload = the same atomic replace; stop turns ip_forward off and only
+// then removes the table — "-" on both because a table someone already flushed must not fail the
+// stop half of a restart.
 //
 // ip_forward follows the forward filter: ExecStartPost turns it on only after `nft -f` loaded the
-// table (a failed load never runs it), ExecStopPost turns it off after every stop and every failed
-// start. Nothing else sets it (RelaySysctl does not), so the relay never routes without the
-// filter. Callers: "forwarding is on" is the unit's state — the relay recipe (Task 3.4) checks
+// table (a failed load never runs it); the first ExecStop turns it off BEFORE the second drops the
+// table (systemd runs ExecStop lines in order) — the other order leaves a window in which the relay
+// routes transit without its filter, on every stop, deprovision and nftables restart;
+// ExecStopPost turns it off again after a failed start (ExecStop does not run then). Nothing else
+// sets it (RelaySysctl does not), so the relay never routes without the filter. Callers:
+// "forwarding is on" is the unit's state — the relay recipe (Task 3.4) checks
 // `sysctl -n net.ipv4.ip_forward` = 1 in its unit step, not in the sysctl step.
 func RelayUnit(nftPath string) string {
 	ports := make([]string, len(RelayTCPPorts))
@@ -143,6 +147,7 @@ RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f %[4]s
 ExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
 ExecReload=/usr/sbin/nft -f %[4]s
+ExecStop=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
 ExecStop=-/usr/sbin/nft delete table ip %[5]s
 ExecStopPost=-/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
 [Install]
