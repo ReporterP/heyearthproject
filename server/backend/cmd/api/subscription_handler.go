@@ -302,7 +302,7 @@ func clashProfile(in hubConnectionInputs) string {
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		name := "HeYearth-XHTTP"
 		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
 
 	// 1c. Hysteria2 Express (premium plans only — auto-routed by Happ for UDP-heavy traffic).
@@ -327,10 +327,15 @@ func clashProfile(in hubConnectionInputs) string {
 		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
-			// sni is the connect host here, as it always was (pinned by the
-			// subscription_clash golden; the reserve proxies below use the
-			// cert domain like the URIs).
-			proxies = append(proxies, clashHy2Proxy(name, host, hy2Password, obfsPassword, host, up, down))
+			// sni on the Hub stays the connect host, as it always was (pinned
+			// by the subscription_clash golden). During a failover the server is
+			// a relay IP that no certificate names (skip-cert-verify: false):
+			// the cert domain then, like the URIs and the reserve proxies.
+			sni := host
+			if in.entries.failover {
+				sni = in.hysteria2SNI
+			}
+			proxies = append(proxies, clashHy2Proxy(name, host, hy2Password, obfsPassword, sni, up, down))
 		}
 	}
 
@@ -346,7 +351,7 @@ func clashProfile(in hubConnectionInputs) string {
 			proxyNames = append(proxyNames, "HeYearth-Home"+sfx, "HeYearth-XHTTP"+sfx)
 			proxies = append(proxies,
 				clashRealityProxy("HeYearth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI))
+				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 		}
 		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
 			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)
@@ -397,21 +402,30 @@ func clashRealityProxy(name, host, uuid, flowLine, pbk, sid, fp, sni string) str
     servername: %s`, name, host, uuid, flowLine, pbk, sid, fp, sni)
 }
 
-// clashXHTTPProxy is the VLESS Reality + XHTTP proxy (port 2443).
-func clashXHTTPProxy(name, host, uuid, pbk, sid, sni string) string {
+// clashXHTTPProxy is the VLESS Reality + XHTTP proxy (port 2443). hubHost is
+// main_server_host: the Hub's vless-xhttp inbound checks Host = hubHost and
+// path "/" (xray_sync.go, the URI's host=/path=). A proxy whose server is
+// another address (a relay, the main proxy during a failover) sets both in
+// xhttp-opts — what mihomo sends without them is undocumented. On the Hub
+// itself the proxy stays as it always was (pinned by subscription_clash).
+func clashXHTTPProxy(name, host, uuid, pbk, sid, sni, hubHost string) string {
+	opts := ""
+	if hubHost != "" && host != hubHost {
+		opts = fmt.Sprintf("\n    xhttp-opts:\n      path: \"/\"\n      host: %s", hubHost)
+	}
 	return fmt.Sprintf(
 		`  - name: "%s"
     type: vless
     server: %s
     port: 2443
     uuid: "%s"
-    network: xhttp
+    network: xhttp%s
     tls: true
     reality-opts:
       public-key: "%s"
       short-id: "%s"
     client-fingerprint: chrome
-    servername: %s`, name, host, uuid, pbk, sid, sni)
+    servername: %s`, name, host, uuid, opts, pbk, sid, sni)
 }
 
 // clashHy2Proxy is a Clash.Meta hysteria2 proxy. Ports range matches the

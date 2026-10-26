@@ -50,6 +50,9 @@ proxies:
     port: 2443
     uuid: "11111111-2222-4333-8444-555555555555"
     network: xhttp
+    xhttp-opts:
+      path: "/"
+      host: hub.example.test
     tls: true
     reality-opts:
       public-key: "PBK-test"
@@ -63,7 +66,7 @@ proxies:
     password: "hy2-password-test"
     obfs: salamander
     obfs-password: "obfs-test"
-    sni: 203.0.113.50
+    sni: tls.example.test
     skip-cert-verify: false
     up: "30 Mbps"
     down: "120 Mbps"
@@ -86,6 +89,9 @@ proxies:
     port: 2443
     uuid: "11111111-2222-4333-8444-555555555555"
     network: xhttp
+    xhttp-opts:
+      path: "/"
+      host: hub.example.test
     tls: true
     reality-opts:
       public-key: "PBK-test"

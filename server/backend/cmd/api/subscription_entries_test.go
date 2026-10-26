@@ -179,11 +179,66 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 		if strings.Contains(body, "HiEarth-Express · резерв 2") || strings.Contains(body, eR6) {
 			t.Error("clash: Bamboo through an unconfirmed UDP entry, or an unhealthy relay")
 		}
+		// Дуб through a relay: the Hub's vless-xhttp inbound checks Host = main_server_host and
+		// path "/" (the same path as the URI's path=%2F).
+		for _, name := range []string{"HeYearth-XHTTP · резерв", "HeYearth-XHTTP · резерв 2"} {
+			if b := clashBlock(t, body, name); !strings.Contains(b, clashXHTTPHubOpts) {
+				t.Errorf("clash %q through a relay lacks the Hub Host/path:\n%s", name, b)
+			}
+		}
+		if b := clashBlock(t, body, "HeYearth-XHTTP"); strings.Contains(b, "xhttp-opts") {
+			t.Errorf("clash main XHTTP on the Hub must stay as before (no xhttp-opts):\n%s", b)
+		}
+		if b := clashBlock(t, body, "HiEarth-Express · резерв"); !strings.Contains(b, "\n    sni: tls.example.test\n") {
+			t.Errorf("clash reserve Express must use the cert-domain SNI:\n%s", b)
+		}
+
 		body, _ = entriesRequest(t, entriesScript(t, "failover"), "clash-verge/2.0", "?format=clash")
 		if !strings.Contains(body, "name: \"HeYearth-Home\"\n    type: vless\n    server: "+eR5) {
 			t.Error("clash main proxy not moved to the reserve during failover")
 		}
+		if b := clashBlock(t, body, "HeYearth-XHTTP"); !strings.Contains(b, "\n    server: "+eR5+"\n") || !strings.Contains(b, clashXHTTPHubOpts) {
+			t.Errorf("clash main XHTTP during failover: must point at the relay with the Hub Host/path:\n%s", b)
+		}
+		b := clashBlock(t, body, "HiEarth-Express")
+		if !strings.Contains(b, "\n    server: "+eR5+"\n") || !strings.Contains(b, "\n    sni: tls.example.test\n") || strings.Contains(b, "sni: "+eR5) {
+			t.Errorf("clash main Express during failover: relay address with the cert-domain SNI (never the relay IP):\n%s", b)
+		}
 	})
+	t.Run("clash xhttp path matches the URI", func(t *testing.T) {
+		body, _ := entriesRequest(t, entriesScript(t, "relay"), "Happ/3.1 Android", "")
+		for _, raw := range strings.Split(body, "\n") {
+			u, err := url.Parse(raw)
+			if err != nil || u.Query().Get("type") != "xhttp" || !strings.Contains(u.Fragment, "резерв") {
+				continue
+			}
+			if got := u.Query().Get("path"); !strings.Contains(clashXHTTPHubOpts, "path: \""+got+"\"") {
+				t.Errorf("URI %q path %q differs from the Clash xhttp-opts path", u.Fragment, got)
+			}
+		}
+	})
+}
+
+// clashXHTTPHubOpts is what every Clash XHTTP proxy that does not connect to main_server_host
+// carries: the Hub inbound's path and Host (eHub = main_server_host of the fixture).
+const clashXHTTPHubOpts = "\n    xhttp-opts:\n      path: \"/\"\n      host: " + eHub + "\n"
+
+// clashBlock returns the YAML of proxy name (from its "- name:" line to the next proxy or the
+// proxy groups), with a trailing newline.
+func clashBlock(t *testing.T, body, name string) string {
+	t.Helper()
+	start := strings.Index(body, "  - name: \""+name+"\"\n")
+	if start < 0 {
+		t.Fatalf("clash has no proxy %q", name)
+	}
+	rest := body[start+1:]
+	end := len(rest)
+	for _, stop := range []string{"\n  - name: ", "\n\nproxy-groups:"} {
+		if i := strings.Index(rest, stop); i >= 0 && i < end {
+			end = i
+		}
+	}
+	return " " + rest[:end] + "\n"
 }
 
 // planEntries is the decision itself (pure): which relays are reserves and where the main lines
