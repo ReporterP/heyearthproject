@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,7 +195,9 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
 	w.Header().Set("X-Config-Version", configVersion)
 	w.Header().Set("Subscription-Userinfo", userinfo)
-	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
+	// Auto-update every subscription_update_interval_hours (default 4, matches
+	// the auto-tuner); 1 h during an entry failover (phase 3).
+	w.Header().Set("Profile-Update-Interval", strconv.Itoa(max(in.entries.interval, 1)))
 	w.Header().Set("Profile-Title", "HiEarth")
 	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
 	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
@@ -254,7 +257,10 @@ func buildClashConfig(userID string) (string, error) {
 
 // clashProfile builds the Clash/ClashMeta YAML from in. Pure.
 func clashProfile(in hubConnectionInputs) string {
-	host := in.mainServerHost
+	host := in.entries.main // the failover target, or the Hub
+	if host == "" {
+		host = in.mainServerHost
+	}
 	if host == "" {
 		host = "hiearth.ru"
 	}
@@ -271,13 +277,11 @@ func clashProfile(in hubConnectionInputs) string {
 	realityPubKey := in.realityPubKey
 	realityShortID := in.realityShortID
 	realitySNI := in.realitySNI
+	flowLine := ""
+	if flow := in.realityFlow; flow != "" {
+		flowLine = fmt.Sprintf("\n    flow: %s", flow)
+	}
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
-		flow := in.realityFlow
-		flowLine := ""
-		if flow != "" {
-			flowLine = fmt.Sprintf("\n    flow: %s", flow)
-		}
-
 		// Multi-profile: 3 VLESS configs for different ISP aggressiveness.
 		// fp diversification: chrome (most-tested), firefox (second-most-tested),
 		// edge (Chromium-based but distinct JA3). Avoid ios/safari — XTLS #5918,
@@ -290,19 +294,7 @@ func clashProfile(in hubConnectionInputs) string {
 		}
 		for _, p := range profiles {
 			proxyNames = append(proxyNames, p.name)
-			proxies = append(proxies, fmt.Sprintf(
-				`  - name: "%s"
-    type: vless
-    server: %s
-    port: 443
-    uuid: "%s"%s
-    network: tcp
-    tls: true
-    reality-opts:
-      public-key: "%s"
-      short-id: "%s"
-    client-fingerprint: %s
-    servername: %s`, p.name, host, vlessUUID, flowLine, realityPubKey, realityShortID, p.fp, realitySNI))
+			proxies = append(proxies, clashRealityProxy(p.name, host, vlessUUID, flowLine, realityPubKey, realityShortID, p.fp, realitySNI))
 		}
 	}
 
@@ -310,19 +302,7 @@ func clashProfile(in hubConnectionInputs) string {
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		name := "HeYearth-XHTTP"
 		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: vless
-    server: %s
-    port: 2443
-    uuid: "%s"
-    network: xhttp
-    tls: true
-    reality-opts:
-      public-key: "%s"
-      short-id: "%s"
-    client-fingerprint: chrome
-    servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
 	}
 
 	// 1c. Hysteria2 Express (premium plans only — auto-routed by Happ for UDP-heavy traffic).
@@ -330,37 +310,47 @@ func clashProfile(in hubConnectionInputs) string {
 	// is blocked (corporate WiFi, mobile carriers throttling QUIC). The auth-backend
 	// enforces plan membership server-side, so even if someone copies the URI to a base-tier
 	// account it will be rejected.
+	//
+	// Per-plan up/down; safe defaults without an Express plan (a failed
+	// plan read never gets here: loadHubConnectionInputs returns it).
+	up, down := 50, 100
+	if plan := in.plan; plan != nil && plan.ExpressEnabled {
+		if plan.ExpressUpMbps > 0 {
+			up = plan.ExpressUpMbps
+		}
+		if plan.ExpressDownMbps > 0 {
+			down = plan.ExpressDownMbps
+		}
+	}
 	if canHysteria2 {
 		hy2Password, obfsPassword := in.hy2Password, in.obfsPassword
-		// Per-plan up/down; safe defaults without an Express plan (a failed
-		// plan read never gets here: loadHubConnectionInputs returns it).
-		up, down := 50, 100
-		if plan := in.plan; plan != nil && plan.ExpressEnabled {
-			if plan.ExpressUpMbps > 0 {
-				up = plan.ExpressUpMbps
-			}
-			if plan.ExpressDownMbps > 0 {
-				down = plan.ExpressDownMbps
-			}
-		}
 		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
-			// Clash.Meta hysteria2 profile. Ports range matches the iptables redirect
-			// configured by cmd/deploy --setup-hysteria2-hub. Happ picks one randomly
-			// and rotates per its port-hop schedule.
-			proxies = append(proxies, fmt.Sprintf(
-				`  - name: "%s"
-    type: hysteria2
-    server: %s
-    ports: 30000-65000
-    password: "%s"
-    obfs: salamander
-    obfs-password: "%s"
-    sni: %s
-    skip-cert-verify: false
-    up: "%d Mbps"
-    down: "%d Mbps"`, name, host, hy2Password, obfsPassword, host, up, down))
+			// sni is the connect host here, as it always was (pinned by the
+			// subscription_clash golden; the reserve proxies below use the
+			// cert domain like the URIs).
+			proxies = append(proxies, clashHy2Proxy(name, host, hy2Password, obfsPassword, host, up, down))
+		}
+	}
+
+	// Reserve entries (phase 3): the same proxies through each healthy relay,
+	// after the main ones; Express only through a relay whose UDP is healthy.
+	reserves := in.entries.reserves
+	if in.mainServerHost == "" { // same gate as reserveOptions: no Hub address, no reserve lines
+		reserves = nil
+	}
+	for k, r := range reserves {
+		sfx := reserveSuffix(k)
+		if realityPubKey != "" && vlessUUID != "" && canVLESS {
+			proxyNames = append(proxyNames, "HeYearth-Home"+sfx, "HeYearth-XHTTP"+sfx)
+			proxies = append(proxies,
+				clashRealityProxy("HeYearth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI))
+		}
+		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
+			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)
+			proxies = append(proxies, clashHy2Proxy("HiEarth-Express"+sfx, r.address, in.hy2Password, in.obfsPassword, in.hysteria2SNI, up, down))
 		}
 	}
 
@@ -387,6 +377,60 @@ proxy-groups:
 rules:
   - MATCH,HeYearth
 `, strings.Join(proxies, "\n"), namesList)
+}
+
+// clashRealityProxy is one VLESS Reality TCP proxy (port 443). flowLine is
+// "" or "\n    flow: <flow>".
+func clashRealityProxy(name, host, uuid, flowLine, pbk, sid, fp, sni string) string {
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: vless
+    server: %s
+    port: 443
+    uuid: "%s"%s
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: %s
+    servername: %s`, name, host, uuid, flowLine, pbk, sid, fp, sni)
+}
+
+// clashXHTTPProxy is the VLESS Reality + XHTTP proxy (port 2443).
+func clashXHTTPProxy(name, host, uuid, pbk, sid, sni string) string {
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: vless
+    server: %s
+    port: 2443
+    uuid: "%s"
+    network: xhttp
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: chrome
+    servername: %s`, name, host, uuid, pbk, sid, sni)
+}
+
+// clashHy2Proxy is a Clash.Meta hysteria2 proxy. Ports range matches the
+// iptables redirect configured by cmd/deploy --setup-hysteria2-hub (a relay
+// forwards the same range to the Hub). Happ picks one randomly and rotates per
+// its port-hop schedule.
+func clashHy2Proxy(name, host, pw, obfs, sni string, up, down int) string {
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: hysteria2
+    server: %s
+    ports: 30000-65000
+    password: "%s"
+    obfs: salamander
+    obfs-password: "%s"
+    sni: %s
+    skip-cert-verify: false
+    up: "%d Mbps"
+    down: "%d Mbps"`, name, host, pw, obfs, sni, up, down)
 }
 
 // buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -198,6 +200,8 @@ type hubConnectionInputs struct {
 	hy2Password  string // per-user Hysteria2 password (only with canHysteria2)
 	obfsPassword string // shared Salamander password (only with canHysteria2)
 	hysteria2SNI string // hub_main_server_host (hiearth.ru): the cert domain
+
+	entries entryPlan // where the lines point (phase 3): reserves, failover, update interval
 }
 
 // subscriptionSetting reads an app_settings value for a client profile:
@@ -208,12 +212,49 @@ func subscriptionSetting(key, def string) (string, error) {
 	})
 }
 
+// loadHubSettingInputs reads the user-independent settings of the profiles
+// (also used by the admin preview of the entries). Defaults only for
+// absent/blank keys, an error for a failed read.
+func loadHubSettingInputs(in *hubConnectionInputs) error {
+	var err error
+	if in.mainServerHost, err = subscriptionSetting("main_server_host", ""); err != nil {
+		return err
+	}
+	for _, r := range []struct {
+		dst      *string
+		key, def string
+	}{
+		{&in.realityPubKey, "reality_public_key", ""},
+		{&in.realityShortID, "reality_short_id", ""},
+		{&in.realitySNI, "reality_sni_domain", biz.DefaultRealitySNI},
+		{&in.realityFlow, "reality_flow", "xtls-rprx-vision"},
+		{&in.xhttpPort, "xhttp_port", "2443"},
+	} {
+		if *r.dst, err = subscriptionSetting(r.key, r.def); err != nil {
+			return err
+		}
+	}
+	cdn, err := subscriptionSetting("cdn_enabled", "false")
+	if err != nil {
+		return err
+	}
+	if in.cdnEnabled = cdn == "true"; in.cdnEnabled {
+		if in.cdnHost, err = subscriptionSetting("cdn_host", "cdn.hiearth.ru"); err != nil {
+			return err
+		}
+		if in.cdnPath, err = subscriptionSetting("cdn_xh_path", "/cdn-xh"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // loadHubConnectionInputs reads the inputs of userID's profiles. The first
 // failed read is returned; nothing is defaulted on an error.
 func loadHubConnectionInputs(userID string) (hubConnectionInputs, error) {
 	var in hubConnectionInputs
 	var err error
-	if in.mainServerHost, err = subscriptionSetting("main_server_host", ""); err != nil {
+	if err = loadHubSettingInputs(&in); err != nil {
 		return in, err
 	}
 
@@ -231,33 +272,6 @@ func loadHubConnectionInputs(userID string) (hubConnectionInputs, error) {
 		return in, err
 	}
 	in.canVLESS = biz.PlanAllowsProtocol(in.plan, "vless")
-
-	for _, r := range []struct {
-		dst      *string
-		key, def string
-	}{
-		{&in.realityPubKey, "reality_public_key", ""},
-		{&in.realityShortID, "reality_short_id", ""},
-		{&in.realitySNI, "reality_sni_domain", biz.DefaultRealitySNI},
-		{&in.realityFlow, "reality_flow", "xtls-rprx-vision"},
-		{&in.xhttpPort, "xhttp_port", "2443"},
-	} {
-		if *r.dst, err = subscriptionSetting(r.key, r.def); err != nil {
-			return in, err
-		}
-	}
-	cdn, err := subscriptionSetting("cdn_enabled", "false")
-	if err != nil {
-		return in, err
-	}
-	if in.cdnEnabled = cdn == "true"; in.cdnEnabled {
-		if in.cdnHost, err = subscriptionSetting("cdn_host", "cdn.hiearth.ru"); err != nil {
-			return in, err
-		}
-		if in.cdnPath, err = subscriptionSetting("cdn_xh_path", "/cdn-xh"); err != nil {
-			return in, err
-		}
-	}
 
 	// Same plan gate as the auth backend. A DB failure is an error, not "no
 	// Bamboo": the caller answers 503 so clients keep their cached profiles.
@@ -277,6 +291,14 @@ func loadHubConnectionInputs(userID string) (hubConnectionInputs, error) {
 		if in.hysteria2SNI, err = subscriptionSetting("hub_main_server_host", "hiearth.ru"); err != nil {
 			return in, err
 		}
+	}
+
+	// Reserve entries and the failover: a failed read is a 503 too — a profile
+	// without the reserve lines (or pointing at a blocked Hub during a failover)
+	// would replace the cached one.
+	if in.entries, err = loadEntryPlan(userID, in.mainServerHost); err != nil {
+		log.Printf("[connection-options] user %s: entries: %v", userID, err)
+		return in, err
 	}
 	return in, nil
 }
@@ -298,21 +320,22 @@ func buildHubConnectionOptions(userID string) ([]*heyearth_v1.ConnectionOption, 
 // hubConnectionOptions builds the connection options from in. Pure.
 func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOption {
 	mainServerHost, userVlessUUID, canVLESS := in.mainServerHost, in.vlessUUID, in.canVLESS
+	// Where the main Берёза/Дуб/Бамбук lines connect: the failover target, or
+	// the Hub. The Дуб Host header and the Бамбук SNI never follow it.
+	connect := in.entries.main
+	if connect == "" {
+		connect = mainServerHost
+	}
+	rp := realityParams{uuid: userVlessUUID, sni: in.realitySNI, pbk: in.realityPubKey, sid: in.realityShortID}
+	if in.realityFlow != "" {
+		rp.flowParam = "&flow=" + in.realityFlow
+	}
 
 	var opts []*heyearth_v1.ConnectionOption
 
 	if mainServerHost != "" && userVlessUUID != "" {
 		// 1. VLESS Reality (максимальная защита от DPI) — only if plan allows vless
-		realityPubKey := in.realityPubKey
-		realityShortID := in.realityShortID
-		realitySNI := in.realitySNI
-		if realityPubKey != "" && canVLESS {
-			flow := in.realityFlow
-			flowParam := ""
-			if flow != "" {
-				flowParam = "&flow=" + flow
-			}
-
+		if in.realityPubKey != "" && canVLESS {
 			// 🌴 Пальма (AmneziaWG) — server-side infrastructure ready (biz/awg.go,
 			// awg_sync.go, awg.service on :51820, per-plan amnezia_wg_enabled flag,
 			// per-user keys + CPS via biz.GetUserAWGConfig) but NOT emitted in happ
@@ -361,39 +384,17 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 			realityFPs := []string{"chrome", "firefox"}
 			for i, fp := range realityFPs {
 				label := fmt.Sprintf("🌳 Берёза %d", i+1)
-				vlessURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
-					userVlessUUID, mainServerHost, realitySNI, fp, realityPubKey, realityShortID, flowParam,
-					url.PathEscape(label))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 vlessURI,
-					Protocol:            "vless",
-					Label:               label,
-					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i), // 0..1
-				})
+				opts = append(opts, vlessOption(rp.tcpURI(connect, fp, label), label, int32(i))) // 0..1
 			}
 
 			// 🌲 Дуб 1..2 — XHTTP Reality :2443, 2 uTLS variants.
 			// Pre-Hysteria2 working URI shape — no spx, no fragment.
-			xhttpPort := in.xhttpPort
 			// Same rationale as realityFPs above (research 2026-05-27) — chrome + firefox
 			// to avoid ios/safari XTLS regressions, especially XHTTP-specific #5918.
 			xhttpFPs := []string{"chrome", "firefox"}
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
-				xhttpURI := fmt.Sprintf(
-					"vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
-					userVlessUUID, mainServerHost, xhttpPort, realitySNI, fp, realityPubKey, realityShortID,
-					url.QueryEscape(mainServerHost),
-					url.PathEscape(label))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 xhttpURI,
-					Protocol:            "vless",
-					Label:               label,
-					RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"},
-					Priority:            int32(i + 2), // 2..3
-				})
+				opts = append(opts, vlessOption(rp.xhttpURI(connect, in.xhttpPort, fp, mainServerHost, label), label, int32(i+2))) // 2..3
 			}
 		}
 
@@ -447,42 +448,184 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 		// but sni uses the cert domain from hub_main_server_host.
 		hysteria2SNI := in.hysteria2SNI
 		if hy2Password != "" && obfsPassword != "" {
-			// Two Бамбук variants — identical except for the bandwidth params that
-			// flip Hysteria2's congestion control:
-			//   BBR (no bandwidth) — adaptive, learns network
-			//   Brutal (with upmbps/downmbps) — fixed rate, beats operator UDP QoS
-			// Note: "only WiFi" in label is the happ-native filter token — exact
-			// spelling matters (verified per happ docs 2026-05-26). Do not change.
-			bambooVariants := []struct {
-				name     string // "Бамбук 1" / "Бамбук 2"
-				bwParams string // "" → BBR; "&upmbps=N&downmbps=N" → Brutal CC
-				priority int32
-			}{
-				{"Бамбук 1", "", 4},
-				{"Бамбук 2", "&upmbps=20&downmbps=80", 5},
-			}
+			// Two Бамбук variants (bambooVariants) — identical except for the
+			// bandwidth params that flip Hysteria2's congestion control.
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
-				// hop_interval=15s — Hysteria2 client rotates source port every 15 seconds.
-				// Mobile carrier (Tele2) UDP-QoS sliding-window is typically 20-60s; 15s
-				// rotation beats heuristic before pattern stabilizes. Default would be
-				// happ-client's internal value (often 30s+). Verified safe per
-				// docs/research/2026-05-26-mobile-dpi-tele2.md.
-				uri := fmt.Sprintf(
-					"hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000&hop_interval=15%s#%s",
-					url.QueryEscape(hy2Password), mainServerHost, url.QueryEscape(obfsPassword), hysteria2SNI,
-					v.bwParams, url.PathEscape(label))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 uri,
-					Protocol:            "hysteria2",
-					Label:               label,
-					RecommendedNetworks: []string{"wifi", "ethernet"},
-					Priority:            v.priority,
-				})
+				opts = append(opts, bambooOption(bambooURI(hy2Password, connect, obfsPassword, hysteria2SNI, v.bwParams, label), label, v.priority))
 			}
 		}
 	}
 
+	opts = append(opts, reserveOptions(in, rp)...)
+	return opts
+}
+
+// ── Entries (phase 3): reserve lines and the failover of the main address ──
+//
+// A reserve entry is a RU relay (servers.role 'relay') that DNATs the Hub's
+// user ports to the Hub (internal/config/relay_nft.go): TCP 443/2443 to the
+// same ports, the whole UDP hop range 30000-65000 to Hub:50443. A line through
+// it is the Hub's line with the relay's address in front of the same ports —
+// the Reality SNI/keys, the Дуб Host header (main_server_host) and the Бамбук
+// SNI (the cert domain) stay the Hub's.
+
+// defaultUpdateIntervalHours is Profile-Update-Interval without the setting
+// (matches the auto-tuner); 1 h during a failover.
+const defaultUpdateIntervalHours = 4
+
+type reserveEntry struct {
+	id      int
+	address string
+	udp     bool // Бамбук answers through this entry (its UDP check is healthy)
+}
+
+// entryPlan says where the lines point. main "" means mainServerHost.
+type entryPlan struct {
+	main     string
+	failover bool // main is the failover target
+	reserves []reserveEntry
+	interval int // Profile-Update-Interval, hours
+}
+
+// planEntries: reserves = online relays with a healthy external check and an
+// address, by id. During a failover (global, or forced for the test user) the
+// main lines go to the target — only if it is a healthy reserve right now (a
+// stale flag never points users at a dead relay) — and the interval drops to
+// 1 h either way, so clients pick up the return quickly. Pure.
+func planEntries(mainHost string, relays []biz.Entry, fo biz.EntryFailover, forced bool, intervalRaw string) entryPlan {
+	p := entryPlan{main: mainHost, interval: defaultUpdateIntervalHours}
+	if h, err := strconv.Atoi(strings.TrimSpace(intervalRaw)); err == nil && h >= 1 && h <= 24 {
+		p.interval = h
+	}
+	for _, r := range relays {
+		if r.Kind == biz.EntryKindRelay && r.Lifecycle == "online" && r.Health.External == biz.EntryHealthy && r.Address != "" {
+			p.reserves = append(p.reserves, reserveEntry{id: r.ID, address: r.Address, udp: r.Health.UDP == biz.EntryHealthy})
+		}
+	}
+	sort.Slice(p.reserves, func(i, j int) bool { return p.reserves[i].id < p.reserves[j].id })
+	if !fo.Active && !forced {
+		return p
+	}
+	p.interval = 1
+	target := fo.Target
+	if !fo.Active && len(p.reserves) > 0 {
+		target = p.reserves[0].id
+	}
+	for _, r := range p.reserves {
+		if r.id == target {
+			p.main, p.failover = r.address, true
+			break
+		}
+	}
+	return p
+}
+
+// loadEntryPlan reads the inputs of planEntries; every read is strict (an
+// error, never "no reserves" / "no failover").
+func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
+	relays, err := withSyncTimeout(biz.ListRelayEntries)
+	if err != nil {
+		return entryPlan{}, err
+	}
+	fo, err := withSyncTimeout(biz.GetEntryFailover)
+	if err != nil {
+		return entryPlan{}, err
+	}
+	testUser, err := subscriptionSetting("entry_failover_test_user", "")
+	if err != nil {
+		return entryPlan{}, err
+	}
+	interval, err := subscriptionSetting("subscription_update_interval_hours", strconv.Itoa(defaultUpdateIntervalHours))
+	if err != nil {
+		return entryPlan{}, err
+	}
+	return planEntries(mainHost, relays, fo, userID != "" && testUser == userID, interval), nil
+}
+
+// reserveSuffix labels the k-th reserve (0-based): " · резерв", " · резерв 2", …
+func reserveSuffix(k int) string {
+	if k == 0 {
+		return " · резерв"
+	}
+	return fmt.Sprintf(" · резерв %d", k+1)
+}
+
+// realityParams are the Reality values shared by every VLESS line of a user.
+type realityParams struct{ uuid, sni, pbk, sid, flowParam string }
+
+func (p realityParams) tcpURI(host, fp, label string) string {
+	return fmt.Sprintf("vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
+		p.uuid, host, p.sni, fp, p.pbk, p.sid, p.flowParam, url.PathEscape(label))
+}
+
+// xhttpURI: hostHeader is ALWAYS the Hub's main_server_host — the XHTTP inbound checks it.
+func (p realityParams) xhttpURI(host, port, fp, hostHeader, label string) string {
+	return fmt.Sprintf("vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
+		p.uuid, host, port, p.sni, fp, p.pbk, p.sid, url.QueryEscape(hostHeader), url.PathEscape(label))
+}
+
+// bambooURI: sni is the cert domain (hub_main_server_host), never the connect
+// host. hop_interval=15s — Hysteria2 client rotates source port every 15
+// seconds. Mobile carrier (Tele2) UDP-QoS sliding-window is typically 20-60s;
+// 15s rotation beats heuristic before pattern stabilizes. Default would be
+// happ-client's internal value (often 30s+). Verified safe per
+// docs/research/2026-05-26-mobile-dpi-tele2.md.
+func bambooURI(password, host, obfs, sni, bwParams, label string) string {
+	return fmt.Sprintf("hysteria2://%s@%s:50443/?obfs=salamander&obfs-password=%s&sni=%s&insecure=0&mport=30000-65000&hop_interval=15%s#%s",
+		url.QueryEscape(password), host, url.QueryEscape(obfs), sni, bwParams, url.PathEscape(label))
+}
+
+// bambooVariants — identical except for the bandwidth params that flip
+// Hysteria2's congestion control:
+//
+//	BBR (no bandwidth) — adaptive, learns network
+//	Brutal (with upmbps/downmbps) — fixed rate, beats operator UDP QoS
+//
+// Note: "only WiFi" in the label is the happ-native filter token — exact
+// spelling matters (verified per happ docs 2026-05-26). Do not change.
+var bambooVariants = []struct {
+	name     string // "Бамбук 1" / "Бамбук 2"
+	bwParams string // "" → BBR; "&upmbps=N&downmbps=N" → Brutal CC
+	priority int32
+}{
+	{"Бамбук 1", "", 4},
+	{"Бамбук 2", "&upmbps=20&downmbps=80", 5},
+}
+
+func vlessOption(uri, label string, prio int32) *heyearth_v1.ConnectionOption {
+	return &heyearth_v1.ConnectionOption{Uri: uri, Protocol: "vless", Label: label,
+		RecommendedNetworks: []string{"wifi", "cellular", "ethernet", "any"}, Priority: prio}
+}
+
+func bambooOption(uri, label string, prio int32) *heyearth_v1.ConnectionOption {
+	return &heyearth_v1.ConnectionOption{Uri: uri, Protocol: "hysteria2", Label: label,
+		RecommendedNetworks: []string{"wifi", "ethernet"}, Priority: prio}
+}
+
+// reserveOptions: per healthy reserve one Берёза and one Дуб (fp chrome) and,
+// when Бамбук answers through it, both Бамбук variants; after every main line
+// (priority 20 + 10·k). Same plan gates as the main lines.
+func reserveOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.ConnectionOption {
+	if in.mainServerHost == "" {
+		return nil
+	}
+	var opts []*heyearth_v1.ConnectionOption
+	for k, r := range in.entries.reserves {
+		sfx, base := reserveSuffix(k), int32(20+10*k)
+		if rp.uuid != "" && rp.pbk != "" && in.canVLESS {
+			label := "🌳 Берёза" + sfx
+			opts = append(opts, vlessOption(rp.tcpURI(r.address, "chrome", label), label, base))
+			label = "🌲 Дуб" + sfx
+			opts = append(opts, vlessOption(rp.xhttpURI(r.address, in.xhttpPort, "chrome", in.mainServerHost, label), label, base+1))
+		}
+		if in.canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
+			for i, v := range bambooVariants {
+				label := fmt.Sprintf("🎋 %s only WiFi%s", v.name, sfx)
+				opts = append(opts, bambooOption(bambooURI(in.hy2Password, r.address, in.obfsPassword, in.hysteria2SNI, v.bwParams, label), label, base+2+int32(i)))
+			}
+		}
+	}
 	return opts
 }
 

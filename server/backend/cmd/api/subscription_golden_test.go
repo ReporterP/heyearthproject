@@ -102,6 +102,27 @@ func (c scriptConn) QueryContext(_ context.Context, query string, args []driver.
 		}
 		return r, nil
 	}
+	// Several keys in one statement (biz.GetEntryFailover): answered from settings as (key, value)
+	// rows, one read id for the statement.
+	if strings.Contains(q, "SELECT key, value FROM app_settings WHERE key IN (") {
+		keys := make([]string, 0, len(args))
+		for _, a := range args {
+			k, _ := a.Value.(string)
+			keys = append(keys, k)
+		}
+		id := "settings:" + strings.Join(keys, ",")
+		s.seen[id] = true
+		if s.fail == id {
+			return nil, errScriptInjected
+		}
+		r := &scriptRows{cols: []string{"key", "value"}}
+		for _, k := range keys {
+			if v, ok := s.settings[k]; ok {
+				r.rows = append(r.rows, []driver.Value{k, v})
+			}
+		}
+		return r, nil
+	}
 	for _, sq := range s.queries {
 		if strings.Contains(q, sq.match) {
 			s.seen[sq.name] = true
@@ -199,6 +220,8 @@ func goldenScript() *scriptDB {
 				cols: []string{"id", "slug", "name", "group_name", "source", "domains", "ip4", "ip6", "cidr4", "cidr6", "dns_servers", "timeout_sec", "is_active", "notes", "created_at", "updated_at"},
 				rows: [][]driver.Value{{int64(1), "bank", "Банк", "banks", "manual", "{online.bank.example,www.bank.example}", "{203.0.113.10}", "{}", "{192.0.2.0/24}", "{}", "{}",
 					int64(60), true, "", "2026-01-01", "2026-01-01"}}},
+			// Reserve entries (phase 3): none here — the goldens above are the profiles without a relay.
+			{name: "relays", match: "LEFT JOIN entry_state e ON e.entry_id = s.id", cols: relayCols},
 		},
 		seen: map[string]bool{},
 	}
