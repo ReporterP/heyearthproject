@@ -179,8 +179,13 @@ Environment="TLS_CA_FILE=` + NodeAgentCACert + `"
 WantedBy=multi-user.target
 `
 
-// ExitSysctlConf is ExitSysctlPath (/etc/sysctl.d/99-bbr.conf), the same file and values the
-// admin panel's exit setup wrote.
+// ExitSysctlConf is ExitSysctlPath (/etc/sysctl.d/99-bbr.conf): the values the admin panel's exit
+// setup wrote plus those exit 2 carries (measured 2026-10-26) — TCP timestamps and window scaling
+// pinned on, and the conntrack table at 131072 entries (both key names: the current and the legacy
+// alias), so a converge never lowers its capacity after a reboot. The conntrack keys exist only
+// while nf_conntrack is loaded: the base step applies the file with unknown keys ignored
+// (ExitBaseScript: sysctl -e), and systemd's udev rule re-applies net/netfilter when the module
+// loads.
 const ExitSysctlConf = `net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 16777216
@@ -192,6 +197,10 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_window_scaling = 1
+net.netfilter.nf_conntrack_max = 131072
+net.nf_conntrack_max = 131072
 `
 
 const (

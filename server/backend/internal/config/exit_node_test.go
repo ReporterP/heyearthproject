@@ -257,6 +257,17 @@ func TestPortHopPartsAreTheScript(t *testing.T) {
 	if !strings.Contains(ExitSysctlConf, "net.ipv4.tcp_congestion_control = bbr\n") || !strings.HasSuffix(ExitSysctlConf, "\n") {
 		t.Errorf("sysctl:\n%s", ExitSysctlConf)
 	}
+	// What exit 2 runs with (2026-10-26) must survive a converge: a lower conntrack limit after a
+	// reboot would drop flows under load.
+	for _, l := range []string{"net.ipv4.tcp_timestamps = 1", "net.ipv4.tcp_window_scaling = 1",
+		"net.netfilter.nf_conntrack_max = 131072", "net.nf_conntrack_max = 131072"} {
+		if !strings.Contains("\n"+ExitSysctlConf, "\n"+l+"\n") {
+			t.Errorf("sysctl lacks %q", l)
+		}
+	}
+	if !strings.Contains(ExitBaseScript, "sysctl -e -p "+ExitSysctlPath+" ") {
+		t.Error("the base step must apply the sysctl file with unknown keys ignored (conntrack keys need the module)")
+	}
 	if RestartMarker("xray") != "/opt/heyearth/state/restart-pending/xray" {
 		t.Error(RestartMarker("xray"))
 	}
