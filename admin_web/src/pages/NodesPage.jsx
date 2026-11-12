@@ -111,11 +111,11 @@ export default function NodesPage() {
 
   const openNode = (id) => setF({ node: String(id) })
   const current = items?.find((n) => String(n.id) === f.node)
-  const canAdd = manage && role === 'exit' // the reserve-entry wizard comes with phase 3
+  const canAdd = manage
   const wizard = manage && f.add === '1'
   const exitTab = role === 'exit'
   const addButton = (
-    <Button icon={<Plus className="w-4 h-4" />} onClick={() => setF({ add: '1' })}>Добавить ноду</Button>
+    <Button icon={<Plus className="w-4 h-4" />} onClick={() => setF({ add: '1' })}>{role === 'relay' ? 'Добавить вход в РФ' : 'Добавить ноду'}</Button>
   )
 
   return (
@@ -138,7 +138,7 @@ export default function NodesPage() {
             title={exitTab ? 'Выходов пока нет' : 'Резервных входов пока нет'}
             description={exitTab
               ? 'Купите VPS за рубежом (Ubuntu или Debian, x86_64) и добавьте его — мастер всё настроит и проверит сам.'
-              : 'Резервные входы в РФ появятся в следующем обновлении.'}
+              : 'Мобильные операторы режут адрес Hub. Купите VPS в России у другого провайдера (не там, где Hub) и добавьте его — мастер проверит адрес с телефона, настроит пересылку на Hub и включит вход для всех.'}
             action={canAdd && addButton} />
         ) : (
           <>

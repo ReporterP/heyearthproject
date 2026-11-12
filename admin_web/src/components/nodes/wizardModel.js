@@ -7,6 +7,9 @@
 import { wizardCanAdvance, defaultPlanIds } from './nodeModel.js'
 
 export const WIZARD_STEPS = ['Роль и страна', 'Доступ и ключ', 'Предпроверка', 'Настройки', 'Установка']
+// A reserve entry has no options: its step 3 is the phone check of its address on mobile networks.
+export const RELAY_STEPS = ['Роль', 'Доступ и ключ', 'Предпроверка', 'Проверка с телефона', 'Установка']
+export const wizardSteps = (role) => (role === 'relay' ? RELAY_STEPS : WIZARD_STEPS)
 export const INSTALL_STEP = 4
 export const SSH_USER = 'root'
 
@@ -14,7 +17,7 @@ export function initialWizard(initialRole = 'exit') {
   return {
     step: 0,
     role: initialRole === 'relay' ? 'relay' : 'exit',
-    country: '',
+    country: initialRole === 'relay' ? 'RU' : '', // a reserve entry lives in Russia
     name: '',
     ip: '',
     sshPort: '22',
@@ -86,9 +89,12 @@ const hasKey = (s, fp) => !!fp && !!s.probe?.keys.some((k) => k.fingerprint === 
 
 export const canConfirmKey = (s) => !s.serverId && probeIsCurrent(s) && hasKey(s, s.fingerprint) && pasteVerdict(s) !== 'mismatch'
 
+// canCreate: the password is optional — without one the Hub's key (put on the server at the
+// hoster) must work, the server checks it; a typed blank one is still refused.
 export function canCreate(s) {
-  return !s.serverId && s.role === 'exit' && countryValid(s.country) && canConfirmKey(s) &&
-    s.fingerprintConfirmed === true && s.passwordValid === true
+  const roleOK = (s.role === 'exit' && countryValid(s.country)) || (s.role === 'relay' && s.country === 'RU')
+  return !s.serverId && roleOK && canConfirmKey(s) && s.fingerprintConfirmed === true &&
+    (s.passwordEntered !== true || s.passwordValid === true)
 }
 
 // canStart: «Установить» — the options are valid and the plans are no longer loading (without
@@ -122,8 +128,11 @@ function applySet(s, patch) {
   for (const [k, v] of Object.entries(patch || {})) {
     if (!EDITABLE.includes(k) || (s.serverId && LOCKED_AFTER_SAVE.includes(k))) continue
     switch (k) {
-      case 'role': if (v === 'exit' || v === 'relay') next.role = v; break
-      case 'country': next.country = String(v ?? '').toUpperCase(); break
+      case 'role':
+        if (v === 'relay') Object.assign(next, { role: 'relay', country: 'RU' })
+        else if (v === 'exit') Object.assign(next, { role: 'exit', country: s.role === 'relay' ? '' : next.country })
+        break
+      case 'country': if (next.role !== 'relay') next.country = String(v ?? '').toUpperCase(); break
       case 'loadWeight': next.loadWeight = typeof v === 'number' ? v : parseInt(v, 10); break
       case 'mtproxy': case 'fallback': next[k] = v === true; break
       default: next[k] = String(v ?? '')
@@ -227,6 +236,7 @@ export function createRequest(s, password) {
 // provisionRequest: plan_ids only when the plans were read — without them (no settings.read) the
 // node keeps no bindings (common pool) instead of being sent an empty list by mistake.
 export function provisionRequest(s) {
+  if (s.role === 'relay') return {} // no plans, MTProxy or priority (the server refuses them)
   const out = { mtproxy: s.mtproxy, load_weight: s.loadWeight }
   if (s.plansState === 'ready') out.plan_ids = s.planIds || []
   return out
@@ -237,7 +247,7 @@ export function provisionRequest(s) {
 // field is optional; plans and priority go with provisionRequest) and only when it differs from
 // what is stored; null otherwise.
 export function routingRequest(s) {
-  if (s.fallback === s.fallbackStored) return null
+  if (s.role === 'relay' || s.fallback === s.fallbackStored) return null
   return { tunnel_fallback_enabled: s.fallback }
 }
 

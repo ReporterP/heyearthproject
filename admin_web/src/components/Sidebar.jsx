@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X,
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, DoorOpen,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
@@ -32,6 +32,7 @@ const groups = [
     label: 'ИНФРАСТРУКТУРА',
     items: [
       { to: '/nodes',            icon: Server,   label: 'navNodes' },
+      { to: '/entries',          icon: DoorOpen, label: 'navEntries' },
       { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys' },
       { to: '/releases',         icon: Rocket,   label: 'navReleases' },
       { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking' },

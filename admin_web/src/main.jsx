@@ -22,6 +22,7 @@ import PromocodesPage from './pages/PromocodesPage.jsx'
 import PaymentsPage from './pages/PaymentsPage.jsx'
 import PaymentOpsPage from './pages/PaymentOpsPage.jsx'
 import NodesPage from './pages/NodesPage.jsx'
+import EntriesPage from './pages/EntriesPage.jsx'
 import ServerDetailPage from './pages/ServerDetailPage.jsx'
 import SshKeysPage from './pages/SshKeysPage.jsx'
 import ReleasesPage from './pages/ReleasesPage.jsx'
@@ -59,6 +60,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/payment-ops" element={<PaymentOpsPage />} />
                   <Route path="/traffic" element={<TrafficPage />} />
                   <Route path="/nodes" element={<NodesPage />} />
+                  <Route path="/entries" element={<EntriesPage />} />
                   <Route path="/servers" element={<Navigate to="/nodes" replace />} />
                   <Route path="/servers/:id" element={<ServerDetailPage />} />
                   <Route path="/ssh-keys" element={<SshKeysPage />} />

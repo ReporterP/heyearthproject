@@ -20,6 +20,7 @@ import {
   deprovisionConsequences, deleteConsequences, fallbackOffConsequences, plansNote, plansFailure,
 } from './drawerModel.js'
 import JobProgress from './JobProgress.jsx'
+import MobileCheckPanel from '../entries/MobileCheckPanel.jsx'
 import TunnelCheckDialog from '../servers/TunnelCheckDialog.jsx'
 
 const ROLE_LABEL = { exit: 'Выход за рубежом', relay: 'Резервный вход в РФ' }
@@ -288,6 +289,12 @@ function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunne
       )}
 
       <HostKeySection node={node} manage={manage} onChanged={onChanged} />
+
+      {!exit && node.host_key?.confirmed && (
+        <Section title="Мобильные сети">
+          <MobileCheckPanel serverId={node.id} canStart={manage} />
+        </Section>
+      )}
 
       {(acts.tunnelCheck.show || acts.verify.show) && (
         <Section title="Проверки">

@@ -10,6 +10,7 @@ export const PAGE_PERMS = {
   '/promocodes': 'promocodes.read',
   '/servers': 'servers.read', // redirects to /nodes
   '/nodes': 'servers.read',
+  '/entries': 'servers.read',
   '/ssh-keys': 'servers.read',
   '/releases': 'releases.read',
   '/traffic-masking': 'traffic_masking.read',
@@ -29,7 +30,7 @@ export const PAGE_PERMS = {
 
 // Pages a tenant (B2B) admin never sees, whatever the permissions.
 export const TENANT_HIDDEN = new Set([
-  '/servers', '/nodes', '/ssh-keys', '/releases', '/traffic-masking', '/direct-routes', '/mtproto',
+  '/servers', '/nodes', '/entries', '/ssh-keys', '/releases', '/traffic-masking', '/direct-routes', '/mtproto',
   '/auto-tuner', '/alerts', '/admins', '/audit-log', '/tenants', '/b2b-analytics', '/settings',
 ])
 

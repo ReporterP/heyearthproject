@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid,
-  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest,
+  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, wizardSteps,
   routingRequest, closeNeedsConfirm, normalizePlans,
 } from './wizardModel.js'
 
@@ -183,13 +183,15 @@ test('leaving the access step before saving forgets the password (its field is e
   assert.equal(back.passwordValid, false)
 })
 
-test('the node is saved only with a confirmed key of the current probe and a password', () => {
+test('the node is saved only with a confirmed key of the current probe; the password is optional', () => {
   assert.equal(canCreate(probed()), false, 'not confirmed')
   const ok = run(probed(), { type: 'confirmKey', value: true })
   assert.equal(canCreate(ok), true)
   assert.equal(canCreate(run(ok, pw('   '))), false, 'blank password')
+  assert.equal(canCreate(run(ok, pw(''))), true, 'no password: the Hub key is checked by the server')
   assert.equal(canCreate(run(ok, { type: 'set', patch: { country: 'D' } })), false, 'no country')
-  assert.equal(canCreate({ ...ok, role: 'relay' }), false, 'relays come with phase 3')
+  assert.equal(canCreate({ ...ok, role: 'relay', country: 'RU' }), true, 'a reserve entry in Russia')
+  assert.equal(canCreate({ ...ok, role: 'relay', country: 'DE' }), false, 'a reserve entry abroad')
   assert.equal(canCreate({ ...ok, probe: { ...ok.probe, ip: '203.0.113.99' } }), false, 'probe of another address')
 })
 
@@ -225,7 +227,7 @@ test('the state machine never skips an unfinished step', () => {
   assert.equal(canGo(s0, 1), true)
   assert.equal(canGo(s0, 2), false, 'access not done')
   assert.equal(canGo(initialWizard(), 1), false, 'no country')
-  assert.equal(canGo(initialWizard('relay'), 1), false, 'relay is not available yet')
+  assert.equal(canGo(initialWizard('relay'), 1), true, 'a relay is in RU from the start')
   assert.equal(run(s0, { type: 'go', step: 3 }).step, 0)
   const s2 = created()
   assert.equal(canGo(s2, 3), false, 'preflight not passed')
@@ -327,4 +329,18 @@ test('«Установить» waits for the plans: never a silent common-pool n
   assert.equal(canStart(run(ready, { type: 'plansFailed', error: 'Нет прав на это действие' })), true, 'a failure is shown and explained')
   assert.equal(canStart(run(ready, { type: 'plans', plans: [] }, { type: 'set', patch: { loadWeight: 0 } })), false)
   assert.equal(canStart({ ...run(ready, { type: 'plans', plans: [] }), serverId: null }), false)
+})
+
+test('relay: RU fixed, steps of its own, no exit options in the requests', () => {
+  const r = initialWizard('relay')
+  assert.equal(r.country, 'RU')
+  assert.equal(run(r, { type: 'set', patch: { country: 'DE' } }).country, 'RU', 'country locked to RU')
+  const back = run(r, { type: 'set', patch: { role: 'exit' } })
+  assert.equal(back.role, 'exit')
+  assert.equal(back.country, '', 'leaving relay clears RU')
+  assert.equal(run(initialWizard(), { type: 'set', patch: { role: 'relay' } }).country, 'RU')
+  assert.deepEqual(provisionRequest({ ...r, plansState: 'ready', planIds: [1] }), {})
+  assert.equal(routingRequest({ ...r, fallback: false, fallbackStored: true }), null)
+  assert.equal(wizardSteps('relay')[3], 'Проверка с телефона')
+  assert.equal(wizardSteps('exit')[3], 'Настройки')
 })

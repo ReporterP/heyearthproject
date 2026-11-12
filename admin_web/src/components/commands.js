@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell, DoorOpen,
 } from 'lucide-react'
 
 /**
@@ -22,6 +22,7 @@ export const commands = [
 
   // Infrastructure
   { id: 'go-nodes',           label: 'Ноды',                 icon: Server,          kind: 'page', href: '/nodes',           group: 'Инфраструктура' },
+  { id: 'go-entries',         label: 'Входы',                icon: DoorOpen,        kind: 'page', href: '/entries',         group: 'Инфраструктура' },
   { id: 'go-ssh-keys',        label: 'SSH Ключи',            icon: Key,             kind: 'page', href: '/ssh-keys',        group: 'Инфраструктура' },
   { id: 'go-releases',        label: 'Релизы',               icon: Rocket,          kind: 'page', href: '/releases',        group: 'Инфраструктура' },
   { id: 'go-traffic-masking', label: 'Маскировка трафика',   icon: EyeOff,          kind: 'page', href: '/traffic-masking', group: 'Инфраструктура' },

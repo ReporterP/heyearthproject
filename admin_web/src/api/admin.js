@@ -260,6 +260,27 @@ export function fetchAlertEvents(limit = 100) {
   return apiFetch(`/alerts/events?limit=${limit}`)
 }
 
+// ── Entries (Hub + reserve entries in RU) ──
+export function fetchEntries() {
+  return apiFetch('/entries')
+}
+export function saveEntryAddress(id, payload) {
+  return apiFetch(`/entries/${id}`, { method: 'PUT', body: payload })
+}
+export function saveEntrySettings(patch) {
+  return apiFetch('/entries/settings', { method: 'PUT', body: patch })
+}
+export function fetchEntriesPreview() {
+  return apiFetch('/entries/preview')
+}
+// mode: 'hub' | 'relay' (everyone through target) | 'auto'
+export function saveEntryMode(mode, target) {
+  return apiFetch('/entries/mode', { method: 'PUT', body: { mode, target: target || 0 } })
+}
+// «Проверить с телефона»: start a 30-minute test page on the node / read what reached the phones.
+export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
+export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)
+
 // ── Auto-Tuner ──
 export function fetchAutoTunerStatus() {
   return apiFetch('/auto-tuner/status')

@@ -37,7 +37,9 @@ test('paths', () => {
 })
 test('the wizard never skips an unfinished step', () => {
   assert.equal(wizardCanAdvance(0, { role: 'exit', country: 'DE' }), true)
-  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'RU' }), false)
+  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'RU' }), true)
+  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'DE' }), false)
+  assert.equal(wizardCanAdvance(3, { role: 'relay' }), true, 'the phone check is advisory')
   const fp = 'SHA256:' + 'A'.repeat(43)
   assert.equal(wizardCanAdvance(1, { serverId: 3, fingerprint: fp, fingerprintConfirmed: false }), false)
   assert.equal(wizardCanAdvance(1, { serverId: 3, fingerprint: fp, fingerprintConfirmed: true }), true)
