@@ -158,6 +158,17 @@ func RegisterRoutes() {
 				return
 			}
 		}
+		if strings.HasSuffix(r.URL.Path, "/mobile-check") { // «Проверить с телефона» (mobile_check.go)
+			switch r.Method {
+			case http.MethodPost:
+				RequirePermission("nodes.provision", StartMobileCheckHandler).ServeHTTP(w, r)
+			case http.MethodGet:
+				RequirePermission("servers.read", GetMobileCheckHandler).ServeHTTP(w, r)
+			default:
+				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/routing") {
 			withMethod(http.MethodPut, RequirePermission("nodes.provision", NodeRoutingHandler)).ServeHTTP(w, r)
 			return
