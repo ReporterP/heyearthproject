@@ -804,14 +804,19 @@ WantedBy=multi-user.target
 
 // doBot removed — Telegram bot is no longer part of the project.
 
+// doAdminWeb uploads next to the live build and swaps directories at the end: a dropped SFTP
+// session leaves the working admin in place (the old order removed it first). When SFTP keeps
+// dropping, `go run quick_admin_web.go` sends the build as one archive over an SSH pipe.
 func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "rm -rf /var/www/heyearth && mkdir -p /var/www/heyearth", true)
+	const live, next = "/var/www/heyearth", "/var/www/heyearth.next"
+	_, _ = runSSH(client, "rm -rf "+next+" && mkdir -p "+next, true)
 	adminBuildDir := buildAdminWeb(cfg.repoRoot, cfg)
-	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
-		log.Fatalf("upload admin_web build: %v", err)
+	if err := uploadDir(c, adminBuildDir, next); err != nil {
+		_, _ = runSSH(client, "rm -rf "+next, false)
+		log.Fatalf("upload admin_web build: %v (the live admin is untouched; try: go run quick_admin_web.go)", err)
 	}
-	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth", true)
-	fmt.Println("[admin-web] uploaded to /var/www/heyearth")
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ -d %[1]s ] && mv %[1]s %[1]s.old || true; } && mv %[2]s %[1]s", live, next), true)
+	fmt.Println("[admin-web] uploaded to " + live)
 }
 
 func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
