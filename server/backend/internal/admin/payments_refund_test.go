@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -185,5 +186,24 @@ func TestRevokedPermissionStopsAtOnce(t *testing.T) {
 	paymentsItemRouter(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("revoked payments.refund: status %d, want 403", rec.Code)
+	}
+}
+
+// A DB error while reading the admin's live access is a 503, not a 401: the admin UI logs out on 401.
+func TestLiveAccessDBErrorIsNotLogout(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-jwt-secret")
+	oldLive := adminLiveAccess
+	t.Cleanup(func() { adminLiveAccess = oldLive })
+	adminLiveAccess = func(int) (adminLive, error) { return adminLive{}, errors.New("pool exhausted") }
+	tok, err := GenerateToken(AdminUser{ID: 7, Username: "operator", Permissions: []string{"*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/anything", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	AuthMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("DB error: status %d, want 503", rec.Code)
 	}
 }

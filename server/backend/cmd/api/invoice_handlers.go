@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/middleware"
@@ -64,7 +65,7 @@ func handleAdminCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	createInvoice(w, r, true)
 }
 
-func createInvoice(w http.ResponseWriter, r *http.Request, admin bool) {
+func createInvoice(w http.ResponseWriter, r *http.Request, byAdmin bool) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
 		return
@@ -80,8 +81,12 @@ func createInvoice(w http.ResponseWriter, r *http.Request, admin bool) {
 		TenantID    int    `json:"tenant_id"` // explicit linkage, admin form only
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req)
-	if !admin {
+	if !byAdmin {
 		req.TenantID = 0
+	} else if req.TenantID <= 0 || !admin.CanAccessTenant(r, req.TenantID) {
+		// A tenant-scoped admin invoices only their own tenants.
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "нет доступа к этой компании"})
+		return
 	}
 
 	req.INN = strings.TrimSpace(req.INN)
@@ -105,7 +110,7 @@ func createInvoice(w http.ResponseWriter, r *http.Request, admin bool) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "amount должен быть ≥ 100"})
 		return
 	}
-	if !admin && req.Amount > publicInvoiceMaxRub {
+	if !byAdmin && req.Amount > publicInvoiceMaxRub {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "сумма больше 1 000 000 ₽ — напишите нам, выставим счёт вручную"})
 		return
 	}
@@ -228,7 +233,7 @@ func createInvoice(w http.ResponseWriter, r *http.Request, admin bool) {
 		"email":            req.Email,
 		"company_name":     req.CompanyName,
 	}
-	if admin { // the public form must not learn whether an INN is already a client
+	if byAdmin { // the public form must not learn whether an INN is already a client
 		out["tenant_id"] = tenant.ID
 		out["tenant_status"] = tenant.Status
 	}

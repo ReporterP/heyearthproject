@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -197,18 +198,31 @@ type adminLive struct {
 // role change or a revoked permission works on the next request, not after
 // the token's 24 hours. Tests swap it.
 var adminLiveAccess = func(id int) (adminLive, error) {
-	rec, err := loadAdminRecordByID(id)
+	var live adminLive
+	err := db.DB.QueryRow(`SELECT is_active, tenant_id FROM admin_users WHERE id = $1`, id).Scan(&live.Active, &live.TenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return adminLive{}, nil // deleted: same as deactivated
+	}
+	if err != nil || !live.Active {
+		return adminLive{}, err
+	}
+	roles, err := listAdminRolesForUser(id)
 	if err != nil {
 		return adminLive{}, err
 	}
-	if !rec.IsActive {
-		return adminLive{}, nil
+	perms := map[string]struct{}{}
+	for _, role := range roles {
+		live.Roles = append(live.Roles, role.RoleKey)
+		for _, p := range role.Permissions {
+			perms[p] = struct{}{}
+		}
 	}
-	u, _, err := buildAdminUser(rec)
-	if err != nil {
-		return adminLive{}, err
+	for p := range perms {
+		live.Permissions = append(live.Permissions, p)
 	}
-	return adminLive{Active: true, Roles: u.Roles, Permissions: u.Permissions, TenantID: u.TenantID}, nil
+	slices.Sort(live.Roles)
+	slices.Sort(live.Permissions)
+	return live, nil
 }
 
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -243,7 +257,12 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// The token only says who this is; what they may do comes from the DB now.
 		live, err := adminLiveAccess(claims.AdminID)
-		if err != nil || !live.Active {
+		if err != nil {
+			// A DB hiccup is not a lost session: 401 would log the admin out.
+			writeAdminError(w, http.StatusServiceUnavailable, "База данных не ответила, повторите через несколько секунд")
+			return
+		}
+		if !live.Active {
 			writeAdminError(w, http.StatusUnauthorized, "Admin account deactivated")
 			return
 		}
