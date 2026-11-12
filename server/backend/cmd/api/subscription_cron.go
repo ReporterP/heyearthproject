@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -46,7 +47,7 @@ func checkExpiringSubscriptions() {
 	// IMPORTANT: исключаем подписки, для которых уже есть pending/completed платёж
 	// за последние 24 часа — чтобы не списывать повторно (cron каждый час).
 	rows, err := db.DB.Query(`
-		SELECT u.user_id, us.valid_until, COALESCE(p.name, us.plan, 'unknown'), us.auto_renew
+		SELECT u.user_id, us.id, us.valid_until, COALESCE(p.name, us.plan, 'unknown'), us.auto_renew
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		LEFT JOIN plans p ON p.id = us.plan_id
@@ -69,16 +70,17 @@ func checkExpiringSubscriptions() {
 	expiringCount := 0
 	for rows.Next() {
 		var userID, plan string
+		var subID int
 		var validUntil time.Time
 		var autoRenew bool
-		if err := rows.Scan(&userID, &validUntil, &plan, &autoRenew); err != nil {
+		if err := rows.Scan(&userID, &subID, &validUntil, &plan, &autoRenew); err != nil {
 			continue
 		}
 		expiringCount++
 
 		if autoRenew {
 			// Auto-renew: charge saved payment method
-			if err := processAutoRenew(userID); err != nil {
+			if err := processAutoRenew(userID, subID); err != nil {
 				log.Printf("[subscription-cron] Auto-renew %s (%s): %v", userID, plan, err)
 			} else {
 				log.Printf("[subscription-cron] Auto-renew %s (%s): платёж создан", userID, plan)
@@ -164,19 +166,46 @@ func checkTenantBalanceWarnings() {
 	log.Printf("[subscription-cron] Проверка балансов завершена")
 }
 
-// processAutoRenew handles auto-renewal for a user.
-// Free plans: extend automatically.
-// Paid plans with saved payment_method_id: charge via YooKassa (no confirmation).
-// Paid plans without saved method: log expiry (user must re-pay manually).
-func processAutoRenew(userID string) error {
-	plan, err := biz.GetUserPlan(userID)
+// processAutoRenew renews one subscription (user_subscriptions.id) that ends within 24 h
+// and has auto_renew set.
+//
+// Free access (owner's decision 13.11): a subscription given by a promocode and paid
+// nothing (price_paid = 0, promocode_used names an existing code) renews free, for the
+// plan's duration, and keeps the code as its mark. A free plan WITHOUT a promocode (the
+// trial taken from the site) never renews: its auto_renew is switched off. Paid plans
+// are charged (see below).
+func processAutoRenew(userID string, subID int) error {
+	var planID, pricePaid int
+	var promo string
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(plan_id, 0), COALESCE(price_paid, 0), COALESCE(promocode_used, '')
+		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW()`, subID).Scan(&planID, &pricePaid, &promo)
+	if err != nil {
+		return fmt.Errorf("subscription %d: %w", subID, err)
+	}
+	if planID == 0 {
+		return fmt.Errorf("subscription %d has no plan", subID)
+	}
+	plan, err := biz.GetPlanByID(planID)
 	if err != nil || plan == nil {
-		return fmt.Errorf("no active plan for %s", userID)
+		return fmt.Errorf("plan %d of subscription %d: %w", planID, subID, err)
 	}
 
-	// Free plans: extend automatically
+	freePromo := false
+	if pricePaid == 0 {
+		if freePromo, err = biz.IsRedeemedPromocode(context.Background(), db.DB, promo); err != nil {
+			return fmt.Errorf("check promocode of subscription %d: %w", subID, err)
+		}
+	}
+	if freePromo {
+		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, biz.NormalizePromocode(promo))
+	}
 	if plan.PriceRub <= 0 {
-		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
+		if _, err := db.DB.Exec(`UPDATE user_subscriptions SET auto_renew = FALSE WHERE id = $1`, subID); err != nil {
+			return fmt.Errorf("switch off auto-renew of free subscription %d: %w", subID, err)
+		}
+		log.Printf("[auto-renew] User %s: free plan '%s' without a promocode is not renewed (auto_renew switched off)", userID, plan.Slug)
+		return nil
 	}
 
 	// Защита от двойного списания: если за последние 24 часа уже был

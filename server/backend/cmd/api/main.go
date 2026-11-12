@@ -141,11 +141,15 @@ func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromo
 		return nil, status.Error(codes.PermissionDenied, "user is blocked")
 	}
 
-	if err := biz.ApplyPromocode(user.ID, strings.TrimSpace(req.GetCode())); err != nil {
-		return &heyearth_v1.ApplyPromocodeResponse{Success: false, Message: err.Error()}, nil
+	res, err := biz.RedeemPromocode(ctx, user.UserID, req.GetCode(), 0, biz.RedeemSourceApp)
+	if err != nil {
+		if biz.IsPromoError(err) {
+			return &heyearth_v1.ApplyPromocodeResponse{Success: false, Message: err.Error()}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "apply promocode: %v", err)
 	}
-
-	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: "Promocode applied successfully"}, nil
+	RequestXraySync()
+	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: res.Message}, nil
 }
 
 // ─────────────────────── HTTP Helpers ───────────────────────
@@ -1096,7 +1100,6 @@ func main() {
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
 	// Admin debug: force auto-renew for a user
-	http.HandleFunc("/api/admin/force-autorenew", admin.RequirePermission("payments.write", handleAdminForceAutoRenew))
 	// Admin: force sync всех pending платежей (не ждать cron)
 	http.HandleFunc("/api/admin/sync-pending-payments", admin.RequirePermission("payments.write", handleAdminSyncAllPending))
 

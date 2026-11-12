@@ -488,6 +488,23 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 // the caller's timeout also bounds lock waits. ErrDowngradeNotAllowed comes back before
 // any write, so the transaction stays usable.
 func ActivateSubscriptionWithPlanTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
+	return ActivateSubscriptionTx(ctx, tx, userID, planID, durationDays, pricePaid, promocodeUsed, ActivateOpts{})
+}
+
+// ActivateOpts adjusts ActivateSubscriptionTx.
+type ActivateOpts struct {
+	// InsertAutoRenew is auto_renew of a NEW subscription row; nil = the plan's
+	// auto_renew_default (false for the free trial). An extended or switched row keeps
+	// the user's own choice, except that leaving a free plan for a paid one takes the
+	// paid plan's default.
+	InsertAutoRenew *bool
+	// TrafficLimit, when set, is written to the row in every branch (0 = unlimited:
+	// promocode access).
+	TrafficLimit *int64
+}
+
+// ActivateSubscriptionTx is ActivateSubscriptionWithPlanTx with options.
+func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string, opts ActivateOpts) error {
 	var dbUserID int
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
 		return fmt.Errorf("resolve user %s: %w", userID, err)
@@ -527,28 +544,37 @@ func ActivateSubscriptionWithPlanTx(ctx context.Context, tx *sql.Tx, userID stri
 		}
 	}
 
+	// traffic_limit: written only when the caller sets it ($n IS NULL keeps the row's).
+	var trafficLimit sql.NullInt64
+	if opts.TrafficLimit != nil {
+		trafficLimit = sql.NullInt64{Int64: *opts.TrafficLimit, Valid: true}
+	}
+
 	// (1) No active subscription — fresh INSERT.
 	if !hasActive {
-		validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays)
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at)
-			VALUES ($1, %s, true, $2, $3, $4, 'active', NOW())
-		`, validUntilExpr), dbUserID, planID, pricePaid, promocodeUsed); err != nil {
+		autoRenew := newPlan.AutoRenewDefault
+		if opts.InsertAutoRenew != nil {
+			autoRenew = *opts.InsertAutoRenew
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at, traffic_limit)
+			VALUES ($1, NOW() + make_interval(days => $2), $3, $4, $5, $6, 'active', NOW(), $7)
+		`, dbUserID, durationDays, autoRenew, planID, pricePaid, promocodeUsed, trafficLimit); err != nil {
 			return err
 		}
 		return nil
 	}
 
-	// (2) Same plan — extend valid_until in place.
+	// (2) Same plan — extend valid_until in place; auto_renew stays the user's choice.
 	if currentPlanID == planID {
-		validUntilExpr := fmt.Sprintf("valid_until + INTERVAL '%d days'", durationDays)
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE user_subscriptions
-			SET valid_until = %s,
-			    price_paid = $1, promocode_used = $2,
-			    status = 'active', auto_renew = true
-			WHERE id = $3
-		`, validUntilExpr), pricePaid, promocodeUsed, currentSubID); err != nil {
+			SET valid_until = valid_until + make_interval(days => $1),
+			    price_paid = $2, promocode_used = $3,
+			    status = 'active',
+			    traffic_limit = CASE WHEN $4::bigint IS NULL THEN traffic_limit ELSE $4::bigint END
+			WHERE id = $5
+		`, durationDays, pricePaid, promocodeUsed, trafficLimit, currentSubID); err != nil {
 			return err
 		}
 		return nil
@@ -571,123 +597,20 @@ func ActivateSubscriptionWithPlanTx(ctx context.Context, tx *sql.Tx, userID stri
 		leftoverDays = 0
 	}
 	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPlanListPrice, durationDays)
-	validUntilExpr := fmt.Sprintf("NOW() + INTERVAL '%d days'", durationDays+bonusDays)
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	// Leaving a free plan (the trial) takes the new plan's auto-renew default; between
+	// paid plans the user's own choice stays.
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE user_subscriptions
 		SET plan_id = $1,
-		    valid_until = %s,
-		    price_paid = $2,
-		    promocode_used = $3,
+		    valid_until = NOW() + make_interval(days => $2),
+		    price_paid = $3,
+		    promocode_used = $4,
 		    status = 'active',
-		    auto_renew = true
-		WHERE id = $4
-	`, validUntilExpr), planID, pricePaid, promocodeUsed, currentSubID); err != nil {
+		    auto_renew = CASE WHEN $5 THEN $6 ELSE auto_renew END,
+		    traffic_limit = CASE WHEN $7::bigint IS NULL THEN traffic_limit ELSE $7::bigint END
+		WHERE id = $8
+	`, planID, durationDays+bonusDays, pricePaid, promocodeUsed, currentPriceRub <= 0, newPlan.AutoRenewDefault, trafficLimit, currentSubID); err != nil {
 		return err
-	}
-	return nil
-}
-
-// ApplyPromoToPrice validates and applies a promocode for a specific plan and user.
-// Uses FOR UPDATE lock to prevent race conditions on usage counter.
-func ApplyPromoToPrice(basePrice int, code string, planID ...int) (finalPrice int, freeTrialDays int, trafficGiftBytes int64, err error) {
-	codeNorm := strings.ToUpper(strings.TrimSpace(code))
-
-	// Start transaction for atomic read-validate-increment
-	tx, txErr := db.DB.Begin()
-	if txErr != nil {
-		return basePrice, 0, 0, fmt.Errorf("db error")
-	}
-	defer tx.Rollback()
-
-	var promoType string
-	var discountPercent, discountFixed, freeDays, maxUses, currentUses int
-	var trafficGift int64
-	var isActive bool
-	var expiresAt sql.NullTime
-	var appliesToPlans pq.Int64Array
-
-	err = tx.QueryRow(`
-		SELECT promo_type, COALESCE(discount_percent,0), COALESCE(discount_fixed_rub,0),
-		       COALESCE(free_days,0), COALESCE(traffic_gift_bytes,0), is_active,
-		       max_uses, current_uses, expires_at, applies_to_plans
-		FROM promocodes WHERE code = $1 FOR UPDATE
-	`, codeNorm).Scan(&promoType, &discountPercent, &discountFixed, &freeDays, &trafficGift,
-		&isActive, &maxUses, &currentUses, &expiresAt, &appliesToPlans)
-	if err != nil {
-		return basePrice, 0, 0, fmt.Errorf("промокод не найден")
-	}
-	if !isActive {
-		return basePrice, 0, 0, fmt.Errorf("промокод деактивирован")
-	}
-	if maxUses > 0 && currentUses >= maxUses {
-		return basePrice, 0, 0, fmt.Errorf("промокод исчерпан")
-	}
-	if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
-		return basePrice, 0, 0, fmt.Errorf("промокод истёк")
-	}
-
-	// Check applies_to_plans
-	if len(appliesToPlans) > 0 && len(planID) > 0 {
-		found := false
-		for _, pid := range appliesToPlans {
-			if int(pid) == planID[0] {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return basePrice, 0, 0, fmt.Errorf("промокод не действует на этот план")
-		}
-	}
-
-	switch promoType {
-	case "discount_percent":
-		finalPrice = basePrice - (basePrice * discountPercent / 100)
-		if finalPrice < 0 {
-			finalPrice = 0
-		}
-	case "discount_fixed":
-		finalPrice = basePrice - discountFixed
-		if finalPrice < 0 {
-			finalPrice = 0
-		}
-	case "free_trial":
-		finalPrice = 0
-		freeTrialDays = freeDays
-	case "traffic_gift":
-		finalPrice = basePrice
-		trafficGiftBytes = trafficGift
-	default:
-		finalPrice = basePrice
-	}
-
-	// Increment usage counter INSIDE transaction (atomic with validation)
-	if _, txErr := tx.Exec("UPDATE promocodes SET current_uses = current_uses + 1, updated_at = NOW() WHERE code = $1", codeNorm); txErr != nil {
-		return basePrice, 0, 0, fmt.Errorf("ошибка обновления промокода")
-	}
-
-	if txErr := tx.Commit(); txErr != nil {
-		return basePrice, 0, 0, fmt.Errorf("ошибка применения промокода")
-	}
-
-	return
-}
-
-// CheckPromoPerUserLimit checks if user has already used this promo.
-func CheckPromoPerUserLimit(userID, code string) error {
-	codeNorm := strings.ToUpper(strings.TrimSpace(code))
-	var perUserLimit int
-	err := db.DB.QueryRow("SELECT COALESCE(per_user_limit, 1) FROM promocodes WHERE code = $1", codeNorm).Scan(&perUserLimit)
-	if err != nil {
-		return nil // no promo or no limit
-	}
-	if perUserLimit <= 0 {
-		return nil // unlimited
-	}
-	var usedCount int
-	db.DB.QueryRow("SELECT COUNT(*) FROM user_subscriptions us JOIN users u ON u.id = us.user_id WHERE u.user_id = $1 AND us.promocode_used = $2", userID, codeNorm).Scan(&usedCount)
-	if usedCount >= perUserLimit {
-		return fmt.Errorf("промокод уже использован (лимит %d на пользователя)", perUserLimit)
 	}
 	return nil
 }

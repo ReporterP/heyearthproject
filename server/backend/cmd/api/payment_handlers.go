@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,20 +111,33 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	originalPrice := plan.PriceRub
 	priceRub := plan.PriceRub
 
-	// Apply promocode
+	// Promocode: validated here, used (counted) only when the purchase goes through —
+	// in the paid-payment claim, or below for a zero price. A free_trial code is a free
+	// grant, not a discount: it is redeemed right away, like in the cabinet.
 	promoUsed := ""
-	if body.Promocode != "" {
-		if err := biz.CheckPromoPerUserLimit(userID, body.Promocode); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if strings.TrimSpace(body.Promocode) != "" {
+		var userDBID int
+		if err := db.DB.QueryRowContext(r.Context(), `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
 			return
 		}
-		finalPrice, _, _, promoErr := biz.ApplyPromoToPrice(priceRub, body.Promocode, plan.ID)
-		if promoErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": promoErr.Error()})
+		promo, err := biz.LoadPromocode(r.Context(), db.DB, userDBID, body.Promocode, plan.ID, false)
+		if err != nil {
+			writePromoError(w, err)
 			return
 		}
-		priceRub = finalPrice
-		promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
+		if promo.Type == biz.PromoFreeTrial {
+			res, err := biz.RedeemPromocode(r.Context(), userID, promo.Code, plan.ID, biz.RedeemSourceCabinet)
+			if err != nil {
+				writePromoError(w, err)
+				return
+			}
+			RequestXraySync()
+			writeJSON(w, http.StatusOK, map[string]any{"status": "activated", "plan": res.PlanName, "message": res.Message})
+			return
+		}
+		priceRub = promo.PriceFor(priceRub)
+		promoUsed = promo.Code
 	}
 
 	// Downgrade guard — fail fast before creating any payment record.
@@ -144,16 +158,18 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Free plan — activate immediately
+	// Free plan (or a 100% discount) — activate immediately.
 	if priceRub <= 0 {
-		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, promoUsed); err != nil {
+		if err := activateFreePurchase(r.Context(), userID, plan, promoUsed); err != nil {
 			if errors.Is(err, biz.ErrDowngradeNotAllowed) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
 				return
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "activate: " + err.Error()})
+			log.Printf("[payment.create] free activation for %s plan %d: %v", userID, plan.ID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "не удалось активировать тариф, попробуйте позже"})
 			return
 		}
+		RequestXraySync()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "activated",
 			"plan":    plan.Name,
@@ -722,24 +738,55 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	code := strings.TrimSpace(req.Code)
-	if code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code required"})
+	if strings.TrimSpace(req.Code) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Введите промокод"})
 		return
 	}
+	res, err := biz.RedeemPromocode(r.Context(), userID, req.Code, 0, biz.RedeemSourceCabinet)
+	if err != nil {
+		writePromoError(w, err)
+		return
+	}
+	RequestXraySync()
+	writeJSON(w, http.StatusOK, map[string]string{"message": res.Message})
+}
 
-	if err := biz.CheckPromoPerUserLimit(userID, code); err != nil {
+// writePromoError answers a refused promocode with its Russian text (400), anything
+// else with a generic 500 (the cause goes to the log).
+func writePromoError(w http.ResponseWriter, err error) {
+	if biz.IsPromoError(err) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	log.Printf("[promocode] %v", err)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось применить промокод, попробуйте позже"})
+}
 
-	var dbUserID int
-	db.DB.QueryRow("SELECT id FROM users WHERE user_id = $1", userID).Scan(&dbUserID)
-	if err := biz.ApplyPromocode(dbUserID, code); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+// activateFreePurchase activates a purchase that costs nothing (a free plan, or a 100%
+// discount code) and records the code in the same transaction.
+func activateFreePurchase(ctx context.Context, userID string, plan *biz.Plan, promo string) error {
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Промокод активирован"})
+	defer tx.Rollback() //nolint:errcheck
+	if err := biz.ActivateSubscriptionTx(ctx, tx, userID, plan.ID, plan.DurationDays, 0, promo, biz.ActivateOpts{}); err != nil {
+		return err
+	}
+	if promo != "" {
+		var userDBID int
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+			return err
+		}
+		if err := biz.ConsumePaidPromocodeTx(ctx, tx, promo, userDBID, biz.RedeemSourceFree, 0); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	biz.NotifySubscriptionChange()
+	return nil
 }
 
 func handleCreateDonation(w http.ResponseWriter, r *http.Request) {

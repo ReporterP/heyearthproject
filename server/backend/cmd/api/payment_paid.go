@@ -250,8 +250,15 @@ var (
 	raiseUnappliedAlert = RaiseAlertNoRepeat
 	openUnappliedAlerts = func() []string { return alerts.activeKeys(unappliedAlertPrefix) }
 	getPlanByID         = biz.GetPlanByID
-	activatePlanTx      = biz.ActivateSubscriptionWithPlanTx
-	creditWalletTx      = biz.CreditTenantWalletTx
+	consumePaidPromoTx  = func(ctx context.Context, tx *sql.Tx, userID, code string, paymentID int) error {
+		var userDBID int
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+			return err
+		}
+		return biz.ConsumePaidPromocodeTx(ctx, tx, code, userDBID, biz.RedeemSourcePayment, paymentID)
+	}
+	activatePlanTx = biz.ActivateSubscriptionWithPlanTx
+	creditWalletTx = biz.CreditTenantWalletTx
 	// subscriptionActivated runs after COMMIT of an activation: Xray sync, email.
 	subscriptionActivated = func(row paymentRow, plan *biz.Plan, pricePaid int, autoRenew bool, amount string) {
 		log.Printf("[yookassa] ✓ activated plan '%s' for user %s (%s ₽, payment %d)", plan.Name, row.UserID, amount, row.ID)
@@ -402,6 +409,12 @@ func activatePaidSubscriptionTx(ctx context.Context, tx *sql.Tx, p *yookassa.Pay
 		return paymentUnapplied(ctx, tx, row, p, fmt.Sprintf("тариф «%s» дешевле текущего — понижение тарифа не применяется", plan.Name))
 	case err != nil:
 		return nil, fmt.Errorf("activate plan %d: %w", planID, err)
+	}
+	// The promocode the payment was made with is used now, with the purchase.
+	if promo, _ := row.Meta["promocode"].(string); promo != "" {
+		if err := consumePaidPromoTx(ctx, tx, row.UserID, promo, row.ID); err != nil {
+			return nil, fmt.Errorf("promocode %s: %w", promo, err)
+		}
 	}
 	return func() { subscriptionActivated(row, plan, pricePaid, autoRenew, p.Amount.Value) }, nil
 }
