@@ -161,6 +161,44 @@ function ModeCard({ data, canEdit, onSaved }) {
   )
 }
 
+// The site's names that must point at the entries for the site and the subscription to open on
+// mobile networks (the 443 router's names; relays pass them to the Hub with the client's address).
+const SITE_NAMES = ['hiearth.ru', 'www.hiearth.ru', 'admin.hiearth.ru', 'site.hiearth.ru']
+
+// DnsCard: the owner's DNS step once an entry works — the site and the subscription link live on
+// the domain, and the domain still points at the Hub that mobile networks cut.
+function DnsCard({ relays }) {
+  const ips = relays.filter(r => r.health.external === 'healthy').map(r => r.address)
+  return (
+    <Card>
+      <CardHeader><h3 className="text-sm font-semibold text-primary">Сайт и подписка на мобильных</h3></CardHeader>
+      <CardBody className="space-y-3">
+        <p className="text-sm text-secondary">
+          VPN через вход уже работает, но сайт (регистрация, оплата) и ссылка подписки открываются по домену, а он указывает на Hub,
+          который мобильные операторы режут. У регистратора домена замените A-записи на адрес входа — вход передаст всё на Hub
+          с настоящим IP посетителя (оплаты, лимиты и журнал продолжат работать).
+        </p>
+        {ips.length === 0 ? (
+          <p className="text-xs text-warning">Сначала дождитесь, пока вход станет «доступен» снаружи.</p>
+        ) : (
+          <Table>
+            <Thead><Tr><Th>Имя</Th><Th>Тип</Th><Th>Значение</Th><Th>TTL</Th></Tr></Thead>
+            <Tbody>
+              {SITE_NAMES.flatMap(n => ips.map(ip => (
+                <Tr key={n + ip}><Td mono>{n}</Td><Td mono>A</Td><Td mono>{ip}</Td><Td mono>300</Td></Tr>
+              )))}
+            </Tbody>
+          </Table>
+        )}
+        <p className="text-xs text-tertiary">
+          Старую A-запись с адресом Hub удалите: иначе телефоны будут иногда попадать на него и «висеть». Изменение расходится по
+          интернету от нескольких минут до пары часов.
+        </p>
+      </CardBody>
+    </Card>
+  )
+}
+
 export default function EntriesPage() {
   const { can } = useAuth()
   const toast = useToast()
@@ -235,6 +273,8 @@ export default function EntriesPage() {
       {relays.length === 0 && <SetupGuide canEdit={canEdit} onStart={() => setWizard(true)} />}
 
       <ModeCard data={data} canEdit={canEdit} onSaved={load} />
+
+      {relays.length > 0 && <DnsCard relays={relays} />}
 
       <Table>
         <Thead><Tr><Th>Вход</Th><Th>Адрес</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th>Адрес в подписке</Th><Th>Мобильные сети</Th></Tr></Thead>
