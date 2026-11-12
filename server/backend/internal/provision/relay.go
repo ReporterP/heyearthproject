@@ -175,7 +175,7 @@ func (o RelayOptions) relaySSHFrom() []string {
 }
 
 // relayLayout is where a relay keeps its files.
-type relayLayout struct{ osRelease, nft, unit, wants, sysctl, modules, jail, state string }
+type relayLayout struct{ osRelease, nft, unit, wants, sysctl, modules, jail, state, nginx string }
 
 // relayPaths is the layout of a real relay (tests root it in a temp dir).
 var relayPaths = relayLayout{
@@ -187,6 +187,7 @@ var relayPaths = relayLayout{
 	modules:   "/etc/modules-load.d/heyearth-relay.conf",
 	jail:      "/etc/fail2ban/jail.d/heyearth-sshd.local",
 	state:     "/opt/heyearth/state/relay-pending",
+	nginx:     config.RelayNginxConfPath,
 }
 
 // RelayRecipe is the setup of a relay (relaySetup adds the activate step).
@@ -219,7 +220,7 @@ func (l relayLayout) script(op string, o RelayOptions, body string) string {
 	b.WriteString("# hp:relay-" + op + "\nset -euo pipefail\n")
 	for _, kv := range [][2]string{{"HUB", o.HubIP}, {"SSH_PORT", strconv.Itoa(o.SSHPort)}, {"TABLE", config.RelayNftTable},
 		{"UNIT_NAME", config.RelayUnitName}, {"OS_RELEASE", l.osRelease}, {"NFT", l.nft}, {"UNIT", l.unit}, {"WANTS", l.wants},
-		{"SYSCTL", l.sysctl}, {"MODULES", l.modules}, {"JAIL", l.jail}, {"STATE", l.state}} {
+		{"SYSCTL", l.sysctl}, {"MODULES", l.modules}, {"JAIL", l.jail}, {"STATE", l.state}, {"NGINX", l.nginx}} {
 		b.WriteString(kv[0] + "=" + shellquote.Quote(kv[1]) + "\n")
 	}
 	b.WriteString(body)
@@ -330,7 +331,7 @@ fi
 // relayCheckNames are the owner-facing names of the relay preflight checks, in their order.
 var relayCheckNames = []struct{ key, name string }{
 	{"root", "Вход под root"}, {"os", "Операционная система"}, {"arch", "Архитектура"}, {"systemd", "systemd"},
-	{"docker", "Docker"}, {"ports", "Порты TCP 443/2443 и UDP 50443"}, {"forward", "Пересылка (FORWARD)"}, {"hub", "Связь с Hub"},
+	{"docker", "Docker"}, {"ports", "Порты TCP 80/443/2443 и UDP 50443"}, {"forward", "Пересылка (FORWARD)"}, {"hub", "Связь с Hub"},
 }
 
 // relayPreflightSh changes nothing: one "PF <check> ok|fail <detail>" line per relayCheckNames.
@@ -427,7 +428,7 @@ func (l relayLayout) preflight(o RelayOptions) stepFunc {
 }
 
 // relayPackages: nftables (the rules), fail2ban + python3-systemd (its journal backend).
-const relayPackages = "nftables fail2ban python3-systemd"
+const relayPackages = "nftables fail2ban python3-systemd nginx libnginx-mod-stream"
 
 const relayHavePkg = `have_pkg() { [ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" = "install ok installed" ]; }
 missing=""
@@ -588,9 +589,10 @@ rm -f "$U_MARK"
 	}
 }
 
+// portList: the TCP ports nft DNATs to the Hub (the forwarded flows ufw must route).
 func portList(sep string) string {
-	ps := make([]string, len(config.RelayTCPPorts))
-	for i, p := range config.RelayTCPPorts {
+	ps := make([]string, len(config.RelayDNATTCPPorts))
+	for i, p := range config.RelayDNATTCPPorts {
 		ps[i] = strconv.Itoa(p)
 	}
 	return strings.Join(ps, sep)
@@ -714,6 +716,9 @@ fi
 	for _, rt := range relayRoutes() {
 		b.WriteString(`ufw route allow proto ` + rt[0] + ` to "$HUB" port ` + rt[1] + ` comment heyearth-relay >/dev/null` + "\n")
 	}
+	for _, p := range config.RelayStreamTCPPorts { // the relay's own nginx stream (relay_stream)
+		b.WriteString(`ufw allow ` + strconv.Itoa(p) + `/tcp comment heyearth-relay >/dev/null` + "\n")
+	}
 	b.WriteString(`echo "ufw: пересылка на Hub $HUB разрешена (TCP ` + portList(",") + `, UDP ` + strconv.Itoa(config.RelayBambooPort) + `)"
 `)
 	return b.String()
@@ -728,6 +733,10 @@ route() { awk -v to="$HUB" -v port="$1" '$1 == to && $2 == port && $3 == "ALLOW"
 `)
 	for _, rt := range relayRoutes() {
 		b.WriteString(`route ` + rt[1] + "/" + rt[0] + ` || echo "RELAY_FAIL ufw: нет разрешения пересылки ` + strings.ToUpper(rt[0]) + " " + rt[1] + ` на Hub $HUB"` + "\n")
+	}
+	for _, p := range config.RelayStreamTCPPorts {
+		ps := strconv.Itoa(p)
+		b.WriteString(`awk -v p=` + ps + `/tcp '$1 == p && $2 == "ALLOW" { f = 1 } END { exit !f }' <<<"$st" || echo "RELAY_FAIL ufw: порт ` + ps + ` закрыт"` + "\n")
 	}
 	return b.String()
 }
@@ -828,6 +837,7 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 		{Name: "relay_sysctl", Apply: l.sysctlApply(o), Verify: l.sysctlVerify(o)},
 		{Name: "relay_rules", Apply: l.rulesApply(o), Verify: l.rulesVerify(o), Rollback: l.rulesRollback(o)},
 		{Name: "relay_unit", Apply: l.unitApply(o), Verify: l.unitVerify(o), Rollback: l.unitRollback(o)},
+		{Name: "relay_stream", Apply: l.streamApply(o), Verify: l.streamVerify(o)},
 		// No rollback: on a live relay it would remove the rules an earlier job added; an extra
 		// allow is harmless (the nft forward chain drops every flow not DNATed to the Hub).
 		{Name: "relay_firewall", Apply: func(ctx context.Context, r Remote, s *State) error {
@@ -836,6 +846,12 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 			return l.check(ctx, r, "firewall-check", o, relayFirewallCheckSh())
 		}},
 		{Name: "relay_fail2ban", Apply: l.jailApply(o), Verify: l.jailVerify(o), Rollback: l.jailRollback(o)},
+		// The Hub trusts this relay's PROXY header before the check from outside goes through it.
+		{Name: "relay_hub_trust", Apply: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTrust(ctx, s.Hub, o.RelayIP, true)
+		}, Verify: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTrustCheck(ctx, s.Hub, o.RelayIP)
+		}},
 		{Name: "relay_path", Verify: relayPathVerify(o)},
 	}
 }
@@ -866,6 +882,7 @@ func relaySetup(n Node, st *State) (Recipe, error) {
 // and fail2ban restarted without the relay's jail. The packages stay.
 const relayTeardownSh = `sysctl -q -w net.ipv4.ip_forward=0
 systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
+systemctl disable --now nginx >/dev/null 2>&1 || true
 nft delete table ip "$TABLE" >/dev/null 2>&1 || true
 jail=0
 if [ -e "$JAIL" ]; then jail=1; fi
@@ -878,6 +895,7 @@ echo "пересылка снята: таблицы $TABLE нет, ip_forward в
 `
 
 const relayTeardownCheckSh = `if nft list table ip "$TABLE" >/dev/null 2>&1; then echo "RELAY_FAIL таблица $TABLE ещё загружена"; fi
+if systemctl is-active --quiet nginx; then echo "RELAY_FAIL nginx входа работает"; fi
 if systemctl is-active --quiet "$UNIT_NAME"; then echo "RELAY_FAIL $UNIT_NAME работает"; fi
 for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL" "$WANTS/$UNIT_NAME"; do
   if [ -e "$f" ]; then echo "RELAY_FAIL остался $f"; fi
@@ -907,6 +925,10 @@ if grep -q '#[[:space:]]*heyearth-relay' <<<"$st"; then echo "RELAY_FAIL в ufw 
 func relayDeprovision(l relayLayout) Recipe {
 	var o RelayOptions // teardown needs no options: a changed Hub address must not leave rules behind
 	return Recipe{
+		// The Hub stops trusting the relay's PROXY header first (its address may be reused).
+		{Name: "relay_hub_untrust", Apply: bestEffort(func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTrust(ctx, s.Hub, s.Node.IP, false)
+		})},
 		{Name: "relay_teardown", Apply: bestEffort(func(ctx context.Context, r Remote, s *State) error {
 			return l.run(ctx, r, s, "teardown", o, relayTeardownSh)
 		}), Verify: bestEffortVerify(func(ctx context.Context, r Remote, _ *State) error {

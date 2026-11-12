@@ -24,7 +24,7 @@ func TestValidateRelayCreate(t *testing.T) {
 }
 
 func TestValidateRelaySSHPort(t *testing.T) {
-	for _, p := range []int{443, 2443} {
+	for _, p := range []int{80, 443, 2443} {
 		if validateRelaySSHPort(p) == nil {
 			t.Errorf("SSH on %d accepted: the relay forwards it to the Hub", p)
 		}

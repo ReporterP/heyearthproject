@@ -1,5 +1,5 @@
 [Unit]
-Description=HiEarth reserve entry: forward TCP 443/2443 and UDP 30000-65000 to the Hub
+Description=HiEarth reserve entry: forward TCP 2443 and UDP 30000-65000 to the Hub
 After=network-pre.target nftables.service ufw.service
 PartOf=nftables.service
 ReloadPropagatedFrom=nftables.service

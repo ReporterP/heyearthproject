@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 )
 
 // validateRelayCreate normalizes the wizard's create request of a reserve entry (role 'relay'):
@@ -21,11 +23,11 @@ func validateRelayCreate(country string, planIDs []int, mtproxy bool, loadWeight
 	return "RU", nil
 }
 
-// validateRelaySSHPort: the relay forwards TCP 443 and 2443 to the Hub, so SSH on one of them
-// would be forwarded too — the Hub could never reach the relay again.
+// validateRelaySSHPort: the relay takes TCP 80, 443 and 2443 for users (config.RelayTCPPorts),
+// so SSH on one of them would be forwarded to the Hub — the Hub could never reach the relay again.
 func validateRelaySSHPort(port int) error {
-	if port == 443 || port == 2443 {
-		return fmt.Errorf("SSH на порту %d не подойдёт: резервный вход пересылает 443 и 2443 на Hub. Оставьте 22 или выберите другой порт", port)
+	if slices.Contains(config.RelayTCPPorts, port) {
+		return fmt.Errorf("SSH на порту %d не подойдёт: резервный вход пересылает 80, 443 и 2443 на Hub. Оставьте 22 или выберите другой порт", port)
 	}
 	return nil
 }

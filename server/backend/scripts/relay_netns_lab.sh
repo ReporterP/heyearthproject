@@ -207,8 +207,9 @@ check "ip_forward включён юнитом после загрузки таб
 check "одна таблица после start + reload" "$(tables)" "1"
 check "ровно 2 DNAT (проверка шага Verify)" "$(printf '%s\n' "$live" | grep -c "dnat to $HUB" || true)" "2"
 check "masquerade как в Verify" "$(printf '%s\n' "$live" | grep -c "ip daddr $HUB ct status dnat masquerade" || true)" "1"
-check "TCP 443 → Hub, Hub видит ретранслятор" "$(probe tcp $C1 $R_C 443)" "*hub tcp 443 from $R_H*"
-check "TCP 2443" "$(probe tcp $C1 $R_C 2443)" "*hub tcp 2443 from $R_H*"
+# TCP 443 and 80 go through the relay's nginx stream (config.RelayNginxConf), not nft: not DNATed here.
+check "TCP 443 не DNAT (его принимает nginx входа)" "$(probe tcp $C1 $R_C 443)" "ERR*"
+check "TCP 2443 → Hub, Hub видит ретранслятор" "$(probe tcp $C1 $R_C 2443)" "*hub tcp 2443 from $R_H*"
 check "UDP 50443" "$(probe udp $C1 $R_C 50443)" "*from $R_H reply-from $R_C:50443"
 check "UDP hop 41234: ответ с того же адреса и порта" "$(probe udp $C1 $R_C 41234)" "*from $R_H reply-from $R_C:41234"
 # Two clients, one source port, two hop ports (LAB_MUTATE=same-port: see the header).
@@ -226,7 +227,7 @@ unit_stop || echo "(stop упал)"
 check "stop: ни на одном шаге таблица не снята при включённом ip_forward" "окон: $windows" "окон: 0"
 check "после stop таблицы нет" "$(tables)" "0"
 check "после stop ip_forward выключен" "$(x r sysctl -n net.ipv4.ip_forward)" "0"
-check "после stop TCP 443 не пересылается" "$(probe tcp $C1 $R_C 443)" "ERR*"
+check "после stop TCP 2443 не пересылается" "$(probe tcp $C1 $R_C 2443)" "ERR*"
 check "после stop транзит не маршрутизируется" "$(transit)" "Hub транзита не получил"
 
 if [ "$fails" = 0 ]; then echo "LAB PASS ($total/$total)"; else echo "LAB FAIL ($fails из $total)"; exit 1; fi

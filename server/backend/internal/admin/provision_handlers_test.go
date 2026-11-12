@@ -354,7 +354,7 @@ func TestCreateNodeValidation(t *testing.T) {
 		"bad ip":            {`{"ip_address":"x","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
 		"loopback ip":       {`{"ip_address":"127.0.0.1","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
 		"relay abroad":      {`{"role":"relay","ip_address":"203.0.113.7","country_code":"NL","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "RU"},
-		"relay SSH on 443":  {`{"role":"relay","ip_address":"203.0.113.7","ssh_port":443,"ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "пересылает 443"},
+		"relay SSH on 443":  {`{"role":"relay","ip_address":"203.0.113.7","ssh_port":443,"ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "пересылает 80, 443"},
 		"no country":        {`{"ip_address":"203.0.113.7","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "страну"},
 		"no fingerprint":    {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p"}`, 400, "отпечаток"},
 		"bad fingerprint":   {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"MD5:aa"}`, 400, "отпечаток"},

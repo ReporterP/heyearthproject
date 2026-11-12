@@ -12,11 +12,11 @@ import (
 // user data on it; the Hub sees the relay's address as the client. One set of templates for the
 // admin wizard and the CLI (internal/provision RelayRecipe writes them).
 //
-// What is forwarded, and nothing else:
+// What is forwarded by nft, and nothing else (TCP 443 and 80 go through the relay's nginx stream
+// with the client's address in a PROXY header instead: relay_stream.go):
 //
-//	TCP 443, 2443 (RelayTCPPorts)          -> the same port of the Hub (nginx stream SNI router
-//	                                          → Reality «Берёза»; XHTTP «Дуб», which checks the
-//	                                          Host header, not the address)
+//	TCP 2443 (RelayDNATTCPPorts)           -> the same port of the Hub (XHTTP «Дуб», which checks
+//	                                          the Host header, not the address)
 //	UDP 30000-65000 (50443 «Бамбук» incl.) -> Hub:50443
 //
 // Only packets addressed to the relay itself (fib daddr type local) are rewritten, so SSH and any
@@ -43,9 +43,13 @@ const (
 	RelayBambooPort = 50443
 )
 
-// RelayTCPPorts go to the same port of the Hub: 443 (nginx stream → Reality «Берёза») and
-// 2443 (XHTTP «Дуб»).
-var RelayTCPPorts = []int{443, 2443}
+// RelayTCPPorts: every TCP port a relay takes for users — 80 and 443 (its nginx stream,
+// RelayStreamTCPPorts) and 2443 (nft DNAT, RelayDNATTCPPorts). They must be free on a new relay
+// and can never be its SSH port.
+var RelayTCPPorts = []int{80, 443, 2443}
+
+// RelayDNATTCPPorts go to the same port of the Hub by nft DNAT: 2443 (XHTTP «Дуб»).
+var RelayDNATTCPPorts = []int{2443}
 
 // relayNonPublicV4 are IPv4 ranges a Hub address can never be in, beyond what netip reports as
 // private, loopback, link-local, multicast or unspecified: the exit's refused ranges
@@ -96,8 +100,8 @@ func RelayNftRuleset(hubIP string) (string, error) {
 		return "", err
 	}
 	h := hub.String()
-	tcp := make([]string, len(RelayTCPPorts))
-	for i, p := range RelayTCPPorts {
+	tcp := make([]string, len(RelayDNATTCPPorts))
+	for i, p := range RelayDNATTCPPorts {
 		tcp[i] = strconv.Itoa(p)
 	}
 	var b strings.Builder
@@ -132,8 +136,8 @@ func RelayNftRuleset(hubIP string) (string, error) {
 // "forwarding is on" is the unit's state — the relay recipe (Task 3.4) checks
 // `sysctl -n net.ipv4.ip_forward` = 1 in its unit step, not in the sysctl step.
 func RelayUnit(nftPath string) string {
-	ports := make([]string, len(RelayTCPPorts))
-	for i, p := range RelayTCPPorts {
+	ports := make([]string, len(RelayDNATTCPPorts))
+	for i, p := range RelayDNATTCPPorts {
 		ports[i] = strconv.Itoa(p)
 	}
 	return fmt.Sprintf(`[Unit]

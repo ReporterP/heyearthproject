@@ -103,6 +103,9 @@ stop) if [ -e "$S/active-$u" ]; then rm -f "$S/active-$u"; if [ "$u" = $R ]; the
 daemon-reload|reset-failed) ;;
 *) echo "systemctl stub: $cmd" >&2; exit 2 ;;
 esac`,
+	"nginx": `if [ "${1:-}" = -t ]; then
+  if [ "${NGINX_BAD:-0}" = 1 ] || [ ! -f "${4:-}" ]; then echo "nginx: configuration test failed" >&2; exit 1; fi
+fi`,
 	"fail2ban-client": `if [ "${1:-}" = status ] && [ "${2:-}" = sshd ]; then
   [ -e "$T/state/active-fail2ban" ] && grep -q '^\[sshd\]' "$T/state/f2b-loaded" 2>/dev/null
 else exit 1; fi`,
@@ -117,9 +120,9 @@ status)
   echo "--                         ------      ----"
   if [ "${2:-}" = numbered ]; then awk '{printf "[%2d] %s\n", NR, $0}' "$R"; else cat "$R"; fi ;;
 allow)
-  shift; from=Anywhere; port=""; proto=""
-  while [ $# -gt 0 ]; do case "$1" in from) from=$2; shift 2 ;; to) shift 2 ;; port) port=$2; shift 2 ;; proto) proto=$2; shift 2 ;; *) port=${1%/*}; proto=${1#*/}; shift ;; esac; done
-  l="$port/$proto ALLOW IN $from"; grep -qxF -- "$l" "$R" || echo "$l" >> "$R" ;;
+  shift; from=Anywhere; port=""; proto=""; c=""
+  while [ $# -gt 0 ]; do case "$1" in from) from=$2; shift 2 ;; to) shift 2 ;; port) port=$2; shift 2 ;; proto) proto=$2; shift 2 ;; comment) c=$2; shift 2 ;; *) port=${1%/*}; proto=${1#*/}; shift ;; esac; done
+  l="$port/$proto ALLOW IN $from${c:+ # $c}"; grep -qxF -- "$l" "$R" || echo "$l" >> "$R" ;;
 route)
   shift 2; proto=""; to=""; port=""; c=""
   while [ $# -gt 1 ]; do case "$1" in proto) proto=$2 ;; to) to=$2 ;; port) port=$2 ;; comment) c=$2 ;; esac; shift 2; done
@@ -180,7 +183,7 @@ func (h *relayHost) layout() relayLayout {
 	return relayLayout{osRelease: p("/etc/os-release"), nft: p("/etc/heyearth/relay.nft"), unit: p("/etc/systemd/system/heyearth-relay.service"),
 		wants: p("/etc/systemd/system/multi-user.target.wants"), sysctl: p("/etc/sysctl.d/90-heyearth-relay.conf"),
 		modules: p("/etc/modules-load.d/heyearth-relay.conf"), jail: p("/etc/fail2ban/jail.d/heyearth-sshd.local"),
-		state: p("/opt/heyearth/state/relay-pending")}
+		state: p("/opt/heyearth/state/relay-pending"), nginx: p("/etc/nginx/nginx.conf")}
 }
 
 // The files of the layout, relative to the root (Go side).
@@ -311,11 +314,26 @@ type relayEnv struct {
 	verified int
 	pathErr  error
 	dialErr  error
+	hubTrust []string // relayHubTrust calls: "<ip> <on>"
+	trusted  bool
 }
 
 func relayFixture(t *testing.T, env map[string]string) *relayEnv {
 	t.Helper()
 	e := &relayEnv{h: newRelayHost(t, env), hooks: &fakeHooks{lifecycle: "pending"}}
+	prevTrust, prevCheck := relayHubTrust, relayHubTrustCheck
+	t.Cleanup(func() { relayHubTrust, relayHubTrustCheck = prevTrust, prevCheck })
+	relayHubTrust = func(_ context.Context, _ Remote, ip string, on bool) error {
+		e.hubTrust = append(e.hubTrust, fmt.Sprintf("%s %v", ip, on))
+		e.trusted = on
+		return nil
+	}
+	relayHubTrustCheck = func(context.Context, Remote, string) error {
+		if !e.trusted {
+			return errors.New("Hub не доверяет входу")
+		}
+		return nil
+	}
 	e.opts = testRelayOpts()
 	e.opts.VerifyPath = func(context.Context) error { e.verified++; return e.pathErr }
 	e.store = newMemStore(Node{ID: 9, Name: "Резерв", Role: "relay", IP: tRelay, SSHPort: 2222, Password: "relay-Pa55word",
@@ -364,8 +382,8 @@ func (e *relayEnv) dump(id int64) string {
 	return b.String()
 }
 
-var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_rules", "relay_unit", "relay_firewall",
-	"relay_fail2ban", "relay_path", "activate"}
+var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_rules", "relay_unit", "relay_stream", "relay_firewall",
+	"relay_fail2ban", "relay_hub_trust", "relay_path", "activate"}
 
 func allSteps(names []string, status string) map[string]string {
 	m := map[string]string{}
@@ -403,7 +421,8 @@ func runRelaySteps(t *testing.T, h *relayHost, o RelayOptions, names ...string) 
 }
 
 const wantRelayUfw = "2222/tcp ALLOW IN 198.51.100.2\n2222/tcp ALLOW IN 198.51.100.3\n" +
-	"198.51.100.2 443,2443/tcp ALLOW FWD Anywhere # heyearth-relay\n198.51.100.2 50443/udp ALLOW FWD Anywhere # heyearth-relay\n"
+	"198.51.100.2 2443/tcp ALLOW FWD Anywhere # heyearth-relay\n198.51.100.2 50443/udp ALLOW FWD Anywhere # heyearth-relay\n" +
+	"80/tcp ALLOW IN Anywhere # heyearth-relay\n443/tcp ALLOW IN Anywhere # heyearth-relay\n"
 
 func TestRelayProvisionFreshThenNoOpRerun(t *testing.T) {
 	e := relayFixture(t, map[string]string{"UFW_ACTIVE": "1"})
@@ -427,7 +446,7 @@ func TestRelayProvisionFreshThenNoOpRerun(t *testing.T) {
 	if got := h.file("/state/ufw"); got != wantRelayUfw {
 		t.Fatalf("ufw:\n%s\nwant:\n%s", got, wantRelayUfw)
 	}
-	for _, c := range []string{"apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends nftables fail2ban python3-systemd",
+	for _, c := range []string{"apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends nftables fail2ban python3-systemd nginx libnginx-mod-stream",
 		"nft -c -f -", "sysctl -e -q -p", "systemctl start heyearth-relay.service", "systemctl restart fail2ban"} {
 		if !strings.Contains(h.calls(), c) {
 			t.Errorf("first run lacks %q", c)
@@ -686,7 +705,7 @@ func TestRelayFirewallOnlyIfActive(t *testing.T) {
 	if err := st.Verify(context.Background(), on, nil); err == nil || !strings.Contains(err.Error(), "UDP 50443") {
 		t.Fatalf("missing UDP rule: %v", err)
 	}
-	if _, _, err := runRelaySteps(t, on, o, "relay_firewall"); err != nil || strings.Contains(on.calls(), "ufw allow") ||
+	if _, _, err := runRelaySteps(t, on, o, "relay_firewall"); err != nil || strings.Contains(on.calls(), "ufw allow from") ||
 		!strings.HasPrefix(on.file("/state/ufw"), "2222/tcp LIMIT IN Anywhere\n") {
 		t.Fatalf("SSH rule touched: %v\n%s", err, on.file("/state/ufw"))
 	}
@@ -891,7 +910,7 @@ func TestRelayOptionsFor(t *testing.T) {
 // The phase 2 dispatch: a relay ends online only through activate (after relay_path), and its
 // teardown sits between the lifecycle steps of DeprovisionRecipe.
 func TestRelayStitching(t *testing.T) {
-	if dep := stepNames(DeprovisionRecipe("relay")); !slices.Equal(dep, []string{"exclude", "relay_teardown", "relay_firewall_remove", "finalize"}) {
+	if dep := stepNames(DeprovisionRecipe("relay")); !slices.Equal(dep, []string{"exclude", "relay_hub_untrust", "relay_teardown", "relay_firewall_remove", "finalize"}) {
 		t.Fatalf("relay deprovision: %v", dep)
 	}
 	for _, s := range append(relayRecipe(testRelayOpts(), relayPaths), RelayDeprovisionRecipe()...) {

@@ -35,8 +35,8 @@ func TestRelayNftRuleset(t *testing.T) {
 	}
 	for _, must := range []string{
 		"type nat hook prerouting priority dstnat; policy accept;\n",
-		// TCP to the same Hub port: 443 = nginx stream SNI router, 2443 = XHTTP.
-		"    fib daddr type local tcp dport { 443, 2443 } dnat to " + labHub + "\n",
+		// TCP 2443 (XHTTP) to the same Hub port; 443 and 80 go through the relay's nginx stream.
+		"    fib daddr type local tcp dport { 2443 } dnat to " + labHub + "\n",
 		// UDP: the whole hop range to Hub:50443 (not the same port — the Hub's hop DNAT would clash).
 		"    fib daddr type local udp dport 30000-65000 dnat to " + labHub + ":50443\n",
 		// Nothing else is forwarded: only flows our DNAT sent to the Hub (and their replies/ICMP).
@@ -277,5 +277,79 @@ func TestRelayNftInNetns(t *testing.T) {
 	}
 	if w := readRel(dir, "window"); w != "" {
 		t.Errorf("the stop dropped the table while ip_forward was on (%d times): the relay routed without its filter", strings.Count(w, "open"))
+	}
+}
+
+// TCP 443 and 80 of a relay go through its nginx stream: 443 with a PROXY header to the Hub's
+// relay listener, 80 plain; no http block (the package's default site never listens).
+func TestRelayNginxConf(t *testing.T) {
+	c, err := RelayNginxConf(labHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, must := range []string{"listen 443 ", "proxy_pass " + labHub + ":8447;", "proxy_protocol on;", "listen 80;", "proxy_pass " + labHub + ":80;", "stream {"} {
+		if !strings.Contains(c, must) {
+			t.Errorf("relay nginx.conf lacks %q:\n%s", must, c)
+		}
+	}
+	if strings.Contains(c, "http {") || strings.Count(c, "proxy_protocol on;") != 1 {
+		t.Errorf("relay nginx.conf: no http block, PROXY on 443 only:\n%s", c)
+	}
+	if _, err := RelayNginxConf("10.0.0.1"); err == nil {
+		t.Error("a private Hub address accepted")
+	}
+	golden(t, "relay_nginx.golden", []byte(c))
+}
+
+const labRouter = `map $ssl_preread_server_name $backend {
+    hiearth.ru          nginx_https;
+    admin.hiearth.ru    nginx_https;   # admin
+    default        xray_vless;
+}
+upstream nginx_https {
+    server 127.0.0.1:8446;
+}
+upstream xray_vless {
+    server 127.0.0.1:10444;
+}
+server {
+    listen 443;
+    proxy_pass $backend;
+}
+`
+
+// The Hub's relay listener mirrors the 443 router's SNI routing: the site's names to the http
+// PROXY mirror, the rest (Reality) to xray's; realip only from the trust files.
+func TestHubRelayPPConf(t *testing.T) {
+	names, err := RouterSiteNames(labRouter)
+	if err != nil || strings.Join(names, ",") != "admin.hiearth.ru,hiearth.ru" {
+		t.Fatalf("site names %v %v", names, err)
+	}
+	if n, err := RouterSiteNames(strings.ReplaceAll(labRouter, "8446", "8443")); err != nil || len(n) != 2 {
+		t.Errorf("router in off mode (8443): %v %v", n, err)
+	}
+	if _, err := RouterSiteNames("server { listen 443; }"); err == nil {
+		t.Error("a router without the map: must refuse (the site would go to xray)")
+	}
+	c := HubRelayPPConf(names)
+	for _, must := range []string{"listen 8447 proxy_protocol", "include " + HubRelayTrustDir + "/*.conf;", "ssl_preread on;", "proxy_protocol on;",
+		"admin.hiearth.ru", "relay_nginx_pp;", "relay_xray_pp;", "server 127.0.0.1:8446;", "server 127.0.0.1:10444;"} {
+		if !strings.Contains(c, must) {
+			t.Errorf("relay-pp.conf lacks %q:\n%s", must, c)
+		}
+	}
+	if strings.Contains(c, "set_real_ip_from") {
+		t.Error("relay-pp.conf itself must trust nobody (only the per-relay files do)")
+	}
+	golden(t, "hub_relay_pp.golden", []byte(c))
+	f, err := HubRelayTrustFile(labHub)
+	if err != nil || !strings.Contains(f, "set_real_ip_from "+labHub+";") {
+		t.Errorf("trust file %q %v", f, err)
+	}
+	if _, err := HubRelayTrustFile("192.168.1.5"); err == nil {
+		t.Error("a private relay address trusted")
+	}
+	if p := HubRelayTrustPath(" 203.0.113.50 "); p != HubRelayTrustDir+"/203.0.113.50.conf" {
+		t.Errorf("trust path %q", p)
 	}
 }
