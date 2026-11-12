@@ -436,14 +436,14 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Сначала проверьте подключение и подтвердите отпечаток ключа сервера (SHA256:…)")
 		return
 	}
-	if strings.TrimSpace(req.SSHPassword) == "" {
-		writeAdminError(w, http.StatusBadRequest, "Нужен пароль root: он хранится зашифрованно и нужен, пока на сервер не поставлен ключ Hub")
-		return
-	}
-	enc, err := encryptSSHPassword(req.SSHPassword)
-	if err != nil {
-		writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
-		return
+	// No password: the owner put the Hub's public key on the server when creating it; checked
+	// right after the row is stored (hubKeyOnlyAccess), the row goes again when it does not work.
+	var enc []byte
+	if strings.TrimSpace(req.SSHPassword) != "" {
+		if enc, err = encryptSSHPassword(req.SSHPassword); err != nil {
+			writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
+			return
+		}
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" && req.Role == "relay" {
@@ -482,8 +482,45 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить сервер")
 		return
 	}
+	if len(enc) == 0 && !hubKeyOnlyAccess(w, r.Context(), id) {
+		return
+	}
 	WriteAuditLog(r, "create_node", "server", strconv.Itoa(id), map[string]string{"name": name, "ip": ip, "fingerprint": fp, "key_type": key.Type})
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+// hubKeyOnlyMsg: a node added without a password must let the Hub in with its own key.
+const hubKeyOnlyMsg = "Hub не смог войти на сервер по своему ключу. Либо вставьте публичный ключ Hub (раздел «SSH-ключи») " +
+	"в настройки сервера у хостера для пользователя root, либо укажите пароль root"
+
+const deletePendingNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state = 'pending'`
+
+// hubKeyOnlyAccess: the just stored password-less node answers to the Hub's key (one harmless
+// command); otherwise its row is removed and the owner told what to do.
+func hubKeyOnlyAccess(w http.ResponseWriter, ctx context.Context, id int) bool {
+	err := func() error {
+		n, err := NodeJobs.LoadNode(ctx, id)
+		if err != nil {
+			return err
+		}
+		rem, err := NodeDial(n)
+		if err != nil {
+			return err
+		}
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		_, err = rem.Run(c, "true")
+		return err
+	}()
+	if err == nil {
+		return true
+	}
+	log.Printf("[nodes] node %d: Hub key access: %v", id, err)
+	if _, derr := db.DB.ExecContext(ctx, deletePendingNodeQuery, id); derr != nil {
+		log.Printf("[nodes] node %d: remove after failed key access: %v", id, derr)
+	}
+	writeAdminError(w, http.StatusConflict, hubKeyOnlyMsg)
+	return false
 }
 
 const confirmHostKeyQuery = `UPDATE servers SET ssh_host_key = $2, ssh_host_key_fp = $3, ssh_host_key_confirmed_at = NOW(), updated_at = NOW() WHERE id = $1`

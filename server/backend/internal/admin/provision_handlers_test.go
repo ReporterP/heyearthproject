@@ -358,7 +358,6 @@ func TestCreateNodeValidation(t *testing.T) {
 		"no country":        {`{"ip_address":"203.0.113.7","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "страну"},
 		"no fingerprint":    {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p"}`, 400, "отпечаток"},
 		"bad fingerprint":   {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"MD5:aa"}`, 400, "отпечаток"},
-		"no password":       {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_host_key_fp":"` + fp + `"}`, 400, "пароль"},
 		"no encryption key": {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 503, sshPasswordKeyMissingMsg},
 	} {
 		rec := call(CreateNodeHandler, "POST", "/api/admin/servers", tc.body)
@@ -422,6 +421,54 @@ func TestCreateNodeStoresChosenProbeKey(t *testing.T) {
 	}
 	if !sawBlob || !sawFP || !sawCountry {
 		t.Errorf("chosen key / fingerprint / country not stored: %v", args)
+	}
+}
+
+type stubRemote struct{ err error }
+
+func (r stubRemote) Run(context.Context, string) (string, error) { return "", r.err }
+func (r stubRemote) PutFile(context.Context, string, []byte, uint32) (bool, error) {
+	return false, r.err
+}
+
+// No password: the Hub's key put on the server by the owner must let the Hub in; when it does
+// not, the just stored row goes again and the owner is told to add the key or a password.
+func TestCreateNodeWithoutPassword(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		dialErr error
+		code    int
+	}{{"Hub key works", nil, 201}, {"Hub key refused", provision.ErrNoCredentials, 409}} {
+		t.Run(c.name, func(t *testing.T) {
+			withProvisioning(t, &fakeProvisioner{}, provision.Node{ID: 9})
+			NodeJobs = fakeJobs{node: provision.Node{ID: 9}, allowLoad: true} // the access check loads credentials
+			NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) { return twoKeys(), nil }
+			prevDial := NodeDial
+			t.Cleanup(func() { NodeDial = prevDial })
+			NodeDial = func(provision.Node) (provision.Remote, error) { return stubRemote{}, c.dialErr }
+			d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
+				switch {
+				case strings.Contains(q, "SELECT EXISTS"):
+					return one([]string{"exists"}, false)
+				case strings.Contains(q, "INSERT INTO servers"):
+					return one([]string{"id"}, int64(9))
+				}
+				return nil
+			}})
+			rec := call(CreateNodeHandler, "POST", "/api/admin/servers",
+				`{"role":"relay","ip_address":"203.0.113.7","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`)
+			if rec.Code != c.code {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			ins := d.matching("INSERT INTO servers")
+			if enc, _ := ins[0].args[6].([]byte); len(ins) != 1 || len(enc) != 0 {
+				t.Fatalf("insert without a password: %+v", ins)
+			}
+			deleted := len(d.matching("DELETE FROM servers WHERE id = $1 AND lifecycle_state = 'pending'")) == 1
+			if deleted != (c.code == 409) || (c.code == 409 && !strings.Contains(rec.Body.String(), "ключу")) {
+				t.Errorf("deleted=%v body %s", deleted, rec.Body)
+			}
+		})
 	}
 }
 
