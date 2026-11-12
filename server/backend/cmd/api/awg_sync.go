@@ -98,7 +98,7 @@ func SyncAWGConfig() error {
 		WHERE p.amnezia_wg_enabled = TRUE
 		  AND us.status = 'active'
 		  AND us.valid_until > NOW()
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
+		  AND (COALESCE(us.traffic_limit, 0) = 0 OR us.traffic_used < us.traffic_limit)
 		  AND u.awg_public_key IS NOT NULL
 		  AND u.awg_public_key <> ''
 		  AND u.awg_ip_address IS NOT NULL

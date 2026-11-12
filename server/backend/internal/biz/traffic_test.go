@@ -77,7 +77,6 @@ func TestHysteria2PlanQueryFilters(t *testing.T) {
 			innerJoin,
 			"us.status = 'active'",
 			"us.valid_until > NOW()",
-			"(us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)",
 		}},
 		{"CanUseHysteria2", hysteria2PlanGateQuery, []string{
 			innerJoin,
@@ -92,6 +91,11 @@ func TestHysteria2PlanQueryFilters(t *testing.T) {
 				if !strings.Contains(q, normSQL(m)) {
 					t.Errorf("query lost the filter %q:\n%s", m, tt.query)
 				}
+			}
+			// The lifetime traffic_used filter read a limit of 0 (promocode access) as
+			// exceeded; the cycle quota decides now (A7).
+			if strings.Contains(q, "TRAFFIC_USED") {
+				t.Errorf("query still filters on the lifetime traffic_used:\n%s", tt.query)
 			}
 			for _, outer := range []string{"LEFT", "RIGHT", "FULL", "OUTER", "CROSS"} {
 				if strings.Contains(q, outer+" JOIN PLANS") {
