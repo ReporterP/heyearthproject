@@ -331,17 +331,30 @@ func clashProfile(in hubConnectionInputs) string {
 			// by the subscription_clash golden). During a failover the server is
 			// a relay IP that no certificate names (skip-cert-verify: false):
 			// the cert domain then, like the URIs and the reserve proxies.
-			sni := host
-			if in.entries.failover {
+			// The main Express follows the target only when Бамбук answers
+			// through it; otherwise it stays on the Hub.
+			server, sni := host, host
+			if in.entries.failover && !in.entries.mainUDP {
+				server, sni = in.mainServerHost, in.mainServerHost
+			} else if in.entries.failover {
 				sni = in.hysteria2SNI
 			}
-			proxies = append(proxies, clashHy2Proxy(name, host, hy2Password, obfsPassword, sni, up, down))
+			proxies = append(proxies, clashHy2Proxy(name, server, hy2Password, obfsPassword, sni, up, down))
 		}
+	}
+
+	// While everyone is pinned to a relay: Home and XHTTP straight to the Hub
+	// (the way out on Wi-Fi if the relay dies), like directOptions.
+	if in.entries.pinned && in.mainServerHost != "" && realityPubKey != "" && vlessUUID != "" && canVLESS {
+		proxyNames = append(proxyNames, "HeYearth-Home"+directLabel, "HeYearth-XHTTP"+directLabel)
+		proxies = append(proxies,
+			clashRealityProxy("HeYearth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+			clashXHTTPProxy("HeYearth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
 
 	// Reserve entries (phase 3): the same proxies through each healthy relay,
 	// after the main ones; Express only through a relay whose UDP is healthy.
-	reserves := in.entries.reserves
+	reserves := shownReserves(in.entries)
 	if in.mainServerHost == "" { // same gate as reserveOptions: no Hub address, no reserve lines
 		reserves = nil
 	}

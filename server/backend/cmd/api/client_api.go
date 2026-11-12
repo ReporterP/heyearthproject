@@ -326,6 +326,11 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 	if connect == "" {
 		connect = mainServerHost
 	}
+	// The main Бамбук follows the target only when Бамбук answers through it.
+	bambooHost := connect
+	if in.entries.failover && !in.entries.mainUDP {
+		bambooHost = mainServerHost
+	}
 	rp := realityParams{uuid: userVlessUUID, sni: in.realitySNI, pbk: in.realityPubKey, sid: in.realityShortID}
 	if in.realityFlow != "" {
 		rp.flowParam = "&flow=" + in.realityFlow
@@ -452,13 +457,27 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 			// bandwidth params that flip Hysteria2's congestion control.
 			for _, v := range bambooVariants {
 				label := fmt.Sprintf("🎋 %s only WiFi", v.name)
-				opts = append(opts, bambooOption(bambooURI(hy2Password, connect, obfsPassword, hysteria2SNI, v.bwParams, label), label, v.priority))
+				opts = append(opts, bambooOption(bambooURI(hy2Password, bambooHost, obfsPassword, hysteria2SNI, v.bwParams, label), label, v.priority))
 			}
 		}
 	}
 
+	opts = append(opts, directOptions(in, rp)...)
 	opts = append(opts, reserveOptions(in, rp)...)
 	return opts
+}
+
+// directOptions: while everyone is pinned to a relay, one Берёза and one Дуб
+// (fp chrome) straight to the Hub — the way out on Wi-Fi if the relay dies.
+// Priorities 10..11: after the main lines, before the reserves.
+func directOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.ConnectionOption {
+	if !in.entries.pinned || in.mainServerHost == "" || rp.uuid == "" || rp.pbk == "" || !in.canVLESS {
+		return nil
+	}
+	label := "🌳 Берёза" + directLabel
+	opts := []*heyearth_v1.ConnectionOption{vlessOption(rp.tcpURI(in.mainServerHost, "chrome", label), label, 10)}
+	label = "🌲 Дуб" + directLabel
+	return append(opts, vlessOption(rp.xhttpURI(in.mainServerHost, in.xhttpPort, "chrome", in.mainServerHost, label), label, 11))
 }
 
 // ── Entries (phase 3): reserve lines and the failover of the main address ──
@@ -484,6 +503,8 @@ type reserveEntry struct {
 type entryPlan struct {
 	main     string
 	failover bool // main is the failover target
+	mainUDP  bool // Бамбук answers through the target: the main Бамбук lines follow it
+	pinned   bool // the owner sent everyone through the target: «· напрямую» lines, normal interval
 	reserves []reserveEntry
 	interval int // Profile-Update-Interval, hours
 }
@@ -491,13 +512,16 @@ type entryPlan struct {
 // planEntries: reserves = online relays with a healthy external check and an
 // address, by id. During a failover (global, or forced for the test user) the
 // main lines go to the target — only if it is a healthy reserve right now (a
-// stale flag never points users at a dead relay) — and the interval drops to
-// 1 h either way, so clients pick up the return quickly. Pure.
+// stale flag never points users at a dead relay), the main Бамбук only when
+// its UDP check is healthy too — and the interval drops to 1 h either way, so
+// clients pick up the return quickly. A pinned failover on a healthy target is
+// the owner's standing choice: the normal interval stays. Pure.
 func planEntries(mainHost string, relays []biz.Entry, fo biz.EntryFailover, forced bool, intervalRaw string) entryPlan {
 	p := entryPlan{main: mainHost, interval: defaultUpdateIntervalHours}
 	if h, err := strconv.Atoi(strings.TrimSpace(intervalRaw)); err == nil && h >= 1 && h <= 24 {
 		p.interval = h
 	}
+	normal := p.interval
 	for _, r := range relays {
 		if r.Kind == biz.EntryKindRelay && r.Lifecycle == "online" && r.Health.External == biz.EntryHealthy && r.Address != "" {
 			p.reserves = append(p.reserves, reserveEntry{id: r.ID, address: r.Address, udp: r.Health.UDP == biz.EntryHealthy})
@@ -514,12 +538,33 @@ func planEntries(mainHost string, relays []biz.Entry, fo biz.EntryFailover, forc
 	}
 	for _, r := range p.reserves {
 		if r.id == target {
-			p.main, p.failover = r.address, true
+			p.main, p.failover, p.mainUDP = r.address, true, r.udp
+			if fo.Active && fo.Pinned && r.id == fo.Target {
+				p.pinned, p.interval = true, normal
+			}
 			break
 		}
 	}
 	return p
 }
+
+// shownReserves: the reserves that get lines of their own — all of them, except
+// the pinned target (the main lines already point at it).
+func shownReserves(p entryPlan) []reserveEntry {
+	if !p.pinned {
+		return p.reserves
+	}
+	var out []reserveEntry
+	for _, r := range p.reserves {
+		if r.address != p.main {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// directLabel marks a line that goes straight to the Hub while everyone is pinned to a relay.
+const directLabel = " · напрямую"
 
 // loadEntryPlan reads the inputs of planEntries; every read is strict (an
 // error, never "no reserves" / "no failover").
@@ -611,7 +656,7 @@ func reserveOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.Con
 		return nil
 	}
 	var opts []*heyearth_v1.ConnectionOption
-	for k, r := range in.entries.reserves {
+	for k, r := range shownReserves(in.entries) {
 		sfx, base := reserveSuffix(k), int32(20+10*k)
 		if rp.uuid != "" && rp.pbk != "" && in.canVLESS {
 			label := "🌳 Берёза" + sfx

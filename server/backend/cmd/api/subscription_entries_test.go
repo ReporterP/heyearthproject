@@ -41,11 +41,20 @@ func entriesScript(t *testing.T, scenario string) *scriptDB {
 	switch scenario {
 	case "relay": // 5 healthy (UDP too), 6 unhealthy, 7 healthy TCP but UDP unconfirmed
 		rows = [][]driver.Value{relayRow(5, eR5, "healthy", "healthy"), relayRow(6, eR6, "unhealthy", "healthy"), relayRow(7, eR7, "healthy", "unknown")}
-	case "failover", "relay_unhealthy":
-		ext := map[string]string{"failover": "healthy", "relay_unhealthy": "unhealthy"}[scenario]
-		rows = [][]driver.Value{relayRow(5, eR5, ext, "healthy")}
+	case "failover", "relay_unhealthy", "failover_no_udp":
+		ext := map[string]string{"failover": "healthy", "relay_unhealthy": "unhealthy", "failover_no_udp": "healthy"}[scenario]
+		udp := map[string]string{"failover_no_udp": "unknown"}[scenario]
+		if udp == "" {
+			udp = "healthy"
+		}
+		rows = [][]driver.Value{relayRow(5, eR5, ext, udp)}
 		s.settings["entry_failover_active"], s.settings["entry_failover_target"] = "true", "5"
 		s.settings["entry_failover_since"] = "2026-10-12T10:00:00Z"
+	case "pinned": // everyone through 5 on purpose; 7 is a second healthy reserve
+		rows = [][]driver.Value{relayRow(5, eR5, "healthy", "healthy"), relayRow(7, eR7, "healthy", "unknown")}
+		s.settings["entry_failover_active"], s.settings["entry_failover_target"] = "true", "5"
+		s.settings["entry_failover_pinned"] = "true"
+		s.settings["subscription_update_interval_hours"] = "6"
 	default:
 		t.Fatalf("scenario %s", scenario)
 	}
@@ -131,6 +140,45 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 		}
 		if got := h.Get("Profile-Update-Interval"); got != "1" {
 			t.Errorf("interval %q, want 1 during failover", got)
+		}
+	})
+	t.Run("failover: Bamboo stays on the Hub while its UDP is unconfirmed", func(t *testing.T) {
+		lines, _ := happ(t, entriesScript(t, "failover_no_udp"))
+		wantLines(t, lines, map[string]string{"🌳 Берёза 1": eR5 + ":443", "🌲 Дуб 1": eR5 + ":2443",
+			"🎋 Бамбук 1 only WiFi": eHub + ":50443", "🎋 Бамбук 2 only WiFi": eHub + ":50443"})
+		body, _ := entriesRequest(t, entriesScript(t, "failover_no_udp"), "clash-verge/2.0", "?format=clash")
+		express := clashBlock(t, body, "HiEarth-Express")
+		if !strings.Contains(express, "server: "+eHub) || !strings.Contains(express, "sni: "+eHub) {
+			t.Errorf("main Express must stay on the Hub (server and sni) without UDP through the target:\n%s", express)
+		}
+	})
+	t.Run("pinned: everyone through the target, direct lines, no duplicate reserve", func(t *testing.T) {
+		lines, h := happ(t, entriesScript(t, "pinned"))
+		wantLines(t, lines, map[string]string{"🌳 Берёза 1": eR5 + ":443", "🌲 Дуб 2": eR5 + ":2443",
+			"🎋 Бамбук 1 only WiFi": eR5 + ":50443",
+			"🌳 Берёза · напрямую":  eHub + ":443", "🌲 Дуб · напрямую": eHub + ":2443",
+			"🌳 Берёза · резерв": eR7 + ":443", "🌲 Дуб · резерв": eR7 + ":2443"})
+		if hp := lines["🌲 Дуб · напрямую"].hostParam; hp != eHub {
+			t.Errorf("direct XHTTP host= %q, want %s", hp, eHub)
+		}
+		for label, l := range lines {
+			if strings.Contains(label, "резерв") && l.host == eR5 {
+				t.Errorf("%q duplicates the main lines (pinned target)", label)
+			}
+		}
+		if _, ok := lines["🌳 Берёза · резерв 2"]; ok {
+			t.Error("reserve numbering must skip the pinned target")
+		}
+		if got := h.Get("Profile-Update-Interval"); got != "6" {
+			t.Errorf("pinned: interval %q, want the normal 6", got)
+		}
+		body, _ := entriesRequest(t, entriesScript(t, "pinned"), "clash-verge/2.0", "?format=clash")
+		direct := clashBlock(t, body, "HeYearth-XHTTP · напрямую")
+		if !strings.Contains(direct, "server: "+eHub) || strings.Contains(direct, "xhttp-opts") {
+			t.Errorf("direct Clash XHTTP must be the plain Hub proxy:\n%s", direct)
+		}
+		if res := clashBlock(t, body, "HeYearth-Home · резерв"); !strings.Contains(res, "server: "+eR7) {
+			t.Errorf("Clash: the first reserve must be 7, not the pinned target:\n%s", res)
 		}
 	})
 	t.Run("failover target unhealthy", func(t *testing.T) {
@@ -258,6 +306,9 @@ func TestPlanEntries(t *testing.T) {
 		{ID: 0, Kind: biz.EntryKindHub, Address: "hub", Lifecycle: "online", Health: biz.EntryHealth{External: biz.EntryHealthy}},
 	}
 	active := func(target int) biz.EntryFailover { return biz.EntryFailover{Active: true, Target: target} }
+	pinned := func(target int) biz.EntryFailover {
+		return biz.EntryFailover{Active: true, Target: target, Pinned: true}
+	}
 	cases := []struct {
 		name     string
 		fo       biz.EntryFailover
@@ -276,12 +327,22 @@ func TestPlanEntries(t *testing.T) {
 		{"target unknown", active(42), false, "", "hub", false, 1},
 		{"test user: the first healthy reserve", biz.EntryFailover{}, true, "6", "r5.example.test", true, 1},
 		{"test user during a global failover: its target", active(9), true, "", "r9.example.test", true, 1},
+		{"pinned to a healthy reserve: normal interval", pinned(5), false, "12", "r5.example.test", true, 12},
+		{"pinned target unhealthy: Hub, 1 h", pinned(6), false, "12", "hub", false, 1},
+		{"test user during a pinned failover", pinned(5), true, "", "r5.example.test", true, 4},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			p := planEntries("hub", relays, c.fo, c.forced, c.interval)
 			if p.main != c.main || p.failover != c.failover || p.interval != c.hours {
 				t.Errorf("planEntries = main %q failover %v interval %d, want %q %v %d", p.main, p.failover, p.interval, c.main, c.failover, c.hours)
+			}
+			wantUDP := c.failover && c.main == "r5.example.test" // 5's UDP is healthy, 9's unknown
+			if p.mainUDP != wantUDP {
+				t.Errorf("mainUDP %v, want %v", p.mainUDP, wantUDP)
+			}
+			if wantPinned := c.fo.Pinned && c.failover; p.pinned != wantPinned {
+				t.Errorf("pinned %v, want %v", p.pinned, wantPinned)
 			}
 			want := []reserveEntry{{5, "r5.example.test", true}, {9, "r9.example.test", false}}
 			if fmt.Sprint(p.reserves) != fmt.Sprint(want) {
@@ -304,7 +365,7 @@ func TestEntriesSubscriptionGolden(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	for _, sc := range []string{"relay", "failover", "relay_unhealthy"} {
+	for _, sc := range []string{"relay", "failover", "relay_unhealthy", "failover_no_udp", "pinned"} {
 		t.Run(sc, func(t *testing.T) {
 			happBody, _ := entriesRequest(t, entriesScript(t, sc), "Happ/3.1 Android", "")
 			want := fmt.Sprint(labels(subLines(t, strings.Split(happBody, "\n"))))
