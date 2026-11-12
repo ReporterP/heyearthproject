@@ -21,20 +21,33 @@ func InitDB() error {
 		connStr = "postgres://postgres:postgres@localhost:5432/heyearth?sslmode=disable"
 	}
 
-	var err error
-	DB, err = sql.Open("postgres", connStr)
+	// Migrations run on their own handle without statement_timeout (they may
+	// rewrite large tables); the API's pool gets the session limits.
+	migDB, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to db: %w", err)
 	}
-
-	if err = DB.Ping(); err != nil {
+	defer migDB.Close()
+	if err = migDB.Ping(); err != nil {
 		return fmt.Errorf("failed to ping db: %w", err)
 	}
 
-	log.Println("Connected to PostgreSQL successfully")
+	DB, err = sql.Open("postgres", withSessionLimits(connStr))
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	// Postgres allows 100 connections by default; leave room for psql, backups and migrations.
+	DB.SetMaxOpenConns(60)
+	DB.SetMaxIdleConns(10)
+	if err = DB.Ping(); err != nil {
+		return fmt.Errorf("failed to ping db: %w", err)
+	}
+	var st string
+	_ = DB.QueryRow(`SHOW statement_timeout`).Scan(&st)
+	log.Printf("Connected to PostgreSQL successfully (statement_timeout=%s)", st)
 
 	// Run migrations
-	driver, err := postgres.WithInstance(DB, &postgres.Config{})
+	driver, err := postgres.WithInstance(migDB, &postgres.Config{})
 	if err != nil {
 		return fmt.Errorf("could not create postgres driver: %w", err)
 	}

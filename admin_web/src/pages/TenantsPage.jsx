@@ -4,7 +4,7 @@ import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import usePagedData from '../hooks/usePagedData.js'
-import { fetchTenantsPaged, createTenant, updateTenant, deleteTenant } from '../api/admin.js'
+import { fetchTenantsPaged, createTenant, updateTenant, deleteTenant, createTenantInvoice } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, TextArea, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -314,17 +314,13 @@ export default function TenantsPage() {
                 onClick={async () => {
                   setInvoiceLoading(true)
                   try {
-                    const r = await fetch('/api/v1/business/create-invoice', {
-                      method: 'POST', headers: {'Content-Type':'application/json'},
-                      body: JSON.stringify({
-                        inn: invoiceInn, company_name: invoiceCompany,
-                        amount: parseInt(invoiceAmount) || 0,
-                        email: invoiceEmail || invoiceTenant.contact_email || '',
-                        description: invoiceDescription,
-                      })
+                    const data = await createTenantInvoice({
+                      tenant_id: invoiceTenant.id,
+                      inn: invoiceInn, company_name: invoiceCompany,
+                      amount: parseInt(invoiceAmount) || 0,
+                      email: invoiceEmail || invoiceTenant.contact_email || '',
+                      description: invoiceDescription,
                     })
-                    const data = await r.json()
-                    if (!r.ok) { toast.error(data.error || 'Ошибка'); return }
                     setInvoiceResult(data)
                     toast.success('Счёт создан')
                   } catch(e) { toast.error(e.message) }

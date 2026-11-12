@@ -998,6 +998,7 @@ func main() {
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
 	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)
+	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute) // promocodes and activation codes: guessing is the attack
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
@@ -1008,9 +1009,12 @@ func main() {
 	}
 
 	srv := &server{}
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(clientAuthInterceptor))
 	heyearth_v1.RegisterClientApiServer(grpcServer, srv)
-	reflection.Register(grpcServer)
+	// Reflection lists every RPC to anyone who asks; only for local debugging.
+	if os.Getenv("GRPC_REFLECTION") == "1" {
+		reflection.Register(grpcServer)
+	}
 	go func() {
 		log.Printf("gRPC API on %s", grpcAddr)
 		_ = grpcServer.Serve(lis)
@@ -1057,9 +1061,9 @@ func main() {
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
 	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess))
-	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(handleRedeemCode))
+	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(codeLimiter.Middleware(handleRedeemCode)))
 	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
-	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
+	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(codeLimiter.Middleware(handleApplyPromocode)))
 	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
 	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
 
@@ -1079,6 +1083,7 @@ func main() {
 
 	// B2B invoice — публичный endpoint, доступен без авторизации
 	http.HandleFunc("/api/v1/business/create-invoice", apiLimiter.Middleware(handleCreateInvoice))
+	http.HandleFunc("/api/admin/b2b/create-invoice", admin.RequirePermission("tenants.write", handleAdminCreateInvoice))
 	// B2B self-service (Phase P1): tenant dashboard + topup + invite + member mgmt.
 	// All endpoints check tenant_members for role-based access.
 	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(handleBusinessMe))
@@ -1126,5 +1131,5 @@ func main() {
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
-	log.Fatal(newMainHTTPServer(httpAddr, nil).ListenAndServe())
+	log.Fatal(newMainHTTPServer(httpAddr, limitPublicBodies(http.DefaultServeMux)).ListenAndServe())
 }

@@ -314,3 +314,8 @@ export function updatePlan(id, payload) {
 export function deletePlan(id) {
   return apiFetch(`/plans/${id}`, { method: 'DELETE' })
 }
+
+// «Выставить счёт» for a tenant: the admin route links the invoice to this tenant (tenants.write).
+export function createTenantInvoice(body) {
+  return apiFetch('/api/admin/b2b/create-invoice', { method: 'POST', body })
+}

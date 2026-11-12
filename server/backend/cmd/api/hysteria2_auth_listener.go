@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/middleware"
@@ -34,11 +35,19 @@ const (
 // newMainHTTPServer is the nginx-facing REST/admin server on 127.0.0.1:8000. Its BaseContext
 // marks every request for proxy-header trust (see the trust model in internal/middleware).
 // Timeouts are left as they were with http.ListenAndServe (none).
+// newMainHTTPServer: the timeouts bound what a stuck client or handler can
+// hold. nginx buffers request bodies (uploads up to 512 MB arrive over
+// loopback at full speed), so 5 minutes for the body and the reply is roomy;
+// the header limit stops slow-header clients.
 func newMainHTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
-		Addr:        addr,
-		Handler:     h,
-		BaseContext: middleware.TrustedProxyBaseContext,
+		Addr:              addr,
+		Handler:           h,
+		BaseContext:       middleware.TrustedProxyBaseContext,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
 	}
 }
 
@@ -107,4 +116,19 @@ func startHysteria2AuthListener(auth http.Handler) (*http.Server, error) {
 	srv := serveHysteria2Auth(ln, auth)
 	log.Printf("Hysteria2 auth callback on %s%s", hysteria2AuthListenAddr, hysteria2AuthPath)
 	return srv, nil
+}
+
+// publicBodyLimit caps request bodies outside the admin API. Public JSON
+// (sign-up, payments, YooKassa webhooks, invoices) is a few KB; before this
+// cap any of them read as much as a client sent. The admin API is excluded:
+// app uploads there are up to 512 MB, behind admin auth.
+const publicBodyLimit = 1 << 20
+
+func limitPublicBodies(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && !strings.HasPrefix(r.URL.Path, "/api/admin/") {
+			r.Body = http.MaxBytesReader(w, r.Body, publicBodyLimit)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
