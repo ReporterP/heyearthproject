@@ -1,7 +1,4 @@
 {
-  "env": {
-    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"
-  },
   "enabledPlugins": {
     "autofix-bot@claude-plugins-official": true,
     "anthropic-agent-skills@claude-plugins-official": true,
