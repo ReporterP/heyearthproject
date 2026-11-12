@@ -34,14 +34,14 @@ import (
 
 const awgStatsPeriod = 60 * time.Second
 
-type awgCounter struct {
-	RX int64 // bytes received by awg0 from peer = user upload
-	TX int64 // bytes sent by awg0 to peer     = user download
-}
-
-// awgStatsPrev — last cumulative snapshot keyed by peer public key.
-// Package-scope singleton (collector is one goroutine), like hysteria2StatsPrev.
-var awgStatsPrev = map[string]awgCounter{}
+// awgStatsPrev — last cumulative snapshot keyed by peer public key (Up = awg0
+// RX = user upload, Down = awg0 TX = user download); awgStatsPrimed — whether it
+// came from a real read (the first read after the API starts books nothing,
+// see cumulativeDeltas). Package-scope singleton, like hysteria2StatsPrev.
+var (
+	awgStatsPrev   = map[string]counterPair{}
+	awgStatsPrimed bool
+)
 
 // StartAWGStatsLoop kicks off a 60s polling loop over `awg show awg0 transfer`.
 // Safe to call when AWG isn't installed — every tick just silent-skips.
@@ -94,7 +94,7 @@ func collectAWGStats() {
 		return
 	}
 
-	cur := map[string]awgCounter{}
+	cur := map[string]counterPair{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
@@ -108,23 +108,16 @@ func collectAWGStats() {
 		if err1 != nil || err2 != nil {
 			continue
 		}
-		cur[f[0]] = awgCounter{RX: rx, TX: tx}
+		cur[f[0]] = counterPair{Up: rx, Down: tx}
 	}
 
-	saved := 0
-	for pubkey, c := range cur {
-		prev := awgStatsPrev[pubkey]
-		upDelta := c.RX - prev.RX   // user upload
-		downDelta := c.TX - prev.TX // user download
+	// A counter that went down = interface recreated: re-baselined, no row.
+	deltas := cumulativeDeltas(awgStatsPrev, cur, awgStatsPrimed)
+	awgStatsPrev, awgStatsPrimed = cur, true
 
-		// Negative delta = interface recreated (counters reset). Re-baseline,
-		// emit no row this tick.
-		if upDelta < 0 || downDelta < 0 {
-			continue
-		}
-		if upDelta == 0 && downDelta == 0 {
-			continue
-		}
+	saved := 0
+	for pubkey, d := range deltas {
+		upDelta, downDelta := d.Up, d.Down
 
 		userID, ok := keyToUser[pubkey]
 		if !ok {
@@ -154,5 +147,4 @@ func collectAWGStats() {
 	if saved > 0 {
 		log.Printf("[awg-stats] recorded deltas: %d peers", saved)
 	}
-	awgStatsPrev = cur
 }
