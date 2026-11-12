@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Smartphone, RefreshCw } from 'lucide-react'
 import { startMobileCheck, fetchMobileCheck } from '../../api/admin.js'
-import { Badge, Button, CopyButton, Table, Thead, Tbody, Tr, Th, Td } from '../ui/index.js'
+import { Badge, Button, CopyButton, Skeleton, Table, Thead, Tbody, Tr, Th, Td } from '../ui/index.js'
 import { mobileCheckSummary } from './entriesModel.js'
 
 const POLL_MS = 3000
@@ -13,6 +13,7 @@ const POLL_MS = 3000
  */
 export default function MobileCheckPanel({ serverId, canStart = true, onResult }) {
   const [check, setCheck] = useState(null) // { active, url, qr, expires_at, results }
+  const [loaded, setLoaded] = useState(false) // the first read answered (no «Начать» flash before it)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const onResultRef = useRef(onResult)
@@ -21,7 +22,7 @@ export default function MobileCheckPanel({ serverId, canStart = true, onResult }
   // The last state of a check (also one started earlier, e.g. before the wizard was reopened).
   useEffect(() => {
     let alive = true
-    fetchMobileCheck(serverId).then((r) => { if (alive) setCheck(r) }).catch(() => {})
+    fetchMobileCheck(serverId).then((r) => { if (alive) setCheck(r) }).catch(() => {}).finally(() => { if (alive) setLoaded(true) })
     return () => { alive = false }
   }, [serverId])
 
@@ -57,7 +58,7 @@ export default function MobileCheckPanel({ serverId, canStart = true, onResult }
         появится тестовая страница, вы открываете её с выключенным Wi-Fi — и видно, сколько данных реально дошло.
       </p>
 
-      {check?.active && check.url ? (
+      {!loaded ? <Skeleton className="h-9 w-56" /> : check?.active && check.url ? (
         <div className="flex flex-col sm:flex-row gap-4 rounded border border-default bg-elevated p-3">
           {check.qr && (
             <img src={check.qr} alt="QR-код ссылки проверки" width={160} height={160}
