@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # HiEarth
 
-B2B proxy-эко platform with anonymous user registration, flexible subscription plans, and auto-tuning VPN infrastructure. Hub-and-spoke architecture with Go backend, Flutter client, React admin panel (18 pages), and React marketing site (11 pages).
+B2B proxy-эко platform with anonymous user registration, flexible subscription plans, and auto-tuning VPN infrastructure. Hub-and-spoke architecture with Go backend, Flutter client, React admin panel (23 pages), and React marketing site + user portal (19 pages).
 
-**Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: `45.150.39.236`.
-**Payment**: T-Bank (Tinkoff) Acquiring API v2 with fiscalization.
+**Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: `138.16.181.225` (VDSina; the old `45.150.39.236` is filtered upstream — never use it). Exit 2: `89.124.89.126` (Amsterdam).
+**Payment**: YooKassa (`internal/yookassa`, webhook `/api/webhooks/yookassa`). T-Bank was removed.
+**Mobile networks** (since 2026-11-07..12) cut the Hub's subnet: mobile users go through a reserve entry in RU (relay) — see «Entries» below.
 
 ## Language
 
@@ -47,9 +48,9 @@ User communicates in Russian. Use Russian for UI strings and user-facing code; E
 - **Одна сессия — одна задача.** Когда фаза или подпроект закончены, запиши состояние в beads и план, затем предложи пользователю начать новую сессию (`/clear`). Не тяни одну сессию неделями.
 - **«Продолжай весь план» не значит «любой ценой».** Работай по задачам плана, но в конце каждой фазы коротко отчитайся и остановись.
 
-### Верификация (проект без тестов)
+### Верификация
 
-В HiEarth нет автоматических тестов. TDD адаптируется:
+Go-тесты есть в `cmd/*` и `internal/*` (`go test ./cmd/... ./internal/...`, golden-эталоны подписки в `cmd/api/testdata`), фронт — `npm test` (node --test) в admin_web. Для поведения на проде TDD адаптируется:
 - **RED** → формулируй evidence-команду: "после фикса `curl /api/v1/X` должен вернуть 200"
 - **GREEN** → минимальный код чтобы evidence-команда прошла
 - **VERIFY** → фактический запуск + чтение полного вывода
@@ -84,14 +85,16 @@ heyearthproject/
 │   │   │   ├── deploy/            # Deployment tool (SSH + SFTP)
 │   │   │   └── node-agent/        # Exit node gRPC :50052
 │   │   ├── internal/
-│   │   │   ├── admin/             # Admin handlers + RBAC (14 handler files)
-│   │   │   ├── biz/               # Business logic (14 modules, 2374 lines)
+│   │   │   ├── admin/             # Admin handlers + RBAC (~31 files, incl. provisioning, mobile_check)
+│   │   │   ├── biz/               # Business logic (~33 files, incl. entries)
+│   │   │   ├── provision/         # Node provisioning core (exit, relay, deprovision recipes; Runner)
+│   │   │   ├── config/            # Templates for nodes (exit, relay nft/nginx, Hub relay-pp)
 │   │   │   ├── crypto/            # AES-256-GCM for SSH passwords
 │   │   │   ├── db/                # PostgreSQL + migrations runner
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
-│   │   │   └── tbank/             # T-Bank Acquiring API client
-│   │   ├── migrations/            # 27 SQL migrations (000001-000027)
+│   │   │   └── yookassa/          # YooKassa client + webhook
+│   │   ├── migrations/            # 62 SQL migrations (000001-000062)
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -100,13 +103,13 @@ heyearthproject/
 │   └── packages/flutter_v2ray_plus/  # Local Xray plugin
 ├── admin_web/                     # React 19 admin panel (Vite + Tailwind v4)
 │   └── src/
-│       ├── pages/                 # 18 pages (incl. PlansPage, AutoTunerPage, ServerDetailPage)
-│       ├── components/            # 12 components (incl. ConfigEditorDialog)
+│       ├── pages/                 # 23 pages (incl. NodesPage, EntriesPage, AlertsPage, PlansPage)
+│       ├── components/            # ~27 components (nodes/ wizard, entries/ MobileCheckPanel, ui/ primitives)
 │       └── i18n/                  # ru/en translations
 └── site/                          # React 19 marketing + user portal (Vite + Tailwind v4)
     └── src/
-        ├── pages/                 # 11 pages (incl. PrivacyPage, RefundPage, OfferPage, PaymentPage)
-        ├── components/            # 4 components
+        ├── pages/                 # 19 pages (incl. Connect, Checkout, Business*, legal pages)
+        ├── components/            # components
         └── auth/                  # AuthContext
 ```
 
@@ -118,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs 27 migrations on startup
+# Auto-runs the migrations on startup (62)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -164,6 +167,9 @@ Users → [Hub: hiearth.ru (Russia)]
 | Hub | 80 | TCP | HTTP redirect |
 | Hub | 443 | TCP | nginx stream SNI router |
 | Hub | 443 | UDP | AmneziaWG (awg0) |
+| Hub | 8447 | TCP | nginx stream for reserve entries (PROXY protocol in; trust per relay) |
+| Hub | 8446 | TCP (loopback) | http nginx PROXY mirror (realip) |
+| Hub | 10444 | TCP (loopback) | xray `vless-reality-pp` (PROXY mirror) |
 | Hub | 2443 | TCP | VLESS XHTTP (splithttp) |
 | Hub | 50443 | UDP | Hysteria2 server (Бамбук); UDP 30000-65000 DNAT → :50443 for local destinations only |
 | Hub | 8000 | TCP (loopback) | heyearth-api REST (nginx upstream) |
@@ -200,18 +206,19 @@ SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (u
 
 **`cmd/node-agent/main.go`** — exit node gRPC :50052 (mTLS): CreateUser, DeleteUser, GetMetrics
 
-### Payment System (T-Bank)
+### Payment System (YooKassa)
 
-**`internal/tbank/client.go`** — собственная реализация без SDK:
-- Token: SHA256 от отсортированных параметров + Password (вложенные объекты исключаются)
-- `InitPayment()` → PaymentURL для checkout
-- `ChargeRecurring()` → Init + Charge с RebillID для автопродления
-- `ParseNotification()` → webhook верификация
-- Fiscalization: Receipt с USN_income + service + full_payment
+**`internal/yookassa`** — client + webhook (IP allowlist + re-fetch of the payment). Refunds via admin (permission `payments.refund`).
 
-**Payment flow**: POST /api/v1/payment/create → T-Bank Init → redirect → webhook → ActivateSubscriptionWithPlan
+**Payment flow**: POST /api/v1/payment/create → YooKassa (embedded widget `/checkout/{id}` or redirect) → webhook `/api/webhooks/yookassa` → ActivateSubscriptionWithPlan
 
-**Auto-renew**: subscription_cron hourly → expiring in 24h + auto_renew=true → ChargeRecurring с saved RebillID
+**Auto-renew**: subscription_cron hourly → expiring soon + auto_renew → recurring charge with the saved payment method
+
+### Entries (mobile networks)
+
+- Reserve entry = RU VPS of another provider (`servers.role='relay'`), added in admin «Входы» (wizard; Hub key instead of a root password; «Проверить с телефона» = `mobile_check`).
+- Relay: TCP 443/80 via its nginx stream → Hub `:8447` with PROXY protocol (`/etc/nginx/stream.d/relay-pp.conf`, trust per relay in `/etc/nginx/heyearth-relays/<ip>.conf`); TCP 2443 + UDP 30000–65000 via nft DNAT.
+- Subscription modes (`PUT /api/admin/entries/mode`): hub / relay (pinned: everyone through one entry, «· напрямую» lines) / auto (failover after 3 real failures, back after 2 OK + 30 min). Monitor: `cmd/api/entry_monitor.go`.
 
 ### Plans System
 
@@ -240,7 +247,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ### Security
 
-- **JWT user**: custom HMAC-SHA256, 7 дней, validates vs `user_sessions` table (revocable)
+- **JWT user**: custom HMAC-SHA256, 30 дней, validates vs `user_sessions` table (revocable). gRPC ClientApi does NOT check it yet (trusts `user_id` from the request) — known gap.
 - **JWT admin**: golang-jwt/v5, 24h, RBAC с 16 permissions
 - **SSH**: AES-256-GCM (`ssh_password_enc`), TOFU (`ssh_host_key`)
 - **mTLS**: CA 10yr + leaf 1yr, TLS 1.3+
@@ -263,7 +270,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 27 migrations)
+## Database (PostgreSQL, 62 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `payments`, `promocodes`, `traffic_stats`, `config_test_results`, `app_settings`, `admin_users`, `admin_roles`, `admin_permissions`, `admin_audit_log`, `tenants`, `traffic_masking_rules`, `ssh_keys`, `app_releases`, `user_sessions`, `user_devices`
 
@@ -297,10 +304,10 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Xray binary**: `exec.LookPath("xray")` → fallback `/opt/heyearth/xray/xray`
 - **JWT_SECRET**: panics if unset. No fallback.
 - **Xray sync**: never call `SyncXrayConfig()` directly from handlers → use `RequestXraySync()`
-- **No tests**: zero coverage. Verify via `go build` + `deploy --status` + curl.
+- **Tests**: Go tests + goldens + admin_web node tests exist; prod behaviour still needs evidence (`deploy --status`, curl, journal).
+- **Admin deploy**: `go run quick_admin_web.go` (one tar.gz over an SSH pipe, atomic swap) when `deploy --admin-web` drops on SFTP.
 - **Nginx stream SNI**: port 443 → `:8443` for domains, `:10443` for Xray VLESS
 - **VLESS Reality port**: user URI must use `:443` (through nginx), NOT `:10443` (loopback)
-- **T-Bank Token**: SHA256, exclude nested objects (Receipt, DATA) from signature
 - **Auto-tuner**: Reality requires tcp + xtls-rprx-vision. Never change transport/flow.
 - **Per-country SNI**: Hub(RU) uses yandex.ru/vk.com. Exit(NL/LV) uses github.com/twitch.tv.
 - **apple.com bad SNI**: ASN mismatch visible to DPI. Removed from candidates.
