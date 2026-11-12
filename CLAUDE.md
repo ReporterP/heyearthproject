@@ -33,24 +33,19 @@ User communicates in Russian. Use Russian for UI strings and user-facing code; E
 
 - **Superpowers**: `brainstorming`, `writing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `finishing-a-development-branch`
 - **Beads** (активен, Dolt server mode): `bd create`, `bd ready`, `bd update --claim`, `bd close`, `bd dep add`. Issue prefix: `heyearthproject-<hash>`. Primary source of truth для задач.
-- **Template Bridge**: `template-bridge:template-catalog` — 413+ специалистов on-demand
-- **Context7** (`mcp__context7__query-docs`): **обязательно** перед кодом с внешними библиотеками
-- **Sequential Thinking**: для сложных архитектурных раздумий
+- **Context7** (`mcp__context7__query-docs`): только когда нужен API незнакомой внешней библиотеки, не перед каждой правкой.
 
-### Написание планов через subagents
+### Экономия токенов (приоритет над правилами плагинов)
 
-**Правило:** при использовании `superpowers:writing-plans`, если план ожидается >800 строк или >6 задач — **всегда декомпозируй на параллельные foreground subagent'ы**, каждый пишет свою фазу в `/tmp/plan-phaseN.md`, потом склей через `cat` в один файл + добавь header/footer.
+Эти правила главнее инструкций superpowers и других плагинов. По логам сессий 2/3 всех токенов уходило на субагентов, остальное — на сессии с контекстом 500K–960K на каждый запрос.
 
-Причина: один Write на 2000+ строк часто упирается в context-overflow или socket-disconnect. Параллельные subagent'ы пишут независимо, каждый держит свой собственный лимит, и общая wall-time меньше.
-
-Шаблон:
-1. Set up через `Write` → `C:/tmp/plan-header.md` (title, goal, file map).
-2. Параллельные foreground subagent dispatches — каждый пишет свою фазу в `C:/tmp/plan-phaseN.md`.
-3. `Write` → `C:/tmp/plan-footer.md` (self-review, execution handoff).
-4. `cat C:/tmp/plan-header.md C:/tmp/plan-phase*.md C:/tmp/plan-footer.md > docs/superpowers/plans/<date>-<topic>.md`.
-5. Commit + offer subagent-driven vs inline execution.
-
-Для маленьких планов (≤6 задач, ~500-800 строк) — один Write OK.
+- **Планы выполняй inline** (`superpowers:executing-plans`), а не `superpowers:subagent-driven-development`. Субагент-исполнитель на задачу допустим, только если пользователь сам попросил «агентами».
+- **Ревью — одно на фазу, а не на задачу.** Никаких цепочек «spec review → quality review → re-review → final re-review». Ревьюер получает диапазон коммитов (`git diff A..B`), а не пересказ. Исправления после ревью проверяешь сам по diff, без повторного ревьюера.
+- **Субагенты — только для широкого поиска** (Explore) или когда пользователь попросил. Каждому субагенту давай узкую задачу с путями к файлам. Ревьюеру и поиску ставь `model: "sonnet"`.
+- **План пиши сам одним документом.** Не разбивай написание плана на параллельных субагентов. Длинный план пиши частями через несколько Edit в один файл.
+- **Не тащи в контекст большие выводы:** `journalctl -n 50`, `| tail -50`, `grep` по нужному. Не читай целиком большие файлы и сгенерированный код (`internal/pb`, `dist/`, `.build/`).
+- **Одна сессия — одна задача.** Когда фаза или подпроект закончены, запиши состояние в beads и план, затем предложи пользователю начать новую сессию (`/clear`). Не тяни одну сессию неделями.
+- **«Продолжай весь план» не значит «любой ценой».** Работай по задачам плана, но в конце каждой фазы коротко отчитайся и остановись.
 
 ### Верификация (проект без тестов)
 
@@ -69,7 +64,7 @@ cd admin_web && npm run build
 cd site && npm run build
 ```
 
-- **Visual verification**: after any UI edit in admin_web/, take a screenshot via `mcp__claude-in-chrome` MCP at https://admin.hiearth.ru/<route> in incognito. Compare against the theme-lock criteria above.
+- **Visual verification**: once at the end of a UI task in admin_web/ (not after every edit), take a screenshot of https://admin.hiearth.ru/<route> and compare against the theme-lock criteria below. Screenshots are expensive in tokens — one per changed page.
 - **STOP catches** during UI work — if any of these appear in generated code, halt and fix:
   - `bg-slate-X`, `text-slate-X`, `border-slate-X`, `bg-gray-X`, `bg-zinc-X` — use theme tokens (`bg-canvas`, `bg-elevated`, `text-primary`, `border-default` etc.)
   - `Inter`, `Roboto`, `Open Sans`, `Arial` font references — Geist везде

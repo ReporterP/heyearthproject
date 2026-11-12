@@ -1,7 +1,14 @@
 {
+  "env": {
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"
+  },
   "enabledPlugins": {
     "autofix-bot@claude-plugins-official": true,
     "anthropic-agent-skills@claude-plugins-official": true,
-    "superpowers@claude-plugins-official": true
+    "superpowers@claude-plugins-official": true,
+    "pixel-plugin@pixel-plugin": false,
+    "spritecook@spritecook": false,
+    "agentic-bundle-indie-game-dev@agentic-awesome-skills": false,
+    "template-bridge@template-bridge-marketplace": false
   }
 }
