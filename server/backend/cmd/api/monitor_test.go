@@ -312,3 +312,16 @@ func TestDecideOffsiteBackup(t *testing.T) {
 		t.Errorf("the offsite threshold must equal the local backup threshold (26 h), got %v", offsiteMaxAge)
 	}
 }
+
+func TestCheckHostVerdictForRelayKey(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	var st loopProbeStreak
+	r := &checkHostRecorder{}
+	for i, v := range []string{"unreachable", "unreachable", "reachable", "reachable"} {
+		checkHostVerdictFor(&st, t0.Add(time.Duration(i)*15*time.Minute), v, "relay-5-unreachable-ru", "Резервный вход недоступен из РФ",
+			"203.0.113.50", "https://check-host.net/x", checkHostTally{Failed: 3}, r.raise, r.resolve)
+	}
+	if got := strings.Join(r.events, ","); got != "raise relay-5-unreachable-ru warn,resolve relay-5-unreachable-ru" {
+		t.Fatalf("events %q", got)
+	}
+}

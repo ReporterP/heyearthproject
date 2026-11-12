@@ -85,6 +85,11 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, checkHostInterval, func() {
 		safely("check-host", runCheckHostProbe)
 	})
+	// Entries (phase 3): every entry from outside + the failover of the main address. Own goroutine:
+	// per entry up to ~25 s (TLS 15 s + control 10 s), + ~20 s Bamboo per relay.
+	go runEvery(100*time.Second, entryCheckInterval, func() {
+		safely("входы", runEntryMonitor)
+	})
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)
 		safely("бэкап", checkBackupFreshness)
@@ -418,22 +423,77 @@ func runCheckHostProbe() {
 	verdict := tally.verdict()
 	log.Printf("[monitor] check-host %s:443: OK=%d fail=%d pending=%d → %s %s", entry, tally.OK, tally.Failed, tally.Pending, verdict, link)
 	checkHostVerdict(&checkHostState, time.Now(), verdict, entry, link, tally, RaiseAlert, ResolveAlert)
+	saveRUCheck(0, verdict, link)
+	runCheckHostRelays(nodes)
 }
 
-// checkHostVerdict turns one check-host verdict into alerts; "unknown" is not counted at all.
+// checkHostVerdict turns one check-host verdict of the Hub into alerts (checkHostVerdictFor).
 func checkHostVerdict(st *loopProbeStreak, now time.Time, verdict, entry, link string, tally checkHostTally,
+	raise func(key string, level AlertLevel, title, details string), resolve func(key, message string)) {
+	checkHostVerdictFor(st, now, verdict, "entry-unreachable-ru", "Вход недоступен из РФ", entry, link, tally, raise, resolve)
+}
+
+var checkHostRelayStates = map[int]*loopProbeStreak{} // touched only by the check-host goroutine
+
+// runCheckHostRelays: the same check-host TCP :443 from RU nodes for every online relay.
+func runCheckHostRelays(nodes []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), entryDBTimeout)
+	relays, err := biz.ListRelayEntries(ctx)
+	cancel()
+	if err != nil {
+		log.Printf("[monitor] check-host: резервные входы не прочитаны: %v", err)
+		return
+	}
+	live := map[int]bool{}
+	for _, r := range relays {
+		live[r.ID] = true
+		tally, link, err := checkHostTCP(net.JoinHostPort(r.Address, "443"), nodes)
+		if err != nil {
+			log.Printf("[monitor] check-host недоступен для %s, не учитывается: %v", r.Address, err)
+			continue
+		}
+		st := checkHostRelayStates[r.ID]
+		if st == nil {
+			st = &loopProbeStreak{}
+			checkHostRelayStates[r.ID] = st
+		}
+		v := tally.verdict()
+		checkHostVerdictFor(st, time.Now(), v, relayAlertKey(r.ID, "unreachable-ru"), "Резервный вход недоступен из РФ", r.Address, link, tally, RaiseAlert, ResolveAlert)
+		saveRUCheck(r.ID, v, link)
+	}
+	for id := range checkHostRelayStates {
+		if !live[id] {
+			delete(checkHostRelayStates, id)
+		}
+	}
+}
+
+func saveRUCheck(id int, verdict, link string) {
+	if verdict != "reachable" && verdict != "unreachable" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), entryDBTimeout)
+	defer cancel()
+	if err := biz.SaveEntryCheck(ctx, id, "ru", biz.EntryCheck{Status: verdict, At: time.Now(), Detail: link}); err != nil {
+		log.Printf("[monitor] check-host: вход %d не сохранён: %v", id, err)
+	}
+}
+
+// checkHostVerdictFor turns one check-host verdict of an entry into alerts under key; "unknown"
+// is not counted at all.
+func checkHostVerdictFor(st *loopProbeStreak, now time.Time, verdict, key, title, entry, link string, tally checkHostTally,
 	raise func(key string, level AlertLevel, title, details string), resolve func(key, message string)) {
 	switch verdict {
 	case "reachable":
 		st.recordWithin(now, true, checkHostStaleAfter)
 		if st.recovered() {
-			resolve("entry-unreachable-ru", fmt.Sprintf("Вход %s:443 снова доступен с RU-узлов check-host: %d проверки подряд (последняя: %d из %d).",
+			resolve(key, fmt.Sprintf("Вход %s:443 снова доступен с RU-узлов check-host: %d проверки подряд (последняя: %d из %d).",
 				entry, st.oks, tally.OK, tally.OK+tally.Failed))
 		}
 	case "unreachable":
 		fails := st.recordWithin(now, false, checkHostStaleAfter)
 		if fails >= checkHostFailThreshold {
-			raise("entry-unreachable-ru", AlertWarn, "Вход недоступен из РФ",
+			raise(key, AlertWarn, title,
 				fmt.Sprintf("%d проверки подряд: ни один RU-узел check-host не подключился к %s:443.\n%s", fails, entry, link))
 		}
 	}

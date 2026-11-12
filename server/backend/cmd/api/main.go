@@ -21,6 +21,7 @@ import (
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
+	"github.com/heyearth/backend/internal/provision"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -934,6 +935,7 @@ func main() {
 	// mutation paths (handlers, crons, admin) call biz.NotifySubscriptionChange
 	// which funnels through RequestSync.
 	biz.XraySyncFn = RequestXraySync
+	provision.RelayPathVerifier = verifyRelayPath
 	biz.Hysteria2SyncFn = RequestHysteria2Sync
 	biz.AWGSyncFn = RequestAWGSync // Palma — added in T6
 
