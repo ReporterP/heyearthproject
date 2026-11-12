@@ -39,3 +39,6 @@ server/backend/heyearth-api.bin
 # Local secrets — never commit (CA/leaf private keys, per-user Claude settings with credentials)
 .claude/settings.local.json
 server/backend/certs/*-key.pem
+
+# Architecture pages carry the Hub/exit addresses: never in the public repo
+docs/architecture/*.html
