@@ -184,12 +184,31 @@ func GenerateToken(admin AdminUser) (string, error) {
 	return token.SignedString(key)
 }
 
-// adminIsActive reports whether the admin may still act (revocation before the token expires).
-// Tests swap it.
-var adminIsActive = func(id int) (bool, error) {
-	var active bool
-	err := db.DB.QueryRow("SELECT is_active FROM admin_users WHERE id = $1", id).Scan(&active)
-	return active, err
+// adminLive is what the database says about an admin right now.
+type adminLive struct {
+	Active      bool
+	Roles       []string
+	Permissions []string
+	TenantID    *int
+}
+
+// adminLiveAccess reads the admin's current state. AuthMiddleware takes roles,
+// permissions and tenant from here instead of the token, so a deactivation, a
+// role change or a revoked permission works on the next request, not after
+// the token's 24 hours. Tests swap it.
+var adminLiveAccess = func(id int) (adminLive, error) {
+	rec, err := loadAdminRecordByID(id)
+	if err != nil {
+		return adminLive{}, err
+	}
+	if !rec.IsActive {
+		return adminLive{}, nil
+	}
+	u, _, err := buildAdminUser(rec)
+	if err != nil {
+		return adminLive{}, err
+	}
+	return adminLive{Active: true, Roles: u.Roles, Permissions: u.Permissions, TenantID: u.TenantID}, nil
 }
 
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -222,11 +241,13 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Verify admin is still active in DB (enables revocation without waiting for token expiry)
-		if isActive, err := adminIsActive(claims.AdminID); err != nil || !isActive {
+		// The token only says who this is; what they may do comes from the DB now.
+		live, err := adminLiveAccess(claims.AdminID)
+		if err != nil || !live.Active {
 			writeAdminError(w, http.StatusUnauthorized, "Admin account deactivated")
 			return
 		}
+		claims.Roles, claims.Permissions, claims.TenantID = live.Roles, live.Permissions, live.TenantID
 
 		ctx := context.WithValue(r.Context(), adminClaimsContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
