@@ -353,7 +353,8 @@ func TestCreateNodeValidation(t *testing.T) {
 	}{
 		"bad ip":            {`{"ip_address":"x","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
 		"loopback ip":       {`{"ip_address":"127.0.0.1","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
-		"relay not yet":     {`{"role":"relay","ip_address":"203.0.113.7","country_code":"RU","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "Резервные входы"},
+		"relay abroad":      {`{"role":"relay","ip_address":"203.0.113.7","country_code":"NL","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "RU"},
+		"relay SSH on 443":  {`{"role":"relay","ip_address":"203.0.113.7","ssh_port":443,"ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "пересылает 443"},
 		"no country":        {`{"ip_address":"203.0.113.7","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "страну"},
 		"no fingerprint":    {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p"}`, 400, "отпечаток"},
 		"bad fingerprint":   {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"MD5:aa"}`, 400, "отпечаток"},
@@ -721,6 +722,9 @@ func TestNodeRoutingOptionalFields(t *testing.T) {
 			if strings.Contains(q, "FROM servers WHERE id = $1 FOR UPDATE") {
 				return one([]string{"one"}, int64(1))
 			}
+			if q == nodeRoleQuery {
+				return one([]string{"role"}, "exit")
+			}
 			return nil
 		}})
 		rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", c.body)
@@ -739,6 +743,21 @@ func TestNodeRoutingOptionalFields(t *testing.T) {
 	withProvDB(t, &provDB{affected: func(string) int64 { return 0 }})
 	if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", `{"plan_ids":[1]}`); rec.Code != 404 {
 		t.Fatalf("missing node: %d %s", rec.Code, rec.Body)
+	}
+	// A relay has no plans or priority: refused before any write; the TCP switch alone still goes.
+	d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
+		if q == nodeRoleQuery {
+			return one([]string{"role"}, "relay")
+		}
+		return nil
+	}})
+	for _, body := range []string{`{"plan_ids":[1]}`, `{"load_weight":3}`} {
+		if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", body); rec.Code != 400 || !strings.Contains(rec.Body.String(), "резервного входа") {
+			t.Errorf("relay %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if len(d.matching("UPDATE servers SET load_weight")) != 0 || len(d.matching("plan_servers")) != 0 {
+		t.Errorf("relay routing written: %+v", d.stmts)
 	}
 }
 

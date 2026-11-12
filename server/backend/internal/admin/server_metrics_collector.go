@@ -38,12 +38,15 @@ func StartServerMetricsCollector() {
 	log.Printf("[server-metrics] Фоновый сборщик метрик серверов запущен (каждые %v)", metricsCollectInterval)
 }
 
-func collectAllServerMetrics() {
-	rows, err := db.DB.Query(`
+// serverMetricsTargetsQuery: node-agent runs on exits only; a relay has no agent.
+const serverMetricsTargetsQuery = `
 		SELECT id, ip_address
 		FROM servers
-		WHERE status != 'archived' OR status IS NULL
-	`)
+		WHERE (status != 'archived' OR status IS NULL)
+		  AND COALESCE(role, 'exit') <> 'relay'`
+
+func collectAllServerMetrics() {
+	rows, err := db.DB.Query(serverMetricsTargetsQuery)
 	if err != nil {
 		return
 	}

@@ -345,8 +345,14 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		req.Status = existing.Status
 	}
 
-	// Все серверы — exit nodes
-	isExitNode := true
+	// The role decides is_exit_node (CHECK servers_relay_not_exit): keep the stored value.
+	isExitNode := existing.IsExitNode
+	if !isExitNode && addrChanged {
+		if err := validateRelaySSHPort(req.SSHPort); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if req.TunnelProtocol == "" {
 		req.TunnelProtocol = existing.TunnelProtocol
 	}

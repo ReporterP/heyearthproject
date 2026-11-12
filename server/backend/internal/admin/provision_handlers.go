@@ -402,8 +402,20 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "exit"
 	}
-	if req.Role != "exit" {
-		writeAdminError(w, http.StatusBadRequest, "Резервные входы в РФ добавляются в следующем обновлении")
+	switch req.Role {
+	case "exit":
+	case "relay":
+		c, err := validateRelayCreate(req.CountryCode, nil, false, 1)
+		if err == nil {
+			err = validateRelaySSHPort(port)
+		}
+		if err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.CountryCode = c
+	default:
+		writeAdminError(w, http.StatusBadRequest, "Роль ноды — exit или relay")
 		return
 	}
 	country := strings.ToUpper(strings.TrimSpace(req.CountryCode))
@@ -434,7 +446,9 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
-	if name == "" {
+	if name == "" && req.Role == "relay" {
+		name = "Резервный вход " + country
+	} else if name == "" {
 		name = "Выход " + country
 	}
 	// A fast answer before the probe; the unique index (uq_servers_ip_address) decides a race.
@@ -617,6 +631,20 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if n.Role == "relay" { // a relay has no plans, MTProxy or priority
+		var planIDs []int
+		if req.PlanIDs != nil {
+			planIDs = *req.PlanIDs
+		}
+		weight := 1
+		if req.LoadWeight != nil {
+			weight = *req.LoadWeight
+		}
+		if _, err := validateRelayCreate("RU", planIDs, req.MTProxy != nil && *req.MTProxy, weight); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if !n.HostKeyConfirmed {
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
 		return
@@ -697,6 +725,10 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if n.Role == "relay" {
+		writeAdminError(w, http.StatusBadRequest, "MTProxy ставится на выход за рубежом, не на резервный вход")
+		return
+	}
 	if !n.HostKeyConfirmed {
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
 		return
@@ -744,9 +776,17 @@ func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provi
 // DeprovisionNodeHandler starts «Отключить»: out of routing first, then the Hub side, then the
 // node (best effort); the row stays offline. An unconfirmed key does not block it.
 func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
-	if n, ok := confirmedNode(w, r, "deprovision"); ok {
-		startJob(w, r, n.ID, provision.KindDeprovision)
+	n, ok := confirmedNode(w, r, "deprovision")
+	if !ok {
+		return
 	}
+	if n.Role == "relay" {
+		if err := relayDeprovisionGuard(r.Context(), n.ID); err != nil {
+			writeAdminError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	startJob(w, r, n.ID, provision.KindDeprovision)
 }
 
 const deleteNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state IN ('pending', 'offline')
@@ -788,6 +828,9 @@ func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	biz.BumpSubscriptionVersion()
+	if err := biz.DeleteEntryState(r.Context(), n.ID); err != nil { // a relay's checks go with it (no-op for exits)
+		log.Printf("[nodes] node %d entry state: %v", n.ID, err)
+	}
 	WriteAuditLog(r, "delete_server", "server", strconv.Itoa(n.ID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Нода удалена"})
 }
@@ -826,6 +869,22 @@ func NodeRoutingHandler(w http.ResponseWriter, r *http.Request) {
 	if req.PlanIDs != nil && !validPlanIDs(*req.PlanIDs) {
 		writeAdminError(w, http.StatusBadRequest, planIDsPositiveMsg)
 		return
+	}
+	if req.PlanIDs != nil || req.LoadWeight != nil {
+		var role string
+		err := db.DB.QueryRowContext(r.Context(), nodeRoleQuery, id).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAdminError(w, http.StatusNotFound, "Нода не найдена")
+			return
+		}
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать ноду")
+			return
+		}
+		if role == "relay" {
+			writeAdminError(w, http.StatusBadRequest, relayRoutingMsg)
+			return
+		}
 	}
 	// Always run (with nothing but plan_ids it only touches updated_at): it tells a missing node.
 	res, err := db.DB.ExecContext(r.Context(), routingQuery, id, req.LoadWeight, req.FallbackEnabled)
