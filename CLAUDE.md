@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 B2B proxy-эко platform with anonymous user registration, flexible subscription plans, and auto-tuning VPN infrastructure. Hub-and-spoke architecture with Go backend, Flutter client, React admin panel (23 pages), and React marketing site + user portal (19 pages).
 
-**Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: `138.16.181.225` (VDSina; the old `45.150.39.236` is filtered upstream — never use it). Exit 2: `89.124.89.126` (Amsterdam).
+**Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: `138.16.181.225` (VDSina; the old `45.150.39.236` is filtered upstream — never use it). Exit 2: Amsterdam (address in the admin, not here — the repo is public).
 **Payment**: YooKassa (`internal/yookassa`, webhook `/api/webhooks/yookassa`). T-Bank was removed.
 **Mobile networks** (since 2026-11-07..12) cut the Hub's subnet: mobile users go through a reserve entry in RU (relay) — see «Entries» below.
 
