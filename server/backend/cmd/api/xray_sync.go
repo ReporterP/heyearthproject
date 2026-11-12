@@ -88,6 +88,7 @@ func RequestXraySync() {
 		debounceTimer.Stop()
 	}
 	debounceTimer = time.AfterFunc(2*time.Second, func() {
+		defer recoverBG("xray-sync")
 		runXraySync("debounced sync error")
 	})
 }
@@ -1275,12 +1276,12 @@ func StartTunnelHealthMonitor() {
 	go func() {
 		// Первая проверка через 10 секунд после старта
 		time.Sleep(10 * time.Second)
-		checkAllTunnels()
+		safely("tunnel-monitor", checkAllTunnels)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			checkAllTunnels()
+			safely("tunnel-monitor", checkAllTunnels)
 		}
 	}()
 	log.Printf("[tunnel-monitor] Фоновый мониторинг exit-нод запущен (каждые 30 сек, hysteresis %d/%d)",
@@ -1314,6 +1315,32 @@ func forgetGoneExits(nodes []biz.ExitNodeTunnel) {
 		}
 		return true
 	})
+	// Alerts replayed after a restart for an exit deleted meanwhile are not in
+	// exitHealthByID: find them from the active alerts themselves.
+	for _, key := range goneExitAlertKeys(alerts.activeKeys("exit-"), online) {
+		ClearAlert(key, "exit-нода больше не online — тревога закрыта без уведомления")
+	}
+}
+
+// goneExitAlertKeys picks the per-exit alert keys (exit-down-<id>,
+// exit-path-down-<id>-<path>) whose exit is not online.
+func goneExitAlertKeys(active []string, online map[int]bool) []string {
+	var out []string
+	for _, key := range active {
+		rest, ok := strings.CutPrefix(key, "exit-path-down-")
+		if ok {
+			rest, _, ok = strings.Cut(rest, "-")
+		} else {
+			rest, ok = strings.CutPrefix(key, "exit-down-")
+		}
+		if !ok {
+			continue
+		}
+		if id, err := strconv.Atoi(rest); err == nil && !online[id] {
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 // saveExitStatus is the monitor's conditional status write; tests swap it.
@@ -1521,7 +1548,7 @@ func StartXraySyncLoop() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			runXraySync("Периодическая синхронизация")
+			safely("xray-sync", func() { runXraySync("Периодическая синхронизация") })
 		}
 	}()
 
@@ -1543,11 +1570,11 @@ func StartXraySyncLoop() {
 // Логирует WARNING если сертификат истекает в течение 30 дней.
 func StartCertExpiryMonitor() {
 	go func() {
-		checkCertExpiry()
+		safely("cert-expiry", checkCertExpiry)
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			checkCertExpiry()
+			safely("cert-expiry", checkCertExpiry)
 		}
 	}()
 }

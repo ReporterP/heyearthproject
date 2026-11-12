@@ -193,7 +193,7 @@ func StartAutoTuner() {
 
 	go func() {
 		time.Sleep(30 * time.Second)
-		runFullTuner()
+		safely("auto-tuner", runFullTuner)
 
 		ticker := time.NewTicker(time.Duration(intervalHours) * time.Hour)
 		defer ticker.Stop()
@@ -208,11 +208,11 @@ func StartAutoTuner() {
 				if biz.GetSettingOrDefault("auto_tuner_enabled", "false") != "true" {
 					continue
 				}
-				runFullTuner()
+				safely("auto-tuner", runFullTuner)
 			case <-admin.AutoTunerRunChan:
 				// Manual trigger from admin UI
 				log.Println("[auto-tuner] Manual run triggered from admin")
-				runFullTuner()
+				safely("auto-tuner", runFullTuner)
 			}
 		}
 	}()

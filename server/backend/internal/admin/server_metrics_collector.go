@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
@@ -46,6 +47,12 @@ const serverMetricsTargetsQuery = `
 		  AND COALESCE(role, 'exit') <> 'relay'`
 
 func collectAllServerMetrics() {
+	// A panic here would kill the whole API; one bad tick is only logged.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[server-metrics] panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	rows, err := db.DB.Query(serverMetricsTargetsQuery)
 	if err != nil {
 		return

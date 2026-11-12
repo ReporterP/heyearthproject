@@ -20,7 +20,7 @@ func StartEmailReminderCron() {
 	go func() {
 		time.Sleep(2 * time.Minute)
 		for {
-			sendRenewalPreviews()
+			safely("email-cron", sendRenewalPreviews)
 			time.Sleep(emailReminderInterval)
 		}
 	}()

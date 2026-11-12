@@ -108,14 +108,21 @@ func runEvery(initialDelay, interval time.Duration, fn func()) {
 	}
 }
 
-// safely runs fn and turns a panic into a log line with the stack trace.
+// safely runs fn and turns a panic into a log line with the stack trace. Every
+// background loop runs its steps through it: an unrecovered panic in any
+// goroutine kills the whole API (billing, subscriptions, the site).
 func safely(name string, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[monitor] panic в %q: %v\n%s", name, r, debug.Stack())
-		}
-	}()
+	defer recoverBG(name)
 	fn()
+}
+
+// recoverBG, deferred at the top of a goroutine or timer callback, turns a
+// panic into a log line with the stack trace (it must be the deferred call
+// itself for recover to work).
+func recoverBG(name string) {
+	if r := recover(); r != nil {
+		log.Printf("[bg] panic в %q: %v\n%s", name, r, debug.Stack())
+	}
 }
 
 // logGate lets a message through at most once per interval. Single-goroutine use.

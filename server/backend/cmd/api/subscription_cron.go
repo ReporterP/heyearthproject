@@ -22,7 +22,7 @@ func StartSubscriptionCron() {
 	go func() {
 		time.Sleep(30 * time.Second)
 		for {
-			checkExpiringSubscriptions()
+			safely("subscription-cron", checkExpiringSubscriptions)
 			time.Sleep(1 * time.Hour)
 		}
 	}()
@@ -32,8 +32,8 @@ func StartSubscriptionCron() {
 	go func() {
 		time.Sleep(1 * time.Minute)
 		for {
-			checkMonthlyBilling()
-			checkTenantBalanceWarnings()
+			safely("b2b-billing", checkMonthlyBilling)
+			safely("b2b-balance", checkTenantBalanceWarnings)
 			time.Sleep(1 * time.Hour)
 		}
 	}()

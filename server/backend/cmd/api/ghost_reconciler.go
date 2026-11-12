@@ -33,11 +33,11 @@ func StartGhostReconciler() {
 	go func() {
 		time.Sleep(2 * time.Minute) // дать API и Xray устаканиться
 		log.Println("[ghost-reconciler] запущен (каждые 30 минут)")
-		runGhostReconciler() // первый сразу
+		safely("ghost-reconciler", runGhostReconciler) // первый сразу
 		ticker := time.NewTicker(ghostReconcilerInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			runGhostReconciler()
+			safely("ghost-reconciler", runGhostReconciler)
 		}
 	}()
 }

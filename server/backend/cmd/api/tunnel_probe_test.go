@@ -866,3 +866,19 @@ func TestMTProtoHealthSkipsDisabled(t *testing.T) {
 		}
 	}
 }
+
+// After an API restart the alert journal replays exit alerts, but the
+// monitor's memory (exitHealthByID) is empty: an exit deleted meanwhile kept
+// its alert active forever. The sweep finds those keys from the alerts alone.
+func TestGoneExitAlertKeys(t *testing.T) {
+	active := []string{
+		"exit-down-7", "exit-path-down-7-hy", "exit-path-down-7-vr", // exit 7 is gone
+		"exit-down-2", "exit-path-down-2-vr", // exit 2 is still online
+		"all-exits-down", "exit-path-down-x-hy", "backup-stale", // not per-exit / unparsable
+	}
+	got := goneExitAlertKeys(active, map[int]bool{2: true})
+	want := []string{"exit-down-7", "exit-path-down-7-hy", "exit-path-down-7-vr"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

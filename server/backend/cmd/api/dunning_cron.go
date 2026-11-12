@@ -25,7 +25,7 @@ func StartDunningCron() {
 	go func() {
 		time.Sleep(3 * time.Minute)
 		for {
-			processRetryQueue()
+			safely("dunning", processRetryQueue)
 			time.Sleep(dunningInterval)
 		}
 	}()

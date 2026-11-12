@@ -49,12 +49,12 @@ func StartTrafficStatsCollector() {
 	go func() {
 		// Ждём запуск Xray
 		time.Sleep(15 * time.Second)
-		collectTrafficStats()
+		safely("traffic-stats", collectTrafficStats)
 
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			collectTrafficStats()
+			safely("traffic-stats", collectTrafficStats)
 		}
 	}()
 	log.Println("[traffic-stats] Фоновый сборщик трафика запущен (каждые 60 сек)")

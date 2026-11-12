@@ -55,6 +55,7 @@ func RequestAWGSync() {
 		awgDebounce.Stop()
 	}
 	awgDebounce = time.AfterFunc(2*time.Second, func() {
+		defer recoverBG("awg-sync")
 		if err := SyncAWGConfig(); err != nil {
 			log.Printf("[awg-sync] debounced sync error: %v", err)
 			recordAWGSyncError(err)
@@ -311,9 +312,11 @@ func StartAWGSyncLoop() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := SyncAWGConfig(); err != nil {
-				log.Printf("[awg-sync] periodic sync: %v", err)
-			}
+			safely("awg-sync", func() {
+				if err := SyncAWGConfig(); err != nil {
+					log.Printf("[awg-sync] periodic sync: %v", err)
+				}
+			})
 		}
 	}()
 

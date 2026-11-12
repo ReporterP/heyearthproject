@@ -1,6 +1,8 @@
 package biz
 
 import (
+	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -42,6 +44,12 @@ func RequestSync() {
 }
 
 func runSync() {
+	// Runs on a timer goroutine: a panic must not take the API down.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[sync] panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	if XraySyncFn != nil {
 		XraySyncFn()
 	}

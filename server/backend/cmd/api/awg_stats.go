@@ -48,11 +48,11 @@ var (
 func StartAWGStatsLoop() {
 	go func() {
 		time.Sleep(25 * time.Second) // let awg.service settle after boot
-		collectAWGStats()
+		safely("awg-stats", collectAWGStats)
 		ticker := time.NewTicker(awgStatsPeriod)
 		defer ticker.Stop()
 		for range ticker.C {
-			collectAWGStats()
+			safely("awg-stats", collectAWGStats)
 		}
 	}()
 	log.Println("[awg-stats] collector started (every 60s)")

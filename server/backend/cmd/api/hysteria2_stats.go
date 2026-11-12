@@ -50,11 +50,11 @@ func StartHysteria2StatsLoop() {
 	go func() {
 		// Give hysteria2-server a moment to come up after a fresh boot.
 		time.Sleep(20 * time.Second)
-		collectHysteria2Stats()
+		safely("hysteria2-stats", collectHysteria2Stats)
 		ticker := time.NewTicker(hysteria2StatsPeriod)
 		defer ticker.Stop()
 		for range ticker.C {
-			collectHysteria2Stats()
+			safely("hysteria2-stats", collectHysteria2Stats)
 		}
 	}()
 	log.Println("[hysteria2-stats] collector started (every 60s)")

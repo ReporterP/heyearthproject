@@ -47,9 +47,9 @@ func StartPaymentSyncCron() {
 		// Первый прогон через минуту после старта
 		time.Sleep(1 * time.Minute)
 		for {
-			syncPendingPayments()
-			reconcilePendingRefunds()
-			syncUnappliedPaymentAlerts()
+			safely("payment-sync", syncPendingPayments)
+			safely("refund-reconcile", reconcilePendingRefunds)
+			safely("payment-alerts", syncUnappliedPaymentAlerts)
 			time.Sleep(paymentSyncInterval)
 		}
 	}()

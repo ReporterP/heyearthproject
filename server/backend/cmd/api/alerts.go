@@ -215,7 +215,8 @@ func (m *alertManager) startReplayRetry(cause error) {
 	go func() {
 		for {
 			time.Sleep(m.initRetry)
-			err := m.replay()
+			err := fmt.Errorf("восстановление алертов упало с паникой")
+			safely("alerts-replay", func() { err = m.replay() })
 			if err == nil {
 				m.mu.Lock()
 				m.retrying = false
@@ -230,11 +231,13 @@ func (m *alertManager) startReplayRetry(cause error) {
 
 func (m *alertManager) purgeLoop() {
 	for {
-		if n, err := m.purge(); err != nil {
-			log.Printf("[alerts] WARN: очистка alert_events: %v", err)
-		} else if n > 0 {
-			log.Printf("[alerts] удалено %d записей alert_events старше %d дней", n, int(alertRetention/(24*time.Hour)))
-		}
+		safely("alerts-purge", func() {
+			if n, err := m.purge(); err != nil {
+				log.Printf("[alerts] WARN: очистка alert_events: %v", err)
+			} else if n > 0 {
+				log.Printf("[alerts] удалено %d записей alert_events старше %d дней", n, int(alertRetention/(24*time.Hour)))
+			}
+		})
 		time.Sleep(alertPurgeEvery)
 	}
 }

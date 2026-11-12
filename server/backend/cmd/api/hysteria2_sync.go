@@ -65,6 +65,7 @@ func RequestHysteria2Sync() {
 		hysteria2Debounce.Stop()
 	}
 	hysteria2Debounce = time.AfterFunc(2*time.Second, func() {
+		defer recoverBG("hysteria2-sync")
 		if err := SyncHysteria2Config(); err != nil {
 			log.Printf("[hysteria2-sync] debounced sync error: %v", err)
 			recordHysteria2SyncError(err)
@@ -564,9 +565,11 @@ func StartHysteria2SyncLoop() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := SyncHysteria2Config(); err != nil {
-				log.Printf("[hysteria2-sync] periodic sync: %v", err)
-			}
+			safely("hysteria2-sync", func() {
+				if err := SyncHysteria2Config(); err != nil {
+					log.Printf("[hysteria2-sync] periodic sync: %v", err)
+				}
+			})
 		}
 	}()
 
