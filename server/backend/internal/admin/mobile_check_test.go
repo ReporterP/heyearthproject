@@ -95,3 +95,9 @@ func TestMobileCheckResponderCompiles(t *testing.T) {
 		t.Fatalf("py_compile: %v\n%s", err, out)
 	}
 }
+
+func TestMobileCheckQR(t *testing.T) {
+	if q := mobileCheckQR("http://203.0.113.50/abcd1234/"); !strings.HasPrefix(q, "data:image/png;base64,") || len(q) < 200 {
+		t.Fatalf("qr %.60q", q)
+	}
+}

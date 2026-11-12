@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/provision"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 const (
@@ -311,6 +313,15 @@ type mobileCheckState struct {
 	Expires time.Time `json:"expires_at"`
 }
 
+// mobileCheckQR: the link as a PNG data URL for the phone's camera ("" when it cannot be drawn).
+func mobileCheckQR(url string) string {
+	png, err := qrcode.Encode(url, qrcode.Medium, 240)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+}
+
 var (
 	mobileChecksMu sync.Mutex
 	mobileChecks   = map[int]mobileCheckState{}
@@ -387,7 +398,7 @@ func StartMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 	mobileChecks[n.ID] = st
 	mobileChecksMu.Unlock()
 	WriteAuditLog(r, "node_mobile_check", "server", strconv.Itoa(n.ID), map[string]string{"port": port})
-	writeAdminJSON(w, http.StatusOK, map[string]any{"url": st.URL, "expires_at": st.Expires, "hint": mobileCheckWifiHint})
+	writeAdminJSON(w, http.StatusOK, map[string]any{"url": st.URL, "qr": mobileCheckQR(st.URL), "expires_at": st.Expires, "hint": mobileCheckWifiHint})
 }
 
 // GetMobileCheckHandler (GET …/{id}/mobile-check): whether the page still runs and what reached
@@ -426,7 +437,7 @@ func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 	active := strings.TrimSpace(state) == "active"
 	resp := map[string]any{"active": active, "results": results, "hint": mobileCheckWifiHint}
 	if active && st.URL != "" {
-		resp["url"], resp["expires_at"] = st.URL, st.Expires
+		resp["url"], resp["qr"], resp["expires_at"] = st.URL, mobileCheckQR(st.URL), st.Expires
 	}
 	writeAdminJSON(w, http.StatusOK, resp)
 }
