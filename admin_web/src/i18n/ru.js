@@ -301,6 +301,7 @@ export default {
   drawerTabProfile: 'Профиль',
   drawerTabSubs: 'Подписки',
   drawerTabTraffic: 'Трафик и платежи',
+  drawerTabWallet: 'Кошелёк',
   drawerAddSub: '+ Подписка',
   drawerTrafficTitle: 'Трафик за 30 дней',
   drawerPaymentsTitle: 'Платежи',

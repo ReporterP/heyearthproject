@@ -301,6 +301,7 @@ export default {
   drawerTabProfile: 'Profile',
   drawerTabSubs: 'Subscriptions',
   drawerTabTraffic: 'Traffic & Payments',
+  drawerTabWallet: 'Wallet',
   drawerAddSub: '+ Subscription',
   drawerTrafficTitle: 'Traffic — last 30 days',
   drawerPaymentsTitle: 'Payments',

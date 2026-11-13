@@ -319,3 +319,17 @@ export function deletePlan(id) {
 export function createTenantInvoice(body) {
   return apiFetch('/b2b/create-invoice', { method: 'POST', body })
 }
+
+// ── Wallet (W6) ──
+export function fetchUserWallet(userDbId) {
+  return apiFetch(`/users/${userDbId}/wallet`)
+}
+export function adjustUserWallet(userDbId, { direction, amountRub, reason, requestId }) {
+  return apiFetch(`/users/${userDbId}/wallet/adjust`, {
+    method: 'POST',
+    body: { direction, amount_rub: amountRub, reason, request_id: requestId },
+  })
+}
+export function fetchWalletStats() {
+  return apiFetch('/wallet-stats')
+}

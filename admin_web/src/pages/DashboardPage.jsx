@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useT } from '../i18n/index.jsx'
-import { fetchOverview, fetchTrafficChart, fetchCapacity } from '../api/admin.js'
+import { fetchOverview, fetchTrafficChart, fetchCapacity, fetchWalletStats } from '../api/admin.js'
+import { formatKop } from '../utils/wallet.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatBytes } from '../utils/format.js'
 import {
@@ -151,6 +152,7 @@ export default function DashboardPage() {
   const [data, setData] = useState(null)
   const [chart, setChart] = useState(null)
   const [cap, setCap] = useState(null)
+  const [wallet, setWallet] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -159,8 +161,10 @@ export default function DashboardPage() {
       fetchOverview(),
       fetchTrafficChart(30).catch(() => ({ daily: [] })),
       fetchCapacity().catch(() => null),
+      fetchWalletStats().catch(() => null),
     ])
-      .then(([overview, chartData, capData]) => {
+      .then(([overview, chartData, capData, walletData]) => {
+        setWallet(walletData)
         setData(overview)
         setChart(chartData?.daily || [])
         setCap(capData)
@@ -192,6 +196,10 @@ export default function DashboardPage() {
     { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), to: '/traffic' },
     { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), to: '/payments' },
     { label: t.dashPayments, value: data?.payments_count, to: '/payments' },
+    ...(wallet ? [{
+      label: 'На кошельках клиентов', value: formatKop(wallet.liabilities_kop),
+      sub: `за месяц: +${formatKop(wallet.topups_month_kop)} / −${formatKop(wallet.spent_month_kop)}`, to: '/payments',
+    }] : []),
     { label: t.dashPromocodes, value: data?.promocodes_count, to: '/promocodes' },
     { label: t.dashActiveReleases, value: data?.active_releases, to: '/releases' },
     { label: t.dashAdmins, value: data?.admins_count, to: '/admins' },

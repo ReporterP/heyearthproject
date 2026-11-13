@@ -9,6 +9,7 @@ import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../comp
 import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
 import { refundableAmount } from '../utils/refund.js'
+import { paymentKindLabel } from '../utils/wallet.js'
 import {
   Button,
   Input,
@@ -334,6 +335,7 @@ export default function PaymentsPage() {
             <Tr>
               <Th sortKey="id" sortState={sortState} onSort={onSort}>ID</Th>
               <Th sortKey="user_id" sortState={sortState} onSort={onSort}>User</Th>
+              <Th>Тип</Th>
               <Th sortKey="amount" sortState={sortState} onSort={onSort} align="right">{t.fieldAmount}</Th>
               <Th sortKey="status" sortState={sortState} onSort={onSort}>{t.fieldStatus}</Th>
               <Th>Метод</Th>
@@ -360,6 +362,10 @@ export default function PaymentsPage() {
                     {isRecovered && <span className="ml-1 text-[9px] text-info align-super" title="Платёж восстановлен через orphan recovery">RECOVERED</span>}
                   </Td>
                   <Td mono className="text-xs">{p.user_id || p.user_db_id || '—'}</Td>
+                  <Td>
+                    <Badge variant={metaObj.kind === 'wallet_topup' ? 'accent' : 'default'}>{paymentKindLabel(metaObj.kind)}</Badge>
+                    {metaObj.purchase_status === 'failed' && <div className="text-[10px] text-warning mt-0.5" title={metaObj.purchase_reason || ''}>покупка не прошла</div>}
+                  </Td>
                   <Td align="right" mono className="font-medium">
                     {parseFloat(p.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {p.currency}
                   </Td>

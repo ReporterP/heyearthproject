@@ -10,11 +10,13 @@ import ConfirmDialog from './ConfirmDialog.jsx'
 import ProfileTab from './user-drawer/ProfileTab.jsx'
 import SubscriptionsTab from './user-drawer/SubscriptionsTab.jsx'
 import TrafficPaymentsTab from './user-drawer/TrafficPaymentsTab.jsx'
+import WalletTab from './user-drawer/WalletTab.jsx'
 
 const TABS = [
   { id: 'profile',       key: 'drawerTabProfile' },
   { id: 'subscriptions', key: 'drawerTabSubs' },
   { id: 'traffic',       key: 'drawerTabTraffic' },
+  { id: 'wallet',        key: 'drawerTabWallet' },
 ]
 
 export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUserMutated }) {
@@ -141,6 +143,7 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
           {activeTab === 'profile'       && <ProfileTab user={user} onSaved={onUserMutated} />}
           {activeTab === 'subscriptions' && <SubscriptionsTab user={user} onChanged={onUserMutated} />}
           {activeTab === 'traffic'       && <TrafficPaymentsTab user={user} />}
+          {activeTab === 'wallet'        && <WalletTab user={user} />}
         </div>
       </Drawer>
 
