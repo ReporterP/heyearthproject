@@ -11,7 +11,13 @@ export function AuthProvider({ children }) {
     setToken(newToken)
   }, [])
 
+  // logout forgets the token here and closes its session on the server (the app and other
+  // devices keep theirs). Fire-and-forget: leaving must work offline too.
   const logout = useCallback(() => {
+    const old = localStorage.getItem('token')
+    if (old) {
+      fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${old}` }, keepalive: true }).catch(() => {})
+    }
     localStorage.removeItem('token')
     setToken('')
   }, [])

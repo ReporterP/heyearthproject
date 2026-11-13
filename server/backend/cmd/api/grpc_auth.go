@@ -57,13 +57,7 @@ func authorizeClientCall(method string, md metadata.MD, req any, validate func(t
 	if !grpcUserMethods[method] {
 		return status.Error(codes.PermissionDenied, "method is not open to clients")
 	}
-	token := ""
-	for _, v := range md.Get("authorization") {
-		if len(v) > 7 && strings.EqualFold(v[:7], "bearer ") {
-			token = strings.TrimSpace(v[7:])
-			break
-		}
-	}
+	token := bearerFromMD(md)
 	if token == "" {
 		return status.Error(codes.Unauthenticated, "authorization: Bearer <token> is required")
 	}
@@ -76,6 +70,16 @@ func authorizeClientCall(method string, md metadata.MD, req any, validate func(t
 		return status.Error(codes.PermissionDenied, "user_id does not match the token")
 	}
 	return nil
+}
+
+// bearerFromMD: the token of the call's "authorization: Bearer <token>" ("" when absent).
+func bearerFromMD(md metadata.MD) string {
+	for _, v := range md.Get("authorization") {
+		if len(v) > 7 && strings.EqualFold(v[:7], "bearer ") {
+			return strings.TrimSpace(v[7:])
+		}
+	}
+	return ""
 }
 
 // grpcAuthLimiter caps Login/Register. Behind nginx every caller is

@@ -214,6 +214,33 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // extractUserFromToken reads JWT from Authorization header and returns user_id.
+// bearerToken: the token of "Authorization: Bearer <token>" ("" when absent).
+func bearerToken(r *http.Request) string {
+	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+}
+
+// handleUserLogout closes the caller's session (POST, Bearer token): the token stops working on
+// the site and in the app. Idempotent: an unknown or missing token answers 204 too.
+func handleUserLogout(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if token := bearerToken(r); token != "" {
+		if err := biz.RevokeUserSession(token); err != nil {
+			log.Printf("[auth] logout: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Не удалось выйти, попробуйте ещё раз"})
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func extractUserFromToken(r *http.Request) (string, error) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
@@ -264,7 +291,7 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 		// future username-based logins). Reverse order = single-form registration
 		// works in one POST.
 		if req.NewPassword != "" {
-			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword); err != nil {
+			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword, bearerToken(r)); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
@@ -823,6 +850,7 @@ func main() {
 	// User portal REST endpoints (rate limited)
 	http.HandleFunc("/api/v1/auth/register", authLimiter.Middleware(handleUserRegister))
 	http.HandleFunc("/api/v1/auth/login", authLimiter.Middleware(handleUserLogin))
+	http.HandleFunc("/api/v1/auth/logout", authLimiter.Middleware(handleUserLogout))
 	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
 	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
 	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))

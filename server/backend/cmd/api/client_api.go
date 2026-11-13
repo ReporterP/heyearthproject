@@ -12,6 +12,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -85,7 +86,8 @@ func (s *server) UpdateProfile(ctx context.Context, req *heyearth_v1.UpdateProfi
 
 	// Set password if provided
 	if newPassword := req.GetNewPassword(); newPassword != "" {
-		if err := biz.SetCloudPassword(userID, newPassword, req.GetCurrentPassword()); err != nil {
+		md, _ := metadata.FromIncomingContext(ctx)
+		if err := biz.SetCloudPassword(userID, newPassword, req.GetCurrentPassword(), bearerFromMD(md)); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 	}

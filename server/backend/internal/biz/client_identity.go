@@ -150,7 +150,10 @@ func SetUsername(userID, username string) error {
 
 // SetCloudPassword sets or changes the user's cloud password.
 // If currentPassword is provided and user already has a password, it must match.
-func SetCloudPassword(userID, newPassword, currentPassword string) error {
+// Changing an existing password closes every other session of the user (cleanup plan D2):
+// whoever logged in with the old one is signed out; keepToken (the caller's own session,
+// "" = none) stays. Setting the first password closes nothing.
+func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) error {
 	if newPassword == "" {
 		return fmt.Errorf("new password cannot be empty")
 	}
@@ -164,7 +167,8 @@ func SetCloudPassword(userID, newPassword, currentPassword string) error {
 	}
 
 	// If user already has a password, verify the current one
-	if user.PasswordHash.Valid && user.PasswordHash.String != "" {
+	replaced := user.PasswordHash.Valid && user.PasswordHash.String != ""
+	if replaced {
 		if currentPassword == "" {
 			return fmt.Errorf("current password required")
 		}
@@ -178,10 +182,22 @@ func SetCloudPassword(userID, newPassword, currentPassword string) error {
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	_, err = db.DB.Exec(`
-		UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2
-	`, string(hash), userID)
+	tx, err := db.DB.Begin()
 	if err != nil {
+		return fmt.Errorf("set cloud password: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`
+		UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2
+	`, string(hash), userID); err != nil {
+		return fmt.Errorf("set cloud password: %w", err)
+	}
+	if replaced {
+		if _, err = tx.Exec(revokeOtherSessionsQuery, user.ID, hashToken(keepToken)); err != nil {
+			return fmt.Errorf("close other sessions: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("set cloud password: %w", err)
 	}
 	return nil

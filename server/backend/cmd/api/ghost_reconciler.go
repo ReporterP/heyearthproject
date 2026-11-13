@@ -59,7 +59,7 @@ func runGhostReconciler() {
 		hubSet[id] = true
 	}
 
-	autoCleanup := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_cleanup", "true"), "true")
+	autoCleanup := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_cleanup", "false"), "true")
 	autoRepair := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_repair", "false"), "true")
 
 	var orphans, missing int
