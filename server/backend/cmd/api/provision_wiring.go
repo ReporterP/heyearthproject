@@ -374,9 +374,9 @@ var exitMTProtoDomainStep = func(ctx context.Context, n provision.Node, o *provi
 }
 
 // exitMTProtoDomain points o at the exit's own fronting domain (biz.ExitFrontingDomain) and its
-// secret, recording the domain first: the deeplink hands out the secret of the recorded one. No
-// domain found: o keeps the shared domain and the installer says it does not resolve to the node
-// (an exit installs without MTProxy). A failed read or write of the record is an error.
+// secret; o.Record writes the domain when the install step runs (never here: a verify job reads
+// options too). No domain found: o keeps the shared domain and the installer says it does not
+// resolve to the node (an exit installs without MTProxy). A failed read of the record is an error.
 func exitMTProtoDomain(ctx context.Context, q interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -394,10 +394,8 @@ func exitMTProtoDomain(ctx context.Context, q interface {
 	if err != nil {
 		return nil // the installer's own check names the bad shared secret
 	}
-	if err := biz.SetExitMTProtoDomain(ctx, q, n.ID, domain); err != nil {
-		return fmt.Errorf("домен Telegram-прокси ноды %d не записан: %w", n.ID, err)
-	}
 	o.Domain, o.Secret = domain, secret
+	o.Record = func(ctx context.Context) error { return biz.SetExitMTProtoDomain(ctx, q, n.ID, domain) }
 	return nil
 }
 

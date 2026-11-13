@@ -30,16 +30,18 @@ func TestMTProtoSecretFor(t *testing.T) {
 }
 
 func TestExitFrontingDomain(t *testing.T) {
-	prevAddr, prevHost := mtLookupAddr, mtLookupHost4
-	t.Cleanup(func() { mtLookupAddr, mtLookupHost4 = prevAddr, prevHost })
+	prevAddr, prevHost := mtLookupAddr, mtLookupHost
+	t.Cleanup(func() { mtLookupAddr, mtLookupHost = prevAddr, prevHost })
 	dns := map[string][]string{
 		"front.example.test":        {"203.0.113.2"},  // the shared domain: the old exit
 		"v3.hoster.example.test":    {"203.0.113.3"},  // exit 3's own name
 		"moved.example.test":        {"203.0.113.9"},  // a stored domain that left
 		"stale.hoster.example.test": {"203.0.113.99"}, // a PTR that does not point back
 	}
-	ptr := map[string][]string{"203.0.113.3": {"v3.hoster.example.test."}, "203.0.113.4": {"stale.hoster.example.test."}}
-	mtLookupHost4 = func(_ context.Context, h string) ([]string, error) {
+	ptr := map[string][]string{"203.0.113.3": {"v3.hoster.example.test."}, "203.0.113.4": {"stale.hoster.example.test."},
+		"203.0.113.7": {"bad_name.example.test."}}
+	dns["bad_name.example.test"] = []string{"203.0.113.7"} // resolves back, but no domain mtg takes
+	mtLookupHost = func(_ context.Context, h string) ([]string, error) {
 		if v, ok := dns[h]; ok {
 			return v, nil
 		}
@@ -50,10 +52,10 @@ func TestExitFrontingDomain(t *testing.T) {
 	for _, c := range []struct {
 		ip, stored, want string
 	}{
-		{"203.0.113.2", "", "front.example.test"},                       // the old exit keeps the shared domain
-		{"203.0.113.3", "", "v3.hoster.example.test"},                   // a new exit: its reverse name
-		{"203.0.113.3", "moved.example.test", "v3.hoster.example.test"}, // a stored one that left
-		{"203.0.113.9", "MOVED.example.test", "moved.example.test"},     // a stored one that still points here
+		{"203.0.113.2", "", "front.example.test"},                   // the old exit keeps the shared domain
+		{"203.0.113.3", "", "v3.hoster.example.test"},               // a new exit: its reverse name
+		{"203.0.113.3", "moved.example.test", "moved.example.test"}, // a stored one wins, DNS or not (the installer checks it)
+		{"203.0.113.9", "MOVED.example.test", "moved.example.test"}, // a stored one that still points here
 	} {
 		if got, err := ExitFrontingDomain(ctx, c.ip, c.stored, "front.example.test"); err != nil || got != c.want {
 			t.Errorf("%s stored %q: %q %v, want %q", c.ip, c.stored, got, err, c.want)
@@ -61,6 +63,12 @@ func TestExitFrontingDomain(t *testing.T) {
 	}
 	if _, err := ExitFrontingDomain(ctx, "203.0.113.4", "", "front.example.test"); err == nil || !strings.Contains(err.Error(), "stale.hoster.example.test") {
 		t.Errorf("a PTR that does not point back: %v", err)
+	}
+	if _, err := ExitFrontingDomain(ctx, "203.0.113.7", "", ""); err == nil {
+		t.Error("a reverse name mtg does not take was accepted")
+	}
+	if _, err := ExitFrontingDomain(ctx, "not-an-ip", "", ""); err == nil {
+		t.Error("a non-IP address was accepted")
 	}
 	if _, err := ExitFrontingDomain(ctx, "203.0.113.5", "", ""); err == nil || !strings.Contains(err.Error(), "PTR") {
 		t.Errorf("no name at all: %v", err)

@@ -157,6 +157,14 @@ func installMTProxyStep(o MTProtoOptions, skipOnFailure bool) stepFunc {
 		if err := setMTProto(ctx, s, "installing"); errors.Is(err, ErrMTProxyDisabled) {
 			return mtproxySwitchedOff(s, "не ставлю")
 		}
+		if o.Record != nil {
+			if err := o.validate(); err != nil {
+				return err
+			}
+			if err := o.Record(ctx); err != nil {
+				return fmt.Errorf("домен Telegram-прокси не записан: %w", err)
+			}
+		}
 		out, err := InstallMTProxy(ctx, r, o)
 		s.Printf("%s", tail(out, 2000))
 		if err != nil {

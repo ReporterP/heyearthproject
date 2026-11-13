@@ -295,3 +295,42 @@ func TestMTProxyJob(t *testing.T) {
 		t.Fatalf("failed install job: %v %s %v %q", got, store.jobs[id].Status, h.mtproto, store.jobs[id].Error)
 	}
 }
+
+// The exit's domain is recorded by the install step, right before the install — never by a
+// verify job, and never when the options do not validate.
+func TestMTProxyStepRecordsDomainBeforeInstall(t *testing.T) {
+	ctx := context.Background()
+	var log []string
+	o := testMTOptions()
+	o.Record = func(context.Context) error { log = append(log, "record "+o.Domain); return nil }
+	run := func(status, kind string, host *fakeHost, o MTProtoOptions) {
+		h := &fakeHooks{lifecycle: "provisioning"}
+		store := newMemStore(Node{ID: 7, Role: "exit", MTProtoStatus: status}, h)
+		if _, err := mtproxyRunner(store, h, host, o).Start(ctx, 7, kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := newFakeHost()
+	run("unknown", KindProvision, host, o)
+	if !slices.Equal(log, []string{"record " + o.Domain}) || host.count("mtproxy-install") != 1 {
+		t.Fatalf("install: %v %v", log, host.ops)
+	}
+	log = nil
+	run("healthy", KindVerify, host, o)
+	if len(log) != 0 {
+		t.Fatalf("a verify job recorded: %v", log)
+	}
+	bad := o
+	bad.Domain = "bad_name.example.com"
+	run("unknown", KindProvision, newFakeHost(), bad)
+	if len(log) != 0 {
+		t.Fatalf("an invalid domain was recorded: %v", log)
+	}
+	failing := o
+	failing.Record = func(context.Context) error { return errors.New("db down") }
+	fh := newFakeHost()
+	run("unknown", KindProvision, fh, failing)
+	if fh.count("mtproxy-install") != 0 {
+		t.Fatal("installed although the domain was not recorded")
+	}
+}

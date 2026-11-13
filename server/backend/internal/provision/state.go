@@ -79,6 +79,10 @@ type MTProtoOptions struct {
 	Port           int
 	Secret, Domain string
 	Script         []byte // cmd/deploy/install-mtproxy.sh
+	// Record writes Domain as the exit's MTProxy domain (nil: nothing to record). The install
+	// step calls it right before installing: the Telegram deeplink hands out the secret of the
+	// recorded domain, so it must change only together with what mtg runs.
+	Record func(ctx context.Context) error
 }
 
 // State is one job run: the node, the Hub, options, and what steps learnt (keys, changed files).

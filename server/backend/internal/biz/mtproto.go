@@ -18,6 +18,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -230,34 +231,37 @@ func MTProtoSecretFor(secret, domain string) (string, error) {
 
 // Resolvers of ExitFrontingDomain (tests swap them).
 var (
-	mtLookupAddr  = net.DefaultResolver.LookupAddr
-	mtLookupHost4 = func(ctx context.Context, host string) ([]string, error) {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host)
-		out := make([]string, 0, len(ips))
-		for _, ip := range ips {
-			out = append(out, ip.String())
-		}
-		return out, err
-	}
+	mtLookupAddr = net.DefaultResolver.LookupAddr
+	mtLookupHost = net.DefaultResolver.LookupHost
 )
 
-// ExitFrontingDomain is the fake-TLS domain of the exit at ip, the first of: the one stored for
-// it, the shared mtproto_fronting_domain, the exit's reverse-DNS name (hosters name their
-// servers, e.g. v1234567.hosted-by-<hoster>.com) — each only while it resolves to ip.
+// mtDomainNameRe: a domain mtg and install-mtproxy.sh take (provision's mtDomainRe, lower case).
+var mtDomainNameRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ExitFrontingDomain is the fake-TLS domain of the exit at ip: the one stored for it (as is — its
+// MTProxy runs with it, and a DNS blip must not move a working exit to another domain; the
+// installer checks it still resolves here), else the shared mtproto_fronting_domain, else the
+// exit's reverse-DNS name (hosters name their servers, e.g. v1234567.hosted-by-<hoster>.com) —
+// those two only while they resolve to ip.
 func ExitFrontingDomain(ctx context.Context, ip, stored, shared string) (string, error) {
+	if d := strings.ToLower(strings.TrimSpace(stored)); d != "" {
+		return d, nil
+	}
+	want := net.ParseIP(strings.TrimSpace(ip))
+	if want == nil {
+		return "", fmt.Errorf("адрес выхода %q — не IP", ip)
+	}
 	resolvesHere := func(name string) bool {
-		if name == "" || len(name) > 253 || !strings.Contains(name, ".") {
+		if len(name) > 253 || !mtDomainNameRe.MatchString(name) {
 			return false
 		}
-		ips, err := mtLookupHost4(ctx, name)
-		return err == nil && slices.Contains(ips, ip)
+		ips, err := mtLookupHost(ctx, name)
+		return err == nil && slices.ContainsFunc(ips, func(s string) bool { return want.Equal(net.ParseIP(s)) })
 	}
-	for _, d := range []string{stored, shared} {
-		if d = strings.ToLower(strings.TrimSpace(d)); resolvesHere(d) {
-			return d, nil
-		}
+	if d := strings.ToLower(strings.TrimSpace(shared)); resolvesHere(d) {
+		return d, nil
 	}
-	names, err := mtLookupAddr(ctx, ip)
+	names, err := mtLookupAddr(ctx, want.String())
 	for _, n := range names {
 		if n = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(n), ".")); resolvesHere(n) {
 			return n, nil

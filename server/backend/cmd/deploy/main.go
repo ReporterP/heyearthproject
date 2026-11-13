@@ -1903,10 +1903,7 @@ func setupExitNodeDeploy(addr string, mainClient *ssh.Client, cfg *deployConfig,
 			fmt.Printf("[exit-node] запись id %d в базе — «ожидает настройки» (pending): повторите команду (продолжит) или удалите её в админке\n", id)
 		}
 	}
-	if err := recordMTProtoDomain(ctx, db, id, eo.MTProto); err != nil {
-		stranded()
-		log.Fatalf("[exit-node] домен Telegram-прокси: %v", err)
-	}
+	withMTProtoRecord(db, id, eo.MTProto)
 	if planKind != "keep" {
 		if err := provision.BindPlans(ctx, db, id, planIDs); err != nil {
 			stranded()

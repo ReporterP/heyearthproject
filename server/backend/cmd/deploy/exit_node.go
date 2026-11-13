@@ -332,7 +332,7 @@ func cliExitOptions(ctx context.Context, mainClient *ssh.Client, hub provision.R
 }
 
 // cliMTProtoOptions points o at the exit's own fronting domain and its secret, like the API's
-// exitMTProtoDomain (the row is recorded after ensureExitRow: recordMTProtoDomain). No domain found:
+// exitMTProtoDomain (o.Record is set once the row exists: withMTProtoRecord). No domain found:
 // o keeps the shared one, and the installer says it does not resolve to the node.
 func cliMTProtoOptions(ctx context.Context, db *sql.DB, exitIP string, cur exitRowState, o *provision.MTProtoOptions) *provision.MTProtoOptions {
 	stored := ""
@@ -350,11 +350,13 @@ func cliMTProtoOptions(ctx context.Context, db *sql.DB, exitIP string, cur exitR
 	return o
 }
 
-// recordMTProtoDomain writes the domain the exit's MTProxy fronts before the job installs it: the
-// Telegram deeplink hands out the secret of the recorded domain.
-func recordMTProtoDomain(ctx context.Context, db *sql.DB, id int, o *provision.MTProtoOptions) error {
+// withMTProtoRecord lets the install step record the domain the exit's MTProxy fronts. A stored
+// domain always wins in biz.ExitFrontingDomain, so the shared fallback is written only over an
+// empty record (the same secret).
+func withMTProtoRecord(db *sql.DB, id int, o *provision.MTProtoOptions) {
 	if o == nil {
-		return nil
+		return
 	}
-	return biz.SetExitMTProtoDomain(ctx, db, id, o.Domain)
+	domain := o.Domain
+	o.Record = func(ctx context.Context) error { return biz.SetExitMTProtoDomain(ctx, db, id, domain) }
 }
