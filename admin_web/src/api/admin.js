@@ -291,6 +291,10 @@ export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mob
 export const fetchFailingRenewals = () => apiFetch('/renewals/failing')
 export const fetchFeatures = () => apiFetch('/features')
 
+// ── Subscription sharing (C13) ──
+export const fetchUserDialRate = (id) => apiFetch(`/users/${id}/dial-rate`)
+export const fetchDialRateSuspects = () => apiFetch('/dial-rate/suspects')
+
 // ── Direct routes ──
 export const fetchDirectRoutes = (query) => apiFetch(`/direct-routes${query ? `?${query}` : ''}`)
 export const fetchDirectRouteStats = () => apiFetch('/direct-routes/stats')

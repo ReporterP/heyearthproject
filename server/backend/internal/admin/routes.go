@@ -36,6 +36,10 @@ func RegisterRoutes() {
 			RequirePermission(permWalletAdjust, UserWalletAdjustHandler).ServeHTTP(w, r)
 			return
 		}
+		if strings.HasSuffix(trimmed, "/dial-rate") && r.Method == http.MethodGet { // C13
+			RequirePermission("users.read", UserDialRateHandler).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(trimmed, "/referrals") && r.Method == http.MethodGet {
 			RequirePermission("users.read", UserReferralsHandler).ServeHTTP(w, r)
 			return
@@ -238,6 +242,7 @@ func RegisterRoutes() {
 	// «Платежи → Не прошло продление» and the menu's switches (C10).
 	http.HandleFunc("/api/admin/renewals/failing", withMethod(http.MethodGet, RequirePermission("payments.read", FailingRenewalsHandler)))
 	http.HandleFunc("/api/admin/features", withMethod(http.MethodGet, AuthMiddleware(FeaturesHandler)))
+	http.HandleFunc("/api/admin/dial-rate/suspects", withMethod(http.MethodGet, RequirePermission("users.read", DialRateSuspectsHandler)))
 
 	// The Hub's row on «Серверы» (B1).
 	http.HandleFunc("/api/admin/hub", withMethod(http.MethodGet, RequirePermission("servers.read", HubHandler)))

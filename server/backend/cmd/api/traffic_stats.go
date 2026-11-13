@@ -161,7 +161,7 @@ func collectTrafficStats() {
 
 // recordDialRateSamples оценивает per-user dials/min из дельт и записывает в dial_rate_log.
 // Окно = 60 сек (соответствует тикеру collectTrafficStats).
-// Раз в час чистит сэмплы старше 24 часов.
+// Раз в час сводит минуты в сутки (dial_rate_daily) и чистит минуты старше 48 часов.
 func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	if len(deltas) == 0 {
 		return
@@ -205,6 +205,9 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 	lastDialRateCleanup.Unlock()
 	if doCleanup {
+		if err := biz.RollupDialRate(); err != nil {
+			log.Printf("[dial-rate] rollup: %v", err)
+		}
 		if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
 			log.Printf("[dial-rate] Очистка: %d старых записей удалено", n)
 		}

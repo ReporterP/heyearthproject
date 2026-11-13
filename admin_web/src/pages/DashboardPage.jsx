@@ -6,17 +6,12 @@ import { formatKop } from '../utils/wallet.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import CapacityPanel from '../components/servers/CapacityPanel.jsx'
 import LaunchChecklist from '../components/servers/LaunchChecklist.jsx'
+import SharingPanel from '../components/SharingPanel.jsx'
 import { formatBytes } from '../utils/format.js'
 import {
   Card,
   PageHeader,
   Skeleton,
-  Table,
-  Thead,
-  Tbody,
-  Tr,
-  Th,
-  Td,
 } from '../components/ui/index.js'
 
 function formatRub(amount) {
@@ -179,34 +174,8 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Top users by traffic */}
-      {data?.top_users && data.top_users.length > 0 && (
-        <Card className="p-5">
-          <h3 className="text-lg font-semibold text-primary mb-4">{t.dashTopUsers}</h3>
-          <Table>
-            <Thead>
-              <Tr>
-                <Th>#</Th>
-                <Th>User ID</Th>
-                <Th align="right">{t.trafficUpload}</Th>
-                <Th align="right">{t.trafficDownload}</Th>
-                <Th align="right">{t.trafficTotal}</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
-              {data.top_users.map((u, i) => (
-                <Tr key={u.user_id}>
-                  <Td className="text-tertiary">{i + 1}</Td>
-                  <Td mono className="text-xs">{u.username || u.user_id}</Td>
-                  <Td align="right" mono className="text-info">{formatBytes(u.upload)}</Td>
-                  <Td align="right" mono className="text-info">{formatBytes(u.download)}</Td>
-                  <Td align="right" mono className="font-semibold text-primary">{formatBytes(u.total)}</Td>
-                </Tr>
-              ))}
-            </Tbody>
-          </Table>
-        </Card>
-      )}
+      {/* Subscription sharing and top traffic, with «Заблокировать» (C13) */}
+      <SharingPanel />
     </div>
   )
 }
