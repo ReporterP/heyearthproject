@@ -40,7 +40,6 @@ type deployConfig struct {
 	repoRoot           string
 	serverRoot         string
 	backendRoot        string
-	ansibleRoot        string
 	env                envMap
 	siteDomain         string
 	letsEncryptEmail   string
@@ -68,8 +67,6 @@ func main() {
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
-	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
-	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
 	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перевыпустить на Hub клиентский mTLS-сертификат API от CA Hub (CA и сертификаты нод не меняются; сертификаты нод обновляет их настройка)")
 	ensureHubProv := flag.Bool("ensure-hub-provisioning", false, "подготовить живой Hub к настройке нод (админка и --setup-exit-node): SSH_ENCRYPTION_KEY в api.env, ключ SSH Hub, node-agent, install-mtproxy.sh, собственный CA node-agent на Hub (прежний — как legacy до сведения exit); ничего не перезапускает")
 	setupExitNode := flag.String("setup-exit-node", "", "настроить exit-ноду ядром провижининга (IP или IP:порт; порт игнорируется)")
@@ -121,29 +118,23 @@ func main() {
 		mode = "ssh"
 	case *statusMode:
 		mode = "status"
-	case *backupMode:
-		mode = "backup"
-	case *restoreMode:
-		mode = "restore"
 	case flag.NArg() == 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
 	serverRoot := filepath.Join(repoRoot, "server")
 	backendRoot := filepath.Join(serverRoot, "backend")
-	ansibleRoot := filepath.Join(serverRoot, "ansible")
 	env := loadEnv(serverRoot, repoRoot)
 
 	cfg := &deployConfig{
 		repoRoot:           repoRoot,
 		serverRoot:         serverRoot,
 		backendRoot:        backendRoot,
-		ansibleRoot:        ansibleRoot,
 		env:                env,
 		siteDomain:         env.get("SITE_DOMAIN", "hiearth.ru"),
 		letsEncryptEmail:   env.get("LETSENCRYPT_EMAIL", ""),
@@ -173,10 +164,6 @@ func main() {
 	}
 	if mode == "status" {
 		doStatus(client, cfg)
-		return
-	}
-	if mode == "backup" {
-		doBackup(client, cfg)
 		return
 	}
 	if mode == "fix-db" {
@@ -226,7 +213,6 @@ func main() {
 		installGoOnServer(client)
 		optimizeNetworkStack(client)
 		installPostgresOnServer(client)
-		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doAdminWeb(sftpClient, client, cfg)
@@ -238,7 +224,6 @@ func main() {
 		setupAmneziaWGHub(client, cfg)
 		verifyServices(client)
 	case "update-main":
-		// installAnsibleOnServer пропускаем — apt-get update может зависать
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
@@ -275,10 +260,6 @@ func main() {
 	case "setup-awg":
 		setupAmneziaWGHub(client, cfg)
 		setupAWGExitRoute(client, cfg)
-	case "backup":
-		doBackup(client, cfg)
-	case "restore":
-		doRestore(client, sftpClient, cfg)
 	}
 }
 
@@ -714,22 +695,13 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='heyearth'" 
 	_, _ = runSSH(client, script, true)
 }
 
-func installAnsibleOnServer(client *ssh.Client) {
-	script := `set -e
-apt-get update -qq
-apt-get install -y -qq software-properties-common
-apt-get install -y -qq ansible sshpass
-`
-	_, _ = runSSH(client, script, true)
-}
-
 // uploadNodeProvisioningAssets: node-agent and the MTProxy installer for the API's provisioning,
-// ansible, and the node-agent CA, which is made on the Hub itself (ensureHubNodeCA): no
+// and the node-agent CA, which is made on the Hub itself (ensureHubNodeCA): no
 // certificate or key goes from this machine to the Hub any more (Beads cudk.77). A deploy only
 // creates a CA on a Hub without one and renews the API's client certificate; replacing an old CA
 // is --ensure-hub-provisioning.
 func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+appDir+"/ansible "+hubCertsDir+" "+path.Dir(hubMTProxyScript), true)
+	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+hubCertsDir+" "+path.Dir(hubMTProxyScript), true)
 
 	nodeAgentPath := buildGoBinary(cfg.backendRoot, "node-agent", "node-agent")
 	if err := uploadFile(c, nodeAgentPath, hubNodeAgentArtifact); err != nil {
@@ -740,9 +712,6 @@ func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deplo
 	}
 	_, _ = runSSH(client, "chmod 755 "+hubMTProxyScript, true)
 
-	if err := uploadDir(c, cfg.ansibleRoot, appDir+"/ansible"); err != nil {
-		log.Fatalf("upload ansible: %v", err)
-	}
 	ctx, hub := context.Background(), provision.NewSSHRemote(client)
 	p, err := ensureHubNodeCA(ctx, hub, hubCertsDir, hubClock(ctx, hub)(), caKeep, false)
 	reportHubCA(p, err, false)
@@ -1819,58 +1788,6 @@ func serializeEnv(values map[string]string) string {
 		}
 	}
 	return b.String()
-}
-
-func doBackup(client *ssh.Client, cfg *deployConfig) {
-	timestamp := time.Now().Format("20060102-150405")
-	backupDir := fmt.Sprintf("/opt/heyearth/backups/%s", timestamp)
-
-	fmt.Printf("=== Creating backup at %s ===\n", backupDir)
-
-	cmds := []string{
-		fmt.Sprintf("mkdir -p %s", backupDir),
-		fmt.Sprintf("sudo -u postgres pg_dump heyearth > %s/db.sql 2>/dev/null || pg_dump -h 127.0.0.1 -U heyearth heyearth > %s/db.sql", backupDir, backupDir),
-		fmt.Sprintf("cp -r %s/certs %s/certs 2>/dev/null || true", appDir, backupDir),
-		fmt.Sprintf("cp %s/.env %s/dot-env 2>/dev/null || true", appDir, backupDir),
-		fmt.Sprintf("cp -r /var/www/heyearth %s/admin-web 2>/dev/null || true", backupDir),
-		fmt.Sprintf("cp -r /var/www/heyearth-site %s/site 2>/dev/null || true", backupDir),
-		fmt.Sprintf("cp /etc/nginx/conf.d/heyearth.conf %s/nginx.conf 2>/dev/null || true", backupDir),
-		fmt.Sprintf("tar czf /opt/heyearth/backups/backup-%s.tar.gz -C /opt/heyearth/backups %s", timestamp, timestamp),
-		fmt.Sprintf("rm -rf %s", backupDir),
-		"ls -lah /opt/heyearth/backups/",
-	}
-
-	for _, cmd := range cmds {
-		out, err := runSSH(client, cmd, false)
-		if err != nil {
-			log.Printf("  cmd failed: %s → %v", cmd, err)
-		}
-		if strings.TrimSpace(out) != "" {
-			fmt.Println(out)
-		}
-	}
-
-	fmt.Printf("=== Backup complete: /opt/heyearth/backups/backup-%s.tar.gz ===\n", timestamp)
-}
-
-func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
-	fmt.Println("=== Available backups ===")
-	out, _ := runSSH(client, "ls -lt /opt/heyearth/backups/*.tar.gz 2>/dev/null | head -10", false)
-	fmt.Println(out)
-
-	fmt.Println("To restore, run on the server:")
-	fmt.Println("  cd /opt/heyearth/backups")
-	fmt.Println("  tar xzf backup-XXXXXXXX-XXXXXX.tar.gz")
-	fmt.Println("  sudo -u postgres psql heyearth < XXXXXXXX-XXXXXX/db.sql")
-	fmt.Println("  cp XXXXXXXX-XXXXXX/dot-env /opt/heyearth/mainserver/.env")
-	fmt.Println("  cp -r XXXXXXXX-XXXXXX/certs /opt/heyearth/mainserver/certs")
-	fmt.Println("  systemctl restart heyearth-api")
-	fmt.Println("")
-	fmt.Println("For migration to a new server:")
-	fmt.Println("  1. Run --backup on the old server")
-	fmt.Println("  2. scp /opt/heyearth/backups/backup-*.tar.gz newhost:/opt/heyearth/backups/")
-	fmt.Println("  3. On the new server: run deploy --main first")
-	fmt.Println("  4. Then restore the DB and config from the backup")
 }
 
 // parseExitNodeAddr validates --setup-exit-node: an IP address, optionally with a port (the
