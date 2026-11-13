@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +97,15 @@ type adminUserPayload struct {
 	IsActive    *bool    `json:"is_active"`
 	RoleKeys    []string `json:"role_keys"`
 }
+
+// activeSuperAdminsQuery: active admins holding the super admin role (C1 lockout guard).
+const activeSuperAdminsQuery = `SELECT COUNT(DISTINCT u.id) FROM admin_users u
+	JOIN admin_user_roles ur ON ur.admin_user_id = u.id JOIN admin_roles ro ON ro.id = ur.role_id
+	WHERE ro.role_key = $1 AND u.is_active`
+
+const adminPasswordMin = 10
+
+var roleKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
 
 type adminRolePayload struct {
 	RoleKey        string   `json:"role_key"`
@@ -391,11 +402,15 @@ func CreateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(payload.Username) == "" || strings.TrimSpace(payload.Password) == "" {
-		writeAdminError(w, http.StatusBadRequest, "username and password are required")
+		writeAdminError(w, http.StatusBadRequest, "Укажите логин и пароль")
 		return
 	}
 	if len(payload.RoleKeys) == 0 {
-		writeAdminError(w, http.StatusBadRequest, "at least one role is required")
+		writeAdminError(w, http.StatusBadRequest, "Выберите хотя бы одну роль")
+		return
+	}
+	if len(payload.Password) < adminPasswordMin {
+		writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("Пароль — не короче %d символов", adminPasswordMin))
 		return
 	}
 
@@ -424,7 +439,11 @@ func CreateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		RETURNING id
 	`, strings.TrimSpace(payload.Username), strings.TrimSpace(payload.DisplayName), string(passwordHash), isActive).Scan(&id)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to create admin")
+		if isUniqueViolation(err) {
+			writeAdminError(w, http.StatusConflict, "Такой логин уже есть")
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось создать администратора")
 		return
 	}
 
@@ -448,6 +467,7 @@ func CreateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to build admin")
 		return
 	}
+	WriteAuditLog(r, "admin.create", "admin_user", strconv.Itoa(id), map[string]any{"username": adminUser.Username, "roles": payload.RoleKeys, "is_active": isActive})
 	writeAdminJSON(w, http.StatusCreated, adminUser)
 }
 
@@ -495,6 +515,10 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	passwordHash := record.PasswordHash
+	if strings.TrimSpace(payload.Password) != "" && len(payload.Password) < adminPasswordMin {
+		writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("Пароль — не короче %d символов", adminPasswordMin))
+		return
+	}
 	if strings.TrimSpace(payload.Password) != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
 		if err != nil {
@@ -509,6 +533,10 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		SET username = $1, display_name = $2, password_hash = $3, is_active = $4, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $5
 	`, username, displayName, passwordHash, isActive, adminID); err != nil {
+		if isUniqueViolation(err) {
+			writeAdminError(w, http.StatusConflict, "Такой логин уже есть")
+			return
+		}
 		writeAdminError(w, http.StatusInternalServerError, "Failed to update admin")
 		return
 	}
@@ -523,11 +551,27 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Nobody locks the panel out: at least one active super admin remains (C1).
+	var supers int
+	if err := tx.QueryRow(activeSuperAdminsQuery, superAdminRoleKey).Scan(&supers); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить суперадминов")
+		return
+	}
+	if supers == 0 {
+		writeAdminError(w, http.StatusConflict, "Это последний активный суперадмин: без него в панель никто не войдёт с полными правами. Сначала назначьте роль super_admin другому администратору")
+		return
+	}
 
 	if err := tx.Commit(); err != nil {
+		if isUniqueViolation(err) {
+			writeAdminError(w, http.StatusConflict, "Такой логин уже есть")
+			return
+		}
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save admin")
 		return
 	}
+	WriteAuditLog(r, "admin.update", "admin_user", strconv.Itoa(adminID), map[string]any{
+		"username": username, "is_active": isActive, "roles": payload.RoleKeys, "password_changed": strings.TrimSpace(payload.Password) != ""})
 
 	updated, err := loadAdminRecordByID(adminID)
 	if err != nil {
@@ -558,7 +602,11 @@ func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(payload.RoleKey) == "" || strings.TrimSpace(payload.Name) == "" {
-		writeAdminError(w, http.StatusBadRequest, "role_key and name are required")
+		writeAdminError(w, http.StatusBadRequest, "Укажите ключ и название роли")
+		return
+	}
+	if !roleKeyRe.MatchString(strings.TrimSpace(payload.RoleKey)) {
+		writeAdminError(w, http.StatusBadRequest, "Ключ роли: латиница в нижнем регистре, цифры и «_», например support")
 		return
 	}
 
@@ -569,10 +617,7 @@ func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	isSystem := false
-	if payload.IsSystem != nil {
-		isSystem = *payload.IsSystem
-	}
+	isSystem := false // system roles come from migrations only
 
 	var roleID int
 	err = tx.QueryRow(`
@@ -581,7 +626,11 @@ func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 		RETURNING id
 	`, strings.TrimSpace(payload.RoleKey), strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Description), isSystem).Scan(&roleID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to create role")
+		if isUniqueViolation(err) {
+			writeAdminError(w, http.StatusConflict, "Роль с таким ключом уже есть")
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось создать роль")
 		return
 	}
 
@@ -600,6 +649,7 @@ func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to reload roles")
 		return
 	}
+	WriteAuditLog(r, "role.create", "admin_role", strconv.Itoa(roleID), map[string]any{"role_key": strings.TrimSpace(payload.RoleKey), "permissions": payload.PermissionKeys})
 	for _, role := range roles {
 		if role.RoleKey == strings.TrimSpace(payload.RoleKey) {
 			writeAdminJSON(w, http.StatusCreated, role)
@@ -639,10 +689,11 @@ func UpdateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roleKey := currentRoleKey
-	if strings.TrimSpace(payload.RoleKey) != "" {
-		roleKey = strings.TrimSpace(payload.RoleKey)
+	if isSystem {
+		writeAdminError(w, http.StatusConflict, "Системную роль менять нельзя — создайте свою роль с нужными правами")
+		return
 	}
+	roleKey := currentRoleKey // the key is what admins and the code refer to: it does not change
 	name := currentName
 	if strings.TrimSpace(payload.Name) != "" {
 		name = strings.TrimSpace(payload.Name)
@@ -650,9 +701,6 @@ func UpdateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 	description := currentDescription
 	if payload.Description != "" || strings.TrimSpace(payload.Description) == "" {
 		description = strings.TrimSpace(payload.Description)
-	}
-	if payload.IsSystem != nil {
-		isSystem = *payload.IsSystem
 	}
 
 	if _, err := tx.Exec(`
@@ -679,6 +727,7 @@ func UpdateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save role")
 		return
 	}
+	WriteAuditLog(r, "role.update", "admin_role", strconv.Itoa(roleID), map[string]any{"role_key": roleKey, "name": name, "permissions": payload.PermissionKeys})
 	roles, err := listAdminRoles()
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to reload roles")
@@ -805,7 +854,7 @@ func assignRolesToAdminTx(tx *sql.Tx, adminID int, roleKeys []string) error {
 	for _, roleKey := range roleKeys {
 		var roleID int
 		if err := tx.QueryRow(`SELECT id FROM admin_roles WHERE role_key = $1`, strings.TrimSpace(roleKey)).Scan(&roleID); err == sql.ErrNoRows {
-			return fmt.Errorf("unknown role: %s", roleKey)
+			return fmt.Errorf("нет такой роли: %s", roleKey)
 		} else if err != nil {
 			return err
 		}
@@ -824,7 +873,7 @@ func assignPermissionsToRoleTx(tx *sql.Tx, roleID int, permissionKeys []string) 
 	for _, permissionKey := range permissionKeys {
 		var permissionID int
 		if err := tx.QueryRow(`SELECT id FROM admin_permissions WHERE permission_key = $1`, strings.TrimSpace(permissionKey)).Scan(&permissionID); err == sql.ErrNoRows {
-			return fmt.Errorf("unknown permission: %s", permissionKey)
+			return fmt.Errorf("нет такого права: %s", permissionKey)
 		} else if err != nil {
 			return err
 		}
