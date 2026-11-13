@@ -25,7 +25,6 @@ type UserProfile struct {
 	CurrentPlan       string `json:"current_plan,omitempty"`
 	CurrentPlanSlug   string `json:"current_plan_slug,omitempty"`
 	ValidUntil        string `json:"valid_until,omitempty"`
-	PausedUntil       string `json:"paused_until,omitempty"`
 	IsPremium         bool   `json:"is_premium"`
 	AccessStatus      string `json:"access_status"`
 	StatusReason      string `json:"status_reason,omitempty"`
@@ -255,21 +254,6 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 		profile.IsPremium = sub.IsPremium
 	}
 
-	// Pause state (активная подписка в паузе). No row = not paused; a failed
-	// read is an error, not "not paused".
-	var pausedUntil sql.NullTime
-	err = db.DB.QueryRow(`
-		SELECT us.paused_until FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.paused_until IS NOT NULL AND us.paused_until > NOW()
-		ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&pausedUntil)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("pause state: %w", err)
-	}
-	if pausedUntil.Valid {
-		profile.PausedUntil = pausedUntil.Time.Format(time.RFC3339)
-	}
 	if profile.IsBlocked {
 		profile.AccessStatus = "blocked"
 		profile.StatusReason = "user_blocked"
@@ -279,7 +263,7 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 
 // GetUserAccessState determines whether a user can connect and their permissions.
 // Every read is strict: a database failure is returned as an error, never read
-// as "no subscription" / "not a tenant" / "not paused". Callers answer it as a
+// as "no subscription" / "not a tenant". Callers answer it as a
 // temporary failure (503 / Unavailable), so clients keep their cached profile
 // instead of being told they lost access.
 func GetUserAccessState(userID string, platform string) (*UserAccessState, error) {
@@ -315,18 +299,6 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		state.Reason = "no_active_subscription"
 	}
 
-	// Проверка паузы — если подписка на паузе, доступ закрыт
-	if hasSub {
-		paused, err := isSubscriptionPaused(userID)
-		if err != nil {
-			return nil, err
-		}
-		if paused {
-			state.CanConnect = false
-			state.Reason = "subscription_paused"
-		}
-	}
-
 	// Traffic masking is available only for premium users
 	state.TrafficMaskingAvailable = profile.IsPremium
 
@@ -347,20 +319,6 @@ func isMemberOfTenant(userID string) (bool, error) {
 		return false, fmt.Errorf("tenant membership: %w", err)
 	}
 	return tenantID > 0, nil
-}
-
-// isSubscriptionPaused — есть ли активная подписка с paused_until > NOW().
-func isSubscriptionPaused(userID string) (bool, error) {
-	var count int
-	err := db.DB.QueryRow(`
-		SELECT COUNT(*) FROM user_subscriptions us
-		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.paused_until IS NOT NULL AND us.paused_until > NOW()
-	`, strings.TrimSpace(userID)).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("pause check: %w", err)
-	}
-	return count > 0, nil
 }
 
 // ─────────────────────── Subscriptions & Payments Lists ───────────────────────

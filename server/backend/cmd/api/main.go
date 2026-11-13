@@ -16,6 +16,7 @@ import (
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/email"
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	"github.com/heyearth/backend/internal/provision"
@@ -649,9 +650,9 @@ func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", "ИП Степанов Александр Владимирович"),
+		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", ""),
 		"legal_address":      biz.GetSettingOrDefault("legal_address", ""),
-		"legal_email":        biz.GetSettingOrDefault("legal_email", "alex_step04@mail.ru"),
+		"legal_email":        biz.GetSettingOrDefault("legal_email", ""),
 		"legal_phone":        biz.GetSettingOrDefault("legal_phone", ""),
 		"legal_inn":          biz.GetSettingOrDefault("legal_inn", ""),
 	})
@@ -743,6 +744,9 @@ func httpGateway(srv *server) http.HandlerFunc {
 func main() {
 	if err := db.InitDB(); err != nil {
 		log.Fatalf("failed to initialize DB: %v", err)
+	}
+	if base := publicBaseURL(); base != "" {
+		email.SiteURL = base // the links in the letters
 	}
 	defer db.CloseDB()
 	// Alerts: replay alert_events so already-reported incidents are not re-sent after a
@@ -901,8 +905,6 @@ func main() {
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
 
 	// Subscription pause / resume
-	http.HandleFunc("/api/v1/user/pause-subscription", apiLimiter.Middleware(handlePauseSubscription))
-	http.HandleFunc("/api/v1/user/resume-subscription", apiLimiter.Middleware(handleResumeSubscription))
 
 	// Proration preview (для UI)
 	http.HandleFunc("/api/v1/payment/proration-preview", apiLimiter.Middleware(handleProrationPreview))
@@ -944,6 +946,12 @@ func main() {
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
+	http.HandleFunc("/api/v1/site-info", apiLimiter.Middleware(handleSiteInfo))
+	// E8: the cabinet's e-mail, its confirmation link and the one-click unsubscribe.
+	http.HandleFunc("/api/v1/user/email", apiLimiter.Middleware(handleUserEmail))
+	http.HandleFunc("/api/v1/user/email/reminders", apiLimiter.Middleware(handleUserEmailReminders))
+	http.HandleFunc("/api/v1/email/confirm", authLimiter.Middleware(handleEmailConfirm))
+	http.HandleFunc("/api/v1/email/unsubscribe", authLimiter.Middleware(handleEmailUnsubscribe))
 
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()

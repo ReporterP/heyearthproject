@@ -90,3 +90,9 @@ func GetAPIEndpoints() []string {
 	}
 	return filtered
 }
+
+// B2BEnabled: the b2b_enabled switch (admin «Настройки», off by default; cleanup plan E3). While
+// it is off the public B2B forms answer 404 and the site hides the business pages.
+func B2BEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(GetSettingOrDefault("b2b_enabled", "false")), "true")
+}

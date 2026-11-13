@@ -521,6 +521,10 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 
 // PublicCreateTenantHandler is a public endpoint for the promo site to create a new tenant.
 func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
+	if !biz.B2BEnabled() { // E3: the business sign-up is off
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")

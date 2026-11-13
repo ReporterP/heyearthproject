@@ -15,15 +15,18 @@ import (
 
 // Message — одно email-сообщение для отправки.
 type Message struct {
-	To           string
-	Subject      string
-	HTMLBody     string
-	TextBody     string // опциональный plaintext fallback
-	Template     string // имя шаблона для email_log
-	UserID       int    // users.id для email_log (0 если нет)
-	UserIDText   string // users.user_id (UUID)
-	PaymentID    int    // payments.id если связано
-	SubscriptionID int  // user_subscriptions.id если связано
+	To             string
+	Subject        string
+	HTMLBody       string
+	TextBody       string // опциональный plaintext fallback
+	Template       string // имя шаблона для email_log
+	UserID         int    // users.id для email_log (0 если нет)
+	UserIDText     string // users.user_id (UUID)
+	PaymentID      int    // payments.id если связано
+	SubscriptionID int    // user_subscriptions.id если связано
+	// UnsubscribeURL (reminders only) becomes List-Unsubscribe + List-Unsubscribe-Post: the
+	// mail client's own one-click «Отписаться» (RFC 8058) POSTs to it.
+	UnsubscribeURL string
 }
 
 // settings — загруженные настройки SMTP.
@@ -119,6 +122,10 @@ func doSend(cfg *smtpSettings, m Message) error {
 	body.WriteString("From: " + from + "\r\n")
 	body.WriteString("To: " + m.To + "\r\n")
 	body.WriteString("Subject: =?UTF-8?B?" + base64UTF8(m.Subject) + "?=\r\n")
+	if m.UnsubscribeURL != "" {
+		body.WriteString("List-Unsubscribe: <" + m.UnsubscribeURL + ">\r\n")
+		body.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+	}
 	body.WriteString("MIME-Version: 1.0\r\n")
 	body.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n\r\n")
 

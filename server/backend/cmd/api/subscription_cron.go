@@ -54,7 +54,6 @@ func checkExpiringSubscriptions() {
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
-		  AND (us.paused_until IS NULL OR us.paused_until < NOW())
 	`)
 	if err != nil {
 		log.Printf("[subscription-cron] Ошибка проверки истекающих подписок: %v", err)

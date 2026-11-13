@@ -17,10 +17,14 @@ import (
 // quietWallet stops the background work after a wallet commit (emails, receipts): it
 // would outlive the test's database.
 func quietWallet(t *testing.T) {
-	prevK, prevE := kickWalletReceiptsAsync, sendActivationEmailAsync
+	prevK, prevE, prevT, prevR := kickWalletReceiptsAsync, sendActivationEmailAsync, notifyWalletTopupAsync, notifyReferralReward
 	kickWalletReceiptsAsync = func() {}
 	sendActivationEmailAsync = func(string, *biz.Plan, int, bool, int) {}
-	t.Cleanup(func() { kickWalletReceiptsAsync, sendActivationEmailAsync = prevK, prevE })
+	notifyWalletTopupAsync = func(int, string, int64, int64) {}
+	notifyReferralReward = func(*biz.ReferralReward) {}
+	t.Cleanup(func() {
+		kickWalletReceiptsAsync, sendActivationEmailAsync, notifyWalletTopupAsync, notifyReferralReward = prevK, prevE, prevT, prevR
+	})
 }
 
 // topupRow inserts a pending top-up payment like createWalletTopup does and returns its id.

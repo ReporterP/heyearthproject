@@ -468,15 +468,26 @@ func handleWalletTopup(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── GET /api/v1/wallet/topup/{payment_id} — the return page polls it ──
+// ── POST /api/v1/wallet/topup/{payment_id}/resume — continue it after a refresh (E7) ──
 
 func handleWalletTopupStatus(w http.ResponseWriter, r *http.Request) {
 	userID, userDBID, ok := requireUser(w, r)
 	if !ok {
 		return
 	}
-	id, _ := strconv.Atoi(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/wallet/topup/"), "/"))
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/wallet/topup/"), "/")
+	resume := strings.HasSuffix(rest, "/resume")
+	id, _ := strconv.Atoi(strings.TrimSuffix(rest, "/resume"))
 	if id <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "payment id required"})
+		return
+	}
+	if resume {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		resumeWalletTopup(w, r, userID, id)
 		return
 	}
 	var status, metaText, amount string
@@ -583,6 +594,10 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 			return nil, fmt.Errorf("purchase after top-up: %w", perr)
 		}
 	}
+	if row.metaInt("purchase_plan_id") <= 0 {
+		balanceAfter := entry.BalanceAfterKop
+		after = append(after, func() { notifyWalletTopupAsync(userDBID, row.UserID, amountKop, balanceAfter) })
+	}
 	after = append(after, func() { kickWalletReceiptsAsync() })
 	return func() {
 		for _, f := range after {
@@ -593,9 +608,12 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 
 // Test seams: the purchase, and what runs in the background after a wallet commit.
 var (
-	notifyReferralReward     = func(*biz.ReferralReward) {}
-	purchaseFromWalletTx     = biz.PurchaseFromWalletTx
-	kickWalletReceiptsAsync  = kickWalletReceipts
+	notifyReferralReward    = func(rw *biz.ReferralReward) { go mailReferralReward(rw) }
+	purchaseFromWalletTx    = biz.PurchaseFromWalletTx
+	kickWalletReceiptsAsync = kickWalletReceipts
+	notifyWalletTopupAsync  = func(userDBID int, userID string, amountKop, balanceKop int64) {
+		go notifyWalletTopup(userDBID, userID, amountKop, balanceKop)
+	}
 	sendActivationEmailAsync = func(userID string, plan *biz.Plan, priceRub int, renewal bool, paymentID int) {
 		go sendActivationEmail(userID, plan, priceRub, renewal, paymentID)
 	}
@@ -721,4 +739,59 @@ func sendPendingWalletReceipts() {
 					p.id, biz.KopToRubString(p.amount), p.ykID, walletReceiptMaxAttempts, msg))
 		}
 	}
+}
+
+// newTopupResumeClient is the YooKassa client of resumeWalletTopup (a test seam).
+var newTopupResumeClient = func() (paymentGetter, error) {
+	c, err := yookassa.NewClientFromSettings()
+	if err != nil {
+		return nil, err
+	}
+	return c.WithTimeout(10 * time.Second), nil
+}
+
+const topupNotResumableMsg = "Этот платёж уже нельзя продолжить — начните оплату заново"
+
+// resumeWalletTopup gives the widget its confirmation token again (or the payment page's
+// address): the checkout page keeps the token only in the tab, so a refresh or a new tab lost
+// it and the client had to start over while the old payment hung as pending. YooKassa returns
+// the confirmation of a payment as long as it waits for the client.
+func resumeWalletTopup(w http.ResponseWriter, r *http.Request, userID string, id int) {
+	var status, ykID string
+	err := db.DB.QueryRowContext(r.Context(), `SELECT status, COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1 AND user_id_text = $2`, id, userID).
+		Scan(&status, &ykID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Платёж не найден"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Временно недоступно, попробуйте через минуту"})
+		return
+	}
+	if status != "pending" || ykID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": topupNotResumableMsg})
+		return
+	}
+	client, err := newTopupResumeClient()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Оплата временно недоступна, попробуйте через минуту"})
+		return
+	}
+	p, err := client.GetPayment(ykID)
+	if err != nil {
+		log.Printf("[wallet] resume %d: %v", id, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Не удалось связаться с ЮKassa, попробуйте через минуту"})
+		return
+	}
+	if p.Status == "pending" && p.Confirmation != nil {
+		if t := strings.TrimSpace(p.Confirmation.ConfirmationToken); t != "" {
+			writeJSON(w, http.StatusOK, map[string]string{"confirmation_token": t})
+			return
+		}
+		if u := strings.TrimSpace(p.Confirmation.ConfirmationURL); u != "" {
+			writeJSON(w, http.StatusOK, map[string]string{"confirmation_url": u})
+			return
+		}
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{"error": topupNotResumableMsg})
 }

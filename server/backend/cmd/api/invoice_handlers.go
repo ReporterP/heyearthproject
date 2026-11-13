@@ -47,6 +47,10 @@ const publicInvoiceMaxRub = 1_000_000
 // handleCreateInvoice is the site's public form. It never links to a tenant
 // by id and never says whether the INN is already a client.
 func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
+	if !biz.B2BEnabled() { // E3: the business invoice form is off
+		http.NotFound(w, r)
+		return
+	}
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -65,6 +64,6 @@ func FailingRenewalsHandler(w http.ResponseWriter, r *http.Request) {
 // FeaturesHandler — GET /api/admin/features: the switches the menu follows (any admin).
 func FeaturesHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]bool{
-		"b2b": strings.EqualFold(strings.TrimSpace(biz.GetSettingOrDefault("b2b_enabled", "false")), "true"),
+		"b2b": biz.B2BEnabled(),
 	})
 }
