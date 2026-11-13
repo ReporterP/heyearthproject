@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -617,6 +618,9 @@ func happAddLink(subscribeURL string) string { return "happ://add/" + subscribeU
 //
 // Priority order:
 //  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /payment
+//     1a. auto-renew from the wallet in ≤ 3 days and the wallet is short
+//     → "💳 Пополните кошелёк: подписка закончится DD.MM"            + /wallet
+//     (a covered renewal → "✅ Продлим с кошелька DD.MM"             + /wallet)
 //  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /payment
 //  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /payment
 //  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /payment
@@ -632,18 +636,25 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 		trafficUsed  int64
 		trafficLimit *int64
 		planSlug     sql.NullString
+		autoRenew    bool
+		planPrice    int
+		pricePaid    int
+		promo        string
+		userDBID     int
 	)
 	err = db.DB.QueryRow(`
 		SELECT us.valid_until,
 		       COALESCE(us.traffic_used, 0),
 		       us.traffic_limit,
-		       COALESCE(p.slug, '')
+		       COALESCE(p.slug, ''),
+		       COALESCE(us.auto_renew, FALSE), COALESCE(p.price_rub, 0), COALESCE(us.price_paid, 0),
+		       COALESCE(us.promocode_used, ''), u.id
 		  FROM user_subscriptions us
 		  JOIN users u  ON u.id = us.user_id
 		  LEFT JOIN plans p ON p.id = us.plan_id
 		 WHERE u.user_id = $1
 		 ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug)
+	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug, &autoRenew, &planPrice, &pricePaid, &promo, &userDBID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
@@ -663,6 +674,27 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 
 	daysLeft := int(validUntil.Sub(now).Hours() / 24)
 	isTrial := planSlug.Valid && planSlug.String == "free-trial"
+
+	// 1a. Renewal from the wallet (W4/W7): the client must top up before the end.
+	if autoRenew && planPrice > 0 && validUntil.Sub(now) <= 3*24*time.Hour {
+		free := false
+		if pricePaid == 0 {
+			if free, err = biz.IsFreeAccessPromocode(context.Background(), db.DB, promo); err != nil {
+				return "", "", fmt.Errorf("subscription announce: %w", err)
+			}
+		}
+		if !free {
+			balance, err := biz.WalletBalance(context.Background(), userDBID)
+			if err != nil {
+				return "", "", fmt.Errorf("subscription announce: %w", err)
+			}
+			end := validUntil.In(moscowTZ).Format("02.01")
+			if balance < int64(planPrice)*100 {
+				return "💳 Пополните кошелёк: подписка закончится " + end, base + "/wallet", nil
+			}
+			return "✅ Продлим с кошелька " + end, base + "/wallet", nil
+		}
+	}
 
 	// 2. ≤ 1 day
 	if daysLeft <= 1 {
@@ -701,3 +733,11 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	}
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Сессия истекла — войдите снова"})
 }
+
+// moscowTZ is the zone dates in Happ announces are shown in.
+var moscowTZ = func() *time.Location {
+	if l, err := time.LoadLocation("Europe/Moscow"); err == nil {
+		return l
+	}
+	return time.FixedZone("MSK", 3*3600)
+}()

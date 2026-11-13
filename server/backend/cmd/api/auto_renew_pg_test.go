@@ -72,11 +72,12 @@ func TestAutoRenewFreeAccess(t *testing.T) {
 	u3 := testpg.NewUser(t, conn, "promo-user")
 	s3 := pgSub(t, conn, u3, annual, 0, "gift1")
 	for i := 1; i <= 2; i++ {
+		testpg.MustExec(t, conn, `UPDATE user_subscriptions SET valid_until = NOW() + INTERVAL '12 hours' WHERE id = $1`, s3)
 		if err := processAutoRenew("promo-user", s3); err != nil {
 			t.Fatal(err)
 		}
 		ar, h, promo := subState(t, conn, s3)
-		if !ar || promo != "GIFT1" || h < i*365*24 {
+		if !ar || promo != "GIFT1" || h < 365*24 {
 			t.Errorf("promo renewal %d: auto_renew=%v hours=%d promo=%q", i, ar, h, promo)
 		}
 	}

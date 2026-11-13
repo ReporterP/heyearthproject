@@ -270,9 +270,9 @@ func walletPurchaseDone(userID string, res *biz.PurchaseResult, renewal bool) {
 		biz.KopToRubString(res.PriceKop), res.ValidUntil.Format("2006-01-02"), biz.KopToRubString(res.BalanceAfterKop))
 	biz.NotifySubscriptionChange()
 	RequestXraySync()
-	kickWalletReceipts()
+	kickWalletReceiptsAsync()
 	if plan, err := biz.GetPlanByID(res.PlanID); err == nil && plan != nil {
-		go sendActivationEmail(userID, plan, int(res.PriceKop/100), renewal, 0)
+		sendActivationEmailAsync(userID, plan, int(res.PriceKop/100), renewal, 0)
 	}
 }
 
@@ -573,7 +573,7 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 			return nil, fmt.Errorf("purchase after top-up: %w", perr)
 		}
 	}
-	after = append(after, kickWalletReceipts)
+	after = append(after, func() { kickWalletReceiptsAsync() })
 	return func() {
 		for _, f := range after {
 			f()
@@ -581,8 +581,14 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 	}, nil
 }
 
-// Test seam.
-var purchaseFromWalletTx = biz.PurchaseFromWalletTx
+// Test seams: the purchase, and what runs in the background after a wallet commit.
+var (
+	purchaseFromWalletTx     = biz.PurchaseFromWalletTx
+	kickWalletReceiptsAsync  = kickWalletReceipts
+	sendActivationEmailAsync = func(userID string, plan *biz.Plan, priceRub int, renewal bool, paymentID int) {
+		go sendActivationEmail(userID, plan, priceRub, renewal, paymentID)
+	}
+)
 
 // ── Closing receipts (54-FZ) ──
 

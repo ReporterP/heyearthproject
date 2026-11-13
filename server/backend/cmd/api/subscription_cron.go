@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -173,7 +174,10 @@ func processAutoRenew(userID string, subID int) error {
 	var promo string
 	err := db.DB.QueryRow(`
 		SELECT COALESCE(plan_id, 0), COALESCE(price_paid, 0), COALESCE(promocode_used, '')
-		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW()`, subID).Scan(&planID, &pricePaid, &promo)
+		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW() AND valid_until < NOW() + INTERVAL '25 hours'`, subID).Scan(&planID, &pricePaid, &promo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // not due (already renewed, or ended)
+	}
 	if err != nil {
 		return fmt.Errorf("subscription %d: %w", subID, err)
 	}
