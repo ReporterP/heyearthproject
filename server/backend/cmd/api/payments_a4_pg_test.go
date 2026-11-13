@@ -128,7 +128,9 @@ func TestFreePurchaseRevalidatesCode(t *testing.T) {
 	}
 	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
-		go func(i int) { errs <- activateFreePurchase(context.Background(), "free-"+string(rune('a'+i)), p, "FULL") }(i)
+		go func(i int) {
+			errs <- activateFreePurchase(context.Background(), "free-"+string(rune('a'+i)), p, "FULL")
+		}(i)
 	}
 	ok := 0
 	for i := 0; i < n; i++ {

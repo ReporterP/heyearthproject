@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/email"
 )
@@ -40,7 +42,7 @@ func sendRenewalPreviews() {
 		  AND us.valid_until BETWEEN NOW() + INTERVAL '2 days' AND NOW() + INTERVAL '4 days'
 		  AND us.paused_until IS NULL
 		  AND p.price_rub > 0
-		  AND u.saved_payment_method IS NOT NULL
+		  AND COALESCE(us.price_paid, 0) > 0
 	`)
 	if err != nil {
 		return
@@ -80,7 +82,8 @@ func sendRenewalPreviews() {
 			continue
 		}
 
-		subj, html, text := email.RenewalPreview(c.PlanName, c.PriceRub, c.ValidUntil)
+		balance, _ := biz.WalletBalance(context.Background(), c.DBUserID)
+		subj, html, text := email.RenewalPreview(c.PlanName, c.PriceRub, c.ValidUntil, balance)
 		if err := email.Send(email.Message{
 			To:             to,
 			Subject:        subj,

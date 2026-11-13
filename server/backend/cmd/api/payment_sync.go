@@ -49,6 +49,12 @@ func StartPaymentSyncCron() {
 		for {
 			safely("payment-sync", syncPendingPayments)
 			safely("payment-never-created", closeNeverCreatedPayments)
+			safely("wallet-receipts", func() {
+				if walletReceiptsMu.TryLock() {
+					defer walletReceiptsMu.Unlock()
+					sendPendingWalletReceipts()
+				}
+			})
 			safely("refund-reconcile", reconcilePendingRefunds)
 			safely("payment-alerts", syncUnappliedPaymentAlerts)
 			time.Sleep(paymentSyncInterval)

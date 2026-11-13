@@ -647,49 +647,6 @@ func TestPaymentFindsItsRow(t *testing.T) {
 	}
 }
 
-// ─── Auto-renew and dunning charges ───────────────────────────────────────
-
-// A charge made by a cron goes through the same claim as its webhook: whichever comes
-// first applies it, the other finds it paid; the cron never writes status/paid_at.
-func TestRecurringChargeAppliedOnce(t *testing.T) {
-	meta := map[string]string{"payment_db_id": "7", "plan_id": "3", "user_id": "user-1", "kind": "subscription", "auto_renew": "true"}
-	cronMeta := map[string]any{"plan_id": 3, "kind": "subscription", "auto_renew": true}
-	tests := []struct {
-		name     string
-		status   string
-		order    []string // "cron" / "webhook"
-		wantActs int64
-		wantStat string
-	}{
-		{"the cron applies, its webhook does not", "succeeded", []string{"cron", "webhook"}, 1, "succeeded"},
-		{"the webhook arrives first, the cron does not apply again", "succeeded", []string{"webhook", "cron"}, 1, "succeeded"},
-		{"a pending charge activates nothing", "pending", []string{"cron"}, 0, "pending"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			d := newPEDB(&peRow{id: 7, status: "pending", user: "user-1"}) // CreatePaymentRecord: no YooKassa id yet
-			usePaymentFakes(t, d)
-			for _, who := range tt.order {
-				var err error
-				if who == "cron" {
-					err = recordRecurringCharge(7, pePayment(tt.status, meta), cronMeta)
-				} else {
-					err = processPaymentEvent(pePayment(tt.status, meta))
-				}
-				if err != nil {
-					t.Fatalf("%s: %v", who, err)
-				}
-			}
-			got := d.row(7)
-			if got.activations != tt.wantActs || got.status != tt.wantStat || got.ykID != "pay-1" {
-				t.Fatalf("activations %d (want %d), status %q (want %q), yk %q", got.activations, tt.wantActs, got.status, tt.wantStat, got.ykID)
-			}
-		})
-	}
-}
-
-// ─── Webhook ──────────────────────────────────────────────────────────────
-
 func TestPaymentWebhookStatus(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -827,7 +784,7 @@ func TestPaymentSQLGuards(t *testing.T) {
 			t.Errorf("%s: %s", name, norm(tc.q))
 		}
 	}
-	for name, q := range map[string]string{"details": paymentDetailsSQL, "recurring link": recurringChargeLinkSQL} {
+	for name, q := range map[string]string{"details": paymentDetailsSQL} {
 		if peStatusAssign.MatchString(norm(q)) || strings.Contains(q, "paid_at") {
 			t.Errorf("%s writes status or paid_at: %s", name, norm(q))
 		}

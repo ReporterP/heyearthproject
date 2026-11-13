@@ -120,6 +120,16 @@ func (c *Client) CancelPayment(paymentID string) (*Payment, error) {
 	return &out, nil
 }
 
+// CreateReceipt — POST /v3/receipts with a caller-chosen Idempotence-Key: a repeat of the
+// same receipt (a retry after a lost answer) returns the receipt the first call made.
+func (c *Client) CreateReceipt(req CreateReceiptRequest, idempotenceKey string) (*ReceiptResponse, error) {
+	var out ReceiptResponse
+	if err := c.doPOSTWithKey("/receipts", req, &out, idempotenceKey); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateRefund — POST /v3/refunds.
 // Полный или частичный возврат succeeded-платежа. Idempotence-Key случайный: повтор
 // этого вызова создаёт новый возврат. Для повторяемых попыток — CreateRefundWithKey.
@@ -188,21 +198,6 @@ func (c *Client) WithTimeout(d time.Duration) *Client {
 	cp := *c
 	cp.http = &http.Client{Timeout: d}
 	return &cp
-}
-
-// ChargeRecurring — удобная обёртка для recurring платежа.
-// Создаёт платёж без confirmation, используя сохранённый payment_method_id.
-// Требует активации у менеджера ЮKassa для prod.
-func (c *Client) ChargeRecurring(paymentMethodID string, amount Amount, description string, receipt *Receipt, metadata map[string]string) (*Payment, error) {
-	req := CreatePaymentRequest{
-		Amount:          amount,
-		Description:     description,
-		Receipt:         receipt,
-		PaymentMethodID: paymentMethodID,
-		Capture:         true,
-		Metadata:        metadata,
-	}
-	return c.CreatePayment(req)
 }
 
 // ─── HTTP plumbing ────────────────────────────────────────────────────────

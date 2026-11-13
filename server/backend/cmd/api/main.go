@@ -987,9 +987,6 @@ func main() {
 	// Email reminders (за 3 дня до автопродления)
 	StartEmailReminderCron()
 
-	// Dunning — retry failed recurring платежей (1/2/3 попытки, grace period)
-	StartDunningCron()
-
 	// Ghost Reconciler: scan hub every 30 min for drift between systemd units
 	// and DB lifecycle state. Optional auto-cleanup / auto-repair via app_settings.
 	StartGhostReconciler()
@@ -1062,6 +1059,13 @@ func main() {
 	// auth probe of `deploy --status` in cmd/deploy/main.go still does).
 	http.HandleFunc(hysteria2AuthPath, handleHysteria2Auth)
 
+	// Wallet (phase W)
+	http.HandleFunc("/api/v1/wallet", apiLimiter.Middleware(handleWallet))
+	http.HandleFunc("/api/v1/wallet/quote", apiLimiter.Middleware(codeLimiter.Middleware(handleWalletQuote)))
+	http.HandleFunc("/api/v1/wallet/purchase", apiLimiter.Middleware(handleWalletPurchase))
+	http.HandleFunc("/api/v1/wallet/topup", apiLimiter.Middleware(handleWalletTopup))
+	http.HandleFunc("/api/v1/wallet/topup/", apiLimiter.Middleware(handleWalletTopupStatus))
+
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
 	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess))
@@ -1070,10 +1074,6 @@ func main() {
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(codeLimiter.Middleware(handleApplyPromocode)))
 	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
 	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
-
-	// Cards management
-	http.HandleFunc("/api/v1/user/cards", apiLimiter.Middleware(handleUserCards))
-	http.HandleFunc("/api/v1/user/cards/", apiLimiter.Middleware(handleDeleteCard))
 
 	// Auto-renew toggle
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))

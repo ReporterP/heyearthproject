@@ -85,55 +85,39 @@ func SubscriptionRenewed(planName string, priceRub int, validUntil time.Time) (s
 }
 
 // RenewalPreview — за 3 дня до списания.
-func RenewalPreview(planName string, priceRub int, validUntil time.Time) (subject, html, text string) {
-	subject = fmt.Sprintf("Через 3 дня — продление подписки на %d ₽", priceRub)
+func RenewalPreview(planName string, priceRub int, validUntil time.Time, balanceKop int64) (subject, html, text string) {
 	days := int(time.Until(validUntil).Hours() / 24)
-	content := fmt.Sprintf(`
-      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;color:#fff">Скоро продлим подписку</h1>
-      <p style="font-size:15px;line-height:1.5;color:#c7cad4;margin:0 0 24px">Через <strong style="color:#fff">%d дня</strong> мы автоматически продлим вашу подписку <strong style="color:#fff">«%s»</strong> с сохранённой карты.</p>
-      <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:12px;padding:20px;margin:0 0 24px">
-        <tr><td>
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:4px">Будет списано</div>
-          <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:12px">%d ₽</div>
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:4px">Дата списания</div>
-          <div style="font-size:16px;font-weight:600;color:#fff">%s</div>
-        </td></tr>
-      </table>
-      <p style="font-size:14px;line-height:1.5;color:#c7cad4;margin:0 0 16px">Не нужна подписка в следующем месяце? Отмените автопродление — доступ сохранится до конца оплаченного периода.</p>
-      <a href="https://hiearth.ru/payments" style="display:inline-block;background:rgba(255,255,255,0.1);color:#fff;padding:10px 20px;border-radius:10px;text-decoration:none;font-weight:500;border:1px solid rgba(255,255,255,0.15)">Управление подпиской</a>
-    `, days, planName, priceRub, validUntil.Format("02.01.2006"))
-	html = wrap(subject, content)
-	text = fmt.Sprintf("Через %d дня спишется %d ₽ за продление подписки «%s».\nОтменить автопродление: https://hiearth.ru/payments",
-		days, priceRub, planName)
-	return
-}
-
-// PaymentFailedRetry — при failed recurring charge.
-func PaymentFailedRetry(planName string, priceRub int, attempt int, nextRetry time.Time, graceEnd time.Time) (subject, html, text string) {
-	subject = "Не удалось списать платёж — обновите карту"
-	retryLabel := "в ближайшие часы"
-	if !nextRetry.IsZero() {
-		retryLabel = nextRetry.Format("02.01.2006")
+	priceKop := int64(priceRub) * 100
+	enough := balanceKop >= priceKop
+	short := (priceKop - balanceKop + 99) / 100
+	var lead, note, textLine string
+	if enough {
+		subject = fmt.Sprintf("Через %d дн. продлим подписку с кошелька — %d ₽", days, priceRub)
+		lead = fmt.Sprintf("Через <strong style=\"color:#fff\">%d дн.</strong> продлим подписку <strong style=\"color:#fff\">«%s»</strong> с вашего кошелька. Денег хватает — ничего делать не нужно.", days, planName)
+		note = "Не нужна подписка дальше? Выключите автопродление в кабинете — доступ сохранится до конца оплаченного периода."
+		textLine = fmt.Sprintf("Через %d дн. спишем %d ₽ с кошелька за подписку «%s». Денег хватает.", days, priceRub, planName)
+	} else {
+		subject = fmt.Sprintf("Пополните кошелёк на %d ₽ — подписка закончится %s", short, validUntil.Format("02.01"))
+		lead = fmt.Sprintf("Подписка <strong style=\"color:#fff\">«%s»</strong> закончится через <strong style=\"color:#fff\">%d дн.</strong> Продление теперь идёт с кошелька, а на нём не хватает <strong style=\"color:#fff\">%d ₽</strong>.", planName, days, short)
+		note = "Пополните кошелёк заранее — подписка продлится сама, без перерыва."
+		textLine = fmt.Sprintf("Подписка «%s» закончится через %d дн. На кошельке не хватает %d ₽ для продления (%d ₽). Пополните: https://hiearth.ru/wallet", planName, days, short, priceRub)
 	}
 	content := fmt.Sprintf(`
-      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;color:#fff">Не получилось продлить подписку</h1>
-      <p style="font-size:15px;line-height:1.5;color:#c7cad4;margin:0 0 24px">Мы не смогли списать <strong style="color:#fff">%d ₽</strong> с вашей сохранённой карты за продление подписки <strong style="color:#fff">«%s»</strong>.</p>
-      <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:20px;margin:0 0 24px">
+      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;color:#fff">Скоро продление</h1>
+      <p style="font-size:15px;line-height:1.5;color:#c7cad4;margin:0 0 24px">%s</p>
+      <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:12px;padding:20px;margin:0 0 24px">
         <tr><td>
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#fca5a5;margin-bottom:4px">Попытка</div>
-          <div style="font-size:18px;font-weight:600;color:#fff;margin-bottom:12px">%d из 3</div>
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#fca5a5;margin-bottom:4px">Следующая попытка</div>
-          <div style="font-size:16px;font-weight:600;color:#fff;margin-bottom:12px">%s</div>
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#fca5a5;margin-bottom:4px">Доступ сохранится до</div>
+          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:4px">Спишем с кошелька</div>
+          <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:12px">%d ₽</div>
+          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:4px">Дата продления</div>
           <div style="font-size:16px;font-weight:600;color:#fff">%s</div>
         </td></tr>
       </table>
-      <p style="font-size:14px;line-height:1.5;color:#c7cad4;margin:0 0 20px">Возможные причины: истёкшая карта, недостаточно средств, отклонение банком. Обновите способ оплаты, чтобы продолжить пользоваться сервисом.</p>
-      <a href="https://hiearth.ru/payment" style="display:inline-block;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Обновить карту и оплатить →</a>
-    `, priceRub, planName, attempt, retryLabel, graceEnd.Format("02.01.2006"))
+      <p style="font-size:14px;line-height:1.5;color:#c7cad4;margin:0 0 16px">%s</p>
+      <a href="https://hiearth.ru/wallet" style="display:inline-block;background:rgba(255,255,255,0.1);color:#fff;padding:10px 20px;border-radius:10px;text-decoration:none;font-weight:500;border:1px solid rgba(255,255,255,0.15)">Кошелёк</a>
+    `, lead, priceRub, validUntil.Format("02.01.2006"), note)
 	html = wrap(subject, content)
-	text = fmt.Sprintf("Не удалось списать %d ₽ за продление «%s» (попытка %d/3).\nСледующая попытка: %s\nДоступ до: %s\n\nОбновите карту: https://hiearth.ru/payment",
-		priceRub, planName, attempt, retryLabel, graceEnd.Format("02.01.2006"))
+	text = textLine
 	return
 }
 

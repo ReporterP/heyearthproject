@@ -17,7 +17,7 @@ import (
 )
 
 // Paid payments. Whatever reports a YooKassa payment — the webhook, «Проверить статус»,
-// the payment sync cron, the auto-renew and dunning crons — calls processPaymentEvent,
+// the payment sync cron — calls processPaymentEvent,
 // and a paid payment is applied exactly once, in ONE transaction:
 //
 //	BEGIN
@@ -26,7 +26,7 @@ import (
 //	  no row -> nothing to do (applied before, or refunded)
 //	  a row  -> activate the subscription / credit the tenant wallet in this transaction
 //	COMMIT
-//	after COMMIT, best effort and idempotent: Xray sync, emails, saved card, invoice mark
+//	after COMMIT, best effort and idempotent: Xray sync, emails, receipts, invoice mark
 //
 // If the activation fails, everything rolls back: the payment stays unpaid and the next
 // report retries. payments.activation_failures counts the failures; the sync cron stops
@@ -302,17 +302,18 @@ func applyPaidPaymentEffects(ctx context.Context, tx *sql.Tx, p *yookassa.Paymen
 			return nil, err
 		}
 		after = append(after, f)
+	case biz.PaymentKindWalletTopup:
+		f, err := creditWalletFromPaymentTx(ctx, tx, p, row)
+		if err != nil {
+			return nil, err
+		}
+		after = append(after, f)
 	case biz.PaymentKindTenantTopup, biz.PaymentKindB2BInvoice:
 		f, err := creditTenantFromPaymentTx(ctx, tx, p, row)
 		if err != nil {
 			return nil, err
 		}
 		after = append(after, f)
-	}
-	// The saved card stays outside the transaction: an idempotent upsert whose failure
-	// must not block the activation.
-	if pm := p.PaymentMethod; pm != nil && pm.ID != "" && pm.Saved {
-		after = append(after, func() { saveUserPaymentMethod(row.UserID, pm) })
 	}
 	return func() {
 		for _, f := range after {
@@ -450,30 +451,6 @@ func creditTenantFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 		}
 		go sendTenantCreditEmail(tenantID, amount, res.NewBalance, res.Activated, kind, paymentDBID)
 	}, nil
-}
-
-// recurringChargeLinkSQL ties a card charge made by a cron to its payments row: ids and
-// metadata only — status, paid_at and the activation go through processPaymentEvent.
-const recurringChargeLinkSQL = `
-		UPDATE payments SET
-			yookassa_payment_id = $1::text,
-			yookassa_status = $2::text,
-			external_id = $1::text,
-			test = $3,
-			metadata = $4::jsonb,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $5`
-
-// recordRecurringCharge links a charge made by auto-renew or dunning to its payments row
-// and applies it through the paid claim, exactly like its payment.succeeded webhook:
-// whichever comes first applies it, the other finds it paid.
-func recordRecurringCharge(paymentDBID int, payment *yookassa.Payment, metadata map[string]any) error {
-	var linkErr error
-	if _, err := db.DB.Exec(recurringChargeLinkSQL, payment.ID, payment.Status, payment.Test, mustJSON(metadata), paymentDBID); err != nil {
-		// processPaymentEvent (and the webhook) still find the row by metadata payment_db_id.
-		linkErr = fmt.Errorf("link charge %s to payment %d: %w", payment.ID, paymentDBID, err)
-	}
-	return errors.Join(linkErr, processPaymentEvent(payment))
 }
 
 // paymentNotificationStatus verifies and applies a payment notification and returns the
