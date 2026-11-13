@@ -497,7 +497,7 @@ if command -v ip6tables >/dev/null 2>&1; then ip6tables -w 5 -S ` + egressChain 
 //   - xray's access to an exit tunnel port (a listener in the allowed SOCKS range) from inside
 //     its cgroup;
 //   - a UDP datagram from inside xray's cgroup to a throw-away loopback listener (the path of
-//     the AmneziaWG replies and of a hysteria client's UDP-ASSOCIATE relay).
+//     a hysteria client's UDP-ASSOCIATE relay).
 //
 // "refused" paths must be refused, otherwise the run FAILS (the rules stay, they are harmless —
 // but the protection must not be mistaken for working): user nobody -> 127.0.0.1:10085; the
@@ -578,7 +578,7 @@ if [ "$cg" = 1 ] && [ -d "$CGROUP_DIR" ]; then
     echo "[ops] WARN: no exit tunnel listener in ` + egressSocksPorts + ` on loopback — the allowed xray path is not verified"
   fi
   xray_cgroup_udp_loopback && rc=0 || rc=$?
-  if [ "$rc" = 0 ]; then echo "[ops] egress guard: a UDP datagram from xray's cgroup reaches a loopback listener (the AmneziaWG replies and the UDP-ASSOCIATE relay path)"
+  if [ "$rc" = 0 ]; then echo "[ops] egress guard: a UDP datagram from xray's cgroup reaches a loopback listener (the UDP-ASSOCIATE relay path)"
   elif [ "$rc" = 99 ]; then echo "[ops] WARN: cannot test UDP from xray's cgroup (python3 missing or the cgroup cannot be entered) — the loopback UDP path is not verified"
   else
     rollback

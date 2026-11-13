@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # HiEarth
 
-B2B proxy-эко platform with anonymous user registration, flexible subscription plans, and auto-tuning VPN infrastructure. Hub-and-spoke architecture with Go backend, Flutter client, React admin panel (23 pages), and React marketing site + user portal (19 pages).
+Proxy-эко service with anonymous registration, a wallet (balance) that pays for subscriptions, «приведи друга», and a Hub-and-spoke network with exits abroad and reserve entries in RU. Go backend, Flutter client (frozen), React admin panel (16 pages), React site + cabinet (23 pages).
 
 **Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: the A record of `hiearth.ru` (VDSina; the Hub's old primary address is filtered upstream — never use it). Exit 2: Amsterdam. Real addresses live in `server/.env` and the admin, never in the repo (it is public): docs and tests use RFC 5737 addresses (`203.0.113.x`, `198.51.100.x`, `192.0.2.x`).
-**Payment**: YooKassa (`internal/yookassa`, webhook `/api/webhooks/yookassa`). T-Bank was removed.
+**Payment**: YooKassa (`internal/yookassa`, webhook `/api/v1/webhooks/yookassa` — the only path YooKassa calls; the old `/api/webhooks/yookassa` is gone). Money goes through the wallet: a top-up is a YooKassa payment («предоплата 100 %» receipt), a subscription is paid from the balance (closing receipt with prepayment settlement). No saved cards, no recurring charges.
 **Mobile networks** (since 2026-11-07..12) cut the Hub's subnet: mobile users go through a reserve entry in RU (relay) — see «Entries» below.
 
 ## Language
@@ -85,8 +85,8 @@ heyearthproject/
 │   │   │   ├── deploy/            # Deployment tool (SSH + SFTP)
 │   │   │   └── node-agent/        # Exit node gRPC :50052
 │   │   ├── internal/
-│   │   │   ├── admin/             # Admin handlers + RBAC (~31 files, incl. provisioning, mobile_check)
-│   │   │   ├── biz/               # Business logic (~33 files, incl. entries)
+│   │   │   ├── admin/             # Admin handlers + RBAC (incl. provisioning, mobile_check, capacity, load)
+│   │   │   ├── biz/               # Business logic (wallet, referral, entries, email prefs, retention)
 │   │   │   ├── provision/         # Node provisioning core (exit, relay, deprovision recipes; Runner)
 │   │   │   ├── config/            # Templates for nodes (exit, relay nft/nginx, Hub relay-pp)
 │   │   │   ├── crypto/            # AES-256-GCM for SSH passwords
@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 62 SQL migrations (000001-000062)
+│   │   ├── migrations/            # 80 SQL migrations (000001-000080), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -103,12 +103,12 @@ heyearthproject/
 │   └── packages/flutter_v2ray_plus/  # Local Xray plugin
 ├── admin_web/                     # React 19 admin panel (Vite + Tailwind v4)
 │   └── src/
-│       ├── pages/                 # 23 pages (incl. NodesPage, EntriesPage, AlertsPage, PlansPage)
+│       ├── pages/                 # 16 pages («Серверы» = exits, RU entries, Hub, «Мощность»)
 │       ├── components/            # ~27 components (nodes/ wizard, entries/ MobileCheckPanel, ui/ primitives)
 │       └── i18n/                  # ru/en translations
 └── site/                          # React 19 marketing + user portal (Vite + Tailwind v4)
     └── src/
-        ├── pages/                 # 19 pages (incl. Connect, Checkout, Business*, legal pages)
+        ├── pages/                 # 23 pages (incl. /connect, /wallet, /help, Checkout, legal; Business* behind b2b_enabled)
         ├── components/            # components
         └── auth/                  # AuthContext
 ```
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (62)
+# Auto-runs the migrations on startup (80)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -145,7 +145,6 @@ Users → [Hub: hiearth.ru (Russia)]
               │    VLESS Reality  :10443 (TCP, via nginx stream :443)
               │    VLESS XHTTP    :2443  (TCP, splithttp anti-DPI)
               │    Hysteria2 (Бамбук) :50443 UDP + hop 30000-65000 (DNAT, dst-type LOCAL)
-              │    AmneziaWG      :443   UDP (awg0 → awgtun → xray socks-awg)
               │    (SOCKS5 :1080, HTTP :8080, Shadowsocks :8388 — removed)
               │
               │  Per-plan routing (weighted balancers per plan)
@@ -166,7 +165,6 @@ Users → [Hub: hiearth.ru (Russia)]
 |------|------|----------|---------|
 | Hub | 80 | TCP | HTTP redirect |
 | Hub | 443 | TCP | nginx stream SNI router |
-| Hub | 443 | UDP | AmneziaWG (awg0) |
 | Hub | 8447 | TCP | nginx stream for reserve entries (PROXY protocol in; trust per relay) |
 | Hub | 8446 | TCP (loopback) | http nginx PROXY mirror (realip) |
 | Hub | 10444 | TCP (loopback) | xray `vless-reality-pp` (PROXY mirror) |
@@ -179,7 +177,7 @@ Users → [Hub: hiearth.ru (Russia)]
 | Hub | 50051 | TCP | gRPC ClientApi |
 | Hub | 10443 | TCP (loopback) | Xray VLESS Reality (behind nginx :443) |
 | Hub | 10085 | TCP (loopback) | Xray API (egress guard: heyearth-api's user only) |
-| Hub | 10808 | TCP/UDP (loopback) | Xray `socks-awg` inbound (AWG traffic via hev-socks5-tunnel) |
+| Hub | 10808 | TCP/UDP (loopback) | Xray `socks-local` inbound (the egress guard's check; AWG is gone) |
 | Hub | 1088+id | TCP/UDP (loopback) | hysteria2-client-<id> SOCKS to exit <id> |
 
 SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (ufw rules pruned by `--setup-ops`).
@@ -195,24 +193,30 @@ SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (u
 ### Entry Points
 
 **`cmd/api/main.go`** — HTTP + gRPC daemon:
-1. `db.InitDB()` → migrations (27 files)
+1. `db.InitDB()` → migrations
 2. `admin.ValidateConfig()` + `admin.InitCORS()`
 3. `biz.OnSubscriptionChange = RequestXraySync` (debounced 2s)
-4. Background: `StartXraySyncLoop`, `StartTrafficStatsCollector`, `StartSubscriptionCron`, `StartAutoTuner`
+4. Background: `StartXraySyncLoop`, tunnel + cert monitors, `StartTrafficStatsCollector`, `StartSubscriptionCron` (auto-renew from the wallet), `StartPaymentSyncCron`, `StartEmailReminderCron`, `StartRetentionLoop`, `StartGhostReconciler`, `StartMonitor`
 5. Rate limiters: auth 10/min, api 100/min, webhook 30/min, admin login 5/min
 6. gRPC :50051, HTTP :8000
 
-**`cmd/deploy/main.go`** — deployment CLI (flags: `--main`, `--update-main`, `--restart`, `--site`, `--admin-web`, `--vue-site`, `--nginx`, `--setup-xray`, `--setup-exit-node`, `--status`, `--backup`, `--restore`, `--rotate-node-agent-certs`, `--ssh`)
+**`cmd/deploy/main.go`** — deployment CLI (flags: `--main`, `--update-main`, `--restart`, `--site`, `--admin-web`, `--vue-site`, `--nginx`, `--setup-xray`, `--setup-ops` (ufw, backup, egress guard), `--setup-exit-node`, `--status`, `--rotate-node-agent-certs`, `--ssh`). Backups: `--setup-ops` timer + `docs/runbooks/restore-hub-backup.md`.
 
-**`cmd/node-agent/main.go`** — exit node gRPC :50052 (mTLS): CreateUser, DeleteUser, GetMetrics
+**`cmd/node-agent/main.go`** — exit node gRPC :50052 (mTLS): GetMetrics only (CreateUser/DeleteUser answer Unimplemented)
 
 ### Payment System (YooKassa)
 
 **`internal/yookassa`** — client + webhook (IP allowlist + re-fetch of the payment). Refunds via admin (permission `payments.refund`).
 
-**Payment flow**: POST /api/v1/payment/create → YooKassa (embedded widget `/checkout/{id}` or redirect) → webhook `/api/webhooks/yookassa` → ActivateSubscriptionWithPlan
+**Payment flow** (site): enough on the wallet → `POST /api/v1/wallet/purchase`; short → `POST /api/v1/wallet/topup` with `purchase` → YooKassa embedded widget `/checkout/{id}` (`/wallet/topup/{id}/resume` after a refresh) → webhook `/api/v1/webhooks/yookassa` credits the wallet and buys the plan in one transaction. Flutter still uses `/api/v1/payment/create`.
 
-**Auto-renew**: subscription_cron hourly → expiring soon + auto_renew → recurring charge with the saved payment method
+**Wallet** (`internal/biz/wallet.go`, `cmd/api/wallet.go`): kopecks, `user_wallets` + `wallet_transactions` ledger, row locks, idempotency keys; closing receipts in `wallet_receipts` (sent by `kickWalletReceipts`). Admin: `wallet.adjust` permission.
+
+**Auto-renew**: subscription_cron → a subscription ending within 24 h with auto_renew on is renewed from the wallet if the balance covers it (default on for paid plans; never charges without money). Free promo subscriptions renew free.
+
+**Referral** («приведи друга», `internal/biz/referral.go`): `/r/<code>` or the code within 7 days of sign-up; on the friend's first real-money purchase ≥ `referral_min_purchase_rub` both get a bonus on the wallet (amounts, cap — admin settings).
+
+**E-mail** (`internal/biz/email_prefs.go`, `cmd/api/email_*.go`): an address given in the cabinet is confirmed by a link; only a confirmed one gets wallet receipts, reminders (3 days before the end and on the last day) and wallet/referral letters; one-click unsubscribe (signed link, List-Unsubscribe-Post). The address typed at payment is for that receipt only.
 
 ### Entries (mobile networks)
 
@@ -225,7 +229,7 @@ SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (u
 **`plans`** table: slug, name, price_rub, duration_days, traffic_limit_bytes, allowed_protocols[], features JSON, is_active, sort_order
 **`plan_servers`** junction: plan_id ↔ server_id
 
-6 seed plans: free-trial (0₽/7d/10GB), socks-basic (100₽), socks-select (150₽), vless-reality (250₽), all-inclusive (300₽), annual-premium (2500₽/365d)
+Active on prod (13.11): free-trial (0 ₽/7 d), vless-reality (250 ₽), all-inclusive (300 ₽), annual-premium (3000 ₽/365 d).
 
 Per-plan Xray routing: каждый план получает свой балансировщик (`plan-N-balancer`) с подмножеством exit-нод.
 
@@ -235,21 +239,12 @@ Per-plan Xray routing: каждый план получает свой бала�
 Привязка к планам (`applies_to_plans[]`), per_user_limit, is_active, expires_at
 `ApplyPromoToPrice()` проверяет ВСЕ ограничения и инкрементирует usage
 
-### Auto-Tuner
-
-**`cmd/api/auto_tuner.go`** — фоновая оптимизация каждые 4 часа:
-- SNI per-country (RU: yandex.ru/mail.ru/vk.com, NL/LV/DE: github.com/twitch.tv/jsdelivr)
-- TLS fingerprint (chrome/firefox/safari/edge)
-- DNS серверы
-- Mux concurrency (адаптивно по количеству нод)
-- xPaddingBytes: 100-1000 (anti-DPI packet normalization)
-- При изменении client-side params → config_version++, пользователям баннер "обновите подписку"
 
 ### Security
 
-- **JWT user**: custom HMAC-SHA256, 30 дней, validates vs `user_sessions` table (revocable). gRPC ClientApi does NOT check it yet (trusts `user_id` from the request) — known gap.
+- **JWT user**: custom HMAC-SHA256, 30 дней, validates vs `user_sessions` (revocable): `POST /api/v1/auth/logout` closes one, a changed password closes all but the caller's, expired ones are deleted. gRPC ClientApi checks the token too (`cmd/api/grpc_auth.go`).
 - **JWT admin**: golang-jwt/v5, 24h, RBAC с 16 permissions
-- **SSH**: AES-256-GCM (`ssh_password_enc`), TOFU (`ssh_host_key`)
+- **SSH**: the Hub's own key (`/api/admin/ssh-keys/hub`) or a password in AES-256-GCM (`ssh_password_enc`); the owner-confirmed host key only
 - **mTLS**: CA 10yr + leaf 1yr, TLS 1.3+
 - **CORS**: `CORS_ALLOWED_ORIGINS` env
 - **Rate limiting**: token bucket per IP
@@ -270,9 +265,11 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 62 migrations)
+## Database (PostgreSQL, 80 migrations)
 
-Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `payments`, `promocodes`, `traffic_stats`, `config_test_results`, `app_settings`, `admin_users`, `admin_roles`, `admin_permissions`, `admin_audit_log`, `tenants`, `traffic_masking_rules`, `ssh_keys`, `app_releases`, `user_sessions`, `user_devices`
+Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
+
+Retention (`cmd/api/retention.go`, every 6 h): per-day traffic sums first, then raw traffic older than 45 days (only days already summed), then expired sessions.
 
 ORM: raw SQL via `database/sql` + `github.com/lib/pq`. No ORM framework.
 
@@ -304,11 +301,12 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Xray binary**: `exec.LookPath("xray")` → fallback `/opt/heyearth/xray/xray`
 - **JWT_SECRET**: panics if unset. No fallback.
 - **Xray sync**: never call `SyncXrayConfig()` directly from handlers → use `RequestXraySync()`
-- **Tests**: Go tests + goldens + admin_web node tests exist; prod behaviour still needs evidence (`deploy --status`, curl, journal).
+- **Tests**: Go tests + goldens + admin_web node tests exist; Postgres-backed tests (`internal/testpg`) run when `TEST_DATABASE_URL` is set. Prod behaviour still needs evidence (`deploy --status`, curl, journal).
+- **Site switches/facts**: `GET /api/v1/site-info` (b2b_enabled, support_contact, exit countries, mobile_ready). With `b2b_enabled=false` the business pages are 404 and public create-tenant/create-invoice answer 404.
 - **Admin deploy**: `go run quick_admin_web.go` (one tar.gz over an SSH pipe, atomic swap) when `deploy --admin-web` drops on SFTP.
 - **Nginx stream SNI**: port 443 → `:8443` for domains, `:10443` for Xray VLESS
 - **VLESS Reality port**: user URI must use `:443` (through nginx), NOT `:10443` (loopback)
-- **Auto-tuner**: Reality requires tcp + xtls-rprx-vision. Never change transport/flow.
+- **Reality**: requires tcp + xtls-rprx-vision. Never change transport/flow (the auto-tuner is gone since 13.11).
 - **Per-country SNI**: Hub(RU) uses yandex.ru/vk.com. Exit(NL/LV) uses github.com/twitch.tv.
 - **apple.com bad SNI**: ASN mismatch visible to DPI. Removed from candidates.
 - **Hysteria2 port hopping**: port-only `DNAT --to-destination :50443`, never `REDIRECT` (rewrites dst to ens3's primary IP; salamander replies use the route source → conntrack clash → EPERM, Бамбук dead 2026-10-12). After any Hub IP/route/NAT change, test Бамбук from the exit node, not from the Hub. The DNAT matches `-m addrtype --dst-type LOCAL` only: unrestricted, it rewrote forwarded UDP of AWG users/docker (calls, games broke).
