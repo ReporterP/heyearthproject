@@ -29,6 +29,7 @@ import BusinessDashboardPage from './pages/BusinessDashboardPage.jsx'
 import ClaimCodePage from './pages/ClaimCodePage.jsx'
 import ConnectPage from './pages/ConnectPage.jsx'
 import WalletPage from './pages/WalletPage.jsx'
+import ReferralLinkPage from './pages/ReferralLinkPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -72,6 +73,7 @@ function App() {
             <Route path="/connect" element={<ConnectPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/r/:code" element={<ReferralLinkPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/refund" element={<RefundPage />} />
             <Route path="/offer" element={<OfferPage />} />

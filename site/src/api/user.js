@@ -1,7 +1,9 @@
 import { apiFetch } from './http.js'
 
-export async function registerUser(platform = '', deviceId = '') {
-  return apiFetch('/api/v1/auth/register', { method: 'POST', body: { platform, device_id: deviceId }, fallback: 'Не удалось создать аккаунт — попробуйте ещё раз.' })
+export async function registerUser(platform = '', deviceId = '', referralCode = '') {
+  const body = { platform, device_id: deviceId }
+  if (referralCode) body.referral_code = referralCode
+  return apiFetch('/api/v1/auth/register', { method: 'POST', body, fallback: 'Не удалось создать аккаунт — попробуйте ещё раз.' })
 }
 
 export async function loginUser(idOrUsername, password = '') {

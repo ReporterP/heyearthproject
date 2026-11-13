@@ -29,6 +29,7 @@ export default {
   navPromocodes: 'Promocodes',
   navPayments: 'Payments',
   navPaymentOps: 'Emails',
+  navReferrals: 'Referrals',
   navNodes: 'Nodes',
   navEntries: 'Entries',
   navSshKeys: 'SSH Keys',

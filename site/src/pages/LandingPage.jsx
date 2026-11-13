@@ -98,6 +98,11 @@ export default function LandingPage() {
   const [plans, setPlans] = useState([])
   const [plansLoading, setPlansLoading] = useState(true)
   const [openFaq, setOpenFaq] = useState(0)
+  const [refTerms, setRefTerms] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/v1/referral/terms').then(r => r.ok ? r.json() : null).then(setRefTerms).catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetch('/api/v1/plans')
@@ -324,6 +329,23 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+
+      {/* ─── Refer a friend ─── */}
+      {refTerms?.enabled && refTerms.friend_kop > 0 && (
+        <section className="relative py-16 md:py-20">
+          <div className="max-w-3xl mx-auto px-6">
+            <div className="card-feat rounded-[26px] p-8 md:p-10 text-center reveal">
+              <p className="eyebrow mb-3">Приведи друга</p>
+              <h2 className="serif text-2xl md:text-3xl font-semibold mb-3">
+                По {Math.round(refTerms.referrer_kop / 100)} ₽ каждому
+              </h2>
+              <p className="text-text-secondary max-w-xl mx-auto">
+                Поделитесь ссылкой из кабинета. Друг оплатит подписку — вам и ему придёт по {Math.round(refTerms.friend_kop / 100)} ₽ на кошелёк HiEarth.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ─── CTA band ─── */}
       <section className="relative py-24 md:py-32 overflow-hidden">

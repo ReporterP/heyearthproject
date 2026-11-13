@@ -30,11 +30,16 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
+	http.HandleFunc("/api/admin/referrals", withMethod(http.MethodGet, RequirePermission("users.read", ReferralsOverviewHandler)))
 	http.HandleFunc("/api/admin/wallet-stats", withMethod(http.MethodGet, RequirePermission("dashboard.read", WalletStatsHandler)))
 	http.HandleFunc("/api/admin/users/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSuffix(r.URL.Path, "/")
 		if strings.HasSuffix(trimmed, "/wallet/adjust") && r.Method == http.MethodPost {
 			RequirePermission(permWalletAdjust, UserWalletAdjustHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/referrals") && r.Method == http.MethodGet {
+			RequirePermission("users.read", UserReferralsHandler).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasSuffix(trimmed, "/wallet") && r.Method == http.MethodGet {

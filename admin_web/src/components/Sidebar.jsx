@@ -4,8 +4,7 @@ import {
   LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
   Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, DoorOpen,
-} from 'lucide-react'
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, DoorOpen, Gift } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import { Kbd } from './ui/index.js'
@@ -48,6 +47,7 @@ const groups = [
       { to: '/plans',        icon: Package,   label: 'navPlans' },
       { to: '/payments',     icon: Wallet,    label: 'navPayments' },
       { to: '/payment-ops',  icon: RotateCcw, label: 'navPaymentOps' },
+      { to: '/referrals',    icon: Gift,      label: 'navReferrals' },
     ],
   },
   {

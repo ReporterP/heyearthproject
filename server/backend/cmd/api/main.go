@@ -211,10 +211,11 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Platform    string `json:"platform"`
-		DeviceID    string `json:"device_id"`
-		DeviceLabel string `json:"device_label"`
-		Locale      string `json:"locale"`
+		Platform     string `json:"platform"`
+		DeviceID     string `json:"device_id"`
+		DeviceLabel  string `json:"device_label"`
+		Locale       string `json:"locale"`
+		ReferralCode string `json:"referral_code"` // from the /r/<code> link (phase R)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
 
@@ -231,6 +232,8 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	bindReferralOnRegister(r, user.ID, req.ReferralCode)
 
 	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
 	if err != nil {
@@ -1058,6 +1061,11 @@ func main() {
 	// with this change has synced it) and nothing else calls the path on :8000 (the
 	// auth probe of `deploy --status` in cmd/deploy/main.go still does).
 	http.HandleFunc(hysteria2AuthPath, handleHysteria2Auth)
+
+	// Refer a friend (phase R)
+	http.HandleFunc("/api/v1/referral", apiLimiter.Middleware(handleReferral))
+	http.HandleFunc("/api/v1/referral/bind", apiLimiter.Middleware(codeLimiter.Middleware(handleReferralBind)))
+	http.HandleFunc("/api/v1/referral/terms", apiLimiter.Middleware(handleReferralTerms))
 
 	// Wallet (phase W)
 	http.HandleFunc("/api/v1/wallet", apiLimiter.Middleware(handleWallet))

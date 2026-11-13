@@ -4,6 +4,7 @@ import { getProfile, getSubscription, applyPromocode, createDonation, getTraffic
 import { useAuth } from '../auth/AuthContext.jsx'
 import TrafficCard from '../components/TrafficCard.jsx'
 import WalletCard from '../components/WalletCard.jsx'
+import ReferralCard from '../components/ReferralCard.jsx'
 import { getWallet } from '../api/wallet.js'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
@@ -425,6 +426,7 @@ export default function DashboardPage() {
 
         {/* ─── Wallet: balance, top-up, what the next renewal does ─── */}
         {wallet && <div className="mb-6"><WalletCard wallet={wallet} /></div>}
+        <div className="mb-6"><ReferralCard token={token} /></div>
 
         {/* ─── Secondary actions grid (one consistent grid, no scattered buttons) ─── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">

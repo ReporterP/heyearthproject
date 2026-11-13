@@ -34,7 +34,7 @@ export const commands = [
   // Money
   { id: 'go-plans',        label: 'Тарифы',                  icon: Package,         kind: 'page', href: '/plans',        group: 'Деньги' },
   { id: 'go-payments',     label: 'Платежи',                 icon: Wallet,          kind: 'page', href: '/payments',     group: 'Деньги' },
-  { id: 'go-payment-ops',  label: 'Дунинг',                  icon: RotateCcw,       kind: 'page', href: '/payment-ops',  group: 'Деньги' },
+  { id: 'go-payment-ops',  label: 'Письма',                  icon: RotateCcw,       kind: 'page', href: '/payment-ops',  group: 'Деньги' },
 
   // Admin
   { id: 'go-admins',         label: 'Администраторы',        icon: ShieldCheck,     kind: 'page', href: '/admins',        group: 'Админ' },

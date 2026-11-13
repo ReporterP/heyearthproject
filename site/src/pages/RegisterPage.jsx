@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 import Fireflies from '../components/Fireflies.jsx'
 import { safeRedirect } from '../lib/redirect.js'
+import { pendingReferral, forgetReferral } from '../lib/referral.js'
 
 const Arrow = () => (
   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
@@ -60,7 +61,8 @@ export default function RegisterPage() {
     setLoading(true)
     setError('')
     try {
-      const data = await registerUser('web', '')
+      const data = await registerUser('web', '', pendingReferral())
+      forgetReferral()
       setGeneratedId(data.id || data.user_id || data.heyearth_id || '')
       if (data.token) setAuthToken(data.token)
     } catch (e) {

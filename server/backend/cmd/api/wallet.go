@@ -268,6 +268,11 @@ func walletPurchaseNow(ctx context.Context, req biz.PurchaseRequest) (*biz.Purch
 func walletPurchaseDone(userID string, res *biz.PurchaseResult, renewal bool) {
 	log.Printf("[wallet] ✓ %s bought «%s» for %s ₽ until %s (balance %s ₽)", userID, res.PlanName,
 		biz.KopToRubString(res.PriceKop), res.ValidUntil.Format("2006-01-02"), biz.KopToRubString(res.BalanceAfterKop))
+	if rw := res.Referral; rw != nil {
+		log.Printf("[referral] reward %d: friend %d paid — inviter %d +%s ₽, friend +%s ₽ (capped=%v)",
+			rw.ID, rw.FriendID, rw.ReferrerID, biz.KopToRubString(rw.ReferrerKop), biz.KopToRubString(rw.FriendKop), rw.Capped)
+		notifyReferralReward(rw)
+	}
 	biz.NotifySubscriptionChange()
 	RequestXraySync()
 	kickWalletReceiptsAsync()
@@ -296,18 +301,23 @@ func handleWalletPurchase(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request_id required"})
 		return
 	}
-	q, err := buildQuote(r.Context(), userID, userDBID, body.PlanID, body.Promocode)
-	if err != nil {
-		writePurchaseError(w, err)
-		return
-	}
-	if q.Free {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Этот тариф бесплатный — оформите его без оплаты"})
-		return
+	key := fmt.Sprintf("purchase:%d:%s", userDBID, rid)
+	var seen bool
+	_ = db.DB.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM wallet_transactions WHERE idempotency_key = $1)`, key).Scan(&seen)
+	if !seen { // a repeat of a finished purchase goes straight to its result
+		q, err := buildQuote(r.Context(), userID, userDBID, body.PlanID, body.Promocode)
+		if err != nil {
+			writePurchaseError(w, err)
+			return
+		}
+		if q.Free {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Этот тариф бесплатный — оформите его без оплаты"})
+			return
+		}
 	}
 	res, err := walletPurchaseNow(r.Context(), biz.PurchaseRequest{
 		UserID: userID, PlanID: body.PlanID, Promocode: body.Promocode,
-		Key: fmt.Sprintf("purchase:%d:%s", userDBID, rid), Kind: biz.WalletPurchase,
+		Key: key, Kind: biz.WalletPurchase,
 	})
 	if err != nil {
 		writePurchaseError(w, err)
@@ -583,6 +593,7 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 
 // Test seams: the purchase, and what runs in the background after a wallet commit.
 var (
+	notifyReferralReward     = func(*biz.ReferralReward) {}
 	purchaseFromWalletTx     = biz.PurchaseFromWalletTx
 	kickWalletReceiptsAsync  = kickWalletReceipts
 	sendActivationEmailAsync = func(userID string, plan *biz.Plan, priceRub int, renewal bool, paymentID int) {

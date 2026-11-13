@@ -21,6 +21,7 @@ export const PAGE_PERMS = {
   '/plans': 'settings.read',
   '/payments': 'payments.read',
   '/payment-ops': 'payments.read',
+  '/referrals': 'users.read',
   '/admins': 'admins.read',
   '/audit-log': 'audit.read',
   '/tenants': 'tenants.read',

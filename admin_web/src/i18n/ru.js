@@ -29,6 +29,7 @@ export default {
   navPromocodes: '\u041F\u0440\u043E\u043C\u043E\u043A\u043E\u0434\u044B',
   navPayments: '\u041F\u043B\u0430\u0442\u0435\u0436\u0438',
   navPaymentOps: 'Письма',
+  navReferrals: 'Рефералы',
   navNodes: 'Ноды',
   navEntries: 'Входы',
   navSshKeys: 'SSH \u041A\u043B\u044E\u0447\u0438',
