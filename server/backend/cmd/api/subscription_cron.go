@@ -83,7 +83,7 @@ func checkExpiringSubscriptions() {
 			if err := processAutoRenew(userID, subID); err != nil {
 				log.Printf("[subscription-cron] Auto-renew %s (%s): %v", userID, plan, err)
 			} else {
-				log.Printf("[subscription-cron] Auto-renew %s (%s): платёж создан", userID, plan)
+				log.Printf("[subscription-cron] Auto-renew %s (%s): обработано", userID, plan)
 			}
 		} else {
 			log.Printf("[subscription-cron] Подписка %s (%s) истекает %s",
@@ -191,9 +191,23 @@ func processAutoRenew(userID string, subID int) error {
 		return fmt.Errorf("plan %d of subscription %d: %w", planID, subID, err)
 	}
 
+	// Activation extends the user's latest active row; a row that is not that one (an
+	// older trial next to a paid plan) is left to end on its own.
+	var latest int
+	if err := db.DB.QueryRow(`
+		SELECT us.id FROM user_subscriptions us JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.plan_id IS NOT NULL
+		ORDER BY us.valid_until DESC LIMIT 1`, userID).Scan(&latest); err != nil {
+		return fmt.Errorf("latest subscription of %s: %w", userID, err)
+	}
+	if latest != subID {
+		log.Printf("[auto-renew] User %s: subscription %d is not the current one (%d) — not renewed", userID, subID, latest)
+		return nil
+	}
+
 	freePromo := false
 	if pricePaid == 0 {
-		if freePromo, err = biz.IsRedeemedPromocode(context.Background(), db.DB, promo); err != nil {
+		if freePromo, err = biz.IsFreeAccessPromocode(context.Background(), db.DB, promo); err != nil {
 			return fmt.Errorf("check promocode of subscription %d: %w", subID, err)
 		}
 	}

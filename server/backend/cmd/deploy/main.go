@@ -839,7 +839,7 @@ func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		_, _ = runSSH(client, "rm -rf "+next, false)
 		log.Fatalf("upload admin_web build: %v (the live admin is untouched; try: go run quick_admin_web.go)", err)
 	}
-	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ -d %[1]s ] && mv %[1]s %[1]s.old || true; } && mv %[2]s %[1]s", live, next), true)
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ ! -d %[1]s ] || mv %[1]s %[1]s.old; } && mv %[2]s %[1]s", live, next), true)
 	fmt.Println("[admin-web] uploaded to " + live)
 }
 
@@ -858,7 +858,7 @@ func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		_, _ = runSSH(client, "rm -rf "+next, false)
 		log.Fatalf("upload site build: %v (the live site is untouched; try: go run quick_admin_web.go -site)", err)
 	}
-	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ -d %[1]s ] && mv %[1]s %[1]s.old || true; } && mv %[2]s %[1]s", live, next), true)
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ ! -d %[1]s ] || mv %[1]s %[1]s.old; } && mv %[2]s %[1]s", live, next), true)
 	fmt.Println("[vue-site] uploaded to " + live)
 }
 

@@ -1,2 +1,2 @@
 DROP TABLE IF EXISTS promocode_redemptions;
-DELETE FROM app_settings WHERE key = 'quota_cutoff_enabled';
+-- quota_cutoff_enabled stays: it may have been set by the owner.

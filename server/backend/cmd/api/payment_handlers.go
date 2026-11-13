@@ -136,6 +136,10 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"status": "activated", "plan": res.PlanName, "message": res.Message})
 			return
 		}
+		if priceRub <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Этот тариф бесплатный — промокод не нужен"})
+			return
+		}
 		priceRub = promo.PriceFor(priceRub)
 		promoUsed = promo.Code
 	}
@@ -161,6 +165,10 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	// Free plan (or a 100% discount) — activate immediately.
 	if priceRub <= 0 {
 		if err := activateFreePurchase(r.Context(), userID, plan, promoUsed); err != nil {
+			if biz.IsPromoError(err) {
+				writePromoError(w, err)
+				return
+			}
 			if errors.Is(err, biz.ErrDowngradeNotAllowed) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
 				return
@@ -786,14 +794,21 @@ func activateFreePurchase(ctx context.Context, userID string, plan *biz.Plan, pr
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if err := biz.ActivateSubscriptionTx(ctx, tx, userID, plan.ID, plan.DurationDays, 0, promo, biz.ActivateOpts{}); err != nil {
-		return err
-	}
+	var userDBID int
 	if promo != "" {
-		var userDBID int
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
 			return err
 		}
+		// Nothing is paid, so the code's limits are checked again under its row lock:
+		// two parallel requests cannot both use a single-use 100% code.
+		if _, err := biz.LoadPromocode(ctx, tx, userDBID, promo, plan.ID, true); err != nil {
+			return err
+		}
+	}
+	if _, err := biz.ActivateSubscriptionTx(ctx, tx, userID, plan.ID, plan.DurationDays, 0, promo, biz.ActivateOpts{}); err != nil {
+		return err
+	}
+	if promo != "" {
 		if err := biz.ConsumePaidPromocodeTx(ctx, tx, promo, userDBID, biz.RedeemSourceFree, 0); err != nil {
 			return err
 		}

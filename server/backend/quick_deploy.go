@@ -141,7 +141,7 @@ func main() {
 
 	// 5. Подменить бинарник атомарно и перезапустить
 	fmt.Println("[5/5] Перезапуск сервиса...")
-	if out := runCmd(client, fmt.Sprintf("chmod +x %s && cp -p %s %s.bak 2>/dev/null; mv -f %s %s && echo SWAPPED", tmpPath, remotePath, remotePath, tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
+	if out := runCmd(client, fmt.Sprintf("chmod +x %[1]s && { [ ! -f %[2]s ] || cp -p %[2]s %[2]s.bak; } && mv -f %[1]s %[2]s && echo SWAPPED", tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
 		runCmd(client, "rm -f "+tmpPath)
 		log.Fatalf("swap binary failed: %s", strings.TrimSpace(out))
 	}

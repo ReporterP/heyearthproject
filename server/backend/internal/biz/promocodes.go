@@ -317,7 +317,7 @@ func grantFreeDaysTx(ctx context.Context, tx *sql.Tx, userID string, p *Promocod
 	}
 	noLimit := int64(0)
 	noRenew := false
-	err = ActivateSubscriptionTx(ctx, tx, userID, planID, days, 0, p.Code, ActivateOpts{InsertAutoRenew: &noRenew, TrafficLimit: &noLimit})
+	_, err = ActivateSubscriptionTx(ctx, tx, userID, planID, days, 0, p.Code, ActivateOpts{InsertAutoRenew: &noRenew, TrafficLimit: &noLimit})
 	if errors.Is(err, ErrDowngradeNotAllowed) {
 		return nil, ErrPromoHigherPlan
 	}
@@ -376,15 +376,16 @@ func FormatGB(b int64) string {
 	return fmt.Sprintf("%.0f ГБ", gb)
 }
 
-// IsRedeemedPromocode reports whether label (user_subscriptions.promocode_used) names an
-// existing promocode — not the cron's "auto-renew" marks or an empty value.
-func IsRedeemedPromocode(ctx context.Context, q queryer, label string) (bool, error) {
+// IsFreeAccessPromocode reports whether label (user_subscriptions.promocode_used) names a
+// free-access code that still renews free: an existing free_trial code the owner has not
+// switched off. Discount codes, the cron's old "auto-renew" marks and empty values do not.
+func IsFreeAccessPromocode(ctx context.Context, q queryer, label string) (bool, error) {
 	norm := NormalizePromocode(label)
 	if norm == "" {
 		return false, nil
 	}
 	var n int
-	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM promocodes WHERE code = $1`, norm).Scan(&n); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM promocodes WHERE code = $1 AND promo_type = 'free_trial' AND is_active`, norm).Scan(&n); err != nil {
 		return false, err
 	}
 	return n > 0, nil

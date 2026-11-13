@@ -81,3 +81,42 @@ func TestAutoRenewFreeAccess(t *testing.T) {
 		}
 	}
 }
+
+// Review fixes: a discount code, or a free code the owner switched off, does not make
+// a zero-price subscription renew free; a row that is not the user's current one is
+// left alone.
+func TestAutoRenewOnlyActiveFreeCodes(t *testing.T) {
+	conn := testpg.Open(t)
+	trial := pgPlan(t, conn, "t-trial", 0, 7)
+	annual := pgPlan(t, conn, "t-annual", 3000, 365)
+	testpg.MustExec(t, conn, `INSERT INTO promocodes (code, duration_days, promo_type, discount_percent) VALUES ('TEN', 30, 'discount_percent', 10)`)
+	testpg.MustExec(t, conn, `INSERT INTO promocodes (code, duration_days, promo_type, free_days, is_active) VALUES ('OFFGIFT', 30, 'free_trial', 30, FALSE)`)
+
+	u1 := testpg.NewUser(t, conn, "disc-user")
+	s1 := pgSub(t, conn, u1, trial, 0, "TEN")
+	u2 := testpg.NewUser(t, conn, "off-user")
+	s2 := pgSub(t, conn, u2, annual, 0, "OFFGIFT")
+	for _, c := range []struct {
+		user string
+		sub  int
+	}{{"disc-user", s1}, {"off-user", s2}} {
+		if err := processAutoRenew(c.user, c.sub); err != nil {
+			t.Fatal(err)
+		}
+		if _, h, _ := subState(t, conn, c.sub); h > 12 {
+			t.Errorf("%s renewed free (%d hours left)", c.user, h)
+		}
+	}
+
+	// Two rows: the older one ending soon is not the current subscription.
+	testpg.MustExec(t, conn, `INSERT INTO promocodes (code, duration_days, promo_type, free_days) VALUES ('GIFT', 30, 'free_trial', 30)`)
+	u3 := testpg.NewUser(t, conn, "two-rows")
+	old := pgSub(t, conn, u3, trial, 0, "GIFT")
+	testpg.MustExec(t, conn, `INSERT INTO user_subscriptions (user_id, plan_id, valid_until, status, price_paid) VALUES ($1, $2, NOW() + INTERVAL '20 days', 'active', 3000)`, u3, annual)
+	if err := processAutoRenew("two-rows", old); err != nil {
+		t.Fatal(err)
+	}
+	if _, h, _ := subState(t, conn, old); h > 12 {
+		t.Errorf("non-current row renewed (%d hours left)", h)
+	}
+}

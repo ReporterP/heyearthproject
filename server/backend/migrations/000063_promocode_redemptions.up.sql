@@ -16,7 +16,8 @@ CREATE INDEX IF NOT EXISTS idx_promocode_redemptions_code_user ON promocode_rede
 INSERT INTO promocode_redemptions (code, user_id, source, created_at)
 SELECT pc.code, us.user_id, 'legacy', COALESCE(us.started_at, NOW())
 FROM user_subscriptions us
-JOIN promocodes pc ON pc.code = UPPER(TRIM(us.promocode_used));
+JOIN promocodes pc ON pc.code = UPPER(TRIM(us.promocode_used))
+WHERE NOT EXISTS (SELECT 1 FROM promocode_redemptions WHERE source = 'legacy');
 
 -- The traffic quota cuts every protocol the same way (A7); the owner can switch it off
 -- in «Настройки». An existing value is kept.

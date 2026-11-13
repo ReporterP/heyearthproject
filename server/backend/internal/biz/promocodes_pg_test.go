@@ -221,3 +221,30 @@ func TestRedeemPromocodeLastUseRace(t *testing.T) {
 		t.Errorf("uses %d/%d, want 1/1", cur, red)
 	}
 }
+
+// Review fix: free days over a PAID subscription of the same plan only add days — the row
+// stays paid (price, mark, traffic limit), so it never becomes free-forever access.
+func TestFreeDaysOverPaidKeepPaidMarks(t *testing.T) {
+	conn := testpg.Open(t)
+	ctx := context.Background()
+	paid := newPlan(t, conn, "t-paid", 300, 30, int64(50<<30), true)
+	testpg.MustExec(t, conn, `INSERT INTO promocodes (code, duration_days, promo_type, free_days, plan_id_granted) VALUES ('GIFT7', 7, 'free_trial', 7, $1)`, paid)
+	uid := testpg.NewUser(t, conn, "payer")
+	if err := ActivateSubscriptionWithPlan("payer", paid, 30, 300, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RedeemPromocode(ctx, "payer", "GIFT7", 0, RedeemSourceCabinet); err != nil {
+		t.Fatal(err)
+	}
+	var pricePaid int
+	var promo string
+	var limit sql.NullInt64
+	var days int
+	if err := conn.QueryRow(`SELECT price_paid, COALESCE(promocode_used, ''), traffic_limit, ROUND(EXTRACT(EPOCH FROM valid_until - NOW()) / 86400)::int
+		FROM user_subscriptions WHERE user_id = $1`, uid).Scan(&pricePaid, &promo, &limit, &days); err != nil {
+		t.Fatal(err)
+	}
+	if pricePaid != 300 || promo != "" || limit.Valid || days != 37 {
+		t.Errorf("paid row after free days: price=%d promo=%q limit=%v days=%d; want 300, no mark, plan limit, 37 days", pricePaid, promo, limit, days)
+	}
+}

@@ -488,7 +488,8 @@ func ActivateSubscriptionWithPlan(userID string, planID int, durationDays int, p
 // the caller's timeout also bounds lock waits. ErrDowngradeNotAllowed comes back before
 // any write, so the transaction stays usable.
 func ActivateSubscriptionWithPlanTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string) error {
-	return ActivateSubscriptionTx(ctx, tx, userID, planID, durationDays, pricePaid, promocodeUsed, ActivateOpts{})
+	_, err := ActivateSubscriptionTx(ctx, tx, userID, planID, durationDays, pricePaid, promocodeUsed, ActivateOpts{})
+	return err
 }
 
 // ActivateOpts adjusts ActivateSubscriptionTx.
@@ -503,11 +504,17 @@ type ActivateOpts struct {
 	TrafficLimit *int64
 }
 
-// ActivateSubscriptionTx is ActivateSubscriptionWithPlanTx with options.
-func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string, opts ActivateOpts) error {
+// ActivateSubscriptionTx is ActivateSubscriptionWithPlanTx with options; it returns the
+// id of the subscription row it created or changed.
+//
+// A free grant (pricePaid 0, a promocode's days) over a PAID row only adds days (and
+// switches the plan when it is a better one): the row keeps its price_paid, promocode
+// mark, traffic limit and auto-renew, so free days never turn paid access into
+// free-forever renewals.
+func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, planID int, durationDays int, pricePaid int, promocodeUsed string, opts ActivateOpts) (int, error) {
 	var dbUserID int
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID); err != nil {
-		return fmt.Errorf("resolve user %s: %w", userID, err)
+		return 0, fmt.Errorf("resolve user %s: %w", userID, err)
 	}
 
 	// Fetch new plan's LIST price (not pricePaid, which may be discounted by
@@ -515,7 +522,7 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 	// to be semantically honest — see code-quality review of 8197e40.
 	newPlan, err := GetPlanByID(planID)
 	if err != nil || newPlan == nil {
-		return fmt.Errorf("resolve new plan %d: %w", planID, err)
+		return 0, fmt.Errorf("resolve new plan %d: %w", planID, err)
 	}
 	newPlanListPrice := newPlan.PriceRub
 
@@ -527,22 +534,24 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 	var currentPriceRub int
 	var currentDurationDays int
 	var currentValidUntil time.Time
+	var currentPricePaid int
 	hasActive := true
 	scanErr := tx.QueryRowContext(ctx, `
-		SELECT us.id, us.plan_id, p.price_rub, p.duration_days, us.valid_until
+		SELECT us.id, us.plan_id, p.price_rub, p.duration_days, us.valid_until, COALESCE(us.price_paid, 0)
 		FROM user_subscriptions us
 		JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
 		ORDER BY us.valid_until DESC LIMIT 1
 		FOR UPDATE OF us
-	`, dbUserID).Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil)
+	`, dbUserID).Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil, &currentPricePaid)
 	if scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			hasActive = false // нет активной подписки → ветка (1)
 		} else {
-			return fmt.Errorf("scan current subscription: %w", scanErr)
+			return 0, fmt.Errorf("scan current subscription: %w", scanErr)
 		}
 	}
+	freeOverPaid := hasActive && pricePaid == 0 && currentPricePaid > 0
 
 	// traffic_limit: written only when the caller sets it ($n IS NULL keeps the row's).
 	var trafficLimit sql.NullInt64
@@ -556,16 +565,25 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 		if opts.InsertAutoRenew != nil {
 			autoRenew = *opts.InsertAutoRenew
 		}
-		if _, err := tx.ExecContext(ctx, `
+		var newID int
+		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO user_subscriptions (user_id, valid_until, auto_renew, plan_id, price_paid, promocode_used, status, started_at, traffic_limit)
 			VALUES ($1, NOW() + make_interval(days => $2), $3, $4, $5, $6, 'active', NOW(), $7)
-		`, dbUserID, durationDays, autoRenew, planID, pricePaid, promocodeUsed, trafficLimit); err != nil {
-			return err
+			RETURNING id
+		`, dbUserID, durationDays, autoRenew, planID, pricePaid, promocodeUsed, trafficLimit).Scan(&newID); err != nil {
+			return 0, err
 		}
-		return nil
+		return newID, nil
 	}
 
 	// (2) Same plan — extend valid_until in place; auto_renew stays the user's choice.
+	if currentPlanID == planID && freeOverPaid {
+		if _, err := tx.ExecContext(ctx, `UPDATE user_subscriptions SET valid_until = valid_until + make_interval(days => $1), status = 'active' WHERE id = $2`,
+			durationDays, currentSubID); err != nil {
+			return 0, err
+		}
+		return currentSubID, nil
+	}
 	if currentPlanID == planID {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE user_subscriptions
@@ -575,9 +593,9 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 			    traffic_limit = CASE WHEN $4::bigint IS NULL THEN traffic_limit ELSE $4::bigint END
 			WHERE id = $5
 		`, durationDays, pricePaid, promocodeUsed, trafficLimit, currentSubID); err != nil {
-			return err
+			return 0, err
 		}
-		return nil
+		return currentSubID, nil
 	}
 
 	// (3) Different plan, downgrade — REJECT.
@@ -585,7 +603,7 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 	// falsely blocked: a user paying 150₽ with promo for a 300₽ plan over
 	// a 250₽ active sub is upgrading, not downgrading.
 	if newPlanListPrice < currentPriceRub {
-		return ErrDowngradeNotAllowed
+		return 0, ErrDowngradeNotAllowed
 	}
 
 	// (4) Cross-plan upgrade or equal-price switch — convert leftover to bonus days.
@@ -597,6 +615,13 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 		leftoverDays = 0
 	}
 	bonusDays := computeBonusDays(currentPriceRub, currentDurationDays, leftoverDays, newPlanListPrice, durationDays)
+	if freeOverPaid {
+		if _, err := tx.ExecContext(ctx, `UPDATE user_subscriptions SET plan_id = $1, valid_until = NOW() + make_interval(days => $2), status = 'active' WHERE id = $3`,
+			planID, durationDays+bonusDays, currentSubID); err != nil {
+			return 0, err
+		}
+		return currentSubID, nil
+	}
 	// Leaving a free plan (the trial) takes the new plan's auto-renew default; between
 	// paid plans the user's own choice stays.
 	if _, err := tx.ExecContext(ctx, `
@@ -610,9 +635,9 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 		    traffic_limit = CASE WHEN $7::bigint IS NULL THEN traffic_limit ELSE $7::bigint END
 		WHERE id = $8
 	`, planID, durationDays+bonusDays, pricePaid, promocodeUsed, currentPriceRub <= 0, newPlan.AutoRenewDefault, trafficLimit, currentSubID); err != nil {
-		return err
+		return 0, err
 	}
-	return nil
+	return currentSubID, nil
 }
 
 // CheckPlanActivationLimit checks if a plan has max_activations_per_user and if the user has exceeded it.

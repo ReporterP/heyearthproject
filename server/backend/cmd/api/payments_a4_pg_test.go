@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -109,5 +110,37 @@ func TestAuthErrorStatus(t *testing.T) {
 	conn.Close() // the session lookup now fails
 	if rec := call("Bearer " + token); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("database down: %d %s, want 503", rec.Code, rec.Body.String())
+	}
+}
+
+// Review fix: a single-use 100% code cannot be used twice by parallel free purchases.
+func TestFreePurchaseRevalidatesCode(t *testing.T) {
+	conn := testpg.Open(t)
+	plan := pgPlan(t, conn, "t-paid", 300, 30)
+	testpg.MustExec(t, conn, `INSERT INTO promocodes (code, duration_days, promo_type, discount_percent, max_uses, per_user_limit) VALUES ('FULL', 30, 'discount_percent', 100, 1, 0)`)
+	p, err := biz.GetPlanByID(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 6
+	for i := 0; i < n; i++ {
+		testpg.NewUser(t, conn, "free-"+string(rune('a'+i)))
+	}
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) { errs <- activateFreePurchase(context.Background(), "free-"+string(rune('a'+i)), p, "FULL") }(i)
+	}
+	ok := 0
+	for i := 0; i < n; i++ {
+		if err := <-errs; err == nil {
+			ok++
+		} else if !biz.IsPromoError(err) {
+			t.Errorf("unexpected: %v", err)
+		}
+	}
+	var subs int
+	_ = conn.QueryRow(`SELECT COUNT(*) FROM user_subscriptions`).Scan(&subs)
+	if ok != 1 || subs != 1 {
+		t.Fatalf("%d free purchases went through (%d subscriptions), want 1", ok, subs)
 	}
 }
