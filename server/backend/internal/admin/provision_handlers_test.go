@@ -1030,15 +1030,12 @@ func TestServerActionsAfterJobs(t *testing.T) {
 	post := func(action string, perms ...string) *httptest.ResponseRecorder {
 		return callAs(ServerActionHandler, "POST", "/api/admin/servers/2/actions", `{"action":"`+action+`"}`, perms...)
 	}
-	// The old in-memory flows answer 410 before touching anything (db.DB is nil here).
-	for _, a := range []string{"hub_provision", "deprovision_soft", "deprovision_hard", "anything"} {
-		if rec := post(a, "server_ops.execute"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "задачи ноды") {
+	// Anything but restart_agent is refused before touching anything (db.DB is nil here); every
+	// change to a node is a job.
+	for _, a := range []string{"hub_provision", "deprovision_soft", "reinstall_mtproxy", "anything"} {
+		if rec := post(a, "server_ops.execute"); rec.Code != http.StatusBadRequest || len(p.kinds) != 0 {
 			t.Errorf("%s: %d %s", a, rec.Code, rec.Body)
 		}
-	}
-	// The MTProxy reinstall moved to POST /servers/{id}/mtproxy: the old action is a 410 pointing there.
-	if rec := post("reinstall_mtproxy", "*"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "/mtproxy") || len(p.kinds) != 0 {
-		t.Errorf("old reinstall_mtproxy: %d %s %v", rec.Code, rec.Body, p.kinds)
 	}
 	// node-agent is not restarted while a job works on the node (refused before any SSH).
 	NodeJobs = fakeJobs{node: provision.Node{ID: 2}, list: []provision.JobView{{ID: 9, Status: provision.JobRunning}}}

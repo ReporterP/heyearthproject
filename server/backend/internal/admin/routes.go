@@ -129,7 +129,6 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/payments/", AuthMiddleware(paymentsItemRouter))
 
-	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(goneHandler(tunnelCredsGoneMsg))))
 	// Node provisioning (provision_handlers.go): reads servers.read, every change nodes.provision.
 	http.HandleFunc("/api/admin/servers/probe", withMethod(http.MethodPost, RequirePermission("nodes.provision", ProbeNodeHandler)))
 	http.HandleFunc("/api/admin/nodes", withMethod(http.MethodGet, RequirePermission("servers.read", ListNodesHandler)))
@@ -201,27 +200,8 @@ func RegisterRoutes() {
 			withMethod(http.MethodPut, RequirePermission("servers.write", ServerOwnerHandler)).ServeHTTP(w, r)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/metrics") {
-			withMethod(http.MethodGet, RequirePermission("servers.read", GetServerMetricsHandler)).ServeHTTP(w, r)
-			return
-		}
 		if strings.HasSuffix(r.URL.Path, "/logs") {
 			withMethod(http.MethodGet, RequirePermission("servers.logs", GetServerLogsHandler)).ServeHTTP(w, r)
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/files") || strings.Contains(r.URL.Path, "/files/") {
-			RequirePermission("servers.files", ServerFileBrowserHandler).ServeHTTP(w, r)
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/file-content") {
-			switch r.Method {
-			case http.MethodGet:
-				RequirePermission("servers.files", ServerFileReadHandler).ServeHTTP(w, r)
-			case http.MethodPut:
-				RequirePermission("servers.write", goneHandler(fileWriteGoneMsg)).ServeHTTP(w, r)
-			default:
-				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-			}
 			return
 		}
 		switch r.Method {
@@ -463,7 +443,6 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/traffic/", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficUserDetailHandler)))
 
 	http.HandleFunc("/api/public/create-tenant", publicLimiter.Middleware(PublicCreateTenantHandler))
-	http.HandleFunc("/api/public/tariff/calculate", publicLimiter.Middleware(PublicTariffCalculateHandler))
 }
 
 // permPaymentsRefund guards every action that moves money or touches YooKassa for a payment.

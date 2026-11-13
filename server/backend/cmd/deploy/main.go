@@ -954,7 +954,6 @@ server {
     listen [::]:80;
     server_name %[1]s www.%[1]s;
 
-    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
 
@@ -1055,7 +1054,6 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
 

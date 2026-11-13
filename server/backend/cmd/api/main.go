@@ -952,9 +952,8 @@ func main() {
 
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
-	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess))
+	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess)) // the Flutter app (payment_api.dart)
 	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(codeLimiter.Middleware(handleRedeemCode)))
-	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(codeLimiter.Middleware(handleApplyPromocode)))
 	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
 
@@ -979,7 +978,6 @@ func main() {
 	// DELETE /api/v1/business/members/{user_db_id} — uses trailing slash routing.
 	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(handleBusinessMembers))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
-	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
 	// Admin debug: force auto-renew for a user

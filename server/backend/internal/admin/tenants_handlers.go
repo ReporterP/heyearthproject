@@ -180,45 +180,6 @@ func DeleteTenantHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "deleted"})
 }
 
-// PublicTariffCalculateHandler returns B2B price estimate without auth.
-func PublicTariffCalculateHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	var req struct {
-		Users          int  `json:"users"`
-		OwnServers     int  `json:"own_servers"`
-		UseOurServers  bool `json:"use_our_servers"`
-		PremiumEnabled bool `json:"premium_enabled"`
-		Unlimited      bool `json:"unlimited"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	var monthly int
-	if req.Unlimited {
-		monthly = 20000
-	} else {
-		monthly = req.Users * 250
-		if req.UseOurServers {
-			monthly += 1000
-		}
-		extraServers := req.OwnServers - 5
-		if extraServers > 0 {
-			monthly += extraServers * 100
-		}
-		if req.PremiumEnabled {
-			monthly += req.Users * 50
-		}
-	}
-	writeAdminJSON(w, http.StatusOK, map[string]int{"monthly": monthly})
-}
-
 // B2BAnalyticsHandler — aggregate KPIs for the B2B revenue stream.
 // Returns counts by status, MRR (monthly recurring revenue) computed from
 // debits in the last 30 days, top-N tenants by traffic and by spend.

@@ -489,29 +489,6 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 
 // ─────────────────────── Other Payment Endpoints ───────────────────────
 
-func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeAuthError(w, err)
-		return
-	}
-	access, err := biz.GetUserAccessState(userID, "")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"can_connect":  access.CanConnect,
-		"is_premium":   access.IsPremium,
-		"grace_period": false,
-	})
-}
-
 func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -539,113 +516,6 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "code redeemed", "tenant_id": tenantID})
-}
-
-func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeAuthError(w, err)
-		return
-	}
-	var req struct {
-		TenantID  int    `json:"tenant_id"`
-		Amount    int    `json:"amount"`
-		ReturnURL string `json:"return_url"`
-		Email     string `json:"email"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.TenantID == 0 || req.Amount < 100 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id and amount (>=100) required"})
-		return
-	}
-
-	// Verify the caller has *billing-level* membership in this tenant. Plain
-	// 'user'/'viewer' members can use the proxy but cannot move the company
-	// wallet — that would be a trivial way to grief a coworker.
-	var userDBID int
-	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
-		return
-	}
-	role, ok, err := biz.GetTenantMember(req.TenantID, userDBID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check membership: " + err.Error()})
-		return
-	}
-	if !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "you are not a member of this tenant"})
-		return
-	}
-	if role != "admin" && role != "billing" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role does not allow billing actions"})
-		return
-	}
-
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены"})
-		return
-	}
-
-	description := fmt.Sprintf("HiEarth B2B — пополнение (%d ₽)", req.Amount)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "yookassa", description)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/dashboard"
-	}
-
-	yreq := yookassa.CreatePaymentRequest{
-		Amount:       yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(req.Amount)), Currency: "RUB"},
-		Description:  description,
-		Confirmation: &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
-		Capture:      true,
-		Receipt:      buildReceipt(description, float64(req.Amount), req.Email, "full_payment"),
-		Metadata: map[string]string{
-			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-			"tenant_id":     fmt.Sprintf("%d", req.TenantID),
-			"user_id":       userID,
-			"kind":          "tenant_topup",
-		},
-	}
-	payment, err := client.CreatePayment(yreq)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
-		return
-	}
-
-	confirmationURL := ""
-	if payment.Confirmation != nil {
-		confirmationURL = payment.Confirmation.ConfirmationURL
-	}
-	// Persist tenant_id + kind so the YooKassa webhook can route the credit
-	// when the payment succeeds. user_id is also included to keep a trace of
-	// who initiated the top-up for audit purposes.
-	_, _ = db.DB.Exec(`
-		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2, confirmation_url = $3,
-			external_id = $1::text, metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $6
-	`, payment.ID, payment.Status, confirmationURL,
-		mustJSON(map[string]interface{}{
-			"tenant_id": req.TenantID,
-			"kind":      "tenant_topup",
-			"user_id":   userID,
-		}),
-		payment.Test, paymentDBID)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"payment_id":       paymentDBID,
-		"confirmation_url": confirmationURL,
-	})
 }
 
 func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
@@ -804,4 +674,28 @@ func mustJSON(v interface{}) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// The Flutter app still asks this (flutter-app/lib/payment_api.dart): kept as is.
+func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	access, err := biz.GetUserAccessState(userID, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"can_connect":  access.CanConnect,
+		"is_premium":   access.IsPremium,
+		"grace_period": false,
+	})
 }
