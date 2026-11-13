@@ -111,7 +111,7 @@ function MetadataPopover({ data }) {
         {open ? 'Скрыть' : 'JSON'}
       </Button>
       {open && (
-        <div className="absolute z-30 top-full left-0 mt-1 p-3 rounded bg-overlay border border-default shadow-xl min-w-[280px] max-w-[400px] max-h-[300px] overflow-auto">
+        <div className="absolute z-30 top-full left-0 mt-1 p-3 rounded bg-overlay border border-default min-w-[280px] max-w-[400px] max-h-[300px] overflow-auto">
           <pre className="text-xs text-primary whitespace-pre-wrap break-all font-mono">{jsonStr}</pre>
         </div>
       )}

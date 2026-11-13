@@ -44,9 +44,9 @@ export default function CommandPalette({ open, onClose }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-24 bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-24 bg-overlay/80" onClick={onClose}>
       <div
-        className="w-full max-w-xl rounded border border-default bg-overlay shadow-2xl"
+        className="w-full max-w-xl rounded border border-default bg-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <Command label="Поиск" loop>

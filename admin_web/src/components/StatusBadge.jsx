@@ -1,27 +1,22 @@
-const colors = {
-  active: 'bg-green-500/20 text-green-400',
-  healthy: 'bg-green-500/20 text-green-400',
-  online: 'bg-green-500/20 text-green-400',
-  paid: 'bg-green-500/20 text-green-400',
-  succeeded: 'bg-green-500/20 text-green-400',
-  inactive: 'bg-gray-500/20 text-gray-400',
-  offline: 'bg-gray-500/20 text-gray-400',
-  blocked: 'bg-red-500/20 text-red-400',
-  unhealthy: 'bg-red-500/20 text-red-400',
-  failed: 'bg-red-500/20 text-red-400',
-  pending: 'bg-yellow-500/20 text-yellow-400',
-  configuring: 'bg-yellow-500/20 text-yellow-400',
-  provisioning: 'bg-yellow-500/20 text-yellow-400',
-  maintenance: 'bg-orange-500/20 text-orange-400',
-  waiting_for_capture: 'bg-yellow-500/20 text-yellow-400',
+import { Badge } from './ui/index.js'
+
+// StatusBadge — a status word in a ui Badge (C11): the variant by meaning, the label in Russian.
+const VARIANT = {
+  active: 'success', healthy: 'success', online: 'success', paid: 'success', succeeded: 'success',
+  inactive: 'default', offline: 'default', canceled: 'default', unknown: 'default',
+  blocked: 'danger', unhealthy: 'danger', failed: 'danger',
+  pending: 'warning', configuring: 'warning', provisioning: 'warning', maintenance: 'warning', waiting_for_capture: 'warning',
+  refunded: 'info',
+}
+const LABEL = {
+  active: 'активна', healthy: 'работает', online: 'онлайн', paid: 'оплачен', succeeded: 'оплачен',
+  inactive: 'неактивна', offline: 'офлайн', canceled: 'отменён', unknown: 'нет данных',
+  blocked: 'заблокирован', unhealthy: 'не работает', failed: 'ошибка',
+  pending: 'ожидает', configuring: 'настраивается', provisioning: 'настраивается', maintenance: 'обслуживание',
+  waiting_for_capture: 'ждёт подтверждения', refunded: 'возвращён',
 }
 
 export default function StatusBadge({ status }) {
-  const key = (status || '').toLowerCase().replace(/\s+/g, '_')
-  const cls = colors[key] || 'bg-gray-500/20 text-gray-400'
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
-      {status}
-    </span>
-  )
+  const key = String(status || '').toLowerCase().replace(/\s+/g, '_')
+  return <Badge variant={VARIANT[key] || 'default'}>{LABEL[key] || status || '—'}</Badge>
 }

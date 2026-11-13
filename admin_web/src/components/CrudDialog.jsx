@@ -10,24 +10,24 @@ export default function CrudDialog({ open, title, onClose, onSubmit, loading, ch
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-overlay/80" onClick={onClose}>
       <div
-        className="bg-surface-card rounded-xl shadow-xl border border-white/10 w-full max-w-md max-h-[80vh] overflow-y-auto m-4"
+        className="bg-elevated rounded-lg border border-default w-full max-w-md max-h-[80vh] overflow-y-auto m-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-default">
           <h2 className="text-lg font-semibold">{title}</h2>
-          <button onClick={onClose} className="text-text-secondary hover:text-text-primary transition">
+          <button onClick={onClose} className="text-secondary hover:text-primary transition">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {children}
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary transition">
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-secondary hover:text-primary transition">
               {t.cancel}
             </button>
-            <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark transition disabled:opacity-50">
+            <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition disabled:opacity-50">
               {loading ? t.loading : t.save}
             </button>
           </div>
@@ -40,7 +40,7 @@ export default function CrudDialog({ open, title, onClose, onSubmit, loading, ch
 export function FormField({ label, children }) {
   return (
     <div>
-      <label className="block text-sm text-text-secondary mb-1">{label}</label>
+      <label className="block text-sm text-secondary mb-1">{label}</label>
       {children}
     </div>
   )
@@ -53,7 +53,7 @@ export function TextInput({ value, onChange, placeholder, type = 'text', ...prop
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-primary placeholder-text-secondary text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none"
+      className="w-full px-3 py-2 rounded-lg bg-canvas border border-default text-primary placeholder-text-secondary text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
       {...props}
     />
   )
@@ -66,7 +66,7 @@ export function TextArea({ value, onChange, placeholder, rows = 3, ...props }) {
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       rows={rows}
-      className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-primary placeholder-text-secondary text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none resize-y"
+      className="w-full px-3 py-2 rounded-lg bg-canvas border border-default text-primary placeholder-text-secondary text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none resize-y"
       {...props}
     />
   )
@@ -79,9 +79,9 @@ export function Checkbox({ label, checked, onChange }) {
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="rounded border-white/20 bg-surface-alt text-brand focus:ring-brand"
+        className="rounded border-default bg-canvas text-accent focus:ring-accent"
       />
-      <span className="text-sm text-text-primary">{label}</span>
+      <span className="text-sm text-primary">{label}</span>
     </label>
   )
 }
@@ -91,7 +91,7 @@ export function SelectInput({ value, onChange, options, placeholder }) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-text-primary text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none"
+      className="w-full px-3 py-2 rounded-lg bg-canvas border border-default text-primary text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
     >
       {placeholder && <option value="">{placeholder}</option>}
       {options.map(o => (

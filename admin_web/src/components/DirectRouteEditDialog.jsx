@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Dialog } from './ui/index.js'
 import { createDirectRoute, updateDirectRoute } from '../api/admin.js'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
@@ -45,13 +46,6 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
     setErrors({})
   }, [open, service]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close on Escape.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
 
   if (!open) return null
 
@@ -112,93 +106,85 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div
-        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-xl font-semibold text-slate-100 mb-4">
-          {isEdit ? `Редактировать: ${service.name || service.slug}` : 'Новый direct-сервис'}
-        </h2>
+    <Dialog open onClose={onClose} title={isEdit ? `Изменить: ${service.name || service.slug}` : 'Новый сервис прямой маршрутизации'} maxWidth="max-w-3xl">
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <Row label="Slug" error={errors.slug} hint="a-z 0-9 . -">
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <Row label="Slug" error={errors.slug} hint="a-z 0-9 . -">
+          <input
+            type="text" value={form.slug} onChange={(e) => update('slug', e.target.value)}
+            className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
+            disabled={isEdit}
+          />
+        </Row>
+
+        <Row label="Название" error={errors.name}>
+          <input
+            type="text" value={form.name} onChange={(e) => update('name', e.target.value)}
+            className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
+          />
+        </Row>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Row label="Группа">
             <input
-              type="text" value={form.slug} onChange={(e) => update('slug', e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
-              disabled={isEdit}
+              type="text" value={form.group_name} onChange={(e) => update('group_name', e.target.value)}
+              placeholder="russia / vk / yandex / other"
+              className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
             />
           </Row>
-
-          <Row label="Название" error={errors.name}>
+          <Row label="Источник">
             <input
-              type="text" value={form.name} onChange={(e) => update('name', e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
+              type="text" value={form.source} onChange={(e) => update('source', e.target.value)}
+              placeholder="URL или метка"
+              className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
             />
           </Row>
+        </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Row label="Группа">
-              <input
-                type="text" value={form.group_name} onChange={(e) => update('group_name', e.target.value)}
-                placeholder="russia / vk / yandex / other"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
-              />
-            </Row>
-            <Row label="Источник">
-              <input
-                type="text" value={form.source} onChange={(e) => update('source', e.target.value)}
-                placeholder="URL или метка"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
-              />
-            </Row>
-          </div>
+        <Row label="Активен">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!form.is_active} onChange={(e) => update('is_active', e.target.checked)} />
+            <span className="text-sm text-secondary">да</span>
+          </label>
+        </Row>
 
-          <Row label="Активен">
-            <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={!!form.is_active} onChange={(e) => update('is_active', e.target.checked)} />
-              <span className="text-sm text-slate-300">да</span>
-            </label>
+        <TextareaRow label="Домены (по одному в строке)" value={form.domains} onChange={(v) => update('domains', v)} error={errors.domains} rows={5} />
+        <div className="grid grid-cols-2 gap-3">
+          <TextareaRow label="IPv4 (по одному)" value={form.ip4} onChange={(v) => update('ip4', v)} rows={4} />
+          <TextareaRow label="IPv6 (по одному)" value={form.ip6} onChange={(v) => update('ip6', v)} rows={4} />
+          <TextareaRow label="CIDR v4" value={form.cidr4} onChange={(v) => update('cidr4', v)} rows={3} />
+          <TextareaRow label="CIDR v6" value={form.cidr6} onChange={(v) => update('cidr6', v)} rows={3} />
+        </div>
+        <TextareaRow label="DNS серверы (опционально)" value={form.dns_servers} onChange={(v) => update('dns_servers', v)} rows={2} />
+
+        <div className="grid grid-cols-2 gap-3">
+          <Row label="Timeout (сек)" error={errors.timeout_sec}>
+            <input
+              type="number" min={60} max={86400}
+              value={form.timeout_sec} onChange={(e) => update('timeout_sec', e.target.value)}
+              className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
+            />
           </Row>
+          <Row label="Заметки">
+            <input
+              type="text" value={form.notes} onChange={(e) => update('notes', e.target.value)}
+              className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary"
+            />
+          </Row>
+        </div>
 
-          <TextareaRow label="Домены (по одному в строке)" value={form.domains} onChange={(v) => update('domains', v)} error={errors.domains} rows={5} />
-          <div className="grid grid-cols-2 gap-3">
-            <TextareaRow label="IPv4 (по одному)" value={form.ip4} onChange={(v) => update('ip4', v)} rows={4} />
-            <TextareaRow label="IPv6 (по одному)" value={form.ip6} onChange={(v) => update('ip6', v)} rows={4} />
-            <TextareaRow label="CIDR v4" value={form.cidr4} onChange={(v) => update('cidr4', v)} rows={3} />
-            <TextareaRow label="CIDR v6" value={form.cidr6} onChange={(v) => update('cidr6', v)} rows={3} />
-          </div>
-          <TextareaRow label="DNS серверы (опционально)" value={form.dns_servers} onChange={(v) => update('dns_servers', v)} rows={2} />
-
-          <div className="grid grid-cols-2 gap-3">
-            <Row label="Timeout (сек)" error={errors.timeout_sec}>
-              <input
-                type="number" min={60} max={86400}
-                value={form.timeout_sec} onChange={(e) => update('timeout_sec', e.target.value)}
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
-              />
-            </Row>
-            <Row label="Заметки">
-              <input
-                type="text" value={form.notes} onChange={(e) => update('notes', e.target.value)}
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100"
-              />
-            </Row>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-800">
-            <button type="button" onClick={onClose}
-              className="px-4 py-2 rounded bg-slate-700 text-slate-100 hover:bg-slate-600">
-              Отмена
-            </button>
-            <button type="submit" disabled={submitting}
-              className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
-              {submitting ? 'Сохранение…' : (isEdit ? 'Сохранить' : 'Создать')}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex justify-end gap-2 pt-4 border-t border-default">
+          <button type="button" onClick={onClose}
+            className="px-4 py-2 rounded bg-hover text-primary hover:bg-hover">
+            Отмена
+          </button>
+          <button type="submit" disabled={submitting}
+            className="px-4 py-2 rounded bg-success text-white hover:opacity-90 disabled:opacity-50">
+            {submitting ? 'Сохранение…' : (isEdit ? 'Сохранить' : 'Создать')}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   )
 }
 
@@ -219,12 +205,12 @@ function linesToArray(s) {
 function Row({ label, error, hint, children }) {
   return (
     <div>
-      <div className="flex justify-between text-xs text-slate-400 mb-1">
+      <div className="flex justify-between text-xs text-secondary mb-1">
         <span>{label}</span>
-        {hint && <span className="text-slate-500">{hint}</span>}
+        {hint && <span className="text-tertiary">{hint}</span>}
       </div>
       {children}
-      {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
+      {error && <div className="text-xs text-danger mt-1">{error}</div>}
     </div>
   )
 }
@@ -235,7 +221,7 @@ function TextareaRow({ label, value, onChange, error, rows = 4 }) {
       <textarea
         value={value} onChange={(e) => onChange(e.target.value)}
         rows={rows}
-        className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-slate-100 font-mono text-sm"
+        className="w-full px-3 py-1.5 bg-canvas border border-default rounded text-primary font-mono text-sm"
       />
     </Row>
   )

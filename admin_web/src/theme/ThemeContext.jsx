@@ -4,7 +4,8 @@ const THEME_KEY  = 'hiearth-theme'
 const ACCENT_KEY = 'hiearth-accent'
 
 const DEFAULT_THEME  = 'linear'
-const DEFAULT_ACCENT = 'blue'
+const DARK_THEMES = ['linear', 'brutalist', 'terminal']
+const DEFAULT_ACCENT = 'violet' // the admin theme lock: violet, used sparingly
 
 const ThemeContext = createContext({
   theme: DEFAULT_THEME,
@@ -14,7 +15,11 @@ const ThemeContext = createContext({
 })
 
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState]   = useState(() => localStorage.getItem(THEME_KEY)  || DEFAULT_THEME)
+  // Dark themes only (C11): a stored light theme («notion») falls back to the default.
+  const [theme, setThemeState]   = useState(() => {
+    const t = localStorage.getItem(THEME_KEY)
+    return t && DARK_THEMES.includes(t) ? t : DEFAULT_THEME
+  })
   const [accent, setAccentState] = useState(() => localStorage.getItem(ACCENT_KEY) || DEFAULT_ACCENT)
 
   useEffect(() => {
