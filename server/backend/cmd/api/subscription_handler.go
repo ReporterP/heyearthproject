@@ -530,7 +530,7 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -553,10 +553,10 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 	baseURL := publicBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
-	// Happ one-tap import requires `happ://crypt5/<encrypted>` per docs.
-	// We fetch from crypto.happ.su lazily and cache in users.happ_crypt_link.
-	// On failure we still return the plain subscribe_url — frontend can copy.
-	happLink, _ := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
+	// One-tap import into Happ: the plain happ://add/<url> deep link, built here. The
+	// cabinet no longer waits for crypto.happ.su (up to 10 s) nor hands the subscription
+	// URL — a bearer secret — to a third party (cleanup plan A6).
+	happLink := happAddLink(subscribeURL)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"subscribe_token": token,
@@ -567,12 +567,11 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetHappLink — public endpoint for ConnectPage to fetch the Happ
-// crypt5 deeplink by subscribe token (no auth needed; token IS the bearer).
+// import deeplink by subscribe token (no auth needed; token IS the bearer).
 //
 // GET /api/v1/user/happ-link/<token>
-// → 200 OK {"happ_link": "happ://crypt5/..."}
+// → 200 OK {"happ_link": "happ://add/<subscribe url>"}
 // → 404 if token unknown
-// → 502 if crypto.happ.su unreachable on first call (subsequent calls hit cache)
 func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -603,29 +602,24 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 	baseURL := publicBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
-	happLink, err := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"error":         "crypto.happ.su unavailable",
-			"subscribe_url": subscribeURL,
-		})
-		return
-	}
-
+	_ = userID
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"happ_link":     happLink,
+		"happ_link":     happAddLink(subscribeURL),
 		"subscribe_url": subscribeURL,
 	})
 }
+
+// happAddLink is Happ's import deep link for a subscription URL.
+func happAddLink(subscribeURL string) string { return "happ://add/" + subscribeURL }
 
 // buildSubscriptionAnnounce builds the dynamic Announce + Announce-Url
 // headers shown in Happ as a single clickable line below the progress bar.
 //
 // Priority order:
-//  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /checkout
-//  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /checkout
-//  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /checkout
-//  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /checkout
+//  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /payment
+//  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /payment
+//  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /payment
+//  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /payment
 //  5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
 //  6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
 //
@@ -658,7 +652,7 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 	}
 
 	base := publicBaseURL()
-	checkout := base + "/checkout"
+	checkout := base + "/payment"
 	dashboard := base + "/dashboard"
 	now := time.Now()
 
@@ -693,4 +687,17 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 
 	// 6. healthy default — always include link to cabinet (per spec)
 	return "Личный кабинет ↗", dashboard, nil
+}
+
+// writeAuthError answers a failed extractUserFromToken: 503 when only the session
+// lookup failed (a database outage must not log the client out — the site drops its
+// token on 401), 401 otherwise. Messages are Russian; the site tells them apart by the
+// status, not by the text.
+func writeAuthError(w http.ResponseWriter, err error) {
+	if dbErr, ok := sessionLookupFailure(err); ok {
+		log.Printf("[auth] session lookup failed: %v", dbErr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Сессия истекла — войдите снова"})
 }

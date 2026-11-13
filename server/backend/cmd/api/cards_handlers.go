@@ -23,7 +23,7 @@ func handleUserCards(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -88,7 +88,7 @@ func handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -135,7 +135,7 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -157,7 +157,7 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "платёж не найден"})
 		return
 	}
-	if status != "completed" {
+	if !biz.IsPaidPaymentStatus(status) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "заявка на возврат доступна только для оплаченных платежей"})
 		return
 	}
@@ -174,6 +174,8 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[refund-request] User %s requested refund for payment %d: %s", userID, req.PaymentID, reason)
+	RaiseAlert(fmt.Sprintf("refund-request-%d", req.PaymentID), AlertWarn, "Заявка на возврат",
+		fmt.Sprintf("Пользователь %s просит вернуть платёж #%d. Причина: %s. Решение — в «Платежах» (кнопка «Возврат»).", userID, req.PaymentID, reason))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Заявка на возврат отправлена. Мы рассмотрим её в ближайшее время."})
 }
 
@@ -191,7 +193,7 @@ func handleToggleAutoRenew(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 

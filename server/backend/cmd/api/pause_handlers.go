@@ -35,7 +35,7 @@ func handlePauseSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -112,7 +112,7 @@ func handleResumeSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 

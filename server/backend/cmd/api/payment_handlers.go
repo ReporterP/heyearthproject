@@ -80,7 +80,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -229,7 +229,8 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	payment, err := client.CreatePayment(req)
 	if err != nil {
 		log.Printf("[yookassa] create payment failed: %v", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+		markPaymentNotCreated(paymentDBID, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "ЮKassa не ответила, попробуйте ещё раз через минуту"})
 		return
 	}
 
@@ -508,7 +509,7 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	planIDStr := r.URL.Query().Get("plan_id")
@@ -565,7 +566,7 @@ func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	access, err := biz.GetUserAccessState(userID, "")
@@ -601,7 +602,7 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	if req.Code == "" {
@@ -624,7 +625,7 @@ func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	var req struct {
@@ -731,7 +732,7 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	var req struct {
@@ -749,6 +750,21 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 	}
 	RequestXraySync()
 	writeJSON(w, http.StatusOK, map[string]string{"message": res.Message})
+}
+
+// markPaymentNotCreated closes our payment row when YooKassa refused or did not answer
+// the creation call: there is nothing to pay. If YooKassa did create it after all, its
+// webhook finds the row by metadata payment_db_id and the paid claim (which ignores the
+// canceled status) still applies it.
+func markPaymentNotCreated(paymentDBID int, cause error) {
+	reason := "not created in YooKassa: " + cause.Error()
+	if len(reason) > 300 {
+		reason = reason[:300]
+	}
+	if _, err := db.DB.Exec(`UPDATE payments SET status = 'canceled', cancellation_reason = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status = 'pending' AND paid_at IS NULL`, paymentDBID, reason); err != nil {
+		log.Printf("[yookassa] payment %d: mark not created: %v", paymentDBID, err)
+	}
 }
 
 // writePromoError answers a refused promocode with its Russian text (400), anything
@@ -797,7 +813,7 @@ func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	var req struct {

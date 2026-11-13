@@ -313,7 +313,7 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -368,7 +368,7 @@ func handleUserSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	items, err := biz.ListUserSubscriptions(userID)
@@ -387,7 +387,7 @@ func handleUserPayments(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	items, err := biz.ListUserPayments(userID)
@@ -410,7 +410,7 @@ func handleUserPaymentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -636,7 +636,7 @@ func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -728,7 +728,7 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -853,7 +853,7 @@ func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	var userDBID int
