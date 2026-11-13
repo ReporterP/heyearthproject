@@ -62,7 +62,9 @@ case "$*" in
 "-f -") in=$(cat); printf '%s\n' "$in" > "$L" ;;
 "-f "*) if [ -f "$2" ] && [ "${NFT_LOAD_FAIL:-0}" != 1 ]; then cp "$2" "$L"; else echo "nft: load failed" >&2; exit 1; fi ;;
 "list table ip heyearth_relay") [ -f "$L" ] || exit 1
-  sed -e '/^#/d' -e '/^table ip heyearth_relay$/d' -e '/^delete table/d' -e 's/^ */\t/' -e 's/counter drop/counter packets 0 bytes 0 drop/' "$L" ;;
+  # as nft prints it: a one-element set is the bare value (dport { 2443 } -> dport 2443)
+  sed -e '/^#/d' -e '/^table ip heyearth_relay$/d' -e '/^delete table/d' -e 's/^ */\t/' -e 's/counter drop/counter packets 0 bytes 0 drop/' \
+    -e 's/dport { \([0-9-]*\) }/dport \1/' "$L" ;;
 "list ruleset") if [ -f "$L" ]; then cat "$L"; fi
   if [ "${NFT_FWD_DROP:-0}" = 1 ]; then printf 'table inet filter {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n'; fi ;;
 "delete table ip heyearth_relay") if [ -f "$L" ]; then
@@ -183,7 +185,7 @@ func (h *relayHost) layout() relayLayout {
 	return relayLayout{osRelease: p("/etc/os-release"), nft: p("/etc/heyearth/relay.nft"), unit: p("/etc/systemd/system/heyearth-relay.service"),
 		wants: p("/etc/systemd/system/multi-user.target.wants"), sysctl: p("/etc/sysctl.d/90-heyearth-relay.conf"),
 		modules: p("/etc/modules-load.d/heyearth-relay.conf"), jail: p("/etc/fail2ban/jail.d/heyearth-sshd.local"),
-		state: p("/opt/heyearth/state/relay-pending"), nginx: p("/etc/nginx/nginx.conf")}
+		state: p("/opt/heyearth/state/relay-pending"), nginx: p("/etc/nginx/nginx.conf"), proc: p("/proc")}
 }
 
 // The files of the layout, relative to the root (Go side).
@@ -952,3 +954,65 @@ func TestRelayStitching(t *testing.T) {
 		t.Fatalf("relay verify: %v %v", stepNames(rc), err)
 	}
 }
+
+// 13.11: the phone check's test page holds TCP 80 for 30 minutes. The preflight does not count a
+// port held only by it (its processes in the hiearth-mobile-check cgroup) as busy, a foreign
+// process on the port still refuses, and the install stops the page before anything takes the port.
+func TestRelayPreflightPhoneCheckPage(t *testing.T) {
+	page := `tcp LISTEN 0 5 0.0.0.0:80 0.0.0.0:* users:(("python3",pid=2038,fd=3))`
+	h := newRelayHost(t, map[string]string{"SS_LINES": page})
+	h.write(t, "/proc/2038/cgroup", "0::/system.slice/"+config.MobileCheckUnit+".service\n")
+	cs, err := RelayPreflight(context.Background(), h, testRelayOpts())
+	if err != nil || len(failedChecks(cs)) != 0 {
+		t.Fatalf("the page counted as busy: %+v %v", cs, err)
+	}
+	if c := cs[slices.IndexFunc(cs, func(c Check) bool { return strings.HasPrefix(c.Name, "Порты") })]; !strings.Contains(c.Detail, "проверки с телефона") {
+		t.Errorf("ports detail %q", c.Detail)
+	}
+
+	// Another program on the port is still a reason to refuse.
+	h2 := newRelayHost(t, map[string]string{"SS_LINES": page})
+	h2.write(t, "/proc/2038/cgroup", "0::/system.slice/apache2.service\n")
+	if cs, err := RelayPreflight(context.Background(), h2, testRelayOpts()); err != nil || len(failedChecks(cs)) != 1 {
+		t.Fatalf("a foreign listener passed: %+v %v", cs, err)
+	}
+
+	// A live entry (reinstall, «Проверить»): 80 and 443 are its own nginx stream — nginx.service
+	// running the nginx.conf the recipe wrote — and that is not busy; a foreign nginx is.
+	nginx := "tcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=700,fd=6),(\"nginx\",pid=701,fd=6))\n" +
+		"tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=700,fd=7),(\"nginx\",pid=701,fd=7))"
+	own, err := config.RelayNginxConf(tHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		conf  string
+		fails int
+	}{{own, 0}, {"user www-data;\nevents {}\n", 1}} {
+		h3 := newRelayHost(t, map[string]string{"SS_LINES": nginx})
+		for _, pid := range []string{"700", "701"} {
+			h3.write(t, "/proc/"+pid+"/cgroup", "0::/system.slice/nginx.service\n")
+		}
+		h3.write(t, "/etc/nginx/nginx.conf", c.conf)
+		if cs, err := RelayPreflight(context.Background(), h3, testRelayOpts()); err != nil || len(failedChecks(cs)) != c.fails {
+			t.Fatalf("nginx (want %d failures): %+v %v", c.fails, cs, err)
+		}
+	}
+
+	// The install's preflight step stops the running page first.
+	h.write(t, "/state/active-"+config.MobileCheckUnit, "")
+	s := NewState(KindProvision, Node{ID: 9, Role: "relay", IP: tRelay}, nopRemote{}, (&fakeHooks{}).Hooks())
+	s.out = &tailBuffer{max: 1 << 16}
+	step := relayStepOf(t, relayRecipe(testRelayOpts(), h.layout()), "relay_preflight")
+	if err := step.Verify(context.Background(), h, s); err != nil {
+		t.Fatalf("preflight step: %v", err)
+	}
+	if !strings.Contains(h.calls(), "systemctl stop "+config.MobileCheckUnit) || fileExists(h.path("/state/active-"+config.MobileCheckUnit)) {
+		t.Errorf("the page was not stopped:\n%s", h.calls())
+	}
+	if !strings.Contains(s.out.String(), "страница проверки с телефона остановлена") {
+		t.Errorf("no line about the stopped page: %q", s.out.String())
+	}
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

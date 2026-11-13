@@ -175,7 +175,7 @@ func (o RelayOptions) relaySSHFrom() []string {
 }
 
 // relayLayout is where a relay keeps its files.
-type relayLayout struct{ osRelease, nft, unit, wants, sysctl, modules, jail, state, nginx string }
+type relayLayout struct{ osRelease, nft, unit, wants, sysctl, modules, jail, state, nginx, proc string }
 
 // relayPaths is the layout of a real relay (tests root it in a temp dir).
 var relayPaths = relayLayout{
@@ -188,6 +188,7 @@ var relayPaths = relayLayout{
 	jail:      "/etc/fail2ban/jail.d/heyearth-sshd.local",
 	state:     "/opt/heyearth/state/relay-pending",
 	nginx:     config.RelayNginxConfPath,
+	proc:      "/proc",
 }
 
 // RelayRecipe is the setup of a relay (relaySetup adds the activate step).
@@ -220,7 +221,8 @@ func (l relayLayout) script(op string, o RelayOptions, body string) string {
 	b.WriteString("# hp:relay-" + op + "\nset -euo pipefail\n")
 	for _, kv := range [][2]string{{"HUB", o.HubIP}, {"SSH_PORT", strconv.Itoa(o.SSHPort)}, {"TABLE", config.RelayNftTable},
 		{"UNIT_NAME", config.RelayUnitName}, {"OS_RELEASE", l.osRelease}, {"NFT", l.nft}, {"UNIT", l.unit}, {"WANTS", l.wants},
-		{"SYSCTL", l.sysctl}, {"MODULES", l.modules}, {"JAIL", l.jail}, {"STATE", l.state}, {"NGINX", l.nginx}} {
+		{"SYSCTL", l.sysctl}, {"MODULES", l.modules}, {"JAIL", l.jail}, {"STATE", l.state}, {"NGINX", l.nginx}, {"PROC", l.proc},
+		{"CHECK_UNIT", config.MobileCheckUnit}} {
 		b.WriteString(kv[0] + "=" + shellquote.Quote(kv[1]) + "\n")
 	}
 	b.WriteString(body)
@@ -334,6 +336,10 @@ var relayCheckNames = []struct{ key, name string }{
 	{"docker", "Docker"}, {"ports", "Порты TCP 80/443/2443 и UDP 50443"}, {"forward", "Пересылка (FORWARD)"}, {"hub", "Связь с Hub"},
 }
 
+// relayStopCheckPageSh stops the phone check's page if it runs.
+const relayStopCheckPageSh = `if systemctl is-active --quiet "$CHECK_UNIT"; then systemctl stop "$CHECK_UNIT"; echo STOPPED; fi
+`
+
 // relayPreflightSh changes nothing: one "PF <check> ok|fail <detail>" line per relayCheckNames.
 func relayPreflightSh() string {
 	tcp := make([]string, len(config.RelayTCPPorts))
@@ -353,10 +359,36 @@ if command -v systemctl >/dev/null 2>&1; then pf systemd ok; else pf systemd fai
 if systemctl is-active --quiet docker 2>/dev/null; then
   pf docker fail "работает Docker: он сам управляет пересылкой и фаерволом — ретранслятор ставится на чистый сервер"
 else pf docker ok; fi
-socks=$(ss -Hlntu 2>/dev/null) || socks=""
-busy=$(awk '{n=split($5,a,":"); p=a[n]; if (($1=="tcp" && (` + strings.Join(cond, " || ") + `)) || ($1=="udp" && p==` +
-		strconv.Itoa(config.RelayBambooPort) + `)) print $1"/"p}' <<<"$socks" | sort -u | tr '\n' ' ')
-if [ -z "$busy" ]; then pf ports ok; else pf ports fail "заняты порты: ${busy% } — их пересылает ретранслятор"; fi
+# Not busy: a port held only by the phone check's test page (its processes in the CHECK_UNIT
+# cgroup — the install stops the page first, relayLayout.preflight) or by this relay's own nginx
+# stream (nginx.service with the nginx.conf the recipe wrote: a reinstall or «Проверить» of a live
+# entry). Anything else on a port refuses.
+socks=$(ss -Hlntup 2>/dev/null) || socks=""
+own_nginx=0
+if head -n 1 "$NGINX" 2>/dev/null | grep -qF 'config.RelayNginxConf'; then own_nginx=1; fi
+busy=""
+page=""
+while read -r proto port pids; do
+  [ -n "$proto" ] || continue
+  kind=""
+  for pid in $pids; do
+    cg=$(cat "$PROC/$pid/cgroup" 2>/dev/null || true)
+    case "$cg" in
+      *"/$CHECK_UNIT.service"*) k=page ;;
+      *"/nginx.service"*) if [ "$own_nginx" = 1 ]; then k=relay; else k=busy; fi ;;
+      *) k=busy ;;
+    esac
+    case "$kind:$k" in *busy*) kind=busy ;; :*|relay:page) kind=$k ;; esac
+  done
+  case "${kind:-busy}" in
+    busy) busy="$busy $proto/$port" ;;
+    page) page="$page $proto/$port" ;;
+  esac
+done < <(awk '{n=split($5,a,":"); p=a[n]; if (($1=="tcp" && (` + strings.Join(cond, " || ") + `)) || ($1=="udp" && p==` +
+		strconv.Itoa(config.RelayBambooPort) + `)) { s=$0; ids=""; while (match(s, /pid=[0-9]+/)) { ids=ids" "substr(s, RSTART+4, RLENGTH-4); s=substr(s, RSTART+RLENGTH) } print $1, p, ids }}' <<<"$socks" | sort -u)
+if [ -n "$busy" ]; then pf ports fail "заняты порты: ${busy# } — их пересылает ретранслятор"
+elif [ -n "$page" ]; then pf ports ok "${page# } — страница проверки с телефона, установка её остановит"
+else pf ports ok; fi
 fwd_ipt=""
 fwd_nft=""
 if command -v iptables >/dev/null 2>&1; then fwd_ipt=$(iptables -S FORWARD 2>/dev/null) || fwd_ipt=""; fi
@@ -409,6 +441,15 @@ func (l relayLayout) checks(ctx context.Context, r Remote, o RelayOptions) ([]Ch
 
 func (l relayLayout) preflight(o RelayOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
+		// The phone check's test page (30 minutes on TCP 80/8080/8880) would hold a port nginx
+		// takes in the packages step: the install stops it — its result is already saved.
+		out, err := r.Run(ctx, l.script("stop-check-page", o, relayStopCheckPageSh))
+		if err != nil {
+			return err
+		}
+		if strings.Contains(out, "STOPPED") {
+			s.Printf("страница проверки с телефона остановлена (результат проверки сохранён)")
+		}
 		cs, err := l.checks(ctx, r, o)
 		if err != nil {
 			return err
@@ -513,7 +554,7 @@ live=$(sed 's/^[[:space:]]*//' <<<"$live")
 has() { grep -qxF -- "$1" <<<"$live"; }
 n=$(grep -c 'dnat to' <<<"$live" || true)
 if [ "$n" != 2 ]; then echo "RELAY_FAIL в таблице $TABLE правил DNAT: $n, нужно 2"; fi
-has ` + q("fib daddr type local tcp dport { "+portList(", ")+" } dnat to "+hub) + ` || echo "RELAY_FAIL нет пересылки TCP ` + portList("/") + ` на Hub $HUB"
+has ` + q("fib daddr type local tcp dport "+config.RelayDNATTCPMatch()+" dnat to "+hub) + ` || echo "RELAY_FAIL нет пересылки TCP ` + portList("/") + ` на Hub $HUB"
 has ` + q(fmt.Sprintf("fib daddr type local udp dport %d-%d dnat to %s:%d", config.RelayHopMin, config.RelayHopMax, hub, config.RelayBambooPort)) +
 		` || echo "RELAY_FAIL нет пересылки UDP ` + fmt.Sprintf("%d-%d на Hub $HUB:%d", config.RelayHopMin, config.RelayHopMax, config.RelayBambooPort) + `"
 has ` + q("ip daddr "+hub+" ct status dnat masquerade") + ` || echo "RELAY_FAIL нет masquerade на Hub $HUB"

@@ -175,3 +175,8 @@ func HubRelayPPConf(siteNames []string) string {
 `, RelayHubPPPort, HubRelayTrustDir)
 	return b.String()
 }
+
+// MobileCheckUnit is the transient unit of «Проверить с телефона» (internal/admin/mobile_check.go):
+// a test page on the first free of TCP 80/8080/8880 for 30 minutes. The relay recipe stops it
+// before it takes those ports, and its preflight does not count them as busy.
+const MobileCheckUnit = "hiearth-mobile-check"

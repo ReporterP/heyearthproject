@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
 	qrcode "github.com/skip2/go-qrcode"
@@ -32,7 +33,7 @@ import (
 
 const (
 	mobileCheckDir      = "/opt/heyearth/mobile-check"
-	mobileCheckUnit     = "hiearth-mobile-check"
+	mobileCheckUnit     = config.MobileCheckUnit
 	mobileCheckLog      = "/var/log/" + mobileCheckUnit + "/check.log" // LogsDirectory of the unit
 	mobileCheckBytes    = 2 << 20                                      // 2 MiB: far past the 5–16 KB where a frozen connection stops
 	mobileCheckDuration = 30 * time.Minute

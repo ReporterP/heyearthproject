@@ -36,7 +36,8 @@ func TestRelayNftRuleset(t *testing.T) {
 	for _, must := range []string{
 		"type nat hook prerouting priority dstnat; policy accept;\n",
 		// TCP 2443 (XHTTP) to the same Hub port; 443 and 80 go through the relay's nginx stream.
-		"    fib daddr type local tcp dport { 2443 } dnat to " + labHub + "\n",
+		// One port: no braces, the way `nft list` prints it (the recipe compares the live rule).
+		"    fib daddr type local tcp dport 2443 dnat to " + labHub + "\n",
 		// UDP: the whole hop range to Hub:50443 (not the same port — the Hub's hop DNAT would clash).
 		"    fib daddr type local udp dport 30000-65000 dnat to " + labHub + ":50443\n",
 		// Nothing else is forwarded: only flows our DNAT sent to the Hub (and their replies/ICMP).

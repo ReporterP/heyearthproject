@@ -4,7 +4,7 @@ delete table ip heyearth_relay
 table ip heyearth_relay {
   chain prerouting {
     type nat hook prerouting priority dstnat; policy accept;
-    fib daddr type local tcp dport { 2443 } dnat to 198.51.100.2
+    fib daddr type local tcp dport 2443 dnat to 198.51.100.2
     fib daddr type local udp dport 30000-65000 dnat to 198.51.100.2:50443
   }
   chain forward {
