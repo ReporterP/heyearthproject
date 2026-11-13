@@ -360,12 +360,13 @@ if systemctl is-active --quiet docker 2>/dev/null; then
   pf docker fail "работает Docker: он сам управляет пересылкой и фаерволом — ретранслятор ставится на чистый сервер"
 else pf docker ok; fi
 # Not busy: a port held only by the phone check's test page (its processes in the CHECK_UNIT
-# cgroup — the install stops the page first, relayLayout.preflight) or by this relay's own nginx
-# stream (nginx.service with the nginx.conf the recipe wrote: a reinstall or «Проверить» of a live
-# entry). Anything else on a port refuses.
+# cgroup — the install stops the page first, relayLayout.preflight) or by this relay's own nginx:
+# nginx.service with the nginx.conf the recipe wrote (a reinstall or «Проверить» of a live entry),
+# or the stock nginx the recipe's packages step installed (relay-nginx-ours next to $STATE: an earlier install
+# stopped before the nginx step). Anything else on a port refuses.
 socks=$(ss -Hlntup 2>/dev/null) || socks=""
 own_nginx=0
-if head -n 1 "$NGINX" 2>/dev/null | grep -qF 'config.RelayNginxConf'; then own_nginx=1; fi
+if head -n 1 "$NGINX" 2>/dev/null | grep -qF 'config.RelayNginxConf' || [ -e "${STATE%/*}/relay-nginx-ours" ]; then own_nginx=1; fi
 busy=""
 page=""
 while read -r proto port pids; do
@@ -481,6 +482,14 @@ const relayPackagesSh = relayHavePkg + `if [ -n "$missing" ]; then
   echo "ставлю пакеты:$missing"
   apt-get -o DPkg::Lock::Timeout=300 update -qq
   apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends $missing
+  case " $missing " in *" nginx "*)
+    # Ubuntu's nginx starts its default site on TCP 80 at install: the entry's nginx step
+    # configures and starts it; until then it stays off, marked as the recipe's own.
+    mkdir -p "${STATE%/*}"
+    touch "${STATE%/*}/relay-nginx-ours"
+    systemctl disable --now nginx >/dev/null 2>&1 || true
+    echo "nginx поставлен и остановлен до шага nginx входа" ;;
+  esac
 else
   echo "пакеты на месте"
 fi
@@ -930,6 +939,7 @@ if [ -e "$JAIL" ]; then jail=1; fi
 for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL"; do rm -f "$f" "$f.bak" "$f.rollback.tmp"; done
 rm -f "$WANTS/$UNIT_NAME"
 rm -rf "$STATE"
+rm -f "${STATE%/*}/relay-nginx-ours"
 systemctl daemon-reload
 if [ "$jail" = 1 ] && systemctl is-active --quiet fail2ban; then systemctl restart fail2ban; fi
 echo "пересылка снята: таблицы $TABLE нет, ip_forward выключен, файлы ретранслятора удалены"

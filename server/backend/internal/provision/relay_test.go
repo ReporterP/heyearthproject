@@ -985,18 +985,34 @@ func TestRelayPreflightPhoneCheckPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stock := "user www-data;\nevents {}\n"
 	for _, c := range []struct {
-		conf  string
-		fails int
-	}{{own, 0}, {"user www-data;\nevents {}\n", 1}} {
+		conf   string
+		marked bool // $STATE/nginx-ours: the stock nginx the recipe's packages step installed
+		fails  int
+	}{{own, false, 0}, {stock, false, 1}, {stock, true, 0}} {
 		h3 := newRelayHost(t, map[string]string{"SS_LINES": nginx})
 		for _, pid := range []string{"700", "701"} {
 			h3.write(t, "/proc/"+pid+"/cgroup", "0::/system.slice/nginx.service\n")
 		}
 		h3.write(t, "/etc/nginx/nginx.conf", c.conf)
-		if cs, err := RelayPreflight(context.Background(), h3, testRelayOpts()); err != nil || len(failedChecks(cs)) != c.fails {
-			t.Fatalf("nginx (want %d failures): %+v %v", c.fails, cs, err)
+		if c.marked {
+			h3.write(t, "/opt/heyearth/state/relay-nginx-ours", "")
 		}
+		if cs, err := RelayPreflight(context.Background(), h3, testRelayOpts()); err != nil || len(failedChecks(cs)) != c.fails {
+			t.Fatalf("nginx %q marked=%v (want %d failures): %+v %v", c.conf[:10], c.marked, c.fails, cs, err)
+		}
+	}
+
+	// The packages step: Ubuntu's nginx starts on TCP 80 at install — the step stops it at once
+	// and marks it as the recipe's own (13.11: a failed install left it running and the next
+	// preflight refused the server).
+	h4 := newRelayHost(t, nil)
+	if _, got, err := runRelaySteps(t, h4, testRelayOpts(), "relay_packages"); err != nil || got["relay_packages"] != StepDone {
+		t.Fatalf("packages: %v %v", got, err)
+	}
+	if !strings.Contains(h4.calls(), "systemctl disable --now nginx") || !fileExists(h4.path("/opt/heyearth/state/relay-nginx-ours")) {
+		t.Errorf("a fresh nginx was left running or unmarked:\n%s", h4.calls())
 	}
 
 	// The install's preflight step stops the running page first.
