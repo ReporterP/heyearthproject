@@ -104,9 +104,10 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		) us ON TRUE
 		LEFT JOIN plans p ON p.id = us.plan_id
 		LEFT JOIN LATERAL (
-			SELECT MAX(lt.recorded_at) AS last_seen
-			FROM traffic_stats lt
-			WHERE lt.user_id = u.user_id
+			SELECT COALESCE(
+			         (SELECT MAX(lt.recorded_at) FROM traffic_stats lt WHERE lt.user_id = u.user_id),
+			         (SELECT MAX(ld.day)::timestamptz FROM traffic_stats_daily ld WHERE ld.user_id = u.user_id)
+			       ) AS last_seen
 		) ls ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM(ts.upload_bytes + ts.download_bytes), 0) AS total_bytes

@@ -260,7 +260,7 @@ func TestReplyFromTarget(t *testing.T) {
 		{"203.0.113.225:41234", "203.0.113.225", 41234, true},
 		{"[::ffff:203.0.113.225]:41234", "203.0.113.225", 41234, true}, // IPv4-mapped is the same address
 		{"203.0.113.225:50443", "203.0.113.225", 41234, false},         // answered from the listener, not the hop port
-		{"198.51.100.236:41234", "203.0.113.225", 41234, false},          // answered from another IP of the Hub
+		{"198.51.100.236:41234", "203.0.113.225", 41234, false},        // answered from another IP of the Hub
 		{"hiearth.ru:41234", "203.0.113.225", 41234, false},
 		{"1.2.3.4:41234", "hiearth.ru", 41234, true}, // a name: only the port is compared
 		{"1.2.3.4:41235", "hiearth.ru", 41234, false},

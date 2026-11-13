@@ -807,6 +807,9 @@ func main() {
 	// and DB lifecycle state. Optional auto-cleanup / auto-repair via app_settings.
 	StartGhostReconciler()
 
+	// Data retention (D5): per-day traffic sums, raw traffic 45 days, expired sessions.
+	StartRetentionLoop()
+
 	// Monitoring → Telegram alerts: external loop probe of the entry via an exit,
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
 	StartMonitor()
