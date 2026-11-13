@@ -21,11 +21,14 @@ import (
 //	  through each entry whose UDP answers; BBR / Brutal 20/80 like the URI lines.
 //
 // The choice is leastLoad over a burst observatory: every way is probed about
-// once a minute, the last 3 probes count, and a way with a failed one among them
-// is left out. A mobile network that cuts the Hub lets a small probe through now
-// and then (the TSPU drops connections only after the first packets or 5–16 KB):
-// a single lucky probe must not send traffic to the Hub. Among the ways left the
-// most stable wins; the entries weigh more, so on Wi-Fi the Hub comes first.
+// once a minute, the last 5 probes count, and a way with 2 failed among them is
+// left out (at the start, any failure). A mobile network that cuts the Hub lets a
+// small probe through now and then (the TSPU drops connections only after the
+// first packets or 5–16 KB): a lucky probe must not send traffic to the Hub.
+// Among the ways left the order is fixed — the Hub's Берёза, the Hub's Дуб, then
+// the entries — by costs far above the probes' jitter: leastLoad ranks by the RTT
+// deviation, and ranking the Hub against an entry by 3–5 noisy samples flipped
+// the choice every few minutes (Happ's ping jumping 0.15 ↔ 0.5 s).
 // Until the first probes answer, traffic takes a fixed way (fallbackTag).
 
 // Subscription formats of handleSubscriptionLink.
@@ -216,15 +219,23 @@ const autoProbeURL = "https://www.gstatic.com/generate_204"
 // Balancer tuning (see the top of the file).
 const (
 	probeInterval  = "1m" // the average time between two probes of one way
-	probeSampling  = 3    // the probes that count
-	probeTolerance = 0.3  // a way with more failed probes than this share is left out: 1 of 3
+	probeSampling  = 5    // the probes that count
+	probeTolerance = 0.2  // a way with more failed probes than this share is left out: 2 of 5
 	probeMaxRTT    = "3s"
-	entryCost      = 4 // an entry's deviation weighs ×2 (√4): the Hub first while it is stable
+	// Costs multiply a way's deviation by their square root: ×100 for an entry,
+	// ×10 for a Дуб — far above the jitter, so they only order the ways left in.
+	entryCost = 10000
+	dubCost   = 100
 )
 
 // balancedConfig is one line: ways (tags starting with prefix) behind a leastLoad
-// balancer over a burst observatory, fallback until the first probes answer.
+// balancer over a burst observatory, fallback until the first probes answer. The
+// first matching cost applies: the entries ("<prefix>r…") first.
 func balancedConfig(label, description, prefix, fallback, hub string, ways []jsonWay, d directRouting) xrayObj {
+	costs := []any{xrayObj{"regexp": true, "match": "^" + prefix + "r", "value": entryCost}}
+	if prefix == "p-" {
+		costs = append(costs, xrayObj{"regexp": true, "match": "-xhttp$", "value": dubCost})
+	}
 	outbounds := make([]any, 0, len(ways)+2)
 	for _, w := range ways {
 		ob := xrayObj{"tag": w.tag}
@@ -244,7 +255,7 @@ func balancedConfig(label, description, prefix, fallback, hub string, ways []jso
 			"balancers": []any{xrayObj{"tag": "auto", "selector": []string{prefix}, "fallbackTag": fallback,
 				"strategy": xrayObj{"type": "leastLoad", "settings": xrayObj{
 					"expected": 1, "maxRTT": probeMaxRTT, "tolerance": probeTolerance,
-					"costs": []any{xrayObj{"regexp": true, "match": "^" + prefix + "r", "value": entryCost}},
+					"costs": costs,
 				}}}},
 			"rules": jsonRules(hub, d, xrayObj{"balancerTag": "auto"}),
 		},

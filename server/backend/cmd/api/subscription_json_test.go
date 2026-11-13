@@ -76,10 +76,16 @@ func TestJSONSubscriptionWays(t *testing.T) {
 	b := auto.Routing.Balancers[0]
 	st := b["strategy"].(map[string]any)
 	set := st["settings"].(map[string]any)
-	cost := set["costs"].([]any)[0].(map[string]any)
+	costs := set["costs"].([]any)
+	entry, dub := costs[0].(map[string]any), costs[1].(map[string]any)
 	if b["tag"] != "auto" || b["fallbackTag"] != "p-r5-tcp" || st["type"] != "leastLoad" || set["tolerance"] != probeTolerance ||
-		set["expected"] != float64(1) || cost["match"] != "^p-r" || cost["regexp"] != true {
+		set["expected"] != float64(1) || entry["match"] != "^p-r" || entry["value"] != float64(entryCost) ||
+		dub["match"] != "-xhttp$" || dub["value"] != float64(dubCost) || entry["regexp"] != true {
 		t.Fatalf("balancer %v", b)
+	}
+	// The order is fixed far above the jitter: an entry ×100, a Дуб ×10 (√cost).
+	if entryCost < 100*100 || dubCost < 10*10 || entryCost <= dubCost {
+		t.Fatalf("costs %d / %d no longer dominate the probes' jitter", entryCost, dubCost)
 	}
 	pc := auto.Burst["pingConfig"].(map[string]any)
 	if auto.Burst["subjectSelector"].([]any)[0] != "p-" || pc["destination"] != autoProbeURL || pc["sampling"] != float64(probeSampling) {
@@ -111,7 +117,9 @@ func TestJSONSubscriptionWays(t *testing.T) {
 		if got := outboundTags(c); !slices.Equal(got, []string{"b-hub", "b-r5", "direct", "block"}) {
 			t.Fatalf("Бамбук %d outbounds %v", i+1, got)
 		}
-		if b := c.Routing.Balancers[0]; b["fallbackTag"] != "b-hub" || b["selector"].([]any)[0] != "b-" {
+		b := c.Routing.Balancers[0]
+		costs := b["strategy"].(map[string]any)["settings"].(map[string]any)["costs"].([]any)
+		if b["fallbackTag"] != "b-hub" || b["selector"].([]any)[0] != "b-" || len(costs) != 1 || costs[0].(map[string]any)["match"] != "^b-r" {
 			t.Fatalf("Бамбук %d balancer %v", i+1, b)
 		}
 		hy, _ := json.Marshal(c.Outbounds[1])
