@@ -1,7 +1,7 @@
 package main
 
 // counterPair is a cumulative byte pair from a source whose counters only grow
-// until that source restarts (Hysteria trafficStats, `awg show transfer`).
+// until that source restarts (Hysteria trafficStats).
 // Up = bytes the user sent, Down = bytes the user received.
 type counterPair struct{ Up, Down int64 }
 

@@ -200,10 +200,10 @@ func goldenScript() *scriptDB {
 			{name: "direct-flag", match: "SELECT direct_routing_enabled FROM plans WHERE id = $1", cols: []string{"enabled"}, rows: [][]driver.Value{{true}}},
 			{name: "plan", match: "FROM plans WHERE id = $1", cols: []string{"id", "slug", "name", "description", "price_rub", "duration_days", "traffic_limit_bytes",
 				"allowed_protocols", "features", "is_active", "direct_routing_enabled", "sort_order", "auto_renew_default", "max_activations_per_user",
-				"express_enabled", "express_up_mbps", "express_down_mbps", "amnezia_wg_enabled", "created_at", "updated_at"},
+				"express_enabled", "express_up_mbps", "express_down_mbps", "created_at", "updated_at"},
 				rows: [][]driver.Value{{int64(3), "all-inclusive", "Всё включено", "", int64(300), int64(30), nil,
 					"{vless,hysteria2}", "{}", true, true, int64(4), true, nil,
-					true, int64(30), int64(120), false, "2026-01-01", "2026-01-01"}}},
+					true, int64(30), int64(120), "2026-01-01", "2026-01-01"}}},
 			// Only the old IsProtocolAllowed → GetPlanByID loads the plan's servers.
 			{name: "plan-servers", match: "SELECT server_id FROM plan_servers WHERE plan_id = $1", cols: []string{"server_id"}, rows: [][]driver.Value{{int64(2)}}},
 			{name: "hy2-gate", match: "SELECT p.allowed_protocols, p.express_enabled", cols: []string{"allowed_protocols", "express_enabled"},

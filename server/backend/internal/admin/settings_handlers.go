@@ -21,7 +21,7 @@ type settingPayload struct {
 var secretSettingKeys = []string{
 	"yookassa_secret_key", "smtp_password",
 	"hysteria2_obfs_password", "hysteria2_stats_secret", "hub_tunnel_password",
-	"awg_server_private_key", "alert_telegram_bot_token", "vless_uuid",
+	"alert_telegram_bot_token", "vless_uuid",
 }
 
 // loadAllSettings is biz.GetAllSettings; tests swap it.

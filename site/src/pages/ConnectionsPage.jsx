@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getConnections, getDownloads, getSubscribeLink, getAwgConfig } from '../api/user.js'
+import { getProfile, getConnections, getDownloads, getSubscribeLink } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
@@ -9,9 +9,6 @@ import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 /* ── Icons ── */
-const Tree = ({ className = 'w-4 h-4' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M9 22V4M15 22V6M6 9c0-2 2-3 3-3M18 11c0-2-2-4-3-4" /></svg>
-)
 const IconLink = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>)
 const IconApple = (p) => (<svg {...p} viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 1.5c.1 1-.3 2-.9 2.7-.7.8-1.7 1.4-2.7 1.3-.1-1 .4-2 1-2.7.6-.7 1.7-1.2 2.6-1.3zM19 17.3c-.5 1.1-.7 1.6-1.4 2.6-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.4.9-3.7.9c-1.6 0-2.8-1.5-3.7-2.9C.7 16.4.4 12 2 9.3c1-1.6 2.6-2.6 4.1-2.6 1.5 0 2.5 1 3.7 1 1.2 0 1.9-1 3.7-1 1.3 0 2.7.7 3.7 2-3.2 1.8-2.7 6.4.8 8.6z" /></svg>)
 const IconAndroid = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="8" width="12" height="11" rx="2" /><path d="M9 8V6a3 3 0 016 0v2M8 5L6.5 3M16 5l1.5-2M9.5 12h.01M14.5 12h.01" /></svg>)
@@ -87,7 +84,7 @@ export default function ConnectionsPage() {
   const [error, setError] = useState('')
   const [configUpdated, setConfigUpdated] = useState(false)
   const [copiedField, setCopiedField] = useState('')
-  const [method, setMethod] = useState('sub')      // sub | proxy | palma
+  const [method, setMethod] = useState('sub')      // sub | proxy
   const [device, setDevice] = useState(detectDevice())
 
   useEffect(() => {
@@ -116,12 +113,7 @@ export default function ConnectionsPage() {
 
   const canConnect = connections?.can_connect
   const vlessReality = connections?.vless_reality || ''
-  const amneziaAvailable = connections?.amnezia_available
   const subUrl = subscribeLink?.subscribe_url || ''
-
-  const [awg, setAwg] = useState(null)
-  const [awgLoading, setAwgLoading] = useState(false)
-  const [awgError, setAwgError] = useState('')
 
   useReveal([loading, canConnect])
 
@@ -130,36 +122,8 @@ export default function ConnectionsPage() {
     if (ok) { setCopiedField(field); setTimeout(() => setCopiedField(''), 2000) }
   }
 
-  async function loadAwg() {
-    if (awg || awgLoading) return
-    setAwgLoading(true)
-    setAwgError('')
-    try {
-      setAwg(await getAwgConfig(token))
-    } catch (e) {
-      setAwgError(e.message || 'Не удалось загрузить конфигурацию')
-    } finally {
-      setAwgLoading(false)
-    }
-  }
-
-  // Lazy-load Пальма config the moment its tab is opened (was: on <details> toggle)
   function selectMethod(id) {
     setMethod(id)
-    if (id === 'palma') loadAwg()
-  }
-
-  function downloadAwgConf() {
-    if (!awg?.config_text) return
-    const blob = new Blob([awg.config_text], { type: 'text/plain' })
-    const href = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = href
-    a.download = 'palma.conf'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(href)
   }
 
   if (loading) return <CabinetSkeleton />
@@ -196,7 +160,6 @@ export default function ConnectionsPage() {
   const methods = [
     { id: 'sub', label: 'Подписка', badge: 'Рекомендуем', available: !!subUrl },
     { id: 'proxy', label: 'Прокси-ссылка', available: !!vlessReality },
-    { id: 'palma', label: 'Пальма', available: !!amneziaAvailable },
   ].filter(m => m.available)
 
   const active = methods.find(m => m.id === method) ? method : (methods[0]?.id || 'sub')
@@ -275,7 +238,6 @@ export default function ConnectionsPage() {
                     active === m.id ? 'bg-brand text-[#04231a]' : 'text-text-secondary hover:text-text-primary'
                   }`}
                 >
-                  {m.id === 'palma' && <Tree className="w-3.5 h-3.5" />}
                   {m.label}
                   {m.badge && active !== m.id && <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/15 text-brand">{m.badge}</span>}
                 </button>
@@ -317,47 +279,6 @@ export default function ConnectionsPage() {
             </div>
           )}
 
-          {/* ── Пальма ── */}
-          {active === 'palma' && (
-            <div className="animate-fade-in">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-brand/15 text-brand text-xs font-bold"><Tree className="w-3.5 h-3.5" /> Пальма</span>
-                <span className="text-xs text-text-secondary">усиленный приватный канал</span>
-              </div>
-
-              {awgLoading && (
-                <div className="flex items-center gap-2 text-xs text-text-secondary py-4">
-                  <div className="w-4 h-4 rounded-full border-2 border-brand/30 border-t-brand animate-spin" />
-                  Готовим конфигурацию…
-                </div>
-              )}
-              {awgError && (
-                <div className="py-3">
-                  <p className="text-sm text-danger mb-2">{awgError}</p>
-                  <button onClick={() => { setAwg(null); setAwgError(''); loadAwg() }} className="btn-ghost !py-2 !px-4 !text-sm">Повторить</button>
-                </div>
-              )}
-              {awg?.config_text && (
-                <div className="flex flex-col sm:flex-row gap-5 items-start">
-                  <QRCode data={awg.config_text} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
-                  <div className="flex-1 min-w-0 w-full">
-                    <p className="text-xs text-text-secondary mb-3">Для приложения AmneziaWG. Отсканируйте QR-код или скачайте файл конфигурации.</p>
-                    {awg.endpoint && <p className="text-xs text-text-secondary mb-1">Сервер: <code className="font-mono text-text-primary">{awg.endpoint}</code></p>}
-                    {awg.ip && <p className="text-xs text-text-secondary mb-3">Ваш IP: <code className="font-mono text-text-primary">{awg.ip}</code></p>}
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      <button onClick={downloadAwgConf} className="btn-primary !py-2.5 !text-sm"><IconDownload className="w-4 h-4" /> Скачать .conf</button>
-                      {awg.deeplink && <a href={awg.deeplink} className="btn-ghost !py-2.5 !text-sm">Открыть в AmneziaWG</a>}
-                      <CopyButton text={awg.config_text} label="Копировать конфиг" />
-                    </div>
-                    <a href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand hover:text-brand-light transition">
-                      Скачать приложение AmneziaWG
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-                    </a>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* ═══ STEP 3 — device-specific instructions ═══ */}

@@ -65,7 +65,6 @@ func main() {
 	streamPPFlag := flag.String("stream-proxy-protocol", "", "on|off: PROXY protocol на 443 stream (реальные IP клиентов для nginx/API); меняет только upstream'ы nginx stream (8443+10443 ↔ 8446+10444, xray слушает оба входа всегда), выполняется на Hub отдельным юнитом")
 	forceFlag := flag.Bool("force", false, "с --setup-xray: заменить существующий /opt/heyearth/xray/config.json bootstrap-конфигом (на живом Hub отрежет пользователей до синхронизации API)")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
-	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перевыпустить на Hub клиентский mTLS-сертификат API от CA Hub (CA и сертификаты нод не меняются; сертификаты нод обновляет их настройка)")
 	ensureHubProv := flag.Bool("ensure-hub-provisioning", false, "подготовить живой Hub к настройке нод (админка и --setup-exit-node): SSH_ENCRYPTION_KEY в api.env, ключ SSH Hub, node-agent, install-mtproxy.sh, собственный CA node-agent на Hub (прежний — как legacy до сведения exit); ничего не перезапускает")
@@ -108,8 +107,6 @@ func main() {
 		mode = "setup-xray"
 	case *setupHy2Flag:
 		mode = "setup-hysteria2-hub"
-	case *setupAwgFlag:
-		mode = "setup-awg"
 	case *setupOpsFlag:
 		mode = "setup-ops"
 	case *streamPPFlag != "":
@@ -123,7 +120,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -210,7 +207,6 @@ func main() {
 
 	switch mode {
 	case "main":
-		installGoOnServer(client)
 		optimizeNetworkStack(client)
 		installPostgresOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
@@ -221,7 +217,6 @@ func main() {
 		doSSL(client, cfg)
 		doNginx(sftpClient, client, cfg) // перезаписать конфиг с учётом SSL
 		seedConnectionSettings(client, cfg)
-		setupAmneziaWGHub(client, cfg)
 		verifyServices(client)
 	case "update-main":
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
@@ -257,9 +252,6 @@ func main() {
 		verifyServices(client)
 	case "setup-hysteria2-hub":
 		setupHysteria2Hub(client, cfg)
-	case "setup-awg":
-		setupAmneziaWGHub(client, cfg)
-		setupAWGExitRoute(client, cfg)
 	}
 }
 
@@ -665,22 +657,6 @@ fi
 sysctl -p 2>/dev/null || true
 echo "[OK] Network stack optimized"
 `
-	_, _ = runSSH(client, script, true)
-}
-
-func installGoOnServer(client *ssh.Client) {
-	script := fmt.Sprintf(`set -e
-if command -v go >/dev/null 2>&1 && go version | grep -q %s; then
-  echo "Go already installed: $(go version)"
-  exit 0
-fi
-cd /tmp
-wget -q %s -O go.tar.gz 2>/dev/null || curl -fsSL %s -o go.tar.gz
-rm -rf %s/go
-tar -C %s -xzf go.tar.gz
-echo 'export PATH=$PATH:%s/go/bin' >/etc/profile.d/go.sh
-chmod 644 /etc/profile.d/go.sh
-`, goVersion, goDownloadURL, goDownloadURL, goInstallPath, goInstallPath, goInstallPath)
 	_, _ = runSSH(client, script, true)
 }
 

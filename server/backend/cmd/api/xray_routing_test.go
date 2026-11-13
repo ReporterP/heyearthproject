@@ -19,8 +19,8 @@ func TestRoutingBuilders(t *testing.T) {
 	if e := newBalancer("plan-9-balancer", nil, "", nil); e["fallbackTag"] != "block" {
 		t.Fatalf("a balancer without exits must fall back to block: %v", e)
 	}
-	r := noExitBlockRule([]string{"vless-reality", "socks-awg"})
-	if r["outboundTag"] != "block" || !reflect.DeepEqual(r["inboundTag"], []string{"vless-reality", "socks-awg"}) {
+	r := noExitBlockRule([]string{"vless-reality", "socks-local"})
+	if r["outboundTag"] != "block" || !reflect.DeepEqual(r["inboundTag"], []string{"vless-reality", "socks-local"}) {
 		t.Fatalf("unexpected no-exit rule: %v", r)
 	}
 	d := dnsDirectRule()
@@ -31,16 +31,16 @@ func TestRoutingBuilders(t *testing.T) {
 	if h["protocol"] != "dns" || h["tag"] != "dns-hijack" {
 		t.Fatalf("unexpected dns hijack outbound: %v", h)
 	}
-	nd := noExitDNSRule([]string{"vless-reality", "socks-awg"})
+	nd := noExitDNSRule([]string{"vless-reality", "socks-local"})
 	if nd["outboundTag"] != "dns-hijack" || nd["port"] != "53" || nd["type"] != "field" ||
-		!reflect.DeepEqual(nd["inboundTag"], []string{"vless-reality", "socks-awg"}) {
+		!reflect.DeepEqual(nd["inboundTag"], []string{"vless-reality", "socks-local"}) {
 		t.Fatalf("unexpected no-exit dns rule: %v", nd)
 	}
 	inbounds := []map[string]interface{}{
 		{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
-		{"tag": "vless-xhttp-cdn"}, {"tag": "api-in"}, {"tag": "probe-vr-2"}, {"tag": "socks-awg"},
+		{"tag": "vless-xhttp-cdn"}, {"tag": "api-in"}, {"tag": "probe-vr-2"}, {"tag": "socks-local"},
 	}
-	want := []string{"vless-reality", "vless-xhttp", "vless-xhttp-cdn", "socks-awg"}
+	want := []string{"vless-reality", "vless-xhttp", "vless-xhttp-cdn", "socks-local"}
 	if got := userInboundTags(inbounds); !reflect.DeepEqual(got, want) {
 		t.Fatalf("userInboundTags = %v, want %v", got, want)
 	}
@@ -58,7 +58,7 @@ func newLeakFixture() leakFixture {
 	return leakFixture{
 		inbounds: []map[string]interface{}{
 			{"tag": "vless-reality"}, {"tag": "vless-xhttp"},
-			{"tag": "api-in"}, {"tag": "socks-awg"},
+			{"tag": "api-in"}, {"tag": "socks-local"},
 		},
 		good:   []map[string]interface{}{newBlockOutbound(), direct, {"protocol": "socks", "tag": "exit-2.hy"}},
 		noExit: []map[string]interface{}{newBlockOutbound(), direct, dnsHijackOutbound()},
@@ -128,11 +128,11 @@ func TestCheckNoDirectLeak(t *testing.T) {
 		t.Fatal("user rule to direct accepted")
 	}
 	inboundToDirect := append(append([]map[string]interface{}{}, exitRules...),
-		map[string]interface{}{"type": "field", "inboundTag": []string{"socks-awg"}, "outboundTag": "direct"})
+		map[string]interface{}{"type": "field", "inboundTag": []string{"socks-local"}, "outboundTag": "direct"})
 	if checkNoDirectLeak(fx.inbounds, fx.good, routingWith(inboundToDirect, bal)) == nil {
-		t.Fatal("socks-awg inbound rule to direct accepted")
+		t.Fatal("socks-local inbound rule to direct accepted")
 	}
-	dnsPlusMore := []map[string]interface{}{{"type": "field", "inboundTag": []string{"dns-out", "socks-awg"}, "outboundTag": "direct"}}
+	dnsPlusMore := []map[string]interface{}{{"type": "field", "inboundTag": []string{"dns-out", "socks-local"}, "outboundTag": "direct"}}
 	if checkNoDirectLeak(fx.inbounds, fx.good, routingWith(dnsPlusMore, bal)) == nil {
 		t.Fatal("dns-out rule widened to another inbound accepted")
 	}
@@ -141,7 +141,7 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	noSocksAWG := []string{"vless-reality", "vless-xhttp"}
 	if checkNoDirectLeak(fx.inbounds, fx.noExit,
 		routingWith([]map[string]interface{}{dnsDirectRule(), noExitBlockRule(noSocksAWG)})) == nil {
-		t.Fatal("no-exit config with socks-awg missing from the block rule accepted")
+		t.Fatal("no-exit config with socks-local missing from the block rule accepted")
 	}
 	if checkNoDirectLeak(fx.inbounds, fx.noExit,
 		routingWith([]map[string]interface{}{dnsDirectRule()})) == nil {
@@ -159,7 +159,7 @@ func TestCheckNoDirectLeak(t *testing.T) {
 	}
 	// the block rule may be split over several rules, as long as together they cover everything
 	split := []map[string]interface{}{
-		dnsDirectRule(), noExitBlockRule(noSocksAWG), noExitBlockRule([]string{"socks-awg"}),
+		dnsDirectRule(), noExitBlockRule(noSocksAWG), noExitBlockRule([]string{"socks-local"}),
 	}
 	if err := checkNoDirectLeak(fx.inbounds, fx.noExit, routingWith(split)); err != nil {
 		t.Fatalf("split block rules rejected: %v", err)

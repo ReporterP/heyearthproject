@@ -14,10 +14,7 @@ import (
 var (
 	XraySyncFn      func()
 	Hysteria2SyncFn func()
-	// AWGSyncFn is the api-layer hook for AmneziaWG config regeneration.
 	// Set by cmd/api/main.go at bootstrap; nil-safe (runSync checks for nil
-	// before calling). Mirrors XraySyncFn / Hysteria2SyncFn pattern.
-	AWGSyncFn func()
 )
 
 var (
@@ -55,9 +52,6 @@ func runSync() {
 	}
 	if Hysteria2SyncFn != nil {
 		Hysteria2SyncFn()
-	}
-	if AWGSyncFn != nil {
-		AWGSyncFn()
 	}
 }
 

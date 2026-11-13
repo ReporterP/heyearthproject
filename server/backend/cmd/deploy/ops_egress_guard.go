@@ -44,7 +44,7 @@ package main
 //	and the same for IPv6 via ip6tables (no 10085 rule: the xray API listens on 127.0.0.1 only).
 //
 // Loopback UDP is RETURNed, never rejected: the datagrams xray sends to 127.0.0.0/8 are replies
-// of its socks-awg inbound to hev-socks5-tunnel's ephemeral port (all UDP of AmneziaWG users, DNS
+// of its socks-local inbound to hev-socks5-tunnel's ephemeral port (all UDP of AmneziaWG users, DNS
 // included) and UDP relayed to a hysteria client's SOCKS UDP-ASSOCIATE port (QUIC, calls, games
 // of VLESS users); hysteria's own DNS goes to the local stub resolver. A rule without connection
 // state cannot tell them from an attack and would break them. The UDP services of this host (the
@@ -284,7 +284,7 @@ const egressGuardDropIn = "# Installed by deploy --setup-ops (cmd/deploy/ops_egr
 // them). Each answers one question:
 //
 //	api_call              the xray API answers for root (the allowed side of the 10085 guard)
-//	xray_socks_check      traffic still flows through xray: the real socks-awg inbound
+//	xray_socks_check      traffic still flows through xray: the real socks-local inbound
 //	                      (127.0.0.1:10808) fetches https://ya.ru
 //	auth_probe [USER]     the HTTP code of a POST to the auth-only listener 127.0.0.1:8001, as
 //	                      root or as USER ("" or 000 = nothing answers; any other code = it does)
@@ -492,7 +492,7 @@ if command -v ip6tables >/dev/null 2>&1; then ip6tables -w 5 -S ` + egressChain 
 // "allowed" paths must keep working, otherwise the guard is rolled back — a guard must never take
 // the API away from its owner, nor the traffic from the users:
 //   - the xray API for the user heyearth-api runs as;
-//   - xray's traffic (socks-awg inbound -> https://ya.ru), if it flowed before;
+//   - xray's traffic (socks-local inbound -> https://ya.ru), if it flowed before;
 //   - the hysteria user's auth callback of the current phase, if it worked before;
 //   - xray's access to an exit tunnel port (a listener in the allowed SOCKS range) from inside
 //     its cgroup;
@@ -530,13 +530,13 @@ fi
 if [ "$xray_before" = 1 ]; then
   if ! xray_socks_check; then
     rollback
-    echo "[ops] FAILED: xray no longer carries traffic (socks-awg -> https://ya.ru) after the egress guard — guard rolled back"; exit 1
+    echo "[ops] FAILED: xray no longer carries traffic (socks-local -> https://ya.ru) after the egress guard — guard rolled back"; exit 1
   fi
-  echo "[ops] egress guard: xray still carries traffic (https://ya.ru through the socks-awg inbound)"
+  echo "[ops] egress guard: xray still carries traffic (https://ya.ru through the socks-local inbound)"
 elif [ "$xray_live" = 1 ]; then
-  echo "[ops] WARN: the socks-awg -> https://ya.ru check did not pass before the guard either — xray traffic not verified"
+  echo "[ops] WARN: the socks-local -> https://ya.ru check did not pass before the guard either — xray traffic not verified"
 else
-  echo "[ops] WARN: curl or the socks-awg inbound (127.0.0.1:10808) is missing — xray traffic not verified"
+  echo "[ops] WARN: curl or the socks-local inbound (127.0.0.1:10808) is missing — xray traffic not verified"
 fi
 wild=$(wild_port || true)
 hubip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4; exit }' || true)

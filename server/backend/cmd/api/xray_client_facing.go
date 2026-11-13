@@ -52,7 +52,7 @@ func xrayClientFacing(configJSON []byte) (string, error) {
 		settings, _ := in["settings"].(map[string]any)
 		rawClients, ok := settings["clients"]
 		if !ok {
-			continue // not a per-user VLESS inbound (api-in, socks-awg)
+			continue // not a per-user VLESS inbound (api-in, socks-local)
 		}
 		tag, _ := in["tag"].(string)
 		if tag == xrayRealityPPTag {

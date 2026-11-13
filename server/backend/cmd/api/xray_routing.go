@@ -100,9 +100,9 @@ func noExitBlockRule(inboundTags []string) map[string]interface{} {
 }
 
 // noExitDNSRule lets users' port-53 traffic reach the dns-hijack outbound
-// instead of the no-exit block rule. Without it the AWG clients (DNS = 1.1.1.1,
-// 8.8.8.8, arriving via tun2socks in socks-awg as UDP :53) could not resolve
-// anything, not even the RU-direct sites that are still served. The queries are
+// instead of the no-exit block rule. Without it a client resolving through its tunnel
+// (UDP :53 to 1.1.1.1 / 8.8.8.8) could not resolve anything, not even the RU-direct sites
+// that are still served. The queries are
 // answered by xray's built-in DNS, which goes out through dnsDirectRule; no user
 // data leaves the Hub. Must come BEFORE noExitBlockRule.
 func noExitDNSRule(inboundTags []string) map[string]interface{} {

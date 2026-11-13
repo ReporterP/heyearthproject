@@ -5,7 +5,6 @@ export const PROTOCOL_NAMES = {
   'vless-reality': 'Берёза',
   hysteria2: 'Бамбук',
   xhttp: 'Дуб',
-  awg: 'Пальма',
 }
 export const protocolName = (key) => PROTOCOL_NAMES[String(key || '').toLowerCase()] || key
 

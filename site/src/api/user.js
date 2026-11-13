@@ -40,12 +40,6 @@ export async function getConnections(token, platform) {
   return apiFetch(`/api/v1/user/connections${q}`, { token, fallback: 'Не удалось загрузить подключение.' })
 }
 
-// AmneziaWG ("Пальма") per-user config. Heavy (keys + CPS) — fetched lazily,
-// only for users whose connections.amnezia_available is true. Returns
-// { available, config_text, deeplink, endpoint, ip }.
-export async function getAwgConfig(token) {
-  return apiFetch('/api/v1/user/awg-config', { token, fallback: 'Не удалось загрузить конфигурацию Пальмы.' })
-}
 
 export async function getDownloads() {
   return apiFetch('/api/v1/user/downloads', { fallback: 'Не удалось загрузить ссылки на приложения.' })

@@ -4,13 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -579,10 +577,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"traffic_masking_available": access.TrafficMaskingAvailable,
 		"config_version":            configVersion,
 		"subscription_version":      subVer,
-		// Palma (AmneziaWG) availability — true only for active subs on an
-		// amnezia_wg_enabled plan. Site renders the WG/QR block off this flag;
-		// the heavy config is fetched lazily via GET /api/v1/user/awg-config.
-		"amnezia_available": false,
 	}
 
 	// Add plan info to response
@@ -596,9 +590,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 			"traffic_limit":     plan.TrafficLimitBytes,
 			"duration_days":     plan.DurationDays,
 		}
-		// ActiveUserPlan only returns a plan for an active subscription, and
-		// access.CanConnect already encodes the same gate used for connection_options.
-		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
 	}
 
 	// Подключения только при активной подписке (per-user UUID). Поля SOCKS/HTTP-прокси больше
@@ -619,100 +610,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	// Set only on the 200: a 503 must not announce a version.
 	w.Header().Set("X-Subscription-Version", fmt.Sprintf("%d", subVer))
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// handleUserAWGConfig — GET /api/v1/user/awg-config
-// Returns the per-user AmneziaWG ("Пальма") client config as WG-INI text plus an
-// amneziawg:// deeplink, for users on an amnezia_wg_enabled plan with an active
-// subscription. The config is heavy (per-user keys + CPS) so the site fetches it
-// lazily — NOT part of /connections. Calling this lazy-inits the user's keys
-// (biz.GetUserAWGConfig) and triggers RequestAWGSync so the peer lands in awg0.conf.
-func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeAuthError(w, err)
-		return
-	}
-
-	// Gate: plan must have AmneziaWG enabled. GetUserPlan errors unless the user
-	// has an active subscription, so this single check covers both conditions.
-	plan, err := biz.GetUserPlan(userID)
-	if err != nil || plan == nil || !plan.AmneziaWGEnabled {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "AmneziaWG (Пальма) недоступен на вашем тарифе",
-		})
-		return
-	}
-
-	cfg, err := biz.GetUserAWGConfig(userID)
-	if err != nil {
-		log.Printf("[awg-config] GetUserAWGConfig(%s): %v", userID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config build failed"})
-		return
-	}
-	// Ensure the freshly-allocated peer is flushed to awg0.conf on the Hub.
-	RequestAWGSync()
-
-	ip := cfg.IPAddress
-	if ip != "" && !strings.Contains(ip, "/") {
-		ip += "/32"
-	}
-
-	var b strings.Builder
-	b.WriteString("[Interface]\n")
-	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.UserPrivKey)
-	fmt.Fprintf(&b, "Address = %s\n", ip)
-	// MTU 1280 (min IPv6 MTU): AWG-over-UDP encapsulation + CPS junk can push a
-	// 1420-byte inner packet past the path MTU on mobile/PPPoE links, fragmenting
-	// large TCP segments so connections open but data stalls ("слабый интернет").
-	// 1280 leaves headroom and traverses every path.
-	b.WriteString("MTU = 1280\n")
-	b.WriteString("DNS = 1.1.1.1, 8.8.8.8\n")
-	fmt.Fprintf(&b, "Jc = %d\n", cfg.CPSParams.Jc)
-	fmt.Fprintf(&b, "Jmin = %d\n", cfg.CPSParams.Jmin)
-	fmt.Fprintf(&b, "Jmax = %d\n", cfg.CPSParams.Jmax)
-	fmt.Fprintf(&b, "S1 = %d\n", cfg.CPSParams.S1)
-	fmt.Fprintf(&b, "S2 = %d\n", cfg.CPSParams.S2)
-	fmt.Fprintf(&b, "H1 = %d\n", cfg.CPSParams.H1)
-	fmt.Fprintf(&b, "H2 = %d\n", cfg.CPSParams.H2)
-	fmt.Fprintf(&b, "H3 = %d\n", cfg.CPSParams.H3)
-	fmt.Fprintf(&b, "H4 = %d\n", cfg.CPSParams.H4)
-	// AmneziaWG 2.0 mimic-QUIC: makes the handshake look like a QUIC Initial
-	// packet so mobile carriers (which throttle unknown UDP) pass it. Must match
-	// the server's I1 — both come from app_settings.awg_mimic_i1. Empty = 1.5 mode.
-	if cfg.MimicI1 != "" {
-		fmt.Fprintf(&b, "I1 = %s\n", cfg.MimicI1)
-	}
-	b.WriteString("\n[Peer]\n")
-	fmt.Fprintf(&b, "PublicKey = %s\n", cfg.ServerPubKey)
-	if cfg.UserPSK != "" {
-		fmt.Fprintf(&b, "PresharedKey = %s\n", cfg.UserPSK)
-	}
-	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
-	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.Endpoint)
-	b.WriteString("PersistentKeepalive = 25\n")
-	configText := b.String()
-
-	deeplink := "amneziawg://" +
-		base64.StdEncoding.EncodeToString([]byte(configText)) +
-		"#" + url.PathEscape("🌴 Пальма")
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"available":   true,
-		"config_text": configText,
-		"deeplink":    deeplink,
-		"endpoint":    cfg.Endpoint,
-		"ip":          cfg.IPAddress,
-	})
 }
 
 // handleUserMTProto — GET /api/v1/user/mtproto
@@ -944,7 +841,6 @@ func main() {
 	biz.XraySyncFn = RequestXraySync
 	provision.RelayPathVerifier = verifyRelayPath
 	biz.Hysteria2SyncFn = RequestHysteria2Sync
-	biz.AWGSyncFn = RequestAWGSync // Palma — added in T6
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
@@ -958,22 +854,10 @@ func main() {
 	// Hysteria2 server sync (no-op if hysteria binary not installed)
 	StartHysteria2SyncLoop()
 
-	// AmneziaWG (Palma) server sync — generates /opt/heyearth/awg/awg0.conf
-	// from current peers + reloads awg.service. No-op if --setup-awg was not
-	// run on this Hub (the /opt/heyearth/awg dir is absent).
-	StartAWGSyncLoop()
-
 	// Hysteria2 per-user traffic collector — polls loopback trafficStats
 	// endpoint every 60s and writes deltas into traffic_stats so cycle-quota
 	// enforcement (biz.IsCycleExceeded) covers Express users transparently.
 	StartHysteria2StatsLoop()
-
-	// AmneziaWG (Palma) per-peer traffic collector — reads `awg show awg0
-	// transfer` every 60s, writes deltas to traffic_stats AND
-	// user_subscriptions.traffic_used so AWG shares one subscription limit
-	// with Reality/Hysteria2 (T3 peer-selection gates on traffic_used).
-	// No-op until --setup-awg has run on this Hub.
-	StartAWGStatsLoop()
 
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()
@@ -1044,7 +928,6 @@ func main() {
 	// Детали одного платежа: GET /api/v1/user/payments/{id}
 	http.HandleFunc("/api/v1/user/payments/", apiLimiter.Middleware(handleUserPaymentDetail))
 	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
-	http.HandleFunc("/api/v1/user/awg-config", apiLimiter.Middleware(handleUserAWGConfig)) // Palma — Beads heyearthproject-98ng T5
 	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
 	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
 	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))

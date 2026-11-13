@@ -646,15 +646,12 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		"settings": map[string]interface{}{"address": "127.0.0.1"},
 	})
 
-	// SOCKS5 inbound для AmneziaWG (Palma) egress. AWG's tun2socks
-	// (hev-socks5-tunnel) dials this on loopback; traffic then flows through
-	// the SAME global routing rules as Reality (inboundTag: null) → RU domains
-	// + RU geoip go to direct-freedom (Hub Moscow), everything else to the
-	// exit-balancer (Amsterdam). sniffing recovers the domain from TLS SNI /
-	// HTTP Host so geosite (domain) rules fire, matching Happ's split.
-	// Loopback-only (127.0.0.1) — never exposed to the network.
+	// socks-local: a loopback SOCKS5 door into xray (it was AmneziaWG's, removed in D7). Ops
+	// checks use it — deploy --setup-ops proves through it that xray still carries traffic after
+	// the egress guard. Routed like Happ's split (RU direct routes → direct-freedom, the rest →
+	// the exit balancer); sniffing recovers the domain. Loopback-only, no user identity.
 	inbounds = append(inbounds, map[string]interface{}{
-		"tag":      "socks-awg",
+		"tag":      "socks-local",
 		"listen":   "127.0.0.1",
 		"port":     10808,
 		"protocol": "socks",
@@ -676,7 +673,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	inbounds = append(inbounds, exitCfg.probeInbounds...)
 
 	// Every inbound except api-in carries user traffic; the no-exit block rule
-	// must cover all of them (C2: the old shadowsocks inbound, socks-awg and CDN used to leak).
+	// must cover all of them (C2: the old shadowsocks inbound, socks-local and CDN used to leak).
 	userInbounds := userInboundTags(inbounds)
 
 	// ── Outbounds ──
@@ -798,19 +795,16 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		}
 	}
 
-	// ── socks-awg (AmneziaWG / Palma) split-routing ──
-	// The per-plan rules above are user-bound (VLESS UUID); the socks-awg SOCKS5
-	// inbound (fed by tun2socks) has no user, so it would fall straight to the
-	// catch-all exit-balancer (Amsterdam) — ALL traffic incl. RU. To match Happ's
-	// split we emit inbound-bound rules from the SAME RU direct domains/IPs
-	// (deduplicated) as soon as any plan has direct routing: RU → direct-freedom
-	// (Hub Moscow), everything else falls through to the catch-all exit-balancer
-	// rule below. Sorted for deterministic config output.
+	// ── socks-local split-routing ──
+	// The per-plan rules above are user-bound (VLESS UUID); the socks-local inbound has no user,
+	// so it would fall straight to the catch-all exit-balancer — ALL traffic incl. RU. Like
+	// Happ's split, inbound-bound rules send the same RU direct domains/IPs (deduplicated) to
+	// direct-freedom as soon as any plan has direct routing. Sorted for deterministic output.
 	if len(in.directPlanIDs) > 0 {
 		if awgDomains := sortedUnique(directDomains); len(awgDomains) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"socks-awg"},
+				"inboundTag":  []string{"socks-local"},
 				"domain":      awgDomains,
 				"outboundTag": "direct-freedom",
 			})
@@ -818,7 +812,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		if awgIPs := sortedUnique(directIPs); len(awgIPs) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"socks-awg"},
+				"inboundTag":  []string{"socks-local"},
 				"ip":          awgIPs,
 				"outboundTag": "direct-freedom",
 			})
@@ -827,7 +821,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 
 	// Traffic masking routing rules. NOT premium-only, whatever the name
 	// suggests: each rule matches its source domain for EVERY user and inbound
-	// (socks-awg included) and sends it out of the Hub's own IP through its
+	// (socks-local included) and sends it out of the Hub's own IP through its
 	// mask-* freedom outbound — no SNI or Host rewriting happens (mask_domain is
 	// unused). They precede the plan rules, the catch-all balancer and, with no
 	// exit up, noExitBlockRule, so such domains keep working Hub-direct like the
@@ -933,7 +927,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 
 	} else {
 		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик на всех
-		// пользовательских inbound (включая socks-awg, CDN).
+		// пользовательских inbound (включая socks-local, CDN).
 		// Явные RU-direct правила выше продолжают работать. Исключение — DNS (порт 53):
 		// клиенты AWG резолвят через 1.1.1.1/8.8.8.8 внутри туннеля, без ответа не
 		// откроются даже RU-direct сайты. Запрос глушит outbound dns-hijack и отвечает
