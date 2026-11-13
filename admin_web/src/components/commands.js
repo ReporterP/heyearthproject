@@ -1,7 +1,6 @@
 import {
-  LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
-  Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
+  LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Bell, Gift,
 } from 'lucide-react'
 
 /**
@@ -13,27 +12,21 @@ import {
 export const commands = [
   // Overview
   { id: 'go-dashboard',     label: 'Дашборд',                icon: LayoutDashboard, kind: 'page', href: '/dashboard',     group: 'Обзор',          shortcut: ['⌘', 'D'] },
-  { id: 'go-traffic',       label: 'Трафик',                 icon: BarChart3,       kind: 'page', href: '/traffic',       group: 'Обзор' },
 
   // Users
   { id: 'go-users',         label: 'Пользователи',           icon: Users,           kind: 'page', href: '/users',         group: 'Пользователи',   shortcut: ['⌘', 'U'] },
-  { id: 'go-subscriptions', label: 'История подписок',       icon: CreditCard,      kind: 'page', href: '/subscriptions', group: 'Пользователи' },
   { id: 'go-promocodes',    label: 'Промокоды',              icon: Ticket,          kind: 'page', href: '/promocodes',    group: 'Пользователи' },
 
   // Infrastructure
   { id: 'go-servers',         label: 'Серверы',              icon: Server,          kind: 'page', href: '/servers',         group: 'Инфраструктура' },
-  { id: 'go-ssh-keys',        label: 'SSH Ключи',            icon: Key,             kind: 'page', href: '/ssh-keys',        group: 'Инфраструктура' },
-  { id: 'go-releases',        label: 'Релизы',               icon: Rocket,          kind: 'page', href: '/releases',        group: 'Инфраструктура' },
-  { id: 'go-traffic-masking', label: 'Маскировка трафика',   icon: EyeOff,          kind: 'page', href: '/traffic-masking', group: 'Инфраструктура' },
   { id: 'go-direct-routes',   label: 'Прямая маршрутизация', icon: Route,           kind: 'page', href: '/direct-routes',   group: 'Инфраструктура' },
   { id: 'go-mtproto',         label: 'MTProto',              icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
-  { id: 'go-auto-tuner',      label: 'Протоколы и маскировка', icon: Zap,           kind: 'page', href: '/auto-tuner',      group: 'Инфраструктура' },
   { id: 'go-alerts',          label: 'Алерты',               icon: Bell,            kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
 
   // Money
   { id: 'go-plans',        label: 'Тарифы',                  icon: Package,         kind: 'page', href: '/plans',        group: 'Деньги' },
   { id: 'go-payments',     label: 'Платежи',                 icon: Wallet,          kind: 'page', href: '/payments',     group: 'Деньги' },
-  { id: 'go-payment-ops',  label: 'Письма',                  icon: RotateCcw,       kind: 'page', href: '/payment-ops',  group: 'Деньги' },
+  { id: 'go-referrals',    label: 'Приведи друга',           icon: Gift,            kind: 'page', href: '/referrals',    group: 'Деньги' },
 
   // Admin
   { id: 'go-admins',         label: 'Администраторы',        icon: ShieldCheck,     kind: 'page', href: '/admins',        group: 'Админ' },

@@ -1,10 +1,9 @@
 import { RotateCcw } from 'lucide-react'
-import usePagedData from '../hooks/usePagedData.js'
-import { pagedFetch } from '../api/client.js'
-import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
+import usePagedData from '../../hooks/usePagedData.js'
+import { pagedFetch } from '../../api/client.js'
+import SearchPaginationBar from '../SearchPaginationBar.jsx'
 import {
   Badge,
-  PageHeader,
   Table,
   Thead,
   Tbody,
@@ -12,7 +11,7 @@ import {
   Th,
   Td,
   EmptyState,
-} from '../components/ui/index.js'
+} from '../ui/index.js'
 
 function fetchEmailLog(params) { return pagedFetch('/email-log', params) }
 
@@ -27,7 +26,8 @@ function formatDate(s) {
   return new Date(s).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function EmailLogTab() {
+/** EmailLog — «Платежи → Письма»: every transactional email and how it went. */
+export default function EmailLog() {
   const paged = usePagedData(fetchEmailLog)
   return (
     <div>
@@ -64,15 +64,6 @@ function EmailLogTab() {
           </Table>
         </div>
       )}
-    </div>
-  )
-}
-
-export default function PaymentOpsPage() {
-  return (
-    <div>
-      <PageHeader title="Письма" subtitle="Журнал email-уведомлений клиентам" />
-      <EmailLogTab />
     </div>
   )
 }

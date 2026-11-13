@@ -287,6 +287,10 @@ export function saveEntryMode(mode, target) {
 export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
 export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)
 
+// ── Renewals and the menu's switches (C10) ──
+export const fetchFailingRenewals = () => apiFetch('/renewals/failing')
+export const fetchFeatures = () => apiFetch('/features')
+
 // ── Direct routes ──
 export const fetchDirectRoutes = (query) => apiFetch(`/direct-routes${query ? `?${query}` : ''}`)
 export const fetchDirectRouteStats = () => apiFetch('/direct-routes/stats')

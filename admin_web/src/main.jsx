@@ -17,22 +17,15 @@ import LoginPage from './auth/LoginPage.jsx'
 import Layout from './components/Layout.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import UsersPage from './pages/UsersPage.jsx'
-import SubscriptionsPage from './pages/SubscriptionsPage.jsx'
 import PromocodesPage from './pages/PromocodesPage.jsx'
 import PaymentsPage from './pages/PaymentsPage.jsx'
-import PaymentOpsPage from './pages/PaymentOpsPage.jsx'
 import ReferralsPage from './pages/ReferralsPage.jsx'
 import ServersPage from './pages/ServersPage.jsx'
 import { NodesRedirect, EntriesRedirect, ServerIdRedirect } from './pages/ServersRedirects.jsx'
-import SshKeysPage from './pages/SshKeysPage.jsx'
-import ReleasesPage from './pages/ReleasesPage.jsx'
 import AdminsPage from './pages/AdminsPage.jsx'
 import TenantsPage from './pages/TenantsPage.jsx'
-import TrafficMaskingPage from './pages/TrafficMaskingPage.jsx'
-import TrafficPage from './pages/TrafficPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
-import AutoTunerPage from './pages/AutoTunerPage.jsx'
 import PlansPage from './pages/PlansPage.jsx'
 import B2BAnalyticsPage from './pages/B2BAnalyticsPage.jsx'
 import MTProtoPage from './pages/MTProtoPage.jsx'
@@ -54,25 +47,19 @@ createRoot(document.getElementById('root')).render(
                 <Route element={<Layout />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/users" element={<UsersPage />} />
-                  <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/promocodes" element={<PromocodesPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />
-                  <Route path="/payment-ops" element={<PaymentOpsPage />} />
+                  <Route path="/payment-ops" element={<Navigate to="/payments?tab=emails" replace />} />
                   <Route path="/referrals" element={<ReferralsPage />} />
-                  <Route path="/traffic" element={<TrafficPage />} />
                   <Route path="/servers" element={<ServersPage />} />
                   <Route path="/servers/:id" element={<ServerIdRedirect />} />
                   <Route path="/nodes" element={<NodesRedirect />} />
                   <Route path="/entries" element={<EntriesRedirect />} />
-                  <Route path="/ssh-keys" element={<SshKeysPage />} />
-                  <Route path="/releases" element={<ReleasesPage />} />
                   <Route path="/admins" element={<AdminsPage />} />
                   <Route path="/tenants" element={<TenantsPage />} />
                   <Route path="/b2b-analytics" element={<B2BAnalyticsPage />} />
-                  <Route path="/traffic-masking" element={<TrafficMaskingPage />} />
                   <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
-                  <Route path="/auto-tuner" element={<AutoTunerPage />} />
                   <Route path="/plans" element={<PlansPage />} />
                   <Route path="/mtproto" element={<MTProtoPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />

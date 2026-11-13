@@ -116,8 +116,8 @@ export default function DashboardPage() {
   const cards = [
     { label: t.dashUsers, value: data?.users_count, sub: `${data?.active_users_count ?? 0} ${t.dashActiveUsers}`, to: '/users' },
     { label: t.dashServers, value: data?.servers_count, sub: `${data?.online_servers_count ?? 0} ${t.dashOnlineServers}`, to: '/servers' },
-    { label: t.dashTrafficToday, value: formatBytes(data?.traffic_today), to: '/traffic' },
-    { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month), to: '/traffic' },
+    { label: t.dashTrafficToday, value: formatBytes(data?.traffic_today) },
+    { label: t.dashTrafficMonth, value: formatBytes(data?.traffic_month) },
     { label: t.dashRevenueMonth, value: formatRub(data?.revenue_month || 0), to: '/payments' },
     { label: t.dashPayments, value: data?.payments_count, to: '/payments' },
     ...(wallet ? [{
@@ -125,7 +125,6 @@ export default function DashboardPage() {
       sub: `за месяц: +${formatKop(wallet.topups_month_kop)} / −${formatKop(wallet.spent_month_kop)}`, to: '/payments',
     }] : []),
     { label: t.dashPromocodes, value: data?.promocodes_count, to: '/promocodes' },
-    { label: t.dashActiveReleases, value: data?.active_releases, to: '/releases' },
     { label: t.dashAdmins, value: data?.admins_count, to: '/admins' },
   ]
 

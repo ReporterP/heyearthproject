@@ -235,6 +235,10 @@ func RegisterRoutes() {
 	// Hysteria2 (Express) status — read-only snapshot for the Hub server detail page.
 	http.HandleFunc("/api/admin/hysteria2/status", withMethod(http.MethodGet, RequirePermission("servers.read", Hysteria2StatusHandler)))
 
+	// «Платежи → Не прошло продление» and the menu's switches (C10).
+	http.HandleFunc("/api/admin/renewals/failing", withMethod(http.MethodGet, RequirePermission("payments.read", FailingRenewalsHandler)))
+	http.HandleFunc("/api/admin/features", withMethod(http.MethodGet, AuthMiddleware(FeaturesHandler)))
+
 	// The Hub's row on «Серверы» (B1).
 	http.HandleFunc("/api/admin/hub", withMethod(http.MethodGet, RequirePermission("servers.read", HubHandler)))
 

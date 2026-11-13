@@ -6,6 +6,8 @@ import { useToast } from '../components/Toast.jsx'
 import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus, syncPendingPayments } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
 import ManualPaymentDialog from '../components/payments/ManualPaymentDialog.jsx'
+import FailingRenewals from '../components/payments/FailingRenewals.jsx'
+import EmailLog from '../components/payments/EmailLog.jsx'
 import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
 import { refundableAmount } from '../utils/refund.js'
@@ -23,7 +25,7 @@ import {
   Td,
   Badge,
   TableSkeleton,
-  EmptyState,
+  EmptyState, Tabs, TabPanel,
 } from '../components/ui/index.js'
 
 const STATUS_OPTIONS = [
@@ -117,7 +119,7 @@ function MetadataPopover({ data }) {
   )
 }
 
-export default function PaymentsPage() {
+function PaymentsList() {
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
@@ -184,18 +186,17 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title={`${t.paymentsTitle} (${total})`}
-        subtitle="Платежи и возвраты через ЮKassa"
-        actions={can('payments.write') ? (
-          <>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <p className="text-sm text-secondary">Платежей: <span className="font-mono tabular-nums">{total}</span></p>
+        {can('payments.write') && (
+          <div className="flex flex-col sm:flex-row gap-2">
             <Button variant="secondary" onClick={handleSyncPending} title="Спросить у ЮKassa статус всех ожидающих платежей">
               Проверить ожидающие
             </Button>
             <Button variant="primary" onClick={() => setDialog({ mode: 'create' })}>+ Ручной платёж</Button>
-          </>
-        ) : null}
-      />
+          </div>
+        )}
+      </div>
 
       {/* Stats panel */}
       <div className="px-4 py-3 rounded border border-default bg-elevated/40 flex items-center gap-6 flex-wrap">
@@ -399,6 +400,32 @@ export default function PaymentsPage() {
           onRefresh={load}
         />
       )}
+    </div>
+  )
+}
+
+const PAYMENT_TABS = [
+  { key: 'payments', label: 'Платежи' },
+  { key: 'renewals', label: 'Не прошло продление' },
+  { key: 'emails', label: 'Письма' },
+]
+
+/**
+ * PaymentsPage — «Платежи»: the payments with refunds and manual records, the subscriptions the
+ * wallet cannot renew (C10: what «Дунинг» was) and the email log (was «Письма»).
+ */
+export default function PaymentsPage() {
+  const [f, setF] = useUrlState({ tab: 'payments' })
+  const tab = PAYMENT_TABS.some((x) => x.key === f.tab) ? f.tab : 'payments'
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Платежи" subtitle="Оплаты и возвраты через ЮKassa, кошельки, письма клиентам" />
+      <Tabs id="payments-tab" label="Раздел платежей" tabs={PAYMENT_TABS} value={tab} onChange={(k) => setF({ tab: k })} />
+      <TabPanel tabsId="payments-tab" tabKey={tab}>
+        {tab === 'payments' && <PaymentsList />}
+        {tab === 'renewals' && <FailingRenewals />}
+        {tab === 'emails' && <EmailLog />}
+      </TabPanel>
     </div>
   )
 }
