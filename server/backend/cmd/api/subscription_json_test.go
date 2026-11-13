@@ -32,7 +32,7 @@ type autoConfig struct {
 		Balancers []map[string]any `json:"balancers"`
 		Rules     []map[string]any `json:"rules"`
 	} `json:"routing"`
-	Observatory map[string]any `json:"observatory"`
+	Burst map[string]any `json:"burstObservatory"`
 }
 
 func parseAuto(t *testing.T, body []byte) []autoConfig {
@@ -52,81 +52,136 @@ func outboundTags(c autoConfig) []string {
 	return tags
 }
 
-// «Авто» first, then every way in alone; the Hub and each reserve get a Берёза
-// (fp firefox, flow) and a Дуб (fp chrome, the Hub's Host header); no Бамбук.
-func TestJSONSubscriptionWays(t *testing.T) {
-	d := directRouting{sites: []string{"domain:bank.example"}, ips: []string{"geoip:private", "geoip:ru", "198.51.100.7/32"}}
-	cs := parseAuto(t, jsonSubscription(autoInputs(), d))
+func remarks(cs []autoConfig) []string {
 	var names []string
 	for _, c := range cs {
 		names = append(names, c.Remarks)
 	}
-	want := []string{"⚡ Авто", "🌳 Берёза", "🌲 Дуб", "🌳 Берёза · резерв", "🌲 Дуб · резерв", "🌳 Берёза · резерв 2", "🌲 Дуб · резерв 2"}
-	if !slices.Equal(names, want) {
-		t.Fatalf("configs %q, want %q", names, want)
+	return names
+}
+
+// Three lines: «⚡ Авто» (Берёза fp firefox + Дуб fp chrome through the Hub and
+// each healthy entry) and «🎋 Бамбук 1/2» (through the Hub and each entry whose
+// UDP answers), each a leastLoad balancer over a burst observatory.
+func TestJSONSubscriptionWays(t *testing.T) {
+	d := directRouting{sites: []string{"domain:bank.example"}, ips: []string{"geoip:private", "geoip:ru", "198.51.100.7/32"}}
+	cs := parseAuto(t, jsonSubscription(autoInputs(), d))
+	if want := []string{"⚡ Авто", "🎋 Бамбук 1 only WiFi", "🎋 Бамбук 2 only WiFi"}; !slices.Equal(remarks(cs), want) {
+		t.Fatalf("configs %q, want %q", remarks(cs), want)
 	}
 	auto := cs[0]
-	if got := outboundTags(auto); !slices.Equal(got, []string{"p-main-tcp", "p-main-xhttp", "p-r5-tcp", "p-r5-xhttp", "p-r6-tcp", "p-r6-xhttp", "direct", "block"}) {
+	if got := outboundTags(auto); !slices.Equal(got, []string{"p-hub-tcp", "p-hub-xhttp", "p-r5-tcp", "p-r5-xhttp", "p-r6-tcp", "p-r6-xhttp", "direct", "block"}) {
 		t.Fatalf("auto outbounds %v", got)
 	}
 	b := auto.Routing.Balancers[0]
-	if b["tag"] != "auto" || b["fallbackTag"] != "p-r5-tcp" || b["strategy"].(map[string]any)["type"] != "leastPing" {
+	st := b["strategy"].(map[string]any)
+	set := st["settings"].(map[string]any)
+	cost := set["costs"].([]any)[0].(map[string]any)
+	if b["tag"] != "auto" || b["fallbackTag"] != "p-r5-tcp" || st["type"] != "leastLoad" || set["tolerance"] != probeTolerance ||
+		set["expected"] != float64(1) || cost["match"] != "^p-r" || cost["regexp"] != true {
 		t.Fatalf("balancer %v", b)
 	}
-	if auto.Observatory["probeUrl"] != autoProbeURL || auto.Observatory["subjectSelector"].([]any)[0] != "p-" {
-		t.Fatalf("observatory %v", auto.Observatory)
+	pc := auto.Burst["pingConfig"].(map[string]any)
+	if auto.Burst["subjectSelector"].([]any)[0] != "p-" || pc["destination"] != autoProbeURL || pc["sampling"] != float64(probeSampling) {
+		t.Fatalf("burst observatory %v", auto.Burst)
 	}
 	rules := auto.Routing.Rules
 	if len(rules) != 4 || rules[0]["balancerTag"] != "auto" || rules[0]["ip"].([]any)[0] != "203.0.113.1" ||
 		rules[1]["outboundTag"] != "direct" || rules[2]["outboundTag"] != "direct" || rules[3]["balancerTag"] != "auto" {
 		t.Fatalf("auto rules %v", rules)
 	}
-	raw := string(jsonSubscription(autoInputs(), d))
-	for _, bad := range []string{"hysteria", "salamander", "obfs"} {
-		if strings.Contains(raw, bad) {
-			t.Fatalf("JSON subscription mentions %q", bad)
-		}
-	}
 	// A Берёза: TCP, flow, fp firefox, port 443; a Дуб: XHTTP, no flow, fp chrome, the Hub's Host.
 	tcp, _ := json.Marshal(auto.Outbounds[2])
 	xh, _ := json.Marshal(auto.Outbounds[3])
 	for _, s := range []string{`"address":"203.0.113.5"`, `"port":443`, `"flow":"xtls-rprx-vision"`, `"fingerprint":"firefox"`, `"network":"tcp"`, `"publicKey":"PBK-test"`} {
 		if !strings.Contains(string(tcp), s) {
-			t.Errorf("Берёза · резерв lacks %s: %s", s, tcp)
+			t.Errorf("Берёза через вход lacks %s: %s", s, tcp)
 		}
 	}
 	for _, s := range []string{`"address":"203.0.113.5"`, `"port":2443`, `"fingerprint":"chrome"`, `"network":"xhttp"`, `"host":"203.0.113.1"`} {
 		if !strings.Contains(string(xh), s) {
-			t.Errorf("Дуб · резерв lacks %s: %s", s, xh)
+			t.Errorf("Дуб через вход lacks %s: %s", s, xh)
 		}
 	}
 	if strings.Contains(string(xh), "flow") {
 		t.Errorf("Дуб has a flow: %s", xh)
 	}
-	// A single way: its own outbound «proxy», the same rules to it.
-	one := cs[1]
-	if got := outboundTags(one); !slices.Equal(got, []string{"proxy", "direct", "block"}) || one.Routing.Rules[3]["outboundTag"] != "proxy" {
-		t.Fatalf("single config %v %v", got, one.Routing.Rules)
+	// Бамбук: the Hub and entry 5 (its UDP answers), not entry 6; Salamander, hopping, the cert domain.
+	for i, c := range cs[1:] {
+		if got := outboundTags(c); !slices.Equal(got, []string{"b-hub", "b-r5", "direct", "block"}) {
+			t.Fatalf("Бамбук %d outbounds %v", i+1, got)
+		}
+		if b := c.Routing.Balancers[0]; b["fallbackTag"] != "b-hub" || b["selector"].([]any)[0] != "b-" {
+			t.Fatalf("Бамбук %d balancer %v", i+1, b)
+		}
+		hy, _ := json.Marshal(c.Outbounds[1])
+		for _, s := range []string{`"protocol":"hysteria"`, `"address":"203.0.113.5"`, `"port":50443`, `"auth":"hy2"`, `"serverName":"tls.example.test"`,
+			`"type":"salamander"`, `"password":"obfs"`, `"ports":"30000-65000"`, `"interval":15`} {
+			if !strings.Contains(string(hy), s) {
+				t.Errorf("Бамбук %d через вход lacks %s: %s", i+1, s, hy)
+			}
+		}
+	}
+	b1, _ := json.Marshal(cs[1].Outbounds[0])
+	b2, _ := json.Marshal(cs[2].Outbounds[0])
+	if !strings.Contains(string(b1), `"congestion":"bbr"`) || strings.Contains(string(b1), "brutal") ||
+		!strings.Contains(string(b2), `"congestion":"brutal"`) || !strings.Contains(string(b2), `"brutalDown":"80 mbps","brutalUp":"20 mbps"`) {
+		t.Fatalf("congestion: %s / %s", b1, b2)
 	}
 }
 
-// During a failover the main lines follow the target; the Hub stays as «· напрямую».
-func TestJSONSubscriptionFailover(t *testing.T) {
+// The JSON Бамбук lines are the URI lines' variants: same names, BBR without
+// bandwidth, Brutal with the URI's upmbps/downmbps.
+func TestBambooJSONMatchesURIVariants(t *testing.T) {
+	if len(bambooJSON) != len(bambooVariants) {
+		t.Fatalf("%d JSON Бамбук lines, %d URI variants", len(bambooJSON), len(bambooVariants))
+	}
+	for i, v := range bambooVariants {
+		j := bambooJSON[i]
+		if j.label != "🎋 "+v.name+" only WiFi" {
+			t.Errorf("label %q for %q", j.label, v.name)
+		}
+		if v.bwParams == "" {
+			if j.quic["congestion"] != "bbr" {
+				t.Errorf("%s: %v, want bbr", v.name, j.quic)
+			}
+			continue
+		}
+		up, down := "", ""
+		for _, kv := range strings.Split(strings.TrimPrefix(v.bwParams, "&"), "&") {
+			k, val, _ := strings.Cut(kv, "=")
+			switch k {
+			case "upmbps":
+				up = val + " mbps"
+			case "downmbps":
+				down = val + " mbps"
+			}
+		}
+		if j.quic["congestion"] != "brutal" || j.quic["brutalUp"] != up || j.quic["brutalDown"] != down {
+			t.Errorf("%s: %v, want brutal %s/%s", v.name, j.quic, up, down)
+		}
+	}
+}
+
+// A server-side failover changes nothing: the balancer probes the Hub itself.
+// Without Бамбук (plan gate) only «Авто»; without a healthy entry the Hub alone.
+func TestJSONSubscriptionVariants(t *testing.T) {
 	in := autoInputs()
 	in.entries.main, in.entries.failover = "203.0.113.5", true
+	if a, b := jsonSubscription(in, directRouting{}), jsonSubscription(autoInputs(), directRouting{}); !bytes.Equal(a, b) {
+		t.Fatal("a failover changed the JSON subscription")
+	}
+	in = autoInputs()
+	in.canHysteria2 = false
+	if got := remarks(parseAuto(t, jsonSubscription(in, directRouting{}))); !slices.Equal(got, []string{"⚡ Авто"}) {
+		t.Fatalf("without Бамбук: %q", got)
+	}
+	in = autoInputs()
+	in.entries.reserves = nil
 	cs := parseAuto(t, jsonSubscription(in, directRouting{}))
-	var names []string
-	for _, c := range cs[1:] {
-		names = append(names, c.Remarks)
-	}
-	if want := []string{"🌳 Берёза", "🌲 Дуб", "🌳 Берёза" + directLabel, "🌲 Дуб" + directLabel, "🌳 Берёза · резерв", "🌲 Дуб · резерв"}; !slices.Equal(names, want) {
-		t.Fatalf("lines %q, want %q", names, want)
-	}
-	if fb := cs[0].Routing.Balancers[0]["fallbackTag"]; fb != "p-main-tcp" {
-		t.Fatalf("fallback %v, want the target's Берёза", fb)
-	}
-	if !strings.Contains(string(jsonSubscription(in, directRouting{})), `"address":"203.0.113.6"`) {
-		t.Fatal("the other reserve is missing")
+	if got := outboundTags(cs[0]); !slices.Equal(got, []string{"p-hub-tcp", "p-hub-xhttp", "direct", "block"}) ||
+		cs[0].Routing.Balancers[0]["fallbackTag"] != "p-hub-tcp" {
+		t.Fatalf("Hub only: %v %v", got, cs[0].Routing.Balancers[0])
 	}
 }
 
