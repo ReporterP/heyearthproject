@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import Fireflies from '../components/Fireflies.jsx'
 import useReveal from '../hooks/useReveal.js'
-import useSiteInfo, { countryName, countryFlag } from '../hooks/useSiteInfo.js'
+import useSiteInfo, { countryName } from '../hooks/useSiteInfo.js'
 
 const HAPP_LINKS = [
   { label: 'iPhone и iPad', url: 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108' },
@@ -123,7 +123,7 @@ export default function LandingPage() {
           <ul className="mt-14 flex flex-wrap justify-center gap-2.5 max-w-2xl mx-auto animate-fade-in-up delay-500">
             {info.exit_countries.length > 0 && (
               <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">
-                Выход в интернет: {info.exit_countries.map(c => `${countryFlag(c)} ${countryName(c)}`).join(', ')}
+                Выход в интернет: {info.exit_countries.map(countryName).join(", ")}
               </li>
             )}
             {info.mobile_ready && (
