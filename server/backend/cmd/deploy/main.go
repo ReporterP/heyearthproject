@@ -547,14 +547,27 @@ func uploadFile(c *sftp.Client, local, remote string) error {
 	if err := sftpMkdirAll(c, remoteDir(remote)); err != nil {
 		return err
 	}
-	_ = c.Remove(remote)
-	dst, err := c.Create(remote)
+	// Write next to the target and rename: a dropped SFTP session leaves the old file
+	// whole (it used to remove it first and leave a truncated binary behind).
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	dst, err := c.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-	_, err = io.Copy(dst, src)
-	return err
+	if _, err = io.Copy(dst, src); err != nil {
+		dst.Close()
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := c.PosixRename(tmp, remote); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func uploadFileContent(c *sftp.Client, content []byte, remote string) error {
@@ -562,14 +575,25 @@ func uploadFileContent(c *sftp.Client, content []byte, remote string) error {
 	if err := sftpMkdirAll(c, remoteDir(remote)); err != nil {
 		return err
 	}
-	_ = c.Remove(remote)
-	dst, err := c.Create(remote)
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	dst, err := c.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-	_, err = dst.Write(content)
-	return err
+	if _, err = dst.Write(content); err != nil {
+		dst.Close()
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := c.PosixRename(tmp, remote); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func uploadDir(c *sftp.Client, localDir, remoteDir string) error {
@@ -819,14 +843,23 @@ func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	fmt.Println("[admin-web] uploaded to " + live)
 }
 
+// doVueSite builds the site FIRST, uploads it next to the live one and swaps the
+// directories at the end, like doAdminWeb: a failed build or a dropped SFTP session leaves
+// the working site in place (it used to delete the live site before building). When SFTP
+// keeps dropping, `go run quick_admin_web.go -site` sends it as one archive.
 func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "rm -rf /var/www/heyearth-site && mkdir -p /var/www/heyearth-site", true)
+	const live, next = "/var/www/heyearth-site", "/var/www/heyearth-site.next"
 	vueBuildDir := buildSite(cfg.repoRoot, cfg)
-	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
-		log.Fatalf("upload vue site build: %v", err)
+	if _, err := os.Stat(filepath.Join(vueBuildDir, "index.html")); err != nil {
+		log.Fatalf("site build has no index.html: %v (the live site is untouched)", err)
 	}
-	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth-site", true)
-	fmt.Println("[vue-site] uploaded to /var/www/heyearth-site")
+	_, _ = runSSH(client, "rm -rf "+next+" && mkdir -p "+next, true)
+	if err := uploadDir(c, vueBuildDir, next); err != nil {
+		_, _ = runSSH(client, "rm -rf "+next, false)
+		log.Fatalf("upload site build: %v (the live site is untouched; try: go run quick_admin_web.go -site)", err)
+	}
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ -d %[1]s ] && mv %[1]s %[1]s.old || true; } && mv %[2]s %[1]s", live, next), true)
+	fmt.Println("[vue-site] uploaded to " + live)
 }
 
 // uncToWSLPath converts a Windows UNC path (\\wsl.localhost\Distro\home\...) to WSL Linux path (/home/...).
@@ -856,7 +889,8 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 	}
 	if useWSL && wslPath != "" {
 		// Unset VITE_API_BASE — nginx on site.hiearth.ru proxies /api/ to backend
-		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && unset VITE_API_BASE && /usr/bin/npm install && /usr/bin/npm run build",
+		// npm ci: the locked versions, never a fresh resolve (package-lock.json stays).
+		script := fmt.Sprintf("cd %s && unset VITE_API_BASE && /usr/bin/npm ci && /usr/bin/npm run build",
 			strings.ReplaceAll(wslPath, "'", "'\"'\"'"))
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
@@ -877,7 +911,7 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 		log.Fatal("npm is required locally to build the site")
 	}
 
-	install := exec.Command(npmPath, "install")
+	install := exec.Command(npmPath, "ci")
 	install.Dir = siteRoot
 	install.Stdout = os.Stdout
 	install.Stderr = os.Stderr

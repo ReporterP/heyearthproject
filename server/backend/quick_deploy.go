@@ -94,11 +94,11 @@ func main() {
 		},
 		Timeout: 10 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", host, config)
+	client, err := dialRetry(host, config)
 	if err != nil {
 		log.Fatalf("SSH dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { client.Close() }()
 	fmt.Println("    Подключено.")
 
 	// 3. Загрузить бинарник через SSH pipe — во временный файл рядом, на место кладёт mv.
@@ -146,22 +146,24 @@ func main() {
 		log.Fatalf("swap binary failed: %s", strings.TrimSpace(out))
 	}
 	runCmd(client, "systemctl restart heyearth-api")
-	time.Sleep(2 * time.Second)
 
-	// Проверить здоровье
-	out := runCmd(client, "systemctl is-active heyearth-api 2>/dev/null || echo FAILED")
-	status := strings.TrimSpace(out)
-	if status == "active" {
-		fmt.Println("    heyearth-api: ACTIVE ✓")
-	} else {
-		fmt.Printf("    heyearth-api: %s ✗\n", status)
-		fmt.Println("    Последние логи:")
-		fmt.Println(runCmd(client, "journalctl -u heyearth-api -n 20 --no-pager 2>&1"))
+	// The API applies migrations and warms up for 30-40 s. It must be active AND answer
+	// /api/v1/health with 200 within healthWait, or the previous binary goes back and the
+	// tool exits non-zero (it used to print the failure and exit 0).
+	if !waitHealthy(&client, host, config, healthWait) {
+		fmt.Println("    heyearth-api НЕ поднялся ✗ — последние логи:")
+		fmt.Println(runCmd(client, "journalctl -u heyearth-api -n 30 --no-pager 2>&1 | tail -30"))
+		fmt.Println("    Откат на предыдущий бинарник (.bak)...")
+		out := runCmd(client, fmt.Sprintf("[ -f %[1]s.bak ] && cp -p %[1]s.bak %[1]s.rollback && mv -f %[1]s.rollback %[1]s && systemctl restart heyearth-api && echo ROLLED_BACK", remotePath))
+		if strings.Contains(out, "ROLLED_BACK") && waitHealthy(&client, host, config, healthWait) {
+			fmt.Println("    Откат выполнен, старая версия работает.")
+		} else {
+			fmt.Printf("    ОТКАТ НЕ УДАЛСЯ: %s\n", strings.TrimSpace(out))
+		}
+		os.Remove(binaryPath)
+		os.Exit(1)
 	}
-
-	// Проверить health endpoint
-	healthOut := runCmd(client, "curl -s http://127.0.0.1:8000/api/v1/health 2>&1")
-	fmt.Printf("    Health: %s\n", strings.TrimSpace(healthOut))
+	fmt.Println("    heyearth-api: ACTIVE ✓, health 200 ✓")
 
 	// Проверить Xray sync
 	xrayOut := runCmd(client, "systemctl is-active xray 2>/dev/null || echo not-installed")
@@ -169,6 +171,46 @@ func main() {
 
 	fmt.Println("\nДеплой завершён!")
 	os.Remove(binaryPath)
+}
+
+// healthWait bounds the wait for the restarted API.
+const healthWait = 90 * time.Second
+
+// dialRetry dials the Hub up to 4 times: the SSH link to it drops now and then.
+func dialRetry(host string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	var last error
+	for i := 0; i < 4; i++ {
+		c, err := ssh.Dial("tcp", host, config)
+		if err == nil {
+			return c, nil
+		}
+		last = err
+		fmt.Printf("    SSH: %v — повтор через 5 с\n", err)
+		time.Sleep(5 * time.Second)
+	}
+	return nil, last
+}
+
+// waitHealthy polls the service state and the health endpoint until both are good or
+// the time is up; a dropped SSH session is redialled.
+func waitHealthy(client **ssh.Client, host string, config *ssh.ClientConfig, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Second)
+		out := runCmd(*client, "systemctl is-active heyearth-api 2>/dev/null; curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8000/api/v1/health")
+		if strings.HasPrefix(out, "ERROR:") {
+			if c, err := dialRetry(host, config); err == nil {
+				(*client).Close()
+				*client = c
+			}
+			continue
+		}
+		f := strings.Fields(out)
+		if len(f) == 2 && f[0] == "active" && f[1] == "200" {
+			return true
+		}
+	}
+	return false
 }
 
 func uploadViaPipe(client *ssh.Client, localPath, remotePath string) error {
@@ -195,8 +237,10 @@ func uploadContentViaPipe(client *ssh.Client, data []byte, remotePath string) er
 	}
 	defer session.Close()
 
+	// Next to the target, then mv: a dropped session never leaves a half-written file.
 	session.Stdin = strings.NewReader(string(data))
-	return session.Run(fmt.Sprintf("cat > %s", remotePath))
+	tmp := fmt.Sprintf("%s.tmp-%d", remotePath, time.Now().UnixNano())
+	return session.Run(fmt.Sprintf("cat > %[1]s && mv -f %[1]s %[2]s || { rm -f %[1]s; exit 1; }", tmp, remotePath))
 }
 
 func runCmd(client *ssh.Client, command string) string {

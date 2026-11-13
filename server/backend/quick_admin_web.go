@@ -1,16 +1,18 @@
 //go:build ignore
 
-// Деплой admin_web одним архивом через SSH pipe (SFTP по многим мелким файлам обрывается).
-// go run quick_admin_web.go
+// Деплой admin_web или сайта одним архивом через SSH pipe (SFTP по многим мелким файлам обрывается).
+// go run quick_admin_web.go         — админка (admin.hiearth.ru)
+// go run quick_admin_web.go -site   — сайт и кабинет (hiearth.ru)
 //
-// Собирает admin_web (npm run build), отправляет dist одним tar.gz в stdin SSH-сессии,
-// распаковывает рядом и меняет каталог атомарно: при обрыве старая админка остаётся на месте.
+// Собирает (npm run build), отправляет dist одним tar.gz в stdin SSH-сессии, распаковывает
+// рядом и меняет каталог атомарно: при обрыве или ошибке сборки старая версия остаётся на месте.
 package main
 
 import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -26,9 +28,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const webRoot = "/var/www/heyearth"
-
 func main() {
+	site := flag.Bool("site", false, "deploy the site (site/) instead of the admin (admin_web/)")
+	flag.Parse()
+	appDir, webRoot, vhost := "admin_web", "/var/www/heyearth", "admin.hiearth.ru"
+	if *site {
+		appDir, webRoot, vhost = "site", "/var/www/heyearth-site", "hiearth.ru"
+	}
+
 	_, thisFile, _, _ := runtime.Caller(0)
 	backendRoot := filepath.Dir(thisFile)
 	serverRoot := filepath.Dir(backendRoot)
@@ -47,14 +54,15 @@ func main() {
 		port = "22"
 	}
 
-	fmt.Println("[1/3] Сборка admin_web...")
-	webDir := filepath.Join(repoRoot, "admin_web")
+	fmt.Printf("[1/3] Сборка %s...\n", appDir)
+	webDir := filepath.Join(repoRoot, appDir)
 	npm := "npm"
 	if runtime.GOOS == "windows" {
 		npm = "npm.cmd"
 	}
 	cmd := exec.Command(npm, "run", "build")
 	cmd.Dir = webDir
+	cmd.Env = filterEnv(os.Environ(), "VITE_API_BASE") // both apps use relative /api
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("npm run build: %v", err)
@@ -66,7 +74,7 @@ func main() {
 	fmt.Printf("    %d файлов, архив %d КБ\n", n, len(archive)/1024)
 
 	fmt.Println("[2/3] Загрузка через SSH pipe...")
-	client, err := ssh.Dial("tcp", net.JoinHostPort(env["DEPLOY_HOST"], port), &ssh.ClientConfig{
+	client, err := dialRetry(net.JoinHostPort(env["DEPLOY_HOST"], port), &ssh.ClientConfig{
 		User: "root",
 		Auth: []ssh.AuthMethod{ssh.Password(env["DEPLOY_SSH_PASSWORD"])},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
@@ -108,10 +116,34 @@ echo "files: $(find %[1]s -type f | wc -l)"`, webRoot, newDir)
 
 	fmt.Println("[3/3] Проверка...")
 	check, _ := client.NewSession()
-	res, _ := check.CombinedOutput("curl -s -o /dev/null -w '%{http_code}' -H 'Host: admin.hiearth.ru' -k https://127.0.0.1:8443/")
+	res, _ := check.CombinedOutput("curl -s -o /dev/null -w '%{http_code}' -H 'Host: " + vhost + "' -k https://127.0.0.1:8443/")
 	check.Close()
-	fmt.Printf("    admin.hiearth.ru: HTTP %s\n", strings.TrimSpace(string(res)))
+	fmt.Printf("    %s: HTTP %s\n", vhost, strings.TrimSpace(string(res)))
 	fmt.Println("Готово.")
+}
+
+func dialRetry(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	var last error
+	for i := 0; i < 4; i++ {
+		c, err := ssh.Dial("tcp", addr, cfg)
+		if err == nil {
+			return c, nil
+		}
+		last = err
+		fmt.Printf("    SSH: %v — повтор через 5 с\n", err)
+		time.Sleep(5 * time.Second)
+	}
+	return nil, last
+}
+
+func filterEnv(env []string, drop string) []string {
+	out := env[:0:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, drop+"=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func readEnv(path string) map[string]string {

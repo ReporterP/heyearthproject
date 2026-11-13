@@ -23,7 +23,10 @@
 `cd /c/tmp/hd/admin_web && npm ci --prefer-offline --no-audit --no-fund && cd ../server/backend && go run quick_admin_web.go` — один tar.gz по SSH и атомарная подмена, в конце HTTP 200.
 
 ## Сайт
-`go run ./cmd/deploy --vue-site` сейчас СНАЧАЛА удаляет живой сайт (`rm -rf`), а потом собирает и загружает. До задачи D3 (атомарная подмена) сайт не деплоить этой командой; сделать D3 первой задачей перед любым деплоем сайта.
+`cd /c/tmp/hd/site && npm ci --prefer-offline --no-audit --no-fund && cd ../server/backend && go run quick_admin_web.go -site` — тот же архив по SSH и атомарная подмена `/var/www/heyearth-site`, в конце HTTP 200. `go run ./cmd/deploy --vue-site` с 13.11 тоже безопасен: сначала собирает, потом загружает рядом и меняет каталог (D3); при обрывах SFTP — `quick_admin_web.go -site`.
+
+## Если API не поднялся
+`quick_deploy.go` ждёт до 90 с `systemctl is-active` + health 200; иначе возвращает прежний бинарник (`.bak`), перезапускает его и выходит с кодом 1. Миграции при этом уже применены (они добавочные: старый бинарник с ними работает).
 
 ## Изменение данных на проде
 Перед любым UPDATE/DELETE затронутые строки копируются в `<table>_bak_<YYYYMMDD>`. Всё в одной транзакции с `-v ON_ERROR_STOP=1`; итоговый SELECT проверяется заранее (ошибка в нём откатывает всю транзакцию).
