@@ -1,26 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { getSettings, updateSetting } from '../api/admin.js'
-import SettingCard from '../components/SettingCard.jsx'
 import SecretSettingField from '../components/settings/SecretSettingField.jsx'
-import {
-  Button,
-  Card,
-  CardHeader,
-  CardBody,
-  PageHeader,
-  Skeleton,
-} from '../components/ui/index.js'
+import SettingField from '../components/settings/SettingField.jsx'
+import { SETTINGS_SECTIONS } from '../components/settings/settingsModel.js'
+import { Button, Card, CardHeader, CardBody, PageHeader, Skeleton } from '../components/ui/index.js'
 
-// A setting shown but not edited here (its own section will own it). An unset value shows what
-// the API actually does without it.
+// A setting shown but not edited here (its own section owns it).
 function ReadOnlySetting({ label, hint, value, empty, emptyWarning = false }) {
   const isEmpty = !String(value ?? '').trim()
   return (
     <div className="py-3">
-      <p className="text-sm font-medium text-primary mb-1">{label}</p>
+      <p className="text-sm text-primary mb-1">{label}</p>
       {hint && <p className="text-xs text-tertiary mb-2">{hint}</p>}
       {isEmpty
         ? <p className={`text-sm ${emptyWarning ? 'text-warning' : 'text-secondary'}`}>{empty}</p>
@@ -29,48 +23,52 @@ function ReadOnlySetting({ label, hint, value, empty, emptyWarning = false }) {
   )
 }
 
+function Section({ title, children }) {
+  return (
+    <Card>
+      <CardHeader><h3 className="text-sm font-semibold text-primary">{title}</h3></CardHeader>
+      <CardBody className="divide-y divide-[var(--color-border-default)] py-1">{children}</CardBody>
+    </Card>
+  )
+}
+
+/**
+ * SettingsPage — «Настройки»: the account and the platform's settings in blocks (C9). Only the
+ * keys of settingsModel.js are written; the API checks every value and refuses any other key.
+ * MTProto, alerts, entries and the Hub's numbers have their own pages.
+ */
 export default function SettingsPage() {
   const { t, locale, setLocale } = useT()
   const { admin, logout, can } = useAuth()
   const toast = useToast()
-
-  const [settings, setSettings] = useState({})
-  // secret key → is it set; the values themselves never leave the API (GET /settings)
+  const canRead = can('settings.read')
+  const canEdit = can('settings.write')
+  const [settings, setSettings] = useState(null)
   const [secretsSet, setSecretsSet] = useState({})
-  // POST /settings needs settings.write; without it the secret fields are locked, saying why
-  const secretLock = can('settings.write') ? '' : 'Нужно право settings.write'
-  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  useEffect(() => {
-    if (can('settings.read')) {
-      getSettings()
-        .then(data => {
-          setSettings(data?.settings || {})
-          setSecretsSet(data?.secrets_set || {})
-        })
-        .catch(err => toast.error(err.message))
-        .finally(() => setLoading(false))
-    } else {
-      setLoading(false)
+  const load = useCallback(async () => {
+    try {
+      const data = await getSettings()
+      setSettings(data?.settings || {})
+      setSecretsSet(data?.secrets_set || {})
+      setError('')
+    } catch (e) {
+      setError(e?.message || 'ошибка')
     }
   }, [])
+  useEffect(() => { if (canRead) load() }, [canRead, load])
 
   async function saveSetting(key, value) {
-    try {
-      await updateSetting(key, value)
-      setSettings(prev => ({ ...prev, [key]: value }))
-      toast.success(t.save + ' OK')
-    } catch (err) {
-      toast.error(err.message)
-    }
+    await updateSetting(key, value)
+    setSettings((prev) => ({ ...prev, [key]: value }))
+    toast.success('Сохранено')
   }
-
-  // Secrets are write-only: only the "set" flag is kept; the field clears itself on success
-  // and keeps the typed value on an error (rethrown for it).
+  // Secrets are write-only: only the «set» flag comes back.
   async function saveSecret(key, value) {
     try {
       await updateSetting(key, value)
-      setSecretsSet(prev => ({ ...prev, [key]: true }))
+      setSecretsSet((prev) => ({ ...prev, [key]: true }))
       toast.success('Секрет сохранён')
     } catch (err) {
       toast.error(err.message)
@@ -78,194 +76,61 @@ export default function SettingsPage() {
     }
   }
 
-  function changeTheme(mode) {
-    localStorage.setItem('admin_theme_mode', mode)
-    document.documentElement.classList.toggle('light', mode === 'light')
-  }
-
-  const currentTheme = localStorage.getItem('admin_theme_mode') || 'dark'
-
   return (
-    <div className="max-w-2xl">
-      <PageHeader title={t.settingsTitle} subtitle="Управление аккаунтом и настройками платформы" />
-
+    <div className="max-w-3xl">
+      <PageHeader title="Настройки" subtitle="Аккаунт и настройки платформы. Изменения действуют сразу и пишутся в журнал аудита." />
       <div className="space-y-6">
-        {/* Account */}
-        <Card>
-          <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsAccount}</h3></CardHeader>
-          <CardBody>
-            <p className="text-sm text-secondary mb-1">{admin?.username}</p>
-            <p className="text-sm text-secondary mb-4">{admin?.display_name}</p>
-            <Button variant="danger" size="md" onClick={logout}>{t.settingsLogout}</Button>
-          </CardBody>
-        </Card>
-
-        {/* Theme & Language */}
-        <Card>
-          <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsTheme}</h3></CardHeader>
-          <CardBody>
-            <div className="flex gap-2 mb-4">
-              {['dark', 'light'].map(mode => (
-                <Button
-                  key={mode}
-                  variant={currentTheme === mode ? 'primary' : 'secondary'}
-                  size="md"
-                  onClick={() => changeTheme(mode)}
-                >
-                  {mode === 'dark' ? t.themeDark : t.themeLight}
-                </Button>
-              ))}
+        <Section title="Аккаунт">
+          <div className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-mono text-sm text-primary">{admin?.username}</p>
+              {admin?.display_name && <p className="text-xs text-tertiary">{admin.display_name}</p>}
             </div>
-            <h3 className="text-lg font-semibold mb-3 text-primary">{t.settingsLanguage}</h3>
+            <Button variant="danger" onClick={logout} className="w-full sm:w-auto">{t.settingsLogout}</Button>
+          </div>
+          <div className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <span className="text-sm text-primary">Язык интерфейса</span>
             <div className="flex gap-2">
-              {['ru', 'en'].map(l => (
-                <Button
-                  key={l}
-                  variant={locale === l ? 'primary' : 'secondary'}
-                  size="md"
-                  onClick={() => setLocale(l)}
-                >
-                  {l.toUpperCase()}
+              {['ru', 'en'].map((l) => (
+                <Button key={l} size="sm" variant={locale === l ? 'secondary' : 'ghost'} aria-pressed={locale === l} onClick={() => setLocale(l)}>
+                  {l === 'ru' ? 'Русский' : 'English'}
                 </Button>
               ))}
             </div>
-          </CardBody>
-        </Card>
+          </div>
+        </Section>
 
-        {/* Server settings */}
-        {can('settings.read') && (
+        {!canRead ? null : error ? (
+          <p role="alert" className="text-sm text-danger">Не удалось загрузить настройки: {error}</p>
+        ) : !settings ? (
+          <div className="space-y-3"><Skeleton className="h-40" /><Skeleton className="h-40" /></div>
+        ) : (
           <>
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsServerSection}</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label="ЮKassa Shop ID" hint="shopId — идентификатор магазина в личном кабинете ЮKassa" value={settings.yookassa_shop_id} onSave={v => saveSetting('yookassa_shop_id', v)} />
-                    <SecretSettingField id="yookassa-secret" label="ЮKassa Secret Key" isSet={secretsSet.yookassa_secret_key} disabledReason={secretLock}
-                      hint="Секретный ключ API (ЛК ЮKassa → Интеграция → API-ключи). Хранится только на сервере и в админку не возвращается."
-                      onSave={v => saveSecret('yookassa_secret_key', v)} />
-                    <SettingCard label="Тестовый режим" hint="true — использовать тестовый магазин ЮKassa (реальные деньги не списываются). В ЛК тестового магазина настройте Webhook URL: https://hiearth.ru/api/v1/webhooks/yookassa" value={settings.yookassa_test_mode || 'true'} onSave={v => saveSetting('yookassa_test_mode', v)} type="toggle" />
-                    <SettingCard label="Email для чеков (fallback)" hint="Если пользователь не указал email при оплате, чек придёт на этот адрес. Фискализация по 54-ФЗ обязательна." value={settings.receipt_fallback_email} onSave={v => saveSetting('receipt_fallback_email', v)} />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">SMTP (email уведомления)</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label="Отправка включена" hint="true/false — если false, email не отправляется (но логируется в email_log)" value={settings.smtp_enabled || 'false'} onSave={v => saveSetting('smtp_enabled', v)} type="toggle" />
-                    <SettingCard label="SMTP Host" hint="Например smtp.yandex.ru или smtp.mail.ru" value={settings.smtp_host} onSave={v => saveSetting('smtp_host', v)} />
-                    <SettingCard label="SMTP Port" hint="587 (STARTTLS) или 465 (implicit TLS)" value={settings.smtp_port || '587'} onSave={v => saveSetting('smtp_port', v)} />
-                    <SettingCard label="SMTP User" hint="Обычно email-ящик полностью" value={settings.smtp_user} onSave={v => saveSetting('smtp_user', v)} />
-                    <SecretSettingField id="smtp-password" label="SMTP Password" isSet={secretsSet.smtp_password} disabledReason={secretLock}
-                      hint="Пароль приложения (app password; для Gmail/Yandex создаётся в настройках почты). Хранится только на сервере и в админку не возвращается."
-                      onSave={v => saveSecret('smtp_password', v)} />
-                    <SettingCard label="From email" hint="Email отправителя (должен совпадать с SMTP User или быть в разрешённых)" value={settings.smtp_from_email} onSave={v => saveSetting('smtp_from_email', v)} />
-                    <SettingCard label="From name" hint="Имя отправителя, например HiEarth" value={settings.smtp_from_name || 'HiEarth'} onSave={v => saveSetting('smtp_from_name', v)} />
-                    <SettingCard label="Use TLS" hint="true для шифрования (рекомендуется)" value={settings.smtp_use_tls || 'true'} onSave={v => saveSetting('smtp_use_tls', v)} type="toggle" />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">Юридические данные</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label="Название организации" hint="Полное наименование ИП или ООО" value={settings.legal_company_name} onSave={v => saveSetting('legal_company_name', v)} />
-                    <SettingCard label="ИНН" hint="ИНН индивидуального предпринимателя или организации" value={settings.legal_inn} onSave={v => saveSetting('legal_inn', v)} />
-                    <SettingCard label="Email" hint="Контактный email для связи" value={settings.legal_email} onSave={v => saveSetting('legal_email', v)} />
-                    <SettingCard label="Телефон" hint="Контактный телефон" value={settings.legal_phone} onSave={v => saveSetting('legal_phone', v)} />
-                    <SettingCard label="Юридический адрес" hint="Адрес регистрации ИП/ООО" value={settings.legal_address} onSave={v => saveSetting('legal_address', v)} />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">Подписки и продление</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard
-                      label="Окно досрочного продления (дней)"
-                      hint="За сколько дней до окончания подписки на сайте появляется CTA «Продлить заранее». Допустимо 0..30. По умолчанию 3 (показывать за 3 дня до конца). 0 — никогда не показывать."
-                      value={settings.early_renewal_days_threshold || '3'}
-                      onSave={v => saveSetting('early_renewal_days_threshold', v)}
-                    />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">Блок «Поддержать разработчика»</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label="Включить блок донатов" hint="Показывать блок «Поддержать разработчика» в личном кабинете пользователей" value={settings.donation_enabled || 'true'} onSave={v => saveSetting('donation_enabled', v)} type="toggle" />
-                    <SettingCard label="Заголовок блока" hint="Заголовок для блока донатов" value={settings.donation_title} onSave={v => saveSetting('donation_title', v)} />
-                    <SettingCard label="Текст блока" hint="Основной текст блока донатов (поддерживает простой текст)" value={settings.donation_text} onSave={v => saveSetting('donation_text', v)} />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsHubServerSection}</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label={t.settingsHubMainServerHost} hint={t.settingsHubMainServerHostHint} value={settings.hub_main_server_host} onSave={v => saveSetting('hub_main_server_host', v)} />
+            {SETTINGS_SECTIONS.map((sec) => (
+              <Section key={sec.key} title={sec.title}>
+                {sec.fields.map((f) => (f.kind === 'secret' ? (
+                  <SecretSettingField key={f.key} id={`setting-${f.key}`} label={f.label} hint={f.hint} isSet={secretsSet[f.key]}
+                    disabledReason={canEdit ? '' : 'Нужно право «Настройки: изменение»'} onSave={(v) => saveSecret(f.key, v)} />
+                ) : (
+                  <SettingField key={f.key} field={f} settings={settings} canEdit={canEdit} onSave={saveSetting} />
+                )))}
+                {sec.key === 'connection' && (
+                  <>
                     <ReadOnlySetting label="Адрес входа в профилях (main_server_host)"
-                      hint="Куда подключаются приложения пользователей (Берёза, Дуб, Бамбук, Пальма). Будет меняться в разделах «Входы» и «Домены»."
-                      value={settings.main_server_host}
-                      empty="не задан — в подписках нет входов через Hub" emptyWarning />
+                      hint="Куда подключаются приложения пользователей. Меняется в «Серверы → Входы в РФ»."
+                      value={settings.main_server_host} empty="не задан — в подписках нет входов через Hub" emptyWarning />
                     <ReadOnlySetting label="Адрес сайта (site_url)" hint="Ссылки в письмах и возврат после оплаты."
                       value={settings.site_url} empty="https://hiearth.ru (по умолчанию)" />
-                    <SettingCard label={t.settingsHubVlessPort} hint={t.settingsHubVlessPortHint} value={settings.hub_vless_port} onSave={v => saveSetting('hub_vless_port', v)} />
-                    <SettingCard label={t.settingsApiEndpoints} hint={t.settingsApiEndpointsHint} value={settings.api_endpoints} onSave={v => saveSetting('api_endpoints', v)} />
-                  </div>
+                  </>
                 )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsB2bTariffsSection}</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label={t.settingsB2bPricePerUser} hint={t.settingsB2bPricePerUserHint} value={settings.b2b_price_per_user} onSave={v => saveSetting('b2b_price_per_user', v)} />
-                    <SettingCard label={t.settingsB2bPriceOurServers} hint={t.settingsB2bPriceOurServersHint} value={settings.b2b_price_our_servers} onSave={v => saveSetting('b2b_price_our_servers', v)} />
-                    <SettingCard label={t.settingsB2bBaseOwnServers} hint={t.settingsB2bBaseOwnServersHint} value={settings.b2b_base_own_servers} onSave={v => saveSetting('b2b_base_own_servers', v)} />
-                    <SettingCard label={t.settingsB2bPriceExtraServer} hint={t.settingsB2bPriceExtraServerHint} value={settings.b2b_price_extra_server} onSave={v => saveSetting('b2b_price_extra_server', v)} />
-                    <SettingCard label={t.settingsB2bPricePremiumUser} hint={t.settingsB2bPricePremiumUserHint} value={settings.b2b_price_premium_user} onSave={v => saveSetting('b2b_price_premium_user', v)} />
-                    <SettingCard label={t.settingsB2bPriceUnlimited} hint={t.settingsB2bPriceUnlimitedHint} value={settings.b2b_price_unlimited} onSave={v => saveSetting('b2b_price_unlimited', v)} />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader><h3 className="text-lg font-semibold text-primary">{t.settingsAppBuildSection}</h3></CardHeader>
-              <CardBody>
-                {loading ? <Skeleton className="h-24" /> : (
-                  <div className="divide-y divide-default">
-                    <SettingCard label={t.settingsAppBuildRepoUrl} value={settings.app_build_repo_url} onSave={v => saveSetting('app_build_repo_url', v)} />
-                    <SettingCard label={t.settingsAppBuildRepoBranch} value={settings.app_build_repo_branch} onSave={v => saveSetting('app_build_repo_branch', v)} />
-                    <SettingCard label={t.settingsAppBuildSiteUrl} value={settings.app_build_site_url} onSave={v => saveSetting('app_build_site_url', v)} />
-                    <SettingCard label={t.settingsAppBuildApiBase} value={settings.app_build_api_base} onSave={v => saveSetting('app_build_api_base', v)} />
-                    <SettingCard label={t.settingsAppBuildPlatforms} value={settings.app_build_platforms} onSave={v => saveSetting('app_build_platforms', v)} />
-                  </div>
-                )}
-              </CardBody>
-            </Card>
-
-            {/* Auto-Tuner moved to separate page /auto-tuner */}
+              </Section>
+            ))}
+            <Section title="Уведомления">
+              <p className="py-3 text-sm text-secondary">
+                Тревоги в Telegram (бот и чат) настраиваются на странице <Link to="/alerts" className="text-accent hover:underline">«Алерты»</Link>,
+                Telegram-прокси — на странице <Link to="/mtproto" className="text-accent hover:underline">«MTProto»</Link>.
+              </p>
+            </Section>
           </>
         )}
       </div>
