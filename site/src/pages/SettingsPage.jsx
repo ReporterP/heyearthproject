@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 import { copyToClipboard } from '../components/CopyButton.jsx'
 import { Skeleton } from '../components/Skeleton.jsx'
+import LoadErrorCard from '../components/LoadErrorCard.jsx'
 
 function strengthOf(pw) {
   if (!pw) return null
@@ -43,6 +44,7 @@ export default function SettingsPage() {
   const [err, setErr] = useState('')
   const [copied, setCopied] = useState(false)
   const [confirmLogout, setConfirmLogout] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     if (!token) { navigate('/login'); return }
@@ -52,10 +54,7 @@ export default function SettingsPage() {
         setUsername(data.username || '')
       })
       .catch(e => {
-        if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
-          logout()
-          navigate('/login')
-        }
+        if (e.kind !== 'auth') setLoadError(e.message || 'Не удалось загрузить профиль — обновите страницу.')
       })
       .finally(() => setLoading(false))
   }, [])
@@ -112,6 +111,8 @@ export default function SettingsPage() {
     const ok = await copyToClipboard(profile?.user_id || '')
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000) }
   }
+
+  if (loadError) return <LoadErrorCard message={loadError} />
 
   return (
     <section className="relative py-12 md:py-16 overflow-hidden">

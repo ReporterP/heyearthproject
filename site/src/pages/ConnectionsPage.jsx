@@ -94,7 +94,8 @@ export default function ConnectionsPage() {
     if (!token) { navigate('/login'); return }
     Promise.all([
       getProfile(token),
-      getConnections(token).catch(() => null),
+      // No catch: a failure (503) must show «временно недоступно», never «нет подписки».
+      getConnections(token),
       getDownloads().catch(() => ({ downloads: {} })),
       getSubscribeLink(token).catch(() => null),
     ]).then(([profileData, connData, dlData, subLinkData]) => {
@@ -108,9 +109,7 @@ export default function ConnectionsPage() {
         localStorage.setItem('heyearth_config_version', String(connData.config_version))
       }
     }).catch(e => {
-      if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
-        logout(); navigate('/login'); return
-      }
+      if (e.kind === 'auth') return // apiFetch signed the site out; RequireAuth redirects
       setError(e.message || 'Не удалось загрузить данные. Обновите страницу.')
     }).finally(() => setLoading(false))
   }, [])

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { UNAUTHORIZED_EVENT } from '../api/http.js'
 
 const AuthContext = createContext()
 
@@ -15,7 +16,15 @@ export function AuthProvider({ children }) {
     setToken('')
   }, [])
 
-  // Validate token on mount
+  // Any API call that got 401 (apiFetch) signs the site out; RequireAuth then sends
+  // the client to /login?redirect=<where they were>. A 503 (database hiccup) does not.
+  useEffect(() => {
+    const onUnauthorized = () => logout()
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [logout])
+
+  // Validate the stored token on mount: only a 401 signs out.
   useEffect(() => {
     if (!token) return
     fetch('/api/v1/user/profile', {

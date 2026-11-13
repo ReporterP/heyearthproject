@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import '@fontsource-variable/lora'
 import '@fontsource-variable/raleway'
@@ -77,6 +77,8 @@ function App() {
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
             <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
+            {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}
+            <Route path="/checkout" element={<Navigate to="/payment" replace />} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
             <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />

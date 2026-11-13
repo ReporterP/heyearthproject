@@ -1,92 +1,52 @@
-const API_BASE = ''
-
-async function jsonOrThrow(res, fallbackMsg) {
-  const ct = res.headers.get('content-type') || ''
-  if (!ct.includes('application/json')) {
-    throw new Error('Сервер вернул некорректный ответ. Попробуйте обновить страницу.')
-  }
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || fallbackMsg)
-  return data
-}
+import { apiFetch } from './http.js'
 
 export async function registerUser(platform = '', deviceId = '') {
-  const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ platform, device_id: deviceId }),
-  })
-  return jsonOrThrow(res, 'Registration failed')
+  return apiFetch('/api/v1/auth/register', { method: 'POST', body: { platform, device_id: deviceId }, fallback: 'Не удалось создать аккаунт — попробуйте ещё раз.' })
 }
 
 export async function loginUser(idOrUsername, password = '') {
-  const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id_or_username: idOrUsername, password }),
-  })
-  return jsonOrThrow(res, 'Login failed')
+  return apiFetch('/api/v1/auth/login', { method: 'POST', body: { id_or_username: idOrUsername, password }, fallback: 'Не удалось войти — попробуйте ещё раз.', signOutOn401: false })
 }
 
 export async function getProfile(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/profile`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load profile')
+  return apiFetch('/api/v1/user/profile', { token, fallback: 'Не удалось загрузить профиль.' })
 }
 
 export async function updateProfile(token, { username, newPassword, currentPassword }) {
-  const res = await fetch(`${API_BASE}/api/v1/user/profile`, {
+  return apiFetch('/api/v1/user/profile', {
+    token,
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
+    body: {
       username: username || undefined,
       new_password: newPassword || undefined,
       current_password: currentPassword || undefined,
-    }),
+    },
+    fallback: 'Не удалось сохранить изменения.',
   })
-  return jsonOrThrow(res, 'Failed to update profile')
 }
 
 export async function getSubscription(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/subscription`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load subscription')
+  return apiFetch('/api/v1/user/subscription', { token, fallback: 'Не удалось загрузить подписку.' })
 }
 
 export async function getPayments(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/payments`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load payments')
+  return apiFetch('/api/v1/user/payments', { token, fallback: 'Не удалось загрузить платежи.' })
 }
 
 export async function getConnections(token, platform) {
-  const url = new URL(`${API_BASE}/api/v1/user/connections`, window.location.origin)
-  if (platform) url.searchParams.set('platform', platform)
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load connections')
+  const q = platform ? `?platform=${encodeURIComponent(platform)}` : ''
+  return apiFetch(`/api/v1/user/connections${q}`, { token, fallback: 'Не удалось загрузить подключение.' })
 }
 
 // AmneziaWG ("Пальма") per-user config. Heavy (keys + CPS) — fetched lazily,
 // only for users whose connections.amnezia_available is true. Returns
 // { available, config_text, deeplink, endpoint, ip }.
 export async function getAwgConfig(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/awg-config`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Не удалось загрузить конфигурацию Пальмы')
+  return apiFetch('/api/v1/user/awg-config', { token, fallback: 'Не удалось загрузить конфигурацию Пальмы.' })
 }
 
 export async function getDownloads() {
-  const res = await fetch(`${API_BASE}/api/v1/user/downloads`)
-  return jsonOrThrow(res, 'Failed to load downloads')
+  return apiFetch('/api/v1/user/downloads', { fallback: 'Не удалось загрузить ссылки на приложения.' })
 }
 
 export async function createPayment(token, plan, returnUrl, planId, promocode, saveCard = false, email = '', confirmationType = 'redirect') {
@@ -96,131 +56,65 @@ export async function createPayment(token, plan, returnUrl, planId, promocode, s
   if (promocode) body.promocode = promocode
   if (email) body.email = email
   if (confirmationType && confirmationType !== 'redirect') body.confirmation_type = confirmationType
-  const res = await fetch(`${API_BASE}/api/v1/payment/create`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  })
-  return jsonOrThrow(res, 'Failed to create payment')
+  return apiFetch('/api/v1/payment/create', { token, method: 'POST', body, fallback: 'Не удалось создать платёж — попробуйте ещё раз.' })
 }
 
 export async function applyPromocode(token, code) {
-  const res = await fetch(`${API_BASE}/api/v1/payment/apply-promocode`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ code }),
-  })
-  return jsonOrThrow(res, 'Failed to apply promocode')
+  return apiFetch('/api/v1/payment/apply-promocode', { token, method: 'POST', body: { code }, fallback: 'Не удалось применить промокод.' })
 }
 
 export async function createDonation(token, amount, returnUrl) {
-  const res = await fetch(`${API_BASE}/api/v1/payment/donate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ amount, return_url: returnUrl }),
-  })
-  return jsonOrThrow(res, 'Failed to create donation')
+  return apiFetch('/api/v1/payment/donate', { token, method: 'POST', body: { amount, return_url: returnUrl }, fallback: 'Не удалось создать платёж.' })
 }
 
 export async function getTrafficStats(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/traffic`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load traffic stats')
+  return apiFetch('/api/v1/user/traffic', { token, fallback: 'Не удалось загрузить статистику трафика.' })
 }
 
 export async function getSubscribeLink(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/subscribe-token`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load subscribe link')
+  return apiFetch('/api/v1/user/subscribe-token', { token, fallback: 'Не удалось загрузить ссылку подписки.' })
 }
 
 // ── Cards ──
 export async function getUserCards(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/cards`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load cards')
+  return apiFetch('/api/v1/user/cards', { token, fallback: 'Не удалось загрузить карты.' })
 }
 
 export async function deleteUserCard(token, cardId) {
-  const res = await fetch(`${API_BASE}/api/v1/user/cards/${cardId}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to delete card')
+  return apiFetch(`/api/v1/user/cards/${cardId}`, { token, method: 'DELETE', fallback: 'Не удалось удалить карту.' })
 }
 
 // ── Refund ──
 export async function requestRefund(token, paymentId, reason) {
-  const res = await fetch(`${API_BASE}/api/v1/payment/refund`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ payment_id: paymentId, reason }),
-  })
-  return jsonOrThrow(res, 'Failed to request refund')
+  return apiFetch('/api/v1/payment/refund', { token, method: 'POST', body: { payment_id: paymentId, reason }, fallback: 'Не удалось отправить заявку на возврат.' })
 }
 
 // ── Auto-renew ──
 export async function toggleAutoRenew(token, enabled) {
-  const res = await fetch(`${API_BASE}/api/v1/user/auto-renew`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ auto_renew: enabled }),
-  })
-  return jsonOrThrow(res, 'Failed to toggle auto-renew')
+  return apiFetch('/api/v1/user/auto-renew', { token, method: 'POST', body: { auto_renew: enabled }, fallback: 'Не удалось изменить автопродление.' })
 }
 
 export async function getPaymentDetail(token, paymentId) {
-  const res = await fetch(`${API_BASE}/api/v1/user/payments/${paymentId}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to fetch payment detail')
+  return apiFetch(`/api/v1/user/payments/${paymentId}`, { token, fallback: 'Не удалось загрузить платёж.' })
 }
 
 export async function pauseSubscription(token, months) {
-  const res = await fetch(`${API_BASE}/api/v1/user/pause-subscription`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ months }),
-  })
-  return jsonOrThrow(res, 'Failed to pause subscription')
+  return apiFetch('/api/v1/user/pause-subscription', { token, method: 'POST', body: { months }, fallback: 'Не удалось приостановить подписку.' })
 }
 
 export async function resumeSubscription(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/resume-subscription`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to resume subscription')
+  return apiFetch('/api/v1/user/resume-subscription', { token, method: 'POST', fallback: 'Не удалось возобновить подписку.' })
 }
 
 // ── MTProto ──
 export async function getMtproto(token) {
-  const res = await fetch(`${API_BASE}/api/v1/user/mtproto`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  return jsonOrThrow(res, 'Failed to load MTProto info')
+  return apiFetch('/api/v1/user/mtproto', { token, fallback: 'Не удалось загрузить прокси для Telegram.' })
 }
 
 // ── Donation settings ──
 export async function getDonationSettings() {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/app/donation-settings`)
-    if (!res.ok) return null
-    const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('application/json')) return null
-    return await res.json()
+    return await apiFetch('/api/v1/app/donation-settings')
   } catch {
     return null
   }

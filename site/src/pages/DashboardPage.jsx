@@ -245,11 +245,7 @@ export default function DashboardPage() {
         }
       } catch {}
     }).catch(e => {
-      if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
-        logout()
-        navigate('/login')
-        return
-      }
+      if (e.kind === 'auth') return // apiFetch signed the site out; RequireAuth redirects
       setError(e.message || 'Не удалось загрузить данные. Обновите страницу.')
     }).finally(() => setLoading(false))
   }, [])

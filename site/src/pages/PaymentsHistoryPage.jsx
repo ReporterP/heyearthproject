@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { getPayments, getProfile, getUserCards, getSubscription, deleteUserCard, toggleAutoRenew, requestRefund, pauseSubscription, resumeSubscription } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import LoadErrorCard from '../components/LoadErrorCard.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 function formatDate(d) {
@@ -46,6 +47,7 @@ export default function PaymentsHistoryPage() {
 
   const [profile, setProfile] = useState(null)
   const [payments, setPayments] = useState([])
+  const [loadError, setLoadError] = useState('')
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [autoRenew, setAutoRenew] = useState(null)   // synced from API (was: hardcoded true)
@@ -60,7 +62,8 @@ export default function PaymentsHistoryPage() {
     if (!token) { navigate('/login'); return }
     Promise.all([
       getProfile(token).catch(() => null),
-      getPayments(token).catch(() => ({ items: [] })),
+      // No catch: a failed load must not look like «платежей пока нет».
+      getPayments(token),
       getUserCards(token).catch(() => ({ cards: [] })),
       getSubscription(token).catch(() => null),
     ]).then(([prof, payData, cardsData, subData]) => {
@@ -70,6 +73,8 @@ export default function PaymentsHistoryPage() {
       // FIX: auto-renew now reflects the server, so the toggle tells the truth
       const active = subData?.items?.find(s => s.active) || subData?.items?.[0]
       if (active && typeof active.auto_renew === 'boolean') setAutoRenew(active.auto_renew)
+    }).catch(e => {
+      if (e.kind !== 'auth') setLoadError(e.message || 'Не удалось загрузить платежи — обновите страницу.')
     }).finally(() => setLoading(false))
   }, [token])
 
@@ -190,6 +195,7 @@ export default function PaymentsHistoryPage() {
   }
 
   if (loading) return <CabinetSkeleton />
+  if (loadError) return <LoadErrorCard message={loadError} />
 
   // group payments by month for scannability
   const groups = payments.reduce((acc, p) => {
@@ -351,7 +357,7 @@ export default function PaymentsHistoryPage() {
                           <p className="text-xs text-faint mt-0.5">{formatDate(p.created_at)}</p>
                         </div>
                         <div className="flex items-center gap-3 flex-shrink-0 ml-3">
-                          {p.status === 'completed' && (
+                          {(p.status === 'succeeded' || p.status === 'completed') && (
                             <button onClick={e => { e.preventDefault(); e.stopPropagation(); handleRefund(p.id) }} className="text-xs text-accent hover:brightness-110 px-2 py-1 rounded-lg bg-accent/10 transition">Возврат</button>
                           )}
                           <svg className="w-5 h-5 text-faint group-hover:text-brand group-hover:translate-x-1 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>

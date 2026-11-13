@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { registerUser, updateProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 import Fireflies from '../components/Fireflies.jsx'
+import { safeRedirect } from '../lib/redirect.js'
 
 const Arrow = () => (
   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
@@ -24,11 +25,16 @@ function strengthOf(pw) {
 
 export default function RegisterPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const redirectTo = safeRedirect(searchParams.get('redirect'))
   const { login, isLoggedIn } = useAuth()
 
+  // Already signed in when the page opens: nothing to register. After a fresh
+  // registration the client is NOT signed in until «Продолжить» below — the screen
+  // with the ID (the only key to the account) must stay until they saved it.
   useEffect(() => {
-    if (isLoggedIn) navigate('/dashboard', { replace: true })
-  }, [isLoggedIn, navigate])
+    if (isLoggedIn) navigate(redirectTo, { replace: true })
+  }, [isLoggedIn, navigate, redirectTo])
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -56,10 +62,7 @@ export default function RegisterPage() {
     try {
       const data = await registerUser('web', '')
       setGeneratedId(data.id || data.user_id || data.heyearth_id || '')
-      if (data.token) {
-        setAuthToken(data.token)
-        login(data.token)
-      }
+      if (data.token) setAuthToken(data.token)
     } catch (e) {
       setError(e.message || 'Не удалось создать аккаунт. Попробуйте ещё раз.')
     } finally {
@@ -174,7 +177,7 @@ export default function RegisterPage() {
 
               <p className="text-center text-sm text-text-secondary">
                 Уже есть аккаунт?{' '}
-                <Link to="/login" className="text-brand hover:text-brand-light font-medium transition-colors">Войти</Link>
+                <Link to={redirectTo !== '/dashboard' ? `/login?redirect=${encodeURIComponent(redirectTo)}` : '/login'} className="text-brand hover:text-brand-light font-medium transition-colors">Войти</Link>
               </p>
             </>
           ) : (
@@ -287,7 +290,7 @@ export default function RegisterPage() {
               <button
                 className="btn-primary w-full !py-3.5 disabled:opacity-40"
                 disabled={!acknowledged}
-                onClick={() => navigate('/dashboard')}
+                onClick={() => { if (authToken) login(authToken); navigate(redirectTo, { replace: true }) }}
               >
                 Перейти в личный кабинет <Arrow />
               </button>

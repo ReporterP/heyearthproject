@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { safeRedirect } from '../lib/redirect.js'
 import { loginUser } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
@@ -31,7 +32,8 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [showHelp, setShowHelp] = useState(false)
 
-  const redirectTo = searchParams.get('redirect') || '/dashboard'
+  const redirectTo = safeRedirect(searchParams.get('redirect'))
+  const registerHref = redirectTo !== '/dashboard' ? `/register?redirect=${encodeURIComponent(redirectTo)}` : '/register'
   const canSubmit = idOrUsername.trim().length > 0 && !loading
 
   async function handleLogin(e) {
@@ -167,7 +169,7 @@ export default function LoginPage() {
                   <p className="text-xs text-text-secondary leading-relaxed">
                     HiEarth ID выдаётся анонимно и нигде не дублируется — восстановить его мы не можем.
                     Проверьте буфер обмена, заметки и скачанный файл <code className="font-mono text-text-primary">hiearth-id.txt</code>.
-                    Если ID утерян — <Link to="/register" className="text-brand hover:text-brand-light">создайте новый</Link> или напишите в поддержку:{' '}
+                    Если ID утерян — <Link to={registerHref} className="text-brand hover:text-brand-light">создайте новый</Link> или напишите в поддержку:{' '}
                     <a href="mailto:alex_step04@mail.ru" className="text-brand hover:text-brand-light">alex_step04@mail.ru</a>
                   </p>
                 </div>
@@ -179,7 +181,7 @@ export default function LoginPage() {
 
           <p className="text-center text-sm text-text-secondary">
             Нет аккаунта?{' '}
-            <Link to="/register" className="text-brand hover:text-brand-light font-medium transition-colors">
+            <Link to={registerHref} className="text-brand hover:text-brand-light font-medium transition-colors">
               Зарегистрироваться
             </Link>
           </p>
