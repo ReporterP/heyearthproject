@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/net/proxy"
 
+	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 )
 
@@ -89,6 +90,11 @@ func StartMonitor() {
 	// per entry up to ~25 s (TLS 15 s + control 10 s), + ~20 s Bamboo per relay.
 	go runEvery(100*time.Second, entryCheckInterval, func() {
 		safely("входы", runEntryMonitor)
+	})
+	// «Мощность» (cleanup plan B5): an hourly look; the «пора докупить» alert is raised once
+	// and not repeated while the verdict stands (RaiseAlertNoRepeat), resolved when it clears.
+	go runEvery(10*time.Minute, time.Hour, func() {
+		safely("мощность", checkCapacity)
 	})
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)
@@ -701,4 +707,23 @@ func checkDiskUsage() {
 		return
 	}
 	ResolveAlert("disk-usage", fmt.Sprintf("Диск в норме: занято %.1f%%.", pct))
+}
+
+const capacityAlertKey = "capacity-buy-more"
+
+func checkCapacity() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sum, err := admin.EvaluateCapacity(ctx)
+	if err != nil {
+		log.Printf("[monitor] мощность: %v", err)
+		return
+	}
+	if sum.Level == "warn" {
+		RaiseAlertNoRepeat(capacityAlertKey, AlertWarn, "Пора докупить сервер", sum.Text+". Подробности — «Серверы → Мощность» в админке.")
+		return
+	}
+	if sum.Level == "ok" {
+		ResolveAlert(capacityAlertKey, "Мощности снова хватает")
+	}
 }

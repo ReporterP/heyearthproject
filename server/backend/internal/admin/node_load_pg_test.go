@@ -76,3 +76,31 @@ func TestRecordNodeSample(t *testing.T) {
 		t.Errorf("load_metrics %s cores %d", raw, cores)
 	}
 }
+
+// B5: the report's queries run on Postgres and read the samples back.
+func TestLoadCapacityReport(t *testing.T) {
+	conn := testpg.Open(t)
+	testpg.MustExec(t, conn, `INSERT INTO servers (id, name, ip_address, role, lifecycle_state, status, cpu_cores, port_mbps, monthly_price_rub)
+		VALUES (301, 'Exit A', '203.0.113.30', 'exit', 'online', 'online', 1, 1000, 700)`)
+	for i := 0; i < 30; i++ {
+		testpg.MustExec(t, conn, `INSERT INTO server_metric_samples (server_id, at, cpu_pct, mem_pct, cores, net_rx_mbps, net_tx_mbps, rx_bytes, tx_bytes)
+			VALUES (301, NOW() - make_interval(mins => $1), 70, 40, 1, 100, 20, 1000000000, 1000000000)`, i)
+		testpg.MustExec(t, conn, `INSERT INTO server_metric_samples (server_id, at, cpu_pct, mem_pct, cores) VALUES (NULL, NOW() - make_interval(mins => $1), 20, 30, 4)`, i)
+	}
+	rep, err := LoadCapacityReport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ex capGroup
+	for _, g := range rep.Groups {
+		if g.Role == "exit" {
+			ex = g
+		}
+	}
+	if len(ex.Nodes) != 1 || ex.Nodes[0].CPUPeak < 69 || ex.Nodes[0].NetPeakMbps < 99 || ex.Nodes[0].MonthTB < 0.05 || ex.Buy != buyExit {
+		t.Fatalf("exit group %+v", ex)
+	}
+	if rep.MonthlyCostRub != 700+2400 {
+		t.Errorf("cost %d", rep.MonthlyCostRub)
+	}
+}
