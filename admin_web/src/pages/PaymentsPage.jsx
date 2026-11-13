@@ -3,9 +3,9 @@ import { Wallet, Copy as CopyIcon, Check } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus } from '../api/admin.js'
+import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus, syncPendingPayments } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
-import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../components/CrudDialog.jsx'
+import ManualPaymentDialog from '../components/payments/ManualPaymentDialog.jsx'
 import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
 import { refundableAmount } from '../utils/refund.js'
@@ -133,20 +133,11 @@ export default function PaymentsPage() {
   const [error, setError] = useState('')
   const pageSize = 20
 
-  const [dialog, setDialog] = useState(null)
-  const [saving, setSaving] = useState(false)
+  const [dialog, setDialog] = useState(null) // { mode: 'create' } | { mode: 'edit', item } — manual payments only
   const [refundFor, setRefundFor] = useState(null) // payment in the refund dialog
   const [checkingId, setCheckingId] = useState(null) // payment whose YooKassa status is being fetched
   const canActions = can('payments.write') || can('payments.refund')
 
-  const [userDbId, setUserDbId] = useState('')
-  const [amount, setAmount] = useState('')
-  const [currency, setCurrency] = useState('RUB')
-  const [status, setStatus] = useState('pending')
-  const [provider, setProvider] = useState('manual')
-  const [externalId, setExternalId] = useState('')
-  const [notes, setNotes] = useState('')
-  const [metadata, setMetadata] = useState('')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -173,75 +164,19 @@ export default function PaymentsPage() {
     return items.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
   }, [items])
 
-  function openCreate() {
-    setUserDbId('')
-    setAmount('')
-    setCurrency('RUB')
-    setStatus('pending')
-    setProvider('manual')
-    setExternalId('')
-    setNotes('')
-    setMetadata('')
-    setDialog({ mode: 'create' })
-  }
-
-  function openEdit(item) {
-    const uid = item.user_db_id && item.user_db_id > 0 ? item.user_db_id : (item.user_id || '')
-    setUserDbId(String(uid))
-    setAmount(String(item.amount || ''))
-    setCurrency(item.currency || 'RUB')
-    setStatus(item.status || 'pending')
-    setProvider(item.provider || '')
-    setExternalId(item.external_id || '')
-    setNotes(item.notes || '')
-    setMetadata(item.metadata ? JSON.stringify(item.metadata) : '')
-    setDialog({ mode: 'edit', item })
-  }
-
-  async function handleSave() {
-    setSaving(true)
-    try {
-      const payload = {
-        user_db_id: parseInt(userDbId),
-        amount: parseFloat(amount),
-        currency,
-        status,
-        provider,
-        external_id: externalId || undefined,
-        notes: notes || undefined,
-      }
-      if (metadata) {
-        try { payload.metadata = JSON.parse(metadata) } catch {
-          toast.error(t.paymentMetadataInvalidJson || 'Metadata: невалидный JSON')
-          setSaving(false)
-          return
-        }
-      }
-      if (dialog.mode === 'create') {
-        await createPayment(payload)
-        toast.success(t.create + ' OK')
-      } else {
-        await updatePayment(dialog.item.id, payload)
-        toast.success(t.save + ' OK')
-      }
-      setDialog(null)
-      load()
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setSaving(false)
-    }
+  async function saveManual(body) {
+    if (dialog.mode === 'create') await createPayment(body)
+    else await updatePayment(dialog.item.id, body)
+    toast.success(dialog.mode === 'create' ? 'Ручной платёж записан' : 'Сохранено')
+    setDialog(null)
+    load()
   }
 
   async function handleSyncPending() {
     try {
-      const r = await fetch('/api/admin/sync-pending-payments', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
-      })
-      const d = await r.json()
-      if (r.ok) { toast.success(d.message || 'Синхронизация запущена'); load() }
-      else toast.error(d.error || 'Ошибка')
+      const d = await syncPendingPayments()
+      toast.success(d?.message || 'Проверка запущена')
+      load()
     } catch (e) { toast.error(e.message) }
   }
 
@@ -254,10 +189,10 @@ export default function PaymentsPage() {
         subtitle="Платежи и возвраты через ЮKassa"
         actions={can('payments.write') ? (
           <>
-            <Button variant="secondary" onClick={handleSyncPending} title="Проверить статус всех pending платежей в ЮKassa">
-              Sync pending
+            <Button variant="secondary" onClick={handleSyncPending} title="Спросить у ЮKassa статус всех ожидающих платежей">
+              Проверить ожидающие
             </Button>
-            <Button variant="primary" onClick={openCreate}>+ {t.createPayment}</Button>
+            <Button variant="primary" onClick={() => setDialog({ mode: 'create' })}>+ Ручной платёж</Button>
           </>
         ) : null}
       />
@@ -400,7 +335,7 @@ export default function PaymentsPage() {
                   {canActions && (
                     <Td>
                       <div className="flex gap-1">
-                        {can('payments.write') && <Button size="sm" variant="ghost" onClick={() => openEdit(p)}>{t.edit}</Button>}
+                        {can('payments.write') && p.provider === 'manual' && <Button size="sm" variant="ghost" onClick={() => setDialog({ mode: 'edit', item: p })}>Изменить</Button>}
                         {can('payments.refund') && (p.yookassa_payment_id || p.external_id) && (
                           <>
                             <Button size="sm" variant="ghost" title="Запросить статус в ЮKassa"
@@ -449,41 +384,7 @@ export default function PaymentsPage() {
         </div>
       )}
 
-      <CrudDialog
-        open={!!dialog} title={dialog?.mode === 'create' ? t.createPayment : t.editPayment}
-        onClose={() => setDialog(null)} onSubmit={handleSave} loading={saving}
-      >
-        <FormField label={t.fieldUserDbId}>
-          <TextInput value={userDbId} onChange={setUserDbId} type="number" />
-        </FormField>
-        <FormField label={t.fieldAmount}>
-          <TextInput value={amount} onChange={setAmount} type="number" />
-        </FormField>
-        <FormField label={t.fieldCurrency}>
-          <SelectInput value={currency} onChange={setCurrency} options={[{ value: 'RUB', label: 'RUB' }, { value: 'USD', label: 'USD' }]} />
-        </FormField>
-        <FormField label={t.fieldStatus}>
-          <SelectInput value={status} onChange={setStatus} options={[
-            { value: 'pending', label: 'Pending' },
-            { value: 'succeeded', label: 'Succeeded' },
-            { value: 'waiting_for_capture', label: 'Waiting for capture' },
-            { value: 'failed', label: 'Failed' },
-            { value: 'canceled', label: 'Canceled' },
-          ]} />
-        </FormField>
-        <FormField label={t.fieldProvider}>
-          <TextInput value={provider} onChange={setProvider} />
-        </FormField>
-        <FormField label={t.fieldExternalId}>
-          <TextInput value={externalId} onChange={setExternalId} />
-        </FormField>
-        <FormField label={t.fieldNotes}>
-          <TextInput value={notes} onChange={setNotes} />
-        </FormField>
-        <FormField label={t.fieldMetadata}>
-          <TextArea value={metadata} onChange={setMetadata} placeholder='{"key":"value"}' rows={2} />
-        </FormField>
-      </CrudDialog>
+      {dialog && <ManualPaymentDialog dialog={dialog} onClose={() => setDialog(null)} onSave={saveManual} />}
 
       {refundFor && (
         <RefundDialog

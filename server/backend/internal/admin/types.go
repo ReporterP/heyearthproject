@@ -136,17 +136,6 @@ type paymentResponse struct {
 	CancellationReason   string          `json:"cancellation_reason,omitempty"`
 }
 
-type paymentPayload struct {
-	UserDBID   int             `json:"user_db_id"`
-	Amount     float64         `json:"amount"`
-	Currency   string          `json:"currency"`
-	Status     string          `json:"status"`
-	Provider   string          `json:"provider"`
-	ExternalID string          `json:"external_id"`
-	Notes      string          `json:"notes"`
-	Metadata   json.RawMessage `json:"metadata"`
-}
-
 type serverResponse struct {
 	ID              int             `json:"id"`
 	Name            string          `json:"name"`

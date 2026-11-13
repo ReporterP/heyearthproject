@@ -72,6 +72,8 @@ export function reapplyPromocodePlan(code) {
 export function fetchPaymentsPaged(params) {
   return pagedFetch('/payments', params)
 }
+// Ask YooKassa for the status of every pending payment (the background sync, now).
+export const syncPendingPayments = () => apiFetch('/sync-pending-payments', { method: 'POST' })
 export function createPayment(payload) {
   return apiFetch('/payments', { method: 'POST', body: payload })
 }
