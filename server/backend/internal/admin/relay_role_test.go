@@ -54,7 +54,7 @@ func TestRelayDeprovisionGuard(t *testing.T) {
 
 func TestServerMetricsSkipRelays(t *testing.T) {
 	q := strings.ToUpper(strings.Join(strings.Fields(serverMetricsTargetsQuery), " "))
-	if !strings.Contains(q, "(STATUS != 'ARCHIVED' OR STATUS IS NULL) AND COALESCE(ROLE, 'EXIT') <> 'RELAY'") {
+	if !strings.Contains(q, "COALESCE(ROLE, 'EXIT') <> 'RELAY'") || !strings.Contains(q, "LIFECYCLE_STATE = 'ONLINE'") {
 		t.Fatalf("relays polled for node-agent metrics:\n%s", serverMetricsTargetsQuery)
 	}
 }

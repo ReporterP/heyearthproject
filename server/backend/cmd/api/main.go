@@ -980,6 +980,7 @@ func main() {
 
 	// Запускаем realtime-сборщик метрик серверов (CPU/RAM/connections каждые 10 сек)
 	admin.StartServerMetricsCollector()
+	admin.StartNodeLoadCollector()
 
 	// Запускаем cron для подписок и B2B биллинга
 	StartSubscriptionCron()
