@@ -15,106 +15,14 @@ import (
 	pb "github.com/heyearth/backend/internal/pb/node_agent_v1"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/status"
 )
 
+// server answers GetMetrics only (the Hub's provisioning and load collector call nothing else).
+// CreateUser/DeleteUser of the Shadowsocks era are gone (cleanup plan D6): the embedded
+// UnimplementedNodeAgentServer answers them Unimplemented, so the proto stays wire-compatible.
 type server struct {
 	pb.UnimplementedNodeAgentServer
-}
-
-func (s *server) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.CreateUserResponse, error) {
-	log.Printf("CreateUser called for user_id: %s (upstream: %q)", req.UserId, req.GetUpstreamVlessUri())
-
-	resp := &pb.CreateUserResponse{}
-
-	ssCmd := exec.Command("/opt/heyearth/add-ss-user.sh", req.UserId)
-	ssOut, err := ssCmd.CombinedOutput()
-	if err != nil {
-		log.Printf("add-ss-user.sh failed: %v, out: %s", err, string(ssOut))
-	} else {
-		ssLink := strings.TrimSpace(string(ssOut))
-		if strings.HasPrefix(ssLink, "ss://") {
-			resp.SsLink = ssLink
-		} else {
-			log.Printf("add-ss-user.sh: unexpected output: %s", ssLink)
-		}
-	}
-
-	args := []string{req.UserId}
-	if upstream := strings.TrimSpace(req.GetUpstreamVlessUri()); upstream != "" {
-		args = append(args, upstream)
-	}
-	xrayCmd := exec.Command("/opt/heyearth/add-xray-user.sh", args...)
-	xrayOut, err := xrayCmd.CombinedOutput()
-	if err != nil {
-		log.Printf("add-xray-user.sh failed: %v, out: %s", err, string(xrayOut))
-	} else {
-		vlessUri := strings.TrimSpace(string(xrayOut))
-		if strings.HasPrefix(vlessUri, "vless://") {
-			resp.VlessUri = vlessUri
-		} else {
-			log.Printf("add-xray-user.sh: unexpected output: %s", vlessUri)
-		}
-	}
-
-	if resp.SsLink == "" && resp.VlessUri == "" {
-		return nil, status.Errorf(codes.Internal, "failed to create user on any protocol")
-	}
-
-	return resp, nil
-}
-
-func (s *server) DeleteUser(ctx context.Context, req *pb.DeleteUserRequest) (*pb.DeleteUserResponse, error) {
-	log.Printf("DeleteUser called for user_id: %s", req.UserId)
-	instance := sanitizeInstance(req.UserId)
-
-	// Remove Shadowsocks user config and stop service
-	ssConfig := fmt.Sprintf("/etc/shadowsocks-libev/users/%s.json", instance)
-	if _, err := os.Stat(ssConfig); err == nil {
-		_ = exec.Command("systemctl", "stop", fmt.Sprintf("shadowsocks-libev@%s", instance)).Run()
-		_ = exec.Command("systemctl", "disable", fmt.Sprintf("shadowsocks-libev@%s", instance)).Run()
-		_ = os.Remove(ssConfig)
-	}
-
-	// Remove Xray user from config
-	xrayConfig := "/opt/heyearth/xray/config.json"
-	uuidFile := fmt.Sprintf("/opt/heyearth/state/xray-uuid-%s", instance)
-	if uuidBytes, err := os.ReadFile(uuidFile); err == nil {
-		clientUUID := strings.TrimSpace(string(uuidBytes))
-		if clientUUID != "" {
-			cmd := exec.Command("bash", "-c",
-				fmt.Sprintf(`jq '.inbounds[0].settings.clients |= [.[] | select(.id != "%s")]' '%s' > /tmp/xray-del.tmp && mv /tmp/xray-del.tmp '%s'`, clientUUID, xrayConfig, xrayConfig))
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("remove xray user: %v, out: %s", err, string(out))
-			} else {
-				_ = exec.Command("systemctl", "reload", "xray").Run()
-			}
-		}
-		_ = os.Remove(uuidFile)
-	}
-
-	// Remove state files
-	passFile := fmt.Sprintf("/opt/heyearth/state/%s.password", instance)
-	_ = os.Remove(passFile)
-
-	return &pb.DeleteUserResponse{Success: true}, nil
-}
-
-func sanitizeInstance(userID string) string {
-	var b strings.Builder
-	for i, c := range userID {
-		if i >= 64 {
-			break
-		}
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			b.WriteRune(c)
-		} else {
-			b.WriteRune('_')
-		}
-	}
-	return b.String()
 }
 
 func (s *server) GetMetrics(ctx context.Context, req *pb.GetMetricsRequest) (*pb.GetMetricsResponse, error) {
