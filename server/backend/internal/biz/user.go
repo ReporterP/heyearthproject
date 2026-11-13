@@ -57,11 +57,6 @@ func GetUserByID(userID string) (*User, error) {
 	return getUserByField("user_id", userID)
 }
 
-// GetUserByUsername returns a user by their username.
-func GetUserByUsername(username string) (*User, error) {
-	return getUserByField("username", username)
-}
-
 // GetUserByIDOrUsername tries to find user by user_id first, then by username.
 func GetUserByIDOrUsername(idOrUsername string) (*User, error) {
 	user, err := getUserByField("user_id", idOrUsername)
@@ -106,17 +101,6 @@ type ActiveVlessClient struct {
 	UserID    string
 	IsPremium bool
 	PlanID    int
-}
-
-// ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
-// Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
-// plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
-// The quota cutoff (ListQuotaExceededUserIDs) and the cabinet traffic card judge
-// the SAME subscription row: best_plan_id below is ordered by effectiveSubOrderBy
-// (traffic.go), the ordering shared by the routing, quota and Express-gate
-// queries (its doc lists which lookups use it and which do not).
-func ListActiveVlessClients() ([]ActiveVlessClient, error) {
-	return ListActiveVlessClientsContext(context.Background())
 }
 
 // ListActiveVlessClientsContext is ListActiveVlessClients bounded by ctx. Any

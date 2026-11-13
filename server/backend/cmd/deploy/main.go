@@ -281,25 +281,6 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	}
 }
 
-// findFlutterCmd returns true if `fvm` or `flutter` is in PATH.
-func findFlutterCmd() bool {
-	if _, err := exec.LookPath("fvm"); err == nil {
-		return true
-	}
-	if _, err := exec.LookPath("flutter"); err == nil {
-		return true
-	}
-	return false
-}
-
-// flutterExec returns the flutter command parts. Prefers "fvm flutter" if fvm is available.
-func flutterExec() (string, []string) {
-	if _, err := exec.LookPath("fvm"); err == nil {
-		return "fvm", []string{"flutter"}
-	}
-	return "flutter", nil
-}
-
 func loadEnv(paths ...string) envMap {
 	m := make(envMap)
 	for _, base := range paths {

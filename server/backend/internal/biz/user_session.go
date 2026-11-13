@@ -2,7 +2,6 @@ package biz
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -156,10 +155,4 @@ func RevokeAllUserSessions(userDBID int) error {
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return fmt.Sprintf("%x", h)
-}
-
-func randomSessionID() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return fmt.Sprintf("%x", buf)
 }

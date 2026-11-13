@@ -324,23 +324,7 @@ func DeletePlan(id int) error {
 	return err
 }
 
-// GetUserPlan returns the active plan for a user: the plan of their latest
-// status = 'active' subscription, ordered by valid_until alone. It is
-// deliberately NOT the effective subscription of effectiveSubOrderBy: plan-less
-// legacy rows are not demoted, so a later plan-less subscription yields "no
-// active plan". Switching it would change the protocol gate (IsProtocolAllowed),
-// the AmneziaWG gate, auto-renew and the Express speeds for such users, not just
-// a tie-break.
-func GetUserPlan(userID string) (*Plan, error) {
-	var planID sql.NullInt64
-	err := db.DB.QueryRow(userPlanQuery, userID).Scan(&planID)
-	if err != nil || !planID.Valid {
-		return nil, fmt.Errorf("no active plan")
-	}
-	return GetPlanByID(int(planID.Int64))
-}
-
-// userPlanQuery is the plan id of GetUserPlan / ActiveUserPlan (u.user_id = $1).
+// userPlanQuery is the plan id of ActiveUserPlan (u.user_id = $1).
 var userPlanQuery = `
 		SELECT us.plan_id FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
@@ -375,15 +359,6 @@ func ActiveUserPlan(userID string) (*Plan, error) {
 		return nil, fmt.Errorf("plan %d: %w", planID.Int64, err)
 	}
 	return p, nil
-}
-
-// IsProtocolAllowed checks if a protocol is available in the user's plan.
-func IsProtocolAllowed(userID, protocol string) bool {
-	plan, err := GetUserPlan(userID)
-	if err != nil {
-		return true // no plan = free tier = allow all (backward compat)
-	}
-	return PlanAllowsProtocol(plan, protocol)
 }
 
 // PlanAllowsProtocol is the protocol gate of IsProtocolAllowed for an already

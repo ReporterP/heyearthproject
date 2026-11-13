@@ -244,18 +244,6 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// buildClashConfig генерирует Clash/ClashMeta YAML конфиг.
-// Returns an error when any input cannot be read (loadHubConnectionInputs);
-// the caller must answer 503 rather than ship a placeholder or degraded
-// profile that would overwrite the client's cached one.
-func buildClashConfig(userID string) (string, error) {
-	in, err := loadHubConnectionInputs(userID)
-	if err != nil {
-		return "", err
-	}
-	return clashProfile(in), nil
-}
-
 // clashProfile builds the Clash/ClashMeta YAML from in. Pure.
 func clashProfile(in hubConnectionInputs) string {
 	host := in.entries.main // the failover target, or the Hub

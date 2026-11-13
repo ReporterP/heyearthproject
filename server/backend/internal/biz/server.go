@@ -103,26 +103,6 @@ func listExitNodesByStatus(ctx context.Context, statusFilter string) ([]ExitNode
 	return nodes, rows.Err()
 }
 
-// UpdateTunnelStatus обновляет статус туннеля для ноды.
-func UpdateTunnelStatus(serverID int, status string) error {
-	_, err := db.DB.Exec(`
-		UPDATE servers
-		SET tunnel_status = $1, last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2
-	`, status, serverID)
-	return err
-}
-
-// UpdateTunnelStatusWithLatency обновляет статус и latency для ноды.
-func UpdateTunnelStatusWithLatency(serverID int, status string, latencyMs int) error {
-	_, err := db.DB.Exec(`
-		UPDATE servers
-		SET tunnel_status = $1, latency_ms = $2, last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $3
-	`, status, latencyMs, serverID)
-	return err
-}
-
 // updateTunnelStatusIfQuery writes the tunnel monitor's verdict only while tunnel_status is still
 // what the monitor read ($6, through the same COALESCE as exitNodeColumns).
 const updateTunnelStatusIfQuery = `
@@ -145,15 +125,4 @@ func UpdateTunnelStatusIfUnchanged(serverID int, old, status string, latencyMs i
 		return false, err
 	}
 	return n > 0, nil
-}
-
-// UpdateTunnelStatusWithError updates tunnel status + stores a human-readable error reason.
-func UpdateTunnelStatusWithError(serverID int, status string, latencyMs int, tunnelError string) error {
-	_, err := db.DB.Exec(`
-		UPDATE servers
-		SET tunnel_status = $1, latency_ms = $2, tunnel_error = $3,
-		    last_tunnel_check = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $4
-	`, status, latencyMs, tunnelError, serverID)
-	return err
 }

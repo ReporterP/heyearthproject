@@ -3,7 +3,6 @@ package biz
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -464,12 +463,4 @@ func newCanonicalUserID() string {
 		uint16(buf[8])<<8|uint16(buf[9]),
 		uint64(buf[10])<<40|uint64(buf[11])<<32|uint64(buf[12])<<24|uint64(buf[13])<<16|uint64(buf[14])<<8|uint64(buf[15]),
 	)
-}
-
-func randomToken(bytesCount int) (string, error) {
-	buf := make([]byte, bytesCount)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
 }

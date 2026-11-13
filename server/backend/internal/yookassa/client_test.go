@@ -40,10 +40,6 @@ func TestIdempotenceKeyHeader(t *testing.T) {
 			_, err := c.CreateRefundWithKey(refund, "refund-7-3")
 			return err
 		}, func(a, b string) bool { return a == "refund-7-3" && b == "refund-7-3" }},
-		{"refund without a key gets a fresh random key", func() error {
-			_, err := c.CreateRefund(refund)
-			return err
-		}, func(a, b string) bool { return random.MatchString(a) && random.MatchString(b) && a != b }},
 		{"empty key falls back to a random one", func() error {
 			_, err := c.CreateRefundWithKey(refund, "")
 			return err

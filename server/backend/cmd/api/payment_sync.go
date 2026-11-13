@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -253,29 +252,4 @@ func syncUnappliedPaymentAlerts() {
 				strings.TrimPrefix(key, unappliedAlertPrefix)))
 		}
 	}
-}
-
-// SyncSinglePayment — ручная синхронизация одного платежа (для админского endpoint).
-// Возвращает актуальный payment и ошибку.
-func SyncSinglePayment(paymentID int) (*yookassa.Payment, error) {
-	var yookassaID string
-	err := db.DB.QueryRow(`SELECT COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1`, paymentID).Scan(&yookassaID)
-	if err == sql.ErrNoRows {
-		return nil, err
-	}
-	if yookassaID == "" {
-		return nil, sql.ErrNoRows
-	}
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		return nil, err
-	}
-	payment, err := client.GetPayment(yookassaID)
-	if err != nil {
-		return nil, err
-	}
-	if err := processPaymentEvent(payment); err != nil {
-		log.Printf("[payment-sync] process single payment %d: %v", paymentID, err)
-	}
-	return payment, nil
 }

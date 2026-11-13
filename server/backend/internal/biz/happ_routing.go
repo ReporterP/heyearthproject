@@ -105,32 +105,6 @@ func buildHappDeeplinkFromProfile(profile happRoutingProfile) string {
 	return "happ://routing/onadd/" + base64.StdEncoding.EncodeToString(js)
 }
 
-// BuildHappRoutingDeeplinkForPlan собирает Happ routing-профиль под конкретный план.
-//
-// В DirectIp попадают:
-//   - MTProto exit-IP пользователя (передаются как голые IP, /32 добавляется внутри)
-//   - IP4/IP6/CIDR4/CIDR6 всех активных direct-route сервисов плана
-//
-// В DirectSites попадают домены этих же сервисов, каждый с префиксом "domain:"
-// (Xray-синтаксис, который Happ принимает — матчит сам домен и все поддомены).
-//
-// DnsHosts оставлен пустым: dns_servers сервисов хранятся в БД, но в Happ-профиль
-// не пушатся (out of scope согласно PRD).
-//
-// Возвращает "" если для плана нет ни MTProto-IP, ни direct-сервисов.
-//
-// Если biz.GetDirectRouteServicesForPlan вернёт ошибку — логируем и обрабатываем
-// как «нет сервисов». The subscription endpoint uses BuildHappRoutingDeeplinkForPlanStrict
-// instead: Happ caches the routing profile, and one built without the plan's
-// services would replace the good one until the next refresh.
-func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
-	deeplink, err := buildHappRoutingDeeplinkForPlan(planID, mtprotoIPs, false)
-	if err != nil {
-		log.Printf("[happ-routing] %v", err)
-	}
-	return deeplink
-}
-
 // BuildHappRoutingDeeplinkForPlanStrict is BuildHappRoutingDeeplinkForPlan that
 // returns a failed read (direct-route services, MTProto fronting domain) as an
 // error instead of building a profile without those entries.
@@ -248,28 +222,4 @@ func buildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string, strict boo
 		BlockIp:        []string{},
 		DomainStrategy: "AsIs",
 	}), nil
-}
-
-// BuildHappRoutingDeeplink — backwards-compat обёртка. Принимает уже отформатированные
-// CIDR (как делал старый MTProto-only callsite). Новый код должен использовать
-// BuildHappRoutingDeeplinkForPlan.
-func BuildHappRoutingDeeplink(directIPs []string) string {
-	if len(directIPs) == 0 {
-		return ""
-	}
-	return buildHappDeeplinkFromProfile(happRoutingProfile{
-		Name:           "HeYearth Smart Routing",
-		GlobalProxy:    "true",
-		RemoteDns:      "https://1.1.1.1/dns-query",
-		DomesticDns:    "https://77.88.8.8/dns-query",
-		Geoipurl:       "https://hiearth.ru/static/geoip.dat",
-		DnsHosts:       map[string]string{},
-		DirectSites:    []string{},
-		DirectIp:       directIPs,
-		ProxySites:     []string{},
-		ProxyIp:        []string{},
-		BlockSites:     []string{},
-		BlockIp:        []string{},
-		DomainStrategy: "AsIs",
-	})
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,9 +24,6 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
-
-//go:embed openapi.json
-var openAPIFS embed.FS
 
 type server struct {
 	heyearth_v1.UnimplementedClientApiServer

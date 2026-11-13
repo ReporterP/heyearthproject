@@ -100,22 +100,6 @@ var subscriptionVersionCache struct {
 	at    time.Time
 }
 
-// GetSubscriptionVersion returns the cached version, refreshing every 5 sec.
-// Cheap to call from API hot path. A failed read yields the last cached value
-// (1 if none) and is not cached.
-func GetSubscriptionVersion() int64 {
-	v, err := SubscriptionVersion()
-	if err == nil {
-		return v
-	}
-	subscriptionVersionCache.Lock()
-	defer subscriptionVersionCache.Unlock()
-	if subscriptionVersionCache.value > 0 {
-		return subscriptionVersionCache.value
-	}
-	return 1
-}
-
 // SubscriptionVersion is GetSubscriptionVersion with a strict read: a failed
 // read is returned (and not cached) instead of reported as version 1, which a
 // client would take for a change ("Подписка обновлена" + refetch). An absent
@@ -176,23 +160,6 @@ func InvalidateSubscriptionVersionCache() {
 	subscriptionVersionCache.Lock()
 	subscriptionVersionCache.at = time.Time{}
 	subscriptionVersionCache.Unlock()
-}
-
-// ── Provision/Deprovision are implemented in this file in Tasks 5 and 6 ─────
-// They consume the FSM + ProvisionEvent + helpers from internal/biz/hub_provisioner.go.
-
-// ProvisionTimeout is the upper bound for a single Provision run.
-const ProvisionTimeout = 5 * time.Minute
-
-// DeprovisionTimeout is the upper bound for a single Deprovision run.
-const DeprovisionTimeout = 90 * time.Second
-
-// withTimeout wraps the parent context with the given timeout.
-func withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	if parent == nil {
-		parent = context.Background()
-	}
-	return context.WithTimeout(parent, d)
 }
 
 // ── Provision (hub-side only) ───────────────────────────────────────────────

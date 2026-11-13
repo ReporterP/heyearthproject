@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestQuotaCutsEveryProtocol(t *testing.T) {
 	mk("over", pw("a"), nil)
 	mk("promo", pw("b"), int64(0))
 
-	over, err := ListQuotaExceededUserIDs()
+	over, err := ListQuotaExceededUserIDsContext(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

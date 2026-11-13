@@ -165,14 +165,6 @@ func lastForwardedFor(values []string) net.IP {
 	return nil
 }
 
-// MaxBodySize wraps a handler to limit request body size (prevents OOM).
-func MaxBodySize(maxBytes int64, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-		next(w, r)
-	}
-}
-
 // Middleware возвращает HTTP middleware для rate limiting.
 func (rl *RateLimiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

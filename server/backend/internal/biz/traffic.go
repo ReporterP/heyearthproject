@@ -242,29 +242,6 @@ func IsCycleExceeded(userDBID int, userUUID string) (bool, error) {
 	return used >= limit, nil
 }
 
-// ListQuotaExceededUserIDs returns the set of users whose current-cycle usage
-// has reached the limit of their EFFECTIVE subscription (effectiveSubOrderBy:
-// the row ListActiveVlessClients uses as the user's plan). A user is in the set
-// only if that subscription has a positive limit (COALESCE of the
-// subscription's own traffic_limit and the plan's traffic_limit_bytes; NULL or
-// 0 = unlimited, never over quota). Other active subscriptions of the user,
-// e.g. a not-yet-expired free trial next to a paid plan, are ignored.
-//
-// The set is keyed by users.user_id, the same value as
-// ActiveVlessClient.UserID, the xray client "email" and traffic_stats.user_id,
-// NOT by the VLESS UUID (users.vless_uuid): look it up with UserID. Looking it
-// up with the UUID, as xray_sync once did, silently matches nobody.
-//
-// Computed in a single SQL query for performance — called by xray_sync on
-// every sync tick and by checkTrafficLimits after each collector iteration
-// (while the cutoff is disarmed both read it at most hourly, for the log line).
-// Each limited user costs one SUM over its traffic_stats rows of the cycle:
-// idx_traffic_stats_user_time_cov (migration 000058) makes it an index-only
-// scan.
-func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
-	return ListQuotaExceededUserIDsContext(context.Background())
-}
-
 // ListQuotaExceededUserIDsContext is ListQuotaExceededUserIDs bounded by ctx.
 func ListQuotaExceededUserIDsContext(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := db.DB.QueryContext(ctx, quotaExceededQuery)

@@ -66,13 +66,6 @@ func NewClient(shopID, secretKey string, testMode bool) *Client {
 	}
 }
 
-// IsTestMode — true если магазин в тестовом режиме.
-// В test-режиме ЮKassa не списывает реальные деньги, но весь API работает так же.
-func (c *Client) IsTestMode() bool { return c.testMode }
-
-// ShopID — public для логирования.
-func (c *Client) ShopID() string { return c.shopID }
-
 // ─── Public API methods ───────────────────────────────────────────────────
 
 // CreatePayment — POST /v3/payments.
@@ -96,30 +89,6 @@ func (c *Client) GetPayment(paymentID string) (*Payment, error) {
 	return &out, nil
 }
 
-// CapturePayment — POST /v3/payments/{id}/capture.
-// Для two-stage (hold + capture). При Amount=nil — capture full.
-func (c *Client) CapturePayment(paymentID string, amount *Amount) (*Payment, error) {
-	body := map[string]interface{}{}
-	if amount != nil {
-		body["amount"] = amount
-	}
-	var out Payment
-	if err := c.doPOST("/payments/"+paymentID+"/capture", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// CancelPayment — POST /v3/payments/{id}/cancel.
-// Работает только для waiting_for_capture платежей.
-func (c *Client) CancelPayment(paymentID string) (*Payment, error) {
-	var out Payment
-	if err := c.doPOST("/payments/"+paymentID+"/cancel", map[string]interface{}{}, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // CreateReceipt — POST /v3/receipts with a caller-chosen Idempotence-Key: a repeat of the
 // same receipt (a retry after a lost answer) returns the receipt the first call made.
 func (c *Client) CreateReceipt(req CreateReceiptRequest, idempotenceKey string) (*ReceiptResponse, error) {
@@ -128,13 +97,6 @@ func (c *Client) CreateReceipt(req CreateReceiptRequest, idempotenceKey string) 
 		return nil, err
 	}
 	return &out, nil
-}
-
-// CreateRefund — POST /v3/refunds.
-// Полный или частичный возврат succeeded-платежа. Idempotence-Key случайный: повтор
-// этого вызова создаёт новый возврат. Для повторяемых попыток — CreateRefundWithKey.
-func (c *Client) CreateRefund(req CreateRefundRequest) (*Refund, error) {
-	return c.CreateRefundWithKey(req, "")
 }
 
 // CreateRefundWithKey is CreateRefund with a caller-chosen Idempotence-Key. Sending the
