@@ -21,10 +21,11 @@ import (
 //   - Attribution: the /r/<code> link (the site keeps the code 30 days and sends it with
 //     the registration) or the «Код друга» field within 7 days of registering, before the
 //     first payment. Set once; never oneself; never in a circle.
-//   - Reward: on the friend's first purchase paid with real money — the part of it paid
-//     from YooKassa top-ups (the closing-receipt rows), not bonuses or promocodes — of at
-//     least referral_min_purchase_rub. Once per friend (referral_rewards.friend_id is
-//     UNIQUE), in the purchase transaction, idempotent.
+//   - Reward: on the friend's FIRST purchase paid with real money — the part of it paid
+//     from YooKassa top-ups (the closing-receipt rows), not bonuses or promocodes — if
+//     that part is at least referral_min_purchase_rub (default 250 ₽: more than the two
+//     bonuses together, so a second account of one's own does not pay off). Once per
+//     friend (referral_rewards.friend_id is UNIQUE), in the purchase transaction.
 
 // ReferralSettings are the owner's numbers.
 type ReferralSettings struct {
@@ -41,7 +42,7 @@ func settingInt(ctx context.Context, q queryer, key string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > 1_000_000 {
 		return def
 	}
 	return n
@@ -57,7 +58,7 @@ func LoadReferralSettings(ctx context.Context, q queryer) ReferralSettings {
 		Enabled:        strings.EqualFold(strings.TrimSpace(enabled), "true"),
 		ReferrerKop:    int64(settingInt(ctx, q, "referral_reward_referrer_rub", 100)) * 100,
 		FriendKop:      int64(settingInt(ctx, q, "referral_reward_friend_rub", 100)) * 100,
-		MinPurchaseKop: int64(settingInt(ctx, q, "referral_min_purchase_rub", 100)) * 100,
+		MinPurchaseKop: int64(settingInt(ctx, q, "referral_min_purchase_rub", 250)) * 100,
 		MonthlyCap:     settingInt(ctx, q, "referral_monthly_cap", 10),
 	}
 }
@@ -149,6 +150,11 @@ func BindReferral(ctx context.Context, friendDBID int, code, ip string, fromCabi
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	// One bind at a time: the circle check reads the inviter's chain, which a concurrent
+	// bind (A enters B's code while B enters A's) could change under it.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('referral-bind'))`); err != nil {
+		return fmt.Errorf("lock binds: %w", err)
+	}
 	var bound sql.NullInt64
 	var createdAt time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT referred_by_user_id, COALESCE(created_at, NOW()) FROM users WHERE id = $1 FOR UPDATE`, friendDBID).Scan(&bound, &createdAt); err != nil {
@@ -241,12 +247,26 @@ func MaybeRewardReferralTx(ctx context.Context, tx *sql.Tx, friendDBID int, spen
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount_kop), 0) FROM wallet_receipts WHERE wallet_tx_id = $1`, spendTxID).Scan(&moneyKop); err != nil {
 		return nil, fmt.Errorf("referral: money part: %w", err)
 	}
-	if moneyKop <= 0 || moneyKop < st.MinPurchaseKop {
+	if moneyKop <= 0 {
+		return nil, nil // paid with bonus money only: not the purchase that counts
+	}
+	// Only the friend's FIRST purchase paid with real money counts: an earlier spending
+	// with YooKassa money (too small, or before the link) closes the chance.
+	var earlier int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM wallet_transactions wt
+		WHERE wt.user_id = $1 AND wt.id <> $2 AND wt.kind IN ('purchase', 'auto_renew')
+		  AND EXISTS (SELECT 1 FROM wallet_receipts r WHERE r.wallet_tx_id = wt.id)`, friendDBID, spendTxID).Scan(&earlier); err != nil {
+		return nil, fmt.Errorf("referral: earlier purchases: %w", err)
+	}
+	if earlier > 0 || moneyKop < st.MinPurchaseKop {
 		return nil, nil
 	}
 	refID := int(referrer.Int64)
-	// The inviter's row lock serializes the monthly cap between friends paying at once.
-	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, refID); err != nil {
+	// The monthly cap is serialized per inviter with an advisory lock, not a row lock: a
+	// FOR UPDATE on users(inviter) would conflict with the FK KEY SHARE locks of the
+	// inviter's own purchase holding their wallet — a deadlock.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('referral-cap'), $1)`, refID); err != nil {
 		return nil, fmt.Errorf("referral: lock inviter: %w", err)
 	}
 	capped := false

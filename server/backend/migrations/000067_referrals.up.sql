@@ -29,6 +29,6 @@ INSERT INTO app_settings (key, value) VALUES
     ('referral_enabled', 'true'),
     ('referral_reward_referrer_rub', '100'),
     ('referral_reward_friend_rub', '100'),
-    ('referral_min_purchase_rub', '100'),
+    ('referral_min_purchase_rub', '250'),
     ('referral_monthly_cap', '10')
 ON CONFLICT (key) DO NOTHING;

@@ -142,3 +142,51 @@ func TestPurchaseReplayBeforePromoCheck(t *testing.T) {
 		t.Fatalf("replay: %+v %v", again, err)
 	}
 }
+
+// Review fixes: the friend's first real-money purchase below the minimum closes the
+// chance; the inviter buying while a friend buys does not deadlock.
+func TestReferralFirstPurchaseAndNoDeadlock(t *testing.T) {
+	conn := testpg.Open(t)
+	ctx := context.Background()
+	cheap := newPlan(t, conn, "t-cheap", 100, 30, nil, true)
+	plan := newPlan(t, conn, "t-all", 300, 30, nil, true)
+	a := testpg.NewUser(t, conn, "inv")
+	b := testpg.NewUser(t, conn, "frd")
+	if err := BindReferral(ctx, b, codeOf(t, a), "", false); err != nil {
+		t.Fatal(err)
+	}
+	topupFor(t, conn, b, "frd", 10000, "yk-c1")
+	if res, err := purchase(t, conn, PurchaseRequest{UserID: "frd", PlanID: cheap, Key: "c1", Kind: WalletPurchase}); err != nil || res.Referral != nil {
+		t.Fatalf("cheap first purchase: %+v %v", res, err)
+	}
+	topupFor(t, conn, b, "frd", 30000, "yk-c2")
+	if res, err := purchase(t, conn, PurchaseRequest{UserID: "frd", PlanID: plan, Key: "c2", Kind: WalletPurchase}); err != nil || res.Referral != nil {
+		t.Fatalf("second purchase rewarded after a first one below the minimum: %+v %v", res, err)
+	}
+
+	// Concurrency: friends of A and A himself buy at the same time, repeatedly.
+	for i := 0; i < 5; i++ {
+		f := testpg.NewUser(t, conn, "f"+string(rune('a'+i)))
+		if err := BindReferral(ctx, f, codeOf(t, a), "", false); err != nil {
+			t.Fatal(err)
+		}
+		topupFor(t, conn, f, "f"+string(rune('a'+i)), 30000, "yk-f"+string(rune('a'+i)))
+	}
+	topupFor(t, conn, a, "inv", 150000, "yk-inv")
+	errs := make(chan error, 10)
+	for i := 0; i < 5; i++ {
+		go func(i int) {
+			_, err := purchase(t, conn, PurchaseRequest{UserID: "f" + string(rune('a'+i)), PlanID: plan, Key: "fp" + string(rune('a'+i)), Kind: WalletPurchase})
+			errs <- err
+		}(i)
+		go func(i int) {
+			_, err := purchase(t, conn, PurchaseRequest{UserID: "inv", PlanID: plan, Key: "ip" + string(rune('a'+i)), Kind: WalletPurchase})
+			errs <- err
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent purchase: %v", err)
+		}
+	}
+}

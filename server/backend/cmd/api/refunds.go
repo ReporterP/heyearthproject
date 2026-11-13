@@ -399,7 +399,26 @@ func reserveRefund(ctx context.Context, paymentID int, requestedKop int64, reaso
 	if err := tx.Commit(); err != nil {
 		return refundAttempt{}, fmt.Errorf("commit reservation: %w", err)
 	}
+	if kind == biz.PaymentKindWalletTopup && !a.Resumed {
+		alertRefundedReferral(paymentID)
+	}
 	return a, nil
+}
+
+// alertRefundedReferral tells the owner when a refunded top-up paid the purchase that
+// earned a «Приведи друга» reward: the bonuses stay on the wallets until the owner decides.
+func alertRefundedReferral(paymentID int) {
+	var rewardID int64
+	var refKop, friendKop int64
+	if err := db.DB.QueryRow(`
+		SELECT rr.id, rr.referrer_kop, rr.friend_kop FROM referral_rewards rr
+		JOIN wallet_receipts wr ON wr.wallet_tx_id = rr.trigger_wallet_tx
+		WHERE wr.payment_id = $1 AND rr.status = 'paid' LIMIT 1`, paymentID).Scan(&rewardID, &refKop, &friendKop); err != nil {
+		return
+	}
+	RaiseAlert(fmt.Sprintf("referral-refunded-%d", rewardID), AlertWarn, "Возврат платежа, за который выплачен бонус за друга",
+		fmt.Sprintf("Платёж #%d возвращён, а покупка на эти деньги дала бонус «Приведи друга» #%d (%s + %s ₽). Бонусы остались на кошельках — при необходимости спишите их в карточке пользователя.",
+			paymentID, rewardID, rubles(refKop), rubles(friendKop)))
 }
 
 // holdWalletRefundTx debits the top-up's refund amount from the user's wallet (key
@@ -485,6 +504,7 @@ func holdExternalWalletRefunds() {
 			if err := tx.Commit(); err != nil {
 				return err
 			}
+			alertRefundedReferral(x.paymentID)
 			if hold < x.kop {
 				RaiseAlert(fmt.Sprintf("wallet-external-refund-%d", x.rowID), AlertWarn, "Возврат пополнения больше остатка кошелька",
 					fmt.Sprintf("Платёж #%d вернули через ЮKassa на %s ₽, а на кошельке клиента было %s ₽ — остальное уже потрачено на услуги. Списано с кошелька %s ₽.",
