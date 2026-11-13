@@ -23,11 +23,11 @@ func TestCollectHubIPs(t *testing.T) {
 		ipNet(t, "127.0.0.1/8"), ipNet(t, "::1/128"),
 		ipNet(t, "10.0.0.5/24"), ipNet(t, "192.168.1.9/24"), ipNet(t, "172.17.0.1/16"), // private
 		ipNet(t, "fe80::1/64"), ipNet(t, "fd00::2/64"), // link-local, ULA
-		ipNet(t, "138.16.181.225/24"), ipNet(t, "45.150.39.236/24"), ipNet(t, "109.172.86.40/24"),
+		ipNet(t, "203.0.113.225/24"), ipNet(t, "198.51.100.236/24"), ipNet(t, "192.0.2.40/24"),
 		ipNet(t, "2001:db8::2/64"),
-		&net.IPAddr{IP: net.ParseIP("45.150.39.236")}, // duplicate, other address type
+		&net.IPAddr{IP: net.ParseIP("198.51.100.236")}, // duplicate, other address type
 	}
-	lookups := map[string][]net.IP{"hiearth.ru": {net.ParseIP("138.16.181.225"), net.ParseIP("203.0.113.9")}}
+	lookups := map[string][]net.IP{"hiearth.ru": {net.ParseIP("203.0.113.225"), net.ParseIP("203.0.113.9")}}
 	lookup := func(h string) ([]net.IP, error) {
 		if ips, ok := lookups[h]; ok {
 			return ips, nil
@@ -36,7 +36,7 @@ func TestCollectHubIPs(t *testing.T) {
 	}
 
 	got := collectHubIPs(addrs, []string{"hiearth.ru", " 198.51.100.7 ", "", "gone.example", "10.9.9.9"}, lookup)
-	want := []string{"109.172.86.40", "138.16.181.225", "198.51.100.7", "2001:db8::2", "203.0.113.9", "45.150.39.236"}
+	want := []string{"192.0.2.40", "203.0.113.225", "198.51.100.7", "2001:db8::2", "203.0.113.9", "198.51.100.236"}
 	// sorted as strings, de-duplicated; loopback, private, link-local and ULA never listed
 	if !reflect.DeepEqual(got, sortedCopy(want)) {
 		t.Fatalf("collectHubIPs = %v, want %v", got, sortedCopy(want))
@@ -69,7 +69,7 @@ func indexOf(list []string, s string) int {
 }
 
 func TestHysteria2ACLRules(t *testing.T) {
-	hub := []string{"138.16.181.225", "2001:db8::2"}
+	hub := []string{"203.0.113.225", "2001:db8::2"}
 	rules := hysteria2ACLRules(hub)
 
 	// the three unconditional rejects come first, in this order
@@ -117,7 +117,7 @@ func TestHysteria2ACLRules(t *testing.T) {
 }
 
 func TestRenderHysteria2ConfigACL(t *testing.T) {
-	hub := []string{"109.172.86.40", "138.16.181.225", "45.150.39.236"}
+	hub := []string{"192.0.2.40", "203.0.113.225", "198.51.100.236"}
 	yaml := renderHysteria2Config(50, 100, "obfs-pass", "stats-secret", 1090, hub)
 	if again := renderHysteria2Config(50, 100, "obfs-pass", "stats-secret", 1090, hub); again != yaml {
 		t.Fatal("the config must be deterministic (the sync's no-op short-circuit compares bytes)")
@@ -150,7 +150,7 @@ func TestRenderHysteria2ConfigACL(t *testing.T) {
 }
 
 func TestBaseSecurityRules(t *testing.T) {
-	hub := []string{"138.16.181.225", "45.150.39.236"}
+	hub := []string{"203.0.113.225", "198.51.100.236"}
 	rules := baseSecurityRules(hub)
 	// 0 dns, 1 private block, 2 loopback + "this host", 3 Hub addresses block, 4 bittorrent, 5 xmpp
 	if len(rules) != 6 {
@@ -178,7 +178,7 @@ func TestBaseSecurityRules(t *testing.T) {
 	}
 	// the caller's slice is not aliased into the rule
 	hub[0] = "tampered"
-	if ips := rules[3]["ip"].([]string); ips[0] != "138.16.181.225" {
+	if ips := rules[3]["ip"].([]string); ips[0] != "203.0.113.225" {
 		t.Errorf("rule keeps a reference to the caller's slice")
 	}
 	// no Hub address known: the rule is omitted, the private block stays
@@ -223,7 +223,7 @@ func TestCheckNoDirectLeakPrivateFirst(t *testing.T) {
 	mask := map[string]interface{}{"type": "field", "domain": []string{"domain:example.com"}, "outboundTag": "mask-7"}
 
 	// the real generator's baseline, then the freedom rules: accepted
-	ok := append(append([]map[string]interface{}{}, baseSecurityRules([]string{"138.16.181.225"})...), freedom, mask, catchAll)
+	ok := append(append([]map[string]interface{}{}, baseSecurityRules([]string{"203.0.113.225"})...), freedom, mask, catchAll)
 	if err := checkNoDirectLeak(fx.inbounds, fx.good, routingWith(ok, bal)); err != nil {
 		t.Fatalf("baseline + freedom rules rejected: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestHubIPCache(t *testing.T) {
 	var warns []string
 	warn := func(m string) { warns = append(warns, m) }
 	calls := 0
-	seq := [][]string{nil, {}, {"138.16.181.225"}, {"203.0.113.9"}}
+	seq := [][]string{nil, {}, {"203.0.113.225"}, {"203.0.113.9"}}
 	compute := func() []string {
 		r := seq[calls]
 		calls++
@@ -276,10 +276,10 @@ func TestHubIPCache(t *testing.T) {
 	}
 
 	// the first non-empty answer is kept for good, and no longer asks
-	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"138.16.181.225"}) {
+	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"203.0.113.225"}) {
 		t.Fatalf("got %v", got)
 	}
-	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"138.16.181.225"}) || calls != 3 || len(warns) != 2 {
+	if got := c.get(compute, warn); !reflect.DeepEqual(got, []string{"203.0.113.225"}) || calls != 3 || len(warns) != 2 {
 		t.Fatalf("a found list must stay (byte-stable configs): got %v, calls=%d, warns=%d", got, calls, len(warns))
 	}
 }

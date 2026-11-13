@@ -322,7 +322,7 @@ func fail2banHarness(vars map[string]string, sshClient string) string {
 	base := map[string]string{"NEVER_IGNORE": "", "DB_IPS": "", "DB_FAIL": "0"}
 	return assignments(mergeVars(base, vars)) + `
 export SSH_CLIENT=` + shQuote(sshClient) + `
-hostname() { echo "STUB-HOSTNAME-CALLED" >&2; echo "138.16.181.225 10.0.0.2"; }
+hostname() { echo "STUB-HOSTNAME-CALLED" >&2; echo "203.0.113.225 10.0.0.2"; }
 runuser() { if [ "$DB_FAIL" = 1 ]; then return 1; fi; printf '%s\n' "$DB_IPS"; }
 SSHD_PORT=22
 ` + fail2banIgnoreScript + fail2banJailFunc + `echo "STATE ignore=$IGNORE"
@@ -334,7 +334,7 @@ func TestFail2banIgnore(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
-	const exit1, exit2 = "89.124.89.126", "5.6.7.8"
+	const exit1, exit2 = "192.0.2.126", "5.6.7.8"
 	cases := []struct {
 		name      string
 		vars      map[string]string
@@ -401,7 +401,7 @@ func TestFail2banIgnore(t *testing.T) {
 				t.Errorf("want ignore list %q:\n%s", c.want, out)
 			}
 			// the Hub's own addresses (hostname -I) are not consulted at all, and ignoreself is off
-			if strings.Contains(out, "STUB-HOSTNAME-CALLED") || strings.Contains(out, "138.16.181.225") || strings.Contains(out, "10.0.0.2") {
+			if strings.Contains(out, "STUB-HOSTNAME-CALLED") || strings.Contains(out, "203.0.113.225") || strings.Contains(out, "10.0.0.2") {
 				t.Errorf("the Hub's own addresses must not be whitelisted:\n%s", out)
 			}
 			for _, l := range []string{"ignoreip = " + c.want, "ignoreself = false", "[sshd]", "enabled = true", "backend = systemd", "port = 22", "maxretry = 5", "findtime = 10m", "bantime = 1h"} {
@@ -425,12 +425,12 @@ func TestFail2banIgnore(t *testing.T) {
 }
 
 func TestHostHygieneScript(t *testing.T) {
-	s := renderHostHygieneScript(2222, "89.124.89.126")
+	s := renderHostHygieneScript(2222, "192.0.2.126")
 	if got := payloadFrom(t, s, "/etc/systemd/journald.conf.d/heyearth.conf"); !strings.Contains(got, "[Journal]\nSystemMaxUse=1G\n") {
 		t.Errorf("journald drop-in: %q", got)
 	}
 	for _, want := range []string{
-		"SSHD_PORT=2222\n", "NEVER_IGNORE='89.124.89.126'\n", "put_file /etc/fail2ban/jail.d/heyearth-sshd.conf 644 \"$(render_jail | base64 -w0)\"",
+		"SSHD_PORT=2222\n", "NEVER_IGNORE='192.0.2.126'\n", "put_file /etc/fail2ban/jail.d/heyearth-sshd.conf 644 \"$(render_jail | base64 -w0)\"",
 		`if ! command -v fail2ban-client`, "apt-get install -y -qq fail2ban python3-systemd", // installed only when missing; failure aborts (set -e)
 		`journalctl --vacuum-size=1G`, `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi`,
 		`[ "$PUT_CHANGED" = 1 ] || ! systemctl is-active --quiet fail2ban`, "fail2ban-client status sshd", "jail sshd is not running",
@@ -444,7 +444,7 @@ func TestHostHygieneScript(t *testing.T) {
 		t.Errorf("the jail must set ignoreself = false and not whitelist hostname -I")
 	}
 	// the exit address only ever appears as the "never ignore" input, not in a literal ignoreip
-	if strings.Contains(s, "ignoreip = 127.0.0.1/8 ::1 89.124.89.126") {
+	if strings.Contains(s, "ignoreip = 127.0.0.1/8 ::1 192.0.2.126") {
 		t.Errorf("the backup target must not be hard-coded into ignoreip")
 	}
 	// restarts of journald / fail2ban are conditional: a re-run must not restart anything unchanged

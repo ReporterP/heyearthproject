@@ -17,7 +17,7 @@ Happ → UDP :50443 (или 50000-50100 с port-hop через iptables REDIRECT
      → biz.ValidateHysteria2Auth → SELECT users.hysteria2_password
      → принят, форвардит через outbound `via_exit`
      → SOCKS5 127.0.0.1:1090 (manual hysteria client из /opt/heyearth/hysteria/client-2.yaml)
-     → QUIC → Exit node NL 89.124.89.126 → интернет
+     → QUIC → Exit node NL 192.0.2.126 → интернет
 ```
 
 Egress IP идентичен VLESS-юзерам с NL exit (geo тот же).
@@ -52,7 +52,7 @@ Egress IP идентичен VLESS-юзерам с NL exit (geo тот же).
 - iptables REDIRECT 50000:50100 → 50443 для port hopping
 - Cert access: `ssl-cert` group, hysteria user member, certbot renewal-hook сохраняет perms
 - Auth backend: per-user пароль валидируется через POST /internal/hysteria2/auth (loopback-only)
-- Outbound: ACL `via_exit(all)` через SOCKS5 1090 → NL exit 89.124.89.126
+- Outbound: ACL `via_exit(all)` через SOCKS5 1090 → NL exit 192.0.2.126
 - URI в подписке: `hysteria2://...?obfs=salamander&...&mport=50000-50100` priority -2 (happ пробует первым)
 
 ## Файлы

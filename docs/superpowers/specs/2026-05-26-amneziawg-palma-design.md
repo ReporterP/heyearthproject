@@ -242,7 +242,7 @@ ALTER TABLE plans DROP COLUMN IF EXISTS amnezia_wg_enabled;
 4. Admin Plans editor: checkbox «🌴 AmneziaWG (Пальма)» visible, can toggle per plan
 5. Юзер на плане с `amnezia_wg_enabled = true`: subscription contains amneziawg:// URI с base64-encoded WG config containing per-user keys + per-user CPS params
 6. Юзер на плане с `amnezia_wg_enabled = false`: subscription НЕ содержит amneziawg:// entry
-7. happ imports amneziawg:// URI → connects → traffic flows through Hub → ipify returns NL exit IP `89.124.89.126`
+7. happ imports amneziawg:// URI → connects → traffic flows through Hub → ipify returns NL exit IP `192.0.2.126`
 8. Hub-side: `wg show awg0` shows the user as connected peer (handshake timestamp recent)
 9. happ-routing.json (Smart Routing) contains 4 new entries: `mts.ru`, `tele2.ru`, `megafon.ru`, `beeline.ru` в `DirectSites` array
 10. (R4) If Xray 26.x supports `scMaxEachPostBytes` — Дуб (XHTTP) inbound config includes it. Otherwise document deferral in commit message.

@@ -436,10 +436,10 @@ func TestEvalExitHealthHysteresisAndAlertActions(t *testing.T) {
 }
 
 func TestExitAlertTexts(t *testing.T) {
-	node := biz.ExitNodeTunnel{ID: 2, Name: "NL-1", IPAddress: "89.124.89.126", TunnelProtocol: "hysteria2"}
+	node := biz.ExitNodeTunnel{ID: 2, Name: "NL-1", IPAddress: "192.0.2.126", TunnelProtocol: "hysteria2"}
 	errLine := fmt.Sprintf("hysteria2 exit #%d via 127.0.0.1:1090: GET generate_204 (gstatic, cloudflare) failed: gstatic: timeout after 5s; cloudflare: timeout after 5s", node.ID)
 
-	if got, want := exitDownDetails(node, errLine), "NL-1 (89.124.89.126): "+errLine; got != want {
+	if got, want := exitDownDetails(node, errLine), "NL-1 (192.0.2.126): "+errLine; got != want {
 		t.Fatalf("exitDownDetails = %q, want %q", got, want)
 	}
 	// Status unhealthy while this tick's probe passed (waiting for the 2nd success): no empty error.
@@ -698,7 +698,7 @@ func TestApplyExitAlertsHysteriaPathDown(t *testing.T) {
 	ah := withExitAlertHarness(t)
 	ok := func(ms int) pathProbe { return pathProbe{present: true, ok: true, rttMs: ms} }
 	hyFail := pathProbe{present: true, err: "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s"}
-	r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}, db: "healthy"}
+	r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "192.0.2.126"}, db: "healthy"}
 	for range 3 {
 		r.tick(exitPathProbe{hyFail, ok(90)})
 	}
@@ -835,7 +835,7 @@ func TestPersistExitVerdict(t *testing.T) {
 }
 
 func TestExitPathAlertTexts(t *testing.T) {
-	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}
+	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "192.0.2.126"}
 	if exitPathAlertKey(2, "hy") != "exit-path-down-2-hy" || exitPathAlertKey(20, "vr") != "exit-path-down-20-vr" {
 		t.Fatal("unexpected path alert keys")
 	}

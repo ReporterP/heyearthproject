@@ -317,7 +317,7 @@ Not needed — code was already committed in tasks 1-5.
 - [ ] **Step 1: Backup Latvia's current state**
 
 ```bash
-go run ./cmd/deploy --ssh 'ssh -o StrictHostKeyChecking=no root@155.212.225.172 "tar -czf /root/latvia-backup-$(date +%F).tgz /opt/heyearth /etc/systemd/system/heyearth-* 2>/dev/null || true; echo BACKUP_DONE"'
+go run ./cmd/deploy --ssh 'ssh -o StrictHostKeyChecking=no root@192.0.2.172 "tar -czf /root/latvia-backup-$(date +%F).tgz /opt/heyearth /etc/systemd/system/heyearth-* 2>/dev/null || true; echo BACKUP_DONE"'
 ```
 
 OR use admin UI: Servers → Latvia → action "Setup exit node" with confirmation dialog.
@@ -330,7 +330,7 @@ In admin panel → Servers → Latvia card → click "Setup exit node" button �
 **Option B — from CLI:**
 ```bash
 cd server/backend
-go run ./cmd/deploy --setup-exit-node 155.212.225.172:22 --exit-node-password <PASSWORD_FROM_DB>
+go run ./cmd/deploy --setup-exit-node 192.0.2.172:22 --exit-node-password <PASSWORD_FROM_DB>
 ```
 
 Wait 3-5 minutes for completion.
@@ -401,7 +401,7 @@ bd close heyearthproject-rqn --reason "Both exit nodes healthy, balancer distrib
 ## Rollback Plan
 
 If Latvia re-provisioning breaks the server:
-1. SSH to Latvia: `ssh root@155.212.225.172`
+1. SSH to Latvia: `ssh root@192.0.2.172`
 2. Restore backup: `cd / && tar -xzf /root/latvia-backup-*.tgz`
 3. Restart services: `systemctl restart xray hysteria2 node-agent 2>/dev/null || true`
 4. In DB: `UPDATE servers SET tunnel_protocol='shadowsocks', tunnel_port=8388 WHERE id=1`

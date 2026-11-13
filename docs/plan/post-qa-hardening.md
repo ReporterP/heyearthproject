@@ -218,7 +218,7 @@ curl -s -H "Authorization: Bearer $TOKEN" https://admin.hiearth.ru/api/admin/ove
 
 # Verify B — SOCKS5 + traffic
 curl -sS --max-time 15 --socks5 qa-socks-test-20260418:84b62bf6-c888-4517-b47b-65189347018c@hiearth.ru:1080 https://ifconfig.me
-# Expect: 89.124.89.126 или 155.212.225.172 (exit node IP)
+# Expect: 192.0.2.126 или 192.0.2.172 (exit node IP)
 
 # Verify subscription URL
 curl -s https://hiearth.ru/api/v1/user/subscribe/<qa-token> | base64 -d | grep '#HeYearth-SOCKS5'

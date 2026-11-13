@@ -16,7 +16,7 @@ func TestParseCheckHostTCPResult(t *testing.T) {
 		tally      checkHostTally
 		verdict    string
 	}{
-		{"one node ok", `{"ru1.node.check-host.net":[{"time":0.05,"address":"138.16.181.225"}],"ru2.node.check-host.net":[{"error":"Connection timed out"}],"ru3.node.check-host.net":[{"error":"Connection timed out"}]}`,
+		{"one node ok", `{"ru1.node.check-host.net":[{"time":0.05,"address":"203.0.113.225"}],"ru2.node.check-host.net":[{"error":"Connection timed out"}],"ru3.node.check-host.net":[{"error":"Connection timed out"}]}`,
 			ru3, checkHostTally{OK: 1, Failed: 2}, "reachable"},
 		{"all failed", `{"ru1.node.check-host.net":[{"error":"Connection timed out"}],"ru2.node.check-host.net":[{"error":"Connection refused"}]}`,
 			ru3[:2], checkHostTally{Failed: 2}, "unreachable"},
@@ -262,8 +262,8 @@ func TestOffsiteConfigured(t *testing.T) {
 		env  string
 		want bool
 	}{
-		{"BACKUP_DIR=/x\nKEEP=14\nTARGET_HOST=89.124.89.126\nTARGET_PORT=22\n", true},
-		{"TARGET_HOST=89.124.89.126", true},
+		{"BACKUP_DIR=/x\nKEEP=14\nTARGET_HOST=192.0.2.126\nTARGET_PORT=22\n", true},
+		{"TARGET_HOST=192.0.2.126", true},
 		{"  TARGET_HOST=2001:db8::1  \n", true},
 		{"BACKUP_DIR=/x\nTARGET_HOST=\nTARGET_PORT=22\n", false},
 		{"TARGET_HOST=   \n", false},

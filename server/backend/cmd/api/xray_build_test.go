@@ -52,7 +52,7 @@ func baseInputs() xrayInputs {
 		directPlanIDs:  []int{3},
 		directServices: []biz.DirectRouteService{{IsActive: true, Domains: []string{"ya.ru", "vk.com"}, IP4: []string{"77.88.8.8"}}},
 		planServers:    map[int][]int{3: {2}, 4: {3}, 6: {2, 3}, 7: {9}},
-		hubIPs:         []string{"138.16.181.225"},
+		hubIPs:         []string{"203.0.113.225"},
 	}
 }
 
@@ -378,8 +378,8 @@ func TestHubIPCacheGetE(t *testing.T) {
 	if _, err := c.getE(func() ([]string, error) { return nil, errors.New("db") }, warn); err == nil {
 		t.Fatal("read error must be returned")
 	}
-	if got, err := c.getE(func() ([]string, error) { return []string{"138.16.181.225"}, nil }, warn); err != nil ||
-		!reflect.DeepEqual(got, []string{"138.16.181.225"}) {
+	if got, err := c.getE(func() ([]string, error) { return []string{"203.0.113.225"}, nil }, warn); err != nil ||
+		!reflect.DeepEqual(got, []string{"203.0.113.225"}) {
 		t.Fatalf("after a failed read the next call computes again: %v, %v", got, err)
 	}
 	if got, _ := c.getE(func() ([]string, error) { return nil, errors.New("not called") }, warn); len(got) != 1 {
@@ -481,7 +481,7 @@ func TestXrayClientFacing(t *testing.T) {
 		{"SNI", func(in *xrayInputs) { in.settings.realitySNI = "vk.com" }},
 		{"public key (private key)", func(in *xrayInputs) { in.keys.PrivateKey = "other" }},
 		{"short id", func(in *xrayInputs) { in.keys.ShortID = "other" }},
-		{"XHTTP host", func(in *xrayInputs) { in.settings.mainServerHost = "138.16.181.225" }},
+		{"XHTTP host", func(in *xrayInputs) { in.settings.mainServerHost = "203.0.113.225" }},
 	}
 	for _, tt := range differ {
 		in := baseInputs()

@@ -39,7 +39,7 @@ func TestRestoreRunbookSteps(t *testing.T) {
 		"tar -C / -xzf /root/restore/files.tar.gz",
 		"go run ./cmd/deploy --setup-xray",
 		"go run ./cmd/deploy --setup-hysteria2-hub",
-		"go run ./cmd/deploy --setup-exit-node 89.124.89.126",
+		"go run ./cmd/deploy --setup-exit-node 192.0.2.126",
 		"go run ./cmd/deploy --setup-ops",
 		"Бамбук — только снаружи",
 	}

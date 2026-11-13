@@ -69,16 +69,16 @@ func TestRelayNftRuleset(t *testing.T) {
 	nftCheck(t, rs)
 
 	// The target is the caller's (validated) Hub address, canonicalised.
-	prod, err := RelayNftRuleset(" 138.16.181.225 ")
-	if err != nil || countLines(prod, "dnat to 138.16.181.225") != 2 || strings.Contains(prod, labHub) {
-		t.Errorf("Hub 138.16.181.225: %v\n%s", err, prod)
+	prod, err := RelayNftRuleset(" 203.0.113.225 ")
+	if err != nil || countLines(prod, "dnat to 203.0.113.225") != 2 || strings.Contains(prod, labHub) {
+		t.Errorf("Hub 203.0.113.225: %v\n%s", err, prod)
 	}
 }
 
 func TestRelayHubIP(t *testing.T) {
 	for _, bad := range []string{"", "hiearth.ru", "10.0.0.1", "172.16.5.4", "192.168.1.1", "100.64.0.1", "127.0.0.1",
 		"0.0.0.0", "0.1.2.3", "169.254.1.1", "224.0.0.1", "240.0.0.1", "255.255.255.255", "::1", "2001:db8::1",
-		"::ffff:138.16.181.225", "138.16.181.225:443", "138.16.181.225/32", "1.2.3.4; nft flush ruleset", "1.2.3.4\nflush ruleset"} {
+		"::ffff:203.0.113.225", "203.0.113.225:443", "203.0.113.225/32", "1.2.3.4; nft flush ruleset", "1.2.3.4\nflush ruleset"} {
 		if _, err := RelayHubIP(bad); err == nil {
 			t.Errorf("RelayHubIP(%q) accepted", bad)
 		}
@@ -86,7 +86,7 @@ func TestRelayHubIP(t *testing.T) {
 			t.Errorf("RelayNftRuleset(%q) accepted", bad)
 		}
 	}
-	for _, good := range []string{" 138.16.181.225 ", "198.51.100.2", "203.0.113.50"} {
+	for _, good := range []string{" 203.0.113.225 ", "198.51.100.2", "203.0.113.50"} {
 		if a, err := RelayHubIP(good); err != nil || a.String() != strings.TrimSpace(good) {
 			t.Errorf("RelayHubIP(%q) = %v, %v", good, a, err)
 		}
@@ -148,9 +148,9 @@ func TestRelaySysctl(t *testing.T) {
 }
 
 func TestRelayJail(t *testing.T) {
-	j := RelayJail(2222, " 138.16.181.225 ")
+	j := RelayJail(2222, " 203.0.113.225 ")
 	for _, must := range []string{"[sshd]\n", "enabled = true\n", "port = 2222\n", "backend = systemd\n",
-		"banaction = nftables-multiport\n", "ignoreip = 127.0.0.1/8 ::1 138.16.181.225\n"} {
+		"banaction = nftables-multiport\n", "ignoreip = 127.0.0.1/8 ::1 203.0.113.225\n"} {
 		if !strings.Contains(j, must) {
 			t.Errorf("jail lacks %q:\n%s", must, j)
 		}
@@ -163,7 +163,7 @@ func TestRelayJail(t *testing.T) {
 	}
 	// An SSH port out of range: the sshd service name (22), never "port = 0".
 	for _, p := range []int{0, -1, 65536} {
-		if j := RelayJail(p, "138.16.181.225"); !strings.Contains(j, "port = ssh\n") {
+		if j := RelayJail(p, "203.0.113.225"); !strings.Contains(j, "port = ssh\n") {
 			t.Errorf("RelayJail(%d):\n%s", p, j)
 		}
 	}

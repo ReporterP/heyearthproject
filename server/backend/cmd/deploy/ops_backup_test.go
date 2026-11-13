@@ -915,8 +915,8 @@ export HEYEARTH_BACKUP_ENV="$T/backup.env"
 		}
 	})
 	t.Run("present file: the three keys and ENV-OK", func(t *testing.T) {
-		out, exit := run(`printf 'BACKUP_DIR=/x\nTARGET_HOST=89.124.89.126\nTARGET_PORT=22\nAGE_RECIPIENT=` + testAgeRecipient + `\nSSH_KEY=/k\n' > "$T/backup.env"`)
-		if exit != 0 || !hasLine(out, "ENV-OK") || !hasLine(out, "TARGET_HOST=89.124.89.126") || !hasLine(out, "AGE_RECIPIENT="+testAgeRecipient) || strings.Contains(out, "SSH_KEY") {
+		out, exit := run(`printf 'BACKUP_DIR=/x\nTARGET_HOST=192.0.2.126\nTARGET_PORT=22\nAGE_RECIPIENT=` + testAgeRecipient + `\nSSH_KEY=/k\n' > "$T/backup.env"`)
+		if exit != 0 || !hasLine(out, "ENV-OK") || !hasLine(out, "TARGET_HOST=192.0.2.126") || !hasLine(out, "AGE_RECIPIENT="+testAgeRecipient) || strings.Contains(out, "SSH_KEY") {
 			t.Fatalf("exit %d:\n%s", exit, out)
 		}
 	})
@@ -950,17 +950,17 @@ func TestParseBackupEnv(t *testing.T) {
 	}
 	ok("ENV-ABSENT\n", backupConfig{})
 	ok("ENV-OK\n", backupConfig{})
-	ok("TARGET_HOST=89.124.89.126\nTARGET_PORT=2222\nAGE_RECIPIENT="+testAgeRecipient+"\nENV-OK\n", backupConfig{"89.124.89.126", 2222, testAgeRecipient})
+	ok("TARGET_HOST=192.0.2.126\nTARGET_PORT=2222\nAGE_RECIPIENT="+testAgeRecipient+"\nENV-OK\n", backupConfig{"192.0.2.126", 2222, testAgeRecipient})
 	ok("TARGET_HOST=\nTARGET_PORT=22\nAGE_RECIPIENT=\nENV-OK\r\n", backupConfig{"", 22, ""})
 	bad("", "no state marker: the read did not work")
-	bad("TARGET_HOST=89.124.89.126\n", "no state marker")
+	bad("TARGET_HOST=192.0.2.126\n", "no state marker")
 	bad("TARGET_HOST=$(reboot)\nENV-OK\n", "malformed host must not be treated as 'no target'")
 	bad("TARGET_PORT=99999\nENV-OK\n", "malformed port")
 	bad("AGE_RECIPIENT=age1short\nENV-OK\n", "malformed recipient")
 }
 
 func TestMergeBackupConfig(t *testing.T) {
-	stored := backupConfig{"89.124.89.126", 2222, testAgeRecipient}
+	stored := backupConfig{"192.0.2.126", 2222, testAgeRecipient}
 	other := "age1" + strings.Repeat("q", 58)
 	cases := []struct {
 		name       string
@@ -972,13 +972,13 @@ func TestMergeBackupConfig(t *testing.T) {
 		wantErrHas string
 	}{
 		{"nothing stored, nothing given: local backups only", backupConfig{}, "", 22, "", backupConfig{port: 22}, ""},
-		{"flags only", backupConfig{}, "89.124.89.126", 22, testAgeRecipient, backupConfig{"89.124.89.126", 22, testAgeRecipient}, ""},
+		{"flags only", backupConfig{}, "192.0.2.126", 22, testAgeRecipient, backupConfig{"192.0.2.126", 22, testAgeRecipient}, ""},
 		{"stored values are kept when no flags are given (a re-run never switches the copy off)", stored, "", 22, "", stored, ""},
 		{"a flag target replaces the stored one and takes the flag port", stored, "5.6.7.8", 22, "", backupConfig{"5.6.7.8", 22, testAgeRecipient}, ""},
-		{"a new recipient replaces the stored one", stored, "", 22, other, backupConfig{"89.124.89.126", 2222, other}, ""},
+		{"a new recipient replaces the stored one", stored, "", 22, other, backupConfig{"192.0.2.126", 2222, other}, ""},
 		{"a recipient alone (no target) is persisted", backupConfig{}, "", 22, testAgeRecipient, backupConfig{"", 22, testAgeRecipient}, ""},
-		{"a target without any recipient is refused", backupConfig{}, "89.124.89.126", 22, "", backupConfig{}, "--backup-age-recipient"},
-		{"a stored target without a stored recipient is refused too", backupConfig{"89.124.89.126", 22, ""}, "", 22, "", backupConfig{}, "--backup-age-recipient"},
+		{"a target without any recipient is refused", backupConfig{}, "192.0.2.126", 22, "", backupConfig{}, "--backup-age-recipient"},
+		{"a stored target without a stored recipient is refused too", backupConfig{"192.0.2.126", 22, ""}, "", 22, "", backupConfig{}, "--backup-age-recipient"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1003,9 +1003,9 @@ func TestValidateBackupFlags(t *testing.T) {
 		recipient string
 		ok        bool
 	}{
-		{"", 22, "", true}, {"89.124.89.126", 22, testAgeRecipient, true}, {"2001:db8::1", 2222, "", true},
-		{"89.124.89.126; rm -rf /", 22, "", false}, {"host.example.com", 22, "", false}, {"1.2.3", 22, "", false},
-		{"89.124.89.126", 0, "", false}, {"89.124.89.126", 70000, "", false}, {"", 0, "", false},
+		{"", 22, "", true}, {"192.0.2.126", 22, testAgeRecipient, true}, {"2001:db8::1", 2222, "", true},
+		{"192.0.2.126; rm -rf /", 22, "", false}, {"host.example.com", 22, "", false}, {"1.2.3", 22, "", false},
+		{"192.0.2.126", 0, "", false}, {"192.0.2.126", 70000, "", false}, {"", 0, "", false},
 		{"", 22, "age1short", false}, {"", 22, "AGE-SECRET-KEY-1QQQQ", false}, {"", 22, testAgeRecipient + "x", false},
 		{"", 22, strings.Replace(testAgeRecipient, "age1q", "age1b", 1), false}, // b is not in the bech32 alphabet
 	} {
@@ -1144,7 +1144,7 @@ func payloadFrom(t *testing.T, script, path string) string {
 }
 
 func TestRenderBackupInstallScript(t *testing.T) {
-	bc := backupConfig{"89.124.89.126", 2222, testAgeRecipient}
+	bc := backupConfig{"192.0.2.126", 2222, testAgeRecipient}
 	s := renderBackupInstallScript(bc)
 	for path, content := range map[string]string{
 		"/etc/heyearth/backup.env":                    renderBackupEnv(bc),
@@ -1159,7 +1159,7 @@ func TestRenderBackupInstallScript(t *testing.T) {
 		}
 	}
 	env := renderBackupEnv(bc)
-	for _, want := range []string{"TARGET_HOST=89.124.89.126\n", "TARGET_PORT=2222\n", "KEEP=14\n", "SSH_KEY=/root/.ssh/heyearth_backup_ed25519\n",
+	for _, want := range []string{"TARGET_HOST=192.0.2.126\n", "TARGET_PORT=2222\n", "KEEP=14\n", "SSH_KEY=/root/.ssh/heyearth_backup_ed25519\n",
 		"BACKUP_DIR=/opt/heyearth/backups\n", "AGE_RECIPIENT=" + testAgeRecipient + "\n", "AGE_RECIPIENT_FILE=/etc/heyearth/backup-age.pub\n"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("backup.env lacks %q", want)
@@ -1196,7 +1196,7 @@ func TestBackupInstallAbortsBeforeWriting(t *testing.T) {
 `
 	t.Run("a missing tool", func(t *testing.T) {
 		guard := `command() { if [ "$1" = -v ] && [ "$2" = pg_dump ]; then return 1; fi; builtin command "$@"; }` + "\n" + trap
-		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}))
+		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"192.0.2.126", 22, testAgeRecipient}))
 		if exit != 1 || !strings.Contains(out, "[ops] ABORT: pg_dump is not installed — backup timer not installed") || strings.Contains(out, "UNEXPECTED") {
 			t.Fatalf("exit %d:\n%s", exit, out)
 		}
@@ -1207,7 +1207,7 @@ timeout() { shift; "$@"; }
 apt-get() { echo "apt: stub failure" >&2; return 100; }
 systemd-analyze() { return 0; }
 ` + trap
-		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}))
+		out, exit := runBash(t, guard+renderBackupInstallScript(backupConfig{"192.0.2.126", 22, testAgeRecipient}))
 		if exit != 1 || !strings.Contains(out, "[ops] ABORT: cannot install age — backup timer not installed") || strings.Contains(out, "UNEXPECTED") {
 			t.Fatalf("exit %d:\n%s", exit, out)
 		}
@@ -1266,11 +1266,11 @@ func TestOpsScriptsParse(t *testing.T) {
 		"backup.sh":            backupScript,
 		"backup-verify.sh":     backupVerifyScript,
 		"receiver":             renderBackupReceiver(),
-		"backup install":       renderBackupInstallScript(backupConfig{"89.124.89.126", 22, testAgeRecipient}),
+		"backup install":       renderBackupInstallScript(backupConfig{"192.0.2.126", 22, testAgeRecipient}),
 		"backup install local": renderBackupInstallScript(backupConfig{port: 22}),
 		"receiver install":     renderReceiverInstallScript(auth),
-		"known_hosts + probe":  renderKnownHostsScript("89.124.89.126", 2222, "ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
-		"journald + fail2ban":  renderHostHygieneScript(22, "89.124.89.126"),
+		"known_hosts + probe":  renderKnownHostsScript("192.0.2.126", 2222, "ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
+		"journald + fail2ban":  renderHostHygieneScript(22, "192.0.2.126"),
 		"nginx patch":          renderNginxStreamPatchScript(),
 		"egress guard":         renderEgressGuardScript(),
 		"egress guard install": renderEgressGuardInstallScript(),
@@ -1295,14 +1295,14 @@ func TestOpsScriptsParse(t *testing.T) {
 }
 
 func TestKnownHostsName(t *testing.T) {
-	if got := knownHostsName("89.124.89.126", 22); got != "89.124.89.126" {
+	if got := knownHostsName("192.0.2.126", 22); got != "192.0.2.126" {
 		t.Errorf("port 22: %q", got)
 	}
-	if got := knownHostsName("89.124.89.126", 2222); got != "[89.124.89.126]:2222" {
+	if got := knownHostsName("192.0.2.126", 2222); got != "[192.0.2.126]:2222" {
 		t.Errorf("port 2222: %q", got)
 	}
-	cmd := backupProbeCommand("89.124.89.126", 2222)
-	for _, want := range []string{"-i /root/.ssh/heyearth_backup_ed25519", "-p 2222", "BatchMode=yes", "StrictHostKeyChecking=yes", "root@89.124.89.126 ping"} {
+	cmd := backupProbeCommand("192.0.2.126", 2222)
+	for _, want := range []string{"-i /root/.ssh/heyearth_backup_ed25519", "-p 2222", "BatchMode=yes", "StrictHostKeyChecking=yes", "root@192.0.2.126 ping"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("probe command lacks %q: %s", want, cmd)
 		}

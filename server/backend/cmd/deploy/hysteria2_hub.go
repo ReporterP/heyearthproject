@@ -26,9 +26,9 @@ import (
 
 // hysteria2PortHopRule makes UDP 30000-65000 reach the single :50443 listener. It is a
 // port-only DNAT, never REDIRECT: REDIRECT rewrites the destination to the interface's
-// primary IP (45.150.39.236 on the Hub), while the server — salamander obfs hides the
+// primary IP (198.51.100.236 on the Hub), while the server — salamander obfs hides the
 // UDPConn from quic-go, so no IP_PKTINFO — replies via plain sendto from the route source
-// (138.16.181.225 since 2026-10-12). The reply then misses the conntrack entry, clashes on
+// (203.0.113.225 since 2026-10-12). The reply then misses the conntrack entry, clashes on
 // confirm and sendto fails with EPERM: Бамбук was dark for 6.5 h after the source switch.
 // 50443 itself is inside the range, so direct dials go through this rule too.
 //

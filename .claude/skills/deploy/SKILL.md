@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Deploy HeYearth components to production server (45.150.39.236). Use when user says "deploy", "задеплой", "обнови сервер", etc.
+description: Deploy HeYearth components to the production Hub (hiearth.ru). Use when user says "deploy", "задеплой", "обнови сервер", etc.
 disable-model-invocation: true
 ---
 
@@ -36,5 +36,5 @@ All deploy commands run from `server/backend/` directory via `go run ./cmd/deplo
 - `--site` builds Flutter Web and Vue site locally, then uploads via SFTP. Requires `fvm flutter` and `npm`.
 - Vue site uses `const API_BASE = ''` (relative paths). The deploy tool strips VITE_API_BASE from env via `filterEnv()`.
 - Admin web uses relative `/api/admin` by default.
-- Current server: `45.150.39.236`, domain: `hiearth.ru`
+- Server: the A record of `hiearth.ru` (address in `server/.env`, never in the repo)
 - No HTTPS yet — all redirects use `http://`

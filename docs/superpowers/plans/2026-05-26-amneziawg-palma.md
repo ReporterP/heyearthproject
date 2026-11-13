@@ -2953,7 +2953,7 @@ If T10 leaves the system in a degraded state:
   >    - If connection hangs >10s, capture `journalctl -u awg -n 100` from Hub and check for `handshake did not complete` errors.
   >
   > 3. **Visit https://www.cloudflare.com/cdn-cgi/trace** in the device browser while Пальма is active. Verify:
-  >    - `ip=89.124.89.126` (NL exit node)
+  >    - `ip=192.0.2.126` (NL exit node)
   >    - `loc=NL`
   >
   > 4. **Tele2 mobile SIM test (the original failure case from the research note):**
@@ -2989,7 +2989,7 @@ If T10 leaves the system in a degraded state:
 
 - [ ] **Step 10: Mark Beads epic done**
   ```bash
-  bd close <epic-id> --reason "Пальма (AmneziaWG 2.0) shipped as priority-0 profile. Per-plan amnezia_wg_enabled toggle works. Berëza shrunk to 2 FPs. R5 mobile-operator direct-routes deployed. R4 best-effort outcome documented per T9 commit. E2E verified end-to-end: subscription emits amneziawg:// URI for users on enabled plans, happ imports and connects, traffic flows to NL exit (89.124.89.126). Closes Tier-2/Tier-3 mobile-DPI mitigations for Tele2/МегаФон/Beeline."
+  bd close <epic-id> --reason "Пальма (AmneziaWG 2.0) shipped as priority-0 profile. Per-plan amnezia_wg_enabled toggle works. Berëza shrunk to 2 FPs. R5 mobile-operator direct-routes deployed. R4 best-effort outcome documented per T9 commit. E2E verified end-to-end: subscription emits amneziawg:// URI for users on enabled plans, happ imports and connects, traffic flows to NL exit (192.0.2.126). Closes Tier-2/Tier-3 mobile-DPI mitigations for Tele2/МегаФон/Beeline."
   ```
   Replace `<epic-id>` with the actual ID from when the epic was created via `bd create -t epic`.
 

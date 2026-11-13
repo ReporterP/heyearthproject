@@ -303,7 +303,7 @@ cat > "$T/bin/ss" <<'STUB'
 echo "LISTEN 0 4096 127.0.0.1:10443 0.0.0.0:*"
 if [ "${NO_MIRROR:-0}" != 1 ]; then echo "LISTEN 0 4096 127.0.0.1:10444 0.0.0.0:*"; fi
 STUB
-printf '#!/bin/sh\necho "2: eth0    inet 138.16.181.225/24 brd 138.16.181.255 scope global eth0"\n' > "$T/bin/ip"
+printf '#!/bin/sh\necho "2: eth0    inet 203.0.113.225/24 brd 203.0.113.255 scope global eth0"\n' > "$T/bin/ip"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/sleep"
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH"
@@ -394,8 +394,8 @@ func TestStreamProxySwitch(t *testing.T) {
 		t.Parallel()
 		out := run(t, "off", "on", nil, "")
 		want(t, out, "STATE rc=0", "STATE result=RESULT: on",
-			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;",
-			"STATE live=1 8446 10444 1", "STATE r_orig=changed h_orig=changed", "STATE probe_ip=138.16.181.225")
+			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 203.0.113.225;",
+			"STATE live=1 8446 10444 1", "STATE r_orig=changed h_orig=changed", "STATE probe_ip=203.0.113.225")
 		if r := router(out); r != buildNginxStreamConf(sppDomain, true) {
 			t.Errorf("router after on:\n%s", r)
 		}
@@ -404,7 +404,7 @@ func TestStreamProxySwitch(t *testing.T) {
 		t.Parallel()
 		out := run(t, "on", "off", nil, "")
 		want(t, out, "STATE rc=0", "STATE result=RESULT: off",
-			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;",
+			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 203.0.113.225;",
 			"STATE live=0 8443 10443 1", "STATE r_orig=changed h_orig=same")
 		if r := router(out); r != buildNginxStreamConf(sppDomain, false) {
 			t.Errorf("router after off:\n%s", r)
@@ -414,7 +414,7 @@ func TestStreamProxySwitch(t *testing.T) {
 		t.Parallel()
 		out := run(t, "on", "on", nil, "")
 		want(t, out, "STATE rc=0", "STATE result=RESULT: on", "STATE r_orig=same h_orig=same",
-			"STATE calls="+preflight+"curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;")
+			"STATE calls="+preflight+"curl api;curl 127.0.0.1;openssl;curl 203.0.113.225;")
 	})
 	t.Run("a file changed after it was read: nothing changed", func(t *testing.T) {
 		t.Parallel()
@@ -467,7 +467,7 @@ func TestStreamProxySwitch(t *testing.T) {
 		t.Parallel()
 		out := run(t, "off", "on", map[string]string{"VERIFY_FAIL": "1"}, "")
 		want(t, out, "STATE rc=1", "STATE result=RESULT: rolled-back-to-off", "STATE r_orig=same h_orig=same", "STATE live=0 8443 10443 0",
-			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 138.16.181.225;")
+			"STATE calls="+preflight+"nginx -t;reload nginx;curl api;curl 127.0.0.1;nginx -t;reload nginx;curl api;curl 127.0.0.1;openssl;curl 203.0.113.225;")
 	})
 }
 

@@ -79,7 +79,7 @@ Followed evidence into tunnel branch (Hysteria2 client logs + systemd units + co
 
 **Factor #1 — Zombie hysteria2-client-1.service (Latvia)** *(CRITICAL)*
 ```
-hysteria2-client-1.service - Hysteria2 Client for 155.212.225.172 (HeYearth)
+hysteria2-client-1.service - Hysteria2 Client for 192.0.2.172 (HeYearth)
   Active since Apr 06; CPU time 10:49:24
   Config: /opt/heyearth/hysteria/client-1.yaml
   Process PID 470602 alive
@@ -91,8 +91,8 @@ Latvia exit is `disabled` in DB (only Amsterdam shows is_exit_node=t), but syste
 Constant stream in `hysteria2-client.service` journal:
 ```
 WARN SOCKS5 TCP error  {reqAddr: "178.121.1.197:60387", error: "i/o timeout"}
-WARN SOCKS5 TCP error  {reqAddr: "85.172.110.203:14084", error: "i/o timeout"}
-WARN SOCKS5 TCP error  {reqAddr: "95.54.22.143:43298", error: "i/o timeout"}
+WARN SOCKS5 TCP error  {reqAddr: "198.51.100.203:14084", error: "i/o timeout"}
+WARN SOCKS5 TCP error  {reqAddr: "198.51.100.143:43298", error: "i/o timeout"}
 WARN SOCKS5 TCP error  {reqAddr: "45.156.20.27:6881", error: "connection refused"}
 ```
 All reqAddr's are **Russian IP-addresses**. Users (or their P2P/BT clients) are dialing destinations IN Russia THROUGH the Amsterdam tunnel — guaranteed to time out (Amsterdam → RU IP is heavily filtered). Each timeout holds resources 5-30 seconds. At hundreds/min this:
@@ -101,7 +101,7 @@ All reqAddr's are **Russian IP-addresses**. Users (or their P2P/BT clients) are 
 * Causes the main tunnel to slow down for ALL users when burst arrives
 
 **Factor #3 — Single exit = SPOF** *(ARCHITECTURAL)*
-Only `Амстердам 32Tb` (89.124.89.126) is `is_exit_node=t, status=online`. When the single tunnel slows/pulses → 100% of users see N/A simultaneously. This is **exactly** the "wave" pattern user described.
+Only `Амстердам 32Tb` (192.0.2.126) is `is_exit_node=t, status=online`. When the single tunnel slows/pulses → 100% of users see N/A simultaneously. This is **exactly** the "wave" pattern user described.
 
 ### Wave mechanism (synthesis)
 
@@ -149,7 +149,7 @@ TOTAL 1130 dials/5min
 ```
 26 reqAddr: "www.google.com:5222"   Google Talk — dead since 2017
  1 reqAddr: "stats.avito.ru:443"
- 1 reqAddr: "91.105.192.100:5222"
+ 1 reqAddr: "198.51.100.100:5222"
 TOTAL 28 errors / 5min
 ```
 
@@ -186,7 +186,7 @@ systemctl restart hysteria2-client
 
 **P1.1 — Add a second exit-node** (eliminate SPOF)
 * Options:
-  - Re-enable Latvia (155.212.225.172) if hardware still alive
+  - Re-enable Latvia (192.0.2.172) if hardware still alive
   - Provision new EU/Asia node (Hetzner, Aeza, BunnyShell — same as hub)
   - Costs ~250-590 ₽/мес depending on provider
 * Plug into DB → `INSERT INTO servers ... is_exit_node=true, load_weight=1`

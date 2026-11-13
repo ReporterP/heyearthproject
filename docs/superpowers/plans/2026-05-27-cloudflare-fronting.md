@@ -44,7 +44,7 @@ Go to https://dash.cloudflare.com → Sign up (or login). Free plan is sufficien
 
 - [ ] **Step 2: Add hiearth.ru site to CF**
 
-In CF dashboard → "Add a Site" → enter `hiearth.ru` → choose **Free plan**. CF will scan existing DNS, will detect A records `hiearth.ru → 45.150.39.236` and `admin.hiearth.ru → 45.150.39.236`. Accept the import.
+In CF dashboard → "Add a Site" → enter `hiearth.ru` → choose **Free plan**. CF will scan existing DNS, will detect A records `hiearth.ru → 198.51.100.236` and `admin.hiearth.ru → 198.51.100.236`. Accept the import.
 
 - [ ] **Step 3: Set proxy=OFF on existing records (CRITICAL)**
 
@@ -55,7 +55,7 @@ For BOTH `hiearth.ru` and `admin.hiearth.ru`: ensure proxy status is **DNS only 
 In DNS panel → Add record:
 - Type: `A`
 - Name: `cdn`
-- IPv4: `45.150.39.236`
+- IPv4: `198.51.100.236`
 - Proxy status: **Proxied (orange cloud)** ← CRITICAL
 
 - [ ] **Step 5: Get CF nameservers**
@@ -101,7 +101,7 @@ After NS propagation (Step 7), from local machine (or any non-Hub network):
 dig cdn.hiearth.ru +short
 ```
 
-Expected: 2-3 CF edge IPs (typically `104.21.x.x` or `172.67.x.x`), **NOT** `45.150.39.236`. If you see Hub IP — wait longer for propagation or check proxy=ON in CF DNS settings.
+Expected: 2-3 CF edge IPs (typically `104.21.x.x` or `172.67.x.x`), **NOT** `198.51.100.236`. If you see Hub IP — wait longer for propagation or check proxy=ON in CF DNS settings.
 
 ```bash
 curl -I https://cdn.hiearth.ru

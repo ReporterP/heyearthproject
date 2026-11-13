@@ -270,7 +270,7 @@ func entriesAnswer(host *string, hub []driver.Value, relays [][]driver.Value, fa
 
 func TestListEntriesAssembly(t *testing.T) {
 	at := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
-	host := " 138.16.181.225 "
+	host := " 203.0.113.225 "
 	f := &entriesFake{answer: entriesAnswer(&host,
 		[]driver.Value{"domain", "hub.example.test", "healthy", at, "", "healthy", at, "", "unknown", nil, ""},
 		[][]driver.Value{
@@ -287,7 +287,7 @@ func TestListEntriesAssembly(t *testing.T) {
 		t.Fatalf("want Hub + 2 relays, got %+v", es)
 	}
 	hub, r1, r2 := es[0], es[1], es[2]
-	if hub.ID != 0 || hub.Kind != EntryKindHub || hub.Name != "Основной вход (Hub)" || hub.IP != "138.16.181.225" ||
+	if hub.ID != 0 || hub.Kind != EntryKindHub || hub.Name != "Основной вход (Hub)" || hub.IP != "203.0.113.225" ||
 		hub.AddressMode != EntryAddressDomain || hub.Address != "hub.example.test" || hub.Country != "RU" || hub.Lifecycle != "online" {
 		t.Errorf("hub: %+v", hub)
 	}
@@ -318,7 +318,7 @@ func TestListEntriesAssembly(t *testing.T) {
 // No Hub row in entry_state (deleted by hand, a fresh table): the Hub is still listed, by IP,
 // unchecked; the relays follow.
 func TestListEntriesHubWithoutStateRow(t *testing.T) {
-	host := "138.16.181.225"
+	host := "203.0.113.225"
 	f := &entriesFake{answer: entriesAnswer(&host, nil, [][]driver.Value{
 		{int64(2), "RU-relay-1", "198.51.100.9", "RU", "online", "ip", "", "unknown", nil, "", "unknown", nil, "", "unknown", nil, ""},
 	}, "")}
@@ -335,7 +335,7 @@ func TestListEntriesHubWithoutStateRow(t *testing.T) {
 
 // A failed read is an error, never a partial list (the subscription answers 503 on it).
 func TestListEntriesReadErrors(t *testing.T) {
-	host := "138.16.181.225"
+	host := "203.0.113.225"
 	hubRow := []driver.Value{"ip", "", "unknown", nil, "", "unknown", nil, "", "unknown", nil, ""}
 	for _, fail := range []string{"setting", "hub", "relays"} {
 		t.Run(fail, func(t *testing.T) {

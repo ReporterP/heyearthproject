@@ -30,7 +30,7 @@ type exitEnv struct {
 	onSleep   func(d time.Duration)
 }
 
-var testExitHubIPs = []string{"138.16.181.225", "45.150.39.236", "109.172.86.40"}
+var testExitHubIPs = []string{"203.0.113.225", "198.51.100.236", "192.0.2.40"}
 
 func exitFixture(t *testing.T, mtproto bool) *exitEnv {
 	t.Helper()
@@ -202,7 +202,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	ag, _ := config.ExitAgentGuardConf(testExitHubIPs)
 	if string(e.node.files[config.ExitAgentGuardConfPath]) != ag || string(e.node.files[config.ExitAgentGuardUnitPath]) != config.ExitAgentGuardUnit ||
 		!strings.Contains(string(e.node.files[config.NodeAgentUnitPath]), "\nRequires="+config.ExitAgentGuardService+".service\n") ||
-		!e.node.nft[config.ExitAgentGuardTable] || !strings.Contains(e.node.scripts["firewall"], "ufw allow from 138.16.181.225 to any port 50052") {
+		!e.node.nft[config.ExitAgentGuardTable] || !strings.Contains(e.node.scripts["firewall"], "ufw allow from 203.0.113.225 to any port 50052") {
 		t.Fatal("node-agent guard not installed from the Hub list")
 	}
 	as := e.node.scripts["converge node-agent"]

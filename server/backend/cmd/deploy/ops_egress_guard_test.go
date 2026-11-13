@@ -95,7 +95,7 @@ func egressHarness(vars map[string]string, body string) string {
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 : > "$T/out.v4"; : > "$T/out.v6"
 export CGROUP_DIR="$T/cg"; if [ "$MAKE_CG" = 1 ]; then mkdir -p "$CGROUP_DIR"; fi
-{ printf 'HUB_EXTRA_IPS="203.0.113.9 138.16.181.225 2001:db8::9"\n'; if [ -n "$ENV_HY_PORTS" ]; then printf 'HY_AUTH_PORTS=%s\n' "$ENV_HY_PORTS"; fi; } > "$T/egress.env"
+{ printf 'HUB_EXTRA_IPS="203.0.113.9 203.0.113.225 2001:db8::9"\n'; if [ -n "$ENV_HY_PORTS" ]; then printf 'HY_AUTH_PORTS=%s\n' "$ENV_HY_PORTS"; fi; } > "$T/egress.env"
 export EGRESS_GUARD_ENV="$T/egress.env"
 ` + egressHarnessStubs + `
 cat > "$T/guard.sh" <<'GUARD_SCRIPT_EOF'
@@ -202,7 +202,7 @@ func TestEgressGuardScript(t *testing.T) {
 			t.Errorf("%s differ:\n--- got\n%s\n--- want\n%s", what, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 	}
-	extraV4 := []string{"138.16.181.225", "203.0.113.9"} // HUB_EXTRA_IPS of the family, sorted, de-duplicated
+	extraV4 := []string{"203.0.113.225", "203.0.113.9"} // HUB_EXTRA_IPS of the family, sorted, de-duplicated
 	extraV6 := []string{"2001:db8::9"}
 	B, A := egressHyAuthPortsB, egressHyAuthPortsA
 
@@ -736,7 +736,7 @@ runuser() {
 }
 getent() {
   case "$2" in
-    hiearth.ru) printf '138.16.181.225 STREAM hiearth.ru\n138.16.181.225 DGRAM\n138.16.181.225 RAW\n2001:db8::2 STREAM\n' ;;
+    hiearth.ru) printf '203.0.113.225 STREAM hiearth.ru\n203.0.113.225 DGRAM\n203.0.113.225 RAW\n2001:db8::2 STREAM\n' ;;
     203.0.113.9) printf '203.0.113.9 STREAM\n1.2.3.4;reboot STREAM\n$(id) STREAM\n' ;;
   esac
 }
@@ -746,7 +746,7 @@ getent() {
 		t.Parallel()
 		out, exit := runBash(t, harness(live("")))
 		if exit != 0 || !hasLine(out, "STATE live=1 before=1 xray_live=1 xray_before=1 hy_live=1 hy_before=1 cg=1 api_user=root hy_uid=998") ||
-			!hasLine(out, "STATE extra=138.16.181.225 2001:db8::2 203.0.113.9") {
+			!hasLine(out, "STATE extra=2001:db8::2 203.0.113.225 203.0.113.9") {
 			t.Fatalf("exit %d:\n%s", exit, out)
 		}
 		if !strings.Contains(out, "only root (uid 0) may open new connections to 127.0.0.1:10085") {
@@ -997,7 +997,7 @@ ss() {
   if [ "$TUNNEL_LISTEN" = 1 ]; then echo "LISTEN 0 4096 127.0.0.1:1090 0.0.0.0:*"; fi
   echo "LISTEN 0 4096 127.0.0.1:5432 0.0.0.0:*"
 }
-ip() { echo "2: eth0    inet 138.16.181.225/24 brd 138.16.181.255 scope global eth0"; }
+ip() { echo "2: eth0    inet 203.0.113.225/24 brd 203.0.113.255 scope global eth0"; }
 cat > "$T/post.sh" <<'POST_SCRIPT_EOF'
 ` + egressGuardPostScript + `POST_SCRIPT_EOF
 ( . "$T/post.sh" )
@@ -1010,8 +1010,8 @@ echo "STATE probes=$( [ -f "$T/probes" ] && tr '\n' ';' < "$T/probes" )"
 		{name: "everything works: allowed paths work, forbidden ones are refused", wantExit: 0, wantCalls: "",
 			wantOut: []string{"egress guard: verified", "the xray API refuses user nobody and answers for root", "xray still carries traffic",
 				"the hysteria user still reaches its auth callback (" + egressHyAuthURL + ", phase B)", "the hysteria user is refused on the main API 127.0.0.1:8000 (phase B)",
-				"the hysteria user is refused on 127.0.0.1:22", "the hysteria user is refused on the Hub's own address 138.16.181.225:22",
-				"xray still reaches the exit tunnel port 127.0.0.1:1090", "a UDP datagram from xray's cgroup reaches a loopback listener", "xray is refused on 127.0.0.1:22", "xray is refused on the Hub's own address 138.16.181.225:22",
+				"the hysteria user is refused on 127.0.0.1:22", "the hysteria user is refused on the Hub's own address 203.0.113.225:22",
+				"xray still reaches the exit tunnel port 127.0.0.1:1090", "a UDP datagram from xray's cgroup reaches a loopback listener", "xray is refused on 127.0.0.1:22", "xray is refused on the Hub's own address 203.0.113.225:22",
 				"STATE probes=hy_connect 127.0.0.1:8000;hy_connect 127.0.0.1:22;"},
 			notOut: []string{"FAILED", "WARN"}},
 		{name: "phase B: the hysteria user can still open the main API on 8000: FAILED", v: map[string]string{"HY_OPEN_8000": "1"}, wantExit: 1, wantCalls: "",
@@ -1027,7 +1027,7 @@ echo "STATE probes=$( [ -f "$T/probes" ] && tr '\n' ';' < "$T/probes" )"
 		{name: "the hysteria auth callback did not work before either: a warning", v: map[string]string{"HY_AUTH_AFTER_OK": "0", "hy_before": "0"}, wantExit: 0, wantCalls: "",
 			wantOut: []string{"auth callback check (" + egressHyAuthURL + ") did not pass before the guard either"}},
 		{name: "the hysteria user can still open a loopback service: FAILED, rules stay", v: map[string]string{"HY_OPEN": "1"}, wantExit: 1, wantCalls: "",
-			wantOut: []string{"FAILED: the hysteria user can still open 127.0.0.1:22", "FAILED: the hysteria user can still open 138.16.181.225:22"}, notOut: []string{"verified"}},
+			wantOut: []string{"FAILED: the hysteria user can still open 127.0.0.1:22", "FAILED: the hysteria user can still open 203.0.113.225:22"}, notOut: []string{"verified"}},
 		{name: "xray (its cgroup) lost its exit tunnel port: rolled back", v: map[string]string{"CG_TUNNEL_RC": "1"}, wantExit: 1, wantCalls: "rollback;",
 			wantOut: []string{"xray cannot reach the exit tunnel port 127.0.0.1:1090", "guard rolled back"}},
 		{name: "a UDP datagram from xray's cgroup to a loopback listener is lost: rolled back (the AmneziaWG / UDP-ASSOCIATE path is broken)", v: map[string]string{"UDP_RC": "1"}, wantExit: 1, wantCalls: "rollback;",
@@ -1037,7 +1037,7 @@ echo "STATE probes=$( [ -f "$T/probes" ] && tr '\n' ';' < "$T/probes" )"
 		{name: "the probe cannot enter the xray cgroup: the cgroup rules are not verified, a warning", v: map[string]string{"CG_TUNNEL_RC": "99", "CG_OTHER_RC": "99"}, wantExit: 0, wantCalls: "",
 			wantOut: []string{"cannot move a probe into"}, notOut: []string{"FAILED", "rolled back"}},
 		{name: "xray (its cgroup) can still open the API port or the Hub's own address: FAILED", v: map[string]string{"CG_OTHER_RC": "0"}, wantExit: 1, wantCalls: "",
-			wantOut: []string{"FAILED: xray (its cgroup) can still open 127.0.0.1:22", "FAILED: xray (its cgroup) can still open 138.16.181.225:22"}, notOut: []string{"verified"}},
+			wantOut: []string{"FAILED: xray (its cgroup) can still open 127.0.0.1:22", "FAILED: xray (its cgroup) can still open 203.0.113.225:22"}, notOut: []string{"verified"}},
 		{name: "no exit tunnel listener on loopback: the allowed xray path is not verified, a warning", v: map[string]string{"TUNNEL_LISTEN": "0"}, wantExit: 0, wantCalls: "",
 			wantOut: []string{"no exit tunnel listener in 1088:1599 on loopback"}, notOut: []string{"FAILED", "rolled back"}},
 		{name: "no user hysteria: its checks are skipped with a warning", v: map[string]string{"hy_uid": ""}, wantExit: 0, wantCalls: "",

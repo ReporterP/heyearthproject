@@ -10,12 +10,12 @@ import (
 
 func TestParseMobileCheckLog(t *testing.T) {
 	log := strings.Join([]string{
-		`{"kind":"page","ip":"91.79.35.101","at":1762950000}`,
-		`{"kind":"blob","ip":"91.79.35.101","sent":2097152,"acked":14336,"secs":15.3,"at":1762950016}`, // frozen at 14 KB
-		`{"kind":"page","ip":"94.25.171.3","at":1762950100}`,
-		`{"kind":"blob","ip":"94.25.171.3","sent":2097152,"acked":2097152,"secs":1.4,"at":1762950102}`,
-		`{"kind":"report","ip":"94.25.171.3","bytes":2097152,"ms":1400,"at":1762950102}`,
-		`{"kind":"page","ip":"176.59.1.2","at":1762950200}`, // the page loaded, the download never started
+		`{"kind":"page","ip":"198.51.100.71","at":1762950000}`,
+		`{"kind":"blob","ip":"198.51.100.71","sent":2097152,"acked":14336,"secs":15.3,"at":1762950016}`, // frozen at 14 KB
+		`{"kind":"page","ip":"198.51.100.73","at":1762950100}`,
+		`{"kind":"blob","ip":"198.51.100.73","sent":2097152,"acked":2097152,"secs":1.4,"at":1762950102}`,
+		`{"kind":"report","ip":"198.51.100.73","bytes":2097152,"ms":1400,"at":1762950102}`,
+		`{"kind":"page","ip":"198.51.100.72","at":1762950200}`, // the page loaded, the download never started
 		`not json`,
 		`{"kind":"blob","at":1762950300}`, // no address: ignored
 	}, "\n")
@@ -27,16 +27,16 @@ func TestParseMobileCheckLog(t *testing.T) {
 	for _, r := range got {
 		byIP[r.IP] = r
 	}
-	if r := byIP["94.25.171.3"]; !r.OK || r.Delivered != mobileCheckBytes || !strings.Contains(r.Verdict, "проходит") || strings.HasPrefix(r.Verdict, "✗") {
+	if r := byIP["198.51.100.73"]; !r.OK || r.Delivered != mobileCheckBytes || !strings.Contains(r.Verdict, "проходит") || strings.HasPrefix(r.Verdict, "✗") {
 		t.Errorf("full download: %+v", r)
 	}
-	if r := byIP["91.79.35.101"]; r.OK || r.Delivered != 14336 || !strings.Contains(r.Verdict, "оборвалось на 14 КБ") {
+	if r := byIP["198.51.100.71"]; r.OK || r.Delivered != 14336 || !strings.Contains(r.Verdict, "оборвалось на 14 КБ") {
 		t.Errorf("frozen: %+v", r)
 	}
-	if r := byIP["176.59.1.2"]; r.OK || r.Delivered != 0 || !strings.Contains(r.Verdict, "не начал") {
+	if r := byIP["198.51.100.72"]; r.OK || r.Delivered != 0 || !strings.Contains(r.Verdict, "не начал") {
 		t.Errorf("page only: %+v", r)
 	}
-	if got[0].IP != "176.59.1.2" { // newest activity first
+	if got[0].IP != "198.51.100.72" { // newest activity first
 		t.Errorf("order: %s first", got[0].IP)
 	}
 	// The kernel took everything (sent) but the phone acknowledged little: acked decides.

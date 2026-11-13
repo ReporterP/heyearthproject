@@ -12,7 +12,7 @@
 
 **Beads epic:** to be created in Task 0.
 
-**Production:** hub 45.150.39.236, exit Amsterdam id=2 (89.124.89.126). Shared secret `26c834d4b1b097dfde254de8614047d7` already in DB (`app_settings.mtproto_secret`).
+**Production:** hub 198.51.100.236, exit Amsterdam id=2 (192.0.2.126). Shared secret `26c834d4b1b097dfde254de8614047d7` already in DB (`app_settings.mtproto_secret`).
 
 **Deploy:** `cd server/backend && go run quick_deploy.go` for binary+migrations, `go run ./cmd/deploy --site --admin-web` for frontend, `go run ./cmd/deploy --ssh '...'` for hub commands.
 
@@ -1221,7 +1221,7 @@ Wait 3-4 minutes, then check:
 ```bash
 go run ./cmd/deploy --ssh "journalctl -u heyearth-api --since '5 minutes ago' --no-pager | grep -E 'ghost-reconciler|mtproto'"
 ```
-Expected: line like `[ghost-reconciler] N exit(s) need mtproto-proxy install; firing 1 (rate-limit)` followed by `[ghost-reconciler] install mtproxy on 2 (89.124.89.126): success` after a few minutes (build on Amsterdam takes 2-5 min).
+Expected: line like `[ghost-reconciler] N exit(s) need mtproto-proxy install; firing 1 (rate-limit)` followed by `[ghost-reconciler] install mtproxy on 2 (192.0.2.126): success` after a few minutes (build on Amsterdam takes 2-5 min).
 
 If you see compile errors or SSH errors → investigate the specific failure (it'll be in the same log).
 
@@ -1251,10 +1251,10 @@ Expected:
 ```json
 {
   "enabled": true,
-  "host": "89.124.89.126",
+  "host": "192.0.2.126",
   "port": "8443",
   "secret": "26c834d4b1b097dfde254de8614047d7",
-  "tg_deeplink": "tg://proxy?server=89.124.89.126&port=8443&secret=...",
+  "tg_deeplink": "tg://proxy?server=192.0.2.126&port=8443&secret=...",
   "t_me_link": "https://t.me/proxy?server=..."
 }
 ```
@@ -1265,7 +1265,7 @@ On a phone:
 1. Open `https://hiearth.ru/connections` while logged in
 2. Tap "Открыть в Telegram"
 3. Confirm proxy in Telegram
-4. Check Telegram Settings → Data and Storage → Proxy → should list `89.124.89.126:8443`
+4. Check Telegram Settings → Data and Storage → Proxy → should list `192.0.2.126:8443`
 5. Send a message to anyone — verify Telegram works through proxy
 6. If sponsor channel was set in admin, Telegram UI shows the sponsor banner
 

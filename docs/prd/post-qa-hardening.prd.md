@@ -19,7 +19,7 @@ author: alex
    «Доход 0 ₽» (есть тестовые платежи, но фильтр их не исключает — где-то их учитывают,
    где-то нет), на графике трафика пусто (данные есть, но CSS обнуляет высоту столбцов),
    карточка «Группы 3» ссылается на скрытый из sidebar раздел server-groups.
-2. **SOCKS5 «не работает»** со слов пользователя — по факту работает (живой тест → exit IP 89.124.89.126,
+2. **SOCKS5 «не работает»** со слов пользователя — по факту работает (живой тест → exit IP 192.0.2.126,
    19 активных сессий за 2ч), но в subscription URI нет `#tag`, в личном кабинете не показаны
    username/password явно, и подсказки пользователю нет.
 3. **Лимиты трафика не enforce-ятся и не видны** — SOCKS5/HTTP accounts в Xray создаются
@@ -74,7 +74,7 @@ author: alex
 ### SOCKS5
 - [ ] Каждый `socks://` / `http://` URI в subscription имеет `#HeYearth-SOCKS5` / `#HeYearth-HTTP` fragment.
 - [ ] На /dashboard в site в блоке подписки у юзеров с socks-планом виден блок «SOCKS5 прокси» с login/password и кнопкой копирования.
-- [ ] Доп. проверки в PRD не нужны — backend уже работает (evidence: `curl --socks5 test:pw@hiearth.ru:1080 https://ifconfig.me → 89.124.89.126`).
+- [ ] Доп. проверки в PRD не нужны — backend уже работает (evidence: `curl --socks5 test:pw@hiearth.ru:1080 https://ifconfig.me → 192.0.2.126`).
 
 ### Traffic limits
 - [ ] `ListActiveUsersWithUUIDs` (SOCKS) и HTTP proxy accounts фильтруют `us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit`.

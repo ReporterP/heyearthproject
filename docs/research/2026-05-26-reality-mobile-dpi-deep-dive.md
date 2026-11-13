@@ -9,7 +9,7 @@
 
 ## 🔴 Critical Correction — Hub Location (post-deploy revelation)
 
-**Our Hub is physically in Moscow, Russia** (IP 45.150.39.236, AS48282 "Hosting technology LTD" / vdsina.ru). The original draft of this document implicitly assumed a foreign-DC Hub, which inverted several recommendations:
+**Our Hub is physically in Moscow, Russia** (IP 198.51.100.236, AS48282 "Hosting technology LTD" / vdsina.ru). The original draft of this document implicitly assumed a foreign-DC Hub, which inverted several recommendations:
 
 | Aspect | Original (wrong) assumption | Corrected for RU Hub |
 |--------|-----------------------------|----------------------|

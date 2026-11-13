@@ -69,7 +69,7 @@
 
 > *«If you write yandex.ru in SNI, but the packet flies to an IP in Amsterdam — filtering systems instantly drop the session.»* — dev.to «Эра белых списков», 2026. **Confidence: HIGH**.
 
-Наш Hub стоит на vdsina (45.150.39.236) — IP в Москве, и поверх нас SNI=yandex.ru формально *может* проходить (RU ASN), но всё-таки vdsina ≠ Yandex ASN. На некоторых Tele2-региональных DPI это всё равно классифицируется как mismatch. **Confidence: MEDIUM** (для нашей именно конкретной конфигурации — нужна проверка).
+Наш Hub стоит на vdsina (198.51.100.236) — IP в Москве, и поверх нас SNI=yandex.ru формально *может* проходить (RU ASN), но всё-таки vdsina ≠ Yandex ASN. На некоторых Tele2-региональных DPI это всё равно классифицируется как mismatch. **Confidence: MEDIUM** (для нашей именно конкретной конфигурации — нужна проверка).
 
 ### C.3. Tele2 особенно агрессивен с TCP+TLS
 

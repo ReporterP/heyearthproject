@@ -67,7 +67,7 @@ var relayNonPublicV4 = func() []netip.Prefix {
 
 // RelayHubIP validates the DNAT target: a public IPv4 literal (the table is family ip), no names,
 // ports, prefixes or IPv4-mapped IPv6. The caller passes the Hub address its replies come from
-// (main_server_host — 138.16.181.225 in production), never a filtered secondary address: Bamboo
+// (main_server_host — 203.0.113.225 in production), never a filtered secondary address: Bamboo
 // replies leave the Hub from its route source, and the relay's conntrack only matches replies
 // from the address it sent to.
 func RelayHubIP(s string) (netip.Addr, error) {

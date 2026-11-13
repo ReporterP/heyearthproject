@@ -15,7 +15,7 @@
 
 **Evidence-driven verification** (no automated tests in this repo): every task ends with a concrete SSH command + expected output that proves the fix took effect.
 
-**Production hub:** `45.150.39.236` (vdsina, 1 vCPU / 1.9 GB), deploy via `cd server/backend && go run ./cmd/deploy --ssh '...'` or `--update-main`.
+**Production hub:** `198.51.100.236` (vdsina, 1 vCPU / 1.9 GB), deploy via `cd server/backend && go run ./cmd/deploy --ssh '...'` or `--update-main`.
 
 ---
 

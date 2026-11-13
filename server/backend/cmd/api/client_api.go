@@ -395,7 +395,7 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 		hy2Password, obfsPassword := in.hy2Password, in.obfsPassword
 		// SNI MUST match the Hysteria2 server's TLS cert. The server uses a
 		// Let's Encrypt cert for hiearth.ru (SAN: hiearth.ru, www, admin — NO IP).
-		// main_server_host became the bare IP 45.150.39.236 on 2026-05-26, so using
+		// main_server_host became the bare IP 198.51.100.236 on 2026-05-26, so using
 		// it as the URI sni with insecure=0 made every QUIC TLS handshake fail
 		// ("Бамбук не отвечает"). Connect host stays the IP (no DNS dependency),
 		// but sni uses the cert domain from hub_main_server_host.

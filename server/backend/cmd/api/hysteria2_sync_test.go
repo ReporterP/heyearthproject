@@ -18,7 +18,7 @@ func TestBambooRestartsOnlyWhenTheExitChanges(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	sel := biz.NewExpressSelector(2, t0)
 	render := func(c biz.ExpressChoice) string {
-		return renderHysteria2Config(100, 100, "obfs", "stats", c.SocksPort, []string{"138.16.181.225"})
+		return renderHysteria2Config(100, 100, "obfs", "stats", c.SocksPort, []string{"203.0.113.225"})
 	}
 	last := render(sel.Current())
 	if !strings.Contains(last, "addr: 127.0.0.1:1090") {
@@ -53,7 +53,7 @@ func TestBambooChoiceCommittedOnlyWhenServerYAMLCarriesIt(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	sel := biz.NewExpressSelector(2, t0)
 	render := func(port int) string {
-		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"138.16.181.225"})
+		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"203.0.113.225"})
 	}
 	var installed []string
 	installErr := errors.New("validation failed (keeping existing config)")
@@ -108,7 +108,7 @@ func TestBambooChoiceCommittedOnlyWhenServerYAMLCarriesIt(t *testing.T) {
 func TestBambooRestartRetriedBeforeCommit(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	render := func(port int) string {
-		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"138.16.181.225"})
+		return renderHysteria2Config(100, 100, "obfs", "stats", port, []string{"203.0.113.225"})
 	}
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	if err := os.WriteFile(path, []byte(render(1090)), 0o600); err != nil {
@@ -159,7 +159,7 @@ func TestBambooServerYAMLUnchangedAtRollout(t *testing.T) {
 		t.Fatalf("the seeded exit #2 must stay without a switch: %+v", c)
 	}
 	checkGolden(t, "hysteria2_server_exit2",
-		[]byte(renderHysteria2Config(100, 100, "obfs", "stats", c.SocksPort, []string{"138.16.181.225"})))
+		[]byte(renderHysteria2Config(100, 100, "obfs", "stats", c.SocksPort, []string{"203.0.113.225"})))
 }
 
 // Review Focus 5 → hysteria2_last_error is shown by the admin API (/hysteria2/status): an error

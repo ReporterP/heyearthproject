@@ -42,3 +42,10 @@ server/backend/certs/*-key.pem
 
 # Architecture pages carry the Hub/exit addresses: never in the public repo
 docs/architecture/*.html
+
+# Cleanup plan D4: binaries, downloaded tools and certificates never go to git
+server/backend/.build/
+.tools/
+server/backend/certs/
+*.exe
+.tmp_*

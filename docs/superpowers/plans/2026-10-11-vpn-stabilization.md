@@ -15,8 +15,8 @@
 ## Соглашения для всех задач
 
 - **Верификация.** В проекте нет тестового фреймворка; новые чистые функции покрываем Go-тестами (`go test ./cmd/api/ -run <Name> -v`), остальное — evidence-командами на проде. Каждая задача заканчивается: `cd server/backend && go build ./... && go vet ./cmd/api/` → деплой → проверка.
-- **Деплой бэкенда:** `cd server/backend && go build ./... && go run ./cmd/deploy --ssh 'systemctl stop heyearth-api && rm -f /opt/heyearth/mainserver/heyearth-api' && go run quick_deploy.go`, затем `go run ./cmd/deploy --ssh 'systemctl is-active heyearth-api xray nginx'`. Admin web: `go run ./cmd/deploy --admin-web`. `DEPLOY_HOST` в `server/.env` = `138.16.181.225` (новый IP Hub). SSH нестабилен — при «connection lost» повторить.
-- **Доступ к проду, если сеть режет порт 22:** SSH через локальный SOCKS Happ: `ssh -o "ProxyCommand=/mingw64/bin/connect.exe -S 127.0.0.1:10808 %h %p" root@138.16.181.225`.
+- **Деплой бэкенда:** `cd server/backend && go build ./... && go run ./cmd/deploy --ssh 'systemctl stop heyearth-api && rm -f /opt/heyearth/mainserver/heyearth-api' && go run quick_deploy.go`, затем `go run ./cmd/deploy --ssh 'systemctl is-active heyearth-api xray nginx'`. Admin web: `go run ./cmd/deploy --admin-web`. `DEPLOY_HOST` в `server/.env` = `203.0.113.225` (новый IP Hub). SSH нестабилен — при «connection lost» повторить.
+- **Доступ к проду, если сеть режет порт 22:** SSH через локальный SOCKS Happ: `ssh -o "ProxyCommand=/mingw64/bin/connect.exe -S 127.0.0.1:10808 %h %p" root@203.0.113.225`.
 - **Коммиты:** английский, conventional (`fix(xray): ...`), последняя строка тела — `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, в теле строка `Beads: <id>`.
 - **Пользовательские строки** — по-русски, без слов VLESS/Xray/VPN (см. CLAUDE.md «Branding»).
 
@@ -1145,7 +1145,7 @@ Expected: `✓ built in …`, без ошибок.
 Run: `grep -nE "(bg|text|border)-(slate|gray|zinc)-|shadow-|rounded-(2xl|3xl)|Inter|Roboto" admin_web/src/pages/AlertsPage.jsx`
 Expected: пусто.
 
-- [ ] **Step 13: Деплой** — бэкенд (см. «Соглашения»), затем `cd server/backend && go run ./cmd/deploy --admin-web`. Внимание: в `quick_deploy.go` захардкожен `host = "45.150.39.236:22"` (старый, отфильтрованный IP) — перед запуском убедиться, что там `138.16.181.225:22` (= `DEPLOY_HOST`), иначе бинарь уедет не туда / SSH повиснет.
+- [ ] **Step 13: Деплой** — бэкенд (см. «Соглашения»), затем `cd server/backend && go run ./cmd/deploy --admin-web`. Внимание: в `quick_deploy.go` захардкожен `host = "198.51.100.236:22"` (старый, отфильтрованный IP) — перед запуском убедиться, что там `203.0.113.225:22` (= `DEPLOY_HOST`), иначе бинарь уедет не туда / SSH повиснет.
 Expected: `heyearth-api: ACTIVE`, `systemctl is-active heyearth-api xray nginx` → `active` ×3.
 
 - [ ] **Step 14: Проверка на проде**
@@ -1315,7 +1315,7 @@ import "testing"
 
 func TestParseCheckHostTCPResult(t *testing.T) {
 	cases := []struct{ name, body, verdict string }{
-		{"one node ok", `{"ru1.node.check-host.net":[{"time":0.05,"address":"138.16.181.225"}],"ru2.node.check-host.net":[{"error":"Connection timed out"}],"ru3.node.check-host.net":[{"error":"Connection timed out"}]}`, "reachable"},
+		{"one node ok", `{"ru1.node.check-host.net":[{"time":0.05,"address":"203.0.113.225"}],"ru2.node.check-host.net":[{"error":"Connection timed out"}],"ru3.node.check-host.net":[{"error":"Connection timed out"}]}`, "reachable"},
 		{"all failed", `{"ru1.node.check-host.net":[{"error":"Connection timed out"}],"ru2.node.check-host.net":[{"error":"Connection refused"}]}`, "unreachable"},
 		{"pending", `{"ru1.node.check-host.net":[{"error":"Connection timed out"}],"ru2.node.check-host.net":null}`, "unknown"},
 		{"empty", `{}`, "unknown"},
@@ -1934,8 +1934,8 @@ Run:
 cd server/backend && B64=$(base64 -w0 /c/tmp/xray_stand.sh) && go run ./cmd/deploy --ssh "echo $B64 | base64 -d > /tmp/xray_stand.sh && bash /tmp/xray_stand.sh check && bash /tmp/xray_stand.sh stand && command -v xray; /opt/heyearth/xray/xray version | head -1"
 ```
 Expected:
-- `check`: `default outbound: direct freedom`, `balancers: [('exit-balancer', None), …]`, `dns rule: False`, `no-exit block rule: []`, `mask outbounds: […]` (записать число), `xray -test live: Configuration OK.`, `live socks-awg: ipify=89.124.89.126`.
-- `stand`: `dead-legacy | Configuration OK. | ipify=<IP Hub: 138.16.181.225 или 45.150.39.236>` — **утечка C2 на текущей семантике**; `dead-fixed | Configuration OK. | ipify=BLOCKED`; `fixed | Configuration OK. | ipify=89.124.89.126 | ru(yandex.ru)=200|30x, <3s`; `noexits | Configuration OK. | ipify=BLOCKED | ru(yandex.ru)=200|30x, <3s` (RU-direct жив без exit, DNS через `direct`).
+- `check`: `default outbound: direct freedom`, `balancers: [('exit-balancer', None), …]`, `dns rule: False`, `no-exit block rule: []`, `mask outbounds: […]` (записать число), `xray -test live: Configuration OK.`, `live socks-awg: ipify=192.0.2.126`.
+- `stand`: `dead-legacy | Configuration OK. | ipify=<IP Hub: 203.0.113.225 или 198.51.100.236>` — **утечка C2 на текущей семантике**; `dead-fixed | Configuration OK. | ipify=BLOCKED`; `fixed | Configuration OK. | ipify=192.0.2.126 | ru(yandex.ru)=200|30x, <3s`; `noexits | Configuration OK. | ipify=BLOCKED | ru(yandex.ru)=200|30x, <3s` (RU-direct жив без exit, DNS через `direct`).
 - `command -v xray`: если в PATH другой xray (deploy ставил 25.1.1), `SyncXrayConfig` валидирует им (`exec.LookPath`); `fallbackTag` понимают обе версии — версию записать, здесь не чинить.
 
 Если `dead-fixed` не `BLOCKED` или какой-либо `-test` не `Configuration OK.` — СТОП, разбираться до правок кода.
@@ -2228,17 +2228,17 @@ Expected: `active` ×3; есть `[xray-sync] Конфиг обновлён: …
 - [ ] **Step 10: Evidence конфига (GREEN)**
 
 Run: `go run ./cmd/deploy --ssh 'test -f /tmp/xray_stand.sh || echo "re-upload: Step 2"; bash /tmp/xray_stand.sh check'`
-Expected: `default outbound: block blackhole`; `inbounds: ['vless-reality', 'vless-xhttp', 'shadowsocks', ('vless-xhttp-cdn',) 'api-in', 'socks-awg']`; `balancers: [('exit-balancer', 'exit-2'), ('plan-N-balancer', 'exit-2'), …]` (fallback — первый здоровый по нашему монитору exit, не block и не direct); `dns rule: True`; `no-exit block rule: []` (exit жив); `xray -test live: Configuration OK.`; `live socks-awg: ipify=89.124.89.126 | ru(yandex.ru)=200|30x`, `time_total` < 3 с.
+Expected: `default outbound: block blackhole`; `inbounds: ['vless-reality', 'vless-xhttp', 'shadowsocks', ('vless-xhttp-cdn',) 'api-in', 'socks-awg']`; `balancers: [('exit-balancer', 'exit-2'), ('plan-N-balancer', 'exit-2'), …]` (fallback — первый здоровый по нашему монитору exit, не block и не direct); `dns rule: True`; `no-exit block rule: []` (exit жив); `xray -test live: Configuration OK.`; `live socks-awg: ipify=192.0.2.126 | ru(yandex.ru)=200|30x`, `time_total` < 3 с.
 
 - [ ] **Step 11: E2E через каждый пользовательский inbound**
 
-- `socks-awg` (путь Пальмы) — Step 10: `ipify=89.124.89.126`.
-- Берёза (`vless-reality`, :443 → nginx stream → :10443): в Happ на рабочей машине обновить подписку, выбрать «🌳 Берёза 1»; локально `curl -s --max-time 10 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org` → `89.124.89.126`.
-- Дуб (`vless-xhttp`, :2443): «🌲 Дуб 1», та же команда → `89.124.89.126`.
+- `socks-awg` (путь Пальмы) — Step 10: `ipify=192.0.2.126`.
+- Берёза (`vless-reality`, :443 → nginx stream → :10443): в Happ на рабочей машине обновить подписку, выбрать «🌳 Берёза 1»; локально `curl -s --max-time 10 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org` → `192.0.2.126`.
+- Дуб (`vless-xhttp`, :2443): «🌲 Дуб 1», та же команда → `192.0.2.126`.
 - Облако (`vless-xhttp-cdn`): только если он есть в `inbounds` (Step 10); иначе пропуск (P13 — профиль и так не работает).
 - `shadowsocks` :8388 — профиля нет; покрыт правилами (Step 10) и стендом (Step 2). Бамбук — не xray, не затронут.
 
-Expected: нигде не IP Hub (138.16.181.225 / 45.150.39.236); `go run ./cmd/deploy --ssh 'journalctl -u xray --since "-10min" --no-pager | grep -ciE "failed to (lookup|resolve)"'` → `0`. Реальную ветку «нет exit» проверяем в окне обслуживания Task 5 Step 9 — без отдельного простоя.
+Expected: нигде не IP Hub (203.0.113.225 / 198.51.100.236); `go run ./cmd/deploy --ssh 'journalctl -u xray --since "-10min" --no-pager | grep -ciE "failed to (lookup|resolve)"'` → `0`. Реальную ветку «нет exit» проверяем в окне обслуживания Task 5 Step 9 — без отдельного простоя.
 
 - [ ] **Step 12: Commit**
 
@@ -2555,15 +2555,15 @@ Expected: `healthy` → `unhealthy` не позже ~100 с; `check`: `balancers
 Восстановление (таймер уже стартовал клиента):
 
 Run: `go run ./cmd/deploy --ssh 'for i in $(seq 1 12); do sleep 10; echo "$(date +%T) $(sudo -u postgres psql -d heyearth -tAc "SELECT tunnel_status FROM servers WHERE id = 2")"; done; bash /tmp/xray_stand.sh check; journalctl -u heyearth-api --since "-8min" --no-pager | grep -E "tunnel-monitor|нет здоровых" | tail -6'`
-Expected: `healthy` в течение ~90 с после старта; `balancers: [('exit-balancer', 'exit-2'), …]`, `ipify=89.124.89.126`; в журнале `НЕДОСТУПЕН` → `ВОССТАНОВЛЕН`; в Telegram два «восстановлено». SSH оборвался — повторить команду.
+Expected: `healthy` в течение ~90 с после старта; `balancers: [('exit-balancer', 'exit-2'), …]`, `ipify=192.0.2.126`; в журнале `НЕДОСТУПЕН` → `ВОССТАНОВЛЕН`; в Telegram два «восстановлено». SSH оборвался — повторить команду.
 
 - [ ] **Step 10: ⚠️ То же окно — сценарий C4 «клиент жив, exit мёртв»** (именно его старая проверка пропускала)
 
-Run (IP exit #2 из Step 1, ожидаемо `89.124.89.126`):
+Run (IP exit #2 из Step 1, ожидаемо `192.0.2.126`):
 ```bash
-go run ./cmd/deploy --ssh 'IP=89.124.89.126; iptables -I OUTPUT -d $IP -p udp -j DROP && systemd-run --on-active=150 iptables -D OUTPUT -d $IP -p udp -j DROP && echo "listening: $(ss -lnt | grep -c "127.0.0.1:1090 ")" && for i in $(seq 1 14); do sleep 10; echo "$(date +%T) $(sudo -u postgres psql -d heyearth -tAc "SELECT tunnel_status || chr(32) || coalesce(left(tunnel_error, 90), chr(45)) FROM servers WHERE id = 2")"; done'
+go run ./cmd/deploy --ssh 'IP=192.0.2.126; iptables -I OUTPUT -d $IP -p udp -j DROP && systemd-run --on-active=150 iptables -D OUTPUT -d $IP -p udp -j DROP && echo "listening: $(ss -lnt | grep -c "127.0.0.1:1090 ")" && for i in $(seq 1 14); do sleep 10; echo "$(date +%T) $(sudo -u postgres psql -d heyearth -tAc "SELECT tunnel_status || chr(32) || coalesce(left(tunnel_error, 90), chr(45)) FROM servers WHERE id = 2")"; done'
 ```
-Expected: `listening: 1` (порт клиента открыт — старая проверка сказала бы healthy); не позже ~110 с `unhealthy hysteria2 via 127.0.0.1:1090: GET https://www.gstatic.com/generate_204 via socks5 …` (timeout/EOF); алерты как в Step 9. Через 150 с таймер снимет правило — повторить команду восстановления из Step 9 (ожидания те же) и `go run ./cmd/deploy --ssh 'iptables -S OUTPUT | grep -c 89.124.89.126'` → `0`.
+Expected: `listening: 1` (порт клиента открыт — старая проверка сказала бы healthy); не позже ~110 с `unhealthy hysteria2 via 127.0.0.1:1090: GET https://www.gstatic.com/generate_204 via socks5 …` (timeout/EOF); алерты как в Step 9. Через 150 с таймер снимет правило — повторить команду восстановления из Step 9 (ожидания те же) и `go run ./cmd/deploy --ssh 'iptables -S OUTPUT | grep -c 192.0.2.126'` → `0`.
 
 - [ ] **Step 11: Commit**
 
@@ -2849,7 +2849,7 @@ if [ "$FAILS" -eq 0 ]; then echo "STAND RESULT: ALL PASS"; else echo "STAND RESU
 - [ ] **Step 2: Прогнать стенд на Hub**
 
 Run: `cd server/backend && go run ./cmd/deploy --ssh "$(cat scripts/xray_api_stand.sh)"`
-(вывод печатается дважды — особенность `--ssh`. Если порт 22 режется: `ssh -o "ProxyCommand=/mingw64/bin/connect.exe -S 127.0.0.1:10808 %h %p" root@138.16.181.225 'bash -s' < scripts/xray_api_stand.sh`. Если с Hub недоступен gstatic (в S1 у A `000`): `go run ./cmd/deploy --ssh "export URL=http://cp.cloudflare.com/generate_204; $(cat scripts/xray_api_stand.sh)"`.)
+(вывод печатается дважды — особенность `--ssh`. Если порт 22 режется: `ssh -o "ProxyCommand=/mingw64/bin/connect.exe -S 127.0.0.1:10808 %h %p" root@203.0.113.225 'bash -s' < scripts/xray_api_stand.sh`. Если с Hub недоступен gstatic (в S1 у A `000`): `go run ./cmd/deploy --ssh "export URL=http://cp.cloudflare.com/generate_204; $(cat scripts/xray_api_stand.sh)"`.)
 
 Expected:
 
@@ -3949,7 +3949,7 @@ git commit -m "docs(vpn): task 7 stand results and live-apply metrics" -m "Recor
 
 - [ ] **Step 1: Исходное состояние (RED)**
 
-На Hub (`ssh root@138.16.181.225`):
+На Hub (`ssh root@203.0.113.225`):
 ```bash
 ss -lntup | grep -E ':(1080|8080|8388|4443|5443|9443|44443|30443)\b' || echo "no listeners"
 ufw status | grep -E '^(1080|8080|8388|4443|5443|9443|44443|30443)/'
@@ -4172,7 +4172,7 @@ git commit -m "chore(cleanup): disable auto-tuner, drop shadowsocks/socks/http l
 
 - [ ] **Step 1: Предпроверка**
 
-Hub: `systemd-analyze calendar '*-*-* 04:00:00 Europe/Moscow' | grep -i 'next elapse'; q "SELECT pg_size_pretty(pg_database_size('heyearth'))"; df -h /opt/heyearth | tail -1; journalctl --disk-usage; systemctl is-active fail2ban; grep -n proxy_timeout /etc/nginx/stream.d/heyearth.conf`. Exit (`ssh root@89.124.89.126`): `df -h /var/backups | tail -1`. Локально: `grep -c '^EXIT_NODE_SSH_PASSWORD=' server/.env` → `1` (root-пароль exit вписывает владелец; `.env` не коммитится).
+Hub: `systemd-analyze calendar '*-*-* 04:00:00 Europe/Moscow' | grep -i 'next elapse'; q "SELECT pg_size_pretty(pg_database_size('heyearth'))"; df -h /opt/heyearth | tail -1; journalctl --disk-usage; systemctl is-active fail2ban; grep -n proxy_timeout /etc/nginx/stream.d/heyearth.conf`. Exit (`ssh root@192.0.2.126`): `df -h /var/backups | tail -1`. Локально: `grep -c '^EXIT_NODE_SSH_PASSWORD=' server/.env` → `1` (root-пароль exit вписывает владелец; `.env` не коммитится).
 Expected: next elapse 04:00 MSK; на exit свободно ≥ 7× размера БД; journal ≈ 3.9G; fail2ban `inactive`; `proxy_timeout` отсутствует.
 
 - [ ] **Step 2: `proxy_timeout` в генераторе nginx stream**
@@ -4383,7 +4383,7 @@ grep -n proxy_timeout "$F" || echo "[ops] no stream conf"
 # Восстановление Hub из бэкапа
 
 Бэкап: `heyearth-backup.timer`, 04:00 MSK (`go run ./cmd/deploy --setup-ops --backup-target <exit-IP>`).
-Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт.); exit 89.124.89.126: `/var/backups/heyearth-hub/` (7 шт.).
+Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт.); exit 192.0.2.126: `/var/backups/heyearth-hub/` (7 шт.).
 Архив: `db.dump` (`pg_dump -Fc heyearth`), `meta.txt` (`users_count`), `files.tar.gz` (`/opt/heyearth/state` — ключи Reality, `/opt/heyearth/mainserver/.env` и `certs` — mTLS CA, `/opt/heyearth/hysteria`, `/etc/letsencrypt`, `/etc/nginx/conf.d`, `/etc/nginx/stream.d`). Статус: `/opt/heyearth/backups/last-success`, `last-offsite`, `last-error`. Ручной бэкап: `systemctl start heyearth-backup`.
 
 ## Проверка без восстановления (ежемесячно)
@@ -4391,13 +4391,13 @@ Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт.); exit 89.1
 
 ## Полное восстановление на новом Hub
 1. `go run ./cmd/deploy --main` с новым `DEPLOY_HOST` в `server/.env`.
-2. `scp root@89.124.89.126:/var/backups/heyearth-hub/backup-<ts>.tar.gz /root/` (по паролю root exit; ключ бэкапа умеет только писать).
+2. `scp root@192.0.2.126:/var/backups/heyearth-hub/backup-<ts>.tar.gz /root/` (по паролю root exit; ключ бэкапа умеет только писать).
 3. `systemctl stop heyearth-api xray hysteria2-server 'hysteria2-client-*'`; `mkdir -p /root/restore && tar -C /root/restore -xzf /root/backup-<ts>.tar.gz`.
 4. БД: `OWNER=$(runuser -u postgres -- psql -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='heyearth'")`; `runuser -u postgres -- pg_restore --clean --if-exists --no-owner --role="$OWNER" -d heyearth < /root/restore/db.dump`; `SELECT count(*) FROM users` = `users_count` из `meta.txt`.
 5. Файлы: `tar -C / -xzf /root/restore/files.tar.gz`.
 6. `systemctl daemon-reload && systemctl start heyearth-api && sleep 5 && systemctl restart xray hysteria2-server 'hysteria2-client-*' nginx`.
 7. `go run ./cmd/deploy --status`; Берёза/Дуб/Бамбук реальным Happ; `curl -s https://hiearth.ru/api/v1/health`.
-8. `go run ./cmd/deploy --setup-ops --backup-target 89.124.89.126`.
+8. `go run ./cmd/deploy --setup-ops --backup-target 192.0.2.126`.
 Новый IP → клиентам нужен refresh подписки (`main_server_host`); ключи Reality из архива сохраняют ссылки валидными.
 
 ## Частично
@@ -4411,13 +4411,13 @@ Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт.); exit 89.1
 
 - [ ] **Step 8: Выполнить на проде**
 
-Run: `cd server/backend && go run ./cmd/deploy --setup-ops --backup-target 89.124.89.126`
+Run: `cd server/backend && go run ./cmd/deploy --setup-ops --backup-target 192.0.2.126`
 Expected: только `[ops] ABSENT …` (ufw вычищен в Task 8); `[ops] journald: … take up` ≤ 1.0G; `Status for the jail: sshd`; `proxy_timeout 3600s;` в выводе grep; строка `heyearth-backup.timer` с NEXT 04:00 MSK; `[ops] offsite backup key installed, probe: PONG`. Повторный запуск — тот же результат без изменений.
 
 - [ ] **Step 9: Первый бэкап и копия вне Hub**
 
 Hub: `systemctl start heyearth-backup.service; systemctl show heyearth-backup -p Result; journalctl -u heyearth-backup -n 5 --no-pager | grep -E 'local:|offsite:'; sha256sum "$(ls -1t /opt/heyearth/backups/backup-*.tar.gz | sed -n 1p)"; ls /opt/heyearth/backups/last-error 2>/dev/null || echo no-error`. Exit: `ls -l /var/backups/heyearth-hub/; sha256sum /var/backups/heyearth-hub/backup-*.tar.gz`.
-Expected: `Result=success`; `local: …backup-2026….tar.gz (…, users=N)`; `offsite: 89.124.89.126 OK (sha256 …)`; хеши Hub и exit совпадают, файлы `-rw-------`; `no-error`.
+Expected: `Result=success`; `local: …backup-2026….tar.gz (…, users=N)`; `offsite: 192.0.2.126 OK (sha256 …)`; хеши Hub и exit совпадают, файлы `-rw-------`; `no-error`.
 
 - [ ] **Step 10: Тестовое восстановление** — Hub: `/opt/heyearth/bin/heyearth-backup-verify.sh; runuser -u postgres -- psql -lqt | grep -c heyearth_restore_test`
 Expected: `users_expected=N users_restored=N schema=51 dirty=f`, `RESTORE-TEST: OK`, затем `0`.
@@ -4460,7 +4460,7 @@ A=$(printf '%s' "$(awk '$1=="auth:"{print $2}' /opt/heyearth/hysteria/client-2.y
 B=$(printf '%s' "$(q "SELECT tunnel_ss_password FROM servers WHERE id=2")" | sha256sum); [ "$A" = "$B" ] && echo AUTH-MATCH || echo AUTH-DIFFERS
 ```
 Exit: `hysteria version | awk '$1=="Version:"'; systemctl list-units 'hysteria*' --no-pager --plain; grep -A2 '^bandwidth' /opt/heyearth/hysteria/server.yaml`
-Expected: `v2.6.1` на обоих; активны `hysteria2-server`, `hysteria2-client-2` (Hub), `hysteria2` (exit); `server: 89.124.89.126:<PORTS>` — **записать `<PORTS>`** (ожидается `20000-50000`); `bandwidth 100/100` на обоих; слушает только 1090; `AUTH-MATCH` (при `AUTH-DIFFERS` — STOP: генератор Step 9 возьмёт auth из БД; сначала согласовать `servers.tunnel_ss_password` с exit).
+Expected: `v2.6.1` на обоих; активны `hysteria2-server`, `hysteria2-client-2` (Hub), `hysteria2` (exit); `server: 192.0.2.126:<PORTS>` — **записать `<PORTS>`** (ожидается `20000-50000`); `bandwidth 100/100` на обоих; слушает только 1090; `AUTH-MATCH` (при `AUTH-DIFFERS` — STOP: генератор Step 9 возьмёт auth из БД; сначала согласовать `servers.tunnel_ss_password` с exit).
 
 - [ ] **Step 2: Одна константа версии + установщик с обновлением и `.bak`**
 
@@ -4588,7 +4588,7 @@ Run: `cd server/backend && go run ./cmd/deploy --ssh 'curl -fsSL -o /tmp/hy-new 
 Expected: `address already in use` (конфиг Hub, включая `masquerade.type: 404`, принят).
 Run: `go run ./cmd/deploy --setup-hysteria2-hub && go run ./cmd/deploy --ssh 'systemctl restart hysteria2-client-2; systemctl is-active --quiet hysteria2-client-express && systemctl restart hysteria2-client-express; sleep 3; systemctl is-active hysteria2-server hysteria2-client-2'`
 Expected: `[hysteria] installed v2.13.0 (previous: v2.6.1 -> /usr/local/bin/hysteria.bak)`, `[hysteria2-hub] hysteria2-server is active`, `active active`. Hub: `/root/hy2-bench/measure.sh V0-as-is-2.13 1090` — ненулевая.
-Бамбук (владелец, Happ на Wi-Fi): обновить подписку → «🎋 Бамбук 1 only WiFi» → https://2ip.ru = 89.124.89.126; то же «Бамбук 2». Сервер: `journalctl -u hysteria2-server --since "-10min" --no-pager | grep -c 'client connected'` ≥ 1. Не подключается → откат Hub (`cp -p /usr/local/bin/hysteria.bak /usr/local/bin/hysteria && systemctl restart hysteria2-server hysteria2-client-2`) и разбор.
+Бамбук (владелец, Happ на Wi-Fi): обновить подписку → «🎋 Бамбук 1 only WiFi» → https://2ip.ru = 192.0.2.126; то же «Бамбук 2». Сервер: `journalctl -u hysteria2-server --since "-10min" --no-pager | grep -c 'client connected'` ≥ 1. Не подключается → откат Hub (`cp -p /usr/local/bin/hysteria.bak /usr/local/bin/hysteria && systemctl restart hysteria2-server hysteria2-client-2`) и разбор.
 
 - [ ] **Step 6: Бенчмарк вариантов 1–3 (одна ночная сессия)**
 
@@ -4618,7 +4618,7 @@ cp -p /opt/heyearth/hysteria/client-2.yaml.orig /opt/heyearth/hysteria/client-2.
 ```markdown
 ## 7. Бенчмарк канала Hub → exit (Hysteria v2.13.0, 2026-10-__)
 
-Метод: `curl --socks5-hostname 127.0.0.1:<port>` 25 МБ с speed.cloudflare.com, 3 прогона, медиана; RTT — медиана 5 × `generate_204`. Ночь MSK, Hub 138.16.181.225 → exit 89.124.89.126; собственная полоса exit B = … Мбит/с.
+Метод: `curl --socks5-hostname 127.0.0.1:<port>` 25 МБ с speed.cloudflare.com, 3 прогона, медиана; RTT — медиана 5 × `generate_204`. Ночь MSK, Hub 203.0.113.225 → exit 192.0.2.126; собственная полоса exit B = … Мбит/с.
 
 | Вариант | Клиент Hub | МБ/с | Мбит/с | RTT, мс |
 |---|---|---|---|---|
@@ -4787,7 +4787,7 @@ sed 's/^auth: .*/auth: <redacted>/' /opt/heyearth/hysteria/client-2.yaml | sed -
 systemctl is-active hysteria2-client-2; /root/hy2-bench/measure.sh WINNER-generated 1090
 sleep 330; journalctl -u heyearth-api --since "-6min" --no-pager | grep -c 'hub-tunnel.*restarted'
 ```
-Expected: одна строка `[hub-tunnel] hysteria2-client-2: config changed (cc=<победитель>), restarted`; файл начинается `# Generated by heyearth-api hub_provisioner.go…`, `server: 89.124.89.126:<PORTS>`, блок победителя; `active`; медиана в пределах ±20 % от замера победителя; `0` повторных рестартов за период синхронизации. Бамбук и Берёза/Дуб реальным Happ работают.
+Expected: одна строка `[hub-tunnel] hysteria2-client-2: config changed (cc=<победитель>), restarted`; файл начинается `# Generated by heyearth-api hub_provisioner.go…`, `server: 192.0.2.126:<PORTS>`, блок победителя; `active`; медиана в пределах ±20 % от замера победителя; `0` повторных рестартов за период синхронизации. Бамбук и Берёза/Дуб реальным Happ работают.
 
 - [ ] **Step 11: Commit**
 ```bash

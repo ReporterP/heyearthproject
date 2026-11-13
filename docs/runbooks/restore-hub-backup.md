@@ -1,5 +1,7 @@
 # Восстановление Hub из бэкапа
 
+> Адреса в примерах — документационные (RFC 5737): `192.0.2.126` — exit 2, `203.0.113.225` — Hub. Настоящие — в `server/.env` и в админке.
+
 Бэкап ставится и обновляется одной командой (идемпотентно, безопасно повторять):
 
 ```
@@ -10,7 +12,7 @@ go run ./cmd/deploy --setup-ops --backup-target <exit-IP> --backup-age-recipient
 Повторный запуск без флагов сохраняет цель и ключ шифрования из `/etc/heyearth/backup.env` (если файл не читается, шаги бэкапа пропускаются с ошибкой, а не «обнуляются»).
 
 - Расписание: `heyearth-backup.timer`, ежедневно 04:00 MSK → `heyearth-backup.service` → `/opt/heyearth/bin/heyearth-backup.sh`.
-- Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт., **без шифрования**, права 0600/каталог 0700); exit 89.124.89.126: `/var/backups/heyearth-hub/backup-YYYYmmdd-HHMMSS.tar.gz.age` (не более 2 на дату и не старше 8 дней, **зашифрованы**).
+- Hub: `/opt/heyearth/backups/backup-YYYYmmdd-HHMMSS.tar.gz` (14 шт., **без шифрования**, права 0600/каталог 0700); exit 192.0.2.126: `/var/backups/heyearth-hub/backup-YYYYmmdd-HHMMSS.tar.gz.age` (не более 2 на дату и не старше 8 дней, **зашифрованы**).
 - Перед запуском проверяется место: на Hub свободно должно быть ≥ 2 × размер прошлого архива + 1 GiB, иначе запуск падает с понятным `last-error` до `pg_dump` (мониторинг через 26 ч поднимет `backup-stale`).
 - Архив (`tar -tzf`): `db.dump` (`pg_dump -Fc heyearth`), `meta.txt` (`users_count`, время, хост), `files.tar.gz` — внутри (пути от `/`, существующие на момент бэкапа):
   `opt/heyearth/state` (ключи Reality), `opt/heyearth/mainserver/api.env` (секреты API: JWT, пароль админки, строка БД) и `.env` (если есть), `opt/heyearth/mainserver/certs` (mTLS CA и листы),
@@ -64,7 +66,7 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` → второе поле, `SHA256:…`. Соединение идёт только с ed25519 host key; после установки этот же ключ записывается в `/root/.ssh/known_hosts` на Hub (`StrictHostKeyChecking=yes`).
 Когда ключ бэкапа уже работает и приёмник актуален, повторные запуски пароль не используют.
 
-Проверка: на Hub `ssh -i /root/.ssh/heyearth_backup_ed25519 -o BatchMode=yes root@89.124.89.126 ping` → `PONG <версия>`;
+Проверка: на Hub `ssh -i /root/.ssh/heyearth_backup_ed25519 -o BatchMode=yes root@192.0.2.126 ping` → `PONG <версия>`;
 на exit `ls -l /var/backups/heyearth-hub/` (файлы `-rw-------`, имена `*.tar.gz.age`) и `sha256sum /var/backups/heyearth-hub/backup-*.tar.gz.age` — сверить со строкой `offsite: … (encrypted, sha256 …)` в `journalctl -u heyearth-backup`.
 
 ## Проверка без восстановления (ежемесячно)
@@ -86,10 +88,10 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 0. **Подготовка (`server/.env` на машине оператора).** `DEPLOY_HOST=<IP нового Hub>`, `DEPLOY_SSH_PASSWORD`, `DEPLOY_HOST_KEY_FINGERPRINT` — отпечаток ключа **нового**
    Hub (в консоли провайдера: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`; при несовпадении deploy печатает тип и отпечаток предъявленного ключа);
    `JWT_SECRET`, `ADMIN_USER`, `ADMIN_PASS` — **прежние** (любой `--main`/`--update-main` пишет их в `api.env` из `server/.env`; другой `JWT_SECRET` разлогинит всех);
-   `EXIT_NODE_SSH_PASSWORD` и `EXIT_NODE_HOST_KEY_FINGERPRINT` exit 89.124.89.126 (для шагов 8–9; пароль Hub на exit не пробуется).
+   `EXIT_NODE_SSH_PASSWORD` и `EXIT_NODE_HOST_KEY_FINGERPRINT` exit 192.0.2.126 (для шагов 8–9; пароль Hub на exit не пробуется).
    Архив: локальный с живого диска старого Hub или копия с exit, расшифрованная **на машине, где лежит `backup.key`** (нужен `age`):
    ```
-   scp root@89.124.89.126:/var/backups/heyearth-hub/backup-<ts>.tar.gz.age .      # по паролю root exit; ключ бэкапа умеет только писать
+   scp root@192.0.2.126:/var/backups/heyearth-hub/backup-<ts>.tar.gz.age .      # по паролю root exit; ключ бэкапа умеет только писать
    age -d -i backup.key -o backup-<ts>.tar.gz backup-<ts>.tar.gz.age             # sha256 при желании сверить с last-offsite/журналом
    ```
 1. **DNS — до SSL.** Все A-записи, смотревшие на старый Hub (`hiearth.ru`, `www`, `admin.hiearth.ru` и т. д.), перевести на новый IP и дождаться:
@@ -121,10 +123,10 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
 7. **`go run ./cmd/deploy --setup-hysteria2-hub`** — бинарник hysteria (pinned), пользователь `hysteria`, `geoip.dat`, port hopping (DNAT только для адресов Hub),
    юниты; ждёт, пока API запишет `/etc/hysteria/server.yaml`, и запускает `hysteria2-server`. Затем поднять восстановленные туннели ко всем exit, кроме Express
    (им управляет API): `for u in $(systemctl list-unit-files 'hysteria2-client-*.service' --no-legend | awk '{print $1}' | grep -v express); do systemctl enable --now "$u"; done`.
-8. **`go run ./cmd/deploy --setup-exit-node 89.124.89.126`** (нужны `EXIT_NODE_SSH_PASSWORD` + `EXIT_NODE_HOST_KEY_FINGERPRINT`, см. шаг 0) — идемпотентно перепроверяет
+8. **`go run ./cmd/deploy --setup-exit-node 192.0.2.126`** (нужны `EXIT_NODE_SSH_PASSWORD` + `EXIT_NODE_HOST_KEY_FINGERPRINT`, см. шаг 0) — идемпотентно перепроверяет
    exit (ключи на exit сохраняются), обновляет запись в БД (статус ноды не меняется: выключенная в админке не включится), заново настраивает туннель Hub → exit и
    перезапускает API. Для остальных exit-нод — тот же шаг с их IP и их отпечатком.
-9. **`go run ./cmd/deploy --setup-ops --backup-target 89.124.89.126 --backup-age-recipient <age1…>`** — чистка ufw, таймер бэкапа и новый ключ загрузки на exit,
+9. **`go run ./cmd/deploy --setup-ops --backup-target 192.0.2.126 --backup-age-recipient <age1…>`** — чистка ufw, таймер бэкапа и новый ключ загрузки на exit,
     fail2ban, journald, nginx, kernel egress guard. Вывод называет фазу гарда: при API c 4ab930e+ и `server.yaml` на `127.0.0.1:8001` — фаза B.
 10. **Проверка.**
     - `go run ./cmd/deploy --status`; `curl -s https://hiearth.ru/api/v1/health`; админка открывается.
@@ -134,7 +136,7 @@ EXIT_NODE_HOST_KEY_FINGERPRINT=SHA256:<отпечаток ed25519 host key exit>
       шлёт QUIC-пакет на случайный порт hopping через SOCKS зарубежного exit и ждёт Version Negotiation: через 3–5 минут после шага 9 в админке («Алерты») не должно быть
       `bamboo-unreachable-external` и `bamboo-probe-blind`; `journalctl -u heyearth-api --since -10min | grep -i бамбук`. И реальный клиент: Happ с Express-подпиской
       на телефоне в мобильной сети.
-    - Бэкап: `systemctl start heyearth-backup.service` → `local: …` и `offsite: 89.124.89.126 OK`.
+    - Бэкап: `systemctl start heyearth-backup.service` → `local: …` и `offsite: 192.0.2.126 OK`.
 
 Новый IP → клиентам нужен refresh подписки; ключи Reality из архива сохраняют ссылки валидными. `main_server_host` приходит из восстановленной БД и deploy его
 больше не перезаписывает (сеет только при отсутствии): если там был IP старого Hub, а не домен, поменяйте его в админке (настройки) на домен или новый IP.

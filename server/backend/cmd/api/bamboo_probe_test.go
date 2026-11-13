@@ -207,7 +207,7 @@ func TestSocksUDPHeader(t *testing.T) {
 		hex  string
 		from string
 	}{
-		{"138.16.181.225", 41234, "000000018a10b5e1a112", "138.16.181.225:41234"},
+		{"203.0.113.225", 41234, "00000001cb0071e1a112", "203.0.113.225:41234"},
 		{"hiearth.ru", 50443, "00000003" + "0a" + hex.EncodeToString([]byte("hiearth.ru")) + "c50b", "hiearth.ru:50443"},
 		{"2001:db8::1", 443, "00000004" + "20010db8000000000000000000000001" + "01bb", "[2001:db8::1]:443"},
 	}
@@ -257,11 +257,11 @@ func TestReplyFromTarget(t *testing.T) {
 		port       int
 		want       bool
 	}{
-		{"138.16.181.225:41234", "138.16.181.225", 41234, true},
-		{"[::ffff:138.16.181.225]:41234", "138.16.181.225", 41234, true}, // IPv4-mapped is the same address
-		{"138.16.181.225:50443", "138.16.181.225", 41234, false},         // answered from the listener, not the hop port
-		{"45.150.39.236:41234", "138.16.181.225", 41234, false},          // answered from another IP of the Hub
-		{"hiearth.ru:41234", "138.16.181.225", 41234, false},
+		{"203.0.113.225:41234", "203.0.113.225", 41234, true},
+		{"[::ffff:203.0.113.225]:41234", "203.0.113.225", 41234, true}, // IPv4-mapped is the same address
+		{"203.0.113.225:50443", "203.0.113.225", 41234, false},         // answered from the listener, not the hop port
+		{"198.51.100.236:41234", "203.0.113.225", 41234, false},          // answered from another IP of the Hub
+		{"hiearth.ru:41234", "203.0.113.225", 41234, false},
 		{"1.2.3.4:41234", "hiearth.ru", 41234, true}, // a name: only the port is compared
 		{"1.2.3.4:41235", "hiearth.ru", 41234, false},
 		{"garbage", "hiearth.ru", 41234, false},
@@ -642,7 +642,7 @@ func gaveUpInTime(t *testing.T, elapsed time.Duration, waitedBoth bool) {
 
 func TestProbeBambooEndToEnd(t *testing.T) {
 	psk := []byte("bamboo-obfs")
-	const ipHost = "138.16.181.225"
+	const ipHost = "203.0.113.225"
 
 	t.Run("vn reply, ipv4 host", func(t *testing.T) {
 		s := newFakeBambooSOCKS(t, fakeSOCKSOpts{handle: vnServer(psk, goodVN(psk))})
@@ -769,7 +769,7 @@ func TestProbeBambooEndToEnd(t *testing.T) {
 		}, errBambooWrongSource},
 		{"vn from another ip", ipHost, func(_ int, dst string, probe []byte) []fakeReply {
 			_, port, _ := net.SplitHostPort(dst)
-			return []fakeReply{{from: net.JoinHostPort("45.150.39.236", port), payload: obfuscated(psk, testVNReply(probe))}}
+			return []fakeReply{{from: net.JoinHostPort("198.51.100.236", port), payload: obfuscated(psk, testVNReply(probe))}}
 		}, errBambooWrongSource},
 		{"domain host, vn from another port", "hiearth.ru", func(_ int, dst string, probe []byte) []fakeReply {
 			return []fakeReply{{from: fromPort(dst, -1), payload: obfuscated(psk, testVNReply(probe))}}
@@ -794,7 +794,7 @@ func TestProbeBambooEndToEnd(t *testing.T) {
 	t.Run("domain host: vn from any ip on the hop port is fine", func(t *testing.T) {
 		s := newFakeBambooSOCKS(t, fakeSOCKSOpts{handle: vnServer(psk, func(_ int, dst string, probe []byte) []fakeReply {
 			_, port, _ := net.SplitHostPort(dst)
-			return []fakeReply{{from: net.JoinHostPort("138.16.181.225", port), payload: obfuscated(psk, testVNReply(probe))}}
+			return []fakeReply{{from: net.JoinHostPort("203.0.113.225", port), payload: obfuscated(psk, testVNReply(probe))}}
 		})})
 		if _, _, err := fastBambooProber.probe(s.port, "hiearth.ru", psk); err != nil {
 			t.Fatal(err)
@@ -1008,8 +1008,8 @@ func newBambooHarness() *bambooHarness {
 		now:        time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
 		deployed:   true,
 		psk:        "obfs",
-		host:       "138.16.181.225",
-		lookupAddr: netip.MustParseAddr("138.16.181.225"),
+		host:       "203.0.113.225",
+		lookupAddr: netip.MustParseAddr("203.0.113.225"),
 		ports:      []int{1090},
 		probeErr:   map[int]error{},
 		details:    map[string]string{},
@@ -1093,7 +1093,7 @@ const (
 
 func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 	h := newBambooHarness()
-	h.probeErr[1090] = fmt.Errorf("%w от 138.16.181.225:41234 за 5s", errBambooNoReply)
+	h.probeErr[1090] = fmt.Errorf("%w от 203.0.113.225:41234 за 5s", errBambooNoReply)
 	for i := 1; i <= 2; i++ {
 		if h.step(time.Minute); h.raised() {
 			t.Fatalf("raised after %d failures: %v", i, h.events)
@@ -1106,7 +1106,7 @@ func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 		t.Fatalf("3rd failure must raise: %v", h.events)
 	}
 	d := h.details[bambooAlertKey]
-	for _, want := range []string{"3 проверок подряд", "138.16.181.225", "41234", "снаружи (через зарубежный exit :1090)", "нет ответа", "hysteria2-server"} {
+	for _, want := range []string{"3 проверок подряд", "203.0.113.225", "41234", "снаружи (через зарубежный exit :1090)", "нет ответа", "hysteria2-server"} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("details lack %q:\n%s", want, d)
 		}
@@ -1129,7 +1129,7 @@ func TestBambooMonitorThresholdAndRecovery(t *testing.T) {
 // Flapping: a single success between failures neither resolves nor restarts the alert.
 func TestBambooMonitorResolvesOnlyAfterTwoSuccesses(t *testing.T) {
 	h := newBambooHarness()
-	down := fmt.Errorf("%w от 138.16.181.225:41234 за 5s", errBambooNoReply)
+	down := fmt.Errorf("%w от 203.0.113.225:41234 за 5s", errBambooNoReply)
 	h.probeErr[1090] = down
 	h.step(time.Minute).step(time.Minute)
 	if h.step(time.Minute); !h.has(raiseDown) {
@@ -1388,8 +1388,8 @@ func TestPreferIPv4(t *testing.T) {
 		addrs []netip.Addr
 		want  string
 	}{
-		{"v6 first, v4 wins", []netip.Addr{a("2001:db8::1"), a("138.16.181.225")}, "138.16.181.225"},
-		{"v4-mapped is unmapped", []netip.Addr{a("::ffff:138.16.181.225")}, "138.16.181.225"},
+		{"v6 first, v4 wins", []netip.Addr{a("2001:db8::1"), a("203.0.113.225")}, "203.0.113.225"},
+		{"v4-mapped is unmapped", []netip.Addr{a("::ffff:203.0.113.225")}, "203.0.113.225"},
 		{"v6 only", []netip.Addr{a("2001:db8::1")}, "2001:db8::1"},
 		{"first v4 of several", []netip.Addr{a("1.1.1.1"), a("2.2.2.2")}, "1.1.1.1"},
 	}
@@ -1485,14 +1485,14 @@ func TestBambooMonitorSkipVerdictSkipLogs(t *testing.T) {
 func TestBambooMonitorResolvesHostOnHub(t *testing.T) {
 	h := newBambooHarness()
 	h.host = "hiearth.ru"
-	h.lookupAddr = netip.MustParseAddr("138.16.181.225")
+	h.lookupAddr = netip.MustParseAddr("203.0.113.225")
 	h.probeErr[1090] = fmt.Errorf("%w: x", errBambooNoReply)
 	h.step(time.Minute)
-	if fmt.Sprint(h.lookups) != "[hiearth.ru]" || fmt.Sprint(h.probedHosts) != "[138.16.181.225]" {
+	if fmt.Sprint(h.lookups) != "[hiearth.ru]" || fmt.Sprint(h.probedHosts) != "[203.0.113.225]" {
 		t.Fatalf("lookups %v, probe targets %v: a name must be resolved on the Hub and probed by IP", h.lookups, h.probedHosts)
 	}
 	h.step(time.Minute).step(time.Minute)
-	if d := h.details[bambooAlertKey]; !strings.Contains(d, "hiearth.ru (138.16.181.225)") {
+	if d := h.details[bambooAlertKey]; !strings.Contains(d, "hiearth.ru (203.0.113.225)") {
 		t.Fatalf("details must name both the host and the IP:\n%s", d)
 	}
 
@@ -1506,7 +1506,7 @@ func TestBambooMonitorResolvesHostOnHub(t *testing.T) {
 
 	ip := newBambooHarness() // an IP literal is never looked up
 	ip.step(time.Minute)
-	if len(ip.lookups) != 0 || fmt.Sprint(ip.probedHosts) != "[138.16.181.225]" {
+	if len(ip.lookups) != 0 || fmt.Sprint(ip.probedHosts) != "[203.0.113.225]" {
 		t.Fatalf("lookups %v, targets %v", ip.lookups, ip.probedHosts)
 	}
 }

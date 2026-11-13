@@ -15,9 +15,9 @@ import (
 
 func TestParseExitNodeAddr(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
-		{"89.124.89.126", "89.124.89.126"},
-		{"89.124.89.126:443", "89.124.89.126"},
-		{" 89.124.89.126 ", "89.124.89.126"},
+		{"192.0.2.126", "192.0.2.126"},
+		{"192.0.2.126:443", "192.0.2.126"},
+		{" 192.0.2.126 ", "192.0.2.126"},
 		{"2001:DB8::5", "2001:db8::5"},
 		{"[2001:db8::5]:443", "2001:db8::5"},
 	} {
@@ -208,19 +208,19 @@ func TestExitRowQueries(t *testing.T) {
 func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func TestCollectCLIHubIPs(t *testing.T) {
-	ipOut := "2: ens3    inet 138.16.181.225/24 brd 138.16.181.255 scope global ens3\n" +
-		"2: ens3    inet 45.150.39.236/32 scope global ens3\n" +
+	ipOut := "2: ens3    inet 203.0.113.225/24 brd 203.0.113.255 scope global ens3\n" +
+		"2: ens3    inet 198.51.100.236/32 scope global ens3\n" +
 		"3: awg0    inet 10.66.66.1/24 scope global awg0\n" +
 		"4: docker0    inet 172.17.0.1/16 scope global docker0\n" +
-		"2: ens3    inet6 2a03:6f00::5/64 scope global\n"
+		"2: ens3    inet6 2001:db8::5/64 scope global\n"
 	lookup := func(h string) ([]net.IP, error) {
 		if h == "hiearth.ru" {
-			return []net.IP{net.ParseIP("138.16.181.225")}, nil
+			return []net.IP{net.ParseIP("203.0.113.225")}, nil
 		}
 		return nil, os.ErrNotExist
 	}
-	got := collectCLIHubIPs(ipOut, []string{"hiearth.ru", "109.172.86.40", "", "broken.invalid"}, lookup)
-	want := []string{"109.172.86.40", "138.16.181.225", "2a03:6f00::5", "45.150.39.236"}
+	got := collectCLIHubIPs(ipOut, []string{"hiearth.ru", "192.0.2.40", "", "broken.invalid"}, lookup)
+	want := []string{"192.0.2.40", "198.51.100.236", "2001:db8::5", "203.0.113.225"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("%v, want %v", got, want)
 	}

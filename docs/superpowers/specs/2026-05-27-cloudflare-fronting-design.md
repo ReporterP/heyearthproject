@@ -10,7 +10,7 @@
 ## 1. Problem
 
 Russian mobile operators (Tele2, MTS) periodically apply per-IP QoS rules or
-outright TCP blocks on our Hub IP `45.150.39.236` (vdsina Moscow,
+outright TCP blocks on our Hub IP `198.51.100.236` (vdsina Moscow,
 AS48282). Symptoms observed in production:
 
 - **MTS:** `hiearth.ru` reachable from operator's network, but VPN sessions to
@@ -59,7 +59,7 @@ Two coexisting paths for VLESS subscription profiles:
 
 ```
 Path 1 (existing, primary): Reality direct
-  User → Hub IP 45.150.39.236 (hiearth.ru, DNS-only in CF)
+  User → Hub IP 198.51.100.236 (hiearth.ru, DNS-only in CF)
        → nginx :443 (SNI router by ssl_preread_server_name)
        → on SNI=realitySNI → Xray vless-reality :10443
        → on SNI=cdn.hiearth.ru → nginx_https :8443 (NEW vhost)
@@ -68,7 +68,7 @@ Path 1 (existing, primary): Reality direct
 Path 2 (new, fallback): VLESS over WebSocket through Cloudflare
   User → Cloudflare edge IP (pool of millions)
        → CF terminates TLS for cdn.hiearth.ru (proxy=on, orange cloud)
-       → CF forwards WebSocket to origin 45.150.39.236
+       → CF forwards WebSocket to origin 198.51.100.236
        → nginx :443 → SNI=cdn.hiearth.ru → nginx_https :8443
        → new vhost cdn.conf → location /cdn-ws → ws upgrade
        → Xray vless-ws-cdn inbound :11443 (loopback)
@@ -108,7 +108,7 @@ User performs these via CF dashboard. No code involved.
 | 1 | Create CF account at dash.cloudflare.com |
 | 2 | Add Site `hiearth.ru` on Free plan |
 | 3 | Let CF import existing DNS records via auto-scan |
-| 4 | Add new DNS A record: `cdn.hiearth.ru → 45.150.39.236`, **Proxied (orange cloud)** |
+| 4 | Add new DNS A record: `cdn.hiearth.ru → 198.51.100.236`, **Proxied (orange cloud)** |
 | 5 | Verify existing records `hiearth.ru` and `admin.hiearth.ru` remain **DNS only (grey cloud)** — Reality must stay direct |
 | 6 | Copy 2 CF-assigned nameservers (e.g. `xxx.ns.cloudflare.com`) |
 | 7 | Update NS records at the domain registrar to CF's nameservers |

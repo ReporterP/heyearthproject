@@ -163,7 +163,7 @@ func TestRenderHysteria2ConfigAuthURL(t *testing.T) {
 	if hysteria2AuthURL != "http://127.0.0.1:8001/internal/hysteria2/auth" {
 		t.Fatalf("hysteria2AuthURL = %q", hysteria2AuthURL)
 	}
-	yaml := renderHysteria2Config(50, 100, "obfs-pass", "stats-secret", 1090, []string{"138.16.181.225"})
+	yaml := renderHysteria2Config(50, 100, "obfs-pass", "stats-secret", 1090, []string{"203.0.113.225"})
 	if !strings.Contains(yaml, "auth:\n  type: http\n  http:\n    url: http://127.0.0.1:8001/internal/hysteria2/auth\n") {
 		t.Errorf("server.yaml must point the auth callback at the :8001 listener:\n%s", yaml)
 	}
@@ -173,7 +173,7 @@ func TestRenderHysteria2ConfigAuthURL(t *testing.T) {
 }
 
 func TestHysteria2ACLExplicitPrivateRanges(t *testing.T) {
-	hub := []string{"138.16.181.225", "2001:db8::2"}
+	hub := []string{"203.0.113.225", "2001:db8::2"}
 	rules := hysteria2ACLRules(hub)
 	wantHead := []string{
 		"reject(geoip:private)", "reject(127.0.0.0/8)", "reject(::1/128)", "reject(0.0.0.0/8)", "reject(::/128)",
@@ -181,7 +181,7 @@ func TestHysteria2ACLExplicitPrivateRanges(t *testing.T) {
 		"reject(169.254.0.0/16)", "reject(fc00::/7)", "reject(fe80::/10)",
 	}
 	wantTail := []string{
-		"via_exit(138.16.181.225, tcp/80)", "via_exit(138.16.181.225, tcp/443)", "reject(138.16.181.225)",
+		"via_exit(203.0.113.225, tcp/80)", "via_exit(203.0.113.225, tcp/443)", "reject(203.0.113.225)",
 		"via_exit(2001:db8::2, tcp/80)", "via_exit(2001:db8::2, tcp/443)", "reject(2001:db8::2)",
 		"direct(geoip:ru)", "via_exit(all)",
 	}

@@ -13,7 +13,7 @@ import (
 // whatever the exit's firewall (ufw is often off on a fresh VPS, ExitFirewallScript never turns
 // it on). An nftables input chain of its own table, ExitAgentGuardTable, drops TCP 50052 from
 // everyone but the Hub's addresses and loopback — what the hand-made guard on exit 2 does
-// (2026-10-15: 138.16.181.225, 45.150.39.236, 109.172.86.40, 127.0.0.1, ::1). Like the xray
+// (2026-10-15: 203.0.113.225, 198.51.100.236, 192.0.2.40, 127.0.0.1, ::1). Like the xray
 // guard (exit_xray_guard.go) the file creates, deletes and defines the table in one nft
 // transaction, the oneshot ExitAgentGuardUnit loads it at boot and again after
 // `systemctl restart nftables` (PartOf=) or `systemctl reload nftables` (ReloadPropagatedFrom=),

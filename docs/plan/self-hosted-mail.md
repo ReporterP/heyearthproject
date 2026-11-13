@@ -23,11 +23,11 @@ smtp_password   = (empty)
 `email.Send(...)` сейчас silent no-op. До починки B2B-signup технически
 работает, но юзер не получает claim-ссылку и не может привязаться к тенанту.
 
-Hub-сервер (45.150.39.236, vdsina): 1 vCPU, 1.9 GB RAM, load avg ≈ 1.10,
+Hub-сервер (198.51.100.236, vdsina): 1 vCPU, 1.9 GB RAM, load avg ≈ 1.10,
 swap = 0. Не подходит для co-hosting mail:
 * RAM: Mailcow требует ≥ 4 GB; на hub останется −300 MB до OOM.
 * Port 25 outbound заблокирован VDS-провайдером (стандарт у vdsina).
-* IP 45.150.39.236 проксирует VPN-трафик 100+ юзеров — почти гарантированно
+* IP 198.51.100.236 проксирует VPN-трафик 100+ юзеров — почти гарантированно
   в Spamhaus/Barracuda/Cisco Talos proxy-listings.
 
 ## Архитектурное решение

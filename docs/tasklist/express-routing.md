@@ -232,7 +232,7 @@ created: 2026-05-25
 
 - [ ] **express-014** — production rollout (blocks: 013)
   - Действия:
-    1. `go run cmd/deploy --setup-hysteria2-hub` (продовый Хаб 45.150.39.236)
+    1. `go run cmd/deploy --setup-hysteria2-hub` (продовый Хаб 198.51.100.236)
     2. `go run cmd/deploy --status` → все зелёные
     3. Включить Express для `all-inclusive` и `annual-premium` в админке
     4. Smoke test от 3 реальных премиум-пользователей через Telegram-канал

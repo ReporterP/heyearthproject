@@ -513,7 +513,7 @@ func TestUnitRollbackReloadsRestoredNftRules(t *testing.T) {
 	}
 	const nftStub = `nft() { echo "nft $*" >> ./restarts; [ "$2" = - ] && cat >> ./nft.stdin; [ ! -f ./nft-fails ]; }
 `
-	const handMade = "table inet heyearth_agent_guard {\n  chain input {\n    tcp dport 50052 ip saddr != { 138.16.181.225 } drop\n  }\n}\n"
+	const handMade = "table inet heyearth_agent_guard {\n  chain input {\n    tcp dport 50052 ip saddr != { 203.0.113.225 } drop\n  }\n}\n"
 	setup := func() string {
 		dir := t.TempDir()
 		mustWrite(t, dir, rel(ExitAgentGuardConfPath), "new rules", 0o644)
@@ -733,8 +733,8 @@ func TestUnitRollbackNftReloadInNetns(t *testing.T) {
 	}{
 		"agent guard": {"node-agent", ExitAgentGuardConfPath, ExitAgentGuardTable, newGuard,
 			"table inet heyearth_agent_guard {\n  chain input {\n    type filter hook input priority 0; policy accept;\n" +
-				"    tcp dport 50052 ip saddr != { 138.16.181.225, 127.0.0.1 } drop\n  }\n}\n",
-			"tcp dport 50052 ip saddr != { 127.0.0.1, 138.16.181.225 } drop", "203.0.113.9", false},
+				"    tcp dport 50052 ip saddr != { 203.0.113.225, 127.0.0.1 } drop\n  }\n}\n",
+			"tcp dport 50052 ip saddr != { 127.0.0.1, 203.0.113.225 } drop", "203.0.113.9", false},
 		"port hop": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf, oldHop,
 			"udp dport 20000-50000 redirect to :50443", "fib daddr", false},
 		"port hop, resumed": {"hysteria2", ExitPortHopConfPath, ExitPortHopTable, ExitPortHopConf, oldHop,
@@ -872,7 +872,7 @@ func TestExitFirewallScript(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
-	script := ExitFirewallScript(2222, []string{"138.16.181.225", "bad;id"}, 8443)
+	script := ExitFirewallScript(2222, []string{"203.0.113.225", "bad;id"}, 8443)
 	t.Run("ufw active: rules added, never enabled, no duplicates", func(t *testing.T) {
 		dir := t.TempDir()
 		for i := 0; i < 2; i++ {
@@ -880,8 +880,8 @@ func TestExitFirewallScript(t *testing.T) {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
-		for _, r := range []string{"allow from 138.16.181.225 to any port 2222 proto tcp", "allow 10443/tcp", "allow 8443/tcp", "allow 50443/udp",
-			"allow 20000:50000/udp", "allow from 138.16.181.225 to any port 50052 proto tcp"} {
+		for _, r := range []string{"allow from 203.0.113.225 to any port 2222 proto tcp", "allow 10443/tcp", "allow 8443/tcp", "allow 50443/udp",
+			"allow 20000:50000/udp", "allow from 203.0.113.225 to any port 50052 proto tcp"} {
 			if count(dir, "ufw.rules", r) != 1 {
 				t.Errorf("rule %q present %d times", r, count(dir, "ufw.rules", r))
 			}
@@ -920,32 +920,32 @@ func TestExitFirewallScript(t *testing.T) {
 		if count(dir, "ipt.rules", "-A INPUT -p tcp --dport 2222 -j ACCEPT") != 0 {
 			t.Error("SSH allowed from anywhere")
 		}
-		for _, r := range []string{"-A INPUT -p tcp -s 138.16.181.225 --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 10443 -j ACCEPT",
+		for _, r := range []string{"-A INPUT -p tcp -s 203.0.113.225 --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 10443 -j ACCEPT",
 			"-A INPUT -p tcp --dport 8443 -j ACCEPT", "-A INPUT -p udp --dport 50443 -j ACCEPT",
-			"-A INPUT -p udp --dport 20000:50000 -j ACCEPT", "-A INPUT -p tcp -s 138.16.181.225 --dport 50052 -j ACCEPT"} {
+			"-A INPUT -p udp --dport 20000:50000 -j ACCEPT", "-A INPUT -p tcp -s 203.0.113.225 --dport 50052 -j ACCEPT"} {
 			if n := count(dir, "ipt.rules", r); n != 1 {
 				t.Errorf("%q %d times", r, n)
 			}
 		}
 	})
 	t.Run("ipv6 hub: ufw only, iptables skips it", func(t *testing.T) {
-		s := ExitFirewallScript(22, []string{"2001:db8::1", "138.16.181.225", " 138.16.181.225 "}, 0)
+		s := ExitFirewallScript(22, []string{"2001:db8::1", "203.0.113.225", " 203.0.113.225 "}, 0)
 		dir := t.TempDir()
 		if out, err := shellRun(t, dir, fwStubs, s, "UFW_ACTIVE=1"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
 		if count(dir, "ufw.rules", "allow from 2001:db8::1 to any port 50052 proto tcp") != 1 ||
-			count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 50052 proto tcp") != 1 ||
+			count(dir, "ufw.rules", "allow from 203.0.113.225 to any port 50052 proto tcp") != 1 ||
 			count(dir, "ufw.rules", "allow from 2001:db8::1 to any port 22 proto tcp") != 1 ||
-			count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 22 proto tcp") != 1 {
+			count(dir, "ufw.rules", "allow from 203.0.113.225 to any port 22 proto tcp") != 1 {
 			t.Errorf("ufw rules:\n%s", readRel(dir, "ufw.rules"))
 		}
 		dir = t.TempDir()
 		if out, err := shellRun(t, dir, fwStubs, s, "IPT_POLICY=DROP"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
-		if strings.Contains(readRel(dir, "ipt.rules"), "2001:db8::1") || count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 50052 -j ACCEPT") != 1 ||
-			count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 22 -j ACCEPT") != 1 {
+		if strings.Contains(readRel(dir, "ipt.rules"), "2001:db8::1") || count(dir, "ipt.rules", "-A INPUT -p tcp -s 203.0.113.225 --dport 50052 -j ACCEPT") != 1 ||
+			count(dir, "ipt.rules", "-A INPUT -p tcp -s 203.0.113.225 --dport 22 -j ACCEPT") != 1 {
 			t.Errorf("iptables rules:\n%s", readRel(dir, "ipt.rules"))
 		}
 	})
@@ -1000,18 +1000,18 @@ func TestExitFirewallScript(t *testing.T) {
 		} {
 			dir := t.TempDir()
 			mustWrite(t, dir, "ufw.listed", tc.listed, 0o644)
-			out, err := shellRun(t, dir, fwStubs, ExitFirewallScript(tc.port, []string{"138.16.181.225"}, 0), "UFW_ACTIVE=1")
+			out, err := shellRun(t, dir, fwStubs, ExitFirewallScript(tc.port, []string{"203.0.113.225"}, 0), "UFW_ACTIVE=1")
 			if err != nil {
 				t.Fatalf("%s: %v\n%s", name, err, out)
 			}
-			added := count(dir, "ufw.rules", fmt.Sprintf("allow from 138.16.181.225 to any port %d proto tcp", tc.port)) == 1
+			added := count(dir, "ufw.rules", fmt.Sprintf("allow from 203.0.113.225 to any port %d proto tcp", tc.port)) == 1
 			if added == tc.keep || strings.Contains(out, "уже есть правило") != tc.keep {
 				t.Errorf("%s: ssh rule added=%v, want %v\n%s", name, added, !tc.keep, out)
 			}
 			if strings.Contains(readRel(dir, "fw.log"), fmt.Sprintf("ufw allow %d/tcp", tc.port)) || strings.Contains(readRel(dir, "fw.log"), "delete") {
 				t.Errorf("%s: SSH allowed from anywhere or an existing rule changed:\n%s", name, readRel(dir, "fw.log"))
 			}
-			if count(dir, "ufw.rules", "allow 10443/tcp") != 1 || count(dir, "ufw.rules", "allow from 138.16.181.225 to any port 50052 proto tcp") != 1 {
+			if count(dir, "ufw.rules", "allow 10443/tcp") != 1 || count(dir, "ufw.rules", "allow from 203.0.113.225 to any port 50052 proto tcp") != 1 {
 				t.Errorf("%s: tunnel / node-agent rules missing:\n%s", name, readRel(dir, "ufw.rules"))
 			}
 		}
@@ -1033,7 +1033,7 @@ func TestExitFirewallScript(t *testing.T) {
 			if err != nil || strings.Contains(out, "уже есть правила") != tc.named {
 				t.Fatalf("%q: %v\n%s", tc.existing, err, out)
 			}
-			fromHub := count(dir, "ipt.rules", "-A INPUT -p tcp -s 138.16.181.225 --dport 2222 -j ACCEPT")
+			fromHub := count(dir, "ipt.rules", "-A INPUT -p tcp -s 203.0.113.225 --dport 2222 -j ACCEPT")
 			if strings.Contains(readRel(dir, "ipt.rules"), "-A INPUT -p tcp --dport 2222 -j ACCEPT") || count(dir, "ipt.rules", tc.existing) != 1 ||
 				(fromHub == 1) == tc.named || count(dir, "ipt.rules", "-A INPUT -p tcp --dport 10443 -j ACCEPT") != 1 {
 				t.Errorf("%q: ssh protection bypassed, ssh allowed from anywhere or tunnel rule missing:\n%s", tc.existing, readRel(dir, "ipt.rules"))

@@ -268,7 +268,7 @@ psql heyearth -c "SELECT value FROM app_settings WHERE key='mtproto_auto_install
 journalctl -u heyearth-api --since "5 minutes ago" | grep ghost-reconciler | grep mtproto
 
 # 4. After ~5-10 min wait, Amsterdam has daemon running
-ssh root@89.124.89.126 'systemctl is-active mtproxy && ss -tln | grep :8443'
+ssh root@192.0.2.126 'systemctl is-active mtproxy && ss -tln | grep :8443'
 # → active + LISTEN
 
 # 5. Server row reflects install
@@ -277,7 +277,7 @@ psql heyearth -c "SELECT id, name, mtproto_status, mtproto_installed_at FROM ser
 
 # 6. Endpoint serves deeplink with REAL exit host
 curl -H "Authorization: Bearer <user-jwt>" https://hiearth.ru/api/v1/user/mtproto | python3 -m json.tool
-# → enabled=true, host=89.124.89.126, port=8443, secret=<shared>
+# → enabled=true, host=192.0.2.126, port=8443, secret=<shared>
 
 # 7. Telegram smoke (manual)
 # Open tg://... on phone → confirm proxy → traffic flows
