@@ -212,6 +212,8 @@ func goldenScript() *scriptDB {
 			{name: "period-usage", match: "COALESCE(SUM(upload_bytes + download_bytes), 0) FROM traffic_stats", cols: []string{"sum"}, rows: [][]driver.Value{{int64(123456)}}},
 			{name: "announce", match: "COALESCE(us.traffic_used, 0)", cols: []string{"valid_until", "used", "limit", "slug", "auto_renew", "price", "price_paid", "promo", "uid"},
 				rows: [][]driver.Value{{vu, int64(0), nil, "all-inclusive", false, int64(300), int64(300), "", int64(7)}}},
+			// Per-exit fronting domains: none here (the shared domain only).
+			{name: "mtproto-domains", match: "SELECT DISTINCT LOWER(mtproto_domain)", cols: []string{"d"}},
 			{name: "mtproto-ips", match: "mtproto_status = 'healthy'", cols: []string{"ip_address"}, rows: [][]driver.Value{{"198.51.100.7"}}},
 			{name: "effective-plan", match: "us.plan_id IS NOT NULL AND us.valid_until > CURRENT_TIMESTAMP", cols: []string{"plan_id"}, rows: [][]driver.Value{{int64(3)}}},
 			{name: "direct-services", match: "FROM direct_route_services s WHERE s.is_active = TRUE",

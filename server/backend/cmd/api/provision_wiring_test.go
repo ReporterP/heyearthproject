@@ -26,7 +26,8 @@ const testMTSecret = "ee0123456789abcdef0123456789abcdef6578616d706c652e636f6d"
 
 func withExitWiring(t *testing.T, ips []string, settings map[string]string, script string) {
 	t.Helper()
-	oldIPs, oldSet, oldPath := exitHubIPs, exitSetting, mtproxyScriptPath
+	oldIPs, oldSet, oldPath, oldDomain := exitHubIPs, exitSetting, mtproxyScriptPath, exitMTProtoDomainStep
+	exitMTProtoDomainStep = func(context.Context, provision.Node, *provision.MTProtoOptions) error { return nil }
 	exitHubIPs = func() []string { return ips }
 	exitSetting = func(k, def string) string {
 		if v, ok := settings[k]; ok {
@@ -40,7 +41,9 @@ func withExitWiring(t *testing.T, ips []string, settings map[string]string, scri
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { exitHubIPs, exitSetting, mtproxyScriptPath = oldIPs, oldSet, oldPath })
+	t.Cleanup(func() {
+		exitHubIPs, exitSetting, mtproxyScriptPath, exitMTProtoDomainStep = oldIPs, oldSet, oldPath, oldDomain
+	})
 }
 
 var mtSettings = map[string]string{"mtproto_port": "9443", "mtproto_secret": testMTSecret, "mtproto_fronting_domain": "example.com"}

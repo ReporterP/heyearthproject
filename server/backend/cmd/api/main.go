@@ -604,7 +604,13 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host, port, ok := biz.PickMTProtoExit()
+	host, port, domain, ok := biz.PickMTProtoExit()
+	if ok && domain != "" { // the exit fronts its own domain: the shared key with that domain
+		if secret, err = biz.MTProtoSecretFor(secret, domain); err != nil {
+			log.Printf("[mtproto] secret for exit %s: %v", host, err)
+			ok = false
+		}
+	}
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"enabled": false,

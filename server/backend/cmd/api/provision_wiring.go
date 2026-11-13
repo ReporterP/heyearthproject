@@ -347,7 +347,8 @@ func apiExitOptions(n provision.Node) (provision.ExitOptions, error) {
 }
 
 // apiMTProtoOptions: the node's MTProxy from the Hub's settings (the port is the one apiExitOptions
-// allows in the ACL / guard rules); nil when the owner switched MTProxy off for the node.
+// allows in the ACL / guard rules); nil when the owner switched MTProxy off for the node. The exit
+// fronts its own domain (exitMTProtoDomain) with the shared key.
 func apiMTProtoOptions(n provision.Node) (*provision.MTProtoOptions, error) {
 	if n.MTProtoStatus == "disabled" {
 		return nil, nil
@@ -356,9 +357,48 @@ func apiMTProtoOptions(n provision.Node) (*provision.MTProtoOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &provision.MTProtoOptions{Port: config.ParseMTProtoPort(exitSetting("mtproto_port", "")),
+	o := &provision.MTProtoOptions{Port: config.ParseMTProtoPort(exitSetting("mtproto_port", "")),
 		Secret: strings.TrimSpace(exitSetting("mtproto_secret", "")),
-		Domain: strings.TrimSpace(exitSetting("mtproto_fronting_domain", "")), Script: script}, nil
+		Domain: strings.TrimSpace(exitSetting("mtproto_fronting_domain", "")), Script: script}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := exitMTProtoDomainStep(ctx, n, o); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// exitMTProtoDomainStep is exitMTProtoDomain on the API's database (tests swap it).
+var exitMTProtoDomainStep = func(ctx context.Context, n provision.Node, o *provision.MTProtoOptions) error {
+	return exitMTProtoDomain(ctx, db.DB, n, o)
+}
+
+// exitMTProtoDomain points o at the exit's own fronting domain (biz.ExitFrontingDomain) and its
+// secret, recording the domain first: the deeplink hands out the secret of the recorded one. No
+// domain found: o keeps the shared domain and the installer says it does not resolve to the node
+// (an exit installs without MTProxy). A failed read or write of the record is an error.
+func exitMTProtoDomain(ctx context.Context, q interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, n provision.Node, o *provision.MTProtoOptions) error {
+	stored, err := biz.ExitMTProtoDomain(ctx, q, n.ID)
+	if err != nil {
+		return fmt.Errorf("домен Telegram-прокси ноды %d: %w", n.ID, err)
+	}
+	domain, err := biz.ExitFrontingDomain(ctx, n.IP, stored, o.Domain)
+	if err != nil {
+		log.Printf("[mtproxy] нода %d: %v", n.ID, err)
+		return nil
+	}
+	secret, err := biz.MTProtoSecretFor(o.Secret, domain)
+	if err != nil {
+		return nil // the installer's own check names the bad shared secret
+	}
+	if err := biz.SetExitMTProtoDomain(ctx, q, n.ID, domain); err != nil {
+		return fmt.Errorf("домен Telegram-прокси ноды %d не записан: %w", n.ID, err)
+	}
+	o.Domain, o.Secret = domain, secret
+	return nil
 }
 
 // readHubFile names the deploy step that puts a missing provisioning asset on the Hub.

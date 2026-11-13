@@ -219,15 +219,19 @@ func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
 	// /32 entry can no longer match — so without this the Telegram-proxy flow
 	// is pushed into the VPN tunnel and reaches the node the long way round
 	// (client → Hub → tunnel → exit → back to itself), or not at all.
-	fronting := MTProtoFrontingDomain()
-	if strict {
-		var err error
-		if fronting, err = MTProtoFrontingDomainStrict(); err != nil {
+	// Every exit fronts its own domain (servers.mtproto_domain), so all of them are listed.
+	fronting, err := MTProtoFrontingDomainsStrict()
+	if err != nil {
+		if strict {
 			return nil, err
 		}
+		log.Printf("[happ-routing] mtproto fronting domains: %v", err)
+		if d := MTProtoFrontingDomain(); d != "" {
+			fronting = []string{d}
+		}
 	}
-	if fronting != "" {
-		directSites = append(directSites, "domain:"+fronting)
+	for _, d := range fronting {
+		directSites = append(directSites, "domain:"+d)
 	}
 	return directSites, nil
 }
