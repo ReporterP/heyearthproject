@@ -42,6 +42,7 @@ const previewUUID = "00000000-0000-4000-8000-000000000000"
 
 func registerEntryAdminRoutes() {
 	http.HandleFunc("/api/admin/entries", admin.RequirePermission("servers.read", handleAdminEntries))
+	http.HandleFunc("/api/admin/launch-checklist", admin.RequirePermission("dashboard.read", handleLaunchChecklist)) // B6
 	http.HandleFunc("/api/admin/entries/", func(w http.ResponseWriter, r *http.Request) {
 		switch strings.TrimPrefix(r.URL.Path, "/api/admin/entries/") {
 		case "preview":

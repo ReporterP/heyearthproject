@@ -319,6 +319,9 @@ type storedKeyView struct {
 type probeResponse struct {
 	provision.ProbeResult
 	Stored *storedKeyView `json:"stored,omitempty"`
+	// GeoCountry: the address's registry country (Team Cymru whois) — the wizard's hint for
+	// the country field (B2); "" when the lookup failed.
+	GeoCountry string `json:"geo_country,omitempty"`
 }
 
 // ProbeNodeHandler — SSH key exchanges only: every host key the node offers (all types, so the
@@ -362,7 +365,9 @@ func ProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 			stored.KeyType = k.Type
 		}
 	}
-	writeAdminJSON(w, http.StatusOK, probeResponse{ProbeResult: res, Stored: stored})
+	geoCtx, geoCancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer geoCancel()
+	writeAdminJSON(w, http.StatusOK, probeResponse{ProbeResult: res, Stored: stored, GeoCountry: ipCountry(geoCtx, ip)})
 }
 
 type createNodePayload struct {
@@ -1090,7 +1095,8 @@ SELECT s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_ad
        COALESCE(s.load_weight, 1), COALESCE(s.tunnel_status, 'unknown'), s.tunnel_fallback_enabled, s.mtproto_status,
        COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''), s.ssh_host_key_confirmed_at IS NOT NULL,
        COALESCE((SELECT array_agg(ps.plan_id ORDER BY ps.plan_id) FROM plan_servers ps WHERE ps.server_id = s.id), '{}'),
-       lj.id, lj.kind, lj.status, hy.status, hy.finished_at, tcp.status, tcp.finished_at
+       lj.id, lj.kind, lj.status, hy.status, hy.finished_at, tcp.status, tcp.finished_at,
+       COALESCE(s.status, ''), COALESCE(s.load_metrics::text, '{}'), s.traffic_quota_tb, s.monthly_price_rub, s.port_mbps, s.cpu_cores
   FROM servers s
   LEFT JOIN LATERAL (SELECT id, kind, status FROM provision_jobs WHERE server_id = s.id ORDER BY id DESC LIMIT 1) lj ON TRUE
   LEFT JOIN LATERAL (SELECT st.status, st.finished_at FROM provision_steps st JOIN provision_jobs j ON j.id = st.job_id
@@ -1145,7 +1151,11 @@ type nodeItem struct {
 	HostKey         nodeHostKey `json:"host_key"`
 	PlanIDs         []int       `json:"plan_ids"`
 	LastJob         *nodeJobRef `json:"last_job"`
-	Paths           struct {
+	// B1: the agent's liveness (online|offline), the latest load sample and the owner's numbers.
+	Status string        `json:"status"`
+	Load   *nodeLoadView `json:"load"`
+	Owner  nodeOwnerView `json:"owner"`
+	Paths  struct {
 		Hy  nodePath `json:"hy"`
 		TCP nodePath `json:"tcp"`
 	} `json:"paths"`
@@ -1184,14 +1194,19 @@ func ListNodesHandler(w http.ResponseWriter, r *http.Request) {
 		var jobID sql.NullInt64
 		var jobKind, jobStatus, hySt, tcpSt sql.NullString
 		var hyAt, tcpAt sql.NullTime
+		var loadRaw string
+		var quota sql.NullFloat64
+		var price, port, cores sql.NullInt64
 		if err := rows.Scan(&it.ID, &it.Name, &it.Role, &it.CountryCode, &it.IPAddress, &it.Lifecycle,
 			&it.LoadWeight, &it.TunnelStatus, &it.FallbackEnabled, &it.MTProtoStatus,
 			&it.HostKey.Fingerprint, &hostKeyBlob, &it.HostKey.Confirmed,
-			&plans, &jobID, &jobKind, &jobStatus, &hySt, &hyAt, &tcpSt, &tcpAt); err != nil {
+			&plans, &jobID, &jobKind, &jobStatus, &hySt, &hyAt, &tcpSt, &tcpAt,
+			&it.Status, &loadRaw, &quota, &price, &port, &cores); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать ноду")
 			return
 		}
 		it.HostKey.KeyType = provision.StoredHostKeyType(hostKeyBlob, it.HostKey.Fingerprint)
+		it.Load, it.Owner = parseLoadMetrics(loadRaw, time.Now()), ownerView(quota, price, port, cores)
 		it.PlanIDs = make([]int, len(plans))
 		for i, p := range plans {
 			it.PlanIDs[i] = int(p)

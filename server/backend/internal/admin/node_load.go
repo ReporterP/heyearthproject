@@ -249,12 +249,11 @@ func recordNodeSample(ctx context.Context, id int, out string) {
 	}
 	b, _ := json.Marshal(m)
 	if _, err := db.DB.ExecContext(ctx, `
-		UPDATE servers SET load_metrics = $2::jsonb, cpu_cores = COALESCE(cpu_cores, $3), metrics_synced_at = NOW()
-		WHERE id = $1`, id, string(b), s.Cores); err != nil {
+		UPDATE servers SET load_metrics = $2::jsonb, metrics_synced_at = NOW()
+		WHERE id = $1`, id, string(b)); err != nil {
 		log.Printf("[node-load] update server %d: %v", id, err)
 	}
 }
-
 
 // purgeOldSamples keeps 30 days (once an hour).
 func purgeOldSamples(ctx context.Context) {

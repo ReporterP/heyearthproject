@@ -101,6 +101,10 @@ func withProvisioning(t *testing.T, p *fakeProvisioner, n provision.Node) *[]pro
 	oldCount := countOtherOnlineExits
 	countOtherOnlineExits = func(context.Context, int) (int, error) { return 1, nil }
 	t.Cleanup(func() { countOtherOnlineExits = oldCount })
+	// No whois from tests: the probe's country hint is «DE».
+	oldGeo := ipCountry
+	ipCountry = func(context.Context, string) string { return "DE" }
+	t.Cleanup(func() { ipCountry = oldGeo })
 	t.Cleanup(func() {
 		NodeProvisioner, NodeJobs, saveNodeOptions, NodeProbe, auditLogExec = oldP, oldJ, oldS, oldProbe, oldAudit
 	})
@@ -249,6 +253,9 @@ func TestProbeNodeHandler(t *testing.T) {
 	rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":" 203.0.113.7 ","ssh_port":2222}`)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), edKey.Fingerprint) || !strings.Contains(rec.Body.String(), ecKey.Fingerprint) {
 		t.Fatalf("every key type must be listed for the owner to compare: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"geo_country":"DE"`) {
+		t.Errorf("the wizard's country hint (B2): %s", rec.Body)
 	}
 	if rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":"exit.example.com"}`); rec.Code != 400 {
 		t.Fatalf("hostname: %d", rec.Code)
@@ -887,7 +894,9 @@ func listNodeRow(id int64, k provision.HostKey) []driver.Value {
 	return []driver.Value{id, "Франкфурт", "exit", "DE", "203.0.113.9", "online",
 		int64(2), "healthy", true, "disabled",
 		k.Fingerprint, k.Key, true,
-		[]byte("{1,3}"), int64(11), "provision", "succeeded", "skipped", fin, "ok", fin}
+		[]byte("{1,3}"), int64(11), "provision", "succeeded", "skipped", fin, "ok", fin,
+		"online", `{"cpu_usage": 12.5, "memory_usage": 40, "active_connections": 7, "cores": 2, "source": "ssh", "synced_at": "` + time.Now().UTC().Format(time.RFC3339) + `"}`,
+		float64(10), int64(700), nil, nil}
 }
 
 func TestListNodesShape(t *testing.T) {
@@ -929,6 +938,12 @@ func TestListNodesShape(t *testing.T) {
 	if live["hy"].(map[string]any)["status"] != "unhealthy" || live["hy"].(map[string]any)["source"] != "monitor" ||
 		live["tcp"].(map[string]any)["rtt_ms"] != float64(80) {
 		t.Errorf("monitor overlay: %v", live)
+	}
+	// B1: the agent's liveness, the latest sample and the owner's numbers.
+	load, owner := job["load"].(map[string]any), job["owner"].(map[string]any)
+	if job["status"] != "online" || load["cpu_pct"] != 12.5 || load["connections"] != float64(7) || load["stale"] != false ||
+		owner["traffic_quota_tb"] != float64(10) || owner["monthly_price_rub"] != float64(700) || owner["port_mbps"] != nil {
+		t.Errorf("load/owner: %v / %v", load, owner)
 	}
 	for _, k := range []string{"ssh_password", "ssh_host_key", "tunnel_uuid", "tunnel_ss_password"} {
 		if _, ok := job[k]; ok {

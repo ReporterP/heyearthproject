@@ -27,3 +27,17 @@ func TestHubReachChecks(t *testing.T) {
 		t.Fatalf("relay %+v", cs)
 	}
 }
+
+func TestParseCymruCountry(t *testing.T) {
+	out := "Bulk mode; whois.cymru.com [2026-11-13 10:00:00 +0000]\n" +
+		"64500   | 203.0.113.9      | 203.0.113.0/24      | nl | ripencc  | 2015-01-01 | EXAMPLE-AS, NL\n"
+	if cc := parseCymruCountry(strings.NewReader(out), "203.0.113.9"); cc != "NL" {
+		t.Errorf("cc %q", cc)
+	}
+	if cc := parseCymruCountry(strings.NewReader(out), "203.0.113.10"); cc != "" {
+		t.Errorf("another ip: %q", cc)
+	}
+	if cc := parseCymruCountry(strings.NewReader("NA | 203.0.113.9 | NA | | other | | NA\n"), "203.0.113.9"); cc != "" {
+		t.Errorf("no country: %q", cc)
+	}
+}

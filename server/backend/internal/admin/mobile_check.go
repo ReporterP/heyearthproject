@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -431,6 +432,12 @@ func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[mobile-check] operator lookup: %v", err)
 		}
 	}
+	for _, res := range results {
+		if res.OK {
+			rememberMobileOK(ctx, n.ID, res.At)
+			break
+		}
+	}
 	mobileChecksMu.Lock()
 	st := mobileChecks[n.ID]
 	mobileChecksMu.Unlock()
@@ -440,4 +447,21 @@ func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 		resp["url"], resp["qr"], resp["expires_at"] = st.URL, mobileCheckQR(st.URL), st.Expires
 	}
 	writeAdminJSON(w, http.StatusOK, resp)
+}
+
+// MobileOKKey: app_settings key holding when a phone last got through entry id (RFC 3339).
+func MobileOKKey(id int) string { return "entry_mobile_ok_" + strconv.Itoa(id) }
+
+// rememberMobileOK keeps the latest good phone check of an entry (the «Запуск» checklist asks
+// «проверен с телефона» without the owner re-running it).
+var rememberMobileOK = func(ctx context.Context, id int, at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if _, err := db.DB.ExecContext(ctx, `
+		INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+		WHERE app_settings.value < EXCLUDED.value`, MobileOKKey(id), at.UTC().Format(time.RFC3339)); err != nil {
+		log.Printf("[mobile-check] remember node %d: %v", id, err)
+	}
 }

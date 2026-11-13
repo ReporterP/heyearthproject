@@ -191,6 +191,14 @@ func RegisterRoutes() {
 			withMethod(http.MethodPost, RequirePermission("server_ops.execute", ServerActionHandler)).ServeHTTP(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/load") { // B1: the card's «Нагрузка» charts; servers/hub/load = the Hub
+			withMethod(http.MethodGet, RequirePermission("servers.read", ServerLoadHandler)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/capacity") { // B5: the owner's numbers (quota, price, port, cores)
+			withMethod(http.MethodPut, RequirePermission("servers.write", ServerOwnerHandler)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/metrics") {
 			withMethod(http.MethodGet, RequirePermission("servers.read", GetServerMetricsHandler)).ServeHTTP(w, r)
 			return
@@ -228,6 +236,9 @@ func RegisterRoutes() {
 
 	// Hysteria2 (Express) status — read-only snapshot for the Hub server detail page.
 	http.HandleFunc("/api/admin/hysteria2/status", withMethod(http.MethodGet, RequirePermission("servers.read", Hysteria2StatusHandler)))
+
+	// The Hub's row on «Серверы» (B1).
+	http.HandleFunc("/api/admin/hub", withMethod(http.MethodGet, RequirePermission("servers.read", HubHandler)))
 
 	// Capacity widget — read-only Hub+Exit headroom snapshot (CPU/traffic vs ceiling).
 	http.HandleFunc("/api/admin/capacity", withMethod(http.MethodGet, RequirePermission("dashboard.read", CapacityHandler)))

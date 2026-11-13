@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -68,12 +69,17 @@ func TestRecordNodeSample(t *testing.T) {
 		t.Fatalf("samples: hub %d node %d", hub, node)
 	}
 	var raw string
-	var cores int
+	var cores sql.NullInt64
 	_ = conn.QueryRow(`SELECT load_metrics::text, cpu_cores FROM servers WHERE id = 201`).Scan(&raw, &cores)
 	var m map[string]any
 	_ = json.Unmarshal([]byte(raw), &m)
-	if m["cpu_usage"] != 50.0 || m["memory_usage"] != 75.0 || m["net_rx_mbps"] != 1.0 || cores != 2 {
-		t.Errorf("load_metrics %s cores %d", raw, cores)
+	if m["cpu_usage"] != 50.0 || m["memory_usage"] != 75.0 || m["net_rx_mbps"] != 1.0 || m["cores"] != 2.0 || cores.Valid {
+		t.Errorf("load_metrics %s cpu_cores %v (the owner's field, never filled by the collector)", raw, cores)
+	}
+	// The list reads it back as a fresh sample.
+	v := parseLoadMetrics(raw, at.Add(90*time.Second))
+	if v.Stale || v.CPUPct == nil || *v.CPUPct != 50 || v.NetRxMbps == nil || *v.NetRxMbps != 1 || v.Cores != 2 || *v.ConntrackPct != 10 {
+		t.Errorf("parsed load %+v", v)
 	}
 }
 

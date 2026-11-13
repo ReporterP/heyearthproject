@@ -147,6 +147,10 @@ func LoadCapacityReport(ctx context.Context) (capReport, error) {
 	}
 	rows.Close()
 
+	if c := int(settingFloat(ctx, "hub_cpu_cores", 0)); c > 0 {
+		nodes[0].Cores = c
+	}
+
 	var active int
 	_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT user_id) FROM traffic_stats WHERE recorded_at > NOW() - INTERVAL '24 hours'`).Scan(&active)
 	return buildCapacityReport(nodes, active), nil
