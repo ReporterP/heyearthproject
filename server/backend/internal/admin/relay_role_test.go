@@ -58,3 +58,16 @@ func TestServerMetricsSkipRelays(t *testing.T) {
 		t.Fatalf("relays polled for node-agent metrics:\n%s", serverMetricsTargetsQuery)
 	}
 }
+
+// B4: the only working exit is switched off only with «ОТКЛЮЧИТЬ ВСЕХ».
+func TestLastExitGuard(t *testing.T) {
+	if !lastExitBlocked(0, "") || !lastExitBlocked(0, "отключить всех") {
+		t.Error("the last exit went off without the exact phrase")
+	}
+	if lastExitBlocked(0, " ОТКЛЮЧИТЬ ВСЕХ ") {
+		t.Error("the phrase is refused")
+	}
+	if lastExitBlocked(1, "") {
+		t.Error("an exit with another one working needs no phrase")
+	}
+}

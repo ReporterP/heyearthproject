@@ -97,6 +97,10 @@ func withProvisioning(t *testing.T, p *fakeProvisioner, n provision.Node) *[]pro
 	NodeProvisioner, NodeJobs = p, fakeJobs{node: n}
 	saveNodeOptions = func(_ context.Context, _ int, o provisionPayload) error { *saved = append(*saved, o); return nil }
 	auditLogExec = func(string, ...any) (sql.Result, error) { return driver.RowsAffected(1), nil }
+	// Another exit is on unless a test says otherwise (the last-exit guard, B4).
+	oldCount := countOtherOnlineExits
+	countOtherOnlineExits = func(context.Context, int) (int, error) { return 1, nil }
+	t.Cleanup(func() { countOtherOnlineExits = oldCount })
 	t.Cleanup(func() {
 		NodeProvisioner, NodeJobs, saveNodeOptions, NodeProbe, auditLogExec = oldP, oldJ, oldS, oldProbe, oldAudit
 	})
@@ -1102,5 +1106,20 @@ func TestAdminHasNoUnpinnedSSHOrSelfRestart(t *testing.T) {
 	}
 	if _, err := os.Stat("ssh_tofu.go"); err == nil {
 		t.Error("ssh_tofu.go (trust on first use) must be gone")
+	}
+}
+
+// B4: «Отключить» the only working exit needs «ОТКЛЮЧИТЬ ВСЕХ» (409 with code last_exit).
+func TestDeprovisionLastExit(t *testing.T) {
+	p := &fakeProvisioner{}
+	withProvisioning(t, p, provision.Node{ID: 7, Name: "Франкфурт", Role: "exit", Lifecycle: "online", HostKeyConfirmed: true})
+	countOtherOnlineExits = func(context.Context, int) (int, error) { return 0, nil }
+	rec := call(DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт"}`)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "last_exit") {
+		t.Fatalf("last exit without the phrase: %d %s", rec.Code, rec.Body)
+	}
+	rec = call(DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт","confirm_last":"ОТКЛЮЧИТЬ ВСЕХ"}`)
+	if rec.Code != 202 {
+		t.Fatalf("with the phrase: %d %s", rec.Code, rec.Body)
 	}
 }

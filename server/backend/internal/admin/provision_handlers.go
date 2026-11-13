@@ -779,11 +779,13 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 
 type confirmPayload struct {
 	ConfirmName string `json:"confirm_name"`
+	// ConfirmLast: «ОТКЛЮЧИТЬ ВСЕХ», typed to switch off the only working exit (B4).
+	ConfirmLast string `json:"confirm_last"`
 }
 
 // confirmedNode loads the node (no credentials) and checks the typed name (ConfirmDanger in the
 // UI, enforced here too); suffix "" = the id is the last path segment.
-func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provision.Node, bool) {
+func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provision.Node, confirmPayload, bool) {
 	var id int
 	var ok bool
 	if suffix == "" {
@@ -794,28 +796,39 @@ func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provi
 	var req confirmPayload
 	if !ok || decodeOptional(r, &req) != nil {
 		writeAdminError(w, http.StatusBadRequest, "Неверный запрос")
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	if !provisionReady(w) {
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	n, ok := loadNodeMeta(w, r.Context(), id)
 	if !ok {
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	if strings.TrimSpace(req.ConfirmName) != n.Name {
 		writeAdminError(w, http.StatusBadRequest, confirmNameMsg)
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
-	return n, true
+	return n, req, true
 }
 
 // DeprovisionNodeHandler starts «Отключить»: out of routing first, then the Hub side, then the
 // node (best effort); the row stays offline. An unconfirmed key does not block it.
 func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
-	n, ok := confirmedNode(w, r, "deprovision")
+	n, req, ok := confirmedNode(w, r, "deprovision")
 	if !ok {
 		return
+	}
+	if n.Role != "relay" && n.Lifecycle == "online" {
+		others, err := countOtherOnlineExits(r.Context(), n.ID)
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить другие выходы")
+			return
+		}
+		if lastExitBlocked(others, req.ConfirmLast) {
+			writeAdminJSON(w, http.StatusConflict, map[string]string{"error": lastExitMsg, "code": "last_exit"})
+			return
+		}
 	}
 	if n.Role == "relay" {
 		if err := relayDeprovisionGuard(r.Context(), n.ID); err != nil {
@@ -824,6 +837,27 @@ func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	startJob(w, r, n.ID, provision.KindDeprovision)
+}
+
+// The last working exit (cleanup plan B4): switching it off leaves every user without
+// internet (no-exit mode blocks all traffic), so it needs the phrase, like an entry in use.
+const (
+	lastExitPhrase        = "ОТКЛЮЧИТЬ ВСЕХ"
+	lastExitMsg           = "Это единственный работающий выход за границу: после отключения у всех пользователей пропадёт интернет. Чтобы всё равно отключить, введите «" + lastExitPhrase + "»"
+	otherOnlineExitsQuery = `SELECT COUNT(*) FROM servers WHERE id <> $1 AND COALESCE(role, 'exit') <> 'relay'
+		AND lifecycle_state = 'online' AND COALESCE(status, '') <> 'archived'`
+)
+
+// countOtherOnlineExits is a test seam.
+var countOtherOnlineExits = func(ctx context.Context, id int) (int, error) {
+	var n int
+	err := db.DB.QueryRowContext(ctx, otherOnlineExitsQuery, id).Scan(&n)
+	return n, err
+}
+
+// lastExitBlocked: no other exit is on and the phrase was not typed.
+func lastExitBlocked(otherOnlineExits int, phrase string) bool {
+	return otherOnlineExits == 0 && strings.TrimSpace(phrase) != lastExitPhrase
 }
 
 const deleteNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state IN ('pending', 'offline')
@@ -842,7 +876,7 @@ const failedNodeDeleteMsg = "Сначала отключите ноду («От�
 // the Hub-side cleanup in this handler could only be less complete. Hub-only: the node itself is
 // not touched (it keeps its agent guard).
 func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
-	n, ok := confirmedNode(w, r, "")
+	n, _, ok := confirmedNode(w, r, "")
 	if !ok {
 		return
 	}
