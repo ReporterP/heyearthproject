@@ -22,8 +22,13 @@ import (
 //   POST   /api/v1/email/confirm {token} (public: the link from the letter)
 //   POST   /api/v1/email/unsubscribe?u=&s= (public, signed: the one-click link; GET → the site page)
 
-// emailConfirmPerDay caps confirmation letters per user and day.
-const emailConfirmPerDay = 5
+// Confirmation letters per day: per account, per address (anonymous accounts are free, so the
+// address needs its own cap — nobody can flood someone else's mailbox) and for the whole service.
+const (
+	emailConfirmPerDay        = 5
+	emailConfirmPerAddressDay = 3
+	emailConfirmTotalDay      = 300
+)
 
 func handleUserEmail(w http.ResponseWriter, r *http.Request) {
 	userID, userDBID, ok := requireUser(w, r)
@@ -52,8 +57,17 @@ func handleUserEmail(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if email.AlreadySent(userDBID, email.TemplateEmailConfirm, time.Minute) || confirmLettersToday(userDBID) >= emailConfirmPerDay {
+		if email.AlreadySent(userDBID, email.TemplateEmailConfirm, time.Minute) || confirmLettersToday(userDBID) >= emailConfirmPerDay ||
+			email.SentToAddress(addr, email.TemplateEmailConfirm, 24*time.Hour) >= emailConfirmPerAddressDay {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Письмо уже отправлено — проверьте почту (и папку «Спам») или попробуйте позже"})
+			return
+		}
+		if email.SentTotal(email.TemplateEmailConfirm, 24*time.Hour) >= emailConfirmTotalDay {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Сейчас слишком много запросов — попробуйте завтра"})
+			return
+		}
+		if !email.Enabled() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Отправка писем временно выключена — попробуйте позже"})
 			return
 		}
 		token, err := biz.RequestEmailConfirm(ctx, userDBID, addr)

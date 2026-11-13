@@ -41,7 +41,9 @@ export function loadPart(token, part, force = false) {
   }
   const mine = cache
   const promise = FETCHERS[part](token).then(
-    (value) => { if (cache === mine) mine.parts[part] = { value, at: Date.now() }; return value },
+    // Written only while this request is still the part's own: an invalidation or a newer
+    // forced load replaces it, and its late answer must not bring old data back.
+    (value) => { if (cache === mine && mine.parts[part]?.promise === promise) mine.parts[part] = { value, at: Date.now() }; return value },
     (err) => { if (cache === mine && mine.parts[part]?.promise === promise) delete mine.parts[part]; throw err },
   )
   mine.parts[part] = { promise }
@@ -70,7 +72,7 @@ export default function useAccount(parts, { optional = [] } = {}) {
   }
   const [state, setState] = useState(initial)
   const alive = useRef(true)
-  useEffect(() => () => { alive.current = false }, [])
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
 
   const run = useCallback((force = false) => {
     if (!token) return Promise.resolve()

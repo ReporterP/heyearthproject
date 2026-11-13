@@ -69,10 +69,15 @@ export default function CheckoutPage() {
     // canceled, expired) shows its real state with a way to start again.
     const tokenReady = token
       ? Promise.resolve({ confirmation_token: token })
-      : resumeTopup(authToken, paymentId).catch(() => ({}))
+      : resumeTopup(authToken, paymentId).catch((e) => (e.status === 409 || e.status === 404 ? {} : { error: e }))
 
     tokenReady.then((res) => {
       if (cancelled) return null
+      if (res.error) {
+        setError(res.error.message || 'Не удалось связаться с оплатой — обновите страницу через минуту.')
+        setStatus('error')
+        return null
+      }
       if (res.confirmation_url) { window.location.assign(res.confirmation_url); return null }
       if (!res.confirmation_token) { setResumed(true); setStatus('result'); return null }
       if (!token) sessionStorage.setItem(`checkout_token_${paymentId}`, res.confirmation_token)

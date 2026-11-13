@@ -245,17 +245,42 @@ func markEmailStatus(logID int, status string, errMsg string) {
 	`, status, errMsg, logID)
 }
 
-// AlreadySent возвращает true если этот шаблон уже был отправлен этому user за window.
-// Используется для дедупликации (renewal_preview шлём только раз за период).
+// AlreadySent: this template went to this user (users.id) within the window. A letter that
+// failed or was not sent because SMTP is off counts as well: reminders are at most once per
+// window, never a retry every cron tick.
 func AlreadySent(userID int, template string, within time.Duration) bool {
 	var count int
 	_ = db.DB.QueryRow(`
 		SELECT COUNT(*) FROM email_log
 		WHERE user_id = $1 AND template = $2
-		  AND status IN ('sent','pending')
+		  AND status IN ('sent', 'pending', 'failed', 'disabled')
 		  AND created_at > NOW() - ($3::text)::interval
 	`, userID, template, within.String()).Scan(&count)
 	return count > 0
+}
+
+// SentToAddress counts letters of a template to an address (any user) within the window.
+func SentToAddress(addr, template string, within time.Duration) int {
+	var count int
+	_ = db.DB.QueryRow(`
+		SELECT COUNT(*) FROM email_log
+		WHERE lower(email) = lower($1) AND template = $2 AND created_at > NOW() - ($3::text)::interval
+	`, addr, template, within.String()).Scan(&count)
+	return count
+}
+
+// SentTotal counts letters of a template to anyone within the window.
+func SentTotal(template string, within time.Duration) int {
+	var count int
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM email_log WHERE template = $1 AND created_at > NOW() - ($2::text)::interval`,
+		template, within.String()).Scan(&count)
+	return count
+}
+
+// Enabled: SMTP is switched on in the settings (Send logs and drops letters otherwise).
+func Enabled() bool {
+	cfg, err := loadSettings()
+	return err == nil && cfg.Enabled && cfg.Host != "" && cfg.FromEmail != ""
 }
 
 // GetUserEmail возвращает email юзера (users.email) либо fallback на последний payer_email из payments.
