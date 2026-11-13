@@ -104,7 +104,9 @@ func runGhostReconciler() {
 	// ── MTProto backfill ──
 	// Auto-install mtproto-proxy on exits that don't have it yet.
 	// Rate-limited to 1 install per tick (30 min) to avoid hammering.
-	autoInstall := biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true"
+	// Only while MTProto itself is on (C6/D2): a switched-off proxy is never put on exits.
+	autoInstall := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true" &&
+		biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true"
 	if autoInstall {
 		needing, err := biz.ListExitsNeedingMTProto()
 		if err != nil {

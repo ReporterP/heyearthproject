@@ -285,6 +285,12 @@ export function saveEntryMode(mode, target) {
 export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
 export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)
 
+// ── MTProto (Telegram proxy) ──
+export const fetchMTProto = () => apiFetch('/mtproto')
+export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body })
+// Only returns a new secret for the domain; nothing is saved until saveMTProto.
+export const generateMTProtoSecret = (frontingDomain) => apiFetch('/mtproto/generate-secret', { method: 'POST', body: { fronting_domain: frontingDomain } })
+
 // ── Auto-Tuner ──
 export function fetchAutoTunerStatus() {
   return apiFetch('/auto-tuner/status')

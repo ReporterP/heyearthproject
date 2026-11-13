@@ -1,188 +1,147 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
+import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import {
-  Button,
-  Card,
-  Input,
-  PageHeader,
-  Spinner,
-} from '../components/ui/index.js'
+import { fetchMTProto, saveMTProto, generateMTProtoSecret } from '../api/admin.js'
+import { Button, Card, Dialog, Input, PageHeader, Skeleton, Switch } from '../components/ui/index.js'
 
-const API = '/api/admin/mtproto'
+const EMPTY = { enabled: false, secret: '', fronting_domain: '', sponsor_channel: '', auto_install: true }
 
-async function authedFetch(method, path, body) {
-  const token = localStorage.getItem('admin_token') || ''
-  const init = {
-    method,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+function formFrom(d) {
+  return {
+    enabled: !!d?.enabled, secret: d?.secret || '', fronting_domain: d?.fronting_domain || '',
+    sponsor_channel: d?.sponsor_channel || '', auto_install: d?.auto_install !== false,
   }
-  if (body !== undefined) init.body = JSON.stringify(body)
-  const res = await fetch(path, init)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
 }
 
+/**
+ * MTProtoPage — the Telegram proxy for subscribers (a button in the cabinet). «Сгенерировать»
+ * only fills the field: the new secret takes effect on «Сохранить», after a warning that every
+ * client's current link stops working. Switched off, MTProto is put on no exit (C6).
+ */
 export default function MTProtoPage() {
+  const { can } = useAuth()
   const toast = useToast()
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({
-    enabled: false,
-    secret: '',
-    fronting_domain: '',
-    sponsor_channel: '',
-    auto_install: true,
-  })
+  const uid = useId()
+  const canEdit = can('settings.write')
+  const [saved, setSaved] = useState(null)
+  const [form, setForm] = useState(EMPTY)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+  const [confirmSecret, setConfirmSecret] = useState(false)
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }))
 
-  async function load() {
-    setLoading(true)
+  const load = useCallback(async () => {
     try {
-      const data = await authedFetch('GET', API)
-      setForm({
-        enabled: !!data.enabled,
-        secret: data.secret || '',
-        fronting_domain: data.fronting_domain || '',
-        sponsor_channel: data.sponsor_channel || '',
-        auto_install: data.auto_install !== false,
-      })
+      const d = await fetchMTProto()
+      setSaved(formFrom(d))
+      setForm(formFrom(d))
+      setError('')
+    } catch (e) {
+      setError(e?.message || 'ошибка')
+    }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  async function generate() {
+    setBusy('generate')
+    try {
+      const { secret } = await generateMTProtoSecret(form.fronting_domain.trim())
+      set({ secret })
+      toast.info('Новый секрет в поле — он заработает после «Сохранить»')
     } catch (e) {
       toast.error(e.message)
     } finally {
-      setLoading(false)
+      setBusy('')
     }
   }
-
-  useEffect(() => { load() }, [])
 
   async function save() {
-    setSaving(true)
+    setBusy('save')
     try {
-      await authedFetch('PUT', API, form)
-      toast.success('Сохранено. Клиенты увидят обновление через 30 сек.')
+      await saveMTProto({ ...form, fronting_domain: form.fronting_domain.trim(), secret: form.secret.trim() })
+      toast.success('Сохранено — кабинеты и подписки обновятся в течение минуты')
+      setConfirmSecret(false)
+      await load()
     } catch (e) {
       toast.error(e.message)
     } finally {
-      setSaving(false)
+      setBusy('')
     }
   }
+  const onSave = () => (saved && saved.secret && form.secret.trim() !== saved.secret ? setConfirmSecret(true) : save())
 
-  async function regenerateSecret() {
-    if (!confirm('Сгенерировать новый секрет? Все клиенты потеряют текущий deeplink.')) return
-    setSaving(true)
-    try {
-      const { secret } = await authedFetch('POST', `${API}/generate-secret`)
-      setForm((f) => ({ ...f, secret }))
-      toast.success('Новый секрет сгенерирован. Нажмите Сохранить, чтобы обновить остальные поля.')
-    } catch (e) {
-      toast.error(e.message)
-    } finally {
-      setSaving(false)
-    }
+  if (!saved && !error) return <div className="max-w-2xl space-y-3"><Skeleton className="h-10" /><Skeleton className="h-64" /></div>
+  if (!saved) {
+    return (
+      <div role="alert" className="max-w-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded border border-danger/30 bg-danger/10 px-3 py-2">
+        <span className="text-sm text-danger">Не удалось загрузить MTProto: {error}</span>
+        <Button variant="secondary" size="sm" icon={<RefreshCw className="w-3.5 h-3.5" />} onClick={load}>Повторить</Button>
+      </div>
+    )
   }
-
-  if (loading) return (
-    <div className="flex justify-center py-20">
-      <Spinner size="md" />
-    </div>
-  )
-
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved)
   return (
     <div className="max-w-2xl space-y-4">
-      <PageHeader
-        title="MTProto Telegram Proxy"
-        subtitle="Кнопка для добавления HeYearth MTProto-прокси в Telegram. Бонус-фича для активных подписчиков."
-      />
-      <p className="text-xs text-tertiary">
-        Host и Port теперь управляются автоматически — балансировщик выбирает здоровый exit-сервер при каждом запросе пользователя.
-      </p>
+      <PageHeader title="Telegram-прокси (MTProto)"
+        subtitle="Кнопка «Добавить прокси в Telegram» в кабинете подписчика. Адрес выбирается сам — здоровый выход при каждом запросе." />
 
-      <Card className="p-5 space-y-4">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.enabled}
-            onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-            className="w-4 h-4 rounded"
-          />
-          <span className="text-sm text-primary">Включить MTProto (виден ли deeplink в личном кабинете)</span>
-        </label>
-
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.auto_install}
-            onChange={(e) => setForm({ ...form, auto_install: e.target.checked })}
-            className="w-4 h-4 rounded"
-          />
-          <span className="text-sm text-primary">Автоматически ставить mtproxy на новые/существующие exit-серверы</span>
-        </label>
+      <Card className="p-5 space-y-5">
+        <Switch checked={form.enabled} disabled={!canEdit} onChange={(v) => set({ enabled: v })} label="Включить"
+          description="Выключенный: кнопки в кабинете нет, на выходы прокси не ставится (ни при настройке, ни автоматически)." />
+        <Switch checked={form.auto_install} disabled={!canEdit || !form.enabled} onChange={(v) => set({ auto_install: v })}
+          label="Ставить на выходы автоматически"
+          description="Раз в 30 минут на один выход без прокси (только пока MTProto включён)." />
 
         <div>
-          <label className="text-xs text-tertiary block mb-1">
-            Fronting domain (fake-TLS SNI)
-          </label>
-          <Input
-            type="text"
-            value={form.fronting_domain}
-            onChange={(e) => setForm({ ...form, fronting_domain: e.target.value })}
-            className="font-mono"
-            placeholder="mt.hiearth.ru"
-          />
+          <label htmlFor={`${uid}-d`} className="text-xs text-secondary block mb-1">Домен маскировки (fake-TLS)</label>
+          <Input id={`${uid}-d`} value={form.fronting_domain} disabled={!canEdit} onChange={(e) => set({ fronting_domain: e.target.value })}
+            className="font-mono" placeholder="mt.example.ru" />
           <p className="text-xs text-tertiary mt-1">
-            A-запись домена <strong className="text-secondary">обязана</strong> указывать на exit-ноды.
-            Клиенты со сниффингом TLS (Happ) подменяют адрес назначения этим доменом — если он ведёт
-            не на ноду, прокси недоступен, а все серверные проверки при этом остаются зелёными.
+            A-запись домена <span className="text-secondary">обязана</span> указывать на выходы: Telegram подменяет адрес назначения
+            этим доменом — если он ведёт не на выход, прокси недоступен, хотя все проверки на сервере зелёные. Сменили домен —
+            сгенерируйте секрет заново.
           </p>
         </div>
 
         <div>
-          <label className="text-xs text-tertiary block mb-1">
-            Secret (mtg-формат: ee + 32 hex + hex домена)
-          </label>
-          <div className="flex gap-2">
-            <Input
-              type="text"
-              value={form.secret}
-              onChange={(e) => setForm({ ...form, secret: e.target.value })}
-              className="font-mono"
-              placeholder="d4...e1"
-            />
-            <Button
-              variant="secondary"
-              onClick={regenerateSecret}
-              disabled={saving}
-            >
-              Regenerate
-            </Button>
+          <label htmlFor={`${uid}-s`} className="text-xs text-secondary block mb-1">Секрет</label>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input id={`${uid}-s`} value={form.secret} disabled={!canEdit} onChange={(e) => set({ secret: e.target.value })}
+              className="font-mono w-full sm:flex-1" placeholder="ee…" />
+            {canEdit && (
+              <Button variant="secondary" onClick={generate} loading={busy === 'generate'} disabled={!!busy || !form.fronting_domain.trim()}
+                className="w-full sm:w-auto">Сгенерировать</Button>
+            )}
           </div>
+          <p className="text-xs text-tertiary mt-1">Формат mtg: ee + 32 hex + домен в hex. «Сгенерировать» только заполняет поле.</p>
         </div>
 
         <div>
-          <label className="text-xs text-tertiary block mb-1">
-            Sponsor channel (необязательно — баннер канала в Telegram)
-          </label>
-          <Input
-            type="text"
-            value={form.sponsor_channel}
-            onChange={(e) => setForm({ ...form, sponsor_channel: e.target.value })}
-            placeholder="@hiearth (тег получите у @mtproxybot)"
-          />
+          <label htmlFor={`${uid}-c`} className="text-xs text-secondary block mb-1">Канал-спонсор (необязательно)</label>
+          <Input id={`${uid}-c`} value={form.sponsor_channel} disabled={!canEdit} onChange={(e) => set({ sponsor_channel: e.target.value })}
+            placeholder="@channel" />
+          <p className="text-xs text-tertiary mt-1">Тег выдаёт @mtproxybot по команде /newproxy (адрес выхода, порт {saved.port || '8443'}, секрет).</p>
         </div>
 
-        <div className="pt-2">
-          <Button
-            variant="primary"
-            onClick={save}
-            loading={saving}
-          >
-            Сохранить
-          </Button>
-        </div>
+        {canEdit && (
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button onClick={onSave} loading={busy === 'save'} disabled={!dirty || !!busy}>Сохранить</Button>
+            {dirty && <Button variant="ghost" onClick={() => setForm(saved)}>Отменить</Button>}
+          </div>
+        )}
       </Card>
 
-      <p className="text-xs text-tertiary">
-        Для тега напишите <code className="text-primary">@mtproxybot</code> команду <code className="text-primary">/newproxy</code> с host+port+secret.
-      </p>
+      <Dialog open={confirmSecret} onClose={() => setConfirmSecret(false)} title="Сменить секрет?" maxWidth="max-w-md">
+        <div className="space-y-3 text-sm">
+          <p className="text-secondary">Прокси, добавленные в Telegram со старым секретом, перестанут работать: подписчикам придётся
+            добавить прокси заново кнопкой в кабинете. Выходы получат новый секрет только после переустановки прокси: в карточке каждого выхода — «Переустановить Telegram-прокси».</p>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmSecret(false)}>Отмена</Button>
+            <Button variant="danger" loading={busy === 'save'} onClick={save}>Сменить и сохранить</Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   )
 }

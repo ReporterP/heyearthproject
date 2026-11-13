@@ -269,7 +269,7 @@ function OptionsStep({ s, set, dispatch, ids }) {
   return (
     <div className="space-y-5">
       <Switch checked={s.mtproxy} onChange={(v) => set({ mtproxy: v })} label="Telegram-прокси (MTProxy)"
-        description="Пользователи получат прокси для Telegram на этой ноде. Включайте, только если A-запись домена маскировки уже указывает на IP ноды — иначе установка прокси не пройдёт." />
+        description="Пользователи получат прокси для Telegram на этой ноде. Включайте, только если MTProto включён в разделе «MTProto» и A-запись домена маскировки уже указывает на IP выхода — иначе установка не пройдёт." />
       <fieldset>
         <legend className="text-xs text-secondary mb-1">Тарифы, которые идут через эту ноду</legend>
         {s.plansState === 'loading' && <Skeleton className="h-16 w-full" />}

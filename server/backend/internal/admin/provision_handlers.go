@@ -671,6 +671,10 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, planIDsPositiveMsg)
 		return
 	}
+	if req.MTProxy != nil && *req.MTProxy && !mtprotoOn() {
+		writeAdminError(w, http.StatusConflict, mtprotoOffMsg)
+		return
+	}
 	if !provisionReady(w) {
 		return
 	}
@@ -755,6 +759,9 @@ func VerifyNodeHandler(w http.ResponseWriter, r *http.Request) {
 // the rest too; answered here before a job is attempted).
 const mtproxyNotOnlineMsg = "Telegram-прокси ставится только на работающую ноду — сначала «Настроить»"
 
+// mtprotoOffMsg: MTProto is switched off in its section — no exit gets the proxy (C6).
+const mtprotoOffMsg = "MTProto выключен в разделе «MTProto» — Telegram-прокси на выходы не ставится"
+
 // MTProxyNodeHandler starts «Переустановить Telegram-прокси»: a job of its own (KindMTProxy, the
 // node's one-job lock), verify → reinstall only if the check fails → verify. The guards of
 // «Проверить» (a confirmed host key) plus a working node; the recipe refuses a non-exit and a
@@ -763,6 +770,10 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "mtproxy")
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
+		return
+	}
+	if !mtprotoOn() {
+		writeAdminError(w, http.StatusConflict, mtprotoOffMsg)
 		return
 	}
 	if !provisionReady(w) {

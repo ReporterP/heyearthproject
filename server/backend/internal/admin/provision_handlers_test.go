@@ -105,6 +105,10 @@ func withProvisioning(t *testing.T, p *fakeProvisioner, n provision.Node) *[]pro
 	oldGeo := ipCountry
 	ipCountry = func(context.Context, string) string { return "DE" }
 	t.Cleanup(func() { ipCountry = oldGeo })
+	// MTProto is switched on unless a test says otherwise (C6).
+	oldMT := mtprotoOn
+	mtprotoOn = func() bool { return true }
+	t.Cleanup(func() { mtprotoOn = oldMT })
 	t.Cleanup(func() {
 		NodeProvisioner, NodeJobs, saveNodeOptions, NodeProbe, auditLogExec = oldP, oldJ, oldS, oldProbe, oldAudit
 	})
@@ -1136,5 +1140,34 @@ func TestDeprovisionLastExit(t *testing.T) {
 	rec = call(DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт","confirm_last":"ОТКЛЮЧИТЬ ВСЕХ"}`)
 	if rec.Code != 202 {
 		t.Fatalf("with the phrase: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// C6: with MTProto switched off in its section no exit gets the Telegram proxy — neither at
+// setup nor by «Переустановить Telegram-прокси».
+func TestMTProxyNeedsMTProtoOn(t *testing.T) {
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{ID: 3, Role: "exit", Lifecycle: "online", HostKeyConfirmed: true})
+	mtprotoOn = func() bool { return false }
+	rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/3/provision", `{"mtproxy": true}`)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "MTProto выключен") {
+		t.Errorf("setup with the proxy while MTProto is off: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(MTProxyNodeHandler, "POST", "/api/admin/servers/3/mtproxy", ""); rec.Code != 409 {
+		t.Errorf("reinstall while MTProto is off: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMTProtoSecretFor(t *testing.T) {
+	good := "ee" + strings.Repeat("ab", 16) + "6578616d706c652e74657374" // example.test
+	if !mtprotoSecretFor(good, "example.test") || !mtprotoSecretFor(strings.ToUpper(good), "Example.test") {
+		t.Error("a valid secret refused")
+	}
+	for _, bad := range []string{"", strings.Repeat("ab", 16), "ee" + strings.Repeat("zz", 16) + "6578616d706c652e74657374", good + "00"} {
+		if mtprotoSecretFor(bad, "example.test") {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if mtprotoSecretFor(good, "other.test") {
+		t.Error("a secret of another domain accepted")
 	}
 }
