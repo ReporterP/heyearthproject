@@ -45,11 +45,13 @@ func siteAliasCertScript(domain string) string {
 cert=/etc/letsencrypt/live/%[1]s/fullchain.pem
 if [ ! -f "$cert" ]; then echo "SKIP нет сертификата $cert"; exit 0; fi
 names=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | sed -n 's/.*DNS://p' | tr -d ' ')
+# Never ask for a certificate with fewer names than it has: an unread SAN list stops here.
+if ! printf '%%s\n' $names | grep -qxF %[1]s; then echo "SKIP не прочитал имена сертификата $cert"; exit 0; fi
 if printf '%%s\n' $names | grep -qxF %[2]s; then echo "OK сертификат уже покрывает %[2]s"; exit 0; fi
 if ! getent ahostsv4 %[2]s >/dev/null 2>&1; then echo "SKIP %[2]s не резолвится — сначала A-записи у регистратора"; exit 0; fi
 args=""
 for n in $names %[2]s; do args="$args -d $n"; done
-certbot certonly --nginx --cert-name %[1]s --expand --non-interactive --quiet $args --deploy-hook 'systemctl reload nginx'
+certbot certonly --nginx --cert-name %[1]s --expand --non-interactive $args --deploy-hook 'systemctl reload nginx'
 systemctl reload nginx
 echo "OK сертификат теперь покрывает:" $names %[2]s
 `, domain, alias)

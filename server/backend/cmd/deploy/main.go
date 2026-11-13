@@ -907,9 +907,10 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
 			log.Fatal(err)
 		}
-		// The reserve entries' listener carries the same site names (go.<domain> included).
+		// The reserve entries' listener carries the same site names (go.<domain> included). A
+		// failure only leaves the old names there: the files above are still applied below.
 		if err := refreshRelayPP(c, client, streamConf); err != nil {
-			log.Fatalf("nginx: %s: %v", config.HubRelayPPConfPath, err)
+			fmt.Printf("WARN: nginx: %s не обновлён: %v\n", config.HubRelayPPConfPath, err)
 		}
 		// Добавить include stream.d в nginx.conf если ещё нет
 		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)

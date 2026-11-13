@@ -263,7 +263,9 @@ func TestEntrySettingsSubscriptionWrites(t *testing.T) {
 // A domain is saved only while the Hub answers for it with a valid certificate.
 func TestEntrySettingsSubDomainNeedsCertificate(t *testing.T) {
 	prevTLS, prevSet, prevAudit, prevBump := subDomainTLS, entriesSetSetting, entriesAudit, entriesBump
-	t.Cleanup(func() { subDomainTLS, entriesSetSetting, entriesAudit, entriesBump = prevTLS, prevSet, prevAudit, prevBump })
+	t.Cleanup(func() {
+		subDomainTLS, entriesSetSetting, entriesAudit, entriesBump = prevTLS, prevSet, prevAudit, prevBump
+	})
 	saved := map[string]string{}
 	entriesSetSetting = func(_ context.Context, k, v string) error { saved[k] = v; return nil }
 	entriesAudit = func(*http.Request, string, string, string, any) {}
@@ -274,7 +276,9 @@ func TestEntrySettingsSubDomainNeedsCertificate(t *testing.T) {
 		handleAdminEntrySettings(rec, httptest.NewRequest(http.MethodPut, "/api/admin/entries/settings", strings.NewReader(body)))
 		return rec
 	}
-	subDomainTLS = func(context.Context, string) (time.Time, error) { return time.Time{}, errors.New("x509: certificate is valid for hiearth.ru") }
+	subDomainTLS = func(context.Context, string) (time.Time, error) {
+		return time.Time{}, errors.New("x509: certificate is valid for hiearth.ru")
+	}
 	if rec := put(`{"sub_domain":"go.example.test"}`); rec.Code != http.StatusConflict || saved["sub_domain"] != "" {
 		t.Fatalf("no certificate: %d %v", rec.Code, saved)
 	}
@@ -306,5 +310,20 @@ func TestSubDomainStatus(t *testing.T) {
 	}
 	if v := subDomainStatus(context.Background(), "", "", "", entries); v.CertOK || len(v.DNS) != 0 || v.AutoMode != autoModeOff {
 		t.Fatalf("no domain: %+v", v)
+	}
+}
+
+// ?format=json without a VLESS way in (no Reality key here) answers the plain list, never an empty 200.
+func TestSubscriptionJSONWithoutVLESSFallsBack(t *testing.T) {
+	s := goldenScript()
+	s.settings["reality_public_key"] = ""
+	useScriptDB(t, s)
+	rec := subscriptionRequest(t, "Happ/3.1 Android", "?format=json")
+	if rec.Code != http.StatusOK || rec.Body.Len() == 0 || bytes.HasPrefix(rec.Body.Bytes(), []byte("[")) ||
+		strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("%d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "hysteria2://") {
+		t.Fatalf("the plain list lacks Бамбук: %q", rec.Body.String())
 	}
 }

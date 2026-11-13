@@ -200,7 +200,9 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		}
 		if jsonBody != nil {
 			format = "json"
-		} // no VLESS way in (e.g. a plan without vless): the plain URIs below
+		} else if format == "json" {
+			format = "" // no VLESS way in (e.g. a plan without vless): the plain URIs below, never an empty 200
+		}
 	}
 	if wantsHappRouting && jsonBody == nil {
 		// Happ caches the routing profile too: any failed read is a 503, not a

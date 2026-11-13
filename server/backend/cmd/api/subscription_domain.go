@@ -103,7 +103,18 @@ func subDomainStatus(ctx context.Context, domain, autoMode, autoTestUser string,
 		return v
 	}
 	v.URL = "https://" + domain
-	cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	type tlsResult struct {
+		until time.Time
+		err   error
+	}
+	tlsDone := make(chan tlsResult, 1)
+	go func() { // beside the DNS lookup, short: the page polls this view
+		tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		until, err := subDomainTLS(tctx, domain)
+		tlsDone <- tlsResult{until, err}
+	}()
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	ips, err := subDomainLookup(cctx, domain)
 	if err != nil {
@@ -127,13 +138,10 @@ func subDomainStatus(ctx context.Context, domain, autoMode, autoTestUser string,
 			v.DNSMissing = append(v.DNSMissing, ip)
 		}
 	}
-	tctx, tcancel := context.WithTimeout(ctx, 6*time.Second)
-	defer tcancel()
-	until, err := subDomainTLS(tctx, domain)
-	if err != nil {
-		v.CertError = err.Error()
+	if t := <-tlsDone; t.err != nil {
+		v.CertError = t.err.Error()
 	} else {
-		v.CertOK, v.CertUntil = true, &until
+		v.CertOK, v.CertUntil = true, &t.until
 	}
 	return v
 }

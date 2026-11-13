@@ -69,6 +69,8 @@ export PATH="$T/bin:$PATH" CALLS="$T/calls"; : > "$CALLS"
 		certbot   bool
 	}{
 		{"covered", "DNS:hiearth.ru, DNS:go.hiearth.ru", true, "OK сертификат уже покрывает", false},
+		{"unread", "", true, "не прочитал имена", false},
+		{"other lineage", "DNS:admin.hiearth.ru", true, "не прочитал имена", false},
 		{"unresolved", "DNS:hiearth.ru, DNS:www.hiearth.ru", false, "не резолвится", false},
 		{"expand", "DNS:hiearth.ru, DNS:admin.hiearth.ru, DNS:www.hiearth.ru", true, "OK сертификат теперь покрывает", true},
 	} {
@@ -80,7 +82,7 @@ export PATH="$T/bin:$PATH" CALLS="$T/calls"; : > "$CALLS"
 		if ran != c.certbot {
 			t.Fatalf("%s: certbot ran=%v\n%s", c.name, ran, out)
 		}
-		if c.certbot && !strings.Contains(out, "--cert-name hiearth.ru --expand --non-interactive --quiet -d hiearth.ru -d admin.hiearth.ru -d www.hiearth.ru -d go.hiearth.ru") {
+		if c.certbot && !strings.Contains(out, "--cert-name hiearth.ru --expand --non-interactive -d hiearth.ru -d admin.hiearth.ru -d www.hiearth.ru -d go.hiearth.ru") {
 			t.Fatalf("%s: certbot args\n%s", c.name, out)
 		}
 	}

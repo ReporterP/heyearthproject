@@ -257,7 +257,10 @@ func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips []s
 	ips = []string{"geoip:private", "geoip:ru"}
 	seen := map[string]bool{}
 	for _, ip := range mtprotoIPs {
-		if c := normalizeIPToCIDR(strings.TrimSpace(ip)); ip != "" && !seen[c] {
+		if ip = strings.TrimSpace(ip); ip == "" {
+			continue
+		}
+		if c := normalizeIPToCIDR(ip); !seen[c] {
 			seen[c] = true
 			ips = append(ips, c)
 		}
