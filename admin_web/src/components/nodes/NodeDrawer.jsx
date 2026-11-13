@@ -13,7 +13,7 @@ import {
 import { nodeState, keyTypeLabel, hostKeyFile, PRIORITY_HINT, JOB_KIND } from './nodeModel.js'
 import { normalizePlans, matchPasted } from './wizardModel.js'
 import {
-  PRIORITIES, PLANS_HINT, LOG_SERVICES, drawerTabs, initialTab, initialJobId, nodeActions, clampPriority, sortedPlanIds,
+  PRIORITIES, PLANS_HINT, logServices, drawerTabs, initialTab, initialJobId, nodeActions, clampPriority, sortedPlanIds,
   routingBody, fallbackBody, routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, keyRows, initialKeyCheck,
   keyCheckReducer, canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences,
   deprovisionConsequences, deleteConsequences, fallbackOffConsequences, plansNote, plansFailure, LAST_EXIT_PHRASE,
@@ -453,7 +453,8 @@ function JobsTab({ node, jobId, jobs, manage, onSelect, onFinished, onRetry }) {
 }
 
 function LogsTab({ node, reason }) {
-  const [service, setService] = useState('node-agent')
+  const services = logServices(node)
+  const [service, setService] = useState(services[0].key)
   const [state, setState] = useState({ loading: false, text: null, error: '' })
   const seq = useRef(0)
   const uid = useId()
@@ -480,7 +481,7 @@ function LogsTab({ node, reason }) {
         <div className="w-full sm:w-64">
           <label htmlFor={`${uid}-service`} className="block text-xs text-secondary mb-1">Сервис</label>
           <Select id={`${uid}-service`} value={service} onChange={(e) => pick(e.target.value)} className="font-mono">
-            {LOG_SERVICES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            {services.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </Select>
         </div>
         <Button variant="secondary" onClick={load} loading={state.loading} disabled={!!reason} className="w-full sm:w-auto">

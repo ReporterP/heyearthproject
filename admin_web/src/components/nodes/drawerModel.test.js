@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import {
   jobActive, drawerTabs, initialTab, initialJobId, nodeActions, parsePriority, clampPriority, routingBody, fallbackBody,
   routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, probeKeyList, keyRows, initialKeyCheck, keyCheckReducer,
-  canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences, deprovisionConsequences, isLastExit, LAST_EXIT_PHRASE,
-  deleteConsequences, fallbackOffConsequences, LOG_SERVICES, plansNote, plansFailure,
+  canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences, deprovisionConsequences, isLastExit, LAST_EXIT_PHRASE, logServices,
+  deleteConsequences, fallbackOffConsequences, plansNote, plansFailure,
 } from './drawerModel.js'
 
 const FP_ED = 'SHA256:' + 'E'.repeat(43)
@@ -108,7 +108,6 @@ test('logs: servers.logs and a confirmed key; tunnel check only for an online ex
   assert.equal(nodeActions(node(), {}).logs.show, false)
   assert.equal(nodeActions(node({ lifecycle_state: 'offline' }), ALL).tunnelCheck.show, false)
   assert.equal(nodeActions(node({ role: 'relay' }), ALL).tunnelCheck.show, false)
-  assert.deepEqual(LOG_SERVICES.map((s) => s.key), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
 })
 
 test('priority is an integer 1..10; routing sends only what changed', () => {
@@ -278,4 +277,11 @@ test('the last working exit is switched off only with the phrase (B4)', () => {
   assert.equal(LAST_EXIT_PHRASE, 'ОТКЛЮЧИТЬ ВСЕХ')
   assert.match(deprovisionConsequences(a, { lastExit: true })[0], /у всех пользователей пропадёт интернет/)
   assert.ok(!deprovisionConsequences(a).some((c) => /пропадёт интернет/.test(c)))
+})
+
+test('journals: only the units the server runs (C5)', () => {
+  const keys = (n) => logServices(n).map((s) => s.key)
+  assert.deepEqual(keys({ role: 'exit', mtproto_status: 'disabled' }), ['node-agent', 'xray', 'hysteria2'])
+  assert.deepEqual(keys({ role: 'exit', mtproto_status: 'healthy' }), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
+  assert.deepEqual(keys({ role: 'relay' }), ['nginx', 'heyearth-relay'])
 })

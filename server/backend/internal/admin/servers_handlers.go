@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -686,8 +687,28 @@ func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// nodeLogServices are the units on a node whose journal the admin panel may read.
-var nodeLogServices = map[string]bool{"node-agent": true, "xray": true, "hysteria2": true, config.MTProxyService: true}
+// nodeLogServices are the units each role really runs (C5): an exit's recipe installs node-agent,
+// xray, hysteria2 and optionally the Telegram proxy; a reserve entry runs nginx (stream to the
+// Hub) and heyearth-relay (its nft forwarding).
+var nodeLogServices = map[string][]string{
+	"exit":  {"node-agent", "xray", "hysteria2", config.MTProxyService},
+	"relay": {"nginx", "heyearth-relay"},
+}
+
+// nodeLogService: the asked unit if the server's role runs it, else "" (default: the first).
+func nodeLogService(role, asked string) string {
+	units, ok := nodeLogServices[role]
+	if !ok {
+		units = nodeLogServices["exit"]
+	}
+	if asked == "" {
+		return units[0]
+	}
+	if slices.Contains(units, asked) {
+		return asked
+	}
+	return ""
+}
 
 // GetServerLogsHandler reads a node unit's journal over the pinned SSH connection.
 func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
@@ -696,9 +717,15 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
-	service := r.URL.Query().Get("service")
-	if !nodeLogServices[service] {
-		service = "node-agent"
+	var role string
+	if err := db.DB.QueryRowContext(r.Context(), `SELECT COALESCE(role, 'exit') FROM servers WHERE id = $1`, serverID).Scan(&role); err != nil {
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
+		return
+	}
+	service := nodeLogService(role, r.URL.Query().Get("service"))
+	if service == "" {
+		writeAdminError(w, http.StatusBadRequest, "На этом сервере нет такой службы")
+		return
 	}
 	tailN, err := strconv.Atoi(r.URL.Query().Get("tail"))
 	if err != nil || tailN < 1 || tailN > 5000 {

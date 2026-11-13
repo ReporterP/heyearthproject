@@ -41,3 +41,22 @@ func TestParseCymruCountry(t *testing.T) {
 		t.Errorf("no country: %q", cc)
 	}
 }
+
+// C5: a journal is read only for a unit the server's role runs.
+func TestNodeLogService(t *testing.T) {
+	for _, c := range []struct{ role, asked, want string }{
+		{"exit", "", "node-agent"},
+		{"exit", "xray", "xray"},
+		{"exit", "mtproxy", "mtproxy"},
+		{"exit", "nginx", ""},
+		{"relay", "", "nginx"},
+		{"relay", "heyearth-relay", "heyearth-relay"},
+		{"relay", "node-agent", ""},
+		{"exit", "sshd; rm -rf /", ""},
+		{"", "hysteria2", "hysteria2"},
+	} {
+		if got := nodeLogService(c.role, c.asked); got != c.want {
+			t.Errorf("%s/%q: %q, want %q", c.role, c.asked, got, c.want)
+		}
+	}
+}

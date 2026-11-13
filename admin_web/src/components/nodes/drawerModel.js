@@ -7,13 +7,24 @@ import { matchPasted } from './wizardModel.js'
 export const PRIORITIES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 export const PLANS_HINT = 'Без привязки нода получает только общий пул; тарифы с привязкой ходят только через свои ноды'
 
-// Units whose journal the backend serves (servers_handlers.go nodeLogServices).
-export const LOG_SERVICES = [
-  { key: 'node-agent', label: 'node-agent' },
-  { key: 'xray', label: 'xray' },
-  { key: 'hysteria2', label: 'hysteria2' },
-  { key: 'mtproxy', label: 'mtproxy (Telegram-прокси)' },
-]
+// logServices: the units this server really runs, as the backend serves them (C5,
+// servers_handlers.go nodeLogServices): an exit — node-agent, xray, hysteria2 and the Telegram
+// proxy if it is on; a reserve entry — nginx and its forwarding.
+export function logServices(node) {
+  if (node?.role === 'relay') {
+    return [
+      { key: 'nginx', label: 'nginx (пересылка на Hub)' },
+      { key: 'heyearth-relay', label: 'heyearth-relay (правила пересылки)' },
+    ]
+  }
+  const out = [
+    { key: 'node-agent', label: 'node-agent' },
+    { key: 'xray', label: 'xray' },
+    { key: 'hysteria2', label: 'hysteria2' },
+  ]
+  if (node?.mtproto_status && node.mtproto_status !== 'disabled') out.push({ key: 'mtproxy', label: 'mtproxy (Telegram-прокси)' })
+  return out
+}
 
 const isExit = (n) => n?.role !== 'relay'
 
