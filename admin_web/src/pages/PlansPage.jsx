@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { protocolName } from '../utils/protocols.js'
 import { Package } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -145,7 +146,7 @@ export default function PlansPage() {
 
               <div className="flex flex-wrap gap-1.5 mb-3">
                 {(plan.allowed_protocols || []).map(p => (
-                  <Badge key={p} variant="accent" className="uppercase">{p}</Badge>
+                  <Badge key={p} variant="accent">{protocolName(p)}</Badge>
                 ))}
               </div>
 
@@ -254,7 +255,7 @@ export default function PlansPage() {
                       }}
                       className="rounded"
                     />
-                    <span className="text-sm uppercase text-primary">{proto}</span>
+                    <span className="text-sm text-primary">{protocolName(proto)}</span>
                   </label>
                 ))}
               </div>

@@ -56,7 +56,7 @@ export const SETTINGS_SECTIONS = [
   {
     key: 'connection', title: 'Подключение',
     fields: [
-      { key: 'hub_main_server_host', label: 'Адрес Hub для приложений', hint: 'Домен или IP, без http:// и порта', kind: 'host' },
+      { key: 'hub_main_server_host', label: 'Домен сертификата Бамбука', hint: 'Домен TLS-сертификата Бамбука на Hub, он же имя в строках подписки. Это не адрес подключения. Менять только вместе с сертификатом', kind: 'host' },
       { key: 'api_endpoints', label: 'Адреса API для приложения', hint: 'Через запятую, по порядку попыток', kind: 'text' },
       { key: 'b2b_enabled', label: 'Раздел B2B (компании)', hint: 'Выключено — разделы «Компании» и «B2B-аналитика» скрыты, публичные страницы бизнеса отвечают 404', kind: 'bool', def: 'false' },
     ],

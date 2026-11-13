@@ -234,7 +234,7 @@ export default function DirectRoutesPage() {
                 <Td className="text-xs text-disabled whitespace-nowrap">{(s.updated_at || '').replace('T', ' ').slice(0, 16)}</Td>
                 <Td>
                   <div className="flex gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Edit</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Изменить</Button>
                     <Button size="sm" variant="ghost" className="text-danger" onClick={() => deleteOne(s.id, s.name)}>Del</Button>
                   </div>
                 </Td>

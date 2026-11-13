@@ -12,6 +12,7 @@ import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
 import { refundableAmount } from '../utils/refund.js'
 import { paymentKindLabel } from '../utils/wallet.js'
+import { paymentStatusName } from '../utils/protocols.js'
 import {
   Button,
   Input,
@@ -29,12 +30,8 @@ import {
 } from '../components/ui/index.js'
 
 const STATUS_OPTIONS = [
-  { value: '', label: 'Все' },
-  { value: 'pending', label: 'Pending' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'canceled', label: 'Canceled' },
-  { value: 'waiting_for_capture', label: 'Waiting for capture' },
+  { value: '', label: 'Все статусы' },
+  ...['succeeded', 'pending', 'waiting_for_capture', 'canceled', 'failed', 'refunded'].map((value) => ({ value, label: paymentStatusName(value) })),
 ]
 
 const STATUS_VARIANT = {
@@ -307,7 +304,7 @@ function PaymentsList() {
                   </Td>
                   <Td>
                     <span title={cancelReason ? `Причина отмены: ${cancelReason}` : undefined}>
-                      <Badge variant={STATUS_VARIANT[p.status] || 'default'}>{p.status}</Badge>
+                      <Badge variant={STATUS_VARIANT[p.status] || 'default'}>{paymentStatusName(p.status)}</Badge>
                     </span>
                     {cancelReason && p.status === 'canceled' && (
                       <div className="text-[10px] text-danger/80 mt-0.5 max-w-[140px] truncate" title={cancelReason}>
