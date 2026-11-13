@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { discoverDirectRoute, createDirectRoute } from '../api/admin.js'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
 
@@ -17,7 +18,6 @@ import { useToast } from './Toast'
  *                 + "Создать сервис" button
  */
 export default function DiscoveryDialog({ open, onClose, onCreated }) {
-  const { token } = useAuth()
   const toast = useToast()
 
   const [stage, setStage] = useState('input')
@@ -70,19 +70,15 @@ export default function DiscoveryDialog({ open, onClose, onCreated }) {
       else if (n === 7) setLoadingMsg('Почти готово…')
     }, 1500)
     try {
-      const resp = await fetch('/api/admin/direct-routes/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ root_domain: trimmed }),
-      })
-      const body = await resp.json().catch(() => ({}))
-      if (!resp.ok) {
-        const msg = body.error || resp.statusText
-        if (resp.status === 429) toast.error('Превышен лимит discovery (10/ч), попробуйте через час')
-        else if (resp.status === 400) toast.error('Невалидный домен: ' + msg)
-        else if (resp.status === 502) toast.error('Поддомены не найдены, попробуйте другой домен')
-        else if (resp.status === 504) toast.error('Discovery превысил 30 сек')
-        else toast.error('Ошибка: ' + msg)
+      let body
+      try {
+        body = await discoverDirectRoute(trimmed)
+      } catch (err) {
+        if (err.status === 429) toast.error('Превышен лимит поиска (10 в час), попробуйте через час')
+        else if (err.status === 400) toast.error('Неверный домен: ' + err.message)
+        else if (err.status === 502) toast.error('Поддомены не найдены, попробуйте другой домен')
+        else if (err.status === 504) toast.error('Поиск занял больше 30 секунд')
+        else toast.error('Ошибка: ' + err.message)
         setStage('input')
         return
       }
@@ -121,22 +117,18 @@ export default function DiscoveryDialog({ open, onClose, onCreated }) {
         timeout_sec: 3600,
         notes: `Auto-discovered ${result.subdomains_resolved}/${result.subdomains_found} subdomains`,
       }
-      const resp = await fetch('/api/admin/direct-routes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      })
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({}))
-        const msg = body.error || resp.statusText
-        if (msg.includes('duplicate') || msg.includes('unique')) {
+      let body
+      try {
+        body = await createDirectRoute(payload)
+      } catch (err) {
+        const msg = err.message || ''
+        if (err.status === 409 || msg.includes('duplicate') || msg.includes('unique')) {
           toast.error(`Сервис со slug=${editSlug} уже существует. Откройте его и добавьте новые домены вручную.`)
         } else {
           toast.error('Ошибка создания: ' + msg)
         }
         return
       }
-      const body = await resp.json()
       toast.success(`Создан сервис id=${body.id} — ${payload.domains.length} доменов, ${payload.ip4.length + payload.ip6.length} IP`)
       onCreated && onCreated()
       onClose()

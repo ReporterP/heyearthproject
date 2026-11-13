@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createDirectRoute, updateDirectRoute } from '../api/admin.js'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
 
@@ -12,7 +13,6 @@ import { useToast } from './Toast'
  *   onSaved:  () => void     called after successful save (parent should refresh list)
  */
 export default function DirectRouteEditDialog({ open, service, onClose, onSaved }) {
-  const { token } = useAuth()
   const toast = useToast()
   const isEdit = Boolean(service && service.id)
 
@@ -96,26 +96,9 @@ export default function DirectRouteEditDialog({ open, service, onClose, onSaved 
       }
       let savedID = service?.id
       if (isEdit) {
-        const resp = await fetch(`/api/admin/direct-routes/${service.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        })
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ error: resp.statusText }))
-          throw new Error(err.error || resp.statusText)
-        }
+        await updateDirectRoute(service.id, payload)
       } else {
-        const resp = await fetch('/api/admin/direct-routes', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        })
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ error: resp.statusText }))
-          throw new Error(err.error || resp.statusText)
-        }
-        const data = await resp.json()
+        const data = await createDirectRoute(payload)
         savedID = data.id
       }
       toast.success(isEdit ? 'Сохранено' : `Создано (id=${savedID})`)

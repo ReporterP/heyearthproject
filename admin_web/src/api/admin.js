@@ -287,6 +287,22 @@ export function saveEntryMode(mode, target) {
 export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
 export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)
 
+// ── Direct routes ──
+export const fetchDirectRoutes = (query) => apiFetch(`/direct-routes${query ? `?${query}` : ''}`)
+export const fetchDirectRouteStats = () => apiFetch('/direct-routes/stats')
+export const fetchDirectRouteGroups = () => apiFetch('/direct-routes/groups')
+export const createDirectRoute = (body) => apiFetch('/direct-routes', { method: 'POST', body })
+export const updateDirectRoute = (id, body) => apiFetch(`/direct-routes/${id}`, { method: 'PUT', body })
+export const deleteDirectRoute = (id) => apiFetch(`/direct-routes/${id}`, { method: 'DELETE' })
+export const bulkDirectRoutes = (action, ids) => apiFetch('/direct-routes/bulk', { method: 'POST', body: { action, ids } })
+export const importDirectRoutes = (body) => apiFetch('/direct-routes/import', { method: 'POST', body })
+export const discoverDirectRoute = (rootDomain) => apiFetch('/direct-routes/discover', { method: 'POST', body: { root_domain: rootDomain } })
+
+// ── B2B ──
+export const fetchB2BAnalytics = () => apiFetch('/b2b-analytics')
+export const fetchUnassignedB2BInvoices = () => apiFetch('/payments/unassigned-b2b-invoices')
+export const attachPaymentToTenant = (paymentId, tenantId) => apiFetch(`/payments/${paymentId}/attach-tenant`, { method: 'POST', body: { tenant_id: tenantId } })
+
 // ── MTProto (Telegram proxy) ──
 export const fetchMTProto = () => apiFetch('/mtproto')
 export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body })

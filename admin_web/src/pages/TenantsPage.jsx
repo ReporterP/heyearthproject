@@ -4,7 +4,7 @@ import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import usePagedData from '../hooks/usePagedData.js'
-import { fetchTenantsPaged, createTenant, updateTenant, deleteTenant, createTenantInvoice } from '../api/admin.js'
+import { fetchTenantsPaged, createTenant, updateTenant, deleteTenant, createTenantInvoice, fetchUnassignedB2BInvoices, attachPaymentToTenant } from '../api/admin.js'
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import CrudDialog, { FormField, TextInput, TextArea, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -58,11 +58,7 @@ export default function TenantsPage() {
     setUnassignedOpen(true)
     setUnassignedLoading(true)
     try {
-      const res = await fetch('/api/admin/payments/unassigned-b2b-invoices', {
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'load failed')
+      const data = await fetchUnassignedB2BInvoices()
       setUnassignedItems(data.items || [])
     } catch (e) {
       toast.error(e.message)
@@ -76,13 +72,7 @@ export default function TenantsPage() {
     if (!tenantId) { toast.error('Выберите компанию'); return }
     setAttachBusy(b => ({ ...b, [paymentId]: true }))
     try {
-      const res = await fetch(`/api/admin/payments/${paymentId}/attach-tenant`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
-        body: JSON.stringify({ tenant_id: Number(tenantId) }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'attach failed')
+      const data = await attachPaymentToTenant(paymentId, Number(tenantId))
       toast.success(data.credited ? `Привязано и зачислено в «${data.tenant_name}»` : `Привязано к «${data.tenant_name}»`)
       // Drop from list — done.
       setUnassignedItems(items => items.filter(p => p.id !== paymentId))

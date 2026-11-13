@@ -23,7 +23,7 @@ import {
   Td,
   Th,
   Thead,
-  Tr,
+  Tr, ConfirmDanger,
 } from '../components/ui/index.js'
 
 const PROMO_TYPES = [
@@ -40,6 +40,7 @@ const STATUS_FILTERS = [
 ]
 
 export default function PromocodesPage() {
+  const [reapply, setReapply] = useState(null) // the promocode whose plan is re-applied
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
@@ -99,22 +100,14 @@ export default function PromocodesPage() {
     setConfirm(null)
   }
 
-  async function handleReapply(item) {
-    // Confirms with the admin first — this rewrites plan_id on every past
-    // subscription created via this promocode. Useful when plan_id_granted
-    // is edited and the admin wants historical redemptions to match.
-    const ok = window.confirm(
-      `Применить план «${item.plan_name || '#' + item.plan_id_granted}» ко всем подпискам с промокодом ${item.code}?\n\n` +
-      'Это перепишет plan_id у всех исторических применений этого промокода (включая записи с пустым планом из legacy данных). Действие необратимо.'
-    )
-    if (!ok) return
-    try {
-      const res = await reapplyPromocodePlan(item.code)
-      toast.success(`Обновлено подписок: ${res.affected || 0}`)
-      paged.reload()
-    } catch (e) {
-      toast.error(e.message)
-    }
+  // Rewrites plan_id on every past subscription made with the code: asked first (ConfirmDanger).
+  function handleReapply(item) {
+    setReapply(item)
+  }
+  async function confirmReapply() {
+    const res = await reapplyPromocodePlan(reapply.code)
+    toast.success(`Обновлено подписок: ${res.affected || 0}`)
+    paged.reload()
   }
 
   function promoTypeLabel(type) {
@@ -408,6 +401,13 @@ export default function PromocodesPage() {
           onCancel={() => setConfirm(null)}
         />
       )}
+      <ConfirmDanger open={!!reapply} onClose={() => setReapply(null)} title="Применить тариф ко всем подпискам с промокодом"
+        confirmText={reapply?.code || ''} actionLabel="Применить"
+        consequences={[
+          `Тариф «${reapply?.plan_name || '#' + (reapply?.plan_id_granted ?? '')}» будет записан во все подписки, выданные по ${reapply?.code || ''}, включая старые записи без тарифа.`,
+          'Действие необратимо.',
+        ]}
+        onConfirm={confirmReapply} />
     </div>
   )
 }

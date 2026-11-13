@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { importDirectRoutes } from '../api/admin.js'
 import { useAuth } from '../auth/AuthContext'
 import { useToast } from './Toast'
 
@@ -13,7 +14,6 @@ import { useToast } from './Toast'
  *   onImported:  () => void   called after a successful non-dry-run import
  */
 export default function DirectRoutesImportDialog({ open, onClose, onImported }) {
-  const { token } = useAuth()
   const toast = useToast()
   const fileInputRef = useRef(null)
   const [jsonText, setJsonText] = useState('')
@@ -72,21 +72,12 @@ export default function DirectRoutesImportDialog({ open, onClose, onImported }) 
     }
     setBusy(true)
     try {
-      const resp = await fetch('/api/admin/direct-routes/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          json: jsonText,
-          overwrite_existing: overwrite,
-          activate_new: activateNew,
-          dry_run: dryRun,
-        }),
+      const data = await importDirectRoutes({
+        json: jsonText,
+        overwrite_existing: overwrite,
+        activate_new: activateNew,
+        dry_run: dryRun,
       })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: resp.statusText }))
-        throw new Error(err.error || resp.statusText)
-      }
-      const data = await resp.json()
       if (dryRun) {
         setPreview(data)
         toast.info(`Просмотр: будет создано ${data.created}, обновлено ${data.updated}`)
