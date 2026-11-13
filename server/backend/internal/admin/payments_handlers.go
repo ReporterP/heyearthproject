@@ -29,6 +29,10 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
+	if err := dateRangeWhere(r, "p.created_at", &where, &args, &argN); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Scope by user DB id — used by the user drawer (Трафик+Платежи tab) to
 	// fetch per-user payment history. Without this, the drawer was showing
 	// the global payments list. Match against either the int FK (p.user_id)
