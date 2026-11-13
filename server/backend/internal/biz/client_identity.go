@@ -45,13 +45,10 @@ type UserAccessState struct {
 	TrafficMaskingAvailable bool
 }
 
-// DeviceRegistration contains info about a user's device.
+// DeviceRegistration: the platform and locale a new account starts with.
 type DeviceRegistration struct {
-	DeviceID    string
-	Platform    string
-	DeviceLabel string
-	Locale      string
-	LinkedVia   string
+	Platform string
+	Locale   string
 }
 
 // UserSubscriptionDetail is returned in subscription lists.
@@ -88,9 +85,6 @@ func RegisterAnonymousUser(device DeviceRegistration) (*User, error) {
 	user, err := createUserRecord(userID, device.Platform, device.Locale)
 	if err != nil {
 		return nil, fmt.Errorf("register anonymous user: %w", err)
-	}
-	if device.DeviceID != "" {
-		_ = RegisterUserDevice(user.UserID, device)
 	}
 	return user, nil
 }
@@ -422,51 +416,6 @@ func ListUserPayments(userID string) ([]UserPaymentDetail, error) {
 }
 
 // ─────────────────────── Devices ───────────────────────
-
-// RegisterUserDevice records a device for a user.
-func RegisterUserDevice(userID string, registration DeviceRegistration) error {
-	user, err := GetOrCreateUser(userID)
-	if err != nil {
-		return err
-	}
-	return insertUserDevice(db.DB, user.ID, registration)
-}
-
-func insertUserDevice(q execQueryer, userDBID int, registration DeviceRegistration) error {
-	deviceID := strings.TrimSpace(registration.DeviceID)
-	platform := NormalizePreferredPlatform(registration.Platform)
-	if deviceID == "" {
-		deviceID = "default"
-	}
-	if platform == "" {
-		platform = "unknown"
-	}
-	linkedVia := strings.TrimSpace(registration.LinkedVia)
-	if linkedVia == "" {
-		linkedVia = "manual"
-	}
-	locale := strings.TrimSpace(registration.Locale)
-	if locale == "" {
-		locale = "ru"
-	}
-	label := strings.TrimSpace(registration.DeviceLabel)
-
-	_, err := q.Exec(`
-		INSERT INTO user_devices (user_id, device_id, platform, device_label, locale, linked_via, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-		ON CONFLICT (user_id, platform, device_id)
-		DO UPDATE SET
-			device_label = EXCLUDED.device_label,
-			locale = EXCLUDED.locale,
-			linked_via = EXCLUDED.linked_via,
-			last_seen_at = CURRENT_TIMESTAMP
-	`, userDBID, deviceID, platform, label, locale, linkedVia)
-	return err
-}
-
-type execQueryer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}
 
 // ─────────────────────── Internal Helpers ───────────────────────
 

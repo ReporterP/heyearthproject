@@ -12,7 +12,7 @@ import (
 const sppDomain = "hiearth.ru"
 
 func sppSSLConf() string {
-	return buildNginxConfSSL(sppDomain, "/opt/heyearth/mainserver", "/etc/letsencrypt/live/"+sppDomain, true)
+	return buildNginxConfSSL(sppDomain, "/etc/letsencrypt/live/"+sppDomain, true)
 }
 
 // legacySSLConf is the http config as the Hub may have it: no PROXY listener.
@@ -57,7 +57,7 @@ func TestBuildNginxConfSSLProxyListener(t *testing.T) {
 	if strings.Count(c, "proxy_set_header X-Real-IP $remote_addr;") != 2 {
 		t.Error("X-Real-IP must keep coming from $remote_addr (realip makes it the client address)")
 	}
-	if noXray := buildNginxConfSSL(sppDomain, "/opt", "/etc/letsencrypt/live/x", false); strings.Contains(noXray, "8446") {
+	if noXray := buildNginxConfSSL(sppDomain, "/etc/letsencrypt/live/x", false); strings.Contains(noXray, "8446") {
 		t.Error("without the stream nginx listens on 443 itself: no PROXY listener")
 	}
 }

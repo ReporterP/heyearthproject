@@ -8,32 +8,6 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
-// RecordSuccessfulConnection bumps the reputation of a server.
-func RecordSuccessfulConnection(serverID int) {
-	_, err := db.DB.Exec(`
-		UPDATE servers
-		SET reputation_score = LEAST(reputation_score + 0.01, 1),
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, serverID)
-	if err != nil {
-		log.Printf("RecordSuccessfulConnection(%d): %v", serverID, err)
-	}
-}
-
-// RecordFailedConnection degrades the reputation of a server.
-func RecordFailedConnection(serverID int) {
-	_, err := db.DB.Exec(`
-		UPDATE servers
-		SET reputation_score = GREATEST(reputation_score - 0.05, 0),
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, serverID)
-	if err != nil {
-		log.Printf("RecordFailedConnection(%d): %v", serverID, err)
-	}
-}
-
 // ─────────────────────── Exit Nodes (Hub-and-Spoke) ───────────────────────
 
 // ExitNodeTunnel — конфигурация туннеля к exit-ноде.

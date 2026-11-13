@@ -17,13 +17,13 @@ func TestLimitPublicBodies(t *testing.T) {
 	big := strings.Repeat("x", publicBodyLimit+1)
 
 	// A public endpoint stops reading past the limit (YooKassa webhook, sign-up, invoices...).
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/webhooks/yookassa", strings.NewReader(big)))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/yookassa", strings.NewReader(big)))
 	if readErr == nil || read > publicBodyLimit {
 		t.Fatalf("public path: read %d bytes, err %v; want an error at %d", read, readErr, publicBodyLimit)
 	}
 
-	// The admin API keeps its own limits (app uploads are up to 512 MB, behind admin auth).
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/admin/app-releases", strings.NewReader(big)))
+	// The admin API keeps its own limits (behind admin auth).
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/admin/servers", strings.NewReader(big)))
 	if readErr != nil || read != int64(len(big)) {
 		t.Fatalf("admin path: read %d, err %v", read, readErr)
 	}

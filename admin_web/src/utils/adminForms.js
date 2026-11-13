@@ -22,8 +22,6 @@ export const PERMISSION_LABELS = {
   'server_ops.execute': 'Серверы: перезапуск агента',
   'nodes.provision': 'Серверы: добавить, настроить, отключить',
   'servers.logs': 'Серверы: журналы',
-  'releases.read': 'Релизы: просмотр',
-  'releases.write': 'Релизы: изменение',
   'admins.read': 'Администраторы: просмотр',
   'admins.write': 'Администраторы и роли: изменение',
   'settings.read': 'Настройки: просмотр',

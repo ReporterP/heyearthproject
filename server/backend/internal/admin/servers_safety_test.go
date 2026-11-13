@@ -12,9 +12,8 @@ import (
 
 // Review Focus 5 → GET /servers/{id} and the list never carry a secret, only whether it is set.
 func TestRedactServerDropsSecrets(t *testing.T) {
-	key := 7
 	s := redactServer(serverResponse{
-		ID: 2, Name: "Амстердам", SSHPassword: "SECRET-ssh", SshKeyID: &key,
+		ID: 2, Name: "Амстердам", SSHPassword: "SECRET-ssh",
 		TunnelUUID: "SECRET-uuid-0000-1111", TunnelPrivateKey: "SECRET-priv", TunnelSSPass: "SECRET-hy",
 		TunnelPublicKey: "pub-ok", TunnelShortID: "abcd", TunnelSNI: "microsoft.com",
 	})

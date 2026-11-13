@@ -104,9 +104,9 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		) us ON TRUE
 		LEFT JOIN plans p ON p.id = us.plan_id
 		LEFT JOIN LATERAL (
-			SELECT MAX(ud.last_seen_at) AS last_seen
-			FROM user_devices ud
-			WHERE ud.user_id = u.id
+			SELECT MAX(lt.recorded_at) AS last_seen
+			FROM traffic_stats lt
+			WHERE lt.user_id = u.user_id
 		) ls ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM(ts.upload_bytes + ts.download_bytes), 0) AS total_bytes
@@ -244,56 +244,6 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteAuditLog(r, "delete_user", "user", fmt.Sprintf("%d", userID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User deleted"})
-}
-
-func ListUserDevicesHandler(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "devices")
-	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
-		return
-	}
-
-	rows, err := db.DB.Query(`
-		SELECT id, platform, device_id, COALESCE(device_label, ''), COALESCE(linked_via, ''), created_at, last_seen_at
-		FROM user_devices
-		WHERE user_id = $1
-		ORDER BY last_seen_at DESC
-	`, userID)
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to list devices")
-		return
-	}
-	defer rows.Close()
-
-	var devices []map[string]any
-	for rows.Next() {
-		var (
-			id          int
-			platform    string
-			deviceID    string
-			deviceLabel string
-			linkedVia   string
-			createdAt   time.Time
-			lastSeenAt  time.Time
-		)
-		if err := rows.Scan(&id, &platform, &deviceID, &deviceLabel, &linkedVia, &createdAt, &lastSeenAt); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, "Failed to scan device")
-			return
-		}
-		devices = append(devices, map[string]any{
-			"id":           id,
-			"platform":     platform,
-			"device_id":    deviceID,
-			"device_label": deviceLabel,
-			"linked_via":   linkedVia,
-			"created_at":   createdAt.Format(time.RFC3339),
-			"last_seen_at": lastSeenAt.Format(time.RFC3339),
-		})
-	}
-	if devices == nil {
-		devices = []map[string]any{}
-	}
-	writeAdminJSON(w, http.StatusOK, devices)
 }
 
 // ListUserTrafficHandler — GET /api/admin/users/{id}/traffic?days=N

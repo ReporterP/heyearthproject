@@ -78,11 +78,11 @@ const nodeMetaQuery = `SELECT ` + nodeMetaColumns + `
   FROM servers s
  WHERE s.id = $1`
 
-// loadNodeQuery adds the credentials: only the encrypted password (the plaintext column is
-// migrated away at API start) and a legacy ssh_keys key.
+// loadNodeQuery adds the credential: only the encrypted password (the plaintext column is
+// migrated away at API start).
 const loadNodeQuery = `SELECT ` + nodeMetaColumns + `,
-       s.ssh_password_enc, COALESCE(sk.private_key, '')
-  FROM servers s LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
+       s.ssh_password_enc
+  FROM servers s
  WHERE s.id = $1`
 
 // scanNodeMeta scans nodeMetaColumns (then extra) and fills HostKeyType from the stored blob.
@@ -113,8 +113,7 @@ func (s *SQLStore) NodeMeta(ctx context.Context, id int) (Node, error) {
 // DialNode reports it as ErrNoCredentials (needsOwner) when the login depends on it.
 func (s *SQLStore) LoadNode(ctx context.Context, id int) (Node, error) {
 	var enc []byte
-	var keyPEM string
-	n, err := scanNodeMeta(s.DB.QueryRowContext(ctx, loadNodeQuery, id), id, &enc, &keyPEM)
+	n, err := scanNodeMeta(s.DB.QueryRowContext(ctx, loadNodeQuery, id), id, &enc)
 	if err != nil {
 		return Node{}, err
 	}
@@ -128,11 +127,6 @@ func (s *SQLStore) LoadNode(ctx context.Context, id int) (Node, error) {
 				n.Password = ""
 				problems = append(problems, fmt.Errorf("пароль SSH ноды %d не расшифровывается (SSH_ENCRYPTION_KEY на Hub): %w", id, err))
 			}
-		}
-	}
-	if keyPEM != "" {
-		if signer, err := ssh.ParsePrivateKey([]byte(keyPEM)); err == nil {
-			n.KeySigner = signer
 		}
 	}
 	if s.HubKeyPath != "" {

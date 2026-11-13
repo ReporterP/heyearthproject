@@ -880,7 +880,6 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 
 func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
-	_, _ = runSSH(client, "mkdir -p "+appDir+"/releases", true)
 
 	domain := cfg.siteDomain
 	certPath := "/etc/letsencrypt/live/" + domain
@@ -910,9 +909,9 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	var nginxConf string
 	if ssl {
-		nginxConf = buildNginxConfSSL(domain, appDir, certPath, xrayActive)
+		nginxConf = buildNginxConfSSL(domain, certPath, xrayActive)
 	} else {
-		nginxConf = buildNginxConfHTTP(domain, appDir)
+		nginxConf = buildNginxConfHTTP(domain)
 	}
 
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
@@ -947,7 +946,7 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	}
 }
 
-func buildNginxConfHTTP(domain, appDir string) string {
+func buildNginxConfHTTP(domain string) string {
 	return fmt.Sprintf(`# ── Main site + API (%[1]s) ──────────────────────────────────────
 server {
     listen 80;
@@ -966,8 +965,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
-
-    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
     # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
     # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
@@ -1021,7 +1018,7 @@ server {
 `, domain, appDir)
 }
 
-func buildNginxConfSSL(domain, appDir, certPath string, xrayActive bool) string {
+func buildNginxConfSSL(domain, certPath string, xrayActive bool) string {
 	// Когда Xray активен, порт 443 занят nginx stream для SNI routing.
 	// HTTPS server blocks слушают на 8443 (внутренний), трафик приходит через stream.
 	// Плюс listener 127.0.0.1:8446 с PROXY protocol — цель stream, пока включён
@@ -1045,12 +1042,12 @@ server {
 
 # ── Main site + API (%[1]s) — HTTPS ─────────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name %[1]s www.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    server_name %[1]s www.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -1066,8 +1063,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
-
-    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
     # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
     # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
@@ -1085,12 +1080,12 @@ server {
 
 # ── Admin panel (admin.%[1]s) — HTTPS ───────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name admin.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    server_name admin.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -1110,12 +1105,12 @@ server {
 
 # ── Redirect site.%[1]s → %[1]s (HTTPS) ────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name site.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    server_name site.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -1129,7 +1124,7 @@ server {
     server_name _;
     return 301 https://%[1]s$request_uri;
 }
-`, domain, appDir, certPath, httpsPort, ppListen)
+`, domain, certPath, httpsPort, ppListen)
 }
 
 // buildNginxStreamConf создаёт конфиг nginx stream для SNI routing на порту 443:

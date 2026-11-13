@@ -124,23 +124,6 @@ export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 }
   return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')
 }
 
-export function deleteSshKey(id) {
-  return apiFetch(`/ssh-keys/${id}`, { method: 'DELETE' })
-}
-
-export function uploadRelease({ platform, version, releaseNotes, mandatory, minSupportedVersion, file, activate }) {
-  const fd = new FormData()
-  fd.append('platform', platform)
-  fd.append('version', version)
-  if (releaseNotes) fd.append('release_notes', releaseNotes)
-  fd.append('mandatory', mandatory ? 'true' : 'false')
-  if (minSupportedVersion) fd.append('min_supported_version', minSupportedVersion)
-  fd.append('activate', activate ? 'true' : 'false')
-  fd.append('file', file)
-  return apiFetch('/releases', { method: 'POST', body: fd })
-}
-
-
 // ── Admin Users & Roles ──
 export function fetchAdminUsers() {
   return apiFetch('/admin-users')
@@ -259,7 +242,6 @@ export const fetchMTProto = () => apiFetch('/mtproto')
 export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body })
 // Only returns a new secret for the domain; nothing is saved until saveMTProto.
 export const generateMTProtoSecret = (frontingDomain) => apiFetch('/mtproto/generate-secret', { method: 'POST', body: { fronting_domain: frontingDomain } })
-
 
 // ── Plans (subscription tariffs) ──
 export function fetchPlans() {

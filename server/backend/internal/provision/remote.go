@@ -69,7 +69,6 @@ type Node struct {
 	// which of the node's keys has the fingerprint with handshake-only probes.
 	HostKeyFP, HostKeyType            string
 	Password                          string     // decrypted ssh_password_enc
-	KeySigner                         ssh.Signer // legacy ssh_keys row
 	HubSigner                         ssh.Signer // the Hub's own key, nil until created
 	HostKeyConfirmed, FallbackEnabled bool
 	// credErr: why a stored credential is unusable (a password that does not decrypt, a corrupt
@@ -101,8 +100,8 @@ func pinned(fp string) ssh.HostKeyCallback {
 }
 
 // DialNode connects only with the owner-confirmed host key, negotiating exactly that key's type
-// (found by handshake-only probes when HostKeyType is unknown). Auth order: Hub key, legacy
-// ssh_keys key, password — the password is never offered before the host key matched.
+// (found by handshake-only probes when HostKeyType is unknown). Auth order: Hub key, password —
+// the password is never offered before the host key matched.
 func DialNode(n Node) (Remote, error) {
 	fp := strings.TrimSpace(n.HostKeyFP)
 	if !n.HostKeyConfirmed || fp == "" {
@@ -111,15 +110,9 @@ func DialNode(n Node) (Remote, error) {
 	if !ValidFingerprint(fp) {
 		return nil, fmt.Errorf("%w: сохранённый отпечаток %q — не SHA256:… из ssh-keygen -lf", ErrHostKeyNotConfirmed, fp)
 	}
-	var signers []ssh.Signer
-	for _, s := range []ssh.Signer{n.HubSigner, n.KeySigner} {
-		if s != nil {
-			signers = append(signers, s)
-		}
-	}
 	var auth []ssh.AuthMethod
-	if len(signers) > 0 {
-		auth = append(auth, ssh.PublicKeys(signers...))
+	if n.HubSigner != nil {
+		auth = append(auth, ssh.PublicKeys(n.HubSigner))
 	}
 	if n.Password != "" {
 		auth = append(auth, ssh.Password(n.Password))

@@ -18,7 +18,7 @@ import (
 // ─────────────────────── Auth RPCs ───────────────────────
 
 func (s *server) Register(ctx context.Context, req *heyearth_v1.RegisterRequest) (*heyearth_v1.AuthResponse, error) {
-	device := deviceFromProto(req.GetDevice(), "register")
+	device := deviceFromProto(req.GetDevice())
 
 	user, err := biz.RegisterAnonymousUser(device)
 	if err != nil {
@@ -51,10 +51,6 @@ func (s *server) Login(ctx context.Context, req *heyearth_v1.LoginRequest) (*hey
 	user, err := biz.LoginByIDOrUsername(idOrUsername, req.GetPassword())
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "%v", err)
-	}
-
-	if req.GetDevice() != nil {
-		_ = biz.RegisterUserDevice(user.UserID, deviceFromProto(req.GetDevice(), "login"))
 	}
 
 	token, err := issueUserJWT(user.UserID, user.ID)
@@ -107,9 +103,6 @@ func (s *server) GetMe(ctx context.Context, req *heyearth_v1.GetMeRequest) (*hey
 	userID := strings.TrimSpace(req.GetUserId())
 	if userID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
-	}
-	if req.GetDevice() != nil {
-		_ = biz.RegisterUserDevice(userID, deviceFromProto(req.GetDevice(), "app_open"))
 	}
 	profile, err := biz.GetUserProfile(userID)
 	if err != nil {
@@ -718,26 +711,9 @@ func accessToProto(access *biz.UserAccessState) *heyearth_v1.AccessStateResponse
 	}
 }
 
-func deviceFromProto(device *heyearth_v1.DeviceContext, linkedVia string) biz.DeviceRegistration {
-	if device == nil {
-		return biz.DeviceRegistration{LinkedVia: linkedVia}
-	}
-	return biz.DeviceRegistration{
-		DeviceID:    device.GetDeviceId(),
-		Platform:    device.GetPlatform(),
-		DeviceLabel: device.GetDeviceLabel(),
-		Locale:      device.GetLocale(),
-		LinkedVia:   firstNonEmpty(device.GetLinkedVia(), linkedVia),
-	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
+// deviceFromProto: what a new account keeps of the device — its platform and locale.
+func deviceFromProto(device *heyearth_v1.DeviceContext) biz.DeviceRegistration {
+	return biz.DeviceRegistration{Platform: device.GetPlatform(), Locale: device.GetLocale()}
 }
 
 // ─────────────────────── JWT ───────────────────────

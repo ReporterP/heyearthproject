@@ -185,8 +185,6 @@ var permissionCatalog = []permissionCatalogItem{
 	// Also seeded by migration 000061; listed here because ensureSuperAdminRole rebuilds
 	// super_admin from this catalog on every login.
 	{Key: "nodes.provision", Name: "Provision Nodes", Description: "Add, set up, verify and retire exit and relay nodes over SSH"},
-	{Key: "releases.read", Name: "Releases Read", Description: "View releases"},
-	{Key: "releases.write", Name: "Releases Write", Description: "Upload and activate releases"},
 	{Key: "admins.read", Name: "Admins Read", Description: "View admins and roles"},
 	{Key: "admins.write", Name: "Admins Write", Description: "Manage admins and roles"},
 	{Key: "settings.read", Name: "Settings Read", Description: "View application settings"},

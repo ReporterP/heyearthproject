@@ -39,6 +39,7 @@ func (s *server) Health(context.Context, *heyearth_v1.HealthRequest) (*heyearth_
 	return &heyearth_v1.HealthResponse{Status: "ok"}, nil
 }
 
+// publicBaseURL: the site's https:// origin (PUBLIC_BASE_URL, else SITE_DOMAIN); "" when unset.
 func publicBaseURL() string {
 	if v := strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")); v != "" {
 		return strings.TrimRight(v, "/")
@@ -52,77 +53,10 @@ func publicBaseURL() string {
 	return ""
 }
 
-func absoluteReleaseURL(publicPath string) string {
-	publicPath = strings.TrimSpace(publicPath)
-	if publicPath == "" {
-		return ""
-	}
-	if strings.HasPrefix(publicPath, "http://") || strings.HasPrefix(publicPath, "https://") {
-		return publicPath
-	}
-	base := publicBaseURL()
-	if base == "" {
-		return ""
-	}
-	if !strings.HasPrefix(publicPath, "/") {
-		publicPath = "/" + publicPath
-	}
-	return base + publicPath
-}
-
-func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
-	platform := biz.NormalizeReleasePlatform(req.GetPlatform())
-	if platform != "" && !biz.IsSupportedReleasePlatform(platform) {
-		return nil, status.Error(codes.InvalidArgument, "unsupported platform")
-	}
-
-	activeReleases, err := biz.GetAllActiveAppReleases()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load active releases: %v", err)
-	}
-
-	response := &heyearth_v1.CheckAppUpdateResponse{
-		ApiEndpoints: biz.GetAPIEndpoints(),
-	}
-	if release, ok := activeReleases["android"]; ok {
-		response.AndroidUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["windows"]; ok {
-		response.WindowsUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["macos"]; ok {
-		response.MacosUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["linux"]; ok {
-		response.LinuxUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["ios"]; ok {
-		response.IosUrl = absoluteReleaseURL(release.PublicPath)
-	}
-
-	if platform != "" {
-		release, ok := activeReleases[platform]
-		if !ok {
-			return response, nil
-		}
-		response.Version = release.Version
-		response.ReleaseNotes = release.ReleaseNotes
-		response.Mandatory = release.Mandatory
-		response.MinSupportedVersion = release.MinSupportedVersion
-		return response, nil
-	}
-
-	latest, err := biz.GetActiveAppRelease("")
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load latest release: %v", err)
-	}
-	if latest != nil {
-		response.Version = latest.Version
-		response.ReleaseNotes = latest.ReleaseNotes
-		response.Mandatory = latest.Mandatory
-		response.MinSupportedVersion = latest.MinSupportedVersion
-	}
-	return response, nil
+// CheckAppUpdate: the app learns the API endpoints here. Releases are not published through the
+// API (cleanup plan D1: the app_releases table never had a row), so no version is offered.
+func (s *server) CheckAppUpdate(context.Context, *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
+	return &heyearth_v1.CheckAppUpdateResponse{ApiEndpoints: biz.GetAPIEndpoints()}, nil
 }
 
 func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromocodeRequest) (*heyearth_v1.ApplyPromocodeResponse, error) {
@@ -210,20 +144,12 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Platform     string `json:"platform"`
-		DeviceID     string `json:"device_id"`
-		DeviceLabel  string `json:"device_label"`
 		Locale       string `json:"locale"`
 		ReferralCode string `json:"referral_code"` // from the /r/<code> link (phase R)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
 
-	device := biz.DeviceRegistration{
-		DeviceID:    req.DeviceID,
-		Platform:    req.Platform,
-		DeviceLabel: req.DeviceLabel,
-		Locale:      req.Locale,
-		LinkedVia:   "register",
-	}
+	device := biz.DeviceRegistration{Platform: req.Platform, Locale: req.Locale}
 
 	user, err := biz.RegisterAnonymousUser(device)
 	if err != nil {
@@ -714,22 +640,9 @@ func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// No auth required for downloads
-	activeReleases, err := biz.GetAllActiveAppReleases()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	downloads := make(map[string]map[string]string)
-	for platform, release := range activeReleases {
-		downloads[platform] = map[string]string{
-			"version":       release.Version,
-			"url":           absoluteReleaseURL(release.PublicPath),
-			"release_notes": release.ReleaseNotes,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"downloads": downloads})
+	// No app release is published through the API (cleanup plan D1); the shape stays for the
+	// Flutter app and the site.
+	writeJSON(w, http.StatusOK, map[string]any{"downloads": map[string]any{}})
 }
 
 func handleUserTraffic(w http.ResponseWriter, r *http.Request) {

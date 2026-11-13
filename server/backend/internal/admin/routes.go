@@ -52,10 +52,6 @@ func RegisterRoutes() {
 			RequirePermission("users.read", ListUserTrafficHandler).ServeHTTP(w, r)
 			return
 		}
-		if strings.HasSuffix(trimmed, "/devices") {
-			RequirePermission("users.read", ListUserDevicesHandler).ServeHTTP(w, r)
-			return
-		}
 		switch r.Method {
 		case http.MethodPatch:
 			RequirePermission("users.write", UpdateUserHandler).ServeHTTP(w, r)
@@ -252,18 +248,6 @@ func RegisterRoutes() {
 		}
 	}))
 
-	http.HandleFunc("/api/admin/releases", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("releases.read", ListReleasesHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("releases.write", UploadReleaseHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/releases/activate", withMethod(http.MethodPost, RequirePermission("releases.write", ActivateReleaseHandler)))
-
 	http.HandleFunc("/api/admin/admin-users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -288,27 +272,6 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/admin-roles/", withMethod(http.MethodPatch, RequirePermission("admins.write", UpdateAdminRoleHandler)))
 	http.HandleFunc("/api/admin/admin-permissions", withMethod(http.MethodGet, RequirePermission("admins.read", ListAdminPermissionsHandler)))
-
-	http.HandleFunc("/api/admin/ssh-keys", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("servers.read", ListSshKeysHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("servers.write", CreateSshKeyHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/ssh-keys/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPatch:
-			RequirePermission("servers.write", UpdateSshKeyHandler).ServeHTTP(w, r)
-		case http.MethodDelete:
-			RequirePermission("servers.write", DeleteSshKeyHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
 
 	http.HandleFunc("/api/admin/settings", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

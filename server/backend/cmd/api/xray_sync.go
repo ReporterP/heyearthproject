@@ -1309,10 +1309,8 @@ func checkAllTunnels() {
 		case v.status == biz.PathUnhealthy:
 			log.Printf("[tunnel-monitor] ALERT: Exit-нода %d (%s, %s) — оба пути НЕДОСТУПНЫ: %s",
 				node.ID, node.Name, node.IPAddress, v.errText)
-			biz.RecordFailedConnection(node.ID)
 		case v.status == biz.PathHealthy && oldStatus == biz.PathUnhealthy:
 			log.Printf("[tunnel-monitor] OK: Exit-нода %d (%s, %s) — туннель ВОССТАНОВЛЕН", node.ID, node.Name, node.IPAddress)
-			biz.RecordSuccessfulConnection(node.ID)
 		default:
 			log.Printf("[tunnel-monitor] Exit-нода %d (%s): %s -> %s", node.ID, node.Name, oldStatus, v.status)
 		}
