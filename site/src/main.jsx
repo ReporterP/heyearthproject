@@ -28,6 +28,7 @@ import BusinessInvoicePage from './pages/BusinessInvoicePage.jsx'
 import BusinessDashboardPage from './pages/BusinessDashboardPage.jsx'
 import ClaimCodePage from './pages/ClaimCodePage.jsx'
 import ConnectPage from './pages/ConnectPage.jsx'
+import WalletPage from './pages/WalletPage.jsx'
 
 function NotFoundPage() {
   return (
@@ -81,6 +82,7 @@ function App() {
             <Route path="/checkout" element={<Navigate to="/payment" replace />} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
+            <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
             <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />
             <Route path="/connections" element={<RequireAuth><ConnectionsPage /></RequireAuth>} />
             <Route path="*" element={<NotFoundPage />} />

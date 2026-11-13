@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { createPayment, getProfile } from '../api/user.js'
+import { createPayment, getProfile, applyPromocode } from '../api/user.js'
+import { getQuote, walletPurchase, walletTopup, newRequestId, rub, formatDay } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { Skeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
@@ -47,8 +48,15 @@ export default function PaymentPage() {
   const [currentSortOrder, setCurrentSortOrder] = useState(-1)
   const [validUntil, setValidUntil] = useState(null)
   const [promocode, setPromocode] = useState('')
+  const [appliedPromo, setAppliedPromo] = useState('')
   const [email, setEmail] = useState('')
-  const [saveCard, setSaveCard] = useState(false)
+  const [quote, setQuote] = useState(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [promoError, setPromoError] = useState('')
+  const [topupRub, setTopupRub] = useState(0)
+  const [walletConfirm, setWalletConfirm] = useState(false)
+  const [requestId, setRequestId] = useState(newRequestId)
+  const [done, setDone] = useState(null) // successful wallet purchase / free activation
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState('')
   const [prorations, setProrations] = useState({})
@@ -94,35 +102,89 @@ export default function PaymentPage() {
 
   useReveal([plans, loading])
 
+  // The price of the chosen plan with the applied code, and the wallet balance.
+  useEffect(() => {
+    if (!token || selectedPlan == null) { setQuote(null); return }
+    let stop = false
+    setQuoteLoading(true)
+    getQuote(token, selectedPlan, appliedPromo).then(q => {
+      if (stop) return
+      setQuote(q)
+      setPromoError('')
+      setTopupRub(Math.ceil((q.topup_kop || 0) / 100))
+    }).catch(e => {
+      if (stop || e.kind === 'auth') return
+      if (appliedPromo) { setPromoError(e.message); setAppliedPromo('') } else setError(e.message)
+    }).finally(() => { if (!stop) setQuoteLoading(false) })
+    return () => { stop = true }
+  }, [token, selectedPlan, appliedPromo])
+
+  // One flow (cleanup plan W3): free — activate; a free-days code — redeem it; enough on
+  // the wallet — confirm and pay from it; not enough — top up the shortfall (or more) and
+  // the payment buys the plan right away.
   async function handlePay(planId) {
     setSwitchConfirm(null)
     if (!token) { navigate('/login?redirect=/payment'); return }
-    setPaying(true)
+    const plan = plans.find(p => p.id === planId)
+    if (!plan) return
     setError('')
+    if (plan.price_rub === 0) return activateFree(planId)
+    if (!quote) return
+    if (quote.promo_type === 'free_trial') return redeemCode()
+    if (quote.shortfall_kop === 0) { setWalletConfirm(true); return }
+    return topupAndBuy(planId)
+  }
+
+  async function activateFree(planId) {
+    setPaying(true)
     try {
-      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, promocode, saveCard, email, 'embedded')
-      if (data.status === 'activated') { navigate('/dashboard'); return }
+      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, '', false, '', 'redirect')
+      if (data.status === 'activated') { setDone({ title: 'Тариф активирован', text: data.message || '' }); return }
+      setError('Не удалось активировать тариф — попробуйте ещё раз.')
+    } catch (e) { setError(e.message) } finally { setPaying(false) }
+  }
+
+  async function redeemCode() {
+    setPaying(true)
+    try {
+      const d = await applyPromocode(token, appliedPromo)
+      setDone({ title: 'Промокод активирован', text: d.message || '' })
+    } catch (e) { setError(e.message) } finally { setPaying(false) }
+  }
+
+  async function payFromWallet() {
+    setWalletConfirm(false)
+    setPaying(true)
+    try {
+      const d = await walletPurchase(token, selectedPlan, appliedPromo, requestId)
+      setRequestId(newRequestId())
+      setDone({ title: 'Подписка активирована', text: `«${d.plan_name}» действует до ${formatDay(d.valid_until)}. На кошельке осталось ${rub(d.balance_kop)}.` })
+    } catch (e) { setError(e.message) } finally { setPaying(false) }
+  }
+
+  async function topupAndBuy(planId) {
+    const min = Math.ceil((quote.topup_kop || 0) / 100)
+    if (topupRub < min) { setError(`Пополнение — не меньше ${min} ₽, чтобы хватило на тариф`); return }
+    setPaying(true)
+    try {
       const plan = plans.find(p => p.id === planId)
-      if (plan) sessionStorage.setItem('payment_pending', JSON.stringify({ name: plan.name, price: plan.price_rub }))
-      if (data.confirmation_token) {
-        sessionStorage.setItem(`checkout_token_${data.payment_id}`, data.confirmation_token)
-        sessionStorage.setItem(`checkout_plan_${data.payment_id}`, plan?.name || '')
-        navigate(`/checkout/${data.payment_id}`)
+      const d = await walletTopup(token, { amountRub: topupRub, purchase: { planId, promocode: appliedPromo }, email: email.trim(), confirmationType: 'embedded' })
+      if (d.confirmation_token) {
+        sessionStorage.setItem(`checkout_token_${d.payment_id}`, d.confirmation_token)
+        sessionStorage.setItem(`checkout_plan_${d.payment_id}`, plan?.name || '')
+        navigate(`/checkout/${d.payment_id}`)
         return
       }
-      if (data.confirmation_url) { window.location.href = data.confirmation_url; return }
-      setError('Не удалось создать платёж. Попробуйте позже.')
-    } catch (e) {
-      setError(e.message || 'Не удалось создать платёж. Попробуйте позже.')
-    } finally {
-      setPaying(false)
-    }
+      if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
+      setError('Не удалось открыть оплату — попробуйте ещё раз.')
+    } catch (e) { setError(e.message) } finally { setPaying(false) }
   }
 
   // Selecting a card scrolls the checkout panel into view (spatial continuity).
   function selectPlan(plan) {
     setSelectedPlan(plan.id)
     setError('')
+    setDone(null)
     requestAnimationFrame(() => {
       checkoutRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     })
@@ -149,7 +211,14 @@ export default function PaymentPage() {
   const chosenPr = chosen ? (prorations[chosen.id] || {}) : {}
   const chosenIsFree = chosen ? chosen.price_rub === 0 : false
   const chosenIsCurrent = chosen ? currentPlanSlug === chosen.slug : false
-  const chosenTotal = chosen ? (chosenPr.final_price ?? chosen.price_rub) : 0
+  const chosenTotal = quote && chosen && quote.plan_id === chosen.id ? quote.price_kop / 100 : (chosen ? chosen.price_rub : 0)
+  const isFreeCode = quote?.promo_type === 'free_trial'
+  const enough = quote && quote.shortfall_kop === 0
+  const ctaLabel = chosenIsFree ? 'Активировать бесплатно'
+    : isFreeCode ? 'Активировать промокод'
+    : !quote ? 'Считаем…'
+    : enough ? `Оплатить с кошелька — ${rub(quote.price_kop)}`
+    : `Пополнить на ${topupRub} ₽ и оплатить`
 
   /* ── Loading: skeleton grid (no layout jump) ── */
   if (loading) return (
@@ -176,7 +245,7 @@ export default function PaymentPage() {
           <p className="eyebrow mb-4">Тарифы</p>
           <h1 className="serif text-3xl md:text-4xl font-semibold mb-3">Выберите тариф</h1>
           <p className="text-text-secondary max-w-lg mx-auto">
-            Автопродление включено по умолчанию — его можно отключить в любой момент.
+            Оплата идёт с кошелька: если на нём не хватает, пополним ровно на нужную сумму и сразу оформим подписку.
           </p>
         </div>
 
@@ -263,18 +332,11 @@ export default function PaymentPage() {
                   {/* price — fixed-height row so async proration can't shift layout */}
                   <div className="min-h-[4.25rem] mb-4">
                     <div className="flex items-baseline gap-1.5">
-                      <span className="serif text-3xl font-semibold tabular-nums">{isFree ? 'Бесплатно' : `${pr.final_price ?? plan.price_rub}₽`}</span>
+                      <span className="serif text-3xl font-semibold tabular-nums">{isFree ? 'Бесплатно' : `${plan.price_rub}₽`}</span>
                       {!isFree && <span className="text-sm text-text-secondary">/ {formatDuration(plan.duration_days)}</span>}
                     </div>
                     <div className="mt-1.5 min-h-[1.5rem]">
-                      {prorationsLoading && !isFree ? (
-                        <Skeleton className="h-4 w-40" />
-                      ) : !isFree && pr.proration_credit > 0 ? (
-                        <span className="text-xs text-accent bg-accent/10 px-2 py-1 rounded-lg inline-flex items-center gap-1.5">
-                          <span className="text-faint line-through">{plan.price_rub}₽</span>
-                          <span>−{pr.proration_credit}₽ за остаток тарифа</span>
-                        </span>
-                      ) : null}
+                      {prorationsLoading && !isFree ? <Skeleton className="h-4 w-40" /> : null}
                     </div>
                   </div>
 
@@ -308,47 +370,53 @@ export default function PaymentPage() {
 
         {/* ── Step 2: checkout — inputs asked only once a plan is chosen ── */}
         <div ref={checkoutRef} className="scroll-mt-24">
-          {chosen ? (
+          {done ? (
+            <div className="card p-8 text-center !border-brand/30 animate-fade-in-up" role="status">
+              <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-brand/15 border border-brand/25 text-brand flex items-center justify-center">
+                <CheckIcon className="w-8 h-8" />
+              </div>
+              <h2 className="serif text-xl font-semibold mb-1">{done.title}</h2>
+              <p className="text-sm text-text-secondary mb-6">{done.text}</p>
+              <Link to="/dashboard" className="btn-primary !py-2.5 !text-sm">В личный кабинет</Link>
+            </div>
+          ) : chosen ? (
             <div className="grid lg:grid-cols-[1.25fr_.9fr] gap-5 animate-fade-in-up">
               {/* left: inputs */}
               <div className="card rounded-[22px] p-6">
                 <h2 className="serif text-lg font-semibold mb-1">Оформление</h2>
-                <p className="text-xs text-text-secondary mb-5">Осталось подтвердить — данные карты вводятся на защищённой странице ЮKassa</p>
+                <p className="text-xs text-text-secondary mb-5">Данные карты вводятся только на защищённой странице ЮKassa</p>
 
                 <div className="space-y-4">
-                  <div>
-                    <label htmlFor="promo" className="block text-xs font-medium text-text-secondary mb-1.5">Промокод <span className="text-faint">(если есть)</span></label>
-                    <div className="flex gap-2">
-                      <input
-                        id="promo" value={promocode} onChange={e => setPromocode(e.target.value.toUpperCase())}
-                        placeholder="ЛЕС10"
-                        className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20 font-mono uppercase tracking-wider"
-                      />
-                      {promocode && (
-                        <button onClick={() => setPromocode('')} aria-label="Очистить промокод" className="px-3 rounded-xl bg-surface-alt border border-brand/12 text-text-secondary hover:text-text-primary transition">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
-                        </button>
-                      )}
+                  {!chosenIsFree && (
+                    <div>
+                      <label htmlFor="promo" className="block text-xs font-medium text-text-secondary mb-1.5">Промокод <span className="text-faint">(если есть)</span></label>
+                      <div className="flex gap-2">
+                        <input
+                          id="promo" value={promocode} onChange={e => { setPromocode(e.target.value.toUpperCase()); setPromoError('') }}
+                          placeholder="ЛЕС10"
+                          className="flex-1 min-w-0 px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20 font-mono uppercase tracking-wider"
+                        />
+                        {appliedPromo && appliedPromo === promocode.trim() ? (
+                          <button onClick={() => { setAppliedPromo(''); setPromocode('') }} className="btn-ghost !py-2.5 !px-4 !text-sm">Убрать</button>
+                        ) : (
+                          <button onClick={() => setAppliedPromo(promocode.trim())} disabled={!promocode.trim()} className="btn-ghost !py-2.5 !px-4 !text-sm disabled:opacity-40">Применить</button>
+                        )}
+                      </div>
+                      {promoError && <p className="text-xs text-danger mt-1.5">{promoError}</p>}
+                      {!promoError && quote?.promo_message && appliedPromo && <p className="text-xs text-brand mt-1.5">{quote.promo_message}</p>}
                     </div>
-                    <p className="text-[11px] text-faint mt-1.5">Скидка применится при оплате</p>
-                  </div>
+                  )}
 
-                  <div>
-                    <label htmlFor="pay-email" className="block text-xs font-medium text-text-secondary mb-1.5">Email для чека <span className="text-faint">(необязательно)</span></label>
-                    <input
-                      id="pay-email" value={email} onChange={e => setEmail(e.target.value)} type="email" inputMode="email" placeholder="you@mail.ru"
-                      className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20"
-                    />
-                    <p className="text-[11px] text-faint mt-1.5">Почту не храним — она нужна только для отправки чека</p>
-                  </div>
-
-                  <label className="flex items-start gap-3 p-3.5 rounded-xl bg-white/[0.03] border border-brand/10 cursor-pointer hover:border-brand/20 transition">
-                    <input type="checkbox" checked={saveCard} onChange={e => setSaveCard(e.target.checked)} className="accent-brand w-4 h-4 mt-0.5" />
-                    <span>
-                      <span className="text-sm font-medium block">Сохранить карту для автопродления</span>
-                      <span className="text-xs text-text-secondary">Подписка продлится сама — отключить можно в разделе «Оплата»</span>
-                    </span>
-                  </label>
+                  {!chosenIsFree && !isFreeCode && quote && !enough && (
+                    <div>
+                      <label htmlFor="pay-email" className="block text-xs font-medium text-text-secondary mb-1.5">Email для чека <span className="text-faint">(необязательно)</span></label>
+                      <input
+                        id="pay-email" value={email} onChange={e => setEmail(e.target.value)} type="email" inputMode="email" placeholder="you@mail.ru"
+                        className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20"
+                      />
+                      <p className="text-[11px] text-faint mt-1.5">Используем только для отправки чека.</p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -367,40 +435,69 @@ export default function PaymentPage() {
                     <span>{chosen.name}</span>
                     <span className="tabular-nums">{chosenIsFree ? '0 ₽' : `${chosen.price_rub} ₽`}</span>
                   </div>
-                  {chosenPr.proration_credit > 0 && (
+                  {quote && quote.list_price_kop > quote.price_kop && !isFreeCode && (
                     <div className="flex justify-between text-brand">
-                      <span>Остаток текущего тарифа</span>
-                      <span className="tabular-nums">−{chosenPr.proration_credit} ₽</span>
+                      <span>Промокод {appliedPromo}</span>
+                      <span className="tabular-nums">−{rub(quote.list_price_kop - quote.price_kop)}</span>
                     </div>
                   )}
-                  {chosenPr.bonus_days > 0 && (
+                  {(quote?.bonus_days || chosenPr.bonus_days) > 0 && (
                     <div className="flex justify-between text-brand">
-                      <span>Бонусные дни</span>
-                      <span className="tabular-nums">+{chosenPr.bonus_days} дн.</span>
+                      <span>Бонусные дни за остаток тарифа</span>
+                      <span className="tabular-nums">+{quote?.bonus_days || chosenPr.bonus_days} дн.</span>
                     </div>
                   )}
-                  {promocode && (
-                    <div className="flex justify-between text-accent">
-                      <span>Промокод {promocode}</span>
-                      <span className="text-xs">проверим при оплате</span>
+                  {!chosenIsFree && !isFreeCode && quote && (
+                    <div className="flex justify-between text-text-secondary">
+                      <span>На кошельке</span>
+                      <span className="tabular-nums">{rub(quote.balance_kop)}</span>
+                    </div>
+                  )}
+                  {quote?.new_valid_until && !chosenIsFree && !isFreeCode && (
+                    <div className="flex justify-between text-text-secondary">
+                      <span>Подписка будет до</span>
+                      <span className="tabular-nums">{formatDay(quote.new_valid_until)}</span>
                     </div>
                   )}
                 </div>
 
-                <div className="flex items-baseline justify-between my-5">
-                  <span className="text-sm text-text-secondary">К оплате</span>
-                  <span className="serif text-3xl font-semibold tabular-nums">{chosenIsFree ? 'Бесплатно' : `${chosenTotal} ₽`}</span>
-                </div>
+                {chosenIsFree || isFreeCode ? (
+                  <div className="flex items-baseline justify-between my-5">
+                    <span className="text-sm text-text-secondary">К оплате</span>
+                    <span className="serif text-3xl font-semibold">Бесплатно</span>
+                  </div>
+                ) : quoteLoading && !quote ? (
+                  <Skeleton className="h-10 w-full my-5" />
+                ) : enough ? (
+                  <div className="flex items-baseline justify-between my-5">
+                    <span className="text-sm text-text-secondary">Спишем с кошелька</span>
+                    <span className="serif text-3xl font-semibold tabular-nums">{rub(quote.price_kop)}</span>
+                  </div>
+                ) : quote ? (
+                  <div className="my-5">
+                    <p className="text-sm text-text-secondary mb-3">
+                      На кошельке {rub(quote.balance_kop)}. Пополним на нужную сумму и сразу оплатим подписку.
+                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input
+                        aria-label="Сумма пополнения, ₽" inputMode="numeric" value={topupRub}
+                        onChange={e => setTopupRub(parseInt(e.target.value.replace(/\D/g, '') || '0', 10))}
+                        className="w-28 px-3 py-2.5 rounded-xl bg-white/5 border border-brand/15 text-lg font-semibold tabular-nums focus:border-brand/50 focus:outline-none"
+                      />
+                      <span className="text-sm text-text-secondary">₽</span>
+                      <button type="button" onClick={() => setTopupRub(v => v + 100)} className="btn-ghost !py-2 !px-3 !text-sm">+100</button>
+                      <button type="button" onClick={() => setTopupRub(v => v + 500)} className="btn-ghost !py-2 !px-3 !text-sm">+500</button>
+                    </div>
+                    {topupRub * 100 > quote.topup_kop && (
+                      <p className="text-xs text-faint mt-2">После оплаты на кошельке останется {rub(quote.balance_kop + topupRub * 100 - quote.price_kop)}.</p>
+                    )}
+                  </div>
+                ) : null}
 
                 {error && <p className="text-sm text-danger bg-danger/10 border border-danger/20 rounded-xl px-3 py-2 mb-3">{error}</p>}
 
-                <button onClick={submitPayment} disabled={paying} className="btn-primary w-full !py-3.5 disabled:opacity-50">
-                  {paying ? (
-                    <>
-                      <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                      Готовим оплату…
-                    </>
-                  ) : chosenIsFree ? 'Активировать бесплатно' : chosenIsCurrent ? `Продлить — ${chosenTotal} ₽` : `Оплатить ${chosenTotal} ₽`}
+                <button onClick={submitPayment} disabled={paying || (!chosenIsFree && !quote)} className="btn-primary w-full !py-3.5 disabled:opacity-50">
+                  {paying ? 'Готовим…' : ctaLabel}
                 </button>
 
                 <p className="flex items-center justify-center gap-1.5 text-[11px] text-faint mt-3.5 text-center">
@@ -423,15 +520,32 @@ export default function PaymentPage() {
       </div>
 
       {/* ── Sticky mobile summary bar (thumb-reachable primary action) ── */}
-      {chosen && (
+      {chosen && !done && (
         <div className="lg:hidden fixed bottom-0 inset-x-0 z-40 glass-strong border-t border-brand/15 px-4 py-3 flex items-center gap-3" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
           <div className="min-w-0 flex-1">
             <p className="text-xs text-text-secondary truncate">{chosen.name}</p>
-            <p className="serif text-lg font-semibold tabular-nums leading-tight">{chosenIsFree ? 'Бесплатно' : `${chosenTotal} ₽`}</p>
+            <p className="serif text-lg font-semibold tabular-nums leading-tight">{chosenIsFree || isFreeCode ? 'Бесплатно' : `${chosenTotal} ₽`}</p>
           </div>
-          <button onClick={submitPayment} disabled={paying} className="btn-primary !py-3 !px-6 disabled:opacity-50 flex-shrink-0">
-            {paying ? '…' : chosenIsFree ? 'Активировать' : 'Оплатить'}
+          <button onClick={submitPayment} disabled={paying || (!chosenIsFree && !quote)} className="btn-primary !py-3 !px-6 disabled:opacity-50 flex-shrink-0">
+            {paying ? '…' : chosenIsFree || isFreeCode ? 'Активировать' : enough ? 'Оплатить' : 'Пополнить и оплатить'}
           </button>
+        </div>
+      )}
+
+      {/* Wallet confirm: what leaves the wallet, what stays, until when */}
+      {walletConfirm && quote && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setWalletConfirm(false)}>
+          <div className="glass-strong rounded-[22px] p-7 max-w-sm w-full text-center" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+            <h3 className="serif text-lg font-semibold mb-2">Оплатить с кошелька?</h3>
+            <p className="text-sm text-text-secondary mb-6">
+              Спишем {rub(quote.price_kop)} с кошелька. Останется {rub(quote.balance_kop - quote.price_kop)}.
+              {quote.new_valid_until ? ` Подписка до ${formatDay(quote.new_valid_until)}.` : ''}
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setWalletConfirm(false)} className="btn-ghost flex-1 !py-2.5 !text-sm">Отмена</button>
+              <button onClick={payFromWallet} className="btn-primary flex-1 !py-2.5 !text-sm">Оплатить</button>
+            </div>
+          </div>
         </div>
       )}
 

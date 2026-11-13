@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext.jsx'
+import PaymentResult from '../components/PaymentResult.jsx'
 
 // YooKassa widget mounts here. Платёж и confirmation_token создаёт предыдущая страница
 // PaymentPage и передаёт через location state или sessionStorage.
@@ -43,11 +45,13 @@ function loadScript(src) {
 
 export default function CheckoutPage() {
   const { paymentId } = useParams()
-  const navigate = useNavigate()
+  const { token: authToken } = useAuth()
   const containerRef = useRef(null)
   const widgetRef = useRef(null)
 
-  const [status, setStatus] = useState('loading') // loading | ready | error | success
+  // loading | ready | error | result (the payment is being or was paid: PaymentResult polls)
+  const [status, setStatus] = useState('loading')
+  const [resumed, setResumed] = useState(false)
   const [error, setError] = useState('')
   const [planName, setPlanName] = useState('')
 
@@ -58,11 +62,10 @@ export default function CheckoutPage() {
     setPlanName(plan)
 
     if (!token) {
-      // Session token is gone (refresh / deep link / new tab). The payment
-      // itself still exists on the server — offer to open it instead of
-      // dead-ending the user.
-      setError('Сессия оплаты не найдена — вероятно, страница была обновлена или открыта заново.')
-      setStatus('error')
+      // The widget token is gone (refresh / new tab). The payment still exists: show
+      // its real state (paid — the result; not paid — a way to start again).
+      setResumed(true)
+      setStatus('result')
       return
     }
 
@@ -79,7 +82,7 @@ export default function CheckoutPage() {
       try {
         const checkout = new window.YooMoneyCheckoutWidget({
           confirmation_token: token,
-          return_url: window.location.origin + '/dashboard?t=1',
+          return_url: window.location.origin + `/wallet?topup=${paymentId}`,
           error_callback(e) {
             console.error('[yookassa-widget]', e)
             setError(e?.error?.description || 'Ошибка оплаты')
@@ -93,21 +96,16 @@ export default function CheckoutPage() {
           },
         })
 
-        // Событие complete — успешная оплата. ЮKassa сама откроет return_url.
-        checkout.on('complete', () => {
-          // Очищаем временный токен
+        // success / complete: the client paid. The widget closes and PaymentResult
+        // polls our API until the webhook has credited the wallet (and bought the plan).
+        const done = () => {
           sessionStorage.removeItem(`checkout_token_${paymentId}`)
           sessionStorage.removeItem(`checkout_plan_${paymentId}`)
-          sessionStorage.setItem('payment_success_plan', planName)
-          setStatus('success')
-          setTimeout(() => navigate('/dashboard?t=1'), 1500)
-        })
-
-        // Событие success — пользователь успешно дошёл до оплаты (но до complete)
-        checkout.on('success', () => {
-          // Закрываем виджет сами, ждём webhook
-          checkout.destroy()
-        })
+          try { checkout.destroy() } catch { /* already gone */ }
+          setStatus('result')
+        }
+        checkout.on('success', done)
+        checkout.on('complete', done)
 
         checkout.on('fail', () => {
           setError('Оплата не прошла. Попробуйте другую карту или способ.')
@@ -133,7 +131,7 @@ export default function CheckoutPage() {
       cancelled = true
       try { widgetRef.current?.destroy() } catch {}
     }
-  }, [paymentId, navigate, planName])
+  }, [paymentId])
 
   return (
     <section className="relative py-10 md:py-16">
@@ -183,17 +181,7 @@ export default function CheckoutPage() {
           </div>
         )}
 
-        {status === 'success' && (
-          <div className="card p-8 text-center !border-brand/30">
-            <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-brand/15 border border-brand/25 flex items-center justify-center">
-              <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <h2 className="serif text-xl font-semibold mb-1">Оплата прошла</h2>
-            <p className="text-sm text-text-secondary">Переходим в личный кабинет…</p>
-          </div>
-        )}
+        {status === 'result' && <PaymentResult token={authToken} paymentId={paymentId} resumeHint={resumed} />}
 
         {/* Container для виджета — существует всегда чтобы YooKassa могла его найти */}
         <div

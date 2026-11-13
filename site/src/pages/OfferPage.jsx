@@ -14,7 +14,7 @@ export default function OfferPage() {
       <div className="max-w-5xl mx-auto px-4 sm:px-6">
         <p className="eyebrow mb-4">Документы</p>
         <h1 className="serif text-3xl md:text-4xl font-semibold mb-2">Договор-оферта</h1>
-        <p className="text-sm text-faint mb-8">Дата последнего обновления: 07 апреля 2026 г.</p>
+        <p className="text-sm text-faint mb-8">Дата последнего обновления: 13 ноября 2026 г.</p>
 
         <div className="grid lg:grid-cols-[16rem_1fr] gap-6 items-start">
         <div className="lg:order-2 min-w-0">
@@ -37,22 +37,32 @@ export default function OfferPage() {
 
           <div>
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">3. Порядок оплаты</h2>
-            <p>Оплата производится через платёжную систему ЮKassa (ООО «ЮMoney»). Исполнитель не обрабатывает и не хранит данные банковских карт.</p>
+            <p>Услуги оплачиваются с баланса (лицевого счёта) Пользователя в личном кабинете. Баланс пополняется через платёжную систему ЮKassa (ООО «ЮMoney»); если при оплате тарифа на балансе недостаточно средств, баланс пополняется на недостающую сумму, после чего тариф сразу оплачивается с баланса. Исполнитель не обрабатывает и не хранит данные банковских карт.</p>
             <p className="mt-2">Поддерживаемые способы оплаты: банковская карта (Visa, MasterCard, МИР), Система быстрых платежей (СБП), ЮMoney, T-Pay, Сбербанк Онлайн, Альфа-Клик и другие методы, доступные в ЮKassa.</p>
           </div>
 
-          <div>
-            <h2 className="serif text-lg font-semibold text-text-primary mb-2">4. Автопродление</h2>
-            <p>При оформлении подписки автопродление включается по умолчанию. За 1 день до окончания подписки с сохранённого способа оплаты списывается стоимость следующего периода. Автопродление можно отключить в личном кабинете.</p>
+          <div id="balance" className="scroll-mt-24">
+            <h2 className="serif text-lg font-semibold text-text-primary mb-2">4. Баланс</h2>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Средства на балансе используются только для оплаты услуг Сервиса.</li>
+              <li>Средства с баланса на счёт (банковскую карту) не возвращаются, проценты на остаток не начисляются.</li>
+              <li>Бонусы, начисленные Исполнителем (например, за приглашение друга), также используются только для оплаты услуг и не выводятся.</li>
+              <li>При пополнении баланса формируется кассовый чек на предоплату услуг; при оплате услуги с баланса — чек зачёта предоплаты. Чеки направляются на указанный email.</li>
+            </ul>
           </div>
 
           <div>
-            <h2 className="serif text-lg font-semibold text-text-primary mb-2">5. Возврат средств</h2>
+            <h2 className="serif text-lg font-semibold text-text-primary mb-2">5. Автопродление</h2>
+            <p>Для платных тарифов автопродление включено по умолчанию: в течение суток до окончания подписки стоимость следующего периода списывается с баланса, если на нём достаточно средств. Если средств недостаточно, подписка не продлевается и заканчивается в срок. Автопродление можно отключить в личном кабинете в разделе «Оплата и подписка».</p>
+          </div>
+
+          <div>
+            <h2 className="serif text-lg font-semibold text-text-primary mb-2">6. Возврат средств</h2>
             <p>Условия возврата описаны на странице <a href="/refund" className="text-brand hover:underline">«Условия возврата и отмены»</a>.</p>
           </div>
 
           <div>
-            <h2 className="serif text-lg font-semibold text-text-primary mb-2">6. Ограничения использования</h2>
+            <h2 className="serif text-lg font-semibold text-text-primary mb-2">7. Ограничения использования</h2>
             <p>Запрещается использование Сервиса для:</p>
             <ul className="list-disc pl-5 space-y-1 mt-2">
               <li>Действий, нарушающих законодательство РФ</li>
@@ -63,7 +73,7 @@ export default function OfferPage() {
           </div>
 
           <div>
-            <h2 className="serif text-lg font-semibold text-text-primary mb-2">7. Реквизиты Исполнителя</h2>
+            <h2 className="serif text-lg font-semibold text-text-primary mb-2">8. Реквизиты Исполнителя</h2>
             <p>{company}</p>
             {inn && <p>ИНН: {inn}</p>}
             {address && <p>Адрес: {address}</p>}

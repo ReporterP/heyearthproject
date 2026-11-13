@@ -3,6 +3,8 @@ import { useNavigate, Link } from 'react-router-dom'
 import { getProfile, getSubscription, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink, getMtproto } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import TrafficCard from '../components/TrafficCard.jsx'
+import WalletCard from '../components/WalletCard.jsx'
+import { getWallet } from '../api/wallet.js'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
@@ -213,6 +215,7 @@ export default function DashboardPage() {
   const [showHelpModal, setShowHelpModal] = useState(false)
 
   const [paymentPopup, setPaymentPopup] = useState(null) // { name, price, activated }
+  const [wallet, setWallet] = useState(null)
 
   useEffect(() => {
     if (!token) { navigate('/login'); return }
@@ -222,7 +225,9 @@ export default function DashboardPage() {
       getTrafficStats(token).catch(() => null),
       getDonationSettings().catch(() => null),
       getSubscribeLink(token).catch(() => null),
-    ]).then(([profileData, subData, trafficData, donationData, subLinkData]) => {
+      getWallet(token).catch(() => null),
+    ]).then(([profileData, subData, trafficData, donationData, subLinkData, walletData]) => {
+      setWallet(walletData)
       setProfile(profileData)
       if (subData?.items?.length > 0) {
         const active = subData.items.find(s => s.active) || subData.items[0]
@@ -418,11 +423,14 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {/* ─── Wallet: balance, top-up, what the next renewal does ─── */}
+        {wallet && <div className="mb-6"><WalletCard wallet={wallet} /></div>}
+
         {/* ─── Secondary actions grid (one consistent grid, no scattered buttons) ─── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           <NavTile
             to="/payments" delay={0}
-            title="Оплата и подписка" subtitle="История, карты, автопродление, пауза"
+            title="Оплата и подписка" subtitle="История платежей, автопродление"
             icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" /></svg>}
           />
           <NavTile

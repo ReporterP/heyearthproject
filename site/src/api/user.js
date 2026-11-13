@@ -75,15 +75,6 @@ export async function getSubscribeLink(token) {
   return apiFetch('/api/v1/user/subscribe-token', { token, fallback: 'Не удалось загрузить ссылку подписки.' })
 }
 
-// ── Cards ──
-export async function getUserCards(token) {
-  return apiFetch('/api/v1/user/cards', { token, fallback: 'Не удалось загрузить карты.' })
-}
-
-export async function deleteUserCard(token, cardId) {
-  return apiFetch(`/api/v1/user/cards/${cardId}`, { token, method: 'DELETE', fallback: 'Не удалось удалить карту.' })
-}
-
 // ── Refund ──
 export async function requestRefund(token, paymentId, reason) {
   return apiFetch('/api/v1/payment/refund', { token, method: 'POST', body: { payment_id: paymentId, reason }, fallback: 'Не удалось отправить заявку на возврат.' })
@@ -96,14 +87,6 @@ export async function toggleAutoRenew(token, enabled) {
 
 export async function getPaymentDetail(token, paymentId) {
   return apiFetch(`/api/v1/user/payments/${paymentId}`, { token, fallback: 'Не удалось загрузить платёж.' })
-}
-
-export async function pauseSubscription(token, months) {
-  return apiFetch('/api/v1/user/pause-subscription', { token, method: 'POST', body: { months }, fallback: 'Не удалось приостановить подписку.' })
-}
-
-export async function resumeSubscription(token) {
-  return apiFetch('/api/v1/user/resume-subscription', { token, method: 'POST', fallback: 'Не удалось возобновить подписку.' })
 }
 
 // ── MTProto ──

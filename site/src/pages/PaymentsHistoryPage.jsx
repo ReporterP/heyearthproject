@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getPayments, getProfile, getUserCards, getSubscription, deleteUserCard, toggleAutoRenew, requestRefund, pauseSubscription, resumeSubscription } from '../api/user.js'
+import { getPayments, getProfile, getSubscription, toggleAutoRenew, requestRefund } from '../api/user.js'
+import { getWallet, rub } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import LoadErrorCard from '../components/LoadErrorCard.jsx'
@@ -48,7 +49,7 @@ export default function PaymentsHistoryPage() {
   const [profile, setProfile] = useState(null)
   const [payments, setPayments] = useState([])
   const [loadError, setLoadError] = useState('')
-  const [cards, setCards] = useState([])
+  const [wallet, setWallet] = useState(null)
   const [loading, setLoading] = useState(true)
   const [autoRenew, setAutoRenew] = useState(null)   // synced from API (was: hardcoded true)
   const [autoRenewLoading, setAutoRenewLoading] = useState(false)
@@ -64,12 +65,12 @@ export default function PaymentsHistoryPage() {
       getProfile(token).catch(() => null),
       // No catch: a failed load must not look like «платежей пока нет».
       getPayments(token),
-      getUserCards(token).catch(() => ({ cards: [] })),
+      getWallet(token).catch(() => null),
       getSubscription(token).catch(() => null),
-    ]).then(([prof, payData, cardsData, subData]) => {
+    ]).then(([prof, payData, walletData, subData]) => {
       setProfile(prof)
       setPayments(payData?.items || [])
-      setCards(cardsData?.cards || [])
+      setWallet(walletData)
       // FIX: auto-renew now reflects the server, so the toggle tells the truth
       const active = subData?.items?.find(s => s.active) || subData?.items?.[0]
       if (active && typeof active.auto_renew === 'boolean') setAutoRenew(active.auto_renew)
@@ -114,69 +115,6 @@ export default function PaymentsHistoryPage() {
     } finally {
       setAutoRenewLoading(false)
     }
-  }
-
-  function handlePause(months) {
-    openModal({
-      title: 'Приостановить подписку',
-      message: `Приостановить на ${months} мес.? Доступ будет закрыт до конца паузы, подписка сохранится.`,
-      confirmLabel: 'Приостановить',
-      onConfirm: async () => {
-        await pauseSubscription(token, months)
-        setProfile(await getProfile(token).catch(() => profile))
-        setNotice(`Подписка приостановлена на ${months} мес.`)
-      },
-    })
-  }
-
-  function handleResume() {
-    openModal({
-      title: 'Возобновить подписку',
-      message: 'Доступ откроется сразу после возобновления.',
-      confirmLabel: 'Возобновить',
-      onConfirm: async () => {
-        await resumeSubscription(token)
-        setProfile(await getProfile(token).catch(() => profile))
-        setNotice('Подписка возобновлена')
-      },
-    })
-  }
-
-  function handleCancelSubscription() {
-    openModal({
-      title: 'Отменить подписку',
-      message: 'Автопродление выключится, сохранённые карты будут удалены. Доступ сохранится до конца оплаченного периода.',
-      confirmLabel: 'Отменить подписку',
-      danger: true,
-      onConfirm: async () => {
-        setAutoRenewLoading(true)
-        try {
-          await toggleAutoRenew(token, false)
-          setAutoRenew(false)
-          for (const card of cards) {
-            try { await deleteUserCard(token, card.payment_method_id || card.card_id) } catch {}
-          }
-          setCards([])
-          setNotice('Подписка отменена. Доступ сохранится до ' + formatDate(validUntil))
-        } finally {
-          setAutoRenewLoading(false)
-        }
-      },
-    })
-  }
-
-  function handleDeleteCard(card, title) {
-    openModal({
-      title: 'Удалить способ оплаты',
-      message: `Удалить «${title}»? Автопродление по этой карте перестанет работать.`,
-      confirmLabel: 'Удалить',
-      danger: true,
-      onConfirm: async () => {
-        await deleteUserCard(token, card.payment_method_id)
-        setCards(cards.filter(c => (c.payment_method_id || c.id) !== (card.payment_method_id || card.id)))
-        setNotice('Способ оплаты удалён')
-      },
-    })
   }
 
   function handleRefund(paymentId) {
@@ -245,8 +183,11 @@ export default function PaymentsHistoryPage() {
                   <p className="text-sm font-medium">Автопродление</p>
                   <p className="text-xs text-text-secondary mt-0.5">
                     {autoRenew
-                      ? `Спишем стоимость следующего периода ${validUntil ? formatDate(validUntil).split(',')[0] : 'в день окончания'}`
+                      ? `Спишем стоимость следующего периода с кошелька ${validUntil ? formatDate(validUntil).split(',')[0] : 'в день окончания'}`
                       : 'Подписка закончится и не продлится автоматически'}
+                    {autoRenew && wallet && (
+                      <> · на кошельке {rub(wallet.balance_kop)} — <Link to="/wallet" className="text-brand hover:text-brand-light">пополнить</Link></>
+                    )}
                   </p>
                 </div>
                 <button
@@ -267,69 +208,11 @@ export default function PaymentsHistoryPage() {
             <Empty
               icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-3.75 6h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 20.25z" /></svg>}
               title="Нет активной подписки"
-              hint="Выберите тариф — здесь появятся продление, способы оплаты и история."
+              hint="Выберите тариф — здесь появятся продление и история платежей."
               action={<Link to="/payment" className="btn-primary !py-2.5 !text-sm mt-4">Выбрать тариф</Link>}
             />
           </div>
         )}
-
-        {/* ─── Pause ─── */}
-        {hasActiveSub && (
-          <div className="card rounded-[22px] p-6 mb-5 reveal">
-            {isPaused ? (
-              <>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                  <h2 className="serif text-base font-semibold">Подписка на паузе</h2>
-                </div>
-                <p className="text-sm text-text-secondary mb-4">Доступ закрыт до {formatDate(pausedUntil)}. Карта сохранена, автопродление продолжится после возобновления.</p>
-                <button onClick={handleResume} className="btn-primary !py-2.5 !px-5 !text-sm">Возобновить сейчас</button>
-              </>
-            ) : (
-              <>
-                <h2 className="serif text-base font-semibold mb-1">Приостановить подписку</h2>
-                <p className="text-sm text-text-secondary mb-4">Не нужен сервис какое-то время? Поставьте на паузу — карта сохранится, списаний не будет.</p>
-                <div className="flex flex-wrap gap-2">
-                  {[1, 2, 3].map(m => (
-                    <button key={m} onClick={() => handlePause(m)} className="btn-ghost !py-2 !px-4 !text-sm">На {m} мес.</button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ─── Cards ─── */}
-        <div className="card rounded-[22px] p-6 mb-5 reveal">
-          <h2 className="serif text-base font-semibold mb-4">Способы оплаты</h2>
-          {cards.length === 0 ? (
-            <Empty
-              icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18" /></svg>}
-              title="Карты не сохранены"
-              hint="Отметьте «Сохранить карту» при оплате — тогда подписка сможет продлеваться сама."
-            />
-          ) : (
-            <div className="space-y-2.5">
-              {cards.map(card => {
-                const LABELS = { bank_card: 'Карта', sbp: 'СБП', yoo_money: 'ЮMoney', tinkoff_bank: 'T-Pay', sberbank: 'Сбер', alfabank: 'Alfa' }
-                const typeLabel = LABELS[card.type] || card.type || 'Метод'
-                const title = card.title || (card.last4 ? `•••• ${card.last4}` : typeLabel)
-                return (
-                  <div key={card.id || card.payment_method_id} className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-brand/10">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-7 rounded bg-brand/12 border border-brand/20 flex items-center justify-center text-[10px] font-bold text-brand flex-shrink-0">{typeLabel.slice(0, 4)}</div>
-                      <div className="min-w-0">
-                        <p className="font-medium text-sm truncate">{title}</p>
-                        <p className="text-xs text-text-secondary truncate">{card.card_type || card.issuer || typeLabel}</p>
-                      </div>
-                    </div>
-                    <button onClick={() => handleDeleteCard(card, title)} className="text-xs text-danger hover:brightness-125 transition flex-shrink-0 ml-3">Удалить</button>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
 
         {/* ─── History, grouped by month ─── */}
         <div className="card rounded-[22px] p-6 mb-5 reveal">
@@ -371,16 +254,6 @@ export default function PaymentsHistoryPage() {
           )}
         </div>
 
-        {/* ─── Danger zone ─── */}
-        {hasActiveSub && (
-          <div className="card rounded-[22px] p-6 reveal !border-danger/15">
-            <h2 className="serif text-base font-semibold mb-1">Отменить подписку</h2>
-            <p className="text-xs text-text-secondary mb-4">Выключит автопродление и удалит сохранённые карты. Доступ сохранится до {formatDate(validUntil)}.</p>
-            <button onClick={handleCancelSubscription} disabled={autoRenewLoading} className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-danger/8 hover:bg-danger/15 border border-danger/20 hover:border-danger/35 text-danger text-sm font-medium transition disabled:opacity-50">
-              Отменить подписку
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Confirm / input modal */}
