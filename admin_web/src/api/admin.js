@@ -18,9 +18,6 @@ export function fetchCapacity() {
 export function fetchUsersPaged(params) {
   return pagedFetch('/users', params)
 }
-export function createUser(payload) {
-  return apiFetch('/users', { method: 'POST', body: payload })
-}
 export function updateUser(id, payload) {
   return apiFetch(`/users/${id}`, { method: 'PATCH', body: payload })
 }

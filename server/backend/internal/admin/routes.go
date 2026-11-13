@@ -22,10 +22,8 @@ func RegisterRoutes() {
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodGet:
+		case http.MethodGet: // users are created by the clients themselves (C2: no form here)
 			RequirePermission("users.read", ListUsersHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("users.write", CreateUserHandler).ServeHTTP(w, r)
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}

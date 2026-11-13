@@ -169,44 +169,9 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: users, Total: total, Page: p.Page, PageSize: p.PageSize})
 }
 
-func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
-	var payload userPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if strings.TrimSpace(payload.UserID) == "" {
-		writeAdminError(w, http.StatusBadRequest, "user_id is required")
-		return
-	}
-
-	isBlocked := false
-	if payload.IsBlocked != nil {
-		isBlocked = *payload.IsBlocked
-	}
-	role := strings.TrimSpace(payload.Role)
-	if role == "" {
-		role = "user"
-	}
-
-	var telegramValue any
-	if payload.TelegramID != nil {
-		telegramValue = *payload.TelegramID
-	}
-
-	var id int
-	err := db.DB.QueryRow(`
-		INSERT INTO users (user_id, telegram_id, role, is_blocked, updated_at)
-		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-		RETURNING id
-	`, strings.TrimSpace(payload.UserID), telegramValue, role, isBlocked).Scan(&id)
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to create user")
-		return
-	}
-	WriteAuditLog(r, "create_user", "user", fmt.Sprintf("%d", id), map[string]string{"user_id": payload.UserID})
-	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
-}
+// userHasMoneyQuery: any paid payment or wallet movement of the user.
+const userHasMoneyQuery = `SELECT EXISTS (SELECT 1 FROM payments WHERE user_id = $1 AND status IN ('succeeded', 'paid', 'completed', 'refunded', 'partially_refunded'))
+	OR EXISTS (SELECT 1 FROM wallet_transactions WHERE user_id = $1)`
 
 func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parseLastPathInt(r.URL.Path)
@@ -217,12 +182,16 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	var payload userPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса (telegram_id — число)")
 		return
 	}
 
 	var telegramValue any
 	if payload.TelegramID != nil {
+		if *payload.TelegramID <= 0 {
+			writeAdminError(w, http.StatusBadRequest, "Telegram ID — положительное число")
+			return
+		}
 		telegramValue = *payload.TelegramID
 	}
 	platform := strings.ToLower(strings.TrimSpace(payload.PreferredPlatform))
@@ -236,10 +205,13 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $6
 	`, strings.TrimSpace(payload.UserID), telegramValue, strings.TrimSpace(payload.Role), payload.IsBlocked, platform, userID); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to update user")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить пользователя")
 		return
 	}
-	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), nil)
+	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), payload)
+	if payload.IsBlocked != nil {
+		biz.NotifySubscriptionChange() // a ban or an unban reaches xray and Bamboo at once
+	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User updated"})
 }
 
@@ -247,6 +219,17 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
+		return
+	}
+	// Money stays on record (54-ФЗ receipts, the wallet ledger): a user who ever paid or had a
+	// wallet movement is blocked, never deleted (C2).
+	var hasMoney bool
+	if err := db.DB.QueryRow(userHasMoneyQuery, userID).Scan(&hasMoney); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить платежи пользователя")
+		return
+	}
+	if hasMoney {
+		writeAdminError(w, http.StatusConflict, "У пользователя есть платежи или движения по кошельку — удалять нельзя (учёт и чеки). Заблокируйте его")
 		return
 	}
 	result, err := db.DB.Exec(`DELETE FROM users WHERE id = $1`, userID)
