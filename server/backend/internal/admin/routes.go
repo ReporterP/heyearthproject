@@ -250,14 +250,6 @@ func RegisterRoutes() {
 	// Capacity widget — read-only Hub+Exit headroom snapshot (CPU/traffic vs ceiling).
 	http.HandleFunc("/api/admin/capacity", withMethod(http.MethodGet, RequirePermission("dashboard.read", CapacityHandler)))
 
-	// Auto-tuner
-	http.HandleFunc("/api/admin/auto-tuner/status", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerStatusHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/history", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerHistoryHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/toggle", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerToggleHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/interval", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerIntervalHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/run-now", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerRunNowHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/cleanup", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerCleanupHandler)))
-
 	// Plans (subscription tariffs)
 	http.HandleFunc("/api/admin/plans", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -393,28 +385,6 @@ func RegisterRoutes() {
 	// B2B analytics — aggregate KPIs (counts by status, MRR, top tenants).
 	http.HandleFunc("/api/admin/b2b-analytics",
 		AuthMiddleware(RequirePermission("tenants.read", B2BAnalyticsHandler).ServeHTTP))
-
-	// Traffic masking
-	http.HandleFunc("/api/admin/traffic-masking", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("traffic_masking.read", ListTrafficMaskingRulesHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("traffic_masking.write", CreateTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/traffic-masking/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPatch:
-			RequirePermission("traffic_masking.write", UpdateTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		case http.MethodDelete:
-			RequirePermission("traffic_masking.write", DeleteTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
 
 	// ------------------------------------------------------------------
 	// Direct routing (services that bypass the proxy chain)

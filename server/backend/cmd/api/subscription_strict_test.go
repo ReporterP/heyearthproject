@@ -132,17 +132,16 @@ func TestHysteria2ObfsPasswordNeverRegeneratesOnReadError(t *testing.T) {
 // Absent / blank settings keep their documented defaults (no 503 for those).
 func TestSubscriptionDefaultsForAbsentSettings(t *testing.T) {
 	s := goldenScript()
-	for _, k := range []string{"reality_sni_domain", "hub_main_server_host", "cdn_host", "config_version"} {
+	for _, k := range []string{"reality_sni_domain", "hub_main_server_host", "config_version"} {
 		delete(s.settings, k)
 	}
-	s.settings["cdn_xh_path"] = "   "
 	useScriptDB(t, s)
 	rec := subscriptionRequest(t, "Happ/3.1", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d %q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"sni=" + biz.DefaultRealitySNI + "&", "sni=hiearth.ru&insecure=0", "@cdn.hiearth.ru:443", "path=%2Fcdn-xh&"} {
+	for _, want := range []string{"sni=" + biz.DefaultRealitySNI + "&", "sni=hiearth.ru&insecure=0"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks default %q", want)
 		}

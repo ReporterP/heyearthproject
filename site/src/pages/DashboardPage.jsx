@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, applyPromocode, createDonation, getTrafficStats, getDonationSettings, getSubscribeLink, getMtproto } from '../api/user.js'
+import { getProfile, getSubscription, applyPromocode, getTrafficStats, getSubscribeLink, getMtproto } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import TrafficCard from '../components/TrafficCard.jsx'
 import WalletCard from '../components/WalletCard.jsx'
@@ -199,13 +199,6 @@ export default function DashboardPage() {
   const [promoMsg, setPromoMsg] = useState('')
   const [promoError, setPromoError] = useState('')
 
-  // Donation
-  const [donationAmount, setDonationAmount] = useState(500)
-  const [customDonationAmount, setCustomDonationAmount] = useState('')
-  const [donationLoading, setDonationLoading] = useState(false)
-  const [donationError, setDonationError] = useState('')
-  const [donationSettings, setDonationSettings] = useState(null)
-  const [donationSettingsLoaded, setDonationSettingsLoaded] = useState(false)
 
   // Traffic + subscribe link
   const [trafficStats, setTrafficStats] = useState(null)
@@ -224,10 +217,9 @@ export default function DashboardPage() {
       getProfile(token),
       getSubscription(token).catch(() => null),
       getTrafficStats(token).catch(() => null),
-      getDonationSettings().catch(() => null),
       getSubscribeLink(token).catch(() => null),
       getWallet(token).catch(() => null),
-    ]).then(([profileData, subData, trafficData, donationData, subLinkData, walletData]) => {
+    ]).then(([profileData, subData, trafficData, subLinkData, walletData]) => {
       setWallet(walletData)
       setProfile(profileData)
       if (subData?.items?.length > 0) {
@@ -235,8 +227,6 @@ export default function DashboardPage() {
         setSubscription(active)
       }
       setTrafficStats(trafficData)
-      setDonationSettings(donationData)
-      setDonationSettingsLoaded(true)
       setSubscribeLink(subLinkData)
 
       // Check for pending payment from PaymentPage redirect
@@ -267,11 +257,6 @@ export default function DashboardPage() {
   const isExpired = validUntil ? new Date(validUntil) < new Date() : false
   const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired && !isPaused
 
-  const donationEnabled = donationSettingsLoaded
-    ? (donationSettings?.donation_enabled !== 'false' && donationSettings?.donation_enabled !== false)
-    : true
-  const donationTitle = donationSettings?.donation_title || 'Поддержать разработчика'
-  const donationText = donationSettings?.donation_text || null
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -303,23 +288,6 @@ export default function DashboardPage() {
     }
   }
 
-  const effectiveDonationAmount = customDonationAmount ? Number(customDonationAmount) : donationAmount
-
-  async function handleDonate() {
-    if (!effectiveDonationAmount || effectiveDonationAmount < 50) return
-    setDonationLoading(true)
-    setDonationError('')
-    try {
-      const returnUrl = window.location.origin + '/dashboard'
-      const data = await createDonation(token, effectiveDonationAmount, returnUrl)
-      if (data.confirmation_url) window.location.href = data.confirmation_url
-      else setDonationError('Не удалось создать платёж. Попробуйте позже.')
-    } catch (e) {
-      setDonationError(e.message || 'Не удалось создать платёж. Попробуйте позже.')
-    } finally {
-      setDonationLoading(false)
-    }
-  }
 
   /* ─── Loading (skeleton, not a bare spinner) ─── */
   if (loading) return <CabinetSkeleton />
@@ -466,8 +434,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ─── Quiet row: promo + donation, side by side on desktop ─── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ─── Quiet row: promo ─── */}
+        <div className="grid grid-cols-1 gap-4">
           {/* Promo code */}
           <div className="card rounded-[22px] p-6 reveal">
             <h2 className="serif text-base font-semibold mb-1">Промокод</h2>
@@ -494,41 +462,6 @@ export default function DashboardPage() {
             {promoError && <p className="text-danger text-sm mt-3 animate-fade-in">{promoError}</p>}
           </div>
 
-          {/* Donation */}
-          {donationEnabled && (
-            <div className="card rounded-[22px] p-6 reveal !border-accent/15">
-              <h2 className="serif text-base font-semibold mb-1">{donationTitle}</h2>
-              <p className="text-xs text-text-secondary mb-4">{donationText ? '' : 'Поможете выпустить нативное приложение для iOS/macOS'}{donationText}</p>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {[100, 300, 500, 1000].map(amt => (
-                  <button
-                    key={amt}
-                    onClick={() => { setDonationAmount(amt); setCustomDonationAmount('') }}
-                    className={`px-3.5 py-2 rounded-xl text-sm font-medium transition-all duration-200 min-h-[40px] ${!customDonationAmount && donationAmount === amt ? 'bg-accent text-[#2a1e02] font-semibold' : 'glass hover:bg-white/10 text-text-secondary hover:text-text-primary'}`}
-                  >{amt} ₽</button>
-                ))}
-                <input
-                  type="number" min="50" step="50" value={customDonationAmount}
-                  onChange={e => setCustomDonationAmount(e.target.value)}
-                  placeholder="Своя"
-                  className="w-24 px-3 py-2 rounded-xl bg-white/5 border border-accent/15 focus:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent/25 text-sm placeholder:text-faint"
-                />
-              </div>
-              <button
-                disabled={donationLoading || effectiveDonationAmount < 50}
-                onClick={handleDonate}
-                className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-full font-semibold text-sm bg-accent text-[#2a1e02] transition-all duration-200 hover:brightness-105 active:scale-[0.97] disabled:opacity-50 min-h-[44px]"
-              >
-                {donationLoading ? (
-                  <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}><path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" /></svg>
-                )}
-                Поддержать — {effectiveDonationAmount} ₽
-              </button>
-              {donationError && <p className="text-danger text-sm mt-3">{donationError}</p>}
-            </div>
-          )}
         </div>
       </div>
 

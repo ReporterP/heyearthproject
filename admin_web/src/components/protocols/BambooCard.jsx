@@ -33,9 +33,9 @@ export default function BambooCard() {
 
   const v = bambooVerdict(st)
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-base font-semibold text-primary">Бамбук <span className="text-tertiary font-normal">· Hysteria2 на Hub</span></h3>
+        <h3 className="text-sm font-semibold text-primary">Бамбук на Hub</h3>
         <Badge variant={v.variant}>{v.label}</Badge>
       </CardHeader>
       <CardBody>

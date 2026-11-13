@@ -440,7 +440,7 @@ func (m *entryMonitor) failover(now time.Time, cur biz.EntryFailover, enabled bo
 	case foAbandon:
 		m.resolve(entryFailoverAlertKey(cur.Target), fmt.Sprintf("Резервный вход %s тоже перестал отвечать — основные строки вернулись на основной вход.", name(cur.Target)))
 		m.raise(entryNoReserveAlert, AlertCritical, "Основной и резервные входы недоступны",
-			"Основной вход недоступен снаружи, здоровых резервных входов нет. Работают только строки «☁️ Облако», если CDN включён.")
+			"Основной вход недоступен снаружи, здоровых резервных входов нет. Пользователи не подключатся, пока Hub или вход не заработает.")
 	case foDisabled:
 		m.resolve(entryFailoverAlertKey(cur.Target), "Автоподмена выключена в админке — основные строки вернулись на основной вход.")
 	}

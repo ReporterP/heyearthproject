@@ -195,8 +195,6 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "tenants.write", Name: "Tenants Write", Description: "Manage B2B tenants"},
 	{Key: "servers.logs", Name: "Server Logs", Description: "View server logs"},
 	{Key: "servers.files", Name: "Server Files", Description: "Browse server files"},
-	{Key: "traffic_masking.read", Name: "Traffic Masking Read", Description: "View traffic masking rules"},
-	{Key: "traffic_masking.write", Name: "Traffic Masking Write", Description: "Manage traffic masking rules"},
 	{Key: "routing.direct.view", Name: "Direct Routing View", Description: "View direct routing services and their plan attachments"},
 	{Key: "routing.direct.manage", Name: "Direct Routing Manage", Description: "Create, update, delete and import direct routing services"},
 	{Key: "audit.read", Name: "Audit Log Read", Description: "View admin audit log"},

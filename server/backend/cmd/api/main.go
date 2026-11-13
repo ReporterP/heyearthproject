@@ -708,19 +708,6 @@ func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleDonationSettings(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"donation_enabled": biz.GetSettingOrDefault("donation_enabled", "true"),
-		"donation_title":   biz.GetSettingOrDefault("donation_title", "Поддержать разработчика"),
-		"donation_text":    biz.GetSettingOrDefault("donation_text", ""),
-	})
-}
-
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -845,6 +832,11 @@ func main() {
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
 
+	// Monitors start here, not inside StartXraySyncLoop (D2): a Hub without xray still gets
+	// the tunnel monitor (the Bamboo path does not need xray) and the certificate alarm.
+	StartTunnelHealthMonitor()
+	StartCertExpiryMonitor()
+
 	// Auth-only loopback listener for hysteria-server (127.0.0.1:8001). Bound before the
 	// first Hysteria2 sync, which writes this address into /etc/hysteria/server.yaml.
 	if _, err := startHysteria2AuthListener(handleHysteria2Auth); err != nil {
@@ -964,7 +956,6 @@ func main() {
 	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(codeLimiter.Middleware(handleRedeemCode)))
 	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
 	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(codeLimiter.Middleware(handleApplyPromocode)))
-	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
 	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
 
 	// Auto-renew toggle
@@ -1015,7 +1006,6 @@ func main() {
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
-	http.HandleFunc("/api/v1/app/donation-settings", apiLimiter.Middleware(handleDonationSettings))
 
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()

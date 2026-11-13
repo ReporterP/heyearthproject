@@ -24,9 +24,6 @@ export function updateUser(id, payload) {
 export function deleteUser(id) {
   return apiFetch(`/users/${id}`, { method: 'DELETE' })
 }
-export function fetchUserDevices(userId) {
-  return apiFetch(`/users/${userId}/devices`)
-}
 export function fetchUserSubscriptions(userDbId) {
   return pagedFetch('/subscriptions', { user_db_id: userDbId, page: 1, pageSize: 100, sort: 'valid_until', dir: 'desc' })
 }
@@ -37,10 +34,6 @@ export function fetchUserTraffic(userDbId) {
   return apiFetch(`/users/${userDbId}/traffic`)
 }
 
-// ── Subscriptions ──
-export function fetchSubscriptionsPaged(params) {
-  return pagedFetch('/subscriptions', params)
-}
 export function saveSubscription(payload) {
   return apiFetch('/subscriptions', { method: 'POST', body: payload })
 }
@@ -86,22 +79,13 @@ export function cancelPayment(id, reason = '', amount = 0) {
 export function checkPaymentStatus(id) {
   return apiFetch(`/payments/${id}/check-status`, { method: 'POST' })
 }
-export function resendPaymentNotifications() {
-  return apiFetch('/payments/resend', { method: 'POST' })
-}
 
 // ── Servers ──
 export function fetchServersPaged(params) {
   return pagedFetch('/servers', params)
 }
-export function fetchServerDetail(id) {
-  return apiFetch(`/servers/${id}`)
-}
 export function fetchHysteria2Status() {
   return apiFetch('/hysteria2/status')
-}
-export function updateServer(id, payload) {
-  return apiFetch(`/servers/${id}`, { method: 'PATCH', body: payload })
 }
 export function runServerAction(id, action) {
   return apiFetch(`/servers/${id}/actions`, { method: 'POST', body: { action } })
@@ -139,29 +123,11 @@ export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 }
   const params = new URLSearchParams({ service, tail })
   return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')
 }
-export function fetchServerFiles(serverId, path) {
-  const params = new URLSearchParams({ path })
-  return apiFetch(`/servers/${serverId}/files?${params}`)
-}
 
-// ── SSH Keys ──
-export function fetchSshKeys() {
-  return apiFetch('/ssh-keys')
-}
-export function createSshKey(name, privateKey) {
-  return apiFetch('/ssh-keys', { method: 'POST', body: { name, private_key: privateKey } })
-}
-export function updateSshKey(id, name, privateKey) {
-  return apiFetch(`/ssh-keys/${id}`, { method: 'PATCH', body: { name, private_key: privateKey } })
-}
 export function deleteSshKey(id) {
   return apiFetch(`/ssh-keys/${id}`, { method: 'DELETE' })
 }
 
-// ── Releases ──
-export function fetchReleases() {
-  return apiFetch('/releases')
-}
 export function uploadRelease({ platform, version, releaseNotes, mandatory, minSupportedVersion, file, activate }) {
   const fd = new FormData()
   fd.append('platform', platform)
@@ -173,23 +139,7 @@ export function uploadRelease({ platform, version, releaseNotes, mandatory, minS
   fd.append('file', file)
   return apiFetch('/releases', { method: 'POST', body: fd })
 }
-export function activateRelease(id) {
-  return apiFetch('/releases/activate', { method: 'POST', body: { release_id: id } })
-}
 
-// ── Traffic Masking ──
-export function fetchTrafficMaskingRules() {
-  return apiFetch('/traffic-masking')
-}
-export function createTrafficMaskingRule(payload) {
-  return apiFetch('/traffic-masking', { method: 'POST', body: payload })
-}
-export function updateTrafficMaskingRule(id, payload) {
-  return apiFetch(`/traffic-masking/${id}`, { method: 'PATCH', body: payload })
-}
-export function deleteTrafficMaskingRule(id) {
-  return apiFetch(`/traffic-masking/${id}`, { method: 'DELETE' })
-}
 
 // ── Admin Users & Roles ──
 export function fetchAdminUsers() {
@@ -233,13 +183,6 @@ export function fetchAuditLog(params) {
   return pagedFetch('/audit-log', params)
 }
 
-// ── Traffic ──
-export function fetchTrafficUsers(params) {
-  return pagedFetch('/traffic', params)
-}
-export function fetchTrafficUserDetail(userId, period = 'month') {
-  return apiFetch(`/traffic/${encodeURIComponent(userId)}?period=${period}`)
-}
 export function fetchTrafficChart(days = 30) {
   return apiFetch(`/traffic-chart?days=${days}`)
 }
@@ -317,25 +260,6 @@ export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body 
 // Only returns a new secret for the domain; nothing is saved until saveMTProto.
 export const generateMTProtoSecret = (frontingDomain) => apiFetch('/mtproto/generate-secret', { method: 'POST', body: { fronting_domain: frontingDomain } })
 
-// ── Auto-Tuner ──
-export function fetchAutoTunerStatus() {
-  return apiFetch('/auto-tuner/status')
-}
-export function fetchAutoTunerHistory(page = 1, pageSize = 30) {
-  return apiFetch(`/auto-tuner/history?page=${page}&page_size=${pageSize}`)
-}
-export function toggleAutoTuner(enabled) {
-  return apiFetch('/auto-tuner/toggle', { method: 'POST', body: { enabled } })
-}
-export function setAutoTunerInterval(hours) {
-  return apiFetch('/auto-tuner/interval', { method: 'POST', body: { hours } })
-}
-export function runAutoTunerNow() {
-  return apiFetch('/auto-tuner/run-now', { method: 'POST' })
-}
-export function cleanupAutoTunerHistory(days = 7) {
-  return apiFetch('/auto-tuner/cleanup', { method: 'POST', body: { days } })
-}
 
 // ── Plans (subscription tariffs) ──
 export function fetchPlans() {

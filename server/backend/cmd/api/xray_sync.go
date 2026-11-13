@@ -250,7 +250,7 @@ func withSyncTimeout[T any](fn func(ctx context.Context) (T, error)) (T, error) 
 // returned, so the sync aborts and xray keeps running its current config.
 // biz.GetSettingOrDefault must not be used on this path: it turns a failed read
 // into the default, i.e. a one-off DB error into a structural diff and an xray
-// restart with a wrong config (an SNI no client uses, a vanished CDN inbound…).
+// restart with a wrong config (an SNI no client uses…).
 func settingForSync(ctx context.Context, get func(context.Context, string) (string, error), key, def string) (string, error) {
 	v, err := get(ctx, key)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -274,7 +274,6 @@ type xraySyncReads struct {
 	setting        func(ctx context.Context, key string) (string, error) // sql.ErrNoRows = absent
 	clients        func(ctx context.Context) ([]biz.ActiveVlessClient, error)
 	exitNodes      func(ctx context.Context) ([]biz.ExitNodeTunnel, error) // online exits, any tunnel_status
-	maskingRules   func(ctx context.Context) ([]biz.TrafficMaskingRule, error)
 	directPlanIDs  func(ctx context.Context) ([]int, error)
 	directServices func(ctx context.Context) ([]biz.DirectRouteService, error)
 	planServers    func(ctx context.Context) (map[int][]int, error)
@@ -287,7 +286,6 @@ var xrayDBReads = xraySyncReads{
 	setting:        biz.GetSettingContext,
 	clients:        biz.ListActiveVlessClientsContext,
 	exitNodes:      biz.ListOnlineExitNodesContext,
-	maskingRules:   biz.ListActiveTrafficMaskingRulesContext,
 	directPlanIDs:  biz.GetPlanIDsWithDirectRoutesContext,
 	directServices: biz.ListActiveDirectRouteServicesContext,
 	planServers:    biz.ListPlanServersContext,
@@ -299,13 +297,10 @@ var xrayDBReads = xraySyncReads{
 type xraySettings struct {
 	realitySNI     string   // reality_sni_domain
 	mainServerHost string   // main_server_host (XHTTP Host header)
-	cdnEnabled     bool     // cdn_enabled
-	cdnXHPath      string   // cdn_xh_path (read only while the CDN is enabled)
-	cdnHost        string   // cdn_host (read only while the CDN is enabled)
 	dnsServers     []string // dns_servers
 	muxConcurrency int      // mux_concurrency (Hub→exit tunnels)
 	// reality_fingerprint is deliberately not an input: the Hub→exit TCP path has its own fixed
-	// exitVRFingerprint (xray_exits.go), so the auto-tuner's rotations never restart xray.
+	// exitVRFingerprint (xray_exits.go), so a change of the user-facing one never restarts xray.
 }
 
 // xrayInputs is everything buildXrayConfig needs; nothing else is read.
@@ -313,8 +308,7 @@ type xrayInputs struct {
 	keys           xrayRealityKeys
 	settings       xraySettings
 	clients        []biz.ActiveVlessClient
-	exitNodes      []biz.ExitNodeTunnel // online; routed only while tunnel_status is healthy
-	maskingRules   []biz.TrafficMaskingRule
+	exitNodes      []biz.ExitNodeTunnel     // online; routed only while tunnel_status is healthy
 	directPlanIDs  []int                    // active plans with direct_routing_enabled, ascending
 	directServices []biz.DirectRouteService // active services, shared by all those plans
 	planServers    map[int][]int            // plan_servers: plan id → server ids
@@ -331,8 +325,6 @@ const (
 	xrayRealityPort       = 10443
 	xrayRealityPPTag      = "vless-reality-pp"
 	xrayRealityPPPort     = 10444
-	defaultCDNXHPath      = "/cdn-xh"
-	defaultCDNHost        = "cdn.hiearth.ru"
 	defaultDNSServers     = "8.8.8.8,1.1.1.1"
 	defaultMuxConcurrency = 8
 )
@@ -354,18 +346,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 	if s.mainServerHost, err = setting("main_server_host", defaultMainServerHost); err != nil {
 		return in, err
 	}
-	cdn, err := setting("cdn_enabled", "false")
-	if err != nil {
-		return in, err
-	}
-	if s.cdnEnabled = cdn == "true"; s.cdnEnabled {
-		if s.cdnXHPath, err = setting("cdn_xh_path", defaultCDNXHPath); err != nil {
-			return in, err
-		}
-		if s.cdnHost, err = setting("cdn_host", defaultCDNHost); err != nil {
-			return in, err
-		}
-	}
 	dns, err := setting("dns_servers", defaultDNSServers)
 	if err != nil {
 		return in, err
@@ -382,9 +362,6 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 	}
 	if in.exitNodes, err = withSyncTimeout(r.exitNodes); err != nil {
 		return in, fmt.Errorf("list online exit nodes: %w", err)
-	}
-	if in.maskingRules, err = withSyncTimeout(r.maskingRules); err != nil {
-		return in, fmt.Errorf("list traffic masking rules: %w", err)
 	}
 	if in.directPlanIDs, err = withSyncTimeout(r.directPlanIDs); err != nil {
 		return in, fmt.Errorf("list plans with direct routes: %w", err)
@@ -438,7 +415,6 @@ type xrayBuild struct {
 	vlessClients int  // VLESS clients per inbound (server entry included)
 	excluded     int  // clients the quota cutoff left out
 	exits        int  // routed (healthy) exits
-	maskRules    int  // mask-* outbounds
 	noExit       bool // no usable exit: every user inbound is blocked
 }
 
@@ -501,8 +477,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	}
 
 	// ── Reality SNI ──
-	// app_settings reality_sni_domain (the auto-tuner picks it from the RU
-	// candidates); while the key is absent biz.DefaultRealitySNI, the same
+	// app_settings reality_sni_domain; while the key is absent biz.DefaultRealitySNI, the same
 	// default the subscription URIs use. The subscription's sni= must be one of
 	// serverNames, or every handshake fails.
 	realitySNI := settings.realitySNI
@@ -602,43 +577,6 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		},
 	}
 
-	// ☁️ vless-xhttp-cdn — VLESS over XHTTP inbound on loopback :11443 for
-	// CDN-fronted path. Cloudflare terminates user-side TLS, our nginx vhost
-	// for cdn.hiearth.ru proxies plain HTTP to here. No security layer at
-	// xray level — TLS already terminated by CF.
-	//
-	// XHTTP chosen over WebSocket because xray 26.x deprecates WS ("Please
-	// migrate to XHTTP H2 & H3"). XHTTP also splits up/down streams (packet-up
-	// mode) which plays better with CF's HTTP/2 multiplexing quirks.
-	//
-	// Toggle-gated via app_settings.cdn_enabled — inbound only generated when
-	// feature is enabled. Re-uses vlessClientsXHTTP (same per-user UUIDs, no
-	// flow because XHTTP is incompatible with XTLS Vision).
-	if settings.cdnEnabled {
-		inbounds = append(inbounds, map[string]interface{}{
-			"tag":      "vless-xhttp-cdn",
-			"listen":   "127.0.0.1",
-			"port":     11443,
-			"protocol": "vless",
-			"settings": map[string]interface{}{
-				"clients":    vlessClientsXHTTP,
-				"decryption": "none",
-			},
-			"streamSettings": map[string]interface{}{
-				"network": "xhttp",
-				"xhttpSettings": map[string]interface{}{
-					"path": settings.cdnXHPath,
-					"host": settings.cdnHost,
-					"mode": "packet-up", // CDN-friendly: separate up/down HTTP requests
-				},
-			},
-			"sniffing": map[string]interface{}{
-				"enabled":      true,
-				"destOverride": []string{"http", "tls", "quic"},
-			},
-		})
-	}
-
 	// ── Xray Stats API ──
 	// dokodemo-door inbound для gRPC API доступа к статистике
 	inbounds = append(inbounds, map[string]interface{}{
@@ -673,7 +611,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	inbounds = append(inbounds, exitCfg.probeInbounds...)
 
 	// Every inbound except api-in carries user traffic; the no-exit block rule
-	// must cover all of them (C2: the old shadowsocks inbound, socks-local and CDN used to leak).
+	// must cover all of them (C2: the old shadowsocks and CDN inbounds used to leak).
 	userInbounds := userInboundTags(inbounds)
 
 	// ── Outbounds ──
@@ -698,29 +636,6 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	outbounds = append(outbounds, exitCfg.outbounds...)
 	outbounds = append(outbounds, exitCfg.probeOutbounds...)
 
-	// ── Traffic masking rules ──
-	// Each rule gets a Hub-local freedom outbound mask-<id>; mask_domain is not
-	// used by the generated config (see the routing rules below).
-	type maskRouteEntry struct {
-		sourceDomain string
-		outboundTag  string
-	}
-	var maskRouteEntries []maskRouteEntry
-	for _, rule := range in.maskingRules {
-		tag := fmt.Sprintf("mask-%d", rule.ID)
-		outbound := map[string]interface{}{
-			"tag": tag, "protocol": "freedom",
-			"settings": map[string]interface{}{
-				"domainStrategy": "UseIP",
-			},
-		}
-		outbounds = append(outbounds, outbound)
-		maskRouteEntries = append(maskRouteEntries, maskRouteEntry{
-			sourceDomain: rule.SourceDomain,
-			outboundTag:  tag,
-		})
-	}
-
 	// ── Direct-routing outbound ──
 	// Unconditional: cheap, idempotent, avoids "tag not found" errors at Xray
 	// startup if rule construction below emits outboundTag before outbound is
@@ -734,7 +649,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	// ── Routing (политики безопасности) ──
 	// The first rules are the security baseline (see baseSecurityRules): xray's own DNS, then
 	// everything that leads back to the Hub itself or to a private range is blocked BEFORE any
-	// direct-freedom / mask-* rule appended below can match it.
+	// direct-freedom rule appended below can match it.
 	rules := baseSecurityRules(in.hubIPs)
 	rules = append(rules, exitCfg.probeRules...) // after the private/loopback block, before everything else
 
@@ -817,22 +732,6 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 				"outboundTag": "direct-freedom",
 			})
 		}
-	}
-
-	// Traffic masking routing rules. NOT premium-only, whatever the name
-	// suggests: each rule matches its source domain for EVERY user and inbound
-	// (socks-local included) and sends it out of the Hub's own IP through its
-	// mask-* freedom outbound — no SNI or Host rewriting happens (mask_domain is
-	// unused). They precede the plan rules, the catch-all balancer and, with no
-	// exit up, noExitBlockRule, so such domains keep working Hub-direct like the
-	// RU-direct services. Kept as is (pre-existing behaviour, flagged for the
-	// owner); checkNoDirectLeak requires them to follow the private-range block.
-	for _, entry := range maskRouteEntries {
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"domain":      []string{"domain:" + entry.sourceDomain},
-			"outboundTag": entry.outboundTag,
-		})
 	}
 
 	routing := map[string]interface{}{
@@ -927,7 +826,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 
 	} else {
 		// Нет здоровых exit-нод: блокируем ВЕСЬ пользовательский трафик на всех
-		// пользовательских inbound (включая socks-local, CDN).
+		// пользовательских inbound (включая socks-local).
 		// Явные RU-direct правила выше продолжают работать. Исключение — DNS (порт 53):
 		// клиенты AWG резолвят через 1.1.1.1/8.8.8.8 внутри туннеля, без ответа не
 		// откроются даже RU-direct сайты. Запрос глушит outbound dns-hijack и отвечает
@@ -1034,7 +933,6 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		vlessClients: len(vlessClients),
 		excluded:     excluded,
 		exits:        len(exitCfg.routes),
-		maskRules:    len(maskRouteEntries),
 		noExit:       noExit,
 	}, nil
 }
@@ -1174,8 +1072,8 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	// Restarted: structural change, failed API apply or stale runtime.
 	recordXrayRestart(restartCause)
 
-	log.Printf("[xray-sync] Конфиг обновлён (рестарт: %s): %d VLESS клиентов, %d exit-нод, %d правил маскировки",
-		restartCause, b.vlessClients, b.exits, b.maskRules)
+	log.Printf("[xray-sync] Конфиг обновлён (рестарт: %s): %d VLESS клиентов, %d exit-нод",
+		restartCause, b.vlessClients, b.exits)
 
 	return b.excluded, nil
 }
@@ -1547,15 +1445,6 @@ func StartXraySyncLoop() {
 	}()
 
 	log.Println("[xray-sync] Фоновая синхронизация запущена (каждые 5 мин)")
-
-	// Запускаем мониторинг туннелей до exit-нод
-	StartTunnelHealthMonitor()
-
-	// Запускаем мониторинг истечения mTLS сертификатов
-	StartCertExpiryMonitor()
-
-	// Запускаем auto-tuner для оптимизации VPN конфигов
-	StartAutoTuner()
 }
 
 // ─────────────────────── mTLS Certificate Expiry Monitor ───────────────────────
@@ -1598,12 +1487,32 @@ func checkCertExpiry() {
 			continue
 		}
 		daysLeft := int(time.Until(cert.NotAfter).Hours() / 24)
-		if daysLeft < 0 {
-			log.Printf("[cert-monitor] CRITICAL: %s ИСТЁК %d дней назад!", name, -daysLeft)
-		} else if daysLeft < 7 {
-			log.Printf("[cert-monitor] CRITICAL: %s истекает через %d дней!", name, daysLeft)
-		} else if daysLeft < 30 {
-			log.Printf("[cert-monitor] WARNING: %s истекает через %d дней", name, daysLeft)
+		level, title := certAlert(name, daysLeft)
+		key := "cert-expiry-" + name
+		if level == "" {
+			certResolve(key, name+": сертификат действует ещё "+strconv.Itoa(daysLeft)+" дн.")
+			continue
 		}
+		log.Printf("[cert-monitor] %s", title)
+		certRaise(key, level, title, "Файл "+path+". Перевыпуск: go run ./cmd/deploy --rotate-node-agent-certs (клиентский сертификат API) или --ensure-hub-provisioning (CA).")
 	}
+}
+
+// Seams: the alarm (D2: the monitor used to only log).
+var (
+	certRaise   = RaiseAlertNoRepeat
+	certResolve = ResolveAlert
+)
+
+// certAlert: critical when expired or under 7 days, warn under 30, nothing otherwise.
+func certAlert(name string, daysLeft int) (AlertLevel, string) {
+	switch {
+	case daysLeft < 0:
+		return AlertCritical, "mTLS-сертификат " + name + " истёк " + strconv.Itoa(-daysLeft) + " дн. назад — Hub не управляет нодами"
+	case daysLeft < 7:
+		return AlertCritical, "mTLS-сертификат " + name + " истекает через " + strconv.Itoa(daysLeft) + " дн."
+	case daysLeft < 30:
+		return AlertWarn, "mTLS-сертификат " + name + " истекает через " + strconv.Itoa(daysLeft) + " дн."
+	}
+	return "", ""
 }

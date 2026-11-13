@@ -59,9 +59,6 @@ export async function applyPromocode(token, code) {
   return apiFetch('/api/v1/payment/apply-promocode', { token, method: 'POST', body: { code }, fallback: 'Не удалось применить промокод.' })
 }
 
-export async function createDonation(token, amount, returnUrl) {
-  return apiFetch('/api/v1/payment/donate', { token, method: 'POST', body: { amount, return_url: returnUrl }, fallback: 'Не удалось создать платёж.' })
-}
 
 export async function getTrafficStats(token) {
   return apiFetch('/api/v1/user/traffic', { token, fallback: 'Не удалось загрузить статистику трафика.' })
@@ -90,11 +87,3 @@ export async function getMtproto(token) {
   return apiFetch('/api/v1/user/mtproto', { token, fallback: 'Не удалось загрузить прокси для Telegram.' })
 }
 
-// ── Donation settings ──
-export async function getDonationSettings() {
-  try {
-    return await apiFetch('/api/v1/app/donation-settings')
-  } catch {
-    return null
-  }
-}

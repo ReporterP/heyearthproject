@@ -11,8 +11,7 @@ import (
 
 // DefaultRealitySNI is the Reality SNI of the Hub (dest + serverNames of its
 // VLESS inbounds, sni= of the subscription URIs) while app_settings has no
-// reality_sni_domain. It is the first RU candidate of the auto-tuner
-// (cmd/api/auto_tuner.go, sniByCountry["RU"]): the Hub is in Russia, and a
+// reality_sni_domain. The Hub is in Russia, and a
 // Russian domain served from a Russian IP shows DPI no ASN mismatch. apple.com,
 // the former default, is a bad SNI there (ASN mismatch). Every reader of the
 // key must fall back to this same constant: if the xray config and the

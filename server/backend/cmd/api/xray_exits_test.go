@@ -790,7 +790,6 @@ func TestXrayExitIDRange(t *testing.T) {
 // tags, a duplicate listen port fails at start).
 func TestXrayExitConfigTagsAndPortsUnique(t *testing.T) {
 	in := exitsInputs(append(multiExits(), legacyVLESSExit(5), exitFixture(511, 2, "healthy", true))...)
-	in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, "cdn.hiearth.ru", "/cdn-xh"
 	v := viewOf(t, mustGen(t, in))
 	unique := func(what string, vals []string) {
 		seen := map[string]bool{}

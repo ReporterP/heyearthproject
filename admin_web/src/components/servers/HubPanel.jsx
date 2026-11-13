@@ -7,6 +7,7 @@ import { loadView } from './serversModel.js'
 import LoadCharts from './LoadCharts.jsx'
 import OwnerForm from './OwnerForm.jsx'
 import HubKeyBox from '../entries/HubKeyBox.jsx'
+import BambooCard from '../protocols/BambooCard.jsx'
 
 function Metric({ label, v, hint }) {
   return (
@@ -64,6 +65,7 @@ export default function HubPanel() {
           </div>
         </>
       )}
+      <BambooCard />
       <Card>
         <CardHeader><h3 className="text-sm font-semibold text-primary">Нагрузка</h3></CardHeader>
         <CardBody><LoadCharts id="hub" /></CardBody>

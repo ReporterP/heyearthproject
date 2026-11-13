@@ -174,8 +174,6 @@ func goldenScript() *scriptDB {
 			"reality_public_key":      "PBK-test",
 			"reality_short_id":        "ab12",
 			"reality_sni_domain":      "storage.yandexcloud.net",
-			"cdn_enabled":             "true",
-			"cdn_host":                "cdn.example.test",
 			"hysteria2_obfs_password": "obfs-test",
 			"config_version":          "7",
 			"mtproto_fronting_domain": "front.example.test",

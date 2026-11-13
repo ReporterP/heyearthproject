@@ -50,18 +50,6 @@
       "priority": 3
     },
     {
-      "uri": "vless://11111111-2222-4333-8444-555555555555@cdn.example.test:443?encryption=none\u0026security=tls\u0026sni=cdn.example.test\u0026type=xhttp\u0026host=cdn.example.test\u0026path=%2Fcdn-xh\u0026mode=packet-up\u0026fp=chrome\u0026tcpKeepAliveInterval=15\u0026tcpKeepAliveIdle=100#%E2%98%81%EF%B8%8F%20%D0%9E%D0%B1%D0%BB%D0%B0%D0%BA%D0%BE%20%28CDN%29",
-      "protocol": "vless",
-      "label": "☁️ Облако (CDN)",
-      "recommended_networks": [
-        "cellular",
-        "wifi",
-        "ethernet",
-        "any"
-      ],
-      "priority": 10
-    },
-    {
       "uri": "hysteria2://hy2-password-test@hub.example.test:50443/?obfs=salamander\u0026obfs-password=obfs-test\u0026sni=tls.example.test\u0026insecure=0\u0026mport=30000-65000\u0026hop_interval=15#%F0%9F%8E%8B%20%D0%91%D0%B0%D0%BC%D0%B1%D1%83%D0%BA%201%20only%20WiFi",
       "protocol": "hysteria2",
       "label": "🎋 Бамбук 1 only WiFi",
@@ -100,7 +88,7 @@
   "subscription_version": 42,
   "traffic_masking_available": true,
   "user_id": "user-1",
-  "vless_reality": "vless://11111111-2222-4333-8444-555555555555@cdn.example.test:443?encryption=none\u0026security=tls\u0026sni=cdn.example.test\u0026type=xhttp\u0026host=cdn.example.test\u0026path=%2Fcdn-xh\u0026mode=packet-up\u0026fp=chrome\u0026tcpKeepAliveInterval=15\u0026tcpKeepAliveIdle=100#%E2%98%81%EF%B8%8F%20%D0%9E%D0%B1%D0%BB%D0%B0%D0%BA%D0%BE%20%28CDN%29"
+  "vless_reality": "vless://11111111-2222-4333-8444-555555555555@hub.example.test:2443?encryption=none\u0026security=reality\u0026sni=storage.yandexcloud.net\u0026fp=firefox\u0026pbk=PBK-test\u0026sid=ab12\u0026type=xhttp\u0026path=%2F\u0026host=hub.example.test\u0026mode=auto\u0026tcpKeepAliveInterval=15\u0026tcpKeepAliveIdle=100#%F0%9F%8C%B2%20%D0%94%D1%83%D0%B1%202"
 }
 
 X-Subscription-Version: 42

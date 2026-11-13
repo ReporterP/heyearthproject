@@ -49,7 +49,6 @@ func baseInputs() xrayInputs {
 			testClient("alice", 3), testClient("bob", 3), testClient("carol", 5), testClient("dave", 0),
 		},
 		exitNodes:      []biz.ExitNodeTunnel{testExit(2, "hysteria2"), testExit(3, "vless")},
-		maskingRules:   []biz.TrafficMaskingRule{{ID: 1, SourceDomain: "example.org", MaskDomain: "unused.example"}},
 		directPlanIDs:  []int{3},
 		directServices: []biz.DirectRouteService{{IsActive: true, Domains: []string{"ya.ru", "vk.com"}, IP4: []string{"77.88.8.8"}}},
 		planServers:    map[int][]int{3: {2}, 4: {3}, 6: {2, 3}, 7: {9}},
@@ -188,7 +187,6 @@ func TestBuildXrayConfigPlanBalancers(t *testing.T) {
 func TestBuildXrayConfigNoExit(t *testing.T) {
 	in := baseInputs()
 	in.exitNodes = nil
-	in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, "cdn.hiearth.ru", "/cdn-xh"
 	cfg, b := genConfig(t, in, quotaCutoff{})
 	if !b.noExit {
 		t.Fatal("noExit not reported")
@@ -197,7 +195,7 @@ func TestBuildXrayConfigNoExit(t *testing.T) {
 		t.Errorf("balancers without exits: %v", tags)
 	}
 	s := string(cfg)
-	for _, want := range []string{`"dns-hijack"`, `"vless-xhttp-cdn"`, `"plan-3-direct-domains"`} {
+	for _, want := range []string{`"dns-hijack"`, `"vless-xhttp"`, `"plan-3-direct-domains"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("no-exit config lacks %s", want)
 		}
@@ -291,9 +289,6 @@ func fakeReads(settings map[string]string, failing string) (xraySyncReads, *[]st
 		exitNodes: func(context.Context) ([]biz.ExitNodeTunnel, error) {
 			return fx.exitNodes, fail("exits")
 		},
-		maskingRules: func(context.Context) ([]biz.TrafficMaskingRule, error) {
-			return fx.maskingRules, fail("masking")
-		},
 		directPlanIDs: func(context.Context) ([]int, error) {
 			return fx.directPlanIDs, fail("directPlanIDs")
 		},
@@ -315,12 +310,12 @@ func fakeReads(settings map[string]string, failing string) (xraySyncReads, *[]st
 // A failed read of ANY input aborts the sync with that error: no config is
 // built from a default or a partial list (I-1).
 func TestXraySyncReadsLoadAbortsOnAnyReadError(t *testing.T) {
-	all := map[string]string{"cdn_enabled": "true"}
+	all := map[string]string{}
 	r, calls := fakeReads(all, "")
 	if _, err := r.load(xrayRealityKeys{}); err != nil {
 		t.Fatalf("all reads succeed: %v", err)
 	}
-	if len(*calls) < 15 {
+	if len(*calls) < 11 {
 		t.Fatalf("only %d reads observed: %v", len(*calls), *calls)
 	}
 	for _, name := range *calls {
@@ -346,22 +341,21 @@ func TestXraySyncReadsDefaults(t *testing.T) {
 	if s.realitySNI != biz.DefaultRealitySNI || s.realitySNI == "apple.com" {
 		t.Errorf("realitySNI = %q, want %q", s.realitySNI, biz.DefaultRealitySNI)
 	}
-	if s.mainServerHost != defaultMainServerHost || s.cdnEnabled ||
+	if s.mainServerHost != defaultMainServerHost ||
 		!reflect.DeepEqual(s.dnsServers, []string{"8.8.8.8", "1.1.1.1"}) || s.muxConcurrency != 8 {
 		t.Errorf("defaults = %+v", s)
 	}
 	for _, c := range *calls {
-		if strings.HasPrefix(c, "setting:cdn_") && c != "setting:cdn_enabled" {
-			t.Errorf("CDN details read although the CDN is off: %s", c)
+		if strings.HasPrefix(c, "setting:cdn_") {
+			t.Errorf("a CDN setting is read: %s", c)
 		}
 	}
-	r, _ = fakeReads(map[string]string{"cdn_enabled": "true", "dns_servers": " , ", "mux_concurrency": "100"}, "")
+	r, _ = fakeReads(map[string]string{"dns_servers": " , ", "mux_concurrency": "100"}, "")
 	in, err = r.load(xrayRealityKeys{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !in.settings.cdnEnabled || in.settings.cdnHost != defaultCDNHost || in.settings.cdnXHPath != defaultCDNXHPath ||
-		len(in.settings.dnsServers) != 2 || in.settings.muxConcurrency != 8 {
+	if len(in.settings.dnsServers) != 2 || in.settings.muxConcurrency != 8 {
 		t.Errorf("parsed settings = %+v", in.settings)
 	}
 	// No direct-routing plan: the services list is not read.
@@ -374,13 +368,6 @@ func TestXraySyncReadsDefaults(t *testing.T) {
 		if c == "directServices" {
 			t.Error("direct services read without a plan that uses them")
 		}
-	}
-}
-
-// The SNI default is the auto-tuner's first RU candidate (the Hub is in RU).
-func TestDefaultRealitySNIIsFirstRUCandidate(t *testing.T) {
-	if got := candidateSNIsForCountry("RU"); len(got) == 0 || got[0] != biz.DefaultRealitySNI {
-		t.Fatalf("RU candidates %v, DefaultRealitySNI %q", got, biz.DefaultRealitySNI)
 	}
 }
 
@@ -472,8 +459,8 @@ func TestXrayClientFacing(t *testing.T) {
 		{"exit down", func(in *xrayInputs) { in.exitNodes = in.exitNodes[:1] }, quotaCutoff{}},
 		{"no exit at all", func(in *xrayInputs) { in.exitNodes = nil }, quotaCutoff{}},
 		{"users and quota", func(in *xrayInputs) { in.clients = in.clients[:1] }, quotaCutoff{true, userSet("alice")}},
-		{"masking/direct/plans", func(in *xrayInputs) {
-			in.maskingRules, in.directPlanIDs, in.planServers = nil, nil, nil
+		{"direct/plans", func(in *xrayInputs) {
+			in.directPlanIDs, in.planServers = nil, nil
 		}, quotaCutoff{}},
 		{"DNS, mux", func(in *xrayInputs) {
 			in.settings.dnsServers = []string{"9.9.9.9"}
@@ -495,9 +482,6 @@ func TestXrayClientFacing(t *testing.T) {
 		{"public key (private key)", func(in *xrayInputs) { in.keys.PrivateKey = "other" }},
 		{"short id", func(in *xrayInputs) { in.keys.ShortID = "other" }},
 		{"XHTTP host", func(in *xrayInputs) { in.settings.mainServerHost = "138.16.181.225" }},
-		{"CDN enabled", func(in *xrayInputs) {
-			in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, "cdn.hiearth.ru", "/cdn-xh"
-		}},
 	}
 	for _, tt := range differ {
 		in := baseInputs()

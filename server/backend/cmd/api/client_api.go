@@ -192,10 +192,6 @@ type hubConnectionInputs struct {
 	realityFlow    string // reality_flow (xtls-rprx-vision)
 	xhttpPort      string // xhttp_port (2443)
 
-	cdnEnabled bool   // cdn_enabled == "true"
-	cdnHost    string // cdn_host (cdn.hiearth.ru)
-	cdnPath    string // cdn_xh_path (/cdn-xh)
-
 	canHysteria2 bool   // the Express plan gate (biz.CanUseHysteria2)
 	hy2Password  string // per-user Hysteria2 password (only with canHysteria2)
 	obfsPassword string // shared Salamander password (only with canHysteria2)
@@ -231,18 +227,6 @@ func loadHubSettingInputs(in *hubConnectionInputs) error {
 		{&in.xhttpPort, "xhttp_port", "2443"},
 	} {
 		if *r.dst, err = subscriptionSetting(r.key, r.def); err != nil {
-			return err
-		}
-	}
-	cdn, err := subscriptionSetting("cdn_enabled", "false")
-	if err != nil {
-		return err
-	}
-	if in.cdnEnabled = cdn == "true"; in.cdnEnabled {
-		if in.cdnHost, err = subscriptionSetting("cdn_host", "cdn.hiearth.ru"); err != nil {
-			return err
-		}
-		if in.cdnPath, err = subscriptionSetting("cdn_xh_path", "/cdn-xh"); err != nil {
 			return err
 		}
 	}
@@ -403,37 +387,6 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 			}
 		}
 
-		// ☁️ Облако (CDN) — VLESS over XHTTP through Cloudflare. Bypasses
-		// per-IP operator blocks (Tele2 flapping, MTS throttling) by routing
-		// user traffic through CF edge IP pool (millions of IPs). Trades Reality
-		// stealth for CF's blanket-blocking immunity.
-		//
-		// XHTTP (not WebSocket) — xray 26.x deprecates WS, recommends XHTTP.
-		// XHTTP packet-up mode separates upstream/downstream into discrete
-		// HTTP requests, plays better with CF's HTTP/2 multiplexing.
-		//
-		// Toggle-gated via app_settings.cdn_enabled. Priority 10 — displayed
-		// last; happ users try faster Reality profiles first, fall back to
-		// Облако if blocked.
-		if canVLESS && in.cdnEnabled {
-			cdnHost := in.cdnHost
-			cdnPath := in.cdnPath
-			if cdnHost != "" {
-				cdnLabel := "☁️ Облако (CDN)"
-				cdnURI := fmt.Sprintf(
-					"vless://%s@%s:443?encryption=none&security=tls&sni=%s&type=xhttp&host=%s&path=%s&mode=packet-up&fp=chrome&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
-					userVlessUUID, cdnHost, cdnHost, cdnHost,
-					url.QueryEscape(cdnPath),
-					url.PathEscape(cdnLabel))
-				opts = append(opts, &heyearth_v1.ConnectionOption{
-					Uri:                 cdnURI,
-					Protocol:            "vless",
-					Label:               cdnLabel,
-					RecommendedNetworks: []string{"cellular", "wifi", "ethernet", "any"},
-					Priority:            10, // displayed last — fallback when Reality direct fails
-				})
-			}
-		}
 	}
 
 	// 2. Hysteria2 «Бамбук» — QUIC/UDP, Wi-Fi only (mobile carriers QoS UDP).
