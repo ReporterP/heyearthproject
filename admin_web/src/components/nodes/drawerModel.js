@@ -19,11 +19,14 @@ const isExit = (n) => n?.role !== 'relay'
 
 export const jobActive = (n) => ['running', 'queued'].includes(n?.last_job?.status)
 
-// drawerTabs: perms = { manage: nodes.provision, logs: servers.logs }.
+// drawerTabs: perms = { manage: nodes.provision, logs: servers.logs }. «Нагрузка» (charts) and
+// «Настройки» (the owner's numbers for «Мощность») are for every server (B1/B5).
 export function drawerTabs(node, { manage = false, logs = false } = {}) {
   return [
     { key: 'overview', label: 'Обзор' },
+    { key: 'load', label: 'Нагрузка' },
     isExit(node) && { key: 'routing', label: 'Тарифы и приоритет' },
+    { key: 'settings', label: 'Настройки' },
     { key: 'jobs', label: 'Задачи' },
     logs && { key: 'logs', label: 'Журналы' },
     manage && { key: 'danger', label: 'Опасная зона' },
@@ -306,8 +309,21 @@ export function reprovisionConsequences() {
   ]
 }
 
-export function deprovisionConsequences(node) {
+// The only working exit (B4): switching it off is confirmed with this phrase, not the name — the
+// API refuses without it (provision_handlers.go lastExitPhrase).
+export const LAST_EXIT_PHRASE = 'ОТКЛЮЧИТЬ ВСЕХ'
+
+// isLastExit: an online exit with no other online exit (the API's otherOnlineExitsQuery).
+export function isLastExit(node, nodes) {
+  if (!node || !isExit(node) || node.lifecycle_state !== 'online') return false
+  return !(nodes || []).some((n) => n.id !== node.id && isExit(n) && n.lifecycle_state === 'online' && n.status !== 'archived')
+}
+
+export function deprovisionConsequences(node, { lastExit = false } = {}) {
   const out = []
+  if (lastExit) {
+    out.push('Это единственный работающий выход за границу: у всех пользователей пропадёт интернет, пока не заработает другой выход. Чтобы подтвердить, введите «' + LAST_EXIT_PHRASE + '».')
+  }
   if (node?.lifecycle_state === 'offline') {
     out.push('Нода уже отключена: повтор уберёт с сервера то, что не удалось убрать в прошлый раз (например, если сервер был недоступен).')
   } else {

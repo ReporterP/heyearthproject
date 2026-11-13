@@ -116,13 +116,20 @@ export const confirmHostKey = (id, fingerprint) => apiFetch(`/servers/${id}/host
 export const preflightNode = (id) => apiFetch(`/servers/${id}/preflight`, { method: 'POST' })
 export const provisionNode = (id, options = {}) => apiFetch(`/servers/${id}/provision`, { method: 'POST', body: options })
 export const verifyNode = (id) => apiFetch(`/servers/${id}/verify`, { method: 'POST' })
-export const deprovisionNode = (id, confirmName) => apiFetch(`/servers/${id}/deprovision`, { method: 'POST', body: { confirm_name: confirmName } })
+// confirmLast: «ОТКЛЮЧИТЬ ВСЕХ» when this is the only working exit (B4; the API answers 409 without it).
+export const deprovisionNode = (id, confirmName, confirmLast = '') =>
+  apiFetch(`/servers/${id}/deprovision`, { method: 'POST', body: { confirm_name: confirmName, confirm_last: confirmLast } })
 export const deleteNode = (id, confirmName) => apiFetch(`/servers/${id}`, { method: 'DELETE', body: { confirm_name: confirmName } })
 export const updateNodeRouting = (id, payload) => apiFetch(`/servers/${id}/routing`, { method: 'PUT', body: payload })
 export const fetchJob = (id) => apiFetch(`/provision-jobs/${id}`)
 export const fetchNodeJobs = (serverId) => apiFetch(`/provision-jobs?server_id=${serverId}`)
 export const resumeJob = (id) => apiFetch(`/provision-jobs/${id}/resume`, { method: 'POST' })
 export const fetchHubKey = () => apiFetch('/ssh-keys/hub')
+// «Серверы» (B1/B5/B6): id 'hub' = the Hub.
+export const fetchHub = () => apiFetch('/hub')
+export const fetchServerLoad = (id, range = '24h') => apiFetch(`/servers/${id}/load?range=${encodeURIComponent(range)}`)
+export const saveServerOwner = (id, body) => apiFetch(`/servers/${id}/capacity`, { method: 'PUT', body })
+export const fetchLaunchChecklist = () => apiFetch('/launch-checklist')
 // «Переустановить Telegram-прокси»: a job of its own → 202 {job_id, kind: 'mtproxy'} (nodes.provision).
 export const reinstallMTProxy = (id) => apiFetch(`/servers/${id}/mtproxy`, { method: 'POST' })
 // Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).

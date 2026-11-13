@@ -6,9 +6,10 @@
 // fingerprint only selects a key: confirming it is always the owner's own switch.
 import { wizardCanAdvance, defaultPlanIds } from './nodeModel.js'
 
-export const WIZARD_STEPS = ['Роль и страна', 'Доступ и ключ', 'Предпроверка', 'Настройки', 'Установка']
+// Step 0 is «Подготовьте сервер у хостера» (B2): the role, the Hub key, the ports, the country.
+export const WIZARD_STEPS = ['Подготовка', 'Доступ и ключ', 'Предпроверка', 'Настройки', 'Установка']
 // A reserve entry has no options: its step 3 is the phone check of its address on mobile networks.
-export const RELAY_STEPS = ['Роль', 'Доступ и ключ', 'Предпроверка', 'Проверка с телефона', 'Установка']
+export const RELAY_STEPS = ['Подготовка', 'Доступ и ключ', 'Предпроверка', 'Проверка с телефона', 'Установка']
 export const wizardSteps = (role) => (role === 'relay' ? RELAY_STEPS : WIZARD_STEPS)
 export const INSTALL_STEP = 4
 export const SSH_USER = 'root'
@@ -33,7 +34,7 @@ export function initialWizard(initialRole = 'exit') {
     plansState: 'loading', // loading | ready | failed
     plansError: '',
     planIds: null, // null until the plans load: then all active paid ones
-    mtproxy: true,
+    mtproxy: false, // off by default (B2): it needs a masking domain's A record on the node
     loadWeight: 1,
     fallback: true,
     fallbackStored: true, // servers.tunnel_fallback_enabled of a new node (DEFAULT true)

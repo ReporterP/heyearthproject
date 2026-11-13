@@ -1,19 +1,18 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Plus, RefreshCw, Smartphone, TriangleAlert } from 'lucide-react'
-import { useAuth } from '../auth/AuthContext.jsx'
-import { useToast } from '../components/Toast.jsx'
-import { fetchEntries, fetchEntriesPreview, saveEntryAddress, saveEntrySettings, saveEntryMode } from '../api/admin.js'
-import { formatDate } from '../utils/format.js'
+import { useAuth } from '../../auth/AuthContext.jsx'
+import { useToast } from '../Toast.jsx'
+import { fetchEntries, fetchEntriesPreview, saveEntryAddress, saveEntrySettings, saveEntryMode } from '../../api/admin.js'
+import { formatDate } from '../../utils/format.js'
 import {
-  Badge, Button, Card, CardHeader, CardBody, Dialog, Input, PageHeader, Select, Spinner,
+  Badge, Button, Card, CardHeader, CardBody, Dialog, Input, Select, Skeleton,
   Table, Thead, Tbody, Tr, Th, Td,
-} from '../components/ui/index.js'
-import { confirmMatches } from '../components/ui/confirm.js' // the typed-confirmation rule of ConfirmDanger (phase 2)
-import AddNodeWizard from '../components/nodes/AddNodeWizard.jsx'
-import MobileCheckPanel from '../components/entries/MobileCheckPanel.jsx'
-import HubKeyBox from '../components/entries/HubKeyBox.jsx'
-import { ENTRY_MODES, healthyRelays, modeBanner } from '../components/entries/entriesModel.js'
+} from '../ui/index.js'
+import { confirmMatches } from '../ui/confirm.js' // the typed-confirmation rule of ConfirmDanger (phase 2)
+import MobileCheckPanel from './MobileCheckPanel.jsx'
+import HubKeyBox from './HubKeyBox.jsx'
+import { ENTRY_MODES, healthyRelays, modeBanner } from './entriesModel.js'
+import { loadView } from '../servers/serversModel.js'
 
 const STATUS = {
   healthy: ['доступен', 'success'], reachable: ['доступен', 'success'],
@@ -170,7 +169,7 @@ const SITE_NAMES = ['hiearth.ru', 'www.hiearth.ru', 'admin.hiearth.ru', 'site.hi
 function DnsCard({ relays }) {
   const ips = relays.filter(r => r.health.external === 'healthy').map(r => r.address)
   return (
-    <Card>
+    <Card id="dns" className="scroll-mt-4">
       <CardHeader><h3 className="text-sm font-semibold text-primary">Сайт и подписка на мобильных</h3></CardHeader>
       <CardBody className="space-y-3">
         <p className="text-sm text-secondary">
@@ -199,10 +198,38 @@ function DnsCard({ relays }) {
   )
 }
 
-export default function EntriesPage() {
+// LoadCells: a relay's latest sample (the nodes list) in the entries table.
+function LoadCells({ node }) {
+  const v = loadView(node?.load, { portMbps: node?.owner?.port_mbps, role: 'relay' })
+  if (v.empty) {
+    return (
+      <>
+        <Td align="right"><span className="text-xs text-tertiary" title={v.why}>нет данных</span></Td>
+        <Td align="right"><span className="text-tertiary">—</span></Td>
+        <Td align="right"><span className="text-tertiary">—</span></Td>
+      </>
+    )
+  }
+  const tone = (c) => (c.warn ? 'text-warning' : v.stale ? 'text-tertiary' : 'text-primary')
+  return (
+    <>
+      <Td mono align="right" className="whitespace-nowrap"><span className={tone(v.cpu)} title={v.why || undefined}>{v.cpu.text}</span></Td>
+      <Td mono align="right" className="whitespace-nowrap"><span className={tone(v.net)}>{v.net.text}</span></Td>
+      <Td mono align="right" className="whitespace-nowrap"><span className={tone(v.conntrack)}>{v.conntrack.text}</span></Td>
+    </>
+  )
+}
+
+/**
+ * EntriesPanel — the «Входы в РФ» tab of «Серверы» (was the «Входы» page): where users connect
+ * (hub / pinned relay / auto), the DNS step, every entry's health and load, the phone check, the
+ * subscription preview, settings, the drill and the history.
+ * Props: nodesById (GET /nodes items by id — the load), onAdd (the wizard), onOpenNode(id),
+ * phoneId / onPhone(id|null) (the phone check dialog lives in the URL: ?phone=<id>).
+ */
+export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneId, onPhone }) {
   const { can } = useAuth()
   const toast = useToast()
-  const navigate = useNavigate()
   // The page is servers.read; every change here (mode, address mode, settings, drill) needs nodes.provision.
   const canEdit = can('nodes.provision')
   const [data, setData] = useState(null)
@@ -211,8 +238,6 @@ export default function EntriesPage() {
   const [form, setForm] = useState({ interval: 4, testUser: '' })
   const [saving, setSaving] = useState(false)
   const [drill, setDrill] = useState({ open: false, minutes: '15', word: '' })
-  const [wizard, setWizard] = useState(false)
-  const [phone, setPhone] = useState(null) // the entry whose address is being checked from a phone
 
   async function load() {
     try {
@@ -248,7 +273,7 @@ export default function EntriesPage() {
     } catch (e) { toast.error(e.message) }
   }
 
-  if (!data && !error) return <div className="flex justify-center py-20"><Spinner size="md" /></div>
+  if (!data && !error) return <div className="space-y-3"><Skeleton className="h-10" /><Skeleton className="h-32" /><Skeleton className="h-40" /></div>
   if (!data) return (
     <div role="alert" className="flex items-center justify-between gap-3 rounded border border-danger/30 bg-danger/10 px-3 py-2">
       <span className="text-sm text-danger">Не удалось загрузить входы: {error}</span>
@@ -257,35 +282,45 @@ export default function EntriesPage() {
   )
 
   const relays = data.entries.filter(e => e.kind === 'relay')
+  const phone = phoneId ? relays.find(e => String(e.id) === String(phoneId)) : null
   const banner = modeBanner(data.failover, data.entries)
   const BannerIcon = banner.tone === 'danger' ? TriangleAlert : CheckCircle2
   return (
-    <div className="max-w-7xl space-y-6">
-      <PageHeader title="Входы"
-        subtitle="Адреса, к которым подключаются пользователи: Hub и входы в РФ для мобильных сетей. Доступность проверяется каждые две минуты снаружи (через выход за рубежом) и раз в 15 минут с российских узлов check-host."
-        actions={canEdit && <Button icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setWizard(true)}>Добавить вход в РФ</Button>} />
+    <div className="space-y-6">
+      <p className="text-xs text-tertiary">
+        Адреса, к которым подключаются пользователи: Hub и входы в РФ для мобильных сетей. Доступность проверяется каждые две минуты
+        снаружи (через выход за рубежом) и раз в 15 минут с российских узлов check-host.
+      </p>
 
       <div role="status" className={`flex items-start gap-2 rounded border px-3 py-2 text-sm ${TONE[banner.tone]}`}>
         <BannerIcon className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
         <span className="min-w-0">{banner.text}</span>
       </div>
 
-      {relays.length === 0 && <SetupGuide canEdit={canEdit} onStart={() => setWizard(true)} />}
+      {relays.length === 0 && <SetupGuide canEdit={canEdit} onStart={onAdd} />}
 
       <ModeCard data={data} canEdit={canEdit} onSaved={load} />
 
       {relays.length > 0 && <DnsCard relays={relays} />}
 
       <Table>
-        <Thead><Tr><Th>Вход</Th><Th>Адрес</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th>Адрес в подписке</Th><Th>Мобильные сети</Th></Tr></Thead>
+        <Thead><Tr><Th>Вход</Th><Th>Адрес</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th align="right">CPU</Th><Th align="right">Канал, Мбит/с</Th><Th align="right">conntrack</Th><Th>Адрес в подписке</Th><Th>Мобильные сети</Th></Tr></Thead>
         <Tbody>
           {data.entries.map(e => (
             <Tr key={e.id}>
-              <Td><span className="text-primary">{e.name}</span>{e.kind === 'relay' && <span className="block text-[11px] text-tertiary">вход в РФ</span>}</Td>
+              <Td>
+                {e.kind === 'relay' && onOpenNode
+                  ? <button type="button" onClick={() => onOpenNode(e.id)} className="text-left text-primary hover:text-accent rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">{e.name}</button>
+                  : <span className="text-primary">{e.name}</span>}
+                {e.kind === 'relay' && <span className="block text-[11px] text-tertiary">вход в РФ</span>}
+              </Td>
               <Td mono className="text-secondary">{e.address || '—'}</Td>
               <Td><Health status={e.health.external} at={e.health.external_at} detail={e.health.external_error} /></Td>
               <Td>{e.kind === 'relay' ? <Health status={e.health.udp} at={e.health.udp_at} detail={e.health.udp_error} /> : <span className="text-tertiary">см. «Алерты»</span>}</Td>
               <Td><Health status={e.health.ru} at={e.health.ru_at} link={e.health.ru_link} /></Td>
+              {e.kind === 'relay'
+                ? <LoadCells node={nodesById[e.id]} />
+                : <><Td align="right"><span className="text-xs text-tertiary">вкладка «Hub»</span></Td><Td /><Td /></>}
               <Td>
                 <Select aria-label={`Адрес входа ${e.name}`} value={e.address_mode} disabled={!canEdit}
                   onChange={ev => setAddressMode(e, ev.target.value)} className="h-7 text-xs">
@@ -295,7 +330,7 @@ export default function EntriesPage() {
               </Td>
               <Td>
                 {e.kind === 'relay'
-                  ? <Button size="sm" variant="secondary" icon={<Smartphone className="w-3.5 h-3.5" />} onClick={() => setPhone(e)}>Проверить с телефона</Button>
+                  ? <Button size="sm" variant="secondary" icon={<Smartphone className="w-3.5 h-3.5" />} onClick={() => onPhone?.(e.id)}>Проверить с телефона</Button>
                   : <span className="text-xs text-tertiary">режется операторами</span>}
               </Td>
             </Tr>
@@ -365,18 +400,13 @@ export default function EntriesPage() {
         </div>
       </Dialog>
 
-      <Dialog open={!!phone} onClose={() => setPhone(null)} title={phone ? `Проверка с телефона — ${phone.name}` : ''} maxWidth="max-w-2xl">
+      <Dialog open={!!phone} onClose={() => onPhone?.(null)} title={phone ? `Проверка с телефона — ${phone.name}` : ''} maxWidth="max-w-2xl">
         {phone && <MobileCheckPanel serverId={phone.id} canStart={canEdit} />}
       </Dialog>
 
-      {wizard && (
-        <AddNodeWizard initialRole="relay" onClose={() => { setWizard(false); load() }}
-          onOpenNode={(id) => navigate(`/nodes?role=relay&node=${id}`)} />
-      )}
-
       <div className="space-y-2">
         <h3 className="text-sm font-semibold text-primary">История входов</h3>
-        {data.history.length === 0 ? <p className="text-xs text-tertiary">Событий пока нет.</p> : (
+        {data.history.length === 0 ? <p className="text-xs text-tertiary">Событий пока нет: тревоги и восстановления входов появятся здесь.</p> : (
           <Table>
             <Thead><Tr><Th>Время</Th><Th>Событие</Th><Th>Что случилось</Th></Tr></Thead>
             <Tbody>

@@ -39,7 +39,7 @@ test('initial state: exit unless the tab asked for a relay; nothing secret, noth
   assert.equal('password' in s, false, 'the password never enters the state')
   assert.equal(s.passwordEntered, false)
   assert.equal(s.fingerprintConfirmed, false)
-  assert.equal(s.mtproxy, true)
+  assert.equal(s.mtproxy, false, 'MTProxy is off by default (B2)')
   assert.equal(s.fallback, true)
   assert.equal(s.loadWeight, 1)
   assert.equal(initialWizard('relay').role, 'relay')

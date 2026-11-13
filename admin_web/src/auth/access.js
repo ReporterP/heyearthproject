@@ -8,9 +8,9 @@ export const PAGE_PERMS = {
   '/users': 'users.read',
   '/subscriptions': 'subscriptions.read',
   '/promocodes': 'promocodes.read',
-  '/servers': 'servers.read', // redirects to /nodes
-  '/nodes': 'servers.read',
-  '/entries': 'servers.read',
+  '/servers': 'servers.read', // «Серверы»: exits, entries in RU, the Hub, «Мощность»
+  '/nodes': 'servers.read', // old address → /servers
+  '/entries': 'servers.read', // old address → /servers?tab=relay
   '/ssh-keys': 'servers.read',
   '/releases': 'releases.read',
   '/traffic-masking': 'traffic_masking.read',

@@ -5,7 +5,8 @@ import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting,
 import { Dialog, Stepper, Button, Input, Select, Switch, CopyButton, Badge, Skeleton, Spinner, useFocusTrap } from '../ui/index.js'
 import { keyTypeLabel, hostKeyFile, PRIORITY_HINT } from './nodeModel.js'
 import MobileCheckPanel from '../entries/MobileCheckPanel.jsx'
-import HubKeyBox from '../entries/HubKeyBox.jsx'
+import PrepareServer from '../servers/PrepareServer.jsx'
+import { exitCountries, geoHint, countryLabel } from '../servers/serversModel.js'
 import {
   wizardSteps, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid, matchPasted,
   pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, routingRequest,
@@ -59,11 +60,23 @@ function RoleStep({ s, set, ids, countryRef }) {
           мобильные операторы пропускают не все подсети хостингов.
         </p>
       )}
-      <Field label="Страна сервера" htmlFor={ids.country} error={countryBad ? 'Две латинские буквы кода страны, например DE' : ''}
-        hint={s.role === 'relay' ? 'Вход для пользователей из России ставится в России.' : 'Код страны ISO из двух латинских букв: DE, NL, FI…'}>
-        <Input id={ids.country} ref={countryRef} value={s.country} maxLength={2} disabled={!!s.serverId || s.role === 'relay'} placeholder="DE"
-          autoComplete="off" autoCapitalize="characters" spellCheck={false} onChange={(e) => set({ country: e.target.value })}
-          className="font-mono w-24" aria-invalid={countryBad || undefined} />
+      {!s.serverId && (
+        <div className="mb-4">
+          <h4 className="text-sm text-primary mb-2">Подготовьте сервер у хостера</h4>
+          <PrepareServer role={s.role} />
+        </div>
+      )}
+      <Field label="Страна сервера" htmlFor={ids.country} error={countryBad ? 'Выберите страну из списка' : ''}
+        hint={s.role === 'relay' ? 'Вход для пользователей из России ставится в России.' : 'Где стоит сервер (по данным хостера). После проверки подключения мастер подскажет страну по реестру IP-адресов.'}>
+        {s.role === 'relay' ? (
+          <Input id={ids.country} ref={countryRef} value={countryLabel('RU')} disabled className="w-full sm:w-64" />
+        ) : (
+          <Select id={ids.country} ref={countryRef} value={s.country} disabled={!!s.serverId} onChange={(e) => set({ country: e.target.value })}
+            className="w-full sm:w-64" aria-invalid={countryBad || undefined}>
+            <option value="">Выберите страну…</option>
+            {exitCountries(s.country).map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
+          </Select>
+        )}
       </Field>
       <Field label="Название (необязательно)" htmlFor={ids.name}
         hint={s.role === 'relay'
@@ -173,7 +186,7 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
             onChange={(e) => set({ sshPort: e.target.value })} className="font-mono tabular-nums" aria-invalid={portBad || undefined} />
         </Field>
       </div>
-      {!saved && <HubKeyBox className="mb-3" />}
+      {!saved && <p className="mb-3 text-xs text-tertiary">Ключ Hub и порты — на первом шаге «Подготовка». Если ключ вставлен у хостера, пароль ниже не нужен.</p>}
       {saved ? (
         <p className="mb-3 text-xs text-tertiary">Доступ сохранён: Hub входит по своему ключу; пароль, если был, хранится зашифрованным и больше не показывается.</p>
       ) : (
@@ -192,7 +205,28 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
           <span className="text-xs text-tertiary">Только обмен ключами SSH — пароль на этом шаге не отправляется.</span>
         </div>
       )}
+      {s.probe && <GeoHint s={s} set={set} />}
       {s.probe && <KeyChooser s={s} dispatch={dispatch} ids={ids} busy={busy} />}
+    </div>
+  )
+}
+
+// GeoHint: the registry country of the probed address next to the chosen one (B2). An exit's
+// country can still be changed until the node is saved; an entry must be a Russian address.
+function GeoHint({ s, set }) {
+  const h = geoHint(s.country, s.probe?.geo_country)
+  if (!h) return null
+  if (s.role === 'relay') {
+    return h.code === 'RU' ? null : (
+      <p className="mt-3 text-xs text-warning">По реестру адресов этот IP — {countryLabel(h.code)}, а вход в РФ должен быть российским адресом: мобильные операторы пропускают отечественные подсети.</p>
+    )
+  }
+  return (
+    <div className={`mt-3 flex flex-col sm:flex-row sm:items-center gap-2 text-xs ${h.matches ? 'text-success' : 'text-warning'}`}>
+      <span>{h.text}{!h.matches && s.country ? `, а выбрано ${countryLabel(s.country)}` : ''}.</span>
+      {!h.matches && !s.serverId && h.code !== 'RU' && (
+        <Button size="sm" variant="secondary" onClick={() => set({ country: h.code })}>Выбрать {countryLabel(h.code)}</Button>
+      )}
     </div>
   )
 }
@@ -235,7 +269,7 @@ function OptionsStep({ s, set, dispatch, ids }) {
   return (
     <div className="space-y-5">
       <Switch checked={s.mtproxy} onChange={(v) => set({ mtproxy: v })} label="Telegram-прокси (MTProxy)"
-        description="Пользователи получат прокси для Telegram на этой ноде. Нужна A-запись домена маскировки на IP ноды." />
+        description="Пользователи получат прокси для Telegram на этой ноде. Включайте, только если A-запись домена маскировки уже указывает на IP ноды — иначе установка прокси не пройдёт." />
       <fieldset>
         <legend className="text-xs text-secondary mb-1">Тарифы, которые идут через эту ноду</legend>
         {s.plansState === 'loading' && <Skeleton className="h-16 w-full" />}
@@ -418,7 +452,7 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
     <Dialog open onClose={requestClose} maxWidth="max-w-2xl">
       <div ref={rootRef} role="dialog" aria-modal="true" aria-labelledby={ids.title}>
         <div className="flex items-center justify-between gap-2 mb-4">
-          <h2 id={ids.title} className="text-lg font-semibold text-primary tracking-tight">{relay ? 'Вход в РФ для мобильных' : 'Добавить ноду'}</h2>
+          <h2 id={ids.title} className="text-lg font-semibold text-primary tracking-tight">{relay ? 'Вход в РФ для мобильных' : 'Выход за рубежом'}</h2>
           <button type="button" onClick={requestClose} aria-label="Закрыть"
             className="inline-flex items-center justify-center w-8 h-8 rounded text-tertiary hover:text-primary hover:bg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
             <X className="w-4 h-4" aria-hidden="true" />
@@ -428,7 +462,7 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
 
         {s.step === 0 && (
           <>
-            <StepHeading headingRef={headingRef} title="Роль и страна">Что это за сервер и где он стоит.</StepHeading>
+            <StepHeading headingRef={headingRef} title="Подготовка">Что это за сервер, что вставить у хостера и где он стоит.</StepHeading>
             <RoleStep s={s} set={set} ids={ids} countryRef={countryRef} />
           </>
         )}

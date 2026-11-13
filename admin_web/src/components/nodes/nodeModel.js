@@ -106,8 +106,8 @@ export function nodeState(n) {
 // pathsStale: a switched-off node is not checked; its last path results are history, not state.
 export const pathsStale = (n) => n.lifecycle_state === 'offline'
 
-// nodeHref: the node card on «Ноды», on the tab of its role (exit unless it is known to be a relay).
-export const nodeHref = (id, role) => `/nodes?role=${role === 'relay' ? 'relay' : 'exit'}&node=${encodeURIComponent(id)}`
+// nodeHref: the server card on «Серверы», on the tab of its role (exit unless it is known to be a relay).
+export const nodeHref = (id, role) => `/servers?tab=${role === 'relay' ? 'relay' : 'exit'}&node=${encodeURIComponent(id)}`
 
 export const STEP_STATUS = {
   pending: { label: 'ждёт', variant: 'default' }, running: { label: 'выполняется', variant: 'info' },

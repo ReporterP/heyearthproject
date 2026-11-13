@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { ListChecks, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
 import {
   verifyNode, provisionNode, deprovisionNode, deleteNode, updateNodeRouting, fetchNodeJobs, fetchPlans, fetchServerLogs,
-  probeNode, confirmHostKey, reinstallMTProxy,
+  probeNode, confirmHostKey, reinstallMTProxy, runServerAction,
 } from '../../api/admin.js'
 import { formatDate, formatRelativeRu } from '../../utils/format.js'
 import {
@@ -17,11 +16,14 @@ import {
   PRIORITIES, PLANS_HINT, LOG_SERVICES, drawerTabs, initialTab, initialJobId, nodeActions, clampPriority, sortedPlanIds,
   routingBody, fallbackBody, routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, keyRows, initialKeyCheck,
   keyCheckReducer, canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences,
-  deprovisionConsequences, deleteConsequences, fallbackOffConsequences, plansNote, plansFailure,
+  deprovisionConsequences, deleteConsequences, fallbackOffConsequences, plansNote, plansFailure, LAST_EXIT_PHRASE,
 } from './drawerModel.js'
 import JobProgress from './JobProgress.jsx'
 import MobileCheckPanel from '../entries/MobileCheckPanel.jsx'
 import TunnelCheckDialog from '../servers/TunnelCheckDialog.jsx'
+import LoadCharts from '../servers/LoadCharts.jsx'
+import OwnerForm from '../servers/OwnerForm.jsx'
+import { loadView } from '../servers/serversModel.js'
 
 const ROLE_LABEL = { exit: 'Выход за рубежом', relay: 'Резервный вход в РФ' }
 const SETUP_TEXT = {
@@ -256,17 +258,41 @@ function HostKeySection({ node, manage, onChanged }) {
   )
 }
 
-function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunnelCheck, onVerify, onSetup, onMtproxy, onChanged }) {
+function LoadRow({ node }) {
+  const v = loadView(node.load, { portMbps: node.owner?.port_mbps, role: node.role })
+  if (v.empty) return <Row label="Нагрузка"><span className="text-xs text-tertiary">{v.why}</span></Row>
+  const cell = (label, c) => (
+    <span className="whitespace-nowrap"><span className="text-tertiary">{label} </span><span className={c.warn ? 'text-warning' : 'text-primary'}>{c.text}</span></span>
+  )
+  return (
+    <Row label="Нагрузка">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono tabular-nums text-sm">
+        {cell('CPU', v.cpu)}{cell('RAM', v.ram)}{cell('канал', v.net)}
+        {node.role === 'relay' ? cell('conntrack', v.conntrack) : cell('подкл.', v.conns)}
+      </div>
+      {v.why && <p className="text-xs text-warning mt-1">{v.why}</p>}
+    </Row>
+  )
+}
+
+function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunnelCheck, onVerify, onSetup, onMtproxy, onRestartAgent, canRestart, onChanged }) {
   const st = nodeState(node)
   const exit = node.role !== 'relay'
   const mt = mtprotoView(node.mtproto_status)
   return (
     <div className="space-y-6">
       <Section title="Состояние">
-        <Row label="Нода">
+        <Row label="Сервер">
           <Badge variant={st.variant}>{st.label}</Badge>
           {st.hint && <p className="text-xs text-tertiary mt-1">{st.hint}</p>}
         </Row>
+        {exit && node.lifecycle_state === 'online' && (
+          <Row label="node-agent">
+            <Badge variant={node.status === 'online' ? 'success' : 'danger'}>{node.status === 'online' ? 'отвечает' : 'не отвечает'}</Badge>
+            {node.status !== 'online' && <p className="text-xs text-tertiary mt-1">Hub не получает ответ агента три проверки подряд (раз в 30 с).</p>}
+          </Row>
+        )}
+        <LoadRow node={node} />
         {exit && <Row label="Основной туннель (UDP)"><PathValue row={pathRow(node, 'hy')} /></Row>}
         {exit && <Row label="Запасной TCP-путь"><PathValue row={pathRow(node, 'tcp')} /></Row>}
         {exit && (
@@ -309,7 +335,7 @@ function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunne
         </Section>
       )}
 
-      {(acts.setup.show || acts.mtproxy.show) && (
+      {(acts.setup.show || acts.mtproxy.show || canRestart) && (
         <Section title="Обслуживание">
           {acts.setup.show && (
             <ActionItem label={acts.setup.label} onClick={onSetup} reason={acts.setup.reason} loading={busy === 'setup'} disabled={!!busy}
@@ -319,10 +345,13 @@ function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunne
             <ActionItem label="Переустановить Telegram-прокси" onClick={onMtproxy} reason={acts.mtproxy.reason} loading={busy === 'mtproxy'} disabled={!!busy}
               description="Задача сначала проверяет Telegram-прокси и ставит его заново, только если проверка не прошла; пока идёт установка, прокси этой ноды может быть недоступен. Туннель и трафик выхода это не затрагивает." />
           )}
+          {canRestart && (
+            <ActionItem label="Перезапустить агент" onClick={onRestartAgent} loading={busy === 'restart'} disabled={!!busy}
+              reason={node.host_key?.confirmed ? '' : 'Сначала подтвердите отпечаток ключа SSH'}
+              description="Перезапускает node-agent на сервере по SSH. Трафик пользователей это не затрагивает." />
+          )}
         </Section>
       )}
-
-      <Link to={`/servers/${node.id}`} className="inline-block text-sm text-accent hover:underline">Метрики и файлы сервера</Link>
     </div>
   )
 }
@@ -494,7 +523,7 @@ export default function NodeDrawer(props) {
   return <NodeCard key={props.node.id} {...props} />
 }
 
-function NodeCard({ node, onClose, onChanged }) {
+function NodeCard({ node, lastExit = false, onClose, onChanged }) {
   const { can } = useAuth()
   const toast = useToast()
   const perms = { manage: can('nodes.provision'), logs: can('servers.logs') }
@@ -639,7 +668,19 @@ function NodeCard({ node, onClose, onChanged }) {
               onTunnelCheck={() => setTunnelCheck(true)}
               onVerify={() => startJob('verify', () => verifyNode(node.id))}
               onSetup={onSetup}
-              onMtproxy={() => startJob('mtproxy', () => reinstallMTProxy(node.id))} />
+              onMtproxy={() => startJob('mtproxy', () => reinstallMTProxy(node.id))}
+              canRestart={exit && node.lifecycle_state === 'online' && can('server_ops.execute')}
+              onRestartAgent={() => act('restart', async () => {
+                await runServerAction(node.id, 'restart_agent')
+                toast.success('node-agent перезапущен')
+              })} />
+          )}
+          {tab === 'load' && <LoadCharts id={node.id} relay={!exit} />}
+          {tab === 'settings' && (
+            <div className="space-y-3">
+              <p className="text-xs text-tertiary">Эти числа знает только владелец: «Мощность» считает по ним лимит трафика, запас канала и стоимость на пользователя.</p>
+              <OwnerForm id={node.id} owner={node.owner} detectedCores={node.load?.cores} canEdit={can('servers.write')} onSaved={onChanged} />
+            </div>
           )}
           {tab === 'routing' && (
             <RoutingTab node={node} can={acts.routing.show} busy={busy} plans={plans} planIds={planIds} weight={weight} error={routingError}
@@ -678,9 +719,9 @@ function NodeCard({ node, onClose, onChanged }) {
       <ConfirmDanger open={danger === 'reprovision'} onClose={closeDanger} title="Переустановить ноду" confirmText={node.name}
         actionLabel="Переустановить" consequences={reprovisionConsequences(node)}
         onConfirm={() => confirmJob(() => provisionNode(node.id, {}))} />
-      <ConfirmDanger open={danger === 'deprovision'} onClose={closeDanger} title={offline ? 'Отключить ноду повторно' : 'Отключить ноду'}
-        confirmText={node.name} actionLabel="Отключить" consequences={deprovisionConsequences(node)}
-        onConfirm={() => confirmJob(() => deprovisionNode(node.id, node.name))} />
+      <ConfirmDanger open={danger === 'deprovision'} onClose={closeDanger} title={offline ? 'Отключить ноду повторно' : lastExit ? 'Отключить последний выход' : 'Отключить ноду'}
+        confirmText={lastExit ? LAST_EXIT_PHRASE : node.name} actionLabel="Отключить" consequences={deprovisionConsequences(node, { lastExit })}
+        onConfirm={() => confirmJob(() => deprovisionNode(node.id, node.name, lastExit ? LAST_EXIT_PHRASE : ''))} />
       <ConfirmDanger open={danger === 'delete'} onClose={closeDanger} title="Удалить запись ноды" confirmText={node.name}
         actionLabel="Удалить" consequences={deleteConsequences(node)} onConfirm={removeNode} />
       <ConfirmDanger open={danger === 'fallbackOff'} onClose={closeDanger} title="Выключить запасной TCP-путь" confirmText={node.name}
