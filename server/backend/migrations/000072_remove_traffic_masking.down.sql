@@ -1,3 +1,4 @@
+-- Emergency path: the rows come back from the backup copies; keys, sequences and indexes do not.
 CREATE TABLE IF NOT EXISTS traffic_masking_rules AS SELECT * FROM traffic_masking_rules_bak_20261113;
 INSERT INTO admin_permissions (permission_key, name, description) VALUES
     ('traffic_masking.read', 'Traffic Masking Read', 'View traffic masking rules'),

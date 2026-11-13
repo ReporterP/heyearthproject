@@ -160,7 +160,8 @@ func TrafficUserDetailHandler(w http.ResponseWriter, r *http.Request) {
 func TrafficChartHandler(w http.ResponseWriter, r *http.Request) {
 	days := 30
 	if d := r.URL.Query().Get("days"); d != "" {
-		if v, err := strconv.Atoi(d); err == nil && v > 0 && v <= 365 {
+		// Raw traffic is kept 45 days (cleanup plan D5): a longer chart would show empty days.
+		if v, err := strconv.Atoi(d); err == nil && v > 0 && v <= 44 {
 			days = v
 		}
 	}

@@ -1,3 +1,4 @@
+-- Emergency path: the rows come back from the backup copies; keys, sequences and indexes do not.
 -- Brings the tables and columns back from the backup copies (rows included).
 CREATE TABLE IF NOT EXISTS ssh_keys AS SELECT * FROM ssh_keys_bak_20261113;
 CREATE TABLE IF NOT EXISTS app_releases AS SELECT * FROM app_releases_bak_20261113;
