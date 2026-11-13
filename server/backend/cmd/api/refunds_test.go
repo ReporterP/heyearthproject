@@ -388,6 +388,11 @@ func (c *rfConn) QueryContext(_ context.Context, query string, args []driver.Nam
 			return none([]string{"id"}), nil
 		}
 		return one([]string{"id"}, int64(7)), nil
+	case strings.HasPrefix(q, "SELECT COALESCE(metadata->>'kind', '')"):
+		// The payment kind (a wallet top-up holds its refund on the wallet): a plain payment here.
+		return one([]string{"kind", "user"}, "subscription", "user-1"), nil
+	case strings.Contains(q, "'refund-hold:' || r.id"):
+		return none([]string{"id", "user", "kop", "payment"}), nil
 	case strings.HasPrefix(q, "SELECT COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1"):
 		if err := c.note("payment"); err != nil {
 			return nil, err

@@ -193,3 +193,39 @@ func TestAnnounceTopUpWallet(t *testing.T) {
 		t.Errorf("covered renewal: %q", text)
 	}
 }
+
+// W6: refunding a top-up holds the amount on the wallet — no more than is left there —
+// and gives it back when YooKassa refuses the refund.
+func TestWalletTopupRefundHold(t *testing.T) {
+	conn := testpg.Open(t)
+	quietWallet(t)
+	plan := pgPlan(t, conn, "t-all", 300, 30)
+	uid := testpg.NewUser(t, conn, "refunder")
+	id := topupRow(t, conn, "refunder", 500, 0, "")
+	testpg.MustExec(t, conn, `UPDATE payments SET yookassa_payment_id = 'yk-' || id WHERE id = $1`, id)
+	if err := processPaymentEvent(ykTopup(id, "refunder", yookassa.PaymentStatusSucceeded, "500.00")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := walletPurchaseNow(t.Context(), biz.PurchaseRequest{UserID: "refunder", PlanID: plan, Key: "p1", Kind: biz.WalletPurchase}); err != nil {
+		t.Fatal(err)
+	}
+	if b := walletOf(t, conn, uid); b != 20000 {
+		t.Fatalf("balance %d, want 20000", b)
+	}
+	if _, err := reserveRefund(t.Context(), id, 50000, "test"); err == nil {
+		t.Fatal("a refund larger than the wallet balance was reserved")
+	}
+	a, err := reserveRefund(t.Context(), id, 20000, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := walletOf(t, conn, uid); b != 0 {
+		t.Fatalf("balance %d after the hold, want 0", b)
+	}
+	testpg.MustExec(t, conn, `UPDATE payment_refunds SET status = 'failed' WHERE id = $1`, a.RowID)
+	releaseFailedWalletRefunds()
+	releaseFailedWalletRefunds()
+	if b := walletOf(t, conn, uid); b != 20000 {
+		t.Errorf("balance %d after a refused refund, want 20000 (once)", b)
+	}
+}

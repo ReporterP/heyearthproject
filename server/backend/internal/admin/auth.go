@@ -121,6 +121,7 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "payments.read", Name: "Payments Read", Description: "View payments"},
 	{Key: "payments.write", Name: "Payments Write", Description: "Create and update payments"},
 	{Key: "payments.refund", Name: "Payments Refund", Description: "Refund, cancel, re-check and resend payments (money leaves the account)"},
+	{Key: "wallet.adjust", Name: "Wallet Adjust", Description: "Credit or debit a user's wallet by hand (with a reason, audited)"},
 	{Key: "servers.read", Name: "Servers Read", Description: "View servers"},
 	{Key: "servers.write", Name: "Servers Write", Description: "Create and update servers"},
 	{Key: "server_ops.execute", Name: "Server Ops Execute", Description: "Run operational actions on servers"},

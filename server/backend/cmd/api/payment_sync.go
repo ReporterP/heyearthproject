@@ -56,6 +56,7 @@ func StartPaymentSyncCron() {
 				}
 			})
 			safely("refund-reconcile", reconcilePendingRefunds)
+			safely("wallet-refund-release", releaseFailedWalletRefunds)
 			safely("payment-alerts", syncUnappliedPaymentAlerts)
 			time.Sleep(paymentSyncInterval)
 		}
