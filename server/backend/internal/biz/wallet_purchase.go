@@ -31,6 +31,8 @@ type PurchaseResult struct {
 	SubscriptionID  int       `json:"subscription_id"`
 	WalletTxID      int64     `json:"-"`
 	Replayed        bool      `json:"-"`
+	// Referral: the «Приведи друга» reward this purchase triggered (nil: none).
+	Referral *ReferralReward `json:"-"`
 }
 
 // PurchaseError is a reason a purchase cannot be made that the client may see.
@@ -66,6 +68,12 @@ func PurchaseFromWalletTx(ctx context.Context, tx *sql.Tx, req PurchaseRequest) 
 	var userDBID int
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, req.UserID).Scan(&userDBID); err != nil {
 		return nil, fmt.Errorf("purchase: resolve user: %w", err)
+	}
+	// The wallet is locked first (one lock order for every purchase: wallet, then the
+	// promocode) and a key used before returns the earlier purchase before any check —
+	// a retry after a lost answer must not see «code already used» for its own purchase.
+	if prev, err := walletReplayTx(ctx, tx, userDBID, req.Key); err != nil || prev != nil {
+		return prev, err
 	}
 	plan, err := GetPlanByID(req.PlanID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -139,8 +147,48 @@ func PurchaseFromWalletTx(ctx context.Context, tx *sql.Tx, req PurchaseRequest) 
 	if err := allocateSettlementTx(ctx, tx, userDBID, entry.TxID, priceKop, desc); err != nil {
 		return nil, err
 	}
-	return &PurchaseResult{PlanID: plan.ID, PlanName: plan.Name, PriceKop: priceKop, BalanceAfterKop: entry.BalanceAfterKop,
-		ValidUntil: validUntil, SubscriptionID: subID, WalletTxID: entry.TxID}, nil
+	rw, err := MaybeRewardReferralTx(ctx, tx, userDBID, entry.TxID, req.PaymentID)
+	if err != nil {
+		return nil, err
+	}
+	balanceAfter := entry.BalanceAfterKop
+	if rw != nil {
+		balanceAfter += rw.FriendKop
+	}
+	return &PurchaseResult{PlanID: plan.ID, PlanName: plan.Name, PriceKop: priceKop, BalanceAfterKop: balanceAfter,
+		ValidUntil: validUntil, SubscriptionID: subID, WalletTxID: entry.TxID, Referral: rw}, nil
+}
+
+// walletReplayTx locks the user's wallet and returns the purchase made earlier with key
+// (nil when the key is new).
+func walletReplayTx(ctx context.Context, tx *sql.Tx, userDBID int, key string) (*PurchaseResult, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userDBID); err != nil {
+		return nil, fmt.Errorf("purchase: wallet: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM user_wallets WHERE user_id = $1 FOR UPDATE`, userDBID); err != nil {
+		return nil, fmt.Errorf("purchase: lock wallet: %w", err)
+	}
+	var res PurchaseResult
+	var owner int
+	var amount int64
+	var sub, plan sql.NullInt64
+	err := tx.QueryRowContext(ctx, `
+		SELECT wt.id, wt.user_id, wt.amount_kop, wt.balance_after_kop, wt.subscription_id, wt.plan_id
+		FROM wallet_transactions wt WHERE wt.idempotency_key = $1`, key).
+		Scan(&res.WalletTxID, &owner, &amount, &res.BalanceAfterKop, &sub, &plan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("purchase: check key: %w", err)
+	}
+	if owner != userDBID || amount >= 0 {
+		return nil, fmt.Errorf("%w: %s", ErrWalletKeyConflict, key)
+	}
+	res.Replayed, res.PriceKop, res.SubscriptionID, res.PlanID = true, -amount, int(sub.Int64), int(plan.Int64)
+	_ = tx.QueryRowContext(ctx, `SELECT name FROM plans WHERE id = $1`, res.PlanID).Scan(&res.PlanName)
+	_ = tx.QueryRowContext(ctx, `SELECT valid_until FROM user_subscriptions WHERE id = $1`, res.SubscriptionID).Scan(&res.ValidUntil)
+	return &res, nil
 }
 
 // moscow is the time zone dates are shown in.

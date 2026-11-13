@@ -422,6 +422,83 @@ func holdWalletRefundTx(ctx context.Context, tx *sql.Tx, userText string, paymen
 	return nil
 }
 
+// holdExternalWalletRefundsSQL: refunds of wallet top-ups that YooKassa reported but no
+// admin reservation made (a refund from the YooKassa account): settled ones older than
+// 15 min (an admin reservation still matching its webhook row is done by then) without a
+// wallet hold yet.
+const holdExternalWalletRefundsSQL = `
+	SELECT r.id, r.payment_id, ROUND(r.amount * 100)::bigint, COALESCE(p.user_id_text, '')
+	FROM payment_refunds r JOIN payments p ON p.id = r.payment_id
+	WHERE p.metadata->>'kind' = 'wallet_topup'
+	  AND r.idempotence_key IS NULL AND r.status = 'succeeded'
+	  AND r.created_at < NOW() - INTERVAL '15 minutes'
+	  AND NOT EXISTS (SELECT 1 FROM wallet_transactions x WHERE x.idempotency_key = 'refund-hold:' || r.id)
+	ORDER BY r.id LIMIT 100`
+
+// holdExternalWalletRefunds takes a top-up refunded from the YooKassa account off the
+// wallet: the money went back to the card, so it must not stay spendable. What the client
+// already spent cannot be taken: the hold is capped by the balance and the owner is told.
+func holdExternalWalletRefunds() {
+	rows, err := db.DB.Query(holdExternalWalletRefundsSQL)
+	if err != nil {
+		log.Printf("[wallet-refund] external select: %v", err)
+		return
+	}
+	type ext struct {
+		rowID     int64
+		paymentID int
+		kop       int64
+		user      string
+	}
+	var list []ext
+	for rows.Next() {
+		var x ext
+		if err := rows.Scan(&x.rowID, &x.paymentID, &x.kop, &x.user); err == nil {
+			list = append(list, x)
+		}
+	}
+	rows.Close()
+	for _, x := range list {
+		ctx, cancel := context.WithTimeout(context.Background(), refundDBTimeout)
+		err := func() error {
+			tx, err := db.DB.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback() //nolint:errcheck
+			var userDBID int
+			var balance int64
+			if err := tx.QueryRowContext(ctx, `SELECT u.id, COALESCE(w.balance_kop, 0) FROM users u LEFT JOIN user_wallets w ON w.user_id = u.id WHERE u.user_id = $1`, x.user).
+				Scan(&userDBID, &balance); err != nil {
+				return fmt.Errorf("user %q: %w", x.user, err)
+			}
+			hold := x.kop
+			if hold > balance {
+				hold = balance
+			}
+			if hold > 0 {
+				if _, err := biz.WalletApply(ctx, tx, userDBID, -hold, biz.WalletRefund, fmt.Sprintf("refund-hold:%d", x.rowID),
+					biz.WalletRefs{PaymentID: x.paymentID, Comment: fmt.Sprintf("возврат платежа #%d через ЮKassa", x.paymentID)}); err != nil {
+					return err
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			if hold < x.kop {
+				RaiseAlert(fmt.Sprintf("wallet-external-refund-%d", x.rowID), AlertWarn, "Возврат пополнения больше остатка кошелька",
+					fmt.Sprintf("Платёж #%d вернули через ЮKassa на %s ₽, а на кошельке клиента было %s ₽ — остальное уже потрачено на услуги. Списано с кошелька %s ₽.",
+						x.paymentID, rubles(x.kop), rubles(balance), rubles(hold)))
+			}
+			return nil
+		}()
+		cancel()
+		if err != nil {
+			log.Printf("[wallet-refund] external refund %d: %v", x.rowID, err)
+		}
+	}
+}
+
 // releaseFailedWalletRefundsSQL: wallet holds whose refund YooKassa refused or canceled
 // and that were not given back yet.
 const releaseFailedWalletRefundsSQL = `

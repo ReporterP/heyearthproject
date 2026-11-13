@@ -172,9 +172,10 @@ func checkTenantBalanceWarnings() {
 func processAutoRenew(userID string, subID int) error {
 	var planID, pricePaid int
 	var promo string
+	var validUntil time.Time
 	err := db.DB.QueryRow(`
-		SELECT COALESCE(plan_id, 0), COALESCE(price_paid, 0), COALESCE(promocode_used, '')
-		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW() AND valid_until < NOW() + INTERVAL '25 hours'`, subID).Scan(&planID, &pricePaid, &promo)
+		SELECT COALESCE(plan_id, 0), COALESCE(price_paid, 0), COALESCE(promocode_used, ''), valid_until
+		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW() AND valid_until < NOW() + INTERVAL '25 hours'`, subID).Scan(&planID, &pricePaid, &promo, &validUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // not due (already renewed, or ended)
 	}
@@ -225,10 +226,6 @@ func processAutoRenew(userID string, subID int) error {
 	// or a restart never charge one period twice. Not enough money: nothing happens —
 	// Happ shows «Пополните кошелёк» and the reminder email asks to top up; the next
 	// hourly run tries again until the subscription ends.
-	var validUntil time.Time
-	if err := db.DB.QueryRow(`SELECT valid_until FROM user_subscriptions WHERE id = $1`, subID).Scan(&validUntil); err != nil {
-		return fmt.Errorf("subscription %d: %w", subID, err)
-	}
 	res, err := walletPurchaseNow(context.Background(), biz.PurchaseRequest{
 		UserID: userID, PlanID: plan.ID,
 		Key:  fmt.Sprintf("renew:%d:%d", subID, validUntil.Unix()),

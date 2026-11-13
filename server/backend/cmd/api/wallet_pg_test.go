@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -227,5 +229,53 @@ func TestWalletTopupRefundHold(t *testing.T) {
 	releaseFailedWalletRefunds()
 	if b := walletOf(t, conn, uid); b != 20000 {
 		t.Errorf("balance %d after a refused refund, want 20000 (once)", b)
+	}
+}
+
+// Review fix: a top-up refunded from the YooKassa account (no admin reservation) comes off
+// the wallet — capped by what is left — and the owner is told about the rest.
+func TestExternalTopupRefundHold(t *testing.T) {
+	conn := testpg.Open(t)
+	quietWallet(t)
+	uid := testpg.NewUser(t, conn, "ext")
+	id := topupRow(t, conn, "ext", 500, 0, "")
+	testpg.MustExec(t, conn, `UPDATE payments SET yookassa_payment_id = 'yk-' || id WHERE id = $1`, id)
+	if err := processPaymentEvent(ykTopup(id, "ext", yookassa.PaymentStatusSucceeded, "500.00")); err != nil {
+		t.Fatal(err)
+	}
+	testpg.MustExec(t, conn, `UPDATE user_wallets SET balance_kop = 20000 WHERE user_id = $1`, uid) // 300 ₽ spent meanwhile
+	testpg.MustExec(t, conn, `INSERT INTO payment_refunds (payment_id, yookassa_refund_id, amount, currency, status, created_at)
+		VALUES ($1, 'rf-ext', 500, 'RUB', 'succeeded', NOW() - INTERVAL '20 minutes')`, id)
+	holdExternalWalletRefunds()
+	holdExternalWalletRefunds()
+	if b := walletOf(t, conn, uid); b != 0 {
+		t.Errorf("balance %d after an external refund, want 0 (the 200 ₽ left)", b)
+	}
+}
+
+// Review fix: /payment/create paid from the wallet twice (an old page without request_id,
+// a retry) buys once.
+func TestCreatePaymentFromWalletOnce(t *testing.T) {
+	conn := testpg.Open(t)
+	quietWallet(t)
+	plan := pgPlan(t, conn, "t-all", 300, 30)
+	uid := testpg.NewUser(t, conn, "dbl")
+	testpg.MustExec(t, conn, `INSERT INTO user_wallets (user_id, balance_kop) VALUES ($1, 90000)`, uid)
+	t.Setenv("JWT_SECRET", "test-secret")
+	token, err := biz.GenerateUserSessionToken("dbl", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/payment/create", strings.NewReader(`{"plan_id":`+strconv.Itoa(plan)+`}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handleCreatePayment(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if b, d := walletOf(t, conn, uid), daysLeft(t, conn, uid); b != 60000 || d != 30 {
+		t.Errorf("after two identical requests: balance %d (want 60000), %d days (want 30)", b, d)
 	}
 }

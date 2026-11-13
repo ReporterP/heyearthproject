@@ -74,6 +74,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		ReturnURL        string `json:"return_url"`
 		Email            string `json:"email"`
 		ConfirmationType string `json:"confirmation_type"` // "embedded" (widget) | "redirect" (default)
+		RequestID        string `json:"request_id"`        // idempotency of a wallet purchase
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -199,9 +200,24 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	priceKop := int64(priceRub) * 100
 	if balance >= priceKop {
+		// A repeated request (double click, retry after a lost answer) must not buy twice:
+		// the client's request_id; an old page without one reuses the key of a purchase of
+		// the same plan it made in the last 2 minutes (that repeat gets the same result).
+		key := ""
+		if rid := strings.TrimSpace(body.RequestID); rid != "" && len(rid) <= 64 {
+			key = fmt.Sprintf("purchase:%d:%s", userDBID, rid)
+		} else {
+			prefix := fmt.Sprintf("purchase:%d:create:", userDBID)
+			if err := db.DB.QueryRowContext(r.Context(), `
+				SELECT idempotency_key FROM wallet_transactions
+				WHERE user_id = $1 AND plan_id = $2 AND idempotency_key LIKE $3 || '%' AND created_at > NOW() - INTERVAL '2 minutes'
+				ORDER BY id DESC LIMIT 1`, userDBID, plan.ID, prefix).Scan(&key); err != nil {
+				key = fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+			}
+		}
 		res, err := walletPurchaseNow(r.Context(), biz.PurchaseRequest{
 			UserID: userID, PlanID: plan.ID, Promocode: promoUsed,
-			Key: fmt.Sprintf("purchase:%d:create-%d", userDBID, time.Now().UnixNano()), Kind: biz.WalletPurchase,
+			Key: key, Kind: biz.WalletPurchase,
 		})
 		if err != nil {
 			writePurchaseError(w, err)
