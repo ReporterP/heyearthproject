@@ -34,7 +34,7 @@ async function fetchHappLink(token) {
     const res = await fetch(`/api/v1/user/happ-link/${encodeURIComponent(token)}`)
     if (!res.ok) return null
     const data = await res.json()
-    return (data && data.happ_link) || null
+    return data && data.happ_link ? { happLink: data.happ_link, subscribeUrl: data.subscribe_url || '' } : null
   } catch {
     return null
   }
@@ -61,19 +61,24 @@ export default function ConnectPage() {
   const [happLink, setHappLink] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const subscribeUrl = token ? `${window.location.origin}/api/v1/user/subscribe/${token}` : ''
+  // The server's address of the subscription (it may live on the subscription domain that
+  // answers on mobile networks); this page's own origin until the server answers.
+  const fallbackUrl = token ? `${window.location.origin}/api/v1/user/subscribe/${token}` : ''
+  const [serverUrl, setServerUrl] = useState('')
+  const subscribeUrl = serverUrl || fallbackUrl
 
   useEffect(() => {
     if (!token) { setLoading(false); return }
     let cancelled = false
-    fetchHappLink(token).then((link) => {
+    fetchHappLink(token).then((res) => {
       if (cancelled) return
-      // No encrypted link (the service is down): Happ also takes the plain subscription address.
-      setHappLink(link || `happ://add/${subscribeUrl}`)
+      if (res?.subscribeUrl) setServerUrl(res.subscribeUrl)
+      // No answer: Happ also takes the plain subscription address.
+      setHappLink(res?.happLink || `happ://add/${fallbackUrl}`)
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [token, subscribeUrl])
+  }, [token, fallbackUrl])
 
   useEffect(() => {
     if (loading || !happLink || typeof window === 'undefined') return

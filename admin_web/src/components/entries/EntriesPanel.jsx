@@ -11,6 +11,7 @@ import {
 import { confirmMatches } from '../ui/confirm.js' // the typed-confirmation rule of ConfirmDanger (phase 2)
 import MobileCheckPanel from './MobileCheckPanel.jsx'
 import HubKeyBox from './HubKeyBox.jsx'
+import SubscriptionCard from './SubscriptionCard.jsx'
 import { ENTRY_MODES, healthyRelays, modeBanner } from './entriesModel.js'
 import { loadView } from '../servers/serversModel.js'
 
@@ -160,44 +161,6 @@ function ModeCard({ data, canEdit, onSaved }) {
   )
 }
 
-// The site's names that must point at the entries for the site and the subscription to open on
-// mobile networks (the 443 router's names; relays pass them to the Hub with the client's address).
-const SITE_NAMES = ['hiearth.ru', 'www.hiearth.ru', 'admin.hiearth.ru', 'site.hiearth.ru']
-
-// DnsCard: the owner's DNS step once an entry works — the site and the subscription link live on
-// the domain, and the domain still points at the Hub that mobile networks cut.
-function DnsCard({ relays }) {
-  const ips = relays.filter(r => r.health.external === 'healthy').map(r => r.address)
-  return (
-    <Card id="dns" className="scroll-mt-4">
-      <CardHeader><h3 className="text-sm font-semibold text-primary">Сайт и подписка на мобильных</h3></CardHeader>
-      <CardBody className="space-y-3">
-        <p className="text-sm text-secondary">
-          VPN через вход уже работает, но сайт (регистрация, оплата) и ссылка подписки открываются по домену, а он указывает на Hub,
-          который мобильные операторы режут. У регистратора домена замените A-записи на адрес входа — вход передаст всё на Hub
-          с настоящим IP посетителя (оплаты, лимиты и журнал продолжат работать).
-        </p>
-        {ips.length === 0 ? (
-          <p className="text-xs text-warning">Сначала дождитесь, пока вход станет «доступен» снаружи.</p>
-        ) : (
-          <Table>
-            <Thead><Tr><Th>Имя</Th><Th>Тип</Th><Th>Значение</Th><Th>TTL</Th></Tr></Thead>
-            <Tbody>
-              {SITE_NAMES.flatMap(n => ips.map(ip => (
-                <Tr key={n + ip}><Td mono>{n}</Td><Td mono>A</Td><Td mono>{ip}</Td><Td mono>300</Td></Tr>
-              )))}
-            </Tbody>
-          </Table>
-        )}
-        <p className="text-xs text-tertiary">
-          Старую A-запись с адресом Hub удалите: иначе телефоны будут иногда попадать на него и «висеть». Изменение расходится по
-          интернету от нескольких минут до пары часов.
-        </p>
-      </CardBody>
-    </Card>
-  )
-}
-
 // LoadCells: a relay's latest sample (the nodes list) in the entries table.
 function LoadCells({ node }) {
   const v = loadView(node?.load, { portMbps: node?.owner?.port_mbps, role: 'relay' })
@@ -222,7 +185,7 @@ function LoadCells({ node }) {
 
 /**
  * EntriesPanel — the «Входы в РФ» tab of «Серверы» (was the «Входы» page): where users connect
- * (hub / pinned relay / auto), the DNS step, every entry's health and load, the phone check, the
+ * (hub / pinned relay / auto), the subscription domain and «Авто», every entry's health and load, the phone check, the
  * subscription preview, settings, the drill and the history.
  * Props: nodesById (GET /nodes items by id — the load), onAdd (the wizard), onOpenNode(id),
  * phoneId / onPhone(id|null) (the phone check dialog lives in the URL: ?phone=<id>).
@@ -301,7 +264,7 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
 
       <ModeCard data={data} canEdit={canEdit} onSaved={load} />
 
-      {relays.length > 0 && <DnsCard relays={relays} />}
+      {relays.length > 0 && <SubscriptionCard data={data} canEdit={canEdit} onSaved={load} />}
 
       <Table>
         <Thead><Tr><Th>Вход</Th><Th>Адрес</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th align="right">CPU</Th><Th align="right">Канал, Мбит/с</Th><Th align="right">conntrack</Th><Th>Адрес в подписке</Th><Th>Мобильные сети</Th></Tr></Thead>

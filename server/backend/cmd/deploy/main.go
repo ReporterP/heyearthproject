@@ -907,6 +907,10 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
 			log.Fatal(err)
 		}
+		// The reserve entries' listener carries the same site names (go.<domain> included).
+		if err := refreshRelayPP(c, client, streamConf); err != nil {
+			log.Fatalf("nginx: %s: %v", config.HubRelayPPConfPath, err)
+		}
 		// Добавить include stream.d в nginx.conf если ещё нет
 		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)
 		fmt.Println("nginx stream SNI routing настроен (443 → 8443/10443)")
@@ -925,6 +929,9 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if _, err := runSSH(client, nginxApplyCmd, true); err != nil {
 		log.Fatalf("nginx: nginx -t / reload не прошли: %v", err)
 	}
+	if ssl {
+		ensureSiteAliasCert(client, domain)
+	}
 }
 
 func buildNginxConfHTTP(domain string) string {
@@ -932,7 +939,7 @@ func buildNginxConfHTTP(domain string) string {
 server {
     listen 80;
     listen [::]:80;
-    server_name %[1]s www.%[1]s;
+    server_name %[1]s www.%[1]s go.%[1]s;
 
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
@@ -1017,7 +1024,7 @@ func buildNginxConfSSL(domain, certPath string, xrayActive bool) string {
 server {
     listen 80;
     listen [::]:80;
-    server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s;
+    server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s go.%[1]s;
     return 301 https://$host$request_uri;
 }
 
@@ -1025,7 +1032,9 @@ server {
 server {
     listen %[3]s ssl http2;
     listen [::]:%[3]s ssl http2;
-%[4]s    server_name %[1]s www.%[1]s;
+%[4]s    # go.<domain>: the same site and API through the reserve entries (its A records point at
+    # them): the subscription link and the cabinet on mobile networks that cut the Hub.
+    server_name %[1]s www.%[1]s go.%[1]s;
 
     ssl_certificate %[2]s/fullchain.pem;
     ssl_certificate_key %[2]s/privkey.pem;
@@ -1124,6 +1133,7 @@ map $ssl_preread_server_name $backend {
     www.%[1]s      nginx_https;
     admin.%[1]s    nginx_https;
     site.%[1]s     nginx_https;
+    go.%[1]s       nginx_https;
     default        xray_vless;
 }
 

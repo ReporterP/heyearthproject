@@ -135,7 +135,26 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
-	announceText, announceURL, err := buildSubscriptionAnnounce(userID)
+	// The subscription domain (go.<domain>, through the reserve entries): links in
+	// the profile follow the host the client fetched it from, so a client on that
+	// name opens the cabinet on it too. «Авто» (JSON) is the owner's switch.
+	var subDomain, autoMode, autoTestUser string
+	for _, s := range []struct {
+		dst      *string
+		key, def string
+	}{{&subDomain, "sub_domain", ""}, {&autoMode, "sub_auto_mode", autoModeOff}, {&autoTestUser, "sub_auto_test_user", ""}} {
+		if *s.dst, err = subscriptionSetting(s.key, s.def); err != nil {
+			log.Printf("[subscribe] user %s: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+	}
+	linkBase, webPage := publicBaseURL(), "https://hiearth.ru/dashboard"
+	if d := strings.TrimSpace(subDomain); d != "" && requestHost(r.Host) == d {
+		linkBase = "https://" + d
+		webPage = linkBase + "/dashboard"
+	}
+	announceText, announceURL, err := buildSubscriptionAnnounceAt(userID, linkBase)
 	if err != nil {
 		log.Printf("[subscribe] user %s: %v", userID, err)
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
@@ -156,9 +175,34 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// ignore unknown URI schemes safely" assumption proved wrong in practice.
 	uaForRouting := strings.ToLower(r.Header.Get("User-Agent"))
 	wantsHappRouting := strings.Contains(uaForRouting, "happ")
+	// The JSON subscription («⚡ Авто»): on request (?format=json), or for a Happ
+	// client while the owner serves it (all, or the test user only).
+	wantsJSON := format == "json" || (format == "" && wantsHappRouting && autoModeServes(autoMode, autoTestUser, userID))
 
 	var uris []string
-	if wantsHappRouting {
+	var jsonBody []byte
+	if wantsJSON {
+		// The same strictness as the routing profile: a failed read is a 503.
+		mtprotoIPs, err := biz.ListMTProtoExitIPs()
+		if err == nil {
+			var planID int
+			if planID, err = biz.EffectivePlanID(userID); err == nil {
+				var d directRouting
+				if d.sites, d.ips, err = biz.CompactDirectRoutingStrict(planID, mtprotoIPs); err == nil {
+					jsonBody = jsonSubscription(in, d)
+				}
+			}
+		}
+		if err != nil {
+			log.Printf("[subscribe] user %s: json profile: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+		if jsonBody != nil {
+			format = "json"
+		} // no VLESS way in (e.g. a plan without vless): the plain URIs below
+	}
+	if wantsHappRouting && jsonBody == nil {
 		// Happ caches the routing profile too: any failed read is a 503, not a
 		// profile without the MTProto IPs or the plan's direct-route services.
 		mtprotoIPs, err := biz.ListMTProtoExitIPs()
@@ -200,8 +244,8 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// the auto-tuner); 1 h during an entry failover (phase 3).
 	w.Header().Set("Profile-Update-Interval", strconv.Itoa(max(in.entries.interval, 1)))
 	w.Header().Set("Profile-Title", "HiEarth")
-	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
-	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+	w.Header().Set("Profile-Web-Page-Url", webPage)
+	w.Header().Set("Support-Url", webPage)
 	// Routing-Enable: 1 — we DO want Happ's routing rules to apply, because
 	// the subscription body ships a `happ://routing/onadd/<b64>` profile with
 	// DirectIp exclusions for our MTProto-proxy IPs. Without these exclusions,
@@ -219,6 +263,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch format {
+	case "json":
+		// Happ: the local proxy ports of the configs get Happ's own login.
+		w.Header().Set("Socks-Auth-Mode", "auto")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(jsonBody)
+
 	case "clash":
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=heyearth.yaml")
@@ -539,7 +589,7 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	baseURL := publicBaseURL()
+	baseURL := subscriptionBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
 	// One-tap import into Happ: the plain happ://add/<url> deep link, built here. The
@@ -588,7 +638,7 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseURL := publicBaseURL()
+	baseURL := subscriptionBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
 	_ = userID
@@ -619,6 +669,11 @@ func happAddLink(subscribeURL string) string { return "happ://add/" + subscribeU
 // Returns empty strings if the user has no subscription record at all
 // (handler should not emit headers in that case); a failed read is an error.
 func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
+	return buildSubscriptionAnnounceAt(userID, publicBaseURL())
+}
+
+// buildSubscriptionAnnounceAt is buildSubscriptionAnnounce with the links on base.
+func buildSubscriptionAnnounceAt(userID, base string) (text, url string, err error) {
 	var (
 		validUntil   time.Time
 		trafficUsed  int64
@@ -650,7 +705,6 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 		return "", "", fmt.Errorf("subscription announce: %w", err)
 	}
 
-	base := publicBaseURL()
 	checkout := base + "/payment"
 	dashboard := base + "/dashboard"
 	now := time.Now()

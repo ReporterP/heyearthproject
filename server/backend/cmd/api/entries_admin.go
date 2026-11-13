@@ -87,7 +87,8 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 		fo, err = entriesFailover(ctx)
 	}
 	vals := map[string]string{}
-	for _, k := range []string{"entry_failover_enabled", "entry_failover_test_user", "entry_probe_simulate_hub_fail_until", "subscription_update_interval_hours"} {
+	for _, k := range []string{"entry_failover_enabled", "entry_failover_test_user", "entry_probe_simulate_hub_fail_until", "subscription_update_interval_hours",
+		"sub_domain", "sub_auto_mode", "sub_auto_test_user"} {
 		if err == nil {
 			vals[k], err = entriesSetting(k)
 		}
@@ -113,6 +114,7 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 		"entries": entries, "failover": view, "history": history,
 		"update_interval_hours": planEntries("", nil, biz.EntryFailover{}, false, vals["subscription_update_interval_hours"]).interval,
 		"domain_mode_available": biz.EntryDomainModeAvailable(),
+		"subscription":          subDomainStatus(ctx, vals["sub_domain"], vals["sub_auto_mode"], vals["sub_auto_test_user"], entries),
 	})
 }
 
@@ -184,6 +186,9 @@ type entrySettingsRequest struct {
 	FailoverEnabled     *bool   `json:"failover_enabled"`
 	TestUser            *string `json:"test_user"`
 	SimulateMinutes     *int    `json:"simulate_hub_fail_minutes"`
+	SubDomain           *string `json:"sub_domain"`     // «Подписка для мобильных»: go.<domain>, "" = the site's own
+	AutoMode            *string `json:"auto_mode"`      // JSON «Авто»: off | test | on
+	AutoTestUser        *string `json:"auto_test_user"` // who gets «Авто» in mode test
 }
 
 // writes returns the app_settings to write, or a user-facing error message.
@@ -215,6 +220,27 @@ func (req entrySettingsRequest) writes(now time.Time) (map[string]string, string
 			out["entry_probe_simulate_hub_fail_until"] = now.Add(time.Duration(*v) * time.Minute).UTC().Format(time.RFC3339)
 		}
 	}
+	if v := req.SubDomain; v != nil {
+		d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(*v)), ".")
+		if d != "" && !entryDomainRe.MatchString(d) {
+			return nil, "домен подписки: имя вида go.hiearth.ru"
+		}
+		out["sub_domain"] = d
+	}
+	if v := req.AutoMode; v != nil {
+		m := strings.TrimSpace(*v)
+		if m != autoModeOff && m != autoModeTest && m != autoModeOn {
+			return nil, "«Авто»: off, test или on"
+		}
+		out["sub_auto_mode"] = m
+	}
+	if v := req.AutoTestUser; v != nil {
+		u := strings.TrimSpace(*v)
+		if u != "" && !entryTestUserRe.MatchString(u) {
+			return nil, "тестовый пользователь «Авто»: ID из раздела «Пользователи»"
+		}
+		out["sub_auto_test_user"] = u
+	}
 	if len(out) == 0 {
 		return nil, "нечего сохранять"
 	}
@@ -239,6 +265,15 @@ func handleAdminEntrySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	// A subscription domain is saved only while the Hub answers for it with a valid
+	// certificate: the cabinet hands out links on it at once.
+	if d := writes["sub_domain"]; d != "" {
+		if _, err := subDomainTLS(ctx, d); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "сертификат для " + d + " не готов: " + err.Error() +
+				" — сначала A-записи на входы, затем deploy --nginx"})
+			return
+		}
+	}
 	keys := make([]string, 0, len(writes))
 	for k := range writes {
 		keys = append(keys, k)
@@ -253,7 +288,9 @@ func handleAdminEntrySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	_, interval := writes["subscription_update_interval_hours"]
 	_, testUser := writes["entry_failover_test_user"]
-	if interval || testUser { // the subscription content changed
+	_, autoMode := writes["sub_auto_mode"]
+	_, autoUser := writes["sub_auto_test_user"]
+	if interval || testUser || autoMode || autoUser { // the subscription content changed
 		if err := entriesBump(ctx); err != nil {
 			log.Printf("[entries-admin] subscription_version: %v", err)
 		}
