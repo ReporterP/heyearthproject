@@ -382,7 +382,8 @@ func checkArtifactSum(path string, data []byte) error {
 		return nil
 	}
 	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(strings.TrimSpace(strings.Fields(string(want) + " ")[0]), got) {
+	f := strings.Fields(string(want))
+	if got := hex.EncodeToString(sum[:]); len(f) == 0 || !strings.EqualFold(f[0], got) {
 		return fmt.Errorf("файл %s на Hub повреждён (sha256 не совпадает с записанным при деплое) — выложите его заново: go run quick_deploy.go", path)
 	}
 	return nil

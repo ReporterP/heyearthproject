@@ -157,3 +157,32 @@ func TestParseLoadMetrics(t *testing.T) {
 		t.Errorf("error without a sample: %+v", v)
 	}
 }
+
+// B4 (review): «another exit» means another WORKING exit — agent alive, tunnel healthy, not
+// being switched off.
+func TestOtherOnlineExitsQuery(t *testing.T) {
+	conn := testpg.Open(t)
+	testpg.MustExec(t, conn, `INSERT INTO servers (id, name, ip_address, role, lifecycle_state, status, tunnel_status) VALUES
+		(501, 'A', '203.0.113.51', 'exit', 'online', 'online', 'healthy'),
+		(502, 'B', '203.0.113.52', 'exit', 'online', 'offline', 'healthy'),
+		(503, 'C', '203.0.113.53', 'exit', 'online', 'online', 'unhealthy'),
+		(504, 'R', '203.0.113.54', 'relay', 'online', 'online', 'healthy')`)
+	count := func() int {
+		n, err := countOtherOnlineExits(context.Background(), 501)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("a dead agent, an unhealthy tunnel or a relay counted as a reserve: %d", n)
+	}
+	testpg.MustExec(t, conn, `UPDATE servers SET status = 'online' WHERE id = 502`)
+	if n := count(); n != 1 {
+		t.Fatalf("a working exit: %d", n)
+	}
+	testpg.MustExec(t, conn, `INSERT INTO provision_jobs (server_id, kind, status) VALUES (502, 'deprovision', 'running')`)
+	if n := count(); n != 0 {
+		t.Errorf("an exit being switched off counted: %d", n)
+	}
+}

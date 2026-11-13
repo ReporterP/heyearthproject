@@ -132,6 +132,11 @@ func collectAllServerMetrics() {
 		}
 	}
 	rows.Close()
+	probed := map[int]bool{}
+	for _, s := range servers {
+		probed[s.ID] = true
+	}
+	agentFailures.keepOnly(probed) // switched off and on again: three fresh probes decide
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5)
@@ -176,6 +181,16 @@ func (f *failCounter) add(id int) int {
 	defer f.mu.Unlock()
 	f.n[id]++
 	return f.n[id]
+}
+
+func (f *failCounter) keepOnly(ids map[int]bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id := range f.n {
+		if !ids[id] {
+			delete(f.n, id)
+		}
+	}
 }
 
 func (f *failCounter) reset(id int) {

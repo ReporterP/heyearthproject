@@ -136,9 +136,12 @@ func clampPct(v float64) float64 {
 
 // netRates is the interface throughput between two samples, Mbit/s; a counter reset
 // (reboot, new interface) gives no rate.
+const maxRateGap = 5 * time.Minute
+
 func netRates(prev, cur nodeSample) (rxMbps, txMbps float64, ok bool) {
 	dt := cur.At.Sub(prev.At).Seconds()
-	if dt <= 0 || prev.Iface != cur.Iface || cur.RxBytes < prev.RxBytes || cur.TxBytes < prev.TxBytes {
+	// Over a long gap (missed samples) the average is no channel load: no rate.
+	if dt <= 0 || dt > maxRateGap.Seconds() || prev.Iface != cur.Iface || cur.RxBytes < prev.RxBytes || cur.TxBytes < prev.TxBytes {
 		return 0, 0, false
 	}
 	rx := float64(cur.RxBytes-prev.RxBytes) * 8 / dt / 1e6

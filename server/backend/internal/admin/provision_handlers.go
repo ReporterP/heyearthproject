@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -829,6 +830,10 @@ func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n.Role != "relay" && n.Lifecycle == "online" {
+		// One check-and-start at a time: two «Отключить» of the last two exits must not both
+		// see the other one as the reserve (the job row exists once startJob returns).
+		lastExitMu.Lock()
+		defer lastExitMu.Unlock()
 		others, err := countOtherOnlineExits(r.Context(), n.ID)
 		if err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить другие выходы")
@@ -851,11 +856,16 @@ func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 // The last working exit (cleanup plan B4): switching it off leaves every user without
 // internet (no-exit mode blocks all traffic), so it needs the phrase, like an entry in use.
 const (
-	lastExitPhrase        = "ОТКЛЮЧИТЬ ВСЕХ"
-	lastExitMsg           = "Это единственный работающий выход за границу: после отключения у всех пользователей пропадёт интернет. Чтобы всё равно отключить, введите «" + lastExitPhrase + "»"
-	otherOnlineExitsQuery = `SELECT COUNT(*) FROM servers WHERE id <> $1 AND COALESCE(role, 'exit') <> 'relay'
-		AND lifecycle_state = 'online' AND COALESCE(status, '') <> 'archived'`
+	lastExitPhrase = "ОТКЛЮЧИТЬ ВСЕХ"
+	lastExitMsg    = "Это единственный работающий выход за границу: после отключения у всех пользователей пропадёт интернет. Чтобы всё равно отключить, введите «" + lastExitPhrase + "»"
+	// Another WORKING exit: switched on, its agent answers, the monitor judged its tunnel
+	// healthy, and no «Отключить» of it is under way (review B: a dead exit is no reserve).
+	otherOnlineExitsQuery = `SELECT COUNT(*) FROM servers s WHERE s.id <> $1 AND COALESCE(s.role, 'exit') <> 'relay'
+		AND s.lifecycle_state = 'online' AND COALESCE(s.status, '') = 'online' AND COALESCE(s.tunnel_status, '') = 'healthy'
+		AND NOT EXISTS (SELECT 1 FROM provision_jobs j WHERE j.server_id = s.id AND j.kind = 'deprovision' AND j.status IN ('queued', 'running'))`
 )
+
+var lastExitMu sync.Mutex
 
 // countOtherOnlineExits is a test seam.
 var countOtherOnlineExits = func(ctx context.Context, id int) (int, error) {

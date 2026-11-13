@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"github.com/heyearth/backend/internal/provision"
 	"math"
 	"testing"
 	"time"
@@ -45,5 +46,43 @@ tcp 37
 	reboot.RxBytes = 5
 	if _, _, ok := netRates(next, reboot); ok {
 		t.Error("a counter reset gave a rate")
+	}
+	late := next
+	late.At = next.At.Add(10 * time.Minute)
+	late.RxBytes += 1000
+	if _, _, ok := netRates(next, late); ok {
+		t.Error("a rate over a 10-minute gap (missed samples) is no channel load")
+	}
+}
+
+// A kept SSH session follows the server's address and key (review B).
+func TestNodeLoadFollow(t *testing.T) {
+	st := &nodeLoadState{remotes: map[int]provision.Remote{}, dialedFor: map[int]string{}, prev: map[int]nodeSample{}}
+	st.remotes[7] = provision.LocalRemote{}
+	st.prev[7] = nodeSample{}
+	st.follow(7, "203.0.113.7|22|SHA256:a")
+	if st.remotes[7] == nil {
+		t.Fatal("first sight dropped the session")
+	}
+	st.follow(7, "203.0.113.7|22|SHA256:a")
+	if st.remotes[7] == nil {
+		t.Fatal("same address dropped the session")
+	}
+	st.follow(7, "203.0.113.8|22|SHA256:a")
+	if st.remotes[7] != nil {
+		t.Error("a new address kept the old session")
+	}
+	if _, ok := st.prev[7]; ok {
+		t.Error("a new address kept the old sample")
+	}
+	st.prev[9] = nodeSample{}
+	st.dropGone([]int{7})
+	if _, ok := st.prev[9]; ok {
+		t.Error("a server that left kept its previous sample")
+	}
+	f := &failCounter{n: map[int]int{1: 2, 2: 1}}
+	f.keepOnly(map[int]bool{1: true})
+	if f.n[1] != 2 || f.n[2] != 0 {
+		t.Errorf("failure counts %v", f.n)
 	}
 }

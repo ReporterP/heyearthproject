@@ -313,10 +313,12 @@ export function reprovisionConsequences() {
 // API refuses without it (provision_handlers.go lastExitPhrase).
 export const LAST_EXIT_PHRASE = 'ОТКЛЮЧИТЬ ВСЕХ'
 
-// isLastExit: an online exit with no other online exit (the API's otherOnlineExitsQuery).
+// isLastExit: an online exit with no other WORKING exit — switched on, agent answering, tunnel
+// judged healthy, not being switched off (the API's otherOnlineExitsQuery).
 export function isLastExit(node, nodes) {
   if (!node || !isExit(node) || node.lifecycle_state !== 'online') return false
-  return !(nodes || []).some((n) => n.id !== node.id && isExit(n) && n.lifecycle_state === 'online' && n.status !== 'archived')
+  return !(nodes || []).some((n) => n.id !== node.id && isExit(n) && n.lifecycle_state === 'online' && n.status === 'online'
+    && n.tunnel_status === 'healthy' && !(n.last_job?.kind === 'deprovision' && ['queued', 'running'].includes(n.last_job?.status)))
 }
 
 export function deprovisionConsequences(node, { lastExit = false } = {}) {

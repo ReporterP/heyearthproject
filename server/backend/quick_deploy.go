@@ -145,7 +145,8 @@ func main() {
 	// 4b. Артефакты нод (B7): node-agent и установщик MTProxy — только если изменились, через
 	// временный файл + mv, с sha256 рядом (API сверяет его перед установкой на exit).
 	fmt.Println("[4b] Артефакты нод...")
-	agentPath := filepath.Join(backendRoot, "node-agent.bin")
+	agentPath := filepath.Join(os.TempDir(), fmt.Sprintf("heyearth-node-agent-%d.bin", os.Getpid()))
+	defer os.Remove(agentPath)
 	ab := exec.Command("go", "build", "-o", agentPath, "./cmd/node-agent/")
 	ab.Dir = backendRoot
 	ab.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")

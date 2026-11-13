@@ -263,12 +263,16 @@ test('consequences explain what happens, in Russian', () => {
 })
 
 test('the last working exit is switched off only with the phrase (B4)', () => {
-  const a = { id: 1, role: 'exit', lifecycle_state: 'online', status: 'online' }
-  const b = { id: 2, role: 'exit', lifecycle_state: 'online', status: 'offline' }
+  const a = { id: 1, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'healthy' }
+  const b = { id: 2, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'healthy' }
+  const dead = { id: 5, role: 'exit', lifecycle_state: 'online', status: 'offline', tunnel_status: 'healthy' }
+  const sick = { id: 6, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'unhealthy' }
+  const leaving = { ...b, id: 8, last_job: { kind: 'deprovision', status: 'running' } }
   const r = { id: 3, role: 'relay', lifecycle_state: 'online' }
   const off = { id: 4, role: 'exit', lifecycle_state: 'offline' }
   assert.equal(isLastExit(a, [a, r, off]), true, 'a relay or a switched-off exit is no reserve')
-  assert.equal(isLastExit(a, [a, b]), false, 'another online exit (the API counts lifecycle, not the agent)')
+  assert.equal(isLastExit(a, [a, dead, sick, leaving]), true, 'a dead, unhealthy or leaving exit is no reserve')
+  assert.equal(isLastExit(a, [a, b]), false, 'another working exit')
   assert.equal(isLastExit(r, [r]), false, 'a relay is never «the last exit»')
   assert.equal(isLastExit(off, [off]), false)
   assert.equal(LAST_EXIT_PHRASE, 'ОТКЛЮЧИТЬ ВСЕХ')

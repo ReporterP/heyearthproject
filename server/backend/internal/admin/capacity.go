@@ -54,7 +54,7 @@ func LoadCapacityReport(ctx context.Context) (capReport, error) {
 		PriceRub: int(settingFloat(ctx, "hub_monthly_price_rub", 0))}}
 	rows, err := db.DB.QueryContext(ctx, `
 		SELECT id, COALESCE(NULLIF(name, ''), 'Нода ' || id), COALESCE(role, 'exit'),
-		       COALESCE(cpu_cores, NULLIF(load_metrics->>'cores', '')::int, 1),
+		       COALESCE(cpu_cores, CASE WHEN load_metrics->>'cores' ~ '^[0-9]+(\.[0-9]+)?$' THEN (load_metrics->>'cores')::numeric::int END, 1),
 		       COALESCE(port_mbps, 1000), COALESCE(traffic_quota_tb, 0), COALESCE(monthly_price_rub, 0)
 		FROM servers
 		WHERE lifecycle_state = 'online' AND COALESCE(status, '') <> 'archived'

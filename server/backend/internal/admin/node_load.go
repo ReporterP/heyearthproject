@@ -29,11 +29,12 @@ const (
 type nodeLoadState struct {
 	mu        sync.Mutex
 	remotes   map[int]provision.Remote // server id -> kept SSH session
+	dialedFor map[int]string           // server id -> address|port|host key the session was dialled for
 	prev      map[int]nodeSample       // server id (0 = Hub) -> previous sample
 	lastPurge time.Time
 }
 
-var nodeLoad = &nodeLoadState{remotes: map[int]provision.Remote{}, prev: map[int]nodeSample{}}
+var nodeLoad = &nodeLoadState{remotes: map[int]provision.Remote{}, dialedFor: map[int]string{}, prev: map[int]nodeSample{}}
 
 // Test seams.
 var (
@@ -75,7 +76,7 @@ func collectNodeLoad() {
 	hcancel()
 
 	rows, err := db.DB.QueryContext(ctx, `
-		SELECT id FROM servers
+		SELECT id, ip_address || '|' || COALESCE(ssh_port, 22) || '|' || COALESCE(ssh_host_key_fp, '') FROM servers
 		WHERE lifecycle_state = 'online' AND COALESCE(status, '') <> 'archived'
 		ORDER BY id`)
 	if err != nil {
@@ -85,8 +86,10 @@ func collectNodeLoad() {
 	var ids []int
 	for rows.Next() {
 		var id int
-		if rows.Scan(&id) == nil {
+		var meta string
+		if rows.Scan(&id, &meta) == nil {
 			ids = append(ids, id)
+			nodeLoad.follow(id, meta) // a new address or host key: redial
 		}
 	}
 	rows.Close()
@@ -157,6 +160,21 @@ func (s *nodeLoadState) remote(ctx context.Context, id int) (provision.Remote, e
 	return rem, nil
 }
 
+// follow drops the kept session when the server's address, port or host key changed since it
+// was dialled (an IP change or a reprovision with a new key).
+func (s *nodeLoadState) follow(id int, meta string) {
+	s.mu.Lock()
+	old, had := s.dialedFor[id]
+	s.dialedFor[id] = meta
+	s.mu.Unlock()
+	if had && old != meta {
+		s.drop(id)
+		s.mu.Lock()
+		delete(s.prev, id)
+		s.mu.Unlock()
+	}
+}
+
 func (s *nodeLoadState) drop(id int) {
 	s.mu.Lock()
 	rem := s.remotes[id]
@@ -178,6 +196,16 @@ func (s *nodeLoadState) dropGone(online []int) {
 	for id := range s.remotes {
 		if !keep[id] {
 			gone = append(gone, id)
+		}
+	}
+	for id := range s.prev {
+		if id != 0 && !keep[id] {
+			delete(s.prev, id) // back online later: its first rate must not span the gap
+		}
+	}
+	for id := range s.dialedFor {
+		if !keep[id] {
+			delete(s.dialedFor, id)
 		}
 	}
 	s.mu.Unlock()
