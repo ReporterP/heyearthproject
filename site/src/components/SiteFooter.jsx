@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import useLegalInfo from '../hooks/useLegalInfo.js'
+import useSiteInfo from '../hooks/useSiteInfo.js'
 
 const LeafMark = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -8,11 +9,9 @@ const LeafMark = ({ className = 'w-4 h-4' }) => (
 )
 
 export default function SiteFooter() {
-  const [legal, setLegal] = useState({})
-  useEffect(() => {
-    fetch('/api/v1/legal-info').then(r => r.json()).then(setLegal).catch(() => {})
-  }, [])
-  const legalEmail = legal.legal_email || 'alex_step04@mail.ru'
+  const legal = useLegalInfo()
+  const { info } = useSiteInfo()
+  const legalEmail = legal.legal_email || ''
   const legalInn = legal.legal_inn || ''
 
   return (
@@ -32,10 +31,12 @@ export default function SiteFooter() {
             <p className="text-sm text-text-secondary leading-relaxed max-w-xs">
               Устойчивый интернет-доступ с эко-маршрутизацией трафика. Тихо, приватно, без лишнего шума.
             </p>
-            <p className="text-xs text-text-secondary mt-3">{legal.legal_company_name || 'ИП Степанов А.В.'}</p>
-            <p className="text-xs text-text-secondary">
-              <a href={`mailto:${legalEmail}`} className="hover:text-brand transition">{legalEmail}</a>
-            </p>
+            {legal.legal_company_name && <p className="text-xs text-text-secondary mt-3">{legal.legal_company_name}</p>}
+            {legalEmail && (
+              <p className="text-xs text-text-secondary">
+                <a href={`mailto:${legalEmail}`} className="hover:text-brand transition">{legalEmail}</a>
+              </p>
+            )}
             {legalInn && <p className="text-xs text-faint">ИНН: {legalInn}</p>}
           </div>
 
@@ -45,7 +46,8 @@ export default function SiteFooter() {
             <ul className="space-y-2">
               <li><Link to="/" className="text-sm text-text-secondary hover:text-text-primary transition">Главная</Link></li>
               <li><Link to="/payment" className="text-sm text-text-secondary hover:text-text-primary transition">Тарифы</Link></li>
-              <li><Link to="/business" className="text-sm text-text-secondary hover:text-text-primary transition">Для бизнеса</Link></li>
+              {info.b2b_enabled && <li><Link to="/business" className="text-sm text-text-secondary hover:text-text-primary transition">Для бизнеса</Link></li>}
+              <li><Link to="/help" className="text-sm text-text-secondary hover:text-text-primary transition">Помощь</Link></li>
               <li><Link to="/dashboard" className="text-sm text-text-secondary hover:text-text-primary transition">Личный кабинет</Link></li>
             </ul>
           </div>
@@ -78,7 +80,7 @@ export default function SiteFooter() {
         {/* Bottom bar */}
         <div className="mt-10 pt-6 border-t border-brand/10 flex flex-col md:flex-row items-center justify-between gap-3">
           <p className="text-xs text-faint">
-            &copy; {new Date().getFullYear()} HiEarth. {legal.legal_company_name || 'ИП Степанов А.В.'} Все права защищены.
+            &copy; {new Date().getFullYear()} HiEarth.{legal.legal_company_name ? ` ${legal.legal_company_name}.` : ''} Все права защищены.
           </p>
           <div className="flex gap-4">
             <Link to="/privacy" className="text-xs text-faint hover:text-text-secondary transition">Конфиденциальность</Link>

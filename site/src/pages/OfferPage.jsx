@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import LegalToc from '../components/LegalToc.jsx'
+import useLegalInfo from '../hooks/useLegalInfo.js'
 
 export default function OfferPage() {
-  const [s, setS] = useState({})
-  useEffect(() => { fetch('/api/v1/legal-info').then(r => r.json()).then(setS).catch(() => {}) }, [])
-  const company = s.legal_company_name || 'ИП Степанов Александр Владимирович'
-  const email = s.legal_email || 'alex_step04@mail.ru'
+  const s = useLegalInfo()
+  const company = s.legal_company_name || '…'
+  const email = s.legal_email || ''
   const address = s.legal_address || 'Указывается по запросу'
   const inn = s.legal_inn || ''
 
@@ -58,7 +58,7 @@ export default function OfferPage() {
 
           <div>
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">6. Возврат средств</h2>
-            <p>Условия возврата описаны на странице <a href="/refund" className="text-brand hover:underline">«Условия возврата и отмены»</a>.</p>
+            <p>Условия возврата описаны на странице <Link to="/refund" className="text-brand hover:underline">«Условия возврата и отмены»</Link>.</p>
           </div>
 
           <div>

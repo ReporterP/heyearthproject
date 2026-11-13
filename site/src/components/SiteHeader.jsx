@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useSiteInfo from '../hooks/useSiteInfo.js'
 
 const LeafMark = ({ className = 'w-5 h-5' }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -22,9 +23,11 @@ export default function SiteHeader() {
 
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
 
+  const { info } = useSiteInfo()
   const navLinks = [
     { to: '/', label: 'Для пользователей' },
-    { to: '/business', label: 'Для бизнеса' },
+    ...(info.b2b_enabled ? [{ to: '/business', label: 'Для бизнеса' }] : []),
+    { to: '/help', label: 'Помощь' },
   ]
 
   return (

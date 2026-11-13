@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { createPayment, getProfile, applyPromocode } from '../api/user.js'
+import { createPayment, getProfile, applyPromocode, getEmailPrefs } from '../api/user.js'
 import { getQuote, walletPurchase, walletTopup, newRequestId, rub, formatDay } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { Skeleton } from '../components/Skeleton.jsx'
@@ -50,6 +50,11 @@ export default function PaymentPage() {
   const [promocode, setPromocode] = useState('')
   const [appliedPromo, setAppliedPromo] = useState('')
   const [email, setEmail] = useState('')
+  // the receipt address defaults to the one confirmed in the cabinet (E8)
+  useEffect(() => {
+    if (!token) return
+    getEmailPrefs(token).then((p) => { if (p?.email) setEmail((cur) => cur || p.email) }).catch(() => {})
+  }, [token])
   const [quote, setQuote] = useState(null)
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [promoError, setPromoError] = useState('')

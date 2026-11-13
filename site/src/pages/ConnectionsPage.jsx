@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getConnections, getDownloads, getSubscribeLink } from '../api/user.js'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
-import CopyButton, { copyToClipboard } from '../components/CopyButton.jsx'
+import useAccount from '../account/useAccount.js'
+import { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
 import QRCode from '../components/QRCode.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
@@ -13,7 +13,6 @@ const IconLink = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="cur
 const IconApple = (p) => (<svg {...p} viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 1.5c.1 1-.3 2-.9 2.7-.7.8-1.7 1.4-2.7 1.3-.1-1 .4-2 1-2.7.6-.7 1.7-1.2 2.6-1.3zM19 17.3c-.5 1.1-.7 1.6-1.4 2.6-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.4.9-3.7.9c-1.6 0-2.8-1.5-3.7-2.9C.7 16.4.4 12 2 9.3c1-1.6 2.6-2.6 4.1-2.6 1.5 0 2.5 1 3.7 1 1.2 0 1.9-1 3.7-1 1.3 0 2.7.7 3.7 2-3.2 1.8-2.7 6.4.8 8.6z" /></svg>)
 const IconAndroid = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="8" width="12" height="11" rx="2" /><path d="M9 8V6a3 3 0 016 0v2M8 5L6.5 3M16 5l1.5-2M9.5 12h.01M14.5 12h.01" /></svg>)
 const IconDesktop = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>)
-const IconDownload = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>)
 
 /* Styled disclosure (replaces dated native <details>) */
 function Reveal({ label, children }) {
@@ -40,7 +39,7 @@ const DEVICE_STEPS = {
     'Включите подключение переключателем в приложении',
   ],
   android: [
-    'Установите Happ из Google Play (или v2rayNG)',
+    'Установите Happ из Google Play',
     'Нажмите «Подключить автоматически» выше',
     'Если не открылось: скопируйте ссылку, в приложении → + → Импорт из буфера обмена',
     'Включите подключение переключателем',
@@ -73,46 +72,26 @@ function extractTokenFromUrl(url) {
 }
 
 export default function ConnectionsPage() {
-  const navigate = useNavigate()
-  const { token, logout } = useAuth()
-
-  const [profile, setProfile] = useState(null)
-  const [connections, setConnections] = useState(null)
-  const [downloads, setDownloads] = useState({})
-  const [subscribeLink, setSubscribeLink] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const { token } = useAuth()
+  // One account load (E6): the connection state is required — a failure (503) must show
+  // «временно недоступно», never «нет подписки»; the link is optional.
+  const { data, loading, error: loadError } = useAccount(['connections', 'subLink'], { optional: ['subLink'] })
+  const connections = data.connections
+  const subscribeLink = data.subLink
+  const error = loadError && loadError.kind !== 'auth' ? (loadError.message || 'Не удалось загрузить данные. Обновите страницу.') : ''
   const [configUpdated, setConfigUpdated] = useState(false)
   const [copiedField, setCopiedField] = useState('')
-  const [method, setMethod] = useState('sub')      // sub | proxy
   const [device, setDevice] = useState(detectDevice())
 
   useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    Promise.all([
-      getProfile(token),
-      // No catch: a failure (503) must show «временно недоступно», never «нет подписки».
-      getConnections(token),
-      getDownloads().catch(() => ({ downloads: {} })),
-      getSubscribeLink(token).catch(() => null),
-    ]).then(([profileData, connData, dlData, subLinkData]) => {
-      setProfile(profileData)
-      setConnections(connData)
-      setDownloads(dlData?.downloads || {})
-      setSubscribeLink(subLinkData)
-      if (connData?.config_version) {
-        const savedVersion = localStorage.getItem('heyearth_config_version')
-        if (savedVersion && savedVersion !== String(connData.config_version)) setConfigUpdated(true)
-        localStorage.setItem('heyearth_config_version', String(connData.config_version))
-      }
-    }).catch(e => {
-      if (e.kind === 'auth') return // apiFetch signed the site out; RequireAuth redirects
-      setError(e.message || 'Не удалось загрузить данные. Обновите страницу.')
-    }).finally(() => setLoading(false))
-  }, [])
+    const v = connections?.config_version
+    if (!v) return
+    const savedVersion = localStorage.getItem('heyearth_config_version')
+    if (savedVersion && savedVersion !== String(v)) setConfigUpdated(true)
+    localStorage.setItem('heyearth_config_version', String(v))
+  }, [connections?.config_version])
 
   const canConnect = connections?.can_connect
-  const vlessReality = connections?.vless_reality || ''
   const subUrl = subscribeLink?.subscribe_url || ''
 
   useReveal([loading, canConnect])
@@ -120,10 +99,6 @@ export default function ConnectionsPage() {
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
     if (ok) { setCopiedField(field); setTimeout(() => setCopiedField(''), 2000) }
-  }
-
-  function selectMethod(id) {
-    setMethod(id)
   }
 
   if (loading) return <CabinetSkeleton />
@@ -157,12 +132,6 @@ export default function ConnectionsPage() {
     </section>
   )
 
-  const methods = [
-    { id: 'sub', label: 'Подписка', badge: 'Рекомендуем', available: !!subUrl },
-    { id: 'proxy', label: 'Прокси-ссылка', available: !!vlessReality },
-  ].filter(m => m.available)
-
-  const active = methods.find(m => m.id === method) ? method : (methods[0]?.id || 'sub')
   const happHref = subUrl ? `/connect?sub=${encodeURIComponent(extractTokenFromUrl(subUrl))}` : '#'
 
   return (
@@ -225,33 +194,16 @@ export default function ConnectionsPage() {
             <span className="w-6 h-6 rounded-full bg-brand/15 border border-brand/25 text-brand text-xs font-bold grid place-items-center">2</span>
             <h2 className="serif text-lg font-semibold">Или добавить вручную</h2>
           </div>
-          <p className="text-sm text-text-secondary mb-5">Отсканируйте QR-код в приложении или скопируйте ссылку.</p>
+          <p className="text-sm text-text-secondary mb-5">Отсканируйте QR-код в приложении или скопируйте ссылку подписки.</p>
 
-          {/* method segmented control */}
-          {methods.length > 1 && (
-            <div className="inline-flex p-1 rounded-xl bg-white/[0.04] border border-brand/10 mb-5 flex-wrap gap-1" role="tablist">
-              {methods.map(m => (
-                <button
-                  key={m.id} role="tab" aria-selected={active === m.id}
-                  onClick={() => selectMethod(m.id)}
-                  className={`px-3.5 py-2 rounded-lg text-sm font-medium transition-all duration-200 inline-flex items-center gap-1.5 ${
-                    active === m.id ? 'bg-brand text-[#04231a]' : 'text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  {m.label}
-                  {m.badge && active !== m.id && <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/15 text-brand">{m.badge}</span>}
-                </button>
-              ))}
-            </div>
-          )}
 
           {/* ── Подписка ── */}
-          {active === 'sub' && subUrl && (
+          {subUrl ? (
             <div className="flex flex-col sm:flex-row gap-5 items-start animate-fade-in">
               <QRCode data={subUrl} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
               <div className="flex-1 min-w-0 w-full">
                 <p className="text-sm font-medium mb-1">Ссылка подписки</p>
-                <p className="text-xs text-text-secondary mb-3">Работает в Happ, v2rayNG, Streisand и Clash. Настройки обновляются автоматически.</p>
+                <p className="text-xs text-text-secondary mb-3">Работает в Happ и других приложениях, которые принимают ссылку подписки. Настройки обновляются сами.</p>
                 <div className="flex gap-2 mb-3">
                   <button onClick={() => copyText(subUrl, 'sub')} className="btn-primary !py-2.5 !text-sm flex-1 sm:flex-none">
                     {copiedField === 'sub' ? '✓ Скопировано' : 'Копировать ссылку'}
@@ -262,21 +214,8 @@ export default function ConnectionsPage() {
                 </Reveal>
               </div>
             </div>
-          )}
-
-          {/* ── Прокси-ссылка ── */}
-          {active === 'proxy' && vlessReality && (
-            <div className="flex flex-col sm:flex-row gap-5 items-start animate-fade-in">
-              <QRCode data={vlessReality} size={168} className="flex-shrink-0 mx-auto sm:mx-0" />
-              <div className="flex-1 min-w-0 w-full">
-                <p className="text-sm font-medium mb-1">Одиночное подключение</p>
-                <p className="text-xs text-text-secondary mb-3">Один сервер без автообновления. Подойдёт, если подписка не поддерживается вашим приложением.</p>
-                <div className="mb-3"><CopyButton text={vlessReality} label="Копировать ссылку" /></div>
-                <Reveal label="Показать ссылку целиком">
-                  <code className="block text-[11px] font-mono text-text-primary break-all select-all bg-bg-app border border-brand/10 rounded-lg p-2.5">{vlessReality}</code>
-                </Reveal>
-              </div>
-            </div>
+          ) : (
+            <p className="text-sm text-text-secondary">Ссылку подписки сейчас не удалось получить — обновите страницу через минуту.</p>
           )}
 
         </div>
@@ -312,22 +251,6 @@ export default function ConnectionsPage() {
           </ol>
         </div>
 
-        {/* ═══ Downloads ═══ */}
-        {Object.keys(downloads).length > 0 && (
-          <div className="card rounded-[22px] p-6 md:p-7 reveal">
-            <h2 className="serif text-base font-semibold mb-1">Скачать приложение</h2>
-            <p className="text-xs text-text-secondary mb-4">Официальные сборки для вашей платформы</p>
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(downloads).map(([platform, info]) => (
-                <a key={platform} href={info.url} target="_blank" rel="noopener noreferrer" className="btn-ghost !py-3 !px-5">
-                  <IconDownload className="w-4 h-4" />
-                  {platform.charAt(0).toUpperCase() + platform.slice(1)}
-                  {info.version && <span className="opacity-60 text-xs">v{info.version}</span>}
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </section>
   )

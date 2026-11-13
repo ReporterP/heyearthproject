@@ -87,3 +87,23 @@ export async function getMtproto(token) {
   return apiFetch('/api/v1/user/mtproto', { token, fallback: 'Не удалось загрузить прокси для Telegram.' })
 }
 
+// ── E-mail (E8) ──
+export async function getEmailPrefs(token) {
+  return apiFetch('/api/v1/user/email', { token, fallback: 'Не удалось загрузить почту.' })
+}
+export async function setEmail(token, email) {
+  return apiFetch('/api/v1/user/email', { token, method: 'POST', body: { email }, fallback: 'Не удалось отправить письмо.' })
+}
+export async function forgetEmail(token) {
+  return apiFetch('/api/v1/user/email', { token, method: 'DELETE', fallback: 'Не удалось удалить адрес.' })
+}
+export async function setEmailReminders(token, enabled) {
+  return apiFetch('/api/v1/user/email/reminders', { token, method: 'POST', body: { enabled }, fallback: 'Не удалось сохранить.' })
+}
+export async function confirmEmail(t) {
+  return apiFetch('/api/v1/email/confirm', { method: 'POST', body: { token: t }, signOutOn401: false, fallback: 'Не удалось подтвердить почту.' })
+}
+export async function unsubscribeEmail(u, s) {
+  const q = new URLSearchParams({ u, s })
+  return apiFetch(`/api/v1/email/unsubscribe?${q}`, { method: 'POST', signOutOn401: false, fallback: 'Не удалось отписаться.' })
+}

@@ -169,8 +169,8 @@ export default function LoginPage() {
                   <p className="text-xs text-text-secondary leading-relaxed">
                     HiEarth ID выдаётся анонимно и нигде не дублируется — восстановить его мы не можем.
                     Проверьте буфер обмена, заметки и скачанный файл <code className="font-mono text-text-primary">hiearth-id.txt</code>.
-                    Если ID утерян — <Link to={registerHref} className="text-brand hover:text-brand-light">создайте новый</Link> или напишите в поддержку:{' '}
-                    <a href="mailto:alex_step04@mail.ru" className="text-brand hover:text-brand-light">alex_step04@mail.ru</a>
+                    Если ID утерян — <Link to={registerHref} className="text-brand hover:text-brand-light">создайте новый</Link> или напишите в{' '}
+                    <Link to="/help" className="text-brand hover:text-brand-light">поддержку</Link>: найдём аккаунт по платежу.
                   </p>
                 </div>
               </div>

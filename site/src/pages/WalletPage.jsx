@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { getEmailPrefs } from '../api/user.js'
 import { getWallet, walletTopup, rub, formatDay } from '../api/wallet.js'
 import { renewLine } from '../components/WalletCard.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
@@ -36,6 +37,11 @@ export default function WalletPage() {
   const [amount, setAmount] = useState(PRESETS[0])
   const [custom, setCustom] = useState('')
   const [email, setEmail] = useState('')
+  // the receipt address defaults to the one confirmed in the cabinet (E8)
+  useEffect(() => {
+    if (!token) return
+    getEmailPrefs(token).then((p) => { if (p?.email) setEmail((cur) => cur || p.email) }).catch(() => {})
+  }, [token])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 

@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { getPayments, getProfile, getSubscription, toggleAutoRenew, requestRefund } from '../api/user.js'
-import { getWallet, rub } from '../api/wallet.js'
+import { Link } from 'react-router-dom'
+import { getPayments, toggleAutoRenew, requestRefund } from '../api/user.js'
+import { rub } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import LoadErrorCard from '../components/LoadErrorCard.jsx'
 import useReveal from '../hooks/useReveal.js'
@@ -43,14 +44,15 @@ function Empty({ icon, title, hint, action }) {
 }
 
 export default function PaymentsHistoryPage() {
-  const navigate = useNavigate()
   const { token } = useAuth()
 
-  const [profile, setProfile] = useState(null)
+  const account = useAccount(['profile', 'wallet', 'subscription'], { optional: ['profile', 'wallet', 'subscription'] })
+  const profile = account.data.profile
+  const wallet = account.data.wallet
   const [payments, setPayments] = useState([])
   const [loadError, setLoadError] = useState('')
-  const [wallet, setWallet] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [paymentsLoading, setPaymentsLoading] = useState(true)
+  const loading = paymentsLoading || account.loading
   const [autoRenew, setAutoRenew] = useState(null)   // synced from API (was: hardcoded true)
   const [autoRenewLoading, setAutoRenewLoading] = useState(false)
   const [notice, setNotice] = useState('')
@@ -60,31 +62,26 @@ export default function PaymentsHistoryPage() {
   const [modalBusy, setModalBusy] = useState(false)
 
   useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    Promise.all([
-      getProfile(token).catch(() => null),
-      // No catch: a failed load must not look like «платежей пока нет».
-      getPayments(token),
-      getWallet(token).catch(() => null),
-      getSubscription(token).catch(() => null),
-    ]).then(([prof, payData, walletData, subData]) => {
-      setProfile(prof)
+    if (!token) return
+    // No catch-to-empty: a failed load must not look like «платежей пока нет».
+    getPayments(token).then((payData) => {
       setPayments(payData?.items || [])
-      setWallet(walletData)
-      // FIX: auto-renew now reflects the server, so the toggle tells the truth
-      const active = subData?.items?.find(s => s.active) || subData?.items?.[0]
-      if (active && typeof active.auto_renew === 'boolean') setAutoRenew(active.auto_renew)
     }).catch(e => {
       if (e.kind !== 'auth') setLoadError(e.message || 'Не удалось загрузить платежи — обновите страницу.')
-    }).finally(() => setLoading(false))
+    }).finally(() => setPaymentsLoading(false))
   }, [token])
+
+  // auto-renew reflects the server, so the toggle tells the truth
+  useEffect(() => {
+    const items = account.data.subscription?.items || []
+    const active = items.find(s => s.active) || items[0]
+    if (active && typeof active.auto_renew === 'boolean') setAutoRenew(active.auto_renew)
+  }, [account.data.subscription])
 
   useReveal([loading, payments])
 
   const currentPlan = profile?.current_plan || ''
   const validUntil = profile?.valid_until
-  const pausedUntil = profile?.paused_until
-  const isPaused = pausedUntil ? new Date(pausedUntil) > new Date() : false
   const hasActiveSub = !!currentPlan
 
   function openModal(cfg) { setModalInput(''); setModal(cfg) }
@@ -109,6 +106,7 @@ export default function PaymentsHistoryPage() {
     try {
       await toggleAutoRenew(token, next)
       setAutoRenew(next)
+      invalidateAccount('subscription')
       setNotice(next ? 'Автопродление включено' : 'Автопродление выключено — подписка не продлится автоматически')
     } catch (e) {
       setNotice(e.message || 'Не удалось изменить автопродление')
@@ -169,9 +167,7 @@ export default function PaymentsHistoryPage() {
               <div>
                 <p className="text-xs text-faint uppercase tracking-wider mb-1">Текущая подписка</p>
                 <p className="serif text-xl font-semibold">{currentPlan}</p>
-                {isPaused
-                  ? <p className="text-sm text-accent mt-1">На паузе до {formatDate(pausedUntil)}</p>
-                  : validUntil && <p className="text-sm text-text-secondary mt-1">Действует до {formatDate(validUntil)}</p>}
+                {validUntil && <p className="text-sm text-text-secondary mt-1">Действует до {formatDate(validUntil)}</p>}
               </div>
               <Link to="/payment" className="btn-primary !py-2.5 !px-5 !text-sm">Сменить тариф</Link>
             </div>

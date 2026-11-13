@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react'
 import LegalToc from '../components/LegalToc.jsx'
+import useLegalInfo from '../hooks/useLegalInfo.js'
 
 export default function PrivacyPage() {
-  const [s, setS] = useState({})
-  useEffect(() => { fetch('/api/v1/legal-info').then(r => r.json()).then(setS).catch(() => {}) }, [])
-  const company = s.legal_company_name || 'ИП Степанов Александр Владимирович'
-  const email = s.legal_email || 'alex_step04@mail.ru'
+  const s = useLegalInfo()
+  const company = s.legal_company_name || '…'
+  const email = s.legal_email || ''
   const address = s.legal_address || 'Указывается по запросу'
 
   return (
@@ -13,7 +12,7 @@ export default function PrivacyPage() {
       <div className="max-w-5xl mx-auto px-4 sm:px-6">
         <p className="eyebrow mb-4">Документы</p>
         <h1 className="serif text-3xl md:text-4xl font-semibold mb-2">Политика конфиденциальности</h1>
-        <p className="text-sm text-faint mb-8">Дата последнего обновления: 07 апреля 2026 г.</p>
+        <p className="text-sm text-faint mb-8">Дата последнего обновления: 13 ноября 2026 г.</p>
 
         <div className="grid lg:grid-cols-[16rem_1fr] gap-6 items-start">
         <div className="lg:order-2 min-w-0">
@@ -28,9 +27,9 @@ export default function PrivacyPage() {
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">2. Какие данные мы собираем</h2>
             <ul className="list-disc pl-5 space-y-1">
               <li>Идентификатор пользователя (HiEarth ID) — генерируется автоматически при регистрации</li>
-              <li>Адрес электронной почты — при оплате и обращении в поддержку</li>
+              <li>Адрес электронной почты — если вы укажете его при оплате (для чека) или в личном кабинете (для чеков и напоминаний о подписке), а также при обращении в поддержку</li>
               <li>Платёжные данные — обрабатываются исключительно платёжным провайдером (ЮKassa), мы не храним данные банковских карт</li>
-              <li>Техническая информация — тип устройства, платформа, язык, для улучшения качества сервиса</li>
+              <li>Техническая информация — платформа и язык при регистрации</li>
               <li>Данные об использовании трафика — объём загруженных/скачанных данных (без содержимого)</li>
             </ul>
           </div>
@@ -51,10 +50,8 @@ export default function PrivacyPage() {
             <p>Мы применяем следующие меры для защиты ваших данных:</p>
             <ul className="list-disc pl-5 space-y-1 mt-2">
               <li>Шифрование передачи данных (TLS 1.3) между клиентом и сервером</li>
-              <li>Шифрование паролей SSH с использованием AES-256-GCM</li>
               <li>Хеширование пользовательских паролей (bcrypt)</li>
               <li>Платёжные данные обрабатываются через сертифицированного провайдера (ЮKassa), соответствующего стандарту PCI DSS</li>
-              <li>Доступ к серверной инфраструктуре защищён mTLS-сертификатами</li>
             </ul>
           </div>
 
@@ -69,7 +66,7 @@ export default function PrivacyPage() {
 
           <div>
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">6. Хранение данных</h2>
-            <p>Персональные данные хранятся на серверах, расположенных на территории Российской Федерации. Данные хранятся в течение срока действия подписки и 30 дней после её окончания, после чего могут быть удалены.</p>
+            <p>Персональные данные хранятся на серверах, расположенных на территории Российской Федерации. Подробная статистика трафика хранится 45 дней, дальше — только суммарный объём за каждый день. Сессии входа удаляются по истечении срока (30 дней). Платёжные документы и чеки хранятся столько, сколько требует законодательство.</p>
           </div>
 
           <div>

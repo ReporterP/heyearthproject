@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import QRCode from '../components/QRCode.jsx'
+import { useNoIndex } from '../components/RequireAuth.jsx'
 
 /* ── Platform constants ── */
 const APP_STORE_URL = 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108'
@@ -52,6 +53,7 @@ async function copyToClipboard(text) {
 export default function ConnectPage() {
   const [searchParams] = useSearchParams()
   const token = (searchParams.get('sub') || '').trim()
+  useNoIndex() // the link carries the subscription key
   const platform = detectPlatform()
   const [copied, setCopied] = useState(false)
   const [triggered, setTriggered] = useState(false)
@@ -66,11 +68,12 @@ export default function ConnectPage() {
     let cancelled = false
     fetchHappLink(token).then((link) => {
       if (cancelled) return
-      setHappLink(link)
+      // No encrypted link (the service is down): Happ also takes the plain subscription address.
+      setHappLink(link || `happ://add/${subscribeUrl}`)
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [token])
+  }, [token, subscribeUrl])
 
   useEffect(() => {
     if (loading || !happLink || typeof window === 'undefined') return
@@ -95,9 +98,9 @@ export default function ConnectPage() {
         <div className="card rounded-[22px] p-8 max-w-md text-center">
           <h1 className="serif text-2xl font-semibold mb-2">Ссылка некорректна</h1>
           <p className="text-sm text-text-secondary mb-6">
-            Параметр <code>sub</code> отсутствует. Откройте кнопку «Добавить в приложение» из личного кабинета.
+            В ссылке нет ключа подписки. Откройте «Подключение» в личном кабинете и нажмите «Подключить в приложении».
           </p>
-          <Link to="/dashboard" className="btn-primary !py-2.5 !text-sm">← В личный кабинет</Link>
+          <Link to="/connect" className="btn-primary !py-2.5 !text-sm">← К подключению</Link>
         </div>
       </section>
     )
@@ -147,9 +150,6 @@ export default function ConnectPage() {
             </div>
           </div>
         )}
-        {!loading && !happLink && (
-          <p className="text-sm text-accent mb-5">Быструю ссылку подготовить не удалось. Используйте ручную установку через QR или копирование ниже.</p>
-        )}
 
         <div className="space-y-2 mb-6">
           {dlButtons.map(({ url, Icon, label }) => (
@@ -162,7 +162,7 @@ export default function ConnectPage() {
         </div>
 
         <div className="border-t border-brand/10 pt-5">
-          <p className="text-xs text-text-secondary mb-3">Или вставьте ссылку в другое приложение (v2rayNG, Streisand):</p>
+          <p className="text-xs text-text-secondary mb-3">Или вставьте ссылку подписки в приложение вручную:</p>
           <div className="flex items-stretch gap-2 mb-4">
             <code className="flex-1 px-3 py-2 rounded-lg bg-bg-app border border-brand/10 text-xs font-mono break-all overflow-hidden text-ellipsis whitespace-nowrap">
               {subscribeUrl}

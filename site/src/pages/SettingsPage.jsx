@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, updateProfile } from '../api/user.js'
+import { updateProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useAccount, { invalidateAccount } from '../account/useAccount.js'
+import EmailCard from '../components/EmailCard.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 import { copyToClipboard } from '../components/CopyButton.jsx'
 import { Skeleton } from '../components/Skeleton.jsx'
@@ -46,18 +48,15 @@ export default function SettingsPage() {
   const [confirmLogout, setConfirmLogout] = useState(false)
   const [loadError, setLoadError] = useState('')
 
+  const account = useAccount(['profile'])
   useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    getProfile(token)
-      .then(data => {
-        setProfile(data)
-        setUsername(data.username || '')
-      })
-      .catch(e => {
-        if (e.kind !== 'auth') setLoadError(e.message || 'Не удалось загрузить профиль — обновите страницу.')
-      })
-      .finally(() => setLoading(false))
-  }, [])
+    if (account.data.profile) {
+      setProfile(account.data.profile)
+      setUsername(account.data.profile.username || '')
+    }
+    if (!account.loading) setLoading(false)
+    if (account.error && account.error.kind !== 'auth') setLoadError(account.error.message || 'Не удалось загрузить профиль — обновите страницу.')
+  }, [account.data.profile, account.loading, account.error])
 
   const passwordIsSet = profile?.has_password
   const usernameIsSet = profile?.username && profile.username.length > 0
@@ -92,6 +91,7 @@ export default function SettingsPage() {
       }
       const data = await updateProfile(token, payload)
       setProfile(data)
+      invalidateAccount('profile')
       setNewPassword(''); setConfirmPassword(''); setCurrentPassword('')
       setMsg('Изменения сохранены')
       setTimeout(() => setMsg(''), 4000)
@@ -251,6 +251,8 @@ export default function SettingsPage() {
                 ) : hasChanges ? 'Сохранить изменения' : 'Нет изменений'}
               </button>
             </div>
+
+            <EmailCard token={token} />
 
             {/* ─── Danger zone: separated from everyday actions ─── */}
             <div className="card rounded-[22px] p-6 animate-fade-in-up delay-200 !border-danger/15">

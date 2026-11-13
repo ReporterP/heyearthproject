@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { getProfile, getSubscription, applyPromocode, getTrafficStats, getSubscribeLink, getMtproto } from '../api/user.js'
+import { Link } from 'react-router-dom'
+import { applyPromocode, getMtproto } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import TrafficCard from '../components/TrafficCard.jsx'
 import WalletCard from '../components/WalletCard.jsx'
 import ReferralCard from '../components/ReferralCard.jsx'
-import { getWallet } from '../api/wallet.js'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
@@ -184,13 +184,22 @@ function NavTile({ to, onClick, disabled, icon, title, subtitle, delay }) {
 }
 
 export default function DashboardPage() {
-  const navigate = useNavigate()
-  const { token, logout } = useAuth()
-
-  const [profile, setProfile] = useState(null)
-  const [subscription, setSubscription] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const { token } = useAuth()
+  // One account load shared with the other cabinet pages (E6): the profile is required, the rest
+  // is shown when it loads.
+  const account = useAccount(['profile', 'subscription', 'traffic', 'subLink', 'wallet'],
+    { optional: ['subscription', 'traffic', 'subLink', 'wallet'] })
+  const { loading } = account
+  const profile = account.data.profile
+  const subscription = (() => {
+    const items = account.data.subscription?.items || []
+    return items.find(s => s.active) || items[0] || null
+  })()
+  const trafficStats = account.data.traffic
+  const subscribeLink = account.data.subLink
+  const wallet = account.data.wallet
+  const error = account.error && account.error.kind !== 'auth'
+    ? (account.error.message || 'Не удалось загрузить данные. Обновите страницу.') : ''
   const [copiedField, setCopiedField] = useState('')
 
   // Promo code
@@ -199,52 +208,9 @@ export default function DashboardPage() {
   const [promoMsg, setPromoMsg] = useState('')
   const [promoError, setPromoError] = useState('')
 
-
-  // Traffic + subscribe link
-  const [trafficStats, setTrafficStats] = useState(null)
-  const [subscribeLink, setSubscribeLink] = useState(null)
-
   // Modals
   const [showAppsModal, setShowAppsModal] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
-
-  const [paymentPopup, setPaymentPopup] = useState(null) // { name, price, activated }
-  const [wallet, setWallet] = useState(null)
-
-  useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    Promise.all([
-      getProfile(token),
-      getSubscription(token).catch(() => null),
-      getTrafficStats(token).catch(() => null),
-      getSubscribeLink(token).catch(() => null),
-      getWallet(token).catch(() => null),
-    ]).then(([profileData, subData, trafficData, subLinkData, walletData]) => {
-      setWallet(walletData)
-      setProfile(profileData)
-      if (subData?.items?.length > 0) {
-        const active = subData.items.find(s => s.active) || subData.items[0]
-        setSubscription(active)
-      }
-      setTrafficStats(trafficData)
-      setSubscribeLink(subLinkData)
-
-      // Check for pending payment from PaymentPage redirect
-      try {
-        const pendingRaw = sessionStorage.getItem('payment_pending')
-        if (pendingRaw) {
-          sessionStorage.removeItem('payment_pending')
-          const pending = JSON.parse(pendingRaw)
-          const activePlan = profileData?.current_plan || ''
-          const activated = activePlan && pending.name && activePlan.toLowerCase().includes(pending.name.toLowerCase().split(' ')[0])
-          setPaymentPopup({ name: pending.name, price: pending.price, activated: !!activated })
-        }
-      } catch {}
-    }).catch(e => {
-      if (e.kind === 'auth') return // apiFetch signed the site out; RequireAuth redirects
-      setError(e.message || 'Не удалось загрузить данные. Обновите страницу.')
-    }).finally(() => setLoading(false))
-  }, [])
 
   useReveal([loading, trafficStats])
 
@@ -252,11 +218,8 @@ export default function DashboardPage() {
   const username = profile?.username || ''
   const currentPlan = profile?.current_plan || subscription?.plan_name || subscription?.group_name || ''
   const validUntil = profile?.valid_until || subscription?.valid_until
-  const pausedUntil = profile?.paused_until
-  const isPaused = pausedUntil ? new Date(pausedUntil) > new Date() : false
   const isExpired = validUntil ? new Date(validUntil) < new Date() : false
-  const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired && !isPaused
-
+  const hasActiveSub = !!currentPlan && currentPlan !== '' && !isExpired
 
   async function copyText(text, field) {
     const ok = await copyToClipboard(text)
@@ -275,19 +238,14 @@ export default function DashboardPage() {
       const data = await applyPromocode(token, promoCode.trim())
       setPromoMsg(data.message || 'Промокод активирован!')
       setPromoCode('')
-      if (data.profile) setProfile(data.profile)
-      const subData = await getSubscription(token).catch(() => null)
-      if (subData?.items?.length > 0) {
-        const active = subData.items.find(s => s.active) || subData.items[0]
-        setSubscription(active)
-      }
+      invalidateAccount() // the subscription and the connection state changed
+      account.reload()
     } catch (e) {
       setPromoError(e.message || 'Не удалось применить промокод')
     } finally {
       setPromoLoading(false)
     }
   }
-
 
   /* ─── Loading (skeleton, not a bare spinner) ─── */
   if (loading) return <CabinetSkeleton />
@@ -310,7 +268,6 @@ export default function DashboardPage() {
   // status pill for the connect hero
   const statusPill = hasActiveSub
     ? { dot: 'bg-brand', label: 'Подписка активна', cls: 'text-brand' }
-    : isPaused && currentPlan ? { dot: 'bg-accent animate-pulse', label: 'На паузе', cls: 'text-accent' }
     : isExpired && currentPlan ? { dot: 'bg-danger', label: 'Подписка истекла', cls: 'text-danger' }
     : { dot: 'bg-accent', label: 'Нет активной подписки', cls: 'text-accent' }
 
@@ -353,12 +310,11 @@ export default function DashboardPage() {
               </span>
               <p className="serif text-xl md:text-2xl font-semibold mt-1">{currentPlan || 'Подключение'}</p>
               {hasActiveSub && validUntil && <p className="text-sm text-text-secondary mt-0.5">Действует до {formatDate(validUntil)}</p>}
-              {isPaused && currentPlan && <p className="text-sm text-text-secondary mt-0.5">На паузе до {formatDate(pausedUntil)}</p>}
               {isExpired && currentPlan && <p className="text-sm text-text-secondary mt-0.5">Закончилась {formatDate(validUntil)}</p>}
             </div>
             {!hasActiveSub && (
-              <Link to={isPaused ? '/payments' : '/payment'} className="btn-primary !py-2.5 !text-sm">
-                {isPaused ? 'Возобновить' : isExpired ? 'Продлить' : 'Оформить подписку'}
+              <Link to="/payment" className="btn-primary !py-2.5 !text-sm">
+                {isExpired ? 'Продлить' : 'Оформить подписку'}
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
               </Link>
             )}
@@ -387,7 +343,7 @@ export default function DashboardPage() {
             </div>
           ) : (
             <p className="text-sm text-text-secondary mt-3">
-              {isPaused ? 'Доступ закрыт на время паузы. Возобновите, чтобы продолжить.' : 'Оформите подписку или введите промокод ниже, чтобы получить доступ.'}
+              Оформите подписку или введите промокод ниже, чтобы получить доступ.
             </p>
           )}
         </div>
@@ -404,7 +360,7 @@ export default function DashboardPage() {
             icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" /></svg>}
           />
           <NavTile
-            to={hasActiveSub ? '/connections' : undefined} onClick={hasActiveSub ? undefined : (e) => e.preventDefault()} disabled={!hasActiveSub} delay={60}
+            to={hasActiveSub ? '/connect' : undefined} onClick={hasActiveSub ? undefined : (e) => e.preventDefault()} disabled={!hasActiveSub} delay={60}
             title="Подключение и настройка" subtitle="Ссылки, QR-коды, усиленный канал"
             icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>}
           />
@@ -520,39 +476,10 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="mt-5 p-3 rounded-xl bg-white/[0.04] border border-brand/10">
-          <p className="text-xs text-text-secondary leading-relaxed">Если что-то не работает, попробуйте другое приложение или напишите нам: <a href="mailto:alex_step04@mail.ru" className="text-brand hover:text-brand-light transition">alex_step04@mail.ru</a></p>
+          <p className="text-xs text-text-secondary leading-relaxed">Если что-то не работает, обновите подписку в приложении или загляните на страницу <Link to="/help" className="text-brand hover:text-brand-light transition">«Помощь»</Link> — там ответы и контакты поддержки.</p>
         </div>
       </ModalOverlay>
 
-      {/* ─── Payment Status Popup ─── */}
-      <ModalOverlay open={!!paymentPopup} onClose={() => setPaymentPopup(null)}>
-        {paymentPopup && (
-          <div className="text-center py-2">
-            {paymentPopup.activated ? (
-              <>
-                <div className="w-16 h-16 rounded-full bg-brand/15 border border-brand/25 flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                </div>
-                <h2 className="serif text-lg font-semibold mb-2">Подписка активирована!</h2>
-                <p className="text-sm text-text-secondary mb-1">Тариф «{paymentPopup.name}»</p>
-                {paymentPopup.price > 0 && <p className="serif text-2xl font-semibold text-brand mb-4 tabular-nums">{paymentPopup.price} ₽</p>}
-                <p className="text-xs text-text-secondary mb-6">Все настройки подключения доступны в блоке подключения выше</p>
-              </>
-            ) : (
-              <>
-                <div className="w-16 h-16 rounded-full bg-accent/15 border border-accent/25 flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-8 h-8 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                </div>
-                <h2 className="serif text-lg font-semibold mb-2">Платёж обрабатывается</h2>
-                <p className="text-sm text-text-secondary mb-1">Тариф «{paymentPopup.name}»</p>
-                {paymentPopup.price > 0 && <p className="serif text-2xl font-semibold text-accent mb-4 tabular-nums">{paymentPopup.price} ₽</p>}
-                <p className="text-xs text-text-secondary mb-6">Подписка будет активирована в течение нескольких минут. Обновите страницу чуть позже.</p>
-              </>
-            )}
-            <button onClick={() => setPaymentPopup(null)} className="btn-primary w-full !py-3">Закрыть</button>
-          </div>
-        )}
-      </ModalOverlay>
     </section>
   )
 }

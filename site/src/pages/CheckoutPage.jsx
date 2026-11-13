@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
+import { resumeTopup } from '../api/wallet.js'
 
 // YooKassa widget mounts here. Платёж и confirmation_token создаёт предыдущая страница
 // PaymentPage и передаёт через location state или sessionStorage.
@@ -61,17 +62,25 @@ export default function CheckoutPage() {
     const plan = sessionStorage.getItem(`checkout_plan_${paymentId}`) || ''
     setPlanName(plan)
 
-    if (!token) {
-      // The widget token is gone (refresh / new tab). The payment still exists: show
-      // its real state (paid — the result; not paid — a way to start again).
-      setResumed(true)
-      setStatus('result')
-      return
-    }
-
     let cancelled = false
 
-    loadScript(YOOKASSA_SCRIPT).then(() => {
+    // The widget token lives in this tab only. After a refresh or in a new tab the API
+    // continues the same payment (cleanup plan E7); one that cannot go on any more (paid,
+    // canceled, expired) shows its real state with a way to start again.
+    const tokenReady = token
+      ? Promise.resolve({ confirmation_token: token })
+      : resumeTopup(authToken, paymentId).catch(() => ({}))
+
+    tokenReady.then((res) => {
+      if (cancelled) return null
+      if (res.confirmation_url) { window.location.assign(res.confirmation_url); return null }
+      if (!res.confirmation_token) { setResumed(true); setStatus('result'); return null }
+      if (!token) sessionStorage.setItem(`checkout_token_${paymentId}`, res.confirmation_token)
+      return mount(res.confirmation_token)
+    })
+
+    function mount(confirmationToken) {
+    return loadScript(YOOKASSA_SCRIPT).then(() => {
       if (cancelled) return
       if (!window.YooMoneyCheckoutWidget) {
         setError('Виджет ЮKassa не доступен. Проверьте соединение и попробуйте снова.')
@@ -81,7 +90,7 @@ export default function CheckoutPage() {
 
       try {
         const checkout = new window.YooMoneyCheckoutWidget({
-          confirmation_token: token,
+          confirmation_token: confirmationToken,
           return_url: window.location.origin + `/wallet?topup=${paymentId}`,
           error_callback(e) {
             console.error('[yookassa-widget]', e)
@@ -126,12 +135,13 @@ export default function CheckoutPage() {
         setStatus('error')
       }
     })
+    }
 
     return () => {
       cancelled = true
       try { widgetRef.current?.destroy() } catch {}
     }
-  }, [paymentId])
+  }, [paymentId, authToken])
 
   return (
     <section className="relative py-10 md:py-16">

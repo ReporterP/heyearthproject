@@ -1,21 +1,18 @@
-import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import LegalToc from '../components/LegalToc.jsx'
+import useLegalInfo from '../hooks/useLegalInfo.js'
 
 export default function RefundPage() {
-  const [settings, setSettings] = useState({})
-  useEffect(() => {
-    fetch('/api/v1/legal-info').then(r => r.json()).then(setSettings).catch(() => {})
-  }, [])
-
-  const companyName = settings.legal_company_name || 'ИП Степанов Александр Владимирович'
-  const email = settings.legal_email || 'alex_step04@mail.ru'
+  const settings = useLegalInfo()
+  const companyName = settings.legal_company_name || '…'
+  const email = settings.legal_email || ''
 
   return (
     <section className="py-10 md:py-16">
       <div className="max-w-5xl mx-auto px-4 sm:px-6">
         <p className="eyebrow mb-4">Документы</p>
         <h1 className="serif text-3xl md:text-4xl font-semibold mb-2">Условия возврата и отмены</h1>
-        <p className="text-sm text-faint mb-8">Дата последнего обновления: 07 апреля 2026 г.</p>
+        <p className="text-sm text-faint mb-8">Дата последнего обновления: 13 ноября 2026 г.</p>
 
         <div className="grid lg:grid-cols-[16rem_1fr] gap-6 items-start">
         <div className="lg:order-2 min-w-0">
@@ -50,7 +47,7 @@ export default function RefundPage() {
 
           <div>
             <h2 className="serif text-lg font-semibold text-text-primary mb-2">5. Отмена подписки</h2>
-            <p>Автопродление подписки можно отключить в любой момент в личном кабинете (раздел «Настройки»). При отключении автопродления текущая подписка продолжает действовать до конца оплаченного периода.</p>
+            <p>Автопродление подписки можно отключить в любой момент в личном кабинете (раздел <Link to="/payments" className="text-brand hover:text-brand-light">«Оплата и подписка»</Link>). При отключении автопродления текущая подписка продолжает действовать до конца оплаченного периода.</p>
           </div>
 
           <div>

@@ -32,6 +32,12 @@ export function getTopupStatus(token, paymentId) {
   return apiFetch(`/api/v1/wallet/topup/${paymentId}`, { token, fallback: 'Не удалось проверить платёж.' })
 }
 
+// resumeTopup: the widget's token again for a payment still waiting for the client (E7);
+// 409 when it cannot go on any more.
+export function resumeTopup(token, paymentId) {
+  return apiFetch(`/api/v1/wallet/topup/${paymentId}/resume`, { token, method: 'POST', fallback: 'Не удалось продолжить платёж.' })
+}
+
 export function newRequestId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`

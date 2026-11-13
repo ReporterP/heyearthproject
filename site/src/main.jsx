@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import '@fontsource-variable/lora'
 import '@fontsource-variable/raleway'
@@ -30,6 +30,9 @@ import ClaimCodePage from './pages/ClaimCodePage.jsx'
 import ConnectPage from './pages/ConnectPage.jsx'
 import WalletPage from './pages/WalletPage.jsx'
 import ReferralLinkPage from './pages/ReferralLinkPage.jsx'
+import HelpPage from './pages/HelpPage.jsx'
+import { EmailConfirmPage, EmailUnsubscribePage } from './pages/EmailLinkPage.jsx'
+import useSiteInfo from './hooks/useSiteInfo.js'
 
 function NotFoundPage() {
   return (
@@ -43,6 +46,21 @@ function NotFoundPage() {
       <Link to="/" className="btn-primary">На главную</Link>
     </div>
   )
+}
+
+// /connect is the one connection page (cleanup plan E6): with ?sub=<token> it is the link the app
+// and the e-mails open (no login: the token is the key), without it the cabinet's page.
+function ConnectRoute() {
+  const [params] = useSearchParams()
+  if (params.get('sub')) return <ConnectPage />
+  return <RequireAuth><ConnectionsPage /></RequireAuth>
+}
+
+// B2BOnly hides the business pages while b2b_enabled is off (E3): they answer like any unknown page.
+function B2BOnly({ children }) {
+  const { info, loaded } = useSiteInfo()
+  if (!loaded) return null
+  return info.b2b_enabled ? children : <NotFoundPage />
 }
 
 function ScrollToTop() {
@@ -62,15 +80,17 @@ function App() {
         <main className="flex-1">
           <Routes>
             <Route path="/" element={<LandingPage />} />
-            <Route path="/business" element={<BusinessPage />} />
-            <Route path="/business/signup" element={<BusinessSignupPage />} />
-            <Route path="/business/invoice" element={<BusinessInvoicePage />} />
+            <Route path="/business" element={<B2BOnly><BusinessPage /></B2BOnly>} />
+            <Route path="/business/signup" element={<B2BOnly><BusinessSignupPage /></B2BOnly>} />
+            <Route path="/business/invoice" element={<B2BOnly><BusinessInvoicePage /></B2BOnly>} />
             {/* B2B self-service dashboard — requires login + tenant membership */}
-            <Route path="/business/dashboard" element={<RequireAuth><BusinessDashboardPage /></RequireAuth>} />
+            <Route path="/business/dashboard" element={<B2BOnly><RequireAuth><BusinessDashboardPage /></RequireAuth></B2BOnly>} />
             {/* Claim a tenant invite code — auth-gated inside the page (it stashes intent and redirects to /login) */}
-            <Route path="/claim/:code" element={<ClaimCodePage />} />
-            {/* Happ deeplink handler — public route (no auth) — token in ?sub= is itself the bearer */}
-            <Route path="/connect" element={<ConnectPage />} />
+            <Route path="/claim/:code" element={<B2BOnly><ClaimCodePage /></B2BOnly>} />
+            <Route path="/connect" element={<ConnectRoute />} />
+            <Route path="/help" element={<HelpPage />} />
+            <Route path="/email/confirm" element={<EmailConfirmPage />} />
+            <Route path="/email/unsubscribe" element={<EmailUnsubscribePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/r/:code" element={<ReferralLinkPage />} />
@@ -86,7 +106,7 @@ function App() {
             <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
             <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
             <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />
-            <Route path="/connections" element={<RequireAuth><ConnectionsPage /></RequireAuth>} />
+            <Route path="/connections" element={<Navigate to="/connect" replace />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>

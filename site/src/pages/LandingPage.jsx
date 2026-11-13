@@ -1,8 +1,15 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import Fireflies from '../components/Fireflies.jsx'
 import useReveal from '../hooks/useReveal.js'
+import useSiteInfo, { countryName, countryFlag } from '../hooks/useSiteInfo.js'
+
+const HAPP_LINKS = [
+  { label: 'iPhone и iPad', url: 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108' },
+  { label: 'Android', url: 'https://play.google.com/store/apps/details?id=com.happproxy' },
+  { label: 'Windows и macOS', url: 'https://www.happ.su/main/ru' },
+]
 
 /* ── Icons (SVG stroke, Lucide-style, single weight) ── */
 const Arrow = ({ className = 'w-4 h-4' }) => (
@@ -28,22 +35,17 @@ const features = [
 
 const steps = [
   { num: '01', title: 'Регистрация', desc: 'Получите уникальный HiEarth ID за один клик. Без email, без номера телефона.' },
-  { num: '02', title: 'Подключение', desc: 'Установите приложение и настройте маршрутизацию на любом устройстве за пару кликов.' },
+  { num: '02', title: 'Подключение', desc: 'Установите бесплатное приложение Happ и нажмите «Подключить» в кабинете — подписка добавится сама.' },
   { num: '03', title: 'Готово', desc: 'Пользуйтесь быстрым, приватным и стабильным доступом к интернету.' },
 ]
 
-const reviews = [
-  { name: 'Мария К.', role: 'дизайнер', text: 'Просто работает. Поставила приложение, ввела ID — и всё летает без единого сбоя уже полгода.' },
-  { name: 'Дмитрий А.', role: 'разработчик', text: 'Скорость честно радует, пинг до зарубежных сервисов ниже, чем я ожидал. Настройка — минута.' },
-  { name: 'Иван С.', role: 'предприниматель', text: 'Перевёл на HiEarth всю команду через бизнес-кабинет. Счета, роли, оплата — всё прозрачно.' },
-]
 
 const faqs = [
   { q: 'Нужны ли мои данные для регистрации?', a: 'Нет. HiEarth ID выдаётся анонимно за один клик — без почты, телефона и паспорта. Сохраните ID, он нужен для входа.' },
   { q: 'На каких устройствах работает?', a: 'Android, iOS, Windows, macOS и Linux. Один аккаунт подключается сразу к нескольким устройствам, в зависимости от тарифа.' },
-  { q: 'Как оплатить?', a: 'Картой или через СБП. Оплата проходит через защищённую систему ЮKassa, данные карты мы не храним. Есть автопродление — его можно отключить в любой момент.' },
-  { q: 'Можно вернуть деньги?', a: 'Да, по условиям возврата. Неиспользованный период подписки возвращается — подробности на странице «Условия возврата».' },
-  { q: 'Это стабильно работает?', a: 'Да. Инфраструктура сама подбирает лучший маршрут и переключается при сбоях, поэтому соединение остаётся ровным без капч и обрывов.' },
+  { q: 'Как оплатить?', a: 'Картой или через СБП: вы пополняете кошелёк HiEarth через ЮKassa, а подписка оплачивается с баланса. Данные карты мы не храним и ничего не списываем с неё сами. Подписка продлевается с баланса, только если на нём хватает денег; автопродление выключается в кабинете.' },
+  { q: 'Можно вернуть деньги?', a: 'Порядок и сроки возврата описаны на странице «Условия возврата».' },
+  { q: 'Это стабильно работает?', a: 'В подписке несколько способов подключения: если один не проходит в вашей сети, приложение переключается на другой. Серверы мы проверяем автоматически каждую минуту.' },
 ]
 
 function formatTraffic(bytes) {
@@ -57,46 +59,13 @@ function formatDuration(days) {
   return `${days} дн.`
 }
 
-/* Count-up metric, animates 0→target on first reveal, tabular to avoid jitter */
-function CountStat({ prefix = '', target, decimals = 0, suffix = '', label }) {
-  const ref = useRef(null)
-  const [val, setVal] = useState(0)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduce || typeof IntersectionObserver === 'undefined') { setVal(target); return }
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => {
-        if (!e.isIntersecting) return
-        io.unobserve(e.target)
-        const dur = 900, t0 = performance.now()
-        const step = (t) => {
-          const p = Math.min(1, (t - t0) / dur)
-          const eased = 1 - Math.pow(1 - p, 3)
-          setVal(target * eased)
-          if (p < 1) requestAnimationFrame(step)
-        }
-        requestAnimationFrame(step)
-      })
-    }, { threshold: 0.4 })
-    io.observe(el)
-    return () => io.disconnect()
-  }, [target])
-  return (
-    <div ref={ref} className="text-center">
-      <p className="serif text-3xl md:text-4xl font-semibold tracking-tight tabular-nums text-text-primary">
-        {prefix}{val.toFixed(decimals)}{suffix}
-      </p>
-      <p className="text-xs text-text-secondary mt-1.5 font-medium">{label}</p>
-    </div>
-  )
-}
 
 export default function LandingPage() {
   const { isLoggedIn } = useAuth()
   const [plans, setPlans] = useState([])
+  const [hasFree, setHasFree] = useState(false)
   const [plansLoading, setPlansLoading] = useState(true)
+  const { info } = useSiteInfo()
   const [openFaq, setOpenFaq] = useState(0)
   const [refTerms, setRefTerms] = useState(null)
 
@@ -107,7 +76,11 @@ export default function LandingPage() {
   useEffect(() => {
     fetch('/api/v1/plans')
       .then(r => r.json())
-      .then(d => setPlans(Array.isArray(d) ? d.filter(p => p.price_rub > 0) : []))
+      .then(d => {
+        const list = Array.isArray(d) ? d : []
+        setPlans(list.filter(p => p.price_rub > 0))
+        setHasFree(list.some(p => p.price_rub === 0))
+      })
       .catch(() => {})
       .finally(() => setPlansLoading(false))
   }, [])
@@ -141,16 +114,23 @@ export default function LandingPage() {
 
           <div className="mt-9 flex flex-wrap justify-center gap-3.5 animate-fade-in-up delay-300">
             <Link to={isLoggedIn ? '/dashboard' : '/register'} className="btn-primary">
-              {isLoggedIn ? 'В кабинет' : 'Начать бесплатно'} <Arrow />
+              {isLoggedIn ? 'В кабинет' : hasFree ? 'Начать бесплатно' : 'Создать аккаунт'} <Arrow />
             </Link>
             <a href="#plans" className="btn-ghost">Смотреть тарифы</a>
           </div>
 
-          <div className="mt-16 grid grid-cols-3 max-w-md mx-auto divide-x divide-brand/12 animate-fade-in-up delay-500">
-            <CountStat target={99.9} decimals={1} suffix="%" label="Аптайм" />
-            <CountStat prefix="<" target={15} suffix=" мс" label="Задержка" />
-            <CountStat target={50} suffix="+" label="Локаций" />
-          </div>
+          {/* Facts the site can check (E1): countries of the working exits, mobile networks, payment */}
+          <ul className="mt-14 flex flex-wrap justify-center gap-2.5 max-w-2xl mx-auto animate-fade-in-up delay-500">
+            {info.exit_countries.length > 0 && (
+              <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">
+                Выход в интернет: {info.exit_countries.map(c => `${countryFlag(c)} ${countryName(c)}`).join(', ')}
+              </li>
+            )}
+            {info.mobile_ready && (
+              <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">Работает на мобильном интернете</li>
+            )}
+            <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">Оплата картой и СБП через ЮKassa</li>
+          </ul>
         </div>
       </section>
 
@@ -203,7 +183,7 @@ export default function LandingPage() {
           <div className="text-center mb-14 reveal">
             <p className="eyebrow mb-4">Тарифы</p>
             <h2 className="text-3xl md:text-4xl font-semibold">Прозрачные цены</h2>
-            <p className="mt-4 text-text-secondary max-w-lg mx-auto">Без скрытых платежей. Оплата помесячно, отмена в любой момент.</p>
+            <p className="mt-4 text-text-secondary max-w-lg mx-auto">Без скрытых платежей: подписка оплачивается с баланса кошелька и продлевается, только если на нём хватает денег. Карту мы не привязываем.</p>
           </div>
 
           {plansLoading ? (
@@ -252,32 +232,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ─── Reviews ─── */}
-      <section className="relative py-20 md:py-28">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
-        <div className="max-w-5xl mx-auto px-6">
-          <div className="text-center mb-14 reveal">
-            <p className="eyebrow mb-4">Отзывы</p>
-            <h2 className="text-3xl md:text-4xl font-semibold">Тихо, но за нас говорят</h2>
-          </div>
-          <div className="grid md:grid-cols-3 gap-5">
-            {reviews.map((r, i) => (
-              <figure key={r.name} className="card p-6 reveal" style={{ transitionDelay: `${Math.min(i * 80, 220)}ms` }}>
-                <div className="flex gap-0.5 mb-3 text-accent">
-                  {[0, 1, 2, 3, 4].map(s => (
-                    <svg key={s} className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7z" /></svg>
-                  ))}
-                </div>
-                <blockquote className="text-sm text-text-primary/90 leading-relaxed mb-4">«{r.text}»</blockquote>
-                <figcaption className="flex items-center gap-3">
-                  <span className="w-9 h-9 rounded-full bg-brand/15 border border-brand/25 text-brand flex items-center justify-center text-sm font-semibold">{r.name[0]}</span>
-                  <span className="text-sm"><b className="font-semibold">{r.name}</b><span className="text-faint"> · {r.role}</span></span>
-                </figcaption>
-              </figure>
-            ))}
-          </div>
-        </div>
-      </section>
 
       {/* ─── FAQ ─── */}
       <section className="relative py-20 md:py-28">
@@ -308,25 +262,23 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ─── Downloads ─── */}
+      {/* ─── App ─── */}
       <section className="relative py-20 md:py-28">
         <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
         <div className="max-w-4xl mx-auto px-6 text-center">
           <div className="reveal">
-            <p className="eyebrow mb-4">Приложения</p>
-            <h2 className="text-3xl md:text-4xl font-semibold mb-4">На всех платформах</h2>
-            <p className="text-text-secondary max-w-lg mx-auto mb-12">Создайте аккаунт — и подключитесь на своём устройстве за пару минут.</p>
+            <p className="eyebrow mb-4">Приложение</p>
+            <h2 className="text-3xl md:text-4xl font-semibold mb-4">Подключение через Happ</h2>
+            <p className="text-text-secondary max-w-lg mx-auto mb-10">Бесплатное приложение для iPhone, Android, Windows и macOS. Установите его, затем нажмите «Подключить» в кабинете — подписка добавится сама.</p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-2xl mx-auto">
-            {['Windows', 'Android', 'iOS', 'macOS'].map((name, i) => (
-              <Link key={name} to={isLoggedIn ? '/connections' : '/register'} className="group card card-hover p-6 reveal" style={{ transitionDelay: `${Math.min(i * 70, 220)}ms` }}>
-                <div className="w-11 h-11 mx-auto rounded-xl bg-brand/12 border border-brand/20 text-brand flex items-center justify-center mb-3 transition-transform duration-300 group-hover:scale-110">
-                  <IconDevices className="w-6 h-6" />
-                </div>
-                <p className="text-sm font-medium">{name}</p>
-              </Link>
+          <div className="flex flex-col sm:flex-row justify-center gap-3 reveal">
+            {HAPP_LINKS.map(l => (
+              <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" className="btn-ghost">
+                <IconDevices className="w-5 h-5" /> {l.label}
+              </a>
             ))}
           </div>
+          <p className="text-xs text-faint mt-6 reveal">Пошаговая инструкция — на странице <Link to="/help" className="text-brand hover:text-brand-light">«Помощь»</Link>.</p>
         </div>
       </section>
 
@@ -355,11 +307,11 @@ export default function LandingPage() {
         <div className="relative max-w-2xl mx-auto px-6 text-center">
           <h2 className="serif text-3xl md:text-5xl font-semibold reveal">Войдите в тихий лес</h2>
           <p className="text-text-secondary max-w-lg mx-auto mt-5 mb-9 reveal" style={{ transitionDelay: '80ms' }}>
-            Анонимный ID за один клик. Бесплатный старт, без карты и обязательств.
+            {hasFree ? 'Анонимный ID за один клик и бесплатная пробная неделя — без карты и обязательств.' : 'Анонимный ID за один клик — без почты, телефона и карты.'}
           </p>
           <div className="reveal" style={{ transitionDelay: '160ms' }}>
             <Link to={isLoggedIn ? '/dashboard' : '/register'} className="btn-primary">
-              {isLoggedIn ? 'В кабинет' : 'Начать бесплатно'} <Arrow />
+              {isLoggedIn ? 'В кабинет' : hasFree ? 'Начать бесплатно' : 'Создать аккаунт'} <Arrow />
             </Link>
           </div>
         </div>
