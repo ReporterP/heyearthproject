@@ -7,7 +7,7 @@ export const SETTINGS_SECTIONS = [
     fields: [
       { key: 'yookassa_shop_id', label: 'ЮKassa: Shop ID', hint: 'Идентификатор магазина в личном кабинете ЮKassa', kind: 'text' },
       { key: 'yookassa_secret_key', label: 'ЮKassa: секретный ключ', kind: 'secret' },
-      { key: 'yookassa_test_mode', label: 'Тестовый магазин ЮKassa', hint: 'Включено — реальные деньги не списываются', kind: 'bool', def: 'true' },
+      { key: 'yookassa_test_mode', label: 'Тестовый магазин ЮKassa', hint: 'Включено — реальные деньги не списываются', kind: 'bool', def: 'false' },
       { key: 'receipt_fallback_email', label: 'Email для чеков, если клиент не указал свой', hint: 'Чек по 54-ФЗ обязателен: без email клиента он уходит сюда', kind: 'email' },
       { key: 'wallet_min_topup_rub', label: 'Минимальное пополнение кошелька, ₽', kind: 'int', min: 1, max: 100000, def: '100' },
       { key: 'early_renewal_days_threshold', label: 'За сколько дней до конца предлагать продлить', hint: '0 — не предлагать', kind: 'int', min: 0, max: 30, def: '3' },
@@ -23,7 +23,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'smtp_password', label: 'Пароль', kind: 'secret' },
       { key: 'smtp_from_email', label: 'Адрес отправителя', kind: 'email' },
       { key: 'smtp_from_name', label: 'Имя отправителя', kind: 'text', def: 'HiEarth' },
-      { key: 'smtp_use_tls', label: 'Шифрование (TLS)', kind: 'bool', def: 'true' },
+      { key: 'smtp_use_tls', label: 'Шифрование (TLS)', kind: 'bool', def: 'false' },
     ],
   },
   {
@@ -58,7 +58,7 @@ export const SETTINGS_SECTIONS = [
     fields: [
       { key: 'hub_main_server_host', label: 'Домен сертификата Бамбука', hint: 'Домен TLS-сертификата Бамбука на Hub, он же имя в строках подписки. Это не адрес подключения. Менять только вместе с сертификатом', kind: 'host' },
       { key: 'api_endpoints', label: 'Адреса API для приложения', hint: 'Через запятую, по порядку попыток', kind: 'text' },
-      { key: 'b2b_enabled', label: 'Раздел B2B (компании)', hint: 'Выключено — разделы «Компании» и «B2B-аналитика» скрыты, публичные страницы бизнеса отвечают 404', kind: 'bool', def: 'false' },
+      { key: 'b2b_enabled', label: 'Раздел B2B (компании)', hint: 'Выключено — разделы «Компании» и «B2B-аналитика» скрыты в меню', kind: 'bool', def: 'false' },
     ],
   },
 ]

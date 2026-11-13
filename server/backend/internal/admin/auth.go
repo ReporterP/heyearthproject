@@ -16,6 +16,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -104,6 +105,51 @@ const activeSuperAdminsQuery = `SELECT COUNT(DISTINCT u.id) FROM admin_users u
 	WHERE ro.role_key = $1 AND u.is_active`
 
 const adminPasswordMin = 10
+
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// grantRefusal: only a super admin gives the super admin role, and nobody gives a role with
+// rights they do not hold themselves (C1 review: admins.write alone must not be a way up).
+func grantRefusal(r *http.Request, q rowQuerier, roleKeys []string) string {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok || claims.IsSuperAdmin() {
+		return ""
+	}
+	for _, k := range roleKeys {
+		k = strings.TrimSpace(k)
+		if k == superAdminRoleKey {
+			return "Роль super_admin выдаёт только суперадмин"
+		}
+		var perms pq.StringArray
+		if err := q.QueryRow(`SELECT COALESCE(array_agg(p.permission_key), '{}') FROM admin_roles r
+			LEFT JOIN admin_role_permissions rp ON rp.role_id = r.id LEFT JOIN admin_permissions p ON p.id = rp.permission_id
+			WHERE r.role_key = $1`, k).Scan(&perms); err != nil {
+			continue // an unknown role is refused later by assignRolesToAdminTx
+		}
+		for _, p := range perms {
+			if p != "" && !claimsAllow(claims, p) {
+				return "Роль «" + k + "» даёт право " + p + ", которого нет у вас — её выдаёт суперадмин"
+			}
+		}
+	}
+	return ""
+}
+
+// permissionGrantRefusal: a role may carry only rights the editor holds (a super admin: any).
+func permissionGrantRefusal(r *http.Request, perms []string) string {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok || claims.IsSuperAdmin() {
+		return ""
+	}
+	for _, p := range perms {
+		if p = strings.TrimSpace(p); p != "" && !claimsAllow(claims, p) {
+			return "Право " + p + " может добавить в роль только тот, у кого оно есть (или суперадмин)"
+		}
+	}
+	return ""
+}
 
 var roleKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
 
@@ -413,6 +459,10 @@ func CreateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("Пароль — не короче %d символов", adminPasswordMin))
 		return
 	}
+	if msg := grantRefusal(r, db.DB, payload.RoleKeys); msg != "" {
+		writeAdminError(w, http.StatusForbidden, msg)
+		return
+	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -491,6 +541,25 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// One admin change at a time: two admins demoting each other must not both pass the guard.
+	if _, err := tx.Exec(`SELECT id FROM admin_roles WHERE role_key = $1 FOR UPDATE`, superAdminRoleKey); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить суперадминов")
+		return
+	}
+	var supersBefore int
+	if err := tx.QueryRow(activeSuperAdminsQuery, superAdminRoleKey).Scan(&supersBefore); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить суперадминов")
+		return
+	}
+	if payload.RoleKeys != nil && len(payload.RoleKeys) == 0 {
+		writeAdminError(w, http.StatusBadRequest, "Выберите хотя бы одну роль")
+		return
+	}
+	if msg := grantRefusal(r, tx, payload.RoleKeys); msg != "" {
+		writeAdminError(w, http.StatusForbidden, msg)
+		return
+	}
+
 	record, err := loadAdminRecordByIDTx(tx, adminID)
 	if err == sql.ErrNoRows {
 		writeAdminError(w, http.StatusNotFound, "Admin not found")
@@ -557,7 +626,7 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить суперадминов")
 		return
 	}
-	if supers == 0 {
+	if supersBefore > 0 && supers == 0 {
 		writeAdminError(w, http.StatusConflict, "Это последний активный суперадмин: без него в панель никто не войдёт с полными правами. Сначала назначьте роль super_admin другому администратору")
 		return
 	}
@@ -607,6 +676,10 @@ func CreateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if !roleKeyRe.MatchString(strings.TrimSpace(payload.RoleKey)) {
 		writeAdminError(w, http.StatusBadRequest, "Ключ роли: латиница в нижнем регистре, цифры и «_», например support")
+		return
+	}
+	if msg := permissionGrantRefusal(r, payload.PermissionKeys); msg != "" {
+		writeAdminError(w, http.StatusForbidden, msg)
 		return
 	}
 
@@ -691,6 +764,10 @@ func UpdateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
 
 	if isSystem {
 		writeAdminError(w, http.StatusConflict, "Системную роль менять нельзя — создайте свою роль с нужными правами")
+		return
+	}
+	if msg := permissionGrantRefusal(r, payload.PermissionKeys); msg != "" {
+		writeAdminError(w, http.StatusForbidden, msg)
 		return
 	}
 	roleKey := currentRoleKey // the key is what admins and the code refer to: it does not change

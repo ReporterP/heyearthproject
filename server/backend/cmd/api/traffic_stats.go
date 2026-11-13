@@ -206,9 +206,8 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	lastDialRateCleanup.Unlock()
 	if doCleanup {
 		if err := biz.RollupDialRate(); err != nil {
-			log.Printf("[dial-rate] rollup: %v", err)
-		}
-		if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
+			log.Printf("[dial-rate] rollup: %v (the minutes are kept until it succeeds)", err)
+		} else if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
 			log.Printf("[dial-rate] Очистка: %d старых записей удалено", n)
 		}
 	}

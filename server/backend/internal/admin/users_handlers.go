@@ -170,7 +170,7 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // userHasMoneyQuery: any paid payment or wallet movement of the user.
-const userHasMoneyQuery = `SELECT EXISTS (SELECT 1 FROM payments WHERE user_id = $1 AND status IN ('succeeded', 'paid', 'completed', 'refunded', 'partially_refunded'))
+const userHasMoneyQuery = `SELECT EXISTS (SELECT 1 FROM payments p JOIN users u ON u.id = $1 WHERE p.user_id = u.id OR p.user_id_text = u.user_id)
 	OR EXISTS (SELECT 1 FROM wallet_transactions WHERE user_id = $1)`
 
 func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -221,15 +221,15 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
 		return
 	}
-	// Money stays on record (54-ФЗ receipts, the wallet ledger): a user who ever paid or had a
-	// wallet movement is blocked, never deleted (C2).
+	// Money stays on record (54-ФЗ receipts, the wallet ledger): a user with any payment (pending
+	// ones too) or a wallet movement is blocked, never deleted (C2).
 	var hasMoney bool
 	if err := db.DB.QueryRow(userHasMoneyQuery, userID).Scan(&hasMoney); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить платежи пользователя")
 		return
 	}
 	if hasMoney {
-		writeAdminError(w, http.StatusConflict, "У пользователя есть платежи или движения по кошельку — удалять нельзя (учёт и чеки). Заблокируйте его")
+		writeAdminError(w, http.StatusConflict, "У пользователя есть платежи (в том числе незавершённые) или движения по кошельку — удалять нельзя (учёт и чеки). Заблокируйте его")
 		return
 	}
 	result, err := db.DB.Exec(`DELETE FROM users WHERE id = $1`, userID)

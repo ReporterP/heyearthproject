@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,8 +41,8 @@ func TestAdminsAndRoles(t *testing.T) {
 	auditLogExec = func(string, ...any) (sql.Result, error) { return driver.RowsAffected(1), nil }
 
 	// A role with two rights.
-	rec := callAs(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles",
-		`{"role_key": "support", "name": "Поддержка", "permission_keys": ["users.read", "payments.read"], "is_system": true}`, "admins.write")
+	rec := asSuper(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles",
+		`{"role_key": "support", "name": "Поддержка", "permission_keys": ["users.read", "payments.read"], "is_system": true}`)
 	if rec.Code != 201 {
 		t.Fatalf("create role: %d %s", rec.Code, rec.Body)
 	}
@@ -48,16 +51,16 @@ func TestAdminsAndRoles(t *testing.T) {
 	if role.IsSystem {
 		t.Error("the API made a system role")
 	}
-	if rec := callAs(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles", `{"role_key": "Bad Key", "name": "x"}`, "admins.write"); rec.Code != 400 {
+	if rec := asSuper(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles", `{"role_key": "Bad Key", "name": "x"}`); rec.Code != 400 {
 		t.Errorf("bad key: %d", rec.Code)
 	}
-	if rec := callAs(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles", `{"role_key": "support", "name": "x"}`, "admins.write"); rec.Code != 409 {
+	if rec := asSuper(CreateAdminRoleHandler, "POST", "/api/admin/admin-roles", `{"role_key": "support", "name": "x"}`); rec.Code != 409 {
 		t.Errorf("duplicate key: %d", rec.Code)
 	}
 
 	// An admin with it: the rights act at once.
-	rec = callAs(CreateAdminUserHandler, "POST", "/api/admin/admin-users",
-		`{"username": "helper", "password": "long-enough-pass", "role_keys": ["support"]}`, "admins.write")
+	rec = asSuper(CreateAdminUserHandler, "POST", "/api/admin/admin-users",
+		`{"username": "helper", "password": "long-enough-pass", "role_keys": ["support"]}`)
 	if rec.Code != 201 {
 		t.Fatalf("create admin: %d %s", rec.Code, rec.Body)
 	}
@@ -67,13 +70,13 @@ func TestAdminsAndRoles(t *testing.T) {
 	if err != nil || !live.Active || !slices.Contains(live.Permissions, "users.read") || slices.Contains(live.Permissions, "users.write") {
 		t.Fatalf("live access %+v %v", live, err)
 	}
-	if rec := callAs(CreateAdminUserHandler, "POST", "/api/admin/admin-users", `{"username": "x", "password": "short", "role_keys": ["support"]}`, "admins.write"); rec.Code != 400 {
+	if rec := asSuper(CreateAdminUserHandler, "POST", "/api/admin/admin-users", `{"username": "x", "password": "short", "role_keys": ["support"]}`); rec.Code != 400 {
 		t.Errorf("short password: %d", rec.Code)
 	}
 
 	// The role gains a right: the next request has it.
 	path := "/api/admin/admin-roles/" + strconv.Itoa(role.ID)
-	if rec := callAs(UpdateAdminRoleHandler, "PATCH", path, `{"name": "Поддержка", "permission_keys": ["users.read", "users.write"]}`, "admins.write"); rec.Code != 200 {
+	if rec := asSuper(UpdateAdminRoleHandler, "PATCH", path, `{"name": "Поддержка", "permission_keys": ["users.read", "users.write"]}`); rec.Code != 200 {
 		t.Fatalf("update role: %d %s", rec.Code, rec.Body)
 	}
 	live, _ = adminLiveAccess(helper.ID)
@@ -84,16 +87,33 @@ func TestAdminsAndRoles(t *testing.T) {
 	// The system role is not edited.
 	var superID int
 	_ = conn.QueryRow(`SELECT id FROM admin_roles WHERE role_key = 'super_admin'`).Scan(&superID)
-	if rec := callAs(UpdateAdminRoleHandler, "PATCH", "/api/admin/admin-roles/"+strconv.Itoa(superID), `{"permission_keys": []}`, "admins.write"); rec.Code != 409 {
+	if rec := asSuper(UpdateAdminRoleHandler, "PATCH", "/api/admin/admin-roles/"+strconv.Itoa(superID), `{"permission_keys": []}`); rec.Code != 409 {
 		t.Errorf("system role edited: %d %s", rec.Code, rec.Body)
+	}
+
+	// Without the super admin role, admins.write is no way up (review C1).
+	if rec := callAs(CreateAdminUserHandler, "POST", "/api/admin/admin-users", `{"username": "x2", "password": "long-enough-pass", "role_keys": ["super_admin"]}`, "admins.write"); rec.Code != 403 {
+		t.Errorf("super_admin given without being one: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callAs(CreateAdminUserHandler, "POST", "/api/admin/admin-users", `{"username": "x3", "password": "long-enough-pass", "role_keys": ["support"]}`, "admins.write"); rec.Code != 403 {
+		t.Errorf("a role with rights the editor lacks: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callAs(CreateAdminUserHandler, "POST", "/api/admin/admin-users", `{"username": "x4", "password": "long-enough-pass", "role_keys": ["support"]}`, "admins.write", "users.read", "users.write"); rec.Code != 201 {
+		t.Errorf("a role within the editor's rights: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callAs(UpdateAdminRoleHandler, "PATCH", path, `{"name": "Поддержка", "permission_keys": ["users.read", "payments.refund"]}`, "admins.write", "users.read"); rec.Code != 403 {
+		t.Errorf("a right the editor lacks added to a role: %d %s", rec.Code, rec.Body)
+	}
+	if rec := asSuper(UpdateAdminUserHandler, "PATCH", "/api/admin/admin-users/"+strconv.Itoa(helper.ID), `{"role_keys": []}`); rec.Code != 400 {
+		t.Errorf("an admin left without roles: %d %s", rec.Code, rec.Body)
 	}
 
 	// The last active super admin cannot be switched off or lose the role.
 	ownerPath := "/api/admin/admin-users/" + strconv.Itoa(owner)
-	if rec := callAs(UpdateAdminUserHandler, "PATCH", ownerPath, `{"is_active": false}`, "admins.write"); rec.Code != 409 || !strings.Contains(rec.Body.String(), "последний") {
+	if rec := asSuper(UpdateAdminUserHandler, "PATCH", ownerPath, `{"is_active": false}`); rec.Code != 409 || !strings.Contains(rec.Body.String(), "последний") {
 		t.Errorf("last super admin deactivated: %d %s", rec.Code, rec.Body)
 	}
-	if rec := callAs(UpdateAdminUserHandler, "PATCH", ownerPath, `{"role_keys": ["support"]}`, "admins.write"); rec.Code != 409 {
+	if rec := asSuper(UpdateAdminUserHandler, "PATCH", ownerPath, `{"role_keys": ["support"]}`); rec.Code != 409 {
 		t.Errorf("last super admin lost the role: %d %s", rec.Code, rec.Body)
 	}
 	var active bool
@@ -102,10 +122,19 @@ func TestAdminsAndRoles(t *testing.T) {
 		t.Error("the refused change was written")
 	}
 	// With a second super admin it is allowed.
-	if rec := callAs(UpdateAdminUserHandler, "PATCH", "/api/admin/admin-users/"+strconv.Itoa(helper.ID), `{"role_keys": ["super_admin"]}`, "admins.write"); rec.Code != 200 {
+	if rec := asSuper(UpdateAdminUserHandler, "PATCH", "/api/admin/admin-users/"+strconv.Itoa(helper.ID), `{"role_keys": ["super_admin"]}`); rec.Code != 200 {
 		t.Fatalf("second super admin: %d %s", rec.Code, rec.Body)
 	}
-	if rec := callAs(UpdateAdminUserHandler, "PATCH", ownerPath, `{"is_active": false}`, "admins.write"); rec.Code != 200 {
+	if rec := asSuper(UpdateAdminUserHandler, "PATCH", ownerPath, `{"is_active": false}`); rec.Code != 200 {
 		t.Errorf("with another super admin: %d %s", rec.Code, rec.Body)
 	}
+}
+
+// asSuper is callAs for a super admin (every right, the super_admin role).
+func asSuper(h http.HandlerFunc, method, path, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminClaimsContextKey, &Claims{AdminID: 1, Roles: []string{superAdminRoleKey}, Permissions: []string{"*"}}))
+	h(rec, req)
+	return rec
 }
