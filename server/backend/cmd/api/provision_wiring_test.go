@@ -504,3 +504,28 @@ func TestUnreadableSSHCiphertexts(t *testing.T) {
 		t.Errorf("query: %s", q)
 	}
 }
+
+// B7: an artifact whose sha256 file disagrees is refused; one without the file is accepted.
+func TestArtifactChecksum(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "node-agent")
+	if err := os.WriteFile(p, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err != nil {
+		t.Fatalf("no checksum file: %v", err)
+	}
+	// sha256("binary")
+	if err := os.WriteFile(p+".sha256", []byte("9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err != nil {
+		t.Fatalf("matching checksum: %v", err)
+	}
+	if err := os.WriteFile(p, []byte("binar"), 0o600); err != nil { // cut off
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err == nil || !strings.Contains(err.Error(), "повреждён") {
+		t.Fatalf("cut-off file: %v", err)
+	}
+}

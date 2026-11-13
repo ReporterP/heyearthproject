@@ -595,6 +595,10 @@ func PreflightNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadGateway, "Проверки не выполнились: "+err.Error())
 		return
 	}
+	// The hoster's firewall, seen from the Hub (B2): before anything is installed.
+	if meta, err := NodeJobs.NodeMeta(ctx, id); err == nil {
+		checks = append(checks, hubReachChecks(ctx, meta.Role, meta.IP)...)
+	}
 	all := true
 	for _, c := range checks {
 		all = all && c.OK

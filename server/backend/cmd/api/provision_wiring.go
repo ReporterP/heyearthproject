@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -365,7 +367,25 @@ func readHubFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("на Hub нет %s — выполните go run ./cmd/deploy --ensure-hub-provisioning (%v)", path, err)
 	}
+	if err := checkArtifactSum(path, b); err != nil {
+		return nil, err
+	}
 	return b, nil
+}
+
+// checkArtifactSum compares a Hub artifact with the sha256 written next to it by the deploy
+// (cleanup plan B7): a cut-off upload must fail here, before an exit gets a broken binary.
+// A file without the checksum (older deploys) is accepted.
+func checkArtifactSum(path string, data []byte) error {
+	want, err := os.ReadFile(path + ".sha256")
+	if err != nil {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(strings.TrimSpace(strings.Fields(string(want) + " ")[0]), got) {
+		return fmt.Errorf("файл %s на Hub повреждён (sha256 не совпадает с записанным при деплое) — выложите его заново: go run quick_deploy.go", path)
+	}
+	return nil
 }
 
 // mtproxyRetryAfter: the reconciler's backfill does not start another MTProxy job on a node

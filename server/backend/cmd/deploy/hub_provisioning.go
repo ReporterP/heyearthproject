@@ -287,8 +287,12 @@ func putHubFile(client *ssh.Client, dst, mode string, data []byte) {
 		fmt.Printf("[hub] %s без изменений\n", dst)
 		return
 	}
+	// The file, then its sha256 next to it (the API checks it before sending the file to a
+	// node: a cut-off upload never reaches an exit).
 	cmd := "set -e; umask 077; mkdir -p " + shQuote(path.Dir(dst)) + "; cat > " + shQuote(dst+".tmp") + "; chmod " + mode + " " + shQuote(dst+".tmp") +
-		"; mv -f " + shQuote(dst+".tmp") + " " + shQuote(dst)
+		"; mv -f " + shQuote(dst+".tmp") + " " + shQuote(dst) +
+		"; echo " + hex.EncodeToString(sum[:]) + " > " + shQuote(dst+".sha256.tmp") + "; chmod 644 " + shQuote(dst+".sha256.tmp") +
+		"; mv -f " + shQuote(dst+".sha256.tmp") + " " + shQuote(dst+".sha256")
 	if _, err := runSSHQuiet(client, cmd, string(data)); err != nil {
 		log.Fatalf("[hub] запись %s: %v", dst, err)
 	}

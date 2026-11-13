@@ -5,6 +5,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -139,6 +142,34 @@ func main() {
 	}
 	fmt.Printf("    %d файлов миграций загружено\n", len(entries))
 
+	// 4b. Артефакты нод (B7): node-agent и установщик MTProxy — только если изменились, через
+	// временный файл + mv, с sha256 рядом (API сверяет его перед установкой на exit).
+	fmt.Println("[4b] Артефакты нод...")
+	agentPath := filepath.Join(backendRoot, "node-agent.bin")
+	ab := exec.Command("go", "build", "-o", agentPath, "./cmd/node-agent/")
+	ab.Dir = backendRoot
+	ab.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	ab.Stderr = os.Stderr
+	if err := ab.Run(); err != nil {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("build node-agent: %v", err)
+	}
+	for _, a := range []struct{ local, remote, mode string }{
+		{agentPath, appDir + "/artifacts/node-agent", "755"},
+		{filepath.Join(backendRoot, "cmd", "deploy", "install-mtproxy.sh"), "/opt/heyearth/scripts/install-mtproxy.sh", "755"},
+	} {
+		data, err := os.ReadFile(a.local)
+		if err != nil {
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("read %s: %v", a.local, err)
+		}
+		if err := putArtifact(client, a.remote, a.mode, data); err != nil {
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("artifact %s: %v (сервис не перезапущен)", a.remote, err)
+		}
+	}
+	os.Remove(agentPath)
+
 	// 5. Подменить бинарник атомарно и перезапустить
 	fmt.Println("[5/5] Перезапуск сервиса...")
 	if out := runCmd(client, fmt.Sprintf("chmod +x %[1]s && { [ ! -f %[2]s ] || cp -p %[2]s %[2]s.bak; } && mv -f %[1]s %[2]s && echo SWAPPED", tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
@@ -211,6 +242,32 @@ func waitHealthy(client **ssh.Client, host string, config *ssh.ClientConfig, wit
 		}
 	}
 	return false
+}
+
+// putArtifact writes a node artifact when its sha256 differs: temp file + mv, then the sha256
+// file next to it.
+func putArtifact(client *ssh.Client, remote, mode string, data []byte) error {
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	cur := strings.TrimSpace(runCmd(client, fmt.Sprintf("cat %s.sha256 2>/dev/null; [ -f %s ] && sha256sum < %s | cut -d' ' -f1", remote, remote, remote)))
+	if f := strings.Fields(cur); len(f) == 2 && f[0] == hexSum && f[1] == hexSum {
+		fmt.Printf("    %s без изменений\n", remote)
+		return nil
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	session.Stdin = bytes.NewReader(data)
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	script := fmt.Sprintf("set -e; mkdir -p $(dirname %[1]s); cat > %[2]s; chmod %[3]s %[2]s; [ \"$(sha256sum < %[2]s | cut -d' ' -f1)\" = %[4]s ] || { rm -f %[2]s; echo 'checksum mismatch after upload'; exit 1; }; mv -f %[2]s %[1]s; echo %[4]s > %[1]s.sha256.tmp; mv -f %[1]s.sha256.tmp %[1]s.sha256",
+		remote, tmp, mode, hexSum)
+	if out, err := session.CombinedOutput(script); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("    %s обновлён (%d байт)\n", remote, len(data))
+	return nil
 }
 
 func uploadViaPipe(client *ssh.Client, localPath, remotePath string) error {
