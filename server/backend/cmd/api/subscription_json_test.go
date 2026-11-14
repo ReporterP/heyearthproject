@@ -92,7 +92,7 @@ func TestJSONSubscriptionWays(t *testing.T) {
 		t.Fatalf("burst observatory %v", auto.Burst)
 	}
 	rules := auto.Routing.Rules
-	if len(rules) != 4 || rules[0]["balancerTag"] != "auto" || rules[0]["ip"].([]any)[0] != "203.0.113.1" ||
+	if len(rules) != 4 || rules[0]["balancerTag"] != "auto" || rules[0]["ip"].([]any)[0] != "203.0.113.1" || rules[0]["port"] != "80,443" ||
 		rules[1]["outboundTag"] != "direct" || rules[2]["outboundTag"] != "direct" || rules[3]["balancerTag"] != "auto" {
 		t.Fatalf("auto rules %v", rules)
 	}

@@ -179,14 +179,17 @@ func jsonInbounds() []any {
 	}
 }
 
-// jsonRules: the Hub's own address always through the tunnel (it is a RU address,
-// geoip:ru would send it direct — and a mobile network that cuts the Hub's
-// subnet would then cut the site and the cabinet too), then the direct lists,
-// then everything else to final (an outbound tag or the balancer).
+// jsonRules: the site and the cabinet on the Hub's own address (ports 80/443)
+// through the tunnel (it is a RU address, geoip:ru would send it direct — and a
+// mobile network that cuts the Hub's subnet would then cut the site too), then
+// the direct lists, then everything else to final (an outbound tag or the
+// balancer). Other ports of the Hub (the owner's SSH) stay direct: through the
+// tunnel they would end on the Hub itself, which lets its proxy reach its own
+// address on 80/443 only.
 func jsonRules(hub string, d directRouting, final xrayObj) []any {
 	var rules []any
 	if hub != "" {
-		r := xrayObj{"type": "field"}
+		r := xrayObj{"type": "field", "port": "80,443"}
 		if net.ParseIP(hub) != nil {
 			r["ip"] = []string{hub}
 		} else {
