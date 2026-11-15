@@ -223,6 +223,11 @@ h1, h2, h3, h4, .serif {
 /* scroll reveal */
 .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s var(--ease-out), transform .7s var(--ease-out); }
 .reveal.in { opacity: 1; transform: none; }
+/* useReveal only sees the .reveal elements present when its page effect runs; a block that
+   mounts later (it loads its own data, e.g. «Пригласи друга», «Кошелёк») was never given .in
+   and stayed transparent, holding its space. Without .in, show it after 1.6 s anyway. */
+@keyframes reveal-fallback { to { opacity: 1; transform: none; } }
+.reveal:not(.in) { animation: reveal-fallback .7s var(--ease-out) 1.6s forwards; }
 
 /* skeleton loading (progressive-loading, MASTER §5 / UX §3) */
 @keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
