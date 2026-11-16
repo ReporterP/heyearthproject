@@ -82,9 +82,9 @@ func TestExitAgentGuardUnits(t *testing.T) {
 // reload), and is ordered after nftables.service so its load lands after the flush.
 func TestNftUnitsSurviveNftablesReloadAndRestart(t *testing.T) {
 	for name, u := range map[string]struct{ unit, conf string }{
-		"agent guard": {ExitAgentGuardUnit, ExitAgentGuardConfPath},
-		"xray guard":  {ExitXrayGuardUnit, ExitXrayGuardConfPath},
-		"port hop":    {ExitPortHopUnit, ExitPortHopConfPath},
+		"agent guard":  {ExitAgentGuardUnit, ExitAgentGuardConfPath},
+		"tunnel guard": {ExitGuardUnit, ExitGuardConfPath},
+		"port hop":     {ExitPortHopUnit, ExitPortHopConfPath},
 	} {
 		load := "/usr/sbin/nft -f " + u.conf + "\n"
 		for _, w := range []string{"\nPartOf=nftables.service\n", "\nReloadPropagatedFrom=nftables.service\n", "\nExecStart=" + load, "\nExecReload=" + load,
@@ -101,7 +101,7 @@ func TestNftUnitsSurviveNftablesReloadAndRestart(t *testing.T) {
 		}
 	}
 	golden(t, "exit_unit_porthop.golden", []byte(ExitPortHopUnit))
-	golden(t, "exit_unit_xray_guard.golden", []byte(ExitXrayGuardUnit))
+	golden(t, "exit_unit_guard.golden", []byte(ExitGuardUnit))
 }
 
 // node-agent's converge with the guard as its extra: the guard is loaded, enabled and started

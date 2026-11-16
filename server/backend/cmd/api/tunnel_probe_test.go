@@ -846,7 +846,7 @@ func TestExitPathAlertTexts(t *testing.T) {
 		}
 	}
 	title, details = exitPathDownText(node, "vr", "")
-	for _, want := range []string{"TCP", "10443", "ждём подтверждения"} {
+	for _, want := range []string{"TCP", "ShadowTLS", "443", "heyearth-stls-client-2", "Переустановить", "ждём подтверждения"} {
 		if !strings.Contains(title+details, want) {
 			t.Errorf("TCP path alert lacks %q: %s / %s", want, title, details)
 		}

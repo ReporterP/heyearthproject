@@ -320,7 +320,6 @@ func cliExitOptions(ctx context.Context, mainClient *ssh.Client, hub provision.R
 	return provision.ExitOptions{
 		HubIPs:      hubIPs,
 		MTProtoPort: port,
-		HubXray:     "/opt/heyearth/xray/xray",
 		NodeAgent:   func() ([]byte, error) { return []byte(agent), nil },
 		CA:          func() ([]byte, []byte, error) { return []byte(ca), nil, nil },
 		CASigner: func(ctx context.Context, c *x509.Certificate) (crypto.Signer, error) {

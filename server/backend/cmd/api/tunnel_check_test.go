@@ -68,7 +68,7 @@ func TestTunnelCheckResultAbsentReasons(t *testing.T) {
 	now := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 	r := tunnelCheckResult(biz.ExitNodeTunnel{ID: 4, TunnelProtocol: "hysteria2", LifecycleState: "online"},
 		exitPathProbe{hy: pathProbe{present: true, ok: true, rttMs: 70}}, now)
-	if r.Paths[1].Status != "absent" || !strings.Contains(r.Paths[1].Error, "нет данных Reality") {
+	if r.Paths[1].Status != "absent" || !strings.Contains(r.Paths[1].Error, "нет tunnel_uuid") {
 		t.Errorf("vr: %+v", r.Paths[1])
 	}
 	r = tunnelCheckResult(biz.ExitNodeTunnel{ID: 4, TunnelProtocol: "vless", LifecycleState: "online"},

@@ -71,7 +71,6 @@ type ExitOptions struct {
 	// key): the deploy CLI's HubCASigner — the CA key stays on the Hub. nil: the key from CA()
 	// (the API, which runs on the Hub).
 	CASigner func(ctx context.Context, ca *x509.Certificate) (crypto.Signer, error)
-	HubXray  string // the Hub's xray for the TCP path check
 }
 
 // MTProtoOptions: the exit's Telegram proxy (Secret is redacted from every step output).
@@ -207,12 +206,15 @@ func (t *tailBuffer) String() string { return tail(string(t.b), t.max) }
 var titles = map[string]string{
 	"preflight": "Предпроверка сервера", "hub_key": "Ключ Hub на ноде", "reality_keys": "Ключи туннеля",
 	"base": "Сеть и пакеты", "firewall": "Фаервол", "hysteria": "Основной туннель (Hysteria) и прыжки портов",
-	"xray": "Запасной TCP-туннель (Reality)", "mtproxy": "Telegram-прокси (MTProxy)", "node_agent": "Агент мониторинга",
-	"save_tunnel": "Данные туннеля в базе", "hub_client": "Клиент туннеля на Hub",
+	"stls": "Запасной TCP-туннель (ShadowTLS)", "mtproxy": "Telegram-прокси (MTProxy)", "node_agent": "Агент мониторинга",
+	"save_tunnel": "Данные туннеля в базе", "hub_client": "Клиент туннеля на Hub", "hub_stls": "Клиент запасного туннеля на Hub",
+	"retire_xray": "Снятие старого запасного туннеля (Reality)",
+	// Steps of earlier recipes, still named in old jobs.
+	"xray":    "Запасной TCP-туннель (Reality)",
 	"path_hy": "Проверка пути: основной туннель", "path_tcp": "Проверка пути: запасной TCP",
 	"activate": "Включение в маршрутизацию", "exclude": "Исключение из маршрутизации",
 	"hub_client_remove": "Удаление клиента туннеля на Hub", "rotate_password": "Смена пароля туннеля",
-	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих xray",
+	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих запасного туннеля",
 	"remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
 	// The reserve entry (relay.go).
 	"relay_preflight": "Предпроверка", "relay_packages": "Пакеты", "relay_sysctl": "Пересылка и conntrack",

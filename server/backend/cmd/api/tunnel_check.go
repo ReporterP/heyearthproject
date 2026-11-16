@@ -26,7 +26,7 @@ func checkExitTunnel(ctx context.Context, serverID int) (admin.TunnelCheckResult
 // (tunnel_uuid, the Hysteria password) can reach it: only the probe errors and field names.
 func tunnelCheckResult(node biz.ExitNodeTunnel, p exitPathProbe, now time.Time) admin.TunnelCheckResult {
 	hy := tunnelPathCheck("hy", "Hysteria (UDP)", p.hy, exitHyAbsentReason(node))
-	vr := tunnelPathCheck("vr", "TCP (VLESS Reality)", p.vr, exitVRAbsentReason(node))
+	vr := tunnelPathCheck("vr", "TCP (ShadowTLS)", p.vr, exitVRAbsentReason(node))
 	summary := tunnelCheckSummary(hy.Status, vr.Status)
 	if node.LifecycleState != "online" {
 		// Out of the routing: xray has no probe inbound for it (buildExitConfig) and its
@@ -100,7 +100,7 @@ func tunnelCheckSummary(hy, vr string) string {
 	case vr == "ok":
 		return "Hysteria не проходит — трафик exit идёт по запасному TCP-пути, Бамбук через этот exit не работает."
 	case hy == "absent" && vr == "absent":
-		return "У exit нет ни одного пути: нужен протокол hysteria2 или учётка VLESS Reality."
+		return "У exit нет ни одного пути: нужен протокол hysteria2 с tunnel_uuid или учётка VLESS."
 	default:
 		return "Ни один путь не работает: exit недоступен, его трафик идёт через другие exit."
 	}

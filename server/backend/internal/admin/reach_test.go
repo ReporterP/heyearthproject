@@ -20,7 +20,7 @@ func TestHubReachChecks(t *testing.T) {
 		return context.DeadlineExceeded
 	}
 	cs := hubReachChecks(context.Background(), "exit", "203.0.113.5")
-	if len(cs) != 2 || !cs[0].OK || cs[1].OK || !strings.Contains(cs[1].Detail, "откройте входящий TCP 10443") {
+	if len(cs) != 2 || !cs[0].OK || cs[1].OK || !strings.Contains(cs[1].Detail, "откройте входящий TCP 443") {
 		t.Fatalf("%+v", cs)
 	}
 	if cs := hubReachChecks(context.Background(), "relay", "203.0.113.5"); len(cs) != 3 || cs[0].Name != "TCP 443 с Hub" {

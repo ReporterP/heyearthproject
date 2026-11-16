@@ -33,7 +33,8 @@ package main
 //	  (IPv6: fc00::/7, fe80::/10), except port 53                        -> REJECT
 //
 //	xray.service's cgroup (xray runs as root, so a uid match would be useless); allowed loopback
-//	  TCP: the exit tunnels' SOCKS ports.
+//	  TCP: the exit tunnels' SOCKS ports — the hysteria clients' and the ShadowTLS backup
+//	  clients' (heyearth-stls-client-<id>, internal/config exit_stls.go).
 //	user hysteria: hysteria2-server (User=hysteria). The per-exit tunnel clients
 //	  hysteria2-client-<id>.service run as ROOT (no User=, see config.HubHysteriaClientUnit, written by internal/provision hub_client) and are not
 //	  covered: they only dial their exit and listen on loopback. Allowed loopback TCP: the SOCKS
@@ -95,9 +96,10 @@ package main
 // check `grep url: /etc/hysteria/server.yaml`; then re-run --setup-ops. An env file without
 // HY_AUTH_PORTS (written by an older guard) means phase A.
 //
-// The SOCKS ports are 1088+serverID and server ids are serial and never reused, so the allowed
-// range is generous (egressSocksPorts); a range of 12 would silently cut off exit #12. Nothing
-// else listens on loopback in that range.
+// The SOCKS ports are 1088+serverID (hysteria) and 2088+serverID (ShadowTLS backup), and server
+// ids are serial and never reused, so the allowed ranges are generous (egressSocksPorts,
+// egressSTLSPorts); a range of 12 would silently cut off exit #12. Nothing else listens on
+// loopback in those ranges.
 //
 // The cgroup match pins the cgroup INSTANCE when a rule is loaded, and a restarted service gets
 // a new one: heyearth-egress-guard.sh xray therefore rebuilds the chain from an ExecStartPost
@@ -122,6 +124,9 @@ const (
 	// egressSocksPorts: hysteria2-client-<id> listens on 127.0.0.1:(1088+id); the xray `socks`
 	// outbounds and hysteria-server's via_exit outbound dial them.
 	egressSocksPorts = "1088:1599"
+	// egressSTLSPorts: heyearth-stls-client-<id> listens on 127.0.0.1:(2088+id)
+	// (config.HubSTLSSocksPort); the xray outbound exit-<id>.vr and the probe pair dial it.
+	egressSTLSPorts = "2088:2599"
 	// egressAPIPort: the main heyearth-api listener (the whole REST API, nginx's upstream).
 	egressAPIPort = "8000"
 	// egressHyAuthPort / egressHyAuthPath: the auth-only heyearth-api listener hysteria2-server
@@ -152,6 +157,7 @@ ENV_FILE="${EGRESS_GUARD_ENV:-/etc/heyearth/egress-guard.env}"
 CGROUP_PATH=system.slice/xray.service
 CGROUP_DIR="${CGROUP_DIR:-/sys/fs/cgroup/$CGROUP_PATH}"
 SOCKS_PORTS=__SOCKS_PORTS__
+STLS_PORTS=__STLS_PORTS__
 HUB_EXTRA_IPS=""
 # The hysteria auth callback port(s), decided by deploy --setup-ops: phase A unless the env says B.
 HY_AUTH_PORTS=__HY_AUTH_PORTS_A__
@@ -197,7 +203,7 @@ build_rules() {
     subject_rules "-m owner --uid-owner $HY_UID" "$SOCKS_PORTS,$HY_AUTH_PORTS,53"
   fi
   if [ "$cg" = 1 ]; then
-    subject_rules "-m cgroup --path $CGROUP_PATH" "$SOCKS_PORTS"
+    subject_rules "-m cgroup --path $CGROUP_PATH" "$SOCKS_PORTS,$STLS_PORTS"
   fi
 }
 load_rules() {
@@ -267,6 +273,7 @@ esac
 func renderEgressGuardScript() string {
 	return strings.NewReplacer(
 		"__SOCKS_PORTS__", egressSocksPorts,
+		"__STLS_PORTS__", egressSTLSPorts,
 		"__HY_AUTH_PORTS_A__", egressHyAuthPortsA,
 		"__HY_AUTH_PORTS_B__", egressHyAuthPortsB,
 		"__PRIVATE4__", egressPrivate4,

@@ -151,12 +151,11 @@ Users → [Hub: hiearth.ru (Russia)]
               │    ↓
               │  Hub→Exit tunnels:
               │    Hysteria2 QUIC  :50443 UDP (primary)
-              │    SS+WebSocket    :443   TCP (fallback)
-              │    VLESS Reality   :10443 TCP (backup)
+              │    ShadowTLS v3 → Shadowsocks 2022 :443 TCP (backup, sing-box; since 16.11, B8)
               │
               ▼
          [Exit Nodes: abroad]
-              Xray + Hysteria2 + node-agent (mTLS :50052)
+              Hysteria2 + sing-box (heyearth-stls) + node-agent (mTLS :50052)
 ```
 
 ### Port Map
@@ -179,11 +178,11 @@ Users → [Hub: hiearth.ru (Russia)]
 | Hub | 10085 | TCP (loopback) | Xray API (egress guard: heyearth-api's user only) |
 | Hub | 10808 | TCP/UDP (loopback) | Xray `socks-local` inbound (the egress guard's check; AWG is gone) |
 | Hub | 1088+id | TCP/UDP (loopback) | hysteria2-client-<id> SOCKS to exit <id> |
+| Hub | 2088+id | TCP/UDP (loopback) | heyearth-stls-client-<id> SOCKS (ShadowTLS backup to exit <id>; xray `exit-<id>.vr`) |
 
 SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (ufw rules pruned by `--setup-ops`).
 | Exit | 50443 | UDP | Hysteria2 |
-| Exit | 443 | TCP | SS+WebSocket |
-| Exit | 10443 | TCP | VLESS Reality |
+| Exit | 443 | TCP | ShadowTLS v3 (sing-box `heyearth-stls`, backup tunnel; the old xray Reality :10443 is retired by the recipe) |
 | Exit | 50052 | TCP | node-agent gRPC (mTLS) |
 
 ---

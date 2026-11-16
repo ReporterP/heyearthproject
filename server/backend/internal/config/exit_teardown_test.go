@@ -64,7 +64,7 @@ func TestExitStopServicesUsesRealUnitNames(t *testing.T) {
 		t.Fatal("no hysteria2-server / hysteria-server unit exists on the exits")
 	}
 	dir := t.TempDir()
-	for _, u := range []string{"hysteria2", "xray", "node-agent"} {
+	for _, u := range []string{"hysteria2", ExitSTLSUnit, "xray", "node-agent"} {
 		unit(t, dir, u, true, true)
 	}
 	// mtproxy was never installed (MTProxy switched off); the Hub-only guard of node-agent and the
@@ -77,7 +77,7 @@ func TestExitStopServicesUsesRealUnitNames(t *testing.T) {
 			t.Fatalf("run %d: %v\n%s", run, err, out)
 		}
 	}
-	for _, u := range []string{"hysteria2", "xray", "node-agent"} { // the real unit names
+	for _, u := range []string{"hysteria2", ExitSTLSUnit, "xray", "node-agent"} { // the real unit names
 		if exists(dir, "active."+u) || exists(dir, "enabled."+u) {
 			t.Errorf("%s still running or enabled", u)
 		}
@@ -86,7 +86,7 @@ func TestExitStopServicesUsesRealUnitNames(t *testing.T) {
 		strings.Contains(readRel(dir, "calls"), "agent-guard") || regexp.MustCompile(`(?m) nftables$`).MatchString(readRel(dir, "calls")) {
 		t.Fatalf("touched what it must not:\n%s", readRel(dir, "calls"))
 	}
-	if got := ExitServiceUnits(); strings.Join(got, " ") != "hysteria2 xray node-agent mtproxy" {
+	if got := ExitServiceUnits(); strings.Join(got, " ") != "hysteria2 heyearth-stls xray node-agent mtproxy" {
 		t.Fatalf("units %v", got)
 	}
 }
@@ -262,7 +262,7 @@ func TestExitRotatePasswordYAMLScalars(t *testing.T) {
 // The names deprovision removes are the ones the templates install: a renamed constant or
 // table cannot leave a rule set behind unnoticed.
 func TestTeardownNamesMatchTemplates(t *testing.T) {
-	guard, err := ExitXrayGuardConf("203.0.113.7", 8443)
+	guard, err := ExitGuardConf("203.0.113.7", 8443)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,15 +271,18 @@ func TestTeardownNamesMatchTemplates(t *testing.T) {
 		"hop conf":        strings.Contains(ExitPortHopUnit, "nft -f "+ExitPortHopConfPath+"\n"),
 		"hop unit path":   ExitPortHopUnitPath == unitFilePath(ExitPortHopService),
 		"hop check":       strings.Contains(HysteriaCheckScript, "table inet "+ExitPortHopTable+" "),
-		"guard table":     strings.Contains(guard, "table inet "+ExitXrayGuardTable+" {"),
-		"guard conf":      strings.Contains(ExitXrayGuardUnit, "nft -f "+ExitXrayGuardConfPath+"\n"),
-		"guard unit path": ExitXrayGuardUnitPath == unitFilePath(ExitXrayGuardService),
-		"xray requires":   strings.Contains(ExitXrayUnit, "Requires="+ExitXrayGuardService+".service"),
-		"service units": slices.Equal(ExitServiceUnits()[:3], []string{"hysteria2", "xray", "node-agent"}) &&
-			ExitHysteriaUnitPath == unitFilePath("hysteria2") && ExitXrayUnitPath == unitFilePath("xray") && NodeAgentUnitPath == unitFilePath("node-agent"),
+		"guard table":     strings.Contains(guard, "table inet "+ExitGuardTable+" {"),
+		"guard conf":      strings.Contains(ExitGuardUnit, "nft -f "+ExitGuardConfPath+"\n"),
+		"guard unit path": ExitGuardUnitPath == unitFilePath(ExitGuardService),
+		"stls requires":   strings.Contains(ExitSTLSUnitFile, "Requires="+ExitGuardService+".service"),
+		"service units": slices.Equal(ExitServiceUnits()[:4], []string{"hysteria2", ExitSTLSUnit, "xray", "node-agent"}) &&
+			ExitHysteriaUnitPath == unitFilePath("hysteria2") && ExitSTLSUnitPath == unitFilePath(ExitSTLSUnit) &&
+			ExitXrayUnitPath == unitFilePath("xray") && NodeAgentUnitPath == unitFilePath("node-agent"),
 		"hub client": strings.Contains(HubHysteriaClientUnit(7, "203.0.113.7"), " -c "+HubClientConfigPath(7)+"\n") &&
 			strings.Contains(HubHysteriaClientYAML(7, "203.0.113.7", "x", 1095), "server id=7"),
-		"probe path": strings.Contains(VRProbeConfigPath(7), "vr-probe-7.json"),
+		"hub stls client": strings.Contains(HubSTLSClientUnit(7, "203.0.113.7"), "LoadCredential=client.json:"+HubSTLSConfigPath(7)+"\n") &&
+			strings.Contains(HubClientRemoveScript(7), shQuote(RestartMarker(HubSTLSUnit(7)))) &&
+			strings.Contains(HubClientRemoveScript(7), shQuote(PathCheckMarker(HubSTLSUnit(7)))),
 		// The Hub client's markers are the ones its converge and rollback use (the path check of a live exit included).
 		"hub client markers": strings.Contains(HubClientRemoveScript(7), shQuote(RestartMarker(HubClientUnit(7)))) &&
 			strings.Contains(HubClientRemoveScript(7), shQuote(PathCheckMarker(HubClientUnit(7)))) &&
@@ -344,8 +347,16 @@ func TestHubClientRemoveArchivesAndCleans(t *testing.T) {
 		mustWrite(t, dir, "etc/systemd/system/multi-user.target.wants/hysteria2-client-"+id+".service", "", 0o644)
 		mustWrite(t, dir, rel(RestartMarker("hysteria2-client-"+id)), "", 0o644)
 		mustWrite(t, dir, rel(PathCheckMarker("hysteria2-client-"+id)), "BEFORE=1\n", 0o644)
-		mustWrite(t, dir, "opt/heyearth/state/vr-probe-"+id+".json", `{"uuid":"x"}`, 0o600)
-		mustWrite(t, dir, "opt/heyearth/state/vr-probe-"+id+".json.bak", `{"uuid":"y"}`, 0o600)
+		// The ShadowTLS backup client of the same exit.
+		s := "heyearth-stls-client-" + id
+		mustWrite(t, dir, "opt/heyearth/stls/client-"+id+".json", `{"password":"x"}`, 0o600)
+		mustWrite(t, dir, "opt/heyearth/stls/client-"+id+".json.bak", `{"password":"y"}`, 0o600)
+		unit(t, dir, s, true, true)
+		mustWrite(t, dir, "etc/systemd/system/"+s+".service.bak", "[Unit]", 0o644)
+		mustWrite(t, dir, "etc/systemd/system/multi-user.target.wants/"+s+".service", "", 0o644)
+		mustWrite(t, dir, rel(RestartMarker(s)), "", 0o644)
+		mustWrite(t, dir, rel(BinaryPendingMarker(s)), "x", 0o644)
+		mustWrite(t, dir, rel(PathCheckMarker(s)), "BEFORE=1\n", 0o644)
 	}
 	seed("7")
 	seed("17") // another exit: untouched
@@ -359,13 +370,18 @@ func TestHubClientRemoveArchivesAndCleans(t *testing.T) {
 	for _, gone := range []string{"opt/heyearth/hysteria/client-7.yaml", "opt/heyearth/hysteria/client-7.yaml.bak",
 		"etc/systemd/system/hysteria2-client-7.service", "etc/systemd/system/hysteria2-client-7.service.bak",
 		"etc/systemd/system/multi-user.target.wants/hysteria2-client-7.service", "active.hysteria2-client-7", "enabled.hysteria2-client-7",
-		rel(RestartMarker("hysteria2-client-7")), rel(PathCheckMarker("hysteria2-client-7")), "opt/heyearth/state/vr-probe-7.json", "opt/heyearth/state/vr-probe-7.json.bak"} {
+		rel(RestartMarker("hysteria2-client-7")), rel(PathCheckMarker("hysteria2-client-7")),
+		"opt/heyearth/stls/client-7.json", "opt/heyearth/stls/client-7.json.bak", "etc/systemd/system/heyearth-stls-client-7.service",
+		"etc/systemd/system/heyearth-stls-client-7.service.bak", "etc/systemd/system/multi-user.target.wants/heyearth-stls-client-7.service",
+		"active.heyearth-stls-client-7", "enabled.heyearth-stls-client-7", rel(RestartMarker("heyearth-stls-client-7")),
+		rel(BinaryPendingMarker("heyearth-stls-client-7")), rel(PathCheckMarker("heyearth-stls-client-7"))} {
 		if exists(dir, gone) {
 			t.Errorf("%s left behind", gone)
 		}
 	}
 	for _, kept := range []string{"opt/heyearth/hysteria/client-17.yaml", "etc/systemd/system/hysteria2-client-17.service",
-		"active.hysteria2-client-17", "enabled.hysteria2-client-17", "opt/heyearth/state/vr-probe-17.json", rel(PathCheckMarker("hysteria2-client-17"))} {
+		"active.hysteria2-client-17", "enabled.hysteria2-client-17", rel(PathCheckMarker("hysteria2-client-17")),
+		"opt/heyearth/stls/client-17.json", "active.heyearth-stls-client-17", rel(PathCheckMarker("heyearth-stls-client-17"))} {
 		if !exists(dir, kept) {
 			t.Errorf("another exit's %s removed", kept)
 		}
@@ -375,19 +391,32 @@ func TestHubClientRemoveArchivesAndCleans(t *testing.T) {
 		t.Fatalf("archives %v\n%s", arch, out)
 	}
 	a := filepath.ToSlash(mustRel(t, dir, arch[0]))
-	if !exists(dir, a+"/client-7.yaml") || !exists(dir, a+"/hysteria2-client-7.service") || !exists(dir, a+"/journal-snapshot.log") {
-		t.Fatalf("config/unit/journal not archived in %s\n%s", a, out)
+	for _, f := range []string{"client-7.yaml", "hysteria2-client-7.service", "hysteria2-client-7.journal.log",
+		"client-7.json", "heyearth-stls-client-7.service", "heyearth-stls-client-7.journal.log"} {
+		if !exists(dir, a+"/"+f) {
+			t.Fatalf("%s not archived in %s\n%s", f, a, out)
+		}
 	}
 	if fi, err := os.Stat(arch[0]); runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm()&0o077 != 0) {
 		t.Errorf("the archive holds the old tunnel password: mode %v", fi.Mode())
 	}
-	// The stray-process fallback matches exit 7's client only.
-	pat := strings.TrimSpace(readRel(dir, "pkill.log"))
-	re := regexp.MustCompile(strings.TrimPrefix(pat, "-9 -f "))
-	if !strings.HasPrefix(pat, "-9 -f ") || !re.MatchString("/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-7.yaml") ||
-		re.MatchString("/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-17.yaml") ||
-		re.MatchString("/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-70.yaml") {
-		t.Fatalf("pkill pattern %q", pat)
+	// The stray-process fallbacks match exit 7's clients only.
+	pats := strings.Split(strings.TrimSpace(readRel(dir, "pkill.log")), "\n")
+	if len(pats) != 2 {
+		t.Fatalf("pkill calls %q", pats)
+	}
+	for i, c := range []struct{ mine, other, longer string }{
+		{"/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-7.yaml", "/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-17.yaml",
+			"/usr/local/bin/hysteria client -c /opt/heyearth/hysteria/client-70.yaml"},
+		{SingBoxBinary + " run -c /run/credentials/heyearth-stls-client-7.service/client.json",
+			SingBoxBinary + " run -c /run/credentials/heyearth-stls-client-17.service/client.json",
+			SingBoxBinary + " run -c /run/credentials/heyearth-stls-client-70.service/client.json"},
+	} {
+		pat := strings.Trim(pats[i], "'")
+		re := regexp.MustCompile(strings.Trim(strings.TrimPrefix(pat, "-9 -f "), "'"))
+		if !strings.HasPrefix(pat, "-9 -f ") || !re.MatchString(c.mine) || re.MatchString(c.other) || re.MatchString(c.longer) {
+			t.Fatalf("pkill pattern %q", pat)
+		}
 	}
 	if out, _ := shellRun(t, dir, teardownStub, HubClientStateScript(7)); out != "UNIT=0\nCONFIG=0\nACTIVE=0\nLINK=0\n" {
 		t.Fatalf("state after: %q", out)
@@ -422,15 +451,15 @@ func TestExitRemoveGuardAndHop(t *testing.T) {
 		t.Skip("no bash")
 	}
 	dir := t.TempDir()
-	for _, f := range []string{ExitXrayGuardConfPath, ExitPortHopConfPath, ExitAgentGuardConfPath} {
+	for _, f := range []string{ExitGuardConfPath, ExitPortHopConfPath, ExitAgentGuardConfPath} {
 		mustWrite(t, dir, rel(f), "table inet x {}\n", 0o644)
 		mustWrite(t, dir, rel(f)+".bak", "table inet x {}\n", 0o644)
 	}
-	for _, u := range []string{ExitXrayGuardService, ExitPortHopService, ExitAgentGuardService} {
+	for _, u := range []string{ExitGuardService, ExitPortHopService, ExitAgentGuardService} {
 		unit(t, dir, u, true, true)
 		mustWrite(t, dir, "etc/systemd/system/multi-user.target.wants/"+u+".service", "", 0o644)
 	}
-	for _, tb := range []string{ExitXrayGuardTable, ExitPortHopTable, ExitAgentGuardTable} {
+	for _, tb := range []string{ExitGuardTable, ExitPortHopTable, ExitAgentGuardTable} {
 		mustWrite(t, dir, "nft."+tb, "table inet "+tb+" {}\n", 0o644)
 	}
 	unit(t, dir, "xray", true, true)
@@ -452,7 +481,7 @@ func TestExitRemoveGuardAndHop(t *testing.T) {
 		t.Fatalf("state before: %v", s)
 	}
 	// xray still running: its guard is not taken away.
-	if out, err := shellRun(t, dir, teardownStub, ExitRemoveGuardScript); err == nil || !exists(dir, "nft."+ExitXrayGuardTable) || !exists(dir, rel(ExitXrayGuardConfPath)) {
+	if out, err := shellRun(t, dir, teardownStub, ExitRemoveGuardScript); err == nil || !exists(dir, "nft."+ExitGuardTable) || !exists(dir, rel(ExitGuardConfPath)) {
 		t.Fatalf("guard removed under a running xray: %v\n%s", err, out)
 	}
 	os.Remove(filepath.Join(dir, "active.xray"))
@@ -463,10 +492,10 @@ func TestExitRemoveGuardAndHop(t *testing.T) {
 			}
 		}
 	}
-	for _, gone := range []string{"nft." + ExitXrayGuardTable, "nft." + ExitPortHopTable, rel(ExitXrayGuardConfPath), rel(ExitXrayGuardConfPath) + ".bak",
-		rel(ExitXrayGuardUnitPath), rel(ExitPortHopConfPath), rel(ExitPortHopConfPath) + ".bak", rel(ExitPortHopUnitPath),
-		"etc/systemd/system/multi-user.target.wants/" + ExitXrayGuardService + ".service", "etc/systemd/system/multi-user.target.wants/" + ExitPortHopService + ".service",
-		"active." + ExitXrayGuardService, "enabled." + ExitPortHopService} {
+	for _, gone := range []string{"nft." + ExitGuardTable, "nft." + ExitPortHopTable, rel(ExitGuardConfPath), rel(ExitGuardConfPath) + ".bak",
+		rel(ExitGuardUnitPath), rel(ExitPortHopConfPath), rel(ExitPortHopConfPath) + ".bak", rel(ExitPortHopUnitPath),
+		"etc/systemd/system/multi-user.target.wants/" + ExitGuardService + ".service", "etc/systemd/system/multi-user.target.wants/" + ExitPortHopService + ".service",
+		"active." + ExitGuardService, "enabled." + ExitPortHopService} {
 		if exists(dir, gone) {
 			t.Errorf("%s left behind", gone)
 		}
@@ -481,7 +510,7 @@ func TestExitRemoveGuardAndHop(t *testing.T) {
 		t.Fatalf("touched the agent guard or nftables.service:\n%s", c)
 	}
 	if s := state(); s["GUARD_TABLE"] != "0" || s["GUARD_FILES"] != "0" || s["HOP_TABLE"] != "0" || s["HOP_FILES"] != "0" ||
-		s["ACTIVE_"+ExitXrayGuardService] != "0" || s["ENABLED_"+ExitPortHopService] != "0" {
+		s["ACTIVE_"+ExitGuardService] != "0" || s["ENABLED_"+ExitPortHopService] != "0" {
 		t.Fatalf("state after: %v", s)
 	}
 	// A table nft refuses to delete fails the step.

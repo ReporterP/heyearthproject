@@ -1,0 +1,103 @@
+{
+  "dns": {
+    "servers": [
+      {
+        "server": "8.8.8.8",
+        "tag": "dns-1",
+        "type": "udp"
+      },
+      {
+        "server": "1.1.1.1",
+        "tag": "dns-2",
+        "type": "udp"
+      }
+    ],
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    {
+      "detour": "ss-in",
+      "handshake": {
+        "server": "www.twitch.tv",
+        "server_port": 443
+      },
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "strict_mode": true,
+      "tag": "stls-in",
+      "type": "shadowtls",
+      "users": [
+        {
+          "name": "hub",
+          "password": "16e9458006192d8f8e6f8ed43420832c"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "listen": "127.0.0.1",
+      "listen_port": 8389,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "JAw68XYA+2jMiT4C26okuw==",
+      "tag": "ss-in",
+      "type": "shadowsocks"
+    }
+  ],
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "route": {
+    "default_domain_resolver": "dns-1",
+    "final": "direct",
+    "rules": [
+      {
+        "action": "resolve",
+        "strategy": "ipv4_only"
+      },
+      {
+        "action": "route",
+        "ip_cidr": [
+          "203.0.113.7/32"
+        ],
+        "network": [
+          "tcp"
+        ],
+        "outbound": "direct",
+        "port": [
+          8443
+        ]
+      },
+      {
+        "action": "reject",
+        "ip_cidr": [
+          "203.0.113.7/32",
+          "127.0.0.0/8",
+          "::1/128",
+          "0.0.0.0/8",
+          "::/128",
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "100.64.0.0/10",
+          "169.254.0.0/16",
+          "fc00::/7",
+          "fe80::/10",
+          "224.0.0.0/4",
+          "255.255.255.255/32",
+          "ff00::/8"
+        ]
+      },
+      {
+        "action": "reject",
+        "ip_is_private": true
+      }
+    ]
+  }
+}

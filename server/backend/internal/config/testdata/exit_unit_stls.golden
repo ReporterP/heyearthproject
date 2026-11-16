@@ -1,0 +1,22 @@
+[Unit]
+Description=Backup tunnel from the Hub: ShadowTLS v3 (HeYearth)
+After=network.target heyearth-exit-guard.service
+Requires=heyearth-exit-guard.service
+[Service]
+Type=simple
+User=stls
+Group=stls
+ExecStartPre=+/bin/chown stls:stls /opt/heyearth/sing-box/server.json
+ExecStart=/opt/heyearth/sing-box/sing-box run -c /opt/heyearth/sing-box/server.json
+BindReadOnlyPaths=/opt/heyearth/sing-box/resolv.conf:/etc/resolv.conf
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target

@@ -60,8 +60,8 @@ type fakeHost struct {
 	// Hub: UDP to the exits is choked — a hysteria client crash-loops after every (re)start (the
 	// real client exits when its first connection fails) and nothing answers through its SOCKS.
 	udpChoked bool
-	vrFail    bool // Hub: the TCP path probe gets no 204
-	// probeDead: a path probe (op "socks-probe <port>" or "vr-probe <port>") gets no 204 when it says so —
+	tcpFail   bool // Hub: the ShadowTLS path probe (socks-probe 2088+id) gets no 204
+	// probeDead: a path probe (op "socks-probe <port>") gets no 204 when it says so —
 	// tests tie a path to what the node runs.
 	probeDead func(op string) bool
 	// dropAfterPut: the first write of one of these paths lands, then the connection is lost.
@@ -120,15 +120,15 @@ func (h *fakeHost) loadNft(table, path string) {
 }
 
 // converge models UnitConvergeScript / UnitConvergeSoftScript: the extra loads the unit's guard
-// (xray: the egress guard, node-agent: the Hub-only guard) when its file is there; the unit is
-// restarted when marked or down. A failed restart keeps the marker (strict) or reports HEALTH=0
-// and drops it (soft). A Hub client under udpChoked crash-loops after the restart.
+// (the backup tunnel: the egress guard, node-agent: the Hub-only guard) when its file is there;
+// the unit is restarted when marked or down. A failed restart keeps the marker (strict) or
+// reports HEALTH=0 and drops it (soft). A Hub client under udpChoked crash-loops after the restart.
 func (h *fakeHost) converge(u string, soft bool) (string, error) {
 	switch u {
-	case "xray":
-		if h.files[config.ExitXrayGuardConfPath] != nil {
-			h.loadNft(config.ExitXrayGuardTable, config.ExitXrayGuardConfPath)
-			h.enabled[config.ExitXrayGuardService] = true
+	case config.ExitSTLSUnit:
+		if h.files[config.ExitGuardConfPath] != nil {
+			h.loadNft(config.ExitGuardTable, config.ExitGuardConfPath)
+			h.enabled[config.ExitGuardService] = true
 		}
 	case "node-agent":
 		if h.files[config.ExitAgentGuardConfPath] != nil {
@@ -434,9 +434,14 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		h.loadNft(config.ExitPortHopTable, config.ExitPortHopConfPath)
 	case "hy-check":
 		return "VERSION=" + config.HysteriaVersion + "\nLISTEN=" + b01(h.active["hysteria2"]) + "\nHOP=" + b01(h.files[config.ExitPortHopConfPath] != nil) + "\n", nil
-	case "xray-check":
-		return "VERSION=" + strings.TrimPrefix(config.XrayExitVersion, "v") + "\nLISTEN=" + b01(h.active["xray"]) +
-			"\nGUARD=" + b01(h.nft[config.ExitXrayGuardTable]) + "\n", nil
+	case "stls-check":
+		return "VERSION=" + config.SingBoxVersion + "\nLISTEN=" + b01(h.active[config.ExitSTLSUnit]) +
+			"\nGUARD=" + b01(h.nft[config.ExitGuardTable]) + "\n", nil
+	case "retire-xray":
+		h.remove(config.ExitXrayUnitPath, config.ExitXrayConfig)
+		h.active["xray"], h.enabled["xray"] = false, false
+	case "xray-state":
+		return "XRAY=" + b01(h.files[config.ExitXrayUnitPath] != nil || h.files[config.ExitXrayConfig] != nil || h.active["xray"]) + "\n", nil
 	case "agent-check":
 		return "LISTEN=" + b01(h.active["node-agent"]) + "\nGUARD=" + b01(h.nft[config.ExitAgentGuardTable]) + "\n", nil
 	case "base-check":
@@ -450,15 +455,10 @@ func (h *fakeHost) run(op, script string) (string, error) {
 	case "hub-key":
 		return testHubPub + " heyearth-hub\n", nil
 	case "socks-probe":
-		if h.udpChoked || (h.probeDead != nil && h.probeDead(op)) {
+		// The hysteria clients' SOCKS (1088+id) need UDP to the exit; the ShadowTLS clients' (2088+id) TCP.
+		hy := atoi(f[1]) < 2088
+		if (hy && h.udpChoked) || (!hy && h.tcpFail) || (h.probeDead != nil && h.probeDead(op)) {
 			return "HTTP=000\n", nil
-		}
-		return "HTTP=204\n", nil
-	case "vr-probe": // the probe config carries the tunnel UUID: the script removes it
-		cfg := between(script, "VR_CFG='", "'")
-		h.remove(cfg)
-		if h.vrFail || (h.probeDead != nil && h.probeDead(op)) {
-			return "[vr-probe] xray: connection refused\nHTTP=000\n", nil
 		}
 		return "HTTP=204\n", nil
 	case "mtproxy-install":
@@ -472,16 +472,23 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		a := b01(h.active["mtproxy"])
 		return "ACTIVE=" + a + "\nLISTEN=" + a + "\nSECRET=" + b01(h.mtSecret != "" && h.mtSecret == between(script, "S='", "'")) +
 			"\nVERSION=" + h.mtgVersion + "\n", nil
-	case "hub-client-remove":
-		u := "hysteria2-client-" + f[1]
-		h.remove("/etc/systemd/system/"+u+".service", config.HubClientConfigPath(atoi(f[1])))
-		h.active[u], h.enabled[u] = false, false
-		h.clearMarker(u)
-		delete(h.pathMark, u)
+	case "hub-client-remove": // both clients of the exit: hysteria and the ShadowTLS backup
+		id := atoi(f[1])
+		for _, c := range [][2]string{{config.HubClientUnit(id), config.HubClientConfigPath(id)}, {config.HubSTLSUnit(id), config.HubSTLSConfigPath(id)}} {
+			h.remove("/etc/systemd/system/"+c[0]+".service", c[1])
+			h.active[c[0]], h.enabled[c[0]] = false, false
+			h.clearMarker(c[0])
+			delete(h.pathMark, c[0])
+		}
 	case "hub-client-state":
-		u := "hysteria2-client-" + f[1]
-		return "UNIT=" + b01(h.files["/etc/systemd/system/"+u+".service"] != nil) + "\nCONFIG=" + b01(h.files[config.HubClientConfigPath(atoi(f[1]))] != nil) +
-			"\nACTIVE=" + b01(h.active[u]) + "\nLINK=" + b01(h.enabled[u]) + "\n", nil
+		id := atoi(f[1])
+		var unit, cfg, active, link bool
+		for _, c := range [][2]string{{config.HubClientUnit(id), config.HubClientConfigPath(id)}, {config.HubSTLSUnit(id), config.HubSTLSConfigPath(id)}} {
+			unit = unit || h.files["/etc/systemd/system/"+c[0]+".service"] != nil
+			cfg = cfg || h.files[c[1]] != nil
+			active, link = active || h.active[c[0]], link || h.enabled[c[0]]
+		}
+		return "UNIT=" + b01(unit) + "\nCONFIG=" + b01(cfg) + "\nACTIVE=" + b01(active) + "\nLINK=" + b01(link) + "\n", nil
 	case "rotate-password":
 		pw, line := between(script, "NEW='", "'"), between(script, "RP_LINE='", "'")
 		if y, ok := h.files[config.ExitHysteriaConfig]; ok {
@@ -515,23 +522,25 @@ func (h *fakeHost) run(op, script string) (string, error) {
 			h.active[u], h.enabled[u] = false, false
 		}
 	case "remove-guard":
-		if h.active["xray"] {
-			return "", errors.New("exit status 1: [exit] xray ещё работает — защиту исходящих не снимаю")
+		for _, u := range []string{config.ExitSTLSUnit, "xray"} {
+			if h.active[u] {
+				return "", errors.New("exit status 1: [exit] " + u + " ещё работает — защиту исходящих не снимаю")
+			}
 		}
-		h.remove(config.ExitXrayGuardConfPath, config.ExitXrayGuardUnitPath)
-		h.nft[config.ExitXrayGuardTable] = false
-		h.active[config.ExitXrayGuardService], h.enabled[config.ExitXrayGuardService] = false, false
+		h.remove(config.ExitGuardConfPath, config.ExitGuardUnitPath)
+		h.nft[config.ExitGuardTable] = false
+		h.active[config.ExitGuardService], h.enabled[config.ExitGuardService] = false, false
 	case "remove-hop":
 		h.remove(config.ExitPortHopConfPath, config.ExitPortHopUnitPath)
 		h.nft[config.ExitPortHopTable] = false
 		h.active[config.ExitPortHopService], h.enabled[config.ExitPortHopService] = false, false
 	case "teardown-state":
 		var b strings.Builder
-		for _, u := range append(config.ExitServiceUnits(), config.ExitXrayGuardService, config.ExitPortHopService) {
+		for _, u := range append(config.ExitServiceUnits(), config.ExitGuardService, config.ExitPortHopService) {
 			fmt.Fprintf(&b, "ACTIVE_%s=%s\nENABLED_%s=%s\n", u, b01(h.active[u]), u, b01(h.enabled[u]))
 		}
 		fmt.Fprintf(&b, "GUARD_TABLE=%s\nGUARD_FILES=%s\nHOP_TABLE=%s\nHOP_FILES=%s\n",
-			b01(h.nft[config.ExitXrayGuardTable]), b01(h.files[config.ExitXrayGuardConfPath] != nil || h.files[config.ExitXrayGuardUnitPath] != nil),
+			b01(h.nft[config.ExitGuardTable]), b01(h.files[config.ExitGuardConfPath] != nil || h.files[config.ExitGuardUnitPath] != nil),
 			b01(h.nft[config.ExitPortHopTable]), b01(h.files[config.ExitPortHopConfPath] != nil || h.files[config.ExitPortHopUnitPath] != nil))
 		return b.String(), nil
 	}

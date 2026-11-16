@@ -54,7 +54,7 @@ test('countries: flags, names, the exit list, the GeoIP hint', () => {
 
 test('PREP_PORTS: what the plan says to open at the hoster', () => {
   const ports = (role) => PREP_PORTS[role].map((p) => `${p.proto} ${p.port}`)
-  for (const p of ['TCP 50052', 'UDP 50443', 'TCP 10443']) assert.ok(ports('exit').includes(p), p)
+  for (const p of ['TCP 50052', 'UDP 50443', 'TCP 443']) assert.ok(ports('exit').includes(p), p)
   for (const p of ['TCP 443', 'TCP 80', 'TCP 2443', 'UDP 30000–65000']) assert.ok(ports('relay').includes(p), p)
   assert.match(PREP_PORTS.exit.find((p) => p.port === '50052').note, /только с адреса Hub/)
 })

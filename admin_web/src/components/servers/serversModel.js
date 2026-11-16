@@ -115,7 +115,7 @@ export const PREP_PORTS = {
     { proto: 'TCP', port: '22', note: 'SSH (или ваш порт) — Hub настраивает сервер' },
     { proto: 'TCP', port: '50052', note: 'только с адреса Hub — управление нодой' },
     { proto: 'UDP', port: '50443', note: 'основной туннель от Hub' },
-    { proto: 'TCP', port: '10443', note: 'запасной туннель от Hub' },
+    { proto: 'TCP', port: '443', note: 'запасной туннель от Hub' },
   ],
   relay: [
     { proto: 'TCP', port: '22', note: 'SSH (или ваш порт) — Hub настраивает сервер' },

@@ -55,7 +55,7 @@ func TestApiExitOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.HubIPs, hub) || o.HubXray != xrayUnitBinary || o.NodeAgent == nil || o.CA == nil {
+	if !slices.Equal(o.HubIPs, hub) || o.NodeAgent == nil || o.CA == nil {
 		t.Fatalf("options %+v", o)
 	}
 	if o.MTProto == nil || o.MTProtoPort != 9443 || o.MTProto.Port != o.MTProtoPort ||
@@ -270,66 +270,49 @@ func outboundsByTag(t *testing.T, cfg []byte) map[string]json.RawMessage {
 	return m
 }
 
-type vlessUser struct {
-	ID   string `json:"id"`
-	Flow string `json:"flow"`
-}
-
-type vlessOutbound struct {
-	Settings struct {
-		Vnext []struct {
-			Address string      `json:"address"`
-			Port    int         `json:"port"`
-			Users   []vlessUser `json:"users"`
-		} `json:"vnext"`
-	} `json:"settings"`
-	StreamSettings struct {
-		Network         string `json:"network"`
-		Security        string `json:"security"`
-		RealitySettings struct {
-			Fingerprint string `json:"fingerprint"`
-			ServerName  string `json:"serverName"`
-			PublicKey   string `json:"publicKey"`
-			ShortID     string `json:"shortId"`
-		} `json:"realitySettings"`
-	} `json:"streamSettings"`
-}
-
-// The wizard's TCP path check dials exactly what Xray's exit-<id>.vr outbound (phase 1) dials.
-func TestVRProbeMatchesXrayOutbound(t *testing.T) {
+// The Hub's xray reaches a Hysteria exit's backup path exactly where the recipe puts the Hub's
+// ShadowTLS client of the exit and where its path check probes: SOCKS on
+// 127.0.0.1:config.HubSTLSSocksPort(id) — for the routed outbound exit-<id>.vr and for the
+// monitor's probe pair alike.
+func TestVROutboundIsTheHubSTLSClient(t *testing.T) {
 	ex := testExit(2, "hysteria2")
-	ex.TunnelSNI = config.ExitRealitySNI
-	ex.TunnelPort = 50443 // production: tunnel_port is the hysteria port, the .vr path must still dial :10443
+	ex.TunnelPort = 50443 // production: tunnel_port is the hysteria port, the backup path must not use it
 	in := baseInputs()
 	in.exitNodes = []biz.ExitNodeTunnel{ex}
 	cfg, _ := genConfig(t, in, quotaCutoff{})
 	_, vrTag := exitOutboundTags(2)
-	raw, ok := outboundsByTag(t, cfg)[vrTag]
-	if !ok {
-		t.Fatalf("no %s outbound", vrTag)
+	var socks struct {
+		Protocol string `json:"protocol"`
+		Settings struct {
+			Servers []struct {
+				Address string `json:"address"`
+				Port    int    `json:"port"`
+			} `json:"servers"`
+		} `json:"settings"`
 	}
-	probeCfg, err := config.ExitRealityProbeConfig(config.VRProbeSocksPort(2), config.RealityProbe{ExitIP: ex.IPAddress,
-		UUID: ex.TunnelUUID, PublicKey: ex.TunnelPubKey, ShortID: ex.TunnelShortID, SNI: ex.TunnelSNI})
+	client, err := config.HubSTLSClientJSON(2, ex.IPAddress, ex.TunnelUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var probe struct {
-		Outbounds []vlessOutbound `json:"outbounds"`
+	var cl struct {
+		Inbounds []struct {
+			Listen string `json:"listen"`
+			Port   int    `json:"listen_port"`
+		} `json:"inbounds"`
 	}
-	var x vlessOutbound
-	if json.Unmarshal(probeCfg, &probe) != nil || json.Unmarshal(raw, &x) != nil || len(probe.Outbounds) != 1 {
-		t.Fatal("unparsable")
+	if json.Unmarshal(client, &cl) != nil || len(cl.Inbounds) != 1 {
+		t.Fatal("unparsable client config")
 	}
-	p := probe.Outbounds[0]
-	if len(p.Settings.Vnext) != 1 || len(x.Settings.Vnext) != 1 || len(p.Settings.Vnext[0].Users) != 1 || len(x.Settings.Vnext[0].Users) != 1 {
-		t.Fatalf("xray %+v\nprobe %+v", x, p)
-	}
-	xv, pv := x.Settings.Vnext[0], p.Settings.Vnext[0]
-	if xv.Port != config.ExitRealityPort || xv.Users[0].Flow != config.ExitRealityFlow || x.StreamSettings.Network != "tcp" ||
-		xv.Address != pv.Address || xv.Port != pv.Port || xv.Users[0] != pv.Users[0] ||
-		x.StreamSettings.Network != p.StreamSettings.Network || x.StreamSettings.Security != p.StreamSettings.Security ||
-		x.StreamSettings.RealitySettings != p.StreamSettings.RealitySettings {
-		t.Fatalf("xray %+v\nprobe %+v", x, p)
+	for _, tag := range []string{vrTag, exitProbeTag(2)} {
+		raw, ok := outboundsByTag(t, cfg)[tag]
+		if !ok {
+			t.Fatalf("no %s outbound", tag)
+		}
+		if json.Unmarshal(raw, &socks) != nil || socks.Protocol != "socks" || len(socks.Settings.Servers) != 1 ||
+			socks.Settings.Servers[0].Address != cl.Inbounds[0].Listen || socks.Settings.Servers[0].Port != cl.Inbounds[0].Port ||
+			socks.Settings.Servers[0].Port != config.HubSTLSSocksPort(2) {
+			t.Fatalf("%s: %s\nclient listens on %s:%d", tag, raw, cl.Inbounds[0].Listen, cl.Inbounds[0].Port)
+		}
 	}
 }
 

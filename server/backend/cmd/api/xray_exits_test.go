@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
-	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/xraydiff"
 )
 
@@ -505,19 +504,23 @@ func TestXrayExitPathOutbounds(t *testing.T) {
 	if hy == nil || hy["protocol"] != "socks" || !strings.Contains(asJSON(hy["settings"]), `"address":"127.0.0.1","port":1108`) {
 		t.Errorf("exit-20.hy must be the SOCKS of hysteria2-client-20 (127.0.0.1:1108): %s", asJSON(hy))
 	}
-	vr := asJSON(byTag(v.Outbounds, "exit-2.vr"))
-	for _, want := range []string{`"address":"203.0.113.2"`, `"port":10443`, `"flow":"xtls-rprx-vision"`,
-		`"serverName":"microsoft.com"`, `"publicKey":"` + testExitPBK + `"`, `"shortId":"abcd"`, `"fingerprint":"chrome"`} {
-		if !strings.Contains(vr, want) {
-			t.Errorf("exit-2.vr lacks %s: %s", want, vr)
+	// The backup path of a Hysteria exit is the SOCKS of the Hub's ShadowTLS client of the exit:
+	// no address, key or SNI of the exit in the xray config.
+	for tag, port := range map[string]string{"exit-2.vr": "2090", "probe-vr-2": "2090", "exit-20.vr": "2108"} {
+		o := byTag(v.Outbounds, tag)
+		if o == nil || o["protocol"] != "socks" || !strings.Contains(asJSON(o["settings"]), `"address":"127.0.0.1","port":`+port) ||
+			strings.Contains(asJSON(o), "203.0.113.") || o["streamSettings"] != nil {
+			t.Errorf("%s must be the SOCKS of heyearth-stls-client (127.0.0.1:%s): %s", tag, port, asJSON(o))
 		}
 	}
-	if strings.Contains(vr, `"mux"`) {
-		t.Errorf("Vision cannot run over mux: %s", vr)
-	}
 	old := asJSON(byTag(v.Outbounds, "exit-5.vr"))
-	if !strings.Contains(old, `"port":8443`) || !strings.Contains(old, `"mux"`) || strings.Contains(old, `"flow"`) {
-		t.Errorf("a legacy VLESS exit keeps its own port, mux and no flow: %s", old)
+	for _, want := range []string{`"address":"203.0.113.5"`, `"port":8443`, `"mux"`, `"fingerprint":"chrome"`, `"publicKey":"` + testExitPBK + `"`} {
+		if !strings.Contains(old, want) {
+			t.Errorf("a legacy VLESS exit keeps its own Reality outbound (%s): %s", want, old)
+		}
+	}
+	if strings.Contains(old, `"flow"`) {
+		t.Errorf("a legacy VLESS exit has no flow: %s", old)
 	}
 	if byTag(v.Outbounds, "exit-5.hy") != nil {
 		t.Error("a VLESS exit has no Hysteria path")
@@ -536,12 +539,11 @@ func realityOf(t *testing.T, v xrayView, tag string) map[string]any {
 	return rs
 }
 
-// The Hub→exit TCP path (exit-N.vr and probe-vr-N, routed or not, legacy VLESS included) always
-// presents the fixed chrome fingerprint: a non-chrome reality_fingerprint (the auto-tuner rotates
-// it; ios/edge/randomized fail the exit's Reality handshake on prod) changes neither those
-// outbounds nor any other byte of the config, so a rotation restarts nothing. The user-facing
-// inbounds stay unaffected as before: their fingerprints never came from the xray config (they
-// are fixed in the URIs, client_api.go and subscription_handler.go).
+// A legacy VLESS exit's path (exit-N.vr and probe-vr-N) always presents the fixed chrome
+// fingerprint: a non-chrome reality_fingerprint changes neither those outbounds nor any other
+// byte of the config (the Hysteria exits' backup paths carry no TLS settings at all), so a
+// change of the setting restarts nothing. The user-facing inbounds stay unaffected as before:
+// their fingerprints never came from the xray config.
 func TestXrayExitVRFingerprintIgnoresSetting(t *testing.T) {
 	gen := func(settings map[string]string) []byte {
 		t.Helper()
@@ -559,7 +561,7 @@ func TestXrayExitVRFingerprintIgnoresSetting(t *testing.T) {
 		t.Run(fp, func(t *testing.T) {
 			cfg := gen(map[string]string{"reality_fingerprint": fp})
 			v := viewOf(t, cfg)
-			for _, tag := range []string{"exit-2.vr", "probe-vr-2", "probe-vr-7", "exit-5.vr", "probe-vr-5"} {
+			for _, tag := range []string{"exit-5.vr", "probe-vr-5"} {
 				if got := realityOf(t, v, tag)["fingerprint"]; got != "chrome" {
 					t.Errorf("%s: fingerprint %v with reality_fingerprint=%s, want chrome", tag, got, fp)
 				}
@@ -571,37 +573,34 @@ func TestXrayExitVRFingerprintIgnoresSetting(t *testing.T) {
 	}
 }
 
-// An exit row without tunnel_sni: the TCP path of a Hysteria exit (exit-N.vr, probe-vr-N) presents
-// www.microsoft.com, one of the serverNames --setup-exit-node gives the exit's Reality inbound
-// (the apex microsoft.com fails the handshake on prod). An explicit tunnel_sni is used as is, and
-// a legacy primary VLESS exit (not set up by deploy) keeps its old fallback, its own address.
+// A legacy primary VLESS exit (not set up by deploy) presents its tunnel_sni, or without one its
+// own address. A Hysteria exit's tunnel_sni plays no part in the xray config any more.
 func TestXrayExitVRDefaultSNI(t *testing.T) {
-	if config.ExitVRSNI != "www.microsoft.com" {
-		t.Fatalf("config.ExitVRSNI = %q, want www.microsoft.com", config.ExitVRSNI)
-	}
-	noSNI := exitFixture(2, 1, "healthy", true)
-	noSNI.TunnelSNI = ""
-	apex := exitFixture(3, 1, "healthy", true) // tunnel_sni microsoft.com, as older deploys wrote it
-	other := exitFixture(7, 1, "unhealthy", true)
-	other.TunnelSNI = "github.com"
 	legacy := legacyVLESSExit(5)
 	legacy.TunnelSNI = ""
-	cfg, _ := genConfig(t, exitsInputs(noSNI, apex, other, legacy), quotaCutoff{})
+	named := legacyVLESSExit(6)
+	named.TunnelSNI = "github.com"
+	hy := exitFixture(2, 1, "healthy", true)
+	cfg, _ := genConfig(t, exitsInputs(legacy, named, hy), quotaCutoff{})
 	v := viewOf(t, cfg)
 	for tag, want := range map[string]string{
-		"exit-2.vr": "www.microsoft.com", "probe-vr-2": "www.microsoft.com",
-		"exit-3.vr": "microsoft.com", "probe-vr-3": "microsoft.com",
-		"probe-vr-7": "github.com",
-		"exit-5.vr":  "203.0.113.5", "probe-vr-5": "203.0.113.5",
+		"exit-5.vr": "203.0.113.5", "probe-vr-5": "203.0.113.5",
+		"exit-6.vr": "github.com", "probe-vr-6": "github.com",
 	} {
 		if got := realityOf(t, v, tag)["serverName"]; got != want {
 			t.Errorf("%s: serverName %v, want %s", tag, got, want)
 		}
 	}
+	hy.TunnelSNI = "other.example"
+	cfg2, _ := genConfig(t, exitsInputs(legacy, named, hy), quotaCutoff{})
+	if string(cfg2) != string(cfg) {
+		t.Error("a Hysteria exit's tunnel_sni must not change the xray config")
+	}
 }
 
-// The VLESS Reality fields are checked as xray checks them: a row xray would reject loses only
-// its TCP path (the Hysteria path stays), a legacy VLESS exit without a valid one is skipped.
+// A Hysteria exit's backup path needs only its tunnel UUID (the ShadowTLS secrets derive from
+// it); a legacy VLESS exit's path is checked as xray checks it. A row without a usable path loses
+// only that path (the Hysteria path stays), a legacy VLESS exit without one is skipped.
 func TestXrayExitVRValidation(t *testing.T) {
 	resetExitNotes(t)
 	captureLog(t)
@@ -612,26 +611,26 @@ func TestXrayExitVRValidation(t *testing.T) {
 		wantVR bool
 	}{
 		{"valid", func(*biz.ExitNodeTunnel) {}, false, true},
-		{"valid: empty short id (xray allows it)", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "" }, false, true},
-		{"valid: 16-char short id", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef" }, false, true},
 		{"valid: UUID without dashes", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = strings.ReplaceAll(testExitUUID, "-", "") }, false, true},
-		{"valid: legacy VLESS", func(*biz.ExitNodeTunnel) {}, true, true},
-		{"no Reality credentials at all", func(n *biz.ExitNodeTunnel) { n.TunnelUUID, n.TunnelPubKey = "", "" }, false, false},
+		{"valid: no Reality key or short id (not needed)", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey, n.TunnelShortID = "", "zz" }, false, true},
+		{"no tunnel credentials at all", func(n *biz.ExitNodeTunnel) { n.TunnelUUID, n.TunnelPubKey = "", "" }, false, false},
 		{"uuid: not hex", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "zzzzzzzz-bbbb-cccc-dddd-eeeeeeeeeeee" }, false, false},
 		{"uuid: dashes misplaced", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "aaaaaaa-abbbb-cccc-dddd-eeeeeeeeeeee" }, false, false},
 		{"uuid: 31 chars", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = strings.Repeat("a", 31) }, false, false},
-		{"uuid: a short name xray would hash", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "hub" }, false, false},
-		{"public key: empty", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = "" }, false, false},
-		{"public key: not base64url", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = strings.Repeat("+", 43) }, false, false},
-		{"public key: padded std base64", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "=" }, false, false},
-		{"public key: 31 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK[:42] }, false, false},
-		{"public key: 33 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "A" }, false, false},
-		{"short id: odd length", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "abc" }, false, false},
-		{"short id: not hex", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "zz" }, false, false},
-		{"short id: 18 chars", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef01" }, false, false},
+		{"uuid: a short name", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "hub" }, false, false},
+		{"valid: legacy VLESS", func(*biz.ExitNodeTunnel) {}, true, true},
+		{"legacy VLESS: empty short id (xray allows it)", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "" }, true, true},
+		{"legacy VLESS: 16-char short id", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef" }, true, true},
+		{"legacy VLESS: public key empty", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = "" }, true, false},
+		{"legacy VLESS: public key not base64url", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = strings.Repeat("+", 43) }, true, false},
+		{"legacy VLESS: public key padded std base64", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "=" }, true, false},
+		{"legacy VLESS: public key 31 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK[:42] }, true, false},
+		{"legacy VLESS: public key 33 bytes", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = testExitPBK + "A" }, true, false},
+		{"legacy VLESS: short id odd length", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "abc" }, true, false},
+		{"legacy VLESS: short id not hex", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "zz" }, true, false},
+		{"legacy VLESS: short id 18 chars", func(n *biz.ExitNodeTunnel) { n.TunnelShortID = "0123456789abcdef01" }, true, false},
 		{"legacy VLESS: port 0 (NULL column)", func(n *biz.ExitNodeTunnel) { n.TunnelPort = 0 }, true, false},
 		{"legacy VLESS: port 70000", func(n *biz.ExitNodeTunnel) { n.TunnelPort = 70000 }, true, false},
-		{"legacy VLESS: no public key", func(n *biz.ExitNodeTunnel) { n.TunnelPubKey = "" }, true, false},
 		{"legacy VLESS: bad uuid", func(n *biz.ExitNodeTunnel) { n.TunnelUUID = "x" }, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -663,18 +662,18 @@ func TestXrayExitVRValidation(t *testing.T) {
 func TestXrayExitNotesLoggedOnStateChange(t *testing.T) {
 	resetExitNotes(t)
 	logs := captureLog(t)
-	badSID := exitFixture(2, 1, "healthy", true)
-	badSID.TunnelShortID = "abc"
-	badKey := exitFixture(2, 1, "healthy", true)
+	noUUID := exitFixture(2, 1, "healthy", true)
+	noUUID.TunnelUUID = "x"
+	badKey := legacyVLESSExit(2)
 	badKey.TunnelPubKey = "short"
 	skipped := legacyVLESSExit(3)
 	skipped.TunnelPort = 0
 	lines := func() int { return strings.Count(logs.String(), "\n") }
 
 	for i := 0; i < 3; i++ {
-		genConfig(t, exitsInputs(badSID, skipped), quotaCutoff{})
+		genConfig(t, exitsInputs(noUUID, skipped), quotaCutoff{})
 	}
-	if lines() != 2 || !strings.Contains(logs.String(), "exit-нода 2 (exit-2): TCP-путь (exit-2.vr) не строится: tunnel_short_id") ||
+	if lines() != 2 || !strings.Contains(logs.String(), "exit-нода 2 (exit-2): TCP-путь (exit-2.vr) не строится: нет tunnel_uuid") ||
 		!strings.Contains(logs.String(), "exit-нода 3 (exit-3): пропущена") {
 		t.Fatalf("three syncs, two bad rows: want one line each\n%s", logs)
 	}

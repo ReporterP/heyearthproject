@@ -23,7 +23,7 @@ import (
 
 // hubReachPorts: what each role must let in from the Hub (UDP cannot be told this way).
 var hubReachPorts = map[string][]int{
-	"exit":  {50052, 10443},
+	"exit":  {50052, 443}, // node-agent, the ShadowTLS backup tunnel
 	"relay": {443, 80, 2443},
 }
 

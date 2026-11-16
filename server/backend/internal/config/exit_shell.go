@@ -213,9 +213,9 @@ fi
 //     restart_checked: the previous version must run.
 //
 // Every new unit file of the run (a .service next to the unit's own, e.g. heyearth-exit-guard
-// for xray) is disabled and stopped before it is removed, so no enable symlink is left dangling.
+// for the exit tunnel) is disabled and stopped before it is removed, so no enable symlink is left dangling.
 //
-// A restored nftables file of ours (nftRuleFiles: the port hop, the xray guard, the node-agent
+// A restored nftables file of ours (nftRuleFiles: the port hop, the tunnel guard, the node-agent
 // guard) is loaded into the kernel again before any restart — the file alone would leave the
 // rejected run's rules in force (e.g. a Hub address list that locked the Hub out of node-agent).
 // The load is one nft transaction that drops the table first, so a hand-made previous file
@@ -332,7 +332,7 @@ fi
 // (UnitRollbackScript reloads a restored one).
 var nftRuleFiles = []struct{ path, table string }{
 	{ExitPortHopConfPath, ExitPortHopTable},
-	{ExitXrayGuardConfPath, ExitXrayGuardTable},
+	{ExitGuardConfPath, ExitGuardTable},
 	{ExitAgentGuardConfPath, ExitAgentGuardTable},
 }
 
@@ -440,8 +440,8 @@ END { exit !f }`
 const UfwHasPortAwk = ufwHasPortAwk
 
 // ExitFirewallScript never switches a firewall on. If ufw is active (asked with LC_ALL=C: the
-// status line is localized) it allows the tunnels (hysteria UDP 50443 + the hop range, Reality
-// TCP 10443), the MTProxy port and node-agent :50052 from the Hub's addresses only (ufw skips
+// status line is localized) it allows the tunnels (hysteria UDP 50443 + the hop range, ShadowTLS
+// TCP 443), the MTProxy port and node-agent :50052 from the Hub's addresses only (ufw skips
 // existing rules itself). Else, if iptables filters INPUT (DROP/REJECT policy or rule), the same
 // rules are inserted once (-C first); IPv6 Hub addresses are left to ufw — exits run with IPv6
 // disabled (ExitSysctlConf). The SSH port is allowed only when no rule mentions it yet, and then
@@ -456,7 +456,7 @@ func ExitFirewallScript(sshPort int, hubIPs []string, mtprotoPort int) string {
 		ssh = sshPort
 	}
 	var tcp []int
-	for _, p := range validPorts([]int{ExitRealityPort, mtprotoPort}) {
+	for _, p := range validPorts([]int{ExitSTLSPort, mtprotoPort}) {
 		if p != ssh {
 			tcp = append(tcp, p)
 		}
@@ -544,110 +544,6 @@ func ExitFirewallScript(sshPort int, hubIPs []string, mtprotoPort int) string {
 	return b.String()
 }
 
-// Exit Xray: pinned like hysteria (HysteriaVersion/HysteriaSHA256). XrayExitSHA256 is the
-// "SHA2-256" line of Xray-linux-64.zip.dgst of the release, re-checked against the downloaded
-// asset (2026-10-15). Update both together.
-const (
-	XrayExitVersion = "v26.3.27"
-	XrayExitSHA256  = "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
-)
-
-// XrayExitDownloadURL is the linux-64 release archive of XrayExitVersion.
-func XrayExitDownloadURL() string {
-	return "https://github.com/XTLS/Xray-core/releases/download/" + XrayExitVersion + "/Xray-linux-64.zip"
-}
-
-// XrayExitInstallScript installs the pinned xray on an exit (see xrayExitInstallScript).
-func XrayExitInstallScript() string { return xrayExitInstallScript(XrayExitSHA256) }
-
-// xrayExitInstallScript renders the installer for the expected archive sha256 (tests pass the
-// hash of their stub download). It acts when the binary is not XrayExitVersion or geoip.dat /
-// geosite.dat are missing (the exit config's guard rules use geoip:private; earlier installs
-// unzipped the whole archive, the provisioning core must not depend on that): download to a temp
-// dir in /opt/heyearth/xray (same filesystem: atomic mv; stale dirs of a dropped run are
-// removed), sha256 before unzip and any execution, version check of the new binary, data files
-// installed from the same archive, the previous binary kept as xray.bak (temp + mv; with no
-// previous binary a leftover xray.bak is removed, so a rollback cannot resurrect it). Before
-// anything is moved into place the xray unit's restart marker is set, and before the binary the
-// pending-binary marker with the new binary's sha256 (BinaryPendingMarker): an interruption
-// right after a move is still restarted and, if unhealthy, rolled back. Sets XR_REPLACED=1 when
-// the binary was replaced, XR_DATA=1 when the data files were (re)installed. On failure
-// "[xray] ERROR" goes to stderr, nothing is changed and it returns non-zero: run under set -e.
-// Does not restart anything.
-func xrayExitInstallScript(sha string) string {
-	return `XR_WANT="` + strings.TrimPrefix(XrayExitVersion, "v") + `"
-XR_SHA256="` + sha + `"
-XR_DIR=` + path.Dir(ExitXrayBinary) + `
-XR_REPLACED=0
-XR_DATA=0
-XR_CUR=$("$XR_DIR/xray" version 2>/dev/null | awk 'NR==1{print $2}') || XR_CUR=""
-xr_fetch() {
-  curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -o "$XR_TMP/xray.zip" "` + XrayExitDownloadURL() + `" \
-    && echo "$XR_SHA256  $XR_TMP/xray.zip" | sha256sum -c --quiet \
-    && unzip -o -q "$XR_TMP/xray.zip" xray geoip.dat geosite.dat -d "$XR_TMP" \
-    && [ -s "$XR_TMP/geoip.dat" ] && [ -s "$XR_TMP/geosite.dat" ] \
-    && chmod 755 "$XR_TMP/xray" && chmod 644 "$XR_TMP/geoip.dat" "$XR_TMP/geosite.dat" \
-    && [ "$("$XR_TMP/xray" version 2>/dev/null | awk 'NR==1{print $2}')" = "$XR_WANT" ]
-}
-if [ "$XR_CUR" != "$XR_WANT" ] || [ ! -s "$XR_DIR/geoip.dat" ] || [ ! -s "$XR_DIR/geosite.dat" ]; then
-  mkdir -p "$XR_DIR"
-  rm -rf "$XR_DIR"/.dl.*
-  XR_TMP=$(mktemp -d "$XR_DIR/.dl.XXXXXX")
-  if xr_fetch; then
-    mkdir -p ` + RestartMarkerDir + ` ` + BinaryPendingDir + `
-    touch ` + RestartMarker("xray") + `
-    mv -f "$XR_TMP/geoip.dat" "$XR_DIR/geoip.dat"
-    mv -f "$XR_TMP/geosite.dat" "$XR_DIR/geosite.dat"
-    XR_DATA=1
-    if [ "$XR_CUR" != "$XR_WANT" ]; then
-      if [ -f "$XR_DIR/xray" ]; then
-        cp -p "$XR_DIR/xray" "$XR_DIR/xray.bak.tmp"
-        mv -f "$XR_DIR/xray.bak.tmp" "$XR_DIR/xray.bak"
-      else
-        rm -f "$XR_DIR/xray.bak"
-      fi
-      XR_NEW_SHA=$(sha256sum < "$XR_TMP/xray" | cut -d' ' -f1)
-      printf '%s  %s\n' "$XR_NEW_SHA" "$XR_DIR/xray" > ` + BinaryPendingMarker("xray") + `
-      mv -f "$XR_TMP/xray" "$XR_DIR/xray"
-      XR_REPLACED=1
-      echo "[xray] installed $XR_WANT (previous: ${XR_CUR:-none})"
-    else
-      echo "[xray] $XR_WANT: geoip.dat/geosite.dat restored from the release archive"
-    fi
-    rm -rf "$XR_TMP"
-  else
-    rm -rf "$XR_TMP"
-    echo "[xray] ERROR: download/sha256/verify of $XR_WANT failed, binary unchanged" >&2
-    false
-  fi
-else
-  echo "[xray] $XR_WANT already installed"
-fi
-`
-}
-
-// ExitXrayPrepareScript is the converge extra of the exit xray (UnitConvergeScript("xray", …)),
-// after the recipe wrote config.json, xray.service and the guard files (ExitXrayGuardConfPath,
-// ExitXrayGuardUnitPath, ExitXrayResolvConfPath): the system user (ExitXrayUserScript), the
-// kernel egress guard loaded and enabled (ExitXrayGuardApplyScript — refused when its files are
-// missing, xray never starts unguarded), the pinned binary (it sets the restart and
-// pending-binary markers itself), then `xray run -test` on the config before any restart.
-func ExitXrayPrepareScript() string { return exitXrayPrepareScript(XrayExitInstallScript()) }
-
-func exitXrayPrepareScript(install string) string {
-	return ExitXrayUserScript +
-		"for xr_f in " + ExitXrayGuardConfPath + " " + ExitXrayGuardUnitPath + " " + ExitXrayResolvConfPath + "; do\n" +
-		"  [ -f \"$xr_f\" ] || { echo \"[xray] ERROR: нет $xr_f — без защиты исходящих xray не запускается\" >&2; exit 1; }\ndone\n" +
-		ExitXrayGuardApplyScript + install +
-		`if ! XR_TEST=$(` + ExitXrayBinary + ` run -test -config ` + ExitXrayConfig + ` 2>&1); then
-  printf '%s\n' "$XR_TEST" | tail -n 20 >&2
-  echo "[xray] ERROR: конфигурация не прошла проверку xray run -test — служба не перезапущена" >&2
-  exit 1
-fi
-echo "[xray] конфигурация прошла проверку (xray run -test)"
-`
-}
-
 // ExitHysteriaPrepareScript is the converge extra of the exit hysteria (UnitConvergeScript(
 // "hysteria2", …)): the pinned hysteria and the self-signed TLS pair. The shared installer
 // (HysteriaInstallScript, also used by deploy) has no hook before its final mv, so when it will
@@ -657,7 +553,7 @@ echo "[xray] конфигурация прошла проверку (xray run -t
 // restarted and rolled back, and if the install fails the binary keeps its old sha256, so
 // UnitRollbackScript never takes its .bak. With no (executable) binary the installer keeps no
 // backup, so a leftover hysteria.bak is removed first: a rollback of that fresh install must not
-// resurrect it (the same in the xray installer). The TLS
+// resurrect it (the same in the sing-box installer). The TLS
 // pair is created only when a half is missing: marker, then both old files removed, then key,
 // then certificate — an interruption never leaves a new key next to an old certificate (a
 // missing half makes the next run generate a fresh pair).
@@ -700,8 +596,8 @@ fi
 }
 
 // ExitPreflightScript changes nothing; one "PF <check> ok|fail <detail>" line per check (os,
-// arch, root, disk, internet — www.gstatic.com and github.com, where Xray and Hysteria come from
-// — and the ports 50443/udp, 10443/tcp, 50052/tcp: free or held by our own service), then
+// arch, root, disk, internet — www.gstatic.com and github.com, where sing-box and Hysteria come
+// from — and the ports 50443/udp, 443/tcp, 50052/tcp: free or held by our own service), then
 // "PF_TIME <unix>" for the clock check on the Hub.
 func ExitPreflightScript() string {
 	return opLine("preflight") + `. /etc/os-release 2>/dev/null || true
@@ -712,9 +608,9 @@ avail=$(df -Pk / | awk 'NR==2{print $4}')
 if [ "${avail:-0}" -ge 1048576 ]; then echo "PF disk ok $((avail/1024)) МБ свободно"; else echo "PF disk fail свободно меньше 1 ГБ"; fi
 pf_tcp() { timeout 10 bash -c "exec 3<>/dev/tcp/$1/443" 2>/dev/null; }
 if ! pf_tcp www.gstatic.com; then echo "PF internet fail нет выхода в интернет (www.gstatic.com:443)"
-elif ! pf_tcp github.com; then echo "PF internet fail нет доступа к github.com:443 (оттуда ставятся Xray и Hysteria)"
+elif ! pf_tcp github.com; then echo "PF internet fail нет доступа к github.com:443 (оттуда ставятся sing-box и Hysteria)"
 else echo "PF internet ok"; fi
-for spec in udp:` + strconv.Itoa(ExitHysteriaPort) + `:hysteria tcp:` + strconv.Itoa(ExitRealityPort) + `:xray tcp:` + strconv.Itoa(NodeAgentPort) + `:node-agent; do
+for spec in udp:` + strconv.Itoa(ExitHysteriaPort) + `:hysteria tcp:` + strconv.Itoa(ExitSTLSPort) + `:sing-box tcp:` + strconv.Itoa(NodeAgentPort) + `:node-agent; do
   proto=${spec%%:*}; rest=${spec#*:}; port=${rest%%:*}; own=${rest#*:}
   if [ "$proto" = udp ]; then line=$(ss -Hulpn "sport = :$port" 2>/dev/null); else line=$(ss -Htlpn "sport = :$port" 2>/dev/null); fi
   if [ -z "$line" ] || printf '%s' "$line" | grep -q "\"$own\""; then echo "PF port_$port ok"
@@ -781,14 +677,6 @@ if ss -Hulpn 'sport = :50443' 2>/dev/null | grep -q '"hysteria"'; then echo LIST
 if nft list table inet hysteria_porthopping 2>/dev/null | ` + hopRuleGrep + `; then echo HOP=1; else echo HOP=0; fi
 `
 
-// XrayCheckScript prints VERSION=<xray version>, LISTEN=0|1 (xray on TCP 10443), GUARD=0|1 (the
-// kernel egress guard table of the xray user is loaded).
-const XrayCheckScript = `# hp:xray-check
-echo "VERSION=$(` + ExitXrayBinary + ` version 2>/dev/null | awk 'NR==1{print $2}')"
-if ss -Htlpn 'sport = :10443' 2>/dev/null | grep -q '"xray"'; then echo LISTEN=1; else echo LISTEN=0; fi
-if nft list table inet ` + ExitXrayGuardTable + ` 2>/dev/null | grep -q 'jump xray_egress'; then echo GUARD=1; else echo GUARD=0; fi
-`
-
 // HubSSHKeyEnsureScript (run on the Hub): the Hub's own ed25519 key, created once (an empty
 // leftover is replaced; a lost .pub is derived from the key, never a new key); prints the public
 // line "ssh-ed25519 AAAA… heyearth-hub".
@@ -848,33 +736,4 @@ func SocksProbeScript(port int) string {
 	p := strconv.Itoa(port)
 	return opLine("socks-probe", p) + probeCurl + "code=000\nfor i in 1 2 3; do\n  code=$(probe_once " + p + ")\n" +
 		"  [ \"$code\" = 204 ] && break\n  [ \"$i\" = 3 ] || sleep 3\ndone\necho \"HTTP=$code\"\n"
-}
-
-// VRProbeScript (Hub): a short-lived xray (xrayBin) on the ExitRealityProbeConfig at cfgPath,
-// SOCKS on port; up to 3 generate_204; HTTP=<code>. A stale probe of a dropped run is killed
-// first; on exit the probe xray is stopped and the config (it carries the tunnel UUID) and its
-// .bak are removed. On failure xray's own log goes to stderr.
-func VRProbeScript(xrayBin, cfgPath string, port int) string {
-	p := strconv.Itoa(port)
-	return opLine("vr-probe", p) + probeCurl + "VR_BIN=" + shQuote(xrayBin) + "\nVR_CFG=" + shQuote(cfgPath) + "\n" +
-		`VR_LOG=$(mktemp)
-pkill -f -- "run -config $VR_CFG" 2>/dev/null || true
-"$VR_BIN" run -config "$VR_CFG" > "$VR_LOG" 2>&1 &
-vr_pid=$!
-trap 'kill "$vr_pid" 2>/dev/null; wait "$vr_pid" 2>/dev/null; rm -f "$VR_CFG" "$VR_CFG.bak" "$VR_LOG"' EXIT
-trap 'exit 1' HUP INT TERM
-for i in $(seq 1 25); do
-  ss -Htln 'sport = :` + p + `' 2>/dev/null | grep -q . && break
-  kill -0 "$vr_pid" 2>/dev/null || break
-  sleep 0.2
-done
-code=000
-for i in 1 2 3; do
-  code=$(probe_once ` + p + `)
-  [ "$code" = 204 ] && break
-  [ "$i" = 3 ] || sleep 2
-done
-if [ "$code" != 204 ]; then tail -n 15 "$VR_LOG" | sed 's/^/[vr-probe] xray: /' >&2; fi
-echo "HTTP=$code"
-`
 }

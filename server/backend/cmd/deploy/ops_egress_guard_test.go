@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/heyearth/backend/internal/config"
 )
 
 // ───────────────────────── the guard script (iptables / ip6tables stubs) ─────────────────────────
@@ -143,7 +145,7 @@ func expectedEgressRules(fam int, apiUID, hy, hyPorts string, cgroup bool, extra
 		subject("-m owner --uid-owner "+hy, "1088:1599,"+hyPorts+",53")
 	}
 	if cgroup {
-		subject(eCgroup, "1088:1599")
+		subject(eCgroup, "1088:1599,2088:2599")
 	}
 	return r
 }
@@ -471,6 +473,10 @@ func TestEgressGuardScriptConstants(t *testing.T) {
 	}
 	// the allowed loopback range is wide enough for exits of any realistic server id (1088+id);
 	// the hysteria user's auth callback: 8000+8001 in phase A, the auth-only 8001 in phase B
+	// the ShadowTLS backup clients (2088+id, config.HubSTLSSocksPort) for the same ids
+	if config.HubSTLSSocksPort(1) != 2089 || config.HubSTLSSocksPort(511) != 2599 || egressSTLSPorts != "2088:2599" {
+		t.Errorf("ShadowTLS client range %s does not cover ids 1..511 (cmd/api exitMaxID)", egressSTLSPorts)
+	}
 	if egressSocksPorts != "1088:1599" || egressAPIPort != "8000" || egressHyAuthPort != "8001" ||
 		egressHyAuthPortsA != "8000,8001" || egressHyAuthPortsB != "8001" || egressHyAuthURL != "http://127.0.0.1:8001/internal/hysteria2/auth" {
 		t.Errorf("ports changed: %s %s %s %s %s %s", egressSocksPorts, egressAPIPort, egressHyAuthPort, egressHyAuthPortsA, egressHyAuthPortsB, egressHyAuthURL)

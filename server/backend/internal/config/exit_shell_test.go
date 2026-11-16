@@ -159,7 +159,7 @@ func TestUnitConvergeRestartsOnlyOnMarkerOrDown(t *testing.T) {
 		t.Fatal("an unchanged running unit was restarted")
 	}
 	mustWrite(t, dir, marker, "", 0o644)
-	mustWrite(t, dir, binMarker, ExitXrayBinary+"\n", 0o644)
+	mustWrite(t, dir, binMarker, ExitXrayDir+"/xray"+"\n", 0o644)
 	mustRun() // marker (written but not restarted before an SSH drop) → exactly one restart, markers gone
 	if count(dir, "restarts", "xray") != 2 {
 		t.Fatal("the pending marker must trigger a restart")
@@ -170,7 +170,7 @@ func TestUnitConvergeRestartsOnlyOnMarkerOrDown(t *testing.T) {
 	// A restart that does not come up fails the step and keeps both markers: the files on disk are
 	// still not confirmed running (the next converge restarts again, the rollback sees the binary).
 	mustWrite(t, dir, marker, "", 0o644)
-	mustWrite(t, dir, binMarker, ExitXrayBinary+"\n", 0o644)
+	mustWrite(t, dir, binMarker, ExitXrayDir+"/xray"+"\n", 0o644)
 	os.Remove(filepath.Join(dir, "active.xray")) // it crashed
 	if out, err := run("DEAD=1"); err == nil || !strings.Contains(out, "не запустился") {
 		t.Fatalf("a failed restart must fail the converge: %v\n%s", err, out)
@@ -306,7 +306,7 @@ func TestUnitRollbackLiveUnitVsFreshInstall(t *testing.T) {
 	}
 	dropIn := "/etc/systemd/system/xray.service.d/override.conf"
 	dir := t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644) // installed long ago, unchanged
+	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitSTLSUnitFile, 0o644) // installed long ago, unchanged
 	mustWrite(t, dir, rel(dropIn), "[Service]\nLimitNOFILE=1\n", 0o644)
 	mustWrite(t, dir, "active.xray", "", 0o644)
 	out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{dropIn}))
@@ -321,9 +321,9 @@ func TestUnitRollbackLiveUnitVsFreshInstall(t *testing.T) {
 	dir = t.TempDir()
 	mustWrite(t, dir, rel(ExitXrayConfig), "new", 0o600)
 	mustWrite(t, dir, rel(ExitXrayUnitPath), "new", 0o644)
-	mustWrite(t, dir, rel(ExitXrayGuardUnitPath), ExitXrayGuardUnit, 0o644)
+	mustWrite(t, dir, rel(ExitGuardUnitPath), ExitGuardUnit, 0o644)
 	mustWrite(t, dir, "active.xray", "", 0o644)
-	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayConfig, ExitXrayUnitPath, ExitXrayGuardUnitPath})); err != nil ||
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayConfig, ExitXrayUnitPath, ExitGuardUnitPath})); err != nil ||
 		!strings.Contains(out, "новая установка снята") {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -333,21 +333,21 @@ func TestUnitRollbackLiveUnitVsFreshInstall(t *testing.T) {
 			t.Fatalf("want %q before the files are removed:\n%s", w, readRel(dir, "calls"))
 		}
 	}
-	if exists(dir, rel(ExitXrayGuardUnitPath)) || exists(dir, rel(ExitXrayUnitPath)) {
+	if exists(dir, rel(ExitGuardUnitPath)) || exists(dir, rel(ExitXrayUnitPath)) {
 		t.Fatal("new unit files left behind")
 	}
 
 	// A live xray whose run added the guard unit: the guard is disabled and removed, xray restarted.
 	dir = t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644)
-	mustWrite(t, dir, rel(ExitXrayGuardUnitPath), ExitXrayGuardUnit, 0o644)
+	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitSTLSUnitFile, 0o644)
+	mustWrite(t, dir, rel(ExitGuardUnitPath), ExitGuardUnit, 0o644)
 	mustWrite(t, dir, "active.xray", "", 0o644)
-	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayGuardUnitPath})); err != nil {
+	if out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitGuardUnitPath})); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	calls := readRel(dir, "calls")
 	if !strings.Contains(calls, "disable --now heyearth-exit-guard.service unitfile=present") || strings.Contains(calls, "disable --now xray") ||
-		exists(dir, rel(ExitXrayGuardUnitPath)) || count(dir, "restarts", "xray") != 1 {
+		exists(dir, rel(ExitGuardUnitPath)) || count(dir, "restarts", "xray") != 1 {
 		t.Fatalf("new guard unit not disabled before removal, or xray disabled / not restarted:\n%s", calls)
 	}
 }
@@ -369,7 +369,7 @@ func TestUnitRollbackFromMarkerAfterResume(t *testing.T) {
 	mustWrite(t, dir, "active.xray", "", 0o644)
 	mark := MarkRestartScript("xray", []PendingWrite{
 		{ExitXrayConfig, sha256Hex(newCfg)}, {ExitXrayUnitPath, sha256Hex(newUnit)},
-		{ExitXrayResolvConfPath, sha256Hex("never written")}})
+		{ExitSTLSResolvConfPath, sha256Hex("never written")}})
 	for i := 0; i < 2; i++ { // marked twice (a retried step): entries are not duplicated
 		if out, err := shellRun(t, dir, systemctlStub, mark); err != nil {
 			t.Fatalf("%v\n%s", err, out)
@@ -448,17 +448,17 @@ func TestUnitRollbackFromPathCheckMarker(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
-	newBin := fakeXray("26.3.27")
+	newBin := fakeSingBox("1.14.4")
 	dir := t.TempDir()
 	mustWrite(t, dir, rel(ExitXrayConfig), "new-cfg", 0o600)
 	mustWrite(t, dir, rel(ExitXrayConfig)+".bak", "old-cfg", 0o600)
-	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644)
+	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitSTLSUnitFile, 0o644)
 	mustWrite(t, dir, "bin/xray", newBin, 0o755)
-	mustWrite(t, dir, "bin/xray.bak", fakeXray("25.1.1"), 0o755)
+	mustWrite(t, dir, "bin/xray.bak", fakeSingBox("1.13.0"), 0o755)
 	mustWrite(t, dir, "active.xray", "", 0o644)
 	mustWrite(t, dir, rel(PathCheckMarker("xray")), "BEFORE=1\n"+sha256Hex("new-cfg")+"  ./opt/heyearth/xray/config.json\nBIN "+sha256Hex(newBin)+"  ./bin/xray\n", 0o644)
 	out, err := shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", nil))
-	if err != nil || readRel(dir, rel(ExitXrayConfig)) != "old-cfg" || readRel(dir, "bin/xray") != fakeXray("25.1.1") ||
+	if err != nil || readRel(dir, rel(ExitXrayConfig)) != "old-cfg" || readRel(dir, "bin/xray") != fakeSingBox("1.13.0") ||
 		count(dir, "restarts", "xray") != 1 || exists(dir, rel(PathCheckMarker("xray"))) {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -551,11 +551,11 @@ func TestUnitRollbackReloadsRestoredNftRules(t *testing.T) {
 
 	// A guard new in this run: removed with its unit, its table stays (it only ever restricts).
 	dir = t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayGuardConfPath), "new guard", 0o644)
+	mustWrite(t, dir, rel(ExitGuardConfPath), "new guard", 0o644)
 	mustWrite(t, dir, rel(ExitXrayUnitPath), "new unit", 0o644)
 	mustWrite(t, dir, rel(ExitXrayUnitPath)+".bak", "old unit", 0o644)
-	if out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("xray", []string{ExitXrayGuardConfPath, ExitXrayUnitPath})); err != nil ||
-		exists(dir, rel(ExitXrayGuardConfPath)) || exists(dir, "nft.stdin") {
+	if out, err := shellRun(t, dir, systemctlStub+nftStub, UnitRollbackScript("xray", []string{ExitGuardConfPath, ExitXrayUnitPath})); err != nil ||
+		exists(dir, rel(ExitGuardConfPath)) || exists(dir, "nft.stdin") {
 		t.Fatalf("new guard: %v\n%s", err, out)
 	}
 
@@ -880,7 +880,7 @@ func TestExitFirewallScript(t *testing.T) {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
-		for _, r := range []string{"allow from 203.0.113.225 to any port 2222 proto tcp", "allow 10443/tcp", "allow 8443/tcp", "allow 50443/udp",
+		for _, r := range []string{"allow from 203.0.113.225 to any port 2222 proto tcp", "allow 443/tcp", "allow 8443/tcp", "allow 50443/udp",
 			"allow 20000:50000/udp", "allow from 203.0.113.225 to any port 50052 proto tcp"} {
 			if count(dir, "ufw.rules", r) != 1 {
 				t.Errorf("rule %q present %d times", r, count(dir, "ufw.rules", r))
@@ -920,7 +920,7 @@ func TestExitFirewallScript(t *testing.T) {
 		if count(dir, "ipt.rules", "-A INPUT -p tcp --dport 2222 -j ACCEPT") != 0 {
 			t.Error("SSH allowed from anywhere")
 		}
-		for _, r := range []string{"-A INPUT -p tcp -s 203.0.113.225 --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 10443 -j ACCEPT",
+		for _, r := range []string{"-A INPUT -p tcp -s 203.0.113.225 --dport 2222 -j ACCEPT", "-A INPUT -p tcp --dport 443 -j ACCEPT",
 			"-A INPUT -p tcp --dport 8443 -j ACCEPT", "-A INPUT -p udp --dport 50443 -j ACCEPT",
 			"-A INPUT -p udp --dport 20000:50000 -j ACCEPT", "-A INPUT -p tcp -s 203.0.113.225 --dport 50052 -j ACCEPT"} {
 			if n := count(dir, "ipt.rules", r); n != 1 {
@@ -964,7 +964,7 @@ func TestExitFirewallScript(t *testing.T) {
 		if out, err := shellRun(t, dir, fwStubs, ExitFirewallScript(0, nil, 0), "UFW_ACTIVE=1"); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
-		if got := readRel(dir, "ufw.rules"); got != "allow 10443/tcp\nallow 50443/udp\nallow 20000:50000/udp\n" {
+		if got := readRel(dir, "ufw.rules"); got != "allow 443/tcp\nallow 50443/udp\nallow 20000:50000/udp\n" {
 			t.Errorf("ufw rules:\n%s", got)
 		}
 	})
@@ -1011,7 +1011,7 @@ func TestExitFirewallScript(t *testing.T) {
 			if strings.Contains(readRel(dir, "fw.log"), fmt.Sprintf("ufw allow %d/tcp", tc.port)) || strings.Contains(readRel(dir, "fw.log"), "delete") {
 				t.Errorf("%s: SSH allowed from anywhere or an existing rule changed:\n%s", name, readRel(dir, "fw.log"))
 			}
-			if count(dir, "ufw.rules", "allow 10443/tcp") != 1 || count(dir, "ufw.rules", "allow from 203.0.113.225 to any port 50052 proto tcp") != 1 {
+			if count(dir, "ufw.rules", "allow 443/tcp") != 1 || count(dir, "ufw.rules", "allow from 203.0.113.225 to any port 50052 proto tcp") != 1 {
 				t.Errorf("%s: tunnel / node-agent rules missing:\n%s", name, readRel(dir, "ufw.rules"))
 			}
 		}
@@ -1035,7 +1035,7 @@ func TestExitFirewallScript(t *testing.T) {
 			}
 			fromHub := count(dir, "ipt.rules", "-A INPUT -p tcp -s 203.0.113.225 --dport 2222 -j ACCEPT")
 			if strings.Contains(readRel(dir, "ipt.rules"), "-A INPUT -p tcp --dport 2222 -j ACCEPT") || count(dir, "ipt.rules", tc.existing) != 1 ||
-				(fromHub == 1) == tc.named || count(dir, "ipt.rules", "-A INPUT -p tcp --dport 10443 -j ACCEPT") != 1 {
+				(fromHub == 1) == tc.named || count(dir, "ipt.rules", "-A INPUT -p tcp --dport 443 -j ACCEPT") != 1 {
 				t.Errorf("%q: ssh protection bypassed, ssh allowed from anywhere or tunnel rule missing:\n%s", tc.existing, readRel(dir, "ipt.rules"))
 			}
 		}
@@ -1052,63 +1052,66 @@ func TestExitFirewallScript(t *testing.T) {
 	})
 }
 
-// fakeXray mimics `xray version` (first line "Xray <v> (...)") and `xray run -test`, which fails
-// when ./xray-test-fails exists.
-func fakeXray(v string) string {
-	return "#!/bin/sh\ncase \"$1\" in\n  version) echo 'Xray " + v + " (Xray, Penetrates Everything.) 0123abc (go1.26.1 linux/amd64)'; echo 'A unified platform for anti-censorship.' ;;\n" +
-		"  run) if [ -f ./xray-test-fails ]; then echo 'Failed to start: main: failed to load config files'; exit 23; fi; echo 'Configuration OK.' ;;\nesac\n"
+// fakeSingBox mimics `sing-box version` (first line "sing-box version <v>") and `sing-box check`,
+// which fails when ./sb-check-fails exists.
+func fakeSingBox(v string) string {
+	return "#!/bin/sh\ncase \"$1\" in\n  version) echo 'sing-box version " + v + "'; echo; echo 'Environment: go1.26.10 linux/amd64' ;;\n" +
+		"  check) if [ -f ./sb-check-fails ]; then echo 'FATAL[0000] decode config at ./server.json: unknown field'; exit 1; fi ;;\n  run) sleep 1 ;;\nesac\n"
 }
 
-// curl/unzip stubs for the xray installer: curl "downloads" ./download (fails like curl -f when
-// absent) and records its args; unzip extracts ./payload as xray plus two release data files.
-const xrayDownloadStubs = `curl() { printf '%s\n' "$*" >> ./curl.args; out=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done; [ -f ./download ] || return 22; cp ./download "$out"; }
-unzip() { echo "unzip $*" >> ./unzip.args; d=""; while [ $# -gt 0 ]; do case "$1" in -d) d="$2"; shift 2;; *) shift;; esac; done; cp ./payload "$d/xray"; echo geoip-new > "$d/geoip.dat"; echo geosite-new > "$d/geosite.dat"; }
+// curl/tar stubs for the sing-box installer: curl "downloads" ./download (fails like curl -f when
+// absent) and records its args; tar extracts ./payload as sing-box into the -C directory.
+const singBoxDownloadStubs = `curl() { printf '%s\n' "$*" >> ./curl.args; out=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done; [ -f ./download ] || return 22; cp ./download "$out"; }
+tar() { echo "tar $*" >> ./tar.args; d=""; while [ $# -gt 0 ]; do case "$1" in -C) d="$2"; shift 2;; *) shift;; esac; done; cp ./payload "$d/sing-box"; }
 `
 
-func xrayVersionOf(t *testing.T, path string) string {
+func singBoxVersionOf(t *testing.T, path string) string {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		return ""
 	}
 	out, _ := exec.Command("bash", path, "version").Output()
 	f := strings.Fields(string(out))
-	if len(f) < 2 {
+	if len(f) < 3 {
 		return "?"
 	}
-	return f[1]
+	return f[2]
 }
 
-func TestXrayExitPinned(t *testing.T) {
-	if XrayExitVersion != "v26.3.27" || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(XrayExitSHA256) {
-		t.Fatalf("pin %s %s", XrayExitVersion, XrayExitSHA256)
+func TestSingBoxPinned(t *testing.T) {
+	if SingBoxVersion != "1.14.4" || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(SingBoxArchiveSHA256) {
+		t.Fatalf("pin %s %s", SingBoxVersion, SingBoxArchiveSHA256)
 	}
-	// SHA2-256 of Xray-linux-64.zip, from the release's Xray-linux-64.zip.dgst; re-checked by
-	// downloading the asset (2026-10-15).
-	if XrayExitSHA256 != "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae" {
-		t.Fatal("XrayExitSHA256 changed without updating this test")
+	// sha256 of sing-box-1.14.4-linux-amd64.tar.gz, downloaded on the Hub 2026-11-16 (the binary
+	// inside is the one the B8 experiment ran for three days).
+	if SingBoxArchiveSHA256 != "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968" {
+		t.Fatal("SingBoxArchiveSHA256 changed without updating this test")
 	}
-	if u := XrayExitDownloadURL(); u != "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip" {
+	if u := SingBoxDownloadURL(); u != "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz" {
 		t.Fatal(u)
 	}
-	s := XrayExitInstallScript()
-	if !strings.Contains(s, `XR_SHA256="`+XrayExitSHA256+`"`) || !strings.Contains(s, XrayExitDownloadURL()) {
+	s := SingBoxInstallScript(ExitSTLSUnit)
+	if !strings.Contains(s, `SB_SHA256="`+SingBoxArchiveSHA256+`"`) || !strings.Contains(s, SingBoxDownloadURL()) {
 		t.Fatal("production installer does not pin the release")
 	}
-	iSHA, iUnzip, iExec := strings.Index(s, "sha256sum -c"), strings.Index(s, "unzip "), strings.Index(s, `"$XR_TMP/xray" version`)
-	if iSHA < 0 || iSHA > iUnzip || iUnzip > iExec {
-		t.Errorf("order sha256sum(%d) < unzip(%d) < exec(%d) violated", iSHA, iUnzip, iExec)
+	iSHA, iTar, iExec := strings.Index(s, "sha256sum -c"), strings.Index(s, "tar -xzf"), strings.Index(s, `"$SB_TMP/sing-box" version`)
+	if iSHA < 0 || iSHA > iTar || iTar > iExec {
+		t.Errorf("order sha256sum(%d) < tar(%d) < exec(%d) violated", iSHA, iTar, iExec)
+	}
+	for _, u := range []string{ExitSTLSUnit, HubSTLSUnit(7)} {
+		if s := SingBoxInstallScript(u); !strings.Contains(s, RestartMarker(u)) || !strings.Contains(s, BinaryPendingMarker(u)) {
+			t.Errorf("installer for %s does not set its markers", u)
+		}
 	}
 }
 
-func TestXrayExitInstall(t *testing.T) {
+func TestSingBoxInstall(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
-	const installedBefore = "# installed before\n"
 	for _, tc := range []struct {
 		name               string
 		current, bak       string // bin content, "" = absent
-		dats               bool   // geoip.dat/geosite.dat already there
 		download, payload  string // "" download = curl fails
 		wrongSHA, pipefail bool
 		ok                 bool
@@ -1116,46 +1119,38 @@ func TestXrayExitInstall(t *testing.T) {
 		wantCurl           bool
 		want               []string
 	}{
-		{name: "fresh", download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27", wantCurl: true,
-			want: []string{"XR_REPLACED=1", "XR_DATA=1", "[xray] installed 26.3.27 (previous: none)"}},
-		// Review: no binary but a leftover xray.bak — removed, a rollback cannot resurrect it.
-		{name: "fresh with a leftover bak", bak: fakeXray("24.9.30"), download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27",
-			wantCurl: true, want: []string{"XR_REPLACED=1"}},
-		{name: "fresh under pipefail", pipefail: true, download: "zip", payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27", wantCurl: true,
-			want: []string{"XR_REPLACED=1"}},
-		{name: "current kept", current: fakeXray("26.3.27"), dats: true, download: "zip", payload: fakeXray("26.3.27"), ok: true,
-			wantVer: "26.3.27", want: []string{"XR_REPLACED=0", "XR_DATA=0", "already installed"}},
-		{name: "upgrade keeps bak", current: fakeXray("25.1.1"), bak: fakeXray("24.9.30"), dats: true, download: "zip", payload: fakeXray("26.3.27"),
-			ok: true, wantVer: "26.3.27", wantBak: "25.1.1", wantCurl: true, want: []string{"XR_REPLACED=1", "XR_DATA=1", "(previous: 25.1.1)"}},
-		{name: "data files restored, binary kept", current: fakeXray("26.3.27") + installedBefore, bak: fakeXray("25.1.1"), download: "zip",
-			payload: fakeXray("26.3.27"), ok: true, wantVer: "26.3.27", wantBak: "25.1.1", wantCurl: true,
-			want: []string{"XR_REPLACED=0", "XR_DATA=1", "geoip.dat"}},
-		{name: "sha mismatch keeps old", current: fakeXray("25.1.1"), dats: true, download: "zip", payload: fakeXray("26.3.27"), wrongSHA: true,
-			wantVer: "25.1.1", wantCurl: true, want: []string{"[xray] ERROR"}},
-		{name: "download fails", current: fakeXray("25.1.1"), dats: true, payload: fakeXray("26.3.27"),
-			wantVer: "25.1.1", wantCurl: true, want: []string{"[xray] ERROR"}},
-		{name: "wrong version in the archive", current: fakeXray("25.1.1"), dats: true, download: "zip", payload: fakeXray("26.3.26"),
-			wantVer: "25.1.1", wantCurl: true, want: []string{"[xray] ERROR"}},
+		{name: "fresh", download: "tgz", payload: fakeSingBox("1.14.4"), ok: true, wantVer: "1.14.4", wantCurl: true,
+			want: []string{"[sing-box] installed 1.14.4 (previous: none)"}},
+		// No binary but a leftover sing-box.bak — removed, a rollback cannot resurrect it.
+		{name: "fresh with a leftover bak", bak: fakeSingBox("1.11.0"), download: "tgz", payload: fakeSingBox("1.14.4"), ok: true,
+			wantVer: "1.14.4", wantCurl: true},
+		{name: "fresh under pipefail", pipefail: true, download: "tgz", payload: fakeSingBox("1.14.4"), ok: true, wantVer: "1.14.4", wantCurl: true},
+		{name: "current kept", current: fakeSingBox("1.14.4"), download: "tgz", payload: fakeSingBox("1.14.4"), ok: true,
+			wantVer: "1.14.4", want: []string{"already installed"}},
+		{name: "upgrade keeps bak", current: fakeSingBox("1.13.0"), bak: fakeSingBox("1.11.0"), download: "tgz", payload: fakeSingBox("1.14.4"),
+			ok: true, wantVer: "1.14.4", wantBak: "1.13.0", wantCurl: true, want: []string{"(previous: 1.13.0)"}},
+		{name: "sha mismatch keeps old", current: fakeSingBox("1.13.0"), download: "tgz", payload: fakeSingBox("1.14.4"), wrongSHA: true,
+			wantVer: "1.13.0", wantCurl: true, want: []string{"[sing-box] ERROR"}},
+		{name: "download fails", current: fakeSingBox("1.13.0"), payload: fakeSingBox("1.14.4"),
+			wantVer: "1.13.0", wantCurl: true, want: []string{"[sing-box] ERROR"}},
+		{name: "wrong version in the archive", current: fakeSingBox("1.13.0"), download: "tgz", payload: fakeSingBox("1.14.3"),
+			wantVer: "1.13.0", wantCurl: true, want: []string{"[sing-box] ERROR"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			xdir := "opt/heyearth/xray/"
-			mustWrite(t, dir, xdir+".dl.stale1/xray.zip", "left by a dropped run", 0o644)
+			sdir := rel(SingBoxDir) + "/"
+			mustWrite(t, dir, sdir+".dl.stale1/sb.tgz", "left by a dropped run", 0o644)
 			if tc.current != "" {
-				mustWrite(t, dir, xdir+"xray", tc.current, 0o755)
+				mustWrite(t, dir, sdir+"sing-box", tc.current, 0o755)
 			}
 			if tc.bak != "" {
-				mustWrite(t, dir, xdir+"xray.bak", tc.bak, 0o755)
-			}
-			if tc.dats {
-				mustWrite(t, dir, xdir+"geoip.dat", "geoip-old\n", 0o644)
-				mustWrite(t, dir, xdir+"geosite.dat", "geosite-old\n", 0o644)
+				mustWrite(t, dir, sdir+"sing-box.bak", tc.bak, 0o755)
 			}
 			if tc.download != "" {
 				mustWrite(t, dir, "download", tc.download, 0o644)
 			}
 			mustWrite(t, dir, "payload", tc.payload, 0o755)
-			sha := sha256Hex("zip")
+			sha := sha256Hex("tgz")
 			if tc.wrongSHA {
 				sha = sha256Hex("other")
 			}
@@ -1163,7 +1158,7 @@ func TestXrayExitInstall(t *testing.T) {
 			if tc.pipefail {
 				prelude = "set -eo pipefail\n"
 			}
-			out, err := shellRun(t, dir, prelude+xrayDownloadStubs, xrayExitInstallScript(sha)+"echo XR_REPLACED=$XR_REPLACED XR_DATA=$XR_DATA\necho AFTER\n")
+			out, err := shellRun(t, dir, prelude+singBoxDownloadStubs, singBoxInstallScript(ExitSTLSUnit, sha)+"echo AFTER\n")
 			if (err == nil) != tc.ok || strings.Contains(out, "AFTER") != tc.ok {
 				t.Fatalf("err=%v\n%s", err, out)
 			}
@@ -1172,77 +1167,73 @@ func TestXrayExitInstall(t *testing.T) {
 					t.Errorf("output lacks %q:\n%s", w, out)
 				}
 			}
-			if v := xrayVersionOf(t, filepath.Join(dir, xdir+"xray")); v != tc.wantVer {
+			if v := singBoxVersionOf(t, filepath.Join(dir, sdir+"sing-box")); v != tc.wantVer {
 				t.Errorf("binary now %q, want %q", v, tc.wantVer)
 			}
-			if v := xrayVersionOf(t, filepath.Join(dir, xdir+"xray.bak")); v != tc.wantBak {
-				t.Errorf("xray.bak %q, want %q", v, tc.wantBak)
-			}
-			if tc.current != "" && strings.HasSuffix(tc.current, installedBefore) && !strings.HasSuffix(readRel(dir, xdir+"xray"), installedBefore) {
-				t.Error("a current binary was replaced although only the data files were missing")
+			if v := singBoxVersionOf(t, filepath.Join(dir, sdir+"sing-box.bak")); v != tc.wantBak {
+				t.Errorf("sing-box.bak %q, want %q", v, tc.wantBak)
 			}
 			if curl := exists(dir, "curl.args"); curl != tc.wantCurl {
 				t.Errorf("curl called=%v, want %v", curl, tc.wantCurl)
 			}
-			if tc.ok && tc.wantCurl {
-				if readRel(dir, xdir+"geoip.dat") != "geoip-new\n" || readRel(dir, xdir+"geosite.dat") != "geosite-new\n" {
-					t.Error("geoip.dat/geosite.dat not installed from the release")
-				}
-				if !strings.Contains(readRel(dir, "unzip.args"), " xray geoip.dat geosite.dat -d ") {
-					t.Errorf("unzip args: %s", readRel(dir, "unzip.args"))
-				}
+			if tc.ok && tc.wantCurl && !strings.Contains(readRel(dir, "tar.args"), " --strip-components=1 sing-box-1.14.4-linux-amd64/sing-box") {
+				t.Errorf("tar args: %s", readRel(dir, "tar.args"))
 			}
-			if !tc.ok && tc.dats && readRel(dir, xdir+"geoip.dat") != "geoip-old\n" {
-				t.Error("data files changed by a failed install")
+			// Markers only when the binary was really replaced.
+			replaced := tc.ok && tc.wantCurl
+			if exists(dir, rel(RestartMarker(ExitSTLSUnit))) != replaced || exists(dir, rel(BinaryPendingMarker(ExitSTLSUnit))) != replaced {
+				t.Errorf("markers present=%v/%v, want %v", exists(dir, rel(RestartMarker(ExitSTLSUnit))),
+					exists(dir, rel(BinaryPendingMarker(ExitSTLSUnit))), replaced)
 			}
 			// A download attempt clears stale temp dirs of a dropped run and leaves none of its own.
-			if left, _ := filepath.Glob(filepath.Join(dir, xdir, ".dl.*")); len(left) != 0 && tc.wantCurl {
+			if left, _ := filepath.Glob(filepath.Join(dir, sdir, ".dl.*")); len(left) != 0 && tc.wantCurl {
 				t.Errorf("temp dirs left behind: %v", left)
 			}
-			if exists(dir, xdir+"xray.bak.tmp") {
-				t.Error("xray.bak.tmp left behind")
+			if exists(dir, sdir+"sing-box.bak.tmp") {
+				t.Error("sing-box.bak.tmp left behind")
 			}
 		})
 	}
 }
 
-// guardStubs: the user/guard commands of ExitXrayUserScript / ExitXrayGuardApplyScript.
-const guardStubs = `getent() { [ "$1" = group ] && [ "$2" = xray ] && [ -f ./group-xray ]; }
-groupadd() { echo "groupadd $*" >> ./groupadd.log; touch ./group-xray; }
-id() { [ "$1" = -u ] && [ "$2" = xray ] && [ -f ./user-xray ]; }
-useradd() { echo "useradd $*" >> ./useradd.log; touch ./user-xray; }
-nft() { [ -f ./user-xray ] || { echo "nft: user xray unknown" >&2; return 1; }; echo "nft $*" >> ./nft.log; }
+// guardStubs: the user/guard commands of ExitSTLSUserScript / ExitGuardApplyScript.
+const guardStubs = `getent() { [ "$1" = group ] && [ "$2" = stls ] && [ -f ./group-stls ]; }
+groupadd() { echo "groupadd $*" >> ./groupadd.log; touch ./group-stls; }
+id() { [ "$1" = -u ] && [ "$2" = stls ] && [ -f ./user-stls ]; }
+useradd() { echo "useradd $*" >> ./useradd.log; touch ./user-stls; }
+nft() { [ -f ./user-stls ] || { echo "nft: user stls unknown" >&2; return 1; }; echo "nft $*" >> ./nft.log; }
 `
 
-// The whole xray step on the node: converge with ExitXrayPrepareScript — pinned binary, the user,
-// the kernel guard, `xray run -test`, then a restart only when something changed.
-func TestExitXrayConverge(t *testing.T) {
+// The whole tunnel step on the node: converge with ExitSTLSPrepareScript — pinned binary, the
+// user, the kernel guard, `sing-box check`, then a restart only when something changed.
+func TestExitSTLSConverge(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
 	dir := t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayConfig), "{}\n", 0o600)
-	mustWrite(t, dir, rel(ExitXrayGuardConfPath), "guard\n", 0o644)
-	mustWrite(t, dir, rel(ExitXrayGuardUnitPath), ExitXrayGuardUnit, 0o644)
-	mustWrite(t, dir, rel(ExitXrayResolvConfPath), ExitXrayResolvConf, 0o644)
-	mustWrite(t, dir, "download", "zip", 0o644)
-	mustWrite(t, dir, "payload", fakeXray("26.3.27"), 0o755)
-	script := UnitConvergeScript("xray", exitXrayPrepareScript(xrayExitInstallScript(sha256Hex("zip"))))
-	stubs := systemctlStub + guardStubs + xrayDownloadStubs
-	marker, binMarker := rel(RestartMarker("xray")), rel(BinaryPendingMarker("xray"))
+	mustWrite(t, dir, rel(ExitSTLSConfig), "{}\n", 0o600)
+	mustWrite(t, dir, rel(ExitGuardConfPath), "guard\n", 0o644)
+	mustWrite(t, dir, rel(ExitGuardUnitPath), ExitGuardUnit, 0o644)
+	mustWrite(t, dir, rel(ExitSTLSResolvConfPath), ExitSTLSResolvConf, 0o644)
+	mustWrite(t, dir, "download", "tgz", 0o644)
+	mustWrite(t, dir, "payload", fakeSingBox("1.14.4"), 0o755)
+	u := ExitSTLSUnit
+	script := UnitConvergeScript(u, exitSTLSPrepareScript(singBoxInstallScript(u, sha256Hex("tgz"))))
+	stubs := systemctlStub + guardStubs + singBoxDownloadStubs
+	marker, binMarker := rel(RestartMarker(u)), rel(BinaryPendingMarker(u))
 
-	// Fresh exit: installed, user created, guard loaded, config tested, started once.
+	// Fresh exit: installed, user created, guard loaded, config checked, started once.
 	out, err := shellRun(t, dir, stubs, script)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, w := range []string{"[xray] installed 26.3.27", "egress guard applied", "xray run -test", "работает стабильно"} {
+	for _, w := range []string{"[sing-box] installed 1.14.4", "egress guard applied", "sing-box check", "работает стабильно"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
 	}
-	if count(dir, "restarts", "xray") != 1 || readRel(dir, "useradd.log") == "" || exists(dir, marker) || exists(dir, binMarker) {
-		t.Fatalf("restarts=%d useradd=%q markers=%v/%v\n%s", count(dir, "restarts", "xray"), readRel(dir, "useradd.log"),
+	if count(dir, "restarts", u) != 1 || readRel(dir, "useradd.log") == "" || exists(dir, marker) || exists(dir, binMarker) {
+		t.Fatalf("restarts=%d useradd=%q markers=%v/%v\n%s", count(dir, "restarts", u), readRel(dir, "useradd.log"),
 			exists(dir, marker), exists(dir, binMarker), out)
 	}
 	if count(dir, "nft.log", "nft -f ./etc/nftables-heyearth-exit-guard.conf") != 1 {
@@ -1254,79 +1245,77 @@ func TestExitXrayConverge(t *testing.T) {
 	if out, err := shellRun(t, dir, stubs, script); err != nil || !strings.Contains(out, "без перезапуска") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if exists(dir, "curl.args") || count(dir, "restarts", "xray") != 1 || count(dir, "nft.log", "nft -f ./etc/nftables-heyearth-exit-guard.conf") != 2 ||
+	if exists(dir, "curl.args") || count(dir, "restarts", u) != 1 || count(dir, "nft.log", "nft -f ./etc/nftables-heyearth-exit-guard.conf") != 2 ||
 		strings.Count(readRel(dir, "useradd.log"), "useradd") != 1 {
-		t.Fatalf("idempotent re-run changed things: restarts=%d\n%s", count(dir, "restarts", "xray"), readRel(dir, "nft.log"))
+		t.Fatalf("idempotent re-run changed things: restarts=%d\n%s", count(dir, "restarts", u), readRel(dir, "nft.log"))
 	}
 
-	// A new config that xray refuses: the converge fails before any restart, the marker stays.
+	// A new config that sing-box refuses: the converge fails before any restart, the marker stays.
 	mustWrite(t, dir, marker, "", 0o644)
-	mustWrite(t, dir, "xray-test-fails", "", 0o644)
+	mustWrite(t, dir, "sb-check-fails", "", 0o644)
 	out, err = shellRun(t, dir, stubs, script)
-	if err == nil || !strings.Contains(out, "failed to load config files") || !strings.Contains(out, "[xray] ERROR") {
-		t.Fatalf("a failing xray -test must fail the step: %v\n%s", err, out)
+	if err == nil || !strings.Contains(out, "decode config") || !strings.Contains(out, "[sing-box] ERROR") {
+		t.Fatalf("a failing sing-box check must fail the step: %v\n%s", err, out)
 	}
-	if count(dir, "restarts", "xray") != 1 || !exists(dir, marker) {
-		t.Fatal("restarted with a config xray refused, or the marker was lost")
+	if count(dir, "restarts", u) != 1 || !exists(dir, marker) {
+		t.Fatal("restarted with a config sing-box refused, or the marker was lost")
 	}
-	os.Remove(filepath.Join(dir, "xray-test-fails"))
+	os.Remove(filepath.Join(dir, "sb-check-fails"))
 
 	// The guard files are written by the recipe; without them nothing is started.
-	os.Remove(filepath.Join(dir, rel(ExitXrayGuardConfPath)))
+	os.Remove(filepath.Join(dir, rel(ExitGuardConfPath)))
 	out, err = shellRun(t, dir, stubs, script)
-	if err == nil || !strings.Contains(out, ExitXrayGuardConfPath) || count(dir, "restarts", "xray") != 1 {
+	if err == nil || !strings.Contains(out, ExitGuardConfPath) || count(dir, "restarts", u) != 1 {
 		t.Fatalf("missing guard file must stop the step: %v\n%s", err, out)
 	}
 }
 
 // An upgrade marks both the restart and the pending binary; a failing restart then rolls the
 // binary back with the config.
-func TestExitXrayUpgradeRollback(t *testing.T) {
+func TestExitSTLSUpgradeRollback(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no bash")
 	}
-	dir := xrayUpgradeFixture(t)
+	dir := stlsUpgradeFixture(t)
 	// The new binary crash-loops (NRestarts moves between the samples).
-	out, err := shellRun(t, dir, xrayConvergeStubs, xrayTestConverge(), "FLAP=1")
+	out, err := shellRun(t, dir, stlsConvergeStubs, stlsTestConverge(), "FLAP=1")
 	if err == nil || !strings.Contains(out, "перезапускается сам") {
 		t.Fatalf("a crash-looping upgrade must fail the converge: %v\n%s", err, out)
 	}
-	// On the node the marker names /opt/heyearth/xray/xray (rewritten to ./ here) and the new sha256.
-	if readRel(dir, rel(BinaryPendingMarker("xray"))) != sha256Hex(fakeXray("26.3.27"))+"  ./"+rel(ExitXrayBinary)+"\n" || !exists(dir, rel(RestartMarker("xray"))) {
-		t.Fatalf("upgrade must leave both markers until the restart is confirmed: %q\n%s", readRel(dir, rel(BinaryPendingMarker("xray"))), out)
+	// On the node the marker names /opt/heyearth/sing-box/sing-box (rewritten to ./ here) and the new sha256.
+	if readRel(dir, rel(BinaryPendingMarker(ExitSTLSUnit))) != sha256Hex(fakeSingBox("1.14.4"))+"  ./"+rel(SingBoxBinary)+"\n" || !exists(dir, rel(RestartMarker(ExitSTLSUnit))) {
+		t.Fatalf("upgrade must leave both markers until the restart is confirmed: %q\n%s", readRel(dir, rel(BinaryPendingMarker(ExitSTLSUnit))), out)
 	}
-	out, err = shellRun(t, dir, systemctlStub, UnitRollbackScript("xray", []string{ExitXrayConfig}))
+	out, err = shellRun(t, dir, systemctlStub, UnitRollbackScript(ExitSTLSUnit, []string{ExitSTLSConfig}))
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if v := xrayVersionOf(t, filepath.Join(dir, rel(ExitXrayBinary))); v != "25.1.1" || readRel(dir, rel(ExitXrayConfig)) != "old" {
-		t.Fatalf("binary %s config %q after rollback\n%s", v, readRel(dir, rel(ExitXrayConfig)), out)
+	if v := singBoxVersionOf(t, filepath.Join(dir, rel(SingBoxBinary))); v != "1.13.0" || readRel(dir, rel(ExitSTLSConfig)) != "old" {
+		t.Fatalf("binary %s config %q after rollback\n%s", v, readRel(dir, rel(ExitSTLSConfig)), out)
 	}
 }
 
-// xrayUpgradeFixture: a live exit on xray 25.1.1 (unit installed, config just rewritten with a
+// stlsUpgradeFixture: a live exit on sing-box 1.13.0 (unit installed, config just rewritten with a
 // .bak) about to be upgraded from the stub download.
-func xrayUpgradeFixture(t *testing.T) string {
+func stlsUpgradeFixture(t *testing.T) string {
 	dir := t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayBinary), fakeXray("25.1.1"), 0o755)
-	mustWrite(t, dir, "opt/heyearth/xray/geoip.dat", "geoip-old\n", 0o644)
-	mustWrite(t, dir, "opt/heyearth/xray/geosite.dat", "geosite-old\n", 0o644)
-	mustWrite(t, dir, rel(ExitXrayConfig), "new", 0o600)
-	mustWrite(t, dir, rel(ExitXrayConfig)+".bak", "old", 0o600)
-	mustWrite(t, dir, rel(ExitXrayUnitPath), ExitXrayUnit, 0o644)
-	for _, p := range []string{ExitXrayGuardConfPath, ExitXrayGuardUnitPath, ExitXrayResolvConfPath} {
+	mustWrite(t, dir, rel(SingBoxBinary), fakeSingBox("1.13.0"), 0o755)
+	mustWrite(t, dir, rel(ExitSTLSConfig), "new", 0o600)
+	mustWrite(t, dir, rel(ExitSTLSConfig)+".bak", "old", 0o600)
+	mustWrite(t, dir, rel(ExitSTLSUnitPath), ExitSTLSUnitFile, 0o644)
+	for _, p := range []string{ExitGuardConfPath, ExitGuardUnitPath, ExitSTLSResolvConfPath} {
 		mustWrite(t, dir, rel(p), "x\n", 0o644)
 	}
-	mustWrite(t, dir, "active.xray", "", 0o644)
-	mustWrite(t, dir, "download", "zip", 0o644)
-	mustWrite(t, dir, "payload", fakeXray("26.3.27"), 0o755)
+	mustWrite(t, dir, "active."+ExitSTLSUnit, "", 0o644)
+	mustWrite(t, dir, "download", "tgz", 0o644)
+	mustWrite(t, dir, "payload", fakeSingBox("1.14.4"), 0o755)
 	return dir
 }
 
-const xrayConvergeStubs = systemctlStub + guardStubs + xrayDownloadStubs + mvKillStub
+const stlsConvergeStubs = systemctlStub + guardStubs + singBoxDownloadStubs + mvKillStub
 
-func xrayTestConverge() string {
-	return UnitConvergeScript("xray", exitXrayPrepareScript(xrayExitInstallScript(sha256Hex("zip"))))
+func stlsTestConverge() string {
+	return UnitConvergeScript(ExitSTLSUnit, exitSTLSPrepareScript(singBoxInstallScript(ExitSTLSUnit, sha256Hex("tgz"))))
 }
 
 // mvKillStub simulates an interrupted run (SSH drop, killed bash): the script dies right before
@@ -1347,16 +1336,17 @@ func TestBinaryMarkersBeforeReplace(t *testing.T) {
 			t.Fatalf("%v\n%s", err, out)
 		}
 	}
-	// xray, killed right after the new binary landed.
-	dir := xrayUpgradeFixture(t)
-	if out, err := shellRun(t, dir, xrayConvergeStubs, xrayTestConverge(), "MV_KILL_AFTER=*.dl.*/xray *"); err == nil {
+	// sing-box, killed right after the new binary landed.
+	dir := stlsUpgradeFixture(t)
+	if out, err := shellRun(t, dir, stlsConvergeStubs, stlsTestConverge(), "MV_KILL_AFTER=*.dl.*/sing-box *"); err == nil {
 		t.Fatalf("stub did not interrupt:\n%s", out)
 	}
-	if xrayVersionOf(t, filepath.Join(dir, rel(ExitXrayBinary))) != "26.3.27" || !exists(dir, rel(RestartMarker("xray"))) || !exists(dir, rel(BinaryPendingMarker("xray"))) {
+	if singBoxVersionOf(t, filepath.Join(dir, rel(SingBoxBinary))) != "1.14.4" || !exists(dir, rel(RestartMarker(ExitSTLSUnit))) ||
+		!exists(dir, rel(BinaryPendingMarker(ExitSTLSUnit))) {
 		t.Fatal("binary replaced without both markers")
 	}
-	rollback(dir, "xray")
-	if v := xrayVersionOf(t, filepath.Join(dir, rel(ExitXrayBinary))); v != "25.1.1" {
+	rollback(dir, ExitSTLSUnit)
+	if v := singBoxVersionOf(t, filepath.Join(dir, rel(SingBoxBinary))); v != "1.13.0" {
 		t.Fatalf("interrupted upgrade not rolled back: %s", v)
 	}
 	// hysteria: markers are set before the shared installer runs; when it then fails (download
@@ -1524,14 +1514,14 @@ func TestExitPreflightScript(t *testing.T) {
 id() { echo "${UID_STUB:-0}"; }
 df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/vda1 1 1 9000000 1%% /\n'; }
 timeout() { [ "${NET:-1}" = 1 ] || { [ "${NET}" = gh ] && case "$*" in *gstatic*) true;; *) false;; esac; }; }
-ss() { case "$*" in *10443*) echo 'LISTEN 0 4096 *:10443 *:* users:(("nginx",pid=1,fd=6))' ;; *50052*) echo 'LISTEN 0 4096 *:50052 *:* users:(("node-agent",pid=2,fd=3))' ;; esac; }
+ss() { case "$*" in *:443) echo 'LISTEN 0 4096 *:443 *:* users:(("nginx",pid=1,fd=6))' ;; *50052*) echo 'LISTEN 0 4096 *:50052 *:* users:(("node-agent",pid=2,fd=3))' ;; esac; }
 `
 	out, err := shellRun(t, dir, stubs, ExitPreflightScript())
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	for _, w := range []string{"PF os ok Ubuntu 24.04", "PF arch ok", "PF root ok", "PF disk ok", "PF internet ok",
-		"PF port_50443 ok", "PF port_50052 ok", "PF port_10443 fail порт 10443 занят: users:((\"nginx\"", "PF_TIME "} {
+		"PF port_50443 ok", "PF port_50052 ok", "PF port_443 fail порт 443 занят: users:((\"nginx\"", "PF_TIME "} {
 		if !strings.Contains(out, w) {
 			t.Errorf("preflight lacks %q:\n%s", w, out)
 		}
@@ -1608,7 +1598,7 @@ func TestPortHopApplyAndChecks(t *testing.T) {
 		"\t\tudp dport 20000-50000 fib daddr type local counter packets 0 bytes 0 redirect to :50443\n\t}\n}\n"
 	const oldUnguarded = "table inet hysteria_porthopping {\n\tchain prerouting {\n\t\tudp dport 20000-50000 counter packets 0 bytes 0 redirect to :50443\n\t}\n}\n"
 	stubs := systemctlStub + `nft() { case "$1" in -f) echo "nft $*" >> ./nft.log ;; list) case "$*" in *hysteria_porthopping*) cat ./hop.listed 2>/dev/null ;; *heyearth_exit_guard*) cat ./guard.listed 2>/dev/null ;; esac ;; esac; }
-ss() { case "$*" in *50443*) cat ./ss.udp 2>/dev/null ;; *10443*) cat ./ss.tcp 2>/dev/null ;; esac; }
+ss() { case "$*" in *50443*) cat ./ss.udp 2>/dev/null ;; *:443) cat ./ss.tcp 2>/dev/null ;; esac; }
 `
 	dir := t.TempDir()
 	mustWrite(t, dir, "hop.listed", listed, 0o644)
@@ -1633,15 +1623,15 @@ ss() { case "$*" in *50443*) cat ./ss.udp 2>/dev/null ;; *10443*) cat ./ss.tcp 2
 		t.Fatalf("hy-check: %q", out)
 	}
 
-	mustWrite(t, dir, rel(ExitXrayBinary), fakeXray("26.3.27"), 0o755)
-	mustWrite(t, dir, "ss.tcp", `LISTEN 0 4096 0.0.0.0:10443 0.0.0.0:* users:(("xray",pid=9,fd=3))`+"\n", 0o644)
-	if out, _ := shellRun(t, dir, stubs, XrayCheckScript); out != "VERSION=26.3.27\nLISTEN=1\nGUARD=0\n" {
-		t.Fatalf("xray-check: %q", out)
+	mustWrite(t, dir, rel(SingBoxBinary), fakeSingBox("1.14.4"), 0o755)
+	mustWrite(t, dir, "ss.tcp", `LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("sing-box",pid=9,fd=3))`+"\n", 0o644)
+	if out, _ := shellRun(t, dir, stubs, STLSCheckScript); out != "VERSION=1.14.4\nLISTEN=1\nGUARD=0\n" {
+		t.Fatalf("stls-check: %q", out)
 	}
-	mustWrite(t, dir, "guard.listed", "table inet heyearth_exit_guard {\n\tchain output {\n\t\tmeta skuid \"xray\" jump xray_egress\n\t}\n}\n", 0o644)
-	mustWrite(t, dir, "ss.tcp", `LISTEN 0 4096 0.0.0.0:10443 0.0.0.0:* users:(("nginx",pid=9,fd=3))`+"\n", 0o644)
-	if out, _ := shellRun(t, dir, stubs, XrayCheckScript); out != "VERSION=26.3.27\nLISTEN=0\nGUARD=1\n" {
-		t.Fatalf("xray-check: %q", out)
+	mustWrite(t, dir, "guard.listed", "table inet heyearth_exit_guard {\n\tchain output {\n\t\tmeta skuid \"stls\" jump tunnel_egress\n\t}\n}\n", 0o644)
+	mustWrite(t, dir, "ss.tcp", `LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=9,fd=3))`+"\n", 0o644)
+	if out, _ := shellRun(t, dir, stubs, STLSCheckScript); out != "VERSION=1.14.4\nLISTEN=0\nGUARD=1\n" {
+		t.Fatalf("stls-check: %q", out)
 	}
 }
 
@@ -1733,34 +1723,45 @@ sleep() { :; }
 	if out, _ := shellRun(t, dir, curlStub, SocksProbeScript(1095)); out != "HTTP=000\n" || readRel(dir, "tries") != "3\n" {
 		t.Fatalf("all tries failed: %q tries=%q", out, readRel(dir, "tries"))
 	}
+}
 
-	// VR probe: a short-lived xray on the probe config, killed afterwards; the config (it carries
-	// the tunnel UUID) and its .bak are removed.
-	dir = t.TempDir()
-	mustWrite(t, dir, rel(ExitXrayBinary), "#!/bin/bash\necho \"$*\" > ./probe-xray.args\ntouch ./probe-xray.up\nexec sleep 30\n", 0o755)
-	mustWrite(t, dir, "opt/heyearth/state/vr-probe-7.json", "{}", 0o600)
-	mustWrite(t, dir, "opt/heyearth/state/vr-probe-7.json.bak", "{\"uuid\":\"old\"}", 0o600)
-	mustWrite(t, dir, "ok-after", "1", 0o644)
-	stubs := curlStub + `ss() { [ -f ./probe-xray.up ] && echo 'LISTEN 0 4096 127.0.0.1:3095 0.0.0.0:*'; }
-pkill() { echo "pkill $*" >> ./pkill.log; }
-kill() { echo "kill $*" >> ./kill.log; builtin kill "$@"; }
+// retire-xray removes everything of the old Reality path — unit, drop-ins, ExitXrayDir, the
+// 10443/tcp allowances, the user — and xray-state then reports nothing left; both idempotent.
+func TestExitRetireXrayScript(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	mustWrite(t, dir, rel(ExitXrayUnitPath), "[Unit]\n", 0o644)
+	mustWrite(t, dir, rel(ExitXrayUnitPath)+".d/egress.conf", "x\n", 0o644)
+	mustWrite(t, dir, rel(ExitXrayConfig), "{\"uuid\":\"secret\"}\n", 0o600)
+	mustWrite(t, dir, "active.xray", "", 0o644)
+	stubs := systemctlStub + `ufw() { echo "ufw $*" >> ./ufw.log; [ "$1" = status ] && echo 'Status: active'; return 0; }
+iptables() { echo "iptables $*" >> ./ipt.log; if [ "$1" = -C ]; then [ -f ./ipt-rule ] && return 0 || return 1; fi; [ "$1" = -D ] && rm -f ./ipt-rule; return 0; }
+netfilter-persistent() { echo "nfp $*" >> ./nfp.log; }
+id() { [ "$2" = xray ] && [ ! -f ./userdel.log ]; }
+pgrep() { return 1; }
+userdel() { echo "userdel $*" >> ./userdel.log; }
 `
-	out, err = shellRun(t, dir, stubs, VRProbeScript(ExitXrayBinary, "/opt/heyearth/state/vr-probe-7.json", 3095))
-	if err != nil || !strings.HasSuffix(out, "HTTP=204\n") {
-		t.Fatalf("%v %q", err, out)
+	mustWrite(t, dir, "ipt-rule", "", 0o644)
+	for i := 1; i <= 2; i++ {
+		if out, err := shellRun(t, dir, stubs, ExitRetireXrayScript); err != nil {
+			t.Fatalf("run %d: %v\n%s", i, err, out)
+		}
 	}
-	if got := readRel(dir, "probe-xray.args"); got != "run -config ./opt/heyearth/state/vr-probe-7.json\n" {
-		t.Errorf("probe xray args %q", got)
+	if exists(dir, rel(ExitXrayUnitPath)) || exists(dir, rel(ExitXrayUnitPath)+".d") || exists(dir, rel(ExitXrayDir)) || exists(dir, "active.xray") {
+		t.Fatal("xray unit, drop-ins, dir or the running service left")
 	}
-	if exists(dir, "opt/heyearth/state/vr-probe-7.json") || exists(dir, "opt/heyearth/state/vr-probe-7.json.bak") {
-		t.Error("probe config with the tunnel UUID left on the Hub")
+	if !strings.Contains(readRel(dir, "ufw.log"), "ufw delete allow 10443/tcp") || !strings.Contains(readRel(dir, "ipt.log"), "-D INPUT -p tcp --dport 10443 -j ACCEPT") ||
+		readRel(dir, "nfp.log") != "nfp save\n" || readRel(dir, "userdel.log") != "userdel xray\n" {
+		t.Fatalf("ufw %q iptables %q nfp %q userdel %q", readRel(dir, "ufw.log"), readRel(dir, "ipt.log"), readRel(dir, "nfp.log"), readRel(dir, "userdel.log"))
 	}
-	stopped := false
-	for _, l := range strings.Split(readRel(dir, "kill.log"), "\n") {
-		stopped = stopped || (strings.HasPrefix(l, "kill ") && !strings.HasPrefix(l, "kill -0 "))
+	if out, _ := shellRun(t, dir, systemctlStub, ExitXrayStateScript); out != "XRAY=0\n" {
+		t.Fatalf("xray-state after retire: %q", out)
 	}
-	if !stopped || !strings.Contains(readRel(dir, "pkill.log"), "vr-probe-7.json") {
-		t.Errorf("probe xray not stopped / stale probe not cleared: kill=%q pkill=%q", readRel(dir, "kill.log"), readRel(dir, "pkill.log"))
+	mustWrite(t, dir, rel(ExitXrayConfig), "{}\n", 0o600)
+	if out, _ := shellRun(t, dir, systemctlStub, ExitXrayStateScript); out != "XRAY=1\n" {
+		t.Fatalf("xray-state with the dir left: %q", out)
 	}
 }
 
@@ -1771,20 +1772,21 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		t.Skip("no bash")
 	}
 	for name, s := range map[string]string{
-		"converge": UnitConvergeScript("xray", ExitXrayPrepareScript()), "rollback": UnitRollbackScript("x", []string{"/a b"}),
+		"converge": UnitConvergeScript(ExitSTLSUnit, ExitSTLSPrepareScript()), "rollback": UnitRollbackScript("x", []string{"/a b"}),
 		"state": UnitStateScript("xray"), "mark": MarkRestartScript("xray", nil), "sums": SumsScript("/a", "/b c"), "cat": CatScript("/a"),
 		"firewall": ExitFirewallScript(22, nil, 0), "preflight": ExitPreflightScript(), "base": ExitBaseScript, "basecheck": ExitBaseCheckScript,
-		"hop": ExitPortHopApplyScript, "hy": HysteriaCheckScript, "xr": XrayCheckScript, "hubkey": HubSSHKeyEnsureScript,
-		"hyprep": ExitHysteriaPrepareScript(), "xrprep": ExitXrayPrepareScript(),
+		"hop": ExitPortHopApplyScript, "hy": HysteriaCheckScript, "stls": STLSCheckScript, "hubkey": HubSSHKeyEnsureScript,
+		"hyprep": ExitHysteriaPrepareScript(), "sbprep": ExitSTLSPrepareScript(), "hubsbprep": HubSTLSPrepareScript(7),
+		"retire": ExitRetireXrayScript, "xraystate": ExitXrayStateScript,
 		"auth": AuthorizedKeyScript("ssh-ed25519 AAAA"), "authc": AuthorizedKeyCheckScript("ssh-ed25519 AAAA"),
-		"socks": SocksProbeScript(1095), "vr": VRProbeScript("/opt/heyearth/xray/xray", "/opt/heyearth/state/vr-probe-7.json", 3095),
+		"socks":  SocksProbeScript(1095),
 		"hyconv": UnitConvergeScript("hysteria2", ExitHysteriaPrepareScript()),
 		"soft":   UnitConvergeSoftScript("hysteria2-client-7", HysteriaEnsureScript()), "private": PrivateModeScript("/a", "/b c"),
 		"agentcheck": NodeAgentCheckScript, "agentconv": UnitConvergeScript("node-agent", ExitAgentGuardApplyScript),
 		"keypub": KeyPublicScript("/a b"), "pcstate": PathCheckStateScript("xray"), "pcstart": PathCheckStartScript("xray", true),
 		"pcrecord": PathCheckRecordScript("xray", []PendingWrite{{"/a b", sha256Hex("x")}}), "pcdone": PathCheckDoneScript("xray"),
 	} {
-		if name != "hyprep" && name != "xrprep" && !strings.HasPrefix(s, "# hp:") {
+		if name != "hyprep" && name != "sbprep" && name != "hubsbprep" && !strings.HasPrefix(s, "# hp:") {
 			t.Errorf("%s: no marker line", name)
 		}
 		if out, err := exec.Command("bash", "-n", "-c", s).CombinedOutput(); err != nil {
@@ -1795,8 +1797,9 @@ func TestOpScriptsMarkedAndParse(t *testing.T) {
 		"converge xray": UnitConvergeScript("xray", ""), "rollback xray": UnitRollbackScript("xray", nil), "unit-state xray": UnitStateScript("xray"),
 		"mark xray": MarkRestartScript("xray", nil), "sums /a /b": SumsScript("/a", "/b"), "cat /a": CatScript("/a"), "firewall": ExitFirewallScript(22, nil, 0),
 		"preflight": ExitPreflightScript(), "base": ExitBaseScript, "base-check": ExitBaseCheckScript, "hop-apply": ExitPortHopApplyScript,
-		"hy-check": HysteriaCheckScript, "xray-check": XrayCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
-		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095), "vr-probe 3095": VRProbeScript("/x", "/c", 3095),
+		"hy-check": HysteriaCheckScript, "stls-check": STLSCheckScript, "hub-key": HubSSHKeyEnsureScript, "authkey": AuthorizedKeyScript("k"),
+		"authkey-check": AuthorizedKeyCheckScript("k"), "socks-probe 1095": SocksProbeScript(1095),
+		"retire-xray": ExitRetireXrayScript, "xray-state": ExitXrayStateScript,
 		"converge hysteria2-client-7 soft": UnitConvergeSoftScript("hysteria2-client-7", ""), "private /a /b": PrivateModeScript("/a", "/b"),
 		"agent-check": NodeAgentCheckScript, "key-pub /a": KeyPublicScript("/a"), "path-state xray": PathCheckStateScript("xray"),
 		"path-start xray 0": PathCheckStartScript("xray", false), "path-record xray": PathCheckRecordScript("xray", nil), "path-done xray": PathCheckDoneScript("xray"),

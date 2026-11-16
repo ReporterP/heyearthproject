@@ -28,16 +28,16 @@ func deproFixture(t *testing.T) *deproEnv {
 	t.Helper()
 	e := &deproEnv{node: newFakeHost(), hub: newFakeHost(), h: &fakeHooks{lifecycle: "online", tunnelStatus: "healthy", tunnel: Tunnel{Password: deproOldPW}}}
 	n := e.node
-	for _, u := range append(config.ExitServiceUnits(), config.ExitXrayGuardService, config.ExitPortHopService, config.ExitAgentGuardService) {
+	for _, u := range append(config.ExitServiceUnits(), config.ExitGuardService, config.ExitPortHopService, config.ExitAgentGuardService) {
 		n.active[u], n.enabled[u] = true, true
 	}
-	for _, tb := range []string{config.ExitXrayGuardTable, config.ExitPortHopTable, config.ExitAgentGuardTable} {
+	for _, tb := range []string{config.ExitGuardTable, config.ExitPortHopTable, config.ExitAgentGuardTable} {
 		n.nft[tb] = true
 	}
 	n.files[config.ExitPortHopConfPath] = []byte(config.ExitPortHopConf)
 	n.files[config.ExitPortHopUnitPath] = []byte(config.ExitPortHopUnit)
-	n.files[config.ExitXrayGuardConfPath] = []byte("table inet heyearth_exit_guard {}\n")
-	n.files[config.ExitXrayGuardUnitPath] = []byte(config.ExitXrayGuardUnit)
+	n.files[config.ExitGuardConfPath] = []byte("table inet heyearth_exit_guard {}\n")
+	n.files[config.ExitGuardUnitPath] = []byte(config.ExitGuardUnit)
 	n.files[config.ExitAgentGuardConfPath] = []byte("table inet heyearth_agent_guard {}\n")
 	n.files[config.ExitHysteriaConfig] = []byte(config.ExitHysteriaServerYAML(deproOldPW, "203.0.113.7", 8443))
 	n.files[config.ExitHysteriaConfig+".bak"] = []byte("  password: " + deproOldPW + "\n")
@@ -71,18 +71,18 @@ func deproFixture(t *testing.T) *deproEnv {
 func (e *deproEnv) tornDown(t *testing.T) {
 	t.Helper()
 	n := e.node
-	for _, u := range append(config.ExitServiceUnits(), config.ExitXrayGuardService, config.ExitPortHopService) {
+	for _, u := range append(config.ExitServiceUnits(), config.ExitGuardService, config.ExitPortHopService) {
 		if n.active[u] || n.enabled[u] {
 			t.Errorf("%s still running/enabled on the exit", u)
 		}
 	}
-	for _, p := range []string{config.ExitPortHopConfPath, config.ExitPortHopUnitPath, config.ExitXrayGuardConfPath, config.ExitXrayGuardUnitPath,
+	for _, p := range []string{config.ExitPortHopConfPath, config.ExitPortHopUnitPath, config.ExitGuardConfPath, config.ExitGuardUnitPath,
 		config.ExitHysteriaConfig + ".bak"} {
 		if n.files[p] != nil {
 			t.Errorf("%s left on the exit", p)
 		}
 	}
-	if n.nft[config.ExitXrayGuardTable] || n.nft[config.ExitPortHopTable] {
+	if n.nft[config.ExitGuardTable] || n.nft[config.ExitPortHopTable] {
 		t.Errorf("nft tables left: %v", n.nft)
 	}
 	// A parked node keeps :50052 closed to the world: the node-agent Hub-only guard stays.
@@ -313,14 +313,14 @@ func TestDeprovisionResumesAfterDrop(t *testing.T) {
 	e.tornDown(t)
 }
 
-// The node stays guarded: its xray egress guard is never removed while xray still runs, even if
+// The node stays guarded: its tunnel egress guard is never removed while the tunnel still runs, even if
 // the stop step was skipped and the node came back in the middle of the job.
 func TestDeprovisionKeepsGuardUnderRunningXray(t *testing.T) {
 	e := deproFixture(t)
 	e.node.dropOnce = "stop-services"
 	id, _ := e.r.Start(context.Background(), 7, KindDeprovision)
 	if got := e.store.statuses(id); !slices.Equal(got, withStatus(deproSteps, "done", "done", "done", "failed", "pending", "pending", "pending")) ||
-		!e.node.nft[config.ExitXrayGuardTable] || e.node.count("remove-guard") != 0 {
+		!e.node.nft[config.ExitGuardTable] || e.node.count("remove-guard") != 0 {
 		t.Fatalf("steps=%v ops=%v", got, e.node.ops)
 	}
 }

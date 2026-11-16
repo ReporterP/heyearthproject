@@ -327,7 +327,6 @@ func apiExitOptions(n provision.Node) (provision.ExitOptions, error) {
 	o := provision.ExitOptions{
 		HubIPs:      hubIPs,
 		MTProtoPort: port,
-		HubXray:     xrayUnitBinary,
 		NodeAgent:   func() ([]byte, error) { return readHubFile(filepath.Join(config.AppDir(), "artifacts", "node-agent")) },
 		CA: func() ([]byte, []byte, error) {
 			cert, err := readHubFile(filepath.Join(certs, "ca-cert.pem"))

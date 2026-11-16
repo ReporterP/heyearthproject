@@ -1,0 +1,19 @@
+[Unit]
+Description=Backup tunnel client to exit id=7 (203.0.113.7): ShadowTLS v3 — HeYearth
+After=network.target
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=client.json:/opt/heyearth/stls/client-7.json
+ExecStart=/opt/heyearth/sing-box/sing-box run -c ${CREDENTIALS_DIRECTORY}/client.json
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target

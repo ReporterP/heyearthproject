@@ -27,28 +27,28 @@ func TestValidateExitIP(t *testing.T) {
 	}
 	// The renderers that can fail apply the same contract.
 	for _, ip := range []string{"127.0.0.1", "0.0.0.0", "exit.example.com"} {
-		if _, err := ExitXrayConfigJSON(testKeys, ip, 8443); err == nil {
-			t.Errorf("ExitXrayConfigJSON accepted %q", ip)
+		if _, err := ExitSTLSServerJSON(testKeys.UUID, ip, 8443); err == nil {
+			t.Errorf("ExitSTLSServerJSON accepted %q", ip)
 		}
-		if _, err := ExitXrayGuardConf(ip, 8443); err == nil {
-			t.Errorf("ExitXrayGuardConf accepted %q", ip)
+		if _, err := ExitGuardConf(ip, 8443); err == nil {
+			t.Errorf("ExitGuardConf accepted %q", ip)
 		}
-		if _, err := ExitRealityProbeConfig(3095, RealityProbe{ExitIP: ip, UUID: testKeys.UUID, PublicKey: testKeys.PublicKey}); err == nil {
-			t.Errorf("ExitRealityProbeConfig accepted %q", ip)
+		if _, err := HubSTLSClientJSON(7, ip, testKeys.UUID); err == nil {
+			t.Errorf("HubSTLSClientJSON accepted %q", ip)
 		}
 	}
 }
 
 // nftCheck runs `nft -c -f` on conf when nft can (Linux with CAP_NET_ADMIN); skips otherwise. A
-// missing user xray on the test host is replaced by uid 0 for the check only.
+// missing user stls on the test host is replaced by uid 0 for the check only.
 func nftCheck(t *testing.T, conf string) {
 	t.Helper()
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Log("nft not installed: syntax check skipped")
 		return
 	}
-	if exec.Command("id", "-u", ExitXrayUser).Run() != nil {
-		conf = strings.ReplaceAll(conf, `meta skuid "`+ExitXrayUser+`"`, "meta skuid 0")
+	if exec.Command("id", "-u", ExitSTLSUser).Run() != nil {
+		conf = strings.ReplaceAll(conf, `meta skuid "`+ExitSTLSUser+`"`, "meta skuid 0")
 	}
 	p := filepath.Join(t.TempDir(), "guard.nft")
 	if err := os.WriteFile(p, []byte(conf), 0o644); err != nil {
@@ -64,18 +64,18 @@ func nftCheck(t *testing.T, conf string) {
 	}
 }
 
-// The kernel guard of the exit xray: the user's packets to the exit itself (but MTProxy), loopback,
+// The kernel guard of the exit's backup tunnel: the user's packets to the exit itself (but MTProxy), loopback,
 // private, multicast and broadcast ranges and any local address are rejected — DNS included.
-func TestExitXrayGuardConf(t *testing.T) {
-	c, err := ExitXrayGuardConf("203.0.113.7", 8443)
+func TestExitGuardConf(t *testing.T) {
+	c, err := ExitGuardConf("203.0.113.7", 8443)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(c, "\ntable inet heyearth_exit_guard\ndelete table inet heyearth_exit_guard\ntable inet heyearth_exit_guard {\n") {
 		t.Error("the nft file must create-then-delete the table (idempotent re-apply)")
 	}
-	if !strings.Contains(c, "  chain output {\n    type filter hook output priority filter; policy accept;\n    meta skuid \"xray\" jump xray_egress\n  }\n") {
-		t.Error("the output chain must send every packet of user xray through xray_egress")
+	if !strings.Contains(c, "  chain output {\n    type filter hook output priority filter; policy accept;\n    meta skuid \"stls\" jump tunnel_egress\n  }\n") {
+		t.Error("the output chain must send every packet of user stls through tunnel_egress")
 	}
 	if strings.Contains(c, "dport 53") || strings.Count(c, " return\n") != 1 {
 		t.Errorf("the only allowance is MTProxy on the own address (no DNS exception):\n%s", c)
@@ -104,123 +104,96 @@ func TestExitXrayGuardConf(t *testing.T) {
 			t.Errorf("blocked range %s missing", n)
 		}
 	}
-	golden(t, "exit_xray_guard_nft.golden", []byte(c))
+	golden(t, "exit_guard_nft.golden", []byte(c))
 	nftCheck(t, c)
 
 	// No MTProxy: no allowance on the own address. IPv6 exit: its address goes to the ip6 rules.
-	c0, _ := ExitXrayGuardConf("203.0.113.7", 0)
+	c0, _ := ExitGuardConf("203.0.113.7", 0)
 	if strings.Contains(c0, " return\n") || !strings.Contains(c0, ", 203.0.113.7 } counter reject\n") {
 		t.Errorf("without MTProxy:\n%s", c0)
 	}
-	c6, _ := ExitXrayGuardConf("2001:DB8::7", 8443)
+	c6, _ := ExitGuardConf("2001:DB8::7", 8443)
 	if !strings.Contains(c6, "    ip6 daddr 2001:db8::7 tcp dport 8443 return\n") || !strings.Contains(c6, ", ff00::/8, 2001:db8::7 } counter reject\n") {
 		t.Errorf("IPv6 exit:\n%s", c6)
 	}
 	nftCheck(t, c6)
 }
 
-// ExitXrayUnit runs xray as the guarded, capability-less user with its own resolv.conf, and
-// never without the guard; the guard comes back after an nftables flush.
-func TestExitXrayUnitRunsAsGuardedUser(t *testing.T) {
-	for _, w := range []string{"\nUser=xray\n", "\nGroup=xray\n", "\nRequires=heyearth-exit-guard.service\n",
-		"\nAfter=network.target heyearth-exit-guard.service\n", "\nExecStartPre=+/bin/chown xray:xray " + ExitXrayConfig + "\n",
-		"\nBindReadOnlyPaths=" + ExitXrayResolvConfPath + ":/etc/resolv.conf\n", "\nNoNewPrivileges=yes\n", "\nProtectSystem=strict\n",
-		"\nProtectHome=yes\n", "\nPrivateTmp=yes\n", "\nCapabilityBoundingSet=\n", "\nAmbientCapabilities=\n"} {
-		if !strings.Contains(ExitXrayUnit, w) {
-			t.Errorf("xray unit lacks %q", strings.TrimSpace(w))
+// ExitSTLSUnitFile runs sing-box as the guarded user — only CAP_NET_BIND_SERVICE, its own
+// resolv.conf — and never without the guard; the guard comes back after an nftables flush.
+func TestExitSTLSUnitRunsAsGuardedUser(t *testing.T) {
+	for _, w := range []string{"\nUser=stls\n", "\nGroup=stls\n", "\nRequires=heyearth-exit-guard.service\n",
+		"\nAfter=network.target heyearth-exit-guard.service\n", "\nExecStartPre=+/bin/chown stls:stls " + ExitSTLSConfig + "\n",
+		"\nExecStart=" + SingBoxBinary + " run -c " + ExitSTLSConfig + "\n",
+		"\nBindReadOnlyPaths=" + ExitSTLSResolvConfPath + ":/etc/resolv.conf\n", "\nNoNewPrivileges=yes\n", "\nProtectSystem=strict\n",
+		"\nProtectHome=yes\n", "\nPrivateTmp=yes\n", "\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n", "\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"} {
+		if !strings.Contains(ExitSTLSUnitFile, w) {
+			t.Errorf("tunnel unit lacks %q", strings.TrimSpace(w))
 		}
 	}
-	if strings.Index(ExitXrayUnit, "ExecStartPre=") > strings.Index(ExitXrayUnit, "ExecStart=/") {
-		t.Error("the config must be handed to the user before xray starts")
+	if strings.Index(ExitSTLSUnitFile, "ExecStartPre=") > strings.Index(ExitSTLSUnitFile, "ExecStart=/") {
+		t.Error("the config must be handed to the user before sing-box starts")
 	}
-	for _, w := range []string{"ExecStart=/usr/sbin/nft -f " + ExitXrayGuardConfPath + "\n", "\nBefore=xray.service\n",
+	for _, w := range []string{"ExecStart=/usr/sbin/nft -f " + ExitGuardConfPath + "\n", "\nBefore=heyearth-stls.service\n",
 		"\nAfter=network.target nftables.service\n", "\nPartOf=nftables.service\n"} {
-		if !strings.Contains(ExitXrayGuardUnit, w) {
+		if !strings.Contains(ExitGuardUnit, w) {
 			t.Errorf("guard unit lacks %q", strings.TrimSpace(w))
 		}
 	}
 }
 
-// xray's resolv.conf names exactly the servers of its dns block: nothing on the exit resolves
+// sing-box's resolv.conf names exactly the servers of its dns block: nothing on the exit resolves
 // through a local or private resolver the guard would refuse.
-func TestExitXrayResolvConfMatchesDNSBlock(t *testing.T) {
+func TestExitSTLSResolvConfMatchesDNSBlock(t *testing.T) {
 	var ns []string
-	for _, l := range strings.Split(ExitXrayResolvConf, "\n") {
+	for _, l := range strings.Split(ExitSTLSResolvConf, "\n") {
 		if f := strings.Fields(l); len(f) == 2 && f[0] == "nameserver" {
 			ns = append(ns, f[1])
 		}
 	}
-	b, err := ExitXrayConfigJSON(testKeys, "203.0.113.7", 8443)
+	b, err := ExitSTLSServerJSON(testKeys.UUID, "203.0.113.7", 8443)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(ns, exitXrayDNSServers) || !strings.Contains(string(b), "\"servers\": [\n      \"8.8.8.8\",\n      \"1.1.1.1\"\n    ]") {
-		t.Errorf("resolv.conf %v, dns block %v", ns, exitXrayDNSServers)
+	if !reflect.DeepEqual(ns, exitSTLSDNSServers) || !strings.Contains(string(b), `"server": "8.8.8.8"`) || !strings.Contains(string(b), `"server": "1.1.1.1"`) {
+		t.Errorf("resolv.conf %v, dns block %v", ns, exitSTLSDNSServers)
 	}
 	for _, s := range ns {
 		if strings.Contains(mustGuardConf(t), " "+s+",") || net.ParseIP(s).IsPrivate() || net.ParseIP(s).IsLoopback() {
 			t.Errorf("nameserver %s is refused by the guard", s)
 		}
 	}
-	golden(t, "exit_xray_resolv_conf.golden", []byte(ExitXrayResolvConf))
+	golden(t, "exit_stls_resolv_conf.golden", []byte(ExitSTLSResolvConf))
 }
 
 func mustGuardConf(t *testing.T) string {
 	t.Helper()
-	c, err := ExitXrayGuardConf("203.0.113.7", 8443)
+	c, err := ExitGuardConf("203.0.113.7", 8443)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
 
-// TestExitXrayGuardScriptBehaviour runs ExitXrayGuardScript in a real bash with /etc/ and /opt/
-// rewritten to a temp ./etc/, ./opt/ and getent/groupadd/id/useradd/nft/systemctl stubbed: the
-// group and user are created once (an existing lone group is reused), the files are exactly
-// ExitXrayResolvConf / ExitXrayGuardConf / ExitXrayGuardUnit, nft loads the guard (after the user
-// exists) and the boot unit is enabled every run; a failing nft stops the script.
-func TestExitXrayGuardScriptBehaviour(t *testing.T) {
+// TestExitSTLSUserAndGuardScripts runs ExitSTLSUserScript + ExitGuardApplyScript in a real bash
+// with getent/groupadd/id/useradd/nft/systemctl stubbed: the group and user are created once (an
+// existing lone group is reused), nft loads the guard after the user exists and the boot unit is
+// enabled every run; a failing nft stops the script.
+func TestExitSTLSUserAndGuardScripts(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
 	}
-	s, err := ExitXrayGuardScript("203.0.113.7", 8443)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ExitXrayGuardScript("exit.example.com", 8443); err == nil {
-		t.Error("non-IP accepted")
-	}
-	script := strings.ReplaceAll(s, "cat > /etc/", "cat > ./etc/")
-	script = strings.ReplaceAll(script, "\nnft -f /etc/", "\nnft -f ./etc/")
-	script = strings.ReplaceAll(script, "cat > /opt/", "cat > ./opt/")
-	script = strings.ReplaceAll(script, "mkdir -p /opt/", "mkdir -p ./opt/")
-	if strings.Contains(script, "> /etc/") || strings.Contains(script, "> /opt/") || strings.Contains(script, "mkdir -p /") ||
-		strings.Contains(script, "\nnft -f /etc/") || strings.Count(script, "./etc/") != 3 || strings.Count(script, "./opt/") != 2 {
-		t.Fatal("path rewrite incomplete; refusing to run against the real /etc or /opt")
-	}
-	const stubs = `getent() { [ "$1" = group ] && [ "$2" = xray ] && [ -f ./group-xray ]; }
-groupadd() { echo "groupadd $*" >> ./groupadd.log; touch ./group-xray; }
-id() { [ "$1" = -u ] && [ "$2" = xray ] && [ -f ./user-xray ]; }
-useradd() { [ -f ./group-xray ] || { echo "useradd: group xray does not exist" >&2; return 6; }; echo "useradd $*" >> ./useradd.log; touch ./user-xray; }
-nft() { [ -f ./user-xray ] || { echo "nft: user xray unknown" >&2; return 1; }; [ ! -f ./nft-fails ] || return 1; echo "nft $*" >> ./nft.log; }
+	const stubs = `getent() { [ "$1" = group ] && [ "$2" = stls ] && [ -f ./group-stls ]; }
+groupadd() { echo "groupadd $*" >> ./groupadd.log; touch ./group-stls; }
+id() { [ "$1" = -u ] && [ "$2" = stls ] && [ -f ./user-stls ]; }
+useradd() { [ -f ./group-stls ] || { echo "useradd: group stls does not exist" >&2; return 6; }; echo "useradd $*" >> ./useradd.log; touch ./user-stls; }
+nft() { [ -f ./user-stls ] || { echo "nft: user stls unknown" >&2; return 1; }; [ ! -f ./nft-fails ] || return 1; echo "nft $*" >> ./nft.log; }
 systemctl() { echo "systemctl $*" >> ./systemctl.log; }
 `
-	setup := func(lonelyGroup bool) string {
-		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, "etc", "systemd", "system"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if lonelyGroup {
-			if err := os.WriteFile(filepath.Join(dir, "group-xray"), nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return dir
-	}
 	run := func(dir string) (string, error) {
 		cmd := exec.Command("bash", "-s")
 		cmd.Dir = dir
-		cmd.Stdin = strings.NewReader("set -e\n" + stubs + script + "echo AFTER-GUARD\n")
+		cmd.Stdin = strings.NewReader("set -e\n" + stubs + ExitSTLSUserScript + ExitGuardApplyScript + "echo AFTER-GUARD\n")
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
 		err := cmd.Run()
@@ -230,10 +203,13 @@ systemctl() { echo "systemctl $*" >> ./systemctl.log; }
 		b, _ := os.ReadFile(filepath.Join(dir, name))
 		return string(b)
 	}
-	const wantUseradd = "useradd --system -g xray --no-create-home --shell /usr/sbin/nologin xray\n"
+	const wantUseradd = "useradd --system -g stls --no-create-home --shell /usr/sbin/nologin stls\n"
 
-	// A group xray without its user (left by an old package): reused, the user is still created.
-	lonely := setup(true)
+	// A group stls without its user: reused, the user is still created.
+	lonely := t.TempDir()
+	if err := os.WriteFile(filepath.Join(lonely, "group-stls"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := run(lonely); err != nil || !strings.Contains(out, "AFTER-GUARD") {
 		t.Fatalf("lone group: %v\n%s", err, out)
 	}
@@ -241,22 +217,16 @@ systemctl() { echo "systemctl $*" >> ./systemctl.log; }
 		t.Errorf("lone group: groupadd %q, useradd %q", read(lonely, "groupadd.log"), read(lonely, "useradd.log"))
 	}
 
-	dir := setup(false)
+	dir := t.TempDir()
 	for i := 1; i <= 2; i++ {
 		if out, err := run(dir); err != nil || !strings.Contains(out, "AFTER-GUARD") {
 			t.Fatalf("run %d: %v\n%s", i, err, out)
 		}
 	}
-	if read(dir, "groupadd.log") != "groupadd --system xray\n" || read(dir, "useradd.log") != wantUseradd {
+	if read(dir, "groupadd.log") != "groupadd --system stls\n" || read(dir, "useradd.log") != wantUseradd {
 		t.Errorf("want exactly one groupadd and one useradd:\n%s%s", read(dir, "groupadd.log"), read(dir, "useradd.log"))
 	}
-	conf, _ := ExitXrayGuardConf("203.0.113.7", 8443)
-	for path, want := range map[string]string{ExitXrayGuardConfPath: conf, ExitXrayGuardUnitPath: ExitXrayGuardUnit, ExitXrayResolvConfPath: ExitXrayResolvConf} {
-		if got := read(dir, strings.TrimPrefix(path, "/")); got != want {
-			t.Errorf("%s:\n%s\nwant\n%s", path, got, want)
-		}
-	}
-	if got := read(dir, "nft.log"); got != "nft -f ./etc/nftables-heyearth-exit-guard.conf\nnft -f ./etc/nftables-heyearth-exit-guard.conf\n" {
+	if got := read(dir, "nft.log"); got != "nft -f "+ExitGuardConfPath+"\nnft -f "+ExitGuardConfPath+"\n" {
 		t.Errorf("nft calls:\n%s", got)
 	}
 	if strings.Count(read(dir, "systemctl.log"), "systemctl enable heyearth-exit-guard\n") != 2 {
@@ -286,10 +256,10 @@ func TestHysteriaPasswordSameOnHubAndExit(t *testing.T) {
 func TestExitStaticFileGoldens(t *testing.T) {
 	for name, text := range map[string]string{
 		"exit_unit_hysteria2.golden":  ExitHysteriaUnit,
-		"exit_unit_xray.golden":       ExitXrayUnit,
+		"exit_unit_stls.golden":       ExitSTLSUnitFile,
 		"exit_unit_node_agent.golden": NodeAgentUnit,
 		"exit_unit_porthop.golden":    ExitPortHopUnit,
-		"exit_unit_xray_guard.golden": ExitXrayGuardUnit,
+		"exit_unit_guard.golden":      ExitGuardUnit,
 		"exit_sysctl.golden":          ExitSysctlConf,
 	} {
 		golden(t, name, []byte(text))
