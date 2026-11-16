@@ -360,14 +360,22 @@ if [[ "$(uname -m)" != "x86_64" ]]; then
 	echo "the stock official MTProxy build requires an x86_64 server" >&2
 	exit 1
 fi
-export DEBIAN_FRONTEND=noninteractive
+# On the live Hub: never upgrade what is installed, never let needrestart restart services (nginx,
+# the API running this very script), never start a freshly installed nftables.service (its default
+# /etc/nftables.conf begins with flush ruleset: the Hub's iptables-nft rules would go).
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 need=
-for p in ca-certificates curl build-essential iproute2 libssl-dev util-linux zlib1g-dev nftables; do
+for p in ca-certificates curl build-essential iproute2 libssl-dev util-linux zlib1g-dev; do
 	dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || need="$need $p"
 done
+command -v nft >/dev/null 2>&1 || need="$need nftables"
 if [[ -n "$need" ]]; then
+	printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
+	trap 'rm -f /usr/sbin/policy-rc.d' EXIT
 	apt-get update -qq
-	apt-get install -y -qq --no-install-recommends $need
+	apt-get install -y -qq --no-install-recommends --no-upgrade $need
+	rm -f /usr/sbin/policy-rc.d
+	trap - EXIT
 fi
 if ! id mtproxy >/dev/null 2>&1; then
 	useradd --system --home /nonexistent --shell /usr/sbin/nologin mtproxy
@@ -391,7 +399,7 @@ if [[ ! -x "$source_directory/objs/bin/mtproto-proxy" ]] ||
 	install -d -o mtproxy -g mtproxy -m 0755 "$build_directory"
 	tar -C "$build_directory" --strip-components=1 -xzf "$archive"
 	chown -R mtproxy:mtproxy "$build_directory"
-	runuser -u mtproxy -- make -C "$build_directory" -j"$(nproc)" >/dev/null
+	runuser -u mtproxy -- nice -n 19 ionice -c 3 make -C "$build_directory" -j2 >/dev/null
 	test -x "$build_directory/objs/bin/mtproto-proxy"
 	printf '%%s\n' "$mtproxy_commit" > "$build_directory/.tproxy-commit"
 	chown -R root:root "$build_directory"
@@ -400,7 +408,9 @@ if [[ ! -x "$source_directory/objs/bin/mtproto-proxy" ]] ||
 	fi
 	mv "$build_directory" "$source_directory"
 	trap - EXIT
-	rm -rf "$temporary"
+	rm -rf "$temporary" "$source_directory".before-tproxy.*
+	# A new binary runs only after a restart: tg_services restarts every marked unit.
+	mkdir -p %[5]s && touch %[5]s/mtproxy
 	echo "MTProxy собран из $mtproxy_commit"
 fi
 find "$source_directory" -type d -exec chmod 0755 {} +
@@ -426,7 +436,7 @@ if [[ ! -s %[4]s/proxy-secret ]] || [[ ! -s %[4]s/proxy-multi.conf ]]; then
 	trap - EXIT
 	echo "proxy-secret и proxy-multi.conf получены с core.telegram.org"
 fi
-`, TGMTProxyDir, MTProxyCommit, MTProxyArchiveSHA256, TGMTProxyEtc)
+`, TGMTProxyDir, MTProxyCommit, MTProxyArchiveSHA256, TGMTProxyEtc, RestartMarkerDir)
 
 // TGMTProxyNATScript prints NAT=<args> for mtproxy.env: "" when the source address the Hub uses
 // towards Telegram's middle-ends is public (configured on an interface: no 1:1 NAT), otherwise
@@ -508,8 +518,10 @@ server {
     ssl_ecdh_curve X25519:prime256v1;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # The bridge URI (/?bridge=...) and the carrier's bearer are credentials.
+    # The bridge URI (/?bridge=...) and the carrier's bearer are credentials: no access log, and
+    # no error log either (an upstream error line quotes the request).
     access_log off;
+    error_log /dev/null crit;
     client_max_body_size 0;
 
     location / {

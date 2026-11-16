@@ -26,6 +26,13 @@ type tgNginxWant struct {
 	hasRelayPP            bool
 }
 
+// tgNginxStampPath: the sha256 of the files nginx last reloaded with (tg_nginx's apply).
+const tgNginxStampPath = "/opt/heyearth/state/tg-nginx-applied"
+
+func (w tgNginxWant) stamp() string {
+	return sha256Hex([]byte(string(w.router) + "\x00" + string(w.conf) + "\x00" + string(w.relayPP)))
+}
+
 func tgNginxDesired(ctx context.Context, r Remote, host string) (tgNginxWant, []byte, error) {
 	router, err := readFileB64(ctx, r, config.HubStreamRouterPath)
 	if err != nil {
@@ -114,6 +121,11 @@ func tgNginxStep(name, host string) Step {
 		if out, err := r.Run(ctx, tgNginxReloadSh); err != nil {
 			return fmt.Errorf("nginx не принял настройку: %w: %s", err, tail(out, 800))
 		}
+		// Reloaded with exactly these files: a run cut between the writes and the reload is caught
+		// by the next verify (files on disk alone do not say what nginx runs).
+		if _, err := r.PutFile(ctx, tgNginxStampPath, []byte(w.stamp()), 0o644); err != nil {
+			return err
+		}
 		if host != "" {
 			s.Printf("nginx: %s идёт на релей через Hub и входы", host)
 		} else {
@@ -147,6 +159,15 @@ func tgNginxStep(name, host string) Step {
 			}
 			if string(pp) != string(w.relayPP) {
 				probs = append(probs, config.HubRelayPPConfPath+" не повторяет имена маршрутизатора")
+			}
+		}
+		if len(probs) == 0 {
+			stamp, err := readFileB64(ctx, r, tgNginxStampPath)
+			if err != nil {
+				return err
+			}
+			if string(stamp) != w.stamp() {
+				probs = append(probs, "nginx ещё не перечитал эти файлы")
 			}
 		}
 		if len(probs) > 0 {
@@ -184,6 +205,9 @@ func tgCheckVerify(host string) stepFunc {
 		idx, nf := sha256Hex(site["index.html"]), sha256Hex(site["404.html"])
 		script := `h=` + host + `
 t=$(mktemp); trap 'rm -f "$t"' EXIT
+# Only what nginx logs during these probes is looked at (the live logs are big and older lines
+# are not ours).
+declare -A sz; for f in /var/log/nginx/*.log; do [ -f "$f" ] && sz[$f]=$(stat -c %s "$f"); done
 probe() { # port path want_code want_sum [extra]
   code=$(curl -sk --max-time 10 $5 -o "$t" -w '%{http_code}' --resolve "$h:$1:127.0.0.1" "https://$h:$1$2" 2>/dev/null)
   sum=$(sha256sum < "$t" | cut -c1-64)
@@ -195,8 +219,8 @@ probe 8443 '/?bridge=wrong&x=1' 200 ` + idx + `
 probe 8443 /no-such-page-$RANDOM.html 404 ` + nf + `
 probe 8446 / 200 ` + idx + ` --haproxy-protocol
 curl -fsS -o /dev/null --max-time 5 http://` + config.TGWebAdminListen + `/readyz || echo 'FAIL readyz релея не 200'
-n=$(cat /var/log/nginx/*.log 2>/dev/null | grep -c 'bridge=' || true)
-[ "${n:-0}" = 0 ] || echo "FAIL в журналах nginx $n строк с bridge="
+n=0; for f in /var/log/nginx/*.log; do [ -f "$f" ] || continue; c=$(tail -c +$(( ${sz[$f]:-0} + 1 )) "$f" | grep -c 'bridge=' || true); n=$(( n + ${c:-0} )); done
+[ "$n" = 0 ] || echo "FAIL в журналах nginx $n новых строк с bridge="
 true
 `
 		out, err := r.Run(ctx, script)

@@ -191,6 +191,12 @@ func (m *Manager) Running() bool {
 // Start starts kind (provision.KindTGWebInstall / KindTGWebOff) in the background. Refusals (a
 // run in progress, settings the recipe cannot take) return before anything runs.
 func (m *Manager) Start(ctx context.Context, kind string) error {
+	return m.start(ctx, kind, nil)
+}
+
+// start claims the slot, then runs prepare (settings written under the claim, so no other run can
+// read them half-way), then the run. Anything failing before the run releases the slot.
+func (m *Manager) start(ctx context.Context, kind string, prepare func() error) error {
 	m.mu.Lock()
 	if m.cur != nil && m.cur.Status == provision.JobRunning {
 		m.mu.Unlock()
@@ -201,6 +207,12 @@ func (m *Manager) Start(ctx context.Context, kind string) error {
 	m.mu.Unlock()
 	release := func() { m.mu.Lock(); m.cur = nil; m.mu.Unlock() }
 
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			release()
+			return err
+		}
+	}
 	s, err := Load(ctx)
 	if err != nil {
 		release()
@@ -234,7 +246,7 @@ func (m *Manager) Start(ctx context.Context, kind string) error {
 			m.cur = &r
 			m.mu.Unlock()
 		})
-		m.finish(kind, s.Host, res)
+		m.finish(kind, s.Host, opts.Secret, res)
 	}
 	if m.Go != nil {
 		m.Go(run)
@@ -244,8 +256,9 @@ func (m *Manager) Start(ctx context.Context, kind string) error {
 	return nil
 }
 
-// finish stores the run and, after a good install, the host it was made for (the link appears).
-func (m *Manager) finish(kind, host string, res provision.HubRun) {
+// finish stores the run and, after a good install, the host it was made for (the link appears) —
+// only while the stored secret is still the one this run installed.
+func (m *Manager) finish(kind, host, secret string, res provision.HubRun) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if b, err := json.Marshal(res); err == nil {
@@ -254,28 +267,50 @@ func (m *Manager) finish(kind, host string, res provision.HubRun) {
 		}
 	}
 	if kind == provision.KindTGWebInstall && res.Status == provision.JobSucceeded {
-		if err := setSetting(ctx, KeyLiveHost, host); err != nil {
-			log.Printf("[tgweb] адрес %s не отмечен рабочим: %v", host, err)
+		cur, err := setting(ctx, KeySecret)
+		switch {
+		case err != nil:
+			log.Printf("[tgweb] секрет не перечитан, адрес %s не отмечен рабочим: %v", host, err)
+		case cur != secret:
+			log.Printf("[tgweb] секрет сменили во время установки — адрес %s не отмечен рабочим, нужна новая установка", host)
+		default:
+			if err := setSetting(ctx, KeyLiveHost, host); err != nil {
+				log.Printf("[tgweb] адрес %s не отмечен рабочим: %v", host, err)
+			}
 		}
 	}
 	log.Printf("[tgweb] %s: %s %s", kind, res.Status, res.Error)
 }
 
 // RotateSecret saves a new secret, hides the link until the install that applies it succeeds and
-// starts that install.
+// starts that install — all under one claim of the slot (no other run sees half of it). When the
+// install cannot start, the previous secret is put back.
 func (m *Manager) RotateSecret(ctx context.Context) error {
-	if m.Running() {
-		return ErrBusy
-	}
 	v, err := randomHex(16)
 	if err != nil {
 		return err
 	}
-	if err := setSetting(ctx, KeyLiveHost, ""); err != nil {
-		return err
+	var prev string
+	var wrote bool
+	err = m.start(ctx, provision.KindTGWebInstall, func() error {
+		p, err := setting(ctx, KeySecret)
+		if err != nil {
+			return err
+		}
+		prev = p
+		if err := setSetting(ctx, KeyLiveHost, ""); err != nil {
+			return err
+		}
+		if err := setSetting(ctx, KeySecret, v); err != nil {
+			return fmt.Errorf("секрет WEB-прокси не сохранён: %w", err)
+		}
+		wrote = true
+		return nil
+	})
+	if err != nil && wrote && prev != "" {
+		if rerr := setSetting(ctx, KeySecret, prev); rerr != nil {
+			log.Printf("[tgweb] прежний секрет не возвращён: %v", rerr)
+		}
 	}
-	if err := setSetting(ctx, KeySecret, v); err != nil {
-		return fmt.Errorf("секрет WEB-прокси не сохранён: %w", err)
-	}
-	return m.Start(ctx, provision.KindTGWebInstall)
+	return err
 }

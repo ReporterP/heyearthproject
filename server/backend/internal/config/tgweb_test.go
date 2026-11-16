@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -205,5 +206,23 @@ func TestTGWebSiteFiles(t *testing.T) {
 				t.Errorf("%s contains %q", n, bad)
 			}
 		}
+	}
+}
+
+// The shell the Hub runs parses (bash -n), when bash is around.
+func TestTGWebScriptsParse(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	for name, s := range map[string]string{"build": TGWebMTProxyBuildScript, "nat": TGMTProxyNATScript, "refresh": TGRefreshScriptText} {
+		c := exec.Command(bash, "-n")
+		c.Stdin = strings.NewReader(s)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Errorf("%s: %v\n%s", name, err, out)
+		}
+	}
+	if !strings.Contains(TGWebMTProxyBuildScript, "touch /opt/heyearth/state/restart-pending/mtproxy") || !strings.Contains(TGWebMTProxyBuildScript, "--no-upgrade") {
+		t.Error("build script must mark the restart and never upgrade")
 	}
 }

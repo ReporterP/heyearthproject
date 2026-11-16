@@ -166,7 +166,9 @@ func (h *tgHub) Run(_ context.Context, s string) (string, error) {
 		}
 		return "CERT=none\n", nil
 	case strings.HasPrefix(s, "rm -f "):
-		delete(h.files, reQuoted.FindStringSubmatch(s)[1])
+		for _, f := range strings.Fields(strings.TrimPrefix(s, "rm -f ")) {
+			delete(h.files, strings.Trim(f, "'"))
+		}
 		return "", nil
 	case strings.Contains(s, "probe 8443"):
 		if !strings.Contains(string(h.files[config.HubStreamRouterPath]), "tg.example.ru") || !h.active[config.TGWebUnit] {

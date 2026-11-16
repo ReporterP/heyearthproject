@@ -33,8 +33,10 @@ server {
     ssl_ecdh_curve X25519:prime256v1;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # The bridge URI (/?bridge=...) and the carrier's bearer are credentials.
+    # The bridge URI (/?bridge=...) and the carrier's bearer are credentials: no access log, and
+    # no error log either (an upstream error line quotes the request).
     access_log off;
+    error_log /dev/null crit;
     client_max_body_size 0;
 
     location / {

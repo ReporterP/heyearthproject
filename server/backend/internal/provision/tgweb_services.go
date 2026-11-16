@@ -27,7 +27,9 @@ var tgServicesCheckSh = func() string {
 	for _, p := range []string{"8080", "8081"} {
 		fmt.Fprintf(&b, "l=$(ss -Hltn 'sport = :%[1]s' | awk '{print $4}'); [ -n \"$l\" ] || echo 'FAIL релей не слушает %[1]s'; echo \"$l\" | grep -vq '^127\\.0\\.0\\.1:' && [ -n \"$l\" ] && echo \"FAIL порт %[1]s слушается не только на 127.0.0.1: $l\"\n", p)
 	}
-	b.WriteString("ok=; for i in 1 2 3 4 5 6 7 8 9 10; do if curl -fsS -o /dev/null --max-time 3 http://" + config.TGWebAdminListen + "/readyz; then ok=1; break; fi; sleep 2; done\n")
+	// The relay may still be connecting to MTProxy right after a restart: up to ~20 s, and only
+	// while it runs at all (a first install's verify must not wait for nothing).
+	b.WriteString("ok=; if systemctl is-active --quiet " + config.TGWebUnit + "; then for i in 1 2 3 4 5 6 7 8; do if curl -fsS -o /dev/null --max-time 2 http://" + config.TGWebAdminListen + "/readyz 2>/dev/null; then ok=1; break; fi; sleep 1; done; fi\n")
 	b.WriteString("[ -n \"$ok\" ] || echo 'FAIL readyz релея не 200: MTProxy на 127.0.0.1:" + fmt.Sprint(config.TGMTProxyPort) + " недоступен'\ntrue\n")
 	return b.String()
 }()

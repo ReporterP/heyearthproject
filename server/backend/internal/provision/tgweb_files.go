@@ -41,9 +41,14 @@ func tgOwnersSh(site []File) string {
 	sort.Strings(keep)
 	fmt.Fprintf(&b, "find %s -mindepth 1 \\( -type f -o -type l \\) 2>/dev/null | sort | grep -vxF -e %s | sed 's/^/EXTRA /'\n",
 		shellquote.Quote(config.TGWebSiteDir), strings.Join(quoteAll(keep), " -e "))
+	b.WriteString("for f in " + strings.Join(tgSecretBaks, " ") + `; do [ ! -e "$f" ] || echo "BAK $f"; done` + "\n")
 	b.WriteString("id tproxy >/dev/null 2>&1 && echo USER_TPROXY\ntrue\n")
 	return b.String()
 }
+
+// tgSecretBaks: PutFile keeps the replaced version as <path>.bak; these would hold the old secret
+// or token key.
+var tgSecretBaks = []string{config.TGWebProfilesPath + ".bak", config.TGWebTokenKeyPath + ".bak", config.TGMTProxyEnvPath + ".bak"}
 
 func quoteAll(v []string) []string {
 	out := make([]string, len(v))
@@ -82,6 +87,8 @@ func tgFilesVerify(o TGWebOptions) stepFunc {
 		for _, l := range strings.Split(out, "\n") {
 			f := strings.Fields(l)
 			switch {
+			case len(f) >= 2 && f[0] == "BAK":
+				probs = append(probs, "старая копия с секретом "+f[1])
 			case len(f) >= 2 && f[0] == "EXTRA":
 				probs = append(probs, "лишний файл сайта "+f[1])
 			case len(f) >= 2 && f[0] == "OWN":
@@ -116,6 +123,8 @@ func tgFilesApply(o TGWebOptions) stepFunc {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrNoRollback, err)
 		}
+		// The previous versions of the secret-bearing files never stay on disk, whatever happens below.
+		defer func() { _, _ = r.Run(context.WithoutCancel(ctx), "rm -f "+strings.Join(tgSecretBaks, " ")) }()
 		if out, err := r.Run(ctx, `set -e
 id tproxy >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin tproxy
 id mtproxy >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin mtproxy
@@ -163,7 +172,7 @@ install -d -o root -g mtproxy -m 0750 `+config.TGMTProxyEtc+`
 			return p
 		}())
 		fix.WriteString("find " + config.TGWebSiteDir + " -mindepth 1 \\( -type f -o -type l \\) | grep -vxF -e " + strings.Join(keep, " -e ") + " | while IFS= read -r f; do rm -f -- \"$f\"; echo \"удалён $f\"; done\n")
-		fix.WriteString("rm -f " + config.TGWebConfigPath + ".bak " + config.TGWebProfilesPath + ".bak " + config.TGWebTokenKeyPath + ".bak " + config.TGMTProxyEnvPath + ".bak\n")
+
 		if out, err := r.Run(ctx, fix.String()); err != nil {
 			return fmt.Errorf("владельцы файлов: %w: %s", err, tail(out, 500))
 		}
