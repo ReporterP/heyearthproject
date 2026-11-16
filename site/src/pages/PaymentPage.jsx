@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { createPayment, getProfile, applyPromocode, getEmailPrefs } from '../api/user.js'
 import { getQuote, walletPurchase, walletTopup, newRequestId, rub, formatDay } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
-import { Skeleton } from '../components/Skeleton.jsx'
+import { Skeleton } from '../legacy/LegacySkeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 const CheckIcon = ({ className = 'w-4 h-4 mt-0.5 text-brand flex-shrink-0' }) => (

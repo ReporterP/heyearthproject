@@ -3,6 +3,8 @@ import { UNAUTHORIZED_EVENT } from '../api/http.js'
 
 const AuthContext = createContext()
 
+export const SESSION_EXPIRED_KEY = 'he_session_expired'
+
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('token') || '')
 
@@ -25,7 +27,11 @@ export function AuthProvider({ children }) {
   // Any API call that got 401 (apiFetch) signs the site out; RequireAuth then sends
   // the client to /login?redirect=<where they were>. A 503 (database hiccup) does not.
   useEffect(() => {
-    const onUnauthorized = () => logout()
+    // remember why the person lands on /login: the login page says «Сессия закончилась» (03 §6)
+    const onUnauthorized = () => {
+      try { sessionStorage.setItem(SESSION_EXPIRED_KEY, '1') } catch { /* storage off */ }
+      logout()
+    }
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
   }, [logout])

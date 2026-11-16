@@ -4,7 +4,6 @@ import { safeRedirect } from '../lib/redirect.js'
 import { loginUser } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
-import Fireflies from '../components/Fireflies.jsx'
 
 const LeafMark = () => (
   <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -67,7 +66,6 @@ export default function LoginPage() {
 
   return (
     <section className="relative min-h-[calc(100vh-8rem)] flex items-center justify-center py-16 overflow-hidden">
-      <Fireflies density={22000} />
       <div className="pointer-events-none absolute inset-0">
         <div className="blob-a absolute top-1/4 -left-24 w-80 h-80 rounded-full bg-brand/10 blur-[110px]" />
         <div className="blob-b absolute bottom-1/4 -right-24 w-80 h-80 rounded-full bg-accent/8 blur-[110px]" />

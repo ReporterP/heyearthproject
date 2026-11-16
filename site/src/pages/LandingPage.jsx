@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
-import Fireflies from '../components/Fireflies.jsx'
 import useReveal from '../hooks/useReveal.js'
 import useSiteInfo, { countryName } from '../hooks/useSiteInfo.js'
 
@@ -91,7 +90,6 @@ export default function LandingPage() {
     <>
       {/* ─── Hero ─── */}
       <section className="relative overflow-hidden pt-24 pb-28 md:pt-32 md:pb-36">
-        <Fireflies density={13000} />
         {/* drift blobs */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="blob-a absolute top-16 left-[8%] w-72 h-72 rounded-full bg-brand/14 blur-[110px]" />
@@ -302,7 +300,6 @@ export default function LandingPage() {
       {/* ─── CTA band ─── */}
       <section className="relative py-24 md:py-32 overflow-hidden">
         <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/20 to-transparent" />
-        <Fireflies density={16000} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-brand/5 to-transparent" />
         <div className="relative max-w-2xl mx-auto px-6 text-center">
           <h2 className="serif text-3xl md:text-5xl font-semibold reveal">Войдите в тихий лес</h2>

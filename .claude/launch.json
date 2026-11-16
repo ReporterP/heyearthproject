@@ -4,22 +4,48 @@
     {
       "name": "Go Backend",
       "runtimeExecutable": "go",
-      "runtimeArgs": ["run", "./cmd/api"],
+      "runtimeArgs": [
+        "run",
+        "./cmd/api"
+      ],
       "port": 8000,
       "cwd": "server/backend"
     },
     {
       "name": "Admin Web (React + Vite)",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "5173"],
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--port",
+        "5173"
+      ],
       "port": 5173,
       "cwd": "admin_web"
     },
     {
       "name": "Site (React + Vite)",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js", "dev", "--port", "5174"],
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "dev",
+        "--port",
+        "5174"
+      ],
       "port": 5174,
+      "cwd": "site"
+    },
+    {
+      "name": "Site mock (Канон)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--mode",
+        "mock",
+        "--port",
+        "5175",
+        "--strictPort"
+      ],
+      "port": 5175,
       "cwd": "site"
     }
   ]

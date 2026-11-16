@@ -4,7 +4,7 @@ import { getPayments, toggleAutoRenew, requestRefund } from '../api/user.js'
 import { rub } from '../api/wallet.js'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount, { invalidateAccount } from '../account/useAccount.js'
-import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
 import LoadErrorCard from '../components/LoadErrorCard.jsx'
 import useReveal from '../hooks/useReveal.js'
 

@@ -6,7 +6,7 @@ import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import EmailCard from '../components/EmailCard.jsx'
 import PasswordInput from '../components/PasswordInput.jsx'
 import { copyToClipboard } from '../components/CopyButton.jsx'
-import { Skeleton } from '../components/Skeleton.jsx'
+import { Skeleton } from '../legacy/LegacySkeleton.jsx'
 import LoadErrorCard from '../components/LoadErrorCard.jsx'
 
 function strengthOf(pw) {

@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom'
-import Fireflies from '../components/Fireflies.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 const Arrow = ({ className = 'w-4 h-4' }) => (
@@ -41,7 +40,6 @@ export default function BusinessPage() {
     <>
       {/* ─── Hero ─── */}
       <section className="relative overflow-hidden pt-20 pb-20 md:pt-28 md:pb-28">
-        <Fireflies density={14000} />
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="blob-a absolute top-1/4 -right-24 w-96 h-96 rounded-full bg-brand/12 blur-[110px]" />
           <div className="blob-b absolute bottom-1/4 -left-24 w-96 h-96 rounded-full bg-accent/10 blur-[110px]" />
@@ -116,7 +114,6 @@ export default function BusinessPage() {
       {/* ─── CTA ─── */}
       <section className="relative py-24 md:py-32 overflow-hidden">
         <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/20 to-transparent" />
-        <Fireflies density={16000} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-brand/5 to-transparent" />
         <div className="relative max-w-2xl mx-auto px-6 text-center">
           <h2 className="serif text-3xl md:text-5xl font-semibold reveal">Готовы начать?</h2>

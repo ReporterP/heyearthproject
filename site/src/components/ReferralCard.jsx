@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiFetch } from '../api/http.js'
 import { rub } from '../api/wallet.js'
 import { pendingReferral, forgetReferral } from '../lib/referral.js'
-import QRCode from './QRCode.jsx'
+import { QR as QRCode } from './QRCode.jsx'
 
 // «Пригласи друга» in the cabinet (cleanup plan R5): the link, copy / share / QR, the
 // counters, the rules in two lines — and the «Код друга» field for a new account.

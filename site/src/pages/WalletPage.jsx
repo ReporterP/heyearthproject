@@ -6,7 +6,7 @@ import { getWallet, walletTopup, rub, formatDay } from '../api/wallet.js'
 import { renewLine } from '../components/WalletCard.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
 import LoadErrorCard from '../components/LoadErrorCard.jsx'
-import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
 
 const PRESETS = [300, 900, 3000]
 

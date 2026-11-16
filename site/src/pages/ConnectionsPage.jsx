@@ -4,8 +4,8 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount from '../account/useAccount.js'
 import { copyToClipboard } from '../components/CopyButton.jsx'
 import TelegramBlock from '../components/TelegramBlock.jsx'
-import QRCode from '../components/QRCode.jsx'
-import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { QR as QRCode } from '../components/QRCode.jsx'
+import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 /* ── Icons ── */

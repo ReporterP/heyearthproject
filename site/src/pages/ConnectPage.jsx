@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import QRCode from '../components/QRCode.jsx'
+import { QR as QRCode } from '../components/QRCode.jsx'
 import { useNoIndex } from '../components/RequireAuth.jsx'
 
 /* ── Platform constants ── */

@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { getBusinessMe, initBusinessTopup, createBusinessInvite, removeBusinessMember, changeBusinessMemberRole } from '../api/business.js'
 import { copyToClipboard } from '../components/CopyButton.jsx'
-import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
 
 /* Empty state with a way forward instead of a bare line of text */

@@ -1,14 +1,18 @@
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom'
+import '@fontsource-variable/manrope'
+import '@fontsource/jetbrains-mono/500.css'
+import '@fontsource/jetbrains-mono/600.css'
+import '@fontsource/jetbrains-mono/700.css'
+import './styles/site.css'
+import './styles/legacy.css'
 import { AuthProvider } from './auth/AuthContext.jsx'
-import '@fontsource-variable/lora'
-import '@fontsource-variable/raleway'
-import './style.css'
-import SiteHeader from './components/SiteHeader.jsx'
-import SiteFooter from './components/SiteFooter.jsx'
-import AmbientFireflies from './components/AmbientFireflies.jsx'
+import { ToastProvider } from './components/Toast.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
+import LegacyLayout from './legacy/LegacyLayout.jsx'
+import useSiteInfo from './hooks/useSiteInfo.js'
+import NotFoundPage from './pages/NotFoundPage.jsx'
 import LandingPage from './pages/LandingPage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import RegisterPage from './pages/RegisterPage.jsx'
@@ -32,40 +36,40 @@ import WalletPage from './pages/WalletPage.jsx'
 import ReferralLinkPage from './pages/ReferralLinkPage.jsx'
 import HelpPage from './pages/HelpPage.jsx'
 import { EmailConfirmPage, EmailUnsubscribePage } from './pages/EmailLinkPage.jsx'
-import useSiteInfo from './hooks/useSiteInfo.js'
 
-function NotFoundPage() {
-  return (
-    <div className="relative flex flex-col items-center justify-center py-40 px-4 text-center overflow-hidden">
-      <div className="pointer-events-none absolute left-1/2 top-1/3 h-72 w-72 -translate-x-1/2 rounded-full bg-brand/10 blur-3xl" />
-      <p className="serif text-[7rem] leading-none font-semibold text-brand/25 tabular-nums">404</p>
-      <h1 className="serif text-2xl mt-2 mb-3">Тропа не найдена</h1>
-      <p className="text-text-secondary mb-8 max-w-sm">
-        Похоже, эта страница затерялась в лесу. Вернёмся к началу.
-      </p>
-      <Link to="/" className="btn-primary">На главную</Link>
-    </div>
-  )
-}
+const L = (el) => <LegacyLayout>{el}</LegacyLayout>
 
-// /connect is the one connection page (cleanup plan E6): with ?sub=<token> it is the link the app
-// and the e-mails open (no login: the token is the key), without it the cabinet's page.
+// /connect is the one connection page: with ?sub=<token> it is the link the app and the e-mails
+// open (no login: the token is the key), without it the cabinet's page.
 function ConnectRoute() {
   const [params] = useSearchParams()
-  if (params.get('sub')) return <ConnectPage />
-  return <RequireAuth><ConnectionsPage /></RequireAuth>
+  if (params.get('sub') !== null) return L(<ConnectPage />)
+  return <RequireAuth>{L(<ConnectionsPage />)}</RequireAuth>
 }
 
-// B2BOnly hides the business pages while b2b_enabled is off (E3): they answer like any unknown page.
+// B2BOnly hides the business pages while b2b_enabled is off: they answer like any unknown page.
 function B2BOnly({ children }) {
   const { info, loaded } = useSiteInfo()
   if (!loaded) return null
   return info.b2b_enabled ? children : <NotFoundPage />
 }
 
-function ScrollToTop() {
-  const { pathname } = useLocation()
-  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+// Scroll: a new page starts at the top; an anchor (/#plans, /help#mobile) scrolls to its section,
+// waiting a little for content that loads its data first.
+function ScrollManager() {
+  const { pathname, hash } = useLocation()
+  useEffect(() => {
+    if (!hash) { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }); return undefined }
+    let tries = 0
+    let t
+    const go = () => {
+      const el = document.getElementById(decodeURIComponent(hash.slice(1)))
+      if (el) { el.scrollIntoView({ block: 'start' }); return }
+      if (tries++ < 20) t = setTimeout(go, 50)
+    }
+    go()
+    return () => clearTimeout(t)
+  }, [pathname, hash])
   return null
 }
 
@@ -73,45 +77,42 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-      <ScrollToTop />
-      <AmbientFireflies />
-      <div className="relative z-10 min-h-screen flex flex-col">
-        <SiteHeader />
-        <main className="flex-1">
+        <ToastProvider>
+          <a className="skip" href="#main">Перейти к содержимому</a>
+          <ScrollManager />
           <Routes>
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/business" element={<B2BOnly><BusinessPage /></B2BOnly>} />
-            <Route path="/business/signup" element={<B2BOnly><BusinessSignupPage /></B2BOnly>} />
-            <Route path="/business/invoice" element={<B2BOnly><BusinessInvoicePage /></B2BOnly>} />
-            {/* B2B self-service dashboard — requires login + tenant membership */}
-            <Route path="/business/dashboard" element={<B2BOnly><RequireAuth><BusinessDashboardPage /></RequireAuth></B2BOnly>} />
-            {/* Claim a tenant invite code — auth-gated inside the page (it stashes intent and redirects to /login) */}
-            <Route path="/claim/:code" element={<B2BOnly><ClaimCodePage /></B2BOnly>} />
+            <Route path="/" element={L(<LandingPage />)} />
+            <Route path="/help" element={L(<HelpPage />)} />
+            <Route path="/offer" element={L(<OfferPage />)} />
+            <Route path="/privacy" element={L(<PrivacyPage />)} />
+            <Route path="/refund" element={L(<RefundPage />)} />
+            <Route path="/r/:code" element={L(<ReferralLinkPage />)} />
+            <Route path="/email/confirm" element={L(<EmailConfirmPage />)} />
+            <Route path="/email/unsubscribe" element={L(<EmailUnsubscribePage />)} />
+            <Route path="/login" element={L(<LoginPage />)} />
+            <Route path="/register" element={L(<RegisterPage />)} />
+
+            <Route path="/business" element={<B2BOnly>{L(<BusinessPage />)}</B2BOnly>} />
+            <Route path="/business/signup" element={<B2BOnly>{L(<BusinessSignupPage />)}</B2BOnly>} />
+            <Route path="/business/invoice" element={<B2BOnly>{L(<BusinessInvoicePage />)}</B2BOnly>} />
+            <Route path="/business/dashboard" element={<B2BOnly><RequireAuth>{L(<BusinessDashboardPage />)}</RequireAuth></B2BOnly>} />
+            <Route path="/claim/:code" element={<B2BOnly>{L(<ClaimCodePage />)}</B2BOnly>} />
+
             <Route path="/connect" element={<ConnectRoute />} />
-            <Route path="/help" element={<HelpPage />} />
-            <Route path="/email/confirm" element={<EmailConfirmPage />} />
-            <Route path="/email/unsubscribe" element={<EmailUnsubscribePage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
-            <Route path="/r/:code" element={<ReferralLinkPage />} />
-            <Route path="/privacy" element={<PrivacyPage />} />
-            <Route path="/refund" element={<RefundPage />} />
-            <Route path="/offer" element={<OfferPage />} />
-            <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
-            <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
-            <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
+            <Route path="/connections" element={<Navigate to="/connect" replace />} />
+            <Route path="/dashboard" element={<RequireAuth>{L(<DashboardPage />)}</RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth>{L(<SettingsPage />)}</RequireAuth>} />
+            <Route path="/payment" element={<RequireAuth>{L(<PaymentPage />)}</RequireAuth>} />
+            <Route path="/checkout/:paymentId" element={<RequireAuth>{L(<CheckoutPage />)}</RequireAuth>} />
             {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}
             <Route path="/checkout" element={<Navigate to="/payment" replace />} />
-            <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-            <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
-            <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
-            <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />
-            <Route path="/connections" element={<Navigate to="/connect" replace />} />
+            <Route path="/wallet" element={<RequireAuth>{L(<WalletPage />)}</RequireAuth>} />
+            <Route path="/payments" element={<RequireAuth>{L(<PaymentsHistoryPage />)}</RequireAuth>} />
+            <Route path="/payments/:id" element={<RequireAuth>{L(<PaymentDetailPage />)}</RequireAuth>} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
-        </main>
-        <SiteFooter />
-      </div>
+          <div id="he-layer" />
+        </ToastProvider>
       </AuthProvider>
     </BrowserRouter>
   )
@@ -119,6 +120,8 @@ function App() {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
-  </StrictMode>
+    <div className="he">
+      <App />
+    </div>
+  </StrictMode>,
 )

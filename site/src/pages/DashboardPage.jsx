@@ -6,7 +6,7 @@ import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import TrafficCard from '../components/TrafficCard.jsx'
 import WalletCard from '../components/WalletCard.jsx'
 import ReferralCard from '../components/ReferralCard.jsx'
-import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
 import { normalizeTelegramProxy, dashboardTelegramLinks } from '../components/telegramProxyModel.js'
 import useReveal from '../hooks/useReveal.js'
 
