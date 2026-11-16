@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, useSearchParams } from 'react-router-dom'
 import '@fontsource-variable/manrope'
 import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
@@ -59,9 +59,14 @@ function B2BOnly({ children }) {
 // the page has settled (fonts, data), since a smooth scroll started that early gets cancelled.
 function ScrollManager() {
   const { pathname, hash, key } = useLocation()
+  const navType = useNavigationType()
   useEffect(() => {
     const initial = key === 'default' // the location the page was opened with
-    if (!hash) { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }); return undefined }
+    if (!hash) {
+      // «Назад/Вперёд» keep the browser's own scroll position
+      if (navType !== 'POP' || initial) window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      return undefined
+    }
     let tries = 0
     const timers = []
     const go = (behavior) => {
@@ -75,7 +80,7 @@ function ScrollManager() {
     go(initial ? 'instant' : 'smooth')
     if (initial) timers.push(setTimeout(() => go('instant'), 700))
     return () => timers.forEach(clearTimeout)
-  }, [pathname, hash, key])
+  }, [pathname, hash, key]) // eslint-disable-line react-hooks/exhaustive-deps
   return null
 }
 
@@ -95,8 +100,8 @@ function App() {
             <Route path="/r/:code" element={<ReferralLinkPage />} />
             <Route path="/email/confirm" element={<EmailConfirmPage />} />
             <Route path="/email/unsubscribe" element={<EmailUnsubscribePage />} />
-            <Route path="/login" element={L(<LoginPage />)} />
-            <Route path="/register" element={L(<RegisterPage />)} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
 
             <Route path="/business" element={<B2BOnly>{L(<BusinessPage />)}</B2BOnly>} />
             <Route path="/business/signup" element={<B2BOnly>{L(<BusinessSignupPage />)}</B2BOnly>} />

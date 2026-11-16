@@ -8,7 +8,7 @@ export default function MiniPage({ kind = 'mini', children, label, maxWidth = 44
     <main id="main" style={{ flex: 1, minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '40px 16px 64px' }}>
       <div className="stack" style={{ alignItems: 'center', gap: 28, width: '100%', maxWidth: wide ? 640 : maxWidth }}>
         <Logo />
-        <section className={`${kind} pop`} style={{ width: '100%' }} aria-label={label} aria-live="polite">
+        <section className={`${kind} pop`} style={{ width: '100%' }} aria-label={label}>
           {children}
         </section>
       </div>

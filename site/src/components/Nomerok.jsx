@@ -57,7 +57,7 @@ export function IdChip({ id, phone = false, className = '' }) {
   )
 }
 
-export default function Nomerok({ id, variant = 'idle', label = 'ваш номерок', withRail = true, masked = false, railWidth = 300 }) {
+export default function Nomerok({ id, variant = 'idle', label = 'ваш номерок', withRail = true, masked = false, railWidth = 300, idSize }) {
   const raw = String(id ?? '').replace(/\s+/g, '')
   const lines = masked ? ['•••• ••••'] : idLines(raw)
   const tag = (
@@ -69,7 +69,7 @@ export default function Nomerok({ id, variant = 'idle', label = 'ваш номе
     >
       <span className="tag__hook" aria-hidden="true" />
       <span className="tag__k" aria-hidden="true">{label}</span>
-      <span className="tag__id" aria-hidden="true">
+      <span className="tag__id" aria-hidden="true" style={idSize ? { fontSize: idSize } : undefined}>
         {lines[0]}
         {lines[1] ? <><br />{lines[1]}</> : null}
       </span>

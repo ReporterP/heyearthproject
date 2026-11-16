@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 // One scroll lock for every layer (dialog, drawers): the page stops scrolling while at least one
 // layer is open, whatever order they close in.
@@ -18,6 +18,8 @@ export const focusables = (root) => (root ? [...root.querySelectorAll(FOCUSABLE)
 // `ref`, closes on Esc. A layer opened on top (dialog over a drawer) listens in the capture phase and
 // marks the event handled, so the layer below does not close too (03 §2).
 export function useLayer(ref, open, onEscape, { capture = false } = {}) {
+  const esc = useRef(onEscape)
+  esc.current = onEscape
   useEffect(() => {
     if (!open) return undefined
     const unlock = lockScroll()
@@ -25,7 +27,7 @@ export function useLayer(ref, open, onEscape, { capture = false } = {}) {
       if (e.defaultPrevented) return
       if (e.key === 'Escape') {
         e.preventDefault()
-        onEscape?.()
+        esc.current?.()
         return
       }
       if (e.key !== 'Tab' || !ref.current) return

@@ -48,7 +48,7 @@ export default function ReferralCard({ token }) {
 
   const s = ref.stats || {}
   return (
-    <div className="card rounded-[22px] p-6 reveal">
+    <div id="referral" className="card rounded-[22px] p-6 reveal">
       <p className="eyebrow mb-2">Пригласи друга</p>
       <p className="text-sm text-text-secondary mb-4">
         Друг оплатит подписку — вам {rub(ref.referrer_kop)} и другу {rub(ref.friend_kop)} на кошелёк.

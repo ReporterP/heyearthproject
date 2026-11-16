@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 // Table of contents (spec 02 §33 `toc`, 06 §6.2–6.3): sticky list; the current section is the one in
 // the top third of the screen (aria-current="true"). A click scrolls smoothly and records #id in the
 // history; manual scrolling only replaces the address.
 export function useScrollSpy(ids) {
-  const [current, setCurrent] = useState(ids[0])
+  const fromHash = typeof window !== 'undefined' ? decodeHash(window.location.hash) : ''
+  const [current, setCurrent] = useState(ids.includes(fromHash) ? fromHash : ids[0])
   const key = ids.join(',')
   useEffect(() => {
+    if (!key) return undefined
     const list = key.split(',')
     let raf = 0
     const on = () => {
@@ -36,7 +39,12 @@ export function useScrollSpy(ids) {
   return [current, setCurrent]
 }
 
+function decodeHash(h) {
+  try { return decodeURIComponent(String(h || '').slice(1)) } catch { return String(h || '').slice(1) }
+}
+
 export default function Toc({ items, current, onPick, label = 'Содержание', numbered = false, className = '', style }) {
+  const navigate = useNavigate()
   return (
     <nav className={`toc stack gap-1 ${className}`} aria-label={label} style={style}>
       {items.map((it, i) => (
@@ -46,9 +54,8 @@ export default function Toc({ items, current, onPick, label = 'Содержан�
           aria-current={current === it.id ? 'true' : undefined}
           onClick={(e) => {
             e.preventDefault()
-            const el = document.getElementById(it.id)
-            if (el) el.scrollIntoView({ block: 'start' })
-            window.history.pushState(window.history.state, '', `#${it.id}`)
+            // the router records #id (one history entry) and ScrollManager scrolls smoothly to it
+            navigate({ hash: `#${it.id}` }, { preventScrollReset: true })
             onPick?.(it.id)
           }}
         >

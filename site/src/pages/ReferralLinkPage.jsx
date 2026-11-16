@@ -72,11 +72,15 @@ export default function ReferralLinkPage() {
                 : terms === undefined ? <span className="skel" style={{ width: 96, height: 40 }} aria-hidden="true" /> : <span className="t-h3 subtle">—</span>}
             </div>
             <div className="divider" style={{ margin: '22px 0' }} />
-            <ul className="plan__list" style={{ margin: 0 }}>
-              <li>Код приглашения уже сохранён — ничего вводить не нужно</li>
-              <li>Бонус придёт, когда вы оплатите любую подписку деньгами</li>
-              <li>Код действует 7 дней после регистрации и до первой оплаты</li>
-            </ul>
+            {active || terms === undefined ? (
+              <ul className="plan__list" style={{ margin: 0 }}>
+                <li>Код приглашения уже сохранён — ничего вводить не нужно</li>
+                <li>Бонус придёт, когда вы оплатите любую подписку деньгами</li>
+                <li>Код действует 7 дней после регистрации и до первой оплаты</li>
+              </ul>
+            ) : (
+              <p className="t-sm muted">Код из этой ссылки не действует — бонуса не будет. Зарегистрироваться можно и без него.</p>
+            )}
             <div className="copy" style={{ marginTop: 22, paddingRight: 12 }}>
               <span className="copy__v">Код приглашения: {shown}</span>
               {terms !== undefined && (active ? <Badge tone="ok">Применён</Badge> : <Badge tone="warn">Код не действует</Badge>)}

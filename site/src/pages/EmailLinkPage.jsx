@@ -56,8 +56,8 @@ export function EmailConfirmPage() {
       {state === 'wait' && (
         <div key="wait" className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
           <span className="spinner" aria-hidden="true" style={{ margin: '24px 0 8px' }} />
-          <h1 className="t-h3" role="status">Подтверждаем…</h1>
-          <p className="muted t-sm">Пара секунд.</p>
+          <h1 className="t-h3">Подтверждаем…</h1>
+          <p className="muted t-sm" role="status">Пара секунд.</p>
         </div>
       )}
       {state === 'ok' && (

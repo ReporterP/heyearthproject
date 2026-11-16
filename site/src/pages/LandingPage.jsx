@@ -189,7 +189,7 @@ export default function LandingPage() {
               {phone && <div className="rise" style={{ '--d': '200ms', marginTop: 26 }}><AppScreen phone /></div>}
               <div ref={heroCta} className={`${phone ? 'stack gap-2' : 'row wrap gap-3'} rise`} style={{ '--d': phone ? '280ms' : '200ms', marginTop: phone ? 20 : 36 }}>
                 <Button variant={isLoggedIn ? 'secondary' : 'primary'} size="lg" block={phone} to={main.to} iconRight={phone || isLoggedIn ? undefined : 'arrowRight'}>{main.label}</Button>
-                <Button variant="secondary" size="lg" block={phone} href="#plans">{tariffsLabel}</Button>
+                <Button variant="secondary" size="lg" block={phone} to="/#plans">{tariffsLabel}</Button>
               </div>
               {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS — через бесплатное приложение Happ</p>}
             </div>
