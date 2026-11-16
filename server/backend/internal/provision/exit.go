@@ -30,8 +30,8 @@ type File struct {
 // choked (Review Focus 3). A second run on a converged exit writes and restarts nothing. On a
 // live exit the steps that restart a path users ride on (hysteria, the ShadowTLS backup tunnel,
 // the Hub's clients) are checked end to end around the change (guardPath), one after another.
-// The xray of the retired Reality path is removed last (retire_xray), only after the ShadowTLS
-// path answered end to end (path_tcp).
+// The xray of the retired Reality path goes (retire_xray) before the backup tunnel's step re-keys
+// the shared kernel guard to the user stls, so it never runs unguarded.
 func ExitRecipe(o ExitOptions) Recipe {
 	var hyDown error // set by path_hy's Apply when the main tunnel does not answer; path_tcp decides
 	r := Recipe{
@@ -41,6 +41,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 		{Name: "base", Apply: baseApply, Verify: baseVerify},
 		{Name: "firewall", Apply: firewallApply(o)},
 		{Name: "hysteria", Apply: guardPath(hyPath, onNode("hysteria2"), false, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
+		{Name: "retire_xray", Apply: retireXrayApply, Verify: retireXrayVerify},
 		{Name: "stls", Apply: guardPath(stlsPath, onNode(config.ExitSTLSUnit), false, stlsApply(o)), Verify: stlsVerify(o), Rollback: unitRollback(config.ExitSTLSUnit)},
 	}
 	if o.MTProto != nil {
@@ -53,7 +54,6 @@ func ExitRecipe(o ExitOptions) Recipe {
 		Step{Name: "hub_stls", Apply: guardPath(stlsPath, hubSTLSUnit, true, hubSTLSApply), Verify: hubSTLSVerify, Rollback: hubSTLSRollback},
 		Step{Name: "path_hy", Apply: pathHyDegraded(&hyDown), Verify: pathHysteria},
 		Step{Name: "path_tcp", Verify: pathTCP(&hyDown)},
-		Step{Name: "retire_xray", Apply: retireXrayApply, Verify: retireXrayVerify},
 		Step{Name: "activate", Apply: activateApply, Verify: lifecycleIs("online")},
 	)
 }
@@ -1236,10 +1236,10 @@ func pathTCP(hyDown *error) stepFunc {
 
 // ── the retired backup path: the exit's xray (VLESS Reality :10443) ──
 
-// retireXrayApply removes the exit's xray of the old TCP path (config.ExitRetireXrayScript). It
-// runs after path_tcp: on a job that got this far the ShadowTLS path answered (or the owner
-// switched the fallback off), and the Hub's xray has not dialled :10443 since the API that builds
-// exit-<id>.vr over ShadowTLS.
+// retireXrayApply removes the exit's xray of the old TCP path (config.ExitRetireXrayScript).
+// Nothing dials it: the API that runs this recipe builds exit-<id>.vr over ShadowTLS. It runs
+// before the stls step, whose guard file names only the user stls — the old xray must be gone
+// before its kernel guard rule is.
 func retireXrayApply(ctx context.Context, r Remote, s *State) error {
 	return runPrint(config.ExitRetireXrayScript)(ctx, r, s)
 }

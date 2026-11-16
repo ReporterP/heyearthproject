@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // leftoverAbs finds an absolute /opt/heyearth or /etc path that survived shellRun's rewrite.
@@ -1140,6 +1141,11 @@ func TestSingBoxInstall(t *testing.T) {
 			dir := t.TempDir()
 			sdir := rel(SingBoxDir) + "/"
 			mustWrite(t, dir, sdir+".dl.stale1/sb.tgz", "left by a dropped run", 0o644)
+			old := time.Now().Add(-2 * time.Hour)
+			if err := os.Chtimes(filepath.Join(dir, sdir, ".dl.stale1"), old, old); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, dir, sdir+".dl.young/sb.tgz", "another job, just now", 0o644)
 			if tc.current != "" {
 				mustWrite(t, dir, sdir+"sing-box", tc.current, 0o755)
 			}
@@ -1185,8 +1191,11 @@ func TestSingBoxInstall(t *testing.T) {
 				t.Errorf("markers present=%v/%v, want %v", exists(dir, rel(RestartMarker(ExitSTLSUnit))),
 					exists(dir, rel(BinaryPendingMarker(ExitSTLSUnit))), replaced)
 			}
-			// A download attempt clears stale temp dirs of a dropped run and leaves none of its own.
-			if left, _ := filepath.Glob(filepath.Join(dir, sdir, ".dl.*")); len(left) != 0 && tc.wantCurl {
+			// A download attempt clears temp dirs of a dropped run older than 30 minutes, keeps a
+			// younger one (another exit's job may be installing on the Hub right now) and leaves
+			// none of its own.
+			if left, _ := filepath.Glob(filepath.Join(dir, sdir, ".dl.*")); tc.wantCurl &&
+				(len(left) != 1 || filepath.Base(left[0]) != ".dl.young") {
 				t.Errorf("temp dirs left behind: %v", left)
 			}
 			if exists(dir, sdir+"sing-box.bak.tmp") {

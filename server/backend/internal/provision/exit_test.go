@@ -103,8 +103,8 @@ func (e *exitEnv) tail(id int64, step string) string {
 
 func opIndex(ops []string, op string) int { return slices.Index(ops, op) }
 
-var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "firewall", "hysteria", "stls", "node_agent", "save_tunnel",
-	"hub_client", "hub_stls", "path_hy", "path_tcp", "retire_xray", "activate"}
+var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "firewall", "hysteria", "retire_xray", "stls", "node_agent",
+	"save_tunnel", "hub_client", "hub_stls", "path_hy", "path_tcp", "activate"}
 
 func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	e := exitFixture(t, false)
@@ -113,7 +113,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	if err != nil || e.store.jobs[id].Status != JobSucceeded {
 		t.Fatalf("%v %s %v", err, e.store.jobs[id].Error, e.store.statuses(id))
 	}
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok", "done")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "ok", "done", "done", "done", "done", "done", "ok", "ok", "done")) {
 		t.Fatalf("steps: %v", got)
 	}
 	k := e.keys(t)
@@ -803,7 +803,7 @@ func TestRecipeForSetupGuards(t *testing.T) {
 	names := func(r Recipe) []string { return stepNames(r) }
 	s := newState(KindProvision, nil)
 	r, err := RecipeFor(KindProvision, good, s)
-	withMT := slices.Insert(slices.Clone(exitSteps), 7, "mtproxy")
+	withMT := slices.Insert(slices.Clone(exitSteps), 8, "mtproxy")
 	if err != nil || !slices.Equal(names(r), withMT) || s.Begin == nil || s.Fail == nil {
 		t.Fatalf("provision: %v %v", err, names(r))
 	}
@@ -899,7 +899,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 	e, k := legacyExit(t)
 	writes, hubWrites := e.node.writes, e.hub.writes
 	id := e.start(t, KindVerify)
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "drift", "ok")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
 		t.Fatalf("verify: %v", got)
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, "права 644") {
@@ -912,7 +912,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "done", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
 	wantNode := map[string]int{"hysteria2": 1, config.ExitSTLSUnit: 1, "node-agent": 1}
@@ -931,11 +931,11 @@ func TestExitConvergesLiveExit(t *testing.T) {
 		!e.node.nft[config.ExitGuardTable] || !e.node.active[config.ExitSTLSUnit] {
 		t.Fatal("the backup tunnel: config from the kept UUID, user stls, egress guard, running")
 	}
-	// The retired xray: unit, config (it carried the tunnel UUID) and service gone — after the
-	// backup path answered end to end.
-	if e.node.files[config.ExitXrayConfig] != nil || e.node.files[config.ExitXrayUnitPath] != nil || e.node.active["xray"] ||
-		slices.Index(e.trace, "node: retire-xray") < slices.Index(e.trace, "hub: socks-probe 2095") {
-		t.Fatal("the old xray must be retired, and only after the backup path answered")
+	// The retired xray: unit, config (it carried the tunnel UUID) and service gone — before the
+	// tunnel's converge re-keys the shared kernel guard to the user stls (never unguarded).
+	if r, c := slices.Index(e.trace, "node: retire-xray"), slices.Index(e.trace, "node: converge heyearth-stls"); e.node.files[config.ExitXrayConfig] != nil ||
+		e.node.files[config.ExitXrayUnitPath] != nil || e.node.active["xray"] || r < 0 || c < 0 || r > c {
+		t.Fatal("the old xray must be retired, before the tunnel's guard is re-keyed")
 	}
 	ag, _ := config.ExitAgentGuardConf(testExitHubIPs)
 	if string(e.node.files[config.ExitAgentGuardConfPath]) != ag || CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow) != nil {

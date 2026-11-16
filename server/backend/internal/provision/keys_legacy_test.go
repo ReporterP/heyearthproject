@@ -641,7 +641,7 @@ func TestExitTwoConvergesWithOldKeysFile(t *testing.T) {
 	id := e.start(t, KindVerify)
 	// The old exit has no ShadowTLS yet: its tunnel and the Hub's client drift, the backup path is
 	// down and the retired xray still there.
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "drift", "drift", "ok")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "drift", "ok")) {
 		t.Fatalf("verify: %v", got)
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, legacyKeysDrift) || strings.Contains(tl, "некорректен") {
@@ -658,7 +658,7 @@ func TestExitTwoConvergesWithOldKeysFile(t *testing.T) {
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "done", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
 	if e.keys(t) != k || e.h.tunnel != dbTunnel(k) {

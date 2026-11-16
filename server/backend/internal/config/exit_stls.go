@@ -247,7 +247,8 @@ func SingBoxInstallScript(unit string) string {
 
 // singBoxInstallScript renders the installer for the expected archive sha256 (tests pass the
 // hash of their stub download). It acts when the binary is not SingBoxVersion: download to a temp
-// dir in SingBoxDir (same filesystem: atomic mv; stale dirs of a dropped run are removed), sha256
+// dir in SingBoxDir (same filesystem: atomic mv; dirs of a dropped run older than 30 minutes are
+// removed — not younger ones, which may belong to another exit's job installing on the Hub), sha256
 // before unpacking and any execution, version check of the new binary, the previous binary kept as
 // sing-box.bak (temp + mv; with no previous binary a leftover .bak is removed, so a rollback
 // cannot resurrect it). Before the move the unit's restart marker and pending-binary marker (the
@@ -269,7 +270,7 @@ sb_fetch() {
 }
 if [ "$SB_CUR" != "$SB_WANT" ]; then
   mkdir -p "$SB_DIR"
-  rm -rf "$SB_DIR"/.dl.*
+  find "$SB_DIR" -maxdepth 1 -name '.dl.*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true
   SB_TMP=$(mktemp -d "$SB_DIR/.dl.XXXXXX")
   if sb_fetch; then
     mkdir -p ` + RestartMarkerDir + ` ` + BinaryPendingDir + `
@@ -338,8 +339,8 @@ if nft list table inet ` + ExitGuardTable + ` 2>/dev/null | grep -q 'jump tunnel
 // ExitRetireXrayScript removes the exit's xray of the old backup path (VLESS Reality :10443):
 // the unit stopped, disabled and deleted with its drop-ins, ExitXrayDir (binary, and the config
 // that carries the tunnel UUID) deleted, the 10443/tcp allowances of ufw / iptables dropped, the
-// system user xray deleted. The kernel guard stays (it now guards sing-box). Idempotent; the
-// recipe runs it only after the ShadowTLS path answered end to end.
+// system user xray deleted. The kernel guard stays (the next step re-keys it to sing-box's user).
+// Idempotent; the recipe runs it before that step, so the old xray never runs unguarded.
 var ExitRetireXrayScript = opLine("retire-xray") + `set -e
 if [ -f ` + ExitXrayUnitPath + ` ] || systemctl is-active --quiet xray 2>/dev/null; then
   systemctl disable --now xray >/dev/null 2>&1 || true
