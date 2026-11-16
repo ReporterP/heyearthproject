@@ -70,7 +70,9 @@
   #root { min-height: 100vh; }
   /* the root wrapper of every page */
   .he { min-height: 100vh; display: flex; flex-direction: column; }
-  .he main { flex: 1 0 auto; }
+  /* a main.container is a flex item with auto margins: without a width it shrinks to its content
+     and a wide child (the document tabs) pushes the page wider than the phone */
+  .he main { flex: 1 0 auto; width: 100%; }
 }
 
 /* Touch: lifts only on real pointers (03 §1) */
