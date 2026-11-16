@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { registerUser, updateProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -86,18 +86,21 @@ export default function RegisterPage() {
   const [hasFree, setHasFree] = useState(false)
   const terms = useRefTerms()
   const refCode = useMemo(() => pendingReferral(), [])
+  const inFlight = useRef(false)
 
   useEffect(() => { if (isLoggedIn) navigate(afterwards, { replace: true }) }, [isLoggedIn]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { fetchPlans().then((l) => setHasFree(l.some((p) => Number(p.price_rub) === 0))).catch(() => {}) }, [])
 
   async function create() {
-    if (busy) return
+    if (inFlight.current) return
+    inFlight.current = true
     setBusy(true)
     setError(null)
     try {
       const data = await registerUser('web', '', pendingReferral())
-      forgetReferral()
       const next = { id: data.user_id || data.id || '', token: data.token || '' }
+      if (!next.id || !next.token) throw new Error('no id')
+      forgetReferral()
       writePending(next)
       setPending(next)
     } catch (e) {
@@ -105,6 +108,7 @@ export default function RegisterPage() {
         ? { title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
         : { title: 'Не получилось создать аккаунт.', text: 'Попробуйте ещё раз через минуту.' })
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
@@ -145,7 +149,7 @@ export default function RegisterPage() {
       )}
       {error && <Alert tone="bad" title={error.title} rise>{error.text}</Alert>}
       <Button variant="primary" size="lg" block iconRight="arrowRight" loading={busy} onClick={create} className="rise" style={{ '--d': '200ms' }}>Получить HiEarth ID</Button>
-      <p className="t-sm muted" style={{ textAlign: 'center' }}>Уже есть аккаунт? <Link to={redirectTo !== '/dashboard' ? `/login?redirect=${encodeURIComponent(redirectTo)}` : '/login'} className="link">Войти</Link></p>
+      <p className="t-sm muted" style={{ textAlign: 'center' }}>Уже есть аккаунт? <Link to={afterwards !== '/dashboard' ? `/login?redirect=${encodeURIComponent(afterwards)}` : '/login'} className="link">Войти</Link></p>
       <p className="t-xs subtle" style={{ textAlign: 'center' }}>
         Нажимая кнопку, вы принимаете <a href="/offer" target="_blank" rel="noopener" className="link">договор-оферту</a> и <a href="/privacy" target="_blank" rel="noopener" className="link">политику конфиденциальности</a>.
       </p>
@@ -166,6 +170,10 @@ function Issued({ pending, onDone, narrow, toast }) {
   const [busy, setBusy] = useState(false)
   const [savedLogin, setSavedLogin] = useState('')
   const [copiedBtn, setCopiedBtn] = useState(false)
+  const copyTimer = useRef(null)
+  const saving = useRef(false)
+  useEffect(() => () => clearTimeout(copyTimer.current), [])
+  const dirty = creds === 'open' && (login || pw || pw2)
 
   const errs = {
     login: !login.trim() ? 'Укажите имя пользователя'
@@ -177,13 +185,16 @@ function Issued({ pending, onDone, narrow, toast }) {
   const show = (k) => (tried || touched[k]) && errs[k]
   const s = strength(pw)
 
-  async function save() {
+  async function save(e) {
+    e?.preventDefault()
+    if (saving.current) return
     setTried(true)
     setServerErr(null)
     if (errs.login || errs.pw || errs.pw2) return
+    saving.current = true
     setBusy(true)
     try {
-      await updateProfile(pending.token, { username: login.trim(), newPassword: pw })
+      await updateProfile(pending.token, { username: login.trim(), newPassword: pw }, { signOutOn401: false })
       setSavedLogin(login.trim())
       setCreds('saved')
       toast.ok('Изменения сохранены')
@@ -191,8 +202,10 @@ function Issued({ pending, onDone, narrow, toast }) {
       const raw = String(e?.data?.error || '').toLowerCase()
       if (raw === 'username already taken') setServerErr({ field: 'login', text: 'Это имя уже занято — попробуйте другое' })
       else if (raw.startsWith('username can only contain')) setServerErr({ field: 'login', text: 'Имя может содержать только латинские буквы, цифры, «_» и «-»' })
+      else if (e?.status === 429) setServerErr({ title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' })
       else setServerErr({ text: 'Попробуйте снова.', title: 'Не удалось сохранить.' })
     } finally {
+      saving.current = false
       setBusy(false)
     }
   }
@@ -200,7 +213,8 @@ function Issued({ pending, onDone, narrow, toast }) {
   async function copyBtn() {
     if (await copyText(pending.id)) {
       setCopiedBtn(true)
-      setTimeout(() => setCopiedBtn(false), 2000)
+      clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopiedBtn(false), 2000)
     }
   }
 
@@ -227,7 +241,7 @@ function Issued({ pending, onDone, narrow, toast }) {
       {creds === 'open' ? (
         <div className="collapse is-open">
           <div>
-            <section className="card" style={{ padding: 20 }} aria-labelledby="creds-t">
+            <form className="card" style={{ padding: 20 }} aria-labelledby="creds-t" onSubmit={save} noValidate>
               <p id="creds-t"><b>Логин и пароль</b> <Badge tone="plain" style={{ marginLeft: 6 }}>необязательно</Badge></p>
               <p className="t-sm muted" style={{ marginTop: 2 }}>Тогда для входа хватит короткого имени вместо длинного ID.</p>
               <div className="stack gap-4" style={{ marginTop: 16 }}>
@@ -249,11 +263,11 @@ function Issued({ pending, onDone, narrow, toast }) {
                   </Field>
                 </div>
                 <div className="row gap-2">
-                  <Button variant="secondary" onClick={save} loading={busy}>Сохранить</Button>
+                  <Button variant="secondary" type="submit" loading={busy}>Сохранить</Button>
                   <Button variant="ghost" onClick={() => setCreds('skipped')} disabled={busy}>Пропустить</Button>
                 </div>
               </div>
-            </section>
+            </form>
           </div>
         </div>
       ) : (
@@ -266,8 +280,9 @@ function Issued({ pending, onDone, narrow, toast }) {
 
       <Checkbox checked={saved} onChange={setSaved}>Я сохранил свой HiEarth ID в надёжном месте</Checkbox>
       <div className="stack gap-2">
-        <Button variant="primary" size="lg" block disabled={!saved} onClick={onDone}>Продолжить в кабинет</Button>
+        <Button variant="primary" size="lg" block disabled={!saved || dirty} onClick={onDone}>Продолжить в кабинет</Button>
         {!saved && <p className="t-xs subtle" style={{ textAlign: 'center' }}>Кнопка станет активной, когда отметите галочку</p>}
+        {saved && dirty && <p className="t-xs subtle" style={{ textAlign: 'center' }}>Логин и пароль не сохранены — нажмите «Сохранить» или «Пропустить»</p>}
       </div>
     </AuthLayout>
   )

@@ -9,6 +9,8 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('token') || '')
 
   const login = useCallback((newToken) => {
+    // a registration left on its «ID выдан» step is over once someone signs in (RegisterPage)
+    try { sessionStorage.removeItem('he_pending_registration') } catch { /* storage off */ }
     localStorage.setItem('token', newToken)
     setToken(newToken)
   }, [])

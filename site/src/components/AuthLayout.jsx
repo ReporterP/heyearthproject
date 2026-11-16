@@ -6,7 +6,7 @@ import Logo from './Logo.jsx'
 export default function AuthLayout({ children, side, reveal = false, sideLabel, width = 420 }) {
   return (
     <div className={`auth ${reveal ? 'auth--reveal' : ''}`}>
-      <div className="stack max-sm:!px-4 max-lg:!px-6" style={{ padding: '32px 56px' }}>
+      <div className="stack max-lg:px-6! max-sm:px-4!" style={{ padding: '32px 56px' }}>
         <Logo style={{ alignSelf: 'flex-start' }} />
         <main id="main" style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', placeItems: 'center', padding: '32px 0' }}>
           <div className="stack gap-6" style={{ width: '100%', maxWidth: width }}>{children}</div>

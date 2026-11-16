@@ -38,6 +38,8 @@ export default function LoginPage() {
   const registerHref = redirectTo !== '/dashboard' ? `/register?redirect=${encodeURIComponent(redirectTo)}` : '/register'
   const [expired] = useState(readExpired)
   const idRef = useRef(null)
+  const pwRef = useRef(null)
+  const inFlight = useRef(false)
   const [id, setId] = useState('')
   const [pw, setPw] = useState('')
   const [busy, setBusy] = useState(false)
@@ -50,9 +52,10 @@ export default function LoginPage() {
 
   async function submit(e) {
     e.preventDefault()
-    if (busy) return
+    if (inFlight.current) return
     const value = normalizeLogin(id)
     if (!value) { setIdEmpty(true); idRef.current?.focus(); return }
+    inFlight.current = true
     setBusy(true)
     setErr(null)
     try {
@@ -60,8 +63,12 @@ export default function LoginPage() {
       login(data.token)
       navigate(redirectTo, { replace: true })
     } catch (e2) {
-      setErr(explain(e2))
+      const x = explain(e2)
+      setErr(x)
+      // the person lands on the field to fix (03 §9)
+      requestAnimationFrame(() => (x.field === 'pw' ? pwRef.current : idRef.current)?.focus())
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
@@ -83,7 +90,7 @@ export default function LoginPage() {
         </div>
         {expired && !err && <Alert tone="info" title="Сессия закончилась">— войдите снова.</Alert>}
         {redirectTo.startsWith('/claim/') && !expired && !err && <Alert tone="info">Войдите или зарегистрируйтесь, чтобы присоединиться к компании.</Alert>}
-        {err && <Alert tone="bad" title={err.title} rise>{err.text}</Alert>}
+        {err && <div id="login-err"><Alert tone="bad" title={err.title} rise>{err.text}</Alert></div>}
         <Field label="HiEarth ID или имя пользователя" error={idEmpty ? 'Укажите HiEarth ID или имя пользователя' : null}>
           <Input
             ref={idRef}
@@ -91,6 +98,7 @@ export default function LoginPage() {
             size="lg"
             value={id}
             invalid={err?.field === 'id'}
+            aria-errormessage={err?.field === 'id' ? 'login-err' : undefined}
             onChange={(e) => { setId(e.target.value); setIdEmpty(false); if (err?.field === 'id') setErr(null) }}
             autoComplete="username"
             autoCapitalize="none"
@@ -99,6 +107,8 @@ export default function LoginPage() {
         </Field>
         <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
           <Input
+            ref={pwRef}
+            aria-errormessage={err?.field === 'pw' ? 'login-err' : undefined}
             type="password"
             size="lg"
             value={pw}

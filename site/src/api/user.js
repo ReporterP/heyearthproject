@@ -14,9 +14,10 @@ export async function getProfile(token) {
   return apiFetch('/api/v1/user/profile', { token, fallback: 'Не удалось загрузить профиль.' })
 }
 
-export async function updateProfile(token, { username, newPassword, currentPassword }) {
+export async function updateProfile(token, { username, newPassword, currentPassword }, { signOutOn401 = true } = {}) {
   return apiFetch('/api/v1/user/profile', {
     token,
+    signOutOn401,
     method: 'PATCH',
     body: {
       username: username || undefined,
