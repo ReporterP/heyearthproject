@@ -14,7 +14,8 @@ const (
 )
 
 // ExitPaths is the monitor's last view of one online exit's two paths: Hysteria (hy, the exit's
-// hysteria2-client SOCKS) and TCP (vr, VLESS Reality to the exit's xray). In memory only:
+// hysteria2-client SOCKS) and TCP (vr, the backup: ShadowTLS v3 through the Hub's
+// heyearth-stls-client SOCKS; VLESS Reality for a legacy VLESS exit). In memory only:
 // empty after an API restart until the first monitor tick (~10 s), dropped once the exit is no
 // longer online. Errors name loopback addresses only, never credentials.
 type ExitPaths struct {
