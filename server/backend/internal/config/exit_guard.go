@@ -85,8 +85,9 @@ func ValidateExitIP(exitIP string) error {
 }
 
 // ExitGuardConf renders ExitGuardConfPath for the exit exitIP (ValidateExitIP) with the
-// MTProxy port allowed on its own address (0 = none), the same allowance as ExitHysteriaACL.
-func ExitGuardConf(exitIP string, mtprotoPort int) (string, error) {
+// TCP ports allowed on its own address (the MTProxy ports; 0 = none), the same allowance as
+// ExitHysteriaACL.
+func ExitGuardConf(exitIP string, ownTCPPorts ...int) (string, error) {
 	if err := ValidateExitIP(exitIP); err != nil {
 		return "", err
 	}
@@ -113,7 +114,7 @@ func ExitGuardConf(exitIP string, mtprotoPort int) (string, error) {
 	b.WriteString("  chain output {\n    type filter hook output priority filter; policy accept;\n")
 	b.WriteString("    meta skuid \"" + ExitSTLSUser + "\" jump tunnel_egress\n  }\n")
 	b.WriteString("  chain tunnel_egress {\n")
-	for _, p := range validPorts([]int{mtprotoPort}) {
+	for _, p := range validPorts(ownTCPPorts) {
 		b.WriteString("    " + fam + " daddr " + ip + " tcp dport " + strconv.Itoa(p) + " return\n")
 	}
 	if fam == "ip" {

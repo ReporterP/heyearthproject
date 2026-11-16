@@ -112,9 +112,9 @@ func marshalConfig(cfg map[string]any) ([]byte, error) {
 // ExitSTLSServerJSON renders ExitSTLSConfig of the exit exitIP (ValidateExitIP): ShadowTLS v3 on
 // 0.0.0.0:443 for the Hub's user, strict, detour to the loopback Shadowsocks 2022; out through
 // "direct". The route rules mirror the hysteria ACL: a target name is resolved first, then the
-// exit's own address is refused except tcp/<MTProxy port> (0 = none), and so are the private,
+// exit's own address is refused except tcp/<MTProxy ports> (0 = none), and so are the private,
 // loopback, multicast and broadcast ranges. The kernel guard (ExitGuardConf) is the second layer.
-func ExitSTLSServerJSON(uuid, exitIP string, mtprotoPort int) ([]byte, error) {
+func ExitSTLSServerJSON(uuid, exitIP string, ownTCPPorts ...int) ([]byte, error) {
 	if err := ValidateExitIP(exitIP); err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func ExitSTLSServerJSON(uuid, exitIP string, mtprotoPort int) ([]byte, error) {
 		own = ip + "/128"
 	}
 	rules := []any{map[string]any{"action": "resolve", "strategy": "ipv4_only"}}
-	if ports := validPorts([]int{mtprotoPort}); len(ports) > 0 {
+	if ports := validPorts(ownTCPPorts); len(ports) > 0 {
 		rules = append(rules, map[string]any{"ip_cidr": []string{own}, "network": []string{"tcp"}, "port": ports,
 			"action": "route", "outbound": "direct"})
 	}

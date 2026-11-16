@@ -226,3 +226,24 @@ func TestTGWebScriptsParse(t *testing.T) {
 		t.Error("build script must mark the restart and never upgrade")
 	}
 }
+
+// An MTProxy port beside the classic one is allowed on the exit's own address in all three
+// places (hysteria ACL, ShadowTLS route, kernel guard of the stls user) and nowhere else.
+func TestExitOwnPortsList(t *testing.T) {
+	const ip = "203.0.113.7"
+	hy := ExitHysteriaServerYAML("pw", ip, 8443, TGMTProxyPort)
+	if !strings.Contains(hy, "direct(203.0.113.7, tcp/8443)") || !strings.Contains(hy, "direct(203.0.113.7, tcp/3398)") {
+		t.Fatalf("hysteria ACL:\n%s", hy)
+	}
+	st, err := ExitSTLSServerJSON("0f0e0d0c-0b0a-4908-8706-050403020100", ip, 8443, TGMTProxyPort)
+	if err != nil || !strings.Contains(string(st), `"port": [`) || !strings.Contains(string(st), "3398") {
+		t.Fatalf("stls route: %v\n%s", err, st)
+	}
+	g, err := ExitGuardConf(ip, 8443, TGMTProxyPort)
+	if err != nil || !strings.Contains(g, "ip daddr 203.0.113.7 tcp dport 3398 return") || !strings.Contains(g, "tcp dport 8443 return") {
+		t.Fatalf("guard: %v\n%s", err, g)
+	}
+	if one := ExitHysteriaServerYAML("pw", ip, 8443); strings.Contains(one, "3398") {
+		t.Fatal("one port in, one port out")
+	}
+}
