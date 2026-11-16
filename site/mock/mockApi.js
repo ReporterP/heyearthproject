@@ -174,10 +174,13 @@ function business() {
     ] : []),
   ]
   return {
-    tenant: { id: 42, name: 'ООО «Ромашка»', slug: 'romashka', status: S.tenant === 'active' ? 'active' : 'inactive', plan: 'basic', contact_email: 'buh@romashka.ru', balance: S.tenant === 'suspended' ? 0 : 12500, inn: '7707083893', max_users: 10, max_servers: 5, use_provider_servers: true, created_at: iso(now() - 15 * DAY), ...(S.tenant === 'suspended' ? { suspended: true } : {}) },
+    tenant: { id: 42, name: 'ООО «Ромашка»', slug: 'romashka', status: S.tenant, plan: 'basic', contact_email: 'buh@romashka.ru', balance: S.tenant === 'active' ? 12500 : 0, inn: '7707083893', max_users: 10, max_servers: 5, use_provider_servers: true, created_at: iso(now() - 15 * DAY) },
     role,
     members,
-    transactions: [{ id: 1, amount: 10000, direction: 'credit', description: 'Пополнение', payment_id: 600, created_at: iso(now() - 2 * DAY) }],
+    transactions: S.history === 'empty' ? [] : [
+      { id: 2, amount: 3500, direction: 'debit', description: 'Ежемесячное списание: 10 мест', created_at: iso(now() - 1 * DAY) },
+      { id: 1, amount: 10000, direction: 'credit', description: '', payment_id: 600, created_at: iso(now() - 2 * DAY) },
+    ],
     invoices: S.history === 'empty' ? null : [
       { id: 1042, payment_id: 600, inn: '7707083893', legal_name: 'ООО «Ромашка»', amount: 10000, currency: 'RUB', status: 'paid', description: 'HiEarth B2B', payer_email: 'buh@romashka.ru', created_at: iso(now() - 2 * DAY), paid_at: iso(now() - 2 * DAY) },
       { id: 1051, inn: '7707083893', legal_name: 'ООО «Ромашка»', amount: 3500, currency: 'RUB', status: 'pending', description: 'HiEarth B2B', payer_email: 'buh@romashka.ru', created_at: iso(now()) },

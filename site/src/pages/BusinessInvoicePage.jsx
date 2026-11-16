@@ -1,154 +1,134 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import NarrowHeader from '../components/NarrowHeader.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge from '../components/Badge.jsx'
+import Button from '../components/Button.jsx'
+import CopyField from '../components/CopyField.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Flap from '../components/Flap.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { group } from '../lib/format.js'
 
-// Публичная форма «Получить счёт на оплату» для B2B юрлиц.
-// Обращается к /api/v1/business/create-invoice (публичный endpoint).
+// Счёт для юрлиц /business/invoice (spec 10 §10.3, artboard «Счёт для юрлиц»): public form →
+// POST /api/v1/business/create-invoice → the invoice with its payment link (copy / open).
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function BusinessInvoicePage() {
+  const narrow = useMedia('(max-width: 1024px)')
+  usePageMeta('Счёт для юрлиц — HiEarth')
   const [inn, setInn] = useState('')
-  const [company, setCompany] = useState('')
   const [amount, setAmount] = useState('')
+  const [amountFocus, setAmountFocus] = useState(false)
+  const [company, setCompany] = useState('')
   const [email, setEmail] = useState('')
-  const [description, setDescription] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [desc, setDesc] = useState('')
+  const [touched, setTouched] = useState({})
+  const [tried, setTried] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [srvField, setSrvField] = useState(null) // { field, text }
   const [result, setResult] = useState(null)
+  const inFlight = useRef(false)
 
-  async function handleSubmit(e) {
+  const amountNum = parseInt(amount, 10) || 0
+  const errs = {
+    inn: !inn ? 'Укажите ИНН' : !(inn.length === 10 || inn.length === 12) ? 'ИНН должен содержать 10 цифр (юрлицо) или 12 (ИП)' : null,
+    amount: !amount ? 'Укажите сумму' : amountNum < 100 ? 'Минимум 100 ₽' : null,
+    company: !company.trim() ? 'Укажите название организации' : null,
+    email: !email.trim() ? 'Укажите email' : !EMAIL_RE.test(email.trim()) ? 'Проверьте адрес почты — в нём должна быть «@» и домен' : null,
+  }
+  const show = (k) => ((tried || touched[k]) && errs[k]) || (srvField?.field === k && srvField.text) || null
+  const blur = (k) => () => setTouched((t) => ({ ...t, [k]: true }))
+
+  async function submit(e) {
     e.preventDefault()
-    setError('')
-    setLoading(true)
+    setTried(true)
+    setSrvField(null)
+    if (Object.values(errs).some(Boolean) || inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setErr('')
     try {
       const r = await fetch('/api/v1/business/create-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          inn,
-          company_name: company,
-          amount: parseInt(amount) || 0,
-          email,
-          description,
-          return_url: window.location.origin + '/business',
-        }),
+        body: JSON.stringify({ inn, company_name: company.trim(), amount: amountNum, email: email.trim(), description: desc.trim(), return_url: `${window.location.origin}/business` }),
       })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Не удалось создать счёт')
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        const m = String(data.error || '')
+        if (/ИНН/i.test(m)) setSrvField({ field: 'inn', text: /контрольн/i.test(m) ? 'ИНН не прошёл проверку — проверьте цифры' : 'ИНН должен содержать 10 цифр (юрлицо) или 12 (ИП)' })
+        else if (/amount|сумм/i.test(m)) setSrvField({ field: 'amount', text: /1 000 000/.test(m) ? 'Сумма больше 1 000 000 ₽ — напишите нам, выставим счёт вручную' : 'Минимум 100 ₽' })
+        else if (r.status === 429) setErr('Слишком много счетов подряд — попробуйте через час.')
+        else setErr(/[а-я]/i.test(m) ? m : 'Не удалось создать счёт — попробуйте ещё раз.')
+        return
+      }
       setResult(data)
-    } catch (err) {
-      setError(err.message)
+    } catch {
+      setErr('Нет связи с сервером — проверьте интернет и повторите.')
     } finally {
-      setLoading(false)
+      inFlight.current = false
+      setBusy(false)
     }
   }
 
-  const inputCls = 'w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-text-primary focus:border-brand/50 focus:ring-2 focus:ring-brand/20 outline-none transition placeholder:text-faint'
-
-  // Real validation — the hints promised rules that were never enforced
-  const amountNum = parseInt(amount, 10)
-  const innValid = inn.length === 10 || inn.length === 12
-  const amountValid = Number.isFinite(amountNum) && amountNum >= 100
-  const emailValid = /^\S+@\S+\.\S+$/.test(email)
-  const innError = inn.length > 0 && !innValid ? 'ИНН должен содержать 10 цифр (юрлицо) или 12 (ИП)' : ''
-  const amountError = amount.length > 0 && !amountValid ? 'Минимальная сумма счёта — 100 ₽' : ''
-  const emailError = email.length > 0 && !emailValid ? 'Проверьте адрес — похоже, в нём опечатка' : ''
-  const canSubmit = innValid && company.trim().length > 0 && amountValid && emailValid && !loading
-
-  if (result) {
-    return (
-      <section className="relative py-10 md:py-16">
-        <div className="max-w-2xl mx-auto px-4 sm:px-6">
-          <div className="card rounded-[22px] p-8 !border-brand/30">
-            <div className="w-14 h-14 mb-4 rounded-full bg-brand/15 border border-brand/25 flex items-center justify-center">
-              <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <h1 className="serif text-2xl font-semibold mb-2">Счёт создан</h1>
-            <p className="text-sm text-text-secondary mb-5">
-              Счёт на <strong className="text-text-primary">{result.amount}₽</strong> сформирован для <strong className="text-text-primary">{result.company_name}</strong>. Ссылка для оплаты:
-            </p>
-            <div className="mb-5">
-              <a href={result.confirmation_url} target="_blank" rel="noopener noreferrer" className="btn-primary">
-                Перейти к оплате →
-              </a>
-            </div>
-            <div className="p-3 rounded-lg bg-surface-2 border border-brand/10 mb-4">
-              <p className="text-xs text-text-secondary mb-1">Ссылка (можете скопировать и отправить):</p>
-              <p className="font-mono text-xs break-all select-all text-text-primary">{result.confirmation_url}</p>
-            </div>
-            <p className="text-xs text-text-secondary">
-              После оплаты чек-накладная по 54-ФЗ будет автоматически отправлена на <strong className="text-text-primary">{result.email}</strong>.
-            </p>
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={() => { setResult(null); setInn(''); setCompany(''); setAmount(''); setEmail(''); setDescription('') }}
-                className="btn-ghost !py-2 !px-4 !text-sm"
-              >
-                Создать ещё один
-              </button>
-              <Link to="/business" className="px-4 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary self-center">Вернуться</Link>
-            </div>
-          </div>
-        </div>
-      </section>
-    )
+  function again() {
+    setResult(null); setInn(''); setAmount(''); setCompany(''); setEmail(''); setDesc(''); setTried(false); setTouched({})
   }
 
-  return (
-    <section className="relative py-10 md:py-16">
-      <div className="max-w-2xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <p className="eyebrow mb-3">Для бизнеса</p>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">Счёт на оплату для юрлиц</h1>
-          </div>
-          <Link to="/business" className="text-sm text-text-secondary hover:text-brand">← Для бизнеса</Link>
-        </div>
-
-        <p className="text-sm text-text-secondary mb-6">
-          Введите реквизиты — мы выпишем счёт и отправим чек-накладную по 54-ФЗ на указанный email. Оплата проходит через защищённую систему ЮKassa.
-        </p>
-
-        <form onSubmit={handleSubmit} className="card rounded-[22px] p-6 space-y-4">
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">ИНН <span className="text-accent">*</span></label>
-            <input type="text" inputMode="numeric" required value={inn} onChange={e => setInn(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="7707083893 или 500913244106" aria-invalid={!!innError} className={`${inputCls} font-mono ${innError ? '!border-danger/50' : ''}`} />
-            {innError ? <p className="text-xs text-danger mt-1">{innError}</p> : <p className="text-xs text-faint mt-1">10 цифр для юрлица, 12 для ИП</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">Название организации <span className="text-accent">*</span></label>
-            <input type="text" required value={company} onChange={e => setCompany(e.target.value)} placeholder="ООО «Ромашка» или ИП Иванов И.И." className={inputCls} />
-          </div>
-
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">Сумма (₽) <span className="text-accent">*</span></label>
-            <input type="number" min="100" required value={amount} onChange={e => setAmount(e.target.value)} placeholder="5000" aria-invalid={!!amountError} className={`${inputCls} ${amountError ? '!border-danger/50' : ''}`} />
-            {amountError ? <p className="text-xs text-danger mt-1">{amountError}</p> : <p className="text-xs text-faint mt-1">Минимум 100 ₽</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">Email для чека <span className="text-accent">*</span></label>
-            <input type="email" inputMode="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="buyer@company.ru" aria-invalid={!!emailError} className={`${inputCls} ${emailError ? '!border-danger/50' : ''}`} />
-            {emailError && <p className="text-xs text-danger mt-1">{emailError}</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">Описание услуг (необязательно)</label>
-            <textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="HiEarth — корпоративная подписка на 10 сотрудников" className={`${inputCls} resize-none`} />
-          </div>
-
-          {error && <p className="text-sm text-danger bg-danger/10 px-3 py-2 rounded-lg">{error}</p>}
-
-          <button type="submit" disabled={!canSubmit} className="btn-primary w-full !py-3 disabled:opacity-40">
-            {loading ? 'Создаём…' : 'Получить счёт'}
-          </button>
-
-          <p className="text-xs text-faint text-center">
-            Нажимая «Получить счёт», вы соглашаетесь с <Link to="/offer" className="text-brand hover:underline">договором-офертой</Link>
-          </p>
-        </form>
+  const form = (
+    <form className="card stack gap-4" style={{ padding: 28 }} onSubmit={submit} noValidate>
+      <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12 }}>
+        <Field label="ИНН" error={show('inn')}>
+          <Input mono inputMode="numeric" value={inn} onBlur={blur('inn')} onChange={(e) => { setInn(e.target.value.replace(/\D/g, '').slice(0, 12)); setSrvField(null) }} />
+        </Field>
+        <Field label="Сумма, ₽" hint="минимум 100 ₽" error={show('amount')}>
+          <Input mono inputMode="numeric" value={amountFocus || !amount ? amount : group(amountNum)} onFocus={() => setAmountFocus(true)} onBlur={() => { setAmountFocus(false); blur('amount')() }}
+            onChange={(e) => { setAmount(e.target.value.replace(/\D/g, '').slice(0, 7)); setSrvField(null) }} />
+        </Field>
       </div>
-    </section>
+      <Field label="Название организации" error={show('company')}>
+        <Input value={company} placeholder="ООО «Ромашка» или ИП Иванов И.И." autoComplete="organization" onBlur={blur('company')} onChange={(e) => setCompany(e.target.value)} />
+      </Field>
+      <Field label="Email для чека" error={show('email')}>
+        <Input type="email" inputMode="email" autoComplete="email" value={email} placeholder="buh@company.ru" onBlur={blur('email')} onChange={(e) => setEmail(e.target.value)} />
+      </Field>
+      <Field label="Описание услуг" optional>
+        <Input value={desc} placeholder="HiEarth — корпоративная подписка на 10 сотрудников" onChange={(e) => setDesc(e.target.value)} />
+      </Field>
+      {err && <Alert tone="bad" rise>{err}</Alert>}
+      <div><Button variant="primary" size="lg" type="submit" block={narrow} loading={busy}>Получить счёт</Button></div>
+      <p className="t-xs subtle">Отправляя форму, вы принимаете условия <Link to="/offer" className="link">договора-оферты</Link>.</p>
+    </form>
+  )
+
+  return (
+    <>
+      <NarrowHeader back={{ to: '/business', label: 'Для бизнеса' }} right={null} />
+      <main id="main" className="container" style={{ maxWidth: 688, paddingTop: 48, paddingBottom: 80 }}>
+        <h1 className="t-h1">Счёт на оплату для юрлиц</h1>
+        <p className="muted" style={{ marginTop: 6 }}>Сформируем счёт — оплатите его со счёта организации.</p>
+        <div className={`collapse ${result ? '' : 'is-open'}`} style={{ marginTop: 28 }} inert={result ? true : undefined}><div>{form}</div></div>
+        {result && (
+          <section className="card card--elevated card--glow stack gap-3 swap" style={{ marginTop: 28, padding: 28 }} aria-live="polite">
+            <Badge tone="ok" style={{ width: 'max-content' }}>Счёт создан</Badge>
+            <h2 className="t-h3">Счёт № {result.payment_id} сформирован для {result.company_name || company}</h2>
+            <Flap value={Number(result.amount) || amountNum} suffix="₽" size={34} label={`${group(Number(result.amount) || amountNum)} рублей`} />
+            {result.confirmation_url && (
+              <>
+                <p className="t-sm muted">Ссылка — можно скопировать и отправить бухгалтерии:</p>
+                <CopyField value={result.confirmation_url} label="Ссылка на оплату счёта" />
+              </>
+            )}
+            <div className={`${narrow ? 'stack' : 'row'} gap-2`}>
+              {result.confirmation_url && <Button variant="secondary" size="sm" href={result.confirmation_url} target="_blank" rel="noopener noreferrer" iconRight="external">Перейти к оплате</Button>}
+              <Button variant="ghost" size="sm" onClick={again}>Вернуться</Button>
+            </div>
+          </section>
+        )}
+      </main>
+    </>
   )
 }

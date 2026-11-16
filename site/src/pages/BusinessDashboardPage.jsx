@@ -1,476 +1,454 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useAccount from '../account/useAccount.js'
 import { getBusinessMe, initBusinessTopup, createBusinessInvite, removeBusinessMember, changeBusinessMemberRole } from '../api/business.js'
-import { copyToClipboard } from '../components/CopyButton.jsx'
-import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
-import useReveal from '../hooks/useReveal.js'
+import NarrowHeader from '../components/NarrowHeader.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge from '../components/Badge.jsx'
+import Button from '../components/Button.jsx'
+import Card from '../components/Card.jsx'
+import CopyField from '../components/CopyField.jsx'
+import Dialog, { DialogActions } from '../components/Dialog.jsx'
+import EmptyState from '../components/EmptyState.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Flap from '../components/Flap.jsx'
+import ListRow from '../components/ListRow.jsx'
+import { SkeletonCard } from '../components/Skeleton.jsx'
+import { Progress, Select } from '../components/Controls.jsx'
+import { shortId } from '../components/Nomerok.jsx'
+import { useToast } from '../components/Toast.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { ROLES, ROLE_OPTIONS, initials } from '../lib/b2b.js'
+import { date, dateTime, days, group, money, plural } from '../lib/format.js'
 
-/* Empty state with a way forward instead of a bare line of text */
-function Empty({ icon, title, hint, action }) {
-  return (
-    <div className="text-center py-8">
-      <div className="w-11 h-11 mx-auto rounded-full bg-white/[0.04] border border-brand/10 text-faint flex items-center justify-center mb-3">{icon}</div>
-      <p className="text-sm font-medium mb-1">{title}</p>
-      <p className="text-xs text-text-secondary max-w-xs mx-auto">{hint}</p>
-      {action && <div className="mt-4">{action}</div>}
-    </div>
-  )
+// Кабинет компании /business/dashboard (spec 10 §10.4, artboard «Кабинет компании»).
+// GET /api/v1/business/me → company, the caller's role, members, operations, invoices. The role decides
+// what is shown: admin — invite, roles, remove; admin and billing — top up. No membership → /business.
+const AMOUNTS = [1000, 5000, 10000, 25000]
+const ROLE_PHRASE = { admin: 'администратор', billing: 'биллинг-менеджер', user: 'сотрудник', viewer: 'доступ только на чтение' }
+const STATUS = {
+  active: { tone: 'ok', text: 'Аккаунт активен' },
+  inactive: { tone: 'warn', text: 'Аккаунт неактивен' },
+  suspended: { tone: 'bad', text: 'Аккаунт приостановлен' },
+}
+const INVITE_ROLES = [
+  { value: 'user', label: 'Сотрудник — только доступ' },
+  { value: 'viewer', label: 'Только чтение — видит кабинет' },
+  { value: 'billing', label: 'Биллинг-менеджер — может пополнять' },
+  { value: 'admin', label: 'Админ — полный доступ' },
+]
+const INVOICE = { paid: { tone: 'ok', text: 'Оплачен' }, pending: { tone: 'warn', text: 'Ожидание' }, cancelled: { tone: undefined, text: 'Отменён' } }
+
+const memberName = (m) => (m.username ? `@${m.username}` : m.email || `ID ${shortId(m.user_id)}`)
+const memberInitials = (m) => initials(m.username || (m.email || '').split('@')[0] || '?')
+
+// the API answers in English; the person reads Russian (05 §6)
+function say(e, fallback) {
+  const m = String(e?.message || '')
+  if (/last admin/i.test(m)) return 'В компании должен остаться хотя бы один администратор.'
+  if (/admin role required|does not allow/i.test(m)) return 'Это действие доступно только администратору компании.'
+  if (/amount/i.test(m)) return 'Минимум 100 ₽'
+  return /[а-я]/i.test(m) ? m : fallback
 }
 
-/*
- * B2B tenant self-service dashboard. Rendered at /business/dashboard. The
- * logged-in user must have a tenant_members row; otherwise → /business.
- */
-
-function formatMoney(n) {
-  return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0) + ' ₽'
-}
-function formatDate(s) {
-  if (!s) return '—'
-  try { return new Date(s).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { return s }
-}
-function roleLabel(role) {
-  return ({
-    admin:   { text: 'Админ',         cls: 'bg-brand/20 text-brand' },
-    billing: { text: 'Биллинг',       cls: 'bg-accent/20 text-accent' },
-    viewer:  { text: 'Только чтение', cls: 'bg-white/10 text-text-secondary' },
-    user:    { text: 'Сотрудник',     cls: 'bg-white/10 text-text-secondary' },
-  }[role] || { text: role, cls: 'bg-white/10 text-text-secondary' })
+// the 1st of next month — when the monthly charge happens
+function nextCharge() {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth() + 1, 1)
 }
 
 export default function BusinessDashboardPage() {
-  const navigate = useNavigate()
   const { token } = useAuth()
-
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const toast = useToast()
+  const narrow = useMedia('(max-width: 1024px)')
+  const phone = useMedia('(max-width: 640px)')
+  const { data: acc } = useAccount(['profile'], { optional: ['profile'] })
+  const myId = acc?.profile?.user_id
   const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [actionError, setActionError] = useState('')
+  const [loadErr, setLoadErr] = useState(false)
+  const [savingRole, setSavingRole] = useState(null)
+  const [leaving, setLeaving] = useState(null) // user_db_id whose row is collapsing
+  const [topup, setTopup] = useState(false)
+  const [invite, setInvite] = useState(false)
+  const [remove, setRemove] = useState(null)
+  const welcomed = useRef(false)
 
-  const [topupOpen, setTopupOpen] = useState(false)
-  const [topupAmount, setTopupAmount] = useState(5000)
-  const [topupLoading, setTopupLoading] = useState(false)
+  usePageMeta(`${data?.tenant?.name ? `${data.tenant.name} — ` : ''}Кабинет компании — HiEarth`, { noindex: true })
 
-  const [inviteOpen, setInviteOpen] = useState(false)
-  const [inviteRole, setInviteRole] = useState('user')
-  const [inviteLoading, setInviteLoading] = useState(false)
-  const [inviteResult, setInviteResult] = useState(null)
-
-  const [confirmRemove, setConfirmRemove] = useState(null) // member pending removal
-  const [removeBusy, setRemoveBusy] = useState(false)
-  const [copiedField, setCopiedField] = useState('')
-  const [savingRole, setSavingRole] = useState(null)   // user_db_id being updated
-  const [notice, setNotice] = useState('')
-
-  async function load() {
-    setLoading(true)
+  const load = useCallback(async () => {
+    setLoadErr(false)
     try {
-      const d = await getBusinessMe(token)
-      setData(d)
-      setError('')
+      setData(await getBusinessMe(token))
     } catch (e) {
-      if (e.message?.includes('no B2B membership')) { navigate('/business'); return }
-      setError(e.message || 'Не удалось загрузить данные')
-    } finally {
-      setLoading(false)
+      if (/no B2B membership/i.test(e.message || '')) { navigate('/business', { replace: true }); return }
+      setLoadErr(true)
     }
-  }
+  }, [token, navigate])
 
+  useEffect(() => { load() }, [load])
+
+  // after joining by an invitation (/claim → ?welcome=1): one toast, then the parameter goes away
   useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
+    if (!data || welcomed.current || params.get('welcome') !== '1') return
+    welcomed.current = true
+    toast.ok(`Вы в компании ${data.tenant.name}`)
+    params.delete('welcome')
+    setParams(params, { replace: true })
+  }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useReveal([loading, data])
-
-  // Chips set numbers, the input sets strings — normalise once, here.
-  const topupValue = parseInt(topupAmount, 10)
-  const topupValid = Number.isFinite(topupValue) && topupValue >= 100
-
-  async function handleTopup() {
-    if (!topupValid) return
-    setTopupLoading(true)
+  async function changeRole(m, role) {
+    if (role === m.role || savingRole) return
+    const prev = m.role
+    setSavingRole(m.user_db_id)
+    setData((d) => ({ ...d, members: d.members.map((x) => (x.user_db_id === m.user_db_id ? { ...x, role } : x)) }))
     try {
-      const returnUrl = window.location.origin + '/business/dashboard'
-      const res = await initBusinessTopup(token, { amount: topupValue, returnUrl })
-      if (res.confirmation_url) window.location.href = res.confirmation_url
+      await changeBusinessMemberRole(token, m.user_db_id, role)
+      toast.ok('Роль изменена')
     } catch (e) {
-      setActionError(e.message || 'Не удалось создать платёж')
-      setTopupOpen(false)
-    } finally {
-      setTopupLoading(false)
-    }
-  }
-
-  async function handleCreateInvite() {
-    setInviteLoading(true)
-    setInviteResult(null)
-    try {
-      const res = await createBusinessInvite(token, { role: inviteRole })
-      setInviteResult(res)
-    } catch (e) {
-      setActionError(e.message || 'Не удалось создать приглашение')
-      setInviteOpen(false)
-    } finally {
-      setInviteLoading(false)
-    }
-  }
-
-  async function doRemoveMember() {
-    if (!confirmRemove) return
-    setRemoveBusy(true)
-    try {
-      await removeBusinessMember(token, confirmRemove.user_db_id)
-      setConfirmRemove(null)
-      await load()
-    } catch (e) {
-      setActionError(e.message || 'Не удалось удалить участника')
-      setConfirmRemove(null)
-    } finally {
-      setRemoveBusy(false)
-    }
-  }
-
-  // Optimistic: the select reflects the new role immediately and reverts in
-  // place on failure — no full-page reload flash for a one-field change.
-  async function handleChangeRole(member, newRole) {
-    if (newRole === member.role || savingRole) return
-    const prevRole = member.role
-    setSavingRole(member.user_db_id)
-    setActionError('')
-    setData(d => ({ ...d, members: d.members.map(m => m.user_db_id === member.user_db_id ? { ...m, role: newRole } : m) }))
-    try {
-      await changeBusinessMemberRole(token, member.user_db_id, newRole)
-      setNotice(`Роль обновлена: ${roleLabel(newRole).text}`)
-      setTimeout(() => setNotice(''), 3000)
-    } catch (e) {
-      setData(d => ({ ...d, members: d.members.map(m => m.user_db_id === member.user_db_id ? { ...m, role: prevRole } : m) }))
-      setActionError(e.message || 'Не удалось изменить роль')
+      setData((d) => ({ ...d, members: d.members.map((x) => (x.user_db_id === m.user_db_id ? { ...x, role: prev } : x)) }))
+      toast.bad(say(e, 'Не удалось изменить роль — попробуйте ещё раз.'))
     } finally {
       setSavingRole(null)
     }
   }
 
-  async function copy(text, field) {
-    // shared helper — has an execCommand fallback for non-secure contexts
-    const ok = await copyToClipboard(text)
-    if (ok) {
-      setCopiedField(field)
-      setTimeout(() => setCopiedField(''), 1800)
+  // the row collapses (04: `collapse`, 320 ms) after the dialog closes, then the list reloads
+  function removed(m) {
+    setRemove(null)
+    toast.ok('Сотрудник удалён')
+    setTimeout(() => setLeaving(m.user_db_id), 170)
+    setTimeout(() => {
+      setData((d) => ({ ...d, members: d.members.filter((x) => x.user_db_id !== m.user_db_id) }))
+      setLeaving(null)
+      document.getElementById('staff')?.focus({ preventScroll: true }) // the row with the opener is gone
+      load()
+    }, 520)
+  }
+
+  const header = <NarrowHeader back={{ to: '/dashboard', label: 'Личный кабинет' }} logoText={phone ? undefined : 'HiEarth для бизнеса'} />
+
+  if (loadErr) {
+    return (
+      <>
+        {header}
+        <main id="main" className="container" style={{ paddingTop: 56, paddingBottom: 80 }}>
+          <EmptyState mood="worried" title="Не удалось загрузить кабинет компании" actions={<Button variant="secondary" onClick={load} icon="refresh">Повторить</Button>}>
+            Сервис временно недоступен. Попробуйте ещё раз через минуту.
+          </EmptyState>
+        </main>
+      </>
+    )
+  }
+
+  if (!data) {
+    return (
+      <>
+        {header}
+        <main id="main" className="container" style={{ paddingTop: 40, paddingBottom: 80 }} aria-busy="true">
+          <span className="sr" role="status">Загружаем кабинет компании…</span>
+          <SkeletonCard lines={1} style={{ marginBottom: 16 }} />
+          <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'minmax(0,4fr) minmax(0,8fr)', gap: 16 }}>
+            <SkeletonCard big />
+            <SkeletonCard lines={5} />
+          </div>
+        </main>
+      </>
+    )
+  }
+
+  const t = data.tenant
+  const role = data.role
+  const isAdmin = role === 'admin'
+  const canBill = role === 'admin' || role === 'billing'
+  const members = data.members || []
+  const max = Number(t.max_users) || 0
+  const full = max > 0 && members.length >= max
+  const status = STATUS[t.status] || { tone: undefined, text: t.status }
+  const invoices = data.invoices || []
+  const operations = data.transactions || []
+  const balance = Math.round((Number(t.balance) || 0) * 100) / 100
+  const span = (n) => (narrow ? undefined : { gridColumn: `span ${n}` })
+  const seats = max > 0
+    ? <span className="mono">{members.length} из {max} {plural(max, ['места', 'мест', 'мест'])}</span>
+    : <span className="mono">{members.length} {plural(members.length, ['место', 'места', 'мест'])}</span>
+
+  return (
+    <>
+      {header}
+      <main id="main" className="container" style={{ paddingTop: phone ? 28 : 40, paddingBottom: 80 }}>
+        <div className="page-head rise">
+          <div style={{ minWidth: 0 }}>
+            <h1 className="t-h1">{t.name}</h1>
+            <p className="muted mono t-sm" style={{ marginTop: 6 }}>{t.inn ? `ИНН ${t.inn} · ` : ''}вы — {ROLE_PHRASE[role] || role}</p>
+          </div>
+          <Badge tone={status.tone} style={{ height: 30, padding: '0 12px', fontSize: 13 }}>{status.text}</Badge>
+        </div>
+
+        {t.status === 'inactive' && <Alert tone="warn" rise className="mb-4"><b>Аккаунт неактивен.</b> Пополните кошелёк — после первого платежа аккаунт активируется автоматически.</Alert>}
+        {t.status === 'suspended' && <Alert tone="bad" rise className="mb-4"><b>Аккаунт приостановлен.</b> Баланс закончился. Пополните — доступ восстановится после ежемесячного списания.</Alert>}
+
+        <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'repeat(12, minmax(0,1fr))', gap: 16 }}>
+          <Card title="Баланс компании" className="rise" style={{ ...span(4), '--d': '60ms' }}>
+            <Flap value={group(balance)} suffix="₽" size={phone ? 36 : 44} label={money(balance)} />
+            <p className="t-sm subtle" style={{ marginTop: 10 }}>
+              Следующее списание — {date(nextCharge())}: {max > 0 ? `${max} ${plural(max, ['место', 'места', 'мест'])}` : 'места'} × тариф «{t.plan}».
+            </p>
+            {canBill
+              ? <Button variant="primary" block onClick={() => setTopup(true)} style={{ marginTop: 16 }}>Пополнить кошелёк</Button>
+              : <p className="t-xs subtle" style={{ marginTop: 12 }}>Пополнение доступно администратору и биллинг-менеджеру</p>}
+          </Card>
+
+          <Card
+            title={<>Сотрудники · {seats}</>}
+            action={isAdmin && members.length > 1 ? <Button size="sm" onClick={() => setInvite(true)}>+ Пригласить</Button> : null}
+            className="rise"
+            style={{ ...span(8), '--d': '120ms' }}
+            id="staff"
+            tabIndex={-1}
+          >
+            {max > 0 && <div style={{ marginBottom: 8 }}><Progress value={(members.length / max) * 100} warn={full} label={`Занято ${members.length} из ${max} мест`} /></div>}
+            {full && <p className="t-xs subtle" style={{ marginBottom: 8 }}>Мест не осталось — новые сотрудники не смогут присоединиться.</p>}
+            {members.length <= 1 && (
+              <EmptyState small title="Сотрудники не привязаны" actions={isAdmin ? <Button size="sm" onClick={() => setInvite(true)}>Пригласить первого</Button> : null}>
+                {isAdmin
+                  ? 'Создайте ссылку-приглашение — сотрудник получит доступ без отдельной регистрации.'
+                  : 'Приглашать сотрудников может администратор компании.'}
+              </EmptyState>
+            )}
+            {members.length > 1 && (phone
+              ? (
+                <div className="rows">
+                  {members.map((m) => {
+                    const me = m.user_id === myId
+                    return (
+                      <div key={m.user_db_id} className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}>
+                        <div>
+                          <div className="stack gap-2" style={{ padding: '12px 0', borderTop: '1px solid var(--line)' }}>
+                            <span className="row gap-2" style={{ minWidth: 0 }}>
+                              <span className="ava">{memberInitials(m)}</span>
+                              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}><b className="t-sm">{memberName(m)}</b>{me && <span className="subtle t-sm"> (вы)</span>}<br /><span className="mono t-xs subtle">с {date(m.joined_at)}</span></span>
+                            </span>
+                            {isAdmin && !me
+                              ? (
+                                <span className="row gap-2">
+                                  <Select value={m.role} onChange={(r) => changeRole(m, r)} disabled={savingRole === m.user_db_id} options={ROLE_OPTIONS} label={`Роль: ${memberName(m)}`} />
+                                  <Button variant="ghost" size="sm" onClick={() => setRemove(m)} disabled={savingRole === m.user_db_id}>Удалить</Button>
+                                </span>
+                              )
+                              : <Badge tone={ROLES[m.role]?.tone} style={{ width: 'max-content' }}>{ROLES[m.role]?.text || m.role}</Badge>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+              : (
+                <table className="tbl">
+                  <thead><tr><th>Сотрудник</th><th>Роль</th><th>В компании</th>{isAdmin && <th><span className="sr">Действия</span></th>}</tr></thead>
+                  <tbody>
+                    {members.map((m) => {
+                      const me = m.user_id === myId
+                      const cell = (c) => <div className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}><div>{c}</div></div>
+                      return (
+                        <tr key={m.user_db_id} style={leaving === m.user_db_id ? { opacity: 0, transition: 'opacity 160ms var(--ease-out)' } : undefined}>
+                          <td>{cell(<span className="row gap-2" style={{ minWidth: 0 }}><span className="ava">{memberInitials(m)}</span><span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{memberName(m)}{me && <span className="subtle"> (вы)</span>}</span></span>)}</td>
+                          <td>{cell(isAdmin && !me
+                            ? <Select value={m.role} onChange={(r) => changeRole(m, r)} disabled={savingRole === m.user_db_id} options={ROLE_OPTIONS} label={`Роль: ${memberName(m)}`} />
+                            : <Badge tone={ROLES[m.role]?.tone}>{ROLES[m.role]?.text || m.role}</Badge>)}</td>
+                          <td className="mono subtle">{cell(m.joined_at ? `с ${date(m.joined_at)}` : '—')}</td>
+                          {isAdmin && <td style={{ textAlign: 'right' }}>{cell(me ? null : <Button variant="ghost" size="sm" onClick={() => setRemove(m)} disabled={savingRole === m.user_db_id}>Удалить</Button>)}</td>}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              ))}
+          </Card>
+
+          <Card title="Счета" className="rise" style={{ ...span(6), '--d': '180ms' }}>
+            {invoices.length === 0
+              ? <EmptyState small title="Счетов пока нет" actions={<Button variant="ghost" size="sm" to="/business/invoice">Получить счёт</Button>} />
+              : (
+                <div className="rows">
+                  {invoices.map((inv) => (
+                    <ListRow key={inv.id} icon="file" title={`Счёт № ${inv.id}`} sub={[date(inv.created_at), inv.inn ? `ИНН ${inv.inn}` : ''].filter(Boolean).join(' · ')}
+                      amount={money(inv.amount)} badge={INVOICE[inv.status] || { text: inv.status }} />
+                  ))}
+                </div>
+              )}
+          </Card>
+
+          <Card title="Операции" className="rise" style={{ ...span(6), '--d': '240ms' }}>
+            {operations.length === 0
+              ? (
+                <EmptyState small title="Операций пока нет" actions={canBill ? <Button variant="ghost" size="sm" onClick={() => setTopup(true)}>Пополнить кошелёк</Button> : null}>
+                  Здесь появятся пополнения кошелька и ежемесячные списания.
+                </EmptyState>
+              )
+              : (
+                <div className="rows">
+                  {operations.map((tx) => {
+                    const credit = tx.direction === 'credit'
+                    return (
+                      <ListRow key={tx.id} icon={credit ? 'topup' : 'receipt'} title={tx.description || (credit ? 'Пополнение' : 'Списание')} sub={dateTime(tx.created_at)}
+                        amount={`${credit ? '+' : '−'}${money(Math.abs(Number(tx.amount) || 0))}`} amountTone={credit ? 'ok' : ''} />
+                    )
+                  })}
+                </div>
+              )}
+          </Card>
+        </div>
+      </main>
+
+      <TopupDialog open={topup} onClose={() => setTopup(false)} token={token} />
+      <InviteDialog open={invite} onClose={() => setInvite(false)} token={token} />
+      <RemoveDialog member={remove} onClose={() => setRemove(null)} onRemoved={removed} token={token} />
+    </>
+  )
+}
+
+// Пополнение кошелька компании: a redirect payment of ЮKassa (topup-init gives confirmation_url).
+function TopupDialog({ open, onClose, token }) {
+  const [pick, setPick] = useState(5000)
+  const [own, setOwn] = useState('')
+  const [shown, setShown] = useState(false) // the field error appears after leaving the field or «Оплатить»
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const sum = own ? parseInt(own, 10) || 0 : pick
+  const bad = own && sum < 100 ? 'Минимум 100 ₽' : ''
+
+  useEffect(() => { if (open) { setErr(''); setBusy(false); setShown(false) } }, [open])
+
+  async function pay(e) {
+    e.preventDefault()
+    setShown(true)
+    if (!sum || bad || busy) return
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await initBusinessTopup(token, { amount: sum, returnUrl: `${window.location.origin}/business/dashboard` })
+      if (r.confirmation_url) { window.location.assign(r.confirmation_url); return }
+      setErr('Не удалось создать платёж — попробуйте ещё раз.')
+    } catch (e2) {
+      setErr(say(e2, 'Не удалось создать платёж — попробуйте ещё раз.'))
+    }
+    setBusy(false)
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} title="Пополнение кошелька" busy={busy} closeOnOverlay={!own}>
+      <form onSubmit={pay} noValidate className="stack gap-3">
+        <p className="muted t-sm">Деньги придут после успешной оплаты в ЮKassa.</p>
+        <span className="t-label" id="b-amounts-l">Сумма</span>
+        <div className="amounts" role="radiogroup" aria-labelledby="b-amounts-l">
+          {AMOUNTS.map((a) => (
+            <span key={a} style={{ display: 'contents' }}>
+              <input type="radio" id={`b-amt-${a}`} name="b-amount" checked={!own && pick === a} onChange={() => { setPick(a); setOwn('') }} />
+              <label htmlFor={`b-amt-${a}`}>{group(a)}&nbsp;₽</label>
+            </span>
+          ))}
+        </div>
+        <Field id="b-own" label="Своя сумма, ₽" error={(shown && bad) || null}>
+          <Input id="b-own" mono inputMode="numeric" placeholder="от 100 ₽" value={own} onBlur={() => setShown(true)} onChange={(e) => { setOwn(e.target.value.replace(/\D/g, '').slice(0, 7)); setShown(false) }} />
+        </Field>
+        {err && <Alert tone="bad" rise>{err}</Alert>}
+        <DialogActions>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Отмена</Button>
+          <Button variant="primary" type="submit" loading={busy}>{sum && !bad ? `Оплатить ${group(sum)} ₽` : 'Оплатить'}</Button>
+        </DialogActions>
+      </form>
+    </Dialog>
+  )
+}
+
+// Пригласить сотрудника: role → POST /api/v1/business/invite → a single-use link for 7 days.
+function InviteDialog({ open, onClose, token }) {
+  const [role, setRole] = useState('user')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [res, setRes] = useState(null)
+
+  useEffect(() => { if (open) { setRes(null); setErr(''); setBusy(false); setRole('user') } }, [open])
+
+  async function create() {
+    if (busy) return
+    setBusy(true)
+    setErr('')
+    try {
+      setRes(await createBusinessInvite(token, { role }))
+    } catch (e) {
+      setErr(say(e, 'Не удалось создать приглашение — попробуйте ещё раз.'))
+    }
+    setBusy(false)
+  }
+
+  const left = res?.expires_at ? Math.max(1, Math.round((new Date(res.expires_at) - Date.now()) / 86400000)) : 7
+  return (
+    <Dialog open={open} onClose={onClose} title="Пригласить сотрудника" busy={busy}>
+      {res
+        ? (
+          <div className="stack gap-3 swap">
+            <p className="muted t-sm">Отправьте ссылку сотруднику — она действует {days(left)}{res.expires_at ? ` (до ${dateTime(res.expires_at)})` : ''}. Ссылка одноразовая.</p>
+            <CopyField value={res.claim_url} label="Ссылка-приглашение" />
+            <DialogActions><Button variant="primary" onClick={onClose} data-autofocus>Готово</Button></DialogActions>
+          </div>
+        )
+        : (
+          <div className="stack gap-3">
+            <p className="muted t-sm">Создаст одноразовую ссылку на 7 дней.</p>
+            <Field id="inv-role" label="Роль">
+              <select id="inv-role" className="sel" style={{ width: "100%", height: 44 }} value={role} onChange={(e) => setRole(e.target.value)}>
+                {INVITE_ROLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </Field>
+            {err && <Alert tone="bad" rise>{err}</Alert>}
+            <DialogActions>
+              <Button variant="ghost" onClick={onClose} disabled={busy}>Отмена</Button>
+              <Button variant="primary" onClick={create} loading={busy}>Создать ссылку</Button>
+            </DialogActions>
+          </div>
+        )}
+    </Dialog>
+  )
+}
+
+// Удалить сотрудника?: DELETE /api/v1/business/members/:id (the server keeps the last admin).
+function RemoveDialog({ member, onClose, onRemoved, token }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const last = useRef(member)
+  if (member) last.current = member
+  const m = last.current
+
+  useEffect(() => { if (member) { setErr(''); setBusy(false) } }, [member])
+
+  async function go() {
+    if (busy || !m) return
+    setBusy(true)
+    setErr('')
+    try {
+      await removeBusinessMember(token, m.user_db_id)
+      setBusy(false)
+      onRemoved(m)
+    } catch (e) {
+      setErr(say(e, 'Не удалось удалить сотрудника — попробуйте ещё раз.'))
+      setBusy(false)
     }
   }
 
-  if (loading) return <CabinetSkeleton />
-
-  if (error || !data) return (
-    <div className="max-w-xl mx-auto py-16 px-4">
-      <div className="card rounded-[22px] p-6 !border-danger/20">
-        <h1 className="serif text-lg font-semibold text-danger mb-2">Ошибка</h1>
-        <p className="text-sm text-text-secondary mb-4">{error || 'Нет данных'}</p>
-        <button onClick={load} className="btn-primary !py-2.5 !text-sm">Повторить</button>
-      </div>
-    </div>
-  )
-
-  const t = data.tenant
-  const isAdmin = data.role === 'admin'
-  const canBill = data.role === 'admin' || data.role === 'billing'
-  const isInactive = t.status === 'inactive'
-  const isSuspended = t.status === 'suspended'
-
   return (
-    <section className="relative py-10 md:py-16">
-      <div className="relative max-w-5xl mx-auto px-4 sm:px-6">
-
-        {notice && (
-          <div role="status" aria-live="polite" className="mb-4 flex items-start gap-2 p-3 rounded-xl bg-brand/10 border border-brand/20 animate-fade-in">
-            <svg className="w-5 h-5 text-brand flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-            <p className="text-sm text-text-primary flex-1">{notice}</p>
-          </div>
-        )}
-
-        {actionError && (
-          <div role="alert" className="mb-6 flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 animate-fade-in">
-            <svg className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
-            <p className="text-sm text-danger flex-1">{actionError}</p>
-            <button onClick={() => setActionError('')} aria-label="Скрыть" className="text-danger/70 hover:text-danger"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg></button>
-          </div>
-        )}
-
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8 gap-4 flex-wrap">
-          <div>
-            <p className="text-xs text-faint uppercase tracking-wider">Компания</p>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">{t.name}</h1>
-            <p className="text-sm text-text-secondary mt-1">
-              {t.inn && <>ИНН: <span className="font-mono">{t.inn}</span> · </>}
-              Тариф: <span className="text-text-primary">{t.plan}</span>
-              {' · '}Статус: <StatusBadge status={t.status} />
-              {' · '}Ваша роль: <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${roleLabel(data.role).cls}`}>{roleLabel(data.role).text}</span>
-            </p>
-          </div>
-          <Link to="/dashboard" className="text-sm text-text-secondary hover:text-brand transition">← Личный кабинет</Link>
-        </div>
-
-        {/* Status banner */}
-        {isInactive && (
-          <div className="card rounded-[22px] p-5 mb-6 !border-accent/30 bg-accent/5">
-            <p className="text-sm font-semibold text-accent">Аккаунт неактивен</p>
-            <p className="text-xs text-accent/80 mt-1">Пополните кошелёк — после первого успешного платежа аккаунт активируется автоматически.</p>
-          </div>
-        )}
-        {isSuspended && (
-          <div className="card rounded-[22px] p-5 mb-6 !border-danger/30 bg-danger/5">
-            <p className="text-sm font-semibold text-danger">Аккаунт приостановлен</p>
-            <p className="text-xs text-danger/80 mt-1">Баланс закончился. Пополните кошелёк — доступ восстановится после следующего ежемесячного списания.</p>
-          </div>
-        )}
-
-        {/* Balance + topup */}
-        <div className="card-feat rounded-[22px] p-6 mb-6">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <p className="text-xs text-faint uppercase tracking-wider mb-2">Баланс</p>
-              <p className="serif text-4xl font-semibold text-text-primary tabular-nums">{formatMoney(t.balance)}</p>
-              <p className="text-xs text-text-secondary mt-2">Списание {t.max_users} мест × тариф «{t.plan}» каждое 1-е число месяца.</p>
-            </div>
-            {canBill ? (
-              <button onClick={() => setTopupOpen(true)} className="btn-primary !py-3 min-h-[48px]">Пополнить кошелёк</button>
-            ) : (
-              <span className="text-xs text-text-secondary max-w-[12rem]">Пополнение доступно только администратору и биллинг-менеджеру</span>
-            )}
-          </div>
-        </div>
-
-        {/* Members */}
-        <div className="card rounded-[22px] p-6 mb-6 reveal">
-          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-            <div className="min-w-0">
-              <h2 className="serif text-lg font-semibold">Сотрудники</h2>
-              <p className="text-xs text-text-secondary mt-0.5">
-                {data.members.length} из {t.max_users || '∞'} мест занято
-                {t.max_users > 0 && data.members.length >= t.max_users && <span className="text-accent"> · мест не осталось</span>}
-              </p>
-            </div>
-            {isAdmin && (
-              <button onClick={() => { setInviteOpen(true); setInviteResult(null) }} className="btn-ghost !py-2 !px-4 !text-sm">+ Пригласить</button>
-            )}
-          </div>
-
-          {/* seat capacity at a glance */}
-          {t.max_users > 0 && (
-            <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden mb-5">
-              <div
-                className={`h-full transition-all duration-500 ${data.members.length >= t.max_users ? 'bg-accent' : 'bg-brand'}`}
-                style={{ width: `${Math.min(100, (data.members.length / t.max_users) * 100)}%` }}
-              />
-            </div>
-          )}
-
-          {data.members.length === 0 ? (
-            <Empty
-              icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.1a9.4 9.4 0 002.6.4 9.3 9.3 0 004.1-1 4.1 4.1 0 00-7.5-2.5M15 19.1v-.1c0-1.1-.3-2.2-.8-3.1M15 19.1v.1A12.3 12.3 0 018.6 21c-2.3 0-4.5-.6-6.4-1.8v-.1a6.4 6.4 0 0112-3.1M12 6.4a3.4 3.4 0 11-6.8 0 3.4 3.4 0 016.8 0zm8.3 2.2a2.6 2.6 0 11-5.3 0 2.6 2.6 0 015.3 0z" /></svg>}
-              title="Сотрудники не привязаны"
-              hint="Создайте ссылку-приглашение — сотрудник перейдёт по ней и получит доступ без отдельной регистрации."
-              action={isAdmin
-                ? <button onClick={() => { setInviteOpen(true); setInviteResult(null) }} className="btn-primary !py-2.5 !text-sm">Пригласить первого</button>
-                : <p className="text-xs text-faint">Приглашать может администратор компании</p>}
-            />
-          ) : (
-            <div className="space-y-2">
-              {data.members.map(m => {
-                const rl = roleLabel(m.role)
-                return (
-                  <div key={m.user_db_id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-brand/8 flex-wrap">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium truncate">{m.username ? `@${m.username}` : (m.email || m.user_id)}</p>
-                      <p className="text-[11px] text-faint truncate font-mono">{m.user_id}</p>
-                    </div>
-                    {isAdmin ? (
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <select
-                          value={m.role}
-                          onChange={e => handleChangeRole(m, e.target.value)}
-                          disabled={savingRole === m.user_db_id}
-                          aria-busy={savingRole === m.user_db_id}
-                          className="px-2 py-1 rounded-lg bg-white/5 border border-brand/12 text-[11px] font-medium hover:bg-white/10 transition disabled:opacity-50"
-                          title="Изменить роль"
-                        >
-                          <option value="admin">Админ</option>
-                          <option value="billing">Биллинг</option>
-                          <option value="viewer">Только чтение</option>
-                          <option value="user">Сотрудник</option>
-                        </select>
-                        {savingRole === m.user_db_id && (
-                          <svg className="w-3.5 h-3.5 animate-spin text-brand" viewBox="0 0 24 24" fill="none" aria-label="Сохраняем">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                        )}
-                      </div>
-                    ) : (
-                      <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium flex-shrink-0 ${rl.cls}`}>{rl.text}</span>
-                    )}
-                    {isAdmin && (
-                      <button onClick={() => setConfirmRemove(m)} disabled={savingRole === m.user_db_id} className="text-xs text-danger hover:brightness-125 transition disabled:opacity-40 flex-shrink-0" title="Удалить из компании">Удалить</button>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Invoices */}
-        {data.invoices && data.invoices.length > 0 && (
-          <div className="card rounded-[22px] p-6 mb-6">
-            <h2 className="serif text-lg font-semibold mb-4">Счета</h2>
-            <div className="space-y-2">
-              {data.invoices.map(inv => (
-                <div key={inv.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-brand/8 flex-wrap">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">
-                      Счёт #{inv.id} · {formatMoney(inv.amount)}
-                      {' · '}<span className={`text-xs px-1.5 py-0.5 rounded ${
-                        inv.status === 'paid' ? 'bg-brand/15 text-brand' :
-                        inv.status === 'pending' ? 'bg-accent/15 text-accent' :
-                        'bg-white/5 text-faint'}`}>
-                        {inv.status === 'paid' ? 'Оплачен' : inv.status === 'pending' ? 'Ожидание' : inv.status === 'cancelled' ? 'Отменён' : inv.status}
-                      </span>
-                    </p>
-                    <p className="text-[11px] text-text-secondary mt-0.5 truncate">
-                      ИНН {inv.inn} · {inv.legal_name} · создан {formatDate(inv.created_at)}
-                      {inv.paid_at && <> · оплачен {formatDate(inv.paid_at)}</>}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Transactions */}
-        <div className="card rounded-[22px] p-6 reveal">
-          <h2 className="serif text-lg font-semibold mb-4">История операций</h2>
-          {data.transactions.length === 0 ? (
-            <Empty
-              icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" /></svg>}
-              title="Операций пока нет"
-              hint="Здесь появятся все пополнения кошелька и ежемесячные списания."
-              action={canBill ? <button onClick={() => setTopupOpen(true)} className="btn-primary !py-2.5 !text-sm">Пополнить кошелёк</button> : null}
-            />
-          ) : (
-            <div className="space-y-2">
-              {data.transactions.map(tx => (
-                <div key={tx.id} className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-brand/8">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{tx.description || (tx.direction === 'credit' ? 'Пополнение' : 'Списание')}</p>
-                    <p className="text-[11px] text-faint mt-0.5">{formatDate(tx.created_at)}</p>
-                  </div>
-                  <span className={`font-semibold tabular-nums ${tx.direction === 'credit' ? 'text-brand' : 'text-text-primary'}`}>
-                    {tx.direction === 'credit' ? '+' : '−'}{formatMoney(tx.amount)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Topup modal */}
-      {topupOpen && (
-        <ModalOverlay onClose={() => setTopupOpen(false)}>
-          <h2 className="serif text-lg font-semibold mb-1">Пополнение кошелька</h2>
-          <p className="text-sm text-text-secondary mb-5">Деньги придут после успешной оплаты в ЮKassa.</p>
-          <label className="block text-xs text-text-secondary mb-1">Сумма, ₽</label>
-          <input type="number" min="100" step="100" value={topupAmount} onChange={e => setTopupAmount(e.target.value)}
-            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:ring-2 focus:ring-brand/25 focus:outline-none text-base" />
-          <div className="flex gap-2 mt-2 flex-wrap">
-            {[1000, 5000, 10000, 25000].map(v => (
-              <button key={v} onClick={() => setTopupAmount(v)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-brand/12 hover:bg-white/10 text-xs transition">{v} ₽</button>
-            ))}
-          </div>
-          <div className="flex gap-3 mt-6">
-            <button onClick={() => setTopupOpen(false)} className="btn-ghost flex-1 !py-3 !text-sm">Отмена</button>
-            <button onClick={handleTopup} disabled={topupLoading || !topupValid} className="btn-primary flex-1 !py-3 !text-sm disabled:opacity-40">
-              {topupLoading ? 'Готовим оплату…' : topupValid ? `Оплатить ${topupValue.toLocaleString('ru-RU')} ₽` : 'Оплатить'}
-            </button>
-          </div>
-        </ModalOverlay>
-      )}
-
-      {/* Invite modal */}
-      {inviteOpen && (
-        <ModalOverlay onClose={() => setInviteOpen(false)}>
-          <h2 className="serif text-lg font-semibold mb-1">Пригласить сотрудника</h2>
-          <p className="text-sm text-text-secondary mb-5">Создаст одноразовую ссылку на 7 дней.</p>
-          <label className="block text-xs text-text-secondary mb-1">Роль</label>
-          <select value={inviteRole} onChange={e => setInviteRole(e.target.value)}
-            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:ring-2 focus:ring-brand/25 focus:outline-none text-sm">
-            <option value="user">Сотрудник — только доступ</option>
-            <option value="viewer">Только чтение — видит кабинет</option>
-            <option value="billing">Биллинг-менеджер — может пополнять</option>
-            <option value="admin">Админ — полный доступ</option>
-          </select>
-          {inviteResult ? (
-            <div className="mt-5 p-4 rounded-xl bg-brand/10 border border-brand/30">
-              <p className="text-xs text-brand uppercase tracking-wider mb-2">Ссылка создана</p>
-              <code className="block font-mono text-xs break-all text-text-primary select-all">{inviteResult.claim_url}</code>
-              <p className="text-[11px] text-text-secondary mt-2">Действует до {formatDate(inviteResult.expires_at)}</p>
-              <button onClick={() => copy(inviteResult.claim_url, 'invite')} className="mt-3 w-full px-4 py-2.5 rounded-xl bg-white/5 border border-brand/12 hover:bg-white/10 text-sm font-medium transition">
-                {copiedField === 'invite' ? '✓ Скопировано' : 'Копировать ссылку'}
-              </button>
-            </div>
-          ) : (
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setInviteOpen(false)} className="btn-ghost flex-1 !py-3 !text-sm">Отмена</button>
-              <button onClick={handleCreateInvite} disabled={inviteLoading} className="btn-primary flex-1 !py-3 !text-sm disabled:opacity-50">{inviteLoading ? '…' : 'Создать ссылку'}</button>
-            </div>
-          )}
-        </ModalOverlay>
-      )}
-
-      {/* Remove-member confirm modal */}
-      {confirmRemove && (
-        <ModalOverlay onClose={() => !removeBusy && setConfirmRemove(null)}>
-          <div className="text-center">
-            <div className="w-12 h-12 mx-auto rounded-full bg-danger/12 border border-danger/25 text-danger flex items-center justify-center mb-4">
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.3 3.9 2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
-            </div>
-            <h2 className="serif text-lg font-semibold mb-2">Удалить сотрудника?</h2>
-            <p className="text-sm text-text-secondary mb-6">{confirmRemove.username ? `@${confirmRemove.username}` : (confirmRemove.email || confirmRemove.user_id)} потеряет доступ к компании.</p>
-            <div className="flex gap-3">
-              <button onClick={() => setConfirmRemove(null)} disabled={removeBusy} className="btn-ghost flex-1 !py-2.5 !text-sm disabled:opacity-50">Отмена</button>
-              <button onClick={doRemoveMember} disabled={removeBusy} className="flex-1 inline-flex items-center justify-center !py-2.5 !text-sm rounded-full font-semibold bg-danger text-white hover:brightness-110 active:scale-[0.97] transition disabled:opacity-50">{removeBusy ? 'Удаляем…' : 'Удалить'}</button>
-            </div>
-          </div>
-        </ModalOverlay>
-      )}
-    </section>
-  )
-}
-
-function StatusBadge({ status }) {
-  const map = {
-    active:    { text: 'Активен',      cls: 'text-brand' },
-    inactive:  { text: 'Неактивен',    cls: 'text-accent' },
-    suspended: { text: 'Приостановлен', cls: 'text-danger' },
-  }
-  const s = map[status] || { text: status, cls: 'text-text-secondary' }
-  return <span className={`${s.cls} font-medium`}>{s.text}</span>
-}
-
-function ModalOverlay({ onClose, children }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={onClose}>
-      <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto rounded-[22px] glass-strong p-6 animate-fade-in-scale" onClick={e => e.stopPropagation()}>
-        <button onClick={onClose} aria-label="Закрыть" className="absolute top-3 right-3 p-1.5 rounded-lg hover:bg-white/10 text-text-secondary hover:text-text-primary transition">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-        </button>
-        <div className="pr-8">{children}</div>
-      </div>
-    </div>
+    <Dialog open={!!member} onClose={onClose} title="Удалить сотрудника?" busy={busy}>
+      <p className="muted t-sm">{m ? memberName(m) : ''} потеряет доступ, место освободится.</p>
+      {err && <Alert tone="bad" rise className="mt-3">{err}</Alert>}
+      <DialogActions>
+        <Button variant="ghost" onClick={onClose} disabled={busy}>Отмена</Button>
+        <Button variant="danger" onClick={go} loading={busy}>Удалить</Button>
+      </DialogActions>
+    </Dialog>
   )
 }

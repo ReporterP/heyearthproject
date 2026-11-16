@@ -9,7 +9,6 @@ import './styles/site.css'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
-import LegacyLayout from './legacy/LegacyLayout.jsx'
 import useSiteInfo from './hooks/useSiteInfo.js'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import LandingPage from './pages/LandingPage.jsx'
@@ -36,7 +35,6 @@ import ReferralLinkPage from './pages/ReferralLinkPage.jsx'
 import HelpPage from './pages/HelpPage.jsx'
 import { EmailConfirmPage, EmailUnsubscribePage } from './pages/EmailLinkPage.jsx'
 
-const L = (el) => <LegacyLayout>{el}</LegacyLayout>
 
 // /connect is the one connection page: with ?sub=<token> it is the link the app and the e-mails
 // open (no login: the token is the key), without it the cabinet's page.
@@ -103,11 +101,11 @@ function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
 
-            <Route path="/business" element={<B2BOnly>{L(<BusinessPage />)}</B2BOnly>} />
-            <Route path="/business/signup" element={<B2BOnly>{L(<BusinessSignupPage />)}</B2BOnly>} />
-            <Route path="/business/invoice" element={<B2BOnly>{L(<BusinessInvoicePage />)}</B2BOnly>} />
-            <Route path="/business/dashboard" element={<B2BOnly><RequireAuth>{L(<BusinessDashboardPage />)}</RequireAuth></B2BOnly>} />
-            <Route path="/claim/:code" element={<B2BOnly>{L(<ClaimCodePage />)}</B2BOnly>} />
+            <Route path="/business" element={<B2BOnly><BusinessPage /></B2BOnly>} />
+            <Route path="/business/signup" element={<B2BOnly><BusinessSignupPage /></B2BOnly>} />
+            <Route path="/business/invoice" element={<B2BOnly><BusinessInvoicePage /></B2BOnly>} />
+            <Route path="/business/dashboard" element={<B2BOnly><RequireAuth><BusinessDashboardPage /></RequireAuth></B2BOnly>} />
+            <Route path="/claim/:code" element={<B2BOnly><ClaimCodePage /></B2BOnly>} />
 
             <Route path="/connect" element={<ConnectRoute />} />
             <Route path="/connections" element={<Navigate to="/connect" replace />} />

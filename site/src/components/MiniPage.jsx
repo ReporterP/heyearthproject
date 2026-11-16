@@ -5,7 +5,7 @@ import Logo from './Logo.jsx'
 //   <MiniPage kind="mini|res" label="Подтверждение почты">…</MiniPage>
 export default function MiniPage({ kind = 'mini', children, label, maxWidth = 440, wide = false }) {
   return (
-    <main id="main" style={{ flex: 1, minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '40px 16px 64px' }}>
+    <main id="main" style={{ flex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', placeItems: 'center', padding: '40px 16px 64px' }}>
       <div className="stack" style={{ alignItems: 'center', gap: 28, width: '100%', maxWidth: wide ? 640 : maxWidth }}>
         <Logo />
         <section className={`${kind} pop`} style={{ width: '100%' }} aria-label={label}>
