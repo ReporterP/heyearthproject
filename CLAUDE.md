@@ -391,6 +391,9 @@ that you think outside the box!
   - анимации не из `spec/04-motion.md`, анимации по скроллу; больше одного ёжика на экран;
   - UI без строки в `spec/`.
 - Проверка: `cd site && npm run build`, `impeccable detect --json <файлы>` (0 предупреждений), скриншот 1440 и 390 против артборда.
+- Весь сайт пересобран на «Канон» и выкачен 2026-11-17 (ветка `redesign/kanon`); старого слоя («Лес в ночи», `legacy.css`, Lora/Raleway) больше нет.
+- Подключение стилей (`site/src/styles/site.css`): `hiearth.css` импортирован в `layer(components)`, чтобы layout-утилиты Tailwind (`mt-4`, `max-sm:hidden`) побеждали классы компонентов; палитра/тени/радиусы/шрифты Tailwind выключены в `@theme`, брейкпоинты — `sm` 641px и `lg` 1025px; Tailwind-утилиты `collapse`/`container` не генерируются (их имена занял `hiearth.css`). Grid с `place-items:center` вокруг карточки — всегда с `minmax(0,1fr)`, иначе телефон скроллится вбок.
+- Mock API для разработки: `cd site && npm run dev:mock` (порт Vite по умолчанию, в `.claude/launch.json` — 5175; пульт сценариев `/__mock`, `/__mock/set?b2b=admin&tenant=suspended…`, вход — токен `mock-token`). Только dev, в сборку не попадает.
 
 ## Branding
 
