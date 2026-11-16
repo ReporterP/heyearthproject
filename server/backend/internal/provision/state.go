@@ -65,8 +65,10 @@ type ExitOptions struct {
 	HubIPs      []string        // node-agent :50052 is allowed only from these
 	MTProtoPort int             // allowed through the ACL / guard rules
 	MTProto     *MTProtoOptions // nil: no MTProxy (mtproto_status = 'disabled')
-	NodeAgent   func() ([]byte, error)
-	CA          func() (cert, key []byte, err error)
+	// TGMTProxy: the Telegram WEB proxy's MTProxy on the exit (nil: the WEB proxy is off).
+	TGMTProxy *TGExitOptions
+	NodeAgent func() ([]byte, error)
+	CA        func() (cert, key []byte, err error)
 	// CASigner, when set, signs node certificates instead of CA()'s key (CA() may then return no
 	// key): the deploy CLI's HubCASigner — the CA key stays on the Hub. nil: the key from CA()
 	// (the API, which runs on the Hub).
@@ -151,6 +153,9 @@ func (s *State) Secrets() []string {
 	all := append([]string{s.Node.Password, s.Keys.PrivateKey, s.Keys.SSPassword, s.Keys.UUID}, s.secrets...)
 	if s.Exit.MTProto != nil {
 		all = append(all, s.Exit.MTProto.Secret)
+	}
+	if s.Exit.TGMTProxy != nil {
+		all = append(all, s.Exit.TGMTProxy.Secret)
 	}
 	var out []string
 	for _, v := range all {

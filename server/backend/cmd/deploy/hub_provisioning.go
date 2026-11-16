@@ -387,6 +387,11 @@ func ensureHubProvisioning(client *ssh.Client, cfg *deployConfig) {
 	} else {
 		putHubFile(client, appDir+"/"+config.TGWebArtifact, "755", relay)
 	}
+	if fwd, err := os.ReadFile(buildGoBinary(cfg.backendRoot, "tgfwd", "heyearth-tgfwd")); err != nil {
+		fmt.Printf("[hub] WARN: heyearth-tgfwd не собран: %v\n", err)
+	} else {
+		putHubFile(client, appDir+"/"+config.TGFwdArtifact, "755", fwd)
+	}
 
 	fmt.Println("[hub] 4/4 CA node-agent на Hub")
 	mode := caRotate

@@ -159,8 +159,20 @@ func main() {
 		runCmd(client, "rm -f "+tmpPath)
 		log.Fatalf("build node-agent: %v", err)
 	}
+	// The WEB proxy's forwarder (phase T) is built the same way, from this repository.
+	fwdPath := filepath.Join(os.TempDir(), fmt.Sprintf("heyearth-tgfwd-%d.bin", os.Getpid()))
+	defer os.Remove(fwdPath)
+	fb := exec.Command("go", "build", "-o", fwdPath, "./cmd/tgfwd/")
+	fb.Dir = backendRoot
+	fb.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	fb.Stderr = os.Stderr
+	if err := fb.Run(); err != nil {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("build tgfwd: %v", err)
+	}
 	for _, a := range []struct{ local, remote, mode string }{
 		{agentPath, appDir + "/artifacts/node-agent", "755"},
+		{fwdPath, appDir + "/" + config.TGFwdArtifact, "755"},
 		{filepath.Join(backendRoot, "cmd", "deploy", "install-mtproxy.sh"), "/opt/heyearth/scripts/install-mtproxy.sh", "755"},
 	} {
 		data, err := os.ReadFile(a.local)

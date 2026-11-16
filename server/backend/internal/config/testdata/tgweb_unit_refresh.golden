@@ -1,20 +1,20 @@
 [Unit]
-Description=Refresh the official MTProxy routing configuration (heyearth phase T)
+Description=Refresh the WEB proxy MTProxy's routing configuration (heyearth phase T)
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/refresh-mtproxy-config
+ExecStart=/usr/local/sbin/heyearth-tg-mtproxy-refresh
 ProtectProc=invisible
 ProcSubset=pid
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/etc/mtproxy
+ReadWritePaths=/etc/heyearth/tg-mtproxy
 ---
 [Unit]
-Description=Daily official MTProxy routing refresh (heyearth phase T)
+Description=Daily WEB proxy MTProxy routing refresh (heyearth phase T)
 
 [Timer]
 OnBootSec=10m
@@ -28,8 +28,8 @@ WantedBy=timers.target
 #!/usr/bin/env bash
 set -euo pipefail
 
-destination=/etc/mtproxy/proxy-multi.conf
-temporary="$(mktemp /etc/mtproxy/proxy-multi.conf.XXXXXX)"
+destination=/etc/heyearth/tg-mtproxy/proxy-multi.conf
+temporary="$(mktemp /etc/heyearth/tg-mtproxy/proxy-multi.conf.XXXXXX)"
 trap 'rm -f "$temporary"' EXIT
 
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
@@ -37,7 +37,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 test "$(wc -c < "$temporary")" -ge 100
 grep -q '^default ' "$temporary"
 grep -q '^proxy_for ' "$temporary"
-chown root:mtproxy "$temporary"
+chown root:tgmtproxy "$temporary"
 chmod 0640 "$temporary"
 if [[ -e "$destination" ]] && cmp -s "$temporary" "$destination"; then
 	rm -f "$temporary"
@@ -46,4 +46,4 @@ if [[ -e "$destination" ]] && cmp -s "$temporary" "$destination"; then
 fi
 mv -f "$temporary" "$destination"
 trap - EXIT
-systemctl try-restart mtproxy.service
+systemctl try-restart heyearth-tg-mtproxy.service

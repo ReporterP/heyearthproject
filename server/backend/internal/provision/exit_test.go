@@ -121,11 +121,11 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	y := string(e.node.files[config.ExitHysteriaConfig])
-	if !strings.Contains(y, "  password: "+k.SSPassword+"\n") || !strings.Contains(y, "- reject(203.0.113.7)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/8443)") {
+	if !strings.Contains(y, "  password: "+k.SSPassword+"\n") || !strings.Contains(y, "- reject(203.0.113.7)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/8443)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/3398)") {
 		t.Fatalf("server.yaml:\n%s", y)
 	}
 	// The backup tunnel: both ends rendered from the tunnel UUID, the exit's config with the MTProxy allowance.
-	wantSrv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443)
+	wantSrv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443, config.TGMTProxyPort)
 	wantCli, _ := config.HubSTLSClientJSON(7, "203.0.113.7", k.UUID)
 	if string(e.node.files[config.ExitSTLSConfig]) != string(wantSrv) || string(e.hub.files[config.HubSTLSConfigPath(7)]) != string(wantCli) ||
 		string(e.hub.files["/etc/systemd/system/heyearth-stls-client-7.service"]) != config.HubSTLSClientUnit(7, "203.0.113.7") {
@@ -173,7 +173,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	// The backup tunnel: its resolv.conf and kernel egress guard are written before the converge,
 	// whose extra creates the user and loads the guard before the restart; every written file is
 	// in the marker.
-	guard, _ := config.ExitGuardConf("203.0.113.7", 8443)
+	guard, _ := config.ExitGuardConf("203.0.113.7", 8443, config.TGMTProxyPort)
 	if string(e.node.files[config.ExitGuardConfPath]) != guard || string(e.node.files[config.ExitGuardUnitPath]) != config.ExitGuardUnit ||
 		string(e.node.files[config.ExitSTLSResolvConfPath]) != config.ExitSTLSResolvConf || !e.node.nft[config.ExitGuardTable] {
 		t.Fatal("tunnel guard / resolv.conf not installed")
@@ -926,7 +926,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 	if e.h.lifecycle != "online" || len(e.h.history) != 0 || e.h.syncs != 1 || e.h.bumps != 0 {
 		t.Fatalf("lifecycle %s history %v syncs %d bumps %d", e.h.lifecycle, e.h.history, e.h.syncs, e.h.bumps)
 	}
-	srv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443)
+	srv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443, config.TGMTProxyPort)
 	if string(e.node.files[config.ExitSTLSConfig]) != string(srv) || !strings.Contains(string(e.node.files[config.ExitSTLSUnitPath]), "\nUser=stls\n") ||
 		!e.node.nft[config.ExitGuardTable] || !e.node.active[config.ExitSTLSUnit] {
 		t.Fatal("the backup tunnel: config from the kept UUID, user stls, egress guard, running")

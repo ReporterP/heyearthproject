@@ -126,7 +126,7 @@ type Runner struct {
 // ValidKind reports whether k is a job kind.
 func ValidKind(k string) bool {
 	switch k {
-	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy:
+	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy:
 		return true
 	}
 	return false

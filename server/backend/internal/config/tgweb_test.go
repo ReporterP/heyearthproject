@@ -19,21 +19,23 @@ func TestTGWebRenderedGoldens(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "tgweb_profiles_json.golden", prof)
-	env, err := TGMTProxyEnv(tgTestSecret, "")
+	env, err := TGExitMTProxyEnv(tgTestSecret, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden(t, "tgweb_mtproxy_env.golden", env)
-	natEnv, err := TGMTProxyEnv(tgTestSecret, "--nat-info 10.0.0.5:203.0.113.7")
+	natEnv, err := TGExitMTProxyEnv(tgTestSecret, "--nat-info 10.0.0.5:203.0.113.7")
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden(t, "tgweb_mtproxy_env_nat.golden", natEnv)
-	golden(t, "tgweb_nft.golden", []byte(TGWebNft))
+	golden(t, "tgweb_nft.golden", []byte(TGExitMTProxyNft))
 	golden(t, "tgweb_unit_relay.golden", []byte(TGWebRelayUnitText))
-	golden(t, "tgweb_unit_mtproxy.golden", []byte(TGMTProxyUnitText))
-	golden(t, "tgweb_unit_firewall.golden", []byte(TGFirewallUnitText))
-	golden(t, "tgweb_unit_refresh.golden", []byte(TGRefreshServiceText+"---\n"+TGRefreshTimerText+"---\n"+TGRefreshScriptText))
+	golden(t, "tgweb_unit_mtproxy.golden", []byte(TGExitMTProxyUnitText))
+	golden(t, "tgweb_unit_firewall.golden", []byte(TGExitFirewallUnitText))
+	golden(t, "tgweb_unit_fwd.golden", []byte(TGFwdUnitText))
+	golden(t, "tgweb_fwd_backends.golden", TGFwdBackendsJSON(map[int]string{3: "198.51.100.3", 2: "198.51.100.2", 9: "not-an-ip"}))
+	golden(t, "tgweb_unit_refresh.golden", []byte(TGExitRefreshServiceText+"---\n"+TGExitRefreshTimerText+"---\n"+TGExitRefreshScriptText))
 	http80, err := TGWebNginxConf("tg.example.ru", "")
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +92,7 @@ func TestTGWebValidation(t *testing.T) {
 			t.Errorf("secret %q accepted", s)
 		}
 	}
-	if _, err := TGMTProxyEnv(tgTestSecret, "--nat-info 1.2.3.4:5.6.7.8\nX=1"); err == nil {
+	if _, err := TGExitMTProxyEnv(tgTestSecret, "--nat-info 1.2.3.4:5.6.7.8\nX=1"); err == nil {
 		t.Error("a NAT value with a newline must be refused")
 	}
 	if _, err := TGWebTokenKey(strings.Repeat("ab", 31)); err == nil {
@@ -104,13 +106,18 @@ func TestTGWebValidation(t *testing.T) {
 // The MTProxy port stays out of every loopback range the Hub's egress guard opens to xray.
 func TestTGMTProxyPortOutsideGuardRanges(t *testing.T) {
 	for _, r := range [][2]int{{1088, 1599}, {2088, 2599}, {12000, 12511}} {
-		for _, p := range []int{TGMTProxyPort, TGMTProxyStatsPort, 8080, 8081} {
+		for _, p := range []int{TGMTProxyPort, TGExitMTProxyStatsPort, 8080, 8081} {
 			if p >= r[0] && p <= r[1] {
 				t.Errorf("port %d inside %d..%d", p, r[0], r[1])
 			}
 		}
 	}
-	if !strings.Contains(TGMTProxyUnitText, "-H 3398") || !strings.Contains(TGWebNft, "{ 3398, 8888 }") {
+	for _, u := range []string{TGExitMTProxyUnitText, TGExitRefreshScriptText, TGExitMTProxyBuildScript, TGExitFirewallUnitText} {
+		if rest := strings.ReplaceAll(u, "heyearth-tg-mtproxy", ""); strings.Contains(rest, "mtproxy.service") || strings.Contains(rest, "/opt/mtproxy") {
+			t.Error("the exit's mtg (mtproxy.service, /opt/mtproxy) must never be named by the WEB proxy's MTProxy")
+		}
+	}
+	if !strings.Contains(TGExitMTProxyUnitText, "-H 3398") || !strings.Contains(TGExitMTProxyNft, "{ 3398, 3399 }") || !strings.Contains(TGFwdUnitText, "-listen 127.0.0.1:3398") {
 		t.Error("unit and nft table must use the same MTProxy ports")
 	}
 }
@@ -215,14 +222,14 @@ func TestTGWebScriptsParse(t *testing.T) {
 	if err != nil {
 		t.Skip("no bash")
 	}
-	for name, s := range map[string]string{"build": TGWebMTProxyBuildScript, "nat": TGMTProxyNATScript, "refresh": TGRefreshScriptText} {
+	for name, s := range map[string]string{"build": TGExitMTProxyBuildScript, "nat": TGMTProxyNATScript, "refresh": TGExitRefreshScriptText} {
 		c := exec.Command(bash, "-n")
 		c.Stdin = strings.NewReader(s)
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Errorf("%s: %v\n%s", name, err, out)
 		}
 	}
-	if !strings.Contains(TGWebMTProxyBuildScript, "touch /opt/heyearth/state/restart-pending/mtproxy") || !strings.Contains(TGWebMTProxyBuildScript, "--no-upgrade") {
+	if !strings.Contains(TGExitMTProxyBuildScript, "touch /opt/heyearth/state/restart-pending/heyearth-tg-mtproxy") || !strings.Contains(TGExitMTProxyBuildScript, "--no-upgrade") {
 		t.Error("build script must mark the restart and never upgrade")
 	}
 }

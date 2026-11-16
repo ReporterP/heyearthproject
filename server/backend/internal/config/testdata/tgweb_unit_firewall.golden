@@ -1,17 +1,15 @@
 [Unit]
-Description=Drop the WEB proxy's MTProxy ports off loopback (heyearth phase T)
+Description=Drop the WEB proxy MTProxy's ports off loopback (heyearth phase T)
 After=nftables.service
 PartOf=nftables.service
-Before=mtproxy.service tproxy-server.service
+Before=heyearth-tg-mtproxy.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=true
-ExecStart=-/usr/sbin/nft delete table inet tproxy_backend
-ExecStart=/usr/sbin/nft -f /etc/tproxy-server/firewall.nft
-ExecReload=-/usr/sbin/nft delete table inet tproxy_backend
-ExecReload=/usr/sbin/nft -f /etc/tproxy-server/firewall.nft
-ExecStop=-/usr/sbin/nft delete table inet tproxy_backend
+ExecStart=/usr/sbin/nft -f /etc/heyearth/tg-mtproxy/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/heyearth/tg-mtproxy/firewall.nft
+ExecStop=-/usr/sbin/nft delete table inet heyearth_tg_mtproxy
 
 [Install]
 WantedBy=multi-user.target

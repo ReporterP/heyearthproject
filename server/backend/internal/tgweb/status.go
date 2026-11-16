@@ -28,6 +28,9 @@ type Status struct {
 	MiddleEnd5Min *int              `json:"middle_end_disconnects_5m"`
 	Cert          CertView          `json:"cert"`
 	DNS           *DNSView          `json:"dns"`
+	// Exits: the online exits, whether each runs the current secret's MTProxy and answers
+	// through the tunnel (nil: not read).
+	Exits []Exit `json:"exits"`
 }
 
 // CertView: the host's certificate as stored by certbot.
@@ -108,13 +111,12 @@ func certInfo(host string, now time.Time) CertView {
 	return CertView{Present: true, NotAfter: &na, DaysLeft: int(na.Sub(now).Hours() / 24)}
 }
 
-// statusScript: the units' states and MTProxy's middle-end disconnects in the last 5 minutes.
-var statusScript = `for u in tproxy-server mtproxy refresh-mtproxy-config.timer; do printf 'UNIT %s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"; done
-printf 'ME %s\n' "$(journalctl -u mtproxy --since -5min --no-pager -o cat 2>/dev/null | grep -c 'Disconnected from RPC Middle-End' || true)"
+// statusScript: the Hub's units' states. (The MTProxy middle-end log lives on the exits.)
+var statusScript = `for u in tproxy-server heyearth-tgfwd; do printf 'UNIT %s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"; done
 `
 
 // Check gathers the status (each part best effort: what cannot be read stays empty / nil).
-func Check(ctx context.Context, hub provision.Remote, host string) Status {
+func Check(ctx context.Context, hub provision.Remote, host, secret string) Status {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	st := Status{CheckedAt: time.Now().UTC(), Services: map[string]string{}}
@@ -143,6 +145,9 @@ func Check(ctx context.Context, hub provision.Remote, host string) Status {
 	st.Cert = certInfo(host, time.Now())
 	if v, err := CheckDNS(ctx, host); err == nil {
 		st.DNS = &v
+	}
+	if ex, err := Exits(ctx, secret); err == nil {
+		st.Exits = ex
 	}
 	return st
 }

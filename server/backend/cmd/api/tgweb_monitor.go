@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/heyearth/backend/internal/provision"
 	"github.com/heyearth/backend/internal/tgweb"
 )
 
@@ -68,8 +69,14 @@ func startTGWebMonitor() {
 	}
 	go runEvery(2*time.Minute, tgWebProbeEvery, func() {
 		safely("WEB-прокси", func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
+			// The forwarder's list follows the exits' tunnels (an install run writes it too).
+			if !tgweb.Default.Running() {
+				if _, err := tgweb.RefreshBackends(ctx, provision.LocalRemote{}); err != nil {
+					log.Printf("[monitor] WEB-прокси: список выходов не обновлён: %v", err)
+				}
+			}
 			p.tick(ctx)
 		})
 	})

@@ -1,10 +1,12 @@
 package provision
 
-// The Telegram WEB proxy on the Hub (phase T): recipes run with RunHub, the Hub as the remote.
-// Install: tg_mtproxy → tg_files → tg_services → tg_cert → tg_nginx → tg_check (every step
-// converges; a second run on a converged Hub writes and restarts nothing). Off: tg_nginx_off →
-// tg_stop (the host leaves nginx first, then relay and MTProxy stop; files, token key and the
-// MTProxy build stay for the next install). Renderers: internal/config tgweb.go.
+// The Telegram WEB proxy (phase T). Telegram is unreachable from the Hub, so the official MTProxy
+// runs on the exits (tgweb_exit.go: the exit recipe's tg_mtproxy step, KindTGMTProxy jobs) and
+// the Hub carries the rest — recipes run with RunHub, the Hub as the remote. Install: tg_files →
+// tg_exits → tg_services → tg_cert → tg_nginx → tg_check (every step converges; a second run on
+// a converged Hub writes and restarts nothing). Off: tg_nginx_off → tg_stop (the host leaves
+// nginx first, then the relay and the forwarder stop; files and the token key stay).
+// Renderers: internal/config tgweb.go, tgweb_exit.go.
 
 import (
 	"context"
@@ -30,10 +32,15 @@ type TGWebOptions struct {
 	Host     string
 	Secret   string // 32 hex; redacted from every output
 	TokenKey []byte // 32 bytes (app_settings tg_webproxy_token_key)
-	// Relay returns the tproxy-server binary (the artifact, its sha256 checked).
-	Relay func() ([]byte, error)
+	// Relay / Fwd return the tproxy-server and heyearth-tgfwd binaries (artifacts, sha256 checked).
+	Relay, Fwd func() ([]byte, error)
 	// DNS returns what is wrong with the host's records ("" = they point at the entries / the Hub).
 	DNS func(ctx context.Context) (problem string, err error)
+	// Exits brings the exits' MTProxy to Secret (KindTGMTProxy jobs) and writes the forwarder's
+	// list of exits it reaches; ExitsCheck says what is missing ("" = at least one exit serves the
+	// secret through the tunnel and the list says so).
+	Exits      func(ctx context.Context, r Remote, s *State) error
+	ExitsCheck func(ctx context.Context, r Remote) (string, error)
 	// Email is the ACME contact for a first certbot account ("" = the Hub's existing account).
 	Email string
 }
@@ -48,8 +55,8 @@ func (o TGWebOptions) validate() error {
 	if len(o.TokenKey) != 32 {
 		return errors.New("ключ подписи токенов WEB-прокси не из 32 байт")
 	}
-	if o.Relay == nil || o.DNS == nil {
-		return errors.New("нет артефакта tproxy-server или проверки DNS")
+	if o.Relay == nil || o.Fwd == nil || o.DNS == nil || o.Exits == nil || o.ExitsCheck == nil {
+		return errors.New("нет артефактов tproxy-server / heyearth-tgfwd, проверки DNS или выходов")
 	}
 	return nil
 }
@@ -57,19 +64,6 @@ func (o TGWebOptions) validate() error {
 // tgCertDir is the host's own certificate (never the site's: a future neutral host must not share
 // a SAN list with it).
 func tgCertDir(host string) string { return "/etc/letsencrypt/live/" + host }
-
-// tgUnitFiles: the units, the nft table and the refresh script (upstream's deploy/ files).
-func tgUnitFiles() []File {
-	return []File{
-		{config.TGWebNftPath, []byte(config.TGWebNft), 0o644},
-		{config.TGFirewallPath, []byte(config.TGFirewallUnitText), 0o644},
-		{config.TGMTProxyUnitPth, []byte(config.TGMTProxyUnitText), 0o644},
-		{config.TGWebUnitPath, []byte(config.TGWebRelayUnitText), 0o644},
-		{config.TGRefreshSvcPath, []byte(config.TGRefreshServiceText), 0o644},
-		{config.TGRefreshTmrPath, []byte(config.TGRefreshTimerText), 0o644},
-		{config.TGRefreshScript, []byte(config.TGRefreshScriptText), 0o755},
-	}
-}
 
 // tgSiteFiles: the decoy site under TGWebSiteDir.
 func tgSiteFiles() []File {
@@ -83,19 +77,17 @@ func tgSiteFiles() []File {
 
 // tgFileSet is every file of tg_files, grouped by the unit that must restart when one changes.
 type tgFileSet struct {
-	relay, mtproxy, firewall, other []File
+	relay, fwd []File
 }
 
-func (f tgFileSet) all() []File {
-	out := append([]File{}, f.relay...)
-	out = append(out, f.mtproxy...)
-	out = append(out, f.firewall...)
-	return append(out, f.other...)
-}
+func (f tgFileSet) all() []File { return append(append([]File{}, f.relay...), f.fwd...) }
 
-// tgFiles renders the files for natArgs ("" or --nat-info, TGMTProxyNATScript).
-func tgFiles(o TGWebOptions, natArgs string) (tgFileSet, error) {
+func tgFiles(o TGWebOptions) (tgFileSet, error) {
 	relay, err := o.Relay()
+	if err != nil {
+		return tgFileSet{}, err
+	}
+	fwd, err := o.Fwd()
 	if err != nil {
 		return tgFileSet{}, err
 	}
@@ -107,23 +99,19 @@ func tgFiles(o TGWebOptions, natArgs string) (tgFileSet, error) {
 	if err != nil {
 		return tgFileSet{}, err
 	}
-	env, err := config.TGMTProxyEnv(o.Secret, natArgs)
-	if err != nil {
-		return tgFileSet{}, err
-	}
-	units := tgUnitFiles()
-	var fs tgFileSet
-	fs.relay = append([]File{
-		{config.TGWebBinary, relay, 0o755},
-		{config.TGWebConfigPath, cfg, 0o640},
-		{config.TGWebProfilesPath, prof, 0o400},
-		{config.TGWebTokenKeyPath, o.TokenKey, 0o400},
-		units[3],
-	}, tgSiteFiles()...)
-	fs.mtproxy = []File{{config.TGMTProxyEnvPath, env, 0o640}, units[2]}
-	fs.firewall = []File{units[0], units[1]}
-	fs.other = units[4:]
-	return fs, nil
+	return tgFileSet{
+		relay: append([]File{
+			{config.TGWebBinary, relay, 0o755},
+			{config.TGWebConfigPath, cfg, 0o640},
+			{config.TGWebProfilesPath, prof, 0o400},
+			{config.TGWebTokenKeyPath, o.TokenKey, 0o400},
+			{config.TGWebUnitPath, []byte(config.TGWebRelayUnitText), 0o644},
+		}, tgSiteFiles()...),
+		fwd: []File{
+			{config.TGFwdBinary, fwd, 0o755},
+			{config.TGFwdUnitPath, []byte(config.TGFwdUnitText), 0o644},
+		},
+	}, nil
 }
 
 // tgOwners: files whose owner is not root:root (a new file is created root-owned by PutFile).
@@ -131,7 +119,6 @@ var tgOwners = [][2]string{
 	{config.TGWebDir, "root:tproxy"},
 	{config.TGWebConfigPath, "root:tproxy"},
 	{config.TGWebTokenKeyPath, "tproxy:tproxy"},
-	{config.TGMTProxyEnvPath, "root:mtproxy"},
 }
 
 // TGWebRecipe is the install / update recipe (the options are checked first: no step runs on bad
@@ -141,8 +128,17 @@ func TGWebRecipe(o TGWebOptions) (Recipe, error) {
 		return nil, err
 	}
 	return Recipe{
-		{Name: "tg_mtproxy", Apply: tgMTProxyApply, Verify: tgMTProxyVerify},
 		{Name: "tg_files", Apply: tgFilesApply(o), Verify: tgFilesVerify(o)},
+		{Name: "tg_exits", Apply: o.Exits, Verify: func(ctx context.Context, r Remote, _ *State) error {
+			missing, err := o.ExitsCheck(ctx, r)
+			if err != nil {
+				return err
+			}
+			if missing != "" {
+				return errors.New(missing)
+			}
+			return nil
+		}},
 		{Name: "tg_services", Apply: tgServicesApply, Verify: tgServicesVerify},
 		{Name: "tg_cert", Apply: tgCertApply(o), Verify: tgCertVerify(o.Host)},
 		tgNginxStep("tg_nginx", o.Host),
@@ -150,7 +146,8 @@ func TGWebRecipe(o TGWebOptions) (Recipe, error) {
 	}, nil
 }
 
-// TGWebOffRecipe takes the WEB proxy off: the host out of nginx, then relay and MTProxy stopped.
+// TGWebOffRecipe takes the WEB proxy off: the host out of nginx, then the relay and the forwarder
+// stopped (the exits' MTProxy stays: nothing reaches it without the Hub).
 func TGWebOffRecipe() Recipe {
 	return Recipe{
 		tgNginxStep("tg_nginx_off", ""),
@@ -160,14 +157,15 @@ func TGWebOffRecipe() Recipe {
 
 func init() {
 	for k, v := range map[string]string{
-		"tg_mtproxy":   "Официальный MTProxy: сборка и конфигурация Telegram",
-		"tg_files":     "Файлы WEB-прокси: релей, конфиги, юниты, сайт-заглушка",
-		"tg_services":  "Запуск: фаервол, MTProxy, релей, обновление конфигурации",
+		"tg_files":     "Файлы WEB-прокси: релей, перенаправитель, юниты, сайт-заглушка",
+		"tg_exits":     "MTProxy на выходах и список выходов для перенаправителя",
+		"tg_services":  "Запуск перенаправителя и релея",
 		"tg_cert":      "Сертификат адреса",
 		"tg_nginx":     "nginx: адрес на 443 через входы и Hub",
 		"tg_check":     "Проверка: сайт, мост, журнал nginx",
 		"tg_nginx_off": "nginx: адрес снят",
-		"tg_stop":      "Остановка релея и MTProxy",
+		"tg_stop":      "Остановка релея и перенаправителя",
+		"tg_mtproxy":   "MTProxy WEB-прокси Telegram",
 	} {
 		titles[k] = v
 	}

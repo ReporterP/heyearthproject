@@ -47,6 +47,9 @@ func ExitRecipe(o ExitOptions) Recipe {
 	if o.MTProto != nil {
 		r = append(r, Step{Name: "mtproxy", Apply: mtproxyApply(*o.MTProto), Verify: mtproxyVerify(*o.MTProto)})
 	}
+	if o.TGMTProxy != nil {
+		r = append(r, tgExitStep(*o.TGMTProxy))
+	}
 	return append(r,
 		Step{Name: "node_agent", Apply: agentApply(o), Verify: agentVerify(o), Rollback: unitRollback("node-agent")},
 		Step{Name: "save_tunnel", Apply: tunnelApply, Verify: tunnelVerify},
@@ -476,7 +479,7 @@ func hysteriaFiles(o ExitOptions, s *State) ([]File, error) {
 		return nil, err
 	}
 	return []File{
-		{config.ExitHysteriaConfig, []byte(config.ExitHysteriaServerYAML(s.Keys.SSPassword, exitIP(s), o.MTProtoPort)), 0o600},
+		{config.ExitHysteriaConfig, []byte(config.ExitHysteriaServerYAML(s.Keys.SSPassword, exitIP(s), o.MTProtoPort, config.TGMTProxyPort)), 0o600},
 		{config.ExitHysteriaUnitPath, []byte(config.ExitHysteriaUnit), 0o644},
 	}, nil
 }
@@ -556,11 +559,11 @@ func hysteriaVerify(o ExitOptions) stepFunc {
 // at files that are not there yet. config.ExitSTLSPrepareScript (the converge extra) creates the
 // user stls, loads the guard and installs the pinned sing-box before the restart.
 func stlsFiles(o ExitOptions, s *State) ([]File, error) {
-	cfg, err := config.ExitSTLSServerJSON(s.Keys.UUID, exitIP(s), o.MTProtoPort)
+	cfg, err := config.ExitSTLSServerJSON(s.Keys.UUID, exitIP(s), o.MTProtoPort, config.TGMTProxyPort)
 	if err != nil {
 		return nil, err
 	}
-	guard, err := config.ExitGuardConf(exitIP(s), o.MTProtoPort)
+	guard, err := config.ExitGuardConf(exitIP(s), o.MTProtoPort, config.TGMTProxyPort)
 	if err != nil {
 		return nil, err
 	}

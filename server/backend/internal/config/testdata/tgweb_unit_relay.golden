@@ -1,8 +1,7 @@
 [Unit]
 Description=Telegram WEB proxy relay (tproxy-server, heyearth phase T)
-After=network-online.target mtproxy.service tproxy-firewall.service
-Wants=network-online.target mtproxy.service
-Requires=tproxy-firewall.service
+After=network-online.target heyearth-tgfwd.service
+Wants=network-online.target heyearth-tgfwd.service
 
 [Service]
 Type=simple

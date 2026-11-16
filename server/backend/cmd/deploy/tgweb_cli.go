@@ -11,6 +11,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
+	sshcrypto "github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
 	"github.com/heyearth/backend/internal/tgweb"
@@ -28,6 +29,11 @@ func tgWebCLI(client *ssh.Client, cfg *deployConfig) {
 		log.Fatalf("[tg] tproxy-server: %v", err)
 	}
 	putHubFile(client, appDir+"/"+config.TGWebArtifact, "755", relay)
+	fwd, err := os.ReadFile(buildGoBinary(cfg.backendRoot, "tgfwd", "heyearth-tgfwd"))
+	if err != nil {
+		log.Fatalf("[tg] heyearth-tgfwd: %v", err)
+	}
+	putHubFile(client, appDir+"/"+config.TGFwdArtifact, "755", fwd)
 
 	hubEnv, _, err := readHubAPIEnv(client)
 	if err != nil {
@@ -39,6 +45,33 @@ func tgWebCLI(client *ssh.Client, cfg *deployConfig) {
 	}
 	defer closeDB()
 	db.DB = sqlDB
+	key := envFileValue(hubEnv, "SSH_ENCRYPTION_KEY")
+	if !validSSHKey(key) {
+		log.Fatal("[tg] в api.env на Hub нет SSH_ENCRYPTION_KEY — сначала go run ./cmd/deploy --ensure-hub-provisioning")
+	}
+	os.Setenv("SSH_ENCRYPTION_KEY", key)
+	// The exits' MTProxy: KindTGMTProxy jobs under the CLI runner (synchronous), like --setup-exit-node.
+	hub := provision.NewSSHRemote(client)
+	store := &provision.SQLStore{DB: sqlDB, Decrypt: sshcrypto.Decrypt, JobRunner: provision.RunnerCLI}
+	runner := &provision.Runner{Store: store, Dial: provision.DialNode, Go: func(f func()) { f() }, Logf: log.Printf,
+		Recipe: func(ctx context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
+			st := provision.NewState(kind, n, hub, store.Hooks(func() {}, nil))
+			tg, err := tgweb.ExitOptions(ctx, n.ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			st.Exit.TGMTProxy = tg
+			rc, err := provision.RecipeFor(kind, n, st)
+			return rc, st, err
+		}}
+	tgweb.StartExitJob = runner.Start
+	tgweb.ExitJob = func(ctx context.Context, id int) (int64, string, string, error) {
+		jobs, err := store.ListJobs(ctx, id, 1)
+		if err != nil || len(jobs) == 0 {
+			return 0, "", "", err
+		}
+		return jobs[0].ID, jobs[0].Status, jobs[0].Error, nil
+	}
 	os.Setenv("SITE_DOMAIN", cfg.siteDomain)
 	os.Setenv("LETSENCRYPT_EMAIL", cfg.letsEncryptEmail)
 	ctx := context.Background()
@@ -53,7 +86,8 @@ func tgWebCLI(client *ssh.Client, cfg *deployConfig) {
 	if err := tgweb.SetSetting(ctx, tgweb.KeyEnabled, "true"); err != nil {
 		log.Fatalf("[tg] %v", err)
 	}
-	m := &tgweb.Manager{Hub: provision.NewSSHRemote(client), Go: func(f func()) { f() }, Relay: func() ([]byte, error) { return relay, nil }}
+	m := &tgweb.Manager{Hub: hub, Go: func(f func()) { f() },
+		Relay: func() ([]byte, error) { return relay, nil }, Fwd: func() ([]byte, error) { return fwd, nil }}
 	start := time.Now()
 	if err := m.Start(ctx, provision.KindTGWebInstall); err != nil {
 		log.Fatalf("[tg] %v", err)

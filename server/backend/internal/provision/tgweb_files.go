@@ -11,22 +11,6 @@ import (
 	"github.com/heyearth/backend/internal/shellquote"
 )
 
-// tgNAT runs TGMTProxyNATScript: "" on a directly addressed Hub, --nat-info behind 1:1 NAT.
-func tgNAT(ctx context.Context, r Remote) (string, error) {
-	kv, err := runKV(ctx, r, config.TGMTProxyNATScript)
-	if err != nil {
-		return "", err
-	}
-	if e := kv["NAT_ERR"]; e != "" {
-		return "", errors.New(e)
-	}
-	nat, ok := kv["NAT"]
-	if !ok {
-		return "", errors.New("адрес Hub для Telegram не определён")
-	}
-	return nat, nil
-}
-
 // tgOwnersSh prints OWN <path> <user:group> for every tgOwners path and the site files nobody
 // put there (EXTRA <path>).
 func tgOwnersSh(site []File) string {
@@ -48,7 +32,7 @@ func tgOwnersSh(site []File) string {
 
 // tgSecretBaks: PutFile keeps the replaced version as <path>.bak; these would hold the old secret
 // or token key.
-var tgSecretBaks = []string{config.TGWebProfilesPath + ".bak", config.TGWebTokenKeyPath + ".bak", config.TGMTProxyEnvPath + ".bak"}
+var tgSecretBaks = []string{config.TGWebProfilesPath + ".bak", config.TGWebTokenKeyPath + ".bak"}
 
 func quoteAll(v []string) []string {
 	out := make([]string, len(v))
@@ -65,11 +49,7 @@ var tgRelayCheckSh = config.TGWebBinary + " -config " + config.TGWebConfigPath +
 func tgFilesVerify(o TGWebOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		s.AddSecret(o.Secret)
-		nat, err := tgNAT(ctx, r)
-		if err != nil {
-			return err
-		}
-		fs, err := tgFiles(o, nat)
+		fs, err := tgFiles(o)
 		if err != nil {
 			return err
 		}
@@ -112,14 +92,7 @@ func tgFilesVerify(o TGWebOptions) stepFunc {
 func tgFilesApply(o TGWebOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		s.AddSecret(o.Secret)
-		nat, err := tgNAT(ctx, r)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrNoRollback, err)
-		}
-		if nat != "" {
-			s.Printf("Hub за NAT: MTProxy получит %s", nat)
-		}
-		fs, err := tgFiles(o, nat)
+		fs, err := tgFiles(o)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrNoRollback, err)
 		}
@@ -127,10 +100,9 @@ func tgFilesApply(o TGWebOptions) stepFunc {
 		defer func() { _, _ = r.Run(context.WithoutCancel(ctx), "rm -f "+strings.Join(tgSecretBaks, " ")) }()
 		if out, err := r.Run(ctx, `set -e
 id tproxy >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin tproxy
-id mtproxy >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin mtproxy
 install -d -o root -g tproxy -m 0750 `+config.TGWebDir+`
 install -d -o root -g root -m 0755 `+config.TGWebSiteDir+`
-install -d -o root -g mtproxy -m 0750 `+config.TGMTProxyEtc+`
+install -d -o root -g root -m 0755 `+config.TGFwdDir+`
 `); err != nil {
 			return fmt.Errorf("%w: пользователи и каталоги: %w: %s", ErrNoRollback, err, tail(out, 500))
 		}
@@ -139,7 +111,7 @@ install -d -o root -g mtproxy -m 0750 `+config.TGMTProxyEtc+`
 		for _, g := range []struct {
 			unit  string
 			files []File
-		}{{config.TGWebUnit, fs.relay}, {config.TGMTProxyUnit, fs.mtproxy}, {config.TGFirewallUnit, fs.firewall}} {
+		}{{config.TGWebUnit, fs.relay}, {config.TGFwdUnit, fs.fwd}} {
 			states, err := remoteStates(ctx, r, g.files)
 			if err != nil {
 				return err

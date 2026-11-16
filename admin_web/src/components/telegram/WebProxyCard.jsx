@@ -7,7 +7,7 @@ import { requestSequencer } from '../../utils/polling.js'
 import { Badge, Button, Card, CardBody, CardHeader, Dialog, Input, Skeleton, Spinner, Switch } from '../ui/index.js'
 import {
   RUN_POLL_MS, IDLE_POLL_MS, isRunning, overallState, formFrom, payloadFrom, effectiveHost, hostError, saveCheck, saveMessage,
-  fmtInt, humanBytes, fmtDateTime, agoText, probeView, servicesList, disconnectsView, certView, dnsView, runView, stepView,
+  fmtInt, humanBytes, fmtDateTime, agoText, probeView, servicesList, certView, dnsView, runView, stepView, exitsView,
   stepKey, autoOpenStep,
 } from './webProxyModel.js'
 
@@ -96,7 +96,7 @@ function StatusSection({ data, error, refreshing, onRefresh }) {
   const liveDiffers = !!data.live_host && data.live_host !== host
   const cert = certView(st?.cert)
   const dns = dnsView(st?.dns)
-  const disc = disconnectsView(st?.middle_end_disconnects_5m)
+  const exits = exitsView(st?.exits)
   const healthz = probeView(st?.healthz)
   const readyz = probeView(st?.readyz)
   return (
@@ -135,7 +135,14 @@ function StatusSection({ data, error, refreshing, onRefresh }) {
             <Row label="Сессии / потоки сейчас" mono>{fmtInt(m?.sessions_live)} / {fmtInt(m?.streams_live)}</Row>
             <Row label="Сессий создано всего" mono>{fmtInt(m?.sessions_created_total)}</Row>
             <Row label="Трафик ↑ / ↓" mono title="от клиентов / к клиентам">{humanBytes(m?.bytes_up_total)} / {humanBytes(m?.bytes_down_total)}</Row>
-            <Row label="MTProxy: разрывов middle-end за 5 мин" mono tone={disc.tone}>{disc.text}</Row>
+            {exits && (
+              <>
+                <Row label="MTProxy на выходах" mono tone={exits.tone}>{exits.summary}</Row>
+                {exits.rows.map((r) => (
+                  <Row key={r.key} label={<span className="font-mono pl-3">{r.label}</span>} tone={r.tone}>{r.text}</Row>
+                ))}
+              </>
+            )}
             <Row label="Сертификат" tone={cert.tone} mono={cert.text !== 'нет' && cert.text !== '—'}
               title={st.cert?.not_after ? `до ${fmtDateTime(st.cert.not_after)}` : undefined}>
               {cert.text}

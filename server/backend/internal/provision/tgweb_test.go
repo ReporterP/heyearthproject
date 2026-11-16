@@ -2,10 +2,7 @@ package provision
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -13,192 +10,45 @@ import (
 	"github.com/heyearth/backend/internal/config"
 )
 
-// tgHub is a small fake Hub for the WEB proxy recipes: files with PutFile's semantics, units,
-// restart markers, owners, a certificate and nginx reloads; scripts are recognised by content.
-type tgHub struct {
-	files              map[string][]byte
-	modes              map[string]uint32
-	owners             map[string]string
-	users              map[string]bool
-	active, enabled    map[string]bool
-	marker             map[string]bool
-	restarts           map[string]int
-	built, tgFiles     bool
-	cert               bool
-	nginxReloads       int
-	certbotRuns        int
-	nginxBad, certFail bool
-	puts               int
+// tgExits fakes the exits' side for the Hub recipe: which secret they serve and the list the
+// Hub's forwarder got.
+type tgExits struct {
+	serving string // the secret the exits run ("" = none)
+	reach   bool   // the Hub reaches them through the tunnel
+	runs    int
 }
 
-func newTGHub() *tgHub {
-	h := &tgHub{files: map[string][]byte{}, modes: map[string]uint32{}, owners: map[string]string{}, users: map[string]bool{},
-		active: map[string]bool{}, enabled: map[string]bool{}, marker: map[string]bool{}, restarts: map[string]int{}}
-	h.files[config.HubStreamRouterPath] = []byte(tgRouter)
-	h.files[config.HubRelayPPConfPath] = []byte(config.HubRelayPPConf([]string{"go.example.ru", "example.ru"}))
-	return h
-}
-
-const tgRouter = `map $ssl_preread_server_name $backend {
-    example.ru          nginx_https;
-    go.example.ru       nginx_https;
-    default        xray_vless;
-}
-
-upstream nginx_https {
-    server 127.0.0.1:8446;
-}
-
-upstream xray_vless {
-    server 127.0.0.1:10444;
-}
-`
-
-func (h *tgHub) PutFile(_ context.Context, p string, data []byte, mode uint32) (bool, error) {
-	if cur, ok := h.files[p]; ok && string(cur) == string(data) && h.modes[p] == mode {
-		return false, nil
+func (e *tgExits) opts(o *TGWebOptions) {
+	o.Exits = func(ctx context.Context, r Remote, s *State) error {
+		e.runs++
+		e.serving = o.Secret
+		_, err := r.PutFile(ctx, config.TGFwdBackendsPath, []byte("exits for "+o.Secret[:4]), 0o644)
+		return err
 	}
-	h.files[p], h.modes[p] = append([]byte(nil), data...), mode
-	h.puts++
-	return true, nil
-}
-
-var reQuoted = regexp.MustCompile(`'([^']*)'`)
-
-func (h *tgHub) Run(_ context.Context, s string) (string, error) {
-	switch {
-	case strings.HasPrefix(s, "# hp:sums"):
-		line := s[strings.Index(s, "for p in"):]
-		line = line[:strings.Index(line, "\n")]
-		var out strings.Builder
-		for _, m := range reQuoted.FindAllStringSubmatch(line, -1) {
-			if d, ok := h.files[m[1]]; ok {
-				fmt.Fprintf(&out, "%s %o  %s\n", sha256Hex(d), h.modes[m[1]], m[1])
-			}
-		}
-		return out.String(), nil
-	case strings.HasPrefix(s, "# hp:mark "):
-		h.marker[strings.Fields(s)[2]] = true
-		return "", nil
-	case strings.HasPrefix(s, "# hp:converge "):
-		u := strings.Fields(s)[2]
-		h.enabled[u] = true
-		if h.marker[u] || !h.active[u] {
-			h.restarts[u]++
-			h.active[u], h.marker[u] = true, false
+	o.ExitsCheck = func(_ context.Context, r Remote) (string, error) {
+		h := r.(*tgHost)
+		switch {
+		case e.serving != o.Secret:
+			return "на выходах нет MTProxy с этим секретом", nil
+		case !e.reach:
+			return "MTProxy на выходах не отвечает через туннель", nil
+		case string(h.files[config.TGFwdBackendsPath]) != "exits for "+o.Secret[:4]:
+			return "список выходов перенаправителя устарел", nil
 		}
 		return "", nil
-	case strings.Contains(s, "base64 -w0"):
-		p := reQuoted.FindStringSubmatch(s)[1]
-		if d, ok := h.files[p]; ok {
-			return "FILE\n" + base64.StdEncoding.EncodeToString(d) + "\n", nil
-		}
-		return "ABSENT\n", nil
-	case strings.Contains(s, "certbot certonly"):
-		h.certbotRuns++
-		if h.certFail {
-			return "challenge failed", errors.New("exit status 1")
-		}
-		h.cert = true
-		return "Successfully received certificate.", nil
-	case s == tgNginxReloadSh:
-		if h.nginxBad {
-			return "nginx: [emerg] bad", errors.New("exit status 1")
-		}
-		h.nginxReloads++
-		return "", nil
-	case strings.Contains(s, "uname -m"):
-		h.built, h.users["mtproxy"] = true, true
-		h.files[config.TGMTProxyEtc+"/proxy-secret"] = []byte("x")
-		return "MTProxy собран", nil
-	case strings.Contains(s, "149.154.175.50"):
-		return "NAT=\n", nil
-	case strings.Contains(s, "BUILT=1"):
-		var out []string
-		if h.built {
-			out = append(out, "BUILT=1", "FILES=1")
-		}
-		if h.users["mtproxy"] {
-			out = append(out, "USER=1")
-		}
-		return strings.Join(out, "\n"), nil
-	case strings.Contains(s, "printf 'OWN"):
-		var out []string
-		for _, o := range tgOwners {
-			out = append(out, "OWN "+o[0]+" "+h.owners[o[0]])
-		}
-		if h.users["tproxy"] {
-			out = append(out, "USER_TPROXY")
-		}
-		return strings.Join(out, "\n"), nil
-	case strings.Contains(s, "tproxy-server -config"):
-		return "", nil
-	case strings.Contains(s, "useradd") && strings.Contains(s, "install -d"):
-		h.users["tproxy"], h.users["mtproxy"] = true, true
-		return "", nil
-	case strings.Contains(s, "chown root:tproxy"):
-		for _, o := range tgOwners {
-			h.owners[o[0]] = o[1]
-		}
-		return "", nil
-	case strings.Contains(s, "enable --now --quiet "+config.TGRefreshUnit):
-		h.active[config.TGRefreshUnit+".timer"], h.enabled[config.TGRefreshUnit+".timer"] = true, true
-		return "", nil
-	case strings.Contains(s, "nft list table inet tproxy_backend"):
-		var out []string
-		for _, u := range append(append([]string{}, tgUnits...), config.TGRefreshUnit+".timer") {
-			if !h.active[u] || !h.enabled[u] {
-				out = append(out, "FAIL "+u+" не работает")
-			}
-		}
-		for _, u := range tgUnits {
-			if h.marker[u] {
-				out = append(out, "FAIL "+u+" ждёт перезапуска")
-			}
-		}
-		return strings.Join(out, "\n"), nil
-	case strings.Contains(s, "CERT=none"):
-		if h.cert {
-			return "CERT=ok\n", nil
-		}
-		if _, ok := h.files[tgCertDir("tg.example.ru")+"/fullchain.pem"]; ok {
-			return "CERT=expiring\n", nil
-		}
-		return "CERT=none\n", nil
-	case strings.HasPrefix(s, "rm -f "):
-		for _, f := range strings.Fields(strings.TrimPrefix(s, "rm -f ")) {
-			delete(h.files, strings.Trim(f, "'"))
-		}
-		return "", nil
-	case strings.Contains(s, "probe 8443"):
-		if !strings.Contains(string(h.files[config.HubStreamRouterPath]), "tg.example.ru") || !h.active[config.TGWebUnit] {
-			return "FAIL https://tg.example.ru:8443/: код 000", nil
-		}
-		return "", nil
-	case strings.Contains(s, "systemctl disable --now"):
-		for _, u := range tgStopUnits {
-			h.active[u], h.enabled[u] = false, false
-		}
-		return "", nil
-	case strings.Contains(s, "&& echo 'FAIL"): // tg_stop's verify
-		var out []string
-		for _, u := range tgStopUnits {
-			if h.active[u] || h.enabled[u] {
-				out = append(out, "FAIL "+u+" работает")
-			}
-		}
-		return strings.Join(out, "\n"), nil
 	}
-	return "", fmt.Errorf("tgHub: unexpected script:\n%s", s)
 }
 
-func tgOpts(dnsProblem string) TGWebOptions {
-	return TGWebOptions{Host: "tg.example.ru", Secret: strings.Repeat("ab", 16), TokenKey: []byte(strings.Repeat("k", 32)),
+func tgOpts(dnsProblem string, ex *tgExits) TGWebOptions {
+	o := TGWebOptions{Host: "tg.example.ru", Secret: strings.Repeat("ab", 16), TokenKey: []byte(strings.Repeat("k", 32)),
 		Relay: func() ([]byte, error) { return []byte("ELF relay"), nil },
+		Fwd:   func() ([]byte, error) { return []byte("ELF fwd"), nil },
 		DNS:   func(context.Context) (string, error) { return dnsProblem, nil }}
+	ex.opts(&o)
+	return o
 }
 
-func runTG(t *testing.T, h *tgHub, kind string, rc Recipe, secret string) HubRun {
+func runTG(t *testing.T, h Remote, kind string, rc Recipe, secret string) HubRun {
 	t.Helper()
 	st := NewState("tgweb-"+kind, Node{}, h, Hooks{})
 	st.AddSecret(secret)
@@ -213,19 +63,35 @@ func stepStatuses(r HubRun) string {
 	return strings.Join(s, " ")
 }
 
+func restarted(before, after map[string]int) string {
+	var out []string
+	for u, n := range after {
+		if n != before[u] {
+			out = append(out, u)
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
+}
+
+func copyCounts(m map[string]int) map[string]int {
+	c := map[string]int{}
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
 func TestTGWebRecipeConverges(t *testing.T) {
-	h := newTGHub()
-	o := tgOpts("")
+	h, ex := newTGHost(), &tgExits{reach: true}
+	o := tgOpts("", ex)
 	rc, err := TGWebRecipe(o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := runTG(t, h, KindTGWebInstall, rc, o.Secret)
-	if r.Status != JobSucceeded {
-		t.Fatalf("install: %s %s\n%s", r.Status, r.Error, stepStatuses(r))
-	}
-	if got := stepStatuses(r); got != "tg_mtproxy=done tg_files=done tg_services=done tg_cert=done tg_nginx=done tg_check=ok" {
-		t.Fatalf("first run: %s", got)
+	if got := stepStatuses(r); r.Status != JobSucceeded || got != "tg_files=done tg_exits=done tg_services=done tg_cert=done tg_nginx=done tg_check=ok" {
+		t.Fatalf("first run: %s %s", got, r.Error)
 	}
 	router := string(h.files[config.HubStreamRouterPath])
 	if !strings.Contains(router, "tg.example.ru") || !strings.Contains(string(h.files[config.HubRelayPPConfPath]), "tg.example.ru") {
@@ -234,47 +100,42 @@ func TestTGWebRecipeConverges(t *testing.T) {
 	if string(h.files[config.TGWebTokenKeyPath]) != strings.Repeat("k", 32) || h.owners[config.TGWebTokenKeyPath] != "tproxy:tproxy" {
 		t.Fatal("token key not written for tproxy")
 	}
-	for _, r := range r.Steps {
-		if strings.Contains(r.Output, o.Secret) {
-			t.Fatalf("secret in the output of %s", r.Name)
+	if !strings.Contains(string(h.files[config.TGWebProfilesPath]), "127.0.0.1:3398") || h.files[config.TGFwdBinary] == nil {
+		t.Fatal("the relay must point at the forwarder on 127.0.0.1:3398")
+	}
+	for _, s := range r.Steps {
+		if strings.Contains(s.Output, o.Secret) {
+			t.Fatalf("secret in the output of %s", s.Name)
 		}
 	}
 	// A second run touches nothing.
-	puts, restarts, reloads := h.puts, fmt.Sprint(h.restarts), h.nginxReloads
+	puts, restarts, reloads := h.puts, copyCounts(h.restarts), h.nginxReloads
 	rc2, _ := TGWebRecipe(o)
 	r2 := runTG(t, h, KindTGWebInstall, rc2, o.Secret)
-	if got := stepStatuses(r2); got != "tg_mtproxy=ok tg_files=ok tg_services=ok tg_cert=ok tg_nginx=ok tg_check=ok" || r2.Status != JobSucceeded {
+	if got := stepStatuses(r2); r2.Status != JobSucceeded || got != "tg_files=ok tg_exits=ok tg_services=ok tg_cert=ok tg_nginx=ok tg_check=ok" {
 		t.Fatalf("second run: %s %s", got, r2.Error)
 	}
-	if h.puts != puts || fmt.Sprint(h.restarts) != restarts || h.nginxReloads != reloads || h.certbotRuns != 1 {
-		t.Fatalf("second run changed the Hub: puts %d→%d restarts %s→%v reloads %d→%d certbot %d", puts, h.puts, restarts, h.restarts, reloads, h.nginxReloads, h.certbotRuns)
+	if h.puts != puts || restarted(restarts, h.restarts) != "" || h.nginxReloads != reloads || h.certbotRuns != 1 || ex.runs != 1 {
+		t.Fatalf("second run changed the Hub: puts %d→%d restarted %q reloads %d→%d certbot %d exits %d",
+			puts, h.puts, restarted(restarts, h.restarts), reloads, h.nginxReloads, h.certbotRuns, ex.runs)
 	}
-	// A new secret restarts the relay and MTProxy, nothing else.
-	o2 := o
+	// A new secret: the exits are brought to it, the relay restarts, the forwarder does not.
+	o2 := tgOpts("", ex)
 	o2.Secret = strings.Repeat("cd", 16)
-	before := map[string]int{}
-	for k, v := range h.restarts {
-		before[k] = v
-	}
+	ex.opts(&o2)
+	before := copyCounts(h.restarts)
 	rc3, _ := TGWebRecipe(o2)
 	r3 := runTG(t, h, KindTGWebInstall, rc3, o2.Secret)
-	if r3.Status != JobSucceeded {
-		t.Fatalf("rotate: %s", r3.Error)
+	if r3.Status != JobSucceeded || ex.serving != o2.Secret || ex.runs != 2 {
+		t.Fatalf("rotate: %s %s (exits %q)", stepStatuses(r3), r3.Error, ex.serving)
 	}
-	var restarted []string
-	for u, n := range h.restarts {
-		if n != before[u] {
-			restarted = append(restarted, u)
-		}
+	if got := restarted(before, h.restarts); got != config.TGWebUnit {
+		t.Fatalf("rotation restarted %q", got)
 	}
-	sort.Strings(restarted)
-	if strings.Join(restarted, ",") != "mtproxy,tproxy-server" {
-		t.Fatalf("rotation restarted %v", restarted)
+	if !strings.Contains(string(h.files[config.TGWebProfilesPath]), o2.Secret) {
+		t.Fatal("new secret not in profiles.json")
 	}
-	if !strings.Contains(string(h.files[config.TGWebProfilesPath]), o2.Secret) || !strings.Contains(string(h.files[config.TGMTProxyEnvPath]), o2.Secret) {
-		t.Fatal("new secret not in profiles.json / mtproxy.env")
-	}
-	// Off: the host leaves nginx (router back as it was), the relay and MTProxy stop.
+	// Off: the host leaves nginx (router back as it was), the relay and the forwarder stop.
 	off := runTG(t, h, KindTGWebOff, TGWebOffRecipe(), "")
 	if off.Status != JobSucceeded || stepStatuses(off) != "tg_nginx_off=done tg_stop=done" {
 		t.Fatalf("off: %s %s", stepStatuses(off), off.Error)
@@ -282,7 +143,7 @@ func TestTGWebRecipeConverges(t *testing.T) {
 	if string(h.files[config.HubStreamRouterPath]) != tgRouter {
 		t.Fatalf("router after off:\n%s", h.files[config.HubStreamRouterPath])
 	}
-	if _, ok := h.files[config.TGWebNginxConfPath]; ok || h.active[config.TGWebUnit] || h.active[config.TGMTProxyUnit] {
+	if _, ok := h.files[config.TGWebNginxConfPath]; ok || h.active[config.TGWebUnit] || h.active[config.TGFwdUnit] {
 		t.Fatal("off left the vhost or the services")
 	}
 	if strings.Contains(string(h.files[config.HubRelayPPConfPath]), "tg.example.ru") {
@@ -290,15 +151,29 @@ func TestTGWebRecipeConverges(t *testing.T) {
 	}
 }
 
+// No exit reachable through the tunnel: the run stops at tg_exits, the Hub's nginx untouched.
+func TestTGWebRecipeNeedsReachableExits(t *testing.T) {
+	h, ex := newTGHost(), &tgExits{reach: false}
+	o := tgOpts("", ex)
+	rc, _ := TGWebRecipe(o)
+	r := runTG(t, h, KindTGWebInstall, rc, o.Secret)
+	if r.Status != JobFailed || !strings.Contains(r.Error, "не отвечает через туннель") {
+		t.Fatalf("want the tunnel refusal: %s %q", stepStatuses(r), r.Error)
+	}
+	if h.nginxReloads != 0 || string(h.files[config.HubStreamRouterPath]) != tgRouter {
+		t.Fatal("nginx touched without a working backend")
+	}
+}
+
 func TestTGWebRecipeWaitsForDNS(t *testing.T) {
-	h := newTGHub()
-	o := tgOpts("У tg.example.ru нет A-записей: добавьте у регистратора A-записи")
+	h, ex := newTGHost(), &tgExits{reach: true}
+	o := tgOpts("У tg.example.ru нет A-записей: добавьте у регистратора A-записи", ex)
 	rc, _ := TGWebRecipe(o)
 	r := runTG(t, h, KindTGWebInstall, rc, o.Secret)
 	if r.Status != JobFailed || !strings.Contains(r.Error, "нет A-записей") {
 		t.Fatalf("want the DNS refusal, got %s %q", r.Status, r.Error)
 	}
-	if got := stepStatuses(r); got != "tg_mtproxy=done tg_files=done tg_services=done tg_cert=failed tg_nginx=pending tg_check=pending" {
+	if got := stepStatuses(r); got != "tg_files=done tg_exits=done tg_services=done tg_cert=failed tg_nginx=pending tg_check=pending" {
 		t.Fatalf("steps: %s", got)
 	}
 	if h.certbotRuns != 0 || h.nginxReloads != 0 || string(h.files[config.HubStreamRouterPath]) != tgRouter {
@@ -307,21 +182,19 @@ func TestTGWebRecipeWaitsForDNS(t *testing.T) {
 }
 
 func TestTGWebNginxRefusedConfigIsUndone(t *testing.T) {
-	h := newTGHub()
-	o := tgOpts("")
+	h, ex := newTGHost(), &tgExits{reach: true}
+	o := tgOpts("", ex)
 	rc, _ := TGWebRecipe(o)
 	if r := runTG(t, h, KindTGWebInstall, rc, o.Secret); r.Status != JobSucceeded {
 		t.Fatal(r.Error)
 	}
-	// The host moves; nginx refuses the new config: the old router and vhost come back.
 	h.nginxBad = true
 	routerBefore, confBefore := string(h.files[config.HubStreamRouterPath]), string(h.files[config.TGWebNginxConfPath])
 	o2 := o
 	o2.Host = "tg.other.ru"
 	h.cert = false
 	rc2, _ := TGWebRecipe(o2)
-	r := runTG(t, h, KindTGWebInstall, rc2, o.Secret)
-	if r.Status != JobFailed {
+	if r := runTG(t, h, KindTGWebInstall, rc2, o.Secret); r.Status != JobFailed {
 		t.Fatalf("want failure, got %s", stepStatuses(r))
 	}
 	if string(h.files[config.HubStreamRouterPath]) != routerBefore || string(h.files[config.TGWebNginxConfPath]) != confBefore {
@@ -330,19 +203,86 @@ func TestTGWebNginxRefusedConfigIsUndone(t *testing.T) {
 }
 
 func TestTGWebOptionsValidated(t *testing.T) {
-	o := tgOpts("")
-	o.Secret = "short"
-	if _, err := TGWebRecipe(o); err == nil {
-		t.Error("bad secret accepted")
+	for name, mut := range map[string]func(*TGWebOptions){
+		"secret": func(o *TGWebOptions) { o.Secret = "short" },
+		"host":   func(o *TGWebOptions) { o.Host = "localhost" },
+		"key":    func(o *TGWebOptions) { o.TokenKey = nil },
+		"fwd":    func(o *TGWebOptions) { o.Fwd = nil },
+		"exits":  func(o *TGWebOptions) { o.ExitsCheck = nil },
+	} {
+		o := tgOpts("", &tgExits{})
+		mut(&o)
+		if _, err := TGWebRecipe(o); err == nil {
+			t.Errorf("%s: bad options accepted", name)
+		}
 	}
-	o = tgOpts("")
-	o.Host = "localhost"
-	if _, err := TGWebRecipe(o); err == nil {
-		t.Error("bad host accepted")
+}
+
+// The exit step: installs and records once, a second run only verifies, a new secret restarts
+// MTProxy (not its firewall), and the secret never reaches an output.
+func TestTGExitStepConverges(t *testing.T) {
+	e := newTGHost()
+	records := 0
+	o := TGExitOptions{Secret: strings.Repeat("ef", 16), Record: func(context.Context) error { records++; return nil }}
+	run := func(o TGExitOptions) HubRun {
+		st := NewState(KindTGMTProxy, Node{}, e, Hooks{})
+		return RunHub(context.Background(), KindTGMTProxy, Recipe{tgExitStep(o)}, st, nil)
 	}
-	o = tgOpts("")
-	o.TokenKey = nil
-	if _, err := TGWebRecipe(o); err == nil {
-		t.Error("missing token key accepted")
+	r := run(o)
+	if r.Status != JobSucceeded || stepStatuses(r) != "tg_mtproxy=done" || records != 1 || e.builds != 1 {
+		t.Fatalf("install: %s %s records %d builds %d", stepStatuses(r), r.Error, records, e.builds)
+	}
+	env := string(e.files[config.TGExitMTProxyEnvPath])
+	if !strings.Contains(env, "MTPROXY_SECRET="+o.Secret) || e.owners[config.TGExitMTProxyEnvPath] != "root:"+config.TGExitMTProxyUser {
+		t.Fatalf("env: %q owner %q", env, e.owners[config.TGExitMTProxyEnvPath])
+	}
+	if strings.Contains(r.Steps[0].Output, o.Secret) {
+		t.Fatal("secret in the output")
+	}
+	puts, before := e.puts, copyCounts(e.restarts)
+	if r := run(o); stepStatuses(r) != "tg_mtproxy=ok" || e.puts != puts || restarted(before, e.restarts) != "" {
+		t.Fatalf("second run: %s puts %d→%d", stepStatuses(r), puts, e.puts)
+	}
+	o2 := o
+	o2.Secret = strings.Repeat("01", 16)
+	if r := run(o2); r.Status != JobSucceeded || restarted(before, e.restarts) != config.TGExitMTProxyUnit {
+		t.Fatalf("rotation: %s restarted %q", stepStatuses(r), restarted(before, e.restarts))
+	}
+	for _, p := range []string{config.TGExitMTProxyUnitPath, config.TGExitFirewallPath, config.TGExitRefreshSvcPath} {
+		if strings.Contains(fmt.Sprint(e.files[p]), "/etc/systemd/system/mtproxy.service") {
+			t.Fatal("the exit's mtg unit must never be touched")
+		}
+	}
+	if _, ok := e.files["/etc/systemd/system/mtproxy.service"]; ok {
+		t.Fatal("the exit's mtg unit must never be written")
+	}
+}
+
+func TestTGExitRecipeRefusals(t *testing.T) {
+	st := NewState(KindTGMTProxy, Node{}, nil, Hooks{})
+	n := Node{ID: 2, Role: "exit", Lifecycle: "online", HostKeyConfirmed: true}
+	if _, err := tgExitRecipe(n, st); err == nil {
+		t.Error("no options (WEB proxy off), yet a job")
+	}
+	st.Exit.TGMTProxy = &TGExitOptions{Secret: strings.Repeat("ab", 16)}
+	if rc, err := tgExitRecipe(n, st); err != nil || len(rc) != 1 {
+		t.Fatalf("%v", err)
+	}
+	for _, bad := range []Node{{ID: 2, Role: "relay", Lifecycle: "online", HostKeyConfirmed: true}, {ID: 2, Role: "exit", Lifecycle: "failed", HostKeyConfirmed: true}, {ID: 2, Role: "exit", Lifecycle: "online"}} {
+		if _, err := tgExitRecipe(bad, st); err == nil {
+			t.Errorf("%+v accepted", bad)
+		}
+	}
+	// The exit recipe carries the step only with options.
+	has := func(rc Recipe) bool {
+		for _, s := range rc {
+			if s.Name == "tg_mtproxy" {
+				return true
+			}
+		}
+		return false
+	}
+	if has(ExitRecipe(ExitOptions{})) || !has(ExitRecipe(ExitOptions{TGMTProxy: st.Exit.TGMTProxy})) {
+		t.Fatal("tg_mtproxy step must follow the options")
 	}
 }

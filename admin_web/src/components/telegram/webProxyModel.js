@@ -122,7 +122,7 @@ export const probeView = (ok) => (ok == null
   : ok ? { text: 'ok', tone: 'success' } : { text: 'нет', tone: 'danger' })
 
 // The three units the install puts on the Hub, in this order; any other unit the API reports follows.
-export const SERVICE_UNITS = ['tproxy-server', 'mtproxy', 'refresh-mtproxy-config.timer']
+export const SERVICE_UNITS = ['tproxy-server', 'heyearth-tgfwd']
 
 export function serviceView(state, enabled) {
   if (state === 'active') return { text: 'active', tone: 'success' }
@@ -135,6 +135,20 @@ export function servicesList(services, enabled) {
   const map = services && typeof services === 'object' ? services : {}
   const units = [...SERVICE_UNITS, ...Object.keys(map).filter((u) => !SERVICE_UNITS.includes(u)).sort()]
   return units.map((unit) => ({ unit, ...serviceView(map[unit], enabled) }))
+}
+
+// exitsView: the exits' MTProxy of the WEB proxy (status.exits): installed with the current
+// secret, answering through the Hub→exit tunnel (path hysteria | stls).
+export function exitsView(exits) {
+  if (!Array.isArray(exits)) return null
+  const rows = exits.map((e) => {
+    const label = `#${e.id}${e.name ? ' ' + e.name : ''}`
+    if (!e.installed) return { key: e.id, label, text: 'MTProxy не установлен', tone: 'warning' }
+    if (!e.reachable) return { key: e.id, label, text: 'установлен, через туннель не отвечает', tone: 'danger' }
+    return { key: e.id, label, text: `работает (${e.path === 'stls' ? 'через запасной ShadowTLS' : 'через основной туннель'})`, tone: 'success' }
+  })
+  const ok = rows.filter((r) => r.tone === 'success').length
+  return { rows, summary: `${ok} из ${rows.length}`, tone: ok === 0 ? 'danger' : ok < rows.length ? 'warning' : 'success' }
 }
 
 export function disconnectsView(n) {

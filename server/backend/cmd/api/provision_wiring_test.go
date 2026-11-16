@@ -27,6 +27,9 @@ const testMTSecret = "ee0123456789abcdef0123456789abcdef6578616d706c652e636f6d"
 func withExitWiring(t *testing.T, ips []string, settings map[string]string, script string) {
 	t.Helper()
 	oldIPs, oldSet, oldPath, oldDomain := exitHubIPs, exitSetting, mtproxyScriptPath, exitMTProtoDomainStep
+	oldTG := tgExitOptions
+	tgExitOptions = func(context.Context, int) (*provision.TGExitOptions, error) { return nil, nil } // the WEB proxy off
+	t.Cleanup(func() { tgExitOptions = oldTG })
 	exitMTProtoDomainStep = func(context.Context, provision.Node, *provision.MTProtoOptions) error { return nil }
 	exitHubIPs = func() []string { return ips }
 	exitSetting = func(k, def string) string {

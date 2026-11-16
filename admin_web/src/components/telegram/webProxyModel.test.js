@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   RUN_POLL_MS, IDLE_POLL_MS, isRunning, pollDelay, overallState, formFrom, effectiveHost, payloadFrom, isDirty, hostError,
   saveCheck, saveMessage, fmtInt, humanBytes, plural, daysText, agoText, probeView, servicesList, disconnectsView, certView,
-  dnsView, runView, stepView, autoOpenStep, stepKey,
+  dnsView, runView, stepView, autoOpenStep, stepKey, exitsView,
 } from './webProxyModel.js'
 
 const NB = ' '
@@ -111,11 +111,11 @@ test('probe, services, middle-end disconnects', () => {
   assert.deepEqual(probeView(true), { text: 'ok', tone: 'success' })
   assert.deepEqual(probeView(false), { text: 'нет', tone: 'danger' })
   assert.equal(probeView(undefined).text, '—')
-  const list = servicesList({ mtproxy: 'active', 'tproxy-server': 'failed', 'zz.unit': 'inactive' }, true)
-  assert.deepEqual(list.map((s) => s.unit), ['tproxy-server', 'mtproxy', 'refresh-mtproxy-config.timer', 'zz.unit'])
-  assert.deepEqual(list.map((s) => s.tone), ['danger', 'success', 'warning', 'warning'])
-  assert.equal(servicesList({ mtproxy: 'inactive' }, false)[1].tone, 'default')
-  assert.equal(servicesList(null, true).length, 3)
+  const list = servicesList({ 'heyearth-tgfwd': 'active', 'tproxy-server': 'failed', 'zz.unit': 'inactive' }, true)
+  assert.deepEqual(list.map((s) => s.unit), ['tproxy-server', 'heyearth-tgfwd', 'zz.unit'])
+  assert.deepEqual(list.map((s) => s.tone), ['danger', 'success', 'warning'])
+  assert.equal(servicesList({ 'heyearth-tgfwd': 'inactive' }, false)[1].tone, 'default')
+  assert.equal(servicesList(null, true).length, 2)
   assert.deepEqual(disconnectsView(null), { text: '—', tone: 'default' })
   assert.deepEqual(disconnectsView(0), { text: '0', tone: 'default' })
   assert.equal(disconnectsView(4).tone, 'warning')
@@ -161,4 +161,19 @@ test('autoOpenStep: the first problem, else the running step, else none', () => 
   assert.equal(autoOpenStep({ steps: [{ name: 'a', status: 'done' }] }), null)
   assert.equal(autoOpenStep(null), null)
   assert.equal(stepKey({}, 2), 'step-2')
+})
+
+test('exitsView: installed and reachable exits, by path', () => {
+  assert.equal(exitsView(null), null)
+  const v = exitsView([
+    { id: 2, name: 'NL', installed: true, reachable: true, path: 'stls' },
+    { id: 3, installed: true, reachable: false },
+    { id: 4, installed: false },
+  ])
+  assert.equal(v.summary, '1 из 3')
+  assert.equal(v.tone, 'warning')
+  assert.match(v.rows[0].text, /ShadowTLS/)
+  assert.equal(v.rows[1].tone, 'danger')
+  assert.equal(v.rows[2].tone, 'warning')
+  assert.equal(exitsView([{ id: 3, installed: true, reachable: false }]).tone, 'danger')
 })

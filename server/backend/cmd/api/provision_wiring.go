@@ -62,6 +62,15 @@ func initProvisioning() {
 	admin.HubPublicKey = func(ctx context.Context) (string, error) { return provision.EnsureHubKey(ctx, provision.LocalRemote{}) }
 	admin.HubOwnIPs = hubOwnIPs
 	tgweb.HubAddrs = hubOwnIPs // where tg.<domain> may point besides the entries
+	// The WEB proxy's install run brings the exits' MTProxy to its secret with node jobs.
+	tgweb.StartExitJob = nodeRunner.Start
+	tgweb.ExitJob = func(ctx context.Context, id int) (int64, string, string, error) {
+		jobs, err := nodeStore.ListJobs(ctx, id, 1)
+		if err != nil || len(jobs) == 0 {
+			return 0, "", "", err
+		}
+		return jobs[0].ID, jobs[0].Status, jobs[0].Error, nil
+	}
 }
 
 // nodeRunner runs every node job of the API (admin handlers and the reconciler's MTProxy backfill).
@@ -275,11 +284,20 @@ func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Re
 			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit.MTProto = mt
+	case kind == provision.KindTGMTProxy: // the WEB proxy's MTProxy only
+		tg, err := tgExitOptions(ctx, n.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		st.Exit.TGMTProxy = tg
 	case kind == provision.KindDeprovision: // taking a node out of service needs no options
 	case n.Role == "exit":
 		opts, err := apiExitOptions(n)
 		if err != nil {
 			return nil, nil, provision.Refusal(err)
+		}
+		if opts.TGMTProxy, err = tgExitOptions(ctx, n.ID); err != nil {
+			return nil, nil, err
 		}
 		st.Exit = opts
 	case n.Role == "relay":
@@ -291,6 +309,16 @@ func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Re
 	}
 	rc, err := provision.RecipeFor(kind, n, st)
 	return rc, st, err
+}
+
+// tgExitOptions is tgweb.ExitOptions (tests swap it): nil while the WEB proxy is off; a failed
+// read of its settings is an internal error (never a job that silently skips the step).
+var tgExitOptions = func(ctx context.Context, id int) (*provision.TGExitOptions, error) {
+	o, err := tgweb.ExitOptions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("настройки WEB-прокси не прочитаны: %w", err)
+	}
+	return o, nil
 }
 
 // apiRelayOptions: what a relay recipe takes from the Hub. The DNAT target is main_server_host —

@@ -1,6 +1,8 @@
-table inet tproxy_backend {
-	chain local_backend {
+table inet heyearth_tg_mtproxy
+delete table inet heyearth_tg_mtproxy
+table inet heyearth_tg_mtproxy {
+	chain input {
 		type filter hook input priority -10; policy accept;
-		iifname != "lo" tcp dport { 3398, 8888 } drop
+		iifname != "lo" tcp dport { 3398, 3399 } drop
 	}
 }

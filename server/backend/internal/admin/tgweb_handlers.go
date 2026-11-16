@@ -35,8 +35,8 @@ type tgWebView struct {
 // Seams (tests swap them).
 var (
 	tgManager = tgweb.Default
-	tgCheck   = func(ctx context.Context, host string) *tgweb.Status {
-		s := tgweb.Check(ctx, provision.LocalRemote{}, host)
+	tgCheck   = func(ctx context.Context, host, secret string) *tgweb.Status {
+		s := tgweb.Check(ctx, provision.LocalRemote{}, host, secret)
 		return &s
 	}
 	tgArtifactPresent = func() bool { _, err := tgweb.ReadArtifact(); return err == nil }
@@ -53,7 +53,7 @@ func tgWebPayload(ctx context.Context) (tgWebView, error) {
 		Artifact: tgWebArtifact{Present: tgArtifactPresent(), Commit: config.TProxyCommit[:7]},
 		Run:      tgManager.Run(ctx),
 	}
-	v.Status = tgCheck(ctx, s.Host)
+	v.Status = tgCheck(ctx, s.Host, s.Secret)
 	return v, nil
 }
 

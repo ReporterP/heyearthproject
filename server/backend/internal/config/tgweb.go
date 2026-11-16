@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -45,34 +47,29 @@ const (
 	TGWebConfigPath   = TGWebDir + "/config.json"
 	TGWebProfilesPath = TGWebDir + "/profiles.json"
 	TGWebTokenKeyPath = TGWebDir + "/token.key"
-	TGWebNftPath      = TGWebDir + "/firewall.nft"
 	TGWebSiteDir      = "/srv/tproxy-site"
 
 	// TGWebListen / TGWebAdminListen: the relay's public (behind nginx) and admin listeners.
 	TGWebListen      = "127.0.0.1:8080"
 	TGWebAdminListen = "127.0.0.1:8081"
-	// TGMTProxyPort is the official MTProxy's client port. Not upstream's 2398: that is inside
-	// 2088..2599, the Hub's ShadowTLS clients' range (2088+id, exit_stls.go) which the egress guard
-	// opens to xray on loopback because nothing else listens there. TGMTProxyStatsPort: its stats.
-	// mtproto-proxy has no bind option: both listen on 0.0.0.0 and TGWebNft drops them off lo.
-	TGMTProxyPort      = 3398
-	TGMTProxyStatsPort = 8888
-
-	TGMTProxyDir     = "/opt/MTProxy"
-	TGMTProxyBinary  = TGMTProxyDir + "/objs/bin/mtproto-proxy"
-	TGMTProxyEtc     = "/etc/mtproxy"
-	TGMTProxyEnvPath = TGMTProxyEtc + "/mtproxy.env"
-	TGRefreshScript  = "/usr/local/sbin/refresh-mtproxy-config"
-
 	TGWebUnit        = "tproxy-server"
-	TGMTProxyUnit    = "mtproxy"
-	TGFirewallUnit   = "tproxy-firewall"
-	TGRefreshUnit    = "refresh-mtproxy-config"
 	TGWebUnitPath    = "/etc/systemd/system/" + TGWebUnit + ".service"
-	TGMTProxyUnitPth = "/etc/systemd/system/" + TGMTProxyUnit + ".service"
-	TGFirewallPath   = "/etc/systemd/system/" + TGFirewallUnit + ".service"
-	TGRefreshSvcPath = "/etc/systemd/system/" + TGRefreshUnit + ".service"
-	TGRefreshTmrPath = "/etc/systemd/system/" + TGRefreshUnit + ".timer"
+
+	// TGMTProxyPort is the official MTProxy's client port: on the exits (TGExitMTProxy*), and on
+	// the Hub the forwarder's loopback listener the relay's profile points at. Not upstream's 2398:
+	// that is inside 2088..2599, the Hub's ShadowTLS clients' range (2088+id, exit_stls.go) which
+	// the egress guard opens to xray on loopback because nothing else listens there.
+	TGMTProxyPort = 3398
+
+	// The forwarder on the Hub (cmd/tgfwd): 127.0.0.1:TGMTProxyPort → an exit's MTProxy through
+	// the Hub→exit tunnel. Telegram is unreachable from the Hub itself (checked 16.11.2026: core,
+	// middle-ends, DCs all time out), so MTProxy runs on the exits.
+	TGFwdArtifact     = "artifacts/tgfwd"
+	TGFwdBinary       = "/usr/local/bin/heyearth-tgfwd"
+	TGFwdUnit         = "heyearth-tgfwd"
+	TGFwdUnitPath     = "/etc/systemd/system/" + TGFwdUnit + ".service"
+	TGFwdDir          = "/etc/heyearth-tgfwd"
+	TGFwdBackendsPath = TGFwdDir + "/backends.json"
 
 	// TGWebNginxConfPath: the Hub's http server blocks of the WEB proxy host (port 80 always,
 	// 8443 / 8446 once its certificate exists). The API owns this file; deploy --nginx never
@@ -156,21 +153,6 @@ func TGWebProfilesJSON(secret string) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// TGMTProxyEnv is /etc/mtproxy/mtproxy.env (the official MTProxy's secret, one worker, 4096
-// connections; natArgs "" or "--nat-info <local>:<public>" behind 1:1 NAT — see
-// TGMTProxyNATScript).
-func TGMTProxyEnv(secret, natArgs string) ([]byte, error) {
-	if err := checkTGWebSecret(secret); err != nil {
-		return nil, err
-	}
-	if natArgs != "" && !reNATArgs.MatchString(natArgs) {
-		return nil, fmt.Errorf("MTPROXY_NAT_ARGS %q не вида --nat-info <локальный IPv4>:<публичный IPv4>", natArgs)
-	}
-	return []byte("MTPROXY_SECRET=" + secret + "\nMTPROXY_WORKERS=1\nMTPROXY_MAX_CONNECTIONS=4096\nMTPROXY_NAT_ARGS=" + natArgs + "\n"), nil
-}
-
-var reNATArgs = regexp.MustCompile(`^--nat-info [0-9]{1,3}(?:\.[0-9]{1,3}){3}:[0-9]{1,3}(?:\.[0-9]{1,3}){3}$`)
-
 // TGWebTokenKey checks the relay's persistent token-signing key (32 random bytes, stored hex in
 // app_settings tg_webproxy_token_key so the database backup carries it) and returns its bytes.
 func TGWebTokenKey(hexKey string) ([]byte, error) {
@@ -181,21 +163,12 @@ func TGWebTokenKey(hexKey string) ([]byte, error) {
 	return b, nil
 }
 
-// TGWebNft is upstream's second boundary for the MTProxy ports (mtproto-proxy binds 0.0.0.0).
-var TGWebNft = fmt.Sprintf(`table inet tproxy_backend {
-	chain local_backend {
-		type filter hook input priority -10; policy accept;
-		iifname != "lo" tcp dport { %d, %d } drop
-	}
-}
-`, TGMTProxyPort, TGMTProxyStatsPort)
-
-// TGWebRelayUnitText is upstream deploy/tproxy-server.service (hardening kept as is).
+// TGWebRelayUnitText is upstream deploy/tproxy-server.service (hardening kept as is); its
+// backend is the forwarder (TGFwdUnit) instead of a local MTProxy and its firewall unit.
 const TGWebRelayUnitText = `[Unit]
 Description=Telegram WEB proxy relay (tproxy-server, heyearth phase T)
-After=network-online.target mtproxy.service tproxy-firewall.service
-Wants=network-online.target mtproxy.service
-Requires=tproxy-firewall.service
+After=network-online.target heyearth-tgfwd.service
+Wants=network-online.target heyearth-tgfwd.service
 
 [Service]
 Type=simple
@@ -236,228 +209,6 @@ UMask=0077
 
 [Install]
 WantedBy=multi-user.target
-`
-
-// TGMTProxyUnitText is upstream deploy/mtproxy.service with our client port.
-var TGMTProxyUnitText = fmt.Sprintf(`[Unit]
-Description=Official Telegram MTProxy backend of the WEB proxy (heyearth phase T)
-After=network-online.target tproxy-firewall.service
-Wants=network-online.target
-Requires=tproxy-firewall.service
-
-[Service]
-Type=simple
-User=mtproxy
-Group=mtproxy
-EnvironmentFile=/etc/mtproxy/mtproxy.env
-Environment=MTPROXY_WORKERS=1
-Environment=MTPROXY_MAX_CONNECTIONS=4096
-# Empty on a directly addressed host; --nat-info <local>:<public> behind 1:1 NAT (mtproxy.env).
-# Unquoted so an empty value expands to no argument.
-Environment=MTPROXY_NAT_ARGS=
-WorkingDirectory=/opt/MTProxy
-ExecStart=/opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p %[2]d -H %[1]d -S ${MTPROXY_SECRET} $MTPROXY_NAT_ARGS --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M ${MTPROXY_WORKERS} -C ${MTPROXY_MAX_CONNECTIONS}
-Restart=on-failure
-RestartSec=3s
-LimitNOFILE=1048576
-NoNewPrivileges=true
-PrivateDevices=true
-PrivateTmp=true
-ProtectHome=true
-ProtectProc=invisible
-ProtectSystem=strict
-ProcSubset=pid
-ReadOnlyPaths=/etc/mtproxy
-RestrictAddressFamilies=AF_INET AF_INET6
-RestrictNamespaces=true
-RestrictRealtime=true
-LockPersonality=true
-
-[Install]
-WantedBy=multi-user.target
-`, TGMTProxyPort, TGMTProxyStatsPort)
-
-// TGFirewallUnitText is upstream deploy/tproxy-firewall.service.
-const TGFirewallUnitText = `[Unit]
-Description=Drop the WEB proxy's MTProxy ports off loopback (heyearth phase T)
-After=nftables.service
-PartOf=nftables.service
-Before=mtproxy.service tproxy-server.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=true
-ExecStart=-/usr/sbin/nft delete table inet tproxy_backend
-ExecStart=/usr/sbin/nft -f /etc/tproxy-server/firewall.nft
-ExecReload=-/usr/sbin/nft delete table inet tproxy_backend
-ExecReload=/usr/sbin/nft -f /etc/tproxy-server/firewall.nft
-ExecStop=-/usr/sbin/nft delete table inet tproxy_backend
-
-[Install]
-WantedBy=multi-user.target
-`
-
-// TGRefreshServiceText / TGRefreshTimerText / TGRefreshScriptText: upstream's daily refresh of
-// proxy-multi.conf (MTProxy restarts only when the routing data changed).
-const TGRefreshServiceText = `[Unit]
-Description=Refresh the official MTProxy routing configuration (heyearth phase T)
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/refresh-mtproxy-config
-ProtectProc=invisible
-ProcSubset=pid
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths=/etc/mtproxy
-`
-
-const TGRefreshTimerText = `[Unit]
-Description=Daily official MTProxy routing refresh (heyearth phase T)
-
-[Timer]
-OnBootSec=10m
-OnUnitActiveSec=1d
-RandomizedDelaySec=1h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-`
-
-const TGRefreshScriptText = `#!/usr/bin/env bash
-set -euo pipefail
-
-destination=/etc/mtproxy/proxy-multi.conf
-temporary="$(mktemp /etc/mtproxy/proxy-multi.conf.XXXXXX)"
-trap 'rm -f "$temporary"' EXIT
-
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-	--output "$temporary" https://core.telegram.org/getProxyConfig
-test "$(wc -c < "$temporary")" -ge 100
-grep -q '^default ' "$temporary"
-grep -q '^proxy_for ' "$temporary"
-chown root:mtproxy "$temporary"
-chmod 0640 "$temporary"
-if [[ -e "$destination" ]] && cmp -s "$temporary" "$destination"; then
-	rm -f "$temporary"
-	trap - EXIT
-	exit 0
-fi
-mv -f "$temporary" "$destination"
-trap - EXIT
-systemctl try-restart mtproxy.service
-`
-
-// TGWebMTProxyBuildScript is upstream deploy/install-mtproxy.sh: the pinned, checksum-verified
-// MTProxy source built unchanged by the unprivileged mtproxy user (skipped when /opt/MTProxy is
-// already that commit), then proxy-secret and proxy-multi.conf over HTTPS. Idempotent.
-var TGWebMTProxyBuildScript = fmt.Sprintf(`set -euo pipefail
-if [[ "$(uname -m)" != "x86_64" ]]; then
-	echo "the stock official MTProxy build requires an x86_64 server" >&2
-	exit 1
-fi
-# On the live Hub: never upgrade what is installed, never let needrestart restart services (nginx,
-# the API running this very script), never start a freshly installed nftables.service (its default
-# /etc/nftables.conf begins with flush ruleset: the Hub's iptables-nft rules would go).
-export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
-need=
-for p in ca-certificates curl build-essential iproute2 libssl-dev util-linux zlib1g-dev; do
-	dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || need="$need $p"
-done
-command -v nft >/dev/null 2>&1 || need="$need nftables"
-if [[ -n "$need" ]]; then
-	printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
-	trap 'rm -f /usr/sbin/policy-rc.d' EXIT
-	apt-get update -qq
-	apt-get install -y -qq --no-install-recommends --no-upgrade $need
-	rm -f /usr/sbin/policy-rc.d
-	trap - EXIT
-fi
-if ! id mtproxy >/dev/null 2>&1; then
-	useradd --system --home /nonexistent --shell /usr/sbin/nologin mtproxy
-fi
-
-source_directory=%[1]s
-mtproxy_commit=%[2]s
-mtproxy_checksum=%[3]s
-if [[ ! -x "$source_directory/objs/bin/mtproto-proxy" ]] ||
-	[[ ! -f "$source_directory/.tproxy-commit" ]] ||
-	! grep -Fxq "$mtproxy_commit" "$source_directory/.tproxy-commit"; then
-	temporary="$(mktemp -d /tmp/mtproxy-build.XXXXXX)"
-	chmod 0711 "$temporary"
-	trap 'rm -rf "$temporary"' EXIT
-	archive="$temporary/MTProxy.tar.gz"
-	build_directory="$temporary/MTProxy"
-	curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-		--output "$archive" \
-		"https://github.com/TelegramMessenger/MTProxy/archive/${mtproxy_commit}.tar.gz"
-	test "$(sha256sum "$archive" | awk '{print $1}')" = "$mtproxy_checksum"
-	install -d -o mtproxy -g mtproxy -m 0755 "$build_directory"
-	tar -C "$build_directory" --strip-components=1 -xzf "$archive"
-	chown -R mtproxy:mtproxy "$build_directory"
-	runuser -u mtproxy -- nice -n 19 ionice -c 3 make -C "$build_directory" -j2 >/dev/null
-	test -x "$build_directory/objs/bin/mtproto-proxy"
-	printf '%%s\n' "$mtproxy_commit" > "$build_directory/.tproxy-commit"
-	chown -R root:root "$build_directory"
-	if [[ -e "$source_directory" ]]; then
-		mv "$source_directory" "$source_directory.before-tproxy.$(date +%%Y%%m%%d%%H%%M%%S)"
-	fi
-	mv "$build_directory" "$source_directory"
-	trap - EXIT
-	rm -rf "$temporary" "$source_directory".before-tproxy.*
-	# A new binary runs only after a restart: tg_services restarts every marked unit.
-	mkdir -p %[5]s && touch %[5]s/mtproxy
-	echo "MTProxy собран из $mtproxy_commit"
-fi
-find "$source_directory" -type d -exec chmod 0755 {} +
-chmod 0755 "$source_directory/objs/bin/mtproto-proxy"
-
-install -d -o root -g mtproxy -m 0750 %[4]s
-if [[ ! -s %[4]s/proxy-secret ]] || [[ ! -s %[4]s/proxy-multi.conf ]]; then
-	secret_temp="$(mktemp %[4]s/proxy-secret.XXXXXX)"
-	config_temp="$(mktemp %[4]s/proxy-multi.conf.XXXXXX)"
-	trap 'rm -f "$secret_temp" "$config_temp"' EXIT
-	curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-		--output "$secret_temp" https://core.telegram.org/getProxySecret
-	curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-		--output "$config_temp" https://core.telegram.org/getProxyConfig
-	test "$(wc -c < "$secret_temp")" -eq 128
-	test "$(wc -c < "$config_temp")" -ge 100
-	grep -q '^default ' "$config_temp"
-	grep -q '^proxy_for ' "$config_temp"
-	chown root:mtproxy "$secret_temp" "$config_temp"
-	chmod 0640 "$secret_temp" "$config_temp"
-	mv -f "$secret_temp" %[4]s/proxy-secret
-	mv -f "$config_temp" %[4]s/proxy-multi.conf
-	trap - EXIT
-	echo "proxy-secret и proxy-multi.conf получены с core.telegram.org"
-fi
-`, TGMTProxyDir, MTProxyCommit, MTProxyArchiveSHA256, TGMTProxyEtc, RestartMarkerDir)
-
-// TGMTProxyNATScript prints NAT=<args> for mtproxy.env: "" when the source address the Hub uses
-// towards Telegram's middle-ends is public (configured on an interface: no 1:1 NAT), otherwise
-// --nat-info <local>:<public> with the public address measured by an echo service (upstream
-// install.sh's logic). MTProxy hashes its own address into the middle-end keys: a wrong one
-// leaves every stream silently hanging.
-const TGMTProxyNATScript = `set -uo pipefail
-local_address="$(ip -4 route get 149.154.175.50 2>/dev/null | sed -n 's/.*[[:space:]]src[[:space:]]\+\([0-9.]\+\).*/\1/p' | head -n 1)"
-if [[ -z "$local_address" ]]; then echo "NAT_ERR=нет маршрута к Telegram (ip route get 149.154.175.50)"; exit 0; fi
-if ! [[ "$local_address" =~ ^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.) ]]; then
-	echo "NAT="
-	exit 0
-fi
-for probe in https://api.ipify.org https://ifconfig.co/ip https://icanhazip.com; do
-	candidate="$(curl --fail --silent --location --ipv4 --max-time 10 --proto '=https' --proto-redir '=https' --tlsv1.2 "$probe" 2>/dev/null | tr -d '[:space:]')" || continue
-	if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-		echo "NAT=--nat-info $local_address:$candidate"
-		exit 0
-	fi
-done
-echo "NAT_ERR=адрес $local_address частный, а публичный не определился — MTProxy не сможет работать с Telegram"
 `
 
 // TGWebNginxConf renders TGWebNginxConfPath for host. Port 80 always: the HTTP→HTTPS redirect of
@@ -650,4 +401,69 @@ func TGWebDNSCheck(host string, a, aaaa, expected []string) string {
 		return fmt.Sprintf("У %s есть AAAA-запись (%s), а у Hub и входов нет IPv6 — удалите её", host, strings.Join(aaaa, ", "))
 	}
 	return ""
+}
+
+// TGFwdUnitText runs the forwarder (cmd/tgfwd) as a throwaway user that can reach loopback only:
+// the relay connects to it, it connects to the Hub's tunnel SOCKS ports.
+var TGFwdUnitText = fmt.Sprintf(`[Unit]
+Description=Telegram WEB proxy: relay streams to the exits' MTProxy through the tunnel (heyearth phase T)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=%[1]s -listen 127.0.0.1:%[2]d -backends %[3]s
+Restart=always
+RestartSec=2s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+`, TGFwdBinary, TGMTProxyPort, TGFwdBackendsPath)
+
+// TGFwdTarget is one exit's MTProxy for the forwarder: its address and the Hub's local SOCKS
+// ports that reach it (hysteria 1088+id first, ShadowTLS 2088+id second).
+type TGFwdTarget struct {
+	Exit  int      `json:"exit"`
+	Addr  string   `json:"addr"`
+	Socks []string `json:"socks"`
+}
+
+// TGFwdBackendsJSON is TGFwdBackendsPath for the exits whose MTProxy runs (by id).
+func TGFwdBackendsJSON(exits map[int]string) []byte {
+	ids := make([]int, 0, len(exits))
+	for id := range exits {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	ts := []TGFwdTarget{}
+	for _, id := range ids {
+		ip := net.ParseIP(strings.TrimSpace(exits[id]))
+		if ip == nil || id < 1 || id > 511 {
+			continue
+		}
+		ts = append(ts, TGFwdTarget{Exit: id, Addr: net.JoinHostPort(ip.String(), strconv.Itoa(TGMTProxyPort)),
+			Socks: []string{"127.0.0.1:" + strconv.Itoa(1088+id), "127.0.0.1:" + strconv.Itoa(hubSTLSSocksBase+id)}})
+	}
+	b, _ := json.MarshalIndent(map[string]any{"targets": ts}, "", "  ")
+	return append(b, '\n')
 }

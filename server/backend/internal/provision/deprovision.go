@@ -319,6 +319,8 @@ func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return DeprovisionRecipe(n.Role), nil
 	case KindMTProxy:
 		return mtproxyRecipe(n, st)
+	case KindTGMTProxy:
+		return tgExitRecipe(n, st)
 	}
 	return recipeForSetup(kind, n, st)
 }

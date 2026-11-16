@@ -45,13 +45,17 @@ var (
 	lookupIP = func(ctx context.Context, network, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, network, host)
 	}
-	artifactPath = func() string { return filepath.Join(config.AppDir(), config.TGWebArtifact) }
+	artifactPath = func(rel string) string { return filepath.Join(config.AppDir(), rel) }
 )
 
-// ReadArtifact reads the relay binary the deploy put next to the API and checks it against the
-// sha256 written beside it (a cut-off upload must never be installed).
-func ReadArtifact() ([]byte, error) {
-	p := artifactPath()
+// ReadArtifact reads the relay binary the deploy put next to the API; ReadFwdArtifact the
+// forwarder's. Both are checked against the sha256 written beside them (a cut-off upload must
+// never be installed).
+func ReadArtifact() ([]byte, error)    { return readArtifact(config.TGWebArtifact) }
+func ReadFwdArtifact() ([]byte, error) { return readArtifact(config.TGFwdArtifact) }
+
+func readArtifact(rel string) ([]byte, error) {
+	p := artifactPath(rel)
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("на Hub нет %s — выложите его: go run quick_deploy.go (%v)", p, err)
@@ -124,9 +128,12 @@ func CheckDNS(ctx context.Context, host string) (DNSView, error) {
 
 // Options builds the install recipe's options from the settings (secret and token key created on
 // the first install).
-func Options(ctx context.Context, s *Settings, relay func() ([]byte, error)) (provision.TGWebOptions, error) {
+func Options(ctx context.Context, s *Settings, relay, fwd func() ([]byte, error)) (provision.TGWebOptions, error) {
 	if relay == nil {
 		relay = ReadArtifact
+	}
+	if fwd == nil {
+		fwd = ReadFwdArtifact
 	}
 	if err := config.ValidTGWebHost(s.Host); err != nil {
 		return provision.TGWebOptions{}, err
@@ -140,7 +147,8 @@ func Options(ctx context.Context, s *Settings, relay func() ([]byte, error)) (pr
 	}
 	host := s.Host
 	return provision.TGWebOptions{
-		Host: host, Secret: s.Secret, TokenKey: key, Relay: relay,
+		Host: host, Secret: s.Secret, TokenKey: key, Relay: relay, Fwd: fwd,
+		Exits: exitsApply(s.Secret), ExitsCheck: exitsCheck(s.Secret),
 		DNS: func(ctx context.Context) (string, error) {
 			v, err := CheckDNS(ctx, host)
 			return v.Problem, err
@@ -154,6 +162,7 @@ type Manager struct {
 	Hub   provision.Remote       // LocalRemote in the API
 	Go    func(func())           // nil: go f()
 	Relay func() ([]byte, error) // nil: ReadArtifact (the CLI hands the freshly built binary)
+	Fwd   func() ([]byte, error) // nil: ReadFwdArtifact
 	mu    sync.Mutex
 	cur   *provision.HubRun
 }
@@ -222,7 +231,7 @@ func (m *Manager) start(ctx context.Context, kind string, prepare func() error) 
 	var opts provision.TGWebOptions
 	switch kind {
 	case provision.KindTGWebInstall:
-		if opts, err = Options(ctx, &s, m.Relay); err == nil {
+		if opts, err = Options(ctx, &s, m.Relay, m.Fwd); err == nil {
 			recipe, err = provision.TGWebRecipe(opts)
 		}
 	case provision.KindTGWebOff:
