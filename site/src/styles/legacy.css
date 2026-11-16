@@ -2,31 +2,7 @@
    Scoped under .legacy (LegacyLayout wraps those pages). Colours are mapped onto the «Канон»
    palette so the old pages sit in the new dark theme until they are rebuilt.
    Delete this file together with LegacyLayout when the last page is rebuilt (stage F). */
-@theme {
-  --color-brand: #22C55E;
-  --color-brand-dark: #22C55E;
-  --color-brand-light: #34D46D;
-  --color-forest: #0F141F;
-  --color-accent: #F5B544;
-  --color-accent-dark: #F5B544;
-  --color-surface: #090C14;
-  --color-surface-alt: #0F141F;
-  --color-surface-card: #0F141F;
-  --color-surface-2: #0F141F;
-  --color-raise: #151B28;
-  --color-bg-app: #090C14;
-  --color-bg-surface: #0F141F;
-  --color-border: #1F2735;
-  --color-text-primary: #EEF2F7;
-  --color-text-secondary: #A1ABBD;
-  --color-faint: #8490A4;
-  --color-ok: #4ADE80;
-  --color-warning: #F5B544;
-  --color-danger: #F87171;
-  --color-white: #FFFFFF;
-  --color-black: #000000;
-  --color-green-400: #4ADE80;
-}
+/* (its @theme tokens live in site.css, after the resets) */
 
 @keyframes legacy-fade-in-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes legacy-skel { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }

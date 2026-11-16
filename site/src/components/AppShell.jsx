@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount from '../account/useAccount.js'
 import useSiteInfo from '../hooks/useSiteInfo.js'
 import { apiFetch } from '../api/http.js'
+import { useLayer } from '../lib/layers.js'
 import Logo from './Logo.jsx'
 import Icon from './Icon.jsx'
 import Button from './Button.jsx'
@@ -12,16 +13,17 @@ import { IdChip, shortId } from './Nomerok.jsx'
 
 // AppShell (spec 02 §30): the cabinet's side menu + main column. ≤1024 px the menu becomes a top bar
 // (logo · short ID chip · menu button) with the items in a drawer. «Выйти» opens the logout dialog.
-let companyCache = null // null = unknown, false = no company, true = member with a dashboard
+const companyCache = new Map() // token → true (member with a dashboard) | false (403/404)
 
 function useCompany(token, enabled) {
-  const [has, setHas] = useState(companyCache === true)
+  const [has, setHas] = useState(companyCache.get(token) === true)
   useEffect(() => {
-    if (!enabled || !token || companyCache !== null) return undefined
+    setHas(companyCache.get(token) === true)
+    if (!enabled || !token || companyCache.has(token)) return undefined
     let alive = true
     apiFetch('/api/v1/business/me', { token })
-      .then(() => { companyCache = true; if (alive) setHas(true) })
-      .catch(() => { companyCache = false })
+      .then(() => { companyCache.set(token, true); if (alive) setHas(true) })
+      .catch((e) => { if (e.status === 403 || e.status === 404) companyCache.set(token, false) })
     return () => { alive = false }
   }, [token, enabled])
   return enabled && has
@@ -82,17 +84,14 @@ export default function AppShell({ children }) {
   }
 
   useEffect(() => { setOpen(false) }, [pathname, hash])
+  useLayer(drawer, open, () => { setOpen(false); btn.current?.focus() })
   useEffect(() => {
     if (!open) return undefined
-    const onKey = (e) => { if (e.key === 'Escape') { setOpen(false); btn.current?.focus() } }
     const mq = window.matchMedia('(min-width: 1025px)')
     const onWide = () => { if (mq.matches) setOpen(false) }
-    window.addEventListener('keydown', onKey)
     mq.addEventListener('change', onWide)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
     drawer.current?.querySelector('a,button')?.focus()
-    return () => { window.removeEventListener('keydown', onKey); mq.removeEventListener('change', onWide); document.body.style.overflow = prev }
+    return () => mq.removeEventListener('change', onWide)
   }, [open])
 
   const link = (i, tab = 0) => (

@@ -1,117 +1,123 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import useSiteInfo from '../hooks/useSiteInfo.js'
 import { useAuth } from '../auth/AuthContext.jsx'
+import SiteHeader from '../components/SiteHeader.jsx'
+import SiteFooter from '../components/SiteFooter.jsx'
+import Button from '../components/Button.jsx'
+import Alert from '../components/Alert.jsx'
+import Hedgehog from '../components/Hedgehog.jsx'
+import Skeleton from '../components/Skeleton.jsx'
+import Toc, { useScrollSpy } from '../components/Toc.jsx'
+import useSiteInfo from '../hooks/useSiteInfo.js'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { HAPP, supportHref } from '../lib/apps.js'
 
-const HAPP_IOS = 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108'
-const HAPP_ANDROID = 'https://play.google.com/store/apps/details?id=com.happproxy'
-const HAPP_DESKTOP = 'https://www.happ.su/main/ru'
-
-// supportHref turns the support_contact setting into a link: a Telegram @handle, a t.me / https
-// link, an e-mail; anything else is shown as text.
-export function supportHref(contact) {
-  const c = String(contact || '').trim()
-  if (!c) return ''
-  if (/^@[A-Za-z0-9_]{4,}$/.test(c)) return `https://t.me/${c.slice(1)}`
-  if (/^https:\/\//i.test(c)) return c
-  if (/^t\.me\//i.test(c)) return `https://${c}`
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c)) return `mailto:${c}`
-  return ''
-}
-
-const FAQ = [
-  {
-    q: 'Как подключиться',
-    a: (loggedIn) => (
-      <ol className="list-decimal pl-5 space-y-1.5">
-        <li>Установите приложение Happ: <a className="text-brand hover:text-brand-light" href={HAPP_IOS} target="_blank" rel="noopener noreferrer">iPhone</a>, <a className="text-brand hover:text-brand-light" href={HAPP_ANDROID} target="_blank" rel="noopener noreferrer">Android</a>, <a className="text-brand hover:text-brand-light" href={HAPP_DESKTOP} target="_blank" rel="noopener noreferrer">Windows и macOS</a>.</li>
-        <li>Откройте {loggedIn ? <Link className="text-brand hover:text-brand-light" to="/connect">«Подключение»</Link> : '«Подключение»'} в личном кабинете и нажмите «Подключить в приложении» — подписка добавится сама.</li>
-        <li>Включите подключение переключателем в Happ.</li>
-      </ol>
-    ),
-  },
-  {
-    q: 'Не работает на мобильном интернете',
-    a: () => (
-      <ul className="list-disc pl-5 space-y-1.5">
-        <li>Обновите подписку в Happ (потяните список вниз или нажмите «Обновить»): адреса для мобильных сетей приходят с обновлением.</li>
-        <li>Попробуйте другую строку подписки: если одна не соединяется, Happ позволяет выбрать соседнюю.</li>
-        <li>Проверьте, что в Wi-Fi всё работает: если да, напишите нам название оператора и город — проверим вход для вашей сети.</li>
-      </ul>
-    ),
-  },
-  {
-    q: 'Подписка закончилась или не продлилась',
-    a: (loggedIn) => (
-      <p>Подписка продлевается с баланса кошелька, если включено автопродление и денег хватает. Пополните кошелёк или продлите тариф на странице {loggedIn ? <Link className="text-brand hover:text-brand-light" to="/payment">«Тарифы»</Link> : '«Тарифы»'} — доступ вернётся сразу после оплаты.</p>
-    ),
-  },
-  {
-    q: 'Потерял ID аккаунта',
-    a: () => (
-      <p>ID — единственный ключ входа, поэтому восстановить его без пароля нельзя. Если вы задавали имя и пароль, войдите по имени. Если нет — напишите в поддержку, укажите дату и сумму оплаты: найдём аккаунт по платежу.</p>
-    ),
-  },
-  {
-    q: 'Как вернуть деньги',
-    a: () => (
-      <p>Условия и порядок — на странице <Link className="text-brand hover:text-brand-light" to="/refund">«Условия возврата»</Link>.</p>
-    ),
-  },
+// Помощь (spec 06 §6.2, artboard «Помощь»). Read. One primary button — «Выбрать тариф».
+const TOPICS = [
+  { id: 'connect', label: 'Как подключиться' },
+  { id: 'mobile', label: 'Не работает на мобильном' },
+  { id: 'expired', label: 'Подписка закончилась' },
+  { id: 'lost-id', label: 'Потерял ID аккаунта' },
+  { id: 'refund', label: 'Как вернуть деньги' },
+  { id: 'support', label: 'Связаться с поддержкой' },
 ]
 
 export default function HelpPage() {
-  const { info, loaded } = useSiteInfo()
   const { isLoggedIn } = useAuth()
-  const [open, setOpen] = useState(0)
+  const { info, loaded } = useSiteInfo()
+  const narrow = useMedia('(max-width: 1024px)')
+  const [current] = useScrollSpy(TOPICS.map((t) => t.id))
+  usePageMeta('Помощь — HiEarth', { description: 'Как подключиться, что делать, если не работает на мобильном интернете, как продлить подписку и вернуть деньги.' })
+  const guard = (to) => (isLoggedIn ? to : `/login?redirect=${encodeURIComponent(to)}`)
   const contact = info.support_contact
   const contactLink = supportHref(contact)
   const email = info.support_email
 
   return (
-    <section className="relative py-12 md:py-20">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6">
-        <p className="eyebrow mb-2">Помощь</p>
-        <h1 className="serif text-3xl md:text-4xl font-semibold mb-3">Если что-то не так</h1>
-        <p className="text-text-secondary mb-10 max-w-xl">Ответы на частые вопросы. Не нашли свой — напишите нам, ответим в течение дня.</p>
+    <>
+      <SiteHeader />
+      <main id="main" className="container" style={{ paddingTop: narrow ? 32 : 56, paddingBottom: 96 }}>
+        <h1 className="t-d2">Помощь</h1>
+        <p className="t-lead" style={{ marginTop: 12, maxWidth: 640 }}>Ответы на частые вопросы. Не нашли свой — напишите нам, ответим в течение дня.</p>
 
-        <div className="card-feat rounded-[22px] p-6 md:p-7 mb-8">
-          <h2 className="serif text-lg font-semibold mb-3">Связаться с поддержкой</h2>
-          {!loaded ? (
-            <div className="skeleton h-5 w-48 rounded" />
-          ) : contact || email ? (
-            <div className="flex flex-col sm:flex-row gap-3">
-              {contact && (contactLink
-                ? <a href={contactLink} target="_blank" rel="noopener noreferrer" className="btn-primary !py-2.5 !text-sm">Написать: {contact}</a>
-                : <p className="text-sm text-text-primary">{contact}</p>)}
-              {email && <a href={`mailto:${email}`} className="btn-ghost !py-2.5 !text-sm">{email}</a>}
-            </div>
-          ) : (
-            <p className="text-sm text-text-secondary">Контакты поддержки скоро появятся здесь. Пока опишите проблему через раздел «Документы» — там указаны реквизиты.</p>
-          )}
-          <p className="text-xs text-faint mt-3">Укажите свой ID (он в личном кабинете) — так мы быстрее найдём аккаунт.</p>
-        </div>
+        <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : '240px minmax(0, 1fr)', gap: narrow ? 16 : 48, marginTop: narrow ? 24 : 48, alignItems: 'start' }}>
+          <Toc
+            items={TOPICS}
+            current={current}
+            label="Темы"
+            style={narrow
+              ? { position: 'sticky', top: 'var(--header-h)', zIndex: 5, flexDirection: 'row', overflowX: 'auto', background: 'var(--bg)', padding: '8px 0', margin: '0 -16px', paddingInline: 16, whiteSpace: 'nowrap', scrollbarWidth: 'none' }
+              : { position: 'sticky', top: 92 }}
+          />
+          <div className="stack gap-4">
+            <section id="connect" className="card" style={{ padding: narrow ? 22 : 30 }}>
+              <h2 className="t-h2">Как подключиться</h2>
+              <ol className="num">
+                <li><span><b>Установите приложение Happ.</b> Оно бесплатное.</span></li>
+                <li><span><b>Откройте кабинет и нажмите «Добавить в Happ»</b> в блоке «Подключение» — подписка добавится сама.</span></li>
+                <li><span><b>Включите подключение переключателем в Happ.</b></span></li>
+              </ol>
+              <div className="row wrap gap-2" style={{ marginTop: 20 }}>
+                {[HAPP.ios, HAPP.android].map((a) => <Button key={a.url} variant="secondary" href={a.url} block={narrow}>{a.label} · {a.store}</Button>)}
+                <Button variant="secondary" href={HAPP.desktop.url} block={narrow}>Windows и macOS</Button>
+              </div>
+            </section>
 
-        <div className="space-y-3">
-          {FAQ.map((item, i) => (
-            <div key={item.q} className="card rounded-[18px]">
-              <button
-                onClick={() => setOpen(open === i ? -1 : i)}
-                aria-expanded={open === i}
-                className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left"
-              >
-                <span className="font-medium">{item.q}</span>
-                <svg className={`w-4 h-4 text-brand transition-transform duration-300 ${open === i ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
-              </button>
-              <div className="grid transition-all duration-300 ease-out" style={{ gridTemplateRows: open === i ? '1fr' : '0fr' }}>
-                <div className="overflow-hidden">
-                  <div className="px-5 pb-5 text-sm text-text-secondary leading-relaxed">{item.a(isLoggedIn)}</div>
+            <section id="mobile" className="card" style={{ padding: narrow ? 22 : 30 }}>
+              <h2 className="t-h2">Не работает на мобильном интернете</h2>
+              <ol className="num">
+                <li><span><b>Обновите подписку в Happ</b> — потяните список вниз или нажмите «Обновить». Адреса для мобильных сетей приходят с обновлением.</span></li>
+                <li><span><b>Попробуйте другую строку подписки.</b> Если одна не соединяется, Happ позволяет выбрать соседнюю.</span></li>
+                <li><span><b>Проверьте, работает ли по Wi-Fi.</b> Если да — напишите нам оператора и город, проверим вход для вашей сети.</span></li>
+              </ol>
+            </section>
+
+            <section id="expired" className="card row gap-6" style={{ padding: narrow ? 22 : 30, alignItems: 'center' }}>
+              {!narrow && <Hedgehog mood="sleep" size={110} style={{ flex: 'none' }} />}
+              <div style={{ flex: 1 }}>
+                <h2 className="t-h2">Подписка закончилась или не продлилась</h2>
+                <p className="muted" style={{ marginTop: 8 }}>Автопродление списывает деньги с кошелька, только если их хватает. Пополните кошелёк или выберите тариф заново — подписка включится сразу после оплаты.</p>
+                <div className="row wrap gap-2" style={{ marginTop: 16 }}>
+                  <Button variant="primary" to={guard('/payment')}>Выбрать тариф</Button>
+                  <Button variant="ghost" to={guard('/wallet')}>Пополнить кошелёк</Button>
                 </div>
               </div>
-            </div>
-          ))}
+            </section>
+
+            <section id="lost-id" className="card" style={{ padding: narrow ? 22 : 30 }}>
+              <h2 className="t-h2">Потерял ID аккаунта</h2>
+              <p className="muted" style={{ marginTop: 10, maxWidth: 680 }}>
+                ID — единственный ключ входа, поэтому восстановить его без пароля нельзя. Если вы задавали логин и пароль — <Link to="/login" className="link">войдите по логину</Link>. Если нет — напишите в поддержку и укажите дату и сумму оплаты: найдём аккаунт по платежу.
+              </p>
+            </section>
+
+            <section id="refund" className="card" style={{ padding: narrow ? 22 : 30 }}>
+              <h2 className="t-h2">Как вернуть деньги</h2>
+              <p className="muted" style={{ marginTop: 10 }}>
+                Условия и порядок — на странице <Link to="/refund" className="link">«Условия возврата»</Link>. Заявку можно отправить из раздела {isLoggedIn ? <Link to="/payments" className="link">«Оплата и подписка»</Link> : '«Оплата и подписка»'} в кабинете.
+              </p>
+            </section>
+
+            <section id="support" className="card card--elevated" style={{ padding: narrow ? 22 : 30 }}>
+              <h2 className="t-h2">Связаться с поддержкой</h2>
+              {!loaded ? (
+                <Skeleton w={220} h={16} style={{ marginTop: 14 }} />
+              ) : contact || email ? (
+                <div className="row wrap gap-2" style={{ marginTop: 14 }}>
+                  {contact && (contactLink
+                    ? <Button variant="secondary" href={contactLink} icon="send" target={contactLink.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer">Написать: {contact}</Button>
+                    : <span className="mono">{contact}</span>)}
+                  {email && <Button variant="ghost" href={`mailto:${email}`} icon="mail">{email}</Button>}
+                </div>
+              ) : (
+                <p className="muted" style={{ marginTop: 10, maxWidth: 640 }}>Контакты поддержки скоро появятся здесь. Пока опишите проблему через раздел «Документы» — там указаны реквизиты.</p>
+              )}
+              <Alert tone="info" title="Укажите свой ID" className="mt-4">— он в личном кабинете. Так мы быстрее найдём аккаунт.</Alert>
+            </section>
+          </div>
         </div>
-      </div>
-    </section>
+      </main>
+      <SiteFooter compact />
+    </>
   )
 }

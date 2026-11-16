@@ -6,7 +6,6 @@ import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
 import '@fontsource/jetbrains-mono/700.css'
 import './styles/site.css'
-import './styles/legacy.css'
 import { AuthProvider } from './auth/AuthContext.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
@@ -56,20 +55,27 @@ function B2BOnly({ children }) {
 
 // Scroll: a new page starts at the top; an anchor (/#plans, /help#mobile) scrolls to its section,
 // waiting a little for content that loads its data first.
+// On the first load (a link like /help#mobile from outside) the jump is instant and repeated once
+// the page has settled (fonts, data), since a smooth scroll started that early gets cancelled.
 function ScrollManager() {
-  const { pathname, hash } = useLocation()
+  const { pathname, hash, key } = useLocation()
   useEffect(() => {
+    const initial = key === 'default' // the location the page was opened with
     if (!hash) { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }); return undefined }
     let tries = 0
-    let t
-    const go = () => {
-      const el = document.getElementById(decodeURIComponent(hash.slice(1)))
-      if (el) { el.scrollIntoView({ block: 'start' }); return }
-      if (tries++ < 20) t = setTimeout(go, 50)
+    const timers = []
+    const go = (behavior) => {
+      let id = hash.slice(1)
+      try { id = decodeURIComponent(id) } catch { /* keep raw */ }
+      const el = document.getElementById(id)
+      if (el) { el.scrollIntoView({ block: 'start', behavior }); return true }
+      if (tries++ < 20) timers.push(setTimeout(() => go(behavior), 50))
+      return false
     }
-    go()
-    return () => clearTimeout(t)
-  }, [pathname, hash])
+    go(initial ? 'instant' : 'smooth')
+    if (initial) timers.push(setTimeout(() => go('instant'), 700))
+    return () => timers.forEach(clearTimeout)
+  }, [pathname, hash, key])
   return null
 }
 
@@ -81,14 +87,14 @@ function App() {
           <a className="skip" href="#main">Перейти к содержимому</a>
           <ScrollManager />
           <Routes>
-            <Route path="/" element={L(<LandingPage />)} />
-            <Route path="/help" element={L(<HelpPage />)} />
-            <Route path="/offer" element={L(<OfferPage />)} />
-            <Route path="/privacy" element={L(<PrivacyPage />)} />
-            <Route path="/refund" element={L(<RefundPage />)} />
-            <Route path="/r/:code" element={L(<ReferralLinkPage />)} />
-            <Route path="/email/confirm" element={L(<EmailConfirmPage />)} />
-            <Route path="/email/unsubscribe" element={L(<EmailUnsubscribePage />)} />
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/help" element={<HelpPage />} />
+            <Route path="/offer" element={<OfferPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/refund" element={<RefundPage />} />
+            <Route path="/r/:code" element={<ReferralLinkPage />} />
+            <Route path="/email/confirm" element={<EmailConfirmPage />} />
+            <Route path="/email/unsubscribe" element={<EmailUnsubscribePage />} />
             <Route path="/login" element={L(<LoginPage />)} />
             <Route path="/register" element={L(<RegisterPage />)} />
 

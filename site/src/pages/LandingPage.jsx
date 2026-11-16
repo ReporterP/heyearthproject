@@ -1,318 +1,356 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
-import useReveal from '../hooks/useReveal.js'
-import useSiteInfo, { countryName } from '../hooks/useSiteInfo.js'
+import SiteHeader from '../components/SiteHeader.jsx'
+import SiteFooter from '../components/SiteFooter.jsx'
+import Button from '../components/Button.jsx'
+import Badge from '../components/Badge.jsx'
+import Alert from '../components/Alert.jsx'
+import Icon from '../components/Icon.jsx'
+import Flap from '../components/Flap.jsx'
+import ConnectOrb from '../components/ConnectOrb.jsx'
+import Hedgehog from '../components/Hedgehog.jsx'
+import Nomerok from '../components/Nomerok.jsx'
+import PlanCard from '../components/PlanCard.jsx'
+import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
+import useMedia, { PHONE } from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { fetchPlans, splitPlans, savings, featuredId, minPaidPrice, perMonthLabel, termLabel, priceTag } from '../lib/plans.js'
+import { days, kopNum } from '../lib/format.js'
+import './landing.css'
 
-const HAPP_LINKS = [
-  { label: 'iPhone и iPad', url: 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108' },
-  { label: 'Android', url: 'https://play.google.com/store/apps/details?id=com.happproxy' },
-  { label: 'Windows и macOS', url: 'https://www.happ.su/main/ru' },
+// Главная (spec 06 §6.1, artboards «Главная · /» and «Главная · телефон»). Persuade.
+// One main action — the free week (or «Получить HiEarth ID» / «В кабинет»), repeated at the end.
+const SAMPLE_ID = '7c1e4a9b-2f60-4d8e-a3b5-0c91d27e6f48' // an example tag: the real ID is a UUID (02 §34.3)
+
+const FAQ = [
+  { q: 'Работает ли на мобильном интернете?', a: 'Да. Если путь закрыт в вашей сети, приложение переключится на другой. Если сайты не открываются — обновите подписку в Happ: потяните список вниз.' },
+  { q: 'Нужны ли мои данные?', a: 'Нет. HiEarth ID выдаётся анонимно. Восстановить его нельзя — сохраните номерок или задайте логин и пароль.' },
+  { q: 'Как оплатить и спишете ли вы с карты?', a: 'Вы пополняете кошелёк через ЮKassa картой или СБП. Данные карты мы не храним и ничего не списываем сами.' },
+  { q: 'Можно вернуть деньги?', a: <>Да, по условиям возврата — порядок и сроки на странице <Link to="/refund" className="link">«Условия возврата»</Link>.</> },
 ]
 
-/* ── Icons (SVG stroke, Lucide-style, single weight) ── */
-const Arrow = ({ className = 'w-4 h-4' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-)
-const Check = ({ className = 'w-4 h-4' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 6" /></svg>
-)
-const Tree = ({ className = 'w-6 h-6' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M9 22V4M15 22V6M6 9c0-2 2-3 3-3M18 11c0-2-2-4-3-4" /></svg>
-)
-const IconLeaf = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M11 20A7 7 0 019.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10z" /><path d="M2 21c0-3 1.85-5.36 5.08-6" /></svg>)
-const IconDevices = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="14" height="11" rx="2" /><path d="M7 19h6M10 15v4" /><rect x="16" y="9" width="6" height="11" rx="1.5" /></svg>)
-const IconShield = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>)
-const IconBolt = (p) => (<svg {...p} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L4 14h7l-2 8 9-12h-7z" /></svg>)
-
-const features = [
-  { Icon: IconLeaf, title: 'Эко-маршрутизация', desc: 'Оптимизированные маршруты снижают энергопотребление и ускоряют доступ к ресурсам.' },
-  { Icon: IconDevices, title: 'Все устройства', desc: 'Android, Windows, iOS, macOS, Linux. Один аккаунт — все платформы сразу.' },
-  { Icon: IconShield, title: 'Приватность', desc: 'Соединение неотличимо от обычного защищённого HTTPS. Данные под шифрованием на всём пути.' },
-  { Icon: IconBolt, title: 'Высокая скорость', desc: 'Минимальная задержка благодаря умной сети маршрутизации и близким шлюзам.' },
-]
-
-const steps = [
-  { num: '01', title: 'Регистрация', desc: 'Получите уникальный HiEarth ID за один клик. Без email, без номера телефона.' },
-  { num: '02', title: 'Подключение', desc: 'Установите бесплатное приложение Happ и нажмите «Подключить» в кабинете — подписка добавится сама.' },
-  { num: '03', title: 'Готово', desc: 'Пользуйтесь быстрым, приватным и стабильным доступом к интернету.' },
-]
-
-
-const faqs = [
-  { q: 'Нужны ли мои данные для регистрации?', a: 'Нет. HiEarth ID выдаётся анонимно за один клик — без почты, телефона и паспорта. Сохраните ID, он нужен для входа.' },
-  { q: 'На каких устройствах работает?', a: 'Android, iOS, Windows, macOS и Linux. Один аккаунт подключается сразу к нескольким устройствам, в зависимости от тарифа.' },
-  { q: 'Как оплатить?', a: 'Картой или через СБП: вы пополняете кошелёк HiEarth через ЮKassa, а подписка оплачивается с баланса. Данные карты мы не храним и ничего не списываем с неё сами. Подписка продлевается с баланса, только если на нём хватает денег; автопродление выключается в кабинете.' },
-  { q: 'Можно вернуть деньги?', a: 'Порядок и сроки возврата описаны на странице «Условия возврата».' },
-  { q: 'Это стабильно работает?', a: 'В подписке несколько способов подключения: если один не проходит в вашей сети, приложение переключается на другой. Серверы мы проверяем автоматически каждую минуту.' },
-]
-
-function formatTraffic(bytes) {
-  if (!bytes) return 'Безлимит'
-  const gb = bytes / (1024 * 1024 * 1024)
-  return gb >= 1 ? `${gb.toFixed(0)} ГБ` : `${(bytes / (1024 * 1024)).toFixed(0)} МБ`
-}
-function formatDuration(days) {
-  if (days >= 365) { const y = Math.round(days / 365); return `${y} ${y === 1 ? 'год' : y < 5 ? 'года' : 'лет'}` }
-  if (days >= 30) return `${Math.round(days / 30)} мес.`
-  return `${days} дн.`
+function usePlans() {
+  const [state, setState] = useState({ list: [], loading: true, error: false })
+  const load = useCallback(() => {
+    setState((s) => ({ ...s, loading: true, error: false }))
+    fetchPlans().then((list) => setState({ list, loading: false, error: false }), () => setState({ list: [], loading: false, error: true }))
+  }, [])
+  useEffect(load, [load])
+  return { ...state, reload: load }
 }
 
+function useReferralTerms() {
+  const [t, setT] = useState(null)
+  useEffect(() => {
+    fetch('/api/v1/referral/terms').then((r) => (r.ok ? r.json() : null)).then(setT).catch(() => setT(null))
+  }, [])
+  return t && t.enabled && t.friend_kop > 0 ? t : null
+}
+
+// «Экран приложения» — an illustration, not a status (aria-hidden parts, one label for the reader)
+function AppScreen({ phone }) {
+  return (
+    <div className="card card--elevated" style={{ position: 'relative', zIndex: 1, padding: phone ? 22 : 28, borderRadius: phone ? 24 : 28 }} role="img" aria-label="Пример экрана приложения">
+      <div className="row between" aria-hidden="true">{phone ? <b>HiEarth</b> : <span className="t-h4">HiEarth</span>}<Badge tone="ok">Подписка до 14 фев</Badge></div>
+      <div style={{ display: 'grid', placeItems: 'center', margin: phone ? '22px 0 18px' : '34px 0 30px' }} aria-hidden="true">
+        <ConnectOrb active label="Подключено" style={phone ? { width: 168, height: 168 } : undefined} ariaLabel="" />
+      </div>
+      <div className="row gap-3" style={{ padding: phone ? '12px 14px' : '14px 16px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)' }} aria-hidden="true">
+        <span className="lp-flag" />
+        {phone
+          ? <b style={{ flex: 1 }}>Нидерланды</b>
+          : <span style={{ flex: 1 }}><b style={{ display: 'block' }}>Нидерланды</b><span className="t-xs subtle">путь выбран автоматически</span></span>}
+        <Flap value={phone ? '42:17' : '00:42:17'} size={phone ? 15 : 17} delayMs={500} label="" />
+      </div>
+      {!phone && (
+        <div className="grid g-2" style={{ marginTop: 10, gap: 10 }} aria-hidden="true">
+          <div className="lp-well"><p className="t-xs subtle">Получено</p><p className="t-h4 mono" style={{ marginTop: 4 }}>1,2 ГБ</p></div>
+          <div className="lp-well"><p className="t-xs subtle">Соединение</p><p className="t-h4 ok" style={{ marginTop: 4 }}>Зашифровано</p></div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PathRow({ tone, title, note, badge, phone }) {
+  if (phone) {
+    return (
+      <div className="row between t-sm" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg)', border: `1px solid ${tone === 'ok' ? 'var(--accent-line)' : 'var(--line)'}` }}>
+        <b>{title}</b><Badge tone={tone === 'idle' ? undefined : tone}>{badge}</Badge>
+      </div>
+    )
+  }
+  const icon = tone === 'bad' ? <Icon name="x" size={22} strokeWidth={2.4} className="bad" /> : tone === 'ok' ? <Icon name="check" size={22} strokeWidth={2.4} className="ok" /> : <Icon name="circle" size={22} strokeWidth={2.2} className="muted" />
+  return (
+    <div className="lp-path" style={tone === 'ok' ? { borderColor: 'var(--accent-line)' } : undefined}>
+      {icon}
+      <span><b>{title}</b> <span className="subtle t-sm">· {note}</span></span>
+      <Badge tone={tone === 'idle' ? undefined : tone}>{badge}</Badge>
+    </div>
+  )
+}
 
 export default function LandingPage() {
   const { isLoggedIn } = useAuth()
-  const [plans, setPlans] = useState([])
-  const [hasFree, setHasFree] = useState(false)
-  const [plansLoading, setPlansLoading] = useState(true)
-  const { info } = useSiteInfo()
-  const [openFaq, setOpenFaq] = useState(0)
-  const [refTerms, setRefTerms] = useState(null)
+  const phone = useMedia(PHONE)
+  const plans = usePlans()
+  const ref = useReferralTerms()
+  const showSkel = useDelayed(plans.loading, 300)
+  usePageMeta('HiEarth — защищённый доступ к интернету')
 
+  const { paid, free } = splitPlans(plans.list)
+  const save = savings(plans.list)
+  const featured = featuredId(plans.list)
+  const minPrice = minPaidPrice(plans.list)
+  const allUnlimited = paid.length > 0 && paid.every((p) => !Number(p.traffic_limit_bytes))
+  const freeDays = free ? days(Number(free.duration_days) || 7) : ''
+
+  const main = isLoggedIn
+    ? { label: 'В кабинет', to: '/dashboard' }
+    : free ? { label: `Попробовать ${freeDays} бесплатно`, to: '/register' } : { label: 'Получить HiEarth ID', to: '/register' }
+  const tariffsLabel = !plans.loading && !plans.error && minPrice ? `Тарифы от ${priceTag(minPrice)}` : 'Тарифы'
+  const planTo = (p) => (isLoggedIn ? `/payment?plan=${encodeURIComponent(p.slug)}` : `/register?plan=${encodeURIComponent(p.slug)}`)
+  const refAmount = ref ? kopNum(ref.friend_kop) : 0
+  const refSame = ref && ref.referrer_kop === ref.friend_kop
+
+  // sticky CTA (phone, guest): shown when the hero button has left the screen and the final CTA is not visible
+  const heroCta = useRef(null)
+  const finalCta = useRef(null)
+  const [heroGone, setHeroGone] = useState(false)
+  const [finalSeen, setFinalSeen] = useState(false)
   useEffect(() => {
-    fetch('/api/v1/referral/terms').then(r => r.ok ? r.json() : null).then(setRefTerms).catch(() => {})
-  }, [])
+    if (!phone || isLoggedIn) return undefined
+    const io = new IntersectionObserver((es) => {
+      for (const e of es) {
+        if (e.target === heroCta.current) setHeroGone(!e.isIntersecting && e.boundingClientRect.top < 0)
+        if (e.target === finalCta.current) setFinalSeen(e.isIntersecting)
+      }
+    })
+    if (heroCta.current) io.observe(heroCta.current)
+    if (finalCta.current) io.observe(finalCta.current)
+    return () => io.disconnect()
+  }, [phone, isLoggedIn])
 
-  useEffect(() => {
-    fetch('/api/v1/plans')
-      .then(r => r.json())
-      .then(d => {
-        const list = Array.isArray(d) ? d : []
-        setPlans(list.filter(p => p.price_rub > 0))
-        setHasFree(list.some(p => p.price_rub === 0))
-      })
-      .catch(() => {})
-      .finally(() => setPlansLoading(false))
-  }, [])
-
-  useReveal([plans, plansLoading])
+  const plansBody = plans.error ? (
+    <Alert tone="bad" title="Тарифы недоступны.">
+      Не удалось загрузить список. <button type="button" className="link" onClick={plans.reload} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Обновить</button>
+    </Alert>
+  ) : plans.loading ? (
+    <div className="grid g-4" aria-busy="true" style={{ minHeight: 380 }}>
+      {showSkel && [0, 1, 2, 3].map((i) => <SkeletonCard key={i} lines={4} big />)}
+    </div>
+  ) : phone ? (
+    <div className="stack gap-3">
+      {paid.filter((p) => p.id === featured).map((p) => (
+        <div key={p.id} className="plan plan--featured" style={{ padding: 22 }}>
+          {save[p.id] > 0 && <span className="plan__ribbon">Выгоднее на {save[p.id]}%</span>}
+          <div className="row between gap-3">
+            <span><span className="plan__name">{p.name}</span><br /><span className="plan__term">{termLabel(p)}{perMonthLabel(p) ? ` · ${perMonthLabel(p).replace(' в месяц', '/мес')}` : ''}</span></span>
+            <span className="plan__price" style={{ margin: 0, fontSize: 34 }}>{priceTag(p.price_rub)}</span>
+          </div>
+          <Button variant="primary" block to={planTo(p)} style={{ marginTop: 16 }}>Выбрать</Button>
+        </div>
+      ))}
+      {paid.filter((p) => p.id !== featured).map((p) => (
+        <Link key={p.id} to={planTo(p)} className="card card--link" style={{ padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span><b>{p.name}</b><br /><span className="t-sm subtle">{termLabel(p)}{perMonthLabel(p) ? ` · ${perMonthLabel(p).replace(' в месяц', '/мес')}` : p.direct_routing_enabled ? ' · РФ-сервисы' : ''}</span></span>
+          <b className="t-h3">{priceTag(p.price_rub)}</b>
+        </Link>
+      ))}
+    </div>
+  ) : (
+    <div
+      className={`grid ${paid.length >= 4 ? 'g-4' : paid.length === 3 ? 'g-3' : 'g-2'}`}
+      style={paid.length <= 2 ? { maxWidth: 760, margin: '0 auto' } : undefined}
+    >
+      {paid.map((p) => (
+        <PlanCard key={p.id} plan={p} featured={p.id === featured} saving={save[p.id]} to={planTo(p)} />
+      ))}
+    </div>
+  )
 
   return (
     <>
-      {/* ─── Hero ─── */}
-      <section className="relative overflow-hidden pt-24 pb-28 md:pt-32 md:pb-36">
-        {/* drift blobs */}
-        <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          <div className="blob-a absolute top-16 left-[8%] w-72 h-72 rounded-full bg-brand/14 blur-[110px]" />
-          <div className="blob-b absolute bottom-6 right-[8%] w-80 h-80 rounded-full bg-accent/10 blur-[130px]" />
-        </div>
-
-        <div className="relative max-w-4xl mx-auto px-6 text-center">
-          <div className="eyebrow mb-7 animate-fade-in">
-            <span className="w-1.5 h-1.5 rounded-full bg-brand pulse-dot" />
-            Устойчивый интернет нового поколения
-          </div>
-
-          <h1 className="serif text-4xl sm:text-5xl md:text-[4.1rem] font-semibold leading-[1.08] animate-fade-in-up" style={{ lineHeight: 1.1 }}>
-            Тихий интернет,<br className="hidden sm:block" /> в котором всё <span className="italic text-brand">просто работает</span>
-          </h1>
-
-          <p className="mt-7 text-base md:text-lg text-text-secondary max-w-xl mx-auto leading-relaxed animate-fade-in-up delay-200">
-            HiEarth — устойчивый доступ с умной эко-маршрутизацией. Быстро, приватно и без лишнего шума на всех ваших устройствах.
-          </p>
-
-          <div className="mt-9 flex flex-wrap justify-center gap-3.5 animate-fade-in-up delay-300">
-            <Link to={isLoggedIn ? '/dashboard' : '/register'} className="btn-primary">
-              {isLoggedIn ? 'В кабинет' : hasFree ? 'Начать бесплатно' : 'Создать аккаунт'} <Arrow />
-            </Link>
-            <a href="#plans" className="btn-ghost">Смотреть тарифы</a>
-          </div>
-
-          {/* Facts the site can check (E1): countries of the working exits, mobile networks, payment */}
-          <ul className="mt-14 flex flex-wrap justify-center gap-2.5 max-w-2xl mx-auto animate-fade-in-up delay-500">
-            {info.exit_countries.length > 0 && (
-              <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">
-                Выход в интернет: {info.exit_countries.map(countryName).join(", ")}
-              </li>
-            )}
-            {info.mobile_ready && (
-              <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">Работает на мобильном интернете</li>
-            )}
-            <li className="px-3.5 py-2 rounded-full bg-white/[0.04] border border-brand/12 text-sm text-text-secondary">Оплата картой и СБП через ЮKassa</li>
-          </ul>
-        </div>
-      </section>
-
-      {/* ─── Steps ─── */}
-      <section className="relative py-20 md:py-28">
-        <div className="max-w-5xl mx-auto px-6">
-          <div className="text-center mb-14 reveal">
-            <p className="eyebrow mb-4">Начало работы</p>
-            <h2 className="text-3xl md:text-4xl font-semibold">Три шага до тишины</h2>
-          </div>
-          <div className="grid md:grid-cols-3 gap-6">
-            {steps.map((s, i) => (
-              <div key={s.num} className="card card-hover p-7 reveal" style={{ transitionDelay: `${Math.min(i * 90, 220)}ms` }}>
-                <span className="serif text-2xl font-semibold text-brand tabular-nums">{s.num}</span>
-                <h3 className="text-lg font-semibold mt-4 mb-2">{s.title}</h3>
-                <p className="text-sm text-text-secondary leading-relaxed">{s.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ─── Features ─── */}
-      <section className="relative py-20 md:py-28">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
-        <div className="max-w-6xl mx-auto px-6">
-          <div className="text-center mb-14 reveal">
-            <p className="eyebrow mb-4">Преимущества</p>
-            <h2 className="text-3xl md:text-4xl font-semibold">Почему HiEarth</h2>
-          </div>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            {features.map((f, i) => (
-              <div key={f.title} className="group card card-hover p-6 reveal" style={{ transitionDelay: `${Math.min(i * 70, 220)}ms` }}>
-                <div className="w-12 h-12 rounded-xl bg-brand/12 border border-brand/20 text-brand flex items-center justify-center mb-4 transition-transform duration-300 group-hover:scale-110">
-                  <f.Icon className="w-6 h-6" />
-                </div>
-                <h3 className="text-base font-semibold mb-2">{f.title}</h3>
-                <p className="text-sm text-text-secondary leading-relaxed">{f.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ─── Plans ─── */}
-      <section id="plans" className="relative py-20 md:py-28 overflow-hidden">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
-        <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] h-[380px] bg-brand/6 rounded-full blur-[130px]" />
-        <div className="relative max-w-5xl mx-auto px-6">
-          <div className="text-center mb-14 reveal">
-            <p className="eyebrow mb-4">Тарифы</p>
-            <h2 className="text-3xl md:text-4xl font-semibold">Прозрачные цены</h2>
-            <p className="mt-4 text-text-secondary max-w-lg mx-auto">Без скрытых платежей: подписка оплачивается с баланса кошелька и продлевается, только если на нём хватает денег. Карту мы не привязываем.</p>
-          </div>
-
-          {plansLoading ? (
-            <div className="grid gap-6 md:grid-cols-3">
-              {[0, 1, 2].map(i => <div key={i} className="card h-80 animate-pulse-glow" />)}
-            </div>
-          ) : plans.length === 0 ? (
-            <div className="card p-10 text-center max-w-md mx-auto">
-              <p className="text-text-secondary">Тарифы временно недоступны. Загляните чуть позже или напишите нам.</p>
-            </div>
-          ) : (
-            <div className={`grid gap-6 ${plans.length >= 3 ? 'md:grid-cols-3' : 'md:grid-cols-2 max-w-3xl mx-auto'}`}>
-              {plans.map((p, i) => {
-                const highlighted = i === Math.min(Math.floor(plans.length / 2), plans.length - 1)
-                const pf = typeof p.features === 'string' ? JSON.parse(p.features || '{}') : (p.features || {})
-                const feats = [p.description, `Трафик: ${formatTraffic(p.traffic_limit_bytes)}`, `Срок: ${formatDuration(p.duration_days)}`]
-                if (pf.traffic_masking) feats.push('Приватная маршрутизация')
-                if (pf.priority_support) feats.push('Приоритетная поддержка')
-                if (p.direct_routing_enabled) feats.push('Доступ к РФ-сервисам')
-                return (
-                  <div key={p.id} className={`group relative p-8 rounded-[22px] reveal card-hover ${highlighted ? 'card-feat' : 'card'}`} style={{ transitionDelay: `${Math.min(i * 90, 220)}ms` }}>
-                    {highlighted && (
-                      <span className="absolute -top-3 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-full bg-accent text-[#2a1e02] text-[11px] font-bold uppercase tracking-wide">Популярный</span>
-                    )}
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="serif text-xl font-semibold">{p.name}</h3>
-                      <span className="tree-sway text-brand"><Tree className="w-7 h-7" /></span>
-                    </div>
-                    <div className="flex items-baseline gap-1.5 mb-6">
-                      <span className="serif text-5xl font-semibold tracking-tight tabular-nums">{p.price_rub}</span>
-                      <span className="text-text-secondary text-sm">₽ / {formatDuration(p.duration_days)}</span>
-                    </div>
-                    <ul className="space-y-2.5 mb-8">
-                      {feats.map(f => (
-                        <li key={f} className="flex items-start gap-2.5 text-sm text-text-secondary">
-                          <Check className="w-4 h-4 mt-0.5 text-brand flex-shrink-0" /><span>{f}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    <Link to="/payment" className={highlighted ? 'btn-primary w-full' : 'btn-ghost w-full'}>Выбрать</Link>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </section>
-
-
-      {/* ─── FAQ ─── */}
-      <section className="relative py-20 md:py-28">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
-        <div className="max-w-3xl mx-auto px-6">
-          <div className="text-center mb-12 reveal">
-            <p className="eyebrow mb-4">Вопросы</p>
-            <h2 className="text-3xl md:text-4xl font-semibold">Коротко о главном</h2>
-          </div>
-          <div className="space-y-3">
-            {faqs.map((f, i) => {
-              const open = openFaq === i
-              return (
-                <div key={f.q} className="card overflow-hidden reveal" style={{ transitionDelay: `${Math.min(i * 60, 200)}ms` }}>
-                  <button onClick={() => setOpenFaq(open ? -1 : i)} className="w-full flex items-center justify-between gap-4 px-6 py-5 text-left" aria-expanded={open}>
-                    <span className="font-semibold text-[15px]">{f.q}</span>
-                    <svg className={`w-5 h-5 text-brand flex-shrink-0 transition-transform duration-300 ${open ? 'rotate-45' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-                  </button>
-                  <div className="grid transition-all duration-300 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
-                    <div className="overflow-hidden">
-                      <p className="px-6 pb-5 text-sm text-text-secondary leading-relaxed">{f.a}</p>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* ─── App ─── */}
-      <section className="relative py-20 md:py-28">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/12 to-transparent" />
-        <div className="max-w-4xl mx-auto px-6 text-center">
-          <div className="reveal">
-            <p className="eyebrow mb-4">Приложение</p>
-            <h2 className="text-3xl md:text-4xl font-semibold mb-4">Подключение через Happ</h2>
-            <p className="text-text-secondary max-w-lg mx-auto mb-10">Бесплатное приложение для iPhone, Android, Windows и macOS. Установите его, затем нажмите «Подключить» в кабинете — подписка добавится сама.</p>
-          </div>
-          <div className="flex flex-col sm:flex-row justify-center gap-3 reveal">
-            {HAPP_LINKS.map(l => (
-              <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" className="btn-ghost">
-                <IconDevices className="w-5 h-5" /> {l.label}
-              </a>
-            ))}
-          </div>
-          <p className="text-xs text-faint mt-6 reveal">Пошаговая инструкция — на странице <Link to="/help" className="text-brand hover:text-brand-light">«Помощь»</Link>.</p>
-        </div>
-      </section>
-
-      {/* ─── Refer a friend ─── */}
-      {refTerms?.enabled && refTerms.friend_kop > 0 && (
-        <section className="relative py-16 md:py-20">
-          <div className="max-w-3xl mx-auto px-6">
-            <div className="card-feat rounded-[26px] p-8 md:p-10 text-center reveal">
-              <p className="eyebrow mb-3">Приведи друга</p>
-              <h2 className="serif text-2xl md:text-3xl font-semibold mb-3">
-                По {Math.round(refTerms.referrer_kop / 100)} ₽ каждому
-              </h2>
-              <p className="text-text-secondary max-w-xl mx-auto">
-                Поделитесь ссылкой из кабинета. Друг оплатит подписку — вам и ему придёт по {Math.round(refTerms.friend_kop / 100)} ₽ на кошелёк HiEarth.
+      <SiteHeader transparentTop />
+      <main id="main" className="lp-page">
+        {/* 1 · hero */}
+        <section className="lp-hero">
+          <div className="container lp-hero__grid">
+            <div>
+              <h1 className={`${phone ? '' : 't-d1'} rise`} style={phone ? { fontSize: 40, lineHeight: 1.04, letterSpacing: '-.045em', fontWeight: 800 } : undefined}>
+                Защищённый доступ к&nbsp;интернету в&nbsp;одну кнопку
+              </h1>
+              <p className={`${phone ? 'muted' : 't-lead'} rise`} style={{ '--d': '120ms', marginTop: phone ? 16 : 24, maxWidth: 540, fontSize: phone ? 16 : undefined, lineHeight: phone ? 1.55 : undefined }}>
+                {phone
+                  ? 'Через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, телефона и привязки карты.'
+                  : 'Сайты и приложения открываются через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, без телефона, без привязки карты.'}
               </p>
+              {phone && <div className="rise" style={{ '--d': '200ms', marginTop: 26 }}><AppScreen phone /></div>}
+              <div ref={heroCta} className={`${phone ? 'stack gap-2' : 'row wrap gap-3'} rise`} style={{ '--d': phone ? '280ms' : '200ms', marginTop: phone ? 20 : 36 }}>
+                <Button variant={isLoggedIn ? 'secondary' : 'primary'} size="lg" block={phone} to={main.to} iconRight={phone || isLoggedIn ? undefined : 'arrowRight'}>{main.label}</Button>
+                <Button variant="secondary" size="lg" block={phone} href="#plans">{tariffsLabel}</Button>
+              </div>
+              {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS — через бесплатное приложение Happ</p>}
+            </div>
+            {!phone && (
+              <div className="rise" style={{ '--d': '200ms', position: 'relative', justifySelf: 'end', width: '100%', maxWidth: 460, marginTop: 40 }}>
+                <Hedgehog mood="idle" size={112} style={{ position: 'absolute', right: 28, top: -66, zIndex: 0 }} />
+                <AppScreen />
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 2 · bento (id how) */}
+        <section id="how" className="lp-section">
+          <div className="container">
+            <h2 className={phone ? 'lp-h2' : 't-d2'} style={{ maxWidth: 720 }}>{phone ? 'Всё, что нужно' : <>Всё, что нужно, — и&nbsp;ничего лишнего</>}</h2>
+            <div className="lp-bento" style={{ marginTop: phone ? 22 : 48 }}>
+              <article className="card" style={{ gridColumn: 'span 4', padding: phone ? 20 : 30 }}>
+                <h3 className={phone ? 't-h3' : 't-h2'}>{phone ? 'Работает на мобильном' : 'Работает на мобильном интернете'}</h3>
+                <p className={`muted ${phone ? 't-sm' : ''}`} style={{ marginTop: phone ? 6 : 10, maxWidth: 520 }}>
+                  {phone ? 'Оператор закрыл путь — приложение переходит на соседний.' : 'В подписке несколько способов подключения. Если оператор закрыл один, приложение само переходит на соседний — вы ничего не делаете.'}
+                </p>
+                <div className="stack gap-2" style={{ marginTop: phone ? 14 : 24 }} role="img" aria-label="Схема: основной путь закрыт, вход для мобильных сетей работает, запасной канал готов">
+                  <PathRow phone={phone} tone="bad" title="Основной путь" note="закрыт в вашей сети" badge="Закрыт" />
+                  <PathRow phone={phone} tone="ok" title={phone ? 'Вход для мобильных' : 'Вход для мобильных сетей'} note="вы здесь" badge="Работает" />
+                  {!phone && <PathRow tone="idle" title="Запасной канал" note="наготове" badge="Готов" />}
+                </div>
+              </article>
+              <article className={phone ? 'card row gap-4' : 'card'} style={{ gridColumn: 'span 2', padding: phone ? 20 : 30, display: 'flex', flexDirection: phone ? 'row' : 'column', alignItems: phone ? 'flex-start' : undefined }}>
+                <div style={phone ? { flex: 1 } : undefined}>
+                  <h3 className={phone ? 't-h3' : 't-h2'}>Анонимно</h3>
+                  <p className={`muted ${phone ? 't-sm' : ''}`} style={{ marginTop: phone ? 6 : 10 }}>{phone ? 'Вместо почты и телефона — номерок, HiEarth ID.' : 'Вместо почты и телефона — номерок: HiEarth ID за один клик.'}</p>
+                </div>
+                {phone ? (
+                  <div className="tag tag--idle" aria-hidden="true" style={{ padding: '40px 12px 12px', borderRadius: '32px 32px 14px 14px', marginTop: 18 }}>
+                    <span className="tag__hook" style={{ top: -24, height: 36 }} />
+                    <span className="tag__id" style={{ fontSize: 14 }}>{SAMPLE_ID.slice(0, 4)}<br />{SAMPLE_ID.slice(-4)}</span>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 'auto', paddingTop: 40, display: 'flex', justifyContent: 'center' }} aria-hidden="true">
+                    <Nomerok id={SAMPLE_ID} variant="idle" label="номерок" railWidth="100%" />
+                  </div>
+                )}
+              </article>
+              <article className="card" style={{ gridColumn: 'span 3', padding: phone ? 20 : 30 }}>
+                <h3 className={phone ? 't-h3' : 't-h2'}>Честная оплата</h3>
+                <p className={`muted ${phone ? 't-sm' : ''}`} style={{ marginTop: phone ? 6 : 10, maxWidth: 440 }}>
+                  {phone ? 'Подписка платится с кошелька и продлевается, только если денег хватает. Карту не привязываем.' : 'Пополняете кошелёк картой или через СБП — подписка оплачивается с баланса и продлевается, только если денег хватает. Карту не привязываем.'}
+                </p>
+                {!phone && (
+                  <div className="row gap-4" style={{ marginTop: 26, padding: '18px 20px', borderRadius: 16, background: 'var(--bg)', border: '1px solid var(--line)' }} aria-hidden="true">
+                    <span className="t-sm muted" style={{ flex: 1 }}>На кошельке</span>
+                    <Flap value={430} suffix="₽" size={30} label="" />
+                  </div>
+                )}
+              </article>
+              {!phone && (
+                <article className="card" style={{ gridColumn: 'span 3', padding: 30 }}>
+                  <h3 className="t-h2">Все ваши устройства</h3>
+                  <p className="muted" style={{ marginTop: 10 }}>Один аккаунт — телефон, планшет и компьютер. Подключение в приложении Happ, оно бесплатное.</p>
+                  <div className="grid g-2" style={{ marginTop: 22, gap: 10 }}>
+                    {['iPhone и iPad', 'Android', 'Windows', 'macOS'].map((d) => <span key={d} className="btn btn--secondary" style={{ justifyContent: 'flex-start', cursor: 'default', pointerEvents: 'none' }}>{d}</span>)}
+                  </div>
+                </article>
+              )}
+            </div>
+
+            {/* 3 · three steps */}
+            {phone ? (
+              <>
+                <h2 className="lp-h2" style={{ marginTop: 48 }}>Три шага</h2>
+                <ol className="stack gap-4" style={{ marginTop: 20 }}>
+                  {[['Получите HiEarth ID', 'Один клик, без почты и телефона.'], ['Установите Happ', 'Бесплатно для iPhone, Android, Windows, macOS.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама — включайте.']].map(([t, d], i) => (
+                    <li key={t} className="row gap-3" style={{ alignItems: 'flex-start' }}>
+                      <span className="kbd" style={{ height: 30, minWidth: 30, justifyContent: 'center' }}>{i + 1}</span>
+                      <span><b>{t}</b><br /><span className="muted t-sm">{d}</span></span>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            ) : (
+              <ol className="grid g-3" style={{ marginTop: 96, gap: 32 }}>
+                {[['Получите HiEarth ID', 'Один клик, без почты и телефона. Сохраните номерок — восстановить его нельзя.'], ['Установите Happ', 'Бесплатное приложение для iPhone, Android, Windows и macOS.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама. Включите — и всё, дальше путь выбирается автоматически.']].map(([t, d], i) => (
+                  <li key={t} className="lp-step"><span className="lp-step__n" aria-hidden="true">{i + 1}</span><h3 className="t-h3">{t}</h3><p className="muted t-sm" style={{ marginTop: 8 }}>{d}</p></li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </section>
+
+        {/* 4 · plans */}
+        <section id="plans" className="lp-section">
+          <div className="container">
+            <div className="row wrap between" style={{ alignItems: 'flex-end', gap: phone ? 8 : 20 }}>
+              <h2 className={phone ? 'lp-h2' : 't-d2'}>Тарифы</h2>
+              {(allUnlimited || free) && (
+                <p className={`muted ${phone ? 't-sm' : ''}`} style={{ maxWidth: 440 }}>
+                  {phone
+                    ? [allUnlimited && 'Безлимитный трафик.', free && 'Неделя — бесплатно.'].filter(Boolean).join(' ')
+                    : [allUnlimited && 'Безлимитный трафик во всех тарифах.', free && 'Первая неделя — бесплатно и без карты.'].filter(Boolean).join(' ')}
+                </p>
+              )}
+            </div>
+            <div style={{ marginTop: phone ? 22 : 48 }}>{plansBody}</div>
+
+            {ref && (
+              <div id="referral" className={`card ${phone ? 'stack gap-4' : 'row gap-6'}`} style={{ marginTop: 24, padding: phone ? 20 : '20px 28px' }}>
+                {!phone && <Hedgehog mood="happy" size={84} style={{ flex: 'none' }} />}
+                <p style={{ flex: 1 }}>
+                  <b>{refSame ? `Приведите друга — по ${refAmount} ₽ каждому.` : `Приведите друга — вам ${kopNum(ref.referrer_kop)} ₽, другу ${refAmount} ₽.`}</b>{' '}
+                  <span className="muted">Ссылка в кабинете: когда друг оплатит подписку, деньги придут на оба кошелька.</span>
+                </p>
+                <Button variant="secondary" block={phone} to={isLoggedIn ? '/dashboard#referral' : '/register'}>Получить ссылку</Button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 5 · questions */}
+        <section id="faq" className="lp-section">
+          <div className="container lp-faq">
+            <div>
+              <h2 className={phone ? 'lp-h2' : 't-d2'}>Вопросы</h2>
+              <p className="muted" style={{ marginTop: phone ? 8 : 16 }}>Не нашли ответ? <Link to="/help" className="link">Вся помощь</Link></p>
+            </div>
+            <div className="acc">
+              {FAQ.map((f) => (
+                <details key={f.q}>
+                  <summary style={phone ? { fontSize: 16 } : undefined}>{f.q}</summary>
+                  <p className={`acc__b ${phone ? 't-sm' : ''}`}>{f.a}</p>
+                </details>
+              ))}
             </div>
           </div>
         </section>
-      )}
 
-      {/* ─── CTA band ─── */}
-      <section className="relative py-24 md:py-32 overflow-hidden">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/20 to-transparent" />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-brand/5 to-transparent" />
-        <div className="relative max-w-2xl mx-auto px-6 text-center">
-          <h2 className="serif text-3xl md:text-5xl font-semibold reveal">Войдите в тихий лес</h2>
-          <p className="text-text-secondary max-w-lg mx-auto mt-5 mb-9 reveal" style={{ transitionDelay: '80ms' }}>
-            {hasFree ? 'Анонимный ID за один клик и бесплатная пробная неделя — без карты и обязательств.' : 'Анонимный ID за один клик — без почты, телефона и карты.'}
-          </p>
-          <div className="reveal" style={{ transitionDelay: '160ms' }}>
-            <Link to={isLoggedIn ? '/dashboard' : '/register'} className="btn-primary">
-              {isLoggedIn ? 'В кабинет' : hasFree ? 'Начать бесплатно' : 'Создать аккаунт'} <Arrow />
-            </Link>
+        {/* 6 · final CTA */}
+        <section style={{ padding: phone ? '8px 0 40px' : '0 0 96px' }}>
+          <div className="container">
+            <div ref={finalCta} className={`card card--glow ${phone ? 'stack gap-4' : 'row wrap between'}`} style={phone ? { padding: 26, borderRadius: 24, alignItems: 'center', textAlign: 'center' } : { padding: '48px 56px', borderRadius: 28, gap: 32 }}>
+              <div className="row gap-8">
+                {!phone && <ConnectOrb active small ariaLabel="" />}
+                <div>
+                  <h2 className={phone ? 't-h2' : 't-h1'}>Подключитесь за минуту</h2>
+                  {free && !phone && <p className="muted" style={{ marginTop: 8 }}>Неделя бесплатно. Карта не нужна.</p>}
+                </div>
+              </div>
+              {isLoggedIn
+                ? <Button variant="secondary" size="lg" block={phone} to="/dashboard">В кабинет</Button>
+                : <Button variant="primary" size="lg" block={phone} to="/register">Получить ID бесплатно</Button>}
+            </div>
           </div>
+        </section>
+      </main>
+      <SiteFooter compact={phone} />
+
+      {phone && !isLoggedIn && (
+        <div className={`sticky-cta ${heroGone && !finalSeen ? 'is-shown' : ''}`} aria-hidden={!(heroGone && !finalSeen)}>
+          <Button variant="primary" size="lg" block to="/register" tabIndex={heroGone && !finalSeen ? 0 : -1}>{free ? `Попробовать ${freeDays} бесплатно` : 'Получить HiEarth ID'}</Button>
         </div>
-      </section>
+      )}
     </>
   )
 }

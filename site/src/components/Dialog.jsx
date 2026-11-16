@@ -1,16 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useLayer, focusables } from '../lib/layers.js'
 
 // Dialog (spec 02 §15): confirmations of irreversible actions, a short form in place, one large
 // object (QR). Replaces window.confirm/alert/prompt everywhere.
-//   <Dialog open={open} onClose={close} title="Точно выйти?" busy={busy} initialFocus="cancel">…</Dialog>
+//   <Dialog open={open} onClose={close} title="Точно выйти?" busy={busy}>…</Dialog>
 // - Esc, overlay click and the cancel button close it; not while `busy`, and the overlay does not
 //   close a dialog with a filled form (`closeOnOverlay={false}`).
-// - Focus moves inside (first field, or the element marked data-autofocus), is trapped, and goes back
-//   to the opener on close. The page under it does not scroll.
+// - Focus moves inside (the element marked data-autofocus, else the first field, else the first
+//   control), is trapped, and goes back to the opener on close or unmount. The page does not scroll.
 // - Leaving plays `is-leaving` for 160 ms before unmounting.
-const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
-
 export default function Dialog({ open, onClose, title, children, busy = false, closeOnOverlay = true, className = '', style }) {
   const [mounted, setMounted] = useState(open)
   const [leaving, setLeaving] = useState(false)
@@ -20,64 +19,48 @@ export default function Dialog({ open, onClose, title, children, busy = false, c
 
   useEffect(() => {
     if (open) {
-      opener.current = document.activeElement
+      if (!box.current || !box.current.contains(document.activeElement)) opener.current = document.activeElement
       setMounted(true)
       setLeaving(false)
       return undefined
     }
     if (!mounted) return undefined
     setLeaving(true)
-    const t = setTimeout(() => {
-      setMounted(false)
-      setLeaving(false)
-      if (opener.current && opener.current.focus) opener.current.focus()
-    }, 160)
+    const t = setTimeout(() => { setMounted(false); setLeaving(false) }, 160)
     return () => clearTimeout(t)
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // focus back to the opener when the dialog goes away (closed, or the parent unmounts it)
+  useEffect(() => {
+    if (!mounted) return undefined
+    return () => {
+      const el = opener.current
+      if (el && el.isConnected && el.focus) el.focus()
+    }
+  }, [mounted])
 
   // first focus
   useEffect(() => {
     if (!open || !mounted || !box.current) return
-    const el = box.current.querySelector('[data-autofocus]') || box.current.querySelector('input,textarea,select') || box.current.querySelector(FOCUSABLE)
-    if (el) el.focus()
+    const el = box.current.querySelector('[data-autofocus]') || box.current.querySelector('input,textarea,select') || focusables(box.current)[0] || box.current
+    el.focus()
   }, [open, mounted])
 
-  // scroll lock
-  useEffect(() => {
-    if (!mounted) return undefined
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prev }
-  }, [mounted])
+  useLayer(box, open && mounted, () => { if (!busy) onClose?.() }, { capture: true })
 
   if (!mounted) return null
   const host = document.getElementById('he-layer') || document.body
-
-  function onKeyDown(e) {
-    if (e.key === 'Escape') {
-      e.stopPropagation()
-      if (!busy) onClose?.()
-      return
-    }
-    if (e.key !== 'Tab' || !box.current) return
-    const els = [...box.current.querySelectorAll(FOCUSABLE)].filter((x) => x.offsetParent !== null)
-    if (!els.length) return
-    const first = els[0]
-    const last = els[els.length - 1]
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
-  }
 
   return createPortal(
     <div
       className={`overlay ${leaving ? 'is-leaving' : ''}`}
       onMouseDown={(e) => { if (e.target === e.currentTarget && closeOnOverlay && !busy) onClose?.() }}
-      onKeyDown={onKeyDown}
     >
       <div
         ref={box}
+        tabIndex={-1}
         className={`dialog ${className}`}
-        style={style}
+        style={{ outline: 'none', ...style }}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}

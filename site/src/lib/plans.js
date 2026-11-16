@@ -1,7 +1,7 @@
 // Plans come only from GET /api/v1/plans (spec 05 §2): names, prices, terms and features are never
 // written in the code. These helpers derive what the cards show from the API fields.
 import { apiFetch } from '../api/http.js'
-import { money, term } from './format.js'
+import { money, term, traffic } from './format.js'
 
 export function fetchPlans() {
   return apiFetch('/api/v1/plans', { signOutOn401: false, fallback: 'Не удалось загрузить тарифы.' })
@@ -21,7 +21,7 @@ export function planList(p) {
   const out = []
   if (p.description) out.push(p.description)
   const lim = Number(p.traffic_limit_bytes) || 0
-  out.push(lim ? `Трафик — ${Math.round(lim / 1024 ** 3)} ГБ` : 'Трафик без лимита')
+  out.push(lim ? `Трафик — ${traffic(lim)}` : 'Трафик без лимита')
   const f = features(p)
   if (f.traffic_masking) out.push('Приватная маршрутизация')
   if (f.priority_support) out.push('Приоритетная поддержка')
@@ -29,7 +29,8 @@ export function planList(p) {
   return out
 }
 
-const perMonth = (p) => Number(p.price_rub) / Math.max(1, Number(p.duration_days) / 30)
+const months = (p) => Math.max(1, Math.round(Number(p.duration_days) / 30))
+const perMonth = (p) => Number(p.price_rub) / months(p)
 
 // Saving of a long plan against the dearest monthly plan, in whole percent; 0 when not cheaper.
 export function savings(plans) {

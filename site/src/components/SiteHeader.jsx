@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLayer } from '../lib/layers.js'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useSiteInfo from '../hooks/useSiteInfo.js'
@@ -10,7 +11,8 @@ import { IdChip } from './Nomerok.jsx'
 // SiteHeader (spec 02 §28) + mobile drawer (§29).
 //   variant 'site'     — public pages: anchors, «Помощь», «Для бизнеса» (b2b), login / start / cabinet;
 //           'business' — the B2B landing: «Для людей», «Для бизнеса», «Помощь», «Подключить бизнес»;
-//           'minimal'  — logo only (register, login).
+//           'minimal'  — logo only (register, login);
+//           'compact'  — logo + «Войти» / «В кабинет» (404, invitation, pages from letters).
 //   transparentTop — the landing: no background/line at the very top (`is-top`).
 export default function SiteHeader({ variant = 'site', transparentTop = false }) {
   const { isLoggedIn } = useAuth()
@@ -20,7 +22,7 @@ export default function SiteHeader({ variant = 'site', transparentTop = false })
   const [atTop, setAtTop] = useState(true)
   const btn = useRef(null)
   const drawer = useRef(null)
-  const { data } = useAccount(isLoggedIn && variant !== 'minimal' ? ['profile'] : [], { optional: ['profile'] })
+  const { data } = useAccount(isLoggedIn && variant !== 'minimal' && variant !== 'compact' ? ['profile'] : [], { optional: ['profile'] })
   const userId = data?.profile?.user_id
 
   useEffect(() => {
@@ -33,21 +35,14 @@ export default function SiteHeader({ variant = 'site', transparentTop = false })
 
   // close on navigation, Esc, and when the screen grows past the phone width
   useEffect(() => { setOpen(false) }, [pathname, hash])
+  useLayer(drawer, open, () => { setOpen(false); btn.current?.focus() })
   useEffect(() => {
     if (!open) return undefined
-    const onKey = (e) => { if (e.key === 'Escape') { setOpen(false); btn.current?.focus() } }
     const mq = window.matchMedia('(min-width: 641px)')
     const onWide = () => { if (mq.matches) setOpen(false) }
-    window.addEventListener('keydown', onKey)
     mq.addEventListener('change', onWide)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
     drawer.current?.querySelector('a,button')?.focus()
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      mq.removeEventListener('change', onWide)
-      document.body.style.overflow = prev
-    }
+    return () => mq.removeEventListener('change', onWide)
   }, [open])
 
   const links = variant === 'business'
@@ -64,10 +59,15 @@ export default function SiteHeader({ variant = 'site', transparentTop = false })
       ]
   const current = (to) => (to === pathname ? 'page' : undefined)
 
-  if (variant === 'minimal') {
+  if (variant === 'minimal' || variant === 'compact') {
     return (
       <header className="site-nav">
-        <div className="container site-nav__in"><Logo /></div>
+        <div className="container site-nav__in">
+          <Logo />
+          {variant === 'compact' && (isLoggedIn
+            ? <Button variant="secondary" size="sm" to="/dashboard">В кабинет</Button>
+            : <Button variant="ghost" size="sm" to="/login">Войти</Button>)}
+        </div>
       </header>
     )
   }
@@ -94,7 +94,7 @@ export default function SiteHeader({ variant = 'site', transparentTop = false })
             </>
           ) : (
             <>
-              <Button variant="ghost" size="sm" to="/login" className="max-sm:hidden">Войти</Button>
+              <Button variant="ghost" size="sm" to="/login">Войти</Button>
               <span className="max-sm:hidden">{startCta}</span>
             </>
           )}

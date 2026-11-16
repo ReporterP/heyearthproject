@@ -4,6 +4,11 @@
    its palette, shadows, radii and fonts are switched off below, so `bg-slate-*`, `shadow-*`
    and friends simply do not exist in this build. */
 @import "tailwindcss";
+/* In the components layer, so a layout utility on an element (max-sm:hidden, mt-4…) still wins over
+   a component class — unlayered CSS would beat every Tailwind layer regardless of specificity. */
+@import "./hiearth.css" layer(components);
+/* TEMPORARY (until the last page is rebuilt): theme + scoped styles of the not-yet-rebuilt pages */
+@import "./legacy.css";
 
 @theme {
   --color-*: initial;
@@ -18,11 +23,36 @@
   --breakpoint-*: initial;
   --breakpoint-sm: 641px;
   --breakpoint-lg: 1025px;
-}
 
-/* In the components layer, so a layout utility on an element (max-sm:hidden, mt-4…) still wins over
-   a component class — unlayered CSS would beat every Tailwind layer regardless of specificity. */
-@import "./hiearth.css" layer(components);
+  /* TEMPORARY — tokens of the not-yet-rebuilt pages (styles/legacy.css); delete with it */
+  --color-brand: #22C55E;
+  --color-brand-dark: #22C55E;
+  --color-brand-light: #34D46D;
+  --color-forest: #0F141F;
+  --color-accent: #F5B544;
+  --color-accent-dark: #F5B544;
+  --color-surface: #090C14;
+  --color-surface-alt: #0F141F;
+  --color-surface-card: #0F141F;
+  --color-surface-2: #0F141F;
+  --color-raise: #151B28;
+  --color-bg-app: #090C14;
+  --color-bg-surface: #0F141F;
+  --color-border: #1F2735;
+  --color-text-primary: #EEF2F7;
+  --color-text-secondary: #A1ABBD;
+  --color-faint: #8490A4;
+  --color-ok: #4ADE80;
+  --color-warning: #F5B544;
+  --color-danger: #F87171;
+  --color-white: #FFFFFF;
+  --color-black: #000000;
+  --color-green-400: #4ADE80;
+  /* the old pages still use md:/xl: and rounded-* */
+  --breakpoint-md: 768px;
+  --breakpoint-xl: 1280px;
+  --radius-sm: .25rem; --radius-md: .375rem; --radius-lg: .5rem; --radius-xl: .75rem; --radius-2xl: 1rem; --radius-3xl: 1.5rem;
+}
 
 /* @fontsource-variable registers Manrope as «Manrope Variable» */
 :root {

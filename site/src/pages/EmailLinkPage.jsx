@@ -1,57 +1,115 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { confirmEmail, unsubscribeEmail } from '../api/user.js'
-import { useNoIndex } from '../components/RequireAuth.jsx'
+import { useAuth } from '../auth/AuthContext.jsx'
+import MiniPage from '../components/MiniPage.jsx'
+import Hedgehog from '../components/Hedgehog.jsx'
+import Button from '../components/Button.jsx'
+import usePageMeta from '../hooks/usePageMeta.js'
 
-// The two links from the letters (cleanup plan E8): /email/confirm?t=… confirms an address on
-// open; /email/unsubscribe?u=…&s=… switches the reminders off with one click on the button (a
-// link scanner opening the page changes nothing).
+// The two links from the letters (spec 06 §6.6, artboard «Письма»): /email/confirm?t=… confirms the
+// address as soon as it opens; /email/unsubscribe?u=…&s=… switches the reminders off only after the
+// button is pressed (so a mail scanner opening the link changes nothing).
+function useGo() {
+  const { isLoggedIn } = useAuth()
+  return (to) => (isLoggedIn ? to : `/login?redirect=${encodeURIComponent(to)}`)
+}
+
+// a link that the server rejects (400/404) is «устарела»; anything else is a temporary failure
+function Failed({ temporary, onRetry, go }) {
+  return (
+    <div className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
+      <Hedgehog mood="worried" size={120} />
+      <h1 className="t-h3">Не получилось</h1>
+      <p className="muted t-sm">
+        {temporary
+          ? 'Сервис временно недоступен. Попробуйте ещё раз через минуту.'
+          : 'Ссылка устарела или уже использована. Запросите новое письмо в настройках кабинета.'}
+      </p>
+      {temporary
+        ? <Button variant="secondary" size="sm" onClick={onRetry}>Повторить</Button>
+        : <Button variant="secondary" size="sm" to={go('/settings')}>Настройки</Button>}
+    </div>
+  )
+}
+
 export function EmailConfirmPage() {
-  useNoIndex()
+  usePageMeta('Подтверждение почты — HiEarth', { noindex: true })
   const [params] = useSearchParams()
-  const [state, setState] = useState({ status: 'wait', text: '' })
+  const go = useGo()
+  const [state, setState] = useState('wait') // wait | ok | bad | temp
   const once = useRef(false)
+  const run = () => {
+    setState('wait')
+    confirmEmail(params.get('t') || '')
+      .then(() => setState('ok'))
+      .catch((e) => setState(e.status === 400 || e.status === 404 ? 'bad' : 'temp'))
+  }
   useEffect(() => {
     if (once.current) return
     once.current = true
-    confirmEmail(params.get('t') || '')
-      .then((r) => setState({ status: 'ok', text: `Почта ${r.email} подтверждена. Теперь чеки и напоминания приходят на неё.` }))
-      .catch((e) => setState({ status: 'bad', text: e.message }))
-  }, [params])
-  return <Result title={state.status === 'ok' ? 'Почта подтверждена' : state.status === 'bad' ? 'Не получилось' : 'Подтверждаем…'} {...state} />
+    run()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <MiniPage label="Подтверждение почты">
+      {state === 'wait' && (
+        <div key="wait" className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
+          <span className="spinner" aria-hidden="true" style={{ margin: '24px 0 8px' }} />
+          <h1 className="t-h3" role="status">Подтверждаем…</h1>
+          <p className="muted t-sm">Пара секунд.</p>
+        </div>
+      )}
+      {state === 'ok' && (
+        <div key="ok" className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
+          <Hedgehog mood="happy" size={120} />
+          <h1 className="t-h3">Почта подтверждена</h1>
+          <p className="muted t-sm">Пришлём чек об оплате и напомним за 3 дня до конца подписки. Больше ничего.</p>
+          <Button variant="primary" to={go('/dashboard')}>В кабинет</Button>
+        </div>
+      )}
+      {(state === 'bad' || state === 'temp') && <Failed key={state} temporary={state === 'temp'} onRetry={run} go={go} />}
+    </MiniPage>
+  )
 }
 
 export function EmailUnsubscribePage() {
-  useNoIndex()
+  usePageMeta('Напоминания — HiEarth', { noindex: true })
   const [params] = useSearchParams()
-  const [state, setState] = useState({ status: 'ask', text: 'Отключить письма-напоминания о конце подписки? Чеки об оплате продолжат приходить.' })
-  async function go() {
-    setState({ status: 'wait', text: '' })
+  const go = useGo()
+  const [state, setState] = useState('ask') // ask | busy | ok | bad | temp
+  async function unsubscribe() {
+    setState('busy')
     try {
-      const r = await unsubscribeEmail(params.get('u') || '', params.get('s') || '')
-      setState({ status: 'ok', text: (r.message || 'Напоминания отключены') + '. Включить их снова можно в настройках кабинета.' })
+      await unsubscribeEmail(params.get('u') || '', params.get('s') || '')
+      setState('ok')
     } catch (e) {
-      setState({ status: 'bad', text: e.message })
+      setState(e.status === 400 || e.status === 404 ? 'bad' : 'temp')
     }
   }
   return (
-    <Result title={state.status === 'ok' ? 'Готово' : state.status === 'bad' ? 'Не получилось' : 'Напоминания'} {...state}>
-      {state.status === 'ask' && <button onClick={go} className="btn-primary !py-2.5 !text-sm">Отписаться</button>}
-    </Result>
+    <MiniPage label="Напоминания о конце подписки">
+      {(state === 'ask' || state === 'busy') && (
+        <div key="ask" className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
+          <Hedgehog mood="idle" size={120} />
+          <h1 className="t-h3">Отключить напоминания?</h1>
+          <p className="muted t-sm">Письма о конце подписки перестанут приходить. Чеки об оплате продолжат приходить.</p>
+          <div className="row wrap gap-2" style={{ justifyContent: 'center' }}>
+            <Button variant="ghost" to="/" disabled={state === 'busy'}>Не надо</Button>
+            <Button variant="secondary" onClick={unsubscribe} loading={state === 'busy'}>Отписаться</Button>
+          </div>
+        </div>
+      )}
+      {state === 'ok' && (
+        <div key="ok" className="swap stack" style={{ alignItems: 'center', gap: 12 }}>
+          <Hedgehog mood="sleep" size={120} />
+          <h1 className="t-h3">Напоминания отключены</h1>
+          <p className="muted t-sm">Включить их снова можно в настройках кабинета.</p>
+          <Button variant="secondary" to={go('/settings')}>Настройки</Button>
+        </div>
+      )}
+      {(state === 'bad' || state === 'temp') && <Failed key={state} temporary={state === 'temp'} onRetry={unsubscribe} go={go} />}
+    </MiniPage>
   )
 }
 
-function Result({ title, status, text, children }) {
-  return (
-    <section className="min-h-[60vh] flex items-center justify-center px-4 py-12">
-      <div className="card rounded-[22px] p-8 max-w-md w-full text-center">
-        <h1 className="serif text-2xl font-semibold mb-3">{title}</h1>
-        {status === 'wait' ? <div className="skeleton h-4 w-48 mx-auto rounded" /> : <p className={`text-sm mb-6 ${status === 'bad' ? 'text-danger' : 'text-text-secondary'}`}>{text}</p>}
-        <div className="flex flex-wrap justify-center gap-2.5">
-          {children}
-          <Link to="/settings" className="btn-ghost !py-2.5 !text-sm">Настройки</Link>
-        </div>
-      </div>
-    </section>
-  )
-}

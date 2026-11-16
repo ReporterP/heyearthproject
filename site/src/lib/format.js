@@ -13,7 +13,7 @@ export function plural(n, forms) {
 
 // group: 1000 → «1 000» (non-breaking space), for every amount (05 §4 shows «1 000 ₽»).
 export function group(n) {
-  const neg = n < 0
+  const neg = n < 0 && Math.abs(n) >= 0.005
   const [i, f] = Math.abs(n).toFixed(2).split('.')
   const int = i.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP)
   const frac = f === '00' ? '' : `,${f}`
@@ -71,9 +71,9 @@ export function daysLeft(until) {
 export function traffic(bytes) {
   const b = Number(bytes) || 0
   const gb = b / 1024 ** 3
-  if (gb >= 1) return `${gb.toFixed(1).replace('.', ',')}${NBSP}ГБ`
+  if (gb >= 0.995) return `${gb.toFixed(1).replace('.', ',')}${NBSP}ГБ`
   const mb = b / 1024 ** 2
-  return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1).replace('.', ',')}${NBSP}МБ`
+  return `${mb >= 9.95 ? Math.round(mb) : mb.toFixed(1).replace('.', ',')}${NBSP}МБ`
 }
 
 export function trafficParts(bytes) {
@@ -85,7 +85,7 @@ export function trafficParts(bytes) {
 // «7 дней», «1 месяц», «3 месяца», «12 месяцев», «1 год»
 export function term(days) {
   const d = Number(days) || 0
-  if (d >= 360 && d % 365 < 10) { const y = Math.round(d / 365); return `${y}${NBSP}${plural(y, ['год', 'года', 'лет'])}` }
+  if (d >= 360) { const y = Math.max(1, Math.round(d / 365)); return `${y}${NBSP}${plural(y, ['год', 'года', 'лет'])}` }
   if (d >= 28) { const m = Math.round(d / 30); return `${m}${NBSP}${plural(m, ['месяц', 'месяца', 'месяцев'])}` }
   return `${d}${NBSP}${plural(d, ['день', 'дня', 'дней'])}`
 }

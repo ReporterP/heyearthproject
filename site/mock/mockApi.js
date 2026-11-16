@@ -51,7 +51,7 @@ const PLANS = [
 ].map((p) => ({ ...p, allowed_protocols: ['all'], is_active: true, auto_renew_default: false, created_at: '2026-05-01T10:00:00Z', updated_at: '2026-05-01T10:00:00Z' }))
 
 const CUR = PLANS[3] // the user's plan: «Квартал»
-const visiblePlans = () => PLANS.filter((p) => p.price_rub > 0 || S.trial === 'available')
+const visiblePlans = () => PLANS
 
 function balanceKop() {
   if (S.wallet === 'enough') return 150000
