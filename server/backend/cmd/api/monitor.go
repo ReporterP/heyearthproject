@@ -96,6 +96,7 @@ func StartMonitor() {
 	go runEvery(10*time.Minute, time.Hour, func() {
 		safely("мощность", checkCapacity)
 	})
+	startTGWebMonitor()
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)
 		safely("бэкап", checkBackupFreshness)

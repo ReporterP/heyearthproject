@@ -286,6 +286,19 @@ func RegisterRoutes() {
 
 	// MTProto settings
 	http.HandleFunc("/api/admin/mtproto/generate-secret", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", GenerateMTProtoSecret))))
+	// Telegram WEB proxy (phase T)
+	http.HandleFunc("/api/admin/telegram/webproxy/install", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", InstallTGWebProxy))))
+	http.HandleFunc("/api/admin/telegram/webproxy/rotate-secret", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", RotateTGWebProxySecret))))
+	http.HandleFunc("/api/admin/telegram/webproxy", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("settings.read", GetTGWebProxy).ServeHTTP(w, r)
+		case http.MethodPut:
+			RequirePermission("settings.write", UpdateTGWebProxy).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 	http.HandleFunc("/api/admin/mtproto", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

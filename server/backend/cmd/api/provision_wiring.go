@@ -20,6 +20,7 @@ import (
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tgweb"
 )
 
 // nodeStore is the API's provisioning store: the Hub's own key on disk, node passwords
@@ -60,6 +61,7 @@ func initProvisioning() {
 	admin.NodeJobs = nodeStore
 	admin.HubPublicKey = func(ctx context.Context) (string, error) { return provision.EnsureHubKey(ctx, provision.LocalRemote{}) }
 	admin.HubOwnIPs = hubOwnIPs
+	tgweb.HubAddrs = hubOwnIPs // where tg.<domain> may point besides the entries
 }
 
 // nodeRunner runs every node job of the API (admin handlers and the reconciler's MTProxy backfill).

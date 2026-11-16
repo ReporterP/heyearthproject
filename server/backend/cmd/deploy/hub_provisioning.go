@@ -32,7 +32,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -379,6 +381,12 @@ func ensureHubProvisioning(client *ssh.Client, cfg *deployConfig) {
 		log.Fatal(err)
 	}
 	putHubFile(client, hubMTProxyScript, "755", mt)
+	// The Telegram WEB proxy relay (phase T): the admin's «Установить / обновить» installs it.
+	if relay, err := tproxybuild.Build(func(f string, a ...any) { fmt.Printf("[hub] "+f+"\n", a...) }); err != nil {
+		fmt.Printf("[hub] WARN: tproxy-server не собран: %v\n", err)
+	} else {
+		putHubFile(client, appDir+"/"+config.TGWebArtifact, "755", relay)
+	}
 
 	fmt.Println("[hub] 4/4 CA node-agent на Hub")
 	mode := caRotate

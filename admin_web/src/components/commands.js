@@ -20,7 +20,7 @@ export const commands = [
   // Infrastructure
   { id: 'go-servers',         label: 'Серверы',              icon: Server,          kind: 'page', href: '/servers',         group: 'Инфраструктура' },
   { id: 'go-direct-routes',   label: 'Прямая маршрутизация', icon: Route,           kind: 'page', href: '/direct-routes',   group: 'Инфраструктура' },
-  { id: 'go-mtproto',         label: 'MTProto',              icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
+  { id: 'go-mtproto',         label: 'Telegram',             icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
   { id: 'go-alerts',          label: 'Алерты',               icon: Bell,            kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
 
   // Money

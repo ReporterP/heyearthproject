@@ -28,7 +28,7 @@ export default {
   navTenants: '\u0422\u0435\u043D\u0430\u043D\u0442\u044B',
   navDirectRoutes: '\u041F\u0440\u044F\u043C\u0430\u044F \u043C\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044F',
   navAuditLog: 'Журнал аудита',
-  navMTProto: 'MTProto',
+  navMTProto: 'Telegram',
   navAlerts: 'Алерты',
   navSettings: '\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438',
   dashboardTitle: '\u0414\u0430\u0448\u0431\u043E\u0440\u0434',

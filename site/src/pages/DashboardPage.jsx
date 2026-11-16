@@ -7,6 +7,7 @@ import TrafficCard from '../components/TrafficCard.jsx'
 import WalletCard from '../components/WalletCard.jsx'
 import ReferralCard from '../components/ReferralCard.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
+import { normalizeTelegramProxy, dashboardTelegramLinks } from '../components/telegramProxyModel.js'
 import useReveal from '../hooks/useReveal.js'
 
 // Extracts the trailing token segment from a subscribe URL like
@@ -17,15 +18,19 @@ function extractTokenFromUrl(url) {
   return parts[parts.length - 1] || ''
 }
 
+// Static class names so Tailwind sees them: one column for the app button + one per Telegram link.
+const ACTION_COLS = { 1: 'sm:grid-cols-1', 2: 'sm:grid-cols-2', 3: 'sm:grid-cols-3' }
+
 function ConnectionActions({ token, subscribeUrl }) {
-  const [mtproto, setMtproto] = useState(null)
+  // Quick Telegram links: WEB proxy first when the API offers it, else the classic pair.
+  const [tgLinks, setTgLinks] = useState([])
 
   useEffect(() => {
     if (!token) return
     let cancelled = false
     getMtproto(token).then((data) => {
-      if (!cancelled) setMtproto(data)
-    }).catch(() => {/* hide MTProto buttons on error */})
+      if (!cancelled) setTgLinks(dashboardTelegramLinks(normalizeTelegramProxy(data)))
+    }).catch(() => {/* hide the Telegram links on error */})
     return () => { cancelled = true }
   }, [token])
 
@@ -33,8 +38,7 @@ function ConnectionActions({ token, subscribeUrl }) {
     ? `/connect?sub=${encodeURIComponent(extractTokenFromUrl(subscribeUrl))}`
     : '#'
 
-  const mtprotoEnabled = mtproto && mtproto.enabled
-  const cols = mtprotoEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-1'
+  const cols = ACTION_COLS[1 + tgLinks.length] || 'sm:grid-cols-3'
 
   return (
     <div className={`grid grid-cols-1 ${cols} gap-3`}>
@@ -45,31 +49,27 @@ function ConnectionActions({ token, subscribeUrl }) {
         <span>Добавить в приложение</span>
       </a>
 
-      {mtprotoEnabled && (
+      {tgLinks.map((l, i) => (
         <a
-          href={mtproto.tg_deeplink}
-          className="group flex items-center justify-center gap-3 px-5 py-4 rounded-2xl bg-[#229ED9] hover:bg-[#38b0e8] text-white font-semibold transition-all duration-200 min-h-[60px]"
-        >
-          <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M21.05 3.05 2.95 9.13c-.93.32-.92 1.6 0 1.92l4.62 1.55 1.55 4.62c.32.93 1.6.92 1.92 0l1.05-3.13 3.65 2.74c.7.52 1.7.13 1.86-.72L21.6 4.07c.17-.84-.6-1.55-1.55-1.02Z" />
-          </svg>
-          <span>Открыть в Telegram</span>
-        </a>
-      )}
-
-      {mtprotoEnabled && (
-        <a
-          href={mtproto.t_me_link}
-          target="_blank"
-          rel="noopener noreferrer"
+          key={l.key}
+          href={l.href}
+          {...(l.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
           className="btn-ghost !py-4 !rounded-2xl min-h-[60px] text-base"
         >
-          <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-          </svg>
-          <span>Открыть через t.me</span>
+          {i === 0 ? (
+            <svg className="w-6 h-6 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m22 2-7 20-4-9-9-4Z" />
+              <path d="M22 2 11 13" />
+            </svg>
+          ) : (
+            <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+            </svg>
+          )}
+          <span>{l.label}</span>
+          {l.external && <span className="sr-only"> (откроется в новой вкладке)</span>}
         </a>
-      )}
+      ))}
     </div>
   )
 }

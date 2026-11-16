@@ -128,7 +128,7 @@ export default function SettingsPage() {
             <Section title="Уведомления">
               <p className="py-3 text-sm text-secondary">
                 Тревоги в Telegram (бот и чат) настраиваются на странице <Link to="/alerts" className="text-accent hover:underline">«Алерты»</Link>,
-                Telegram-прокси — на странице <Link to="/mtproto" className="text-accent hover:underline">«MTProto»</Link>.
+                Telegram-прокси — на странице <Link to="/mtproto" className="text-accent hover:underline">«Telegram»</Link>.
               </p>
             </Section>
           </>

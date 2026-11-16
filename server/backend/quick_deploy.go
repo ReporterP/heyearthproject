@@ -19,8 +19,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
 )
+
+const tgArtifact = config.TGWebArtifact
 
 const (
 	user       = "root"
@@ -170,6 +174,15 @@ func main() {
 		}
 	}
 	os.Remove(agentPath)
+
+	// 4c. Релей Telegram WEB-прокси (фаза T): закреплённый коммит, его go test ./... в Linux, с
+	// sha256 рядом — API ставит его на Hub кнопкой «Установить / обновить». Сбой здесь не
+	// останавливает деплой API: в админке будет видно, что артефакта нет.
+	if relay, err := tproxybuild.Build(func(f string, a ...any) { fmt.Printf("    "+f+"\n", a...) }); err != nil {
+		fmt.Printf("    WARN: tproxy-server не собран: %v — WEB-прокси на Hub не обновится\n", err)
+	} else if err := putArtifact(client, appDir+"/"+tgArtifact, "755", relay); err != nil {
+		fmt.Printf("    WARN: артефакт tproxy-server не выложен: %v\n", err)
+	}
 
 	// 5. Подменить бинарник атомарно и перезапустить
 	fmt.Println("[5/5] Перезапуск сервиса...")

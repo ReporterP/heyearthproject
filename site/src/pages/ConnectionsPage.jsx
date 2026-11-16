@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount from '../account/useAccount.js'
 import { copyToClipboard } from '../components/CopyButton.jsx'
-import TelegramProxyButton from '../components/TelegramProxyButton.jsx'
+import TelegramBlock from '../components/TelegramBlock.jsx'
 import QRCode from '../components/QRCode.jsx'
 import { CabinetSkeleton } from '../components/Skeleton.jsx'
 import useReveal from '../hooks/useReveal.js'
@@ -186,7 +186,7 @@ export default function ConnectionsPage() {
           </p>
         </div>
 
-        <TelegramProxyButton token={token} />
+        <TelegramBlock token={token} />
 
         {/* ═══ STEP 2 — manual methods, one at a time (progressive disclosure) ═══ */}
         <div className="card rounded-[22px] p-6 md:p-7 mb-5 reveal">

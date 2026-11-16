@@ -243,6 +243,16 @@ export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body 
 // Only returns a new secret for the domain; nothing is saved until saveMTProto.
 export const generateMTProtoSecret = (frontingDomain) => apiFetch('/mtproto/generate-secret', { method: 'POST', body: { fronting_domain: frontingDomain } })
 
+// ── Telegram WEB proxy (tproxy-server on the Hub) ──
+// Every call returns the GET payload (settings + status + last run). The secret is never returned.
+// PUT/POST answer 409 {error} while a run is in progress.
+export const fetchTGWebProxy = () => apiFetch('/telegram/webproxy')
+// Turning on (or a new host while on) starts an install run; turning off starts a disable run.
+export const saveTGWebProxy = ({ enabled, host }) => apiFetch('/telegram/webproxy', { method: 'PUT', body: { enabled, host } })
+export const installTGWebProxy = () => apiFetch('/telegram/webproxy/install', { method: 'POST' })
+// A new secret, then an install run re-applies it: every link handed out before stops working.
+export const rotateTGWebProxySecret = () => apiFetch('/telegram/webproxy/rotate-secret', { method: 'POST' })
+
 // ── Plans (subscription tariffs) ──
 export function fetchPlans() {
   return apiFetch('/plans')

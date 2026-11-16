@@ -28,7 +28,7 @@ export default {
   navTenants: 'Tenants',
   navDirectRoutes: 'Direct Routing',
   navAuditLog: 'Audit Log',
-  navMTProto: 'MTProto',
+  navMTProto: 'Telegram',
   navAlerts: 'Alerts',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',

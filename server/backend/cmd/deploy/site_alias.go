@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -66,4 +67,28 @@ func ensureSiteAliasCert(client *ssh.Client, domain string) {
 		return
 	}
 	fmt.Println(strings.TrimSpace(out))
+}
+
+// routerManagedLines reads, from doNginx's read of the live router (streamRouterReadCmd output),
+// the $backend map lines the API owns (config.TGWebRouterMarker: the Telegram WEB proxy host).
+// Nothing when the router is absent or unreadable (the mode check then stops doNginx anyway).
+func routerManagedLines(out string, readErr error) []string {
+	out = strings.TrimSpace(out)
+	if readErr != nil || out == "" || out == "ABSENT" {
+		return nil
+	}
+	b, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		return nil
+	}
+	return config.RouterManagedLines(string(b))
+}
+
+// withManagedLines carries the API's lines into the router doNginx generates: a deploy must not
+// drop the WEB proxy host from SNI routing (the API adds and removes it, internal/provision tgweb).
+func withManagedLines(router string, managed []string) (string, error) {
+	if len(managed) == 0 {
+		return router, nil
+	}
+	return config.RouterWithManagedLines(router, managed)
 }

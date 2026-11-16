@@ -20,6 +20,7 @@ import (
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tgweb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -563,9 +564,10 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUserMTProto — GET /api/v1/user/mtproto
-// Returns the Telegram MTProto proxy deeplink if MTProto is enabled and
-// the user has an active subscription. Result is the same for everyone
-// (shared secret) — this is a convenience perk, not a privacy feature.
+// The Telegram proxies of an active subscriber: the WEB proxy first (Telegram Desktop 7.1+ and
+// updated Android, phase T), the classic MTProto proxy second (iOS and older clients). Shared
+// secrets — a convenience perk, not a privacy feature. The flat fields are the classic proxy for
+// pages built before the WEB proxy.
 func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -595,41 +597,74 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	web, err := userWebProxy(r.Context())
+	if err != nil {
+		log.Printf("[tgweb] ссылка WEB-прокси: %v", err)
+		web = nil // the classic proxy is still handed out
+	}
+	writeJSON(w, http.StatusOK, buildUserMTProto(web, userClassicProxy()))
+}
 
+// userWebProxy is tgweb.ForUser (tests swap it).
+var userWebProxy = tgweb.ForUser
+
+// classicProxy is the classic MTProto part of /user/mtproto.
+type classicProxy struct {
+	Link   string `json:"link"`
+	TGLink string `json:"tg_link"`
+	Server string `json:"server"`
+	Port   string `json:"port"`
+	Secret string `json:"secret"`
+}
+
+// userMTProtoResp: web first, classic second, then the legacy flat classic fields.
+type userMTProtoResp struct {
+	Enabled    bool            `json:"enabled"`
+	Reason     string          `json:"reason,omitempty"`
+	Web        *tgweb.UserLink `json:"web,omitempty"`
+	Classic    *classicProxy   `json:"classic,omitempty"`
+	Host       string          `json:"host,omitempty"`
+	Port       string          `json:"port,omitempty"`
+	Secret     string          `json:"secret,omitempty"`
+	TgDeeplink string          `json:"tg_deeplink,omitempty"`
+	TMeLink    string          `json:"t_me_link,omitempty"`
+}
+
+func buildUserMTProto(web *tgweb.UserLink, classic *classicProxy) userMTProtoResp {
+	resp := userMTProtoResp{Enabled: web != nil || classic != nil, Web: web, Classic: classic}
+	if classic != nil {
+		resp.Host, resp.Port, resp.Secret = classic.Server, classic.Port, classic.Secret
+		resp.TgDeeplink, resp.TMeLink = classic.TGLink, classic.Link
+	}
+	if !resp.Enabled {
+		resp.Reason = "Временно недоступно"
+	}
+	return resp
+}
+
+// userClassicProxy: a weighted-random healthy exit's MTProxy (nil: switched off or none healthy).
+var userClassicProxy = func() *classicProxy {
 	enabled := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true"
 	secret := biz.GetSettingOrDefault("mtproto_secret", "")
-
 	if !enabled || secret == "" {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": false})
-		return
+		return nil
 	}
-
 	host, port, domain, ok := biz.PickMTProtoExit()
 	if ok && domain != "" { // the exit fronts its own domain: the shared key with that domain
+		var err error
 		if secret, err = biz.MTProtoSecretFor(secret, domain); err != nil {
 			log.Printf("[mtproto] secret for exit %s: %v", host, err)
 			ok = false
 		}
 	}
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"enabled": false,
-			"reason":  "Временно недоступно",
-		})
-		return
+		return nil
 	}
-
-	tgDeeplink := fmt.Sprintf("tg://proxy?server=%s&port=%s&secret=%s", host, port, secret)
-	tMeLink := fmt.Sprintf("https://t.me/proxy?server=%s&port=%s&secret=%s", host, port, secret)
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":     true,
-		"host":        host,
-		"port":        port,
-		"secret":      secret,
-		"tg_deeplink": tgDeeplink,
-		"t_me_link":   tMeLink,
-	})
+	return &classicProxy{
+		Link:   fmt.Sprintf("https://t.me/proxy?server=%s&port=%s&secret=%s", host, port, secret),
+		TGLink: fmt.Sprintf("tg://proxy?server=%s&port=%s&secret=%s", host, port, secret),
+		Server: host, Port: port, Secret: secret,
+	}
 }
 
 func handlePublicPlans(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,15 @@
+# SNI-based routing
+map $ssl_preread_server_name $backend {
+    hiearth.ru          nginx_https;
+    go.hiearth.ru       nginx_https;
+    tg.hiearth.ru                nginx_https; # heyearth: tg-webproxy
+    default        xray_vless;
+}
+
+upstream nginx_https {
+    server 127.0.0.1:8446;
+}
+
+upstream xray_vless {
+    server 127.0.0.1:10444;
+}

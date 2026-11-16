@@ -67,6 +67,7 @@ func main() {
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
 	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перевыпустить на Hub клиентский mTLS-сертификат API от CA Hub (CA и сертификаты нод не меняются; сертификаты нод обновляет их настройка)")
+	tgWebFlag := flag.Bool("tg-webproxy", false, "Telegram WEB-прокси на Hub (фаза T): собрать tproxy-server, выложить артефакт и выполнить рецепт «Установить / обновить» по SSH (настройки — из базы Hub); включает WEB-прокси")
 	ensureHubProv := flag.Bool("ensure-hub-provisioning", false, "подготовить живой Hub к настройке нод (админка и --setup-exit-node): SSH_ENCRYPTION_KEY в api.env, ключ SSH Hub, node-agent, install-mtproxy.sh, собственный CA node-agent на Hub (прежний — как legacy до сведения exit); ничего не перезапускает")
 	setupExitNode := flag.String("setup-exit-node", "", "настроить exit-ноду ядром провижининга (IP или IP:порт; порт игнорируется)")
 	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль root exit-ноды (иначе EXIT_NODE_SSH_PASSWORD или сохранённый в базе)")
@@ -111,6 +112,8 @@ func main() {
 		mode = "setup-ops"
 	case *streamPPFlag != "":
 		mode = "stream-proxy-protocol"
+	case *tgWebFlag:
+		mode = "tg-webproxy"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
@@ -178,6 +181,10 @@ func main() {
 
 	if mode == "ensure-hub-provisioning" {
 		ensureHubProvisioning(client, cfg)
+		return
+	}
+	if mode == "tg-webproxy" {
+		tgWebCLI(client, cfg)
 		return
 	}
 	if mode == "rotate-certs" {
@@ -880,8 +887,11 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	// from the router file before anything is written; if it cannot be determined, nginx is not
 	// touched at all (fail closed).
 	proxyProtocol := false
+	var managed []string // the router's lines owned by the API (the Telegram WEB proxy host)
 	if xrayActive && ssl {
-		if proxyProtocol, err = streamModeForDeploy(runSSHQuiet(client, streamRouterReadCmd, "")); err != nil {
+		routerOut, routerErr := runSSHQuiet(client, streamRouterReadCmd, "")
+		managed = routerManagedLines(routerOut, routerErr)
+		if proxyProtocol, err = streamModeForDeploy(routerOut, routerErr); err != nil {
 			log.Fatalf("nginx: %v — конфиги nginx не трогаю. Приведите %s в порядок или выполните go run ./cmd/deploy --stream-proxy-protocol on|off",
 				err, streamRouterFile)
 		}
@@ -901,7 +911,10 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	// Если Xray активен — настраиваем nginx stream для SNI routing на 443
 	if xrayActive && ssl {
-		streamConf := buildNginxStreamConf(domain, proxyProtocol)
+		streamConf, err := withManagedLines(buildNginxStreamConf(domain, proxyProtocol), managed)
+		if err != nil {
+			log.Fatalf("nginx: строки WEB-прокси Telegram в %s не переносятся: %v — конфиги nginx не трогаю", streamRouterFile, err)
+		}
 		_, _ = runSSH(client, "apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true", true)
 		_, _ = runSSH(client, "mkdir -p /etc/nginx/stream.d", true)
 		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
