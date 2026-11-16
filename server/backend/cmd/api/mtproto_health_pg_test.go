@@ -26,7 +26,8 @@ func TestCheckMTProtoHealth(t *testing.T) {
 		(401, 'a', '203.0.113.41', 'exit', 'online', 'online', TRUE, 'healthy', NOW(), 'v1.hoster.example'),
 		(402, 'b', '203.0.113.42', 'exit', 'online', 'online', TRUE, 'healthy', NOW(), ''),
 		(403, 'c', '203.0.113.43', 'exit', 'online', 'online', TRUE, 'disabled', NOW(), ''),
-		(404, 'd', '2001:db8::44', 'exit', 'online', 'online', TRUE, 'healthy', NOW(), '')`)
+		(404, 'd', '2001:db8::44', 'exit', 'online', 'online', TRUE, 'healthy', NOW(), ''),
+		(405, 'e', ' [2001:db8::45]', 'exit', 'online', 'online', TRUE, 'healthy', NOW(), '')`)
 	mtprotoCountMu.Lock()
 	clear(mtprotoFailCount)
 	clear(mtprotoSuccessCount)
@@ -64,7 +65,7 @@ func TestCheckMTProtoHealth(t *testing.T) {
 		addrs = append(addrs, a)
 	}
 	slices.Sort(addrs)
-	if !slices.Equal(addrs, []string{"203.0.113.41:18443", "203.0.113.42:18443", "[2001:db8::44]:18443"}) ||
+	if !slices.Equal(addrs, []string{"203.0.113.41:18443", "203.0.113.42:18443", "[2001:db8::44]:18443", "[2001:db8::45]:18443"}) ||
 		probed["203.0.113.41:18443"] != wantA || probed["203.0.113.42:18443"] != shared || probed["[2001:db8::44]:18443"] != shared {
 		t.Fatalf("probed %v", probed)
 	}

@@ -1356,6 +1356,9 @@ const mtprotoHealthQuery = `
 // mtprotoProbeTimeout bounds one exit's probe, connect included (the exits are probed in parallel).
 const mtprotoProbeTimeout = 6 * time.Second
 
+// mtprotoTCPOnly: the TCP-only fallback of mtprotoProbe is logged once per process.
+var mtprotoTCPOnly sync.Once
+
 // mtprotoProbe is one exit's MTProxy health probe (tests swap it): the fake-TLS handshake a
 // Telegram client makes (internal/mtprobe) — mtg must accept the connection, recognise the secret
 // users get for this exit and answer. A TCP connect alone stayed green for ~30 hours on
@@ -1363,9 +1366,12 @@ const mtprotoProbeTimeout = 6 * time.Second
 // usable secret (not set yet) only TCP is checked.
 var mtprotoProbe = func(ctx context.Context, addr, secret string) error {
 	if secret == "" {
+		mtprotoTCPOnly.Do(func() {
+			log.Printf("[mtproto-health] WARN: mtproto_secret / mtproto_fronting_domain не заданы или не в формате mtg — MTProxy проверяется только по TCP (не видит mtg, который перестал принимать подключения)")
+		})
 		c, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 		if err != nil {
-			return fmt.Errorf("TCP: %w", err)
+			return fmt.Errorf("TCP (без рукопожатия: секрет не задан): %w", err)
 		}
 		return c.Close()
 	}
@@ -1437,7 +1443,9 @@ func checkMTProtoHealth() {
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), mtprotoProbeTimeout)
 			defer cancel()
-			results[i] = mtprotoProbe(ctx, net.JoinHostPort(p.IP, mtprotoPort), mtprotoProbeSecret(sharedSecret, sharedDomain, p.Domain))
+			// ip_address is free text: "[2001:db8::1]" must not become "[[…]]:port".
+			host := strings.Trim(strings.TrimSpace(p.IP), "[]")
+			results[i] = mtprotoProbe(ctx, net.JoinHostPort(host, mtprotoPort), mtprotoProbeSecret(sharedSecret, sharedDomain, p.Domain))
 		}()
 	}
 	wg.Wait()

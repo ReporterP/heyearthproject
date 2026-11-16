@@ -102,20 +102,22 @@ if [[ -x "$BIN" ]] && "$BIN" --version 2>&1 | grep -q "^${MTG_VERSION}[^0-9]"; t
 fi
 if [[ $NEED_MTG_INSTALL -eq 1 ]]; then
   echo "[install-mtproxy] installing mtg v${MTG_VERSION}"
-  systemctl stop mtproxy 2>/dev/null || true   # binary is busy while running
+  # Download, check and unpack first, stop the running mtg only to swap the binary: a failed
+  # download (set -e) leaves the old one serving.
   cd /tmp
+  rm -rf /tmp/mtg.tar.gz /tmp/mtg-extract
   curl -fsSL -o /tmp/mtg.tar.gz \
     "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-amd64.tar.gz"
   GOT_SHA256="$(sha256sum /tmp/mtg.tar.gz | awk '{print $1}')"
   if [[ "$GOT_SHA256" != "$MTG_SHA256" ]]; then
     rm -f /tmp/mtg.tar.gz
     echo "ERR: mtg v${MTG_VERSION} download has sha256 $GOT_SHA256, expected $MTG_SHA256" >&2
-    systemctl start mtproxy 2>/dev/null || true   # keep the old binary serving
     exit 1
   fi
-  rm -rf /tmp/mtg-extract
   mkdir -p /tmp/mtg-extract
   tar -xzf /tmp/mtg.tar.gz -C /tmp/mtg-extract --strip-components=1
+  /tmp/mtg-extract/mtg --version >/dev/null
+  systemctl stop mtproxy 2>/dev/null || true   # binary is busy while running
   install -m 0755 /tmp/mtg-extract/mtg "$BIN"
   rm -rf /tmp/mtg.tar.gz /tmp/mtg-extract
 fi
