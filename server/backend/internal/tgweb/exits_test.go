@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
@@ -76,8 +77,15 @@ func TestExitsAndForwarderList(t *testing.T) {
 	if !strings.Contains(list, "198.51.100.2:3398") || !strings.Contains(list, "127.0.0.1:2091") {
 		t.Fatalf("list:\n%s", list)
 	}
-	// Both tunnels of every exit down: nothing serves.
+	// Both tunnels of every exit down: they stay listed for keepFor (a blip), then leave.
 	down["127.0.0.1:2090"], down["127.0.0.1:1091"], down["127.0.0.1:2091"] = true, true, true
+	if miss, _ := check(context.Background(), hub); miss != "" {
+		t.Fatalf("a blip must not empty the list: %q", miss)
+	}
+	on := now
+	t.Cleanup(func() { now = on })
+	later := on().Add(keepFor + time.Second)
+	now = func() time.Time { return later }
 	if miss, _ := check(context.Background(), hub); !strings.Contains(miss, "через туннель") {
 		t.Fatalf("no reachable exit: %q", miss)
 	}

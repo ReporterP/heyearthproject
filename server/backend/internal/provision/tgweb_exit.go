@@ -61,11 +61,10 @@ true
 func tgExitVerify(o TGExitOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		s.AddSecret(o.Secret)
-		nat, err := tgNAT(ctx, r)
-		if err != nil {
+		if err := tgNoNAT(ctx, r); err != nil {
 			return err
 		}
-		m, f, other, err := tgExitFiles(o, nat)
+		m, f, other, err := tgExitFiles(o, "")
 		if err != nil {
 			return err
 		}
@@ -113,14 +112,10 @@ func tgExitApply(o TGExitOptions) stepFunc {
 		if err != nil {
 			return fmt.Errorf("%w: сборка MTProxy: %w", ErrNoRollback, err)
 		}
-		nat, err := tgNAT(ctx, r)
-		if err != nil {
+		if err := tgNoNAT(ctx, r); err != nil {
 			return fmt.Errorf("%w: %w", ErrNoRollback, err)
 		}
-		if nat != "" {
-			s.Printf("выход за NAT: MTProxy получит %s", nat)
-		}
-		m, f, other, err := tgExitFiles(o, nat)
+		m, f, other, err := tgExitFiles(o, "")
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrNoRollback, err)
 		}
@@ -167,6 +162,33 @@ func tgExitApply(o TGExitOptions) stepFunc {
 
 func tgExitStep(o TGExitOptions) Step {
 	return Step{Name: "tg_mtproxy", Apply: tgExitApply(o), Verify: tgExitVerify(o)}
+}
+
+// tgExitStepOptional is the step inside the full exit recipe: a failure is reported and the step
+// skipped — the WEB proxy's MTProxy never stops an exit's setup (its tunnel, agent, activation);
+// a KindTGMTProxy job or the WEB proxy's install retries it.
+func tgExitStepOptional(o TGExitOptions) Step {
+	apply := tgExitApply(o)
+	return Step{Name: "tg_mtproxy", Verify: tgExitVerify(o), Apply: func(ctx context.Context, r Remote, s *State) error {
+		if err := apply(ctx, r, s); err != nil {
+			s.Printf("MTProxy WEB-прокси не установлен: %v. Выход работает и без него; повтор — «Установить / обновить» на странице Telegram.", err)
+			return fmt.Errorf("%w: %v", ErrSkipped, err)
+		}
+		return nil
+	}}
+}
+
+// tgNoNAT refuses an exit behind 1:1 NAT: the Hub reaches the MTProxy at the exit's public
+// address through the tunnel, which such an exit does not have on an interface.
+func tgNoNAT(ctx context.Context, r Remote) error {
+	nat, err := tgNAT(ctx, r)
+	if err != nil {
+		return err
+	}
+	if nat != "" {
+		return errors.New("выход за NAT (" + strings.SplitN(nat, " ", 2)[0] + "): MTProxy WEB-прокси на таком выходе не работает — Hub обращается к публичному адресу выхода")
+	}
+	return nil
 }
 
 // tgExitRecipe is a KindTGMTProxy job: the one step, on an online exit whose host key the owner

@@ -286,3 +286,24 @@ func TestTGExitRecipeRefusals(t *testing.T) {
 		t.Fatal("tg_mtproxy step must follow the options")
 	}
 }
+
+// Inside the full exit recipe a failing MTProxy step is skipped (the exit's setup goes on); as a
+// job of its own it fails. A NATed exit is refused with the reason.
+func TestTGExitStepOptionalAndNAT(t *testing.T) {
+	e := newTGHost()
+	e.buildFail = true
+	o := TGExitOptions{Secret: strings.Repeat("ef", 16)}
+	run := func(step Step) HubRun {
+		return RunHub(context.Background(), KindReprovision, Recipe{step}, NewState(KindReprovision, Node{}, e, Hooks{}), nil)
+	}
+	if r := run(tgExitStepOptional(o)); r.Status != JobSucceeded || stepStatuses(r) != "tg_mtproxy=skipped" {
+		t.Fatalf("optional: %s %s", stepStatuses(r), r.Error)
+	}
+	if r := run(tgExitStep(o)); r.Status != JobFailed {
+		t.Fatalf("job of its own must fail: %s", stepStatuses(r))
+	}
+	e.buildFail, e.nat = false, "--nat-info 10.0.0.5:203.0.113.7"
+	if r := run(tgExitStep(o)); r.Status != JobFailed || !strings.Contains(r.Error, "за NAT") {
+		t.Fatalf("NAT: %s %q", stepStatuses(r), r.Error)
+	}
+}

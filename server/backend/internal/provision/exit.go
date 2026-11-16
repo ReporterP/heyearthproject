@@ -48,7 +48,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 		r = append(r, Step{Name: "mtproxy", Apply: mtproxyApply(*o.MTProto), Verify: mtproxyVerify(*o.MTProto)})
 	}
 	if o.TGMTProxy != nil {
-		r = append(r, tgExitStep(*o.TGMTProxy))
+		r = append(r, tgExitStepOptional(*o.TGMTProxy))
 	}
 	return append(r,
 		Step{Name: "node_agent", Apply: agentApply(o), Verify: agentVerify(o), Rollback: unitRollback("node-agent")},

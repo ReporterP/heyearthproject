@@ -27,6 +27,8 @@ type tgHost struct {
 	certbotRuns        int
 	builds             int
 	nginxBad, certFail bool
+	buildFail          bool
+	nat                string
 	puts               int
 }
 
@@ -120,11 +122,14 @@ func (h *tgHost) Run(_ context.Context, s string) (string, error) {
 		h.nginxReloads++
 		return "", nil
 	case strings.Contains(s, "uname -m"): // the exit's MTProxy build
+		if h.buildFail {
+			return "curl: (28) github.com timed out", errors.New("exit status 28")
+		}
 		h.builds++
 		h.built, h.users[config.TGExitMTProxyUser] = true, true
 		return "MTProxy собран", nil
 	case strings.Contains(s, "149.154.175.50"):
-		return "NAT=\n", nil
+		return "NAT=" + h.nat + "\n", nil
 	case strings.Contains(s, "LISTEN=1"): // the exit step's check
 		kv := []string{"OWN=" + h.owners[config.TGExitMTProxyEnvPath], "NOBAK=1"}
 		if h.built {

@@ -105,6 +105,7 @@ func Exits(ctx context.Context, secret string) ([]Exit, error) {
 			go func(e *Exit) {
 				defer wg.Done()
 				e.Reachable, e.Path = reach(ctx, e.ID, e.IP)
+				noteReach(e.ID, e.Reachable)
 			}(&out[i])
 		}
 	}
@@ -113,10 +114,37 @@ func Exits(ctx context.Context, secret string) ([]Exit, error) {
 	return out, nil
 }
 
+// keepFor: an installed exit stays in the forwarder's list this long after it last answered
+// through the tunnel — one failed probe (a tunnel blip) must not take the WEB proxy down; the
+// forwarder rests a failing path by itself.
+const keepFor = 3 * time.Minute
+
+var (
+	okMu   sync.Mutex
+	lastOK = map[int]time.Time{}
+	now    = time.Now
+)
+
+func noteReach(id int, ok bool) {
+	if !ok {
+		return
+	}
+	okMu.Lock()
+	lastOK[id] = now()
+	okMu.Unlock()
+}
+
+func recentlyOK(id int) bool {
+	okMu.Lock()
+	defer okMu.Unlock()
+	t, ok := lastOK[id]
+	return ok && now().Sub(t) < keepFor
+}
+
 func served(exits []Exit) map[int]string {
 	m := map[int]string{}
 	for _, e := range exits {
-		if e.Installed && e.Reachable {
+		if e.Installed && (e.Reachable || recentlyOK(e.ID)) {
 			m[e.ID] = e.IP
 		}
 	}

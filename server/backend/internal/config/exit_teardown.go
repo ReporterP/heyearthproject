@@ -43,7 +43,7 @@ const (
 	MTProxyBinary        = "/usr/local/bin/mtg"
 
 	systemdWantsDir     = "/etc/systemd/system/multi-user.target.wants"
-	exitServiceUnitList = "hysteria2 " + ExitSTLSUnit + " xray node-agent " + MTProxyService + " " + TGExitMTProxyUnit + " " + TGExitRefreshUnit + ".timer"
+	exitServiceUnitList = "hysteria2 " + ExitSTLSUnit + " xray node-agent " + MTProxyService + " " + TGExitMTProxyUnit + " " + TGExitRefreshUnit + ".timer " + TGExitFirewallUnit
 )
 
 // ExitServiceUnits are the long-running services of an exit, stopped and disabled by deprovision.

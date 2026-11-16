@@ -86,7 +86,7 @@ func TestExitStopServicesUsesRealUnitNames(t *testing.T) {
 		strings.Contains(readRel(dir, "calls"), "agent-guard") || regexp.MustCompile(`(?m) nftables$`).MatchString(readRel(dir, "calls")) {
 		t.Fatalf("touched what it must not:\n%s", readRel(dir, "calls"))
 	}
-	if got := ExitServiceUnits(); strings.Join(got, " ") != "hysteria2 heyearth-stls xray node-agent mtproxy heyearth-tg-mtproxy heyearth-tg-mtproxy-refresh.timer" {
+	if got := ExitServiceUnits(); strings.Join(got, " ") != "hysteria2 heyearth-stls xray node-agent mtproxy heyearth-tg-mtproxy heyearth-tg-mtproxy-refresh.timer heyearth-tg-mtproxy-firewall" {
 		t.Fatalf("units %v", got)
 	}
 }

@@ -190,12 +190,14 @@ for p in ca-certificates curl build-essential iproute2 libssl-dev util-linux zli
 done
 command -v nft >/dev/null 2>&1 || need="$need nftables"
 if [[ -n "$need" ]]; then
-	printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
-	trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+	ours=
+	if [[ ! -e /usr/sbin/policy-rc.d ]]; then
+		printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d; ours=1
+		trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+	fi
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends --no-upgrade $need
-	rm -f /usr/sbin/policy-rc.d
-	trap - EXIT
+	if [[ -n "$ours" ]]; then rm -f /usr/sbin/policy-rc.d; trap - EXIT; fi
 fi
 if ! id %[6]s >/dev/null 2>&1; then
 	useradd --system --home /nonexistent --shell /usr/sbin/nologin %[6]s

@@ -41,6 +41,8 @@ type backends struct {
 const (
 	dialTimeout = 5 * time.Second
 	restFor     = 30 * time.Second
+	// openBudget bounds one stream's search for a path: the client gives up soon after.
+	openBudget = 12 * time.Second
 )
 
 type forwarder struct {
@@ -52,8 +54,36 @@ type forwarder struct {
 	dial    func(ctx context.Context, socks, addr string) (net.Conn, error)
 }
 
+// rawDialer remembers the TCP connection to the SOCKS port: the SOCKS wrapper the proxy package
+// returns hides CloseWrite, and a half-close must reach the exit as a FIN, not as a full close.
+type rawDialer struct {
+	d   net.Dialer
+	raw *net.TCPConn
+}
+
+func (r *rawDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	c, err := r.d.DialContext(ctx, network, addr)
+	if tc, ok := c.(*net.TCPConn); ok {
+		r.raw = tc
+	}
+	return c, err
+}
+
+func (r *rawDialer) Dial(network, addr string) (net.Conn, error) {
+	return r.DialContext(context.Background(), network, addr)
+}
+
+// halfCloser is a SOCKS connection that can still send a FIN.
+type halfCloser struct {
+	net.Conn
+	raw *net.TCPConn
+}
+
+func (h halfCloser) CloseWrite() error { return h.raw.CloseWrite() }
+
 func socksDial(ctx context.Context, socks, addr string) (net.Conn, error) {
-	d, err := proxy.SOCKS5("tcp", socks, nil, &net.Dialer{Timeout: dialTimeout})
+	rd := &rawDialer{d: net.Dialer{Timeout: dialTimeout}}
+	d, err := proxy.SOCKS5("tcp", socks, nil, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +91,14 @@ func socksDial(ctx context.Context, socks, addr string) (net.Conn, error) {
 	if !ok {
 		return nil, errors.New("SOCKS5 dialer without context")
 	}
-	return cd.DialContext(ctx, "tcp", addr)
+	c, err := cd.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if rd.raw != nil {
+		return halfCloser{Conn: c, raw: rd.raw}, nil
+	}
+	return c, nil
 }
 
 func (f *forwarder) set(t []Target) {
@@ -112,10 +149,15 @@ func (f *forwarder) result(p [2]string, ok bool) {
 	}
 }
 
-// open dials the first path that answers.
+// open dials the first path that answers, within openBudget.
 func (f *forwarder) open(ctx context.Context) (net.Conn, error) {
+	ctx, cancelAll := context.WithTimeout(ctx, openBudget)
+	defer cancelAll()
 	var last error
 	for _, p := range f.paths() {
+		if ctx.Err() != nil {
+			break
+		}
 		dctx, cancel := context.WithTimeout(ctx, dialTimeout)
 		c, err := f.dial(dctx, p[0], p[1])
 		cancel()
@@ -197,8 +239,13 @@ func (l *listener) sync() error {
 		go func() {
 			for {
 				c, err := ln.Accept()
-				if err != nil {
+				if errors.Is(err, net.ErrClosed) {
 					return
+				}
+				if err != nil { // EMFILE, ECONNABORTED…: wait and go on, never stop accepting
+					log.Printf("[tgfwd] accept: %v", err)
+					time.Sleep(100 * time.Millisecond)
+					continue
 				}
 				go l.f.serve(c)
 			}
