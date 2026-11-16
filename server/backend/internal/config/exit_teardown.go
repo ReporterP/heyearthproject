@@ -321,11 +321,20 @@ func MTProxyRunScript(path string, port int, secret, domain string) string {
 }
 
 // MTProxyCheckScript prints ACTIVE (mtproxy.service), LISTEN (mtg on TCP port), SECRET
-// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, and VERSION (mtg's).
+// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, QUEUE and VERSION
+// (mtg's).
+//
+// QUEUE is the listening socket's accept queue (Recv-Q of LISTEN): connections the kernel has
+// completed that mtg has not accepted. A live mtg accepts at once, so it is 0; a second sample
+// 2 s later rules out a burst. Above 0 twice means mtg runs and listens but no longer accepts —
+// the 13-14.11.2026 failure (mtg 2.2.8 ended its accept loop on one Accept error and lived on).
 func MTProxyCheckScript(port int, secret string) string {
+	p := strconv.Itoa(port)
 	return opLine("mtproxy-check") + "S=" + shQuote(secret) + "\n" +
 		"if systemctl is-active --quiet " + MTProxyService + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
-		"if ss -Htlnp 'sport = :" + strconv.Itoa(port) + "' 2>/dev/null | grep -q '\"mtg\"'; then echo LISTEN=1; else echo LISTEN=0; fi\n" +
+		"if ss -Htlnp 'sport = :" + p + "' 2>/dev/null | grep -q '\"mtg\"'; then echo LISTEN=1; else echo LISTEN=0; fi\n" +
+		"mq() { ss -Htln 'sport = :" + p + "' 2>/dev/null | awk '{q += $2} END {print q + 0}'; }\n" +
+		"q=$(mq)\nif [ \"$q\" -gt 0 ] 2>/dev/null; then sleep 2; q=$(mq); fi\necho \"QUEUE=$q\"\n" +
 		"mc=0\nif [ -r " + MTProxyConfigPath + " ]; then\n" +
 		"  while IFS= read -r l || [ -n \"$l\" ]; do if [ \"$l\" = \"secret = \\\"$S\\\"\" ]; then mc=1; fi; done < " + MTProxyConfigPath + "\nfi\n" +
 		"echo \"SECRET=$mc\"\n" +

@@ -550,19 +550,39 @@ func TestMTProxyCheckScript(t *testing.T) {
 	}
 	const secret = "ee00112233445566778899aabbccddeeff6578616d706c652e6f7267"
 	check := strings.NewReplacer("/usr/local/bin/", "./bin/", "/opt/mtproxy/", "./opt/mtproxy/").Replace(MTProxyCheckScript(8443, secret))
-	stubs := systemctlStub + "ss() { echo \"$*\" >> ./ss.args; cat ./ss.out 2>/dev/null; }\n"
+	// The n-th call of ss prints ss.out.<n> when it exists, else ss.out (ss.n counts the calls).
+	stubs := systemctlStub + `ss() { echo "$*" >> ./ss.args; n=$(( $(cat ./ss.n 2>/dev/null || echo 0) + 1 )); echo $n > ./ss.n
+  if [ -e ./ss.out.$n ]; then cat ./ss.out.$n; else cat ./ss.out 2>/dev/null; fi; }
+sleep() { echo "sleep $*" >> ./ss.args; }
+`
 	dir := t.TempDir()
-	mustWrite(t, dir, "bin/mtg", "#!/bin/sh\necho '2.2.8 (go1.22.5, linux/amd64)'\n", 0o755)
+	mustWrite(t, dir, "bin/mtg", "#!/bin/sh\necho '2.3.0 (go1.26.10, linux/amd64)'\n", 0o755)
 	mustWrite(t, dir, "opt/mtproxy/config.toml", "secret = \""+secret+"\"\nbind-to = \"0.0.0.0:8443\"\n", 0o600)
 	mustWrite(t, dir, "ss.out", `LISTEN 0 4096 *:8443 *:* users:(("mtg",pid=812,fd=3))`+"\n", 0o644)
 	mustWrite(t, dir, "active.mtproxy", "", 0o644)
-	if out, _ := shellRun(t, dir, stubs, check); out != "ACTIVE=1\nLISTEN=1\nSECRET=1\nVERSION=2.2.8\n" || !strings.Contains(readRel(dir, "ss.args"), "sport = :8443") {
+	if out, _ := shellRun(t, dir, stubs, check); out != "ACTIVE=1\nLISTEN=1\nQUEUE=0\nSECRET=1\nVERSION=2.3.0\n" ||
+		!strings.Contains(readRel(dir, "ss.args"), "sport = :8443") || strings.Contains(readRel(dir, "ss.args"), "sleep") {
 		t.Fatalf("%q %q", out, readRel(dir, "ss.args"))
 	}
+	// The 13-14.11.2026 failure: mtg runs and listens, the accept queue is full and stays full.
+	os.Remove(filepath.Join(dir, "ss.n"))
+	mustWrite(t, dir, "ss.out", `LISTEN 4097 4096 *:8443 *:* users:(("mtg",pid=812,fd=3))`+"\n", 0o644)
+	if out, _ := shellRun(t, dir, stubs, check); out != "ACTIVE=1\nLISTEN=1\nQUEUE=4097\nSECRET=1\nVERSION=2.3.0\n" ||
+		!strings.Contains(readRel(dir, "ss.args"), "sleep 2") {
+		t.Fatalf("deaf mtg: %q %q", out, readRel(dir, "ss.args"))
+	}
+	// A burst that mtg drains within the 2 s (calls: 1 LISTEN, 2 first sample, 3 second): not a failure.
+	os.Remove(filepath.Join(dir, "ss.n"))
+	mustWrite(t, dir, "ss.out.3", `LISTEN 0 4096 *:8443 *:* users:(("mtg",pid=812,fd=3))`+"\n", 0o644)
+	if out, _ := shellRun(t, dir, stubs, check); !strings.Contains(out, "\nQUEUE=0\n") {
+		t.Fatalf("drained burst: %q", out)
+	}
+	os.Remove(filepath.Join(dir, "ss.n"))
+	os.Remove(filepath.Join(dir, "ss.out.3"))
 	mustWrite(t, dir, "ss.out", `LISTEN 0 4096 *:8443 *:* users:(("nginx",pid=9,fd=3))`+"\n", 0o644)
 	mustWrite(t, dir, "opt/mtproxy/config.toml", "secret = \""+secret+"00\"\n", 0o600) // the wanted secret is only a prefix
 	os.Remove(filepath.Join(dir, "active.mtproxy"))
-	if out, _ := shellRun(t, dir, stubs, check); out != "ACTIVE=0\nLISTEN=0\nSECRET=0\nVERSION=2.2.8\n" {
+	if out, _ := shellRun(t, dir, stubs, check); out != "ACTIVE=0\nLISTEN=0\nQUEUE=0\nSECRET=0\nVERSION=2.3.0\n" {
 		t.Fatalf("%q", out)
 	}
 	if strings.Contains(MTProxyCheckScript(8443, secret), "grep -qF -- \"$S\"") {

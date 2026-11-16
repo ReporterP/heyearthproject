@@ -22,6 +22,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/mtprobe"
 	"github.com/heyearth/backend/internal/provision"
 	"github.com/heyearth/backend/internal/xraydiff"
 )
@@ -1342,9 +1343,9 @@ func checkAllTunnels() {
 
 // mtprotoHealthQuery: the exits whose MTProxy the health monitor probes — online, installed, and
 // not switched off by the owner ('disabled': a verdict would turn it back into healthy/unhealthy
-// and PickMTProtoExit would hand it out to users again).
+// and PickMTProtoExit would hand it out to users again) — with the domain each one fronts.
 const mtprotoHealthQuery = `
-		SELECT id, ip_address, mtproto_status
+		SELECT id, ip_address, mtproto_status, COALESCE(mtproto_domain, '')
 		  FROM servers
 		 WHERE is_exit_node = TRUE
 		   AND lifecycle_state = 'online'
@@ -1352,11 +1353,55 @@ const mtprotoHealthQuery = `
 		   AND mtproto_status <> 'disabled'
 	`
 
-// checkMTProtoHealth probes the MTProto port on every online exit node that
-// has MTProto installed (mtproto_installed_at IS NOT NULL) and not switched off,
-// and updates mtproto_status via biz.MarkMTProtoStatus with 3-fail / 2-success hysteresis.
+// mtprotoProbeTimeout bounds one exit's probe, connect included (the exits are probed in parallel).
+const mtprotoProbeTimeout = 6 * time.Second
+
+// mtprotoProbe is one exit's MTProxy health probe (tests swap it): the fake-TLS handshake a
+// Telegram client makes (internal/mtprobe) — mtg must accept the connection, recognise the secret
+// users get for this exit and answer. A TCP connect alone stayed green for ~30 hours on
+// 13-14.11.2026 while mtg accepted nothing (the kernel filled its backlog instead). Without a
+// usable secret (not set yet) only TCP is checked.
+var mtprotoProbe = func(ctx context.Context, addr, secret string) error {
+	if secret == "" {
+		c, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return fmt.Errorf("TCP: %w", err)
+		}
+		return c.Close()
+	}
+	sec, err := mtprobe.ParseSecret(secret)
+	if err != nil {
+		return err
+	}
+	return mtprobe.Handshake(ctx, nil, addr, sec)
+}
+
+// mtprotoProbeSecret is the secret users get for an exit (as handleUserMTProto hands it out): the
+// shared key with the exit's own domain, or with the shared domain when it has none. "" when no
+// valid shared secret is set (the probe then checks TCP only).
+func mtprotoProbeSecret(shared, sharedDomain, exitDomain string) string {
+	domain := strings.TrimSpace(exitDomain)
+	if domain == "" {
+		domain = strings.TrimSpace(sharedDomain)
+	}
+	if strings.TrimSpace(shared) == "" || domain == "" {
+		return ""
+	}
+	s, err := biz.MTProtoSecretFor(shared, domain)
+	if err != nil {
+		return ""
+	}
+	return s
+}
+
+// checkMTProtoHealth probes the MTProxy of every online exit node that has it installed
+// (mtproto_installed_at IS NOT NULL) and not switched off — all in parallel, each with the
+// fake-TLS handshake of mtprotoProbe — and updates mtproto_status via biz.MarkMTProtoStatus with
+// 3-fail / 2-success hysteresis.
 func checkMTProtoHealth() {
 	mtprotoPort := biz.GetSettingOrDefault("mtproto_port", "8443")
+	sharedSecret := biz.GetSettingOrDefault("mtproto_secret", "")
+	sharedDomain := biz.GetSettingOrDefault("mtproto_fronting_domain", "")
 
 	rows, err := db.DB.Query(mtprotoHealthQuery)
 	if err != nil {
@@ -1368,23 +1413,38 @@ func checkMTProtoHealth() {
 		ID     int
 		IP     string
 		Status string
+		Domain string
 	}
 	var probes []probeRow
 	for rows.Next() {
 		var p probeRow
-		if scanErr := rows.Scan(&p.ID, &p.IP, &p.Status); scanErr == nil {
+		if scanErr := rows.Scan(&p.ID, &p.IP, &p.Status, &p.Domain); scanErr == nil {
 			probes = append(probes, p)
 		}
 	}
 	rows.Close()
 
-	for _, p := range probes {
-		addr := fmt.Sprintf("%s:%s", p.IP, mtprotoPort)
-		conn, dialErr := net.DialTimeout("tcp", addr, 3*time.Second)
-		ok := dialErr == nil
-		if conn != nil {
-			_ = conn.Close()
-		}
+	results := make([]error, len(probes))
+	var wg sync.WaitGroup
+	for i, p := range probes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[i] = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), mtprotoProbeTimeout)
+			defer cancel()
+			results[i] = mtprotoProbe(ctx, net.JoinHostPort(p.IP, mtprotoPort), mtprotoProbeSecret(sharedSecret, sharedDomain, p.Domain))
+		}()
+	}
+	wg.Wait()
+
+	for i, p := range probes {
+		probeErr := results[i]
+		ok := probeErr == nil
 
 		mtprotoCountMu.Lock()
 		if ok {
@@ -1407,7 +1467,7 @@ func checkMTProtoHealth() {
 				if markErr := biz.MarkMTProtoStatus(p.ID, "unhealthy"); markErr != nil {
 					log.Printf("[mtproto-health] MarkMTProtoStatus(%d, unhealthy): %v", p.ID, markErr)
 				} else {
-					log.Printf("[mtproto-health] server %d (%s) → unhealthy after 3 fails: %v", p.ID, p.IP, dialErr)
+					log.Printf("[mtproto-health] server %d (%s) → unhealthy after 3 fails: %v", p.ID, p.IP, probeErr)
 				}
 			} else {
 				_ = biz.MarkMTProtoStatus(p.ID, p.Status)

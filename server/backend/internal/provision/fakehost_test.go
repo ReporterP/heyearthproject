@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/heyearth/backend/internal/config"
@@ -56,6 +57,7 @@ type fakeHost struct {
 	mtproxyFail     bool
 	mtSecret        string // the secret mtproxy runs with (set by mtproxy-install)
 	mtgVersion      string
+	mtQueue         int  // accept queue of an mtg that runs but stopped accepting (mtproxy-install: 0)
 	noOpenSSL       bool // key-pub answers NO_OPENSSL
 	// Hub: UDP to the exits is choked — a hysteria client crash-loops after every (re)start (the
 	// real client exits when its first connection fails) and nothing answers through its SOCKS.
@@ -466,11 +468,12 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		if h.mtproxyFail {
 			return "", errors.New("exit status 1: ERR: fronting domain does not resolve to this node; secret: " + args[1])
 		}
-		h.active["mtproxy"], h.enabled["mtproxy"], h.mtSecret = true, true, args[1]
+		h.active["mtproxy"], h.enabled["mtproxy"], h.mtSecret, h.mtQueue = true, true, args[1], 0
 		return "[install-mtproxy] DONE\nsecret: " + args[1] + "\n", nil
 	case "mtproxy-check":
 		a := b01(h.active["mtproxy"])
-		return "ACTIVE=" + a + "\nLISTEN=" + a + "\nSECRET=" + b01(h.mtSecret != "" && h.mtSecret == between(script, "S='", "'")) +
+		return "ACTIVE=" + a + "\nLISTEN=" + a + "\nQUEUE=" + strconv.Itoa(h.mtQueue) +
+			"\nSECRET=" + b01(h.mtSecret != "" && h.mtSecret == between(script, "S='", "'")) +
 			"\nVERSION=" + h.mtgVersion + "\n", nil
 	case "hub-client-remove": // both clients of the exit: hysteria and the ShadowTLS backup
 		id := atoi(f[1])

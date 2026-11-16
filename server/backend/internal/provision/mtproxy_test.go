@@ -296,6 +296,44 @@ func TestMTProxyJob(t *testing.T) {
 	}
 }
 
+// An mtg that runs and listens with the right secret and version but has stopped accepting (its
+// accept queue fills up: 13-14.11.2026) fails the verify; the job reinstalls it, which restarts
+// it, and then it passes.
+func TestMTProxyVerifyDeafMtg(t *testing.T) {
+	ctx := context.Background()
+	o := testMTOptions()
+	host := newFakeHost()
+	host.active["mtproxy"], host.enabled["mtproxy"], host.mtSecret, host.mtQueue = true, true, testMTSecret, 4097
+	st := NewState(KindMTProxy, Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy"}, host, (&fakeHooks{}).Hooks())
+	err := mtproxyVerify(o)(ctx, host, st)
+	if err == nil || !strings.Contains(err.Error(), "не принимает подключения (в очереди 4097)") {
+		t.Fatalf("deaf mtg passed the verify: %v", err)
+	}
+	host.mtQueue = 0
+	if err := mtproxyVerify(o)(ctx, host, st); err != nil {
+		t.Fatalf("live mtg: %v", err)
+	}
+
+	host.mtQueue = 4097
+	online := Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy", HostKeyConfirmed: true}
+	h := &fakeHooks{lifecycle: "online"}
+	store := newMemStore(online, h)
+	r := &Runner{Store: store, Go: func(f func()) { f() }, Dial: func(Node) (Remote, error) { return host, nil },
+		Recipe: func(_ context.Context, n Node, kind string) (Recipe, *State, error) {
+			st := NewState(kind, n, newFakeHost(), h.Hooks())
+			st.Exit.MTProto = &o
+			rc, err := RecipeFor(kind, n, st)
+			return rc, st, err
+		}}
+	id, err := r.Start(ctx, 7, KindMTProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.statuses(id); !slices.Equal(got, []string{"mtproxy=done"}) || store.jobs[id].Status != JobSucceeded || host.mtQueue != 0 {
+		t.Fatalf("reinstall of a deaf mtg: %v %s queue=%d", got, store.jobs[id].Status, host.mtQueue)
+	}
+}
+
 // The exit's domain is recorded by the install step, right before the install — never by a
 // verify job, and never when the options do not validate.
 func TestMTProxyStepRecordsDomainBeforeInstall(t *testing.T) {

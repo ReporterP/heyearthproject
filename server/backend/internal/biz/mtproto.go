@@ -5,7 +5,7 @@
 //
 // "Healthy" definition: is_exit_node=TRUE AND lifecycle_state='online' AND
 // mtproto_status='healthy'. The Tunnel-health-monitor maintains the status
-// via per-server TCP probe on the global mtproto_port.
+// via a per-server fake-TLS handshake (internal/mtprobe) on the global mtproto_port.
 package biz
 
 import (

@@ -213,8 +213,8 @@ func mtproxyRecipe(n Node, st *State) (Recipe, error) {
 	return Recipe{{Name: "mtproxy", Apply: mtproxyJobApply(o), Verify: mtproxyVerify(o)}}, nil
 }
 
-// mtproxyVerify: mtproxy runs, mtg listens on the port with the configured secret and the
-// version install-mtproxy.sh pins, and the database says healthy (a lost "healthy" mark would
+// mtproxyVerify: mtproxy runs, mtg listens on the port and accepts (its accept queue is empty),
+// with the configured secret and the version install-mtproxy.sh pins, and the database says healthy (a lost "healthy" mark would
 // leave the node "installing": neither the reconciler nor the monitor picks that up). A
 // switched-off MTProxy is not checked.
 func mtproxyVerify(o MTProtoOptions) stepFunc {
@@ -235,6 +235,8 @@ func mtproxyVerify(o MTProtoOptions) stepFunc {
 			return errors.New("mtproxy не запущен")
 		case kv["LISTEN"] != "1":
 			return fmt.Errorf("mtg не слушает TCP %d", o.Port)
+		case kv["QUEUE"] != "0":
+			return fmt.Errorf("mtg слушает TCP %d, но не принимает подключения (в очереди %s) — процесс жив, цикл приёма остановлен; переустановка его перезапустит", o.Port, kv["QUEUE"])
 		case kv["SECRET"] != "1":
 			return errors.New("секрет MTProxy на ноде отличается от настроек")
 		}
