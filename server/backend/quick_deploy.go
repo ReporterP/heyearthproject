@@ -24,7 +24,11 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const tgArtifact = config.TGWebArtifact
+// The WEB proxy artifacts (phase T); package-level: main's ssh config shadows the package name.
+const (
+	tgArtifact    = config.TGWebArtifact
+	tgFwdArtifact = config.TGFwdArtifact
+)
 
 const (
 	user       = "root"
@@ -172,7 +176,7 @@ func main() {
 	}
 	for _, a := range []struct{ local, remote, mode string }{
 		{agentPath, appDir + "/artifacts/node-agent", "755"},
-		{fwdPath, appDir + "/" + config.TGFwdArtifact, "755"},
+		{fwdPath, appDir + "/" + tgFwdArtifact, "755"},
 		{filepath.Join(backendRoot, "cmd", "deploy", "install-mtproxy.sh"), "/opt/heyearth/scripts/install-mtproxy.sh", "755"},
 	} {
 		data, err := os.ReadFile(a.local)
