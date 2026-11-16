@@ -321,8 +321,8 @@ func MTProxyRunScript(path string, port int, secret, domain string) string {
 }
 
 // MTProxyCheckScript prints ACTIVE (mtproxy.service), LISTEN (mtg on TCP port), SECRET
-// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, QUEUE and VERSION
-// (mtg's).
+// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, QUEUE, FRONT (the
+// host of the config's [domain-fronting] section, "" when there is none) and VERSION (mtg's).
 //
 // QUEUE is the listening socket's accept queue (Recv-Q of LISTEN): connections the kernel has
 // completed that mtg has not accepted. A live mtg accepts at once, so it is 0; a second sample
@@ -338,5 +338,9 @@ func MTProxyCheckScript(port int, secret string) string {
 		"mc=0\nif [ -r " + MTProxyConfigPath + " ]; then\n" +
 		"  while IFS= read -r l || [ -n \"$l\" ]; do if [ \"$l\" = \"secret = \\\"$S\\\"\" ]; then mc=1; fi; done < " + MTProxyConfigPath + "\nfi\n" +
 		"echo \"SECRET=$mc\"\n" +
+		"echo \"FRONT=$(awk '" + mtproxyFrontAwk + "' " + MTProxyConfigPath + " 2>/dev/null)\"\n" +
 		"echo \"VERSION=$(" + MTProxyBinary + " --version 2>/dev/null | awk 'NR==1{print $1}')\"\n"
 }
+
+// mtproxyFrontAwk prints the host of the [domain-fronting] section of mtg's config.toml.
+const mtproxyFrontAwk = `/^\[/ { s = ($0 == "[domain-fronting]") } s && $1 == "host" { gsub(/"/, "", $3); print $3; exit }`
