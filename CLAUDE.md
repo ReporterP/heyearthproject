@@ -378,8 +378,25 @@ that you think outside the box!
 - Rounded corners: rounded (4px) или rounded-md (6px); rounded-lg/xl только для модалок и панелей выше карточек.
 </always_use_linear_style_dark_theme>
 
+## Site design system «Канон» — обязательна для `site/`
+
+Любая работа в `site/` (пересборка, доработка, новая страница, кнопка, текст) идёт по дизайн-системе «Канон» (выбрана владельцем 2026-11-16). Она главнее блока «Frontend aesthetics» выше: для сайта тема только тёмная, шрифты только Manrope + JetBrains Mono, эксперименты со стилем — только решением владельца.
+
+- Перед работой: `site/design-system/hiearth-canon/spec/README.md` → раздел нужного экрана (06–10) → компоненты (02). Стили — только `site/design-system/hiearth-canon/hiearth.css` (в коде: `site/src/styles/hiearth.css`, корень `<div className="he">`).
+- **Сначала спецификация, потом код**: новый элемент/состояние/показ-скрытие/анимация/текст сначала строкой в `spec/` (и классом в `hiearth.css`), в том же коммите, что и код. Порядок и критерии готовности — `spec/11-extending.md`.
+- Экраны: https://claude.ai/artifact/U6TEr9jSpR1cuRk9XcS5Li · дизайн-система: https://claude.ai/artifact/5GptLe8fU1HxtyavML6SSh · продукт: `PRODUCT.md`, кратко: `DESIGN.md`.
+- **STOP catches** в `site/src` — остановиться и исправить:
+  - сырые цвета (`#…`, `rgb(`) и палитра Tailwind (`bg-slate-*`, `text-gray-*`, `bg-zinc-*`, `bg-green-500`…) — только `var(--…)`/классы `hiearth.css`;
+  - шрифты кроме Manrope / JetBrains Mono (`Inter`, `Roboto`, `Lora`, `Raleway`);
+  - светлая тема, `shadow-*`, цветные свечения, градиентный текст, «брови» капсом над заголовками, цветная полоса слева у карточек;
+  - вторая primary-кнопка на экране; `window.confirm/alert/prompt`; свои тултипы;
+  - слово «VPN», названия протоколов, «обход блокировок» в текстах; выдуманные цифры/отзывы/страны; захардкоженные названия и цены тарифов (только `/api/v1/plans`);
+  - анимации не из `spec/04-motion.md`, анимации по скроллу; больше одного ёжика на экран;
+  - UI без строки в `spec/`.
+- Проверка: `cd site && npm run build`, `impeccable detect --json <файлы>` (0 предупреждений), скриншот 1440 и 390 против артборда.
+
 ## Branding
 
 - Product: **HiEarth** (current). Domain: `hiearth.ru`.
 - User-facing: call it **SOCKS** (not "SOCKS5"). No VLESS/Shadowsocks/Xray/VPN in UI.
-- Marketing: "proxy-эко маршрутизация", not "VPN".
+- Marketing (site, since 2026-11-16): «защищённое подключение / защищённый доступ к интернету»; the eco theme is dropped; never "VPN". Full copy rules: `site/design-system/hiearth-canon/spec/05-content.md`.
