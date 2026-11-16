@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import NarrowHeader from '../components/NarrowHeader.jsx'
 import Alert from '../components/Alert.jsx'
@@ -31,6 +31,15 @@ export default function BusinessInvoicePage() {
   const [srvField, setSrvField] = useState(null) // { field, text }
   const [result, setResult] = useState(null)
   const inFlight = useRef(false)
+  const resultHead = useRef(null)
+  const innRef = useRef(null)
+  const backToForm = useRef(false)
+
+  // focus follows the swap: to the result heading, and back to «ИНН» after «Вернуться»
+  useEffect(() => {
+    if (result) resultHead.current?.focus()
+    else if (backToForm.current) { backToForm.current = false; innRef.current?.focus() }
+  }, [result])
 
   const amountNum = parseInt(amount, 10) || 0
   const errs = {
@@ -75,6 +84,7 @@ export default function BusinessInvoicePage() {
   }
 
   function again() {
+    backToForm.current = true
     setResult(null); setInn(''); setAmount(''); setCompany(''); setEmail(''); setDesc(''); setTried(false); setTouched({})
   }
 
@@ -82,7 +92,7 @@ export default function BusinessInvoicePage() {
     <form className="card stack gap-4" style={{ padding: 28 }} onSubmit={submit} noValidate>
       <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12 }}>
         <Field label="ИНН" error={show('inn')}>
-          <Input mono inputMode="numeric" value={inn} onBlur={blur('inn')} onChange={(e) => { setInn(e.target.value.replace(/\D/g, '').slice(0, 12)); setSrvField(null) }} />
+          <Input ref={innRef} mono inputMode="numeric" value={inn} onBlur={blur('inn')} onChange={(e) => { setInn(e.target.value.replace(/\D/g, '').slice(0, 12)); setSrvField(null) }} />
         </Field>
         <Field label="Сумма, ₽" hint="минимум 100 ₽" error={show('amount')}>
           <Input mono inputMode="numeric" value={amountFocus || !amount ? amount : group(amountNum)} onFocus={() => setAmountFocus(true)} onBlur={() => { setAmountFocus(false); blur('amount')() }}
@@ -114,7 +124,7 @@ export default function BusinessInvoicePage() {
         {result && (
           <section className="card card--elevated card--glow stack gap-3 swap" style={{ marginTop: 28, padding: 28 }} aria-live="polite">
             <Badge tone="ok" style={{ width: 'max-content' }}>Счёт создан</Badge>
-            <h2 className="t-h3">Счёт № {result.payment_id} сформирован для {result.company_name || company}</h2>
+            <h2 className="t-h3" ref={resultHead} tabIndex={-1} style={{ outline: 'none' }}>Счёт № {result.payment_id} сформирован для {result.company_name || company}</h2>
             <Flap value={Number(result.amount) || amountNum} suffix="₽" size={34} label={`${group(Number(result.amount) || amountNum)} рублей`} />
             {result.confirmation_url && (
               <>

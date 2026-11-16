@@ -76,6 +76,8 @@ export default function BusinessDashboardPage() {
   const [invite, setInvite] = useState(false)
   const [remove, setRemove] = useState(null)
   const welcomed = useRef(false)
+  const timers = useRef([])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
 
   usePageMeta(`${data?.tenant?.name ? `${data.tenant.name} — ` : ''}Кабинет компании — HiEarth`, { noindex: true })
 
@@ -120,13 +122,13 @@ export default function BusinessDashboardPage() {
   function removed(m) {
     setRemove(null)
     toast.ok('Сотрудник удалён')
-    setTimeout(() => setLeaving(m.user_db_id), 170)
-    setTimeout(() => {
+    timers.current.push(setTimeout(() => setLeaving(m.user_db_id), 170))
+    timers.current.push(setTimeout(() => {
       setData((d) => ({ ...d, members: d.members.filter((x) => x.user_db_id !== m.user_db_id) }))
       setLeaving(null)
       document.getElementById('staff')?.focus({ preventScroll: true }) // the row with the opener is gone
       load()
-    }, 520)
+    }, 520))
   }
 
   const header = <NarrowHeader back={{ to: '/dashboard', label: 'Личный кабинет' }} logoText={phone ? undefined : 'HiEarth для бизнеса'} />
@@ -224,6 +226,7 @@ export default function BusinessDashboardPage() {
                 <div className="rows">
                   {members.map((m) => {
                     const me = m.user_id === myId
+                    const locked = !myId || me // until the profile is known, no row is editable
                     return (
                       <div key={m.user_db_id} className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}>
                         <div>
@@ -232,7 +235,7 @@ export default function BusinessDashboardPage() {
                               <span className="ava">{memberInitials(m)}</span>
                               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}><b className="t-sm">{memberName(m)}</b>{me && <span className="subtle t-sm"> (вы)</span>}<br /><span className="mono t-xs subtle">с {date(m.joined_at)}</span></span>
                             </span>
-                            {isAdmin && !me
+                            {isAdmin && !locked
                               ? (
                                 <span className="row gap-2">
                                   <Select value={m.role} onChange={(r) => changeRole(m, r)} disabled={savingRole === m.user_db_id} options={ROLE_OPTIONS} label={`Роль: ${memberName(m)}`} />
@@ -253,15 +256,16 @@ export default function BusinessDashboardPage() {
                   <tbody>
                     {members.map((m) => {
                       const me = m.user_id === myId
+                      const locked = !myId || me // until the profile is known, no row is editable
                       const cell = (c) => <div className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}><div>{c}</div></div>
                       return (
                         <tr key={m.user_db_id} style={leaving === m.user_db_id ? { opacity: 0, transition: 'opacity 160ms var(--ease-out)' } : undefined}>
                           <td>{cell(<span className="row gap-2" style={{ minWidth: 0 }}><span className="ava">{memberInitials(m)}</span><span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{memberName(m)}{me && <span className="subtle"> (вы)</span>}</span></span>)}</td>
-                          <td>{cell(isAdmin && !me
+                          <td>{cell(isAdmin && !locked
                             ? <Select value={m.role} onChange={(r) => changeRole(m, r)} disabled={savingRole === m.user_db_id} options={ROLE_OPTIONS} label={`Роль: ${memberName(m)}`} />
                             : <Badge tone={ROLES[m.role]?.tone}>{ROLES[m.role]?.text || m.role}</Badge>)}</td>
                           <td className="mono subtle">{cell(m.joined_at ? `с ${date(m.joined_at)}` : '—')}</td>
-                          {isAdmin && <td style={{ textAlign: 'right' }}>{cell(me ? null : <Button variant="ghost" size="sm" onClick={() => setRemove(m)} disabled={savingRole === m.user_db_id}>Удалить</Button>)}</td>}
+                          {isAdmin && <td style={{ textAlign: 'right' }}>{cell(locked ? null : <Button variant="ghost" size="sm" onClick={() => setRemove(m)} disabled={savingRole === m.user_db_id}>Удалить</Button>)}</td>}
                         </tr>
                       )
                     })}
@@ -323,6 +327,12 @@ function TopupDialog({ open, onClose, token }) {
   const bad = own && sum < 100 ? 'Минимум 100 ₽' : ''
 
   useEffect(() => { if (open) { setErr(''); setBusy(false); setShown(false) } }, [open])
+  // «Назад» from the ЮKassa page restores this page from the back/forward cache with busy=true
+  useEffect(() => {
+    const h = (e) => { if (e.persisted) setBusy(false) }
+    window.addEventListener('pageshow', h)
+    return () => window.removeEventListener('pageshow', h)
+  }, [])
 
   async function pay(e) {
     e.preventDefault()

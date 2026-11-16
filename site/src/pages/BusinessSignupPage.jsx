@@ -63,7 +63,8 @@ export default function BusinessSignupPage() {
 
   if (step === 2) {
     const claim = result?.claim_url || ''
-    const claimPath = claim ? new URL(claim, window.location.origin).pathname : ''
+    let claimPath = ''
+    try { claimPath = claim ? new URL(claim, window.location.origin).pathname : '' } catch { claimPath = '' }
     return (
       <>
         <NarrowHeader back={{ to: '/business', label: 'Для бизнеса' }} center={steps} right={null} />
