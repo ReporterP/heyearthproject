@@ -372,3 +372,23 @@ func TestMTProxyStepRecordsDomainBeforeInstall(t *testing.T) {
 		t.Fatal("installed although the domain was not recorded")
 	}
 }
+
+// An mtg whose config does not front to the host install-mtproxy.sh pins (installed before
+// MTG_FRONTING_HOST, or edited by hand) fails the verify; the job reinstalls it.
+func TestMTProxyVerifyFrontingHost(t *testing.T) {
+	ctx := context.Background()
+	o := testMTOptions()
+	o.Script = []byte("#!/usr/bin/env bash\nMTG_VERSION=\"2.2.8\"\nMTG_FRONTING_HOST=\"www.twitch.tv\"\n")
+	host := newFakeHost()
+	host.active["mtproxy"], host.enabled["mtproxy"], host.mtSecret = true, true, testMTSecret
+	st := NewState(KindMTProxy, Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy"}, host, (&fakeHooks{}).Hooks())
+	if err := mtproxyVerify(o)(ctx, host, st); err == nil || !strings.Contains(err.Error(), `маскируется под "", а install-mtproxy.sh задаёт www.twitch.tv`) {
+		t.Fatalf("no fronting host passed the verify: %v", err)
+	}
+	if _, err := InstallMTProxy(ctx, host, o); err != nil {
+		t.Fatal(err)
+	}
+	if err := mtproxyVerify(o)(ctx, host, st); err != nil || host.mtFront != "www.twitch.tv" {
+		t.Fatalf("after reinstall: %v (front %q)", err, host.mtFront)
+	}
+}

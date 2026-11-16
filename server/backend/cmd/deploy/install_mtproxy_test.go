@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/heyearth/backend/internal/config"
 )
 
 func TestInstallMTProxyScript(t *testing.T) {
@@ -49,5 +51,22 @@ getent() { `+getent+`; }
 	out, exit = run(`echo "203.0.113.5 STREAM front.example"`)
 	if exit != 0 || !hasLine(out, "STATE passed") {
 		t.Errorf("domain pointing here: exit %d:\n%s", exit, out)
+	}
+}
+
+// mtg fronts strangers to the site the exit's ShadowTLS relays to: both ports of an exit answer a
+// probe alike. The config the installer writes names it in [domain-fronting].
+func TestInstallMTProxyFrontingHost(t *testing.T) {
+	b, err := os.ReadFile("install-mtproxy.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ReplaceAll(string(b), "\r\n", "\n")
+	m := regexp.MustCompile(`(?m)^MTG_FRONTING_HOST="([^"]+)"$`).FindStringSubmatch(s)
+	if m == nil || m[1] != config.ExitSTLSSNI {
+		t.Fatalf("MTG_FRONTING_HOST %v, want config.ExitSTLSSNI %q", m, config.ExitSTLSSNI)
+	}
+	if !strings.Contains(s, "\n[domain-fronting]\nhost = \"$MTG_FRONTING_HOST\"\nport = 443\nEOF\n") {
+		t.Error("config.toml lacks the [domain-fronting] section")
 	}
 }

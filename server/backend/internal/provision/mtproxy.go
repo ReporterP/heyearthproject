@@ -25,6 +25,8 @@ var (
 	mtDomainRe = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 	// mtgVersionRe: the version install-mtproxy.sh pins (MTG_VERSION="2.2.8").
 	mtgVersionRe = regexp.MustCompile(`(?m)^MTG_VERSION="([0-9][0-9A-Za-z.-]*)"`)
+	// mtgFrontRe: where install-mtproxy.sh points mtg's domain fronting (MTG_FRONTING_HOST).
+	mtgFrontRe = regexp.MustCompile(`(?m)^MTG_FRONTING_HOST="([0-9A-Za-z.-]+)"`)
 )
 
 // checkSecret: the secret is in mtg's format and fronts exactly domain. The domain inside the
@@ -214,7 +216,8 @@ func mtproxyRecipe(n Node, st *State) (Recipe, error) {
 }
 
 // mtproxyVerify: mtproxy runs, mtg listens on the port and accepts (its accept queue is empty),
-// with the configured secret and the version install-mtproxy.sh pins, and the database says healthy (a lost "healthy" mark would
+// with the configured secret, the version and the fronting host install-mtproxy.sh pins, and the
+// database says healthy (a lost "healthy" mark would
 // leave the node "installing": neither the reconciler nor the monitor picks that up). A
 // switched-off MTProxy is not checked.
 func mtproxyVerify(o MTProtoOptions) stepFunc {
@@ -242,6 +245,9 @@ func mtproxyVerify(o MTProtoOptions) stepFunc {
 		}
 		if m := mtgVersionRe.FindSubmatch(o.Script); m != nil && kv["VERSION"] != string(m[1]) {
 			return fmt.Errorf("на ноде mtg %q, а install-mtproxy.sh ставит %s", kv["VERSION"], m[1])
+		}
+		if m := mtgFrontRe.FindSubmatch(o.Script); m != nil && kv["FRONT"] != string(m[1]) {
+			return fmt.Errorf("mtg на ноде маскируется под %q, а install-mtproxy.sh задаёт %s", kv["FRONT"], m[1])
 		}
 		if s.Node.MTProtoStatus != "healthy" {
 			return fmt.Errorf("в базе состояние MTProxy «%s», хотя на ноде он работает", s.Node.MTProtoStatus)

@@ -35,6 +35,12 @@ FAKE_TLS_HOST="${3:-}"
 MTG_VERSION="2.3.0"
 # sha256 of mtg-${MTG_VERSION}-linux-amd64.tar.gz (the release's own digest, GitHub release assets).
 MTG_SHA256="11c038ea5eeebd5d49148048975c24f7b0c4fa4c1cf4f15a2410203e2da01812"
+# Where mtg fronts a connection that is not a Telegram client with our secret (a DPI probe, a
+# scanner): the same site the exit's ShadowTLS on :443 relays to (config.ExitSTLSSNI, a test keeps
+# them equal), so both ports of the exit answer a stranger alike — with that site's real TLS.
+# Not the secret's domain: it resolves to this exit, and :443 here is ShadowTLS, whose replies to
+# the exit's own address the kernel egress guard drops — every fronted connection hung (16.11.2026).
+MTG_FRONTING_HOST="www.twitch.tv"
 WORKDIR=/opt/mtproxy
 BIN=/usr/local/bin/mtg
 
@@ -154,6 +160,9 @@ SECRET=$(tr -d '\n\r ' < "$WORKDIR/secret")
 # (Telegram showed a healthy ping) but the session never established — the
 # client sat on "connecting" forever. Pin IPv4 so upstream dials use the only
 # family this host actually has.
+#
+# [domain-fronting] host/port: see MTG_FRONTING_HOST above. The SNI of the fronted hello stays
+# the secret's domain.
 cat > "$WORKDIR/config.toml" <<EOF
 secret = "$SECRET"
 bind-to = "0.0.0.0:$PORT"
@@ -161,6 +170,10 @@ prefer-ip = "prefer-ipv4"
 
 [network]
 doh-ip = "1.1.1.1"
+
+[domain-fronting]
+host = "$MTG_FRONTING_HOST"
+port = 443
 EOF
 
 # Systemd unit — mtg loads config from TOML. Restart=always: mtg >= 2.3.0 exits when its accept
