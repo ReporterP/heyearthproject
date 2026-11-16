@@ -1,36 +1,49 @@
 import { Link } from 'react-router-dom'
+import Button from './Button.jsx'
+import Flap from './Flap.jsx'
+import { kop, kopNum } from '../lib/format.js'
 import { rub, formatDay } from '../api/wallet.js'
 
-// The wallet on the cabinet home: the balance, «Пополнить», «История» and what the next
-// auto-renewal will do.
+// «Кошелёк» on the overview (spec 08 §8.1 item 12): balance as flap, the shortfall before the
+// renewal in warn colour, «Пополнить» (always secondary: the screen's primary is «Добавить в Happ»).
+//   <WalletCard wallet note? phone />  note — the text under the balance in the «none»/«expired» states
+export default function WalletCard({ wallet, note, noteTone, phone, history = true }) {
+  const bal = kopNum(wallet?.balance_kop)
+  const ar = wallet?.auto_renew
+  const short = ar && ar.enabled && !ar.free && !ar.enough && ar.shortfall_kop > 0 ? ar.shortfall_kop : 0
+  const line = note
+    ? { text: note, tone: noteTone || 'subtle' }
+    : short ? { text: `До продления не хватает ${kop(short)}`, tone: 'warn' } : null
+  if (phone) {
+    return (
+      <section className="card row between gap-3" aria-labelledby="wc-t">
+        <span>
+          <span id="wc-t" className="card__title" style={{ display: 'block', marginBottom: 6 }}>Кошелёк</span>
+          <Flap value={bal} suffix="₽" size={30} tone={line?.tone === 'warn' ? 'warn' : undefined} label={`${bal} рублей на кошельке`} />
+          {line && <span className={`t-xs ${line.tone}`} style={{ display: 'block', marginTop: 6 }}>{line.text}</span>}
+        </span>
+        <Button variant="secondary" to="/wallet">Пополнить</Button>
+      </section>
+    )
+  }
+  return (
+    <section className="card">
+      <div className="card__head">
+        <h2 className="card__title">Кошелёк</h2>
+        {history && <Link to="/wallet#history" className="t-sm link">История</Link>}
+      </div>
+      <Flap value={bal} suffix="₽" size={46} tone={line?.tone === 'warn' ? 'warn' : undefined} label={`${bal} рублей на кошельке`} />
+      {line && <p className={`t-sm ${line.tone}`} style={{ marginTop: 10 }}>{line.text}</p>}
+      <Button variant="secondary" block to="/wallet" style={{ marginTop: 18 }}>Пополнить</Button>
+    </section>
+  )
+}
+
+// TEMPORARY for the not-yet-rebuilt wallet page (stage E): the old one-line renewal summary.
 export function renewLine(ar) {
   if (!ar) return null
   if (ar.free) return { tone: 'ok', text: 'Подписка по промокоду продлевается бесплатно' }
   if (!ar.enabled) return { tone: 'muted', text: `Автопродление выключено — подписка закончится ${formatDay(ar.renew_at)}` }
   if (ar.enough) return { tone: 'ok', text: `Автопродление: спишем ${rub(ar.price_kop)} ${formatDay(ar.renew_at)} — денег хватает` }
   return { tone: 'warn', text: `Автопродление ${formatDay(ar.renew_at)}: не хватает ${rub(ar.shortfall_kop)} — пополните кошелёк` }
-}
-
-export default function WalletCard({ wallet }) {
-  if (!wallet) return null
-  const line = renewLine(wallet.auto_renew)
-  return (
-    <div className="card rounded-[22px] p-6 reveal">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <p className="eyebrow mb-2">Кошелёк</p>
-          <p className="serif text-3xl font-semibold tabular-nums">{rub(wallet.balance_kop)}</p>
-        </div>
-        <div className="flex gap-2">
-          <Link to="/wallet#topup" className="btn-primary !py-2.5 !text-sm">Пополнить</Link>
-          <Link to="/wallet" className="btn-ghost !py-2.5 !text-sm">История</Link>
-        </div>
-      </div>
-      {line && (
-        <p className={`text-sm mt-4 ${line.tone === 'warn' ? 'text-accent' : line.tone === 'ok' ? 'text-text-secondary' : 'text-faint'}`}>
-          {line.text}
-        </p>
-      )}
-    </div>
-  )
 }

@@ -10,7 +10,10 @@ export default function Field({ label, hint, hintTone, error, optional, aside, i
   const id = idProp || `f${auto.replace(/:/g, '')}`
   const msgId = `${id}-msg`
   const control = Children.only(children)
-  const enhanced = isValidElement(control)
+  // a wrapper (e.g. div.input-group with the input inside) is left as is: pass `id` to Field and
+  // give the same id to the inner Input
+  const wrapper = isValidElement(control) && typeof control.type === 'string' && !['input', 'textarea', 'select'].includes(control.type)
+  const enhanced = isValidElement(control) && !wrapper
     ? cloneElement(control, {
         id: control.props.id || id,
         invalid: error ? true : control.props.invalid,
@@ -21,7 +24,7 @@ export default function Field({ label, hint, hintTone, error, optional, aside, i
     <div className={`field ${className}`}>
       {label && (
         <div className="row between gap-2">
-          <label className={srLabel ? 'sr' : 'field__label'} htmlFor={control?.props?.id || id}>
+          <label className={srLabel ? 'sr' : 'field__label'} htmlFor={wrapper ? id : (control?.props?.id || id)}>
             {label}{optional && <span className="subtle"> (необязательно)</span>}
           </label>
           {aside && <span className="t-xs subtle">{aside}</span>}

@@ -42,8 +42,8 @@ const L = (el) => <LegacyLayout>{el}</LegacyLayout>
 // open (no login: the token is the key), without it the cabinet's page.
 function ConnectRoute() {
   const [params] = useSearchParams()
-  if (params.get('sub') !== null) return L(<ConnectPage />)
-  return <RequireAuth>{L(<ConnectionsPage />)}</RequireAuth>
+  if (params.get('sub') !== null) return <ConnectPage />
+  return <RequireAuth><ConnectionsPage /></RequireAuth>
 }
 
 // B2BOnly hides the business pages while b2b_enabled is off: they answer like any unknown page.
@@ -111,8 +111,8 @@ function App() {
 
             <Route path="/connect" element={<ConnectRoute />} />
             <Route path="/connections" element={<Navigate to="/connect" replace />} />
-            <Route path="/dashboard" element={<RequireAuth>{L(<DashboardPage />)}</RequireAuth>} />
-            <Route path="/settings" element={<RequireAuth>{L(<SettingsPage />)}</RequireAuth>} />
+            <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth>{L(<PaymentPage />)}</RequireAuth>} />
             <Route path="/checkout/:paymentId" element={<RequireAuth>{L(<CheckoutPage />)}</RequireAuth>} />
             {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}

@@ -1,95 +1,118 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api/http.js'
-import { rub } from '../api/wallet.js'
 import { pendingReferral, forgetReferral } from '../lib/referral.js'
-import { QR as QRCode } from './QRCode.jsx'
+import { copyText } from '../lib/clipboard.js'
+import { kopNum } from '../lib/format.js'
+import Button from './Button.jsx'
+import Field, { Input } from './Field.jsx'
+import Hedgehog from './Hedgehog.jsx'
+import QRDialog from './QRCode.jsx'
+import { useToast } from './Toast.jsx'
 
-// «Пригласи друга» in the cabinet (cleanup plan R5): the link, copy / share / QR, the
-// counters, the rules in two lines — and the «Код друга» field for a new account.
-export default function ReferralCard({ token }) {
+// «Пригласить друга» (spec 08 §8.1 item 14): the terms, three counters, «Скопировать ссылку».
+// Kept from the previous cabinet: «Поделиться» (system share sheet), the link's QR code, and the
+// «Код друга» field for a young account (/api/v1/referral can_bind).
+export function useReferral(token) {
   const [ref, setRef] = useState(null)
+  const load = () => apiFetch('/api/v1/referral', { token }).then(setRef).catch(() => setRef(null))
+  useEffect(() => { if (token) load() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+  return [ref, load]
+}
+
+export default function ReferralCard({ token, referral, reload, phone }) {
+  const toast = useToast()
   const [copied, setCopied] = useState(false)
-  const [showQR, setShowQR] = useState(false)
-  const [code, setCode] = useState(() => pendingReferral())
-  const [bindMsg, setBindMsg] = useState('')
-  const [bindErr, setBindErr] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [qr, setQr] = useState(false)
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  if (!referral || !referral.enabled) return null
 
-  function load() {
-    apiFetch('/api/v1/referral', { token }).then(setRef).catch(() => setRef(null))
-  }
-  useEffect(load, [token])
-
-  if (!ref || !ref.enabled) return null
+  const me = kopNum(referral.referrer_kop)
+  const friend = kopNum(referral.friend_kop)
+  const s = referral.stats || {}
 
   async function copy() {
-    try { await navigator.clipboard.writeText(ref.link); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch { /* no clipboard */ }
+    if (await copyText(referral.link)) {
+      setCopied(true)
+      toast.ok('Ссылка скопирована')
+      clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 2000)
+    } else {
+      toast.bad('Не удалось скопировать ссылку')
+    }
   }
   async function share() {
-    try {
-      await navigator.share({ title: 'HiEarth', text: `Подключайся к HiEarth — по ссылке ты получишь ${rub(ref.friend_kop)} на кошелёк после первой оплаты`, url: ref.link })
-    } catch { /* closed */ }
+    try { await navigator.share({ title: 'HiEarth', text: `Подключайся к HiEarth — по ссылке тебе придёт ${friend} ₽ на кошелёк после первой оплаты`, url: referral.link }) } catch { /* closed */ }
   }
+  const canShare = typeof navigator !== 'undefined' && !!navigator.share
+
+  if (phone) {
+    return (
+      <section id="referral" className="card row gap-3">
+        <Hedgehog mood="happy" size={56} style={{ flex: 'none' }} />
+        <span className="t-sm" style={{ flex: 1 }}><b>Пригласить друга</b><br /><span className="subtle">{me === friend ? `По ${me} ₽ вам и ему` : `Вам ${me} ₽, ему ${friend} ₽`}</span></span>
+        <Button variant="secondary" size="sm" onClick={copy} aria-live="polite">{copied ? '✓ Скопировано' : 'Ссылка'}</Button>
+        {referral.can_bind && <div style={{ flexBasis: '100%' }}><BindCode token={token} onDone={reload} /></div>}
+      </section>
+    )
+  }
+
+  return (
+    <section id="referral" className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="card__head"><h2 className="card__title">Пригласить друга</h2></div>
+      <p className="t-sm">
+        {me === friend ? <>Друг оплатит подписку — вам и ему по <b>{me} ₽</b>.</> : <>Друг оплатит подписку — вам <b>{me} ₽</b>, ему <b>{friend} ₽</b>.</>}
+      </p>
+      <div className="grid g-3" style={{ margin: '16px 0', gap: 8, textAlign: 'center', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+        <div><p className="t-h3 mono">{s.invited || 0}</p><p className="t-xs subtle">пришли</p></div>
+        <div><p className="t-h3 mono">{s.paid || 0}</p><p className="t-xs subtle">оплатили</p></div>
+        <div><p className={`t-h3 mono ${s.earned_kop ? 'ok' : ''}`}>{kopNum(s.earned_kop)}</p><p className="t-xs subtle">₽ получено</p></div>
+      </div>
+      <div className="stack gap-2" style={{ marginTop: 'auto' }}>
+        <Button variant="secondary" block onClick={copy} aria-live="polite">{copied ? '✓ Скопировано' : 'Скопировать ссылку'}</Button>
+        <div className="row gap-2" style={{ justifyContent: 'center' }}>
+          {canShare && <Button variant="ghost" size="sm" onClick={share}>Поделиться</Button>}
+          <Button variant="ghost" size="sm" onClick={() => setQr(true)}>QR-код</Button>
+        </div>
+      </div>
+      {referral.can_bind && <BindCode token={token} onDone={reload} />}
+      <QRDialog open={qr} onClose={() => setQr(false)} data={referral.link} title="Ссылка-приглашение" text="Отсканируйте камерой телефона — ссылка откроет страницу приглашения в HiEarth." />
+    </section>
+  )
+}
+
+// «Вас пригласил друг? Введите его код» — 7 days after registration, before the first payment.
+function BindCode({ token, onDone }) {
+  const toast = useToast()
+  const [code, setCode] = useState(() => pendingReferral())
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
   async function bind(e) {
     e.preventDefault()
-    setBindErr(''); setBindMsg('')
+    if (busy) return
+    if (!code.trim()) { setErr('Укажите код друга'); return }
     setBusy(true)
+    setErr('')
     try {
       const d = await apiFetch('/api/v1/referral/bind', { token, method: 'POST', body: { code: code.trim() } })
-      setBindMsg(d.message || 'Код принят')
       forgetReferral()
-      load()
-    } catch (err) {
-      setBindErr(err.message)
+      toast.ok(d.message || 'Код друга принят')
+      onDone?.()
+    } catch (e2) {
+      setErr(e2.message)
     } finally {
       setBusy(false)
     }
   }
-
-  const s = ref.stats || {}
   return (
-    <div id="referral" className="card rounded-[22px] p-6 reveal">
-      <p className="eyebrow mb-2">Пригласи друга</p>
-      <p className="text-sm text-text-secondary mb-4">
-        Друг оплатит подписку — вам {rub(ref.referrer_kop)} и другу {rub(ref.friend_kop)} на кошелёк.
-        Бонусы идут только на оплату HiEarth.
-      </p>
-      <div className="flex items-stretch gap-2 mb-3">
-        <code className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-white/5 border border-brand/10 text-xs font-mono truncate">{ref.link}</code>
-        <button onClick={copy} className="btn-ghost !py-2 !px-3 !text-sm shrink-0">{copied ? '✓' : 'Копировать'}</button>
-      </div>
-      <div className="flex flex-wrap gap-2 mb-4">
-        {typeof navigator !== 'undefined' && navigator.share && <button onClick={share} className="btn-primary !py-2 !px-4 !text-sm">Поделиться</button>}
-        <button onClick={() => setShowQR(v => !v)} className="btn-ghost !py-2 !px-4 !text-sm">{showQR ? 'Скрыть QR' : 'QR-код'}</button>
-      </div>
-      {showQR && <div className="mb-4 flex justify-center"><QRCode data={ref.link} size={168} /></div>}
-      <div className="grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-xl bg-white/[0.03] border border-brand/10 py-2.5">
-          <p className="serif text-lg font-semibold tabular-nums">{s.invited || 0}</p>
-          <p className="text-[11px] text-faint">пришли</p>
+    <form onSubmit={bind} noValidate style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+      <Field id="friend-code" label="Вас пригласил друг? Введите его код" error={err || null} hint="Код можно указать в течение 7 дней после регистрации, до первой оплаты.">
+        <div className="input-group">
+          <Input id="friend-code" aria-describedby="friend-code-msg" mono value={code} placeholder="ABCD2345" autoCapitalize="characters" spellCheck={false}
+            onChange={(e) => { setCode(e.target.value.toUpperCase()); setErr('') }} invalid={!!err} />
+          <Button variant="secondary" type="submit" loading={busy}>Применить</Button>
         </div>
-        <div className="rounded-xl bg-white/[0.03] border border-brand/10 py-2.5">
-          <p className="serif text-lg font-semibold tabular-nums">{s.paid || 0}</p>
-          <p className="text-[11px] text-faint">оплатили</p>
-        </div>
-        <div className="rounded-xl bg-white/[0.03] border border-brand/10 py-2.5">
-          <p className="serif text-lg font-semibold tabular-nums">{rub(s.earned_kop || 0)}</p>
-          <p className="text-[11px] text-faint">заработано</p>
-        </div>
-      </div>
-      {ref.can_bind && (
-        <form onSubmit={bind} className="mt-5 pt-5 border-t border-brand/10">
-          <label htmlFor="friend-code" className="block text-xs text-text-secondary mb-1.5">Вас пригласил друг? Введите его код</label>
-          <div className="flex gap-2">
-            <input id="friend-code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="ABCD2345"
-              className="flex-1 min-w-0 px-4 py-2.5 rounded-xl bg-white/5 border border-brand/12 text-sm font-mono uppercase tracking-wider placeholder:text-faint focus:border-brand/50 focus:outline-none" />
-            <button disabled={busy || !code.trim()} className="btn-ghost !py-2.5 !px-4 !text-sm disabled:opacity-40">Применить</button>
-          </div>
-          {bindErr && <p className="text-xs text-danger mt-1.5">{bindErr}</p>}
-          {bindMsg && <p className="text-xs text-brand mt-1.5">{bindMsg}</p>}
-          <p className="text-[11px] text-faint mt-1.5">Код можно указать в течение 7 дней после регистрации, до первой оплаты.</p>
-        </form>
-      )}
-    </div>
+      </Field>
+    </form>
   )
 }

@@ -111,3 +111,23 @@ export function dashboardTelegramLinks(vm) {
   }
   return out
 }
+
+/**
+ * The one «Открыть в Telegram» button of the cabinet overview (spec 08 §8.1, phase T):
+ * iPhone/iPad → the classic proxy (there is no iOS client for the WEB proxy);
+ * otherwise the WEB proxy (its t.me page), else the classic tg:// link, else its t.me page.
+ * → null | { href, external, fallback }   fallback: the other link of the same proxy, if any.
+ */
+export function primaryTelegramLink(vm, device = 'desktop') {
+  if (!vm) return null
+  const classic = vm.classic && (vm.classic.tgLink || vm.classic.link)
+    ? { href: vm.classic.tgLink || vm.classic.link, external: !vm.classic.tgLink, fallback: vm.classic.tgLink && vm.classic.link ? vm.classic.link : '' }
+    : null
+  if (device === 'ios' && classic) return classic
+  if (vm.web) {
+    return vm.web.link
+      ? { href: vm.web.link, external: true, fallback: vm.web.tgLink || '' }
+      : { href: vm.web.tgLink, external: false, fallback: '' }
+  }
+  return classic
+}

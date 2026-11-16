@@ -1,104 +1,146 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getEmailPrefs, setEmail as requestEmail, forgetEmail, setEmailReminders } from '../api/user.js'
+import Alert from './Alert.jsx'
+import Badge from './Badge.jsx'
+import Button from './Button.jsx'
+import Dialog, { DialogActions } from './Dialog.jsx'
+import Field, { Input } from './Field.jsx'
+import Skeleton from './Skeleton.jsx'
+import { Switch } from './Controls.jsx'
+import { useToast } from './Toast.jsx'
 
-// «Почта для чеков и напоминаний» (cleanup plan E8): an address is saved only after the link in
-// the letter is opened; reminders can be switched off here or from any reminder.
+// «Почта для чеков и напоминаний» (spec 08 §8.4): an address is saved only after the link in the
+// letter is opened (pending → confirmed); reminders can be switched off here or from any reminder.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 export default function EmailCard({ token }) {
+  const toast = useToast()
   const [prefs, setPrefs] = useState(null)
-  const [loadError, setLoadError] = useState('')
-  const [value, setValue] = useState('')
+  const [loadErr, setLoadErr] = useState(false)
   const [editing, setEditing] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState('')
+  const [value, setValue] = useState('')
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [del, setDel] = useState(false)
+  const [delBusy, setDelBusy] = useState(false)
+  const [remBusy, setRemBusy] = useState(false)
+  const inFlight = useRef(false)
 
-  useEffect(() => {
-    getEmailPrefs(token).then(setPrefs).catch((e) => { if (e.kind !== 'auth') setLoadError(e.message) })
-  }, [token])
+  const load = () => {
+    setLoadErr(false)
+    getEmailPrefs(token).then(setPrefs).catch((e) => { if (e.kind !== 'auth') setLoadErr(true) })
+  }
+  useEffect(load, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function send(e) {
-    e.preventDefault()
-    setBusy(true); setErr(''); setMsg('')
+  async function send(address) {
+    const a = String(address || '').trim()
+    if (!a) { setErr('Укажите email'); return }
+    if (!EMAIL_RE.test(a)) { setErr('Проверьте адрес почты — в нём должна быть «@» и домен'); return }
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setErr('')
     try {
-      const r = await requestEmail(token, value.trim())
+      const r = await requestEmail(token, a)
       setPrefs((p) => ({ ...p, pending_email: r.pending_email }))
-      setMsg(r.message || 'Отправили письмо — откройте ссылку из него')
-      setEditing(false); setValue('')
-    } catch (e2) {
-      setErr(e2.message)
+      setEditing(false)
+      setValue('')
+      toast.ok('Письмо отправлено — проверьте почту')
+    } catch (e) {
+      if (editing || !prefs?.email) setErr(e.message)
+      else toast.bad(e.message)
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
 
   async function remove() {
-    setBusy(true); setErr(''); setMsg('')
+    setDelBusy(true)
     try {
       await forgetEmail(token)
       setPrefs({ email: '', pending_email: '', reminders_off: false })
-      setMsg('Адрес удалён')
-    } catch (e2) {
-      setErr(e2.message)
+      setDel(false)
+      toast.ok('Адрес удалён')
+    } catch {
+      toast.bad('Не удалось удалить адрес — попробуйте ещё раз')
     } finally {
-      setBusy(false)
+      setDelBusy(false)
     }
   }
 
   async function toggleReminders(on) {
-    setBusy(true); setErr('')
+    const prev = prefs.reminders_off
+    setPrefs((p) => ({ ...p, reminders_off: !on }))
+    setRemBusy(true)
     try {
       const r = await setEmailReminders(token, on)
       setPrefs((p) => ({ ...p, reminders_off: r.reminders_off }))
-    } catch (e2) {
-      setErr(e2.message)
+    } catch {
+      setPrefs((p) => ({ ...p, reminders_off: prev }))
+      toast.bad('Не удалось изменить напоминания')
     } finally {
-      setBusy(false)
+      setRemBusy(false)
     }
   }
 
-  const form = (
-    <form onSubmit={send} className="flex flex-col sm:flex-row gap-2 mt-3">
-      <label htmlFor="cab-email" className="sr-only">Адрес почты</label>
-      <input
-        id="cab-email" type="email" inputMode="email" autoComplete="email" required value={value}
-        onChange={(e) => setValue(e.target.value)} placeholder="you@mail.ru"
-        className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20"
-      />
-      <button type="submit" disabled={busy || !value.trim()} className="btn-primary !py-3 !text-sm disabled:opacity-50">Подтвердить</button>
+  if (loadErr) {
+    return <div className="card"><Alert tone="bad" title="Не удалось загрузить почту.">Обновите страницу. <button type="button" className="link" onClick={load} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Повторить</button></Alert></div>
+  }
+  if (!prefs) return <div className="card stack gap-3" aria-busy="true"><Skeleton w="60%" h={18} /><Skeleton w="40%" h={14} /></div>
+
+  const form = (submitLabel, onCancel) => (
+    <form className="swap" onSubmit={(e) => { e.preventDefault(); send(value) }} noValidate>
+      <Field id="email-new" label="Почта" error={err || null} hint={err ? null : 'Используем только для чеков и напоминаний'}>
+        <div className="input-group max-sm:flex-col">
+          <Input id="email-new" aria-describedby="email-new-msg" type="email" inputMode="email" autoComplete="email" value={value} placeholder="you@example.ru"
+            onChange={(e) => { setValue(e.target.value); setErr('') }} invalid={!!err} />
+          <Button variant="secondary" type="submit" loading={busy}>{submitLabel}</Button>
+          {onCancel && <Button variant="ghost" onClick={onCancel} disabled={busy}>Отмена</Button>}
+        </div>
+      </Field>
     </form>
   )
 
   return (
-    <div className="card rounded-[22px] p-6 mb-4 animate-fade-in-up delay-100">
-      <h2 className="serif text-base font-semibold mb-1">Почта для чеков и напоминаний</h2>
-      <p className="text-xs text-text-secondary mb-3">Пришлём чек об оплате с кошелька и напомним за 3 дня до конца подписки. Больше ничего.</p>
+    <div className="card stack gap-3">
+      {prefs.email && !editing && (
+        <div className="row between wrap gap-2">
+          <span className="row wrap gap-3"><b className="mono" style={{ wordBreak: 'break-all' }}>{prefs.email}</b><Badge tone="ok">Подтверждена</Badge></span>
+          <span className="row gap-2">
+            <Button variant="ghost" size="sm" onClick={() => { setEditing(true); setValue(''); setErr('') }}>Изменить</Button>
+            <Button variant="ghost" size="sm" onClick={() => setDel(true)}>Удалить</Button>
+          </span>
+        </div>
+      )}
+      {prefs.pending_email && !editing && (
+        <div className="stack gap-1" style={prefs.email ? { paddingTop: 12, borderTop: '1px solid var(--line)' } : undefined}>
+          <span className="row wrap gap-3"><b className="mono" style={{ wordBreak: 'break-all' }}>{prefs.pending_email}</b><Badge tone="warn">Ждёт подтверждения</Badge></span>
+          <span className="t-sm subtle">
+            Откройте ссылку из письма (проверьте и «Спам»).{' '}
+            <button type="button" className="link" disabled={busy} onClick={() => send(prefs.pending_email)} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Отправить письмо ещё раз</button>
+          </span>
+        </div>
+      )}
+      {editing && form('Сохранить', () => { setEditing(false); setErr('') })}
+      {!prefs.email && !prefs.pending_email && !editing && form('Добавить')}
+      {!prefs.email && prefs.pending_email && !editing && (
+        <div><Button variant="ghost" size="sm" onClick={() => { setEditing(true); setValue(''); setErr('') }}>Указать другой адрес</Button></div>
+      )}
+      {prefs.email && (
+        <div className="row between gap-3" style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <label htmlFor="rem" style={{ cursor: 'pointer' }}><b>Напоминания о конце подписки</b><br /><span className="t-sm subtle">Чеки приходят всегда</span></label>
+          <Switch id="rem" checked={!prefs.reminders_off} disabled={remBusy} onChange={toggleReminders} />
+        </div>
+      )}
 
-      {loadError ? <p className="text-sm text-danger">{loadError}</p>
-        : !prefs ? <div className="skeleton h-10 rounded-xl" />
-        : (
-          <>
-            {prefs.email && !editing && (
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-sm font-medium break-all">{prefs.email}</span>
-                <span className="text-[11px] px-2 py-0.5 rounded bg-brand/12 text-brand">подтверждена</span>
-                <button onClick={() => setEditing(true)} className="text-xs text-brand hover:text-brand-light">Изменить</button>
-                <button onClick={remove} disabled={busy} className="text-xs text-text-secondary hover:text-danger">Удалить</button>
-              </div>
-            )}
-            {prefs.pending_email && (
-              <p className="text-xs text-accent mt-2">Ждём подтверждения: {prefs.pending_email}. Откройте ссылку из письма (проверьте и «Спам»).</p>
-            )}
-            {(!prefs.email || editing) && form}
-            {prefs.email && (
-              <label className="flex items-center gap-2.5 mt-4 text-sm text-text-secondary cursor-pointer select-none">
-                <input type="checkbox" checked={!prefs.reminders_off} disabled={busy} onChange={(e) => toggleReminders(e.target.checked)} className="w-4 h-4 accent-[#34d399]" />
-                Напоминать о конце подписки
-              </label>
-            )}
-          </>
-        )}
-      {msg && <p className="text-xs text-brand mt-3">{msg}</p>}
-      {err && <p className="text-xs text-danger mt-3">{err}</p>}
+      <Dialog open={del} onClose={() => setDel(false)} title="Удалить почту?" busy={delBusy}>
+        <p className="muted t-sm" style={{ marginTop: 8 }}>Чеки и напоминания перестанут приходить.</p>
+        <DialogActions>
+          <Button variant="ghost" onClick={() => setDel(false)} disabled={delBusy} data-autofocus>Отмена</Button>
+          <Button variant="danger" onClick={remove} loading={delBusy}>Удалить</Button>
+        </DialogActions>
+      </Dialog>
     </div>
   )
 }

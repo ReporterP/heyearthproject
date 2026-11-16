@@ -1,288 +1,185 @@
-import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { updateProfile } from '../api/user.js'
+import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount, { invalidateAccount } from '../account/useAccount.js'
+import { updateProfile } from '../api/user.js'
+import AppShell, { PageHead, LogoutDialog } from '../components/AppShell.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge from '../components/Badge.jsx'
+import Button from '../components/Button.jsx'
+import CopyField from '../components/CopyField.jsx'
 import EmailCard from '../components/EmailCard.jsx'
-import PasswordInput from '../components/PasswordInput.jsx'
-import { copyToClipboard } from '../components/CopyButton.jsx'
-import { Skeleton } from '../legacy/LegacySkeleton.jsx'
-import LoadErrorCard from '../components/LoadErrorCard.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Nomerok from '../components/Nomerok.jsx'
+import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
+import { useToast } from '../components/Toast.jsx'
+import { Meter, STRENGTH } from './RegisterPage.jsx'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { currentSub } from '../lib/account.js'
+import { date } from '../lib/format.js'
 
-function strengthOf(pw) {
-  if (!pw) return null
-  let score = 0
-  if (pw.length >= 8) score++
-  if (pw.length >= 12) score++
-  if (/[a-zA-Zа-яА-Я]/.test(pw) && /\d/.test(pw)) score++
-  if (/[^\w\s]/.test(pw)) score++
-  if (score <= 1) return { label: 'Слабый', pct: 33, cls: 'bg-danger', text: 'text-danger' }
-  if (score === 2) return { label: 'Средний', pct: 66, cls: 'bg-accent', text: 'text-accent' }
-  return { label: 'Надёжный', pct: 100, cls: 'bg-brand', text: 'text-brand' }
+// Настройки (spec 08 §8.4, artboard «Настройки»): sections `set` — title on the left, content right.
+function strength(pw) {
+  if (!pw) return 0
+  let s = 0
+  if (pw.length >= 8) s++
+  if (pw.length >= 12) s++
+  if (/[a-zA-Zа-яА-Я]/.test(pw) && /\d/.test(pw)) s++
+  if (/[^\w\s]/.test(pw)) s++
+  return s <= 1 ? 1 : s === 2 ? 2 : 3
 }
 
-/* One row of read-only account data */
-function InfoRow({ label, children }) {
+function Section({ title, text, children }) {
   return (
-    <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-brand/8">
-      <span className="text-xs text-text-secondary flex-shrink-0">{label}</span>
-      <span className="text-sm text-right min-w-0">{children}</span>
-    </div>
+    <section className="set">
+      <div><h2 className="t-h4">{title}</h2>{text && <p className="t-sm subtle" style={{ marginTop: 4 }}>{text}</p>}</div>
+      <div style={{ minWidth: 0 }}>{children}</div>
+    </section>
   )
 }
 
 export default function SettingsPage() {
-  const navigate = useNavigate()
-  const { token, logout } = useAuth()
+  const { token } = useAuth()
+  const toast = useToast()
+  usePageMeta('Настройки — HiEarth', { noindex: true })
+  const acc = useAccount(['profile', 'subscription'], { optional: ['subscription'] })
+  const profile = acc.data.profile
+  const sub = currentSub(acc.data.subscription)
+  const showSkel = useDelayed(acc.loading && !profile, 300)
+  const [logout, setLogout] = useState(false)
 
-  const [loading, setLoading] = useState(true)
-  const [profile, setProfile] = useState(null)
+  // the login + password form
   const [username, setUsername] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [currentPassword, setCurrentPassword] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [err, setErr] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [confirmLogout, setConfirmLogout] = useState(false)
-  const [loadError, setLoadError] = useState('')
+  const [cur, setCur] = useState('')
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [tried, setTried] = useState(false)
+  const [srvErr, setSrvErr] = useState(null) // { field?, text, title? }
+  const [busy, setBusy] = useState(false)
+  const inFlight = useRef(false)
+  useEffect(() => { if (profile) setUsername(profile.username || '') }, [profile?.username]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const account = useAccount(['profile'])
-  useEffect(() => {
-    if (account.data.profile) {
-      setProfile(account.data.profile)
-      setUsername(account.data.profile.username || '')
-    }
-    if (!account.loading) setLoading(false)
-    if (account.error && account.error.kind !== 'auth') setLoadError(account.error.message || 'Не удалось загрузить профиль — обновите страницу.')
-  }, [account.data.profile, account.loading, account.error])
+  const hasPw = !!profile?.has_password
+  const nameChanged = profile && username.trim() !== (profile.username || '')
+  const pwChanged = pw.length > 0
+  const changed = !!(nameChanged || pwChanged)
+  const errs = {
+    username: nameChanged && (username.trim().length < 5 ? 'Имя пользователя должно быть не менее 5 символов'
+      : !/^[A-Za-z0-9_-]+$/.test(username.trim()) ? 'Имя может содержать только латинские буквы, цифры, «_» и «-»' : null),
+    cur: pwChanged && hasPw && !cur ? 'Введите текущий пароль' : null,
+    pw: pwChanged && pw.length < 4 ? 'Пароль должен быть не менее 4 символов' : null,
+    pw2: pwChanged && pw2 !== pw ? 'Пароли не совпадают' : null,
+  }
+  const show = (k) => (tried && errs[k]) || (srvErr?.field === k && srvErr.text) || null
+  const s = strength(pw)
 
-  const passwordIsSet = profile?.has_password
-  const usernameIsSet = profile?.username && profile.username.length > 0
-  const strength = strengthOf(newPassword)
-
-  // Nothing to save → button stays disabled (no "Нечего сохранять" dead-end)
-  const usernameChanged = (username.trim() || '') !== (profile?.username || '')
-  const changingPassword = newPassword.length > 0
-  const hasChanges = usernameChanged || changingPassword
-
-  async function saveAll() {
-    setMsg(''); setErr('')
-    if (!hasChanges) return
-
-    if (usernameChanged) {
-      const u = username.trim()
-      if (u && u.length < 5) { setErr('Имя пользователя должно быть не менее 5 символов'); return }
-    }
-    if (changingPassword) {
-      if (newPassword.length < 4) { setErr('Пароль должен быть не менее 4 символов'); return }
-      if (newPassword !== confirmPassword) { setErr('Пароли не совпадают'); return }
-      if (profile?.has_password && !currentPassword) { setErr('Введите текущий пароль'); return }
-    }
-
-    setSaving(true)
+  async function save(e) {
+    e.preventDefault()
+    if (!changed || inFlight.current) return
+    setTried(true)
+    setSrvErr(null)
+    if (Object.values(errs).some(Boolean)) return
+    inFlight.current = true
+    setBusy(true)
     try {
       const payload = {}
-      if (usernameChanged) payload.username = username.trim()
-      if (changingPassword) {
-        payload.newPassword = newPassword
-        if (profile?.has_password) payload.currentPassword = currentPassword
-      }
-      const data = await updateProfile(token, payload)
-      setProfile(data)
+      if (nameChanged) payload.username = username.trim()
+      if (pwChanged) { payload.newPassword = pw; if (hasPw) payload.currentPassword = cur }
+      await updateProfile(token, payload)
       invalidateAccount('profile')
-      setNewPassword(''); setConfirmPassword(''); setCurrentPassword('')
-      setMsg('Изменения сохранены')
-      setTimeout(() => setMsg(''), 4000)
-    } catch (e) {
-      setErr(e.message || 'Не удалось сохранить. Попробуйте снова.')
+      await acc.reload('profile')
+      setCur(''); setPw(''); setPw2(''); setTried(false)
+      toast.ok('Изменения сохранены')
+    } catch (e2) {
+      const raw = String(e2?.data?.error || '').toLowerCase()
+      if (raw === 'username already taken') setSrvErr({ field: 'username', text: 'Это имя уже занято — попробуйте другое' })
+      else if (raw.startsWith('username can only contain')) setSrvErr({ field: 'username', text: 'Имя может содержать только латинские буквы, цифры, «_» и «-»' })
+      else if (raw.includes('облачный пароль')) setSrvErr({ field: 'username', text: 'Сначала задайте пароль — без него логин не сохранится' })
+      else if (raw.includes('имя пользователя должно быть')) setSrvErr({ field: 'username', text: 'Имя пользователя должно быть не менее 5 символов' })
+      else if (raw === 'invalid current password') setSrvErr({ field: 'cur', text: 'Неверный текущий пароль' })
+      else if (raw === 'current password required') setSrvErr({ field: 'cur', text: 'Введите текущий пароль' })
+      else if (raw.startsWith('password must be at least')) setSrvErr({ field: 'pw', text: 'Пароль должен быть не менее 4 символов' })
+      else setSrvErr({ title: 'Не удалось сохранить.', text: 'Попробуйте снова.' })
     } finally {
-      setSaving(false)
+      inFlight.current = false
+      setBusy(false)
     }
   }
 
-  function handleLogout() {
-    logout()
-    navigate('/')
-  }
+  let body
+  if (acc.error && acc.error.kind !== 'auth' && !profile) {
+    body = <Alert tone="bad" title="Не удалось загрузить профиль.">Обновите страницу. <button type="button" className="link" onClick={() => acc.reload()} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Повторить</button></Alert>
+  } else if (!profile) {
+    body = <div className="stack gap-4" aria-busy="true">{showSkel && [0, 1, 2].map((i) => <SkeletonCard key={i} lines={3} />)}</div>
+  } else {
+    body = (
+      <>
+        <Section title="Номерок" text="Единственный ключ от аккаунта. Восстановить нельзя.">
+          <div className="card row gap-6 max-sm:flex-col" style={{ alignItems: 'center' }}>
+            <div style={{ width: 200, flex: 'none' }} aria-hidden="true">
+              <Nomerok id={profile.user_id} variant="idle" label="номерок" railWidth={200} idSize={13} />
+            </div>
+            <div className="stack gap-3" style={{ flex: 1, minWidth: 0, width: '100%' }}>
+              <CopyField value={profile.user_id} label="HiEarth ID" buttonLabel="Скопировать" />
+              <dl className="kv" style={{ gridTemplateColumns: 'minmax(0, 160px) 1fr' }}>
+                <dt>Имя пользователя</dt><dd className={profile.username ? 'mono' : 'subtle'}>{profile.username || 'не задано'}</dd>
+                <dt>Пароль</dt><dd>{hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
+                <dt>Подписка</dt>
+                <dd>{sub?.active ? `${sub.plan_name} · до ${date(sub.valid_until)}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
+              </dl>
+            </div>
+          </div>
+        </Section>
 
-  async function copyId() {
-    const ok = await copyToClipboard(profile?.user_id || '')
-    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000) }
-  }
+        <Section title={profile.username || hasPw ? 'Логин и пароль' : 'Создать логин и пароль'} text="Входить по короткому имени вместо длинного HiEarth ID.">
+          <form className="card stack gap-4" onSubmit={save} noValidate>
+            {srvErr && !srvErr.field && <Alert tone="bad" title={srvErr.title} rise>{srvErr.text}</Alert>}
+            <Field label="Имя пользователя" hint="минимум 5 символов" error={show('username')}>
+              <Input value={username} autoComplete="username" autoCapitalize="none" spellCheck={false} onChange={(e) => { setUsername(e.target.value); setSrvErr(null) }} />
+            </Field>
+            {hasPw && (
+              <Field label="Текущий пароль" error={show('cur')}>
+                <Input type="password" value={cur} placeholder="Нужен, чтобы сменить пароль" autoComplete="current-password" onChange={(e) => { setCur(e.target.value); setSrvErr(null) }} />
+              </Field>
+            )}
+            <div className="grid g-2" style={{ gap: 12 }}>
+              <div className="stack gap-2">
+                <Field label={hasPw ? 'Новый пароль' : 'Пароль'} error={show('pw')} hint={!show('pw') && s ? STRENGTH[s].label : null} hintTone={s ? STRENGTH[s].tone : ''}>
+                  <Input type="password" value={pw} placeholder={hasPw ? 'Оставьте пустым, чтобы не менять' : 'Придумайте пароль'} autoComplete="new-password" onChange={(e) => { setPw(e.target.value); setSrvErr(null) }} />
+                </Field>
+                <Meter value={s} />
+              </div>
+              <Field label="Повторите пароль" error={show('pw2')}>
+                <Input type="password" value={pw2} autoComplete="new-password" onChange={(e) => setPw2(e.target.value)} />
+              </Field>
+            </div>
+            {changed ? (
+              <div><Button variant="primary" type="submit" loading={busy}>{busy ? 'Сохраняем…' : 'Сохранить изменения'}</Button></div>
+            ) : (
+              <div className="row wrap gap-3"><Button variant="secondary" disabled>Нет изменений</Button><span className="t-sm subtle">Кнопка оживёт, когда что-то поменяете</span></div>
+            )}
+          </form>
+        </Section>
 
-  if (loadError) return <LoadErrorCard message={loadError} />
+        <Section title="Почта для чеков и напоминаний" text="Пришлём чек об оплате с кошелька и напомним за 3 дня до конца подписки. Больше ничего.">
+          <EmailCard token={token} />
+        </Section>
+
+        <Section title="Выход" text="Для входа понадобится HiEarth ID или логин.">
+          <Button variant="danger" icon="logout" onClick={() => setLogout(true)}>Выйти из аккаунта</Button>
+        </Section>
+        <LogoutDialog open={logout} onClose={() => setLogout(false)} profile={profile} />
+      </>
+    )
+  }
 
   return (
-    <section className="relative py-12 md:py-16 overflow-hidden">
-      <div className="pointer-events-none absolute top-1/3 -left-24 w-80 h-80 rounded-full bg-brand/8 blur-[110px]" />
-
-      <div className="relative max-w-lg mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between mb-8 animate-fade-in">
-          <div>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">Настройки</h1>
-            <p className="text-sm text-text-secondary mt-1">Управление аккаунтом</p>
-          </div>
-          <Link to="/dashboard" className="btn-ghost !py-2 !px-4 !text-sm">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-            </svg>
-            Назад
-          </Link>
-        </div>
-
-        {loading ? (
-          <div className="space-y-4">
-            <Skeleton className="h-48 !rounded-[22px]" />
-            <Skeleton className="h-64 !rounded-[22px]" />
-          </div>
-        ) : (
-          <>
-            {/* ─── Аккаунт ─── */}
-            <div className="card rounded-[22px] p-6 mb-4 animate-fade-in-up">
-              <h2 className="serif text-base font-semibold mb-1">Аккаунт</h2>
-              <p className="text-xs text-text-secondary mb-4">Данные вашего профиля</p>
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-brand/8">
-                  <span className="text-xs text-text-secondary flex-shrink-0">HiEarth ID</span>
-                  <button onClick={copyId} className="flex items-center gap-2 min-w-0 group" title="Скопировать">
-                    <span className="font-mono text-sm text-brand truncate">{profile?.user_id || '—'}</span>
-                    {copied
-                      ? <svg className="w-4 h-4 text-brand flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.4}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>
-                      : <svg className="w-4 h-4 text-faint group-hover:text-text-secondary flex-shrink-0 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25" /></svg>}
-                  </button>
-                </div>
-                {usernameIsSet && <InfoRow label="Имя пользователя"><span className="font-medium">@{profile.username}</span></InfoRow>}
-                <InfoRow label="Пароль">
-                  <span className={passwordIsSet ? 'text-brand' : 'text-accent'}>{passwordIsSet ? 'Установлен' : 'Не установлен'}</span>
-                </InfoRow>
-                {profile?.current_plan && (
-                  <InfoRow label="Подписка"><span className="font-medium text-brand">{profile.current_plan}</span></InfoRow>
-                )}
-              </div>
-            </div>
-
-            {/* ─── Вход в аккаунт ─── */}
-            <div className="card rounded-[22px] p-6 mb-4 animate-fade-in-up delay-100">
-              <h2 className="serif text-base font-semibold mb-1">{passwordIsSet || usernameIsSet ? 'Логин и пароль' : 'Создать логин и пароль'}</h2>
-              <p className="text-xs text-text-secondary mb-5">Позволяет входить по короткому имени вместо длинного HiEarth ID</p>
-
-              <div className="space-y-4">
-                <div>
-                  <label htmlFor="set-username" className="block text-xs font-medium text-text-secondary mb-2">Имя пользователя</label>
-                  <input
-                    id="set-username"
-                    type="text"
-                    value={username}
-                    onChange={e => setUsername(e.target.value)}
-                    placeholder="минимум 5 символов"
-                    autoComplete="username"
-                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-brand/25 transition-all duration-300 text-sm placeholder:text-faint"
-                  />
-                </div>
-
-                {passwordIsSet && (
-                  <PasswordInput
-                    value={currentPassword}
-                    onChange={e => setCurrentPassword(e.target.value)}
-                    placeholder="Текущий пароль"
-                    label="Текущий пароль"
-                    autoComplete="current-password"
-                  />
-                )}
-
-                <div>
-                  <PasswordInput
-                    value={newPassword}
-                    onChange={e => setNewPassword(e.target.value)}
-                    placeholder={passwordIsSet ? 'Оставьте пустым, чтобы не менять' : 'Придумайте пароль'}
-                    label={passwordIsSet ? 'Новый пароль' : 'Пароль'}
-                    autoComplete="new-password"
-                  />
-                  {strength && (
-                    <div className="mt-1.5">
-                      <div className="h-1 rounded-full bg-white/8 overflow-hidden">
-                        <div className={`h-full ${strength.cls} transition-all duration-300`} style={{ width: `${strength.pct}%` }} />
-                      </div>
-                      <p className={`text-[11px] mt-1 ${strength.text}`}>{strength.label}{strength.pct < 100 && ' — длиннее 8 символов надёжнее'}</p>
-                    </div>
-                  )}
-                </div>
-
-                {newPassword.length > 0 && (
-                  <div className="animate-fade-in">
-                    <PasswordInput
-                      value={confirmPassword}
-                      onChange={e => setConfirmPassword(e.target.value)}
-                      placeholder="Повторите пароль"
-                      label="Подтвердите пароль"
-                      autoComplete="new-password"
-                    />
-                    {confirmPassword && confirmPassword !== newPassword && (
-                      <p className="text-[11px] text-danger mt-1.5">Пароли не совпадают</p>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {msg && (
-                <div role="status" aria-live="polite" className="flex items-center gap-2 mt-4 animate-fade-in">
-                  <svg className="w-4 h-4 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                  <p className="text-brand text-sm">{msg}</p>
-                </div>
-              )}
-              {err && (
-                <div role="alert" className="flex items-center gap-2 mt-4 animate-fade-in">
-                  <svg className="w-4 h-4 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                  <p className="text-danger text-sm">{err}</p>
-                </div>
-              )}
-
-              <button disabled={saving || !hasChanges} className="btn-primary w-full mt-5 !py-3 disabled:opacity-40" onClick={saveAll}>
-                {saving ? (
-                  <>
-                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Сохраняем…
-                  </>
-                ) : hasChanges ? 'Сохранить изменения' : 'Нет изменений'}
-              </button>
-            </div>
-
-            <EmailCard token={token} />
-
-            {/* ─── Danger zone: separated from everyday actions ─── */}
-            <div className="card rounded-[22px] p-6 animate-fade-in-up delay-200 !border-danger/15">
-              <h2 className="serif text-base font-semibold mb-1">Выход</h2>
-              <p className="text-xs text-text-secondary mb-4">
-                Для входа снова понадобится HiEarth ID{usernameIsSet ? ' или ваш логин' : ''}. Убедитесь, что он сохранён.
-              </p>
-              {!confirmLogout ? (
-                <button
-                  className="w-full py-3 rounded-xl bg-danger/8 hover:bg-danger/15 border border-danger/20 hover:border-danger/35 text-danger text-sm font-medium transition-all duration-300 flex items-center justify-center gap-2"
-                  onClick={() => setConfirmLogout(true)}
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-                  </svg>
-                  Выйти из аккаунта
-                </button>
-              ) : (
-                <div className="animate-fade-in">
-                  <p className="text-sm text-text-primary mb-3">Точно выйти?</p>
-                  <div className="flex gap-3">
-                    <button onClick={() => setConfirmLogout(false)} className="btn-ghost flex-1 !py-2.5 !text-sm">Остаться</button>
-                    <button onClick={handleLogout} className="flex-1 py-2.5 rounded-full bg-danger text-white text-sm font-semibold hover:brightness-110 active:scale-[0.97] transition">Выйти</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
+    <AppShell>
+      <div style={{ maxWidth: 1080 }}>
+        <PageHead title="Настройки" lead="Аккаунт, вход и почта для чеков." />
+        {body}
       </div>
-    </section>
+    </AppShell>
   )
 }
+
