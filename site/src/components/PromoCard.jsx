@@ -41,7 +41,7 @@ export default function PromoCard({ onApplied, compact = false, mood = 'idle' })
     <form onSubmit={submit} noValidate style={{ width: '100%' }}>
       <Field id="promo" label="Промокод" srLabel error={err || null} hint={compact ? null : 'Есть код? Активируйте подписку или бонус.'}>
         <div className="input-group">
-          <Input id="promo" aria-describedby="promo-msg" value={code} placeholder={compact ? 'Код' : 'Например, ЛЕТО10'} autoCapitalize="characters" spellCheck={false}
+          <Input id="promo" aria-describedby={err || !compact ? 'promo-msg' : undefined} value={code} placeholder={compact ? 'Код' : 'Например, ЛЕТО10'} autoCapitalize="characters" spellCheck={false}
             onChange={(e) => { setCode(e.target.value.toUpperCase()); setErr('') }} invalid={!!err} />
           <Button variant="secondary" type="submit" loading={busy}>{compact ? 'ОК' : 'Активировать'}</Button>
         </div>

@@ -74,7 +74,7 @@ function ScrollManager() {
       try { id = decodeURIComponent(id) } catch { /* keep raw */ }
       const el = document.getElementById(id)
       if (el) { el.scrollIntoView({ block: 'start', behavior }); return true }
-      if (tries++ < 20) timers.push(setTimeout(() => go(behavior), 50))
+      if (tries++ < 60) timers.push(setTimeout(() => go(behavior), 50))
       return false
     }
     go(initial ? 'instant' : 'smooth')

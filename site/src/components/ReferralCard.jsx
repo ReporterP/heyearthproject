@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api/http.js'
 import { pendingReferral, forgetReferral } from '../lib/referral.js'
 import { copyText } from '../lib/clipboard.js'
-import { kopNum } from '../lib/format.js'
+import { kop } from '../lib/format.js'
 import Button from './Button.jsx'
 import Field, { Input } from './Field.jsx'
 import Hedgehog from './Hedgehog.jsx'
@@ -27,8 +27,8 @@ export default function ReferralCard({ token, referral, reload, phone }) {
   useEffect(() => () => clearTimeout(timer.current), [])
   if (!referral || !referral.enabled) return null
 
-  const me = kopNum(referral.referrer_kop)
-  const friend = kopNum(referral.friend_kop)
+  const me = kop(referral.referrer_kop).replace(/\u00a0₽$/, '')
+  const friend = kop(referral.friend_kop).replace(/\u00a0₽$/, '')
   const s = referral.stats || {}
 
   async function copy() {
@@ -66,7 +66,7 @@ export default function ReferralCard({ token, referral, reload, phone }) {
       <div className="grid g-3" style={{ margin: '16px 0', gap: 8, textAlign: 'center', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
         <div><p className="t-h3 mono">{s.invited || 0}</p><p className="t-xs subtle">пришли</p></div>
         <div><p className="t-h3 mono">{s.paid || 0}</p><p className="t-xs subtle">оплатили</p></div>
-        <div><p className={`t-h3 mono ${s.earned_kop ? 'ok' : ''}`}>{kopNum(s.earned_kop)}</p><p className="t-xs subtle">₽ получено</p></div>
+        <div><p className={`t-h3 mono ${s.earned_kop ? 'ok' : ''}`}>{kop(s.earned_kop).replace(/\u00a0₽$/, '')}</p><p className="t-xs subtle">₽ получено</p></div>
       </div>
       <div className="stack gap-2" style={{ marginTop: 'auto' }}>
         <Button variant="secondary" block onClick={copy} aria-live="polite">{copied ? '✓ Скопировано' : 'Скопировать ссылку'}</Button>

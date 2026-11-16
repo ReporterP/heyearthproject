@@ -75,11 +75,11 @@ export default function DashboardPage() {
       </div>
     )
   } else if (state === 'active') {
-    body = <Active {...{ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll }} />
+    body = <Active {...{ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll, traffic: acc.data.traffic }} />
   } else if (state === 'none') {
-    body = <NoSub {...{ phone, narrow, wallet, freePlan, plansLoading: plans.loading, token, reloadAll, toast }} />
+    body = <NoSub {...{ phone, narrow, wallet, freePlan, plansLoading: plans.loading, token, reloadAll, toast, referral, reloadReferral }} />
   } else {
-    body = <Expired {...{ phone, narrow, sub, plan, wallet, token, reloadAll, toast, navigate, referral, reloadReferral }} />
+    body = <Expired {...{ phone, narrow, sub, plan, plans, wallet, token, reloadAll, toast, navigate, referral, reloadReferral }} />
   }
 
   const head = state === 'none' && profile
@@ -109,7 +109,7 @@ function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadRef
     return (
       <div className="stack gap-3">
         <R><ActiveConnect subLink={subLink} tg={tg} phone={phone} onHapp={markHapp} /></R>
-        <R d={80}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} phone={phone} /></R>
+        <R d={80}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} phone={phone} started={acc.data.traffic?.subscription?.started_at} /></R>
         {wallet && <R d={160}><WalletCard wallet={wallet} phone={phone} /></R>}
         {traffic && <TrafficCard data={traffic} phone={phone} />}
         {refOn && <ReferralCard token={token} referral={referral} reload={reloadReferral} phone={phone} />}
@@ -122,7 +122,7 @@ function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadRef
   return (
     <div className="grid g-12" style={{ gap: 16, alignItems: 'start' }}>
       <R style={span(7)}><ActiveConnect subLink={subLink} tg={tg} onHapp={markHapp} /></R>
-      <R d={80} style={{ ...span(5), alignSelf: 'stretch' }}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} /></R>
+      <R d={80} style={{ ...span(5), alignSelf: 'stretch' }}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} started={acc.data.traffic?.subscription?.started_at} /></R>
       {wallet && <R d={160} style={span(4)}><WalletCard wallet={wallet} /></R>}
       {traffic && <div style={span(wallet ? (refOn ? 5 : 8) : (refOn ? 9 : 12))}><TrafficCard data={traffic} /></div>}
       {refOn && <div style={{ ...span(3), alignSelf: 'stretch' }}><ReferralCard token={token} referral={referral} reload={reloadReferral} /></div>}
@@ -132,7 +132,7 @@ function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadRef
   )
 }
 
-function NoSub({ phone, narrow, wallet, freePlan, plansLoading, token, reloadAll, toast }) {
+function NoSub({ phone, narrow, wallet, freePlan, plansLoading, token, reloadAll, toast, referral, reloadReferral }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [trialGone, setTrialGone] = useState(false)
@@ -197,6 +197,7 @@ function NoSub({ phone, narrow, wallet, freePlan, plansLoading, token, reloadAll
         {walletCard && <R d={80}>{walletCard}</R>}
         <R d={160}><WaitingConnect /></R>
         <PromoCard compact onApplied={reloadAll} />
+        {referral?.enabled && <ReferralCard token={token} referral={referral} reload={reloadReferral} phone={phone} />}
         {phone && <MobileNav />}
       </div>
     )
@@ -207,24 +208,33 @@ function NoSub({ phone, narrow, wallet, freePlan, plansLoading, token, reloadAll
       {walletCard && <R d={80} style={span(4)}>{walletCard}</R>}
       <R d={160} style={span(8)}><WaitingConnect /></R>
       <div style={span(4)}><PromoCard compact onApplied={reloadAll} /></div>
+      {referral?.enabled && <div style={span(12)}><ReferralCard token={token} referral={referral} reload={reloadReferral} /></div>}
     </div>
   )
 }
 
-function Expired({ phone, narrow, sub, plan, wallet, token, reloadAll, toast, navigate, referral, reloadReferral }) {
+function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, toast, navigate, referral, reloadReferral }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const inFlight = useRef(false)
   const [requestId, setRequestId] = useState(newRequestId)
-  const balance = kopNum(wallet?.balance_kop)
+  // money math in kopecks: a balance of 99,60 ₽ is not enough for a 100 ₽ plan
+  const balanceKop = Number(wallet?.balance_kop) || 0
+  const balance = kopNum(balanceKop)
   const price = plan ? Number(plan.price_rub) : Number(sub.price_rub) || 0
   const buyable = !!plan && price > 0
-  const short = Math.max(0, price - balance)
-  const minTopup = Number(wallet?.min_topup_rub) || 100
-  const topup = short > 0 ? Math.max(short, minTopup) : 0
+  const shortKop = Math.max(0, price * 100 - balanceKop)
+  const short = Math.ceil(shortKop / 100)
+  // with a purchase attached the server accepts a top-up from the shortfall itself (min_topup_rub
+  // applies to plain top-ups)
+  const topup = short
   const wasOn = sub.auto_renew
 
-  const reason = !buyable
+  const reason = plans.loading
+    ? 'Проверяем тариф и баланс…'
+    : plans.error && !plan
+      ? 'Не удалось загрузить тарифы — обновите их, чтобы продлить подписку.'
+      : !buyable
     ? 'Выберите тариф — подписка включится сразу после оплаты.'
     : wasOn && short > 0
       ? `Автопродление не сработало: на кошельке ${money(balance)}, а «${plan.name}» стоит ${money(price)}. Пополните на ${money(short)} — подписка продлится сразу.`
@@ -253,8 +263,10 @@ function Expired({ phone, narrow, sub, plan, wallet, token, reloadAll, toast, na
       setRequestId(newRequestId())
       toast.ok('Подписка активирована')
       reloadAll()
-    } catch {
-      setErr('Не удалось открыть оплату — попробуйте ещё раз.')
+    } catch (e) {
+      if (e?.kind !== 'network') setRequestId(newRequestId())
+      if (e?.status === 402 || e?.status === 409) { setErr(e.message); reloadAll() }
+      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
     } finally {
       inFlight.current = false
       setBusy(false)
@@ -270,7 +282,11 @@ function Expired({ phone, narrow, sub, plan, wallet, token, reloadAll, toast, na
         <p className="muted">{reason}</p>
         {err && <Alert tone="bad" rise>{err}</Alert>}
         <div className={phone ? 'stack gap-2' : 'row wrap gap-2'} style={{ marginTop: 6 }}>
-          {buyable
+          {plans.loading
+            ? <span className="skel" style={{ width: 280, height: 54, borderRadius: 14 }} aria-hidden="true" />
+            : plans.error && !plan
+              ? <Button variant="secondary" size="lg" block={phone} icon="refresh" onClick={plans.reload}>Обновить тарифы</Button>
+              : buyable
             ? <Button variant="primary" size="lg" block={phone} loading={busy} onClick={renew}>{short > 0 ? `Пополнить на ${money(topup)} и продлить` : `Продлить за ${money(price)}`}</Button>
             : <Button variant="primary" size="lg" block={phone} to="/payment">Выбрать тариф</Button>}
           {buyable && <Button variant="ghost" size="lg" block={phone} to="/payment" disabled={busy}>Другой тариф</Button>}

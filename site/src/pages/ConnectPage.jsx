@@ -46,21 +46,33 @@ export default function ConnectPage() {
         if (!alive) return
         if (r.status === 400 || r.status === 404) { setPhase('bad'); return }
         const d = r.ok ? await r.json().catch(() => null) : null
-        if (d?.subscribe_url) setSubUrl(d.subscribe_url)
-        // no answer: Happ also takes the plain subscription address
-        setHapp(d?.happ_link || `happ://add/${fallbackUrl}`)
+        if (d?.subscribe_url && /^https:\/\//i.test(d.subscribe_url)) setSubUrl(d.subscribe_url)
+        // no answer (or not a happ:// link): Happ also takes the plain subscription address
+        setHapp(/^happ:\/\//i.test(d?.happ_link || '') ? d.happ_link : `happ://add/${fallbackUrl}`)
         setPhase('opening')
       })
       .catch(() => { if (alive) { setHapp(`happ://add/${fallbackUrl}`); setPhase('opening') } })
     return () => { alive = false }
   }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // the app took over when the page lost focus or went to the background (the system «Открыть Happ?»
+  // prompt blurs the page too); only a page that stayed in front for 2.5 s means «not installed»
+  const left = useRef(false)
+  useEffect(() => {
+    const away = () => { left.current = true; clearTimeout(timer.current) }
+    const vis = () => { if (document.hidden) away() }
+    window.addEventListener('blur', away)
+    window.addEventListener('pagehide', away)
+    document.addEventListener('visibilitychange', vis)
+    return () => { window.removeEventListener('blur', away); window.removeEventListener('pagehide', away); document.removeEventListener('visibilitychange', vis) }
+  }, [])
   function open() {
     if (!happ) return
     clearTimeout(timer.current)
+    left.current = false
     if (device === 'android') { window.location.href = androidIntent(happ); return }
     window.location.href = happ
-    timer.current = setTimeout(() => { if (!document.hidden) setPhase('not-installed') }, TIMEOUT_MS)
+    timer.current = setTimeout(() => { if (!document.hidden && !left.current) setPhase('not-installed') }, TIMEOUT_MS)
   }
   useEffect(() => {
     if (phase === 'opening' && happ) open()

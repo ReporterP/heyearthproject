@@ -64,7 +64,8 @@ export default function SettingsPage() {
   const pwChanged = pw.length > 0
   const changed = !!(nameChanged || pwChanged)
   const errs = {
-    username: nameChanged && (username.trim().length < 5 ? 'Имя пользователя должно быть не менее 5 символов'
+    username: nameChanged && (!hasPw && !pwChanged ? 'Сначала задайте пароль — без него логин не сохранится'
+      : username.trim().length < 5 ? 'Имя пользователя должно быть не менее 5 символов'
       : !/^[A-Za-z0-9_-]+$/.test(username.trim()) ? 'Имя может содержать только латинские буквы, цифры, «_» и «-»' : null),
     cur: pwChanged && hasPw && !cur ? 'Введите текущий пароль' : null,
     pw: pwChanged && pw.length < 4 ? 'Пароль должен быть не менее 4 символов' : null,

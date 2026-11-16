@@ -53,12 +53,22 @@ export function LogoutDialog({ open, onClose, profile }) {
   )
 }
 
+function useReferralOn() {
+  const [on, setOn] = useState(true)
+  useEffect(() => {
+    let alive = true
+    fetch('/api/v1/referral/terms').then((r) => (r.ok ? r.json() : null)).then((t) => { if (alive && t) setOn(!!t.enabled) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  return on
+}
+
 const ITEMS = [
   { to: '/dashboard', label: 'Обзор', icon: 'home' },
   { to: '/connect', label: 'Подключение', icon: 'power' },
   { to: '/wallet', label: 'Кошелёк', icon: 'wallet' },
   { to: '/payments', label: 'Оплата и подписка', icon: 'receipt' },
-  { to: '/dashboard#referral', label: 'Пригласить друга', icon: 'gift' },
+  { to: '/dashboard#referral', label: 'Пригласить друга', icon: 'gift', referral: true },
   { to: '/business/dashboard', label: 'Компания', icon: 'building', company: true },
   { to: '/settings', label: 'Настройки', icon: 'settings' },
   { to: '/help', label: 'Помощь', icon: 'help' },
@@ -76,7 +86,8 @@ export default function AppShell({ children }) {
   const btn = useRef(null)
   const drawer = useRef(null)
 
-  const items = ITEMS.filter((i) => !i.company || company)
+  const referralOn = useReferralOn()
+  const items = ITEMS.filter((i) => (!i.company || company) && (!i.referral || referralOn))
   const isCurrent = (to) => {
     const [p, h] = to.split('#')
     if (h) return pathname === p && hash === `#${h}` ? 'page' : undefined

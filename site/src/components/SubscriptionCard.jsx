@@ -17,8 +17,8 @@ export function renewText(sub, ar) {
   return { off: true, text: `Автопродление выключено — подписка закончится ${at}` }
 }
 
-export default function SubscriptionCard({ sub, plan, autoRenew, phone }) {
-  const { left, pct } = termShare(sub, plan)
+export default function SubscriptionCard({ sub, plan, autoRenew, phone, started }) {
+  const { left, pct } = termShare(sub, plan, started)
   const warn = left <= 3
   const renew = renewText(sub, autoRenew)
   const slug = sub?.plan || plan?.slug
@@ -38,9 +38,9 @@ export default function SubscriptionCard({ sub, plan, autoRenew, phone }) {
           <div className="row between" style={{ marginTop: 22, alignItems: 'flex-end' }}><span className="t-sm muted">Осталось</span>{flap}</div>
         </>
       )}
-      <div style={{ marginTop: 14 }}><Progress value={pct} warn={warn} label="Осталось от срока подписки" /></div>
+      {pct !== null && <div style={{ marginTop: 14 }}><Progress value={pct} warn={warn} label="Осталось от срока подписки" /></div>}
       {phone ? (
-        <p className="t-xs subtle" style={{ marginTop: 10 }}>{renew.off ? renew.text : renew.short}</p>
+        <p className="t-xs subtle" style={{ marginTop: 10 }}>{renew.off ? <>{renew.text}. <Link to="/payments" className="link">Включить</Link></> : renew.short}</p>
       ) : (
         <p className="t-sm muted" style={{ marginTop: 16 }}>
           {renew.off
