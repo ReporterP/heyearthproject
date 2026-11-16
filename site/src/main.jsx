@@ -113,13 +113,13 @@ function App() {
             <Route path="/connections" element={<Navigate to="/connect" replace />} />
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-            <Route path="/payment" element={<RequireAuth>{L(<PaymentPage />)}</RequireAuth>} />
-            <Route path="/checkout/:paymentId" element={<RequireAuth>{L(<CheckoutPage />)}</RequireAuth>} />
+            <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
+            <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
             {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}
             <Route path="/checkout" element={<Navigate to="/payment" replace />} />
-            <Route path="/wallet" element={<RequireAuth>{L(<WalletPage />)}</RequireAuth>} />
-            <Route path="/payments" element={<RequireAuth>{L(<PaymentsHistoryPage />)}</RequireAuth>} />
-            <Route path="/payments/:id" element={<RequireAuth>{L(<PaymentDetailPage />)}</RequireAuth>} />
+            <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
+            <Route path="/payments" element={<RequireAuth><PaymentsHistoryPage /></RequireAuth>} />
+            <Route path="/payments/:id" element={<RequireAuth><PaymentDetailPage /></RequireAuth>} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
           <div id="he-layer" />

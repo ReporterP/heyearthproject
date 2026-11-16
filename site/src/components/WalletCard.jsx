@@ -2,7 +2,6 @@ import { Link } from 'react-router-dom'
 import Button from './Button.jsx'
 import Flap from './Flap.jsx'
 import { kop, kopNum } from '../lib/format.js'
-import { rub, formatDay } from '../api/wallet.js'
 
 // «Кошелёк» on the overview (spec 08 §8.1 item 12): balance as flap, the shortfall before the
 // renewal in warn colour, «Пополнить» (always secondary: the screen's primary is «Добавить в Happ»).
@@ -37,13 +36,4 @@ export default function WalletCard({ wallet, note, noteTone, phone, history = tr
       <Button variant="secondary" block to="/wallet" style={{ marginTop: 18 }}>Пополнить</Button>
     </section>
   )
-}
-
-// TEMPORARY for the not-yet-rebuilt wallet page (stage E): the old one-line renewal summary.
-export function renewLine(ar) {
-  if (!ar) return null
-  if (ar.free) return { tone: 'ok', text: 'Подписка по промокоду продлевается бесплатно' }
-  if (!ar.enabled) return { tone: 'muted', text: `Автопродление выключено — подписка закончится ${formatDay(ar.renew_at)}` }
-  if (ar.enough) return { tone: 'ok', text: `Автопродление: спишем ${rub(ar.price_kop)} ${formatDay(ar.renew_at)} — денег хватает` }
-  return { tone: 'warn', text: `Автопродление ${formatDay(ar.renew_at)}: не хватает ${rub(ar.shortfall_kop)} — пополните кошелёк` }
 }

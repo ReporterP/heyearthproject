@@ -1,90 +1,140 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { getTopupStatus, rub, formatDay } from '../api/wallet.js'
+import { getTopupStatus } from '../api/wallet.js'
+import { getPaymentDetail } from '../api/user.js'
+import { invalidateAccount } from '../account/useAccount.js'
+import MiniPage from './MiniPage.jsx'
+import Badge from './Badge.jsx'
+import Button from './Button.jsx'
+import ConnectOrb from './ConnectOrb.jsx'
+import Flap from './Flap.jsx'
+import Hedgehog from './Hedgehog.jsx'
+import Timeline from './Timeline.jsx'
+import { date, kop, time } from '../lib/format.js'
+import usePageMeta from '../hooks/usePageMeta.js'
 
-// What happened to a top-up payment (and the purchase it was made for). Polls the API
-// instead of «обновите страницу позже»: ЮKassa reports the payment to us by webhook a few
-// seconds after the client pays.
-export default function PaymentResult({ token, paymentId, onRetry, resumeHint = false }) {
+// Результат оплаты (spec 09 §9.4, artboard «Результат оплаты»): after ЮKassa (return to
+// /wallet?topup=<id>) or the embedded widget's «success». Polls GET /api/v1/wallet/topup/:id every
+// 3 s up to 2 minutes; then «pending» stays with the text that the page can be closed.
+const POLL_MS = 3000
+const POLL_MAX = 40
+
+export default function PaymentResult({ token, paymentId }) {
   const [st, setSt] = useState(null)
+  const [created, setCreated] = useState('')
   const [timedOut, setTimedOut] = useState(false)
-  const [error, setError] = useState('')
+  const [err, setErr] = useState(false)
+  usePageMeta('Результат оплаты — HiEarth', { noindex: true })
 
   useEffect(() => {
     let stop = false
     let tries = 0
+    let t
     async function tick() {
       tries += 1
       try {
         const s = await getTopupStatus(token, paymentId)
         if (stop) return
         setSt(s)
-        setError('')
+        setErr(false)
         const purchasePending = s.purchase && s.purchase.status === 'pending'
-        const settled = s.status === 'canceled' || (s.paid && !purchasePending)
-        if (settled) return
+        if (s.status === 'canceled' || (s.paid && !purchasePending)) { invalidateAccount(); return }
       } catch (e) {
-        if (stop) return
-        if (e.kind === 'auth') return
-        setError(e.message)
+        if (stop || e.kind === 'auth') return
+        if (e.status === 404) { setErr('missing'); return }
+        setErr(true)
       }
-      if (tries >= 45) { setTimedOut(true); return }
-      setTimeout(tick, 2000)
+      if (tries >= POLL_MAX) { setTimedOut(true); return }
+      t = setTimeout(tick, POLL_MS)
     }
     tick()
-    return () => { stop = true }
+    getPaymentDetail(token, paymentId).then((d) => { if (!stop) setCreated(d.created_at || '') }).catch(() => {})
+    return () => { stop = true; clearTimeout(t) }
   }, [token, paymentId])
 
-  const card = (tone, title, body, actions) => (
-    <div className={`card p-7 text-center ${tone === 'ok' ? '!border-brand/30' : tone === 'bad' ? '!border-danger/30' : ''}`} role="status">
-      <div className={`w-14 h-14 mx-auto mb-4 rounded-full flex items-center justify-center ${tone === 'ok' ? 'bg-brand/15 text-brand' : tone === 'bad' ? 'bg-danger/15 text-danger' : 'bg-accent/12 text-accent'}`}>
-        {tone === 'ok'
-          ? <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-          : tone === 'bad'
-            ? <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
-            : <span className="w-6 h-6 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />}
-      </div>
-      <h2 className="serif text-xl font-semibold mb-2">{title}</h2>
-      <p className="text-sm text-text-secondary mb-6 max-w-sm mx-auto">{body}</p>
-      <div className="flex flex-wrap gap-2.5 justify-center">{actions}</div>
-    </div>
-  )
+  const forPlan = !!st?.purchase
+  const again = forPlan ? '/payment' : '/wallet'
+  const amountRub = st ? Math.round(parseFloat(st.amount_rub || '0')) : 0
 
-  if (!st) {
-    return error
-      ? card('wait', 'Проверяем платёж…', error, <button className="btn-ghost !py-2.5 !text-sm" onClick={() => window.location.reload()}>Повторить</button>)
-      : card('wait', 'Проверяем платёж…', 'Это займёт несколько секунд.', null)
+  if (err === 'missing') {
+    return (
+      <MiniPage kind="res" label="Платёж не найден">
+        <Hedgehog mood="worried" size={150} />
+        <h1 className="t-h2">Платёж не найден</h1>
+        <p className="muted t-sm">Платёж не найден или принадлежит другому пользователю.</p>
+        <Button variant="secondary" block to="/payments">История платежей</Button>
+      </MiniPage>
+    )
   }
 
-  const toCabinet = <Link key="cab" to="/dashboard" className="btn-primary !py-2.5 !text-sm">В личный кабинет</Link>
-  const toWallet = <Link key="wal" to="/wallet" className="btn-ghost !py-2.5 !text-sm">Кошелёк</Link>
+  // pending (also before the first answer)
+  if (!st || (!st.paid && st.status !== 'canceled') || (st.paid && st.purchase?.status === 'pending')) {
+    const paidWaitingPlan = st?.paid && st.purchase?.status === 'pending'
+    return (
+      <MiniPage kind="res" label="Результат оплаты">
+        <ConnectOrb active={false} small ariaLabel="Проверяем оплату" />
+        <Badge tone="warn" className="swap">Ожидание</Badge>
+        <h1 className="t-h2 swap">{paidWaitingPlan ? 'Оплата получена, оформляем подписку…' : 'Ждём подтверждения оплаты…'}</h1>
+        <p className="muted t-sm" role="status">
+          {err ? 'Не удаётся проверить платёж — продолжаем пробовать. ' : ''}
+          {timedOut
+            ? 'Платёж ещё не подтверждён. Если вы оплатили — деньги появятся на кошельке, как только ЮKassa подтвердит оплату, страницу можно закрыть.'
+            : 'Обычно это несколько секунд. Страницу можно закрыть — деньги появятся на кошельке, как только ЮKassa подтвердит оплату.'}
+        </p>
+        <div style={{ alignSelf: 'stretch', textAlign: 'left', marginTop: 10 }}>
+          <Timeline items={[
+            { title: 'Платёж создан', sub: created ? time(created) : undefined, state: 'done' },
+            paidWaitingPlan
+              ? { title: 'Оплата получена', sub: 'деньги на кошельке', state: 'done' }
+              : { title: 'Ждём подтверждения от банка', sub: 'проверяем автоматически', state: 'now' },
+            { title: forPlan ? 'Подписка оформлена' : 'Деньги на кошельке', state: paidWaitingPlan ? 'now' : undefined },
+          ]} />
+        </div>
+        <Button variant="ghost" size="sm" to={again}>Начать оплату заново</Button>
+      </MiniPage>
+    )
+  }
 
   if (st.status === 'canceled') {
-    return card('bad', 'Оплата не прошла', 'Деньги не списаны. Попробуйте ещё раз — можно другой картой или через СБП.',
-      [onRetry
-        ? <button key="r" className="btn-primary !py-2.5 !text-sm" onClick={onRetry}>Попробовать снова</button>
-        : <Link key="r" to="/payment" className="btn-primary !py-2.5 !text-sm">Попробовать снова</Link>, toWallet])
+    return (
+      <MiniPage kind="res" label="Результат оплаты">
+        <Hedgehog mood="worried" size={150} />
+        <Badge tone="bad">Не прошла</Badge>
+        <h1 className="t-h2">Оплата не прошла</h1>
+        <p className="muted t-sm">Деньги не списаны. Попробуйте ещё раз — можно другой картой или через СБП.</p>
+        <Button variant="primary" block to={again}>Попробовать снова</Button>
+        <Button variant="ghost" size="sm" to="/dashboard">В личный кабинет</Button>
+      </MiniPage>
+    )
   }
-  if (!st.paid) {
-    const again = <Link key="again" to="/payment" className="btn-ghost !py-2.5 !text-sm">Начать оплату заново</Link>
-    return timedOut
-      ? card('wait', 'Платёж ещё не подтверждён', 'Если вы оплатили — деньги появятся на кошельке, как только ЮKassa подтвердит оплату, страницу можно закрыть. Если не оплатили — начните заново.', [toCabinet, again])
-      : card('wait', 'Ждём подтверждения оплаты…', 'Обычно это несколько секунд.', resumeHint ? [again] : null)
-  }
+
+  // paid: the purchase went through, failed, or there was none
   const p = st.purchase
-  if (p && p.status === 'done') {
-    return card('ok', 'Подписка активирована',
-      `«${p.plan_name}» действует до ${formatDay(p.valid_until)}. На кошельке осталось ${rub(st.balance_kop)}.`, [toCabinet])
-  }
   if (p && p.status === 'failed') {
-    return card('wait', `Кошелёк пополнен на ${st.amount_rub} ₽`,
-      `Подписку оплатите кнопкой ниже — деньги уже на кошельке. ${p.reason ? `Причина: ${p.reason}` : ''}`,
-      [<Link key="pay" to="/payment" className="btn-primary !py-2.5 !text-sm">Оплатить подписку с кошелька</Link>, toWallet])
+    return (
+      <MiniPage kind="res" label="Результат оплаты">
+        <Hedgehog mood="idle" size={150} />
+        <Badge tone="ok">Оплачено</Badge>
+        <h1 className="t-h2">Кошелёк пополнен на {amountRub}&nbsp;₽</h1>
+        <p className="muted t-sm">Подписку оплатите кнопкой ниже — деньги уже на кошельке.{p.reason ? ` Причина: ${p.reason}` : ''}</p>
+        <Button variant="primary" block to="/payment">Оплатить подписку с кошелька</Button>
+        <Button variant="ghost" size="sm" to="/wallet">Кошелёк</Button>
+      </MiniPage>
+    )
   }
-  if (p && p.status === 'pending') {
-    return timedOut
-      ? card('wait', 'Оплата получена', 'Подписку оформляем — обновите кабинет через минуту.', [toCabinet])
-      : card('wait', 'Оплата получена, оформляем подписку…', 'Ещё пара секунд.', null)
-  }
-  return card('ok', 'Кошелёк пополнен', `На кошельке ${rub(st.balance_kop)}.`, [toCabinet, toWallet])
+  return (
+    <MiniPage kind="res" label="Результат оплаты">
+      <Hedgehog mood="happy" size={150} className="pop" />
+      <Badge tone="ok">Оплачено</Badge>
+      <h1 className="t-h2">{p ? 'Подписка активирована' : 'Кошелёк пополнен'}</h1>
+      <p className="muted t-sm">
+        {p
+          ? `Кошелёк пополнен на ${amountRub} ₽, с него оплачен «${p.plan_name}»${p.valid_until ? ` — действует до ${date(p.valid_until)}` : ''}.`
+          : `На кошельке ${kop(st.balance_kop)}.`}
+      </p>
+      <Flap value={amountRub} suffix="₽" size={40} tone="accent" delayMs={200} label={`${amountRub} рублей`} />
+      <Button variant="primary" block to="/dashboard">В личный кабинет</Button>
+      <Button variant="ghost" size="sm" to={`/payments/${paymentId}`}>Открыть чек</Button>
+    </MiniPage>
+  )
 }
+

@@ -1,146 +1,192 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import useAccount from '../account/useAccount.js'
 import { getEmailPrefs } from '../api/user.js'
-import { getWallet, walletTopup, rub, formatDay } from '../api/wallet.js'
-import { renewLine } from '../components/WalletCard.jsx'
+import { walletTopup } from '../api/wallet.js'
+import AppShell, { PageHead } from '../components/AppShell.jsx'
+import Alert from '../components/Alert.jsx'
+import Button from '../components/Button.jsx'
+import EmptyState from '../components/EmptyState.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Flap from '../components/Flap.jsx'
+import ListRow from '../components/ListRow.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
-import LoadErrorCard from '../components/LoadErrorCard.jsx'
-import { CabinetSkeleton } from '../legacy/LegacySkeleton.jsx'
+import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { currentSub } from '../lib/account.js'
+import { date, dateTime, kop, kopNum, group } from '../lib/format.js'
 
-const PRESETS = [300, 900, 3000]
-
-function TxRow({ tx }) {
-  const plus = tx.amount_kop > 0
-  return (
-    <li className="flex items-start justify-between gap-4 py-3 border-b border-brand/8 last:border-0">
-      <div className="min-w-0">
-        <p className="text-sm">{tx.title}</p>
-        <p className="text-xs text-faint mt-0.5">{new Date(tx.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-      </div>
-      <div className="text-right flex-shrink-0">
-        <p className={`text-sm font-semibold tabular-nums ${plus ? 'text-brand' : ''}`}>{plus ? '+' : '−'}{rub(Math.abs(tx.amount_kop))}</p>
-        <p className="text-xs text-faint tabular-nums">остаток {rub(tx.balance_after_kop)}</p>
-      </div>
-    </li>
-  )
-}
+// Кошелёк (spec 09 §9.5, artboard «Кошелёк»). /wallet?topup=<id> is where ЮKassa returns: it shows the
+// payment's result instead (9.4).
+const AMOUNTS = [300, 500, 1000, 2000]
+const MAX = 100000
 
 export default function WalletPage() {
+  const [params] = useSearchParams()
+  const { token } = useAuth()
+  const returned = params.get('topup')
+  if (returned) return <PaymentResult token={token} paymentId={returned} />
+  return <Wallet />
+}
+
+// a wallet transaction → a history row (05 §4, §6)
+function txRow(tx) {
+  const plus = tx.amount_kop > 0
+  const amt = `${plus ? '+' : '−'}${kop(Math.abs(tx.amount_kop))}`
+  const base = { title: tx.title, amount: amt, amountTone: plus ? 'ok' : '' }
+  switch (tx.kind) {
+    case 'topup': return { ...base, icon: 'topup', sub: dateTime(tx.created_at), badge: { tone: 'ok', text: 'Оплачено' }, to: tx.payment_id ? `/payments/${tx.payment_id}` : undefined }
+    case 'purchase':
+    case 'auto_renew': return { ...base, icon: 'receipt', sub: `${dateTime(tx.created_at)} · с кошелька`, badge: { tone: 'ok', text: 'Оплачено' } }
+    case 'referral_bonus':
+    case 'referral_welcome': return { ...base, icon: 'gift', sub: dateTime(tx.created_at), badge: { tone: 'ok', text: 'Зачислено' } }
+    case 'refund': return { ...base, icon: 'refund', sub: dateTime(tx.created_at), badge: { tone: 'info', text: 'Возврат' }, to: tx.payment_id ? `/payments/${tx.payment_id}` : undefined }
+    default: return { ...base, icon: 'wallet', sub: dateTime(tx.created_at) }
+  }
+}
+
+function Wallet() {
   const { token } = useAuth()
   const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const returned = params.get('topup')
-
-  const [wallet, setWallet] = useState(null)
-  const [loadError, setLoadError] = useState('')
-  const [amount, setAmount] = useState(PRESETS[0])
-  const [custom, setCustom] = useState('')
+  const narrow = useMedia('(max-width: 1024px)')
+  usePageMeta('Кошелёк — HiEarth', { noindex: true })
+  const acc = useAccount(['wallet', 'subscription'], { optional: ['subscription'] })
+  const wallet = acc.data.wallet
+  const sub = currentSub(acc.data.subscription)
+  const showSkel = useDelayed(acc.loading && !wallet, 300)
+  const [pick, setPick] = useState(null) // a quick amount
+  const [own, setOwn] = useState('')
+  const [ownFocus, setOwnFocus] = useState(false)
   const [email, setEmail] = useState('')
-  // the receipt address defaults to the one confirmed in the cabinet (E8)
+  const [err, setErr] = useState('')
+  const [fieldErr, setFieldErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const inFlight = useRef(false)
+
   useEffect(() => {
     if (!token) return
-    getEmailPrefs(token).then((p) => { if (p?.email) setEmail((cur) => cur || p.email) }).catch(() => {})
+    getEmailPrefs(token).then((p) => { if (p?.email) setEmail((c) => c || p.email) }).catch(() => {})
   }, [token])
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
 
+  // default: 500 ₽, or the quick amount right above what the renewal is missing
   useEffect(() => {
-    getWallet(token).then(setWallet).catch(e => { if (e.kind !== 'auth') setLoadError(e.message) })
-  }, [token, returned])
+    if (!wallet || pick !== null || own) return
+    const ar = wallet.auto_renew
+    const short = ar && ar.enabled && !ar.free && !ar.enough ? kopNum(ar.shortfall_kop) : 0
+    setPick(short ? (AMOUNTS.find((a) => a >= short) || AMOUNTS[AMOUNTS.length - 1]) : 500)
+  }, [wallet]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (loadError) return <LoadErrorCard message={loadError} />
-  if (!wallet) return <CabinetSkeleton />
+  const min = Number(wallet?.min_topup_rub) || 100
+  const ownNum = parseInt(own, 10) || 0
+  const sum = own ? ownNum : pick || 0
+  const ownError = own && (ownNum < min ? `Минимальная сумма пополнения — ${min} ₽` : ownNum > MAX ? 'Не больше 100 000 ₽ за раз' : '')
 
-  const min = wallet.min_topup_rub || 100
-  const sum = custom ? parseInt(custom, 10) || 0 : amount
-  const line = renewLine(wallet.auto_renew)
-
-  async function topup() {
-    setError('')
-    if (sum < min) { setError(`Минимальная сумма пополнения — ${min} ₽`); return }
-    if (sum > 100000) { setError('Не больше 100 000 ₽ за раз'); return }
+  async function topup(e) {
+    e.preventDefault()
+    if (inFlight.current || !sum) return
+    if (ownError) { setFieldErr(ownError); return }
+    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setErr('Проверьте адрес почты — в нём должна быть «@» и домен'); return }
+    inFlight.current = true
     setBusy(true)
+    setErr('')
     try {
       const d = await walletTopup(token, { amountRub: sum, email: email.trim(), confirmationType: 'embedded' })
       if (d.confirmation_token) {
         sessionStorage.setItem(`checkout_token_${d.payment_id}`, d.confirmation_token)
         sessionStorage.setItem(`checkout_plan_${d.payment_id}`, '')
+        sessionStorage.setItem(`checkout_meta_${d.payment_id}`, JSON.stringify({ amount_kop: d.amount_kop || sum * 100 }))
         navigate(`/checkout/${d.payment_id}`)
         return
       }
       if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
-      setError('Не удалось открыть оплату — попробуйте ещё раз.')
-    } catch (e) {
-      setError(e.message)
+      throw new Error('')
+    } catch (e2) {
+      setErr(e2?.status === 400 && e2.message ? e2.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
 
-  return (
-    <section className="relative py-10 md:py-16">
-      <div className="relative max-w-2xl mx-auto px-4 sm:px-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <h1 className="serif text-2xl md:text-3xl font-semibold">Кошелёк</h1>
-          <Link to="/dashboard" className="text-sm text-text-secondary hover:text-brand transition">← В кабинет</Link>
+  let body
+  if (acc.error && acc.error.kind !== 'auth' && !wallet) {
+    body = <EmptyState mood="worried" title="Не удалось загрузить данные" actions={<Button variant="secondary" onClick={() => acc.reload()}>Повторить</Button>}>Обновите страницу.</EmptyState>
+  } else if (!wallet) {
+    body = <div className="stack gap-4" aria-busy="true">{showSkel && [0, 1].map((i) => <SkeletonCard key={i} lines={4} big={!i} />)}</div>
+  } else {
+    const ar = wallet.auto_renew
+    const note = ar?.free ? 'Подписка по промокоду продлевается бесплатно'
+      : ar?.enabled ? `автопродление ${date(ar.renew_at)} · ${kop(ar.price_kop)}`
+        : sub?.active ? `Подписка действует до ${date(sub.valid_until)}` : ''
+    const rows = (wallet.transactions || []).slice(0, 5)
+    const bal = kopNum(wallet.balance_kop)
+
+    body = (
+      <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'minmax(0, 1fr) 360px', gap: 16, alignItems: 'start' }}>
+        <div className="stack gap-4">
+          <form id="topup" className="card rise" style={{ padding: narrow ? 22 : 30 }} onSubmit={topup} noValidate>
+            <div className="row wrap between gap-2" style={{ alignItems: 'flex-end' }}>
+              <span className="card__title">На кошельке</span>
+              {note && <span className="t-sm subtle">{note}</span>}
+            </div>
+            <div style={{ marginTop: 12 }}><Flap value={bal} suffix="₽" size={narrow ? 40 : 56} label={`${bal} рублей на кошельке`} /></div>
+            <hr className="divider" style={{ margin: '26px 0 22px' }} />
+            <span className="t-label" id="amounts-l">Пополнить</span>
+            <div className="amounts" role="radiogroup" aria-labelledby="amounts-l" style={{ marginTop: 10 }}>
+              {AMOUNTS.map((a) => (
+                <span key={a} style={{ display: 'contents' }}>
+                  <input type="radio" id={`amt-${a}`} name="amount" checked={!own && pick === a} onChange={() => { setPick(a); setOwn(''); setFieldErr('') }} />
+                  <label htmlFor={`amt-${a}`}>{group(a)}&nbsp;₽</label>
+                </span>
+              ))}
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12, marginTop: 14 }}>
+              <Field id="own" label="Своя сумма" error={fieldErr || null}>
+                <Input id="own" mono inputMode="numeric" placeholder="до 100 000 ₽ за раз"
+                  value={ownFocus || !own ? own : group(ownNum)}
+                  onFocus={() => setOwnFocus(true)}
+                  onBlur={() => { setOwnFocus(false); if (ownError) setFieldErr(ownError) }}
+                  onChange={(e) => { const v = e.target.value.replace(/\D/g, '').slice(0, 6); setOwn(v); setFieldErr('') }} />
+              </Field>
+              <Field id="re" label="Email для чека" optional>
+                <Input id="re" type="email" inputMode="email" autoComplete="email" value={email} placeholder="you@example.ru" onChange={(e) => { setEmail(e.target.value); setErr('') }} />
+              </Field>
+            </div>
+            {err && <Alert tone="bad" rise className="mt-4">{err}</Alert>}
+            <div className="row wrap gap-4" style={{ marginTop: 20 }}>
+              <Button variant="primary" size="lg" type="submit" block={narrow} loading={busy} disabled={!sum}>{sum ? `Пополнить на ${group(sum)} ₽` : 'Пополнить'}</Button>
+              <span className="t-sm subtle">На защищённой странице ЮKassa</span>
+            </div>
+          </form>
+
+          <section id="history" className="card">
+            <div className="card__head"><h2 className="card__title">История</h2><Link to="/payments" className="t-sm link">Все платежи</Link></div>
+            {rows.length
+              ? <div className="rows">{rows.map((tx) => <ListRow key={tx.id} {...txRow(tx)} />)}</div>
+              : <EmptyState small title="Пока пусто">Пополните кошелёк — и здесь появятся пополнения и оплаты.</EmptyState>}
+          </section>
         </div>
 
-        {returned && <PaymentResult token={token} paymentId={returned} />}
-
-        <div className="card-feat rounded-[22px] p-6">
-          <p className="text-sm text-text-secondary">На кошельке</p>
-          <p className="serif text-4xl font-semibold tabular-nums mt-1">{rub(wallet.balance_kop)}</p>
-          {line && <p className={`text-sm mt-3 ${line.tone === 'warn' ? 'text-accent' : 'text-text-secondary'}`}>{line.text}</p>}
-          {wallet.auto_renew && !wallet.auto_renew.free && (
-            <p className="text-xs text-faint mt-2">Включить или выключить автопродление — в разделе <Link to="/payments" className="text-brand hover:text-brand-light">«Оплата и подписка»</Link>.</p>
-          )}
-        </div>
-
-        <div id="topup" className="card rounded-[22px] p-6 scroll-mt-24">
-          <h2 className="serif text-lg font-semibold mb-4">Пополнить</h2>
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            {PRESETS.map(p => (
-              <button key={p} type="button" onClick={() => { setAmount(p); setCustom('') }}
-                className={`py-3 rounded-xl border text-sm font-semibold tabular-nums transition ${!custom && amount === p ? 'border-brand bg-brand/12 text-brand' : 'border-brand/12 hover:border-brand/30'}`}>
-                {p.toLocaleString('ru-RU')} ₽
-              </button>
-            ))}
-          </div>
-          <label htmlFor="custom-sum" className="block text-xs text-text-secondary mb-1.5">Своя сумма</label>
-          <input id="custom-sum" inputMode="numeric" value={custom} onChange={e => setCustom(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            placeholder={`от ${min} ₽`}
-            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20 mb-3" />
-          <label htmlFor="topup-email" className="block text-xs text-text-secondary mb-1.5">Email для чека <span className="text-faint">(необязательно)</span></label>
-          <input id="topup-email" type="email" inputMode="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@mail.ru"
-            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20" />
-          <p className="text-[11px] text-faint mt-1.5 mb-4">Используем только для отправки чека.</p>
-          {error && <p className="text-sm text-danger bg-danger/10 border border-danger/20 rounded-xl px-3 py-2 mb-3">{error}</p>}
-          <button onClick={topup} disabled={busy || sum <= 0} className="btn-primary w-full !py-3.5 disabled:opacity-50">
-            {busy ? 'Готовим оплату…' : `Пополнить на ${sum > 0 ? sum.toLocaleString('ru-RU') : '…'} ₽`}
-          </button>
-          <p className="text-[11px] text-faint text-center mt-3">Оплата картой или через СБП на защищённой странице ЮKassa.</p>
-        </div>
-
-        <div className="card rounded-[22px] p-6">
-          <h2 className="serif text-lg font-semibold mb-2">Что такое кошелёк</h2>
-          <ul className="text-sm text-text-secondary space-y-1.5 list-disc pl-5">
-            <li>Вы пополняете кошелёк картой, а подписка оплачивается с него — сразу или автопродлением.</li>
-            <li>Если денег не хватает, при оплате тарифа мы пополним кошелёк ровно на недостающую сумму.</li>
-            <li>Деньги на кошельке идут только на услуги HiEarth; подробности — в <Link to="/offer#balance" className="text-brand hover:text-brand-light">оферте</Link>.</li>
-          </ul>
-        </div>
-
-        <div className="card rounded-[22px] p-6">
-          <h2 className="serif text-lg font-semibold mb-2">История</h2>
-          {wallet.transactions.length === 0 ? (
-            <p className="text-sm text-text-secondary">Пока пусто. Пополните кошелёк — и здесь появятся пополнения и оплаты.</p>
-          ) : (
-            <ul>{wallet.transactions.map(tx => <TxRow key={tx.id} tx={tx} />)}</ul>
-          )}
-        </div>
-        {wallet.auto_renew && <p className="text-xs text-faint text-center">Подписка действует до {formatDay(wallet.auto_renew.renew_at)}.</p>}
+        <aside className="card card--elevated stack gap-3">
+          <h2 className="t-h3">Что такое кошелёк</h2>
+          <p className="t-sm muted">Вы пополняете кошелёк картой, а подписка оплачивается с него — сразу или автопродлением.</p>
+          <p className="t-sm muted">Если денег не хватает, при оплате тарифа мы пополним кошелёк ровно на недостающую сумму.</p>
+          <p className="t-sm muted">Деньги на кошельке идут только на услуги HiEarth; подробности — в <Link to="/offer" className="link">оферте</Link>.</p>
+          <hr className="divider" />
+          <p className="t-sm muted">Включить или выключить автопродление — в разделе <Link to="/payments" className="link">«Оплата и подписка»</Link>.</p>
+        </aside>
       </div>
-    </section>
+    )
+  }
+
+  return (
+    <AppShell>
+      <div style={{ maxWidth: 1120 }}>
+        <PageHead title="Кошелёк" lead="Пополняете картой или СБП — подписка оплачивается с баланса." />
+        {body}
+      </div>
+    </AppShell>
   )
 }

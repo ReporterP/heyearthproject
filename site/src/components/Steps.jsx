@@ -17,7 +17,7 @@ export default function Steps({ items, current, label = 'Шаги оформле
           </>
         )
         return [
-          i > 0 ? <li key={`s${i}`} className="sep" aria-hidden="true" /> : null,
+          i > 0 ? <li key={`s${i}`} className="sep max-sm:w-3!" aria-hidden="true" /> : null,
           <li key={i} className={cls} aria-current={active ? 'step' : undefined}>
             {done && (it.to || it.onClick)
               ? it.to

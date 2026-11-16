@@ -1,575 +1,359 @@
-import { useState, useEffect, useRef } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { createPayment, getProfile, applyPromocode, getEmailPrefs } from '../api/user.js'
-import { getQuote, walletPurchase, walletTopup, newRequestId, rub, formatDay } from '../api/wallet.js'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
-import { Skeleton } from '../legacy/LegacySkeleton.jsx'
-import useReveal from '../hooks/useReveal.js'
+import useAccount, { invalidateAccount } from '../account/useAccount.js'
+import { createPayment, applyPromocode, getEmailPrefs } from '../api/user.js'
+import { getQuote, walletPurchase, walletTopup, newRequestId } from '../api/wallet.js'
+import PayHeader from '../components/PayHeader.jsx'
+import MiniPage from '../components/MiniPage.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge from '../components/Badge.jsx'
+import Button from '../components/Button.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Flap from '../components/Flap.jsx'
+import Hedgehog from '../components/Hedgehog.jsx'
+import Icon from '../components/Icon.jsx'
+import PlanCard from '../components/PlanCard.jsx'
+import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
+import { useToast } from '../components/Toast.jsx'
+import usePlans from '../hooks/usePlans.js'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { currentSub } from '../lib/account.js'
+import { splitPlans, savings, featuredId, planList, termLabel } from '../lib/plans.js'
+import { date, kop, kopNum, money, daysLeft } from '../lib/format.js'
 
-const CheckIcon = ({ className = 'w-4 h-4 mt-0.5 text-brand flex-shrink-0' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 6" /></svg>
-)
-const LockIcon = () => (
-  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 018 0v3" /></svg>
-)
-const Tree = ({ className = 'w-6 h-6' }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M9 22V4M15 22V6M6 9c0-2 2-3 3-3M18 11c0-2-2-4-3-4" /></svg>
-)
-
-function formatTraffic(bytes) {
-  if (!bytes) return 'Безлимит'
-  const gb = bytes / (1024 * 1024 * 1024)
-  return gb >= 1 ? `${gb.toFixed(0)} ГБ` : `${(bytes / (1024 * 1024)).toFixed(0)} МБ`
-}
-function formatDuration(days) {
-  if (days >= 365) { const y = Math.round(days / 365); return `${y} ${y === 1 ? 'год' : y < 5 ? 'года' : 'лет'}` }
-  if (days >= 30) return `${Math.round(days / 30)} мес.`
-  return `${days} дн.`
-}
-
-function protocolLabel(protocols) {
-  if (!protocols || protocols.includes('all')) return 'Все протоколы'
-  // User-facing names only — technical core identifiers are never surfaced (§7).
-  const labelMap = { vless: 'Прокси', hysteria2: 'Скоростной', xhttp: 'Стабильный канал', all: 'Все протоколы', socks: '', http: '' }
-  const labels = protocols.map(p => (labelMap[p] !== undefined ? labelMap[p] : 'Современный')).filter(Boolean)
-  const uniq = [...new Set(labels)]
-  return uniq.length ? uniq.join(' + ') : 'Современные протоколы'
-}
-
+// Тарифы → Оформление (spec 09 §9.1–9.2) on one route: /payment is step 1, /payment?plan=<slug> is
+// step 2 (a history entry, so «Назад» returns to the grid). Paying: enough on the wallet → buy from
+// it; not enough → top up exactly the difference with the purchase attached → /checkout/:id.
 export default function PaymentPage() {
-  const navigate = useNavigate()
-  const { token } = useAuth()
-  const checkoutRef = useRef(null)
+  const [params, setParams] = useSearchParams()
+  const slug = params.get('plan')
+  const plans = usePlans()
+  const acc = useAccount(['profile', 'subscription', 'wallet'], { optional: ['subscription', 'wallet'] })
+  const sub = currentSub(acc.data.subscription)
+  const active = sub?.active ? sub : null
+  const chosen = slug ? plans.list.find((p) => p.slug === slug) : null
+  const [done, setDone] = useState(null) // { title, text } after a purchase without ЮKassa
+  usePageMeta(slug ? 'Оформление — HiEarth' : 'Тарифы — HiEarth', { noindex: true })
 
-  const [plans, setPlans] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [selectedPlan, setSelectedPlan] = useState(null)
-  const [currentPlanSlug, setCurrentPlanSlug] = useState(null)
-  const [currentSortOrder, setCurrentSortOrder] = useState(-1)
-  const [validUntil, setValidUntil] = useState(null)
-  const [promocode, setPromocode] = useState('')
-  const [appliedPromo, setAppliedPromo] = useState('')
-  const [email, setEmail] = useState('')
-  // the receipt address defaults to the one confirmed in the cabinet (E8)
-  useEffect(() => {
-    if (!token) return
-    getEmailPrefs(token).then((p) => { if (p?.email) setEmail((cur) => cur || p.email) }).catch(() => {})
-  }, [token])
-  const [quote, setQuote] = useState(null)
-  const [quoteLoading, setQuoteLoading] = useState(false)
-  const [promoError, setPromoError] = useState('')
-  const [topupRub, setTopupRub] = useState(0)
-  const [walletConfirm, setWalletConfirm] = useState(false)
-  const [requestId, setRequestId] = useState(newRequestId)
-  const [done, setDone] = useState(null) // successful wallet purchase / free activation
-  const [paying, setPaying] = useState(false)
-  const [error, setError] = useState('')
-  const [prorations, setProrations] = useState({})
-  const [prorationsLoading, setProrationsLoading] = useState(false)
-  const [earlyRenewalThreshold, setEarlyRenewalThreshold] = useState(3)
-  const [switchConfirm, setSwitchConfirm] = useState(null)
-  const [loadError, setLoadError] = useState(false)
+  const goStep = (n) => { if (n === 0) setParams({}, { replace: false }) }
 
-  useEffect(() => {
-    const promises = [fetch('/api/v1/plans').then(r => r.json()).catch(() => null)]
-    if (token) promises.push(getProfile(token).catch(() => null))
-    Promise.all(promises).then(([plansData, profile]) => {
-      if (!Array.isArray(plansData)) { setLoadError(true); setPlans([]) }
-      else setPlans(plansData)
-      const list = Array.isArray(plansData) ? plansData : []
-      if (profile?.current_plan_slug) {
-        setCurrentPlanSlug(profile.current_plan_slug)
-        const match = list.find(p => p.slug === profile.current_plan_slug)
-        if (match) setCurrentSortOrder(match.sort_order ?? -1)
-      } else if (profile?.current_plan) {
-        const match = list.find(p => p.name === profile.current_plan || p.slug === profile.current_plan)
-        if (match) { setCurrentPlanSlug(match.slug); setCurrentSortOrder(match.sort_order ?? -1) }
-      }
-      if (profile?.valid_until) setValidUntil(profile.valid_until)
-    }).finally(() => setLoading(false))
-  }, [token])
-
-  useEffect(() => {
-    if (!token || !validUntil || plans.length === 0) return
-    const paid = plans.filter(p => p.price_rub > 0)
-    setProrationsLoading(true)
-    Promise.all(
-      paid.map(p => fetch(`/api/v1/payment/proration-preview?plan_id=${p.id}`, { headers: { Authorization: 'Bearer ' + token } })
-        .then(r => r.ok ? r.json() : null).then(d => [p.id, d]).catch(() => [p.id, null]))
-    ).then(pairs => {
-      const map = {}
-      pairs.forEach(([id, d]) => { if (d) map[id] = d })
-      setProrations(map)
-      const firstWithThreshold = pairs.find(([, d]) => d && typeof d.early_renewal_days_threshold === 'number')
-      if (firstWithThreshold) setEarlyRenewalThreshold(firstWithThreshold[1].early_renewal_days_threshold)
-    }).finally(() => setProrationsLoading(false))
-  }, [token, validUntil, plans])
-
-  useReveal([plans, loading])
-
-  // The price of the chosen plan with the applied code, and the wallet balance.
-  useEffect(() => {
-    if (!token || selectedPlan == null) { setQuote(null); return }
-    let stop = false
-    setQuoteLoading(true)
-    getQuote(token, selectedPlan, appliedPromo).then(q => {
-      if (stop) return
-      setQuote(q)
-      setPromoError('')
-      setTopupRub(Math.ceil((q.topup_kop || 0) / 100))
-    }).catch(e => {
-      if (stop || e.kind === 'auth') return
-      if (appliedPromo) { setPromoError(e.message); setAppliedPromo('') } else setError(e.message)
-    }).finally(() => { if (!stop) setQuoteLoading(false) })
-    return () => { stop = true }
-  }, [token, selectedPlan, appliedPromo])
-
-  // One flow (cleanup plan W3): free — activate; a free-days code — redeem it; enough on
-  // the wallet — confirm and pay from it; not enough — top up the shortfall (or more) and
-  // the payment buys the plan right away.
-  async function handlePay(planId) {
-    setSwitchConfirm(null)
-    if (!token) { navigate('/login?redirect=/payment'); return }
-    const plan = plans.find(p => p.id === planId)
-    if (!plan) return
-    setError('')
-    if (plan.price_rub === 0) return activateFree(planId)
-    if (!quote) return
-    if (quote.promo_type === 'free_trial') return redeemCode()
-    if (quote.shortfall_kop === 0) { setWalletConfirm(true); return }
-    return topupAndBuy(planId)
+  if (done) {
+    return (
+      <MiniPage kind="res" label="Результат оплаты">
+        <Hedgehog mood="happy" size={150} />
+        <Badge tone="ok">Оплачено</Badge>
+        <h1 className="t-h2">{done.title}</h1>
+        {done.text && <p className="muted t-sm">{done.text}</p>}
+        <Button variant="primary" block to="/dashboard">В личный кабинет</Button>
+      </MiniPage>
+    )
   }
 
-  async function activateFree(planId) {
-    setPaying(true)
-    try {
-      const data = await createPayment(token, null, window.location.origin + '/dashboard', planId, '', false, '', 'redirect')
-      if (data.status === 'activated') { setDone({ title: 'Тариф активирован', text: data.message || '' }); return }
-      setError('Не удалось активировать тариф — попробуйте ещё раз.')
-    } catch (e) { setError(e.message) } finally { setPaying(false) }
-  }
-
-  async function redeemCode() {
-    setPaying(true)
-    try {
-      const d = await applyPromocode(token, appliedPromo)
-      setDone({ title: 'Промокод активирован', text: d.message || '' })
-    } catch (e) { setError(e.message) } finally { setPaying(false) }
-  }
-
-  async function payFromWallet() {
-    setWalletConfirm(false)
-    setPaying(true)
-    try {
-      const d = await walletPurchase(token, selectedPlan, appliedPromo, requestId)
-      setRequestId(newRequestId())
-      setDone({ title: 'Подписка активирована', text: `«${d.plan_name}» действует до ${formatDay(d.valid_until)}. На кошельке осталось ${rub(d.balance_kop)}.` })
-    } catch (e) { setError(e.message) } finally { setPaying(false) }
-  }
-
-  async function topupAndBuy(planId) {
-    const min = Math.ceil((quote.topup_kop || 0) / 100)
-    if (topupRub < min) { setError(`Пополнение — не меньше ${min} ₽, чтобы хватило на тариф`); return }
-    setPaying(true)
-    try {
-      const plan = plans.find(p => p.id === planId)
-      const d = await walletTopup(token, { amountRub: topupRub, purchase: { planId, promocode: appliedPromo }, email: email.trim(), confirmationType: 'embedded' })
-      if (d.confirmation_token) {
-        sessionStorage.setItem(`checkout_token_${d.payment_id}`, d.confirmation_token)
-        sessionStorage.setItem(`checkout_plan_${d.payment_id}`, plan?.name || '')
-        navigate(`/checkout/${d.payment_id}`)
-        return
-      }
-      if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
-      setError('Не удалось открыть оплату — попробуйте ещё раз.')
-    } catch (e) { setError(e.message) } finally { setPaying(false) }
-  }
-
-  // Selecting a card scrolls the checkout panel into view (spatial continuity).
-  function selectPlan(plan) {
-    setSelectedPlan(plan.id)
-    setError('')
-    setDone(null)
-    requestAnimationFrame(() => {
-      checkoutRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    })
-  }
-
-  // Single primary CTA — confirms a switch when replacing an active sub.
-  function submitPayment() {
-    if (selectedPlan == null) return
-    const plan = plans.find(p => p.id === selectedPlan)
-    if (!plan) return
-    const isCurrent = currentPlanSlug === plan.slug
-    if (currentPlanSlug && !isCurrent) { setSwitchConfirm(plan.id); return }
-    handlePay(plan.id)
-  }
-
-  const daysRemaining = (() => {
-    if (!validUntil) return Infinity
-    const ms = new Date(validUntil).getTime() - Date.now()
-    return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)))
-  })()
-  const showEarlyRenewalBadge = currentPlanSlug && daysRemaining <= earlyRenewalThreshold
-
-  const chosen = plans.find(p => p.id === selectedPlan) || null
-  const chosenPr = chosen ? (prorations[chosen.id] || {}) : {}
-  const chosenIsFree = chosen ? chosen.price_rub === 0 : false
-  const chosenIsCurrent = chosen ? currentPlanSlug === chosen.slug : false
-  const chosenTotal = quote && chosen && quote.plan_id === chosen.id ? quote.price_kop / 100 : (chosen ? chosen.price_rub : 0)
-  const isFreeCode = quote?.promo_type === 'free_trial'
-  const enough = quote && quote.shortfall_kop === 0
-  const ctaLabel = chosenIsFree ? 'Активировать бесплатно'
-    : isFreeCode ? 'Активировать промокод'
-    : !quote ? 'Считаем…'
-    : enough ? `Оплатить с кошелька — ${rub(quote.price_kop)}`
-    : `Пополнить на ${topupRub} ₽ и оплатить`
-
-  /* ── Loading: skeleton grid (no layout jump) ── */
-  if (loading) return (
-    <section className="relative py-10 md:py-16">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6">
-        <div className="text-center mb-10 space-y-3">
-          <Skeleton className="h-4 w-24 mx-auto !rounded-full" />
-          <Skeleton className="h-9 w-64 mx-auto" />
-          <Skeleton className="h-4 w-80 mx-auto" />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {[0, 1, 2].map(i => <Skeleton key={i} className="h-[22rem] !rounded-[22px]" />)}
-        </div>
-      </div>
-    </section>
+  const showStep2 = slug && (chosen || plans.loading)
+  return (
+    <>
+      <PayHeader
+        step={showStep2 ? 1 : 0}
+        back={showStep2 ? { label: 'Тарифы', onClick: () => goStep(0) } : { to: '/dashboard', label: 'В кабинет' }}
+        onStep={goStep}
+        planSlug={slug}
+      />
+      <main id="main" className="container" style={{ maxWidth: showStep2 ? 1040 : undefined, paddingTop: 48, paddingBottom: 80 }}>
+        {showStep2
+          ? <Review plan={chosen} plansLoading={plans.loading} acc={acc} active={active} onChange={() => goStep(0)} onDone={setDone} />
+          : <Tariffs plans={plans} active={active} acc={acc} onPick={(p) => setParams({ plan: p.slug })} onDone={setDone} unknownSlug={slug && !chosen && !plans.loading} />}
+      </main>
+    </>
   )
+}
+
+// ── step 1 ────────────────────────────────────────────────────────────────────
+function Tariffs({ plans, active, acc, onPick, onDone, unknownSlug }) {
+  const { token } = useAuth()
+  const toast = useToast()
+  const navigate = useNavigate()
+  const narrow = useMedia('(max-width: 1024px)')
+  const showSkel = useDelayed(plans.loading, 300)
+  const { paid, free } = splitPlans(plans.list)
+  const save = savings(plans.list)
+  const current = active ? paid.find((p) => p.id === active.plan_id || p.slug === active.plan) : null
+  const featured = current ? current.id : featuredId(plans.list)
+  const allUnlimited = paid.length > 0 && paid.every((p) => !Number(p.traffic_limit_bytes))
+  const [pr, setPr] = useState({}) // plan id → proration preview
+  const [freeBusy, setFreeBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const inFlight = useRef(false)
+
+  // bonus days / downgrade rule for each paid plan while a subscription is active
+  useEffect(() => {
+    if (!token || !active || !paid.length) return undefined
+    let alive = true
+    Promise.all(paid.map((p) => fetch(`/api/v1/payment/proration-preview?plan_id=${p.id}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.json() : null)).then((d) => [p.id, d]).catch(() => [p.id, null])))
+      .then((pairs) => { if (alive) setPr(Object.fromEntries(pairs.filter(([, d]) => d))) })
+    return () => { alive = false }
+  }, [token, active?.plan_id, paid.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function activateFree() {
+    if (inFlight.current || !free) return
+    inFlight.current = true
+    setFreeBusy(true)
+    setErr('')
+    try {
+      const d = await createPayment(token, null, `${window.location.origin}/dashboard`, free.id, '', false, '', 'redirect')
+      if (d.status !== 'activated') throw new Error('')
+      invalidateAccount()
+      toast.ok('Подписка активирована')
+      navigate('/dashboard')
+    } catch (e) {
+      setErr(e?.status === 400 && e.message ? e.message : 'Не удалось активировать тариф — попробуйте ещё раз.')
+    } finally {
+      inFlight.current = false
+      setFreeBusy(false)
+    }
+  }
+
+  const left = active ? daysLeft(active.valid_until) : 0
+  const threshold = Object.values(pr)[0]?.early_renewal_days_threshold ?? 3
+  const cols = paid.length >= 4 ? 'g-4' : paid.length === 3 ? 'g-3' : 'g-2'
 
   return (
-    <section className="relative py-10 md:py-16 overflow-hidden" style={{ paddingBottom: 'max(6rem, env(safe-area-inset-bottom))' }}>
-      <div className="pointer-events-none absolute top-0 left-1/4 w-96 h-96 bg-brand/6 rounded-full blur-[130px]" />
+    <>
+      <h1 className="t-h1">Выберите тариф</h1>
+      {(allUnlimited || active) && (
+        <p className="muted" style={{ marginTop: 6 }}>
+          {[allUnlimited && 'Безлимитный трафик во всех тарифах.', active && `Сейчас у вас «${active.plan_name}» до ${date(active.valid_until)}.`].filter(Boolean).join(' ')}
+        </p>
+      )}
+      {unknownSlug && <Alert tone="info" className="mt-4">Такого тарифа сейчас нет — выберите из списка.</Alert>}
+      {err && <Alert tone="bad" rise className="mt-4">{err}</Alert>}
 
-      <div className="relative max-w-5xl mx-auto px-4 sm:px-6">
-        <div className="text-center mb-8">
-          <p className="eyebrow mb-4">Тарифы</p>
-          <h1 className="serif text-3xl md:text-4xl font-semibold mb-3">Выберите тариф</h1>
-          <p className="text-text-secondary max-w-lg mx-auto">
-            Оплата идёт с кошелька: если на нём не хватает, пополним ровно на нужную сумму и сразу оформим подписку.
-          </p>
-        </div>
-
-        {/* ── Step indicator (progress feedback) ── */}
-        <div className="flex items-center justify-center gap-3 mb-9" aria-label="Шаги оформления">
-          {[{ n: 1, label: 'Тариф' }, { n: 2, label: 'Оплата' }].map((s, i) => {
-            const done = s.n === 1 && chosen
-            const active = (s.n === 1 && !chosen) || (s.n === 2 && chosen)
-            return (
-              <div key={s.n} className="flex items-center gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300 ${
-                    done ? 'bg-brand text-[#04231a]' : active ? 'border-2 border-brand text-brand' : 'bg-white/5 text-faint border border-brand/12'
-                  }`}>
-                    {done ? <CheckIcon className="w-3.5 h-3.5" /> : s.n}
-                  </div>
-                  <span className={`text-sm font-medium ${active || done ? 'text-text-primary' : 'text-faint'}`}>{s.label}</span>
-                </div>
-                {i === 0 && <div className={`w-10 h-0.5 rounded-full transition-colors duration-300 ${chosen ? 'bg-brand' : 'bg-brand/15'}`} />}
-              </div>
-            )
-          })}
-        </div>
-
-        {/* ── Plans: selection only (no competing buy buttons) ── */}
-        {loadError || plans.length === 0 ? (
-          <div className="card rounded-[22px] p-10 text-center max-w-md mx-auto">
-            <div className="w-12 h-12 mx-auto rounded-full bg-accent/12 border border-accent/25 text-accent flex items-center justify-center mb-4">
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.3 3.9 2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
-            </div>
-            <h2 className="serif text-lg font-semibold mb-2">Тарифы недоступны</h2>
-            <p className="text-sm text-text-secondary mb-5">Не удалось загрузить список тарифов. Попробуйте обновить страницу.</p>
-            <button onClick={() => window.location.reload()} className="btn-primary !py-2.5 !text-sm">Обновить</button>
-          </div>
+      <div style={{ marginTop: 36 }}>
+        {plans.error ? (
+          <Alert tone="bad" title="Тарифы недоступны.">
+            Не удалось загрузить список. <button type="button" className="link" onClick={plans.reload} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Обновить</button>
+          </Alert>
+        ) : plans.loading ? (
+          <div className="grid g-4" aria-busy="true" style={{ minHeight: 380 }}>{showSkel && [0, 1, 2, 3].map((i) => <SkeletonCard key={i} lines={4} big />)}</div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-10">
-            {plans.map((plan, idx) => {
-              const isSelected = selectedPlan === plan.id
-              const isCurrent = currentPlanSlug === plan.slug
-              const isFree = plan.price_rub === 0
-              const isDowngrade = currentSortOrder >= 0 && !isCurrent && (plan.sort_order ?? 0) < currentSortOrder
-              const pr = prorations[plan.id] || {}
-              const blocked = pr.is_downgrade_blocked === true
-              const unavailable = isDowngrade || blocked
-              const validUntilDate = validUntil ? new Date(validUntil).toLocaleDateString('ru-RU') : ''
-
-              const features = [
-                protocolLabel(plan.allowed_protocols),
-                `Трафик: ${formatTraffic(plan.traffic_limit_bytes)}`,
-                `Срок: ${formatDuration(plan.duration_days)}`,
-                `Серверов: ${plan.server_ids?.length || 'все'}`,
-              ]
-              const planFeatures = plan.features ? (typeof plan.features === 'string' ? JSON.parse(plan.features || '{}') : plan.features) : {}
-              if (planFeatures.traffic_masking) features.push('Приватная маршрутизация')
-              if (planFeatures.priority_support) features.push('Приоритетная поддержка')
-              if (plan.direct_routing_enabled) features.push('Доступ к РФ-сервисам')
-
+          <div className={`grid ${cols}`} style={paid.length <= 2 ? { maxWidth: 760 } : undefined}>
+            {paid.map((p) => {
+              const isCur = current && p.id === current.id
+              const preview = pr[p.id]
+              const blocked = !!preview?.is_downgrade_blocked
+              const notes = []
+              if (isCur && left <= threshold) notes.push({ tone: 'warn', text: 'Скоро закончится — продлите заранее' })
+              if (!isCur && preview?.bonus_days > 0) notes.push({ tone: 'ok', text: `+${preview.bonus_days} бонус-дней за остаток текущего плана` })
               return (
-                <button
-                  key={plan.id}
-                  type="button"
-                  onClick={() => !unavailable && selectPlan(plan)}
-                  disabled={unavailable}
-                  aria-pressed={isSelected}
-                  className={`relative text-left rounded-[22px] p-6 reveal transition-all duration-300 ${
-                    unavailable ? 'card opacity-50 cursor-not-allowed'
-                      : isSelected ? 'card-feat cursor-pointer ring-2 ring-brand/40'
-                      : 'card card-hover cursor-pointer'
-                  }`}
-                  style={{ transitionDelay: `${Math.min(idx * 70, 220)}ms` }}
-                >
-                  {isCurrent && (
-                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-brand text-[#04231a] text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">Текущий план</span>
-                  )}
-
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <h3 className="serif text-lg font-semibold">{plan.name}</h3>
-                    <span className={`flex-shrink-0 w-5 h-5 rounded-full border-2 grid place-items-center transition-colors ${isSelected ? 'border-brand bg-brand' : 'border-brand/25'}`}>
-                      {isSelected && <svg className="w-3 h-3 text-[#04231a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>}
-                    </span>
-                  </div>
-                  <p className="text-xs text-text-secondary mb-4">{plan.description}</p>
-
-                  {/* price — fixed-height row so async proration can't shift layout */}
-                  <div className="min-h-[4.25rem] mb-4">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="serif text-3xl font-semibold tabular-nums">{isFree ? 'Бесплатно' : `${plan.price_rub}₽`}</span>
-                      {!isFree && <span className="text-sm text-text-secondary">/ {formatDuration(plan.duration_days)}</span>}
-                    </div>
-                    <div className="mt-1.5 min-h-[1.5rem]">
-                      {prorationsLoading && !isFree ? <Skeleton className="h-4 w-40" /> : null}
-                    </div>
-                  </div>
-
-                  <ul className="space-y-2 mb-4">
-                    {features.map((f, i) => (
-                      <li key={i} className="flex items-start gap-2 text-sm text-text-secondary"><CheckIcon /><span>{f}</span></li>
-                    ))}
-                  </ul>
-
-                  {pr.bonus_days > 0 && !unavailable && !isCurrent && (
-                    <p className="text-xs text-brand">+{pr.bonus_days} бонус-дней за остаток текущего плана</p>
-                  )}
-                  {isCurrent && showEarlyRenewalBadge && (
-                    <p className="text-xs text-accent flex items-center gap-1.5">
-                      <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" strokeLinecap="round" /></svg>
-                      Скоро закончится — продлите заранее
-                    </p>
-                  )}
-                  {/* explain WHY a plan is unavailable, don't just grey it out */}
-                  {unavailable && (
-                    <p className="text-xs text-faint flex items-start gap-1.5">
-                      <LockIcon />
-                      <span>{blocked && validUntilDate ? `Переход доступен после ${validUntilDate}` : 'Сейчас у вас более старший тариф'}</span>
-                    </p>
-                  )}
-                </button>
+                <PlanCard
+                  key={p.id}
+                  plan={p}
+                  featured={p.id === featured}
+                  current={!!isCur}
+                  saving={save[p.id]}
+                  cta={isCur ? 'Продлить' : 'Выбрать'}
+                  onClick={() => onPick(p)}
+                  disabled={blocked}
+                  disabledNote={blocked && active ? `Переход доступен после ${date(active.valid_until)}` : null}
+                  notes={notes}
+                />
               )
             })}
           </div>
         )}
-
-        {/* ── Step 2: checkout — inputs asked only once a plan is chosen ── */}
-        <div ref={checkoutRef} className="scroll-mt-24">
-          {done ? (
-            <div className="card p-8 text-center !border-brand/30 animate-fade-in-up" role="status">
-              <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-brand/15 border border-brand/25 text-brand flex items-center justify-center">
-                <CheckIcon className="w-8 h-8" />
-              </div>
-              <h2 className="serif text-xl font-semibold mb-1">{done.title}</h2>
-              <p className="text-sm text-text-secondary mb-6">{done.text}</p>
-              <Link to="/dashboard" className="btn-primary !py-2.5 !text-sm">В личный кабинет</Link>
-            </div>
-          ) : chosen ? (
-            <div className="grid lg:grid-cols-[1.25fr_.9fr] gap-5 animate-fade-in-up">
-              {/* left: inputs */}
-              <div className="card rounded-[22px] p-6">
-                <h2 className="serif text-lg font-semibold mb-1">Оформление</h2>
-                <p className="text-xs text-text-secondary mb-5">Данные карты вводятся только на защищённой странице ЮKassa</p>
-
-                <div className="space-y-4">
-                  {!chosenIsFree && (
-                    <div>
-                      <label htmlFor="promo" className="block text-xs font-medium text-text-secondary mb-1.5">Промокод <span className="text-faint">(если есть)</span></label>
-                      <div className="flex gap-2">
-                        <input
-                          id="promo" value={promocode} onChange={e => { setPromocode(e.target.value.toUpperCase()); setPromoError('') }}
-                          placeholder="ЛЕС10"
-                          className="flex-1 min-w-0 px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20 font-mono uppercase tracking-wider"
-                        />
-                        {appliedPromo && appliedPromo === promocode.trim() ? (
-                          <button onClick={() => { setAppliedPromo(''); setPromocode('') }} className="btn-ghost !py-2.5 !px-4 !text-sm">Убрать</button>
-                        ) : (
-                          <button onClick={() => setAppliedPromo(promocode.trim())} disabled={!promocode.trim()} className="btn-ghost !py-2.5 !px-4 !text-sm disabled:opacity-40">Применить</button>
-                        )}
-                      </div>
-                      {promoError && <p className="text-xs text-danger mt-1.5">{promoError}</p>}
-                      {!promoError && quote?.promo_message && appliedPromo && <p className="text-xs text-brand mt-1.5">{quote.promo_message}</p>}
-                    </div>
-                  )}
-
-                  {!chosenIsFree && !isFreeCode && quote && !enough && (
-                    <div>
-                      <label htmlFor="pay-email" className="block text-xs font-medium text-text-secondary mb-1.5">Email для чека <span className="text-faint">(необязательно)</span></label>
-                      <input
-                        id="pay-email" value={email} onChange={e => setEmail(e.target.value)} type="email" inputMode="email" placeholder="you@mail.ru"
-                        className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 text-sm placeholder:text-faint focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/20"
-                      />
-                      <p className="text-[11px] text-faint mt-1.5">Используем только для отправки чека.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* right: sticky summary + the single primary CTA */}
-              <div className="card-feat rounded-[22px] p-6 lg:sticky lg:top-24 h-fit">
-                <div className="flex items-center gap-3 mb-5">
-                  <span className="w-11 h-11 rounded-xl bg-brand/15 border border-brand/25 text-brand flex items-center justify-center flex-shrink-0"><Tree className="w-6 h-6" /></span>
-                  <div className="min-w-0">
-                    <p className="serif text-lg font-semibold truncate">{chosen.name}</p>
-                    <p className="text-xs text-text-secondary">подписка на {formatDuration(chosen.duration_days)}</p>
-                  </div>
-                </div>
-
-                <div className="space-y-2 py-4 border-y border-brand/10 text-sm">
-                  <div className="flex justify-between text-text-secondary">
-                    <span>{chosen.name}</span>
-                    <span className="tabular-nums">{chosenIsFree ? '0 ₽' : `${chosen.price_rub} ₽`}</span>
-                  </div>
-                  {quote && quote.list_price_kop > quote.price_kop && !isFreeCode && (
-                    <div className="flex justify-between text-brand">
-                      <span>Промокод {appliedPromo}</span>
-                      <span className="tabular-nums">−{rub(quote.list_price_kop - quote.price_kop)}</span>
-                    </div>
-                  )}
-                  {(quote?.bonus_days || chosenPr.bonus_days) > 0 && (
-                    <div className="flex justify-between text-brand">
-                      <span>Бонусные дни за остаток тарифа</span>
-                      <span className="tabular-nums">+{quote?.bonus_days || chosenPr.bonus_days} дн.</span>
-                    </div>
-                  )}
-                  {!chosenIsFree && !isFreeCode && quote && (
-                    <div className="flex justify-between text-text-secondary">
-                      <span>На кошельке</span>
-                      <span className="tabular-nums">{rub(quote.balance_kop)}</span>
-                    </div>
-                  )}
-                  {quote?.new_valid_until && !chosenIsFree && !isFreeCode && (
-                    <div className="flex justify-between text-text-secondary">
-                      <span>Подписка будет до</span>
-                      <span className="tabular-nums">{formatDay(quote.new_valid_until)}</span>
-                    </div>
-                  )}
-                </div>
-
-                {chosenIsFree || isFreeCode ? (
-                  <div className="flex items-baseline justify-between my-5">
-                    <span className="text-sm text-text-secondary">К оплате</span>
-                    <span className="serif text-3xl font-semibold">Бесплатно</span>
-                  </div>
-                ) : quoteLoading && !quote ? (
-                  <Skeleton className="h-10 w-full my-5" />
-                ) : enough ? (
-                  <div className="flex items-baseline justify-between my-5">
-                    <span className="text-sm text-text-secondary">Спишем с кошелька</span>
-                    <span className="serif text-3xl font-semibold tabular-nums">{rub(quote.price_kop)}</span>
-                  </div>
-                ) : quote ? (
-                  <div className="my-5">
-                    <p className="text-sm text-text-secondary mb-3">
-                      На кошельке {rub(quote.balance_kop)}. Пополним на нужную сумму и сразу оплатим подписку.
-                    </p>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <input
-                        aria-label="Сумма пополнения, ₽" inputMode="numeric" value={topupRub}
-                        onChange={e => setTopupRub(parseInt(e.target.value.replace(/\D/g, '') || '0', 10))}
-                        className="w-28 px-3 py-2.5 rounded-xl bg-white/5 border border-brand/15 text-lg font-semibold tabular-nums focus:border-brand/50 focus:outline-none"
-                      />
-                      <span className="text-sm text-text-secondary">₽</span>
-                      <button type="button" onClick={() => setTopupRub(v => v + 100)} className="btn-ghost !py-2 !px-3 !text-sm">+100</button>
-                      <button type="button" onClick={() => setTopupRub(v => v + 500)} className="btn-ghost !py-2 !px-3 !text-sm">+500</button>
-                    </div>
-                    {topupRub * 100 > quote.topup_kop && (
-                      <p className="text-xs text-faint mt-2">После оплаты на кошельке останется {rub(quote.balance_kop + topupRub * 100 - quote.price_kop)}.</p>
-                    )}
-                  </div>
-                ) : null}
-
-                {error && <p className="text-sm text-danger bg-danger/10 border border-danger/20 rounded-xl px-3 py-2 mb-3">{error}</p>}
-
-                <button onClick={submitPayment} disabled={paying || (!chosenIsFree && !quote)} className="btn-primary w-full !py-3.5 disabled:opacity-50">
-                  {paying ? 'Готовим…' : ctaLabel}
-                </button>
-
-                <p className="flex items-center justify-center gap-1.5 text-[11px] text-faint mt-3.5 text-center">
-                  <LockIcon /> Оплата защищена · без скрытых списаний
-                </p>
-              </div>
-            </div>
-          ) : (
-            plans.length > 0 && (
-              <div className="card rounded-[22px] p-8 text-center border-dashed">
-                <p className="text-sm text-text-secondary">Выберите тариф выше — здесь появится оформление и итоговая сумма.</p>
-              </div>
-            )
-          )}
-        </div>
-
-        <div className="text-center mt-10">
-          <Link to="/dashboard" className="text-sm text-text-secondary hover:text-brand transition">← Вернуться в личный кабинет</Link>
-        </div>
       </div>
 
-      {/* ── Sticky mobile summary bar (thumb-reachable primary action) ── */}
-      {chosen && !done && (
-        <div className="lg:hidden fixed bottom-0 inset-x-0 z-40 glass-strong border-t border-brand/15 px-4 py-3 flex items-center gap-3" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-text-secondary truncate">{chosen.name}</p>
-            <p className="serif text-lg font-semibold tabular-nums leading-tight">{chosenIsFree || isFreeCode ? 'Бесплатно' : `${chosenTotal} ₽`}</p>
-          </div>
-          <button onClick={submitPayment} disabled={paying || (!chosenIsFree && !quote)} className="btn-primary !py-3 !px-6 disabled:opacity-50 flex-shrink-0">
-            {paying ? '…' : chosenIsFree || isFreeCode ? 'Активировать' : enough ? 'Оплатить' : 'Пополнить и оплатить'}
-          </button>
+      {free && !active && !plans.loading && (
+        <div className="card row wrap between gap-4" style={{ marginTop: 16, padding: '20px 24px' }}>
+          <span><span className="plan__name">{free.name}</span> <span className="plan__term">· {termLabel(free)}</span><br /><span className="t-sm muted">{planList(free)[0]}</span></span>
+          <span className="row gap-4"><b className="t-h3">Бесплатно</b><Button variant="secondary" loading={freeBusy} onClick={activateFree}>Активировать бесплатно</Button></span>
         </div>
       )}
 
-      {/* Wallet confirm: what leaves the wallet, what stays, until when */}
-      {walletConfirm && quote && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setWalletConfirm(false)}>
-          <div className="glass-strong rounded-[22px] p-7 max-w-sm w-full text-center" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
-            <h3 className="serif text-lg font-semibold mb-2">Оплатить с кошелька?</h3>
-            <p className="text-sm text-text-secondary mb-6">
-              Спишем {rub(quote.price_kop)} с кошелька. Останется {rub(quote.balance_kop - quote.price_kop)}.
-              {quote.new_valid_until ? ` Подписка до ${formatDay(quote.new_valid_until)}.` : ''}
-            </p>
-            <div className="flex gap-3">
-              <button onClick={() => setWalletConfirm(false)} className="btn-ghost flex-1 !py-2.5 !text-sm">Отмена</button>
-              <button onClick={payFromWallet} className="btn-primary flex-1 !py-2.5 !text-sm">Оплатить</button>
-            </div>
-          </div>
+      <div className="grid" style={{ marginTop: 24, gap: 16, gridTemplateColumns: narrow ? '1fr' : '1fr 1fr' }}>
+        <div className="card row gap-4">
+          <span className="rowi__ic" style={{ background: 'var(--accent-soft)', color: 'var(--accent-fg)' }} aria-hidden="true"><Icon name="wallet" /></span>
+          <p className="t-sm" style={{ flex: 1 }}><b>Оплата с кошелька.</b> <span className="muted">Если денег не хватает, на следующем шаге пополним кошелёк ровно на недостающую сумму.</span></p>
         </div>
-      )}
+        <div className="card row gap-4">
+          <span className="rowi__ic" aria-hidden="true"><Icon name="lock" /></span>
+          <p className="t-sm" style={{ flex: 1 }}><b>Карту не привязываем.</b> <span className="muted">Данные карты вводятся только на защищённой странице ЮKassa.</span></p>
+        </div>
+      </div>
+      {acc.error && acc.error.kind !== 'auth' && <p className="t-xs subtle" style={{ marginTop: 16 }}>Не удалось загрузить данные кабинета — текущий тариф может быть не отмечен.</p>}
+    </>
+  )
+}
 
-      {/* Switch-confirm modal */}
-      {switchConfirm != null && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setSwitchConfirm(null)}>
-          <div className="glass-strong rounded-[22px] p-7 max-w-sm w-full text-center" onClick={e => e.stopPropagation()}>
-            <div className="w-12 h-12 mx-auto rounded-full bg-accent/12 border border-accent/25 text-accent flex items-center justify-center mb-4">
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.3 3.9 2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
-            </div>
-            <h3 className="serif text-lg font-semibold mb-2">Сменить тариф?</h3>
-            <p className="text-sm text-text-secondary mb-6">Текущая подписка будет заменена новым тарифом. Неиспользованный остаток учтён в сумме.</p>
-            <div className="flex gap-3">
-              <button onClick={() => setSwitchConfirm(null)} className="btn-ghost flex-1 !py-2.5 !text-sm">Отмена</button>
-              <button onClick={() => handlePay(switchConfirm)} className="btn-primary flex-1 !py-2.5 !text-sm">Продолжить</button>
-            </div>
-          </div>
+// ── step 2 ────────────────────────────────────────────────────────────────────
+function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
+  const { token } = useAuth()
+  const navigate = useNavigate()
+  const narrow = useMedia('(max-width: 1024px)')
+  const [promo, setPromo] = useState('')
+  const [applied, setApplied] = useState('')
+  const [promoErr, setPromoErr] = useState('')
+  const [quote, setQuote] = useState(null)
+  const [quoteBusy, setQuoteBusy] = useState(false)
+  const [quoteErr, setQuoteErr] = useState('')
+  const [email, setEmail] = useState('')
+  const [confirmed, setConfirmed] = useState('')
+  const [emailErr, setEmailErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [requestId, setRequestId] = useState(newRequestId)
+  const inFlight = useRef(false)
+
+  useEffect(() => {
+    if (!token) return
+    getEmailPrefs(token).then((p) => { if (p?.email) setConfirmed(p.email) }).catch(() => {})
+  }, [token])
+
+  // the price with the code, what the wallet covers and what to top up
+  useEffect(() => {
+    if (!token || !plan) return undefined
+    let alive = true
+    setQuoteBusy(true)
+    getQuote(token, plan.id, applied)
+      .then((q) => { if (!alive) return; setQuote(q); setQuoteErr('') })
+      .catch((e) => {
+        if (!alive || e.kind === 'auth') return
+        if (applied) { setPromoErr(`Не удалось применить промокод: ${String(e.message || '').replace(/^./, (c) => c.toLowerCase())}`); setApplied('') }
+        else setQuoteErr(e.message || 'Не удалось рассчитать стоимость.')
+      })
+      .finally(() => { if (alive) setQuoteBusy(false) })
+    return () => { alive = false }
+  }, [token, plan?.id, applied]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const list = quote ? quote.list_price_kop : Number(plan?.price_rub || 0) * 100
+  const price = quote ? quote.price_kop : list
+  const discount = Math.max(0, list - price)
+  const fromWallet = quote ? Math.min(quote.balance_kop, price) : 0
+  const topupKop = quote ? quote.topup_kop : 0
+  const topupRub = Math.ceil(topupKop / 100)
+  const enough = quote && quote.shortfall_kop === 0
+  const freeCode = quote?.promo_type === 'free_trial'
+  const blocked = !!quote?.is_downgrade_blocked
+  const pct = list ? Math.round((discount / list) * 100) : 0
+
+  function applyCode(e) {
+    e.preventDefault()
+    if (applied) { setApplied(''); setPromo(''); setPromoErr(''); return }
+    if (!promo.trim()) { setPromoErr('Введите промокод'); return }
+    setPromoErr('')
+    setApplied(promo.trim().toUpperCase())
+  }
+
+  async function pay() {
+    if (inFlight.current || !quote || !plan) return
+    const mail = (confirmed || email).trim()
+    if (!confirmed && mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) { setEmailErr('Проверьте адрес почты — в нём должна быть «@» и домен'); return }
+    inFlight.current = true
+    setBusy(true)
+    setErr('')
+    try {
+      if (freeCode) {
+        const d = await applyPromocode(token, applied)
+        invalidateAccount()
+        onDone({ title: 'Промокод активирован', text: d.message || '' })
+        return
+      }
+      if (enough) {
+        const d = await walletPurchase(token, plan.id, applied, requestId)
+        setRequestId(newRequestId())
+        invalidateAccount()
+        onDone({ title: 'Подписка активирована', text: `«${d.plan_name}» действует до ${date(d.valid_until)}. На кошельке осталось ${kop(d.balance_kop)}.` })
+        return
+      }
+      const d = await walletTopup(token, { amountRub: topupRub, purchase: { planId: plan.id, promocode: applied }, email: mail, confirmationType: 'embedded' })
+      if (d.confirmation_token) {
+        sessionStorage.setItem(`checkout_token_${d.payment_id}`, d.confirmation_token)
+        sessionStorage.setItem(`checkout_plan_${d.payment_id}`, plan.name || '')
+        sessionStorage.setItem(`checkout_meta_${d.payment_id}`, JSON.stringify({ slug: plan.slug, amount_kop: d.amount_kop || topupRub * 100, price_kop: price }))
+        navigate(`/checkout/${d.payment_id}`)
+        return
+      }
+      if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
+      throw new Error('')
+    } catch (e) {
+      if (e?.kind !== 'network') setRequestId(newRequestId())
+      if (e?.status === 409 || e?.status === 402) { setErr(e.message); invalidateAccount('wallet'); acc.reload('wallet') }
+      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+    } finally {
+      inFlight.current = false
+      setBusy(false)
+    }
+  }
+
+  if (!plan) {
+    return <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : 'minmax(0,1fr) 380px', gap: 24 }}><SkeletonCard lines={3} /><SkeletonCard lines={4} big /></div>
+  }
+
+  const btnLabel = quoteBusy ? 'Считаем…'
+    : freeCode ? 'Активировать промокод'
+      : enough ? `Оплатить с кошелька — ${kop(price)}`
+        : `Оплатить ${money(topupRub)}`
+
+  const summary = (
+    <aside className="card card--elevated" style={{ position: narrow ? 'static' : 'sticky', top: 92, padding: 26 }}>
+      <h2 className="t-h3">К оплате</h2>
+      <div style={{ marginTop: 14, opacity: quoteBusy ? 0.5 : 1, transition: 'opacity var(--dur-2) var(--ease-out)' }}>
+        <div className="sum"><span className="muted">{plan.name}</span><span className="mono">{kop(list)}</span></div>
+        {discount > 0 && <div className="sum rise" style={{ '--d': '0ms' }}><span className="muted">Промокод {applied}</span><span className="mono ok">−{kop(discount)}</span></div>}
+        {quote && fromWallet > 0 && !freeCode && <div className="sum"><span className="muted">С кошелька</span><span className="mono">−{kop(fromWallet)}</span></div>}
+      </div>
+      <div className="divider" style={{ margin: '12px 0 16px' }} />
+      {quote && !freeCode && (
+        <div className="row between" style={{ alignItems: 'flex-end' }}>
+          <span className="t-label">{enough ? 'Спишем с кошелька' : 'Пополнение'}</span>
+          <Flap value={enough ? kopNum(price) : topupRub} suffix="₽" size={40} label={`${enough ? kopNum(price) : topupRub} рублей`} />
         </div>
       )}
-    </section>
+      {err && <Alert tone="bad" rise className="mt-4">{err}</Alert>}
+      <Button variant="primary" size="lg" block loading={busy} disabled={!quote || quoteBusy || blocked} onClick={pay} style={{ marginTop: 22 }}>{btnLabel}</Button>
+      {quote && !enough && !freeCode && <p className="t-xs subtle" style={{ marginTop: 12, textAlign: 'center' }}>Картой или через СБП на защищённой странице ЮKassa. Карту не привязываем.</p>}
+    </aside>
+  )
+
+  return (
+    <>
+      <h1 className="t-h1">Оформление</h1>
+      <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'minmax(0, 1fr) 380px', gap: 24, marginTop: 28, alignItems: 'start' }}>
+        <div className="stack gap-4">
+          <div className="card row between gap-4">
+            <span><span className="t-label">Тариф</span><br /><b className="t-h3">{plan.name} · {termLabel(plan)}</b><br /><span className="t-sm subtle">{planList(plan).join(', ')}</span></span>
+            <Button variant="ghost" size="sm" onClick={onChange}>Изменить</Button>
+          </div>
+          <div className="card stack gap-4">
+            <form onSubmit={applyCode} noValidate>
+              <Field id="pc" label="Промокод" optional error={promoErr || null} hint={applied && discount > 0 ? (quote?.promo_message || `Скидка ${pct}% — минус ${kop(discount)}`) : applied && freeCode ? (quote?.promo_message || 'Промокод даёт бесплатные дни') : null} hintTone="ok">
+                <div className="input-group">
+                  <Input id="pc" aria-describedby={promoErr || applied ? 'pc-msg' : undefined} value={applied || promo} readOnly={!!applied} placeholder="Например, ЛЕТО10" autoCapitalize="characters" spellCheck={false}
+                    onChange={(e) => { setPromo(e.target.value.toUpperCase()); setPromoErr('') }} invalid={!!promoErr} />
+                  <Button variant="secondary" type="submit" loading={quoteBusy && !!applied && !quote?.promo_type}>{applied ? 'Убрать' : 'Применить'}</Button>
+                </div>
+              </Field>
+              {applied && quote?.promo_type && <Badge tone="ok" className="pop" style={{ marginTop: 8 }}>Применён</Badge>}
+            </form>
+            {!confirmed ? (
+              <Field id="em" label="Email для чека" optional error={emailErr || null} hint="Используем только для отправки чека.">
+                <Input type="email" inputMode="email" autoComplete="email" value={email} placeholder="you@example.ru" onChange={(e) => { setEmail(e.target.value); setEmailErr('') }} />
+              </Field>
+            ) : (
+              <p className="t-sm muted">Чек придёт на <span className="mono" style={{ color: 'var(--fg)' }}>{confirmed}</span>.</p>
+            )}
+          </div>
+          {quoteErr && <Alert tone="bad" title="Не удалось рассчитать стоимость.">{quoteErr === 'Не удалось рассчитать стоимость.' ? 'Обновите страницу.' : quoteErr}</Alert>}
+          {blocked && <Alert tone="warn">Сейчас у вас тариф дороже — сменить на более дешёвый можно после окончания текущего{active ? `, ${date(active.valid_until)}` : ''}.</Alert>}
+          {quote && !freeCode && !blocked && (enough
+            ? <Alert tone="ok" title="Хватает на кошельке.">Спишем {kop(price)} с баланса — без ЮKassa.</Alert>
+            : <Alert tone="warn" title={`На кошельке ${kop(quote.balance_kop)}, к оплате ${kop(price)}.`}>Пополним кошелёк ровно на {money(topupRub)} и сразу оплатим подписку.</Alert>)}
+          {quote?.bonus_days > 0 && <p className="t-sm ok">+{quote.bonus_days} бонус-дней за остаток текущего плана — подписка будет до {date(quote.new_valid_until)}.</p>}
+        </div>
+        {summary}
+      </div>
+    </>
   )
 }
