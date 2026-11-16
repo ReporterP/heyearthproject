@@ -18,7 +18,8 @@ import { kop, kopNum } from '../lib/format.js'
 const SCRIPT = 'https://yookassa.ru/checkout-widget/v1/checkout-widget.js'
 const READY_TIMEOUT_MS = 10000
 
-function loadWidget() {
+// loads the widget script once; a failed tag is removed so «Открыть этот платёж» really retries
+function loadWidget(isCancelled) {
   return new Promise((resolve, reject) => {
     if (window.YooMoneyCheckoutWidget) { resolve(); return }
     let s = document.querySelector(`script[src="${SCRIPT}"]`)
@@ -29,11 +30,13 @@ function loadWidget() {
       document.body.appendChild(s)
     }
     const started = Date.now()
+    const fail = (why) => { clearInterval(poll); s.remove(); reject(new Error(why)) }
     const poll = setInterval(() => {
+      if (isCancelled()) { clearInterval(poll); reject(new Error('cancelled')); return }
       if (window.YooMoneyCheckoutWidget) { clearInterval(poll); resolve() }
-      else if (Date.now() - started > READY_TIMEOUT_MS) { clearInterval(poll); reject(new Error('timeout')) }
+      else if (Date.now() - started > READY_TIMEOUT_MS) fail('timeout')
     }, 60)
-    s.addEventListener('error', () => { clearInterval(poll); reject(new Error('load')) }, { once: true })
+    s.addEventListener('error', () => fail('load'), { once: true })
   })
 }
 
@@ -49,6 +52,7 @@ export default function CheckoutPage() {
   usePageMeta('Оплата — HiEarth', { noindex: true })
   const [state, setState] = useState('loading') // loading | ready | error
   const [attempt, setAttempt] = useState(0)
+  const [declined, setDeclined] = useState(false)
   const widget = useRef(null)
   const planName = sessionStorage.getItem(`checkout_plan_${paymentId}`) || ''
   const meta = readMeta(paymentId)
@@ -68,7 +72,7 @@ export default function CheckoutPage() {
       if (res.confirmation_url) { window.location.assign(res.confirmation_url); return null }
       if (!res.confirmation_token) { toResult(); return null } // paid, canceled or expired: show what happened
       sessionStorage.setItem(`checkout_token_${paymentId}`, res.confirmation_token)
-      return loadWidget().then(() => {
+      return loadWidget(() => cancelled).then(() => {
         if (cancelled) return
         try {
           const w = new window.YooMoneyCheckoutWidget({
@@ -85,7 +89,8 @@ export default function CheckoutPage() {
           }
           w.on('success', done)
           w.on('complete', done)
-          w.on('fail', done) // the result page shows «Оплата не прошла» from the API
+          // a declined card: the widget stays, the person can try another card or СБП
+          w.on('fail', () => { if (!cancelled) setDeclined(true) })
           w.render('yookassa-checkout-container')
           widget.current = w
           setState('ready')
@@ -111,6 +116,7 @@ export default function CheckoutPage() {
           {planName && meta.price_kop ? <p className="t-sm muted" style={{ marginTop: 12 }}>После оплаты сразу спишем {kop(meta.price_kop)} с кошелька за «{planName}».</p> : null}
         </div>
       )}
+      {declined && state === 'ready' && <Alert tone="bad" title="Оплата не прошла." rise>Деньги не списаны. Попробуйте другую карту или способ.</Alert>}
       <Alert tone="plain" icon="shield">Данные карты вводятся только в форме ЮKassa. HiEarth их не видит и не хранит.</Alert>
       {state === 'error' && (
         <div className="card stack gap-3">

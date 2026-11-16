@@ -21,7 +21,7 @@ import useMedia from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { splitPlans, savings, featuredId, planList, termLabel } from '../lib/plans.js'
-import { date, kop, kopNum, money, daysLeft } from '../lib/format.js'
+import { date, kop, money, daysLeft, group } from '../lib/format.js'
 
 // Тарифы → Оформление (spec 09 §9.1–9.2) on one route: /payment is step 1, /payment?plan=<slug> is
 // step 2 (a history entry, so «Назад» returns to the grid). Paying: enough on the wallet → buy from
@@ -37,7 +37,7 @@ export default function PaymentPage() {
   const [done, setDone] = useState(null) // { title, text } after a purchase without ЮKassa
   usePageMeta(slug ? 'Оформление — HiEarth' : 'Тарифы — HiEarth', { noindex: true })
 
-  const goStep = (n) => { if (n === 0) setParams({}, { replace: false }) }
+  const goStep = (n) => { if (n === 0) setParams({}, { replace: true }) }
 
   if (done) {
     return (
@@ -62,7 +62,7 @@ export default function PaymentPage() {
       />
       <main id="main" className="container" style={{ maxWidth: showStep2 ? 1040 : undefined, paddingTop: 48, paddingBottom: 80 }}>
         {showStep2
-          ? <Review plan={chosen} plansLoading={plans.loading} acc={acc} active={active} onChange={() => goStep(0)} onDone={setDone} />
+          ? <Review key={chosen?.id ?? slug} plan={chosen} plansLoading={plans.loading} acc={acc} active={active} onChange={() => goStep(0)} onDone={setDone} />
           : <Tariffs plans={plans} active={active} acc={acc} onPick={(p) => setParams({ plan: p.slug })} onDone={setDone} unknownSlug={slug && !chosen && !plans.loading} />}
       </main>
     </>
@@ -165,7 +165,7 @@ function Tariffs({ plans, active, acc, onPick, onDone, unknownSlug }) {
         )}
       </div>
 
-      {free && !active && !plans.loading && (
+      {free && !active && !plans.loading && !acc.loading && (
         <div className="card row wrap between gap-4" style={{ marginTop: 16, padding: '20px 24px' }}>
           <span><span className="plan__name">{free.name}</span> <span className="plan__term">· {termLabel(free)}</span><br /><span className="t-sm muted">{planList(free)[0]}</span></span>
           <span className="row gap-4"><b className="t-h3">Бесплатно</b><Button variant="secondary" loading={freeBusy} onClick={activateFree}>Активировать бесплатно</Button></span>
@@ -204,7 +204,9 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [requestId, setRequestId] = useState(newRequestId)
+  const [quoteNonce, setQuoteNonce] = useState(0)
   const inFlight = useRef(false)
+  const isFree = plan && Number(plan.price_rub) === 0
 
   useEffect(() => {
     if (!token) return
@@ -213,8 +215,9 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
 
   // the price with the code, what the wallet covers and what to top up
   useEffect(() => {
-    if (!token || !plan) return undefined
+    if (!token || !plan || isFree) return undefined
     let alive = true
+    setQuote(null) // never pay with a quote of another code or balance
     setQuoteBusy(true)
     getQuote(token, plan.id, applied)
       .then((q) => { if (!alive) return; setQuote(q); setQuoteErr('') })
@@ -225,7 +228,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
       })
       .finally(() => { if (alive) setQuoteBusy(false) })
     return () => { alive = false }
-  }, [token, plan?.id, applied]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, plan?.id, applied, quoteNonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const list = quote ? quote.list_price_kop : Number(plan?.price_rub || 0) * 100
   const price = quote ? quote.price_kop : list
@@ -246,7 +249,26 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
     setApplied(promo.trim().toUpperCase())
   }
 
+  async function activateFree() {
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setErr('')
+    try {
+      const d = await createPayment(token, null, `${window.location.origin}/dashboard`, plan.id, '', false, '', 'redirect')
+      if (d.status !== 'activated') throw new Error('')
+      invalidateAccount()
+      onDone({ title: 'Подписка активирована', text: d.message || '' })
+    } catch (e) {
+      setErr(e?.status === 400 && e.message ? e.message : 'Не удалось активировать тариф — попробуйте ещё раз.')
+    } finally {
+      inFlight.current = false
+      setBusy(false)
+    }
+  }
+
   async function pay() {
+    if (isFree) { activateFree(); return }
     if (inFlight.current || !quote || !plan) return
     const mail = (confirmed || email).trim()
     if (!confirmed && mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) { setEmailErr('Проверьте адрес почты — в нём должна быть «@» и домен'); return }
@@ -272,6 +294,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
         sessionStorage.setItem(`checkout_token_${d.payment_id}`, d.confirmation_token)
         sessionStorage.setItem(`checkout_plan_${d.payment_id}`, plan.name || '')
         sessionStorage.setItem(`checkout_meta_${d.payment_id}`, JSON.stringify({ slug: plan.slug, amount_kop: d.amount_kop || topupRub * 100, price_kop: price }))
+        try { localStorage.setItem(`he_topup_plan_${d.payment_id}`, plan.slug) } catch { /* storage off */ }
         navigate(`/checkout/${d.payment_id}`)
         return
       }
@@ -279,7 +302,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
       throw new Error('')
     } catch (e) {
       if (e?.kind !== 'network') setRequestId(newRequestId())
-      if (e?.status === 409 || e?.status === 402) { setErr(e.message); invalidateAccount('wallet'); acc.reload('wallet') }
+      if (e?.status === 409 || e?.status === 402) { setErr(e.message); invalidateAccount('wallet'); acc.reload('wallet'); setQuoteNonce((x) => x + 1) }
       else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
     } finally {
       inFlight.current = false
@@ -291,7 +314,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
     return <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : 'minmax(0,1fr) 380px', gap: 24 }}><SkeletonCard lines={3} /><SkeletonCard lines={4} big /></div>
   }
 
-  const btnLabel = quoteBusy ? 'Считаем…'
+  const btnLabel = isFree ? 'Активировать бесплатно' : quoteBusy ? 'Считаем…'
     : freeCode ? 'Активировать промокод'
       : enough ? `Оплатить с кошелька — ${kop(price)}`
         : `Оплатить ${money(topupRub)}`
@@ -308,11 +331,11 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
       {quote && !freeCode && (
         <div className="row between" style={{ alignItems: 'flex-end' }}>
           <span className="t-label">{enough ? 'Спишем с кошелька' : 'Пополнение'}</span>
-          <Flap value={enough ? kopNum(price) : topupRub} suffix="₽" size={40} label={`${enough ? kopNum(price) : topupRub} рублей`} />
+          <Flap value={enough ? group(price / 100) : topupRub} suffix="₽" size={40} label={enough ? kop(price) : money(topupRub)} />
         </div>
       )}
       {err && <Alert tone="bad" rise className="mt-4">{err}</Alert>}
-      <Button variant="primary" size="lg" block loading={busy} disabled={!quote || quoteBusy || blocked} onClick={pay} style={{ marginTop: 22 }}>{btnLabel}</Button>
+      <Button variant="primary" size="lg" block loading={busy} disabled={!isFree && (!quote || quoteBusy || blocked)} onClick={pay} style={{ marginTop: 22 }}>{btnLabel}</Button>
       {quote && !enough && !freeCode && <p className="t-xs subtle" style={{ marginTop: 12, textAlign: 'center' }}>Картой или через СБП на защищённой странице ЮKassa. Карту не привязываем.</p>}
     </aside>
   )

@@ -9,7 +9,7 @@ import ConnectOrb from './ConnectOrb.jsx'
 import Flap from './Flap.jsx'
 import Hedgehog from './Hedgehog.jsx'
 import Timeline from './Timeline.jsx'
-import { date, kop, time } from '../lib/format.js'
+import { date, kop, time, group } from '../lib/format.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 
 // Результат оплаты (spec 09 §9.4, artboard «Результат оплаты»): after ЮKassa (return to
@@ -52,8 +52,11 @@ export default function PaymentResult({ token, paymentId }) {
   }, [token, paymentId])
 
   const forPlan = !!st?.purchase
-  const again = forPlan ? '/payment' : '/wallet'
-  const amountRub = st ? Math.round(parseFloat(st.amount_rub || '0')) : 0
+  let slug = ''
+  try { slug = localStorage.getItem(`he_topup_plan_${paymentId}`) || '' } catch { /* storage off */ }
+  const again = forPlan ? (slug ? `/payment?plan=${encodeURIComponent(slug)}` : '/payment') : '/wallet'
+  const amount = st ? parseFloat(st.amount_rub || '0') || 0 : 0
+  const amountRub = Math.round(amount)
 
   if (err === 'missing') {
     return (
@@ -116,7 +119,7 @@ export default function PaymentResult({ token, paymentId }) {
         <Badge tone="ok">Оплачено</Badge>
         <h1 className="t-h2">Кошелёк пополнен на {amountRub}&nbsp;₽</h1>
         <p className="muted t-sm">Подписку оплатите кнопкой ниже — деньги уже на кошельке.{p.reason ? ` Причина: ${p.reason}` : ''}</p>
-        <Button variant="primary" block to="/payment">Оплатить подписку с кошелька</Button>
+        <Button variant="primary" block to={slug ? `/payment?plan=${encodeURIComponent(slug)}` : '/payment'}>Оплатить подписку с кошелька</Button>
         <Button variant="ghost" size="sm" to="/wallet">Кошелёк</Button>
       </MiniPage>
     )
@@ -131,7 +134,7 @@ export default function PaymentResult({ token, paymentId }) {
           ? `Кошелёк пополнен на ${amountRub} ₽, с него оплачен «${p.plan_name}»${p.valid_until ? ` — действует до ${date(p.valid_until)}` : ''}.`
           : `На кошельке ${kop(st.balance_kop)}.`}
       </p>
-      <Flap value={amountRub} suffix="₽" size={40} tone="accent" delayMs={200} label={`${amountRub} рублей`} />
+      <Flap value={group(amount)} suffix="₽" size={40} tone="accent" delayMs={200} label={`${group(amount)} рублей`} />
       <Button variant="primary" block to="/dashboard">В личный кабинет</Button>
       <Button variant="ghost" size="sm" to={`/payments/${paymentId}`}>Открыть чек</Button>
     </MiniPage>

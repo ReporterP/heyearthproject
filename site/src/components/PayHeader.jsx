@@ -10,7 +10,7 @@ export default function PayHeader({ back, step, onStep, planSlug }) {
   const bal = data?.wallet ? kopNum(data.wallet.balance_kop) : null
   const items = [
     { label: 'Тариф', to: '/payment', onClick: onStep ? () => onStep(0) : undefined },
-    { label: 'Оформление', to: planSlug ? `/payment?plan=${encodeURIComponent(planSlug)}` : undefined, onClick: onStep ? () => onStep(1) : undefined },
+    { label: 'Оформление', to: planSlug ? `/payment?plan=${encodeURIComponent(planSlug)}` : undefined },
     { label: 'Оплата' },
   ].map((it) => (it.onClick ? { label: it.label, onClick: it.onClick } : it))
   return (
