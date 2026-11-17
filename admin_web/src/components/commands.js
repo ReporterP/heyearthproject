@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Bell, Gift,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Bell, Gift, LifeBuoy,
 } from 'lucide-react'
 
 /**
@@ -15,6 +15,7 @@ export const commands = [
 
   // Users
   { id: 'go-users',         label: 'Пользователи',           icon: Users,           kind: 'page', href: '/users',         group: 'Пользователи',   shortcut: ['⌘', 'U'] },
+  { id: 'go-support',       label: 'Поддержка',              icon: LifeBuoy,        kind: 'page', href: '/support',       group: 'Пользователи' },
   { id: 'go-promocodes',    label: 'Промокоды',              icon: Ticket,          kind: 'page', href: '/promocodes',    group: 'Пользователи' },
 
   // Infrastructure

@@ -12,6 +12,7 @@
 //   history  full | empty                     — payments & wallet history
 //   tg       both | web | classic | none      — Telegram proxy answer
 //   bot      linked | unlinked | blocked | off — the HiEarth Telegram bot (settings «Telegram»)
+//   support  answered | waiting | closed | empty — the support conversation
 //   email    confirmed | pending | none
 //   login    password | nopassword            — has a login+password
 //   referral on | off
@@ -27,7 +28,7 @@
 const DEFAULT = {
   sub: 'active', wallet: 'low', trial: 'used', renew: 'on', history: 'full', tg: 'both', email: 'confirmed',
   login: 'password', referral: 'on', b2b: 'off', tenant: 'active', members: 'many', pay: 'succeeded',
-  sublink: 'ok', fail: '', delay: '350', bot: 'unlinked',
+  sublink: 'ok', fail: '', delay: '350', bot: 'unlinked', support: 'answered',
 }
 const S = { ...DEFAULT }
 const OPTIONS = {
@@ -36,6 +37,7 @@ const OPTIONS = {
   login: ['password', 'nopassword'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer'],
   tenant: ['active', 'inactive', 'suspended'], members: ['many', 'solo'], pay: ['succeeded', 'pending', 'canceled'],
   sublink: ['ok', 'fail'], delay: ['0', '350', '1500'], bot: ['linked', 'unlinked', 'blocked', 'off'],
+  support: ['answered', 'waiting', 'closed', 'empty'],
 }
 
 const USER_ID = '3f2b8c1e-7a4d-4e9b-8c21-5d6e7f8a9b0c'
@@ -375,6 +377,24 @@ function route(method, path, q, body, authed) {
   }
   if (path === '/api/v1/auth/magic') return [200, { url: 'http://localhost:5175/m/mock-magic', expires_in: 300 }]
   if (path === '/api/v1/auth/magic/redeem') return body?.token === 'mock-magic' ? [200, { linked: true, user_id: USER_ID, token: 'mock-token', next: '/wallet' }] : [404, { error: 'Ссылка для входа устарела или уже использована — откройте оплату из Telegram ещё раз' }]
+  // Support (spec 08 §8.6)
+  if (path === '/api/v1/support') {
+    if (failing('support')) return UNAVAILABLE
+    if (S.support === 'empty' && !SUPPORT.extra.length) return [200, { ticket: null, messages: [], unread: 0, telegram_linked: S.bot === 'linked', bot_url: S.bot === 'off' ? '' : 'https://t.me/hiearth_bot' }]
+    const msgs = supportMessages()
+    const status = SUPPORT.extra.length ? 'waiting' : S.support === 'waiting' ? 'open' : S.support
+    return [200, { ticket: { id: 12, status, created_at: iso(now() - 2 * DAY) }, messages: msgs, unread: msgs.filter((m) => m.author === 'admin' && !m.read_at).length,
+      telegram_linked: S.bot === 'linked', bot_url: S.bot === 'off' ? '' : 'https://t.me/hiearth_bot' }]
+  }
+  if (path === '/api/v1/support/messages') {
+    const text = String(body?.body || '').trim()
+    if (!text) return [400, { error: 'Напишите сообщение или приложите картинку' }]
+    const m = { id: 100 + SUPPORT.extra.length, ticket_id: 12, author: 'user', body: text, via: 'site', created_at: iso(now()), read_at: null }
+    SUPPORT.extra.push(m)
+    return [200, { message: m, ticket: { id: 12, status: 'waiting' } }]
+  }
+  if (path === '/api/v1/support/read') { SUPPORT.read = true; return [200, { unread: 0 }] }
+  if (path === '/api/v1/support/unread') return [200, { unread: S.support === 'answered' && !SUPPORT.read ? 1 : 0 }]
   if (path === '/api/v1/auth/telegram') return [200, { linked: false, telegram: { first_name: 'Иван' } }]
   if (path === '/api/v1/auth/telegram/register') return [200, { linked: true, created: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   if (path === '/api/v1/auth/telegram/login') {
@@ -383,6 +403,18 @@ function route(method, path, q, body, authed) {
     return [200, { linked: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   }
   return [404, { error: 'not found' }]
+}
+
+const SUPPORT = { extra: [], read: false }
+function supportMessages() {
+  const base = [
+    { id: 1, ticket_id: 12, author: 'user', body: 'Здравствуйте! На мобильном интернете Happ подключается, но сайты не открываются. Wi-Fi — всё работает.', via: 'site', created_at: iso(now() - 2 * DAY), read_at: iso(now() - 2 * DAY) },
+    { id: 2, ticket_id: 12, author: 'user', body: 'Телефон — iPhone, оператор МТС.', via: 'bot', created_at: iso(now() - 2 * DAY + 60000), read_at: iso(now() - 2 * DAY) },
+  ]
+  if (S.support === 'answered' || S.support === 'closed') {
+    base.push({ id: 3, ticket_id: 12, author: 'admin', body: 'Здравствуйте! Обновите подписку в Happ: потяните список вниз. Для мобильных сетей мы добавили отдельный вход — он подтянется сам.\n\nЕсли не поможет — напишите, разберёмся.', via: 'admin', created_at: iso(now() - DAY), read_at: SUPPORT.read || S.support === 'closed' ? iso(now()) : null })
+  }
+  return [...base, ...SUPPORT.extra]
 }
 
 function controlPage() {
@@ -411,6 +443,10 @@ export default function mockApi() {
         for await (const chunk of req) raw += chunk
         let body = null
         try { body = raw ? JSON.parse(raw) : null } catch { body = null }
+        if (/multipart\//.test(req.headers['content-type'] || '')) { // support: only the text field matters here
+          const m = raw.match(/name="body"\r\n\r\n([\s\S]*?)\r\n--/)
+          body = { body: m ? m[1] : '' }
+        }
         const authed = /^Bearer mock-/.test(req.headers.authorization || '')
         const [status, data] = route(req.method, url.pathname, url.searchParams, body, authed)
         await new Promise((r) => setTimeout(r, Number(S.delay) || 0))

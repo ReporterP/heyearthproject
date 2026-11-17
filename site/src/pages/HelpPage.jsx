@@ -100,6 +100,10 @@ export default function HelpPage() {
 
             <section id="support" className="card card--elevated" style={{ padding: narrow ? 22 : 30 }}>
               <h2 className="t-h2">Связаться с поддержкой</h2>
+              <div className="row wrap gap-3" style={{ marginTop: 14, alignItems: 'center' }}>
+                <Button variant="secondary" icon="mail" to={isLoggedIn ? "/support" : "/login?redirect=/support"}>Написать в поддержку</Button>
+                <span className="t-sm muted">Ответим в кабинете и в Telegram — обычно в течение дня.</span>
+              </div>
               {!loaded ? (
                 <Skeleton w={220} h={16} style={{ marginTop: 14 }} />
               ) : contact || email ? (
@@ -112,7 +116,7 @@ export default function HelpPage() {
               ) : (
                 <p className="muted" style={{ marginTop: 10, maxWidth: 640 }}>Контакты поддержки скоро появятся здесь. Пока опишите проблему через раздел «Документы» — там указаны реквизиты.</p>
               )}
-              <Alert tone="info" title="Укажите свой ID" className="mt-4">— он в личном кабинете. Так мы быстрее найдём аккаунт.</Alert>
+              {!isLoggedIn && <Alert tone="info" title="Укажите свой ID" className="mt-4">— он в личном кабинете. Так мы быстрее найдём аккаунт.</Alert>}
             </section>
           </div>
         </div>

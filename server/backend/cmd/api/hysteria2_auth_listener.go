@@ -127,7 +127,11 @@ const publicBodyLimit = 1 << 20
 func limitPublicBodies(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && !strings.HasPrefix(r.URL.Path, "/api/admin/") {
-			r.Body = http.MaxBytesReader(w, r.Body, publicBodyLimit)
+			limit := int64(publicBodyLimit)
+			if r.URL.Path == "/api/v1/support/messages" {
+				limit = supportBodyLimit // a screenshot up to 5 MB
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

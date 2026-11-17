@@ -56,9 +56,9 @@ const MSG = {
  * apiFetch(path, { token, method, body, fallback, signOutOn401 })
  * Returns the parsed JSON body; throws ApiError.
  */
-export async function apiFetch(path, { token, method = 'GET', body, fallback = 'Что-то пошло не так — попробуйте ещё раз.', signOutOn401 = true, timeoutMs = 20000 } = {}) {
+export async function apiFetch(path, { token, method = 'GET', body, form, fallback = 'Что-то пошло не так — попробуйте ещё раз.', signOutOn401 = true, timeoutMs = 20000 } = {}) {
   const headers = {}
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (body !== undefined && form === undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
 
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
@@ -68,7 +68,7 @@ export async function apiFetch(path, { token, method = 'GET', body, fallback = '
     res = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: form !== undefined ? form : body !== undefined ? JSON.stringify(body) : undefined, // form: multipart (FormData)
       signal: ctrl ? ctrl.signal : undefined,
     })
   } catch {

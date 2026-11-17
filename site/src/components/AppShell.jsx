@@ -11,6 +11,7 @@ import Button from './Button.jsx'
 import Dialog, { DialogActions } from './Dialog.jsx'
 import { IdChip, shortId } from './Nomerok.jsx'
 import { isMiniApp } from '../lib/telegram.js'
+import { useSupportUnread } from './SupportCount.js'
 
 // AppShell (spec 02 §30): the cabinet's side menu + main column. ≤1024 px the menu becomes a top bar
 // (logo · short ID chip · menu button) with the items in a drawer. «Выйти» opens the logout dialog.
@@ -72,6 +73,7 @@ const ITEMS = [
   { to: '/dashboard#referral', label: 'Пригласить друга', icon: 'gift', referral: true },
   { to: '/business/dashboard', label: 'Компания', icon: 'building', company: true },
   { to: '/settings', label: 'Настройки', icon: 'settings' },
+  { to: '/support', label: 'Поддержка', icon: 'mail', support: true },
   { to: '/help', label: 'Помощь', icon: 'help' },
 ]
 
@@ -88,6 +90,8 @@ export default function AppShell({ children }) {
   const drawer = useRef(null)
 
   const tgApp = isMiniApp() // spec 12 §12.4: no «Выйти» inside Telegram
+  const unread = useSupportUnread(token)
+  const countOf = (i) => (i.support && unread > 0 ? unread : 0)
   const referralOn = useReferralOn()
   const items = ITEMS.filter((i) => (!i.company || company) && (!i.referral || referralOn))
   const isCurrent = (to) => {
@@ -108,8 +112,10 @@ export default function AppShell({ children }) {
   }, [open])
 
   const link = (i, tab = 0) => (
-    <Link key={i.to} to={i.to} className="side-link" aria-current={isCurrent(i.to)} tabIndex={tab}>
+    <Link key={i.to} to={i.to} className="side-link" aria-current={isCurrent(i.to)} tabIndex={tab}
+      aria-label={countOf(i) ? `${i.label}, новых ответов: ${countOf(i)}` : undefined}>
       <Icon name={i.icon} />{i.label}
+      {countOf(i) > 0 && <span className="side-link__count" aria-hidden="true">{countOf(i)}</span>}
     </Link>
   )
 
@@ -149,7 +155,10 @@ export default function AppShell({ children }) {
 
       <div id="cabinet-drawer" ref={drawer} className={`drawer lg:hidden ${open ? 'is-open' : ''}`} aria-hidden={!open}>
         {items.map((i) => (
-          <Link key={i.to} to={i.to} aria-current={isCurrent(i.to)} tabIndex={open ? 0 : -1}>{i.label}</Link>
+          <Link key={i.to} to={i.to} aria-current={isCurrent(i.to)} tabIndex={open ? 0 : -1}
+            aria-label={countOf(i) ? `${i.label}, новых ответов: ${countOf(i)}` : undefined}>
+            {i.label}{countOf(i) > 0 && <span className="side-link__count" style={{ marginLeft: 8 }} aria-hidden="true">{countOf(i)}</span>}
+          </Link>
         ))}
         <div className="drawer__foot">
           {profile?.user_id && <IdChip id={profile.user_id} />}

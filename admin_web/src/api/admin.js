@@ -178,6 +178,34 @@ export function updateSetting(key, value) {
   return apiFetch('/settings', { method: 'POST', body: { key, value } })
 }
 
+// ── Support (Telegram bot plan, TG5) ──
+export function fetchSupportTickets({ status = 'needs_answer', q = '' } = {}) {
+  const p = new URLSearchParams({ status, limit: '100' })
+  if (q) p.set('q', q)
+  return apiFetch(`/support/tickets?${p}`)
+}
+export function fetchSupportTicket(id) {
+  return apiFetch(`/support/tickets/${id}`)
+}
+export function markSupportRead(id) {
+  return apiFetch(`/support/tickets/${id}/read`, { method: 'POST' })
+}
+export function sendSupportAnswer(id, body) {
+  return apiFetch(`/support/tickets/${id}/messages`, { method: 'POST', body: { body } })
+}
+export function closeSupportTicket(id) {
+  return apiFetch(`/support/tickets/${id}/close`, { method: 'POST' })
+}
+export function reopenSupportTicket(id) {
+  return apiFetch(`/support/tickets/${id}/reopen`, { method: 'POST' })
+}
+// authImage loads an image that needs the admin session and returns an object URL.
+export async function authImage(path) {
+  const res = await apiFetch(path, { raw: true })
+  if (!res.ok) throw new Error(`Ошибка ${res.status}`)
+  return URL.createObjectURL(await res.blob())
+}
+
 // ── Alerts (Telegram) ──
 export function fetchAlertSettings() {
   return apiFetch('/alerts/settings')

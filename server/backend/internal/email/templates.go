@@ -193,6 +193,21 @@ func ReferralBonus(amountKop int64, inviter bool) (subject, htmlBody, text strin
 	return
 }
 
+// SupportReply — the support team answered (the full text is in the cabinet).
+func SupportReply(body string) (subject, htmlBody, text string) {
+	subject = "Ответ поддержки HiEarth"
+	quote := html.EscapeString(body)
+	if r := []rune(quote); len(r) > 1500 {
+		quote = string(r[:1500]) + "…"
+	}
+	quote = strings.ReplaceAll(quote, "\n", "<br>")
+	htmlBody = wrap(subject, h1("Ответ поддержки")+
+		`<div style="font-size:15px;line-height:1.6;color:#edf6f0;background:rgba(255,255,255,0.04);border-radius:12px;padding:16px 18px;margin:0 0 22px">`+quote+`</div>`+
+		para("Ответить можно в кабинете — переписка сохранена.")+button("/support", "Открыть переписку"), "")
+	text = fmt.Sprintf("Ответ поддержки HiEarth:\n\n%s\n\nОтветить: %s/support", body, SiteURL)
+	return
+}
+
 // Template names (email_log.template).
 const (
 	TemplateSubscriptionActivated = "subscription_activated"
@@ -202,4 +217,5 @@ const (
 	TemplateEmailConfirm          = "email_confirm"
 	TemplateWalletTopup           = "wallet_topup"
 	TemplateReferralBonus         = "referral_bonus"
+	TemplateSupportReply          = "support_reply"
 )

@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, Gift } from 'lucide-react'
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, Gift, LifeBuoy } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import { Kbd } from './ui/index.js'
@@ -22,6 +22,7 @@ const groups = [
       { to: '/users',     icon: Users,           label: 'navUsers' },
       { to: '/plans',     icon: Package,         label: 'navPlans' },
       { to: '/payments',  icon: Wallet,          label: 'navPayments' },
+      { to: '/support',   icon: LifeBuoy,        label: 'navSupport' },
       { to: '/alerts',    icon: Bell,            label: 'navAlerts' },
       { to: '/settings',  icon: Settings,        label: 'navSettings' },
     ],

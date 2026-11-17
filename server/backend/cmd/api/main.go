@@ -1004,6 +1004,7 @@ func main() {
 	registerTelegramAdminRoutes()
 	// Telegram: Mini App sign-in, linking, one-time site sign-in, support, news
 	registerTelegramRoutes(authLimiter, apiLimiter)
+	registerSupportRoutes(apiLimiter)
 
 	// Admin panel
 	admin.RegisterRoutes()

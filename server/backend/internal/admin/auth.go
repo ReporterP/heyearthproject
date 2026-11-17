@@ -195,6 +195,9 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "routing.direct.view", Name: "Direct Routing View", Description: "View direct routing services and their plan attachments"},
 	{Key: "routing.direct.manage", Name: "Direct Routing Manage", Description: "Create, update, delete and import direct routing services"},
 	{Key: "audit.read", Name: "Audit Log Read", Description: "View admin audit log"},
+	// Also seeded by migrations 000084/000085 (Telegram bot plan).
+	{Key: "support.manage", Name: "Support", Description: "Read and answer support tickets"},
+	{Key: "news.manage", Name: "News", Description: "Write and publish news to the channel, the bot, the cabinet and Happ"},
 }
 
 func ValidateConfig() error {

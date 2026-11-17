@@ -30,6 +30,7 @@ export default {
   navAuditLog: 'Audit Log',
   navMTProto: 'Telegram',
   navAlerts: 'Alerts',
+  navSupport: 'Support',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',
   dashUsers: 'Users',
