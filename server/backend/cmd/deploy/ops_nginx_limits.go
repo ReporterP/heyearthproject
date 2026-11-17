@@ -47,6 +47,22 @@ limit_req_status 429;
 limit_conn_status 429;
 limit_req_log_level warn;
 limit_conn_log_level warn;
+
+# The access log never holds a subscription token: /api/v1/user/subscribe/<token>,
+# /api/v1/user/happ-link/<token> and ?sub=<token> (also in the Referer) are logged as <token>.
+# The vhost snippets (ops_headers.go) use this format; fail2ban reads the same lines. Regexes
+# with a space are quoted (nginx keeps \S, \s in quoted strings).
+map $request $he_request {
+    "~^(?<he_a>\S+ /api/v1/user/(?:subscribe|happ-link)/)[^/?\s]+(?<he_b>.*)$" "${he_a}<token>${he_b}";
+    "~^(?<he_c>\S+ [^?\s]*\?(?:\S*&)?sub=)[^&\s]+(?<he_d>.*)$" "${he_c}<token>${he_d}";
+    default $request;
+}
+map $http_referer $he_referer {
+    ~^(?<he_e>[^?]*\?(?:[^#]*&)?sub=)[^&#]+(?<he_f>.*)$ "${he_e}<token>${he_f}";
+    ~^(?<he_g>.*/api/v1/user/(?:subscribe|happ-link)/)[^/?#]+(?<he_h>.*)$ "${he_g}<token>${he_h}";
+    default $http_referer;
+}
+log_format he_masked '$remote_addr - $remote_user [$time_local] "$he_request" $status $body_bytes_sent "$he_referer" "$http_user_agent"';
 `
 
 	// The stream sees real addresses too: direct clients on 443, the entries' clients on 8447

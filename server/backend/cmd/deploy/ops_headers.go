@@ -18,7 +18,8 @@ import (
 
 const nginxHeadersDir = "/etc/nginx/heyearth-headers"
 
-const headersCommon = `add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+const headersCommon = `access_log /var/log/nginx/access.log he_masked;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), usb=(), browsing-topics=()" always;
 `
