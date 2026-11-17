@@ -23,7 +23,6 @@ import (
 
 const (
 	TGLinkTokenTTL = 10 * time.Minute
-	MagicTokenTTL  = 5 * time.Minute
 )
 
 // Errors shown to the person as they are.
@@ -31,7 +30,6 @@ var (
 	ErrTGLinkInvalid  = errors.New("Ссылка устарела или уже использована — нажмите «Подключить Telegram» в настройках ещё раз")
 	ErrTGTakenByOther = errors.New("Этот Telegram уже привязан к другому аккаунту HiEarth — сначала отвяжите его там")
 	ErrTGUserHasOther = errors.New("К аккаунту уже привязан другой Telegram — сначала отвяжите его в настройках")
-	ErrMagicInvalid   = errors.New("Ссылка для входа устарела или уже использована — откройте оплату из Telegram ещё раз")
 	ErrUserBlocked    = errors.New("Аккаунт заблокирован. Напишите в поддержку.")
 )
 
@@ -329,52 +327,6 @@ func SafeNextPath(p string) string {
 	return p
 }
 
-// CreateMagicToken issues a 5-minute one-time sign-in for the site. At most three unused ones
-// live per user (the Mini App refreshes its link every 4 minutes while a payment screen is open).
-func CreateMagicToken(ctx context.Context, userDBID int, next string) (string, error) {
-	token, err := RandomToken()
-	if err != nil {
-		return "", err
-	}
-	if _, err := db.DB.ExecContext(ctx, `
-		DELETE FROM auth_magic_tokens WHERE user_id = $1 AND (expires_at < NOW() OR (used_at IS NULL AND token_hash NOT IN (
-			SELECT token_hash FROM auth_magic_tokens WHERE user_id = $1 AND used_at IS NULL AND expires_at > NOW()
-			 ORDER BY created_at DESC LIMIT 2)))`, userDBID); err != nil {
-		return "", err
-	}
-	if _, err := db.DB.ExecContext(ctx, `
-		INSERT INTO auth_magic_tokens (token_hash, user_id, next_path, expires_at) VALUES ($1, $2, $3, $4)`,
-		hashToken(token), userDBID, SafeNextPath(next), time.Now().Add(MagicTokenTTL)); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-// RedeemMagicToken uses a token up and returns its user and the page to open.
-func RedeemMagicToken(ctx context.Context, token string) (userDBID int, userID, next string, err error) {
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > 64 {
-		return 0, "", "", ErrMagicInvalid
-	}
-	var blocked bool
-	err = db.DB.QueryRowContext(ctx, `
-		WITH t AS (
-			UPDATE auth_magic_tokens SET used_at = NOW()
-			 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
-			RETURNING user_id, next_path)
-		SELECT u.id, u.user_id, t.next_path, COALESCE(u.is_blocked, FALSE) FROM t JOIN users u ON u.id = t.user_id`,
-		hashToken(token)).Scan(&userDBID, &userID, &next, &blocked)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, "", "", ErrMagicInvalid
-	}
-	if err != nil {
-		return 0, "", "", err
-	}
-	if blocked {
-		return 0, "", "", ErrUserBlocked
-	}
-	return userDBID, userID, next, nil
-}
 
 // DeleteFreshUser removes an account created a moment ago that could not be linked (it has no
 // payments, wallet or subscription yet). Anything referencing it keeps it.

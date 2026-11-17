@@ -102,7 +102,7 @@ export default function TelegramConnectPage() {
     return (
       <MiniPage label="Ждём подтверждения в Telegram">
         <Hedgehog mood="search" size={120} />
-        <h1 className="t-h3">Нажмите «Запустить» в боте</h1>
+        <h1 className="t-h3">Нажмите «Запустить» и «Привязать» в боте</h1>
         <p className="muted t-sm">Потом вернитесь в кабинет в Telegram — он откроется сам.</p>
         <Button variant="secondary" block href={url}>Открыть бота ещё раз</Button>
       </MiniPage>
@@ -133,7 +133,7 @@ export default function TelegramConnectPage() {
       {id && <p className="t-sm">Аккаунт: <span className="mono">{shortId(id)}</span></p>}
       {linkErr && <Alert tone="bad" title="Не удалось подключить." rise>{linkErr}</Alert>}
       <Button variant="primary" size="lg" block icon="send" loading={busy} onClick={connect}>Подключить Telegram</Button>
-      <p className="t-xs subtle">Откроется бот HiEarth — нажмите в нём «Запустить». Ссылка действует 10 минут.</p>
+      <p className="t-xs subtle">Откроется бот HiEarth — нажмите в нём «Запустить», затем «Привязать». Ссылка действует 10 минут.</p>
     </MiniPage>
   )
 }

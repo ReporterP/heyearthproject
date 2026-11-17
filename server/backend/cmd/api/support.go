@@ -262,11 +262,25 @@ func notifyOwnerSupport(added *biz.SupportAdded) {
 		if added.Message.Image != "" {
 			body += "\n[картинка — в админке]"
 		}
-		text := fmt.Sprintf("<b>Поддержка · №%d</b> · %s, %s\n\n%s\n\n<i>Ответьте на это сообщение — ответ уйдёт человеку.</i>",
+		// The bot's own lines first, the person's text last and quoted: a message ending in
+		// something that looks like the bot's text cannot pass for it (audit F-5).
+		text := fmt.Sprintf("<b>Поддержка · №%d</b> · %s, %s\n<i>Ответьте на это сообщение — ответ уйдёт человеку.</i>\n\n<blockquote>%s</blockquote>",
 			added.Ticket.ID, html.EscapeString(who), via, html.EscapeString(body))
-		m, err := bot.SendMessage(ctx, tg.SendMessage{ChatID: chat, Text: text, ParseMode: "HTML",
+		msg := tg.SendMessage{ChatID: chat, Text: text, ParseMode: "HTML",
 			ReplyMarkup:        tg.Keyboard(tg.Row(tg.URLButton("Открыть в админке", adminURL(fmt.Sprintf("/support?ticket=%d", added.Ticket.ID))))),
-			LinkPreviewOptions: &tg.LinkPreviewOptions{IsDisabled: true}})
+			LinkPreviewOptions: &tg.LinkPreviewOptions{IsDisabled: true}}
+		// Three attempts: the route to Telegram goes through an exit and may blink (audit F-13).
+		var m *tg.Message
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			if m, err = bot.SendMessage(ctx, msg); err == nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(5*(attempt+1)) * time.Second):
+			}
+		}
 		if err != nil {
 			log.Printf("[support] уведомление владельцу о №%d: %v", added.Ticket.ID, err)
 			return

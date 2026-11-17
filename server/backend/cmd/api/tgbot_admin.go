@@ -89,11 +89,13 @@ func handleAdminTelegramSettings(w http.ResponseWriter, r *http.Request) {
 			_ = biz.SetSetting(tgBotOffsetSetting, "0") // a new bot starts its updates from scratch
 			details["username"] = me.Username
 			tgCfg.forget(tgBotTokenSetting, tgBotUsernameSetting)
+			tgPhotoIDs.Clear() // file_ids belong to the old bot (audit F-10)
 			setupErrors = setupUserBot(r.Context(), &tg.Bot{Token: token, Doer: telegram}, true)
 		} else if req.ClearToken {
 			_ = biz.SetSetting(tgBotTokenSetting, "")
 			_ = biz.SetSetting(tgBotUsernameSetting, "")
 			tgCfg.forget(tgBotTokenSetting, tgBotUsernameSetting)
+			tgPhotoIDs.Clear()
 		}
 		if req.ChannelID != nil {
 			ch := strings.TrimSpace(*req.ChannelID)

@@ -24,8 +24,6 @@ func registerTelegramRoutes(authLimiter, apiLimiter *middleware.RateLimiter) {
 	http.HandleFunc("/api/v1/auth/telegram", authLimiter.Middleware(handleAuthTelegram))
 	http.HandleFunc("/api/v1/auth/telegram/register", authLimiter.Middleware(handleAuthTelegramRegister))
 	http.HandleFunc("/api/v1/auth/telegram/login", authLimiter.Middleware(handleAuthTelegramLogin))
-	http.HandleFunc("/api/v1/auth/magic", apiLimiter.Middleware(handleAuthMagicCreate))
-	http.HandleFunc("/api/v1/auth/magic/redeem", authLimiter.Middleware(handleAuthMagicRedeem))
 	http.HandleFunc("/api/v1/user/telegram", apiLimiter.Middleware(handleUserTelegram))
 	http.HandleFunc("/api/v1/user/telegram/link", apiLimiter.Middleware(handleUserTelegramLink))
 	http.HandleFunc("/api/v1/user/telegram/notify", apiLimiter.Middleware(handleUserTelegramNotify))
@@ -199,51 +197,6 @@ func handleAuthTelegramLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeSession(w, user.UserID, user.ID, nil)
-}
-
-// POST /api/v1/auth/magic {next} (signed in) → a 5-minute one-time link that opens the site
-// signed in on next. The Mini App opens it in the external browser for payments.
-func handleAuthMagicCreate(w http.ResponseWriter, r *http.Request) {
-	_, userDBID, ok := requireUser(w, r)
-	if !ok {
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	var req struct {
-		Next string `json:"next"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	token, err := biz.CreateMagicToken(r.Context(), userDBID, req.Next)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Не удалось подготовить ссылку — попробуйте через минуту"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": magicURL(token), "expires_in": int(biz.MagicTokenTTL.Seconds())})
-}
-
-// POST /api/v1/auth/magic/redeem {token} → a session (the site's /m/<token> page posts it, so a
-// link preview fetching the URL never uses the token up).
-func handleAuthMagicRedeem(w http.ResponseWriter, r *http.Request) {
-	if !preflight(w, r, http.MethodPost) {
-		return
-	}
-	var req struct {
-		Token string `json:"token"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	userDBID, userID, next, err := biz.RedeemMagicToken(r.Context(), req.Token)
-	if err != nil {
-		if errors.Is(err, biz.ErrMagicInvalid) || errors.Is(err, biz.ErrUserBlocked) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
-		return
-	}
-	writeSession(w, userID, userDBID, map[string]any{"next": next})
 }
 
 // GET /api/v1/user/telegram — the cabinet's «Telegram» section; DELETE unlinks.

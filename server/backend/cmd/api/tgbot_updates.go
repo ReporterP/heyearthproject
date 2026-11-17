@@ -465,8 +465,6 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 	}
 }
 
-func magicURL(token string) string { return siteURL() + "/m/" + token }
-
 // ── formats (05 §4) ──
 
 var ruMonths = []string{"января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"}

@@ -85,38 +85,6 @@ func TestTelegramLinkRules(t *testing.T) {
 	}
 }
 
-// TG3: a magic sign-in works once, never after 5 minutes, and keeps the redirect on the site.
-func TestMagicTokenOneTime(t *testing.T) {
-	conn := testpg.Open(t)
-	ctx := context.Background()
-	a := testpg.NewUser(t, conn, "magic-a")
-	tok, err := CreateMagicToken(ctx, a, "/wallet?x=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	uid, userID, next, err := RedeemMagicToken(ctx, tok)
-	if err != nil || uid != a || userID != "magic-a" || next != "/wallet?x=1" {
-		t.Fatalf("redeem: %d %q %q %v", uid, userID, next, err)
-	}
-	if _, _, _, err := RedeemMagicToken(ctx, tok); !errors.Is(err, ErrMagicInvalid) {
-		t.Fatalf("second use must fail: %v", err)
-	}
-	tok2, _ := CreateMagicToken(ctx, a, "https://evil.example/")
-	testpg.MustExec(t, conn, `UPDATE auth_magic_tokens SET expires_at = NOW() - INTERVAL '1 second' WHERE used_at IS NULL`)
-	if _, _, _, err := RedeemMagicToken(ctx, tok2); !errors.Is(err, ErrMagicInvalid) {
-		t.Fatalf("expired must fail: %v", err)
-	}
-	tok3, _ := CreateMagicToken(ctx, a, "//evil.example/")
-	if _, _, next, _ := RedeemMagicToken(ctx, tok3); next != "/dashboard" {
-		t.Fatalf("an outside redirect must fall back to /dashboard: %q", next)
-	}
-	testpg.MustExec(t, conn, `UPDATE users SET is_blocked = TRUE WHERE id = $1`, a)
-	tok4, _ := CreateMagicToken(ctx, a, "/wallet")
-	if _, _, _, err := RedeemMagicToken(ctx, tok4); !errors.Is(err, ErrUserBlocked) {
-		t.Fatalf("a blocked account must not sign in: %v", err)
-	}
-}
-
 func TestSafeNextPath(t *testing.T) {
 	for in, want := range map[string]string{
 		"/wallet": "/wallet", "/payment?plan=x": "/payment?plan=x", "": "/dashboard", "//x.org": "/dashboard",

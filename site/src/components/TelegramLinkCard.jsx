@@ -119,10 +119,10 @@ export default function TelegramLinkCard({ state }) {
         <div className="row wrap gap-3" style={{ alignItems: 'center' }}>
           <Button variant="secondary" icon="send" loading={busy} onClick={connect}>Подключить Telegram</Button>
         </div>
-        <p className="t-sm subtle">Откроется бот HiEarth — нажмите в нём «Запустить». Ссылка действует 10 минут.</p>
+        <p className="t-sm subtle">Откроется бот HiEarth — нажмите в нём «Запустить», затем «Привязать». Ссылка действует 10 минут.</p>
         {waitUrl && (
           <Alert tone="info" title="Ждём подтверждения в Telegram." rise>
-            Нажмите «Запустить» в боте. <a href={waitUrl} target="_blank" rel="noopener" className="link">Открыть ссылку ещё раз</a>
+            Нажмите «Запустить» и «Привязать» в боте. <a href={waitUrl} target="_blank" rel="noopener" className="link">Открыть ссылку ещё раз</a>
           </Alert>
         )}
       </div>

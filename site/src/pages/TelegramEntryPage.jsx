@@ -269,7 +269,7 @@ function TgWaiting({ onLinked, onReopen, onLogin }) {
     try {
       const r = await apiFetch('/api/v1/auth/telegram', { method: 'POST', body: { init_data: initData() }, signOutOn401: false })
       if (r.linked && r.token) { done.current = true; onLinked(r.token); return }
-      if (manual) setNote({ tone: 'info', title: 'Пока не подключено.', text: 'Нажмите «Подключить Telegram» в браузере, затем «Запустить» в боте.' })
+      if (manual) setNote({ tone: 'info', title: 'Пока не подключено.', text: 'Нажмите «Подключить Telegram» в браузере, затем «Запустить» и «Привязать» в боте.' })
     } catch (e) {
       if (manual) setNote({ tone: 'bad', title: 'Не удалось проверить.', text: e?.status === 429 ? 'Подождите минуту и попробуйте снова.' : (e?.message || 'Попробуйте ещё раз через минуту.') })
     } finally {
@@ -289,7 +289,7 @@ function TgWaiting({ onLinked, onReopen, onLogin }) {
       <div className="stack gap-5">
         <div>
           <h1 className="t-h1">Подтвердите в браузере</h1>
-          <p className="t-lead" style={{ marginTop: 8 }}>На открывшейся странице нажмите «Подключить Telegram», затем «Запустить» в боте. Вернитесь сюда — кабинет откроется сам.</p>
+          <p className="t-lead" style={{ marginTop: 8 }}>На открывшейся странице нажмите «Подключить Telegram», затем «Запустить» и «Привязать» в боте. Вернитесь сюда — кабинет откроется сам.</p>
         </div>
         {note && <Alert tone={note.tone} title={note.title} rise>{note.text}</Alert>}
         <div className="stack gap-3">
