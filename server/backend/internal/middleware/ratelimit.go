@@ -47,6 +47,9 @@ func NewRateLimiter(maxRequests int, window time.Duration) *RateLimiter {
 // Allow проверяет можно ли пропустить запрос для данного IP.
 func (rl *RateLimiter) Allow(ip string) bool { return rl.allowN(ip, rl.rate) }
 
+// AllowLimit is Allow with a per-call limit for key (e.g. a larger one for a shared address).
+func (rl *RateLimiter) AllowLimit(key string, limit int) bool { return rl.allowN(key, limit) }
+
 // maxBuckets bounds the limiter's memory under a flood from many addresses: past it, expired
 // buckets are dropped at once, and a new key that still does not fit is refused.
 const maxBuckets = 200000

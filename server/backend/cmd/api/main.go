@@ -139,6 +139,11 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !registerAllowed(r) {
+		w.Header().Set("Retry-After", "3600")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Слишком много новых аккаунтов с этого адреса. Попробуйте завтра."})
+		return
+	}
 
 	var req struct {
 		Platform     string `json:"platform"`
@@ -673,13 +678,10 @@ func handlePublicPlans(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	plans, err := biz.ListActivePlans()
+	plans, err := publicPlansCache.get()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "plans unavailable"})
 		return
-	}
-	if plans == nil {
-		plans = []biz.Plan{}
 	}
 	writeJSON(w, http.StatusOK, plans)
 }
@@ -690,13 +692,8 @@ func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", ""),
-		"legal_address":      biz.GetSettingOrDefault("legal_address", ""),
-		"legal_email":        biz.GetSettingOrDefault("legal_email", ""),
-		"legal_phone":        biz.GetSettingOrDefault("legal_phone", ""),
-		"legal_inn":          biz.GetSettingOrDefault("legal_inn", ""),
-	})
+	info, _ := legalInfoCache.get()
+	writeJSON(w, http.StatusOK, info)
 }
 
 func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
@@ -1015,5 +1012,5 @@ func main() {
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
-	log.Fatal(newMainHTTPServer(httpAddr, limitPublicBodies(http.DefaultServeMux)).ListenAndServe())
+	log.Fatal(newMainHTTPServer(httpAddr, loadShed(limitPublicBodies(http.DefaultServeMux))).ListenAndServe())
 }

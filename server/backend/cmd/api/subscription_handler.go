@@ -66,11 +66,24 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("missing token"))
 		return
 	}
+	// A token is a UUID: anything else is refused without a database lookup, and one token is
+	// served at most subTokenPerMin times a minute (load_protection.go).
+	if !validSubscribeToken(token) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("invalid token"))
+		return
+	}
+	if !subTokenLimiter.Allow(strings.ToLower(token)) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("too many requests"))
+		return
+	}
 
-	// Ищем пользователя по subscribe_token
+	// Ищем пользователя по subscribe_token (uuid = uuid: the unique index is used).
 	var userID string
 	err := db.DB.QueryRow(`
-		SELECT user_id FROM users WHERE subscribe_token::text = $1
+		SELECT user_id FROM users WHERE subscribe_token = $1::uuid
 	`, token).Scan(&userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -630,10 +643,14 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing token"})
 		return
 	}
+	if !validSubscribeToken(token) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "invalid token"})
+		return
+	}
 
 	var userID string
 	err := db.DB.QueryRow(`
-		SELECT user_id FROM users WHERE subscribe_token::text = $1
+		SELECT user_id FROM users WHERE subscribe_token = $1::uuid
 	`, token).Scan(&userID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "invalid token"})
