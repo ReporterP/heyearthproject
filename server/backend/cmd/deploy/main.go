@@ -46,6 +46,7 @@ type deployConfig struct {
 	host               string
 	deployUser         string
 	deployPassword     string
+	deployKeyFile      string // DEPLOY_SSH_KEY_FILE: the deploy key, tried before the password
 	deployPort         int
 	hostKeyFingerprint string
 }
@@ -141,14 +142,14 @@ func main() {
 		host:               env.get("DEPLOY_HOST", ""),
 		deployUser:         env.get("DEPLOY_USER", "root"),
 		deployPassword:     env.get("DEPLOY_SSH_PASSWORD", ""),
+		deployKeyFile:      env.get("DEPLOY_SSH_KEY_FILE", ""),
 		deployPort:         env.getInt("DEPLOY_PORT", 22),
 		hostKeyFingerprint: env.get("DEPLOY_HOST_KEY_FINGERPRINT", ""),
 	}
 
 	validateLocalConfig(mode, cfg)
 
-	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.deployPort)
-	client, err := sshDial(addr, cfg.deployUser, cfg.deployPassword, cfg.hostKeyFingerprint)
+	client, err := sshDialHub(cfg)
 	if err != nil {
 		log.Fatalf("ssh dial: %v", err)
 	}
@@ -266,8 +267,8 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	if cfg.host == "" {
 		log.Fatal("DEPLOY_HOST is required")
 	}
-	if cfg.deployPassword == "" {
-		log.Fatal("DEPLOY_SSH_PASSWORD is required")
+	if cfg.deployPassword == "" && cfg.deployKeyFile == "" {
+		log.Fatal("DEPLOY_SSH_KEY_FILE or DEPLOY_SSH_PASSWORD is required")
 	}
 
 	if mode == "main" || mode == "update-main" {
@@ -373,6 +374,11 @@ func sshDial(addr, user, password, expectedFingerprint string) (*ssh.Client, err
 // restrict the negotiation to ssh-ed25519 (otherwise the server may present its RSA key). There
 // is no unpinned mode.
 func sshDialAlgos(addr, user, password, expectedFingerprint string, hostKeyAlgorithms []string) (*ssh.Client, error) {
+	return sshDialAuth(addr, user, []ssh.AuthMethod{ssh.Password(password)}, expectedFingerprint, hostKeyAlgorithms)
+}
+
+// sshDialAuth is sshDialAlgos with explicit auth methods (the Hub: deploy key, then password).
+func sshDialAuth(addr, user string, auth []ssh.AuthMethod, expectedFingerprint string, hostKeyAlgorithms []string) (*ssh.Client, error) {
 	expectedFingerprint = strings.TrimSpace(expectedFingerprint)
 	if !fingerprintRe.MatchString(expectedFingerprint) {
 		return nil, fmt.Errorf("ssh %s: нужен закреплённый отпечаток ключа хоста SHA256:…, а не %q", addr, expectedFingerprint)
@@ -387,7 +393,7 @@ func sshDialAlgos(addr, user, password, expectedFingerprint string, hostKeyAlgor
 
 	cfg := &ssh.ClientConfig{
 		User:              user,
-		Auth:              []ssh.AuthMethod{ssh.Password(password)},
+		Auth:              auth,
 		HostKeyCallback:   callback,
 		HostKeyAlgorithms: hostKeyAlgorithms,
 		Timeout:           15 * time.Second,

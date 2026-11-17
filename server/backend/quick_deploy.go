@@ -45,13 +45,15 @@ func main() {
 
 	// Load host and password from .env — the Hub IP is not hardcoded
 	// (it changed on 2026-10-10 after the old one was filtered upstream).
-	password, deployHost, deployPort, hostKeyFP := "", "", "22", ""
+	password, keyFile, deployHost, deployPort, hostKeyFP := "", "", "", "22", ""
 	if data, err := os.ReadFile(envFile); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			switch {
 			case strings.HasPrefix(line, "DEPLOY_SSH_PASSWORD="):
 				password = strings.TrimPrefix(line, "DEPLOY_SSH_PASSWORD=")
+			case strings.HasPrefix(line, "DEPLOY_SSH_KEY_FILE="):
+				keyFile = strings.TrimSpace(strings.TrimPrefix(line, "DEPLOY_SSH_KEY_FILE="))
 			case strings.HasPrefix(line, "DEPLOY_HOST="):
 				deployHost = strings.TrimPrefix(line, "DEPLOY_HOST=")
 			case strings.HasPrefix(line, "DEPLOY_PORT="):
@@ -63,8 +65,24 @@ func main() {
 			}
 		}
 	}
-	if password == "" {
-		log.Fatal("DEPLOY_SSH_PASSWORD not found in server/.env")
+	if password == "" && keyFile == "" {
+		log.Fatal("DEPLOY_SSH_KEY_FILE or DEPLOY_SSH_PASSWORD not found in server/.env")
+	}
+	// The deploy key (outside the repo) is tried before the password.
+	auth := []ssh.AuthMethod{}
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			log.Fatalf("DEPLOY_SSH_KEY_FILE: %v", err)
+		}
+		signer, err := ssh.ParsePrivateKey(data)
+		if err != nil {
+			log.Fatalf("DEPLOY_SSH_KEY_FILE %s: %v (passphrase-protected keys are not supported)", keyFile, err)
+		}
+		auth = append(auth, ssh.PublicKeys(signer))
+	}
+	if password != "" {
+		auth = append(auth, ssh.Password(password))
 	}
 	if deployHost == "" {
 		log.Fatal("DEPLOY_HOST not found in server/.env")
@@ -96,7 +114,7 @@ func main() {
 	fmt.Println("[2/5] Подключение к серверу...")
 	config := &ssh.ClientConfig{
 		User: user,
-		Auth: []ssh.AuthMethod{ssh.Password(password)},
+		Auth: auth,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			if got := ssh.FingerprintSHA256(key); got != hostKeyFP {
 				return fmt.Errorf("host key mismatch: got %s, want %s (DEPLOY_HOST_KEY_FINGERPRINT)", got, hostKeyFP)

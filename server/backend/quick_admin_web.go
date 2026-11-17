@@ -41,8 +41,24 @@ func main() {
 	serverRoot := filepath.Dir(backendRoot)
 	repoRoot := filepath.Dir(serverRoot)
 	env := readEnv(filepath.Join(serverRoot, ".env"))
-	if env["DEPLOY_SSH_PASSWORD"] == "" || env["DEPLOY_HOST"] == "" {
-		log.Fatal("DEPLOY_SSH_PASSWORD / DEPLOY_HOST not found in server/.env")
+	if (env["DEPLOY_SSH_PASSWORD"] == "" && env["DEPLOY_SSH_KEY_FILE"] == "") || env["DEPLOY_HOST"] == "" {
+		log.Fatal("DEPLOY_SSH_KEY_FILE or DEPLOY_SSH_PASSWORD, and DEPLOY_HOST, must be in server/.env")
+	}
+	auth := []ssh.AuthMethod{}
+	if kf := strings.TrimSpace(env["DEPLOY_SSH_KEY_FILE"]); kf != "" {
+		// The deploy key (outside the repo) is tried before the password.
+		data, err := os.ReadFile(kf)
+		if err != nil {
+			log.Fatalf("DEPLOY_SSH_KEY_FILE: %v", err)
+		}
+		signer, err := ssh.ParsePrivateKey(data)
+		if err != nil {
+			log.Fatalf("DEPLOY_SSH_KEY_FILE %s: %v (passphrase-protected keys are not supported)", kf, err)
+		}
+		auth = append(auth, ssh.PublicKeys(signer))
+	}
+	if env["DEPLOY_SSH_PASSWORD"] != "" {
+		auth = append(auth, ssh.Password(env["DEPLOY_SSH_PASSWORD"]))
 	}
 	// The root password never goes to an unverified host (same pin as quick_deploy.go).
 	fp := env["DEPLOY_HOST_KEY_FINGERPRINT"]
@@ -76,7 +92,7 @@ func main() {
 	fmt.Println("[2/3] Загрузка через SSH pipe...")
 	client, err := dialRetry(net.JoinHostPort(env["DEPLOY_HOST"], port), &ssh.ClientConfig{
 		User: "root",
-		Auth: []ssh.AuthMethod{ssh.Password(env["DEPLOY_SSH_PASSWORD"])},
+		Auth: auth,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			if got := ssh.FingerprintSHA256(key); got != fp {
 				return fmt.Errorf("host key mismatch: got %s, want %s", got, fp)

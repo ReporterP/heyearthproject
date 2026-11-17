@@ -1049,7 +1049,7 @@ func switchStreamProxyProtocol(client *ssh.Client, cfg *deployConfig, mode strin
 		}
 	}
 	redial := func() (remoteRun, error) {
-		c, err := sshDial(fmt.Sprintf("%s:%d", cfg.host, cfg.deployPort), cfg.deployUser, cfg.deployPassword, cfg.hostKeyFingerprint)
+		c, err := sshDialHub(cfg)
 		if err != nil {
 			return nil, err
 		}
