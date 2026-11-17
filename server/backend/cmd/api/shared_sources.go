@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/middleware"
 )
@@ -53,6 +55,14 @@ func refreshSharedSources(ctx context.Context) error {
 // startSharedSourceRefresh loads the set now and every 5 minutes (a DB error keeps the old set).
 func startSharedSourceRefresh(ctx context.Context) {
 	middleware.SharedSource = isSharedSource
+	middleware.ValidBearer = func(a string) bool {
+		t, ok := strings.CutPrefix(a, "Bearer ")
+		if !ok {
+			return false
+		}
+		_, err := biz.ValidateUserToken(strings.TrimSpace(t))
+		return err == nil
+	}
 	if err := refreshSharedSources(ctx); err != nil {
 		log.Printf("[ratelimit] shared sources: %v", err)
 	}

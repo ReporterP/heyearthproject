@@ -9,8 +9,9 @@ import (
 
 func TestSharedSourceCountsPerUser(t *testing.T) {
 	SharedSource = func(ip string) bool { return ip == "198.51.100.7" }
-	defer func() { SharedSource = nil }()
-	rl := NewRateLimiter(2, time.Minute)
+	ValidBearer = func(a string) bool { return a == "Bearer a" || a == "Bearer b" }
+	defer func() { SharedSource, ValidBearer = nil, nil }()
+	rl := NewRateLimiter(2, time.Minute).PerUserBehindShared()
 	h := rl.Middleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	do := func(ip, auth string) int {
 		r := httptest.NewRequest("GET", "/x", nil)
@@ -35,13 +36,41 @@ func TestSharedSourceCountsPerUser(t *testing.T) {
 	if do("198.51.100.7", "Bearer b") != 200 {
 		t.Fatal("user B must have its own bucket")
 	}
-	// Anonymous requests from the exit: sharedAnonFactor times the limit.
-	for i := 0; i < 2*sharedAnonFactor; i++ {
+	// A forged token is not a bucket of its own: it counts with the anonymous ones (F17).
+	if do("198.51.100.7", "Bearer forged") != 200 {
+		t.Fatal("forged token goes to the shared bucket, which still has room")
+	}
+	// Anonymous requests from the exit: sharedAnonFactor times the limit (one used by the forged one).
+	for i := 0; i < 2*sharedAnonFactor-1; i++ {
 		if do("198.51.100.7", "") != 200 {
 			t.Fatalf("anonymous request %d from a shared address refused", i)
 		}
 	}
 	if do("198.51.100.7", "") != 429 {
 		t.Fatal("anonymous shared limit must still apply")
+	}
+}
+
+func TestSignInLimitStaysPerAddress(t *testing.T) {
+	SharedSource = func(ip string) bool { return ip == "198.51.100.7" }
+	ValidBearer = func(string) bool { return true }
+	defer func() { SharedSource, ValidBearer = nil, nil }()
+	rl := NewRateLimiter(1, time.Minute) // not PerUserBehindShared: like the sign-in / code limits
+	h := rl.Middleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	codes := 0
+	for i := 0; i < sharedAnonFactor+3; i++ {
+		r := httptest.NewRequest("POST", "/login", nil)
+		r.RemoteAddr = "127.0.0.1:5000"
+		r = r.WithContext(TrustProxyHeaders(r.Context()))
+		r.Header.Set("X-Real-IP", "198.51.100.7")
+		r.Header.Set("Authorization", "Bearer t"+string(rune('a'+i)))
+		w := httptest.NewRecorder()
+		h(w, r)
+		if w.Code == 200 {
+			codes++
+		}
+	}
+	if codes != sharedAnonFactor {
+		t.Fatalf("a new token per request must not open new buckets: %d passed", codes)
 	}
 }

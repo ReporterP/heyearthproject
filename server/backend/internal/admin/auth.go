@@ -16,6 +16,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -133,6 +134,34 @@ func grantRefusal(r *http.Request, q rowQuerier, roleKeys []string) string {
 			if p != "" && !claimsAllow(claims, p) {
 				return "Роль «" + k + "» даёт право " + p + ", которого нет у вас — её выдаёт суперадмин"
 			}
+		}
+	}
+	return ""
+}
+
+// targetRefusal: an admin who is not a super admin may change (password, login, active flag,
+// roles) only an admin with no more rights than their own — never a super admin. Otherwise a
+// delegated admins.write role could set the owner's password and sign in as them (audit F3).
+func targetRefusal(r *http.Request, q rowQuerier, targetID int) string {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok || claims.IsSuperAdmin() {
+		return ""
+	}
+	var roles, perms pq.StringArray
+	if err := q.QueryRow(`SELECT COALESCE(array_agg(DISTINCT r.role_key), '{}'), COALESCE(array_agg(DISTINCT p.permission_key) FILTER (WHERE p.permission_key IS NOT NULL), '{}')
+		FROM admin_user_roles ur JOIN admin_roles r ON r.id = ur.role_id
+		LEFT JOIN admin_role_permissions rp ON rp.role_id = r.id LEFT JOIN admin_permissions p ON p.id = rp.permission_id
+		WHERE ur.admin_user_id = $1`, targetID).Scan(&roles, &perms); err != nil {
+		return "Не удалось проверить права администратора"
+	}
+	for _, k := range roles {
+		if k == superAdminRoleKey {
+			return "Суперадмина меняет только суперадмин"
+		}
+	}
+	for _, p := range perms {
+		if p != "" && !claimsAllow(claims, p) {
+			return "У этого администратора есть право " + p + ", которого нет у вас — его меняет суперадмин"
 		}
 	}
 	return ""
@@ -369,15 +398,27 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req LoginRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10) // the API body cap skips /api/admin/ (audit F21)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
+	// Lockout per (login, address), known and unknown logins alike (login_security.go).
+	now := time.Now()
+	ip := middleware.ExtractIP(r)
+	if left := adminLockedFor(req.Username, ip, now); left > 0 {
+		_ = bcrypt.CompareHashAndPassword(dummyAdminHash, []byte(req.Password))
+		mins := int(left.Minutes()) + 1
+		w.Header().Set("Retry-After", fmt.Sprint(mins*60))
+		writeAdminError(w, http.StatusTooManyRequests, fmt.Sprintf("Слишком много неудачных попыток — вход с этого адреса заблокирован ещё на %d мин", mins))
+		return
+	}
 	record, err := loadAdminRecordByUsername(strings.TrimSpace(req.Username))
 	if err == sql.ErrNoRows {
 		// The same bcrypt time as a real account: the answer time does not tell which logins exist.
 		_ = bcrypt.CompareHashAndPassword(dummyAdminHash, []byte(req.Password))
+		adminFailed(req.Username, ip, now)
 		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
@@ -391,16 +432,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
 		return
 	}
-	now := time.Now()
-	if sec.locked(now) {
-		_ = bcrypt.CompareHashAndPassword(dummyAdminHash, []byte(req.Password))
-		mins := int(sec.lockedUntil.Time.Sub(now).Minutes()) + 1
-		w.Header().Set("Retry-After", fmt.Sprint(mins*60))
-		writeAdminError(w, http.StatusTooManyRequests, fmt.Sprintf("Слишком много неудачных попыток — вход заблокирован ещё на %d мин", mins))
-		return
-	}
 	if err := bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)); err != nil {
-		recordAdminFailure(record.ID)
+		adminFailed(req.Username, ip, now)
 		writeLoginAudit(r, record.ID, record.Username, "admin.login_failed", map[string]string{"reason": "password"})
 		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
@@ -420,7 +453,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 			step = verifyTOTP(secret, req.TOTPCode, now, sec.totpLast)
 		}
 		if step == 0 {
-			recordAdminFailure(record.ID)
+			adminFailed(req.Username, ip, now)
 			writeLoginAudit(r, record.ID, record.Username, "admin.login_failed", map[string]string{"reason": "totp"})
 			writeAdminJSON(w, http.StatusUnauthorized, map[string]any{"error": "Код не подошёл", "totp_required": true})
 			return
@@ -434,7 +467,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resetAdminFailures(record.ID)
+	adminSucceeded(req.Username, ip)
 	writeLoginAudit(r, record.ID, record.Username, "admin.login", map[string]bool{"totp": sec.totpEnabled})
 
 	adminUser, roles, err := buildAdminUser(record)
@@ -613,6 +646,10 @@ func UpdateAdminUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
+		return
+	}
+	if msg := targetRefusal(r, tx, adminID); msg != "" {
+		writeAdminError(w, http.StatusForbidden, msg)
 		return
 	}
 

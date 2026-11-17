@@ -5,7 +5,8 @@ package main
 // that sets its own add_header — nginx does not inherit add_header into such a location).
 //
 // Site (also the API, go.<domain> and the Telegram Mini App): HSTS, nosniff, Referrer-Policy,
-// Permissions-Policy and a CSP in Report-Only mode first (reports to /api/v1/csp-report): the
+// Permissions-Policy, framing enforced to the site itself and Telegram Web (the Mini App trusts a
+// frame as a Telegram host — site/src/lib/telegram.js) and a full CSP in Report-Only mode first (reports to /api/v1/csp-report): the
 // ЮKassa widget and Telegram Web (which frames the Mini App) must keep working; enforce after the
 // reports are clean (runbook). Admin: the same plus an enforced CSP and no framing at all.
 
@@ -30,7 +31,7 @@ const siteCSP = "default-src 'self'; script-src 'self' https://yookassa.ru; styl
 	"img-src 'self' data: blob: https:; font-src 'self' data:; " +
 	"connect-src 'self' https://yookassa.ru https://*.yookassa.ru https://*.yoomoney.ru; " +
 	"frame-src https://yookassa.ru https://*.yookassa.ru https://yoomoney.ru https://*.yoomoney.ru; " +
-	"frame-ancestors 'self' https://web.telegram.org; base-uri 'self'; object-src 'none'; " +
+	"frame-ancestors 'self' https://web.telegram.org https://*.telegram.org; base-uri 'self'; object-src 'none'; " +
 	"form-action 'self' https://yookassa.ru https://*.yoomoney.ru; report-uri /api/v1/csp-report"
 
 const adminCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
@@ -40,6 +41,7 @@ var (
 	siteHeadersConf = "# Installed by deploy --setup-hardening (cmd/deploy/ops_headers.go)\n" + headersCommon +
 		`add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Content-Security-Policy-Report-Only "` + siteCSP + `" always;
+add_header Content-Security-Policy "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org" always;
 `
 	adminHeadersConf = "# Installed by deploy --setup-hardening (cmd/deploy/ops_headers.go)\n" + headersCommon +
 		`add_header Referrer-Policy "no-referrer" always;

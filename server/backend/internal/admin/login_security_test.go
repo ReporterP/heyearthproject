@@ -39,3 +39,24 @@ func TestVerifyTOTPWindowAndReplay(t *testing.T) {
 		t.Fatal("old / malformed codes must be refused")
 	}
 }
+
+func TestAdminLockoutPerAddress(t *testing.T) {
+	now := time.Now()
+	for i := 0; i < adminMaxFailures; i++ {
+		adminFailed("Owner", "198.51.100.9", now)
+	}
+	if adminLockedFor("owner", "198.51.100.9", now) == 0 {
+		t.Fatal("the attacking address must be locked")
+	}
+	if adminLockedFor("owner", "203.0.113.4", now) != 0 {
+		t.Fatal("the owner's address must stay open (no account-wide lock, audit F13)")
+	}
+	adminFailed("nobody-like-this", "198.51.100.10", now)
+	adminSucceeded("owner", "198.51.100.9")
+	if adminLockedFor("owner", "198.51.100.9", now) != 0 {
+		t.Fatal("a success clears the lock")
+	}
+	if adminLockedFor("owner", "198.51.100.9", now.Add(adminLockout+time.Second)) != 0 {
+		t.Fatal("locks expire")
+	}
+}

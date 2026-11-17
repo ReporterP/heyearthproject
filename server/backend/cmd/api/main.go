@@ -863,10 +863,10 @@ func main() {
 	// Rate limiters. Our servers' own addresses (exits, entries) are shared by many users:
 	// counted per user there (shared_sources.go).
 	startSharedSourceRefresh(context.Background())
-	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
-	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
-	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)
-	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute) // promocodes and activation codes: guessing is the attack
+	authLimiter := middleware.NewRateLimiter(10, time.Minute)                       // 10 req/min per IP (auth)
+	apiLimiter := middleware.NewRateLimiter(100, time.Minute).PerUserBehindShared() // 100 req/min per IP (general API)
+	webhookLimiter := middleware.NewRateLimiter(30, time.Minute)                    // 30 req/min per IP (webhooks)
+	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute)                    // promocodes and activation codes: guessing is the attack
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"

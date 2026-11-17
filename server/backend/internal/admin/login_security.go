@@ -1,9 +1,10 @@
 package admin
 
 // Admin sign-in hardening (security audit 2026-11-18, migration 000088):
-//   - lockout: adminMaxFailures wrong passwords or codes in a row lock the account for
-//     adminLockout; the answer during a lock is the same whatever the password, so a lock does
-//     not confirm a guess. The counter resets on a successful sign-in.
+//   - lockout: adminMaxFailures wrong passwords or codes from one address lock that login FOR THAT
+//     ADDRESS for adminLockout (in memory) — a stranger cannot lock the owner out from elsewhere
+//     (audit F13), and unknown logins are counted the same way, so a lock does not reveal which
+//     logins exist (F33). The answer during a lock is the same whatever the password.
 //   - an unknown username costs the same bcrypt time as a known one (no username probing).
 //   - TOTP (RFC 6238: HMAC-SHA1, 30 s, 6 digits, ±1 step), opt-in per admin from «Настройки»;
 //     a code is accepted once (totp_last_step). The secret is stored encrypted (internal/crypto).
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -57,17 +59,59 @@ func loadAdminLoginState(id int) (adminLoginState, error) {
 	return s, err
 }
 
-func (s adminLoginState) locked(now time.Time) bool {
-	return s.lockedUntil.Valid && s.lockedUntil.Time.After(now)
+// adminFails: failures per (lower-case login, client address) within adminLockout.
+var adminFails = struct {
+	sync.Mutex
+	m map[string]*adminFailState
+}{m: map[string]*adminFailState{}}
+
+type adminFailState struct {
+	n           int
+	first       time.Time
+	lockedUntil time.Time
 }
 
-// recordAdminFailure counts one failed attempt and locks the account at adminMaxFailures.
-func recordAdminFailure(id int) {
-	_, _ = db.DB.Exec(`
-		UPDATE admin_users SET
-			failed_logins = CASE WHEN failed_logins + 1 >= $2 THEN 0 ELSE failed_logins + 1 END,
-			locked_until  = CASE WHEN failed_logins + 1 >= $2 THEN NOW() + make_interval(secs => $3) ELSE locked_until END
-		WHERE id = $1`, id, adminMaxFailures, int(adminLockout.Seconds()))
+func adminFailKey(login, ip string) string {
+	return strings.ToLower(strings.TrimSpace(login)) + "|" + ip
+}
+
+// adminLockedFor: how long this login stays locked for this address (0 = not locked).
+func adminLockedFor(login, ip string, now time.Time) time.Duration {
+	adminFails.Lock()
+	defer adminFails.Unlock()
+	if st := adminFails.m[adminFailKey(login, ip)]; st != nil && st.lockedUntil.After(now) {
+		return st.lockedUntil.Sub(now)
+	}
+	return 0
+}
+
+// adminFailed counts a wrong password or code; the adminMaxFailures-th within adminLockout locks.
+func adminFailed(login, ip string, now time.Time) {
+	adminFails.Lock()
+	defer adminFails.Unlock()
+	if len(adminFails.m) > 100000 { // a flood of keys: forget the expired ones
+		for k, v := range adminFails.m {
+			if now.Sub(v.first) > adminLockout && v.lockedUntil.Before(now) {
+				delete(adminFails.m, k)
+			}
+		}
+	}
+	k := adminFailKey(login, ip)
+	st := adminFails.m[k]
+	if st == nil || now.Sub(st.first) > adminLockout {
+		st = &adminFailState{first: now}
+		adminFails.m[k] = st
+	}
+	st.n++
+	if st.n >= adminMaxFailures {
+		st.lockedUntil, st.n, st.first = now.Add(adminLockout), 0, now
+	}
+}
+
+func adminSucceeded(login, ip string) {
+	adminFails.Lock()
+	defer adminFails.Unlock()
+	delete(adminFails.m, adminFailKey(login, ip))
 }
 
 // writeLoginAudit records a sign-in event (no session yet, so the admin is named explicitly).
@@ -79,10 +123,6 @@ func writeLoginAudit(r *http.Request, adminID int, username, action string, deta
 	_, _ = auditLogExec(`
 		INSERT INTO admin_audit_log (admin_id, admin_username, action, target_type, target_id, details, ip_address)
 		VALUES ($1, $2, $3, 'admin_user', $4, $5, $6)`, adminID, username, action, fmt.Sprint(adminID), dj, middleware.ExtractIP(r))
-}
-
-func resetAdminFailures(id int) {
-	_, _ = db.DB.Exec(`UPDATE admin_users SET failed_logins = 0, locked_until = NULL WHERE id = $1`, id)
 }
 
 // ── TOTP ──
@@ -268,15 +308,20 @@ func TOTPDisableHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
 		return
 	}
+	ip := middleware.ExtractIP(r)
+	if adminLockedFor(record.Username, ip, time.Now()) > 0 {
+		writeAdminError(w, http.StatusTooManyRequests, "Слишком много неудачных попыток — подождите 15 минут")
+		return
+	}
 	if bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)) != nil {
-		recordAdminFailure(claims.AdminID)
+		adminFailed(record.Username, ip, time.Now())
 		writeAdminError(w, http.StatusForbidden, "Неверный пароль")
 		return
 	}
 	if s.totpEnabled {
 		secret, err := decryptTOTP(s.totpSecret)
 		if err != nil || verifyTOTP(secret, req.Code, time.Now(), s.totpLast) == 0 {
-			recordAdminFailure(claims.AdminID)
+			adminFailed(record.Username, ip, time.Now())
 			writeAdminError(w, http.StatusForbidden, "Код не подошёл")
 			return
 		}

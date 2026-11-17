@@ -13,6 +13,7 @@ import (
 
 // RateLimiter — in-memory rate limiter на основе token bucket per IP.
 type RateLimiter struct {
+	perUser  bool // behind a shared address, count a valid user token separately (PerUserBehindShared)
 	mu       sync.Mutex
 	buckets  map[string]*bucket
 	rate     int           // максимум запросов
@@ -215,16 +216,28 @@ var SharedSource func(ip string) bool
 // allowance (it stands for every user behind that exit).
 const sharedAnonFactor = 20
 
-// keyFor is the bucket of r. A request from a shared address is counted per user when it carries
-// a token (a hash of the Authorization header, never the token itself), else in the address's
-// bucket with sharedAnonFactor times the limit — so one user behind an exit cannot use up the
-// limit of everybody else there.
+// ValidBearer reports whether an Authorization value carries a token this API issued (signature
+// and expiry, no database). Set by cmd/api; nil = never.
+var ValidBearer func(authorization string) bool
+
+// PerUserBehindShared makes the limiter count each signed-in user separately when the request
+// comes from a shared address. Only for the general API limit: the sign-in and code limits stay
+// per address, where one person could otherwise mint a bucket per token (security audit F17).
+func (rl *RateLimiter) PerUserBehindShared() *RateLimiter {
+	rl.perUser = true
+	return rl
+}
+
+// keyFor is the bucket of r. A request from a shared address is counted per user when the limiter
+// allows it and the request carries a valid token (a hash of the header, never the token
+// itself), else in the address's bucket with sharedAnonFactor times the limit — so one user
+// behind an exit cannot use up the limit of everybody else there.
 func (rl *RateLimiter) keyFor(r *http.Request) (string, int) {
 	ip := ExtractIP(r)
 	if SharedSource == nil || !SharedSource(ip) {
 		return ip, rl.rate
 	}
-	if a := r.Header.Get("Authorization"); a != "" {
+	if a := r.Header.Get("Authorization"); rl.perUser && a != "" && ValidBearer != nil && ValidBearer(a) {
 		sum := sha256.Sum256([]byte(a))
 		return ip + "|" + hex.EncodeToString(sum[:12]), rl.rate
 	}

@@ -28,14 +28,22 @@ export function walletTopup(token, { amountRub, purchase, email, confirmationTyp
   return apiFetch('/api/v1/wallet/topup', { token, method: 'POST', body, fallback: 'Не удалось создать платёж.' })
 }
 
+// A payment id comes from the URL (/checkout/:paymentId, ?topup=): only digits reach the API path
+// (a crafted «..%2F..» would otherwise send an authenticated request to another endpoint).
+export function paymentIdOk(id) { return /^\d{1,18}$/.test(String(id ?? '')) }
+
+function badId() { return Promise.reject(Object.assign(new Error('Платёж не найден.'), { status: 404 })) }
+
 export function getTopupStatus(token, paymentId) {
-  return apiFetch(`/api/v1/wallet/topup/${paymentId}`, { token, fallback: 'Не удалось проверить платёж.' })
+  if (!paymentIdOk(paymentId)) return badId()
+  return apiFetch(`/api/v1/wallet/topup/${encodeURIComponent(paymentId)}`, { token, fallback: 'Не удалось проверить платёж.' })
 }
 
 // resumeTopup: the widget's token again for a payment still waiting for the client (E7);
 // 409 when it cannot go on any more.
 export function resumeTopup(token, paymentId) {
-  return apiFetch(`/api/v1/wallet/topup/${paymentId}/resume`, { token, method: 'POST', fallback: 'Не удалось продолжить платёж.' })
+  if (!paymentIdOk(paymentId)) return badId()
+  return apiFetch(`/api/v1/wallet/topup/${encodeURIComponent(paymentId)}/resume`, { token, method: 'POST', fallback: 'Не удалось продолжить платёж.' })
 }
 
 export function newRequestId() {

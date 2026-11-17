@@ -207,6 +207,16 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		telegramValue = *payload.TelegramID
 	}
+	// The HiEarth ID and the Telegram ID both open the account (an ID-only sign-in, a Mini App
+	// sign-in of that Telegram): changing them is the same power as a password reset (audit F12).
+	identityChange := strings.TrimSpace(payload.UserID) != "" || payload.TelegramID != nil
+	if identityChange {
+		claims, _ := ClaimsFromContext(r.Context())
+		if claims == nil || !claimsAllow(claims, "users.password_reset") {
+			writeAdminError(w, http.StatusForbidden, "HiEarth ID и Telegram ID меняет администратор с правом «Сбросить пароль» — они открывают вход в аккаунт")
+			return
+		}
+	}
 	platform := strings.ToLower(strings.TrimSpace(payload.PreferredPlatform))
 	if _, err := db.DB.Exec(`
 		UPDATE users
@@ -222,6 +232,10 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), payload)
+	if identityChange {
+		// The old ID / Telegram must not keep a way in.
+		_, _ = db.DB.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userID)
+	}
 	if payload.IsBlocked != nil {
 		biz.NotifySubscriptionChange() // a ban or an unban reaches xray and Bamboo at once
 	}

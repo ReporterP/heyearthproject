@@ -39,10 +39,22 @@ export function shouldLoad() {
   return location.pathname === '/tg' || launchedFromTelegram() || flagged()
 }
 
+// realTelegram: a Telegram client really hosts the page — its native webview injects
+// TelegramWebviewProxy, Telegram Web frames it (frame-ancestors on the site allows only
+// web.telegram.org). A #tgWebAppData fragment alone proves nothing: anyone can paste their own
+// signed initData into a link and have a signed-in visitor of the site link that Telegram to
+// their account (security audit F10).
+function realTelegram() {
+  if (typeof window === 'undefined') return false
+  try { if (window.TelegramWebviewProxy !== undefined) return true } catch { /* not native */ }
+  try { if (window.external && 'notify' in window.external) return true } catch { /* not WinPhone */ }
+  try { return window.parent != null && window.parent !== window } catch { return true }
+}
+
 // webApp is Telegram.WebApp when the page really runs inside Telegram (initData present).
 export function webApp() {
   const w = typeof window !== 'undefined' ? window.Telegram?.WebApp : null
-  return w && w.initData ? w : null
+  return w && w.initData && realTelegram() ? w : null
 }
 
 export function isMiniApp() { return !!webApp() }

@@ -80,7 +80,8 @@ export async function toggleAutoRenew(token, enabled) {
 }
 
 export async function getPaymentDetail(token, paymentId) {
-  return apiFetch(`/api/v1/user/payments/${paymentId}`, { token, fallback: 'Не удалось загрузить платёж.' })
+  if (!/^\d{1,18}$/.test(String(paymentId ?? ''))) return Promise.reject(Object.assign(new Error('Платёж не найден.'), { status: 404 }))
+  return apiFetch(`/api/v1/user/payments/${encodeURIComponent(paymentId)}`, { token, fallback: 'Не удалось загрузить платёж.' })
 }
 
 // ── MTProto ──

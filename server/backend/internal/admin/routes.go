@@ -24,7 +24,7 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/me/totp", withMethod(http.MethodGet, AuthMiddleware(TOTPStatusHandler)))
 	http.HandleFunc("/api/admin/me/totp/setup", withMethod(http.MethodPost, AuthMiddleware(TOTPSetupHandler)))
 	http.HandleFunc("/api/admin/me/totp/enable", withMethod(http.MethodPost, AuthMiddleware(TOTPEnableHandler)))
-	http.HandleFunc("/api/admin/me/totp/disable", withMethod(http.MethodPost, AuthMiddleware(TOTPDisableHandler)))
+	http.HandleFunc("/api/admin/me/totp/disable", adminLoginLimiter.Middleware(withMethod(http.MethodPost, AuthMiddleware(TOTPDisableHandler))))
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
