@@ -10,6 +10,8 @@
 .he .lp-well { padding: 12px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
 /* the Netherlands flag of the app-screen illustration (raw colours allowed here: spec 01 §10) */
 .he .lp-flag { width: 30px; height: 20px; border-radius: 4px; flex: none; background: linear-gradient(#AE1C28 0 33%, #FFFFFF 33% 66%, #21468B 66%); }
+/* grey app screen (no subscription): the flag waits for the connection (06 §6.1 item 7) */
+.he .lp-flag--off { filter: grayscale(1); opacity: .45; }
 .he .lp-section { padding: 96px 0; border-top: 1px solid var(--line); }
 .he .lp-faq { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 56px; }
 @media (max-width: 1024px) {

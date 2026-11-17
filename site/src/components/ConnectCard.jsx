@@ -38,7 +38,7 @@ export function ActiveConnect({ subLink, tg, phone, onHapp }) {
     return (
       <section className="card card--glow stack gap-3" style={{ alignItems: 'center', textAlign: 'center', padding: 24 }} aria-labelledby="cc-t">
         <h2 id="cc-t" className="sr">Подключение</h2>
-        <ConnectOrb active label="Готово" style={{ width: 160, height: 160 }} />
+        <ConnectOrb active label="Готово" style={{ width: 160, height: 160 }} to={url ? happHref(url) : '/connect'} onClick={url ? onHapp : undefined} ariaLabel={url ? 'Подписка активна — добавить в Happ' : 'Подписка активна — открыть подключение'} />
         <p className="muted t-sm">Выход — Нидерланды</p>
         {missing || (
           <>
@@ -57,7 +57,7 @@ export function ActiveConnect({ subLink, tg, phone, onHapp }) {
 
   return (
     <section className="card card--glow" style={{ display: 'grid', gridTemplateColumns: '200px minmax(0, 1fr)', gap: 28, alignItems: 'center', padding: 28 }} aria-labelledby="cc-t">
-      <ConnectOrb active label="Готово" />
+      <ConnectOrb active label="Готово" to={url ? happHref(url) : '/connect'} onClick={url ? onHapp : undefined} ariaLabel={url ? 'Подписка активна — добавить в Happ' : 'Подписка активна — открыть подключение'} />
       <div className="stack gap-3" style={{ minWidth: 0 }}>
         <div>
           <h2 id="cc-t" className="t-h2">Подключение</h2>
@@ -100,7 +100,7 @@ export function WaitingConnect() {
 export function PausedConnect({ phone }) {
   return (
     <section className="card" style={phone ? undefined : { display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) auto', gap: 24, alignItems: 'center' }}>
-      {!phone && <ConnectOrb active={false} small ariaLabel="Подписки нет" />}
+      {!phone && <ConnectOrb active={false} small to="/payment" ariaLabel="Подключение на паузе — продлить подписку" />}
       <div>
         <h2 className="t-h3">Подключение на паузе</h2>
         <p className="muted t-sm" style={{ marginTop: 4 }}>Подписка в Happ остаётся. После оплаты потяните список вниз в Happ, чтобы обновить её, — добавлять заново не нужно.</p>

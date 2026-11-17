@@ -267,6 +267,9 @@
 .he .orb--off .orb__core{background:var(--bg-elevated);border-color:var(--line-strong)}
 .he .orb--off .orb__core svg,.he .orb--off .orb__label{color:var(--fg-subtle)}
 .he .orb--sm{width:120px;height:120px}.he .orb--sm .orb__core{inset:10px}.he .orb--sm .orb__core svg{width:32px;height:32px}.he .orb--sm .orb__label{font-size:12px}
+.he a.orb,.he button.orb{cursor:pointer;text-decoration:none;color:inherit;border:0;background:none;padding:0;font:inherit;border-radius:50%;-webkit-tap-highlight-color:transparent}
+.he a.orb:focus-visible,.he button.orb:focus-visible{outline:2px solid var(--info);outline-offset:4px}
+.he a.orb:active .orb__core,.he button.orb:active .orb__core{transform:scale(.97);transition-duration:var(--dur-1)}
 
 /* ───────────── 8. Signature: split-flap digits («Вылет») ───────────── */
 .he .flap{display:inline-flex;gap:.06em;perspective:420px;vertical-align:baseline;line-height:1}

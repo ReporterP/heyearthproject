@@ -119,7 +119,7 @@ export default function ConnectionsPage() {
           </Alert>
         )}
         <section className="card card--glow rise" style={phone ? { padding: 24, textAlign: 'center' } : { display: 'grid', gridTemplateColumns: '120px minmax(0,1fr)', gap: 24, alignItems: 'center', padding: 28 }}>
-          <ConnectOrb active small ariaLabel="Подписка активна" style={phone ? { margin: '0 auto 16px' } : undefined} />
+          <ConnectOrb active small to={url ? happHref(url) : undefined} ariaLabel={url ? 'Подписка активна — добавить в Happ' : 'Подписка активна'} style={phone ? { margin: '0 auto 16px' } : undefined} />
           <div className="stack gap-3">
             <div>
               <h2 className="t-h2">Подключить в приложении</h2>

@@ -12,11 +12,13 @@ import ConnectOrb from '../components/ConnectOrb.jsx'
 import Hedgehog from '../components/Hedgehog.jsx'
 import Nomerok from '../components/Nomerok.jsx'
 import PlanCard from '../components/PlanCard.jsx'
-import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
+import Skeleton, { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import useMedia, { PHONE } from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { fetchPlans, splitPlans, savings, featuredId, minPaidPrice, perMonthLabel, termLabel, priceTag } from '../lib/plans.js'
-import { days, kopNum } from '../lib/format.js'
+import { dateShort, days, daysLeft, kopNum, traffic } from '../lib/format.js'
+import useAccount from '../account/useAccount.js'
+import { currentSub, subState } from '../lib/account.js'
 import './landing.css'
 
 // Главная (spec 06 §6.1, artboards «Главная · /» and «Главная · телефон»). Persuade.
@@ -48,28 +50,59 @@ function useReferralTerms() {
   return t && t.enabled && t.friend_kop > 0 ? t : null
 }
 
-// «Экран приложения» — an illustration, not a status (aria-hidden parts, one label for the reader)
-function AppScreen({ phone }) {
+// «Экран приложения» (06 §6.1 item 7): the person's real subscription when they are signed in and it is
+// active; grey «Подключиться» for a guest or without a subscription. The orb is the big button (02 §34.1).
+function AppScreen({ phone, isLoggedIn, guestTo }) {
+  const { data, loading, error } = useAccount(isLoggedIn ? ['subscription', 'traffic'] : [], { optional: ['traffic'] })
+  const sub = currentSub(data?.subscription)
+  const state = !isLoggedIn || error ? 'none' : loading && !data?.subscription ? 'loading' : subState(sub)
+  const live = state === 'active'
+  const used = data?.traffic?.periods?.month?.used_bytes
+  const orb = live ? { to: '/dashboard', label: 'Готово', aria: 'Подписка активна — открыть кабинет' }
+    : state === 'expired' ? { to: '/payment', label: 'Продлить', aria: 'Подписка истекла — продлить' }
+    : state === 'loading' ? { to: '/dashboard', label: '', aria: 'Открыть кабинет' }
+    : isLoggedIn ? { to: '/payment', label: 'Подключиться', aria: 'Подписки нет — выбрать тариф' }
+    : { to: guestTo, label: 'Подключиться', aria: 'Подключиться — получить HiEarth ID' }
+  const badge = state === 'loading' ? <Skeleton w={132} h={24} r={999} />
+    : live ? <Badge tone="ok">Подписка до {dateShort(sub.valid_until)}</Badge>
+    : state === 'expired' ? <Badge tone="warn">Подписка истекла {dateShort(sub.valid_until)}</Badge>
+    : <Badge>Нет подписки</Badge>
   return (
-    <div className="card card--elevated" style={{ position: 'relative', zIndex: 1, padding: phone ? 22 : 28, borderRadius: phone ? 24 : 28 }} role="img" aria-label="Пример экрана приложения">
-      <div className="row between" aria-hidden="true">{phone ? <b>HiEarth</b> : <span className="t-h4">HiEarth</span>}<Badge tone="ok">Подписка до 14 фев</Badge></div>
-      <div style={{ display: 'grid', placeItems: 'center', margin: phone ? '22px 0 18px' : '34px 0 30px' }} aria-hidden="true">
-        <ConnectOrb active label="Подключено" style={phone ? { width: 168, height: 168 } : undefined} ariaLabel="" />
+    <section className="card card--elevated" style={{ position: 'relative', zIndex: 1, padding: phone ? 22 : 28, borderRadius: phone ? 24 : 28 }} aria-label={isLoggedIn ? 'Ваше подключение' : 'Подключение'}>
+      <div className="row between">{phone ? <b aria-hidden="true">HiEarth</b> : <span className="t-h4" aria-hidden="true">HiEarth</span>}{badge}</div>
+      <div style={{ display: 'grid', placeItems: 'center', margin: phone ? '22px 0 18px' : '34px 0 30px' }}>
+        <ConnectOrb active={live} label={orb.label} to={orb.to} ariaLabel={orb.aria} style={phone ? { width: 168, height: 168 } : undefined} />
       </div>
-      <div className="row gap-3" style={{ padding: phone ? '12px 14px' : '14px 16px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)' }} aria-hidden="true">
-        <span className="lp-flag" />
+      <div className="row gap-3" style={{ padding: phone ? '12px 14px' : '14px 16px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)' }}>
+        <span className={`lp-flag ${live ? '' : 'lp-flag--off'}`} aria-hidden="true" />
         {phone
-          ? <b style={{ flex: 1 }}>Нидерланды</b>
-          : <span style={{ flex: 1 }}><b style={{ display: 'block' }}>Нидерланды</b><span className="t-xs subtle">путь выбран автоматически</span></span>}
-        <Flap value={phone ? '42:17' : '00:42:17'} size={phone ? 15 : 17} delayMs={500} label="" />
+          ? <b style={{ flex: 1, color: live ? undefined : 'var(--fg-muted)' }}>Нидерланды</b>
+          : (
+            <span style={{ flex: 1 }}>
+              <b style={{ display: 'block', color: live ? undefined : 'var(--fg-muted)' }}>Нидерланды</b>
+              <span className="t-xs subtle">{live ? 'путь выбран автоматически' : 'откроется после подключения'}</span>
+            </span>
+          )}
+        {live && <Flap value={daysLeft(sub.valid_until)} suffix="дн" size={phone ? 15 : 17} delayMs={500} label={`Осталось ${days(daysLeft(sub.valid_until))}`} />}
       </div>
       {!phone && (
-        <div className="grid g-2" style={{ marginTop: 10, gap: 10 }} aria-hidden="true">
-          <div className="lp-well"><p className="t-xs subtle">Получено</p><p className="t-h4 mono" style={{ marginTop: 4 }}>1,2 ГБ</p></div>
-          <div className="lp-well"><p className="t-xs subtle">Соединение</p><p className="t-h4 ok" style={{ marginTop: 4 }}>Зашифровано</p></div>
+        <div className="grid g-2" style={{ marginTop: 10, gap: 10 }}>
+          {live
+            ? (
+              <>
+                <div className="lp-well"><p className="t-xs subtle">Получено за месяц</p><p className="t-h4 mono" style={{ marginTop: 4 }}>{used == null ? '—' : traffic(used)}</p></div>
+                <div className="lp-well"><p className="t-xs subtle">Тариф</p><p className="t-h4 ok" style={{ marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub.plan_name || '—'}</p></div>
+              </>
+            )
+            : (
+              <>
+                <div className="lp-well"><p className="t-xs subtle">Получено</p><p className="t-h4 mono subtle" style={{ marginTop: 4 }}>—</p></div>
+                <div className="lp-well"><p className="t-xs subtle">Соединение</p><p className="t-h4 subtle" style={{ marginTop: 4 }}>ждёт подключения</p></div>
+              </>
+            )}
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -186,7 +219,7 @@ export default function LandingPage() {
                   ? 'Через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, телефона и привязки карты.'
                   : 'Сайты и приложения открываются через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, без телефона, без привязки карты.'}
               </p>
-              {phone && <div className="rise" style={{ '--d': '200ms', marginTop: 26 }}><AppScreen phone /></div>}
+              {phone && <div className="rise" style={{ '--d': '200ms', marginTop: 26 }}><AppScreen phone isLoggedIn={isLoggedIn} guestTo={main.to} /></div>}
               <div ref={heroCta} className={`${phone ? 'stack gap-2' : 'row wrap gap-3'} rise`} style={{ '--d': phone ? '280ms' : '200ms', marginTop: phone ? 20 : 36 }}>
                 <Button variant={isLoggedIn ? 'secondary' : 'primary'} size="lg" block={phone} to={main.to} iconRight={phone || isLoggedIn ? undefined : 'arrowRight'}>{main.label}</Button>
                 <Button variant="secondary" size="lg" block={phone} to="/#plans">{tariffsLabel}</Button>
@@ -196,7 +229,7 @@ export default function LandingPage() {
             {!phone && (
               <div className="rise" style={{ '--d': '200ms', position: 'relative', justifySelf: 'end', width: '100%', maxWidth: 460, marginTop: 40 }}>
                 <Hedgehog mood="idle" size={112} style={{ position: 'absolute', right: 28, top: -66, zIndex: 0 }} />
-                <AppScreen />
+                <AppScreen isLoggedIn={isLoggedIn} guestTo={main.to} />
               </div>
             )}
           </div>
@@ -331,7 +364,7 @@ export default function LandingPage() {
           <div className="container">
             <div ref={finalCta} className={`card card--glow ${phone ? 'stack gap-4' : 'row wrap between'}`} style={phone ? { padding: 26, borderRadius: 24, alignItems: 'center', textAlign: 'center' } : { padding: '48px 56px', borderRadius: 28, gap: 32 }}>
               <div className="row gap-8">
-                {!phone && <ConnectOrb active small ariaLabel="" />}
+                {!phone && <ConnectOrb active small to={isLoggedIn ? '/dashboard' : '/register'} ariaLabel={isLoggedIn ? 'Открыть кабинет' : 'Подключиться — получить HiEarth ID'} />}
                 <div>
                   <h2 className={phone ? 't-h2' : 't-h1'}>Подключитесь за минуту</h2>
                   {free && !phone && <p className="muted" style={{ marginTop: 8 }}>Неделя бесплатно. Карта не нужна.</p>}

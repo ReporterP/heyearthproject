@@ -74,7 +74,7 @@ export default function PaymentResult({ token, paymentId }) {
     const paidWaitingPlan = st?.paid && st.purchase?.status === 'pending'
     return (
       <MiniPage kind="res" label="Результат оплаты">
-        <ConnectOrb active={false} small ariaLabel="Проверяем оплату" />
+        <ConnectOrb active={false} small to="/dashboard" ariaLabel="Проверяем оплату — открыть кабинет" />
         <Badge tone="warn" className="swap">Ожидание</Badge>
         <h1 className="t-h2 swap">{paidWaitingPlan ? 'Оплата получена, оформляем подписку…' : 'Ждём подтверждения оплаты…'}</h1>
         <p className="muted t-sm" role="status">

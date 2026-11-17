@@ -43,6 +43,7 @@
 | переход `sticky-cta` | Y 100%→0 | 320 · out | `is-shown` | телефон, главная |
 | переход `switch::after` | X 0→18 | 320 · spring | checked | переключатель |
 | переход `acc summary::after` | rotate 45°→225° | 320 · out | open | аккордеон |
+| переход `orb__core` (нажатие) | scale 1→.97 | 120 · out | `:active` | орб-ссылка (02 §34.1) |
 
 Новое движение добавляется только строкой в эту таблицу и keyframes в `hiearth.css` (§11 Motion). Анимации, написанные прямо в компоненте (inline `animation`, Motion/Framer с собственными кривыми), запрещены.
 

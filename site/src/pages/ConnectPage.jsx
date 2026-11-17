@@ -97,7 +97,7 @@ export default function ConnectPage() {
         <div className="stack gap-3" style={{ alignItems: 'center', textAlign: 'center' }}>
           {phase === 'preparing'
             ? <span className="spinner" aria-hidden="true" style={{ margin: '40px 0 12px' }} />
-            : <ConnectOrb active small ariaLabel="Подписка готова к добавлению" />}
+            : <ConnectOrb active small onClick={happ ? open : undefined} ariaLabel={happ ? 'Подписка готова — открыть Happ ещё раз' : 'Подписка готова к добавлению'} />}
           <h1 className="t-h1" style={{ marginTop: 10 }} aria-live="polite">{phase === 'preparing' ? 'Готовим ссылку…' : 'Открываем Happ…'}</h1>
           {phase !== 'preparing' && (
             <p className="muted" style={{ maxWidth: 520 }}>Если приложение не открылось само, выберите устройство ниже. После установки вернитесь и нажмите кнопку ещё раз.</p>

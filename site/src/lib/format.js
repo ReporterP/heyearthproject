@@ -44,6 +44,14 @@ export function date(v, { year } = {}) {
   return `${d.getDate()}${NBSP}${MONTHS[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ''}`
 }
 
+// «14 фев» (year only when it is not the current one) — the badge of the landing's app screen (05)
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+export function dateShort(v) {
+  const d = toDate(v)
+  if (!d) return ''
+  return `${d.getDate()}${NBSP}${MONTHS_SHORT[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? ` ${d.getFullYear()}` : ''}`
+}
+
 export function dateTime(v) {
   const d = toDate(v)
   if (!d) return ''

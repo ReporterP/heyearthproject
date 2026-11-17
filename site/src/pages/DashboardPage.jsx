@@ -162,7 +162,7 @@ function NoSub({ phone, narrow, wallet, freePlan, plansLoading, token, reloadAll
 
   const main = (
     <section className="card" style={phone ? { padding: 24 } : { display: 'grid', gridTemplateColumns: narrow ? '1fr' : '200px minmax(0, 1fr)', gap: 32, alignItems: 'center', padding: 32 }}>
-      {!phone && !narrow && <ConnectOrb active={false} label="Нет подписки" ariaLabel="Подписки нет" />}
+      {!phone && !narrow && <ConnectOrb active={false} label="Нет подписки" to="/payment" ariaLabel="Подписки нет — выбрать тариф" />}
       <div className="stack gap-3">
         <Badge tone="plain" style={{ width: 'max-content' }}>Нет активной подписки</Badge>
         {plansLoading ? (
