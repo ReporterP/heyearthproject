@@ -236,25 +236,30 @@ table inet heyearth_ddos {
 // entries: one address for many users) and the Hub's own addresses. A DB error keeps the current
 // sets (an empty set would put the entries under the per-source limits).
 const ddosAllowScript = `#!/bin/sh
-# Installed by deploy --setup-hardening (cmd/deploy/ops_hardening.go): the flood table's allow sets.
+# Installed by deploy --setup-hardening (cmd/deploy/ops_hardening.go): the flood table's allow sets
+# and nginx's trusted list (ops_nginx_limits.go) — the addresses of every server + the Hub's own.
 set -u
-nft list table inet heyearth_ddos >/dev/null 2>&1 || exit 0
-db=$(runuser -u postgres -- psql -d heyearth -tAc "SELECT DISTINCT ip_address FROM servers WHERE ip_address IS NOT NULL" 2>/dev/null) || { echo "heyearth-ddos-allow: DB unavailable, sets kept"; exit 0; }
+db=$(runuser -u postgres -- psql -d heyearth -tAc "SELECT DISTINCT ip_address FROM servers WHERE ip_address IS NOT NULL" 2>/dev/null) || { echo "heyearth-ddos-allow: DB unavailable, lists kept"; exit 0; }
 own=$(ip -o addr show | awk '{print $4}' | cut -d/ -f1)
-v4=""; v6=""
-for ip in $(printf '%s\n' $db $own | sort -u); do
-  case "$ip" in
-    *[!0-9a-fA-F:.]*) continue ;;
-    *:*) v6="$v6${v6:+, }$ip" ;;
-    *.*.*.*) v4="$v4${v4:+, }$ip" ;;
-  esac
-done
-{
-  echo "flush set inet heyearth_ddos allow4"
-  [ -n "$v4" ] && echo "add element inet heyearth_ddos allow4 { $v4 }"
-  echo "flush set inet heyearth_ddos allow6"
-  [ -n "$v6" ] && echo "add element inet heyearth_ddos allow6 { $v6 }"
-} | nft -f -
+if nft list table inet heyearth_ddos >/dev/null 2>&1; then
+  v4=""; v6=""
+  for ip in $(printf '%s\n' $db $own | sort -u); do
+    case "$ip" in
+      *[!0-9a-fA-F:.]*) continue ;;
+      *:*) v6="$v6${v6:+, }$ip" ;;
+      *.*.*.*) v4="$v4${v4:+, }$ip" ;;
+    esac
+  done
+  {
+    echo "flush set inet heyearth_ddos allow4"
+    [ -n "$v4" ] && echo "add element inet heyearth_ddos allow4 { $v4 }"
+    echo "flush set inet heyearth_ddos allow6"
+    [ -n "$v6" ] && echo "add element inet heyearth_ddos allow6 { $v6 }"
+  } | nft -f -
+fi
+if [ -d /etc/nginx ] && [ -f /etc/nginx/conf.d/00-heyearth-limits.conf -o -f ` + nginxTrustedIPsPath + ` ]; then
+` + nginxTrustedRefresh + `
+fi
 `
 
 const (
@@ -430,6 +435,9 @@ func setupHardening(client *ssh.Client, cfg *deployConfig, ddosMode, sshPassword
 	})
 	step("flood table ("+ddosMode+")", func() error {
 		return guardedApply(client, cfg, "ddos", renderDDoSApply(renderDDoSNft(ddosMode, defaultDDoSLimits)), ddosRollback)
+	})
+	step("nginx limits + scanner jail", func() error {
+		return guardedApply(client, cfg, "nginx-limits", renderNginxLimitsApply(cfg.siteDomain), nginxLimitsRollback)
 	})
 	return failed
 }

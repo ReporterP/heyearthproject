@@ -52,6 +52,9 @@ func TestHardeningScriptsParse(t *testing.T) {
 		"ddos":       renderDDoSApply(renderDDoSNft("enforce", defaultDDoSLimits)),
 		"ddosRb":     ddosRollback,
 		"allow":      ddosAllowScript,
+		"nginx":      renderNginxLimitsApply("example.org"),
+		"nginxRb":    nginxLimitsRollback,
+		"f2bTrusted": f2bTrustedScript,
 	} {
 		if out, code := runBashStdin(t, s, "-n"); code != 0 {
 			t.Errorf("%s: bash -n failed (%d): %s", name, code, out)
