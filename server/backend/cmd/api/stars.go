@@ -242,39 +242,6 @@ func starsChooseButton(text string) []tg.InlineKeyboardButton {
 	return tg.Row(tg.CallbackButton(text, "stars:choose").Styled(tg.StyleSuccess))
 }
 
-// tgStarsChoose sends the plans as buttons; tgStarsPlan sends the invoice of one.
-func tgStarsChoose(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	if starsRate() <= 0 {
-		_, _ = c.reply("Оплата в Telegram пока не включена.", nil)
-		return
-	}
-	offers, err := starsOffers(c.ctx, c.user.DBID)
-	if err != nil {
-		_, _ = c.reply("Не удалось загрузить тарифы — попробуйте через минуту.", nil)
-		return
-	}
-	var rows [][]tg.InlineKeyboardButton
-	for _, o := range offers {
-		if !o.Allowed {
-			continue
-		}
-		label := fmt.Sprintf("%s · %d %s · %d ⭐", o.Name, o.DurationDays, plural(o.DurationDays, "день", "дня", "дней"), o.Stars)
-		b := tg.CallbackButton(label, fmt.Sprintf("stars:plan:%d", o.ID))
-		if o.Current {
-			b = b.Styled(tg.StyleSuccess)
-		}
-		rows = append(rows, tg.Row(b))
-	}
-	if len(rows) == 0 {
-		_, _ = c.reply("Сейчас нечего оплатить — тарифы появятся позже.", nil)
-		return
-	}
-	_, _ = c.reply("<b>Оплата звёздами Telegram</b>\n\nВыберите тариф. Если подписка уже есть, дни добавятся к ней. Вопросы об оплате — /paysupport.", tg.Keyboard(rows...))
-}
-
 func tgStarsPlan(c *tgCtx, planID int) {
 	if !requireLinked(c) {
 		return
@@ -295,7 +262,7 @@ func tgPaySupport(c *tgCtx) {
 	if c.user != nil {
 		_ = biz.SetTGChatState(c.ctx, c.chat, "support", tgSupportModeTTL)
 	}
-	_, _ = c.reply("<b>Вопросы об оплате звёздами</b>\n\nНапишите, что случилось, — ответим здесь, обычно в течение дня. Если звёзды списались, а подписка не включилась, вернём их.",
+	_, _ = c.reply("⭐ <b>Вопросы об оплате звёздами</b>\n\nНапишите, что случилось, — ответим здесь, обычно в течение дня. Если звёзды списались, а подписка не включилась, вернём их.",
 		tg.Keyboard(tg.Row(tg.CallbackButton("Закончить", "sup:end"))))
 }
 
@@ -400,8 +367,8 @@ func handleStarsPaid(c *tgCtx, m *tg.Message) {
 	var until time.Time
 	_ = db.DB.QueryRowContext(c.ctx, `SELECT valid_until FROM user_subscriptions WHERE id = $1`, subID).Scan(&until)
 	log.Printf("[stars] ✓ %s купил «%s» за %d ⭐ (платёж %d) до %s", c.user.UserID, plan.Slug, sp.TotalAmount, payID, until.Format("2006-01-02"))
-	_, _ = c.reply(fmt.Sprintf("Подписка «%s» оплачена и действует до %s. Спасибо!", html.EscapeString(plan.Name), ruDate(until)),
-		tg.Keyboard(tg.Row(tg.WebAppButton("Подключить", miniAppURL("connect")).Styled(tg.StyleSuccess)), tg.Row(openCabinetButton(""))))
+	_, _ = c.reply(fmt.Sprintf("🎉 Подписка «%s» оплачена и действует до %s. Спасибо!", html.EscapeString(plan.Name), ruDate(until)),
+		tg.Keyboard(tg.Row(tg.CallbackButton("🔌 Подключить", "m:con").Styled(tg.StyleSuccess)), tg.Row(tg.CallbackButton("🏠 Меню", "m:home"))))
 }
 
 // reconcileStarsPayments refunds payments that stayed 'paid' (a crash between recording and

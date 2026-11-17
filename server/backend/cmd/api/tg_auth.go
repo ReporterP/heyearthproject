@@ -274,7 +274,7 @@ func handleUserTelegram(w http.ResponseWriter, r *http.Request) {
 				defer recoverBG("tg-unlink-notice")
 				c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				_, _ = enqueueTGChat(c, 0, old, "unlink", "", tgOut{Text: "Telegram отвязан от аккаунта HiEarth на сайте. Уведомления сюда больше не придут."}, 0)
+				_, _ = enqueueTGChat(c, 0, old, "unlink", "", tgOut{Text: "🔓 Telegram отвязан от аккаунта HiEarth на сайте. Уведомления сюда больше не придут."}, 0)
 			}()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"linked": false})

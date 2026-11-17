@@ -75,7 +75,7 @@ func TestTGReminderMessages(t *testing.T) {
 		}
 	}
 	short.Today = true
-	if m := tgReminderMessage(short); !strings.HasPrefix(m.Text, "Сегодня последний день") {
+	if m := tgReminderMessage(short); !strings.Contains(m.Text, "Сегодня последний день") {
 		t.Errorf("today: %q", m.Text)
 	}
 	for _, r := range []reminder{fine, short, off} {

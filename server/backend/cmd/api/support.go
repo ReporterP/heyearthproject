@@ -283,7 +283,7 @@ func deliverSupportAnswer(userDBID int, m *biz.SupportMessage) {
 		defer cancel()
 		if userBotToken() != "" {
 			_, err := enqueueTG(ctx, userDBID, "support", strconv.FormatInt(m.ID, 10), tgOut{
-				Text:      "<b>Ответ поддержки</b>\n\n" + html.EscapeString(m.Body) + "\n\n<i>Чтобы ответить, напишите ответом на это сообщение.</i>",
+				Text:      "💬 <b>Ответ поддержки</b>\n\n" + html.EscapeString(m.Body) + "\n\n<i>Чтобы ответить, напишите ответом на это сообщение.</i>",
 				ParseMode: "HTML",
 				Keyboard:  tg.Keyboard(tg.Row(tg.WebAppButton("Открыть переписку", miniAppURL("support")))),
 			})
@@ -393,17 +393,6 @@ func handleAdminSupportImage(w http.ResponseWriter, r *http.Request) {
 
 // ─────────────────────── Support in the users' bot ───────────────────────
 
-func tgSupportStart(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	if err := biz.SetTGChatState(c.ctx, c.chat, "support", tgSupportModeTTL); err != nil {
-		log.Printf("[support] режим поддержки …%04d не включился: %v", c.chat%10000, err)
-	}
-	_, _ = c.reply("<b>Поддержка</b>\n\nНапишите вопрос одним или несколькими сообщениями — можно приложить скриншот. Ответим сюда и в кабинете, обычно в течение дня.",
-		tg.Keyboard(tg.Row(tg.CallbackButton("Закончить", "sup:end")), tg.Row(tg.WebAppButton("Переписка в кабинете", miniAppURL("support")))))
-}
-
 func tgSupportEnd(c *tgCtx, msgID int) {
 	_ = biz.SetTGChatState(c.ctx, c.chat, "", 0)
 	if msgID > 0 {
@@ -476,7 +465,7 @@ func tgSupportMessage(c *tgCtx, m *tg.Message) {
 	_ = biz.SetTGChatState(c.ctx, c.chat, "support", tgSupportModeTTL)
 	notifyOwnerSupport(added)
 	if added.NeedsAnswer {
-		_, _ = c.reply("Передали в поддержку. Ответ придёт сюда и в кабинет — обычно в течение дня.",
+		_, _ = c.reply("📨 Передали в поддержку. Ответ придёт сюда и в кабинет — обычно в течение дня.",
 			tg.Keyboard(tg.Row(tg.CallbackButton("Закончить", "sup:end"))))
 	}
 }

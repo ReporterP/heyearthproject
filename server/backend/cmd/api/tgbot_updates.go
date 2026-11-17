@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,27 +18,31 @@ import (
 
 // ─────────────────────── Users' bot: commands and buttons (plan TG4) ───────────────────────
 //
-// Texts follow site/design-system/hiearth-canon/spec/05-content.md: «вы», no «VPN», errors say
-// what happened and what to do. Nothing is sold inside the bot: «Пополнить» and «Оплатить» open
-// the site in the browser with a one-time sign-in (Telegram requires Stars for digital goods
-// sold inside bots and Mini Apps).
+// Texts follow site/design-system/hiearth-canon/spec/05-content.md §8a: «вы», a little emoji, no
+// «VPN», errors say what happened and what to do. Inside Telegram only Telegram Stars are taken
+// (stars.go). The menu and its sections are in tgbot_menu.go.
 
 // tgCommands is the bot's menu (setMyCommands).
 var tgCommands = []tg.BotCommand{
-	{Command: "start", Description: "Кабинет и приветствие"},
-	{Command: "status", Description: "Подписка, дни и баланс"},
-	{Command: "connect", Description: "Ссылка подписки и «Добавить в Happ»"},
-	{Command: "wallet", Description: "Баланс и оплата звёздами"},
-	{Command: "friend", Description: "Пригласить друга"},
-	{Command: "support", Description: "Написать в поддержку"},
-	{Command: "news", Description: "Последние новости"},
-	{Command: "settings", Description: "Уведомления и привязка"},
-	{Command: "paysupport", Description: "Вопросы об оплате"},
+	{Command: "menu", Description: "🏠 Главное меню"},
+	{Command: "wallet", Description: "💳 Баланс и операции"},
+	{Command: "status", Description: "📅 Подписка и дни"},
+	{Command: "connect", Description: "🔌 Подключить в Happ"},
+	{Command: "friend", Description: "🎁 Пригласить друга"},
+	{Command: "buy", Description: "⭐ Оплатить звёздами"},
+	{Command: "support", Description: "💬 Написать в поддержку"},
+	{Command: "news", Description: "📰 Новости"},
+	{Command: "settings", Description: "⚙️ Уведомления"},
+	{Command: "paysupport", Description: "🧾 Вопросы об оплате"},
 }
 
 const (
-	tgBotDescription      = "Кабинет HiEarth в Telegram: подписка, подключение, кошелёк, поддержка и новости. Напоминания о подписке приходят сюда же. Подписку можно оплатить звёздами Telegram."
-	tgBotShortDescription = "Кабинет HiEarth: подписка, подключение, поддержка"
+	// @BotFather limits: description ≤ 512, short description ≤ 120 characters
+	tgBotDescription = "👋 Это бот HiEarth — защищённый доступ к интернету в одну кнопку.\n\n" +
+		"✅ Подписка и кошелёк под рукой\n🔌 Подключение в Happ в пару нажатий\n⭐ Оплата звёздами Telegram\n" +
+		"🎁 Бонусы за приглашённых друзей\n💬 Поддержка прямо в чате\n\n" +
+		"Нажмите «Запустить» — войдите по HiEarth ID или создайте новый аккаунт."
+	tgBotShortDescription = "🌍 HiEarth в Telegram: подписка, подключение, кошелёк, поддержка и новости."
 	tgSupportModeTTL      = 30 * time.Minute
 )
 
@@ -76,6 +79,8 @@ func handleUserBotUpdate(ctx context.Context, u tg.Update) {
 	switch {
 	case u.PreCheckout != nil:
 		handleStarsPreCheckout(ctx, bot, u.PreCheckout)
+	case u.InlineQuery != nil:
+		handleInlineQuery(ctx, bot, u.InlineQuery)
 	case u.Message != nil:
 		m := u.Message
 		if m.Chat.Type != "private" || m.From == nil || m.From.IsBot {
@@ -127,45 +132,44 @@ func handleTGMessage(c *tgCtx, m *tg.Message) {
 	text := strings.TrimSpace(m.Text)
 	if cmd, arg, ok := parseTGCommand(text); ok {
 		log.Printf("[tg-bot] …%04d: /%s (аккаунт привязан: %v)", c.chat%10000, cmd, c.user != nil)
-		if cmd != "support" && c.user != nil {
-			if err := biz.SetTGChatState(c.ctx, c.chat, "", 0); err != nil { // any command ends the support mode
+		if cmd != "support" {
+			if err := biz.SetTGChatState(c.ctx, c.chat, "", 0); err != nil { // any command ends the support / sign-in mode
 				log.Printf("[tg-bot] режим чата …%04d: %v", c.chat%10000, err)
 			}
 		}
 		switch cmd {
 		case "start":
 			tgStart(c, arg)
-		case "help":
-			tgStart(c, "")
-		case "status":
-			tgStatus(c)
+		case "help", "menu", "status":
+			tgShow(c, "home", 0)
 		case "connect":
-			tgConnect(c)
+			tgShow(c, "con", 0)
 		case "wallet":
-			tgWallet(c)
+			tgShow(c, "bal", 0)
 		case "friend":
-			tgFriend(c)
+			tgShow(c, "ref", 0)
 		case "support":
-			tgSupportStart(c)
+			tgShow(c, "sup", 0)
 		case "news":
-			tgNews(c)
+			tgShow(c, "news", 0)
 		case "settings":
-			tgSettings(c, 0)
+			tgShow(c, "set", 0)
 		case "paysupport":
 			tgPaySupport(c)
-		case "buy":
-			tgStarsChoose(c)
+		case "buy", "pay":
+			tgShow(c, "pay", 0)
 		default:
-			tgUnknown(c)
+			tgShow(c, "home", 0)
 		}
 		return
 	}
-	// a reply to a support answer, or the support mode: the message goes to the ticket
-	mode := ""
-	if c.user != nil {
-		mode = biz.GetTGChatState(c.ctx, c.chat)
-	}
+	mode := biz.GetTGChatState(c.ctx, c.chat)
 	log.Printf("[tg-bot] …%04d: сообщение (привязан: %v, режим: %q)", c.chat%10000, c.user != nil, mode)
+	if c.user == nil && mode == "login" && text != "" {
+		tgLoginByID(c, m)
+		return
+	}
+	// a reply to a support answer, or the support mode: the message goes to the ticket
 	if c.user != nil && (mode == "support" || isReplyToSupport(c, m)) {
 		tgSupportMessage(c, m)
 		return
@@ -173,7 +177,16 @@ func handleTGMessage(c *tgCtx, m *tg.Message) {
 	tgUnknown(c)
 }
 
-// parseTGCommand splits "/start link_x" and "/start@bot x".
+// tgUnknown answers a message the bot does not expect with the menu.
+func tgUnknown(c *tgCtx) {
+	if c.user == nil {
+		tgShow(c, "home", 0)
+		return
+	}
+	_, _ = c.reply("🙂 Я понимаю кнопки и команды. Чтобы написать в поддержку, нажмите «💬 Поддержка».", nil)
+	tgShow(c, "home", 0)
+}
+
 func parseTGCommand(text string) (cmd, arg string, ok bool) {
 	if !strings.HasPrefix(text, "/") {
 		return "", "", false
@@ -185,10 +198,6 @@ func parseTGCommand(text string) (cmd, arg string, ok bool) {
 
 // ── /start ──
 
-func openCabinetButton(path string) tg.InlineKeyboardButton {
-	return tg.WebAppButton("Открыть кабинет", miniAppURL(path)).Styled(tg.StyleSuccess)
-}
-
 func tgStart(c *tgCtx, arg string) {
 	switch {
 	case strings.HasPrefix(arg, "link_"):
@@ -199,20 +208,7 @@ func tgStart(c *tgCtx, arg string) {
 			log.Printf("[tg-bot] код друга для %d: %v", c.from.ID, err)
 		}
 	}
-	if c.user == nil {
-		_, _ = c.reply("Здравствуйте! Это кабинет HiEarth в Telegram: подписка, подключение, кошелёк и поддержка.\n\n"+
-			"Откройте кабинет и войдите по HiEarth ID — или создайте новый аккаунт за один клик. "+
-			"Уже пользуетесь сайтом? Там в «Настройках» есть кнопка «Подключить Telegram».",
-			tg.Keyboard(tg.Row(openCabinetButton("")), tg.Row(tg.URLButton("Подключить через сайт", siteURL()+"/settings#telegram"))))
-		return
-	}
-	s, err := loadTGSummary(c.ctx, c.user)
-	if err != nil {
-		_, _ = c.reply("Не удалось загрузить данные — попробуйте через минуту.", tg.Keyboard(tg.Row(openCabinetButton(""))))
-		return
-	}
-	_, _ = c.reply("Здравствуйте! Это ваш кабинет HiEarth.\n\n"+s.text()+"\n\nКоманды — в меню слева от поля ввода.",
-		tg.Keyboard(tg.Row(openCabinetButton("")), s.actionRow()))
+	tgShow(c, "home", 0)
 }
 
 func tgLinkFromSite(c *tgCtx, token string) {
@@ -229,12 +225,15 @@ func tgLinkFromSite(c *tgCtx, token string) {
 	}
 	var userID string
 	_ = db.DB.QueryRowContext(c.ctx, `SELECT user_id FROM users WHERE id = $1`, userDBID).Scan(&userID)
-	head := "Готово — Telegram привязан"
+	head := "✅ Готово — Telegram привязан"
 	if already {
-		head = "Этот Telegram уже привязан"
+		head = "✅ Этот Telegram уже привязан"
 	}
 	_, _ = c.reply(fmt.Sprintf("%s к HiEarth ID <code>%s</code>.\n\nСюда будут приходить напоминания о подписке, ответы поддержки и новости. "+
-		"Отключить их можно в /settings.", head, shortHiEarthID(userID)), tg.Keyboard(tg.Row(openCabinetButton(""))))
+		"Отключить их можно в «⚙️ Настройках».", head, shortHiEarthID(userID)), nil)
+	if c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID); c.user != nil {
+		tgShow(c, "home", 0)
+	}
 }
 
 // shortHiEarthID is «3f2b…9b0c» (05 §4).
@@ -249,13 +248,12 @@ func shortHiEarthID(id string) string {
 func requireLinked(c *tgCtx) bool {
 	if c.user != nil {
 		if c.user.Blocked {
-			_, _ = c.reply("Аккаунт заблокирован. Напишите в поддержку: /support.", nil)
+			_, _ = c.reply("🚫 Аккаунт заблокирован. Напишите в поддержку: /support.", nil)
 			return false
 		}
 		return true
 	}
-	_, _ = c.reply("Сначала войдите: откройте кабинет и введите HiEarth ID — или создайте новый аккаунт.",
-		tg.Keyboard(tg.Row(openCabinetButton(""))))
+	tgShow(c, "home", 0) // the welcome with «Создать HiEarth ID» / «У меня есть HiEarth ID»
 	return false
 }
 
@@ -297,85 +295,8 @@ func loadTGSummary(ctx context.Context, u *biz.TGLinkedUser) (*tgSummary, error)
 	return s, nil
 }
 
-func (s *tgSummary) text() string {
-	var b strings.Builder
-	switch {
-	case s.Active:
-		days := tgDaysLeft(s.ValidUntil)
-		fmt.Fprintf(&b, "<b>Подписка:</b> «%s» до %s — осталось %d %s.", html.EscapeString(s.PlanName), ruDate(s.ValidUntil), days, plural(days, "день", "дня", "дней"))
-		if s.AutoRenew && !s.FreePlan {
-			if s.BalanceKop >= s.PriceKop {
-				fmt.Fprintf(&b, "\nАвтопродление включено: %s спишем %s с кошелька.", ruDate(s.ValidUntil), rub(s.PriceKop))
-			} else {
-				fmt.Fprintf(&b, "\nАвтопродление включено, но на кошельке не хватает %s.", rub(s.PriceKop-s.BalanceKop))
-			}
-		}
-	case s.HasSub:
-		fmt.Fprintf(&b, "<b>Подписка закончилась</b> %s.", ruDate(s.ValidUntil))
-	default:
-		b.WriteString("<b>Подписки пока нет.</b> Включите её в кабинете — первая неделя может быть бесплатной.")
-	}
-	fmt.Fprintf(&b, "\n<b>Кошелёк:</b> %s.", rub(s.BalanceKop))
-	return b.String()
-}
-
-// actionRow is the next useful step for the account.
-func (s *tgSummary) actionRow() []tg.InlineKeyboardButton {
-	switch {
-	case !s.HasSub:
-		return tg.Row(tg.WebAppButton("Включить подписку", miniAppURL("dashboard")))
-	case !s.Active:
-		return starsChooseButton("Продлить за ⭐")
-	case s.AutoRenew && !s.FreePlan && s.BalanceKop < s.PriceKop:
-		return starsChooseButton("Продлить звёздами")
-	}
-	return nil
-}
-
 // ── /status /connect /wallet /friend /settings ──
 
-func tgStatus(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	s, err := loadTGSummary(c.ctx, c.user)
-	if err != nil {
-		_, _ = c.reply("Не удалось загрузить данные — попробуйте через минуту.", nil)
-		return
-	}
-	_, _ = c.reply(s.text(), tg.Keyboard(s.actionRow(), tg.Row(openCabinetButton(""))))
-}
-
-func tgConnect(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	s, err := loadTGSummary(c.ctx, c.user)
-	if err != nil {
-		_, _ = c.reply("Не удалось загрузить данные — попробуйте через минуту.", nil)
-		return
-	}
-	if !s.Active {
-		_, _ = c.reply("Нет активной подписки — ссылка для подключения появится, как только она включится.",
-			tg.Keyboard(s.actionRow(), tg.Row(openCabinetButton("dashboard"))))
-		return
-	}
-	subURL, token, err := ensureSubscribeURL(c.ctx, c.user.UserID)
-	if err != nil {
-		_, _ = c.reply("Ссылку подписки сейчас не удалось получить — попробуйте через минуту.", nil)
-		return
-	}
-	_, _ = c.reply("<b>Подключение</b>\n\nНажмите «Добавить в Happ» — приложение откроется и добавит подписку само. "+
-		"Нет приложения? Оно бесплатное, есть для iPhone, Android, Windows и macOS.\n\n"+
-		"Или скопируйте ссылку подписки и вставьте в Happ: «+» → «Вставить из буфера». Не показывайте её посторонним — это доступ к вашей подписке.",
-		tg.Keyboard(
-			tg.Row(tg.URLButton("Добавить в Happ", siteURL()+"/connect?sub="+url.QueryEscape(token)).Styled(tg.StyleSuccess)),
-			tg.Row(tg.CopyButton("Скопировать ссылку подписки", subURL)),
-			tg.Row(tg.WebAppButton("Инструкция и QR-код", miniAppURL("connect"))),
-		))
-}
-
-// ensureSubscribeURL returns the person's subscription URL, creating the token on first use.
 func ensureSubscribeURL(ctx context.Context, userID string) (subURL, token string, err error) {
 	err = db.DB.QueryRowContext(ctx, `SELECT COALESCE(subscribe_token::text, '') FROM users WHERE user_id = $1`, userID).Scan(&token)
 	if err != nil {
@@ -389,96 +310,19 @@ func ensureSubscribeURL(ctx context.Context, userID string) (subURL, token strin
 	return fmt.Sprintf("%s/api/v1/user/subscribe/%s", subscriptionBaseURL(), token), token, nil
 }
 
-func tgWallet(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	s, err := loadTGSummary(c.ctx, c.user)
-	if err != nil {
-		_, _ = c.reply("Не удалось загрузить данные — попробуйте через минуту.", nil)
-		return
-	}
-	text := fmt.Sprintf("<b>Кошелёк:</b> %s.\n\nАвтопродление списывает подписку с баланса.", rub(s.BalanceKop))
-	if starsRate() > 0 {
-		text += " В Telegram подписку можно оплатить звёздами — дни добавятся к текущей."
-	}
-	if s.Active && s.AutoRenew && !s.FreePlan && s.BalanceKop < s.PriceKop {
-		text += fmt.Sprintf("\n\nДо продления %s не хватает %s.", ruDate(s.ValidUntil), rub(s.PriceKop-s.BalanceKop))
-	}
-	_, _ = c.reply(text, tg.Keyboard(
-		starsChooseButton("Оплатить звёздами"),
-		tg.Row(tg.WebAppButton("История", miniAppURL("wallet"))),
-	))
-}
-
-func tgFriend(c *tgCtx) {
-	if !requireLinked(c) {
-		return
-	}
-	st := biz.LoadReferralSettings(c.ctx, db.DB)
-	if !st.Enabled {
-		_, _ = c.reply("Приглашения друзей сейчас выключены.", nil)
-		return
-	}
-	code, err := biz.EnsureReferralCode(c.ctx, c.user.DBID)
-	if err != nil {
-		_, _ = c.reply("Ссылку сейчас не удалось получить — попробуйте через минуту.", nil)
-		return
-	}
-	link := siteURL() + "/r/" + code
-	share := "https://t.me/share/url?url=" + url.QueryEscape(link) + "&text=" + url.QueryEscape("HiEarth — защищённый доступ к интернету. По моей ссылке — бонус на кошелёк после первой оплаты.")
-	bonus := "бонус на кошелёк"
-	if st.ReferrerKop > 0 && st.ReferrerKop == st.FriendKop {
-		bonus = "по " + rub(st.ReferrerKop) + " каждому"
-	} else if st.ReferrerKop > 0 {
-		bonus = rub(st.ReferrerKop) + " вам"
-	}
-	var botRef string
-	if l := botLink("ref_" + code); l != "" {
-		botRef = "\nВ Telegram: " + l
-	}
-	_, _ = c.reply(fmt.Sprintf("<b>Пригласить друга</b>\n\nДруг оплатит подписку — %s.\n\nВаша ссылка: %s%s", bonus, link, botRef),
-		tg.Keyboard(
-			tg.Row(tg.URLButton("Поделиться", share).Styled(tg.StyleSuccess)),
-			tg.Row(tg.CopyButton("Скопировать ссылку", link)),
-		))
-}
-
-func tgUnknown(c *tgCtx) {
-	if c.user == nil {
-		tgStart(c, "")
-		return
-	}
-	_, _ = c.reply("Команды — в меню слева от поля ввода. Чтобы написать в поддержку, нажмите /support.",
-		tg.Keyboard(tg.Row(openCabinetButton("")), tg.Row(tg.CallbackButton("Написать в поддержку", "sup:start"))))
-}
-
 // tgSettingsKeyboard shows the switches as they are now.
 func tgSettingsKeyboard(u *biz.TGLinkedUser) *tg.InlineKeyboardMarkup {
 	onOff := func(on bool) string {
 		if on {
-			return "вкл"
+			return "вкл ✅"
 		}
 		return "выкл"
 	}
 	return tg.Keyboard(
-		tg.Row(tg.CallbackButton("Напоминания о подписке: "+onOff(u.NotifyReminders), "set:rem")),
-		tg.Row(tg.CallbackButton("Новости и советы: "+onOff(u.NotifyNews), "set:news")),
-		tg.Row(tg.CallbackButton("Отвязать Telegram", "unlink?")),
+		tg.Row(tg.CallbackButton("⏰ Напоминания о подписке: "+onOff(u.NotifyReminders), "set:rem")),
+		tg.Row(tg.CallbackButton("📰 Новости и советы: "+onOff(u.NotifyNews), "set:news")),
+		tg.Row(tg.CallbackButton("🔓 Отвязать Telegram", "unlink?")),
 	)
-}
-
-const tgSettingsText = "<b>Уведомления</b>\n\nОтветы поддержки, пополнения кошелька и бонусы приходят всегда. Напоминания о конце подписки и новости можно выключить."
-
-func tgSettings(c *tgCtx, editMessageID int) {
-	if !requireLinked(c) {
-		return
-	}
-	if editMessageID > 0 {
-		_ = c.bot.EditMessageText(c.ctx, c.chat, editMessageID, tgSettingsText, "HTML", tgSettingsKeyboard(c.user))
-		return
-	}
-	_, _ = c.reply(tgSettingsText, tgSettingsKeyboard(c.user))
 }
 
 // ── buttons ──
@@ -491,16 +335,40 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 	}
 	answer := func(text string) { _ = c.bot.AnswerCallbackQuery(c.ctx, q.ID, text) }
 	switch {
+	case strings.HasPrefix(data, "m:"):
+		answer("")
+		section := strings.TrimPrefix(data, "m:")
+		if section != "sup" {
+			_ = biz.SetTGChatState(c.ctx, c.chat, "", 0) // leaving support ends its mode
+		}
+		tgShow(c, section, msgID)
+	case data == "ar:on" || data == "ar:off":
+		if c.user == nil {
+			answer("Сначала войдите")
+			return
+		}
+		answer(tgSetAutoRenew(c, data == "ar:on"))
+		tgShow(c, "sub", msgID)
+	case data == "acc:new":
+		answer("")
+		tgCreateAccount(c, msgID)
+	case data == "acc:login":
+		answer("")
+		tgAskLogin(c)
+	case data == "acc:cancel":
+		_ = biz.SetTGChatState(c.ctx, c.chat, "", 0)
+		answer("Отменено")
+		tgShow(c, "home", msgID)
 	case data == "stars:choose" || strings.HasPrefix(data, "pay:"): // pay: — buttons of older messages
 		answer("")
-		tgStarsChoose(c)
+		tgShow(c, "pay", 0)
 	case strings.HasPrefix(data, "stars:plan:"):
 		answer("")
 		id, _ := strconv.Atoi(strings.TrimPrefix(data, "stars:plan:"))
 		tgStarsPlan(c, id)
 	case data == "set:rem" || data == "set:news":
 		if c.user == nil {
-			answer("Сначала войдите в кабинет")
+			answer("Сначала войдите")
 			return
 		}
 		var news, rem *bool
@@ -508,20 +376,18 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 		if data == "set:rem" {
 			v := !c.user.NotifyReminders
 			rem, c.user.NotifyReminders = &v, v
-			msg = map[bool]string{true: "Напоминания включены", false: "Напоминания выключены"}[v]
+			msg = map[bool]string{true: "🔔 Напоминания включены", false: "🔕 Напоминания выключены"}[v]
 		} else {
 			v := !c.user.NotifyNews
 			news, c.user.NotifyNews = &v, v
-			msg = map[bool]string{true: "Новости включены", false: "Новости выключены"}[v]
+			msg = map[bool]string{true: "🔔 Новости включены", false: "🔕 Новости выключены"}[v]
 		}
 		if err := biz.SetTGNotify(c.ctx, c.user.DBID, news, rem); err != nil {
 			answer("Не удалось изменить — попробуйте ещё раз")
 			return
 		}
 		answer(msg)
-		if msgID > 0 {
-			_ = c.bot.EditMessageReplyMarkup(c.ctx, c.chat, msgID, tgSettingsKeyboard(c.user))
-		}
+		tgShow(c, "set", msgID)
 	case data == "news:off":
 		if c.user != nil {
 			off := false
@@ -530,17 +396,17 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 				return
 			}
 		}
-		answer("Новости выключены. Включить — в /settings")
+		answer("🔕 Новости выключены. Включить — в «⚙️ Настройках»")
 	case data == "unlink?":
 		answer("")
 		if msgID > 0 && c.user != nil {
 			_ = c.bot.EditMessageText(c.ctx, c.chat, msgID,
-				"<b>Отвязать Telegram?</b>\n\nНапоминания, ответы поддержки и новости перестанут приходить сюда. Аккаунт HiEarth и подписка останутся.",
+				"⚠️ <b>Отвязать Telegram?</b>\n\nНапоминания, ответы поддержки и новости перестанут приходить сюда. Аккаунт HiEarth и подписка останутся.",
 				"HTML", tg.Keyboard(tg.Row(tg.CallbackButton("Отвязать", "unlink!").Styled(tg.StyleDanger), tg.CallbackButton("Отмена", "set:back"))))
 		}
 	case data == "set:back":
 		answer("")
-		tgSettings(c, msgID)
+		tgShow(c, "set", msgID)
 	case data == "unlink!":
 		if c.user == nil {
 			answer("Telegram уже отвязан")
@@ -551,25 +417,22 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 			return
 		}
 		answer("Telegram отвязан")
-		if msgID > 0 {
-			_ = c.bot.EditMessageText(c.ctx, c.chat, msgID, "Telegram отвязан от аккаунта HiEarth. Привязать снова можно в кабинете.", "HTML",
-				tg.Keyboard(tg.Row(openCabinetButton(""))))
-		}
+		c.user = nil
+		tgShow(c, "home", msgID)
 	case data == "sup:start":
 		answer("")
-		tgSupportStart(c)
+		tgShow(c, "sup", 0)
 	case data == "sup:end":
 		answer("Готово")
 		tgSupportEnd(c, msgID)
 	case strings.HasPrefix(data, "news:"):
 		answer("")
-		tgNews(c)
+		tgShow(c, "news", 0)
 	default:
 		answer("")
 	}
 }
 
-// magicURL is the site page that exchanges a one-time token for a session.
 func magicURL(token string) string { return siteURL() + "/m/" + token }
 
 // ── formats (05 §4) ──

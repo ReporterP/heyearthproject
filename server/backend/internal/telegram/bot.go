@@ -303,5 +303,10 @@ func (b *Bot) RefundStarPayment(ctx context.Context, userID int64, chargeID stri
 	return b.Call(ctx, "refundStarPayment", map[string]any{"user_id": userID, "telegram_payment_charge_id": chargeID}, nil)
 }
 
+// AnswerInlineQuery answers «@bot …» with personal results (no cache).
+func (b *Bot) AnswerInlineQuery(ctx context.Context, id string, results []InlineQueryResultArticle) error {
+	return b.Call(ctx, "answerInlineQuery", map[string]any{"inline_query_id": id, "results": results, "cache_time": 0, "is_personal": true}, nil)
+}
+
 // ChatIDString formats a numeric chat id.
 func ChatIDString(id int64) string { return strconv.FormatInt(id, 10) }

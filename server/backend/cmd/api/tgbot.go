@@ -239,7 +239,7 @@ func StartTelegram() {
 	runLocked("tg-user-poller", tgLockUserPoller, func(ctx context.Context) {
 		(&tg.Poller{Name: "tg-user-poller", Bot: userBot, Store: settingOffset{tgBotOffsetSetting},
 			Handle:  handleUserBotUpdate,
-			Allowed: []string{"message", "callback_query", "my_chat_member", "pre_checkout_query"},
+			Allowed: []string{"message", "callback_query", "my_chat_member", "pre_checkout_query", "inline_query"},
 			Logf:    log.Printf}).Run(ctx)
 	})
 	runLocked("tg-alert-poller", tgLockAlertPoller, func(ctx context.Context) {
@@ -347,12 +347,16 @@ var tgPhotoIDs sync.Map // uploads path → file_id after the first upload
 func runTGOutbox(ctx context.Context) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
-	var happAt time.Time
+	var happAt, inlineAt time.Time
 	for ctx.Err() == nil {
 		if time.Since(happAt) > time.Minute {
 			refreshHappNews(ctx)
 			if bot := userBot(); bot != nil {
 				reconcileStarsPayments(ctx, bot)
+				if time.Since(inlineAt) > tgInlineRefreshEach {
+					refreshInlineFlag(ctx, bot)
+					inlineAt = time.Now()
+				}
 			}
 			happAt = time.Now()
 		}

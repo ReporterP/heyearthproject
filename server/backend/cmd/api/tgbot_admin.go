@@ -89,7 +89,7 @@ func handleAdminTelegramSettings(w http.ResponseWriter, r *http.Request) {
 			_ = biz.SetSetting(tgBotOffsetSetting, "0") // a new bot starts its updates from scratch
 			details["username"] = me.Username
 			tgCfg.forget(tgBotTokenSetting, tgBotUsernameSetting)
-			setupErrors = setupUserBot(r.Context(), &tg.Bot{Token: token, Doer: telegram})
+			setupErrors = setupUserBot(r.Context(), &tg.Bot{Token: token, Doer: telegram}, true)
 		} else if req.ClearToken {
 			_ = biz.SetSetting(tgBotTokenSetting, "")
 			_ = biz.SetSetting(tgBotUsernameSetting, "")
@@ -118,7 +118,9 @@ func handleAdminTelegramSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // setupUserBot sets the menu, the Mini App button and the descriptions; returns what failed.
-func setupUserBot(parent context.Context, bot *tg.Bot) []string {
+// setupUserBot sets the menu, the Mini App button and (when descriptions, i.e. on saving a token)
+// the descriptions — «Проверить» keeps texts the owner may have changed in @BotFather.
+func setupUserBot(parent context.Context, bot *tg.Bot, descriptions bool) []string {
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
 	var errs []string
@@ -131,8 +133,11 @@ func setupUserBot(parent context.Context, bot *tg.Bot) []string {
 	step("deleteWebhook", bot.DeleteWebhook(ctx))
 	step("setMyCommands", bot.SetMyCommands(ctx, tgCommands))
 	step("setChatMenuButton", bot.SetChatMenuButton(ctx, tg.MenuButton{Type: "web_app", Text: "Кабинет", WebApp: &tg.WebAppInfo{URL: miniAppURL("")}}))
-	step("setMyDescription", bot.SetMyDescription(ctx, tgBotDescription))
-	step("setMyShortDescription", bot.SetMyShortDescription(ctx, tgBotShortDescription))
+	if descriptions {
+		step("setMyDescription", bot.SetMyDescription(ctx, tgBotDescription))
+		step("setMyShortDescription", bot.SetMyShortDescription(ctx, tgBotShortDescription))
+	}
+	refreshInlineFlag(ctx, bot)
 	return errs
 }
 
@@ -155,8 +160,8 @@ func handleAdminTelegramCheck(w http.ResponseWriter, r *http.Request) {
 		_ = biz.SetSetting(tgBotUsernameSetting, me.Username)
 		tgCfg.forget(tgBotUsernameSetting)
 	}
-	setupErrors := setupUserBot(r.Context(), bot)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": me.Username, "name": me.FirstName,
+	setupErrors := setupUserBot(r.Context(), bot, false)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": me.Username, "name": me.FirstName, "inline": me.SupportsInlineQueries,
 		"direct_down": telegram.DirectDown(), "setup_errors": setupErrors})
 }
 

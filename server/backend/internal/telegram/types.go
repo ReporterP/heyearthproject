@@ -9,6 +9,33 @@ type User struct {
 	LastName     string `json:"last_name,omitempty"`
 	Username     string `json:"username,omitempty"`
 	LanguageCode string `json:"language_code,omitempty"`
+	// getMe only: inline mode is switched on in @BotFather (/setinline)
+	SupportsInlineQueries bool `json:"supports_inline_queries,omitempty"`
+}
+
+// InlineQuery is «@bot …» typed in any chat (inline mode).
+type InlineQuery struct {
+	ID     string `json:"id"`
+	From   User   `json:"from"`
+	Query  string `json:"query"`
+	Offset string `json:"offset"`
+}
+
+// InlineQueryResultArticle is a text result of an inline query.
+type InlineQueryResultArticle struct {
+	Type                string                `json:"type"` // "article"
+	ID                  string                `json:"id"`
+	Title               string                `json:"title"`
+	Description         string                `json:"description,omitempty"`
+	InputMessageContent InputTextMessage      `json:"input_message_content"`
+	ReplyMarkup         *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ThumbnailURL        string                `json:"thumbnail_url,omitempty"`
+}
+
+type InputTextMessage struct {
+	MessageText        string              `json:"message_text"`
+	ParseMode          string              `json:"parse_mode,omitempty"`
+	LinkPreviewOptions *LinkPreviewOptions `json:"link_preview_options,omitempty"`
 }
 
 // DisplayName is «Имя Фамилия» or @username.
@@ -142,6 +169,7 @@ type Update struct {
 	CallbackQuery *CallbackQuery     `json:"callback_query,omitempty"`
 	MyChatMember  *ChatMemberUpdated `json:"my_chat_member,omitempty"`
 	PreCheckout   *PreCheckoutQuery  `json:"pre_checkout_query,omitempty"`
+	InlineQuery   *InlineQuery       `json:"inline_query,omitempty"`
 }
 
 type File struct {
@@ -174,6 +202,13 @@ type InlineKeyboardButton struct {
 	CallbackData string          `json:"callback_data,omitempty"`
 	WebApp       *WebAppInfo     `json:"web_app,omitempty"`
 	CopyText     *CopyTextButton `json:"copy_text,omitempty"`
+	// SwitchInlineQuery: pick a chat and type «@bot <query>» there (a pointer: "" is meaningful)
+	SwitchInlineQuery *string `json:"switch_inline_query,omitempty"`
+}
+
+// ShareButton lets the person pick a chat and send the bot's inline result there.
+func ShareButton(text, query string) InlineKeyboardButton {
+	return InlineKeyboardButton{Text: text, SwitchInlineQuery: &query}
 }
 
 type InlineKeyboardMarkup struct {

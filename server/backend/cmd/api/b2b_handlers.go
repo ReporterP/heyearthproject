@@ -399,8 +399,9 @@ func handleBusinessInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBusinessMembers handles both:
-//   DELETE /api/v1/business/members/{user_db_id} — remove member
-//   PATCH  /api/v1/business/members/{user_db_id} — change role (admin only)
+//
+//	DELETE /api/v1/business/members/{user_db_id} — remove member
+//	PATCH  /api/v1/business/members/{user_db_id} — change role (admin only)
 //
 // Both refuse to demote/remove the last admin so the tenant can never be
 // orphaned.
@@ -447,7 +448,9 @@ func handleBusinessMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPatch {
-		var body struct{ Role string `json:"role"` }
+		var body struct {
+			Role string `json:"role"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		newRole := strings.TrimSpace(body.Role)
 		switch newRole {

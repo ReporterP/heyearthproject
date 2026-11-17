@@ -44,12 +44,12 @@ func tgReminderMessage(r reminder) tgOut {
 	var kb *tg.InlineKeyboardMarkup
 	switch r.kind() {
 	case email.ReminderRenewsFine:
-		text = fmt.Sprintf("Подписка %s продлится %s: спишем %s с кошелька, на балансе хватает.", plan, end, rub(priceKop))
+		text = fmt.Sprintf("🔁 Подписка %s продлится %s: спишем %s с кошелька, на балансе хватает.", plan, end, rub(priceKop))
 		kb = tg.Keyboard(cabinetRow(""))
 	case email.ReminderTopUp:
-		head := fmt.Sprintf("Подписка %s заканчивается %s.", plan, end)
+		head := fmt.Sprintf("⏳ Подписка %s заканчивается %s.", plan, end)
 		if r.Today {
-			head = fmt.Sprintf("Сегодня последний день подписки %s.", plan)
+			head = fmt.Sprintf("⏰ Сегодня последний день подписки %s.", plan)
 		}
 		text = fmt.Sprintf("%s Для автопродления на кошельке не хватает %s (на балансе %s).", head, rub(priceKop-r.BalanceKop), rub(r.BalanceKop))
 		if starsRate() > 0 {
@@ -57,9 +57,9 @@ func tgReminderMessage(r reminder) tgOut {
 		}
 		kb = tg.Keyboard(starsChooseButton("Продлить звёздами"), cabinetRow(""))
 	default: // auto-renew off
-		head := fmt.Sprintf("Подписка %s закончится %s — автопродление выключено.", plan, end)
+		head := fmt.Sprintf("⏳ Подписка %s закончится %s — автопродление выключено.", plan, end)
 		if r.Today {
-			head = fmt.Sprintf("Сегодня последний день подписки %s — автопродление выключено.", plan)
+			head = fmt.Sprintf("⏰ Сегодня последний день подписки %s — автопродление выключено.", plan)
 		}
 		text = head + " Продлите её или включите автопродление в кабинете."
 		kb = tg.Keyboard(starsChooseButton("Продлить звёздами"),
@@ -141,7 +141,7 @@ func queueTGExpired(ctx context.Context, now time.Time) (int, error) {
 	n := 0
 	for _, e := range list {
 		m := tgOut{ParseMode: "HTML",
-			Text:     fmt.Sprintf("Подписка «%s» закончилась — подключение на паузе. Подписка в Happ остаётся: после оплаты потяните список вниз в Happ, чтобы обновить её.", html.EscapeString(e.plan)),
+			Text:     fmt.Sprintf("⚠️ Подписка «%s» закончилась — подключение на паузе. Подписка в Happ остаётся: после оплаты потяните список вниз в Happ, чтобы обновить её.", html.EscapeString(e.plan)),
 			Keyboard: tg.Keyboard(starsChooseButton("Продлить звёздами"), cabinetRow(""))}
 		if ok, err := enqueueTG(ctx, e.user, tgKindExpired, subRef(e.sub, e.until), m); err == nil && ok {
 			n++
@@ -171,7 +171,7 @@ func notifyTGRenewShort(userID string, subID int, until time.Time, planName stri
 		}
 		price := int64(priceRub) * 100
 		m := tgOut{ParseMode: "HTML",
-			Text: fmt.Sprintf("Не получилось продлить подписку «%s»: на кошельке %s, нужно %s — не хватает %s. Автопродление попробует снова до конца подписки (%s).",
+			Text: fmt.Sprintf("⚠️ Не получилось продлить подписку «%s»: на кошельке %s, нужно %s — не хватает %s. Автопродление попробует снова до конца подписки (%s).",
 				html.EscapeString(planName), rub(bal), rub(price), rub(price-bal), ruDate(until)),
 			Keyboard: tg.Keyboard(starsChooseButton("Продлить звёздами"))}
 		if _, err := enqueueTG(ctx, userDBID, tgKindReminderToday, subRef(subID, until), m); err != nil {
@@ -197,16 +197,16 @@ func notifyTGPurchase(userID string, res *biz.PurchaseResult, renewal bool) {
 		var text string
 		switch {
 		case renewal:
-			text = fmt.Sprintf("Подписка «%s» продлена до %s: списали %s с кошелька, на балансе %s.", plan, ruDate(res.ValidUntil), rub(res.PriceKop), rub(res.BalanceAfterKop))
+			text = fmt.Sprintf("✅ Подписка «%s» продлена до %s: списали %s с кошелька, на балансе %s.", plan, ruDate(res.ValidUntil), rub(res.PriceKop), rub(res.BalanceAfterKop))
 		case res.PriceKop > 0:
-			text = fmt.Sprintf("Подписка «%s» включена до %s. С кошелька списано %s, на балансе %s.", plan, ruDate(res.ValidUntil), rub(res.PriceKop), rub(res.BalanceAfterKop))
+			text = fmt.Sprintf("🎉 Подписка «%s» включена до %s. С кошелька списано %s, на балансе %s.", plan, ruDate(res.ValidUntil), rub(res.PriceKop), rub(res.BalanceAfterKop))
 		default:
-			text = fmt.Sprintf("Подписка «%s» включена до %s.", plan, ruDate(res.ValidUntil))
+			text = fmt.Sprintf("🎉 Подписка «%s» включена до %s.", plan, ruDate(res.ValidUntil))
 		}
 		kb := tg.Keyboard(cabinetRow(""))
 		if !renewal {
-			text += " Добавьте её в Happ — /connect."
-			kb = tg.Keyboard(tg.Row(tg.WebAppButton("Подключить", miniAppURL("connect")).Styled(tg.StyleSuccess)))
+			text += " 🔌 Добавьте её в Happ — кнопка ниже."
+			kb = tg.Keyboard(tg.Row(tg.CallbackButton("🔌 Подключить", "m:con").Styled(tg.StyleSuccess)))
 		}
 		ref := fmt.Sprintf("%d:%d", res.SubscriptionID, res.ValidUntil.Unix())
 		if _, err := enqueueTG(ctx, userDBID, tgKindPurchase, ref, tgOut{Text: text, ParseMode: "HTML", Keyboard: kb}); err != nil {
@@ -218,7 +218,7 @@ func notifyTGPurchase(userID string, res *biz.PurchaseResult, renewal bool) {
 // notifyTGTopup: a top-up was credited and nothing was bought with it.
 func notifyTGTopup(userDBID int, amountKop, balanceKop int64) {
 	notifyTG(userDBID, tgKindTopup, "", tgOut{
-		Text:     fmt.Sprintf("Кошелёк пополнен на %s. Баланс — %s.", rub(amountKop), rub(balanceKop)),
+		Text:     fmt.Sprintf("💳 Кошелёк пополнен на %s. Баланс — %s.", rub(amountKop), rub(balanceKop)),
 		Keyboard: tg.Keyboard(cabinetRow("wallet")),
 	})
 }
@@ -227,12 +227,12 @@ func notifyTGTopup(userDBID int, amountKop, balanceKop int64) {
 func notifyTGReferral(rw *biz.ReferralReward) {
 	if rw.ReferrerKop > 0 {
 		notifyTG(rw.ReferrerID, tgKindReferral, fmt.Sprintf("%d:inviter", rw.ID), tgOut{
-			Text:     fmt.Sprintf("Друг оплатил подписку — на ваш кошелёк начислено %s.", rub(rw.ReferrerKop)),
+			Text:     fmt.Sprintf("🎁 Друг оплатил подписку — на ваш кошелёк начислено %s.", rub(rw.ReferrerKop)),
 			Keyboard: tg.Keyboard(cabinetRow("wallet"))})
 	}
 	if rw.FriendKop > 0 {
 		notifyTG(rw.FriendID, tgKindReferral, fmt.Sprintf("%d:friend", rw.ID), tgOut{
-			Text:     fmt.Sprintf("Бонус за приглашение — на кошелёк начислено %s.", rub(rw.FriendKop)),
+			Text:     fmt.Sprintf("🎁 Бонус за приглашение — на кошелёк начислено %s.", rub(rw.FriendKop)),
 			Keyboard: tg.Keyboard(cabinetRow("wallet"))})
 	}
 }
