@@ -96,6 +96,10 @@ func StartMonitor() {
 	go runEvery(10*time.Minute, time.Hour, func() {
 		safely("мощность", checkCapacity)
 	})
+	// DDoS signals (ddos_monitor.go): conntrack fill, the flood table's counters, API load shedding.
+	go runEvery(3*time.Minute, time.Minute, func() {
+		safely("признаки атаки", checkDDoSSignals)
+	})
 	startTGWebMonitor()
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)

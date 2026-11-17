@@ -170,6 +170,12 @@ func TOTPSetupHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusServiceUnavailable, "На сервере нет ключа шифрования (SSH_ENCRYPTION_KEY) — 2FA недоступна")
 		return
 	}
+	// With 2FA on, a session alone must not swap the key (a stolen token would keep the account):
+	// turn it off first — that takes the password and a code.
+	if st, err := loadAdminLoginState(claims.AdminID); err != nil || st.totpEnabled {
+		writeAdminError(w, http.StatusConflict, "Двухфакторный вход уже включён — сначала выключите его (нужны пароль и код)")
+		return
+	}
 	secret, err := newTOTPSecret()
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось создать ключ")
@@ -231,7 +237,7 @@ func TOTPEnableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := db.DB.Exec(`UPDATE admin_users SET totp_secret_enc = totp_pending_enc, totp_pending_enc = NULL, totp_enabled = TRUE, totp_last_step = $2
-		WHERE id = $1 AND totp_pending_enc = $3`, claims.AdminID, step, pending)
+		WHERE id = $1 AND totp_pending_enc = $3 AND NOT totp_enabled`, claims.AdminID, step, pending)
 	if n, _ := res.RowsAffected(); err != nil || n != 1 {
 		writeAdminError(w, http.StatusConflict, "Ключ изменился — получите новый и повторите")
 		return
