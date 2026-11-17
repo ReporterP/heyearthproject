@@ -150,6 +150,9 @@ func queueTGExpired(ctx context.Context, now time.Time) (int, error) {
 // notifyTGRenewShort: the hourly auto-renew found the wallet short (once per period; shares
 // its key with the last-day reminder so the person gets one of the two).
 func notifyTGRenewShort(userID string, subID int, until time.Time, planName string, priceRub int) {
+	if userBotToken() == "" {
+		return
+	}
 	go func() {
 		defer recoverBG("tg-renew-short")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -176,6 +179,9 @@ func notifyTGRenewShort(userID string, subID int, until time.Time, planName stri
 
 // notifyTGPurchase: a plan bought or renewed from the wallet (after COMMIT).
 func notifyTGPurchase(userID string, res *biz.PurchaseResult, renewal bool) {
+	if userBotToken() == "" {
+		return
+	}
 	go func() {
 		defer recoverBG("tg-purchase")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

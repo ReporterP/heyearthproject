@@ -27,7 +27,7 @@ export function useSupportUnread(token) {
   const [n, setN] = useState(value)
   useEffect(() => {
     if (!token) return undefined
-    currentToken = token
+    if (currentToken !== token) { set(0); currentToken = token; poll() } // another account in this tab
     listeners.add(setN)
     if (!timer) {
       poll()

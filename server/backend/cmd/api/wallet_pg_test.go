@@ -22,8 +22,11 @@ func quietWallet(t *testing.T) {
 	sendActivationEmailAsync = func(string, *biz.Plan, int, bool, int) {}
 	notifyWalletTopupAsync = func(int, string, int64, int64) {}
 	notifyReferralReward = func(*biz.ReferralReward) {}
+	prevP := notifyTGPurchaseAsync
+	notifyTGPurchaseAsync = func(string, *biz.PurchaseResult, bool) {}
 	t.Cleanup(func() {
 		kickWalletReceiptsAsync, sendActivationEmailAsync, notifyWalletTopupAsync, notifyReferralReward = prevK, prevE, prevT, prevR
+		notifyTGPurchaseAsync = prevP
 	})
 }
 

@@ -157,7 +157,8 @@ func SupportAddUserMessage(ctx context.Context, in SupportIncoming) (*SupportAdd
 }
 
 // SupportAddAdminMessage stores an answer (admin panel or a reply in the owner's chat) and
-// returns it with the ticket's owner.
+// returns it with the ticket's owner. Answering a closed ticket reopens it as «answered»: the
+// person gets the answer, so the conversation is live again.
 func SupportAddAdminMessage(ctx context.Context, ticketID int, adminID *int, body, via string) (*SupportMessage, int, error) {
 	body, err := cleanSupportBody(body)
 	if err != nil {

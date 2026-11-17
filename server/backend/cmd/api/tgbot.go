@@ -309,6 +309,9 @@ func enqueueTGChat(ctx context.Context, userDBID int, chat int64, kind, ref stri
 // notifyTG queues a notice in the background, logging failures (callers are payment paths and
 // crons that must not wait for Telegram).
 func notifyTG(userDBID int, kind, ref string, m tgOut) {
+	if userBotToken() == "" {
+		return
+	}
 	go func() {
 		defer recoverBG("tg-notify")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -395,6 +398,9 @@ func drainTGOutbox(ctx context.Context, bot *tg.Bot) (int, error) {
 		}
 		if wait := sendTGOutRow(ctx, bot, r); wait > 0 {
 			// Telegram asked to slow down: every next message would get 429 too
+			if wait > time.Minute {
+				wait = time.Minute // the row itself waits its next_at; the rest of the queue goes on
+			}
 			log.Printf("[tg-outbox] 429 — пауза %s", wait)
 			t := time.NewTimer(wait)
 			select {

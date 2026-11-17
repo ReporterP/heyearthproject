@@ -281,13 +281,15 @@ func deliverSupportAnswer(userDBID int, m *biz.SupportMessage) {
 		defer recoverBG("support-answer")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := enqueueTG(ctx, userDBID, "support", strconv.FormatInt(m.ID, 10), tgOut{
-			Text:      "<b>Ответ поддержки</b>\n\n" + html.EscapeString(m.Body) + "\n\n<i>Чтобы ответить, напишите ответом на это сообщение.</i>",
-			ParseMode: "HTML",
-			Keyboard:  tg.Keyboard(tg.Row(tg.WebAppButton("Открыть переписку", miniAppURL("support")))),
-		})
-		if err != nil {
-			log.Printf("[support] ответ %d в бот: %v", m.ID, err)
+		if userBotToken() != "" {
+			_, err := enqueueTG(ctx, userDBID, "support", strconv.FormatInt(m.ID, 10), tgOut{
+				Text:      "<b>Ответ поддержки</b>\n\n" + html.EscapeString(m.Body) + "\n\n<i>Чтобы ответить, напишите ответом на это сообщение.</i>",
+				ParseMode: "HTML",
+				Keyboard:  tg.Keyboard(tg.Row(tg.WebAppButton("Открыть переписку", miniAppURL("support")))),
+			})
+			if err != nil {
+				log.Printf("[support] ответ %d в бот: %v", m.ID, err)
+			}
 		}
 		if to := biz.ConfirmedEmail(ctx, userDBID); to != "" {
 			subj, htmlBody, text := email.SupportReply(m.Body)
@@ -451,6 +453,9 @@ func tgSupportMessage(c *tgCtx, m *tg.Message) {
 	added, err := biz.SupportAddUserMessage(c.ctx, biz.SupportIncoming{UserDBID: c.user.DBID, Body: body, Image: name, Via: "bot",
 		TGChatID: c.chat, TGMessage: int64(m.MessageID)})
 	if errors.Is(err, biz.ErrSupportDuplicate) {
+		if name != "" {
+			_ = os.Remove(filepath.Join(supportDir(), name))
+		}
 		return
 	}
 	if err != nil {
@@ -496,6 +501,16 @@ func handleAlertBotUpdate(ctx context.Context, u tg.Update) {
 		return
 	}
 	bot := alertBot()
+	if m.Chat.Type != "private" { // a group alerts chat: only its administrators answer
+		if m.From == nil || bot == nil {
+			return
+		}
+		mem, err := bot.GetChatMember(ctx, chat, m.From.ID)
+		if err != nil || (mem.Status != "creator" && mem.Status != "administrator") {
+			log.Printf("[support] ответ в №%d от не-администратора чата алертов отклонён", ticket)
+			return
+		}
+	}
 	answer := func(text string) {
 		if bot != nil {
 			_, _ = bot.SendMessage(ctx, tg.SendMessage{ChatID: chat, Text: text, ReplyParameters: &tg.ReplyParameters{MessageID: m.MessageID}})

@@ -28,6 +28,9 @@ func (f *fakeTelegram) route() *tgapi.Route {
 			defer f.mu.Unlock()
 			f.next++
 			f.calls = append(f.calls, req.Method+" "+req.ChatID+" "+string(req.Body))
+			if req.Method == "getChatMember" { // the owner is an administrator of the alerts group
+				return []byte(`{"status":"administrator","user":{"id":1}}`), nil
+			}
 			out, _ := json.Marshal(map[string]any{"message_id": 700 + f.next, "chat": map[string]any{"id": 1}})
 			return out, nil
 		},
@@ -77,6 +80,11 @@ func TestSupportFullCircle(t *testing.T) {
 		return "", errors.New("no")
 	})
 
+	tgCfg.forget(tgBotTokenSetting)
+	testpg.MustExec(t, conn, `INSERT INTO app_settings (key, value) VALUES ('tg_bot_token', $1)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, fakeBotToken)
+	t.Cleanup(func() { tgCfg.forget(tgBotTokenSetting) })
+
 	u := testpg.NewUser(t, conn, "support-user")
 	testpg.MustExec(t, conn, `UPDATE users SET telegram_id = 4242 WHERE id = $1`, u)
 
@@ -109,7 +117,7 @@ func TestSupportFullCircle(t *testing.T) {
 	}
 
 	// the owner replies to the notice in the alerts chat
-	handleAlertBotUpdate(ctx, tgapi.Update{Message: &tgapi.Message{MessageID: 2, Chat: tgapi.Chat{ID: -1009000, Type: "supergroup"}, Text: "Обновите подписку в Happ",
+	handleAlertBotUpdate(ctx, tgapi.Update{Message: &tgapi.Message{MessageID: 2, From: &tgapi.User{ID: 1}, Chat: tgapi.Chat{ID: -1009000, Type: "supergroup"}, Text: "Обновите подписку в Happ",
 		ReplyToMessage: &tgapi.Message{MessageID: int(noticeID)}}})
 	var status string
 	_ = conn.QueryRow(`SELECT status FROM support_tickets WHERE id = $1`, added.Ticket.ID).Scan(&status)

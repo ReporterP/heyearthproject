@@ -17,7 +17,7 @@ import (
 // ─────────────────────── Mini App sign-in, linking, one-time site sign-in (TG2/TG3) ───────────────────────
 
 // Each launch brings fresh initData; a stolen string must not stay useful for long.
-const tgInitDataMaxAge = 2 * time.Hour
+const tgInitDataMaxAge = 12 * time.Hour
 
 // registerTelegramRoutes wires the public and cabinet endpoints of the Telegram bot.
 func registerTelegramRoutes(authLimiter, apiLimiter *middleware.RateLimiter) {

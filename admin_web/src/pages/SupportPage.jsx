@@ -29,7 +29,7 @@ function AdminImage({ name }) {
   useEffect(() => {
     let alive = true
     let made = ''
-    authImage(`/support/images/${name}`).then(u => { made = u; if (alive) setUrl(u) }).catch(() => {})
+    authImage(`/support/images/${name}`).then(u => { if (alive) { made = u; setUrl(u) } else URL.revokeObjectURL(u) }).catch(() => {})
     return () => { alive = false; if (made) URL.revokeObjectURL(made) }
   }, [name])
   if (!url) return <div className="mt-2 w-40 h-28 rounded border border-default bg-canvas" aria-hidden="true" />
@@ -49,9 +49,12 @@ function Conversation({ id, onChanged, onBack }) {
   const [toggling, setToggling] = useState(false)
   const endRef = useRef(null)
 
+  const current = useRef(id)
+  current.current = id
   const load = useCallback(async () => {
     try {
       const data = await fetchSupportTicket(id)
+      if (current.current !== id) return // switched to another ticket meanwhile
       setD(data)
       setError('')
       if (data.messages.some(m => m.author === 'user' && !m.read_at)) {
