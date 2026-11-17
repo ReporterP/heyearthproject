@@ -24,6 +24,8 @@
   --breakpoint-*: initial;
   --breakpoint-sm: 641px;
   --breakpoint-lg: 1025px;
+  /* the cabinet only: its content with the 248 px side menu keeps the tablet layout up to 1365 (01 §3) */
+  --breakpoint-xl: 1366px;
 }
 
 /* @fontsource-variable registers Manrope as «Manrope Variable» */

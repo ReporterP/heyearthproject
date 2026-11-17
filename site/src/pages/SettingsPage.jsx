@@ -120,13 +120,13 @@ export default function SettingsPage() {
     body = (
       <>
         <Section title="Номерок" text="Единственный ключ от аккаунта. Восстановить нельзя.">
-          <div className="card row gap-6 max-sm:flex-col" style={{ alignItems: 'center' }}>
+          <div className="card row gap-6 max-xl:flex-col" style={{ alignItems: "center" }}>
             <div style={{ width: 200, flex: 'none' }} aria-hidden="true">
               <Nomerok id={profile.user_id} variant="idle" label="номерок" railWidth={200} idSize={13} />
             </div>
             <div className="stack gap-3" style={{ flex: 1, minWidth: 0, width: '100%' }}>
               <CopyField value={profile.user_id} label="HiEarth ID" buttonLabel="Скопировать" />
-              <dl className="kv" style={{ gridTemplateColumns: 'minmax(0, 160px) 1fr' }}>
+              <dl className="kv sm:grid-cols-[max-content_minmax(0,1fr)]">
                 <dt>Имя пользователя</dt><dd className={profile.username ? 'mono' : 'subtle'}>{profile.username || 'не задано'}</dd>
                 <dt>Пароль</dt><dd>{hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
                 <dt>Подписка</dt>
