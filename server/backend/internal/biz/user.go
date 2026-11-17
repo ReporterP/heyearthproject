@@ -14,16 +14,19 @@ import (
 
 // User represents a HeYearth user in the database.
 type User struct {
-	ID                int
-	UserID            string
-	TelegramID        sql.NullInt64 // legacy, kept for migration compatibility
-	Username          sql.NullString
-	PasswordHash      sql.NullString
-	Role              string
-	IsBlocked         bool
-	PreferredPlatform string
-	Locale            string
-	VlessUUID         string // per-user UUID для VLESS подключения
+	ID           int
+	UserID       string
+	TelegramID   sql.NullInt64 // legacy, kept for migration compatibility
+	Username     sql.NullString
+	PasswordHash sql.NullString
+	// PasswordMustChange: the password is a temporary one support issued
+	// (ResetPasswordByAdmin); SetCloudPassword clears it.
+	PasswordMustChange bool
+	Role               string
+	IsBlocked          bool
+	PreferredPlatform  string
+	Locale             string
+	VlessUUID          string // per-user UUID для VLESS подключения
 }
 
 // Subscription represents an active user subscription.
@@ -246,14 +249,14 @@ func getUserByField(field, value string) (*User, error) {
 	query := fmt.Sprintf(`
 		SELECT id, user_id, telegram_id, COALESCE(username, ''), COALESCE(password_hash, ''),
 		       role, COALESCE(is_blocked, FALSE), COALESCE(preferred_platform, ''), COALESCE(locale, 'ru'),
-		       COALESCE(vless_uuid::text, '')
+		       COALESCE(vless_uuid::text, ''), COALESCE(password_must_change, FALSE)
 		FROM users WHERE %s = $1
 	`, field)
 	var username, passwordHash string
 	err := db.DB.QueryRow(query, value).Scan(
 		&user.ID, &user.UserID, &user.TelegramID, &username, &passwordHash,
 		&user.Role, &user.IsBlocked, &user.PreferredPlatform, &user.Locale,
-		&user.VlessUUID,
+		&user.VlessUUID, &user.PasswordMustChange,
 	)
 	if err != nil {
 		return nil, err

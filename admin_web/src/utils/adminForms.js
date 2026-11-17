@@ -9,6 +9,7 @@ export const PERMISSION_LABELS = {
   'dashboard.read': 'Главная и метрики',
   'users.read': 'Пользователи: просмотр',
   'users.write': 'Пользователи: изменение, блокировка',
+  'users.password_reset': 'Пользователи: сброс пароля (временный пароль виден администратору)',
   'subscriptions.read': 'Подписки: просмотр',
   'subscriptions.write': 'Подписки: изменение',
   'promocodes.read': 'Промокоды: просмотр',

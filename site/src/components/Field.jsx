@@ -1,4 +1,5 @@
-import { Children, cloneElement, isValidElement, useId } from 'react'
+import { Children, cloneElement, isValidElement, useId, useState } from 'react'
+import Icon from './Icon.jsx'
 
 // Field (spec 02 §4): visible label → control → hint or error. The error replaces the hint, marks the
 // control `is-invalid` + aria-invalid and is linked by aria-describedby.
@@ -41,8 +42,37 @@ export default function Field({ label, hint, hintTone, error, optional, aside, i
 }
 
 // Input: `.input` with the variants of 02 §4. `invalid` comes from Field.
-export function Input({ mono, size, invalid, className = '', as = 'input', ...rest }) {
+// type="password" draws `input-pw`: the field + the «show password» button (02 §4).
+export function Input({ mono, size, invalid, className = '', as = 'input', type, id: idProp, ...rest }) {
+  const auto = useId()
+  const [shown, setShown] = useState(false)
   const Tag = as
   const cls = ['input', mono ? 'input--mono' : '', size === 'lg' ? 'input--lg' : '', invalid ? 'is-invalid' : '', className].filter(Boolean).join(' ')
-  return <Tag className={cls} aria-invalid={invalid || undefined} {...rest} />
+  if (Tag !== 'input' || type !== 'password') {
+    return <Tag className={cls} type={type} id={idProp} aria-invalid={invalid || undefined} {...rest} />
+  }
+  const id = idProp || `pw${auto.replace(/:/g, '')}`
+  return (
+    <div className={`input-pw ${size === 'lg' ? 'input-pw--lg' : ''}`}>
+      <input
+        className={cls}
+        id={id}
+        type={shown ? 'text' : 'password'}
+        aria-invalid={invalid || undefined}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        {...rest}
+      />
+      <button
+        type="button"
+        className="input-pw__toggle"
+        aria-label={shown ? 'Скрыть пароль' : 'Показать пароль'}
+        aria-controls={id}
+        onClick={() => setShown((s) => !s)}
+      >
+        <Icon name={shown ? 'eyeOff' : 'eye'} size={18} />
+      </button>
+    </div>
+  )
 }

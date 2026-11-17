@@ -171,6 +171,8 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "dashboard.read", Name: "Dashboard Read", Description: "View admin dashboard"},
 	{Key: "users.read", Name: "Users Read", Description: "View users"},
 	{Key: "users.write", Name: "Users Write", Description: "Create and update users"},
+	// Also seeded by migration 000087.
+	{Key: "users.password_reset", Name: "Users Password Reset", Description: "Reset a user's password: issue a one-time temporary password (shown to the admin) and sign the user out everywhere"},
 	{Key: "subscriptions.read", Name: "Subscriptions Read", Description: "View subscriptions"},
 	{Key: "subscriptions.write", Name: "Subscriptions Write", Description: "Create and update subscriptions"},
 	{Key: "promocodes.read", Name: "Promocodes Read", Description: "View promocodes"},

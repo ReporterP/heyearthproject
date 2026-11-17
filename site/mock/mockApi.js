@@ -16,7 +16,8 @@
 //   news     unread | read | empty             — the cabinet's «Новости»
 //   stars    on | off                          — paying in Telegram Stars (Mini App)
 //   email    confirmed | pending | none
-//   login    password | nopassword            — has a login+password
+//   login    password | nopassword | temporary — has a login+password; temporary = support reset it
+//            (password 1234 is the temporary one: the cabinet's «Смените временный пароль» banner)
 //   referral on | off
 //   b2b      off | admin | billing | viewer   — site-info.b2b_enabled + role in /business/me
 //   tenant   active | inactive | suspended
@@ -36,7 +37,7 @@ const S = { ...DEFAULT }
 const OPTIONS = {
   sub: ['active', 'none', 'expired'], wallet: ['enough', 'low', 'zero'], trial: ['available', 'used'], renew: ['on', 'off'],
   history: ['full', 'empty'], tg: ['both', 'web', 'classic', 'none'], email: ['confirmed', 'pending', 'none'],
-  login: ['password', 'nopassword'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer'],
+  login: ['password', 'nopassword', 'temporary'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer'],
   tenant: ['active', 'inactive', 'suspended'], members: ['many', 'solo'], pay: ['succeeded', 'pending', 'canceled'],
   sublink: ['ok', 'fail'], delay: ['0', '350', '1500'], bot: ['linked', 'unlinked', 'blocked', 'off'],
   support: ['answered', 'waiting', 'closed', 'empty'],
@@ -75,7 +76,8 @@ function sub() {
 
 function profile() {
   const s = sub()
-  const p = { user_id: USER_ID, username: S.login === 'password' ? 'ivan_moscow' : '', has_password: S.login === 'password', preferred_platform: 'web', locale: 'ru', is_blocked: false, is_premium: !!s?.active, access_status: 'active' }
+  const hasPw = S.login === 'password' || S.login === 'temporary'
+  const p = { user_id: USER_ID, username: hasPw ? 'ivan_moscow' : '', has_password: hasPw, must_change_password: S.login === 'temporary', preferred_platform: 'web', locale: 'ru', is_blocked: false, is_premium: !!s?.active, access_status: 'active' }
   if (s?.active) Object.assign(p, { current_plan: s.plan_name, current_plan_slug: s.plan, valid_until: s.valid_until })
   return p
 }
@@ -231,8 +233,8 @@ function route(method, path, q, body, authed) {
     const id = String(body?.id_or_username || '').trim()
     if (id === 'rate') return [429, { error: 'too many requests' }]
     if (id !== USER_ID && id !== 'ivan_moscow') return [401, { error: 'user not found' }]
-    if (S.login === 'password' && !body?.password) return [401, { error: 'password required' }]
-    if (S.login === 'password' && body?.password !== '1234') return [401, { error: 'invalid password' }]
+    if (S.login !== 'nopassword' && !body?.password) return [401, { error: 'password required' }]
+    if (S.login !== 'nopassword' && body?.password !== '1234') return [401, { error: 'invalid password' }]
     return [200, { user_id: USER_ID, token: 'mock-token', profile: profile() }]
   }
   if (path === '/api/v1/auth/logout') return [204, null]
@@ -246,8 +248,9 @@ function route(method, path, q, body, authed) {
     if (method === 'PATCH') {
       if (body?.username && body.username.length < 5) return [400, { error: 'имя пользователя должно быть от 5 до 64 символов' }]
       if (body?.username === 'taken') return [400, { error: 'username already taken' }]
-      if (body?.new_password && S.login === 'password' && body.current_password !== '1234') return [400, { error: 'invalid current password' }]
-      if (body?.username) S.login = 'password'
+      if (body?.new_password && S.login !== 'nopassword' && body.current_password !== '1234') return [400, { error: 'invalid current password' }]
+      if (body?.new_password && S.login === 'temporary' && body.new_password === body.current_password) return [400, { error: 'new password must differ from the temporary one' }]
+      if (body?.username || body?.new_password) S.login = 'password'
       return [200, { ...profile(), username: body?.username || profile().username, has_password: true }]
     }
     return [200, profile()]
@@ -420,8 +423,10 @@ function route(method, path, q, body, authed) {
   }
   if (path === '/api/v1/auth/telegram/register') return [200, { linked: true, created: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   if (path === '/api/v1/auth/telegram/login') {
-    const ok = [USER_ID, 'ivan_moscow'].includes(String(body?.id_or_username || '').toLowerCase()) && (body?.password === '1234' || S.login === 'nopassword')
-    if (!ok) return [400, { error: String(body?.id_or_username || '').includes('-') ? 'user not found' : 'invalid password' }]
+    const known = [USER_ID, 'ivan_moscow'].includes(String(body?.id_or_username || '').toLowerCase())
+    if (!known) return [400, { error: 'user not found' }]
+    if (S.login !== 'nopassword' && !body?.password) return [400, { error: 'password required' }]
+    if (S.login !== 'nopassword' && body?.password !== '1234') return [400, { error: 'invalid password' }]
     return [200, { linked: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   }
   return [404, { error: 'not found' }]
