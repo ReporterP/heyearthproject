@@ -665,6 +665,7 @@ func happAddLink(subscribeURL string) string { return "happ://add/" + subscribeU
 //  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /payment
 //  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /payment
 //  5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
+//     5a. a news post for Happ  → "📣 <заголовок>"                   + /news (happ_days)
 //  6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
 //
 // The dashboard / checkout URL roots are taken from publicBaseURL().
@@ -759,6 +760,11 @@ func buildSubscriptionAnnounceAt(userID, base string) (text, url string, err err
 		if pct >= 80 {
 			return fmt.Sprintf("📊 Использовано %d%% трафика", pct), dashboard, nil
 		}
+	}
+
+	// 5a. an active news post for Happ (personal lines above always win)
+	if text := happNewsAnnounce(); text != "" {
+		return text, base + "/news", nil
 	}
 
 	// 6. healthy default — always include link to cabinet (per spec)

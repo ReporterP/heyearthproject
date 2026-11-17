@@ -347,8 +347,14 @@ var tgPhotoIDs sync.Map // uploads path → file_id after the first upload
 func runTGOutbox(ctx context.Context) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
+	var happAt time.Time
 	for ctx.Err() == nil {
+		if time.Since(happAt) > time.Minute {
+			refreshHappNews(ctx)
+			happAt = time.Now()
+		}
 		if bot := userBot(); bot != nil {
+			publishDueNews(ctx) // scheduled news (this loop runs in one API instance)
 			for ctx.Err() == nil {
 				n, err := drainTGOutbox(ctx, bot)
 				if err != nil {
