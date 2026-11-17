@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # HiEarth
 
-Proxy-эко service with anonymous registration, a wallet (balance) that pays for subscriptions, «приведи друга», and a Hub-and-spoke network with exits abroad and reserve entries in RU. Go backend, Flutter client (frozen), React admin panel (16 pages), React site + cabinet (23 pages).
+Proxy-эко service with anonymous registration, a wallet (balance) that pays for subscriptions, «приведи друга», and a Hub-and-spoke network with exits abroad and reserve entries in RU. Go backend, Flutter client (frozen), React admin panel (19 pages), React site + cabinet (28 pages), a Telegram users' bot (Mini App cabinet, notifications, support, news, Stars payments).
 
 **Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: the A record of `hiearth.ru` (VDSina; the Hub's old primary address is filtered upstream — never use it). Exit 2: Amsterdam. Real addresses live in `server/.env` and the admin, never in the repo (it is public): docs and tests use RFC 5737 addresses (`203.0.113.x`, `198.51.100.x`, `192.0.2.x`).
 **Payment**: YooKassa (`internal/yookassa`, webhook `/api/v1/webhooks/yookassa` — the only path YooKassa calls; the old `/api/webhooks/yookassa` is gone). Money goes through the wallet: a top-up is a YooKassa payment («предоплата 100 %» receipt), a subscription is paid from the balance (closing receipt with prepayment settlement). No saved cards, no recurring charges.
@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 80 SQL migrations (000001-000080), applied at API start
+│   │   ├── migrations/            # 86 SQL migrations (000001-000086), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -103,12 +103,12 @@ heyearthproject/
 │   └── packages/flutter_v2ray_plus/  # Local Xray plugin
 ├── admin_web/                     # React 19 admin panel (Vite + Tailwind v4)
 │   └── src/
-│       ├── pages/                 # 16 pages («Серверы» = exits, RU entries, Hub, «Мощность»)
+│       ├── pages/                 # 19 pages («Серверы» = exits, RU entries, Hub, «Мощность»; «Поддержка», «Новости», «Telegram-бот»)
 │       ├── components/            # ~27 components (nodes/ wizard, entries/ MobileCheckPanel, ui/ primitives)
 │       └── i18n/                  # ru/en translations
 └── site/                          # React 19 marketing + user portal (Vite + Tailwind v4)
     └── src/
-        ├── pages/                 # 23 pages (incl. /connect, /wallet, /help, Checkout, legal; Business* behind b2b_enabled)
+        ├── pages/                 # 28 pages (incl. /connect, /wallet, /help, /support, /news, /tg Mini App entry, /m/:token, Checkout, legal; Business* behind b2b_enabled)
         ├── components/            # components
         └── auth/                  # AuthContext
 ```
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (80)
+# Auto-runs the migrations on startup (86)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -217,6 +217,15 @@ SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (u
 
 **E-mail** (`internal/biz/email_prefs.go`, `cmd/api/email_*.go`): an address given in the cabinet is confirmed by a link; only a confirmed one gets wallet receipts, reminders (3 days before the end and on the last day) and wallet/referral letters; one-click unsubscribe (signed link, List-Unsubscribe-Post). The address typed at payment is for that receipt only.
 
+### Telegram users' bot (since 2026-11-17)
+
+Runbook: `docs/runbooks/telegram-bot.md`; site spec: `spec/12-telegram.md`, 08 §8.6–8.7.
+- Second bot (not the alerts bot). `internal/telegram` = Bot API client + the shared route `telegram` (direct, then an exit's SOCKS; the Hub may not reach Telegram) + limiter + long-poll Poller + initData check. Alerts use the same route.
+- `cmd/api/tgbot*.go`: pollers (users' bot; alerts bot for owner replies) and `tg_outbox` under Postgres advisory locks; `/start link_…|ref_…`, `/status /connect /wallet /friend /support /news /settings /paysupport`; notifications hang on the e-mail/Happ events (`tgbot_notify.go`).
+- Mini App `/tg`: initData → session (`POST /api/v1/auth/telegram[/register|/login]`), the cabinet pages in Mini App mode (`site/src/lib/telegram.js`: MainButton mirrors the screen's primary, BackButton, safe areas, haptics).
+- **Payments inside Telegram are Telegram Stars only** (Developer Terms 6.2; links to pay on the site, ЮKassa, crypto/TON = ban risk). `cmd/api/stars.go`: price = ⌈plan ₽ / `tg_stars_rub`⌉, one payment = one plan period, `stars_payments` per charge id, refund on failure, `/paysupport`. Never add a site-payment link to the bot or the Mini App.
+- Support (`support.go`, admin «Поддержка», `support.manage`), news (`news.go`, admin «Новости», `news.manage`: channel + bot + cabinet feed + Happ line `📣`), settings in admin «Telegram-бот» (token write-only, channel, Stars rate).
+
 ### Entries (mobile networks)
 
 - Reserve entry = RU VPS of another provider (`servers.role='relay'`), added in admin «Входы» (wizard; Hub key instead of a root password; «Проверить с телефона» = `mobile_check`).
@@ -264,9 +273,9 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 80 migrations)
+## Database (PostgreSQL, 86 migrations)
 
-Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
+Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
 Retention (`cmd/api/retention.go`, every 6 h): per-day traffic sums first, then raw traffic older than 45 days (only days already summed), then expired sessions.
 
