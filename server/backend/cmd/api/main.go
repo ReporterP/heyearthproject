@@ -863,7 +863,9 @@ func main() {
 	// the outgoing queue, each in one API instance (advisory locks).
 	StartTelegram()
 
-	// Rate limiters
+	// Rate limiters. Our servers' own addresses (exits, entries) are shared by many users:
+	// counted per user there (shared_sources.go).
+	startSharedSourceRefresh(context.Background())
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
 	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)

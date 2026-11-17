@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"strings"
@@ -43,14 +45,30 @@ func NewRateLimiter(maxRequests int, window time.Duration) *RateLimiter {
 }
 
 // Allow проверяет можно ли пропустить запрос для данного IP.
-func (rl *RateLimiter) Allow(ip string) bool {
+func (rl *RateLimiter) Allow(ip string) bool { return rl.allowN(ip, rl.rate) }
+
+// maxBuckets bounds the limiter's memory under a flood from many addresses: past it, expired
+// buckets are dropped at once, and a new key that still does not fit is refused.
+const maxBuckets = 200000
+
+func (rl *RateLimiter) allowN(ip string, limit int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
 	b, exists := rl.buckets[ip]
 	if !exists || now.Sub(b.lastReset) >= rl.window {
-		rl.buckets[ip] = &bucket{tokens: rl.rate - 1, lastReset: now}
+		if !exists && len(rl.buckets) >= maxBuckets {
+			for k, v := range rl.buckets {
+				if now.Sub(v.lastReset) >= rl.window {
+					delete(rl.buckets, k)
+				}
+			}
+			if len(rl.buckets) >= maxBuckets {
+				return false
+			}
+		}
+		rl.buckets[ip] = &bucket{tokens: limit - 1, lastReset: now}
 		return true
 	}
 
@@ -173,8 +191,8 @@ func (rl *RateLimiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		ip := ExtractIP(r)
-		if !rl.Allow(ip) {
+		key, limit := rl.keyFor(r)
+		if !rl.allowN(key, limit) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -183,4 +201,29 @@ func (rl *RateLimiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// SharedSource reports whether ip is one of our own servers that carries many users at once: an
+// exit (every Happ user who opens the site goes out through one) or an entry. Set by cmd/api from
+// the servers table; nil = none.
+var SharedSource func(ip string) bool
+
+// sharedAnonFactor: an anonymous request from a shared address gets this many times the per-IP
+// allowance (it stands for every user behind that exit).
+const sharedAnonFactor = 20
+
+// keyFor is the bucket of r. A request from a shared address is counted per user when it carries
+// a token (a hash of the Authorization header, never the token itself), else in the address's
+// bucket with sharedAnonFactor times the limit — so one user behind an exit cannot use up the
+// limit of everybody else there.
+func (rl *RateLimiter) keyFor(r *http.Request) (string, int) {
+	ip := ExtractIP(r)
+	if SharedSource == nil || !SharedSource(ip) {
+		return ip, rl.rate
+	}
+	if a := r.Header.Get("Authorization"); a != "" {
+		sum := sha256.Sum256([]byte(a))
+		return ip + "|" + hex.EncodeToString(sum[:12]), rl.rate
+	}
+	return ip, rl.rate * sharedAnonFactor
 }
