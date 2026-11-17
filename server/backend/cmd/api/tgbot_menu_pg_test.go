@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	tgapi "github.com/heyearth/backend/internal/telegram"
 	"github.com/heyearth/backend/internal/testpg"
 )
@@ -94,6 +95,30 @@ func TestTGChatMenu(t *testing.T) {
 	_ = conn.QueryRow(`SELECT COALESCE(telegram_id, 0) FROM users WHERE id = $1`, other).Scan(&linked)
 	if linked != 8200 {
 		t.Fatalf("sign-in by ID did not link: %d", linked)
+	}
+
+	// «Войти через браузер» (spec 12 §12.5): the site's link token, /start link_… in the bot → linked,
+	// and the answer offers the Mini App right away
+	fromSite := testpg.NewUser(t, conn, "site-link-4444-5555")
+	tok, _, err := biz.CreateTGLinkToken(ctx, fromSite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := newTGCtx(ctx, bot, tgapi.User{ID: 8400, FirstName: "Олег"})
+	fake.calls = nil
+	tgLinkFromSite(l, tok)
+	_ = conn.QueryRow(`SELECT COALESCE(telegram_id, 0) FROM users WHERE id = $1`, fromSite).Scan(&linked)
+	if linked != 8400 {
+		t.Fatalf("link from the site: %d", linked)
+	}
+	var answer string
+	for _, call := range fake.calls {
+		if strings.Contains(call, "Telegram привязан") {
+			answer = call
+		}
+	}
+	if !strings.Contains(answer, `"web_app"`) || !strings.Contains(answer, "Открыть кабинет") {
+		t.Errorf("the link answer must open the Mini App: %s", answer)
 	}
 
 	// a newcomer creates an account in the chat

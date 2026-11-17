@@ -229,8 +229,10 @@ func tgLinkFromSite(c *tgCtx, token string) {
 	if already {
 		head = "✅ Этот Telegram уже привязан"
 	}
+	// the Mini App now opens by itself (spec 12 §12.5): offer it right here
+	open := tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Открыть кабинет", miniAppURL("")).Styled(tg.StyleSuccess)))
 	_, _ = c.reply(fmt.Sprintf("%s к HiEarth ID <code>%s</code>.\n\nСюда будут приходить напоминания о подписке, ответы поддержки и новости. "+
-		"Отключить их можно в «⚙️ Настройках».", head, shortHiEarthID(userID)), nil)
+		"Отключить их можно в «⚙️ Настройках».", head, shortHiEarthID(userID)), open)
 	if c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID); c.user != nil {
 		tgShow(c, "home", 0)
 	}

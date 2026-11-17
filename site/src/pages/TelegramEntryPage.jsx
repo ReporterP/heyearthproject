@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../api/http.js'
 import { useAuth } from '../auth/AuthContext.jsx'
-import { initData, loadTelegram, openExternal, setBackButton, startParam, tgFirstName } from '../lib/telegram.js'
+import { initData, loadTelegram, onReturn, openExternal, setBackButton, startParam, tgFirstName } from '../lib/telegram.js'
 import { kopNum } from '../lib/format.js'
 import AuthLayout from '../components/AuthLayout.jsx'
 import Alert from '../components/Alert.jsx'
@@ -19,9 +19,12 @@ import { Issued } from './RegisterPage.jsx'
 import { explain } from './LoginPage.jsx'
 
 // Вход в Mini App (spec 12 §12.1): Telegram's initData → a session when this Telegram account is
-// linked, otherwise «Создать HiEarth ID» / «У меня есть HiEarth ID». ?p= — the cabinet page to open.
+// linked, otherwise «Создать HiEarth ID» / «У меня уже есть аккаунт» (через браузер, 12.5, или по HiEarth ID).
+// ?p= — the cabinet page to open.
 const PAGES = new Set(['dashboard', 'connect', 'wallet', 'payments', 'support', 'news', 'settings', 'help'])
 const PENDING = 'he_tg_pending' // the «Аккаунт создан» step survives a reload, like on the site
+const WAIT_MS = 10 * 60 * 1000 // the site's link lives 10 minutes
+const connectURL = () => `${window.location.origin}/telegram/connect`
 
 function readPending() {
   try { return JSON.parse(sessionStorage.getItem(PENDING) || 'null') } catch { return null }
@@ -51,7 +54,7 @@ export default function TelegramEntryPage() {
   const { login } = useAuth()
   const toast = useToast()
   const narrow = useMedia('(max-width: 1024px)')
-  const [state, setState] = useState('boot') // boot | outside | error | welcome | login | issued
+  const [state, setState] = useState('boot') // boot | outside | error | welcome | login | waiting | issued
   const [error, setError] = useState('')
   const [name, setName] = useState('')
   const [pending, setPending] = useState(readPending)
@@ -92,8 +95,20 @@ export default function TelegramEntryPage() {
     boot()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Telegram's «Назад» returns from the sign-in form to the choice (12 §12.1 «Края»)
-  useEffect(() => (state === 'login' ? setBackButton(true, () => setState('welcome')) : setBackButton(false)), [state])
+  // Telegram's «Назад»: login → welcome, waiting → login (12 §12.1 «Края»)
+  useEffect(() => {
+    if (state === 'login') return setBackButton(true, () => setState('welcome'))
+    if (state === 'waiting') return setBackButton(true, () => setState('login'))
+    return setBackButton(false)
+  }, [state])
+
+  const enter = useCallback((token) => { login(token); navigate(dest(), { replace: true }) }, [login, navigate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // «Войти через браузер»: the site (signed in there) links this Telegram through the bot (12.5)
+  function viaBrowser() {
+    openExternal(connectURL())
+    setState('waiting')
+  }
 
   async function create() {
     if (busy) return
@@ -148,7 +163,11 @@ export default function TelegramEntryPage() {
     )
   }
   if (state === 'login') {
-    return <TgLogin onDone={(token) => { login(token); navigate(dest(), { replace: true }) }} onBack={() => setState('welcome')} />
+    return <TgLogin onDone={enter} onBack={() => setState('welcome')} onBrowser={viaBrowser} />
+  }
+  if (state === 'waiting') {
+    return <TgWaiting onLinked={(token) => { toast.ok('Telegram подключён'); enter(token) }}
+      onReopen={() => openExternal(connectURL())} onLogin={() => setState('login')} />
   }
 
   const refOn = refCode && terms?.enabled && terms.friend_kop > 0
@@ -156,7 +175,7 @@ export default function TelegramEntryPage() {
     <AuthLayout>
       <div>
         <h1 className="t-h1 rise">{name ? `Здравствуйте, ${name}` : 'Здравствуйте'}</h1>
-        <p className="t-lead rise" style={{ '--d': '120ms', marginTop: 10 }}>Это кабинет HiEarth в Telegram. Войдите по HiEarth ID или создайте новый аккаунт — это один клик.</p>
+        <p className="t-lead rise" style={{ '--d': '120ms', marginTop: 10 }}>Это кабинет HiEarth в Telegram. Создайте аккаунт в один клик или войдите в свой.</p>
       </div>
       {refOn && (
         <Alert tone="ok" icon="gift" title="Вас пригласил друг" className="rise" style={{ '--d': '160ms' }}>
@@ -168,7 +187,7 @@ export default function TelegramEntryPage() {
       {createErr && <Alert tone="bad" title={createErr.title} rise>{createErr.text}</Alert>}
       <div className="stack gap-3 rise" style={{ '--d': '200ms' }}>
         <Button variant="primary" size="lg" block loading={busy} onClick={create}>Создать HiEarth ID</Button>
-        <Button variant="secondary" size="lg" block disabled={busy} onClick={() => setState('login')}>У меня есть HiEarth ID</Button>
+        <Button variant="secondary" size="lg" block disabled={busy} onClick={() => setState('login')}>У меня уже есть аккаунт</Button>
       </div>
       <p className="t-xs subtle" style={{ textAlign: 'center' }}>
         Нажимая кнопку, вы принимаете <a href="/offer" target="_blank" rel="noopener" className="link">договор-оферту</a> и <a href="/privacy" target="_blank" rel="noopener" className="link">политику конфиденциальности</a>.
@@ -177,7 +196,7 @@ export default function TelegramEntryPage() {
   )
 }
 
-function TgLogin({ onDone, onBack }) {
+function TgLogin({ onDone, onBack, onBrowser }) {
   const [id, setId] = useState('')
   const [pw, setPw] = useState('')
   const [busy, setBusy] = useState(false)
@@ -185,7 +204,6 @@ function TgLogin({ onDone, onBack }) {
   const [idEmpty, setIdEmpty] = useState(false)
   const idRef = useRef(null)
   const inFlight = useRef(false)
-  const site = useMemo(() => `${window.location.origin}/settings#telegram`, [])
 
   async function submit(e) {
     e.preventDefault()
@@ -208,27 +226,77 @@ function TgLogin({ onDone, onBack }) {
 
   return (
     <AuthLayout width={400}>
-      <form className="stack gap-5" onSubmit={submit} noValidate>
+      <div className="stack gap-5">
         <div>
-          <h1 className="t-h1">Войти по HiEarth ID</h1>
-          <p className="t-lead" style={{ marginTop: 8 }}>Telegram привяжется к аккаунту — дальше вход будет сам.</p>
+          <h1 className="t-h1">Вход в свой аккаунт</h1>
+          <p className="t-lead" style={{ marginTop: 8 }}>Уже вошли на hiearth.ru в браузере? Подтвердите там — HiEarth ID и пароль не понадобятся.</p>
         </div>
-        {err && <Alert tone="bad" title={err.title} rise>{err.text}</Alert>}
-        <Field label="HiEarth ID или имя пользователя" error={idEmpty ? 'Укажите HiEarth ID или имя пользователя' : null}>
-          <Input ref={idRef} mono size="lg" value={id} invalid={err?.field === 'id'} autoComplete="username" autoCapitalize="none" spellCheck={false}
-            onChange={(e) => { setId(e.target.value); setIdEmpty(false); if (err?.field === 'id') setErr(null) }} />
-        </Field>
-        <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
-          <Input type="password" size="lg" value={pw} placeholder="Ваш пароль" invalid={err?.field === 'pw'} autoComplete="current-password"
-            onChange={(e) => { setPw(e.target.value); if (err?.field === 'pw') setErr(null) }} />
-        </Field>
-        <Button variant="primary" size="lg" block type="submit" loading={busy}>Войти и привязать Telegram</Button>
-        <p className="t-sm muted">
-          Удобнее на сайте? Откройте hiearth.ru → «Настройки» → «Подключить Telegram».{' '}
-          <button type="button" className="link" onClick={() => openExternal(site)} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit' }}>Открыть сайт</button>
-        </p>
+        <Button variant="primary" size="lg" block icon="external" disabled={busy} onClick={onBrowser}>Войти через браузер</Button>
+        <form className="stack gap-5" onSubmit={submit} noValidate style={{ paddingTop: 20, borderTop: '1px solid var(--line)' }}>
+          <p className="t-sm subtle">Или по HiEarth ID</p>
+          {err && <Alert tone="bad" title={err.title} rise>{err.text}</Alert>}
+          <Field label="HiEarth ID или имя пользователя" error={idEmpty ? 'Укажите HiEarth ID или имя пользователя' : null}>
+            <Input ref={idRef} mono size="lg" value={id} invalid={err?.field === 'id'} autoComplete="username" autoCapitalize="none" spellCheck={false}
+              onChange={(e) => { setId(e.target.value); setIdEmpty(false); if (err?.field === 'id') setErr(null) }} />
+          </Field>
+          <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
+            <Input type="password" size="lg" value={pw} placeholder="Ваш пароль" invalid={err?.field === 'pw'} autoComplete="current-password"
+              onChange={(e) => { setPw(e.target.value); if (err?.field === 'pw') setErr(null) }} />
+          </Field>
+          <Button variant="secondary" size="lg" block type="submit" loading={busy}>Войти по HiEarth ID</Button>
+        </form>
         <div><Button variant="ghost" onClick={onBack} disabled={busy}>Назад</Button></div>
-      </form>
+      </div>
+    </AuthLayout>
+  )
+}
+
+// «Подтвердите в браузере» (12 §12.1 waiting): the site links this Telegram through the bot; the Mini
+// App asks again when it is back on screen and every 10 s while visible, for 10 minutes.
+function TgWaiting({ onLinked, onReopen, onLogin }) {
+  const [checking, setChecking] = useState(false)
+  const [note, setNote] = useState(null)
+  const inFlight = useRef(false)
+  const done = useRef(false)
+  const until = useRef(Date.now() + WAIT_MS)
+
+  const check = useCallback(async (manual) => {
+    if (inFlight.current || done.current) return
+    if (!manual && (Date.now() > until.current || document.visibilityState !== 'visible')) return
+    inFlight.current = true
+    if (manual) { setChecking(true); setNote(null) }
+    try {
+      const r = await apiFetch('/api/v1/auth/telegram', { method: 'POST', body: { init_data: initData() }, signOutOn401: false })
+      if (r.linked && r.token) { done.current = true; onLinked(r.token); return }
+      if (manual) setNote({ tone: 'info', title: 'Пока не подключено.', text: 'Нажмите «Подключить Telegram» в браузере, затем «Запустить» в боте.' })
+    } catch (e) {
+      if (manual) setNote({ tone: 'bad', title: 'Не удалось проверить.', text: e?.status === 429 ? 'Подождите минуту и попробуйте снова.' : (e?.message || 'Попробуйте ещё раз через минуту.') })
+    } finally {
+      inFlight.current = false
+      if (manual) setChecking(false)
+    }
+  }, [onLinked])
+
+  useEffect(() => {
+    const off = onReturn(() => check(false))
+    const t = setInterval(() => check(false), 10000)
+    return () => { off(); clearInterval(t) }
+  }, [check])
+
+  return (
+    <AuthLayout width={400}>
+      <div className="stack gap-5">
+        <div>
+          <h1 className="t-h1">Подтвердите в браузере</h1>
+          <p className="t-lead" style={{ marginTop: 8 }}>На открывшейся странице нажмите «Подключить Telegram», затем «Запустить» в боте. Вернитесь сюда — кабинет откроется сам.</p>
+        </div>
+        {note && <Alert tone={note.tone} title={note.title} rise>{note.text}</Alert>}
+        <div className="stack gap-3">
+          <Button variant="primary" size="lg" block loading={checking} onClick={() => check(true)}>Проверить и войти</Button>
+          <Button variant="secondary" size="lg" block disabled={checking} onClick={onReopen}>Открыть сайт ещё раз</Button>
+        </div>
+        <div><Button variant="ghost" onClick={onLogin} disabled={checking}>Войти по HiEarth ID</Button></div>
+      </div>
     </AuthLayout>
   )
 }

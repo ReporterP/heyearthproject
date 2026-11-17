@@ -137,6 +137,19 @@ export function openExternal(url) {
   else window.open(url, '_blank', 'noopener')
 }
 
+// onReturn calls cb when the Mini App is on screen again — back from the browser or the bot
+// (Telegram's «activated», Bot API 8.0, and the page's own visibilitychange). Returns the unsubscribe.
+export function onReturn(cb) {
+  const w = webApp()
+  const onVis = () => { if (document.visibilityState === 'visible') cb() }
+  document.addEventListener('visibilitychange', onVis)
+  try { if (w && versionAtLeast('8.0')) w.onEvent('activated', cb) } catch { /* old client */ }
+  return () => {
+    document.removeEventListener('visibilitychange', onVis)
+    try { if (w && versionAtLeast('8.0')) w.offEvent('activated', cb) } catch { /* old client */ }
+  }
+}
+
 // ── haptics ──
 
 export function haptic(kind) {

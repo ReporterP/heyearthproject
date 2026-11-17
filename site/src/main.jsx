@@ -38,6 +38,7 @@ import TelegramEntryPage from './pages/TelegramEntryPage.jsx'
 import SupportPage from './pages/SupportPage.jsx'
 import NewsPage from './pages/NewsPage.jsx'
 import MagicLinkPage from './pages/MagicLinkPage.jsx'
+import TelegramConnectPage from './pages/TelegramConnectPage.jsx'
 import MiniAppPay from './components/StarsPay.jsx'
 import { isMiniApp, loadTelegram, setBackButton, shouldLoad } from './lib/telegram.js'
 
@@ -121,6 +122,7 @@ function App() {
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/tg" element={<TelegramEntryPage />} />
             <Route path="/m/:token" element={<MagicLinkPage />} />
+            <Route path="/telegram/connect" element={<RequireAuth><TelegramConnectPage /></RequireAuth>} />
 
             <Route path="/business" element={<B2BOnly><BusinessPage /></B2BOnly>} />
             <Route path="/business/signup" element={<B2BOnly><BusinessSignupPage /></B2BOnly>} />

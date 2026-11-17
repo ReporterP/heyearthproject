@@ -413,7 +413,11 @@ function route(method, path, q, body, authed) {
   if (path === '/api/v1/stars/invoice') return [200, { url: 'https://t.me/$mock-invoice', stars: 231 }]
   if (path === '/api/v1/news/read') { NEWS.read = true; return [200, { unread: 0 }] }
   if (path === '/api/v1/support/unread') return [200, { unread: S.support === 'answered' && !SUPPORT.read ? 1 : 0 }]
-  if (path === '/api/v1/auth/telegram') return [200, { linked: false, telegram: { first_name: 'Иван' } }]
+  // «Войти через браузер» (12 §12.5): once the site linked it, the Mini App signs in by itself
+  if (path === '/api/v1/auth/telegram') {
+    if (S.bot === 'linked') return [200, { linked: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
+    return [200, { linked: false, telegram: { first_name: 'Иван' } }]
+  }
   if (path === '/api/v1/auth/telegram/register') return [200, { linked: true, created: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   if (path === '/api/v1/auth/telegram/login') {
     const ok = [USER_ID, 'ivan_moscow'].includes(String(body?.id_or_username || '').toLowerCase()) && (body?.password === '1234' || S.login === 'nopassword')

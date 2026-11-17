@@ -26,7 +26,7 @@
 | [08-screens-cabinet.md](08-screens-cabinet.md) | Оболочка кабинета, обзор (все состояния), подключение, открытие Happ, настройки, телефон | |
 | [09-screens-money.md](09-screens-money.md) | Тарифы → оформление → оплата → результат, кошелёк, история, платёж | |
 | [10-screens-b2b.md](10-screens-b2b.md) | Для бизнеса, подключение компании, счёт, кабинет компании, код приглашения | |
-| [12-telegram.md](12-telegram.md) | Mini App: вход `/tg`, одноразовый вход `/m/:token`, оплата только на сайте, MainButton/BackButton, safe area, ссылки | кабинет внутри Telegram |
+| [12-telegram.md](12-telegram.md) | Mini App: вход `/tg` (и «Войти через браузер» → `/telegram/connect`), одноразовый вход `/m/:token`, оплата только звёздами, MainButton/BackButton, safe area, ссылки | кабинет внутри Telegram |
 | [11-extending.md](11-extending.md) | Как добавлять новое: порядок, чек-лист, критерии готовности, запреты | делаете то, чего здесь ещё нет |
 
 ## Как пользоваться
