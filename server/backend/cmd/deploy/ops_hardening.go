@@ -104,7 +104,7 @@ systemctl enable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1
 for t in apt-daily.timer apt-daily-upgrade.timer; do
   [ "$(systemctl is-enabled "$t")" = enabled ] && systemctl is-active --quiet "$t" || { echo "[ops] FAILED: $t is not enabled+active"; exit 1; }
 done
-echo "[ops] auto-updates: next run $(systemctl show -p NextElapseUSecRealtime --value apt-daily-upgrade.timer 2>/dev/null)"
+echo "[ops] auto-updates: next run $(systemctl list-timers apt-daily-upgrade.timer --no-legend 2>/dev/null | awk '{print $1, $2, $3}')"
 echo "[ops] pending security updates: $(apt-get -s upgrade 2>/dev/null | grep -c '^Inst .*-security')"
 [ -f /var/run/reboot-required ] && echo "[ops] NOTE: a reboot is required ($(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null | cut -c1-120))" || true
 `
@@ -312,7 +312,7 @@ nft -f /etc/heyearth/ddos.nft
 systemctl enable heyearth-ddos.service >/dev/null 2>&1
 systemctl is-active --quiet heyearth-ddos.service || systemctl start heyearth-ddos.service
 systemctl enable --now heyearth-ddos-allow.timer >/dev/null 2>&1
-echo "[ops] flood table: $(head -1 /etc/heyearth/ddos.nft | sed 's/.*mode //'); allow4 $(nft list set inet heyearth_ddos allow4 | tr ',' '\n' | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') addresses"
+echo "[ops] flood table: mode $(head -1 /etc/heyearth/ddos.nft | sed -n 's/.*, mode \([a-z]*\)\..*/\1/p'); allow4 $(nft list set inet heyearth_ddos allow4 | tr ',' '\n' | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') addresses"
 `
 }
 
