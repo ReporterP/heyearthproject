@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -185,7 +186,10 @@ func withAdvisoryLock(key int64, fn func(ctx context.Context)) (bool, error) {
 	defer func() {
 		uctx, ucancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer ucancel()
-		_, _ = conn.ExecContext(uctx, `SELECT pg_advisory_unlock($1)`, key)
+		if _, err := conn.ExecContext(uctx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
+			// never hand a connection that may still hold the lock back to the pool
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
 	}()
 	go func() {
 		t := time.NewTicker(30 * time.Second)
@@ -385,16 +389,27 @@ func drainTGOutbox(ctx context.Context, bot *tg.Bot) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	for _, r := range batch {
+	for i, r := range batch {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
-		sendTGOutRow(ctx, bot, r)
+		if wait := sendTGOutRow(ctx, bot, r); wait > 0 {
+			// Telegram asked to slow down: every next message would get 429 too
+			log.Printf("[tg-outbox] 429 — пауза %s", wait)
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+			case <-t.C:
+			}
+			t.Stop()
+			return i + 1, nil
+		}
 	}
 	return len(batch), nil
 }
 
-func sendTGOutRow(ctx context.Context, bot *tg.Bot, r tgOutRow) {
+// sendTGOutRow sends one row and records the outcome; >0 = Telegram's retry_after.
+func sendTGOutRow(ctx context.Context, bot *tg.Bot, r tgOutRow) time.Duration {
 	msgID, err := sendTGOut(ctx, bot, tg.ChatIDString(r.ChatID), r.Payload)
 	switch {
 	case err == nil:
@@ -405,16 +420,17 @@ func sendTGOutRow(ctx context.Context, bot *tg.Bot, r tgOutRow) {
 	default:
 		if wait, ok := tg.RetryAfter(err); ok {
 			_, _ = db.DB.ExecContext(ctx, `UPDATE tg_outbox SET next_at = NOW() + $2 * INTERVAL '1 second', error = $3 WHERE id = $1`, r.ID, int(wait.Seconds())+1, err.Error())
-			return
+			return wait
 		}
 		if tg.IsFinal(err) || r.Attempts+1 >= tgOutboxMaxAttempts {
 			_, _ = db.DB.ExecContext(ctx, `UPDATE tg_outbox SET status = 'failed', attempts = attempts + 1, error = $2 WHERE id = $1`, r.ID, err.Error())
-			return
+			return 0
 		}
 		backoff := time.Duration(1<<r.Attempts) * 30 * time.Second
 		_, _ = db.DB.ExecContext(ctx, `UPDATE tg_outbox SET attempts = attempts + 1, next_at = NOW() + $2 * INTERVAL '1 second', error = $3 WHERE id = $1`,
 			r.ID, int(backoff.Seconds()), err.Error())
 	}
+	return 0
 }
 
 // sendTGOut sends one message (text, or a photo with a caption).

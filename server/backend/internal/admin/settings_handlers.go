@@ -91,6 +91,11 @@ func maskSecret(v string) string {
 var settingsWithOwnEndpoint = map[string]string{
 	"alert_telegram_bot_token": "/api/admin/alerts/settings",
 	"alert_telegram_chat_id":   "/api/admin/alerts/settings",
+	"alert_telegram_offset":    "/api/admin/telegram/settings",
+	"tg_bot_token":             "/api/admin/telegram/settings",
+	"tg_bot_username":          "/api/admin/telegram/settings",
+	"tg_bot_offset":            "/api/admin/telegram/settings",
+	"tg_channel_id":            "/api/admin/telegram/settings",
 }
 
 func UpdateSettingHandler(w http.ResponseWriter, r *http.Request) {

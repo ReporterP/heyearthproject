@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -24,6 +25,7 @@ func StartEmailReminderCron() {
 		time.Sleep(2 * time.Minute)
 		for {
 			safely("email-cron", sendReminders)
+			safely("tg-reminders", sendTGReminders)
 			time.Sleep(emailReminderInterval)
 		}
 	}()
@@ -81,9 +83,21 @@ SELECT u.id, u.user_id, u.email, us.id, us.valid_until, COALESCE(p.name, ''), p.
 // not renew by itself (auto-renew off or the wallet short) — one that renews gets the renewal
 // letter instead.
 func pickReminders(ctx context.Context, now time.Time) ([]reminder, error) {
+	return pickRemindersFrom(ctx, now, reminderCandidatesQuery)
+}
+
+// reminderCandidatesQueryTG is the same choice for the Telegram bot: a linked account that did
+// not block the bot and keeps the bot's reminders on; To is the Telegram chat id.
+var reminderCandidatesQueryTG = strings.Replace(strings.Replace(reminderCandidatesQuery,
+	"SELECT u.id, u.user_id, u.email,", "SELECT u.id, u.user_id, u.telegram_id::text,", 1),
+	"WHERE u.email_verified_at IS NOT NULL AND COALESCE(u.email, '') <> '' AND NOT u.email_reminders_off",
+	"WHERE u.telegram_id IS NOT NULL AND NOT u.tg_blocked AND u.notify_reminders", 1)
+
+// pickRemindersFrom runs the window logic of pickReminders over one candidate query.
+func pickRemindersFrom(ctx context.Context, now time.Time, query string) ([]reminder, error) {
 	var out []reminder
 	scan := func(from, to time.Time, today bool) error {
-		rows, err := db.DB.QueryContext(ctx, reminderCandidatesQuery, from, to)
+		rows, err := db.DB.QueryContext(ctx, query, from, to)
 		if err != nil {
 			return err
 		}

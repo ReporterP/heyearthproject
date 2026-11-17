@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiFetch } from '../api/http.js'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -19,7 +19,6 @@ export default function MagicLinkPage() {
   const navigate = useNavigate()
   const { login } = useAuth()
   const [state, setState] = useState('wait') // wait | bad | temp
-  const next = useRef('/dashboard')
 
   function redeem() {
     setState('wait')
@@ -52,7 +51,7 @@ export default function MagicLinkPage() {
         <>
           <h1 className="t-h3">Ссылка для входа устарела</h1>
           <p className="muted t-sm">Она действует 5 минут и срабатывает один раз. Нажмите «Пополнить» в Telegram ещё раз — или войдите по HiEarth ID.</p>
-          <Button variant="secondary" to={`/login?redirect=${encodeURIComponent(next.current)}`}>Войти</Button>
+          <Button variant="secondary" to="/login">Войти</Button>
         </>
       ) : (
         <>

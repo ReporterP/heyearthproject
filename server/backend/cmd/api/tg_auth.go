@@ -16,7 +16,8 @@ import (
 
 // ─────────────────────── Mini App sign-in, linking, one-time site sign-in (TG2/TG3) ───────────────────────
 
-const tgInitDataMaxAge = 24 * time.Hour
+// Each launch brings fresh initData; a stolen string must not stay useful for long.
+const tgInitDataMaxAge = 2 * time.Hour
 
 // registerTelegramRoutes wires the public and cabinet endpoints of the Telegram bot.
 func registerTelegramRoutes(authLimiter, apiLimiter *middleware.RateLimiter) {
@@ -142,6 +143,10 @@ func handleAuthTelegramRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := biz.LinkTelegram(ctx, user.ID, biz.TGAccount{ID: d.User.ID, Username: d.User.Username}); err != nil {
 		log.Printf("[tg-auth] link new user %d: %v", user.ID, err)
+		// a parallel «Создать» linked first: the account made here has nothing yet — drop it
+		if derr := biz.DeleteFreshUser(ctx, user.ID); derr != nil {
+			log.Printf("[tg-auth] drop unlinked new user %d: %v", user.ID, derr)
+		}
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "Этот Telegram уже привязан к аккаунту HiEarth — закройте кабинет и откройте его снова"})
 		return
 	}

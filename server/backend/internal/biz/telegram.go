@@ -312,10 +312,17 @@ func SafeNextPath(p string) string {
 	return p
 }
 
-// CreateMagicToken issues a 5-minute one-time sign-in for the site.
+// CreateMagicToken issues a 5-minute one-time sign-in for the site. At most three unused ones
+// live per user (the Mini App refreshes its link every 4 minutes while a payment screen is open).
 func CreateMagicToken(ctx context.Context, userDBID int, next string) (string, error) {
 	token, err := RandomToken()
 	if err != nil {
+		return "", err
+	}
+	if _, err := db.DB.ExecContext(ctx, `
+		DELETE FROM auth_magic_tokens WHERE user_id = $1 AND (expires_at < NOW() OR (used_at IS NULL AND token_hash NOT IN (
+			SELECT token_hash FROM auth_magic_tokens WHERE user_id = $1 AND used_at IS NULL AND expires_at > NOW()
+			 ORDER BY created_at DESC LIMIT 2)))`, userDBID); err != nil {
 		return "", err
 	}
 	if _, err := db.DB.ExecContext(ctx, `
@@ -352,6 +359,16 @@ func RedeemMagicToken(ctx context.Context, token string) (userDBID int, userID, 
 	return userDBID, userID, next, nil
 }
 
+// DeleteFreshUser removes an account created a moment ago that could not be linked (it has no
+// payments, wallet or subscription yet). Anything referencing it keeps it.
+func DeleteFreshUser(ctx context.Context, userDBID int) error {
+	_, err := db.DB.ExecContext(ctx, `
+		DELETE FROM users WHERE id = $1 AND telegram_id IS NULL AND created_at > NOW() - INTERVAL '10 minutes'
+		   AND NOT EXISTS (SELECT 1 FROM user_subscriptions WHERE user_id = $1)
+		   AND NOT EXISTS (SELECT 1 FROM payments WHERE user_id = $1)`, userDBID)
+	return err
+}
+
 // PurgeTelegramTokens deletes expired link and sign-in tokens (retention loop).
 func PurgeTelegramTokens(ctx context.Context) (int64, error) {
 	var total int64
@@ -360,6 +377,8 @@ func PurgeTelegramTokens(ctx context.Context) (int64, error) {
 		`DELETE FROM auth_magic_tokens WHERE expires_at < NOW() - INTERVAL '1 day'`,
 		`DELETE FROM tg_chat_state WHERE until_at < NOW() - INTERVAL '1 day'`,
 		`DELETE FROM tg_start_refs WHERE created_at < NOW() - INTERVAL '8 days'`,
+		`DELETE FROM tg_outbox WHERE status <> 'pending' AND news_post_id IS NULL AND created_at < NOW() - INTERVAL '30 days'`,
+		`DELETE FROM tg_outbox WHERE status <> 'pending' AND news_post_id IS NOT NULL AND created_at < NOW() - INTERVAL '90 days'`,
 	} {
 		res, err := db.DB.ExecContext(ctx, q)
 		if err != nil {

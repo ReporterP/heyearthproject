@@ -232,6 +232,7 @@ func processAutoRenew(userID string, subID int) error {
 	})
 	if errors.Is(err, biz.ErrInsufficientFunds) {
 		log.Printf("[auto-renew] User %s: not enough on the wallet for '%s' (%d ₽) — waiting for a top-up", userID, plan.Slug, plan.PriceRub)
+		notifyTGRenewShort(userID, subID, validUntil, plan.Name, plan.PriceRub)
 		return nil
 	}
 	if err != nil {

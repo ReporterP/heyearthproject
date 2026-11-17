@@ -279,6 +279,7 @@ func walletPurchaseDone(userID string, res *biz.PurchaseResult, renewal bool) {
 	if plan, err := biz.GetPlanByID(res.PlanID); err == nil && plan != nil {
 		sendActivationEmailAsync(userID, plan, int(res.PriceKop/100), renewal, 0)
 	}
+	notifyTGPurchaseAsync(userID, res, renewal)
 }
 
 func handleWalletPurchase(w http.ResponseWriter, r *http.Request) {
@@ -608,12 +609,14 @@ func creditWalletFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 
 // Test seams: the purchase, and what runs in the background after a wallet commit.
 var (
-	notifyReferralReward    = func(rw *biz.ReferralReward) { go mailReferralReward(rw) }
+	notifyReferralReward    = func(rw *biz.ReferralReward) { go mailReferralReward(rw); notifyTGReferral(rw) }
 	purchaseFromWalletTx    = biz.PurchaseFromWalletTx
 	kickWalletReceiptsAsync = kickWalletReceipts
 	notifyWalletTopupAsync  = func(userDBID int, userID string, amountKop, balanceKop int64) {
 		go notifyWalletTopup(userDBID, userID, amountKop, balanceKop)
+		notifyTGTopup(userDBID, amountKop, balanceKop)
 	}
+	notifyTGPurchaseAsync    = notifyTGPurchase
 	sendActivationEmailAsync = func(userID string, plan *biz.Plan, priceRub int, renewal bool, paymentID int) {
 		go sendActivationEmail(userID, plan, priceRub, renewal, paymentID)
 	}

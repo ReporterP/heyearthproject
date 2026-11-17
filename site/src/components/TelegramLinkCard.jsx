@@ -61,6 +61,7 @@ export default function TelegramLinkCard({ state }) {
     if (busy) return
     // the tab opens in the click itself (a popup blocker lets it through), the address follows
     const win = window.open('about:blank', '_blank')
+    if (win) win.opener = null
     setBusy(true)
     try {
       const r = await apiFetch('/api/v1/user/telegram/link', { token, method: 'POST' })
