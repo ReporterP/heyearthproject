@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { setLogoutCallback, apiFetch } from '../api/client.js'
+import { withLivePermissions } from './liveSession.js'
 
 const AuthContext = createContext()
 
@@ -38,11 +39,21 @@ export function AuthProvider({ children }) {
     setLogoutCallback(logoutAction)
   }, [logoutAction])
 
-  // Validate token on mount — auto-logout if expired/revoked
+  // On mount: check the token (apiFetch logs out on 401 by itself) and take the rights the server
+  // has now — the stored login answer keeps the rights of the moment of login (a permission added
+  // by a deploy stayed hidden until a new login). A network error or an older API without /me
+  // keeps the session as it is.
   useEffect(() => {
     if (!token) return
-    // apiFetch logs out on 401 by itself; 403 (no dashboard.read) or a network error keep the session.
-    apiFetch('/overview').catch(() => {})
+    apiFetch('/me').then((live) => {
+      setSession((cur) => {
+        const next = withLivePermissions(cur, live)
+        if (next !== cur) {
+          try { localStorage.setItem('admin_login_result', JSON.stringify(next)) } catch {}
+        }
+        return next
+      })
+    }).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

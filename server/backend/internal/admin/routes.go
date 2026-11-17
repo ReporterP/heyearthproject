@@ -19,6 +19,7 @@ var PaymentActionHandler http.HandlerFunc
 func RegisterRoutes() {
 	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
 	http.HandleFunc("/api/admin/overview", withMethod(http.MethodGet, RequirePermission("dashboard.read", OverviewHandler)))
+	http.HandleFunc("/api/admin/me", withMethod(http.MethodGet, AuthMiddleware(AdminMeHandler)))
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
