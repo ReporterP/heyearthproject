@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import { initData, loadTelegram, onReturn, openExternal, setBackButton, startParam, tgFirstName } from '../lib/telegram.js'
 import { kopNum } from '../lib/format.js'
 import AuthLayout from '../components/AuthLayout.jsx'
+import CopyField from '../components/CopyField.jsx'
 import Alert from '../components/Alert.jsx'
 import Button from '../components/Button.jsx'
 import Field, { Input } from '../components/Field.jsx'
@@ -294,6 +295,11 @@ function TgWaiting({ onLinked, onReopen, onLogin }) {
         <div className="stack gap-3">
           <Button variant="primary" size="lg" block loading={checking} onClick={() => check(true)}>Проверить и войти</Button>
           <Button variant="secondary" size="lg" block disabled={checking} onClick={onReopen}>Открыть сайт ещё раз</Button>
+        </div>
+        {/* Telegram may open its own browser, where the person is not signed in: the address for their own one */}
+        <div className="stack gap-2">
+          <p className="t-sm muted">Сайт попросил войти? Откройте адрес в своём браузере или на компьютере — там, где вы уже вошли:</p>
+          <CopyField value={connectURL()} display={connectURL().replace(/^https?:\/\//, '')} label="Адрес страницы подключения" />
         </div>
         <div><Button variant="ghost" onClick={onLogin} disabled={checking}>Войти по HiEarth ID</Button></div>
       </div>
