@@ -4,9 +4,9 @@ import { useT } from '../../i18n/index.jsx'
 import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
 import { updateUser } from '../../api/admin.js'
-import { Input, Select, Button } from '../ui/index.js'
+import { Input, Select, Button, Badge } from '../ui/index.js'
 import { formatDate } from '../../utils/format.js'
-import { telegramId } from '../../utils/users.js'
+import { telegramId, passwordState } from '../../utils/users.js'
 
 function EditableField({ label, value, mono, type = 'text', options, canEdit, onSave, inputMode }) {
   const [editing, setEditing] = useState(false)
@@ -94,6 +94,15 @@ export default function ProfileTab({ user, onSaved }) {
           return patch('telegram_id', n)
         }} />
       <EditableField label={t.fieldUserId}     value={user.user_id}      mono canEdit={false} />
+      <EditableField label="Пароль" canEdit={false} value={(() => {
+        const ps = passwordState(user)
+        return (
+          <span className="inline-flex items-center gap-2">
+            <Badge variant={ps.variant}>{ps.label}</Badge>
+            {user.password_must_change && user.password_reset_at && <span className="text-xs text-tertiary">сброшен {formatDate(user.password_reset_at)}</span>}
+          </span>
+        )
+      })()} />
       <EditableField label={t.fieldCreatedAt}  value={formatDate(user.created_at)} canEdit={false} />
       {user.updated_at && (
         <EditableField label="Обновлён" value={formatDate(user.updated_at)} canEdit={false} />

@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react'
-import { Trash2, Ban, CircleCheck } from 'lucide-react'
+import { Trash2, Ban, CircleCheck, KeyRound } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from './Toast.jsx'
 import { updateUser, deleteUser } from '../api/admin.js'
 import { Drawer } from './ui/Drawer.jsx'
 import { Button, Badge, Dialog, ConfirmDanger } from './ui/index.js'
-import { hasPlan } from '../utils/users.js'
+import { hasPlan, passwordState } from '../utils/users.js'
 import ProfileTab from './user-drawer/ProfileTab.jsx'
 import SubscriptionsTab from './user-drawer/SubscriptionsTab.jsx'
 import TrafficPaymentsTab from './user-drawer/TrafficPaymentsTab.jsx'
 import WalletTab from './user-drawer/WalletTab.jsx'
+import PasswordResetDialog from './user-drawer/PasswordResetDialog.jsx'
 
 const TABS = [
   { id: 'profile',       key: 'drawerTabProfile' },
@@ -27,6 +28,7 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
   const [activeTab, setActiveTab] = useState(defaultTab)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmBlock, setConfirmBlock] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
   const [busy, setBusy] = useState(false)
 
   // Sync activeTab when defaultTab changes (e.g. URL state ?tab=subscriptions)
@@ -63,6 +65,9 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
       ) : (
         <Button size="sm" variant="secondary" className="text-danger" onClick={() => setConfirmBlock(true)} icon={<Ban className="w-3.5 h-3.5" />}>Заблокировать</Button>
       ))}
+      {can('users.password_reset') && passwordState(user).canReset && (
+        <Button size="sm" variant="secondary" onClick={() => setResetOpen(true)} icon={<KeyRound className="w-3.5 h-3.5" />}>Сбросить пароль</Button>
+      )}
       {can('users.write') && (
         <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirmDelete(true)} icon={<Trash2 className="w-3.5 h-3.5" />}>
           Удалить
@@ -133,6 +138,8 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
           </div>
         </div>
       </Dialog>
+
+      <PasswordResetDialog user={user} open={resetOpen} onClose={() => setResetOpen(false)} onDone={onUserMutated} />
 
       <ConfirmDanger open={confirmDelete} onClose={() => setConfirmDelete(false)} title="Удалить пользователя"
         confirmText={user.user_id} actionLabel="Удалить"

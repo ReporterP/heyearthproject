@@ -64,20 +64,24 @@ type trafficDailyRow struct {
 }
 
 type adminUserRow struct {
-	ID                int           `json:"id"`
-	UserID            string        `json:"user_id"`
-	Username          string        `json:"username"`
-	TelegramID        sql.NullInt64 `json:"-"`
-	Role              string        `json:"role"`
-	IsBlocked         bool          `json:"is_blocked"`
-	PreferredPlatform string        `json:"preferred_platform"`
-	CreatedAt         time.Time     `json:"-"`
-	UpdatedAt         time.Time     `json:"-"`
-	CurrentPlan       string        `json:"current_plan"`
-	ValidUntil        sql.NullTime  `json:"-"`
-	LastSeen          sql.NullTime  `json:"-"`
-	Traffic30dBytes   int64         `json:"traffic_30d_bytes"`
-	TrafficLimitBytes int64         `json:"traffic_limit_bytes"`
+	ID                 int           `json:"id"`
+	UserID             string        `json:"user_id"`
+	Username           string        `json:"username"`
+	TelegramID         sql.NullInt64 `json:"-"`
+	Role               string        `json:"role"`
+	IsBlocked          bool          `json:"is_blocked"`
+	PreferredPlatform  string        `json:"preferred_platform"`
+	CreatedAt          time.Time     `json:"-"`
+	UpdatedAt          time.Time     `json:"-"`
+	CurrentPlan        string        `json:"current_plan"`
+	ValidUntil         sql.NullTime  `json:"-"`
+	LastSeen           sql.NullTime  `json:"-"`
+	Traffic30dBytes    int64         `json:"traffic_30d_bytes"`
+	TrafficLimitBytes  int64         `json:"traffic_limit_bytes"`
+	HasPassword        bool          `json:"-"`
+	PasswordMustChange bool          `json:"-"`
+	PasswordResetAt    sql.NullTime  `json:"-"`
+	HasConfirmedEmail  bool          `json:"-"`
 }
 
 type userPayload struct {

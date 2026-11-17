@@ -16,18 +16,21 @@ import (
 
 // UserProfile is the full user profile returned to clients.
 type UserProfile struct {
-	UserID            string `json:"user_id"`
-	Username          string `json:"username"`
-	HasPassword       bool   `json:"has_password"`
-	PreferredPlatform string `json:"preferred_platform,omitempty"`
-	Locale            string `json:"locale,omitempty"`
-	IsBlocked         bool   `json:"is_blocked"`
-	CurrentPlan       string `json:"current_plan,omitempty"`
-	CurrentPlanSlug   string `json:"current_plan_slug,omitempty"`
-	ValidUntil        string `json:"valid_until,omitempty"`
-	IsPremium         bool   `json:"is_premium"`
-	AccessStatus      string `json:"access_status"`
-	StatusReason      string `json:"status_reason,omitempty"`
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	HasPassword bool   `json:"has_password"`
+	// MustChangePassword: signed in with a temporary password from support; the cabinet
+	// asks for a new one on every page until SetCloudPassword clears it.
+	MustChangePassword bool   `json:"must_change_password"`
+	PreferredPlatform  string `json:"preferred_platform,omitempty"`
+	Locale             string `json:"locale,omitempty"`
+	IsBlocked          bool   `json:"is_blocked"`
+	CurrentPlan        string `json:"current_plan,omitempty"`
+	CurrentPlanSlug    string `json:"current_plan_slug,omitempty"`
+	ValidUntil         string `json:"valid_until,omitempty"`
+	IsPremium          bool   `json:"is_premium"`
+	AccessStatus       string `json:"access_status"`
+	StatusReason       string `json:"status_reason,omitempty"`
 }
 
 // UserAccessState describes whether a user can connect.
@@ -152,6 +155,9 @@ func SetUsername(userID, username string) error {
 // Changing an existing password closes every other session of the user (cleanup plan D2):
 // whoever logged in with the old one is signed out; keepToken (the caller's own session,
 // "" = none) stays. Setting the first password closes nothing.
+// A temporary password from support (ResetPasswordByAdmin) is replaced the same way — it is
+// the current password — and the new one must differ from it; the change clears
+// password_must_change.
 func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) error {
 	if newPassword == "" {
 		return fmt.Errorf("new password cannot be empty")
@@ -174,6 +180,9 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(currentPassword)); err != nil {
 			return fmt.Errorf("invalid current password")
 		}
+		if user.PasswordMustChange && newPassword == currentPassword {
+			return ErrSameAsTemporaryPassword
+		}
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -186,10 +195,17 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 		return fmt.Errorf("set cloud password: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`
-		UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2
-	`, string(hash), userID); err != nil {
+	// Only over the password that was just checked: a reset by support (or another change)
+	// in between leaves the current password wrong, not silently overwritten.
+	res, err := tx.Exec(`
+		UPDATE users SET password_hash = $1, password_must_change = FALSE, updated_at = CURRENT_TIMESTAMP
+		 WHERE user_id = $2 AND COALESCE(password_hash, '') = $3
+	`, string(hash), userID, user.PasswordHash.String)
+	if err != nil {
 		return fmt.Errorf("set cloud password: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("invalid current password")
 	}
 	if replaced {
 		if _, err = tx.Exec(revokeOtherSessionsQuery, user.ID, hashToken(keepToken)); err != nil {
@@ -240,6 +256,9 @@ func GetUserProfile(userID string) (*UserProfile, error) {
 		IsBlocked:         user.IsBlocked,
 		HasPassword:       user.PasswordHash.Valid && user.PasswordHash.String != "",
 		AccessStatus:      "active",
+	}
+	if profile.HasPassword {
+		profile.MustChangePassword = user.PasswordMustChange
 	}
 	if user.Username.Valid {
 		profile.Username = user.Username.String

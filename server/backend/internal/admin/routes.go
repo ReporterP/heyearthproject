@@ -36,6 +36,10 @@ func RegisterRoutes() {
 			RequirePermission(permWalletAdjust, UserWalletAdjustHandler).ServeHTTP(w, r)
 			return
 		}
+		if strings.HasSuffix(trimmed, "/password/reset") && r.Method == http.MethodPost {
+			RequirePermission(permUserPasswordReset, UserPasswordResetHandler).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(trimmed, "/dial-rate") && r.Method == http.MethodGet { // C13
 			RequirePermission("users.read", UserDialRateHandler).ServeHTTP(w, r)
 			return
