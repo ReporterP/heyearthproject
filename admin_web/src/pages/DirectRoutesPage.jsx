@@ -261,6 +261,11 @@ export default function DirectRoutesPage() {
         onClose={() => setDiscoveryOpen(false)}
         onCreated={fetchAll}
       />
+      <ConfirmDanger open={!!danger} onClose={() => setDanger(null)}
+        title={danger?.kind === 'bulk' ? `Удалить ${selected.size} сервисов` : `Удалить «${danger?.name || ''}»`}
+        confirmText={danger?.kind === 'bulk' ? 'УДАЛИТЬ' : danger?.name || ''} actionLabel="Удалить"
+        consequences={['Домены и адреса сервиса перестанут идти напрямую у всех тарифов, где он подключён.', 'Подписки пользователей обновятся автоматически.']}
+        onConfirm={confirmDanger} />
     </div>
   )
 }
@@ -275,11 +280,6 @@ function Card({ label, value, tone }) {
     <div className="rounded border border-default bg-elevated/40 p-3">
       <div className={`text-xl font-semibold tabular-nums ${toneClass}`}>{value}</div>
       <div className="text-xs text-disabled">{label}</div>
-      <ConfirmDanger open={!!danger} onClose={() => setDanger(null)}
-        title={danger?.kind === 'bulk' ? `Удалить ${selected.size} сервисов` : `Удалить «${danger?.name || ''}»`}
-        confirmText={danger?.kind === 'bulk' ? 'УДАЛИТЬ' : danger?.name || ''} actionLabel="Удалить"
-        consequences={['Домены и адреса сервиса перестанут идти напрямую у всех тарифов, где он подключён.', 'Подписки пользователей обновятся автоматически.']}
-        onConfirm={confirmDanger} />
     </div>
   )
 }
