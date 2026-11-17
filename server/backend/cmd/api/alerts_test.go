@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	tgapi "github.com/heyearth/backend/internal/telegram"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -908,10 +910,13 @@ func withFakeTelegram(t *testing.T, fs *fakeSettings) *[]string {
 	t.Cleanup(func() { alertTelegram, telegram = oldSrc, oldRoute })
 	alertTelegram = newAlertTelegramSource(fs.get)
 	var calls []string
-	telegram = &telegramRoute{
-		now:     time.Now,
-		direct:  func(token, chatID, text string) error { calls = append(calls, token+"|"+chatID); return nil },
-		viaExit: func(token, chatID, text string) error { return errNoExitRoute },
+	telegram = &tgapi.Route{
+		Now: time.Now,
+		Direct: func(_ context.Context, req *tgapi.Request) ([]byte, error) {
+			calls = append(calls, req.Token+"|"+req.ChatID)
+			return nil, nil
+		},
+		ViaExit: func(context.Context, *tgapi.Request) ([]byte, error) { return nil, errNoExitRoute },
 	}
 	return &calls
 }
@@ -1030,99 +1035,14 @@ func TestTelegramSendMessageMiddleboxAnswerIsNotFinal(t *testing.T) {
 	}
 }
 
-type routeHarness struct {
-	now         time.Time
-	directCalls int
-	exitCalls   int
-	directErr   error
-	exitErr     error
-	r           *telegramRoute
-}
+// The route's fallback rules are tested in internal/telegram (TestRoute*).
 
-func newRouteHarness() *routeHarness {
-	h := &routeHarness{now: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)}
-	h.r = &telegramRoute{
-		now:     func() time.Time { return h.now },
-		direct:  func(token, chatID, text string) error { h.directCalls++; return h.directErr },
-		viaExit: func(token, chatID, text string) error { h.exitCalls++; return h.exitErr },
-	}
-	return h
-}
-
-func TestTelegramRouteFallsBackOnTransportErrorAndRemembersIt(t *testing.T) {
-	h := newRouteHarness()
-	h.directErr = errors.New("Post \"https://api.telegram.org/bot<token>/sendMessage\": context deadline exceeded")
-
-	if err := h.r.send("t", "c", "x"); err != nil || h.directCalls != 1 || h.exitCalls != 1 {
-		t.Fatalf("first send: err=%v direct=%d exit=%d", err, h.directCalls, h.exitCalls)
-	}
-	h.now = h.now.Add(time.Minute)
-	if err := h.r.send("t", "c", "x"); err != nil || h.directCalls != 1 || h.exitCalls != 2 {
-		t.Fatalf("direct path must be skipped for 10 min: err=%v direct=%d exit=%d", err, h.directCalls, h.exitCalls)
-	}
-	h.now = h.now.Add(10 * time.Minute) // 11 min after the failure
-	if err := h.r.send("t", "c", "x"); err != nil || h.directCalls != 2 || h.exitCalls != 3 {
-		t.Fatalf("direct path must be probed again: err=%v direct=%d exit=%d", err, h.directCalls, h.exitCalls)
-	}
-}
-
-func TestTelegramRouteNoFallbackOnTelegram4xx(t *testing.T) {
-	h := newRouteHarness()
-	h.directErr = &telegramAPIError{Status: 400, Description: "Bad Request: chat not found", FromTelegram: true}
-
-	err := h.r.send("t", "c", "x")
-	if err == nil || !strings.Contains(err.Error(), "chat not found") || h.exitCalls != 0 {
-		t.Fatalf("Telegram 4xx must be returned as is, without the exit: err=%v exit=%d", err, h.exitCalls)
-	}
-	_ = h.r.send("t", "c", "x")
-	if h.directCalls != 2 || h.exitCalls != 0 {
-		t.Fatalf("a Telegram verdict must not mark the direct path as down: direct=%d exit=%d", h.directCalls, h.exitCalls)
-	}
-}
-
-func TestTelegramRouteWithoutExitReturnsDirectError(t *testing.T) {
-	h := newRouteHarness()
-	h.directErr = errors.New("dial tcp: i/o timeout")
-	h.exitErr = errNoExitRoute
-
-	err := h.r.send("t", "c", "x")
-	if err == nil || !strings.Contains(err.Error(), "i/o timeout") {
-		t.Fatalf("want the direct error when there is no exit: %v", err)
-	}
-	// direct is "down", exit is unavailable: the direct path is still tried
-	_ = h.r.send("t", "c", "x")
-	if h.directCalls != 2 {
-		t.Fatalf("with no exit the direct path must keep being tried: direct=%d", h.directCalls)
-	}
-}
-
-func TestTelegramRouteDirectRecoversWhileExitFails(t *testing.T) {
-	h := newRouteHarness()
-	h.directErr = errors.New("dial tcp: i/o timeout")
-	if err := h.r.send("t", "c", "x"); err != nil { // exit ok → direct marked down
-		t.Fatal(err)
-	}
-	h.exitErr = errors.New("exit socks: connection refused")
-	h.directErr = nil
-	h.now = h.now.Add(time.Minute)
-	if err := h.r.send("t", "c", "x"); err != nil {
-		t.Fatalf("direct recovered, the message must go out: %v", err)
-	}
-	h.exitErr = nil
-	h.now = h.now.Add(time.Minute)
-	callsBefore := h.exitCalls
-	if err := h.r.send("t", "c", "x"); err != nil || h.exitCalls != callsBefore {
-		t.Fatalf("a recovered direct path must be used again: err=%v exit calls %d→%d", err, callsBefore, h.exitCalls)
-	}
-}
-
-func TestTelegramRouteExit4xxIsFinal(t *testing.T) {
-	h := newRouteHarness()
-	h.directErr = errors.New("dial tcp: i/o timeout")
-	h.exitErr = &telegramAPIError{Status: 401, Description: "Unauthorized", FromTelegram: true}
-	err := h.r.send("t", "c", "x")
-	if err == nil || !strings.Contains(err.Error(), "Unauthorized") {
-		t.Fatalf("a Telegram verdict through the exit must be reported: %v", err)
+// TestAlertSendMessagePayload: the alert goes out exactly as before the move to the package.
+func TestAlertSendMessagePayload(t *testing.T) {
+	req := alertMessageRequest(fakeBotToken, "-100", "HiEarth · КРИТИЧНО · Exit недоступен")
+	want := `{"chat_id":"-100","disable_web_page_preview":true,"text":"HiEarth · КРИТИЧНО · Exit недоступен"}`
+	if req.Method != "sendMessage" || string(req.Body) != want || req.ContentType != "application/json" {
+		t.Fatalf("alert payload changed: got %s %s, want %s", req.Method, req.Body, want)
 	}
 }
 

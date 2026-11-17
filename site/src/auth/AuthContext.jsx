@@ -1,28 +1,36 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { UNAUTHORIZED_EVENT } from '../api/http.js'
+import { isMiniApp } from '../lib/telegram.js'
+
+// The Mini App signs in from Telegram on every launch (spec 12 §12.1) and keeps its session in
+// sessionStorage, apart from the site's; the site keeps it in localStorage.
+function store() {
+  try { return isMiniApp() ? sessionStorage : localStorage } catch { return null }
+}
+function readToken() { try { return store()?.getItem('token') || '' } catch { return '' } }
 
 const AuthContext = createContext()
 
 export const SESSION_EXPIRED_KEY = 'he_session_expired'
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem('token') || '')
+  const [token, setToken] = useState(readToken)
 
   const login = useCallback((newToken) => {
     // a registration left on its «ID выдан» step is over once someone signs in (RegisterPage)
     try { sessionStorage.removeItem('he_pending_registration') } catch { /* storage off */ }
-    localStorage.setItem('token', newToken)
+    try { store()?.setItem('token', newToken) } catch { /* storage off */ }
     setToken(newToken)
   }, [])
 
   // logout forgets the token here and closes its session on the server (the app and other
   // devices keep theirs). Fire-and-forget: leaving must work offline too.
   const logout = useCallback(() => {
-    const old = localStorage.getItem('token')
+    const old = readToken()
     if (old) {
       fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${old}` }, keepalive: true }).catch(() => {})
     }
-    localStorage.removeItem('token')
+    try { store()?.removeItem('token') } catch { /* storage off */ }
     setToken('')
   }, [])
 

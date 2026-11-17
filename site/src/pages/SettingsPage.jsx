@@ -9,6 +9,8 @@ import Badge from '../components/Badge.jsx'
 import Button from '../components/Button.jsx'
 import CopyField from '../components/CopyField.jsx'
 import EmailCard from '../components/EmailCard.jsx'
+import TelegramLinkCard, { useTelegramLink } from '../components/TelegramLinkCard.jsx'
+import { isMiniApp } from '../lib/telegram.js'
 import Field, { Input } from '../components/Field.jsx'
 import Nomerok from '../components/Nomerok.jsx'
 import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
@@ -29,9 +31,9 @@ function strength(pw) {
   return s <= 1 ? 1 : s === 2 ? 2 : 3
 }
 
-function Section({ title, text, children }) {
+function Section({ title, text, children, id }) {
   return (
-    <section className="set">
+    <section className="set" id={id}>
       <div><h2 className="t-h4">{title}</h2>{text && <p className="t-sm subtle" style={{ marginTop: 4 }}>{text}</p>}</div>
       <div style={{ minWidth: 0 }}>{children}</div>
     </section>
@@ -47,6 +49,8 @@ export default function SettingsPage() {
   const sub = currentSub(acc.data.subscription)
   const showSkel = useDelayed(acc.loading && !profile, 300)
   const [logout, setLogout] = useState(false)
+  const tgLink = useTelegramLink(token)
+  const tgApp = isMiniApp()
 
   // the login + password form
   const [username, setUsername] = useState('')
@@ -166,9 +170,17 @@ export default function SettingsPage() {
           <EmailCard token={token} />
         </Section>
 
-        <Section title="Выход" text="Для входа понадобится HiEarth ID или логин.">
-          <Button variant="danger" icon="logout" onClick={() => setLogout(true)}>Выйти из аккаунта</Button>
-        </Section>
+        {(tgLink.data?.bot_enabled || tgLink.data?.linked || tgLink.error) && (
+          <Section id="telegram" title="Telegram" text="Кабинет, напоминания и ответы поддержки — в боте HiEarth.">
+            <TelegramLinkCard state={tgLink} />
+          </Section>
+        )}
+
+        {!tgApp && (
+          <Section title="Выход" text="Для входа понадобится HiEarth ID или логин.">
+            <Button variant="danger" icon="logout" onClick={() => setLogout(true)}>Выйти из аккаунта</Button>
+          </Section>
+        )}
         <LogoutDialog open={logout} onClose={() => setLogout(false)} profile={profile} />
       </>
     )

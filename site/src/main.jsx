@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import '@fontsource-variable/manrope'
 import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
@@ -34,6 +34,10 @@ import WalletPage from './pages/WalletPage.jsx'
 import ReferralLinkPage from './pages/ReferralLinkPage.jsx'
 import HelpPage from './pages/HelpPage.jsx'
 import { EmailConfirmPage, EmailUnsubscribePage } from './pages/EmailLinkPage.jsx'
+import TelegramEntryPage from './pages/TelegramEntryPage.jsx'
+import MagicLinkPage from './pages/MagicLinkPage.jsx'
+import MiniAppPay from './components/PayOnSite.jsx'
+import { isMiniApp, loadTelegram, setBackButton, shouldLoad } from './lib/telegram.js'
 
 
 // /connect is the one connection page: with ?sub=<token> it is the link the app and the e-mails
@@ -82,6 +86,18 @@ function ScrollManager() {
   return null
 }
 
+// TelegramChrome (spec 12 §12.4): inside the Mini App Telegram's «Назад» follows the router history.
+function TelegramChrome() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (!isMiniApp() || location.pathname === '/tg') return undefined
+    const idx = window.history.state?.idx || 0
+    return setBackButton(idx > 0, () => navigate(-1))
+  }, [location, navigate])
+  return null
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -89,6 +105,7 @@ function App() {
         <ToastProvider>
           <a className="skip" href="#main">Перейти к содержимому</a>
           <ScrollManager />
+          <TelegramChrome />
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/help" element={<HelpPage />} />
@@ -100,6 +117,8 @@ function App() {
             <Route path="/email/unsubscribe" element={<EmailUnsubscribePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/tg" element={<TelegramEntryPage />} />
+            <Route path="/m/:token" element={<MagicLinkPage />} />
 
             <Route path="/business" element={<B2BOnly><BusinessPage /></B2BOnly>} />
             <Route path="/business/signup" element={<B2BOnly><BusinessSignupPage /></B2BOnly>} />
@@ -111,8 +130,8 @@ function App() {
             <Route path="/connections" element={<Navigate to="/connect" replace />} />
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-            <Route path="/payment" element={<RequireAuth><PaymentPage /></RequireAuth>} />
-            <Route path="/checkout/:paymentId" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
+            <Route path="/payment" element={<RequireAuth><MiniAppPay><PaymentPage /></MiniAppPay></RequireAuth>} />
+            <Route path="/checkout/:paymentId" element={<RequireAuth><MiniAppPay><CheckoutPage /></MiniAppPay></RequireAuth>} />
             {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}
             <Route path="/checkout" element={<Navigate to="/payment" replace />} />
             <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
@@ -127,10 +146,17 @@ function App() {
   )
 }
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <div className="he">
-      <App />
-    </div>
-  </StrictMode>,
-)
+function render() {
+  createRoot(document.getElementById('root')).render(
+    <StrictMode>
+      <div className={isMiniApp() ? 'he he--tg' : 'he'}>
+        <App />
+      </div>
+    </StrictMode>,
+  )
+}
+
+// Inside Telegram the bridge must be ready before the first render (the session store, MainButton);
+// on the plain site nothing is loaded.
+if (shouldLoad()) loadTelegram().then(render, render)
+else render()

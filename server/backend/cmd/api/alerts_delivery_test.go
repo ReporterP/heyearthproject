@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
+	tgapi "github.com/heyearth/backend/internal/telegram"
 	"io"
 	"net"
 	"net/http"
@@ -161,10 +163,12 @@ func newDeliveryWorld(t *testing.T) *deliveryWorld {
 	})
 	alertTelegram.timeout = 200 * time.Millisecond
 	// api.telegram.org is not reachable directly from the Hub: only the exit path can work
-	telegram = &telegramRoute{
-		now:     time.Now,
-		direct:  func(token, chatID, text string) error { return errors.New("dial tcp 149.154.167.220:443: i/o timeout") },
-		viaExit: telegramSendViaExit,
+	telegram = &tgapi.Route{
+		Now: time.Now,
+		Direct: func(context.Context, *tgapi.Request) ([]byte, error) {
+			return nil, errors.New("dial tcp 149.154.167.220:443: i/o timeout")
+		},
+		ViaExit: telegramExitPath,
 	}
 	return w
 }

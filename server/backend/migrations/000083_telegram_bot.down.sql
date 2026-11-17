@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS tg_outbox;
+DROP TABLE IF EXISTS tg_chat_state;
+DROP TABLE IF EXISTS tg_start_refs;
+DROP TABLE IF EXISTS auth_magic_tokens;
+DROP TABLE IF EXISTS tg_link_tokens;
+ALTER TABLE users DROP COLUMN IF EXISTS notify_reminders;
+ALTER TABLE users DROP COLUMN IF EXISTS notify_news;
+ALTER TABLE users DROP COLUMN IF EXISTS tg_blocked;
+ALTER TABLE users DROP COLUMN IF EXISTS telegram_linked_at;
+ALTER TABLE users DROP COLUMN IF EXISTS telegram_username;

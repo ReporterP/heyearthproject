@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import Icon from './Icon.jsx'
+import { haptic } from '../lib/telegram.js'
 
 // Toasts (spec 02 §14): a short answer to an action that has no place on the page.
 // Success lives 4 s, an error until closed or 8 s; hovering pauses the timer; at most 3;
@@ -29,6 +30,7 @@ export function ToastProvider({ children }) {
   }, [remove])
 
   const push = useCallback((kind, text) => {
+    haptic(kind === 'bad' ? 'error' : 'success') // Mini App only (spec 12 §12.4)
     const ms = kind === 'bad' ? 8000 : 4000
     const same = ref.current.find((t) => t.text === text && t.kind === kind && !t.leaving)
     if (same) { arm(same.id, ms); return }

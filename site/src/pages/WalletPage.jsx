@@ -14,6 +14,8 @@ import ListRow from '../components/ListRow.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
 import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import useMedia from '../hooks/useMedia.js'
+import { PayOnSiteButton } from '../components/PayOnSite.jsx'
+import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { date, dateTime, kop, kopNum, group } from '../lib/format.js'
@@ -133,6 +135,13 @@ function Wallet() {
             </div>
             <div style={{ marginTop: 12 }}><Flap value={bal} suffix="₽" size={narrow ? 40 : 56} label={`${bal} рублей на кошельке`} /></div>
             <hr className="divider" style={{ margin: '26px 0 22px' }} />
+            {isMiniApp() ? (
+              <div className="stack gap-4">
+                <span className="t-label">Пополнение</span>
+                <p className="muted t-sm">Telegram не даёт оплачивать подписку внутри приложения, поэтому пополнение проходит на hiearth.ru. Кнопка откроет сайт в браузере уже с входом — ничего вводить не нужно.</p>
+                <div><PayOnSiteButton next="/wallet" block={narrow}>Пополнить на сайте</PayOnSiteButton></div>
+              </div>
+            ) : (<>
             <span className="t-label" id="amounts-l">Пополнить</span>
             <div className="amounts" role="radiogroup" aria-labelledby="amounts-l" style={{ marginTop: 10 }}>
               {AMOUNTS.map((a) => (
@@ -159,6 +168,7 @@ function Wallet() {
               <Button variant="primary" size="lg" type="submit" block={narrow} loading={busy} disabled={!sum}>{sum ? `Пополнить на ${group(sum)} ₽` : 'Пополнить'}</Button>
               <span className="t-sm subtle">На защищённой странице ЮKassa</span>
             </div>
+            </>)}
           </form>
 
           <section id="history" className="card">

@@ -11,6 +11,7 @@
 //   renew    on | off                         — auto-renewal
 //   history  full | empty                     — payments & wallet history
 //   tg       both | web | classic | none      — Telegram proxy answer
+//   bot      linked | unlinked | blocked | off — the HiEarth Telegram bot (settings «Telegram»)
 //   email    confirmed | pending | none
 //   login    password | nopassword            — has a login+password
 //   referral on | off
@@ -26,7 +27,7 @@
 const DEFAULT = {
   sub: 'active', wallet: 'low', trial: 'used', renew: 'on', history: 'full', tg: 'both', email: 'confirmed',
   login: 'password', referral: 'on', b2b: 'off', tenant: 'active', members: 'many', pay: 'succeeded',
-  sublink: 'ok', fail: '', delay: '350',
+  sublink: 'ok', fail: '', delay: '350', bot: 'unlinked',
 }
 const S = { ...DEFAULT }
 const OPTIONS = {
@@ -34,7 +35,7 @@ const OPTIONS = {
   history: ['full', 'empty'], tg: ['both', 'web', 'classic', 'none'], email: ['confirmed', 'pending', 'none'],
   login: ['password', 'nopassword'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer'],
   tenant: ['active', 'inactive', 'suspended'], members: ['many', 'solo'], pay: ['succeeded', 'pending', 'canceled'],
-  sublink: ['ok', 'fail'], delay: ['0', '350', '1500'],
+  sublink: ['ok', 'fail'], delay: ['0', '350', '1500'], bot: ['linked', 'unlinked', 'blocked', 'off'],
 }
 
 const USER_ID = '3f2b8c1e-7a4d-4e9b-8c21-5d6e7f8a9b0c'
@@ -353,6 +354,33 @@ function route(method, path, q, body, authed) {
       if (S.b2b !== 'admin') return [403, { error: 'admin role required' }]
       return method === 'DELETE' ? [200, { ok: true, removed_user_id: Number(m[1]) }] : [200, { ok: true, user_db_id: Number(m[1]), role: body?.role }]
     }
+  }
+  // Telegram bot (spec 08 §8.4, 12)
+  if (path === '/api/v1/user/telegram') {
+    if (method === 'DELETE') { S.bot = 'unlinked'; return [200, { linked: false }] }
+    const linked = S.bot === 'linked' || S.bot === 'blocked'
+    return [200, { linked, username: linked ? 'ivan_moscow' : '', linked_at: linked ? iso(now() - 3 * DAY) : '0001-01-01T00:00:00Z',
+      notify_news: S.botNews !== 'off', notify_reminders: S.botRem !== 'off', bot_blocked: S.bot === 'blocked',
+      bot_enabled: S.bot !== 'off', bot_username: 'hiearth_bot', bot_url: 'https://t.me/hiearth_bot' }]
+  }
+  if (path === '/api/v1/user/telegram/link') {
+    if (S.bot === 'off') return [503, { error: 'Бот HiEarth пока не подключён — попробуйте позже' }]
+    setTimeout(() => { if (S.bot === 'unlinked') S.bot = 'linked' }, 6000) // «the person pressed Start»
+    return [200, { url: 'https://t.me/hiearth_bot?start=link_mockmockmockmockmockmockmockmock', expires_at: iso(now() + 600000) }]
+  }
+  if (path === '/api/v1/user/telegram/notify') {
+    if (body?.news !== undefined) S.botNews = body.news ? 'on' : 'off'
+    if (body?.reminders !== undefined) S.botRem = body.reminders ? 'on' : 'off'
+    return [200, { notify_news: S.botNews !== 'off', notify_reminders: S.botRem !== 'off' }]
+  }
+  if (path === '/api/v1/auth/magic') return [200, { url: 'http://localhost:5175/m/mock-magic', expires_in: 300 }]
+  if (path === '/api/v1/auth/magic/redeem') return body?.token === 'mock-magic' ? [200, { linked: true, user_id: USER_ID, token: 'mock-token', next: '/wallet' }] : [404, { error: 'Ссылка для входа устарела или уже использована — откройте оплату из Telegram ещё раз' }]
+  if (path === '/api/v1/auth/telegram') return [200, { linked: false, telegram: { first_name: 'Иван' } }]
+  if (path === '/api/v1/auth/telegram/register') return [200, { linked: true, created: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
+  if (path === '/api/v1/auth/telegram/login') {
+    const ok = [USER_ID, 'ivan_moscow'].includes(String(body?.id_or_username || '').toLowerCase()) && (body?.password === '1234' || S.login === 'nopassword')
+    if (!ok) return [400, { error: String(body?.id_or_username || '').includes('-') ? 'user not found' : 'invalid password' }]
+    return [200, { linked: true, user_id: USER_ID, token: 'mock-token', profile: profile() }]
   }
   return [404, { error: 'not found' }]
 }

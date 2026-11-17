@@ -38,6 +38,11 @@ func runRetention() {
 			log.Printf("[retention] traffic: %d user-days summed, %d raw rows older than 45 days removed", days, purged)
 		}
 	}
+	if n, err := biz.PurgeTelegramTokens(ctx); err != nil {
+		log.Printf("[retention] telegram tokens: %v", err)
+	} else if n > 0 {
+		log.Printf("[retention] telegram: %d expired tokens removed", n)
+	}
 	if n, err := biz.CleanupExpiredUserSessions(ctx); err != nil {
 		log.Printf("[retention] sessions: %v", err)
 	} else if n > 0 {

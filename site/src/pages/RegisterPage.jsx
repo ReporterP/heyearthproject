@@ -157,8 +157,8 @@ export default function RegisterPage() {
   )
 }
 
-// Step 2 — «Аккаунт создан»
-function Issued({ pending, onDone, narrow, toast }) {
+// Step 2 — «Аккаунт создан» (also the Mini App's «Создать новый», spec 12 §12.1)
+export function Issued({ pending, onDone, narrow, toast }) {
   const [saved, setSaved] = useState(false)
   const [creds, setCreds] = useState('open') // open | skipped | saved
   const [login, setLogin] = useState('')

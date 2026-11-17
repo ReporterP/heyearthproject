@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -17,6 +14,7 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
+	tg "github.com/heyearth/backend/internal/telegram"
 )
 
 // ─────────────────────── Operational alerts → Telegram ───────────────────────
@@ -54,7 +52,7 @@ const (
 var (
 	errAlertsNotConfigured = errors.New("Telegram не настроен: заполните токен бота и chat_id в админке → Алерты")
 	errAlertsNoDB          = errors.New("БД недоступна")
-	errNoExitRoute         = errors.New("нет доступного exit для обхода")
+	errNoExitRoute         = tg.ErrNoExitRoute
 	telegramAPIBase        = "https://api.telegram.org"
 	mskZone                = time.FixedZone("MSK", 3*60*60)
 )
@@ -610,112 +608,63 @@ func formatAlertText(ev alertEvent) string {
 
 // ── Telegram ──
 
-// telegramAPIError is a non-OK HTTP answer. FromTelegram is true when the body is a Bot API
-// envelope (so a 4xx is Telegram's verdict — bad token, chat not found — and not a middlebox).
-type telegramAPIError struct {
-	Status       int
-	Description  string
-	FromTelegram bool
+// The Bot API route (direct, then the exit tunnel) lives in internal/telegram; both bots share
+// one route, so a direct path found dead by one is skipped by the other too.
+type telegramAPIError = tg.APIError
+
+func telegramFailureIsFinal(err error) bool { return tg.IsFinal(err) }
+
+var telegram = newTelegramRoute()
+
+func newTelegramRoute() *tg.Route {
+	return &tg.Route{Now: time.Now, Pause: telegramDirectPause, Direct: telegramDirectPath, ViaExit: telegramExitPath, Logf: log.Printf}
 }
 
-func (e *telegramAPIError) Error() string {
-	return fmt.Sprintf("Telegram HTTP %d: %s", e.Status, e.Description)
+func telegramDirectPath(ctx context.Context, req *tg.Request) ([]byte, error) {
+	return tg.Exec(ctx, &http.Client{Timeout: req.Timeout + 10*time.Second}, telegramAPIBase, req)
 }
 
-// telegramFailureIsFinal: the exit tunnel only helps against transport problems; a genuine
-// Telegram 4xx would be identical on the other path.
-func telegramFailureIsFinal(err error) bool {
-	var apiErr *telegramAPIError
-	return errors.As(err, &apiErr) && apiErr.FromTelegram && apiErr.Status >= 400 && apiErr.Status < 500
-}
-
-// telegramRoute sends direct first and falls back to the exit tunnel on transport errors.
-// After a failed direct attempt the direct path is skipped for telegramDirectPause so that
-// each message does not first wait out the direct timeout.
-type telegramRoute struct {
-	now     func() time.Time
-	direct  func(token, chatID, text string) error
-	viaExit func(token, chatID, text string) error // errNoExitRoute when no exit is reachable
-
-	mu              sync.Mutex
-	directDownUntil time.Time
-}
-
-var telegram = &telegramRoute{now: time.Now, direct: telegramSendDirect, viaExit: telegramSendViaExit}
-
-func (r *telegramRoute) directDown() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.now().Before(r.directDownUntil)
-}
-
-func (r *telegramRoute) setDirectDown(down bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if down {
-		r.directDownUntil = r.now().Add(telegramDirectPause)
-	} else {
-		r.directDownUntil = time.Time{}
-	}
-}
-
-func (r *telegramRoute) send(token, chatID, text string) error {
-	if r.directDown() {
-		err := r.viaExit(token, chatID, text)
-		if err == nil || telegramFailureIsFinal(err) {
-			return err
-		}
-		// exit path unavailable or failing: the direct path may have recovered
-		derr := r.direct(token, chatID, text)
-		if derr == nil {
-			r.setDirectDown(false)
-			return nil
-		}
-		if errors.Is(err, errNoExitRoute) {
-			return derr
-		}
-		return fmt.Errorf("%v; напрямую: %v", err, derr)
-	}
-	derr := r.direct(token, chatID, text)
-	if derr == nil {
-		return nil
-	}
-	if telegramFailureIsFinal(derr) {
-		return derr
-	}
-	r.setDirectDown(true) // api.telegram.org may be throttled from the RU Hub
-	err := r.viaExit(token, chatID, text)
-	if err == nil {
-		log.Printf("[alerts] Telegram напрямую недоступен (%v) — следующие %s шлём через exit", derr, telegramDirectPause)
-		return nil
-	}
-	if errors.Is(err, errNoExitRoute) {
-		return derr
-	}
-	return fmt.Errorf("напрямую: %v; %v", derr, err)
-}
-
-func telegramSendDirect(token, chatID, text string) error {
-	return telegramSendMessage(&http.Client{Timeout: 10 * time.Second}, token, chatID, text)
-}
-
-func telegramSendViaExit(token, chatID, text string) error {
+// telegramExitPath sends through a healthy exit's local SOCKS (hostnames resolved there).
+func telegramExitPath(ctx context.Context, req *tg.Request) ([]byte, error) {
 	port, err := pickDeliveryExitSocksPort() // bounded DB read, last known exit list as fallback
 	if errors.Is(err, errNoLiveExit) {
-		return errNoExitRoute
+		return nil, errNoExitRoute
 	}
 	if err != nil { // the exit list could not be read: say so instead of "no exit"
-		return fmt.Errorf("exit для обхода не выбран: %w", err)
+		return nil, fmt.Errorf("exit для обхода не выбран: %w", err)
 	}
-	client, err := exitSocksHTTPClient(port, 15*time.Second)
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	client, err := exitSocksHTTPClient(port, timeout+5*time.Second)
 	if err != nil {
-		return fmt.Errorf("exit SOCKS :%d: %w", port, err)
+		return nil, fmt.Errorf("exit SOCKS :%d: %w", port, err)
 	}
-	if err := telegramSendMessage(client, token, chatID, text); err != nil {
-		return fmt.Errorf("через exit :%d: %w", port, err)
+	res, err := tg.Exec(ctx, client, telegramAPIBase, req)
+	if err != nil {
+		if tg.IsFinal(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("через exit :%d: %w", port, err)
 	}
-	log.Printf("[alerts] отправлено через exit :%d", port)
-	return nil
+	if !req.Quiet {
+		log.Printf("[telegram] %s через exit :%d", req.Method, port)
+	}
+	return res, nil
+}
+
+// telegramSendViaExit sends an alert text through the exit path only.
+func telegramSendViaExit(token, chatID, text string) error {
+	_, err := telegramExitPath(context.Background(), alertMessageRequest(token, chatID, text))
+	return err
+}
+
+// alertMessageRequest is the alert's sendMessage (golden: TestAlertSendMessagePayload).
+func alertMessageRequest(token, chatID, text string) *tg.Request {
+	req, _ := tg.JSONRequest(token, "sendMessage", map[string]any{"chat_id": chatID, "text": text, "disable_web_page_preview": true})
+	req.Timeout = 10 * time.Second
+	return req
 }
 
 // alertTelegramConfig is the bot token and chat id from app_settings ("" = not set).
@@ -839,38 +788,17 @@ func sendTelegramAlert(text string) error {
 	if !cfg.configured() {
 		return errAlertsNotConfigured
 	}
-	return telegram.send(cfg.token, cfg.chatID, text)
+	_, err = telegram.Do(context.Background(), alertMessageRequest(cfg.token, cfg.chatID, text))
+	return err
 }
 
+// telegramSendMessage sends one alert text over client (tests and the admin's direct probe).
 func telegramSendMessage(client *http.Client, token, chatID, text string) error {
-	payload, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "disable_web_page_preview": true})
-	resp, err := client.Post(telegramAPIBase+"/bot"+token+"/sendMessage", "application/json", bytes.NewReader(payload))
-	if err != nil {
-		return errors.New(redactSecret(err.Error(), token)) // *url.Error embeds the URL with the token
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	var tr struct {
-		OK          *bool  `json:"ok"`
-		Description string `json:"description"`
-	}
-	_ = json.Unmarshal(raw, &tr)
-	if resp.StatusCode != http.StatusOK || tr.OK == nil || !*tr.OK {
-		desc := tr.Description
-		if desc == "" {
-			desc = strings.TrimSpace(string(raw))
-		}
-		return &telegramAPIError{Status: resp.StatusCode, Description: redactSecret(desc, token), FromTelegram: tr.OK != nil}
-	}
-	return nil
+	_, err := tg.Exec(context.Background(), client, telegramAPIBase, alertMessageRequest(token, chatID, text))
+	return err
 }
 
-func redactSecret(s, secret string) string {
-	if secret == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, secret, "<token>")
-}
+func redactSecret(s, secret string) string { return tg.Redact(s, secret) }
 
 // sendTestAlert is synchronous: the admin sees the real Telegram error.
 func sendTestAlert() error {

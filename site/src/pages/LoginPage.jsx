@@ -20,7 +20,7 @@ function readExpired() {
 }
 
 // server answer → which field is wrong and the catalogue text (05 §7)
-function explain(e) {
+export function explain(e) {
   const raw = String(e?.data?.error || '').toLowerCase()
   if (e?.kind === 'rate' || e?.status === 429) return { field: null, title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
   if (raw === 'user not found') return { field: 'id', title: 'Аккаунт не найден.', text: 'Проверьте ID — его легко перепутать с похожими символами.' }

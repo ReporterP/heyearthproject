@@ -23,6 +23,8 @@ import PromoCard from '../components/PromoCard.jsx'
 import usePlans from '../hooks/usePlans.js'
 import useMtproto from '../hooks/useMtproto.js'
 import useMedia, { PHONE } from '../hooks/useMedia.js'
+import { PayOnSiteButton } from '../components/PayOnSite.jsx'
+import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
 import { date, kopNum, money, days as dayWord } from '../lib/format.js'
@@ -286,10 +288,12 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
             ? <span className="skel" style={{ width: 280, height: 54, borderRadius: 14 }} aria-hidden="true" />
             : plans.error && !plan
               ? <Button variant="secondary" size="lg" block={phone} icon="refresh" onClick={plans.reload}>Обновить тарифы</Button>
-              : buyable
+              : isMiniApp()
+            ? <PayOnSiteButton next="/dashboard" block={phone}>Продлить на сайте</PayOnSiteButton>
+            : buyable
             ? <Button variant="primary" size="lg" block={phone} loading={busy} onClick={renew}>{short > 0 ? `Пополнить на ${money(topup)} и продлить` : `Продлить за ${money(price)}`}</Button>
             : <Button variant="primary" size="lg" block={phone} to="/payment">Выбрать тариф</Button>}
-          {buyable && <Button variant="ghost" size="lg" block={phone} to="/payment" disabled={busy}>Другой тариф</Button>}
+          {buyable && !isMiniApp() && <Button variant="ghost" size="lg" block={phone} to="/payment" disabled={busy}>Другой тариф</Button>}
         </div>
       </div>
     </section>

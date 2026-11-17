@@ -859,6 +859,10 @@ func main() {
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
 	StartMonitor()
 
+	// Telegram users' bot: update pollers (users' bot + owner replies in the alerts bot) and
+	// the outgoing queue, each in one API instance (advisory locks).
+	StartTelegram()
+
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
@@ -997,6 +1001,9 @@ func main() {
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()
 	registerEntryAdminRoutes()
+	registerTelegramAdminRoutes()
+	// Telegram: Mini App sign-in, linking, one-time site sign-in, support, news
+	registerTelegramRoutes(authLimiter, apiLimiter)
 
 	// Admin panel
 	admin.RegisterRoutes()

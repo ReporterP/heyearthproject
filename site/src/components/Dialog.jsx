@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useLayer, focusables } from '../lib/layers.js'
+import { syncMainButton } from '../lib/telegram.js'
 
 // Dialog (spec 02 §15): confirmations of irreversible actions, a short form in place, one large
 // object (QR). Replaces window.confirm/alert/prompt everywhere.
@@ -29,6 +30,12 @@ export default function Dialog({ open, onClose, title, children, busy = false, c
     const t = setTimeout(() => { setMounted(false); setLeaving(false) }, 160)
     return () => clearTimeout(t)
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mini App: Telegram's MainButton hides while a dialog is open (spec 12 §12.4)
+  useEffect(() => {
+    const t = setTimeout(syncMainButton, 0)
+    return () => clearTimeout(t)
+  }, [mounted])
 
   // focus back to the opener when the dialog goes away (closed, or the parent unmounts it)
   useEffect(() => {

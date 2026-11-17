@@ -10,6 +10,7 @@ import Icon from './Icon.jsx'
 import Button from './Button.jsx'
 import Dialog, { DialogActions } from './Dialog.jsx'
 import { IdChip, shortId } from './Nomerok.jsx'
+import { isMiniApp } from '../lib/telegram.js'
 
 // AppShell (spec 02 §30): the cabinet's side menu + main column. ≤1024 px the menu becomes a top bar
 // (logo · short ID chip · menu button) with the items in a drawer. «Выйти» opens the logout dialog.
@@ -86,6 +87,7 @@ export default function AppShell({ children }) {
   const btn = useRef(null)
   const drawer = useRef(null)
 
+  const tgApp = isMiniApp() // spec 12 §12.4: no «Выйти» inside Telegram
   const referralOn = useReferralOn()
   const items = ITEMS.filter((i) => (!i.company || company) && (!i.referral || referralOn))
   const isCurrent = (to) => {
@@ -118,13 +120,13 @@ export default function AppShell({ children }) {
         <nav className="stack" style={{ gap: 2 }}>{items.map((i) => link(i))}</nav>
         <div className="stack gap-3" style={{ marginTop: 'auto', padding: 12 }}>
           {profile?.user_id && <IdChip id={profile.user_id} />}
-          <button type="button" className="t-sm muted" onClick={logoutDlg.show} style={{ background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer' }}>Выйти</button>
+          {!tgApp && <button type="button" className="t-sm muted" onClick={logoutDlg.show} style={{ background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer' }}>Выйти</button>}
         </div>
       </aside>
 
       <div className="app__main" style={{ paddingTop: 0 }}>
         {/* ≤1024: top bar */}
-        <div className="lg:hidden row between gap-3" style={{ height: 'var(--header-h)', borderBottom: '1px solid var(--line)', margin: '0 -20px 20px', padding: '0 20px', position: 'sticky', top: 0, zIndex: 20, background: 'var(--bg)' }}>
+        <div className="lg:hidden row between gap-3" style={{ height: 'var(--header-h)', borderBottom: '1px solid var(--line)', margin: '0 -20px 20px', padding: '0 20px', position: 'sticky', top: 'var(--tg-top, 0px)', zIndex: 20, background: 'var(--bg)' }}>
           <Logo />
           <div className="row gap-2">
             {profile?.user_id && <IdChip id={profile.user_id} phone />}
@@ -151,7 +153,7 @@ export default function AppShell({ children }) {
         ))}
         <div className="drawer__foot">
           {profile?.user_id && <IdChip id={profile.user_id} />}
-          <Button variant="ghost" block onClick={() => { setOpen(false); logoutDlg.show() }} tabIndex={open ? 0 : -1}>Выйти</Button>
+          {!tgApp && <Button variant="ghost" block onClick={() => { setOpen(false); logoutDlg.show() }} tabIndex={open ? 0 : -1}>Выйти</Button>}
         </div>
       </div>
 
