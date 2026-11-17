@@ -206,6 +206,46 @@ export async function authImage(path) {
   return URL.createObjectURL(await res.blob())
 }
 
+// ── Telegram users' bot (TG7) and news (TG6) ──
+export function fetchTelegramSettings() {
+  return apiFetch('/telegram/settings')
+}
+export function saveTelegramSettings(payload) {
+  return apiFetch('/telegram/settings', { method: 'PUT', body: payload })
+}
+export function checkTelegramBot() {
+  return apiFetch('/telegram/check', { method: 'POST' })
+}
+export function checkTelegramChannel() {
+  return apiFetch('/telegram/channel/check', { method: 'POST' })
+}
+export function fetchNews() {
+  return apiFetch('/news')
+}
+export function createNews(payload) {
+  return apiFetch('/news', { method: 'POST', body: payload })
+}
+export function updateNews(id, payload) {
+  return apiFetch(`/news/${id}`, { method: 'PUT', body: payload })
+}
+export function deleteNews(id) {
+  return apiFetch(`/news/${id}`, { method: 'DELETE' })
+}
+export function sendNews(id) {
+  return apiFetch(`/news/${id}/send`, { method: 'POST' })
+}
+export function scheduleNews(id, at) {
+  return apiFetch(`/news/${id}/schedule`, { method: 'POST', body: { at } })
+}
+export function unscheduleNews(id) {
+  return apiFetch(`/news/${id}/unschedule`, { method: 'POST' })
+}
+export function uploadNewsImage(file) {
+  const form = new FormData()
+  form.append('image', file)
+  return apiFetch('/news/upload', { method: 'POST', body: form })
+}
+
 // ── Alerts (Telegram) ──
 export function fetchAlertSettings() {
   return apiFetch('/alerts/settings')

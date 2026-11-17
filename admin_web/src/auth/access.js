@@ -13,6 +13,8 @@ export const PAGE_PERMS = {
   '/mtproto': 'settings.read',
   '/alerts': 'settings.read',
   '/support': 'support.manage',
+  '/news': 'news.manage',
+  '/telegram-bot': 'settings.read',
   '/plans': 'settings.read',
   '/payments': 'payments.read',
   '/payment-ops': 'payments.read', // old address → /payments?tab=emails
@@ -26,7 +28,7 @@ export const PAGE_PERMS = {
 
 // Pages a tenant (B2B) admin never sees, whatever the permissions.
 export const TENANT_HIDDEN = new Set([
-  '/servers', '/nodes', '/entries', '/direct-routes', '/mtproto', '/alerts', '/support', '/admins', '/audit-log', '/tenants', '/b2b-analytics', '/settings',
+  '/servers', '/nodes', '/entries', '/direct-routes', '/mtproto', '/alerts', '/support', '/news', '/telegram-bot', '/admins', '/audit-log', '/tenants', '/b2b-analytics', '/settings',
 ])
 
 export function canOpen(href, { can, isTenantAdmin }) {

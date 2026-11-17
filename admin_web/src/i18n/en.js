@@ -31,6 +31,8 @@ export default {
   navMTProto: 'Telegram',
   navAlerts: 'Alerts',
   navSupport: 'Support',
+  navNews: 'News',
+  navTelegramBot: 'Telegram bot',
   navSettings: 'Settings',
   dashboardTitle: 'Dashboard',
   dashUsers: 'Users',
