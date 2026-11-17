@@ -20,6 +20,11 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
 	http.HandleFunc("/api/admin/overview", withMethod(http.MethodGet, RequirePermission("dashboard.read", OverviewHandler)))
 	http.HandleFunc("/api/admin/me", withMethod(http.MethodGet, AuthMiddleware(AdminMeHandler)))
+	// 2FA of the signed-in admin (login_security.go): any admin manages their own.
+	http.HandleFunc("/api/admin/me/totp", withMethod(http.MethodGet, AuthMiddleware(TOTPStatusHandler)))
+	http.HandleFunc("/api/admin/me/totp/setup", withMethod(http.MethodPost, AuthMiddleware(TOTPSetupHandler)))
+	http.HandleFunc("/api/admin/me/totp/enable", withMethod(http.MethodPost, AuthMiddleware(TOTPEnableHandler)))
+	http.HandleFunc("/api/admin/me/totp/disable", withMethod(http.MethodPost, AuthMiddleware(TOTPDisableHandler)))
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

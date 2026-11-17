@@ -71,6 +71,7 @@ func (c *Claims) IsSuperAdmin() bool {
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	TOTPCode string `json:"totp_code,omitempty"` // when the admin has 2FA on (login_security.go)
 }
 
 type LoginResponse struct {
@@ -375,6 +376,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	record, err := loadAdminRecordByUsername(strings.TrimSpace(req.Username))
 	if err == sql.ErrNoRows {
+		// The same bcrypt time as a real account: the answer time does not tell which logins exist.
+		_ = bcrypt.CompareHashAndPassword(dummyAdminHash, []byte(req.Password))
 		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
@@ -382,14 +385,57 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
 		return
 	}
+	// Lockout + 2FA (login_security.go).
+	sec, err := loadAdminLoginState(record.ID)
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Failed to load admin")
+		return
+	}
+	now := time.Now()
+	if sec.locked(now) {
+		_ = bcrypt.CompareHashAndPassword(dummyAdminHash, []byte(req.Password))
+		mins := int(sec.lockedUntil.Time.Sub(now).Minutes()) + 1
+		w.Header().Set("Retry-After", fmt.Sprint(mins*60))
+		writeAdminError(w, http.StatusTooManyRequests, fmt.Sprintf("Слишком много неудачных попыток — вход заблокирован ещё на %d мин", mins))
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)); err != nil {
+		recordAdminFailure(record.ID)
+		writeLoginAudit(r, record.ID, record.Username, "admin.login_failed", map[string]string{"reason": "password"})
+		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
 	if !record.IsActive {
 		writeAdminError(w, http.StatusForbidden, "Admin account is inactive")
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)); err != nil {
-		writeAdminError(w, http.StatusUnauthorized, "Invalid credentials")
-		return
+	if sec.totpEnabled {
+		if strings.TrimSpace(req.TOTPCode) == "" {
+			writeAdminJSON(w, http.StatusUnauthorized, map[string]any{"error": "Введите код из приложения", "totp_required": true})
+			return
+		}
+		secret, derr := decryptTOTP(sec.totpSecret)
+		step := int64(0)
+		if derr == nil {
+			step = verifyTOTP(secret, req.TOTPCode, now, sec.totpLast)
+		}
+		if step == 0 {
+			recordAdminFailure(record.ID)
+			writeLoginAudit(r, record.ID, record.Username, "admin.login_failed", map[string]string{"reason": "totp"})
+			writeAdminJSON(w, http.StatusUnauthorized, map[string]any{"error": "Код не подошёл", "totp_required": true})
+			return
+		}
+		// A code works once (also against a parallel sign-in with the same code).
+		if res, err := db.DB.Exec(`UPDATE admin_users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2`, record.ID, step); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Failed to record the code")
+			return
+		} else if n, _ := res.RowsAffected(); n != 1 {
+			writeAdminJSON(w, http.StatusUnauthorized, map[string]any{"error": "Код уже использован — дождитесь следующего", "totp_required": true})
+			return
+		}
 	}
+	resetAdminFailures(record.ID)
+	writeLoginAudit(r, record.ID, record.Username, "admin.login", map[string]bool{"totp": sec.totpEnabled})
 
 	adminUser, roles, err := buildAdminUser(record)
 	if err != nil {

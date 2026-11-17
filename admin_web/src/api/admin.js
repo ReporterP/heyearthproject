@@ -1,9 +1,11 @@
 import { apiFetch, pagedFetch } from './client.js'
 
 // ── Auth ──
-export function login(username, password) {
+export function login(username, password, totpCode) {
   // A rejected login (401/403) shows the server's reason and must not run the logout path.
-  return apiFetch('/login', { method: 'POST', body: { username, password }, sessionErrors: false })
+  // With 2FA on the server answers 401 + totp_required until the code from the app is sent.
+  const body = totpCode ? { username, password, totp_code: totpCode } : { username, password }
+  return apiFetch('/login', { method: 'POST', body, sessionErrors: false })
 }
 
 // ── Dashboard ──
@@ -367,3 +369,9 @@ export function adjustUserWallet(userDbId, { direction, amountRub, reason, reque
 export function fetchWalletStats() {
   return apiFetch('/wallet-stats')
 }
+
+// 2FA of the signed-in admin (internal/admin/login_security.go).
+export const getTOTPStatus = () => apiFetch('/me/totp')
+export const setupTOTP = () => apiFetch('/me/totp/setup', { method: 'POST' })
+export const enableTOTP = (code) => apiFetch('/me/totp/enable', { method: 'POST', body: { code } })
+export const disableTOTP = (password, code) => apiFetch('/me/totp/disable', { method: 'POST', body: { password, code } })

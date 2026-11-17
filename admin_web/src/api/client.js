@@ -20,6 +20,7 @@ export class ApiError extends Error {
     super(message, options)
     this.name = 'ApiError'
     this.status = status
+    this.data = options?.data ?? null // the error body (e.g. totp_required on the admin login)
   }
 }
 
@@ -85,7 +86,7 @@ export async function apiFetch(path, { method = 'GET', body, headers = {}, raw =
 
   const data = await readJSON(res)
   if (!res.ok) {
-    throw new ApiError(serverMessage(data) || `Ошибка ${res.status}`, res.status)
+    throw new ApiError(serverMessage(data) || `Ошибка ${res.status}`, res.status, { data })
   }
   if (data === null) {
     throw new ApiError('Сервер вернул не JSON', res.status)

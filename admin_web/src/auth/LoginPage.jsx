@@ -12,6 +12,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // 2FA: the server asks for the code (401 + totp_required) after a correct password.
+  const [needCode, setNeedCode] = useState(false)
+  const [code, setCode] = useState('')
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -19,10 +22,16 @@ export default function LoginPage() {
     setLoading(true)
     setError('')
     try {
-      const result = await apiLogin(username.trim(), password)
+      const result = await apiLogin(username.trim(), password, needCode ? code.trim() : undefined)
       login(result)
       navigate('/dashboard', { replace: true })
     } catch (err) {
+      if (err.data?.totp_required) {
+        setNeedCode(true)
+        setCode('')
+        setError(needCode ? err.message : '')
+        return
+      }
       setError(err.message || 'Login failed')
     } finally {
       setLoading(false)
@@ -55,6 +64,23 @@ export default function LoginPage() {
               className="w-full px-3 py-2 rounded-lg bg-canvas border border-default text-primary placeholder-text-secondary focus:border-accent focus:ring-1 focus:ring-accent outline-none"
             />
           </div>
+
+          {needCode && (
+            <div>
+              <label htmlFor="totp" className="block text-sm text-secondary mb-1">Код из приложения</label>
+              <input
+                id="totp"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                className="w-full px-3 py-2 rounded-lg bg-canvas border border-default text-primary font-mono tabular-nums tracking-widest focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                autoFocus
+              />
+              <p className="text-xs text-tertiary mt-1">Шесть цифр из Google Authenticator, Aegis или другого приложения.</p>
+            </div>
+          )}
 
           {error && <p className="text-danger text-sm">{error}</p>}
 

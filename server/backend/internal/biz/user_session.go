@@ -3,6 +3,7 @@ package biz
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -28,6 +29,10 @@ type userJWTClaims struct {
 	UserDBID int    `json:"user_db_id"`
 	Iat      int64  `json:"iat"`
 	Exp      int64  `json:"exp"`
+	// Jti makes every token unique: two sign-ins of one user in the same second used to get the
+	// same token, so a logout on one device ended the other one too and "close the other
+	// sessions" kept it alive (user_sessions.token_hash is unique since migration 000089).
+	Jti string `json:"jti,omitempty"`
 }
 
 func userJWTSecret() []byte {
@@ -48,6 +53,7 @@ func GenerateUserSessionToken(userID string, userDBID int) (string, error) {
 		UserDBID: userDBID,
 		Iat:      now.Unix(),
 		Exp:      now.Add(userTokenExpiry).Unix(),
+		Jti:      newTokenID(),
 	}
 
 	header := userJWTHeader{Alg: "HS256", Typ: "JWT"}
@@ -164,4 +170,13 @@ func CleanupExpiredUserSessions(ctx context.Context) (int64, error) {
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return fmt.Sprintf("%x", h)
+}
+
+// newTokenID: 16 random bytes, base64url.
+func newTokenID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }

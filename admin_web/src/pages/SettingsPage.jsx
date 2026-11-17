@@ -6,6 +6,7 @@ import { useToast } from '../components/Toast.jsx'
 import { getSettings, updateSetting } from '../api/admin.js'
 import SecretSettingField from '../components/settings/SecretSettingField.jsx'
 import SettingField from '../components/settings/SettingField.jsx'
+import TwoFactorRow from '../components/settings/TwoFactorRow.jsx'
 import { SETTINGS_SECTIONS } from '../components/settings/settingsModel.js'
 import { Button, Card, CardHeader, CardBody, PageHeader, Skeleton } from '../components/ui/index.js'
 
@@ -88,6 +89,7 @@ export default function SettingsPage() {
             </div>
             <Button variant="danger" onClick={logout} className="w-full sm:w-auto">{t.settingsLogout}</Button>
           </div>
+          <TwoFactorRow />
           <div className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <span className="text-sm text-primary">Язык интерфейса</span>
             <div className="flex gap-2">
