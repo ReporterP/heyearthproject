@@ -149,6 +149,10 @@ if [ -f /etc/nginx/conf.d/cdn.conf ] && ! ss -ltnH | grep -q '127.0.0.1:11443 ';
   mkdir -p /var/backups/heyearth-nginx; mv /etc/nginx/conf.d/cdn.conf "/var/backups/heyearth-nginx/cdn.conf.$(date +%Y%m%d-%H%M%S)"
   echo "[ops] nginx: retired the CDN test vhost on :8444 (copy in /var/backups/heyearth-nginx)"
 fi
+# Its firewall rule (added by hand with a comment, so the --setup-ops prune does not match it).
+if command -v ufw >/dev/null 2>&1 && ! ss -Hlnt 'sport = :8444' | grep -q . && ufw show added 2>/dev/null | grep -qE '^ufw allow 8444/tcp( |$)'; then
+  ufw --force delete allow 8444/tcp >/dev/null && echo "[ops] ufw: closed 8444/tcp (nothing listens there)"
+fi
 restore() {
   for f in /etc/nginx/conf.d/00-heyearth-limits.conf /etc/nginx/stream.d/00-heyearth-limits.conf; do
     b="$BK/$(printf '%s' "$f" | tr '/' '_')"; if [ -f "$b" ]; then cp -p "$b" "$f"; else rm -f "$f"; fi
