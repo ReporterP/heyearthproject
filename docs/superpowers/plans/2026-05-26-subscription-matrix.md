@@ -267,7 +267,7 @@ Expected: commit succeeds, hash shown in output.
 
 Subscribe endpoint is `GET /api/v1/user/subscribe/<token>`. The User-Agent matters: when it contains "happ" we return raw happ:// format (smart-routing prefix + one URI per line). Otherwise base64 v2rayN format. We use `-H "User-Agent: Happ/2.8.0"` to get the line format that's easy to grep.
 
-The user from previous session has token `493723f9-f17c-4858-94d0-297043402c54`. Their vless_uuid is `e8f4289a-52c4-4c82-b895-4e41f4c3d5c8` and hysteria2_password starts with `f619861494deaf63...`. Use this token for the smoke test.
+The user from previous session has token `<redacted>`. Their vless_uuid is `<redacted>` and hysteria2_password starts with `f619861494deaf63...`. Use this token for the smoke test.
 
 - [ ] **Step 1: Stop the API service before binary upload**
 
@@ -299,7 +299,7 @@ Expected: `Active: active (running)`, recent start time, no error in last log li
 
 ```bash
 curl -sS -H "User-Agent: Happ/2.8.0" \
-  "https://hiearth.ru/api/v1/user/subscribe/493723f9-f17c-4858-94d0-297043402c54" \
+  "https://hiearth.ru/api/v1/user/subscribe/<redacted>" \
   > /tmp/subs.txt
 wc -l /tmp/subs.txt
 cat /tmp/subs.txt
@@ -415,10 +415,10 @@ Expected output contains four key=value pairs. Note the values — you'll inline
 Also get the user's vless_uuid (we use the same test user as Task 2):
 
 ```bash
-go run ./cmd/deploy --ssh 'set -a; source /opt/heyearth/mainserver/api.env; psql "$DATABASE_URL" -t -c "SELECT vless_uuid FROM users WHERE subscribe_token='"'"'493723f9-f17c-4858-94d0-297043402c54'"'"';"'
+go run ./cmd/deploy --ssh 'set -a; source /opt/heyearth/mainserver/api.env; psql "$DATABASE_URL" -t -c "SELECT vless_uuid FROM users WHERE subscribe_token='"'"'<redacted-uuid>'"'"';"'
 ```
 
-Expected: a single UUID (e.g. `e8f4289a-52c4-4c82-b895-4e41f4c3d5c8`).
+Expected: a single UUID (e.g. `<redacted>`).
 
 - [ ] **Step 2: Write Berëza Chrome test config to Hub and run it**
 

@@ -90,7 +90,7 @@ func sendTGReminders() {
 			kind = tgKindReminderToday
 		}
 		if ok, err := enqueueTG(ctx, r.UserDBID, kind, subRef(r.SubID, r.ValidUntil), tgReminderMessage(r)); err != nil {
-			log.Printf("[tg-notify] reminder %s: %v", r.UserIDText, err)
+			log.Printf("[tg-notify] reminder %s: %v", shortHiEarthID(r.UserIDText), err)
 		} else if ok {
 			queued++
 		}
@@ -175,7 +175,7 @@ func notifyTGRenewShort(userID string, subID int, until time.Time, planName stri
 				html.EscapeString(planName), rub(bal), rub(price), rub(price-bal), ruDate(until)),
 			Keyboard: tg.Keyboard(starsChooseButton("Продлить звёздами"))}
 		if _, err := enqueueTG(ctx, userDBID, tgKindReminderToday, subRef(subID, until), m); err != nil {
-			log.Printf("[tg-notify] renew short %s: %v", userID, err)
+			log.Printf("[tg-notify] renew short %s: %v", shortHiEarthID(userID), err)
 		}
 	}()
 }
@@ -210,7 +210,7 @@ func notifyTGPurchase(userID string, res *biz.PurchaseResult, renewal bool) {
 		}
 		ref := fmt.Sprintf("%d:%d", res.SubscriptionID, res.ValidUntil.Unix())
 		if _, err := enqueueTG(ctx, userDBID, tgKindPurchase, ref, tgOut{Text: text, ParseMode: "HTML", Keyboard: kb}); err != nil {
-			log.Printf("[tg-notify] purchase %s: %v", userID, err)
+			log.Printf("[tg-notify] purchase %s: %v", shortHiEarthID(userID), err)
 		}
 	}()
 }

@@ -90,6 +90,23 @@ func CreateTGLinkToken(ctx context.Context, userDBID int) (string, time.Time, er
 	return token, exp, nil
 }
 
+// PeekTGLinkToken returns the HiEarth ID a valid, unused token would link to — without using it
+// (the bot asks the person to confirm first, security audit F-1).
+func PeekTGLinkToken(ctx context.Context, token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > 64 {
+		return "", ErrTGLinkInvalid
+	}
+	var userID string
+	err := db.DB.QueryRowContext(ctx, `
+		SELECT u.user_id FROM tg_link_tokens t JOIN users u ON u.id = t.user_id
+		 WHERE t.token_hash = $1 AND t.used_at IS NULL AND t.expires_at > NOW()`, hashToken(token)).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrTGLinkInvalid
+	}
+	return userID, err
+}
+
 // ConsumeTGLinkToken links acc to the user of a valid, unused token. already: the same pair was
 // linked before (the token is used up anyway).
 func ConsumeTGLinkToken(ctx context.Context, token string, acc TGAccount) (userDBID int, already bool, err error) {

@@ -2099,7 +2099,7 @@ Expected: `ip rule` содержит правило `from 10.66.66.0/24 lookup 1
 > Обоснование (client_api.go:189-204): happ использует xray-core+sing-box, которые не поддерживают AmneziaWG; emit `amneziawg://` намеренно отключён. Любой `amneziawg://` в подписке = регрессия.
 ```bash
 cd C:/Users/alex/Documents/heyearthproject/server/backend
-go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/subscribe/d329def4-c54f-4448-9721-8e420fd21425 -o /tmp/sub_awg.txt; echo VLESS=$(grep -c '^vless://' /tmp/sub_awg.txt); echo AWG=$(grep -c 'amneziawg://' /tmp/sub_awg.txt)"
+go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/subscribe/<redacted> -o /tmp/sub_awg.txt; echo VLESS=$(grep -c '^vless://' /tmp/sub_awg.txt); echo AWG=$(grep -c 'amneziawg://' /tmp/sub_awg.txt)"
 ```
 Expected: `VLESS=4` (Берёза 1+2, Дуб 1+2) и **`AWG=0`**. Если `AWG>0` — НЕМЕДЛЕННО регрессия emit-блока, остановиться и откатить T-emit изменение.
 
@@ -2110,14 +2110,14 @@ Expected: `VLESS=4` (Берёза 1+2, Дуб 1+2) и **`AWG=0`**. Если `AWG
 cd C:/Users/alex/Documents/heyearthproject/server/backend
 grep -n "awg-config" cmd/api/main.go
 # Затем (premium-токен):
-go run ./cmd/deploy --ssh "curl -sk -o /dev/null -w '%{http_code}\n' --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/awg-config/d329def4-c54f-4448-9721-8e420fd21425"
+go run ./cmd/deploy --ssh "curl -sk -o /dev/null -w '%{http_code}\n' --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/awg-config/<redacted>"
 ```
 Expected (если T6 готов): grep находит строку `http.HandleFunc("/api/v1/user/awg-config...`; premium → `200` + тело-конфиг (см. 8.6.7); free-trial токен → `403`. **Если grep пуст → T6 не доделан: завести/реопенить `heyearthproject-v7lb`, пометить 8.6.6/8.6.7 BLOCKED, не считать эпик закрытым.**
 
 - [ ] **8.6.7 Содержимое premium-конфига валидно.**
 ```bash
 cd C:/Users/alex/Documents/heyearthproject/server/backend
-go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/awg-config/d329def4-c54f-4448-9721-8e420fd21425"
+go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/awg-config/<redacted>"
 ```
 Expected: WG-INI текст — секции `[Interface]` (PrivateKey, Address=10.66.66.X/32, Jc/Jmin/Jmax/S1/S2/H1-H4) и `[Peer]` (PublicKey Hub'а, Endpoint `198.51.100.236:51820`, AllowedIPs `0.0.0.0/0`). Без этого шага money-shot невозможен. (Если T6 не готов — BLOCKED, см. 8.6.6.)
 
@@ -2141,7 +2141,7 @@ Expected: свежие `accepted` строки. setup-awg не должен ло
 ```bash
 cd C:/Users/alex/Documents/heyearthproject/server/backend
 go run ./cmd/deploy --ssh "awg show awg0 transfer"
-go run ./cmd/deploy --ssh "sudo -u postgres psql -d heyearth -t -c \"SELECT traffic_used FROM users WHERE vless_uuid='0feec1d4-5994-4bc7-9ba7-b33568a2306e';\""
+go run ./cmd/deploy --ssh "sudo -u postgres psql -d heyearth -t -c \"SELECT traffic_used FROM users WHERE vless_uuid='<redacted>';\""
 ```
 Expected: `awg show awg0 transfer` для peer тест-юзера — RX/TX ненулевые; `traffic_used` в БД вырос относительно baseline (снять до money-shot тем же запросом). Оба ненулевых = end-to-end подтверждён.
 

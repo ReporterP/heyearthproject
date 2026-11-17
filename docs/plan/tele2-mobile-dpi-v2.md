@@ -337,7 +337,7 @@ Expected: `active`, и grep пустой (нет errors). Если xray crashed/
 ```bash
 cd C:/Users/alex/Documents/heyearthproject/server/backend
 # subscribe_token взят из PRD — это наш test-юзер Tele2 mobile + desktop combo
-go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/subscribe/d329def4-c54f-4448-9721-8e420fd21425 -o /tmp/sub2.txt && grep -oE 'vless://[^[:space:]]+' /tmp/sub2.txt | head -4"
+go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/subscribe/<redacted> -o /tmp/sub2.txt && grep -oE 'vless://[^[:space:]]+' /tmp/sub2.txt | head -4"
 ```
 
 Expected: 4 URI, в каждом `sni=storage.yandexcloud.net`, и `fp=chrome` / `fp=firefox` чередуются:
@@ -405,7 +405,7 @@ Expected: текущее время UTC. Запомнить для следую�
 ```bash
 cd C:/Users/alex/Documents/heyearthproject/server/backend
 # T_START = timestamp из Step 2
-go run ./cmd/deploy --ssh "journalctl -u xray.service --since '<T_START>' --no-pager | grep -E '5f5f66b7-6fbc-4b08-b4cd-8d6c8cd6dffc' | head -30"
+go run ./cmd/deploy --ssh "journalctl -u xray.service --since '<T_START>' --no-pager | grep -E '<redacted>' | head -30"
 ```
 
 Expected: видим минимум 10+ accepted-записей за окно теста, destinations включают `google.com` и `149.154.x` (Telegram DC). Время между accepted — секунды, не «1 раз в минуту».

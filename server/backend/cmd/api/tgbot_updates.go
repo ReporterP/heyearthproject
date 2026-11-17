@@ -131,7 +131,7 @@ func newTGCtx(ctx context.Context, bot *tg.Bot, from tg.User) (*tgCtx, error) {
 func handleTGMessage(c *tgCtx, m *tg.Message) {
 	text := strings.TrimSpace(m.Text)
 	if cmd, arg, ok := parseTGCommand(text); ok {
-		log.Printf("[tg-bot] …%04d: /%s (аккаунт привязан: %v)", c.chat%10000, cmd, c.user != nil)
+		log.Printf("[tg-bot] …%04d: /%q (аккаунт привязан: %v)", c.chat%10000, cmd, c.user != nil)
 		if cmd != "support" {
 			if err := biz.SetTGChatState(c.ctx, c.chat, "", 0); err != nil { // any command ends the support / sign-in mode
 				log.Printf("[tg-bot] режим чата …%04d: %v", c.chat%10000, err)
@@ -201,7 +201,7 @@ func parseTGCommand(text string) (cmd, arg string, ok bool) {
 func tgStart(c *tgCtx, arg string) {
 	switch {
 	case strings.HasPrefix(arg, "link_"):
-		tgLinkFromSite(c, strings.TrimPrefix(arg, "link_"))
+		tgConfirmLink(c, strings.TrimPrefix(arg, "link_"))
 		return
 	case strings.HasPrefix(arg, "ref_") && c.user == nil:
 		if err := biz.SaveTGStartRef(c.ctx, c.from.ID, strings.TrimPrefix(arg, "ref_")); err != nil {
@@ -209,6 +209,21 @@ func tgStart(c *tgCtx, arg string) {
 		}
 	}
 	tgShow(c, "home", 0)
+}
+
+// tgConfirmLink asks before linking: a link_ deep link can come from someone else (who would
+// then own the Mini App session and the Stars payments of this Telegram), so the person sees the
+// HiEarth ID and confirms with a button (security audit F-1).
+func tgConfirmLink(c *tgCtx, token string) {
+	userID, err := biz.PeekTGLinkToken(c.ctx, token)
+	if err != nil || len("lk:"+token) > 64 {
+		_, _ = c.reply(html.EscapeString(biz.ErrTGLinkInvalid.Error()), tg.Keyboard(tg.Row(tg.URLButton("Открыть настройки на сайте", siteURL()+"/settings#telegram"))))
+		return
+	}
+	_, _ = c.reply(fmt.Sprintf("Привязать этот Telegram к аккаунту HiEarth ID <code>%s</code>?\n\n"+
+		"Нажимайте «Привязать», только если сами открыли ссылку в своём кабинете на сайте. "+
+		"Если ссылку прислал кто-то другой — нажмите «Отмена»: иначе этот Telegram будет входить в чужой аккаунт.", shortHiEarthID(userID)),
+		tg.Keyboard(tg.Row(tg.CallbackButton("✅ Привязать", "lk:"+token).Styled(tg.StyleSuccess), tg.CallbackButton("Отмена", "lk:no"))))
 }
 
 func tgLinkFromSite(c *tgCtx, token string) {
@@ -336,7 +351,22 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 		msgID = q.Message.MessageID
 	}
 	answer := func(text string) { _ = c.bot.AnswerCallbackQuery(c.ctx, q.ID, text) }
+	// Only messages of the private chat with this person are edited (a button can also come from
+	// a message elsewhere — inline mode, a forwarded copy); otherwise a new message is sent.
+	if q.Message != nil && q.Message.Chat.ID != q.From.ID {
+		msgID = 0
+	}
+	if c.user != nil && c.user.Blocked && !strings.HasPrefix(data, "m:") {
+		answer("Аккаунт заблокирован")
+		return
+	}
 	switch {
+	case data == "lk:no":
+		answer("Отменено")
+		tgShow(c, "home", 0)
+	case strings.HasPrefix(data, "lk:"):
+		answer("")
+		tgLinkFromSite(c, strings.TrimPrefix(data, "lk:"))
 	case strings.HasPrefix(data, "m:"):
 		answer("")
 		section := strings.TrimPrefix(data, "m:")

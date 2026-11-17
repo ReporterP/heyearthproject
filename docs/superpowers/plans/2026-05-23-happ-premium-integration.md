@@ -818,7 +818,7 @@ Expected: vite build success, assets uploaded, nginx reload OK.
 
 ```bash
 # Replace <TOKEN> with a real subscribe token from DB
-curl -i -A "Happ/1.0" "https://hiearth.ru/api/v1/user/subscribe/216629e8-4936-4b8a-9456-e337e0a1777e" 2>&1 | head -25
+curl -i -A "Happ/1.0" "https://hiearth.ru/api/v1/user/subscribe/<redacted>" 2>&1 | head -25
 ```
 Expected (compare to baseline):
 * ✅ `Content-Disposition: attachment` **GONE**
@@ -831,7 +831,7 @@ Expected (compare to baseline):
 - [ ] **Step 4:** Verify ConnectPage routes
 
 ```bash
-curl -s -o /dev/null -w "HTTP %{http_code}\n" "https://hiearth.ru/connect?sub=216629e8-4936-4b8a-9456-e337e0a1777e"
+curl -s -o /dev/null -w "HTTP %{http_code}\n" "https://hiearth.ru/connect?sub=<redacted>"
 ```
 Expected: `HTTP 200`. The page renders client-side; the HTTP response is the SPA shell.
 

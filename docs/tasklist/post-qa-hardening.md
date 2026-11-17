@@ -72,8 +72,8 @@ _(заполняем по мере закрытия)_
 ```
 user_id = qa-socks-test-20260418
 db_id = 106
-vless_uuid / socks password = 84b62bf6-c888-4517-b47b-65189347018c
-subscribe_token = 57fa765c-9286-483e-89a8-f64e5e19b646
+vless_uuid / socks password = <redacted-uuid>
+subscribe_token = <redacted-uuid>
 plan = socks-select (100 GB/30d)
 ```
 

@@ -2849,7 +2849,7 @@ If T10 leaves the system in a degraded state:
 - [ ] **Step 2: Curl subscription endpoint with happ User-Agent**
   ```bash
   curl -sS -H "User-Agent: Happ/2.8.0" \
-    "https://hiearth.ru/api/v1/user/subscribe/493723f9-f17c-4858-94d0-297043402c54" \
+    "https://hiearth.ru/api/v1/user/subscribe/<redacted>" \
     > /tmp/subs.txt
   wc -l /tmp/subs.txt
   cat /tmp/subs.txt
@@ -2946,7 +2946,7 @@ If T10 leaves the system in a degraded state:
 
   > **Test matrix (must all pass):**
   >
-  > 1. **Re-import subscription in happ-desktop or happ-mobile** using the URL `https://hiearth.ru/api/v1/user/subscribe/493723f9-f17c-4858-94d0-297043402c54`.
+  > 1. **Re-import subscription in happ-desktop or happ-mobile** using the URL `https://hiearth.ru/api/v1/user/subscribe/<redacted>`.
   >    - Confirm the entry list shows «🌴 Пальма» at the top.
   >
   > 2. **Tap «🌴 Пальма»** and verify happ reports "connected" within 5 seconds.
@@ -2972,7 +2972,7 @@ If T10 leaves the system in a degraded state:
   cd server/backend
   go run ./cmd/deploy --ssh 'set -a; source /opt/heyearth/mainserver/api.env; psql "$DATABASE_URL" -c "UPDATE plans SET amnezia_wg_enabled = false WHERE id = 6;"'
   curl -sS -H "User-Agent: Happ/2.8.0" \
-    "https://hiearth.ru/api/v1/user/subscribe/493723f9-f17c-4858-94d0-297043402c54" \
+    "https://hiearth.ru/api/v1/user/subscribe/<redacted>" \
     | grep -c '^amneziawg://'
   ```
   Expected: `0` (no `amneziawg://` URI when plan is disabled) — proves the T7 gate honors the per-plan flag.

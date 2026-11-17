@@ -81,6 +81,9 @@ func tgRender(c *tgCtx, section string) (string, *tg.InlineKeyboardMarkup) {
 		return tgSupportSection(c)
 	case "news":
 		n, _ := strconv.Atoi(arg)
+		if n < 0 || n > 1000 { // callback data is the client's: a negative offset indexed posts[-1] (audit F-4)
+			n = 0
+		}
 		return tgNewsSection(c, n)
 	case "set":
 		return tgSettingsSection(c)
