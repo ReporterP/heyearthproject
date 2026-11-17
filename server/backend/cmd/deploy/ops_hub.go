@@ -35,7 +35,7 @@ type backupConfig struct {
 // Without --backup-target / --backup-age-recipient the values stored in /etc/heyearth/backup.env
 // are kept (a re-run must never silently turn the off-box copy off); if backup.env cannot be
 // read, the backup steps are skipped instead of guessing.
-func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPassword string, exitSSHPort int, ageRecipient string) {
+func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPassword string, exitSSHPort int, ageRecipient, ddosMode, sshPassword string) {
 	if err := validateBackupFlags(backupTarget, exitSSHPort, ageRecipient); err != nil {
 		log.Fatalf("[ops] %v", err)
 	}
@@ -71,6 +71,7 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 	step("nginx stream timeouts + limits", func() error { return patchNginxStream(client) })
 	step("egress guard", func() error { return installEgressGuard(client) })
 	step("AmneziaWG remains (D7)", func() error { return removeAWGHub(client) })
+	failed = append(failed, setupHardening(client, cfg, ddosMode, sshPassword)...)
 
 	if len(failed) > 0 {
 		log.Fatalf("[ops] %d step(s) failed: %s", len(failed), strings.Join(failed, ", "))
