@@ -22,7 +22,7 @@ import ChecklistCard from '../components/ChecklistCard.jsx'
 import PromoCard from '../components/PromoCard.jsx'
 import usePlans from '../hooks/usePlans.js'
 import useMtproto from '../hooks/useMtproto.js'
-import useMedia, { PHONE } from '../hooks/useMedia.js'
+import useMedia, { PHONE, CABINET_NARROW } from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
 import { date, kopNum, money, days as dayWord } from '../lib/format.js'
@@ -37,7 +37,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const toast = useToast()
   const phone = useMedia(PHONE)
-  const narrow = useMedia('(max-width: 1024px)')
+  const narrow = useMedia(CABINET_NARROW)
   usePageMeta('Обзор — HiEarth', { noindex: true })
 
   const acc = useAccount(['profile', 'subscription', 'traffic', 'subLink', 'wallet'], { optional: ['traffic', 'subLink', 'wallet'] })

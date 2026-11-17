@@ -15,3 +15,5 @@ export default function useMedia(query) {
 }
 
 export const PHONE = '(max-width: 640px)'
+// the cabinet's content beside the 248 px side menu: tablet layout up to 1365 (spec 01 §3)
+export const CABINET_NARROW = '(max-width: 1365px)'
