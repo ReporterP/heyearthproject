@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 87 SQL migrations (000001-000087), applied at API start
+│   │   ├── migrations/            # 89 SQL migrations (000001-000089), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (87)
+# Auto-runs the migrations on startup (89)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -164,7 +164,7 @@ Users → [Hub: hiearth.ru (Russia)]
 |------|------|----------|---------|
 | Hub | 80 | TCP | HTTP redirect |
 | Hub | 443 | TCP | nginx stream SNI router |
-| Hub | 8447 | TCP | nginx stream for reserve entries (PROXY protocol in; trust per relay) |
+| Hub | 8447 | TCP | nginx stream for reserve entries (PROXY protocol in; trust per relay; only servers from the DB may connect — nft `heyearth_ddos`) |
 | Hub | 8446 | TCP (loopback) | http nginx PROXY mirror (realip) |
 | Hub | 10444 | TCP (loopback) | xray `vless-reality-pp` (PROXY mirror) |
 | Hub | 2443 | TCP | VLESS XHTTP (splithttp) |
@@ -180,7 +180,7 @@ Users → [Hub: hiearth.ru (Russia)]
 | Hub | 1088+id | TCP/UDP (loopback) | hysteria2-client-<id> SOCKS to exit <id> |
 | Hub | 2088+id | TCP/UDP (loopback) | heyearth-stls-client-<id> SOCKS (ShadowTLS backup to exit <id>; xray `exit-<id>.vr`) |
 
-SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (ufw rules pruned by `--setup-ops`).
+SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (ufw rules pruned by `--setup-ops`). The CDN test vhost on :8444 is retired (18.11).
 | Exit | 50443 | UDP | Hysteria2 |
 | Exit | 443 | TCP | ShadowTLS v3 (sing-box `heyearth-stls`, backup tunnel; the old xray Reality :10443 is retired by the recipe) |
 | Exit | 50052 | TCP | node-agent gRPC (mTLS) |
@@ -199,7 +199,7 @@ SOCKS5 :1080, HTTP proxy :8080 and Shadowsocks :8388 are no longer on the Hub (u
 5. Rate limiters: auth 10/min, api 100/min, webhook 30/min, admin login 5/min
 6. gRPC :50051, HTTP :8000
 
-**`cmd/deploy/main.go`** — deployment CLI (flags: `--main`, `--update-main`, `--restart`, `--site`, `--admin-web`, `--vue-site`, `--nginx`, `--setup-xray`, `--setup-ops` (ufw, backup, egress guard), `--setup-exit-node`, `--status`, `--rotate-node-agent-certs`, `--ssh`). Backups: `--setup-ops` timer + `docs/runbooks/restore-hub-backup.md`.
+**`cmd/deploy/main.go`** — deployment CLI (flags: `--main`, `--update-main`, `--restart`, `--site`, `--admin-web`, `--vue-site`, `--nginx`, `--setup-xray`, `--setup-ops` (ufw, backup, egress guard, then hardening), `--setup-hardening` (sysctl, security auto-updates 04:30 MSK, sshd limits, nft flood table `--ddos-mode observe|enforce`, nginx limits + security headers + token-masked access log, fail2ban scanner jail; sshd/firewall changes roll back by themselves unless a fresh SSH login confirms them; `--ssh-password off` only with the deploy key), `--harden-nodes [--node-upgrade]` (exits and entries via the Hub), `--setup-exit-node`, `--status`, `--rotate-node-agent-certs`, `--ssh`). SSH to the Hub: `DEPLOY_SSH_KEY_FILE` (the deploy key, outside the repo) is tried before `DEPLOY_SSH_PASSWORD`. Backups: `--setup-ops` timer + `docs/runbooks/restore-hub-backup.md`. DDoS: `docs/runbooks/ddos.md`.
 
 **`cmd/node-agent/main.go`** — exit node gRPC :50052 (mTLS): GetMetrics only (CreateUser/DeleteUser answer Unimplemented)
 
@@ -252,11 +252,11 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 - **JWT user**: custom HMAC-SHA256, 30 дней, validates vs `user_sessions` (revocable): `POST /api/v1/auth/logout` closes one, a changed password closes all but the caller's, expired ones are deleted. gRPC ClientApi checks the token too (`cmd/api/grpc_auth.go`).
 - **Password reset by support** (admin user card «Сбросить пароль», permission `users.password_reset`, `internal/admin/password_reset.go`, `biz.ResetPasswordByAdmin`): a temporary password shown to the admin once (a confirmed address also gets it by mail; email_log keeps the subject only), every session of the user closed, `users.password_must_change` raised (audit `user.password_reset`, never the password). Signing in with it works everywhere and keeps the flag; the profile's `must_change_password` puts a non-closable banner on every cabinet page; `SetCloudPassword` clears it (the new password must differ). Accounts without a password are refused (409).
-- **JWT admin**: golang-jwt/v5, 24h, RBAC с 16 permissions
+- **JWT admin**: golang-jwt/v5, 24h, RBAC с 16 permissions; lockout after 5 failed sign-ins (15 min), opt-in TOTP 2FA («Настройки»; lost phone: `docs/runbooks/ddos.md`)
 - **SSH**: the Hub's own key (`/api/admin/ssh-keys/hub`) or a password in AES-256-GCM (`ssh_password_enc`); the owner-confirmed host key only
 - **mTLS**: CA 10yr + leaf 1yr, TLS 1.3+
 - **CORS**: `CORS_ALLOWED_ORIGINS` env
-- **Rate limiting**: token bucket per IP
+- **Rate limiting**: token bucket per IP; requests from our own servers' addresses (exits, entries — many users behind one address) are counted per user token; load shedding at 300 requests in flight; nginx `limit_req`/`limit_conn` per real IP in front (`docs/runbooks/ddos.md`)
 - **Atomic Xray write**: `.tmp.json` → `xray run -test` → rename
 - **Hysteresis failover**: 3 consecutive fails → unhealthy, 2 ok → healthy
 
@@ -274,7 +274,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 87 migrations)
+## Database (PostgreSQL, 89 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -313,6 +313,8 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Tests**: Go tests + goldens + admin_web node tests exist; Postgres-backed tests (`internal/testpg`) run when `TEST_DATABASE_URL` is set. Prod behaviour still needs evidence (`deploy --status`, curl, journal).
 - **Site switches/facts**: `GET /api/v1/site-info` (b2b_enabled, support_contact, exit countries, mobile_ready). With `b2b_enabled=false` the business pages are 404 and public create-tenant/create-invoice answer 404.
 - **Admin deploy**: `go run quick_admin_web.go` (one tar.gz over an SSH pipe, atomic swap) when `deploy --admin-web` drops on SFTP.
+- **SSH from the owner's PC**: the local network drops a TCP flow when the client speaks first, and the Hub's sshd is hammered by bots. Use a forwarder that dials from the physical NIC and waits for the server banner (scratchpad `waitfwd.py <port> <hub-ip>:22 <nic-ip>`), then `DEPLOY_HOST=127.0.0.1 DEPLOY_PORT=<port>` (quick tools: in the clean worktree's `.env` copy).
+- **Security headers** (`/etc/nginx/heyearth-headers/{site,admin}.conf`, included by the vhost generator in every server and in every location with its own `add_header`): site CSP is Report-Only (reports → `/api/v1/csp-report` in the API log, `[csp]`) — enforce it when the log stays clean; admin CSP enforced, no framing. Telegram Web frames the Mini App: never add `X-Frame-Options` to the site.
 - **Nginx stream SNI**: port 443 → `:8443` for domains, `:10443` for Xray VLESS
 - **VLESS Reality port**: user URI must use `:443` (through nginx), NOT `:10443` (loopback)
 - **Reality**: requires tcp + xtls-rprx-vision. Never change transport/flow (the auto-tuner is gone since 13.11).
