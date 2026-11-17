@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HiEarth в Telegram</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column of copy-ready blocks, grouped by where they are pasted (BotFather, channel, posts). Brand «Канон»: dark only. */
+:root {
+  --bg: #090C14; --raised: #0F141F; --elevated: #151B28; --line: #1F2735; --line-strong: #2C3648;
+  --fg: #EEF2F7; --muted: #A1ABBD; --subtle: #8490A4;
+  --accent: #22C55E; --accent-fg: #4ADE80; --accent-ink: #052E14; --accent-soft: rgba(34,197,94,.12); --accent-line: rgba(34,197,94,.35);
+  --warn: #F5B941; --warn-soft: rgba(245,185,65,.12);
+  --sans: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 500 15px/1.6 var(--sans); }
+.wrap { max-width: 860px; margin: 0 auto; padding-block: 40px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 40px; }
+header h1 { font: 800 clamp(30px, 6vw, 44px)/1.1 var(--sans); letter-spacing: -.02em; margin: 0; text-wrap: balance; }
+header p { color: var(--muted); max-width: 62ch; margin: 12px 0 0; }
+.handles { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.chip { font: 600 13px/1 var(--mono); padding: 8px 12px; border-radius: 999px; background: var(--elevated); border: 1px solid var(--line-strong); color: var(--fg); }
+section { display: flex; flex-direction: column; gap: 16px; }
+h2 { font: 800 24px/1.2 var(--sans); margin: 0; letter-spacing: -.01em; }
+h2 small { display: block; font: 600 14px/1.5 var(--sans); color: var(--muted); margin-top: 6px; letter-spacing: 0; }
+.block { background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.block-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.block-head b { font: 700 16px/1.3 var(--sans); }
+.where { font: 600 12px/1.4 var(--mono); color: var(--accent-fg); }
+.limit { font: 500 12px/1.4 var(--mono); color: var(--subtle); }
+.limit.over { color: var(--warn); }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 12px; padding: 14px 16px; font: 500 14px/1.6 var(--sans); }
+.text.mono { font: 500 13px/1.6 var(--mono); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+button.copy { appearance: none; border: 1px solid var(--line-strong); background: var(--elevated); color: var(--fg); font: 700 13px/1 var(--sans); border-radius: 8px; padding: 9px 14px; cursor: pointer; transition: background .2s, border-color .2s, color .2s; }
+button.copy:hover { background: #1B2232; }
+button.copy:focus-visible { outline: 2px solid #60A5FA; outline-offset: 2px; }
+button.copy.done { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-fg); }
+.note { font-size: 14px; color: var(--muted); margin: 0; max-width: 70ch; }
+.note b { color: var(--fg); }
+.warn { border: 1px solid rgba(245,185,65,.35); background: var(--warn-soft); border-radius: 12px; padding: 12px 14px; font-size: 14px; }
+.warn b { color: var(--warn); }
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 10px; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; }
+ol.steps li::before { content: counter(s); font: 700 13px/28px var(--mono); text-align: center; border-radius: 8px; background: var(--elevated); border: 1px solid var(--line-strong); color: var(--fg); }
+code, .k { font: 600 13px var(--mono); color: var(--accent-fg); }
+.assets { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.asset { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.asset img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); display: block; }
+.asset img.round { border-radius: 50%; max-width: 220px; }
+.asset span { font: 500 13px/1.4 var(--mono); color: var(--subtle); }
+.post { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+.kv dt { color: var(--subtle); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.tg-preview { background: #17212B; border-radius: 14px; padding: 12px 14px; font: 400 14px/1.5 -apple-system, 'Segoe UI', Roboto, sans-serif; color: #F5F5F5; max-width: 460px; }
+.tg-preview .t { font-weight: 700; }
+.tg-preview .btn { margin-top: 8px; text-align: center; background: rgba(255,255,255,.08); border-radius: 8px; padding: 7px; font-size: 13px; color: #6AB2F2; }
+table.style { width: 100%; border-collapse: collapse; font-size: 14px; }
+.scroll { overflow-x: auto; }
+table.style th, table.style td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.style th { color: var(--subtle); font: 600 12px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.emoji-set { display: flex; flex-wrap: wrap; gap: 8px; }
+.emoji-set span { background: var(--elevated); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; font-size: 14px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>HiEarth в Telegram</h1>
+    <p>Всё для оформления бота и канала: тексты для @BotFather и настроек канала, аватар, закреп и первые посты. Каждый блок копируется одной кнопкой; рядом показан лимит Telegram.</p>
+    <div class="handles"><span class="chip">бот @hiearthapp</span><span class="chip">канал @hiearthvpn → лучше переименовать</span><span class="chip">бонус за друга: 100 ₽ каждому</span></div>
+  </header>
+
+  <section id="assets">
+    <h2>Аватар и обложка<small>Одна картинка для бота и канала — щит HiEarth на тёмном фоне. Telegram обрежет аватар в круг, щит остаётся целиком.</small></h2>
+    <div class="assets">
+      <div class="asset"><img class="round" src="hiearth-avatar-640.png" alt="Аватар HiEarth — зелёный щит с галочкой"><span>hiearth-avatar-640.png · 640×640</span></div>
+      <div class="asset"><img src="hiearth-cover-640x360.png" alt="Обложка 640×360"><span>hiearth-cover-640x360.png · 640×360</span></div>
+    </div>
+    <p class="note">Файлы лежат в репозитории: <code>docs/telegram-brand/</code>. Обложка — для картинки описания бота (её спрашивает @BotFather) и для постов без своей картинки.</p>
+  </section>
+
+  <section id="bot">
+    <h2>Бот @hiearthapp<small>Всё ниже — в чате с @BotFather. Меню команд и кнопку «Кабинет» сервер ставит сам, их трогать не нужно.</small></h2>
+
+    <div class="block">
+      <div class="block-head"><b>Имя бота</b><span class="where">/setname</span></div>
+      <div class="text" data-limit="64">HiEarth</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+      <p class="note">Сейчас «hiearth • Личный кабинет». Короткое «HiEarth» читается лучше в списке чатов и в пересланных приглашениях.</p>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>Что умеет бот</b><span class="where">/setdescription</span></div>
+      <div class="text" data-limit="512">👋 Это бот HiEarth — защищённый доступ к интернету в одну кнопку.
+
+✅ Подписка и кошелёк под рукой
+🔌 Подключение в Happ в пару нажатий
+⭐ Оплата звёздами Telegram
+🎁 Бонусы за приглашённых друзей
+💬 Поддержка прямо в чате
+
+Нажмите «Запустить» — войдите по HiEarth ID или создайте новый аккаунт.</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+      <p class="note">Это видит человек до «Запустить». После первого сохранения токена сервер больше не меняет описания — правьте их в @BotFather, «Проверить» в админке их не затрёт.</p>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>О боте</b><span class="where">/setabouttext</span></div>
+      <div class="text" data-limit="120">🌍 HiEarth в Telegram: подписка, подключение, кошелёк, поддержка и новости.</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>Подсказка inline-режима</b><span class="where">/setinline</span></div>
+      <div class="text" data-limit="64">Пригласить друга</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+      <p class="note">Включает «📤 Отправить другу»: человек выбирает чат, и туда уходит карточка-приглашение с его ссылкой. После включения нажмите <b>«Проверить»</b> в админке → «Telegram-бот».</p>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>Остальные настройки</b><span class="where">@BotFather</span></div>
+      <ol class="steps">
+        <li><span><code>/setuserpic</code> → hiearth-avatar-640.png.</span></li>
+        <li><span>Bot Settings → <b>Configure Mini App</b> → Enable → адрес <code>https://hiearth.ru/tg</code>. В профиле бота появится кнопка «Открыть», заработают ссылки <code>t.me/hiearthapp?startapp</code>.</span></li>
+        <li><span>Если @BotFather предлагает картинку описания — hiearth-cover-640x360.png.</span></li>
+        <li><span><code>/setjoingroups</code> → <b>Disable</b>: бот личный, в группы его добавлять незачем.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="channel">
+    <h2>Канал<small>Новости, советы и акции. Публикует бот из админки «Новости» — вручную писать тоже можно.</small></h2>
+
+    <div class="warn"><b>Ссылка канала.</b> В @hiearthvpn есть слово «VPN» — в интерфейсе и текстах HiEarth его не пишем. Лучше @hiearth или @hiearth_news. После смены ссылки поменяйте её и в админке → «Telegram-бот» → «Канал», затем «Проверить канал».</div>
+
+    <div class="block">
+      <div class="block-head"><b>Название</b><span class="where">Канал → Изменить</span></div>
+      <div class="text" data-limit="128">HiEarth</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>Описание</b><span class="where">Канал → Изменить → Описание</span></div>
+      <div class="text" data-limit="255">Новости HiEarth — защищённого доступа к интернету в одну кнопку. Возможности, советы и акции.
+
+Кабинет, подключение и поддержка — в боте @hiearthapp</div>
+      <div class="row"><button class="copy">Скопировать</button><span class="limit"></span></div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><b>Настройки канала</b><span class="where">Канал → Изменить</span></div>
+      <ol class="steps">
+        <li><span>Аватар — тот же, что у бота.</span></li>
+        <li><span>Реакции: только выбранные — 👍 ❤️ 🔥 🎉.</span></li>
+        <li><span>Комментарии пока выключены: без модерации туда приходит спам. Вопросы люди задают в боте — там поддержка.</span></li>
+        <li><span>Подпись администраторов — выключена: посты от имени HiEarth.</span></li>
+        <li><span>@hiearthapp — администратор с правами «Публикация», «Редактирование», «Удаление» (иначе правка и удаление новостей из админки не дойдут до канала).</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="posts">
+    <h2>Закреп и первые посты<small>Готово для админки «Новости»: заголовок, текст (разметка Telegram), кнопка и куда отправить. Ничего не выдумано — только то, что есть в сервисе сейчас.</small></h2>
+    <div class="warn"><b>Важно.</b> Новость «в бот» приходит людям прямо в чат бота, а там Telegram разрешает оплату только звёздами. Поэтому в новостях не пишем про карты, СБП, ЮKassa и оплату на сайте — только «⭐ звёздами в боте» или вообще без оплаты.</div>
+    <div id="post-list" class="post"></div>
+  </section>
+
+  <section id="style">
+    <h2>Как писать посты</h2>
+    <div class="scroll">
+      <table class="style">
+        <thead><tr><th>Что</th><th>Правило</th></tr></thead>
+        <tbody>
+          <tr><td>Заголовок</td><td>До 60 символов — он же строка «📣 …» в Happ. Без точки, без капслока.</td></tr>
+          <tr><td>Текст</td><td>2–4 коротких абзаца, одна мысль. С картинкой — до 1024 символов вместе с заголовком (ограничение Telegram).</td></tr>
+          <tr><td>Голос</td><td>На «вы», спокойно и по делу. Каждый пост отвечает: что нового, зачем это человеку, что нажать.</td></tr>
+          <tr><td>Эмодзи</td><td>Одно в начале абзаца или пункта, не в середине фраз.</td></tr>
+          <tr><td>Кнопка</td><td>Одна, глагол: «Открыть бота», «Как подключить». Ссылка — https://.</td></tr>
+          <tr><td>Картинка</td><td>1280×720, тёмный фон, без мелкого текста.</td></tr>
+          <tr><td>Частота</td><td>1–2 поста в неделю. Рассылку в бот — только для важного, остальное — в канал и ленту кабинета.</td></tr>
+          <tr><td>Нельзя</td><td>«VPN», названия протоколов, «обход блокировок», выдуманные цифры и отзывы, карты/СБП/ЮKassa.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="emoji-set" aria-label="Набор эмодзи"><span>👋 привет</span><span>✅ готово</span><span>⏳ скоро</span><span>⚠️ внимание</span><span>🔌 подключение</span><span>📱 телефон</span><span>💳 кошелёк</span><span>⭐ звёзды</span><span>🎁 бонус</span><span>💬 поддержка</span><span>📰 новости</span><span>🔒 безопасность</span></div>
+  </section>
+</div>
+
+<script>
+const POSTS = [
+  { name: 'Закреп — добро пожаловать', where: 'канал (закрепить) · лента кабинета',
+    title: 'Добро пожаловать в HiEarth',
+    body: 'HiEarth — защищённый доступ к интернету в одну кнопку. Сайты и приложения открываются по Wi-Fi и на мобильном интернете.\n\n📰 Здесь — новости сервиса, советы и акции.\n🤖 Подписка, подключение, кошелёк и поддержка — в боте @hiearthapp.\n\nНачните с бота: он поможет подключиться за пару минут.',
+    button: ['Открыть бота', 'https://t.me/hiearthapp'] },
+  { name: 'Кабинет теперь в Telegram', where: 'канал · бот — всем · лента кабинета',
+    title: 'Кабинет HiEarth — в Telegram',
+    body: 'Теперь всё под рукой прямо в Telegram:\n\n💳 баланс и последние операции;\n📅 подписка и автопродление;\n🔌 подключение в Happ в пару нажатий;\n💬 поддержка — пишите прямо в бот, ответ придёт туда же.\n\nНапоминания о конце подписки тоже приходят в бот — их можно выключить в настройках.',
+    button: ['Открыть бота', 'https://t.me/hiearthapp'] },
+  { name: 'Как подключиться за минуту', where: 'канал · лента кабинета',
+    title: 'Как подключиться за минуту',
+    body: '1️⃣ Установите Happ — оно бесплатное, есть для iPhone, Android, Windows и macOS.\n2️⃣ В боте нажмите «🔌 Подключить» → «➕ Добавить в Happ» — подписка добавится сама.\n3️⃣ Включите подключение переключателем в приложении.\n\n🔒 Ссылка подписки — это доступ к вашей подписке, не пересылайте её посторонним.',
+    button: ['Подключить', 'https://t.me/hiearthapp?start=connect'] },
+  { name: 'Мобильный интернет', where: 'канал · бот — с подпиской · Happ на 3 дня · только пока резервный вход включён',
+    title: 'Если на мобильном интернете не открывалось',
+    body: 'Мы добавили отдельный вход для мобильных сетей. Чтобы он подтянулся, обновите подписку в Happ: откройте список подписок и потяните его вниз.\n\nНе помогло — напишите в поддержку прямо в боте, разберёмся.',
+    button: ['Написать в поддержку', 'https://t.me/hiearthapp?start=support'] },
+  { name: 'Приведи друга', where: 'канал · бот — с подпиской · лента кабинета · суммы — из настроек «Приведи друга»',
+    title: 'Приведите друга — по 100 ₽ каждому',
+    body: '🎁 Друг оплатит подписку от 250 ₽ — на кошелёк придёт по 100 ₽ и вам, и ему.\n\nКак пригласить: в боте нажмите «🎁 Друзьям» → «📤 Отправить другу» и выберите чат. Другу нужно зарегистрироваться по вашей ссылке или ввести ваш код в течение 7 дней.',
+    button: ['Пригласить друга', 'https://t.me/hiearthapp?start=friend'] },
+  { name: 'Пробная неделя', where: 'канал · бот — без подписки · лента кабинета',
+    title: 'Первая неделя — бесплатно',
+    body: 'Попробуйте HiEarth неделю без оплаты и без привязки карты. Не понравится — просто не продлевайте.\n\nОткройте бота, создайте HiEarth ID и включите пробную неделю в кабинете.',
+    button: ['Открыть бота', 'https://t.me/hiearthapp'] },
+]
+const list = document.getElementById('post-list')
+for (const p of POSTS) {
+  const el = document.createElement('div')
+  el.className = 'block'
+  const full = `${p.title}\n\n${p.body}`
+  el.innerHTML = `
+    <div class="block-head"><b></b><span class="where"></span></div>
+    <div class="tg-preview"><div class="t"></div><div class="b" style="white-space:pre-wrap;margin-top:6px"></div><div class="btn"></div></div>
+    <dl class="kv"><dt>Заголовок</dt><dd class="v-title"></dd><dt>Кнопка</dt><dd class="v-btn"></dd></dl>
+    <div class="text" data-limit="1024"></div>
+    <div class="row"><button class="copy" data-part="title">Скопировать заголовок</button><button class="copy" data-part="body">Скопировать текст</button><button class="copy" data-part="url">Скопировать ссылку кнопки</button><span class="limit"></span></div>`
+  el.querySelector('b').textContent = p.name
+  el.querySelector('.where').textContent = p.where
+  el.querySelector('.t').textContent = p.title
+  el.querySelector('.b').textContent = p.body
+  el.querySelector('.btn').textContent = p.button[0]
+  el.querySelector('.v-title').textContent = p.title
+  el.querySelector('.v-btn').textContent = `${p.button[0]} → ${p.button[1]}`
+  el.querySelector('.text').textContent = p.body
+  el.dataset.title = p.title
+  el.dataset.url = p.button[1]
+  el.dataset.full = full
+  list.appendChild(el)
+}
+
+// limits: Telegram counts characters (code points)
+for (const block of document.querySelectorAll('.block')) {
+  const t = block.querySelector('.text[data-limit]')
+  const lim = block.querySelector('.limit')
+  if (!t || !lim) continue
+  const max = Number(t.dataset.limit)
+  const n = [...(block.dataset.full || t.textContent)].length
+  lim.textContent = `${n} из ${max}`
+  if (n > max) lim.classList.add('over')
+}
+
+async function copy(text, btn) {
+  const label = btn.textContent
+  try {
+    await navigator.clipboard.writeText(text)
+    btn.textContent = '✓ Скопировано'
+  } catch {
+    const t = btn.closest('.block')?.querySelector('.text')
+    if (t) { const r = document.createRange(); r.selectNodeContents(t); const s = getSelection(); s.removeAllRanges(); s.addRange(r) }
+    btn.textContent = 'Выделено — нажмите Ctrl+C'
+  }
+  btn.classList.add('done')
+  setTimeout(() => { btn.textContent = label; btn.classList.remove('done') }, 2000)
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button.copy')
+  if (!btn) return
+  const block = btn.closest('.block')
+  const part = btn.dataset.part
+  const text = part === 'title' ? block.dataset.title : part === 'url' ? block.dataset.url : block.querySelector('.text').textContent
+  copy(text, btn)
+})
+</script>
+
+</body>
+</html>
