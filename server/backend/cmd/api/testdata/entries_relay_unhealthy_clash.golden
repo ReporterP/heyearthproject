@@ -1,0 +1,83 @@
+# HeYearth — Clash/ClashMeta Config
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+
+proxies:
+  - name: "HeYearth-Home"
+    type: vless
+    server: hub.example.test
+    port: 443
+    uuid: "11111111-2222-4333-8444-555555555555"
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "PBK-test"
+      short-id: "ab12"
+    client-fingerprint: chrome
+    servername: storage.yandexcloud.net
+  - name: "HeYearth-Mobile"
+    type: vless
+    server: hub.example.test
+    port: 443
+    uuid: "11111111-2222-4333-8444-555555555555"
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "PBK-test"
+      short-id: "ab12"
+    client-fingerprint: firefox
+    servername: storage.yandexcloud.net
+  - name: "HeYearth-Strict"
+    type: vless
+    server: hub.example.test
+    port: 443
+    uuid: "11111111-2222-4333-8444-555555555555"
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "PBK-test"
+      short-id: "ab12"
+    client-fingerprint: edge
+    servername: storage.yandexcloud.net
+  - name: "HeYearth-XHTTP"
+    type: vless
+    server: hub.example.test
+    port: 2443
+    uuid: "11111111-2222-4333-8444-555555555555"
+    network: xhttp
+    tls: true
+    reality-opts:
+      public-key: "PBK-test"
+      short-id: "ab12"
+    client-fingerprint: chrome
+    servername: storage.yandexcloud.net
+  - name: "HiEarth-Express"
+    type: hysteria2
+    server: hub.example.test
+    ports: 30000-65000
+    password: "hy2-password-test"
+    obfs: salamander
+    obfs-password: "obfs-test"
+    sni: hub.example.test
+    skip-cert-verify: false
+    up: "30 Mbps"
+    down: "120 Mbps"
+
+proxy-groups:
+  - name: "HeYearth"
+    type: select
+    proxies:
+      - "HeYearth-Home"
+      - "HeYearth-Mobile"
+      - "HeYearth-Strict"
+      - "HeYearth-XHTTP"
+      - "HiEarth-Express"
+      - DIRECT
+
+rules:
+  - MATCH,HeYearth

@@ -8,7 +8,7 @@ const ctx = (perms, isTenantAdmin = false) => ({ can: (p) => perms.includes(p), 
 test('a payments operator sees payments and settings, not servers or tariffs', () => {
   const c = ctx(['payments.read'])
   for (const href of ['/payments', '/payment-ops', '/settings']) assert.equal(canOpen(href, c), true, href)
-  for (const href of ['/servers', '/plans', '/auto-tuner', '/admins']) assert.equal(canOpen(href, c), false, href)
+  for (const href of ['/servers', '/plans', '/alerts', '/admins']) assert.equal(canOpen(href, c), false, href)
 })
 
 test('tenant admins never see infrastructure pages, whatever their permissions', () => {
@@ -35,7 +35,7 @@ test('every page route in main.jsx has a PAGE_PERMS entry (no page silently vani
   const src = readFileSync(new URL('../main.jsx', import.meta.url), 'utf8')
   const paths = [...src.matchAll(/path="([^"]+)"/g)].map((m) => m[1])
   const pages = paths.filter((p) => p !== '/login' && p !== '*' && !p.includes(':'))
-  assert.ok(pages.length >= 20, `only ${pages.length} routes found — has the route syntax changed?`)
+  assert.ok(pages.length >= 15, `only ${pages.length} routes found — has the route syntax changed?`)
   for (const p of pages) assert.ok(Object.hasOwn(PAGE_PERMS, p), `${p} is routed but missing from PAGE_PERMS`)
   for (const p of TENANT_HIDDEN) assert.ok(Object.hasOwn(PAGE_PERMS, p), `${p} is tenant-hidden but missing from PAGE_PERMS`)
 })

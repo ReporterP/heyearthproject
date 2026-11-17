@@ -1,0 +1,11 @@
+Announce: base64:0JvQuNGH0L3Ri9C5INC60LDQsdC40L3QtdGCIOKGlw==
+Announce-Url: https://site.example.test/dashboard
+Content-Disposition: 
+Content-Type: text/plain; charset=utf-8
+Profile-Title: HiEarth
+Profile-Update-Interval: 6
+Profile-Web-Page-Url: https://hiearth.ru/dashboard
+Routing-Enable: 1
+Subscription-Userinfo: upload=0; download=123456; total=0; expire=<valid_until>
+Support-Url: https://hiearth.ru/dashboard
+X-Config-Version: 7

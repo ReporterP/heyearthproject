@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Users, MoreHorizontal } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
-import { useAuth } from '../auth/AuthContext.jsx'
-import { useToast } from '../components/Toast.jsx'
-import { fetchUsersPaged, createUser } from '../api/admin.js'
+import { fetchUsersPaged } from '../api/admin.js'
+import { hasPlan } from '../utils/users.js'
 import { useUrlState } from '../hooks/useUrlState.js'
 import { useHotkey } from '../hooks/useHotkey.js'
-import CrudDialog, { FormField, TextInput, Checkbox, SelectInput } from '../components/CrudDialog.jsx'
 import UserDrawer from '../components/UserDrawer.jsx'
 import { formatDateShort, formatBytes, formatRelativeRu } from '../utils/format.js'
 import {
@@ -51,8 +49,6 @@ function statusDot(user) {
 
 export default function UsersPage() {
   const { t } = useT()
-  const { can } = useAuth()
-  const toast = useToast()
 
   const [f, setF] = useUrlState({
     search: '', status: '', sort: 'last_seen', dir: 'desc', page: 1,
@@ -84,38 +80,6 @@ export default function UsersPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Create dialog (single remaining out-of-drawer entry point)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [newUsername, setNewUsername] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [newRole, setNewRole] = useState('user')
-  const [newBlocked, setNewBlocked] = useState(false)
-
-  function openCreate() {
-    setNewUsername('')
-    setNewPassword('')
-    setNewRole('user')
-    setNewBlocked(false)
-    setCreateOpen(true)
-  }
-
-  async function handleCreate() {
-    setSaving(true)
-    try {
-      const payload = { username: newUsername, role: newRole, is_blocked: newBlocked }
-      if (newPassword) payload.password = newPassword
-      await createUser(payload)
-      toast.success(t.create + ' OK')
-      setCreateOpen(false)
-      load()
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
   // Drawer: derive selected user object from items + URL state.
   // v1 limitation: if `f.open` references a user not in the current page,
   // selectedUser will be null and the drawer will not render. User can
@@ -137,15 +101,15 @@ export default function UsersPage() {
   // J/K row navigation + Enter to open. Skip when drawer or create dialog is open
   // so the global hotkey doesn't fight with form inputs / drawer ESC.
   useHotkey({ key: 'j' }, () => {
-    if (f.open || createOpen) return
+    if (f.open) return
     setSelectedIndex(i => Math.min(items.length - 1, i + 1))
   })
   useHotkey({ key: 'k' }, () => {
-    if (f.open || createOpen) return
+    if (f.open) return
     setSelectedIndex(i => Math.max(0, i - 1))
   })
   useHotkey({ key: 'Enter' }, () => {
-    if (f.open || createOpen) return
+    if (f.open) return
     if (selectedIndex >= 0 && items[selectedIndex]) {
       openDrawer(items[selectedIndex])
     }
@@ -162,10 +126,7 @@ export default function UsersPage() {
     <div className="space-y-4">
       <PageHeader
         title={t.usersTitle + (total > 0 ? ` (${total})` : '')}
-        subtitle={t.usersExportHint}
-        actions={can('users.write') ? (
-          <Button variant="primary" onClick={openCreate}>+ {t.createUser}</Button>
-        ) : null}
+        subtitle="Пользователи регистрируются сами — в приложении или на сайте. Здесь — поиск, карточка, блокировка."
       />
 
       {/* Status filter tabs — replaces previous button group. Counts deferred to v2. */}
@@ -241,7 +202,7 @@ export default function UsersPage() {
                       <span className="font-mono text-xs text-tertiary">{u.user_id}</span>
                     </div>
                   </Td>
-                  <Td>{u.plan ? <Badge variant="accent">{u.plan}</Badge> : <span className="text-tertiary">—</span>}</Td>
+                  <Td>{hasPlan(u) ? <Badge variant="accent">{u.current_plan}</Badge> : <span className="text-tertiary">—</span>}</Td>
                   <Td>
                     <span
                       className={`inline-block w-2 h-2 rounded-full ${statusDot(u)}`}
@@ -303,25 +264,6 @@ export default function UsersPage() {
         onUserMutated={load}
       />
 
-      {/* Create dialog — only out-of-drawer flow that remains */}
-      <CrudDialog
-        open={createOpen}
-        title={t.createUser}
-        onClose={() => setCreateOpen(false)}
-        onSubmit={handleCreate}
-        loading={saving}
-      >
-        <FormField label={t.fieldUsername}>
-          <TextInput value={newUsername} onChange={setNewUsername} autoFocus />
-        </FormField>
-        <FormField label={t.password}>
-          <TextInput value={newPassword} onChange={setNewPassword} type="password" />
-        </FormField>
-        <FormField label={t.fieldRole}>
-          <SelectInput value={newRole} onChange={setNewRole} options={[{ value: 'user', label: 'User' }, { value: 'premium', label: 'Premium' }]} />
-        </FormField>
-        <Checkbox label={t.fieldBlocked} checked={newBlocked} onChange={setNewBlocked} />
-      </CrudDialog>
     </div>
   )
 }

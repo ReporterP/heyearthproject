@@ -61,6 +61,9 @@ func adminCanAccessTenant(r *http.Request, tenantID int) bool {
 	return false
 }
 
+// CanAccessTenant is adminCanAccessTenant for handlers outside this package.
+func CanAccessTenant(r *http.Request, tenantID int) bool { return adminCanAccessTenant(r, tenantID) }
+
 // applyTenantScopeToQuery appends WHERE-clause arguments for filtering by the
 // admin's assigned_tenants. Returns the SQL fragment (e.g. " AND id = ANY($3)")
 // and the appended args. For super-admins returns ("", original-args).

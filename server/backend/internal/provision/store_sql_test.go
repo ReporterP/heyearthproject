@@ -175,7 +175,6 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	host := newSigner(t, "ecdsa256")
 	fp := ssh.FingerprintSHA256(host.PublicKey())
 	blob := base64.StdEncoding.EncodeToString(host.PublicKey().Marshal())
-	legacyKey, _ := ed25519PEM(t)
 	hubPath := filepath.Join(t.TempDir(), "id_ed25519")
 	hubPEM, hubPub := ed25519PEM(t)
 	if err := os.WriteFile(hubPath, hubPEM, 0o600); err != nil {
@@ -183,7 +182,7 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	}
 	meta := []driver.Value{int64(7), "nl-1", "exit", "NL", "203.0.113.7", int64(2222), "root", fp, blob, true, "pending", int64(3), "unknown", false}
 	row := func(enc any) []driver.Value {
-		return append(append([]driver.Value{}, meta...), enc, string(legacyKey))
+		return append(append([]driver.Value{}, meta...), enc)
 	}
 	d := &recDB{}
 	var enc any = []byte("ciphertext")
@@ -193,7 +192,7 @@ func TestSQLStoreLoadNode(t *testing.T) {
 		}
 		switch norm(q) {
 		case norm(loadNodeQuery):
-			return rows(16, row(enc)), nil
+			return rows(15, row(enc)), nil
 		case norm(nodeMetaQuery):
 			return rows(14, meta), nil
 		}
@@ -211,7 +210,7 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	}
 	if n.ID != 7 || n.Name != "nl-1" || n.Role != "exit" || n.IP != "203.0.113.7" || n.SSHPort != 2222 || n.Password != "root-Pa55word" ||
 		n.HostKeyFP != fp || n.HostKeyType != host.PublicKey().Type() || !n.HostKeyConfirmed || n.Lifecycle != "pending" ||
-		n.LoadWeight != 3 || n.MTProtoStatus != "unknown" || n.FallbackEnabled || n.KeySigner == nil || n.HubSigner == nil {
+		n.LoadWeight != 3 || n.MTProtoStatus != "unknown" || n.FallbackEnabled || n.HubSigner == nil {
 		t.Fatalf("node %#v type=%q weight=%d fallback=%v", n, n.HostKeyType, n.LoadWeight, n.FallbackEnabled)
 	}
 	if got := string(ssh.MarshalAuthorizedKey(n.HubSigner.PublicKey())); got != hubPub {
@@ -255,7 +254,7 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	}}
 	m, err := noDecrypt.NodeMeta(context.Background(), 7)
 	if err != nil || m.ID != 7 || m.IP != "203.0.113.7" || m.SSHPort != 2222 || m.HostKeyFP != fp || m.HostKeyType != host.PublicKey().Type() ||
-		!m.HostKeyConfirmed || m.Lifecycle != "pending" || m.Password != "" || m.KeySigner != nil || m.HubSigner != nil {
+		!m.HostKeyConfirmed || m.Lifecycle != "pending" || m.Password != "" || m.HubSigner != nil {
 		t.Fatalf("meta %#v %v", m, err)
 	}
 	if regexp.MustCompile(`ssh_password|private_key`).MatchString(nodeMetaQuery) {

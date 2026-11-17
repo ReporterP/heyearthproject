@@ -1,190 +1,128 @@
-import { useState, useEffect, useRef } from 'react'
-import { useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { loginUser } from '../api/user.js'
-import { useAuth } from '../auth/AuthContext.jsx'
-import PasswordInput from '../components/PasswordInput.jsx'
-import Fireflies from '../components/Fireflies.jsx'
+import { useAuth, SESSION_EXPIRED_KEY } from '../auth/AuthContext.jsx'
+import { safeRedirect } from '../lib/redirect.js'
+import AuthLayout from '../components/AuthLayout.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Button from '../components/Button.jsx'
+import Alert from '../components/Alert.jsx'
+import Nomerok, { normalizeLogin } from '../components/Nomerok.jsx'
+import usePageMeta from '../hooks/usePageMeta.js'
 
-const LeafMark = () => (
-  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 21c-4.5-1-8.5-4.5-8.5-10.5C9 10.5 12 13.5 12 17M12 21c4.5-1 8.5-4.5 8.5-10.5C15 10.5 12 13.5 12 17M12 21V8" />
-  </svg>
-)
+// Вход (spec 07 §7.3, artboard «Вход»). ?redirect= (or ?next=) — where to return after signing in.
+function readExpired() {
+  try {
+    const v = sessionStorage.getItem(SESSION_EXPIRED_KEY) === '1'
+    sessionStorage.removeItem(SESSION_EXPIRED_KEY)
+    return v
+  } catch { return false }
+}
+
+// server answer → which field is wrong and the catalogue text (05 §7)
+function explain(e) {
+  const raw = String(e?.data?.error || '').toLowerCase()
+  if (e?.kind === 'rate' || e?.status === 429) return { field: null, title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
+  if (raw === 'user not found') return { field: 'id', title: 'Аккаунт не найден.', text: 'Проверьте ID — его легко перепутать с похожими символами.' }
+  if (raw === 'invalid password' || raw === 'password required' || raw === 'invalid credentials') return { field: 'pw', title: 'Неверный пароль.', text: 'Если пароль не задавали — оставьте поле пустым.' }
+  if (raw === 'user is blocked') return { field: null, title: 'Аккаунт заблокирован.', text: 'Напишите в поддержку — разберёмся.' }
+  if (e?.kind === 'network') return { field: null, title: 'Нет связи с сервером.', text: 'Проверьте интернет и попробуйте ещё раз.' }
+  return { field: null, title: 'Не удалось войти.', text: 'Попробуйте ещё раз через минуту.' }
+}
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [params] = useSearchParams()
   const { login, isLoggedIn } = useAuth()
+  const redirectTo = safeRedirect(params.get('redirect') || params.get('next'))
+  const registerHref = redirectTo !== '/dashboard' ? `/register?redirect=${encodeURIComponent(redirectTo)}` : '/register'
+  const [expired] = useState(readExpired)
   const idRef = useRef(null)
+  const pwRef = useRef(null)
+  const inFlight = useRef(false)
+  const [id, setId] = useState('')
+  const [pw, setPw] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null) // { field, title, text }
+  const [idEmpty, setIdEmpty] = useState(false)
+  usePageMeta('Вход — HiEarth')
 
-  useEffect(() => {
-    if (isLoggedIn) navigate('/dashboard', { replace: true })
-  }, [isLoggedIn, navigate])
-
-  // Focus the only field that matters on open
+  useEffect(() => { if (isLoggedIn) navigate(redirectTo, { replace: true }) }, [isLoggedIn, navigate, redirectTo])
   useEffect(() => { idRef.current?.focus() }, [])
 
-  const [idOrUsername, setIdOrUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false) // progressive disclosure
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [showHelp, setShowHelp] = useState(false)
-
-  const redirectTo = searchParams.get('redirect') || '/dashboard'
-  const canSubmit = idOrUsername.trim().length > 0 && !loading
-
-  async function handleLogin(e) {
+  async function submit(e) {
     e.preventDefault()
-    if (!idOrUsername.trim()) {
-      setError('Введите HiEarth ID или имя пользователя')
-      idRef.current?.focus()
-      return
-    }
-    setLoading(true)
-    setError('')
+    if (inFlight.current) return
+    const value = normalizeLogin(id)
+    if (!value) { setIdEmpty(true); idRef.current?.focus(); return }
+    inFlight.current = true
+    setBusy(true)
+    setErr(null)
     try {
-      const data = await loginUser(idOrUsername.trim(), password)
+      const data = await loginUser(value, pw)
       login(data.token)
-      navigate(redirectTo)
-    } catch (e) {
-      const msg = e.message || ''
-      // Turn backend errors into a cause + a way forward (error-clarity)
-      if (/password|пароль/i.test(msg)) {
-        setError('Неверный пароль. Если вы его не задавали — оставьте поле пустым.')
-        setShowPassword(true)
-      } else if (/not found|не найден|404/i.test(msg)) {
-        setError('Аккаунт не найден. Проверьте ID — его легко перепутать с похожими символами.')
-      } else {
-        setError(msg || 'Не удалось войти. Попробуйте ещё раз.')
-      }
+      navigate(redirectTo, { replace: true })
+    } catch (e2) {
+      const x = explain(e2)
+      setErr(x)
+      // the person lands on the field to fix (03 §9)
+      requestAnimationFrame(() => (x.field === 'pw' ? pwRef.current : idRef.current)?.focus())
     } finally {
-      setLoading(false)
+      inFlight.current = false
+      setBusy(false)
     }
   }
 
+  const side = (
+    <>
+      <Nomerok masked variant="idle" label="номерок" railWidth={320} />
+      <p className="t-h3">Номерок с вами?</p>
+      <p className="muted t-sm" style={{ maxWidth: 300, textAlign: 'center' }}>HiEarth ID есть в файле, который вы скачали при регистрации, и в шапке кабинета на других устройствах.</p>
+    </>
+  )
+
   return (
-    <section className="relative min-h-[calc(100vh-8rem)] flex items-center justify-center py-16 overflow-hidden">
-      <Fireflies density={22000} />
-      <div className="pointer-events-none absolute inset-0">
-        <div className="blob-a absolute top-1/4 -left-24 w-80 h-80 rounded-full bg-brand/10 blur-[110px]" />
-        <div className="blob-b absolute bottom-1/4 -right-24 w-80 h-80 rounded-full bg-accent/8 blur-[110px]" />
-      </div>
-
-      <div className="relative w-full max-w-md mx-auto px-6">
-        <div className="glass-strong rounded-[26px] p-8 md:p-10 animate-fade-in-scale">
-          <div className="flex justify-center mb-7">
-            <div className="w-14 h-14 rounded-2xl bg-brand/12 border border-brand/25 text-brand flex items-center justify-center glow-brand">
-              <LeafMark />
-            </div>
-          </div>
-
-          <h1 className="serif text-[26px] font-semibold text-center mb-1">С возвращением</h1>
-          <p className="text-text-secondary text-center text-sm mb-8">
-            {redirectTo !== '/dashboard' ? 'Войдите, чтобы продолжить' : 'Войдите в аккаунт HiEarth'}
-          </p>
-
-          <form onSubmit={handleLogin} className="space-y-4" noValidate>
-            <div className="group">
-              <label htmlFor="login-id" className="block text-xs font-medium text-text-secondary mb-2 group-focus-within:text-brand transition-colors">
-                HiEarth ID или имя пользователя
-              </label>
-              <div className="relative">
-                <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint group-focus-within:text-brand transition-colors">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-                  </svg>
-                </div>
-                <input
-                  id="login-id"
-                  ref={idRef}
-                  type="text"
-                  autoComplete="username"
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  spellCheck="false"
-                  value={idOrUsername}
-                  onChange={e => { setIdOrUsername(e.target.value); if (error) setError('') }}
-                  placeholder="Введите ваш ID или username"
-                  aria-invalid={!!error}
-                  className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-brand/25 transition-all duration-300 text-sm placeholder:text-faint font-mono"
-                />
-              </div>
-            </div>
-
-            {/* Password is optional for most accounts — don't show it by default */}
-            {showPassword ? (
-              <div className="animate-fade-in">
-                <PasswordInput
-                  value={password}
-                  onChange={e => { setPassword(e.target.value); if (error) setError('') }}
-                  placeholder="Ваш пароль"
-                  label="Пароль"
-                  autoComplete="current-password"
-                />
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowPassword(true)}
-                className="text-xs text-text-secondary hover:text-brand transition inline-flex items-center gap-1.5"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75M6.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
-                У меня есть пароль
-              </button>
-            )}
-
-            {error && (
-              <div role="alert" aria-live="polite" className="flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 animate-fade-in">
-                <svg className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                </svg>
-                <p className="text-danger text-sm">{error}</p>
-              </div>
-            )}
-
-            <button type="submit" disabled={!canSubmit} className="btn-primary w-full !py-3.5 disabled:opacity-40">
-              {loading ? (
-                <>
-                  <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Входим…
-                </>
-              ) : 'Войти'}
-            </button>
-          </form>
-
-          {/* Recovery path — an unrecoverable ID needs an honest answer, not silence */}
-          <div className="mt-5">
-            <button onClick={() => setShowHelp(h => !h)} aria-expanded={showHelp} className="text-xs text-text-secondary hover:text-text-primary transition">
-              Потеряли ID?
-            </button>
-            <div className="grid transition-all duration-300 ease-out" style={{ gridTemplateRows: showHelp ? '1fr' : '0fr' }}>
-              <div className="overflow-hidden">
-                <div className="pt-3 p-3.5 rounded-xl bg-white/[0.03] border border-brand/10">
-                  <p className="text-xs text-text-secondary leading-relaxed">
-                    HiEarth ID выдаётся анонимно и нигде не дублируется — восстановить его мы не можем.
-                    Проверьте буфер обмена, заметки и скачанный файл <code className="font-mono text-text-primary">hiearth-id.txt</code>.
-                    Если ID утерян — <Link to="/register" className="text-brand hover:text-brand-light">создайте новый</Link> или напишите в поддержку:{' '}
-                    <a href="mailto:alex_step04@mail.ru" className="text-brand hover:text-brand-light">alex_step04@mail.ru</a>
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="relative my-7 h-px bg-gradient-to-r from-transparent via-brand/15 to-transparent" />
-
-          <p className="text-center text-sm text-text-secondary">
-            Нет аккаунта?{' '}
-            <Link to="/register" className="text-brand hover:text-brand-light font-medium transition-colors">
-              Зарегистрироваться
-            </Link>
-          </p>
+    <AuthLayout side={side} width={400}>
+      <form className="stack gap-5" onSubmit={submit} noValidate>
+        <div>
+          <h1 className="t-h1 rise">С возвращением</h1>
+          <p className="t-lead rise" style={{ '--d': '120ms', marginTop: 8 }}>Войдите в аккаунт HiEarth.</p>
         </div>
-      </div>
-    </section>
+        {expired && !err && <Alert tone="info" title="Сессия закончилась">— войдите снова.</Alert>}
+        {redirectTo.startsWith('/claim/') && !expired && !err && <Alert tone="info">Войдите или зарегистрируйтесь, чтобы присоединиться к компании.</Alert>}
+        {err && <div id="login-err"><Alert tone="bad" title={err.title} rise>{err.text}</Alert></div>}
+        <Field label="HiEarth ID или имя пользователя" error={idEmpty ? 'Укажите HiEarth ID или имя пользователя' : null}>
+          <Input
+            ref={idRef}
+            mono
+            size="lg"
+            value={id}
+            invalid={err?.field === 'id'}
+            aria-errormessage={err?.field === 'id' ? 'login-err' : undefined}
+            onChange={(e) => { setId(e.target.value); setIdEmpty(false); if (err?.field === 'id') setErr(null) }}
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+          />
+        </Field>
+        <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
+          <Input
+            ref={pwRef}
+            aria-errormessage={err?.field === 'pw' ? 'login-err' : undefined}
+            type="password"
+            size="lg"
+            value={pw}
+            placeholder="Ваш пароль"
+            invalid={err?.field === 'pw'}
+            onChange={(e) => { setPw(e.target.value); if (err?.field === 'pw') setErr(null) }}
+            autoComplete="current-password"
+          />
+        </Field>
+        <Button variant="primary" size="lg" block type="submit" loading={busy} className="rise" style={{ '--d': '200ms' }}>Войти</Button>
+        <hr className="divider" />
+        <p className="t-sm muted">Нет аккаунта? <Link to={registerHref} className="link">Создайте новый</Link> — это один клик.</p>
+        <p className="t-sm muted">Потеряли ID? Напишите в <Link to="/help#lost-id" className="link">поддержку</Link> — найдём аккаунт по платежу.</p>
+      </form>
+    </AuthLayout>
   )
 }

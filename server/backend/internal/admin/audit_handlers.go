@@ -86,6 +86,15 @@ func ListAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, action)
 		argN++
 	}
+	if adm := strings.TrimSpace(r.URL.Query().Get("admin")); adm != "" {
+		where += fmt.Sprintf(" AND a.admin_username ILIKE $%d", argN)
+		args = append(args, "%"+adm+"%")
+		argN++
+	}
+	if err := dateRangeWhere(r, "a.created_at", &where, &args, &argN); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if targetType != "" {
 		where += fmt.Sprintf(" AND a.target_type = $%d", argN)
 		args = append(args, targetType)

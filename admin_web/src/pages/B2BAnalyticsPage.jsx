@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { fetchB2BAnalytics } from '../api/admin.js'
 import { TrendingUp } from 'lucide-react'
 import {
   Card,
@@ -41,8 +42,7 @@ export default function B2BAnalyticsPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/admin/b2b-analytics', { headers: { Authorization: 'Bearer ' + localStorage.getItem('admin_token') } })
-      .then(r => r.json().then(d => { if (!r.ok) throw new Error(d.error || 'load failed'); return d }))
+    fetchB2BAnalytics()
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))

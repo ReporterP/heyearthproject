@@ -18,7 +18,9 @@ import (
 // Every HEALTHY exit N (lifecycle online, tunnel_status healthy) gets up to two outbounds:
 //
 //	exit-N.hy  Hysteria: SOCKS 127.0.0.1:(1088+N), served by hysteria2-client-N (UDP to the exit)
-//	exit-N.vr  TCP: VLESS Reality straight to the exit's xray on :10443 (flow xtls-rprx-vision)
+//	exit-N.vr  TCP backup: SOCKS 127.0.0.1:(2088+N), served by heyearth-stls-client-N — ShadowTLS v3
+//	           to the exit's :443 (internal/config exit_stls.go; "vr" is the path's historical
+//	           name: until 2026-11-16 it was VLESS Reality to the exit's xray on :10443)
 //
 // Balancers pick exits by the prefix "exit-N." (xray selectors are tag prefixes, so "exit-2."
 // can never match exit-20.*; Beads 07f7) and the catch-all one by "exit-". The order inside an
@@ -29,7 +31,7 @@ import (
 //
 // Every ONLINE exit with a TCP path, healthy or not, also gets a probe pair outside every
 // selector: the loopback SOCKS inbound probe-vr-N (127.0.0.1:12000+N) routed to the outbound
-// probe-vr-N (the same VLESS Reality). The monitor fetches generate_204 through it to judge the
+// probe-vr-N (the same hop to the ShadowTLS client). The monitor fetches generate_204 through it to judge the
 // TCP path, also while the exit is out of the routing, so its recovery is noticed. The pair
 // depends only on the exit being online, never on its health: health flips restart xray exactly
 // as before (an exit enters or leaves the balancers) and nothing more.
@@ -40,21 +42,13 @@ import (
 const (
 	exitSocksPortBase  = 1088
 	exitProbePortBase  = 12000
-	exitMaxID          = 511 // the egress guard allows xray SOCKS 1088..1599 (cmd/deploy/ops_egress_guard.go)
-	exitVRPort         = config.ExitRealityPort
-	exitVRFlow         = config.ExitRealityFlow
+	exitMaxID          = 511 // the egress guard allows xray SOCKS 1088..1599 and 2088..2599 (cmd/deploy/ops_egress_guard.go)
 	exitAllSelector    = "exit-"
 	exitProbeTagPrefix = "probe-vr-"
 	exitVRCostFactor   = 400 // √400 = ×20 on RTT, see exitBaselines
 
-	// exitVRFingerprint is the uTLS fingerprint of the Hub→exit TCP path (exit-N.vr and the probe
-	// outbound probe-vr-N). It is fixed, decoupled from the user-facing reality_fingerprint the
-	// auto-tuner rotates among chrome/firefox/safari/edge: against the exit's Reality inbound
-	// (dest microsoft.com:443, SNI www.microsoft.com) only some fingerprints complete the
-	// handshake — measured on prod 2026-10-15: chrome, firefox, safari ok; ios, edge, randomized
-	// fail — and every tuner rotation would otherwise rewrite these outbounds and restart xray for
-	// all users because of an internal path. Shared with the provisioning probe
-	// (config.ExitRealityProbeConfig), so both dial the exit the same way.
+	// exitVRFingerprint is the uTLS fingerprint of a legacy VLESS exit's single path (fixed:
+	// chrome, firefox, safari complete the Reality handshake, measured on prod 2026-10-15).
 	exitVRFingerprint = config.ExitVRFingerprint
 )
 
@@ -113,8 +107,8 @@ func exitHasHyPath(n biz.ExitNodeTunnel) bool {
 }
 
 // exitHasVRPath is THE predicate of an exit's TCP path, shared by the generator (buildExitConfig),
-// the tunnel monitor and «Проверить туннель»: a VLESS Reality path xray accepts (exitVRProblem)
-// that the owner did not switch off.
+// the tunnel monitor and «Проверить туннель»: a path xray accepts (exitVRProblem) that the owner
+// did not switch off.
 func exitHasVRPath(n biz.ExitNodeTunnel) bool {
 	// The owner may switch this exit's TCP fallback off (servers.tunnel_fallback_enabled): then the
 	// generator builds neither exit-<id>.vr nor the probe pair, and the monitor / «Проверить туннель»
@@ -138,20 +132,23 @@ func exitVRAbsentWhy(n biz.ExitNodeTunnel) string {
 	return exitVRSwitchedOffWhy
 }
 
-// exitVRProblem says why exit n has no usable TCP (VLESS Reality) path, "" when it has one. The
-// field checks are Xray-core 26.3.27's own (infra/conf/vless.go: the user id; transport_internet.go
-// REALITYConfig.Build, client side: publicKey = base64url of 32 bytes, shortId = hex, at most 16
-// characters, empty allowed): a single row xray rejects would fail `xray run -test` and block
-// every sync, so such a path is dropped instead (the exit keeps its Hysteria path).
+// exitVRProblem says why exit n has no usable TCP path, "" when it has one. A Hysteria exit's
+// backup is ShadowTLS through the Hub's client of the exit, whose secrets derive from the tunnel
+// UUID (config.STLSSecrets): the recipe sets that client up wherever the UUID is. A legacy VLESS
+// exit's path is checked as Xray-core 26.3.27 does (infra/conf/vless.go: the user id;
+// transport_internet.go REALITYConfig.Build, client side: publicKey = base64url of 32 bytes,
+// shortId = hex, at most 16 characters, empty allowed): a single row xray rejects would fail
+// `xray run -test` and block every sync, so such a path is dropped instead.
 func exitVRProblem(n biz.ExitNodeTunnel) string {
 	if !exitIDValid(n.ID) {
 		return fmt.Sprintf("id вне 1..%d", exitMaxID)
 	}
 	switch n.TunnelProtocol {
 	case "hysteria2":
-		if n.TunnelUUID == "" && n.TunnelPubKey == "" {
-			return "нет данных Reality (tunnel_uuid, tunnel_public_key)"
+		if !exitUUIDValid(n.TunnelUUID) {
+			return "нет tunnel_uuid (из него выводятся ключи запасного туннеля ShadowTLS)"
 		}
+		return ""
 	case "vless":
 		if n.TunnelPort < 1 || n.TunnelPort > 65535 {
 			return fmt.Sprintf("tunnel_port %d вне 1..65535", n.TunnelPort)
@@ -201,27 +198,28 @@ func exitHyOutbound(id int, tag string) map[string]interface{} {
 	}
 }
 
-// exitVRServerName is the SNI of exit n's TCP path: its tunnel_sni whenever set (never rewritten).
-// Empty, a Hysteria exit's fallback goes to the xray --setup-exit-node configures, so it gets
-// config.ExitVRSNI (www.microsoft.com; the apex fails the handshake); a legacy primary VLESS exit
-// (its own inbound, not set up by deploy) keeps its old fallback, its own address.
+// exitVRServerName is the SNI of a legacy VLESS exit's path: its tunnel_sni when set, else its
+// own address.
 func exitVRServerName(n biz.ExitNodeTunnel) string {
-	switch {
-	case n.TunnelSNI != "":
+	if n.TunnelSNI != "" {
 		return n.TunnelSNI
-	case n.TunnelProtocol == "vless":
-		return n.IPAddress
 	}
-	return config.ExitVRSNI
+	return n.IPAddress
 }
 
-// exitVROutbound is VLESS Reality over TCP to the exit's xray. For a Hysteria exit it is the
-// fallback path: the exit's xray serves the Hub's UUID with flow xtls-rprx-vision (cmd/deploy
-// --setup-exit-node) and refuses requests without that flow and over mux.cool, so: Vision, no
-// mux (UDP 443/QUIC is refused by Vision, clients fall back to TCP while on this path). A legacy
-// primary VLESS exit keeps its old outbound: its own port, mux, no flow. The fingerprint is
-// always exitVRFingerprint, the SNI exitVRServerName.
+// exitVROutbound is exit n's TCP path. For a Hysteria exit — the backup — SOCKS to the Hub's
+// ShadowTLS client of the exit (config.HubSTLSSocksPort; TCP and UDP, the client carries UDP over
+// TCP). A legacy primary VLESS exit keeps its old outbound: VLESS Reality to its own port, mux,
+// no flow, fingerprint exitVRFingerprint, SNI exitVRServerName.
 func exitVROutbound(n biz.ExitNodeTunnel, tag string, mux int) map[string]interface{} {
+	if n.TunnelProtocol == "hysteria2" {
+		return map[string]interface{}{
+			"tag": tag, "protocol": "socks",
+			"settings": map[string]interface{}{
+				"servers": []map[string]interface{}{{"address": "127.0.0.1", "port": config.HubSTLSSocksPort(n.ID)}},
+			},
+		}
+	}
 	// publicKey is always there (exitHasVRPath); shortId is singular on the client side of Reality.
 	reality := map[string]interface{}{"fingerprint": exitVRFingerprint, "serverName": exitVRServerName(n), "publicKey": n.TunnelPubKey}
 	if n.TunnelShortID != "" {
@@ -229,17 +227,11 @@ func exitVROutbound(n biz.ExitNodeTunnel, tag string, mux int) map[string]interf
 	}
 	user := map[string]interface{}{"id": n.TunnelUUID, "encryption": "none"}
 	out := map[string]interface{}{"tag": tag, "protocol": "vless"}
-	port := exitVRPort
-	if n.TunnelProtocol == "vless" {
-		port = n.TunnelPort
-		out["mux"] = map[string]interface{}{
-			"enabled": true, "concurrency": mux, "xudpConcurrency": 16, "xudpProxyUDP443": "allow",
-		}
-	} else {
-		user["flow"] = exitVRFlow
+	out["mux"] = map[string]interface{}{
+		"enabled": true, "concurrency": mux, "xudpConcurrency": 16, "xudpProxyUDP443": "allow",
 	}
 	out["settings"] = map[string]interface{}{
-		"vnext": []map[string]interface{}{{"address": n.IPAddress, "port": port, "users": []map[string]interface{}{user}}},
+		"vnext": []map[string]interface{}{{"address": n.IPAddress, "port": n.TunnelPort, "users": []map[string]interface{}{user}}},
 	}
 	out["streamSettings"] = map[string]interface{}{
 		"network": "tcp", "security": "reality", "realitySettings": reality,

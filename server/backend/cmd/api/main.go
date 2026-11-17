@@ -3,14 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
-	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -19,16 +16,16 @@ import (
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/email"
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
+	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tgweb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
-
-//go:embed openapi.json
-var openAPIFS embed.FS
 
 type server struct {
 	heyearth_v1.UnimplementedClientApiServer
@@ -40,6 +37,7 @@ func (s *server) Health(context.Context, *heyearth_v1.HealthRequest) (*heyearth_
 	return &heyearth_v1.HealthResponse{Status: "ok"}, nil
 }
 
+// publicBaseURL: the site's https:// origin (PUBLIC_BASE_URL, else SITE_DOMAIN); "" when unset.
 func publicBaseURL() string {
 	if v := strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")); v != "" {
 		return strings.TrimRight(v, "/")
@@ -53,77 +51,10 @@ func publicBaseURL() string {
 	return ""
 }
 
-func absoluteReleaseURL(publicPath string) string {
-	publicPath = strings.TrimSpace(publicPath)
-	if publicPath == "" {
-		return ""
-	}
-	if strings.HasPrefix(publicPath, "http://") || strings.HasPrefix(publicPath, "https://") {
-		return publicPath
-	}
-	base := publicBaseURL()
-	if base == "" {
-		return ""
-	}
-	if !strings.HasPrefix(publicPath, "/") {
-		publicPath = "/" + publicPath
-	}
-	return base + publicPath
-}
-
-func (s *server) CheckAppUpdate(_ context.Context, req *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
-	platform := biz.NormalizeReleasePlatform(req.GetPlatform())
-	if platform != "" && !biz.IsSupportedReleasePlatform(platform) {
-		return nil, status.Error(codes.InvalidArgument, "unsupported platform")
-	}
-
-	activeReleases, err := biz.GetAllActiveAppReleases()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load active releases: %v", err)
-	}
-
-	response := &heyearth_v1.CheckAppUpdateResponse{
-		ApiEndpoints: biz.GetAPIEndpoints(),
-	}
-	if release, ok := activeReleases["android"]; ok {
-		response.AndroidUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["windows"]; ok {
-		response.WindowsUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["macos"]; ok {
-		response.MacosUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["linux"]; ok {
-		response.LinuxUrl = absoluteReleaseURL(release.PublicPath)
-	}
-	if release, ok := activeReleases["ios"]; ok {
-		response.IosUrl = absoluteReleaseURL(release.PublicPath)
-	}
-
-	if platform != "" {
-		release, ok := activeReleases[platform]
-		if !ok {
-			return response, nil
-		}
-		response.Version = release.Version
-		response.ReleaseNotes = release.ReleaseNotes
-		response.Mandatory = release.Mandatory
-		response.MinSupportedVersion = release.MinSupportedVersion
-		return response, nil
-	}
-
-	latest, err := biz.GetActiveAppRelease("")
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load latest release: %v", err)
-	}
-	if latest != nil {
-		response.Version = latest.Version
-		response.ReleaseNotes = latest.ReleaseNotes
-		response.Mandatory = latest.Mandatory
-		response.MinSupportedVersion = latest.MinSupportedVersion
-	}
-	return response, nil
+// CheckAppUpdate: the app learns the API endpoints here. Releases are not published through the
+// API (cleanup plan D1: the app_releases table never had a row), so no version is offered.
+func (s *server) CheckAppUpdate(context.Context, *heyearth_v1.CheckAppUpdateRequest) (*heyearth_v1.CheckAppUpdateResponse, error) {
+	return &heyearth_v1.CheckAppUpdateResponse{ApiEndpoints: biz.GetAPIEndpoints()}, nil
 }
 
 func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromocodeRequest) (*heyearth_v1.ApplyPromocodeResponse, error) {
@@ -140,11 +71,15 @@ func (s *server) ApplyPromocode(ctx context.Context, req *heyearth_v1.ApplyPromo
 		return nil, status.Error(codes.PermissionDenied, "user is blocked")
 	}
 
-	if err := biz.ApplyPromocode(user.ID, strings.TrimSpace(req.GetCode())); err != nil {
-		return &heyearth_v1.ApplyPromocodeResponse{Success: false, Message: err.Error()}, nil
+	res, err := biz.RedeemPromocode(ctx, user.UserID, req.GetCode(), 0, biz.RedeemSourceApp)
+	if err != nil {
+		if biz.IsPromoError(err) {
+			return &heyearth_v1.ApplyPromocodeResponse{Success: false, Message: err.Error()}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "apply promocode: %v", err)
 	}
-
-	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: "Promocode applied successfully"}, nil
+	RequestXraySync()
+	return &heyearth_v1.ApplyPromocodeResponse{Success: true, Message: res.Message}, nil
 }
 
 // ─────────────────────── HTTP Helpers ───────────────────────
@@ -206,26 +141,21 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Platform    string `json:"platform"`
-		DeviceID    string `json:"device_id"`
-		DeviceLabel string `json:"device_label"`
-		Locale      string `json:"locale"`
+		Platform     string `json:"platform"`
+		Locale       string `json:"locale"`
+		ReferralCode string `json:"referral_code"` // from the /r/<code> link (phase R)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
 
-	device := biz.DeviceRegistration{
-		DeviceID:    req.DeviceID,
-		Platform:    req.Platform,
-		DeviceLabel: req.DeviceLabel,
-		Locale:      req.Locale,
-		LinkedVia:   "register",
-	}
+	device := biz.DeviceRegistration{Platform: req.Platform, Locale: req.Locale}
 
 	user, err := biz.RegisterAnonymousUser(device)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	bindReferralOnRegister(r, user.ID, req.ReferralCode)
 
 	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
 	if err != nil {
@@ -286,6 +216,33 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // extractUserFromToken reads JWT from Authorization header and returns user_id.
+// bearerToken: the token of "Authorization: Bearer <token>" ("" when absent).
+func bearerToken(r *http.Request) string {
+	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+}
+
+// handleUserLogout closes the caller's session (POST, Bearer token): the token stops working on
+// the site and in the app. Idempotent: an unknown or missing token answers 204 too.
+func handleUserLogout(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if token := bearerToken(r); token != "" {
+		if err := biz.RevokeUserSession(token); err != nil {
+			log.Printf("[auth] logout: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Не удалось выйти, попробуйте ещё раз"})
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func extractUserFromToken(r *http.Request) (string, error) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
@@ -308,7 +265,7 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -336,7 +293,7 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 		// future username-based logins). Reverse order = single-form registration
 		// works in one POST.
 		if req.NewPassword != "" {
-			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword); err != nil {
+			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword, bearerToken(r)); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
@@ -363,7 +320,7 @@ func handleUserSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	items, err := biz.ListUserSubscriptions(userID)
@@ -382,7 +339,7 @@ func handleUserPayments(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	items, err := biz.ListUserPayments(userID)
@@ -405,7 +362,7 @@ func handleUserPaymentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -571,10 +528,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 		"traffic_masking_available": access.TrafficMaskingAvailable,
 		"config_version":            configVersion,
 		"subscription_version":      subVer,
-		// Palma (AmneziaWG) availability — true only for active subs on an
-		// amnezia_wg_enabled plan. Site renders the WG/QR block off this flag;
-		// the heavy config is fetched lazily via GET /api/v1/user/awg-config.
-		"amnezia_available": false,
 	}
 
 	// Add plan info to response
@@ -588,9 +541,6 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 			"traffic_limit":     plan.TrafficLimitBytes,
 			"duration_days":     plan.DurationDays,
 		}
-		// ActiveUserPlan only returns a plan for an active subscription, and
-		// access.CanConnect already encodes the same gate used for connection_options.
-		resp["amnezia_available"] = plan.AmneziaWGEnabled && access.CanConnect
 	}
 
 	// Подключения только при активной подписке (per-user UUID). Поля SOCKS/HTTP-прокси больше
@@ -613,104 +563,11 @@ func handleUserConnections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleUserAWGConfig — GET /api/v1/user/awg-config
-// Returns the per-user AmneziaWG ("Пальма") client config as WG-INI text plus an
-// amneziawg:// deeplink, for users on an amnezia_wg_enabled plan with an active
-// subscription. The config is heavy (per-user keys + CPS) so the site fetches it
-// lazily — NOT part of /connections. Calling this lazy-inits the user's keys
-// (biz.GetUserAWGConfig) and triggers RequestAWGSync so the peer lands in awg0.conf.
-func handleUserAWGConfig(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-		return
-	}
-
-	// Gate: plan must have AmneziaWG enabled. GetUserPlan errors unless the user
-	// has an active subscription, so this single check covers both conditions.
-	plan, err := biz.GetUserPlan(userID)
-	if err != nil || plan == nil || !plan.AmneziaWGEnabled {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "AmneziaWG (Пальма) недоступен на вашем тарифе",
-		})
-		return
-	}
-
-	cfg, err := biz.GetUserAWGConfig(userID)
-	if err != nil {
-		log.Printf("[awg-config] GetUserAWGConfig(%s): %v", userID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config build failed"})
-		return
-	}
-	// Ensure the freshly-allocated peer is flushed to awg0.conf on the Hub.
-	RequestAWGSync()
-
-	ip := cfg.IPAddress
-	if ip != "" && !strings.Contains(ip, "/") {
-		ip += "/32"
-	}
-
-	var b strings.Builder
-	b.WriteString("[Interface]\n")
-	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.UserPrivKey)
-	fmt.Fprintf(&b, "Address = %s\n", ip)
-	// MTU 1280 (min IPv6 MTU): AWG-over-UDP encapsulation + CPS junk can push a
-	// 1420-byte inner packet past the path MTU on mobile/PPPoE links, fragmenting
-	// large TCP segments so connections open but data stalls ("слабый интернет").
-	// 1280 leaves headroom and traverses every path.
-	b.WriteString("MTU = 1280\n")
-	b.WriteString("DNS = 1.1.1.1, 8.8.8.8\n")
-	fmt.Fprintf(&b, "Jc = %d\n", cfg.CPSParams.Jc)
-	fmt.Fprintf(&b, "Jmin = %d\n", cfg.CPSParams.Jmin)
-	fmt.Fprintf(&b, "Jmax = %d\n", cfg.CPSParams.Jmax)
-	fmt.Fprintf(&b, "S1 = %d\n", cfg.CPSParams.S1)
-	fmt.Fprintf(&b, "S2 = %d\n", cfg.CPSParams.S2)
-	fmt.Fprintf(&b, "H1 = %d\n", cfg.CPSParams.H1)
-	fmt.Fprintf(&b, "H2 = %d\n", cfg.CPSParams.H2)
-	fmt.Fprintf(&b, "H3 = %d\n", cfg.CPSParams.H3)
-	fmt.Fprintf(&b, "H4 = %d\n", cfg.CPSParams.H4)
-	// AmneziaWG 2.0 mimic-QUIC: makes the handshake look like a QUIC Initial
-	// packet so mobile carriers (which throttle unknown UDP) pass it. Must match
-	// the server's I1 — both come from app_settings.awg_mimic_i1. Empty = 1.5 mode.
-	if cfg.MimicI1 != "" {
-		fmt.Fprintf(&b, "I1 = %s\n", cfg.MimicI1)
-	}
-	b.WriteString("\n[Peer]\n")
-	fmt.Fprintf(&b, "PublicKey = %s\n", cfg.ServerPubKey)
-	if cfg.UserPSK != "" {
-		fmt.Fprintf(&b, "PresharedKey = %s\n", cfg.UserPSK)
-	}
-	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
-	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.Endpoint)
-	b.WriteString("PersistentKeepalive = 25\n")
-	configText := b.String()
-
-	deeplink := "amneziawg://" +
-		base64.StdEncoding.EncodeToString([]byte(configText)) +
-		"#" + url.PathEscape("🌴 Пальма")
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"available":   true,
-		"config_text": configText,
-		"deeplink":    deeplink,
-		"endpoint":    cfg.Endpoint,
-		"ip":          cfg.IPAddress,
-	})
-}
-
 // handleUserMTProto — GET /api/v1/user/mtproto
-// Returns the Telegram MTProto proxy deeplink if MTProto is enabled and
-// the user has an active subscription. Result is the same for everyone
-// (shared secret) — this is a convenience perk, not a privacy feature.
+// The Telegram proxies of an active subscriber: the WEB proxy first (Telegram Desktop 7.1+ and
+// updated Android, phase T), the classic MTProto proxy second (iOS and older clients). Shared
+// secrets — a convenience perk, not a privacy feature. The flat fields are the classic proxy for
+// pages built before the WEB proxy.
 func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -723,7 +580,7 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -740,35 +597,74 @@ func handleUserMTProto(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	web, err := userWebProxy(r.Context())
+	if err != nil {
+		log.Printf("[tgweb] ссылка WEB-прокси: %v", err)
+		web = nil // the classic proxy is still handed out
+	}
+	writeJSON(w, http.StatusOK, buildUserMTProto(web, userClassicProxy()))
+}
 
+// userWebProxy is tgweb.ForUser (tests swap it).
+var userWebProxy = tgweb.ForUser
+
+// classicProxy is the classic MTProto part of /user/mtproto.
+type classicProxy struct {
+	Link   string `json:"link"`
+	TGLink string `json:"tg_link"`
+	Server string `json:"server"`
+	Port   string `json:"port"`
+	Secret string `json:"secret"`
+}
+
+// userMTProtoResp: web first, classic second, then the legacy flat classic fields.
+type userMTProtoResp struct {
+	Enabled    bool            `json:"enabled"`
+	Reason     string          `json:"reason,omitempty"`
+	Web        *tgweb.UserLink `json:"web,omitempty"`
+	Classic    *classicProxy   `json:"classic,omitempty"`
+	Host       string          `json:"host,omitempty"`
+	Port       string          `json:"port,omitempty"`
+	Secret     string          `json:"secret,omitempty"`
+	TgDeeplink string          `json:"tg_deeplink,omitempty"`
+	TMeLink    string          `json:"t_me_link,omitempty"`
+}
+
+func buildUserMTProto(web *tgweb.UserLink, classic *classicProxy) userMTProtoResp {
+	resp := userMTProtoResp{Enabled: web != nil || classic != nil, Web: web, Classic: classic}
+	if classic != nil {
+		resp.Host, resp.Port, resp.Secret = classic.Server, classic.Port, classic.Secret
+		resp.TgDeeplink, resp.TMeLink = classic.TGLink, classic.Link
+	}
+	if !resp.Enabled {
+		resp.Reason = "Временно недоступно"
+	}
+	return resp
+}
+
+// userClassicProxy: a weighted-random healthy exit's MTProxy (nil: switched off or none healthy).
+var userClassicProxy = func() *classicProxy {
 	enabled := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true"
 	secret := biz.GetSettingOrDefault("mtproto_secret", "")
-
 	if !enabled || secret == "" {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": false})
-		return
+		return nil
 	}
-
-	host, port, ok := biz.PickMTProtoExit()
+	host, port, domain, ok := biz.PickMTProtoExit()
+	if ok && domain != "" { // the exit fronts its own domain: the shared key with that domain
+		var err error
+		if secret, err = biz.MTProtoSecretFor(secret, domain); err != nil {
+			log.Printf("[mtproto] secret for exit %s: %v", host, err)
+			ok = false
+		}
+	}
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"enabled": false,
-			"reason":  "Временно недоступно",
-		})
-		return
+		return nil
 	}
-
-	tgDeeplink := fmt.Sprintf("tg://proxy?server=%s&port=%s&secret=%s", host, port, secret)
-	tMeLink := fmt.Sprintf("https://t.me/proxy?server=%s&port=%s&secret=%s", host, port, secret)
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":     true,
-		"host":        host,
-		"port":        port,
-		"secret":      secret,
-		"tg_deeplink": tgDeeplink,
-		"t_me_link":   tMeLink,
-	})
+	return &classicProxy{
+		Link:   fmt.Sprintf("https://t.me/proxy?server=%s&port=%s&secret=%s", host, port, secret),
+		TGLink: fmt.Sprintf("tg://proxy?server=%s&port=%s&secret=%s", host, port, secret),
+		Server: host, Port: port, Secret: secret,
+	}
 }
 
 func handlePublicPlans(w http.ResponseWriter, r *http.Request) {
@@ -795,24 +691,11 @@ func handleLegalInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", "ИП Степанов Александр Владимирович"),
+		"legal_company_name": biz.GetSettingOrDefault("legal_company_name", ""),
 		"legal_address":      biz.GetSettingOrDefault("legal_address", ""),
-		"legal_email":        biz.GetSettingOrDefault("legal_email", "alex_step04@mail.ru"),
+		"legal_email":        biz.GetSettingOrDefault("legal_email", ""),
 		"legal_phone":        biz.GetSettingOrDefault("legal_phone", ""),
 		"legal_inn":          biz.GetSettingOrDefault("legal_inn", ""),
-	})
-}
-
-func handleDonationSettings(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"donation_enabled": biz.GetSettingOrDefault("donation_enabled", "true"),
-		"donation_title":   biz.GetSettingOrDefault("donation_title", "Поддержать разработчика"),
-		"donation_text":    biz.GetSettingOrDefault("donation_text", ""),
 	})
 }
 
@@ -822,22 +705,9 @@ func handleUserDownloads(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// No auth required for downloads
-	activeReleases, err := biz.GetAllActiveAppReleases()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	downloads := make(map[string]map[string]string)
-	for platform, release := range activeReleases {
-		downloads[platform] = map[string]string{
-			"version":       release.Version,
-			"url":           absoluteReleaseURL(release.PublicPath),
-			"release_notes": release.ReleaseNotes,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"downloads": downloads})
+	// No app release is published through the API (cleanup plan D1); the shape stays for the
+	// Flutter app and the site.
+	writeJSON(w, http.StatusOK, map[string]any{"downloads": map[string]any{}})
 }
 
 func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
@@ -848,7 +718,7 @@ func handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	var userDBID int
@@ -916,6 +786,9 @@ func main() {
 	if err := db.InitDB(); err != nil {
 		log.Fatalf("failed to initialize DB: %v", err)
 	}
+	if base := publicBaseURL(); base != "" {
+		email.SiteURL = base // the links in the letters
+	}
 	defer db.CloseDB()
 	// Alerts: replay alert_events so already-reported incidents are not re-sent after a
 	// restart, start the retention purge. Must run before any background loop calls RaiseAlert.
@@ -934,11 +807,16 @@ func main() {
 	// mutation paths (handlers, crons, admin) call biz.NotifySubscriptionChange
 	// which funnels through RequestSync.
 	biz.XraySyncFn = RequestXraySync
+	provision.RelayPathVerifier = verifyRelayPath
 	biz.Hysteria2SyncFn = RequestHysteria2Sync
-	biz.AWGSyncFn = RequestAWGSync // Palma — added in T6
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)
 	StartXraySyncLoop()
+
+	// Monitors start here, not inside StartXraySyncLoop (D2): a Hub without xray still gets
+	// the tunnel monitor (the Bamboo path does not need xray) and the certificate alarm.
+	StartTunnelHealthMonitor()
+	StartCertExpiryMonitor()
 
 	// Auth-only loopback listener for hysteria-server (127.0.0.1:8001). Bound before the
 	// first Hysteria2 sync, which writes this address into /etc/hysteria/server.yaml.
@@ -949,28 +827,17 @@ func main() {
 	// Hysteria2 server sync (no-op if hysteria binary not installed)
 	StartHysteria2SyncLoop()
 
-	// AmneziaWG (Palma) server sync — generates /opt/heyearth/awg/awg0.conf
-	// from current peers + reloads awg.service. No-op if --setup-awg was not
-	// run on this Hub (the /opt/heyearth/awg dir is absent).
-	StartAWGSyncLoop()
-
 	// Hysteria2 per-user traffic collector — polls loopback trafficStats
 	// endpoint every 60s and writes deltas into traffic_stats so cycle-quota
 	// enforcement (biz.IsCycleExceeded) covers Express users transparently.
 	StartHysteria2StatsLoop()
-
-	// AmneziaWG (Palma) per-peer traffic collector — reads `awg show awg0
-	// transfer` every 60s, writes deltas to traffic_stats AND
-	// user_subscriptions.traffic_used so AWG shares one subscription limit
-	// with Reality/Hysteria2 (T3 peer-selection gates on traffic_used).
-	// No-op until --setup-awg has run on this Hub.
-	StartAWGStatsLoop()
 
 	// Запускаем сборщик трафика (Xray Stats API)
 	StartTrafficStatsCollector()
 
 	// Запускаем realtime-сборщик метрик серверов (CPU/RAM/connections каждые 10 сек)
 	admin.StartServerMetricsCollector()
+	admin.StartNodeLoadCollector()
 
 	// Запускаем cron для подписок и B2B биллинга
 	StartSubscriptionCron()
@@ -981,12 +848,12 @@ func main() {
 	// Email reminders (за 3 дня до автопродления)
 	StartEmailReminderCron()
 
-	// Dunning — retry failed recurring платежей (1/2/3 попытки, grace period)
-	StartDunningCron()
-
 	// Ghost Reconciler: scan hub every 30 min for drift between systemd units
 	// and DB lifecycle state. Optional auto-cleanup / auto-repair via app_settings.
 	StartGhostReconciler()
+
+	// Data retention (D5): per-day traffic sums, raw traffic 45 days, expired sessions.
+	StartRetentionLoop()
 
 	// Monitoring → Telegram alerts: external loop probe of the entry via an exit,
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
@@ -996,6 +863,7 @@ func main() {
 	authLimiter := middleware.NewRateLimiter(10, time.Minute)    // 10 req/min per IP (auth)
 	apiLimiter := middleware.NewRateLimiter(100, time.Minute)    // 100 req/min per IP (general API)
 	webhookLimiter := middleware.NewRateLimiter(30, time.Minute) // 30 req/min per IP (webhooks)
+	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute) // promocodes and activation codes: guessing is the attack
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
@@ -1006,9 +874,12 @@ func main() {
 	}
 
 	srv := &server{}
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(clientAuthInterceptor))
 	heyearth_v1.RegisterClientApiServer(grpcServer, srv)
-	reflection.Register(grpcServer)
+	// Reflection lists every RPC to anyone who asks; only for local debugging.
+	if os.Getenv("GRPC_REFLECTION") == "1" {
+		reflection.Register(grpcServer)
+	}
 	go func() {
 		log.Printf("gRPC API on %s", grpcAddr)
 		_ = grpcServer.Serve(lis)
@@ -1027,13 +898,13 @@ func main() {
 	// User portal REST endpoints (rate limited)
 	http.HandleFunc("/api/v1/auth/register", authLimiter.Middleware(handleUserRegister))
 	http.HandleFunc("/api/v1/auth/login", authLimiter.Middleware(handleUserLogin))
+	http.HandleFunc("/api/v1/auth/logout", authLimiter.Middleware(handleUserLogout))
 	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
 	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
 	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))
 	// Детали одного платежа: GET /api/v1/user/payments/{id}
 	http.HandleFunc("/api/v1/user/payments/", apiLimiter.Middleware(handleUserPaymentDetail))
 	http.HandleFunc("/api/v1/user/connections", apiLimiter.Middleware(handleUserConnections))
-	http.HandleFunc("/api/v1/user/awg-config", apiLimiter.Middleware(handleUserAWGConfig)) // Palma — Beads heyearthproject-98ng T5
 	http.HandleFunc("/api/v1/user/mtproto", apiLimiter.Middleware(handleUserMTProto))
 	http.HandleFunc("/api/v1/user/downloads", apiLimiter.Middleware(handleUserDownloads))
 	http.HandleFunc("/api/v1/user/traffic", apiLimiter.Middleware(handleUserTraffic))
@@ -1052,31 +923,36 @@ func main() {
 	// auth probe of `deploy --status` in cmd/deploy/main.go still does).
 	http.HandleFunc(hysteria2AuthPath, handleHysteria2Auth)
 
+	// Refer a friend (phase R)
+	http.HandleFunc("/api/v1/referral", apiLimiter.Middleware(handleReferral))
+	http.HandleFunc("/api/v1/referral/bind", apiLimiter.Middleware(codeLimiter.Middleware(handleReferralBind)))
+	http.HandleFunc("/api/v1/referral/terms", apiLimiter.Middleware(handleReferralTerms))
+
+	// Wallet (phase W)
+	http.HandleFunc("/api/v1/wallet", apiLimiter.Middleware(handleWallet))
+	http.HandleFunc("/api/v1/wallet/quote", apiLimiter.Middleware(codeLimiter.Middleware(handleWalletQuote)))
+	http.HandleFunc("/api/v1/wallet/purchase", apiLimiter.Middleware(handleWalletPurchase))
+	http.HandleFunc("/api/v1/wallet/topup", apiLimiter.Middleware(handleWalletTopup))
+	http.HandleFunc("/api/v1/wallet/topup/", apiLimiter.Middleware(handleWalletTopupStatus))
+
 	// Payments
 	http.HandleFunc("/api/v1/payment/create", apiLimiter.Middleware(handleCreatePayment))
-	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess))
-	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(handleRedeemCode))
-	http.HandleFunc("/api/v1/payment/tenant-topup", apiLimiter.Middleware(handleTenantTopup))
-	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(handleApplyPromocode))
-	http.HandleFunc("/api/v1/payment/donate", apiLimiter.Middleware(handleCreateDonation))
+	http.HandleFunc("/api/v1/payment/check-access", apiLimiter.Middleware(handleCheckAccess)) // the Flutter app (payment_api.dart)
+	http.HandleFunc("/api/v1/payment/redeem-code", apiLimiter.Middleware(codeLimiter.Middleware(handleRedeemCode)))
+	http.HandleFunc("/api/v1/payment/apply-promocode", apiLimiter.Middleware(codeLimiter.Middleware(handleApplyPromocode)))
 	http.HandleFunc("/api/v1/payment/refund", apiLimiter.Middleware(handleRefundRequest))
-
-	// Cards management
-	http.HandleFunc("/api/v1/user/cards", apiLimiter.Middleware(handleUserCards))
-	http.HandleFunc("/api/v1/user/cards/", apiLimiter.Middleware(handleDeleteCard))
 
 	// Auto-renew toggle
 	http.HandleFunc("/api/v1/user/auto-renew", apiLimiter.Middleware(handleToggleAutoRenew))
 
 	// Subscription pause / resume
-	http.HandleFunc("/api/v1/user/pause-subscription", apiLimiter.Middleware(handlePauseSubscription))
-	http.HandleFunc("/api/v1/user/resume-subscription", apiLimiter.Middleware(handleResumeSubscription))
 
 	// Proration preview (для UI)
 	http.HandleFunc("/api/v1/payment/proration-preview", apiLimiter.Middleware(handleProrationPreview))
 
 	// B2B invoice — публичный endpoint, доступен без авторизации
 	http.HandleFunc("/api/v1/business/create-invoice", apiLimiter.Middleware(handleCreateInvoice))
+	http.HandleFunc("/api/admin/b2b/create-invoice", admin.RequirePermission("tenants.write", handleAdminCreateInvoice))
 	// B2B self-service (Phase P1): tenant dashboard + topup + invite + member mgmt.
 	// All endpoints check tenant_members for role-based access.
 	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(handleBusinessMe))
@@ -1085,11 +961,9 @@ func main() {
 	// DELETE /api/v1/business/members/{user_db_id} — uses trailing slash routing.
 	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(handleBusinessMembers))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
-	http.HandleFunc("/api/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 
 	// Admin debug: force auto-renew for a user
-	http.HandleFunc("/api/admin/force-autorenew", admin.RequirePermission("payments.write", handleAdminForceAutoRenew))
 	// Admin: force sync всех pending платежей (не ждать cron)
 	http.HandleFunc("/api/admin/sync-pending-payments", admin.RequirePermission("payments.write", handleAdminSyncAllPending))
 
@@ -1113,15 +987,21 @@ func main() {
 	// Public API (no auth)
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
-	http.HandleFunc("/api/v1/app/donation-settings", apiLimiter.Middleware(handleDonationSettings))
+	http.HandleFunc("/api/v1/site-info", apiLimiter.Middleware(handleSiteInfo))
+	// E8: the cabinet's e-mail, its confirmation link and the one-click unsubscribe.
+	http.HandleFunc("/api/v1/user/email", apiLimiter.Middleware(handleUserEmail))
+	http.HandleFunc("/api/v1/user/email/reminders", apiLimiter.Middleware(handleUserEmailReminders))
+	http.HandleFunc("/api/v1/email/confirm", authLimiter.Middleware(handleEmailConfirm))
+	http.HandleFunc("/api/v1/email/unsubscribe", authLimiter.Middleware(handleEmailUnsubscribe))
 
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()
+	registerEntryAdminRoutes()
 
 	// Admin panel
 	admin.RegisterRoutes()
 
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
-	log.Fatal(newMainHTTPServer(httpAddr, nil).ListenAndServe())
+	log.Fatal(newMainHTTPServer(httpAddr, limitPublicBodies(http.DefaultServeMux)).ListenAndServe())
 }

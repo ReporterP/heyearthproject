@@ -2126,12 +2126,12 @@ Expected: assets uploaded, nginx reload OK.
 ```bash
 cd server/backend && go run ./cmd/deploy --ssh "bash /tmp/migrate-hysteria-naming.sh" 2>&1 || true
 # If the deploy doesn't copy this script, transfer it explicitly:
-scp cmd/deploy/migrate-hysteria-naming.sh root@45.150.39.236:/tmp/
-ssh root@45.150.39.236 'bash /tmp/migrate-hysteria-naming.sh'
+scp cmd/deploy/migrate-hysteria-naming.sh root@198.51.100.236:/tmp/
+ssh root@198.51.100.236 'bash /tmp/migrate-hysteria-naming.sh'
 ```
 Expected (typical):
 ```
-[migrate-hysteria-naming] legacy unit points to 89.124.89.126
+[migrate-hysteria-naming] legacy unit points to 192.0.2.126
 [migrate-hysteria-naming] mapped to server id=2
 [migrate-hysteria-naming] hysteria2-client-2 is ACTIVE ✓
 [migrate-hysteria-naming] DONE. Legacy at /opt/heyearth/state/legacy-hysteria-migration-...

@@ -60,7 +60,7 @@ func TestListSettingsDropsSecrets(t *testing.T) {
 		return map[string]string{
 			"yookassa_shop_id": "12345", "yookassa_secret_key": "live_SECRET_yk", "smtp_password": "SECRET_smtp",
 			"hysteria2_obfs_password": "SECRET_obfs", "hysteria2_stats_secret": "SECRET_stats",
-			"hub_tunnel_password": "SECRET_hub", "awg_server_private_key": "SECRET_awg",
+			"hub_tunnel_password":      "SECRET_hub",
 			"alert_telegram_bot_token": "123:SECRET_tg", "vless_uuid": "SECRET-uuid", "partner_api_key": "SECRET_api",
 			"main_server_host": "hiearth.ru", "site_url": "https://hiearth.ru",
 		}, nil
@@ -80,7 +80,7 @@ func TestListSettingsDropsSecrets(t *testing.T) {
 	if resp.Settings["main_server_host"] != "hiearth.ru" || resp.Settings["yookassa_shop_id"] != "12345" {
 		t.Errorf("plain settings lost: %v", resp.Settings)
 	}
-	for _, k := range []string{"yookassa_secret_key", "smtp_password", "hysteria2_obfs_password", "awg_server_private_key", "vless_uuid", "partner_api_key"} {
+	for _, k := range []string{"yookassa_secret_key", "smtp_password", "hysteria2_obfs_password", "vless_uuid", "partner_api_key"} {
 		if _, leaked := resp.Settings[k]; leaked || !resp.SecretsSet[k] {
 			t.Errorf("%s: in settings=%v, secrets_set=%v", k, leaked, resp.SecretsSet[k])
 		}

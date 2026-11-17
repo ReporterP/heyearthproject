@@ -82,16 +82,3 @@ func DeletePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Plan deleted"})
 }
-
-// PublicListPlansHandler returns active plans for the user site (no auth).
-func PublicListPlansHandler(w http.ResponseWriter, r *http.Request) {
-	plans, err := biz.ListActivePlans()
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to list plans")
-		return
-	}
-	if plans == nil {
-		plans = []biz.Plan{}
-	}
-	writeAdminJSON(w, http.StatusOK, plans)
-}

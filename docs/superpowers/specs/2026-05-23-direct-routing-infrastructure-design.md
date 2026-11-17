@@ -461,7 +461,7 @@ type ImportResult struct {
 - [ ] Привязка к плану (например `all-inclusive`) → подписка пользователя этого плана содержит `happ://routing/onadd/<b64>` с populated DirectIp/DirectSites
 - [ ] `/opt/heyearth/xray/config.json` содержит outbound `direct-freedom` и rules с `outboundTag: "direct-freedom"` для users этого плана
 - [ ] Из Happ на телефоне открыть 2gis.ru → загружается (через локальный direct)
-- [ ] Из V2RayNG на телефоне открыть 2gis.ru → загружается (через Hub direct, IP 45.150.39.236)
+- [ ] Из V2RayNG на телефоне открыть 2gis.ru → загружается (через Hub direct, IP 198.51.100.236)
 - [ ] Из браузера через SOCKS5 на Hub → 2gis.ru загружается
 - [ ] google.com через Happ → грузится через VPN (не direct — не в списке)
 

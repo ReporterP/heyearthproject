@@ -5,6 +5,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +19,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
+)
+
+// The WEB proxy artifacts (phase T); package-level: main's ssh config shadows the package name.
+const (
+	tgArtifact    = config.TGWebArtifact
+	tgFwdArtifact = config.TGFwdArtifact
 )
 
 const (
@@ -94,11 +105,11 @@ func main() {
 		},
 		Timeout: 10 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", host, config)
+	client, err := dialRetry(host, config)
 	if err != nil {
 		log.Fatalf("SSH dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { client.Close() }()
 	fmt.Println("    Подключено.")
 
 	// 3. Загрузить бинарник через SSH pipe — во временный файл рядом, на место кладёт mv.
@@ -139,29 +150,81 @@ func main() {
 	}
 	fmt.Printf("    %d файлов миграций загружено\n", len(entries))
 
+	// 4b. Артефакты нод (B7): node-agent и установщик MTProxy — только если изменились, через
+	// временный файл + mv, с sha256 рядом (API сверяет его перед установкой на exit).
+	fmt.Println("[4b] Артефакты нод...")
+	agentPath := filepath.Join(os.TempDir(), fmt.Sprintf("heyearth-node-agent-%d.bin", os.Getpid()))
+	defer os.Remove(agentPath)
+	ab := exec.Command("go", "build", "-o", agentPath, "./cmd/node-agent/")
+	ab.Dir = backendRoot
+	ab.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	ab.Stderr = os.Stderr
+	if err := ab.Run(); err != nil {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("build node-agent: %v", err)
+	}
+	// The WEB proxy's forwarder (phase T) is built the same way, from this repository.
+	fwdPath := filepath.Join(os.TempDir(), fmt.Sprintf("heyearth-tgfwd-%d.bin", os.Getpid()))
+	defer os.Remove(fwdPath)
+	fb := exec.Command("go", "build", "-o", fwdPath, "./cmd/tgfwd/")
+	fb.Dir = backendRoot
+	fb.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	fb.Stderr = os.Stderr
+	if err := fb.Run(); err != nil {
+		runCmd(client, "rm -f "+tmpPath)
+		log.Fatalf("build tgfwd: %v", err)
+	}
+	for _, a := range []struct{ local, remote, mode string }{
+		{agentPath, appDir + "/artifacts/node-agent", "755"},
+		{fwdPath, appDir + "/" + tgFwdArtifact, "755"},
+		{filepath.Join(backendRoot, "cmd", "deploy", "install-mtproxy.sh"), "/opt/heyearth/scripts/install-mtproxy.sh", "755"},
+	} {
+		data, err := os.ReadFile(a.local)
+		if err != nil {
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("read %s: %v", a.local, err)
+		}
+		if err := putArtifact(client, a.remote, a.mode, data); err != nil {
+			runCmd(client, "rm -f "+tmpPath)
+			log.Fatalf("artifact %s: %v (сервис не перезапущен)", a.remote, err)
+		}
+	}
+	os.Remove(agentPath)
+
+	// 4c. Релей Telegram WEB-прокси (фаза T): закреплённый коммит, его go test ./... в Linux, с
+	// sha256 рядом — API ставит его на Hub кнопкой «Установить / обновить». Сбой здесь не
+	// останавливает деплой API: в админке будет видно, что артефакта нет.
+	if relay, err := tproxybuild.Build(func(f string, a ...any) { fmt.Printf("    "+f+"\n", a...) }); err != nil {
+		fmt.Printf("    WARN: tproxy-server не собран: %v — WEB-прокси на Hub не обновится\n", err)
+	} else if err := putArtifact(client, appDir+"/"+tgArtifact, "755", relay); err != nil {
+		fmt.Printf("    WARN: артефакт tproxy-server не выложен: %v\n", err)
+	}
+
 	// 5. Подменить бинарник атомарно и перезапустить
 	fmt.Println("[5/5] Перезапуск сервиса...")
-	if out := runCmd(client, fmt.Sprintf("chmod +x %s && cp -p %s %s.bak 2>/dev/null; mv -f %s %s && echo SWAPPED", tmpPath, remotePath, remotePath, tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
+	if out := runCmd(client, fmt.Sprintf("chmod +x %[1]s && { [ ! -f %[2]s ] || cp -p %[2]s %[2]s.bak; } && mv -f %[1]s %[2]s && echo SWAPPED", tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
 		runCmd(client, "rm -f "+tmpPath)
 		log.Fatalf("swap binary failed: %s", strings.TrimSpace(out))
 	}
 	runCmd(client, "systemctl restart heyearth-api")
-	time.Sleep(2 * time.Second)
 
-	// Проверить здоровье
-	out := runCmd(client, "systemctl is-active heyearth-api 2>/dev/null || echo FAILED")
-	status := strings.TrimSpace(out)
-	if status == "active" {
-		fmt.Println("    heyearth-api: ACTIVE ✓")
-	} else {
-		fmt.Printf("    heyearth-api: %s ✗\n", status)
-		fmt.Println("    Последние логи:")
-		fmt.Println(runCmd(client, "journalctl -u heyearth-api -n 20 --no-pager 2>&1"))
+	// The API applies migrations and warms up for 30-40 s. It must be active AND answer
+	// /api/v1/health with 200 within healthWait, or the previous binary goes back and the
+	// tool exits non-zero (it used to print the failure and exit 0).
+	if !waitHealthy(&client, host, config, healthWait) {
+		fmt.Println("    heyearth-api НЕ поднялся ✗ — последние логи:")
+		fmt.Println(runCmd(client, "journalctl -u heyearth-api -n 30 --no-pager 2>&1 | tail -30"))
+		fmt.Println("    Откат на предыдущий бинарник (.bak)...")
+		out := runCmd(client, fmt.Sprintf("[ -f %[1]s.bak ] && cp -p %[1]s.bak %[1]s.rollback && mv -f %[1]s.rollback %[1]s && systemctl restart heyearth-api && echo ROLLED_BACK", remotePath))
+		if strings.Contains(out, "ROLLED_BACK") && waitHealthy(&client, host, config, healthWait) {
+			fmt.Println("    Откат выполнен, старая версия работает.")
+		} else {
+			fmt.Printf("    ОТКАТ НЕ УДАЛСЯ: %s\n", strings.TrimSpace(out))
+		}
+		os.Remove(binaryPath)
+		os.Exit(1)
 	}
-
-	// Проверить health endpoint
-	healthOut := runCmd(client, "curl -s http://127.0.0.1:8000/api/v1/health 2>&1")
-	fmt.Printf("    Health: %s\n", strings.TrimSpace(healthOut))
+	fmt.Println("    heyearth-api: ACTIVE ✓, health 200 ✓")
 
 	// Проверить Xray sync
 	xrayOut := runCmd(client, "systemctl is-active xray 2>/dev/null || echo not-installed")
@@ -169,6 +232,72 @@ func main() {
 
 	fmt.Println("\nДеплой завершён!")
 	os.Remove(binaryPath)
+}
+
+// healthWait bounds the wait for the restarted API.
+const healthWait = 90 * time.Second
+
+// dialRetry dials the Hub up to 4 times: the SSH link to it drops now and then.
+func dialRetry(host string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	var last error
+	for i := 0; i < 4; i++ {
+		c, err := ssh.Dial("tcp", host, config)
+		if err == nil {
+			return c, nil
+		}
+		last = err
+		fmt.Printf("    SSH: %v — повтор через 5 с\n", err)
+		time.Sleep(5 * time.Second)
+	}
+	return nil, last
+}
+
+// waitHealthy polls the service state and the health endpoint until both are good or
+// the time is up; a dropped SSH session is redialled.
+func waitHealthy(client **ssh.Client, host string, config *ssh.ClientConfig, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Second)
+		out := runCmd(*client, "systemctl is-active heyearth-api 2>/dev/null; curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8000/api/v1/health")
+		if strings.HasPrefix(out, "ERROR:") {
+			if c, err := dialRetry(host, config); err == nil {
+				(*client).Close()
+				*client = c
+			}
+			continue
+		}
+		f := strings.Fields(out)
+		if len(f) == 2 && f[0] == "active" && f[1] == "200" {
+			return true
+		}
+	}
+	return false
+}
+
+// putArtifact writes a node artifact when its sha256 differs: temp file + mv, then the sha256
+// file next to it.
+func putArtifact(client *ssh.Client, remote, mode string, data []byte) error {
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	cur := strings.TrimSpace(runCmd(client, fmt.Sprintf("cat %s.sha256 2>/dev/null; [ -f %s ] && sha256sum < %s | cut -d' ' -f1", remote, remote, remote)))
+	if f := strings.Fields(cur); len(f) == 2 && f[0] == hexSum && f[1] == hexSum {
+		fmt.Printf("    %s без изменений\n", remote)
+		return nil
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	session.Stdin = bytes.NewReader(data)
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	script := fmt.Sprintf("set -e; mkdir -p $(dirname %[1]s); cat > %[2]s; chmod %[3]s %[2]s; [ \"$(sha256sum < %[2]s | cut -d' ' -f1)\" = %[4]s ] || { rm -f %[2]s; echo 'checksum mismatch after upload'; exit 1; }; mv -f %[2]s %[1]s; echo %[4]s > %[1]s.sha256.tmp; mv -f %[1]s.sha256.tmp %[1]s.sha256",
+		remote, tmp, mode, hexSum)
+	if out, err := session.CombinedOutput(script); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("    %s обновлён (%d байт)\n", remote, len(data))
+	return nil
 }
 
 func uploadViaPipe(client *ssh.Client, localPath, remotePath string) error {
@@ -195,8 +324,10 @@ func uploadContentViaPipe(client *ssh.Client, data []byte, remotePath string) er
 	}
 	defer session.Close()
 
+	// Next to the target, then mv: a dropped session never leaves a half-written file.
 	session.Stdin = strings.NewReader(string(data))
-	return session.Run(fmt.Sprintf("cat > %s", remotePath))
+	tmp := fmt.Sprintf("%s.tmp-%d", remotePath, time.Now().UnixNano())
+	return session.Run(fmt.Sprintf("cat > %[1]s && mv -f %[1]s %[2]s || { rm -f %[1]s; exit 1; }", tmp, remotePath))
 }
 
 func runCmd(client *ssh.Client, command string) string {

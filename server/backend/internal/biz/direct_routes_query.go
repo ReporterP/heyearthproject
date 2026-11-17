@@ -82,13 +82,6 @@ func ListActiveDirectRouteServicesContext(ctx context.Context) ([]DirectRouteSer
 	return out, rows.Err()
 }
 
-// GetPlanIDsWithDirectRoutes returns ids of active plans with
-// direct_routing_enabled=TRUE. Used by xray_sync to know which plans need
-// extra routing rules.
-func GetPlanIDsWithDirectRoutes() ([]int, error) {
-	return GetPlanIDsWithDirectRoutesContext(context.Background())
-}
-
 // GetPlanIDsWithDirectRoutesContext is GetPlanIDsWithDirectRoutes bounded by ctx.
 func GetPlanIDsWithDirectRoutesContext(ctx context.Context) ([]int, error) {
 	rows, err := db.DB.QueryContext(ctx, `
@@ -185,9 +178,4 @@ func GetDirectRoutesStats() (map[string]any, error) {
 	stats["plans_count"] = plansCount
 
 	return stats, nil
-}
-
-// GetDirectRoutesVersion returns the current direct_routes_version setting (defaults to "1").
-func GetDirectRoutesVersion() string {
-	return GetSettingOrDefault("direct_routes_version", "1")
 }

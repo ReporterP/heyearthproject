@@ -1,11 +1,14 @@
 import { useEffect, useId, useReducer, useRef, useState } from 'react'
 import { ShieldCheck, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.jsx'
-import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting, fetchPlans } from '../../api/admin.js'
+import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting, fetchPlans, saveEntryMode } from '../../api/admin.js'
 import { Dialog, Stepper, Button, Input, Select, Switch, CopyButton, Badge, Skeleton, Spinner, useFocusTrap } from '../ui/index.js'
 import { keyTypeLabel, hostKeyFile, PRIORITY_HINT } from './nodeModel.js'
+import MobileCheckPanel from '../entries/MobileCheckPanel.jsx'
+import PrepareServer from '../servers/PrepareServer.jsx'
+import { exitCountries, geoHint, countryLabel } from '../servers/serversModel.js'
 import {
-  WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid, matchPasted,
+  wizardSteps, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid, matchPasted,
   pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, routingRequest,
   closeNeedsConfirm,
 } from './wizardModel.js'
@@ -44,23 +47,41 @@ function RoleStep({ s, set, ids, countryRef }) {
           <div className="text-sm text-primary">Выход за рубежом</div>
           <div className="text-xs text-tertiary mt-1">Через него трафик уходит в интернет. Нужен VPS вне РФ: Ubuntu или Debian, x86_64.</div>
         </button>
-        <button type="button" disabled aria-pressed={s.role === 'relay'}
-          className="text-left p-3 rounded border border-default opacity-40 cursor-not-allowed">
-          <div className="text-sm text-primary">Резервный вход в РФ</div>
-          <div className="text-xs text-tertiary mt-1">Появится в следующем обновлении.</div>
+        <button type="button" aria-pressed={s.role === 'relay'} disabled={!!s.serverId} onClick={() => set({ role: 'relay' })}
+          className={`text-left p-3 rounded border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent
+            ${s.role === 'relay' ? 'border-accent bg-accent/10' : 'border-default hover:bg-hover'}`}>
+          <div className="text-sm text-primary">Вход в РФ (для мобильных)</div>
+          <div className="text-xs text-tertiary mt-1">Российский VPS другого провайдера — адрес, к которому подключаются пользователи. Пересылает подключения на Hub, своих данных не хранит.</div>
         </button>
       </div>
       {s.role === 'relay' && (
-        <p className="mb-4 text-xs text-warning">Резервные входы в РФ добавляются в следующем обновлении — пока можно добавить только выход за рубежом.</p>
+        <p className="mb-4 text-xs text-secondary">
+          Нужен чистый сервер Ubuntu 24.04 у провайдера, где нет Hub. Перед настройкой мастер предложит проверить адрес с телефона:
+          мобильные операторы пропускают не все подсети хостингов.
+        </p>
       )}
-      <Field label="Страна сервера" htmlFor={ids.country} error={countryBad ? 'Две латинские буквы кода страны, например DE' : ''}
-        hint="Код страны ISO из двух латинских букв: DE, NL, FI…">
-        <Input id={ids.country} ref={countryRef} value={s.country} maxLength={2} disabled={!!s.serverId} placeholder="DE"
-          autoComplete="off" autoCapitalize="characters" spellCheck={false} onChange={(e) => set({ country: e.target.value })}
-          className="font-mono w-24" aria-invalid={countryBad || undefined} />
+      {!s.serverId && (
+        <div className="mb-4">
+          <h4 className="text-sm text-primary mb-2">Подготовьте сервер у хостера</h4>
+          <PrepareServer role={s.role} />
+        </div>
+      )}
+      <Field label="Страна сервера" htmlFor={ids.country} error={countryBad ? 'Выберите страну из списка' : ''}
+        hint={s.role === 'relay' ? 'Вход для пользователей из России ставится в России.' : 'Где стоит сервер (по данным хостера). После проверки подключения мастер подскажет страну по реестру IP-адресов.'}>
+        {s.role === 'relay' ? (
+          <Input id={ids.country} ref={countryRef} value={countryLabel('RU')} disabled className="w-full sm:w-64" />
+        ) : (
+          <Select id={ids.country} ref={countryRef} value={s.country} disabled={!!s.serverId} onChange={(e) => set({ country: e.target.value })}
+            className="w-full sm:w-64" aria-invalid={countryBad || undefined}>
+            <option value="">Выберите страну…</option>
+            {exitCountries(s.country).map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
+          </Select>
+        )}
       </Field>
       <Field label="Название (необязательно)" htmlFor={ids.name}
-        hint={`Например, «Франкфурт». По нему вы отличаете ноды и подтверждаете опасные действия. Пусто — «Выход ${s.country || 'DE'}».`}>
+        hint={s.role === 'relay'
+          ? 'Например, «Москва Timeweb». По нему вы отличаете входы и подтверждаете опасные действия. Пусто — «Резервный вход RU».'
+          : `Например, «Франкфурт». По нему вы отличаете ноды и подтверждаете опасные действия. Пусто — «Выход ${s.country || 'DE'}».`}>
         <Input id={ids.name} value={s.name} disabled={!!s.serverId} maxLength={64} onChange={(e) => set({ name: e.target.value })} />
       </Field>
       {s.serverId && <p className="text-xs text-tertiary">Нода уже сохранена: название и страну можно изменить позже в её карточке.</p>}
@@ -165,11 +186,12 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
             onChange={(e) => set({ sshPort: e.target.value })} className="font-mono tabular-nums" aria-invalid={portBad || undefined} />
         </Field>
       </div>
+      {!saved && <p className="mb-3 text-xs text-tertiary">Ключ Hub и порты — на первом шаге «Подготовка». Если ключ вставлен у хостера, пароль ниже не нужен.</p>}
       {saved ? (
-        <p className="mb-3 text-xs text-tertiary">Пароль root сохранён на Hub в зашифрованном виде и в админке больше не показывается.</p>
+        <p className="mb-3 text-xs text-tertiary">Доступ сохранён: Hub входит по своему ключу; пароль, если был, хранится зашифрованным и больше не показывается.</p>
       ) : (
-        <Field label="Пароль root" htmlFor={ids.password}
-          hint="Отправляется только при сохранении — после подтверждения ключа. Хранится зашифрованным; после настройки Hub входит по своему ключу, пароль остаётся запасным.">
+        <Field label="Пароль root (необязательно)" htmlFor={ids.password}
+          hint="Не нужен, если ключ Hub уже вставлен у хостера. Иначе — пароль root: отправляется только при сохранении, хранится зашифрованным, после настройки остаётся запасным.">
           {/* Uncontrolled on purpose: the password is never in React state, a value attribute or an action. */}
           <Input id={ids.password} ref={passwordRef} type="password" name={ids.password} autoComplete="new-password" spellCheck={false}
             defaultValue="" disabled={!!busy} onChange={(e) => dispatch({ type: 'passwordFlags', ...passwordFlags(e.target.value) })} />
@@ -183,7 +205,28 @@ function AccessStep({ s, set, dispatch, ids, busy, onProbe, passwordRef }) {
           <span className="text-xs text-tertiary">Только обмен ключами SSH — пароль на этом шаге не отправляется.</span>
         </div>
       )}
+      {s.probe && <GeoHint s={s} set={set} />}
       {s.probe && <KeyChooser s={s} dispatch={dispatch} ids={ids} busy={busy} />}
+    </div>
+  )
+}
+
+// GeoHint: the registry country of the probed address next to the chosen one (B2). An exit's
+// country can still be changed until the node is saved; an entry must be a Russian address.
+function GeoHint({ s, set }) {
+  const h = geoHint(s.country, s.probe?.geo_country)
+  if (!h) return null
+  if (s.role === 'relay') {
+    return h.code === 'RU' ? null : (
+      <p className="mt-3 text-xs text-warning">По реестру адресов этот IP — {countryLabel(h.code)}, а вход в РФ должен быть российским адресом: мобильные операторы пропускают отечественные подсети.</p>
+    )
+  }
+  return (
+    <div className={`mt-3 flex flex-col sm:flex-row sm:items-center gap-2 text-xs ${h.matches ? 'text-success' : 'text-warning'}`}>
+      <span>{h.text}{!h.matches && s.country ? `, а выбрано ${countryLabel(s.country)}` : ''}.</span>
+      {!h.matches && !s.serverId && h.code !== 'RU' && (
+        <Button size="sm" variant="secondary" onClick={() => set({ country: h.code })}>Выбрать {countryLabel(h.code)}</Button>
+      )}
     </div>
   )
 }
@@ -226,7 +269,7 @@ function OptionsStep({ s, set, dispatch, ids }) {
   return (
     <div className="space-y-5">
       <Switch checked={s.mtproxy} onChange={(v) => set({ mtproxy: v })} label="Telegram-прокси (MTProxy)"
-        description="Пользователи получат прокси для Telegram на этой ноде. Нужна A-запись домена маскировки на IP ноды." />
+        description="Пользователи получат прокси для Telegram на этой ноде. Включайте, только если классический MTProto включён в разделе «Telegram» и A-запись домена маскировки уже указывает на IP выхода — иначе установка не пройдёт." />
       <fieldset>
         <legend className="text-xs text-secondary mb-1">Тарифы, которые идут через эту ноду</legend>
         {s.plansState === 'loading' && <Skeleton className="h-16 w-full" />}
@@ -279,6 +322,8 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
+  const [mobile, setMobile] = useState({ state: 'none' }) // the phone check of a reserve entry
+  const [enabled, setEnabled] = useState('') // '' | done: everyone was sent through this entry
   const uid = useId()
   const ids = {
     title: `${uid}-title`, country: `${uid}-country`, name: `${uid}-name`, ip: `${uid}-ip`, port: `${uid}-port`,
@@ -369,7 +414,14 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
     runPreflight()
   })
 
+  const enableForAll = () => act('enable', async () => {
+    await saveEntryMode('relay', s.serverId)
+    setEnabled('done')
+  })
+
   const go = (step) => dispatch({ type: 'go', step })
+  const relay = s.role === 'relay'
+  const steps = wizardSteps(s.role)
   const installing = s.step === INSTALL_STEP
   const succeeded = result?.status === 'succeeded'
   const back = (
@@ -380,6 +432,13 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
   let primary
   if (s.step === 1 && !s.serverId) {
     primary = <Button onClick={create} loading={busy === 'create'} disabled={!!busy || !canCreate(s)}>Подтвердить и сохранить</Button>
+  } else if (s.step === 3 && relay) {
+    primary = (
+      <Button onClick={start} loading={busy === 'start'} disabled={!!busy || !canStart(s)}
+        variant={mobile.state === 'fail' ? 'secondary' : 'primary'}>
+        {mobile.state === 'pass' ? 'Настроить вход' : 'Настроить без проверки'}
+      </Button>
+    )
   } else if (s.step === 3) {
     primary = (
       <Button onClick={start} loading={busy === 'start'} disabled={!!busy || !canStart(s)}
@@ -393,17 +452,17 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
     <Dialog open onClose={requestClose} maxWidth="max-w-2xl">
       <div ref={rootRef} role="dialog" aria-modal="true" aria-labelledby={ids.title}>
         <div className="flex items-center justify-between gap-2 mb-4">
-          <h2 id={ids.title} className="text-lg font-semibold text-primary tracking-tight">Добавить ноду</h2>
+          <h2 id={ids.title} className="text-lg font-semibold text-primary tracking-tight">{relay ? 'Вход в РФ для мобильных' : 'Выход за рубежом'}</h2>
           <button type="button" onClick={requestClose} aria-label="Закрыть"
             className="inline-flex items-center justify-center w-8 h-8 rounded text-tertiary hover:text-primary hover:bg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
             <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
-        <Stepper steps={WIZARD_STEPS} current={installing && succeeded ? WIZARD_STEPS.length : s.step} />
+        <Stepper steps={steps} current={installing && succeeded ? steps.length : s.step} />
 
         {s.step === 0 && (
           <>
-            <StepHeading headingRef={headingRef} title="Роль и страна">Что это за сервер и где он стоит.</StepHeading>
+            <StepHeading headingRef={headingRef} title="Подготовка">Что это за сервер, что вставить у хостера и где он стоит.</StepHeading>
             <RoleStep s={s} set={set} ids={ids} countryRef={countryRef} />
           </>
         )}
@@ -417,11 +476,24 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
         )}
         {s.step === 2 && (
           <>
-            <StepHeading headingRef={headingRef} title="Предпроверка">Только чтение: на сервере ничего не меняется.</StepHeading>
+            <StepHeading headingRef={headingRef} title="Предпроверка">
+              Только чтение: на сервере ничего не меняется.{relay ? ' Нужен чистый сервер: порты 443, 2443 и UDP 50443 свободны.' : ''}
+            </StepHeading>
             <PreflightStep s={s} busy={busy} onRun={runPreflight} />
           </>
         )}
-        {s.step === 3 && (
+        {s.step === 3 && relay && (
+          <>
+            <StepHeading headingRef={headingRef} title="Проверка с телефона">
+              Убедитесь, что мобильные операторы пропускают этот адрес — тогда настройка не пропадёт зря.
+            </StepHeading>
+            <MobileCheckPanel serverId={s.serverId} canStart={can('nodes.provision')} onResult={setMobile} />
+            {mobile.state === 'fail' && (
+              <p className="mt-3 text-xs text-warning">Адрес не проходит: настраивать его для мобильных бессмысленно. Смените IP у хостера, закройте мастер и добавьте сервер заново (старую запись удалите в «Нодах»).</p>
+            )}
+          </>
+        )}
+        {s.step === 3 && !relay && (
           <>
             <StepHeading headingRef={headingRef} title="Настройки">Всё это можно изменить позже в карточке ноды.</StepHeading>
             <OptionsStep s={s} set={set} dispatch={dispatch} ids={ids} />
@@ -432,8 +504,24 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
             <StepHeading headingRef={headingRef} title="Установка">
               Нода войдёт в маршрутизацию только после проверки путей туннеля.
             </StepHeading>
-            <JobProgress jobId={s.jobId} canProvision={can('nodes.provision')} tcpEnabled={s.fallback} onFinished={setResult} />
+            <JobProgress jobId={s.jobId} canProvision={can('nodes.provision')} tcpEnabled={!relay && s.fallback} onFinished={setResult} />
             {!result && <p className="text-xs text-tertiary mt-3">Окно можно закрыть: установка продолжится, прогресс — в карточке ноды → «Задачи».</p>}
+            {relay && succeeded && (
+              <div className="mt-4 rounded border border-accent/30 bg-accent/10 p-3 space-y-2">
+                {enabled ? (
+                  <p className="text-sm text-success">Готово: подписка у всех пользователей теперь ведёт на этот вход. Приложения подхватят её при следующем обновлении (до 4 часов) или сразу — кнопкой обновления подписки.</p>
+                ) : (
+                  <>
+                    <p className="text-sm text-primary">Вход настроен. Последний шаг — перевести на него всех пользователей.</p>
+                    <p className="text-xs text-secondary">Hub останется в подписке строками «· напрямую». Вернуть всё как было можно на странице «Входы» в любой момент.
+                      Если кнопка ответит «не отвечает снаружи» — монитор ещё проверяет вход, подождите 2 минуты.</p>
+                    {can('nodes.provision') && (
+                      <Button onClick={enableForAll} loading={busy === 'enable'} disabled={!!busy}>Включить для всех пользователей</Button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </>
         )}
 

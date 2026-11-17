@@ -45,7 +45,7 @@ func otherKeys(t *testing.T, k config.ExitRealityKeys) config.ExitRealityKeys {
 func legacyKeysNode(t *testing.T, k config.ExitRealityKeys) *fakeHost {
 	t.Helper()
 	n := newFakeHost()
-	xc, err := config.ExitXrayConfigJSON(k, "203.0.113.7", 8443)
+	xc, err := legacyXrayConfigJSON(k, "203.0.113.7", 8443)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestNoKeysFileRefusedWhileATunnelExists(t *testing.T) {
 		"database uuid only":     {db: Tunnel{UUID: k.UUID}, want: []string{noFile, "(в базе servers.tunnel_uuid)"}},
 		"database password only": {db: Tunnel{Password: k.SSPassword}, want: []string{noFile, "(в базе servers.tunnel_ss_password)"}},
 		"live xray only": {setup: func(n *fakeHost) {
-			xc, _ := config.ExitXrayConfigJSON(k, "203.0.113.7", 8443)
+			xc, _ := legacyXrayConfigJSON(k, "203.0.113.7", 8443)
 			n.files[config.ExitXrayConfig] = xc
 		}, want: []string{noFile, "(на ноде " + wantXrayWhere + ")"}},
 		"live /etc hysteria only": {setup: func(n *fakeHost) {
@@ -351,7 +351,7 @@ func TestNoKeysFileRefusedWhileATunnelExists(t *testing.T) {
 		"an unreadable live config": {setup: func(n *fakeHost) { n.files[config.ExitHysteriaConfig] = []byte("auth: password\n") },
 			want: []string{noFile, "(на ноде " + config.ExitHysteriaConfig + " (не разобран))"}},
 		"everything (an online exit whose file was deleted)": {db: dbTunnel(k), setup: func(n *fakeHost) {
-			xc, _ := config.ExitXrayConfigJSON(k, "203.0.113.7", 8443)
+			xc, _ := legacyXrayConfigJSON(k, "203.0.113.7", 8443)
 			n.files[config.ExitXrayConfig] = xc
 			n.files[config.ExitHysteriaConfig] = []byte(config.ExitHysteriaServerYAML(k.SSPassword, "203.0.113.7", 8443))
 		}, want: []string{noFile, "в базе servers.tunnel_uuid, servers.tunnel_ss_password; на ноде " + wantXrayWhere + ", " + wantHyWhere,
@@ -486,40 +486,42 @@ func TestHysteriaAuthPassword(t *testing.T) {
 
 // ── the recipe: downstream steps compare against the adopted values ──
 
-var jsonClientID = regexp.MustCompile(`"id": *"([^"]+)"`)
+// stlsPassword matches the ShadowTLS password of a backup tunnel config (32 hex characters; the
+// Shadowsocks key next to it is base64 of another length).
+var stlsPassword = regexp.MustCompile(`"password": "([0-9a-f]{32})"`)
 
 // tieTunnelToCredentials makes the Hub's path probes answer only when both ends carry the same
 // credentials, as the real tunnel does: the main tunnel when the Hub client's auth is the exit's
-// hysteria password, the TCP path when the probe dials with a UUID the exit's Reality inbound
-// accepts. probed collects the UUIDs the TCP probes dialled with.
+// hysteria password, the backup path when the Hub's ShadowTLS client dials with the password the
+// exit's ShadowTLS server expects. probed collects the passwords the backup probes dialled with.
 func tieTunnelToCredentials(e *exitEnv, probed *[]string) {
-	var probeCfg string
-	e.hub.seen = func(op string) {
-		if strings.HasPrefix(op, "vr-probe") {
-			probeCfg = string(e.hub.files[config.VRProbeConfigPath(7)])
-		}
-	}
 	e.hub.probeDead = func(op string) bool {
-		switch {
-		case strings.HasPrefix(op, "socks-probe"):
+		switch op {
+		case "socks-probe 1095":
 			pw, ok := hysteriaAuthPassword(string(e.node.files[config.ExitHysteriaConfig]))
 			hub, hubOK := yamlScalar(between(string(e.hub.files[config.HubClientConfigPath(7)]), "\nauth: ", "\n"))
 			return !ok || !hubOK || hub != pw
-		case strings.HasPrefix(op, "vr-probe"):
-			m := jsonClientID.FindStringSubmatch(probeCfg)
+		case "socks-probe 2095":
+			m := stlsPassword.FindStringSubmatch(string(e.hub.files[config.HubSTLSConfigPath(7)]))
 			if m == nil {
 				return true
 			}
 			*probed = append(*probed, m[1])
-			for _, live := range jsonClientID.FindAllStringSubmatch(string(e.node.files[config.ExitXrayConfig]), -1) {
-				if live[1] == m[1] {
-					return false
-				}
-			}
-			return true
+			live := stlsPassword.FindStringSubmatch(string(e.node.files[config.ExitSTLSConfig]))
+			return live == nil || live[1] != m[1]
 		}
 		return false
 	}
+}
+
+// stlsPW is the ShadowTLS password the tunnel UUID derives.
+func stlsPW(t *testing.T, uuid string) string {
+	t.Helper()
+	pw, _, err := config.STLSSecrets(uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pw
 }
 
 // A converged exit whose keys file is (back) in the old format: verify shows that one drift and
@@ -538,22 +540,22 @@ func TestExitLegacyKeysFileOnConvergedExit(t *testing.T) {
 	writes, hubWrites, restarts, hubRestarts, tunnel, syncs := e.node.writes, e.hub.writes, maps.Clone(e.node.restarts), maps.Clone(e.hub.restarts), e.h.tunnel, e.h.syncs
 
 	id := e.start(t, KindVerify)
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "drift", "ok", "skipped", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "drift", "ok", "skipped", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("verify: %v\n%s", got, e.tail(id, "reality_keys"))
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, legacyKeysDrift) || strings.Contains(tl, "некорректен") {
 		t.Fatalf("reality_keys: %q", tl)
 	}
-	if e.node.writes != writes || !maps.Equal(e.node.restarts, restarts) || e.h.syncs != syncs || len(probed) != 1 || probed[0] != k.UUID {
-		t.Fatalf("verify touched the node (writes %d) or probed with another UUID (%d probes)", e.node.writes-writes, len(probed))
+	if e.node.writes != writes || !maps.Equal(e.node.restarts, restarts) || e.h.syncs != syncs || len(probed) != 1 || probed[0] != stlsPW(t, k.UUID) {
+		t.Fatalf("verify touched the node (writes %d) or probed with another password (%d probes)", e.node.writes-writes, len(probed))
 	}
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "done", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "done", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
-	if e.keys(t) != k || e.node.writes != writes+1 || e.hub.writes != hubWrites+2 || !maps.Equal(e.node.restarts, restarts) ||
+	if e.keys(t) != k || e.node.writes != writes+1 || e.hub.writes != hubWrites || !maps.Equal(e.node.restarts, restarts) ||
 		!maps.Equal(e.hub.restarts, hubRestarts) || e.h.tunnel != tunnel || e.h.syncs != syncs {
 		t.Fatalf("only the keys file may change: keys kept %v, writes %d/%d, restarts %v %v, tunnel kept %v, syncs %d",
 			e.keys(t) == k, e.node.writes-writes, e.hub.writes-hubWrites, e.node.restarts, e.hub.restarts, e.h.tunnel == tunnel, e.h.syncs-syncs)
@@ -576,7 +578,7 @@ func TestExitDeletedKeysFileNeverRegenerated(t *testing.T) {
 	k := e.keys(t)
 	e.node.remove(config.ExitKeysPath)
 	writes, restarts, hubRestarts, tunnel, syncs := e.node.writes, maps.Clone(e.node.restarts), maps.Clone(e.hub.restarts), e.h.tunnel, e.h.syncs
-	yaml, xc := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitXrayConfig])
+	yaml, xc := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitSTLSConfig])
 
 	id := e.start(t, KindVerify)
 	if st := e.steps(id); st["reality_keys"] != StepDrift || !strings.Contains(e.tail(id, "reality_keys"), "новые ключи разорвали бы его, не создаю") {
@@ -588,7 +590,7 @@ func TestExitDeletedKeysFileNeverRegenerated(t *testing.T) {
 		t.Fatalf("%s %q %v", j.Status, j.Error, e.store.statuses(id))
 	}
 	if e.node.writes != writes || e.node.files[config.ExitKeysPath] != nil || string(e.node.files[config.ExitHysteriaConfig]) != yaml ||
-		string(e.node.files[config.ExitXrayConfig]) != xc || !maps.Equal(e.node.restarts, restarts) || !maps.Equal(e.hub.restarts, hubRestarts) ||
+		string(e.node.files[config.ExitSTLSConfig]) != xc || xc == "" || !maps.Equal(e.node.restarts, restarts) || !maps.Equal(e.hub.restarts, hubRestarts) ||
 		e.h.tunnel != tunnel || e.h.syncs != syncs || e.h.lifecycle != "online" {
 		t.Fatalf("the refused converge changed something: writes %d, keys file %v", e.node.writes-writes, e.node.files[config.ExitKeysPath] != nil)
 	}
@@ -637,35 +639,50 @@ func TestExitTwoConvergesWithOldKeysFile(t *testing.T) {
 	tieTunnelToCredentials(e, &probed)
 	writes := e.node.writes
 	id := e.start(t, KindVerify)
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
+	// The old exit has no ShadowTLS yet: its tunnel and the Hub's client drift, the backup path is
+	// down and the retired xray still there.
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "drift", "ok")) {
 		t.Fatalf("verify: %v", got)
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, legacyKeysDrift) || strings.Contains(tl, "некорректен") {
 		t.Fatalf("reality_keys: %q", tl)
 	}
-	for _, step := range []string{"hysteria", "xray", "save_tunnel", "hub_client", "path_tcp"} {
+	for _, step := range []string{"hysteria", "stls", "save_tunnel", "hub_client", "hub_stls", "path_tcp"} {
 		if tl := e.tail(id, step); strings.Contains(tl, "ключи туннеля не прочитаны") {
 			t.Fatalf("%s did not compare against the adopted keys: %q", step, tl)
 		}
 	}
-	if e.node.writes != writes || len(probed) != 1 || probed[0] != k.UUID {
-		t.Fatalf("verify wrote %d files or probed with another UUID (%d probes)", e.node.writes-writes, len(probed))
+	if e.node.writes != writes || len(probed) != 0 {
+		t.Fatalf("verify wrote %d files or probed a backup client that is not there (%d probes)", e.node.writes-writes, len(probed))
 	}
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
 	if e.keys(t) != k || e.h.tunnel != dbTunnel(k) {
 		t.Fatalf("the tunnel credentials must survive: file %v, database %v", e.keys(t) == k, e.h.tunnel == dbTunnel(k))
 	}
+	// Both ends of the backup tunnel derive from the adopted UUID, and the backup path answered with them.
 	if pw, _ := hysteriaAuthPassword(string(e.node.files[config.ExitHysteriaConfig])); pw != k.SSPassword ||
-		!strings.Contains(string(e.node.files[config.ExitXrayConfig]), `"id": "`+k.UUID+`"`) ||
-		!strings.Contains(string(e.hub.files[config.HubClientConfigPath(7)]), "\nauth: "+k.SSPassword+"\n") {
-		t.Fatal("hysteria, xray and the Hub's client must keep the adopted credentials")
+		!strings.Contains(string(e.node.files[config.ExitSTLSConfig]), `"password": "`+stlsPW(t, k.UUID)+`"`) ||
+		!strings.Contains(string(e.hub.files[config.HubSTLSConfigPath(7)]), `"password": "`+stlsPW(t, k.UUID)+`"`) ||
+		!strings.Contains(string(e.hub.files[config.HubClientConfigPath(7)]), "\nauth: "+k.SSPassword+"\n") ||
+		len(probed) == 0 || probed[len(probed)-1] != stlsPW(t, k.UUID) || e.node.files[config.ExitXrayConfig] != nil {
+		t.Fatal("hysteria, the backup tunnel and the Hub's clients must keep the adopted credentials; the old xray must be gone")
 	}
 	for _, st := range e.store.jobs[id].Steps {
 		noSecrets(t, []string{st.OutputTail}, k.UUID, k.SSPassword, k.PrivateKey)
 	}
+}
+
+// legacyXrayConfigJSON is the exit xray config of the retired Reality path (the shape the old
+// renderer wrote until 2026-11-16): the inbound vless-reality on :10443 with the tunnel UUID as
+// its one client — what liveRealityClients still reads to adopt a legacy exit's keys.
+func legacyXrayConfigJSON(k config.ExitRealityKeys, _ string, _ int) ([]byte, error) {
+	return json.MarshalIndent(map[string]any{"inbounds": []any{map[string]any{
+		"tag": "vless-reality", "listen": "0.0.0.0", "port": config.ExitRealityPort, "protocol": "vless",
+		"settings": map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": k.UUID, "flow": "xtls-rprx-vision"}}},
+	}}}, "", "  ")
 }

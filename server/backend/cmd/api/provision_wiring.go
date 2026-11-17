@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +20,7 @@ import (
 	"github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tgweb"
 )
 
 // nodeStore is the API's provisioning store: the Hub's own key on disk, node passwords
@@ -28,6 +32,10 @@ var (
 	exitHubIPs        = hubOwnIPs
 	exitSetting       = biz.GetSettingOrDefault
 	mtproxyScriptPath = "/opt/heyearth/scripts/install-mtproxy.sh"
+	// relayHubHost reads main_server_host strictly: sql.ErrNoRows when absent, any other error a
+	// failed read (never a default — a guessed DNAT target would forward users elsewhere).
+	relayHubHost   = func(ctx context.Context) (string, error) { return biz.GetSettingContext(ctx, "main_server_host") }
+	relayHubLookup = provision.DefaultHubLookup
 )
 
 // initProvisioning: jobs the previous process left running become interrupted (resumable with
@@ -53,6 +61,16 @@ func initProvisioning() {
 	admin.NodeJobs = nodeStore
 	admin.HubPublicKey = func(ctx context.Context) (string, error) { return provision.EnsureHubKey(ctx, provision.LocalRemote{}) }
 	admin.HubOwnIPs = hubOwnIPs
+	tgweb.HubAddrs = hubOwnIPs // where tg.<domain> may point besides the entries
+	// The WEB proxy's install run brings the exits' MTProxy to its secret with node jobs.
+	tgweb.StartExitJob = nodeRunner.Start
+	tgweb.ExitJob = func(ctx context.Context, id int) (int64, string, string, error) {
+		jobs, err := nodeStore.ListJobs(ctx, id, 1)
+		if err != nil || len(jobs) == 0 {
+			return 0, "", "", err
+		}
+		return jobs[0].ID, jobs[0].Status, jobs[0].Error, nil
+	}
 }
 
 // nodeRunner runs every node job of the API (admin handlers and the reconciler's MTProxy backfill).
@@ -256,7 +274,7 @@ func migrateLegacyPasswords(ctx context.Context, todo []legacyPassword,
 func apiHooks() provision.Hooks { return nodeStore.Hooks(biz.RequestSync, admin.ProbeNodeAgent) }
 
 // apiRecipe is the runner's recipe source: the Hub side runs locally (the API is on the Hub).
-func apiRecipe(_ context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
+func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Recipe, *provision.State, error) {
 	st := provision.NewState(kind, n, provision.LocalRemote{}, apiHooks())
 	// The options' errors name what the owner fixes on the Hub (addresses, assets): refusals.
 	switch {
@@ -266,15 +284,62 @@ func apiRecipe(_ context.Context, n provision.Node, kind string) (provision.Reci
 			return nil, nil, provision.Refusal(err)
 		}
 		st.Exit.MTProto = mt
-	case kind != provision.KindDeprovision && n.Role == "exit":
+	case kind == provision.KindTGMTProxy: // the WEB proxy's MTProxy only
+		tg, err := tgExitOptions(ctx, n.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		st.Exit.TGMTProxy = tg
+	case kind == provision.KindDeprovision: // taking a node out of service needs no options
+	case n.Role == "exit":
 		opts, err := apiExitOptions(n)
 		if err != nil {
 			return nil, nil, provision.Refusal(err)
 		}
+		if opts.TGMTProxy, err = tgExitOptions(ctx, n.ID); err != nil {
+			return nil, nil, err
+		}
 		st.Exit = opts
+	case n.Role == "relay":
+		opts, err := apiRelayOptions(ctx, n)
+		if err != nil {
+			return nil, nil, err // a refusal, or an internal error (the setting could not be read)
+		}
+		st.Relay = opts
 	}
 	rc, err := provision.RecipeFor(kind, n, st)
 	return rc, st, err
+}
+
+// tgExitOptions is tgweb.ExitOptions (tests swap it): nil while the WEB proxy is off; a failed
+// read of its settings is an internal error (never a job that silently skips the step).
+var tgExitOptions = func(ctx context.Context, id int) (*provision.TGExitOptions, error) {
+	o, err := tgweb.ExitOptions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("настройки WEB-прокси не прочитаны: %w", err)
+	}
+	return o, nil
+}
+
+// apiRelayOptions: what a relay recipe takes from the Hub. The DNAT target is main_server_host —
+// the address users reach the Hub at today, which its replies come from (the relay's conntrack
+// matches only replies from the address it sent to) — and never hubOwnIPs: that list also holds
+// the Hub's other interface addresses, among them one filtered upstream. hubOwnIPs is only where
+// SSH to the relay may come from (an active ufw without a rule for the SSH port).
+func apiRelayOptions(ctx context.Context, n provision.Node) (provision.RelayOptions, error) {
+	host, err := relayHubHost(ctx)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		host = "" // RelayOptionsFor refuses: no Hub address, no relay
+	case err != nil:
+		return provision.RelayOptions{}, fmt.Errorf("main_server_host не прочитан: %w", err)
+	}
+	o, err := provision.RelayOptionsFor(ctx, n.IP, n.SSHPort, host, relayHubLookup)
+	if err != nil {
+		return provision.RelayOptions{}, provision.Refusal(err)
+	}
+	o.HubIPs = exitHubIPs()
+	return o, nil
 }
 
 // apiExitOptions: what an exit recipe takes from the Hub. HubIPs is ONE list for the node's
@@ -292,7 +357,6 @@ func apiExitOptions(n provision.Node) (provision.ExitOptions, error) {
 	o := provision.ExitOptions{
 		HubIPs:      hubIPs,
 		MTProtoPort: port,
-		HubXray:     xrayUnitBinary,
 		NodeAgent:   func() ([]byte, error) { return readHubFile(filepath.Join(config.AppDir(), "artifacts", "node-agent")) },
 		CA: func() ([]byte, []byte, error) {
 			cert, err := readHubFile(filepath.Join(certs, "ca-cert.pem"))
@@ -312,7 +376,8 @@ func apiExitOptions(n provision.Node) (provision.ExitOptions, error) {
 }
 
 // apiMTProtoOptions: the node's MTProxy from the Hub's settings (the port is the one apiExitOptions
-// allows in the ACL / guard rules); nil when the owner switched MTProxy off for the node.
+// allows in the ACL / guard rules); nil when the owner switched MTProxy off for the node. The exit
+// fronts its own domain (exitMTProtoDomain) with the shared key.
 func apiMTProtoOptions(n provision.Node) (*provision.MTProtoOptions, error) {
 	if n.MTProtoStatus == "disabled" {
 		return nil, nil
@@ -321,9 +386,46 @@ func apiMTProtoOptions(n provision.Node) (*provision.MTProtoOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &provision.MTProtoOptions{Port: config.ParseMTProtoPort(exitSetting("mtproto_port", "")),
+	o := &provision.MTProtoOptions{Port: config.ParseMTProtoPort(exitSetting("mtproto_port", "")),
 		Secret: strings.TrimSpace(exitSetting("mtproto_secret", "")),
-		Domain: strings.TrimSpace(exitSetting("mtproto_fronting_domain", "")), Script: script}, nil
+		Domain: strings.TrimSpace(exitSetting("mtproto_fronting_domain", "")), Script: script}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := exitMTProtoDomainStep(ctx, n, o); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// exitMTProtoDomainStep is exitMTProtoDomain on the API's database (tests swap it).
+var exitMTProtoDomainStep = func(ctx context.Context, n provision.Node, o *provision.MTProtoOptions) error {
+	return exitMTProtoDomain(ctx, db.DB, n, o)
+}
+
+// exitMTProtoDomain points o at the exit's own fronting domain (biz.ExitFrontingDomain) and its
+// secret; o.Record writes the domain when the install step runs (never here: a verify job reads
+// options too). No domain found: o keeps the shared domain and the installer says it does not
+// resolve to the node (an exit installs without MTProxy). A failed read of the record is an error.
+func exitMTProtoDomain(ctx context.Context, q interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, n provision.Node, o *provision.MTProtoOptions) error {
+	stored, err := biz.ExitMTProtoDomain(ctx, q, n.ID)
+	if err != nil {
+		return fmt.Errorf("домен Telegram-прокси ноды %d: %w", n.ID, err)
+	}
+	domain, err := biz.ExitFrontingDomain(ctx, n.IP, stored, o.Domain)
+	if err != nil {
+		log.Printf("[mtproxy] нода %d: %v", n.ID, err)
+		return nil
+	}
+	secret, err := biz.MTProtoSecretFor(o.Secret, domain)
+	if err != nil {
+		return nil // the installer's own check names the bad shared secret
+	}
+	o.Domain, o.Secret = domain, secret
+	o.Record = func(ctx context.Context) error { return biz.SetExitMTProtoDomain(ctx, q, n.ID, domain) }
+	return nil
 }
 
 // readHubFile names the deploy step that puts a missing provisioning asset on the Hub.
@@ -332,7 +434,26 @@ func readHubFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("на Hub нет %s — выполните go run ./cmd/deploy --ensure-hub-provisioning (%v)", path, err)
 	}
+	if err := checkArtifactSum(path, b); err != nil {
+		return nil, err
+	}
 	return b, nil
+}
+
+// checkArtifactSum compares a Hub artifact with the sha256 written next to it by the deploy
+// (cleanup plan B7): a cut-off upload must fail here, before an exit gets a broken binary.
+// A file without the checksum (older deploys) is accepted.
+func checkArtifactSum(path string, data []byte) error {
+	want, err := os.ReadFile(path + ".sha256")
+	if err != nil {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	f := strings.Fields(string(want))
+	if got := hex.EncodeToString(sum[:]); len(f) == 0 || !strings.EqualFold(f[0], got) {
+		return fmt.Errorf("файл %s на Hub повреждён (sha256 не совпадает с записанным при деплое) — выложите его заново: go run quick_deploy.go", path)
+	}
+	return nil
 }
 
 // mtproxyRetryAfter: the reconciler's backfill does not start another MTProxy job on a node

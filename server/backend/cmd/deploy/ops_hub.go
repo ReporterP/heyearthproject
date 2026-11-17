@@ -70,6 +70,7 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 	step("journald + fail2ban", func() error { return setupJournaldFail2ban(client, cfg.deployPort, bc.target) })
 	step("nginx stream timeouts + limits", func() error { return patchNginxStream(client) })
 	step("egress guard", func() error { return installEgressGuard(client) })
+	step("AmneziaWG remains (D7)", func() error { return removeAWGHub(client) })
 
 	if len(failed) > 0 {
 		log.Fatalf("[ops] %d step(s) failed: %s", len(failed), strings.Join(failed, ", "))

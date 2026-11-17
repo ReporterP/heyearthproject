@@ -33,20 +33,21 @@ func TestRelayEntriesQuery(t *testing.T) {
 func TestParseEntryFailover(t *testing.T) {
 	at := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
 	cases := []struct {
-		active, target, since string
-		want                  EntryFailover
+		active, target, since, pinned string
+		want                          EntryFailover
 	}{
-		{"true", "5", "2026-10-12T10:00:00Z", EntryFailover{Active: true, Target: 5, Since: at}},
-		{"true", "5", "", EntryFailover{Active: true, Target: 5}},
-		{"true", "0", "2026-10-12T10:00:00Z", EntryFailover{}}, // nowhere to point: inactive
-		{"true", "x", "", EntryFailover{}},
-		{"false", "5", "2026-10-12T10:00:00Z", EntryFailover{}},
-		{"", "", "", EntryFailover{}},
+		{"true", "5", "2026-10-12T10:00:00Z", "", EntryFailover{Active: true, Target: 5, Since: at}},
+		{"true", "5", "", "false", EntryFailover{Active: true, Target: 5}},
+		{"true", "5", "", " true ", EntryFailover{Active: true, Target: 5, Pinned: true}},
+		{"true", "0", "2026-10-12T10:00:00Z", "true", EntryFailover{}}, // nowhere to point: inactive
+		{"true", "x", "", "", EntryFailover{}},
+		{"false", "5", "2026-10-12T10:00:00Z", "true", EntryFailover{}}, // a pin alone moves nobody
+		{"", "", "", "", EntryFailover{}},
 	}
 	for _, c := range cases {
-		got := ParseEntryFailover(c.active, c.target, c.since)
-		if got.Active != c.want.Active || got.Target != c.want.Target || !got.Since.Equal(c.want.Since) {
-			t.Errorf("ParseEntryFailover(%q,%q,%q) = %+v, want %+v", c.active, c.target, c.since, got, c.want)
+		got := ParseEntryFailover(c.active, c.target, c.since, c.pinned)
+		if got.Active != c.want.Active || got.Target != c.want.Target || !got.Since.Equal(c.want.Since) || got.Pinned != c.want.Pinned {
+			t.Errorf("ParseEntryFailover(%q,%q,%q,%q) = %+v, want %+v", c.active, c.target, c.since, c.pinned, got, c.want)
 		}
 	}
 }
@@ -269,7 +270,7 @@ func entriesAnswer(host *string, hub []driver.Value, relays [][]driver.Value, fa
 
 func TestListEntriesAssembly(t *testing.T) {
 	at := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
-	host := " 138.16.181.225 "
+	host := " 203.0.113.225 "
 	f := &entriesFake{answer: entriesAnswer(&host,
 		[]driver.Value{"domain", "hub.example.test", "healthy", at, "", "healthy", at, "", "unknown", nil, ""},
 		[][]driver.Value{
@@ -286,7 +287,7 @@ func TestListEntriesAssembly(t *testing.T) {
 		t.Fatalf("want Hub + 2 relays, got %+v", es)
 	}
 	hub, r1, r2 := es[0], es[1], es[2]
-	if hub.ID != 0 || hub.Kind != EntryKindHub || hub.Name != "Основной вход (Hub)" || hub.IP != "138.16.181.225" ||
+	if hub.ID != 0 || hub.Kind != EntryKindHub || hub.Name != "Основной вход (Hub)" || hub.IP != "203.0.113.225" ||
 		hub.AddressMode != EntryAddressDomain || hub.Address != "hub.example.test" || hub.Country != "RU" || hub.Lifecycle != "online" {
 		t.Errorf("hub: %+v", hub)
 	}
@@ -317,7 +318,7 @@ func TestListEntriesAssembly(t *testing.T) {
 // No Hub row in entry_state (deleted by hand, a fresh table): the Hub is still listed, by IP,
 // unchecked; the relays follow.
 func TestListEntriesHubWithoutStateRow(t *testing.T) {
-	host := "138.16.181.225"
+	host := "203.0.113.225"
 	f := &entriesFake{answer: entriesAnswer(&host, nil, [][]driver.Value{
 		{int64(2), "RU-relay-1", "198.51.100.9", "RU", "online", "ip", "", "unknown", nil, "", "unknown", nil, "", "unknown", nil, ""},
 	}, "")}
@@ -334,7 +335,7 @@ func TestListEntriesHubWithoutStateRow(t *testing.T) {
 
 // A failed read is an error, never a partial list (the subscription answers 503 on it).
 func TestListEntriesReadErrors(t *testing.T) {
-	host := "138.16.181.225"
+	host := "203.0.113.225"
 	hubRow := []driver.Value{"ip", "", "unknown", nil, "", "unknown", nil, "", "unknown", nil, ""}
 	for _, fail := range []string{"setting", "hub", "relays"} {
 		t.Run(fail, func(t *testing.T) {
@@ -355,11 +356,13 @@ func TestSetEntryFailoverArgs(t *testing.T) {
 		want []driver.Value
 	}{
 		{"active", EntryFailover{Active: true, Target: 5, Since: time.Date(2026, 10, 12, 13, 0, 0, 0, msk)},
-			[]driver.Value{"entry_failover_active", "true", "entry_failover_target", "5", "entry_failover_since", "2026-10-12T10:00:00Z"}},
+			[]driver.Value{"entry_failover_active", "true", "entry_failover_target", "5", "entry_failover_since", "2026-10-12T10:00:00Z", "entry_failover_pinned", "false"}},
 		{"active, no since", EntryFailover{Active: true, Target: 5},
-			[]driver.Value{"entry_failover_active", "true", "entry_failover_target", "5", "entry_failover_since", ""}},
-		{"off (target and since ignored)", EntryFailover{Target: 7, Since: time.Now()},
-			[]driver.Value{"entry_failover_active", "false", "entry_failover_target", "0", "entry_failover_since", ""}},
+			[]driver.Value{"entry_failover_active", "true", "entry_failover_target", "5", "entry_failover_since", "", "entry_failover_pinned", "false"}},
+		{"pinned", EntryFailover{Active: true, Target: 5, Pinned: true},
+			[]driver.Value{"entry_failover_active", "true", "entry_failover_target", "5", "entry_failover_since", "", "entry_failover_pinned", "true"}},
+		{"off (target, since and pin ignored)", EntryFailover{Target: 7, Since: time.Now(), Pinned: true},
+			[]driver.Value{"entry_failover_active", "false", "entry_failover_target", "0", "entry_failover_since", "", "entry_failover_pinned", "false"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -370,7 +373,7 @@ func TestSetEntryFailoverArgs(t *testing.T) {
 			}
 			calls := f.calls()
 			if len(calls) != 1 || !calls[0].exec || !strings.Contains(normSQL(calls[0].q), "ON CONFLICT (KEY) DO UPDATE SET VALUE = EXCLUDED.VALUE") {
-				t.Fatalf("want one upsert of the three keys, got %+v", calls)
+				t.Fatalf("want one upsert of the four keys, got %+v", calls)
 			}
 			if !reflect.DeepEqual(calls[0].args, c.want) {
 				t.Errorf("args = %q, want %q", calls[0].args, c.want)
@@ -379,10 +382,10 @@ func TestSetEntryFailoverArgs(t *testing.T) {
 	}
 }
 
-// The three keys come from one statement; per-key reads answer the same values, so only a
+// The four keys come from one statement; per-key reads answer the same values, so only a
 // single-query read passes.
 func TestGetEntryFailoverOneQuery(t *testing.T) {
-	settings := map[string]string{"entry_failover_active": "true", "entry_failover_target": " 5 ", "entry_failover_since": "2026-10-12T10:00:00Z"}
+	settings := map[string]string{"entry_failover_active": "true", "entry_failover_target": " 5 ", "entry_failover_since": "2026-10-12T10:00:00Z", "entry_failover_pinned": "true"}
 	answer := func(fail bool) func(string, []driver.Value) (driver.Rows, error) {
 		return func(q string, args []driver.Value) (driver.Rows, error) {
 			if fail {
@@ -409,13 +412,13 @@ func TestGetEntryFailoverOneQuery(t *testing.T) {
 	f := &entriesFake{answer: answer(false)}
 	withEntriesDB(t, f)
 	st, err := GetEntryFailover(context.Background())
-	if err != nil || !st.Active || st.Target != 5 || !st.Since.Equal(time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)) {
+	if err != nil || !st.Active || st.Target != 5 || !st.Since.Equal(time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)) || !st.Pinned {
 		t.Fatalf("GetEntryFailover = %+v, %v", st, err)
 	}
 	calls := f.calls()
-	wantArgs := []driver.Value{"entry_failover_active", "entry_failover_target", "entry_failover_since"}
+	wantArgs := []driver.Value{"entry_failover_active", "entry_failover_target", "entry_failover_since", "entry_failover_pinned"}
 	if len(calls) != 1 || !reflect.DeepEqual(calls[0].args, wantArgs) {
-		t.Fatalf("want one read of the three keys, got %+v", calls)
+		t.Fatalf("want one read of the four keys, got %+v", calls)
 	}
 	if ok, err := EntryIsFailoverTarget(context.Background(), 5); !ok || err != nil {
 		t.Errorf("target 5: %v, %v", ok, err)

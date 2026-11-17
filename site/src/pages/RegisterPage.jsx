@@ -1,303 +1,289 @@
-import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { registerUser, updateProfile } from '../api/user.js'
 import { useAuth } from '../auth/AuthContext.jsx'
-import PasswordInput from '../components/PasswordInput.jsx'
-import Fireflies from '../components/Fireflies.jsx'
+import { safeRedirect } from '../lib/redirect.js'
+import { pendingReferral, forgetReferral } from '../lib/referral.js'
+import { fetchPlans } from '../lib/plans.js'
+import { copyText } from '../lib/clipboard.js'
+import { kopNum } from '../lib/format.js'
+import AuthLayout from '../components/AuthLayout.jsx'
+import Field, { Input } from '../components/Field.jsx'
+import Button from '../components/Button.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge from '../components/Badge.jsx'
+import CopyField from '../components/CopyField.jsx'
+import { Checkbox } from '../components/Controls.jsx'
+import Nomerok from '../components/Nomerok.jsx'
+import { useToast } from '../components/Toast.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
 
-const Arrow = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-)
+// Регистрация (spec 07 §7.1–7.2, artboards «Регистрация · шаг 1» and «ID выдан»).
+// The account is created at once, but the site signs in only on «Продолжить в кабинет»: the screen
+// with the ID — the only key to the account — stays until the person has saved it. The pending
+// registration lives in sessionStorage, so reloading step 2 does not lose the ID.
+const PENDING = 'he_pending_registration'
 
-/* Password strength hint — guidance, not a hard gate (backend accepts 4+) */
-function strengthOf(pw) {
-  if (!pw) return null
+function readPending() {
+  try { return JSON.parse(sessionStorage.getItem(PENDING) || 'null') } catch { return null }
+}
+function writePending(v) {
+  try { if (v) sessionStorage.setItem(PENDING, JSON.stringify(v)); else sessionStorage.removeItem(PENDING) } catch { /* storage off */ }
+}
+
+function strength(pw) {
+  if (!pw) return 0
   let score = 0
   if (pw.length >= 8) score++
   if (pw.length >= 12) score++
   if (/[a-zA-Zа-яА-Я]/.test(pw) && /\d/.test(pw)) score++
   if (/[^\w\s]/.test(pw)) score++
-  if (score <= 1) return { label: 'Слабый', pct: 33, cls: 'bg-danger', text: 'text-danger' }
-  if (score === 2) return { label: 'Средний', pct: 66, cls: 'bg-accent', text: 'text-accent' }
-  return { label: 'Надёжный', pct: 100, cls: 'bg-brand', text: 'text-brand' }
+  return score <= 1 ? 1 : score === 2 ? 2 : 3
+}
+export const STRENGTH = { 1: { label: 'Слабый', tone: 'bad' }, 2: { label: 'Средний', tone: 'warn' }, 3: { label: 'Надёжный', tone: 'ok' } }
+
+export function Meter({ value }) {
+  if (!value) return null
+  return <div className={`meter meter--${value}`} aria-hidden="true"><span /><span /><span /></div>
+}
+
+function useRefTerms() {
+  const [t, setT] = useState(null)
+  useEffect(() => {
+    fetch('/api/v1/referral/terms').then((r) => (r.ok ? r.json() : null)).then(setT).catch(() => setT(null))
+  }, [])
+  return t
+}
+
+function downloadIdFile(id) {
+  const d = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const body = `HiEarth ID\n${id}\n\nВыдан ${d}.\nЭто ваш единственный ключ от аккаунта — восстановить его нельзя.\nВход: https://hiearth.ru/login\n`
+  const href = URL.createObjectURL(new Blob([body], { type: 'text/plain;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = href
+  a.download = 'hiearth-id.txt'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(href)
 }
 
 export default function RegisterPage() {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const { login, isLoggedIn } = useAuth()
+  const toast = useToast()
+  const narrow = useMedia('(max-width: 1024px)')
+  const plan = params.get('plan')
+  const redirectTo = safeRedirect(params.get('redirect') || params.get('next'))
+  const afterwards = plan ? `/payment?plan=${encodeURIComponent(plan)}` : redirectTo
+  usePageMeta('Регистрация — HiEarth')
 
-  useEffect(() => {
-    if (isLoggedIn) navigate('/dashboard', { replace: true })
-  }, [isLoggedIn, navigate])
+  const [pending, setPending] = useState(readPending) // { id, token } after step 1
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [hasFree, setHasFree] = useState(false)
+  const terms = useRefTerms()
+  const refCode = useMemo(() => pendingReferral(), [])
+  const inFlight = useRef(false)
 
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [generatedId, setGeneratedId] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [downloaded, setDownloaded] = useState(false)
-  const [acknowledged, setAcknowledged] = useState(false) // gates "continue"
-  const [authToken, setAuthToken] = useState('')
+  useEffect(() => { if (isLoggedIn) navigate(afterwards, { replace: true }) }, [isLoggedIn]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchPlans().then((l) => setHasFree(l.some((p) => Number(p.price_rub) === 0))).catch(() => {}) }, [])
 
-  // Optional credentials
-  const [showCreds, setShowCreds] = useState(false)
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [credsLoading, setCredsLoading] = useState(false)
-  const [credsMsg, setCredsMsg] = useState('')
-  const [credsErr, setCredsErr] = useState('')
-  const [credsSaved, setCredsSaved] = useState(false)
-
-  const strength = strengthOf(password)
-
-  async function handleRegister() {
-    setLoading(true)
-    setError('')
+  async function create() {
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setError(null)
     try {
-      const data = await registerUser('web', '')
-      setGeneratedId(data.id || data.user_id || data.heyearth_id || '')
-      if (data.token) {
-        setAuthToken(data.token)
-        login(data.token)
-      }
+      const data = await registerUser('web', '', pendingReferral())
+      const next = { id: data.user_id || data.id || '', token: data.token || '' }
+      if (!next.id || !next.token) throw new Error('no id')
+      forgetReferral()
+      writePending(next)
+      setPending(next)
     } catch (e) {
-      setError(e.message || 'Не удалось создать аккаунт. Попробуйте ещё раз.')
+      setError(e?.kind === 'rate' || e?.status === 429
+        ? { title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
+        : { title: 'Не получилось создать аккаунт.', text: 'Попробуйте ещё раз через минуту.' })
     } finally {
-      setLoading(false)
+      inFlight.current = false
+      setBusy(false)
     }
   }
 
-  async function copyId() {
-    try {
-      await navigator.clipboard.writeText(generatedId)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* clipboard unavailable */ }
+  if (pending?.id) {
+    return <Issued pending={pending} afterwards={afterwards} narrow={narrow} onDone={() => { writePending(null); if (pending.token) login(pending.token); navigate(afterwards, { replace: true }) }} toast={toast} />
   }
 
-  // A credential that cannot be recovered deserves an offline copy
-  function downloadId() {
-    const body = `HiEarth ID\n${generatedId}\n\nЭто ваш единственный ключ от аккаунта — восстановить его нельзя.\nВход: https://hiearth.ru/login\n`
-    const blob = new Blob([body], { type: 'text/plain;charset=utf-8' })
-    const href = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = href
-    a.download = 'hiearth-id.txt'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(href)
-    setDownloaded(true)
-  }
-
-  async function saveCreds() {
-    setCredsErr(''); setCredsMsg('')
-    if (!username.trim() || username.trim().length < 5) {
-      setCredsErr('Имя пользователя — минимум 5 символов'); return
-    }
-    if (!password || password.length < 4) {
-      setCredsErr('Пароль — минимум 4 символа'); return
-    }
-    if (password !== confirmPassword) {
-      setCredsErr('Пароли не совпадают'); return
-    }
-    setCredsLoading(true)
-    try {
-      await updateProfile(authToken, { username: username.trim(), newPassword: password })
-      setCredsSaved(true)
-      setCredsMsg('Логин и пароль сохранены')
-    } catch (e) {
-      setCredsErr(e.message || 'Не удалось сохранить. Попробуйте снова.')
-    } finally {
-      setCredsLoading(false)
-    }
-  }
+  const refOn = refCode && terms?.enabled && terms.friend_kop > 0
+  const side = (
+    <>
+      <div style={{ width: 320 }}>
+        <div className="rail" />
+        <div style={{ display: 'flex', justifyContent: 'center' }}><div className="ghost-hook" /></div>
+      </div>
+      <p className="t-h3" style={{ marginTop: 12 }}>Здесь появится ваш номерок</p>
+      <p className="muted t-sm" style={{ maxWidth: 300, textAlign: 'center', marginTop: -16 }}>HiEarth ID вместо имени, почты и телефона. Только он открывает аккаунт.</p>
+    </>
+  )
 
   return (
-    <section className="relative min-h-[calc(100vh-8rem)] flex items-center justify-center py-16 overflow-hidden">
-      <Fireflies density={22000} />
-      <div className="pointer-events-none absolute inset-0">
-        <div className="blob-a absolute top-1/4 -left-24 w-80 h-80 rounded-full bg-brand/10 blur-[110px]" />
-        <div className="blob-b absolute bottom-1/4 -right-24 w-80 h-80 rounded-full bg-accent/8 blur-[110px]" />
+    <AuthLayout side={side}>
+      <div>
+        <h1 className="t-h1 rise">Получить HiEarth ID</h1>
+        <p className="t-lead rise" style={{ '--d': '120ms', marginTop: 10 }}>Анонимная регистрация за один клик.</p>
+      </div>
+      <ul className="plan__list rise" style={{ '--d': '160ms', margin: 0, fontSize: 15 }}>
+        <li>Не нужен email или телефон</li>
+        <li>Мгновенная активация</li>
+        {hasFree && <li>Первая неделя — бесплатно, без карты</li>}
+      </ul>
+      {refOn && (
+        <Alert tone="ok" icon="gift" title="Вас пригласил друг" className="rise" style={{ '--d': '200ms' }}>
+          {terms.referrer_kop === terms.friend_kop
+            ? `— после первой оплаты вам обоим придёт по ${kopNum(terms.friend_kop)} ₽.`
+            : `— после первой оплаты вам придёт ${kopNum(terms.friend_kop)} ₽.`}
+        </Alert>
+      )}
+      {error && <Alert tone="bad" title={error.title} rise>{error.text}</Alert>}
+      <Button variant="primary" size="lg" block iconRight="arrowRight" loading={busy} onClick={create} className="rise" style={{ '--d': '200ms' }}>Получить HiEarth ID</Button>
+      <p className="t-sm muted" style={{ textAlign: 'center' }}>Уже есть аккаунт? <Link to={afterwards !== '/dashboard' ? `/login?redirect=${encodeURIComponent(afterwards)}` : '/login'} className="link">Войти</Link></p>
+      <p className="t-xs subtle" style={{ textAlign: 'center' }}>
+        Нажимая кнопку, вы принимаете <a href="/offer" target="_blank" rel="noopener" className="link">договор-оферту</a> и <a href="/privacy" target="_blank" rel="noopener" className="link">политику конфиденциальности</a>.
+      </p>
+    </AuthLayout>
+  )
+}
+
+// Step 2 — «Аккаунт создан»
+function Issued({ pending, onDone, narrow, toast }) {
+  const [saved, setSaved] = useState(false)
+  const [creds, setCreds] = useState('open') // open | skipped | saved
+  const [login, setLogin] = useState('')
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [touched, setTouched] = useState({})
+  const [tried, setTried] = useState(false)
+  const [serverErr, setServerErr] = useState(null) // { field?, text }
+  const [busy, setBusy] = useState(false)
+  const [savedLogin, setSavedLogin] = useState('')
+  const [copiedBtn, setCopiedBtn] = useState(false)
+  const copyTimer = useRef(null)
+  const saving = useRef(false)
+  useEffect(() => () => clearTimeout(copyTimer.current), [])
+  const dirty = creds === 'open' && (login || pw || pw2)
+
+  const errs = {
+    login: !login.trim() ? 'Укажите имя пользователя'
+      : login.trim().length < 5 ? 'Имя пользователя должно быть не менее 5 символов'
+        : !/^[A-Za-z0-9_-]+$/.test(login.trim()) ? 'Имя может содержать только латинские буквы, цифры, «_» и «-»' : null,
+    pw: pw.length < 4 ? 'Пароль должен быть не менее 4 символов' : null,
+    pw2: pw2 !== pw ? 'Пароли не совпадают' : null,
+  }
+  const show = (k) => (tried || touched[k]) && errs[k]
+  const s = strength(pw)
+
+  async function save(e) {
+    e?.preventDefault()
+    if (saving.current) return
+    setTried(true)
+    setServerErr(null)
+    if (errs.login || errs.pw || errs.pw2) return
+    saving.current = true
+    setBusy(true)
+    try {
+      await updateProfile(pending.token, { username: login.trim(), newPassword: pw }, { signOutOn401: false })
+      setSavedLogin(login.trim())
+      setCreds('saved')
+      toast.ok('Изменения сохранены')
+    } catch (e) {
+      const raw = String(e?.data?.error || '').toLowerCase()
+      if (raw === 'username already taken') setServerErr({ field: 'login', text: 'Это имя уже занято — попробуйте другое' })
+      else if (raw.startsWith('username can only contain')) setServerErr({ field: 'login', text: 'Имя может содержать только латинские буквы, цифры, «_» и «-»' })
+      else if (e?.status === 429) setServerErr({ title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' })
+      else setServerErr({ text: 'Попробуйте снова.', title: 'Не удалось сохранить.' })
+    } finally {
+      saving.current = false
+      setBusy(false)
+    }
+  }
+
+  async function copyBtn() {
+    if (await copyText(pending.id)) {
+      setCopiedBtn(true)
+      clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopiedBtn(false), 2000)
+    }
+  }
+
+  const side = (
+    <>
+      <Nomerok id={pending.id} variant="swing" label="ваш номерок" railWidth={narrow ? 300 : 340} idSize={narrow ? 20 : 24} />
+    </>
+  )
+
+  return (
+    <AuthLayout reveal side={side} sideLabel="Ваш номерок" width={460}>
+      <div>
+        <h1 className="t-h1">Аккаунт создан</h1>
+        <p className="t-lead" style={{ marginTop: 10 }}>
+          {narrow ? 'Номерок выше' : 'Номерок справа'} — ваш ключ от аккаунта. Сохраните его: восстановить нельзя.
+        </p>
+      </div>
+      <CopyField value={pending.id} label="HiEarth ID" />
+      <div className="row gap-2 max-sm:flex-col max-sm:items-stretch">
+        <Button variant="secondary" icon="download" onClick={() => downloadIdFile(pending.id)} className="sm:flex-1">Скачать файл с ID</Button>
+        <Button variant="secondary" icon="copy" onClick={copyBtn} className="sm:flex-1" aria-live="polite">{copiedBtn ? '✓ Скопировано' : 'Копировать'}</Button>
       </div>
 
-      <div className="relative w-full max-w-md mx-auto px-6">
-        <div className="glass-strong rounded-[26px] p-8 md:p-10 animate-fade-in-scale">
-          {!generatedId ? (
-            <>
-              <div className="flex justify-center mb-7">
-                <div className="w-14 h-14 rounded-2xl bg-brand/12 border border-brand/25 text-brand flex items-center justify-center glow-brand">
-                  <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 7.5v6M22 10.5h-6M12.75 7a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.2v-.1a6.375 6.375 0 0112.75 0v.1A12.3 12.3 0 0110.37 21c-2.33 0-4.51-.64-6.37-1.77z" />
-                  </svg>
-                </div>
-              </div>
-
-              <h1 className="serif text-[26px] font-semibold text-center mb-1">Регистрация</h1>
-              <p className="text-text-secondary text-center text-sm mb-9">
-                Уникальный HiEarth ID за один клик. Анонимно и бесплатно.
-              </p>
-
-              {error && (
-                <div role="alert" className="flex items-start gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 mb-6 animate-fade-in">
-                  <svg className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                  </svg>
-                  <p className="text-danger text-sm">{error}</p>
-                </div>
-              )}
-
-              <button disabled={loading} className="btn-primary w-full !py-4 !text-base disabled:opacity-50" onClick={handleRegister}>
-                {loading ? (
-                  <>
-                    <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Создаём аккаунт…
-                  </>
-                ) : (<>Получить HiEarth ID <Arrow /></>)}
-              </button>
-
-              <div className="mt-8 space-y-3">
-                {['Анонимная регистрация', 'Не нужен email или телефон', 'Мгновенная активация'].map(f => (
-                  <div key={f} className="flex items-center gap-3 text-sm text-text-secondary">
-                    <svg className="w-4 h-4 text-brand flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                    </svg>
-                    {f}
+      {creds === 'open' ? (
+        <div className="collapse is-open">
+          <div>
+            <form className="card" style={{ padding: 20 }} aria-labelledby="creds-t" onSubmit={save} noValidate>
+              <p id="creds-t"><b>Логин и пароль</b> <Badge tone="plain" style={{ marginLeft: 6 }}>необязательно</Badge></p>
+              <p className="t-sm muted" style={{ marginTop: 2 }}>Тогда для входа хватит короткого имени вместо длинного ID.</p>
+              <div className="stack gap-4" style={{ marginTop: 16 }}>
+                {serverErr && !serverErr.field && <Alert tone="bad" title={serverErr.title}>{serverErr.text}</Alert>}
+                <Field label="Имя пользователя" hint="минимум 5 символов" error={(serverErr?.field === 'login' && serverErr.text) || show('login')}>
+                  <Input value={login} autoComplete="username" autoCapitalize="none" spellCheck={false}
+                    onChange={(e) => { setLogin(e.target.value); if (serverErr?.field === 'login') setServerErr(null) }}
+                    onBlur={() => setTouched((t) => ({ ...t, login: true }))} />
+                </Field>
+                <div className="grid g-2" style={{ gap: 12 }}>
+                  <div className="stack gap-2">
+                    <Field label="Пароль" error={show('pw')} hint={!show('pw') && s ? STRENGTH[s].label : null} hintTone={s ? STRENGTH[s].tone : ''}>
+                      <Input type="password" value={pw} autoComplete="new-password" onChange={(e) => setPw(e.target.value)} onBlur={() => setTouched((t) => ({ ...t, pw: true }))} />
+                    </Field>
+                    <Meter value={s} />
                   </div>
-                ))}
-              </div>
-
-              <div className="relative my-8 h-px bg-gradient-to-r from-transparent via-brand/15 to-transparent" />
-
-              <p className="text-center text-sm text-text-secondary">
-                Уже есть аккаунт?{' '}
-                <Link to="/login" className="text-brand hover:text-brand-light font-medium transition-colors">Войти</Link>
-              </p>
-            </>
-          ) : (
-            <div className="animate-fade-in-scale">
-              <div className="flex justify-center mb-5">
-                <div className="w-16 h-16 rounded-full bg-brand/12 border border-brand/25 flex items-center justify-center">
-                  <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
+                  <Field label="Повторите пароль" error={show('pw2')}>
+                    <Input type="password" value={pw2} autoComplete="new-password" onChange={(e) => setPw2(e.target.value)} onBlur={() => setTouched((t) => ({ ...t, pw2: true }))} />
+                  </Field>
+                </div>
+                <div className="row gap-2">
+                  <Button variant="secondary" type="submit" loading={busy}>Сохранить</Button>
+                  <Button variant="ghost" onClick={() => setCreds('skipped')} disabled={busy}>Пропустить</Button>
                 </div>
               </div>
-
-              <h2 className="serif text-2xl font-semibold mb-2 text-center">Аккаунт создан</h2>
-              <p className="text-text-secondary text-sm mb-6 text-center">Это ваш ключ от аккаунта. Сохраните его — восстановить нельзя.</p>
-
-              <div className="relative mb-4 p-6 rounded-2xl glass border border-brand/30 glow-brand text-center">
-                <p className="text-2xl md:text-3xl font-mono font-bold tracking-wider text-brand-light break-all select-all">{generatedId}</p>
-                <div className="absolute top-2 left-2 w-3 h-3 border-l-2 border-t-2 border-brand/40 rounded-tl" />
-                <div className="absolute top-2 right-2 w-3 h-3 border-r-2 border-t-2 border-brand/40 rounded-tr" />
-                <div className="absolute bottom-2 left-2 w-3 h-3 border-l-2 border-b-2 border-brand/40 rounded-bl" />
-                <div className="absolute bottom-2 right-2 w-3 h-3 border-r-2 border-b-2 border-brand/40 rounded-br" />
-              </div>
-
-              {/* Two ways to save it — both tracked so we can nudge */}
-              <div className="grid grid-cols-2 gap-2 mb-4">
-                <button onClick={copyId} className={copied ? 'btn-primary !py-2.5 !text-sm' : 'btn-ghost !py-2.5 !text-sm'}>
-                  {copied ? (<><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>Скопировано</>) : 'Копировать'}
-                </button>
-                <button onClick={downloadId} className={downloaded ? 'btn-primary !py-2.5 !text-sm' : 'btn-ghost !py-2.5 !text-sm'}>
-                  {downloaded ? (<><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>Скачано</>) : 'Скачать файл'}
-                </button>
-              </div>
-
-              <div className="flex items-start gap-3 p-4 rounded-xl bg-accent/10 border border-accent/25 text-left mb-5">
-                <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-                <p className="text-xs text-accent/90 leading-relaxed">
-                  Без этого ID вы не сможете войти. Мы не храним почту и телефон, поэтому восстановить доступ невозможно.
-                </p>
-              </div>
-
-              {/* Optional: shorter login instead of the long ID */}
-              {!credsSaved && (
-                <div className="mb-5 text-left">
-                  {!showCreds ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowCreds(true)}
-                      className="w-full py-3 rounded-xl border border-dashed border-brand/20 hover:border-brand/45 hover:bg-brand/5 text-sm text-text-secondary hover:text-text-primary transition-all flex items-center justify-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
-                      Добавить логин и пароль — вход станет проще
-                    </button>
-                  ) : (
-                    <div className="p-4 rounded-xl bg-white/[0.03] border border-brand/12 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-semibold">Логин и пароль</p>
-                        <button onClick={() => setShowCreds(false)} className="text-xs text-text-secondary hover:text-text-primary">Пропустить</button>
-                      </div>
-                      <p className="text-xs text-text-secondary">Тогда для входа хватит короткого имени вместо длинного ID.</p>
-                      <div>
-                        <label htmlFor="reg-username" className="block text-xs font-medium text-text-secondary mb-1.5">Имя пользователя</label>
-                        <input
-                          id="reg-username"
-                          type="text"
-                          value={username}
-                          onChange={e => setUsername(e.target.value)}
-                          placeholder="минимум 5 символов"
-                          autoComplete="username"
-                          className="w-full px-4 py-3 rounded-xl bg-white/5 border border-brand/12 focus:border-brand/50 focus:outline-none focus:ring-2 focus:ring-brand/25 text-sm placeholder:text-faint"
-                        />
-                      </div>
-                      <div>
-                        <PasswordInput value={password} onChange={e => setPassword(e.target.value)} placeholder="Пароль" label="Пароль" autoComplete="new-password" />
-                        {strength && (
-                          <div className="mt-1.5">
-                            <div className="h-1 rounded-full bg-white/8 overflow-hidden">
-                              <div className={`h-full ${strength.cls} transition-all duration-300`} style={{ width: `${strength.pct}%` }} />
-                            </div>
-                            <p className={`text-[11px] mt-1 ${strength.text}`}>{strength.label}{strength.pct < 100 && ' — длиннее 8 символов надёжнее'}</p>
-                          </div>
-                        )}
-                      </div>
-                      <PasswordInput value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Повторите пароль" label="Подтверждение" autoComplete="new-password" />
-                      {credsErr && <p role="alert" className="text-danger text-xs">{credsErr}</p>}
-                      {credsMsg && <p className="text-brand text-xs">{credsMsg}</p>}
-                      <button disabled={credsLoading} onClick={saveCreds} className="btn-primary w-full !py-2.5 !text-sm disabled:opacity-50">
-                        {credsLoading ? 'Сохраняем…' : 'Сохранить'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {credsSaved && (
-                <div className="mb-5 flex items-center gap-2 p-3 rounded-xl bg-brand/10 border border-brand/20">
-                  <svg className="w-4 h-4 text-brand flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                  <p className="text-brand text-sm">Логин <strong>@{username}</strong> сохранён — можно входить по нему.</p>
-                </div>
-              )}
-
-              {/* Explicit acknowledgement gates the exit — you can't drift past an
-                  unrecoverable credential by accident */}
-              <label className="flex items-start gap-3 p-3.5 rounded-xl bg-white/[0.03] border border-brand/12 cursor-pointer hover:border-brand/25 transition mb-4">
-                <input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} className="accent-brand w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span className="text-sm">Я сохранил свой HiEarth ID в надёжном месте</span>
-              </label>
-
-              <button
-                className="btn-primary w-full !py-3.5 disabled:opacity-40"
-                disabled={!acknowledged}
-                onClick={() => navigate('/dashboard')}
-              >
-                Перейти в личный кабинет <Arrow />
-              </button>
-              {!acknowledged && (
-                <p className="text-[11px] text-faint text-center mt-2.5">Отметьте галочку, когда сохраните ID</p>
-              )}
-            </div>
-          )}
+            </form>
+          </div>
         </div>
+      ) : (
+        <p className="t-sm muted swap">
+          {creds === 'saved'
+            ? <>Логин <span className="mono" style={{ color: 'var(--fg)' }}>{savedLogin}</span> сохранён — можно входить по нему.</>
+            : 'Логин и пароль можно задать позже в настройках.'}
+        </p>
+      )}
+
+      <Checkbox checked={saved} onChange={setSaved}>Я сохранил свой HiEarth ID в надёжном месте</Checkbox>
+      <div className="stack gap-2">
+        <Button variant="primary" size="lg" block disabled={!saved || dirty} onClick={onDone}>Продолжить в кабинет</Button>
+        {!saved && <p className="t-xs subtle" style={{ textAlign: 'center' }}>Кнопка станет активной, когда отметите галочку</p>}
+        {saved && dirty && <p className="t-xs subtle" style={{ textAlign: 'center' }}>Логин и пароль не сохранены — нажмите «Сохранить» или «Пропустить»</p>}
       </div>
-    </section>
+    </AuthLayout>
   )
 }

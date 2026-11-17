@@ -157,11 +157,6 @@ func GetDirectRouteServiceByID(id int) (*DirectRouteService, error) {
 	return getDirectRouteServiceWhere("s.id = $1", id)
 }
 
-// GetDirectRouteServiceBySlug returns one service by slug or sql.ErrNoRows.
-func GetDirectRouteServiceBySlug(slug string) (*DirectRouteService, error) {
-	return getDirectRouteServiceWhere("s.slug = $1", strings.ToLower(strings.TrimSpace(slug)))
-}
-
 func getDirectRouteServiceWhere(cond string, arg interface{}) (*DirectRouteService, error) {
 	q := `
 		SELECT s.id, s.slug, s.name, s.group_name, s.source,

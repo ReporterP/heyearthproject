@@ -66,12 +66,84 @@ func GetDialRateThreshold() int {
 	return n
 }
 
-// CleanupDialRateLog deletes samples older than 24 hours.
-// Called once per hour from the traffic stats collector.
+// RollupDialRate folds yesterday's and today's minutes into dial_rate_daily (Moscow days,
+// idempotent: a re-run rewrites the same rows). Called once per hour before the cleanup.
+func RollupDialRate() error {
+	_, err := db.DB.Exec(rollupDialRateSQL)
+	return err
+}
+
+const rollupDialRateSQL = `
+	INSERT INTO dial_rate_daily (user_id, day, peak_dials, minutes_active, minutes_over, up_bytes, down_bytes)
+	SELECT user_uuid, (window_start AT TIME ZONE 'Europe/Moscow')::date,
+	       MAX(dials_in_window), COUNT(*), COUNT(*) FILTER (WHERE threshold_exceeded),
+	       COALESCE(SUM(bytes_uplink), 0), COALESCE(SUM(bytes_downlink), 0)
+	  FROM dial_rate_log
+	 WHERE window_start >= ((NOW() AT TIME ZONE 'Europe/Moscow')::date - 1)::timestamp AT TIME ZONE 'Europe/Moscow'
+	 GROUP BY 1, 2
+	ON CONFLICT (user_id, day) DO UPDATE SET
+	    peak_dials = EXCLUDED.peak_dials, minutes_active = EXCLUDED.minutes_active, minutes_over = EXCLUDED.minutes_over,
+	    up_bytes = EXCLUDED.up_bytes, down_bytes = EXCLUDED.down_bytes`
+
+// CleanupDialRateLog keeps the minutes 48 hours and the daily summaries 30 days (C13).
+// Called once per hour from the traffic stats collector, after RollupDialRate.
 func CleanupDialRateLog() (int64, error) {
-	res, err := db.DB.Exec(`DELETE FROM dial_rate_log WHERE window_start < NOW() - INTERVAL '24 hours'`)
+	res, err := db.DB.Exec(`DELETE FROM dial_rate_log WHERE window_start < NOW() - INTERVAL '48 hours'`)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, _ := res.RowsAffected()
+	if _, err := db.DB.Exec(`DELETE FROM dial_rate_daily WHERE day < (NOW() AT TIME ZONE 'Europe/Moscow')::date - 30`); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// DialDay is one Moscow day of a user's dial-rate summary.
+type DialDay struct {
+	Day         string `json:"day"` // YYYY-MM-DD
+	PeakDials   int    `json:"peak_dials"`
+	MinutesOn   int    `json:"minutes_active"`
+	MinutesOver int    `json:"minutes_over"`
+	UpBytes     int64  `json:"up_bytes"`
+	DownBytes   int64  `json:"down_bytes"`
+}
+
+// SharingVerdict: does the last week look like one subscription shared by many? The dial
+// estimate is outgoing bytes / 50 KB, so a long video call also counts — the verdict says
+// «похоже», and nothing is blocked automatically. Suspect: above the per-minute threshold at
+// least an hour a day on 3 of the 7 days, or 4 hours on any day.
+type SharingVerdict struct {
+	Suspect   bool   `json:"suspect"`
+	Text      string `json:"text"`
+	DaysOver  int    `json:"days_over"`
+	MaxMinute int    `json:"max_minutes_over"`
+}
+
+const (
+	sharingHourDays = 3
+	sharingDayMin   = 60
+	sharingHeavyMin = 240
+)
+
+func JudgeSharing(days []DialDay) SharingVerdict {
+	v := SharingVerdict{}
+	for _, d := range days {
+		if d.MinutesOver >= sharingDayMin {
+			v.DaysOver++
+		}
+		if d.MinutesOver > v.MaxMinute {
+			v.MaxMinute = d.MinutesOver
+		}
+	}
+	v.Suspect = v.DaysOver >= sharingHourDays || v.MaxMinute >= sharingHeavyMin
+	switch {
+	case v.Suspect:
+		v.Text = "Похоже на раздачу: подключений выше порога больше часа в сутки " + strconv.Itoa(v.DaysOver) + " из 7 дней (максимум " + strconv.Itoa(v.MaxMinute) + " мин). Проверьте вручную — долгие видеозвонки дают похожую картину."
+	case v.MaxMinute > 0:
+		v.Text = "Бывает выше порога, но в пределах обычного: до " + strconv.Itoa(v.MaxMinute) + " мин в сутки"
+	default:
+		v.Text = "В норме"
+	}
+	return v
 }

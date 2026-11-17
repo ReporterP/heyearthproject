@@ -29,6 +29,10 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
+	if err := dateRangeWhere(r, "p.created_at", &where, &args, &argN); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Scope by user DB id — used by the user drawer (Трафик+Платежи tab) to
 	// fetch per-user payment history. Without this, the drawer was showing
 	// the global payments list. Match against either the int FK (p.user_id)
@@ -149,65 +153,108 @@ func ListPaymentsHandler(w http.ResponseWriter, r *http.Request) {
 	}{items, total, p.Page, p.PageSize, realTotal})
 }
 
+// Manual payments (C7): a record of money taken outside YooKassa (cash, a transfer). Only
+// these are created and edited by hand; a YooKassa payment changes only through YooKassa
+// (its webhook, «Статус», «Вернуть»). A manual record does not extend a subscription.
+var manualPaymentStatuses = map[string]bool{"pending": true, "succeeded": true, "canceled": true}
+
+const manualOnlyMsg = "Это платёж ЮKassa: его статус и сумма меняются только через ЮKassa («Статус», «Вернуть»). Вручную правятся только ручные записи"
+
+type manualPaymentPayload struct {
+	UserDBID int     `json:"user_db_id"`
+	Amount   float64 `json:"amount"`
+	Status   string  `json:"status"`
+	Notes    string  `json:"notes"`
+}
+
+func validManualPayment(p manualPaymentPayload, create bool) error {
+	if create && p.UserDBID <= 0 {
+		return fmt.Errorf("укажите пользователя (ID в базе)")
+	}
+	if p.Amount <= 0 || p.Amount > 1000000 {
+		return fmt.Errorf("сумма — от 0,01 до 1 000 000 ₽")
+	}
+	if !manualPaymentStatuses[strings.TrimSpace(p.Status)] {
+		return fmt.Errorf("статус: pending, succeeded или canceled")
+	}
+	return nil
+}
+
 func CreatePaymentHandler(w http.ResponseWriter, r *http.Request) {
-	var payload paymentPayload
+	var payload manualPaymentPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
-	if payload.UserDBID == 0 || payload.Amount <= 0 || strings.TrimSpace(payload.Status) == "" {
-		writeAdminError(w, http.StatusBadRequest, "user_db_id, amount and status are required")
+	if err := validManualPayment(payload, true); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	currency := strings.TrimSpace(payload.Currency)
-	if currency == "" {
-		currency = "USD"
-	}
-	metadata := payload.Metadata
-	if len(metadata) == 0 {
-		metadata = json.RawMessage(`{}`)
-	}
-	if _, err := db.DB.Exec(`
-		INSERT INTO payments (user_id, amount, currency, status, provider, external_id, notes, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	`, payload.UserDBID, payload.Amount, currency, strings.TrimSpace(payload.Status), strings.TrimSpace(payload.Provider), strings.TrimSpace(payload.ExternalID), strings.TrimSpace(payload.Notes), metadata); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to create payment")
+	var userText string
+	if err := db.DB.QueryRow(`SELECT user_id FROM users WHERE id = $1`, payload.UserDBID).Scan(&userText); err != nil {
+		writeAdminError(w, http.StatusNotFound, "Пользователь не найден")
 		return
 	}
-	writeAdminJSON(w, http.StatusCreated, map[string]string{"message": "Payment created"})
+	var id int
+	if err := db.DB.QueryRow(`
+		INSERT INTO payments (user_id, user_id_text, amount, currency, status, provider, notes, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, 'RUB', $4, 'manual', $5, '{"kind": "manual"}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id`, payload.UserDBID, userText, payload.Amount, strings.TrimSpace(payload.Status), strings.TrimSpace(payload.Notes)).Scan(&id); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось создать платёж")
+		return
+	}
+	WriteAuditLog(r, "payment.manual_create", "payment", strconv.Itoa(id), payload)
+	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
 func UpdatePaymentHandler(w http.ResponseWriter, r *http.Request) {
 	paymentID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid payment id")
+		writeAdminError(w, http.StatusBadRequest, "Неверный id платежа")
 		return
 	}
-	var payload paymentPayload
+	var payload manualPaymentPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
-	metadata := payload.Metadata
-	if len(metadata) == 0 {
-		metadata = json.RawMessage(`{}`)
-	}
-	if _, err := db.DB.Exec(`
-		UPDATE payments
-		SET user_id = COALESCE(NULLIF($1, 0), user_id),
-		    amount = CASE WHEN $2 > 0 THEN $2 ELSE amount END,
-		    currency = COALESCE(NULLIF($3, ''), currency),
-		    status = COALESCE(NULLIF($4, ''), status),
-		    provider = COALESCE(NULLIF($5, ''), provider),
-		    external_id = COALESCE(NULLIF($6, ''), external_id),
-		    notes = $7,
-		    metadata = $8,
-		    confirmed_at = CASE WHEN $4 = 'confirmed' THEN CURRENT_TIMESTAMP ELSE confirmed_at END,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $9
-	`, payload.UserDBID, payload.Amount, strings.TrimSpace(payload.Currency), strings.TrimSpace(payload.Status), strings.TrimSpace(payload.Provider), strings.TrimSpace(payload.ExternalID), strings.TrimSpace(payload.Notes), metadata, paymentID); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to update payment")
+	if err := validManualPayment(payload, false); err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Payment updated"})
+	tx, err := db.DB.Begin()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить")
+		return
+	}
+	defer tx.Rollback()
+	var provider, status, notes string
+	var amount float64
+	err = tx.QueryRow(`SELECT COALESCE(provider, ''), status, amount::float8, COALESCE(notes, '') FROM payments WHERE id = $1 FOR UPDATE`, paymentID).
+		Scan(&provider, &status, &amount, &notes)
+	if err == sql.ErrNoRows {
+		writeAdminError(w, http.StatusNotFound, "Платёж не найден")
+		return
+	}
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось загрузить платёж")
+		return
+	}
+	if provider != "manual" {
+		writeAdminError(w, http.StatusConflict, manualOnlyMsg)
+		return
+	}
+	if _, err := tx.Exec(`
+		UPDATE payments SET amount = $2, status = $3, notes = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+		paymentID, payload.Amount, strings.TrimSpace(payload.Status), strings.TrimSpace(payload.Notes)); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить")
+		return
+	}
+	WriteAuditLog(r, "payment.manual_update", "payment", strconv.Itoa(paymentID), map[string]any{
+		"before": map[string]any{"amount": amount, "status": status, "notes": notes}, "after": payload})
+	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Сохранено"})
 }

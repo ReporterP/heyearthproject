@@ -16,9 +16,11 @@ type stepFunc = func(ctx context.Context, r Remote, s *State) error
 
 // DeprovisionRecipe takes a node out of service: out of routing first, then the Hub side, then
 // (best effort — the VPS may already be gone) the node, which is parked: services stopped and
-// disabled, the xray egress guard and the port hop removed, the tunnel password rotated. The
+// disabled, the backup tunnel's egress guard and the port hop removed, the tunnel password rotated. The
 // node-agent Hub-only guard, binaries, unit files and the Hub's SSH key stay (see
-// config.ExitStopServicesScript). The row ends 'offline'; deleting it is DELETE /servers/{id}.
+// config.ExitStopServicesScript). A relay gets its forwarding taken off instead
+// (RelayDeprovisionRecipe: rules, unit, ip_forward, sysctl, jail, ufw route rules). The row ends
+// 'offline'; deleting it is DELETE /servers/{id}.
 //
 // Every step converges: Verify passes → nothing is done; on a resumed job the finished steps
 // only verify. A node that cannot be reached skips its steps (the job still ends offline); an
@@ -32,10 +34,14 @@ func DeprovisionRecipe(role string) Recipe {
 			Step{Name: "hub_client_remove", Apply: hubClientRemove, Verify: hubClientGone},
 			Step{Name: "rotate_password", Apply: bestEffort(rotatePassword(&newPW)), Verify: rotatedVerify(&newPW)},
 			Step{Name: "stop_services", Apply: bestEffort(runPrint(config.ExitStopServicesScript)), Verify: bestEffortVerify(servicesStopped)},
-			// After stop_services: the guard script refuses while xray runs anyway.
+			// After stop_services: the guard script refuses while the tunnel (or a not yet retired xray) runs anyway.
 			Step{Name: "remove_guard", Apply: bestEffort(runPrint(config.ExitRemoveGuardScript)), Verify: bestEffortVerify(guardRemoved)},
 			Step{Name: "remove_hop", Apply: bestEffort(runPrint(config.ExitRemoveHopScript)), Verify: bestEffortVerify(hopRemoved)},
 		)
+	}
+	if role == "relay" {
+		// Between exclude and finalize: out of the subscriptions first, the row still ends offline.
+		r = append(r, RelayDeprovisionRecipe()...)
 	}
 	return append(r, Step{Name: "finalize", Apply: finalizeApply, Verify: lifecycleIs("offline")})
 }
@@ -186,7 +192,7 @@ func nftSetRemoved(prefix, unit, what string) stepFunc {
 }
 
 var (
-	guardRemoved = nftSetRemoved("GUARD", config.ExitXrayGuardService, "защита исходящих xray")
+	guardRemoved = nftSetRemoved("GUARD", config.ExitGuardService, "защита исходящих запасного туннеля")
 	hopRemoved   = nftSetRemoved("HOP", config.ExitPortHopService, "правила прыжков портов")
 )
 
@@ -313,6 +319,8 @@ func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return DeprovisionRecipe(n.Role), nil
 	case KindMTProxy:
 		return mtproxyRecipe(n, st)
+	case KindTGMTProxy:
+		return tgExitRecipe(n, st)
 	}
 	return recipeForSetup(kind, n, st)
 }

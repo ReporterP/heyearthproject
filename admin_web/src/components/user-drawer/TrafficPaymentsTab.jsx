@@ -4,6 +4,7 @@ import { fetchUserTraffic, fetchUserPayments } from '../../api/admin.js'
 import { formatDate } from '../../utils/format.js'
 import { Badge } from '../ui/index.js'
 import TrafficCard from './TrafficCard.jsx'
+import DialRateCard from './DialRateCard.jsx'
 
 export default function TrafficPaymentsTab({ user }) {
   const { t } = useT()
@@ -43,6 +44,8 @@ export default function TrafficPaymentsTab({ user }) {
           <TrafficCard data={traffic} />
         )}
       </section>
+
+      <DialRateCard userId={user.id} />
 
       {/* ── Payments section ────────────────────────────────────── */}
       <section>

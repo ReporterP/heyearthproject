@@ -11,7 +11,8 @@ package main
 //
 // Counters reset to 0 on hysteria2 restart; we detect that as a "negative
 // delta" and treat the current value as the new baseline (no row inserted
-// for the reset itself — we just resync state).
+// for the reset itself — we just resync state). The first read after the API
+// starts is only a baseline too (see cumulativeDeltas).
 
 import (
 	"encoding/json"
@@ -33,9 +34,13 @@ type hysteria2UserCounter struct {
 	RX int64 `json:"rx"` // bytes downloaded BY the user
 }
 
-// hysteria2StatsPrev — last snapshot of cumulative counters, keyed by user UUID.
-// Lives in package scope because the collector is a singleton goroutine.
-var hysteria2StatsPrev = map[string]hysteria2UserCounter{}
+// hysteria2StatsPrev — last snapshot of cumulative counters, keyed by user UUID;
+// hysteria2StatsPrimed — whether that snapshot came from a real read.
+// Package scope because the collector is a singleton goroutine.
+var (
+	hysteria2StatsPrev   = map[string]counterPair{}
+	hysteria2StatsPrimed bool
+)
 
 // StartHysteria2StatsLoop kicks off a 60-second polling loop against the
 // loopback trafficStats endpoint. Safe to call even if hysteria2 isn't
@@ -45,11 +50,11 @@ func StartHysteria2StatsLoop() {
 	go func() {
 		// Give hysteria2-server a moment to come up after a fresh boot.
 		time.Sleep(20 * time.Second)
-		collectHysteria2Stats()
+		safely("hysteria2-stats", collectHysteria2Stats)
 		ticker := time.NewTicker(hysteria2StatsPeriod)
 		defer ticker.Stop()
 		for range ticker.C {
-			collectHysteria2Stats()
+			safely("hysteria2-stats", collectHysteria2Stats)
 		}
 	}()
 	log.Println("[hysteria2-stats] collector started (every 60s)")
@@ -87,26 +92,22 @@ func collectHysteria2Stats() {
 		return
 	}
 
-	saved := 0
+	snap := make(map[string]counterPair, len(cur))
 	for uuid, c := range cur {
-		prev := hysteria2StatsPrev[uuid]
-		upDelta := c.TX - prev.TX
-		downDelta := c.RX - prev.RX
+		snap[uuid] = counterPair{Up: c.TX, Down: c.RX}
+	}
+	deltas := cumulativeDeltas(hysteria2StatsPrev, snap, hysteria2StatsPrimed)
+	if !hysteria2StatsPrimed {
+		log.Printf("[hysteria2-stats] baseline taken: %d users (nothing booked on the first read)", len(snap))
+	}
+	hysteria2StatsPrev, hysteria2StatsPrimed = snap, true
 
-		// Negative delta = hysteria2-server restart (counters reset to 0).
-		// Don't double-count: treat current value as the new baseline,
-		// emit no row for this tick.
-		if upDelta < 0 || downDelta < 0 {
-			continue
-		}
-		if upDelta == 0 && downDelta == 0 {
-			continue
-		}
-
+	saved := 0
+	for uuid, d := range deltas {
 		if _, err := db.DB.Exec(`
 			INSERT INTO traffic_stats (user_id, upload_bytes, download_bytes)
 			VALUES ($1, $2, $3)
-		`, uuid, upDelta, downDelta); err != nil {
+		`, uuid, d.Up, d.Down); err != nil {
 			log.Printf("[hysteria2-stats] insert %s: %v", uuid, err)
 			continue
 		}
@@ -116,5 +117,4 @@ func collectHysteria2Stats() {
 	if saved > 0 {
 		log.Printf("[hysteria2-stats] recorded deltas: %d users", saved)
 	}
-	hysteria2StatsPrev = cur
 }

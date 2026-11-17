@@ -166,16 +166,16 @@ func (r *serverRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-// serverDetailRows is the row of loadServerByID for exit #2: 27 columns, or 29 with the SSH
+// serverDetailRows is the row of loadServerByID for exit #2: 25 columns, or 27 with the SSH
 // password columns (a legacy plaintext password plus a cipher the test key cannot open).
 func serverDetailRows(withPassword bool) *serverRows {
 	cols := []string{"id", "name", "ip_address", "ssh_port", "ssh_user", "country_code", "status",
-		"load_metrics", "updated_at", "metrics_synced_at", "ssh_key_id", "ssh_key_name",
+		"load_metrics", "updated_at", "metrics_synced_at",
 		"is_exit_node", "tunnel_status", "tunnel_protocol", "tunnel_port", "tunnel_uuid", "tunnel_public_key",
 		"tunnel_private_key", "tunnel_short_id", "tunnel_sni", "tunnel_ss_method", "tunnel_ss_password",
 		"tunnel_error", "lifecycle_state", "mtproto_status", "load_weight"}
 	row := []driver.Value{int64(2), "Амстердам", "203.0.113.7", int64(22), "root", "NL", "online",
-		[]byte("{}"), time.Now(), nil, nil, "",
+		[]byte("{}"), time.Now(), nil,
 		true, "healthy", "hysteria2", int64(50443), fixtureTunnelUUID, "pub-ok",
 		fixturePrivateKey, "abcd", "microsoft.com", "", fixtureHyPassword,
 		"", "online", "healthy", int64(3)}
@@ -189,11 +189,11 @@ func serverDetailRows(withPassword bool) *serverRows {
 // serverListRows is the GET /servers row for exit #2: no secret columns, only "is it set".
 func serverListRows() *serverRows {
 	cols := []string{"id", "name", "ip_address", "ssh_port", "ssh_user", "country_code", "status",
-		"load_metrics", "updated_at", "metrics_synced_at", "ssh_key_id", "ssh_key_name",
+		"load_metrics", "updated_at", "metrics_synced_at",
 		"is_exit_node", "tunnel_status", "tunnel_protocol", "tunnel_port", "tunnel_error", "load_weight",
 		"lifecycle_state", "mtproto_status", "has_ssh_password", "has_tunnel_credentials"}
 	row := []driver.Value{int64(2), "Амстердам", "203.0.113.7", int64(22), "root", "NL", "online",
-		[]byte("{}"), time.Now(), nil, nil, "",
+		[]byte("{}"), time.Now(), nil,
 		true, "healthy", "hysteria2", int64(50443), "", int64(3),
 		"online", "healthy", true, true}
 	return &serverRows{cols: cols, row: row}

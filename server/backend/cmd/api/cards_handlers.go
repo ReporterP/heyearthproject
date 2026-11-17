@@ -10,117 +10,6 @@ import (
 	"github.com/heyearth/backend/internal/db"
 )
 
-// ─────────────────────── User Saved Payment Methods (YooKassa) ───────────────────────
-// YooKassa хранит payment_method_id, который мы привязываем к пользователю
-// при payment.succeeded с save_payment_method:true. Детали (last4, card_type и тд)
-// берутся из saved_payment_methods таблицы.
-
-func handleUserCards(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
-		return
-	}
-
-	var dbUserID int
-	if err := db.DB.QueryRow("SELECT id FROM users WHERE user_id = $1", userID).Scan(&dbUserID); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"cards": []interface{}{}})
-		return
-	}
-
-	rows, err := db.DB.Query(`
-		SELECT id, yookassa_payment_method_id, method_type,
-		       COALESCE(card_last4, ''), COALESCE(card_type, ''), COALESCE(card_issuer, ''),
-		       COALESCE(title, ''), created_at
-		FROM saved_payment_methods
-		WHERE user_id = $1 AND is_active = TRUE
-		ORDER BY created_at DESC
-	`, dbUserID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	defer rows.Close()
-
-	cards := []map[string]interface{}{}
-	for rows.Next() {
-		var id int
-		var ykID, mtype, last4, ctype, issuer, title string
-		var createdAt string
-		if err := rows.Scan(&id, &ykID, &mtype, &last4, &ctype, &issuer, &title, &createdAt); err != nil {
-			continue
-		}
-		card := map[string]interface{}{
-			"id":                id,
-			"payment_method_id": ykID,
-			"type":              mtype,
-			"title":             title,
-			"created_at":        createdAt,
-		}
-		if last4 != "" {
-			card["last4"] = last4
-		}
-		if ctype != "" {
-			card["card_type"] = ctype
-		}
-		if issuer != "" {
-			card["issuer"] = issuer
-		}
-		cards = append(cards, card)
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"cards": cards})
-}
-
-func handleDeleteCard(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
-		return
-	}
-
-	var req struct {
-		PaymentMethodID string `json:"payment_method_id"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-
-	var dbUserID int
-	if err := db.DB.QueryRow("SELECT id FROM users WHERE user_id = $1", userID).Scan(&dbUserID); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
-		return
-	}
-
-	// Деактивируем в saved_payment_methods
-	if req.PaymentMethodID != "" {
-		_, _ = db.DB.Exec(`
-			UPDATE saved_payment_methods SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-			WHERE user_id = $1 AND yookassa_payment_method_id = $2
-		`, dbUserID, req.PaymentMethodID)
-	} else {
-		// Делаем все неактивными
-		_, _ = db.DB.Exec(`UPDATE saved_payment_methods SET is_active = FALSE WHERE user_id = $1`, dbUserID)
-	}
-
-	// Сбрасываем users.saved_payment_method и отключаем автопродление
-	_, _ = db.DB.Exec(`UPDATE users SET saved_payment_method = NULL WHERE id = $1`, dbUserID)
-	_, _ = db.DB.Exec(`UPDATE user_subscriptions SET auto_renew = FALSE WHERE user_id = $1`, dbUserID)
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Способ оплаты удалён"})
-}
-
 // ─────────────────────── User Refund Request ───────────────────────
 
 func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +24,7 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -157,7 +46,7 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "платёж не найден"})
 		return
 	}
-	if status != "completed" {
+	if !biz.IsPaidPaymentStatus(status) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "заявка на возврат доступна только для оплаченных платежей"})
 		return
 	}
@@ -174,6 +63,8 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[refund-request] User %s requested refund for payment %d: %s", userID, req.PaymentID, reason)
+	RaiseAlert(fmt.Sprintf("refund-request-%d", req.PaymentID), AlertWarn, "Заявка на возврат",
+		fmt.Sprintf("Пользователь %s просит вернуть платёж #%d. Причина: %s. Решение — в «Платежах» (кнопка «Возврат»).", userID, req.PaymentID, reason))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Заявка на возврат отправлена. Мы рассмотрим её в ближайшее время."})
 }
 
@@ -191,7 +82,7 @@ func handleToggleAutoRenew(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 

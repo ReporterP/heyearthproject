@@ -18,12 +18,12 @@ export default function SearchPaginationBar({ search, onSearch, page, totalPages
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder={t.search || 'Search\u2026'}
-          className="flex-1 px-3 py-1.5 rounded-lg bg-surface-alt border border-white/10 text-text-primary placeholder-text-secondary text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none"
+          className="flex-1 px-3 py-1.5 rounded-lg bg-canvas border border-default text-primary placeholder-text-secondary text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
         />
         <button
           type="submit"
           disabled={loading}
-          className="px-3 py-1.5 rounded-lg bg-brand text-white text-sm hover:bg-brand-dark transition disabled:opacity-50"
+          className="px-3 py-1.5 rounded-lg bg-accent text-white text-sm hover:bg-accent-hover transition disabled:opacity-50"
         >
           {t.search || 'Search'}
         </button>
@@ -33,17 +33,17 @@ export default function SearchPaginationBar({ search, onSearch, page, totalPages
           <button
             disabled={page <= 1}
             onClick={() => onPageChange(page - 1)}
-            className="px-2 py-1 rounded text-sm text-text-secondary hover:text-text-primary disabled:opacity-30 transition"
+            className="px-2 py-1 rounded text-sm text-secondary hover:text-primary disabled:opacity-30 transition"
           >
             &laquo;
           </button>
-          <span className="text-sm text-text-secondary px-2">
+          <span className="text-sm text-secondary px-2">
             {page} / {totalPages}
           </span>
           <button
             disabled={page >= totalPages}
             onClick={() => onPageChange(page + 1)}
-            className="px-2 py-1 rounded text-sm text-text-secondary hover:text-text-primary disabled:opacity-30 transition"
+            className="px-2 py-1 rounded text-sm text-secondary hover:text-primary disabled:opacity-30 transition"
           >
             &raquo;
           </button>

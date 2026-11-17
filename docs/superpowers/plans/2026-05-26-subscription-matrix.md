@@ -388,7 +388,7 @@ If any check fails, fix the code in `client_api.go` and redeploy starting from T
 
 The Hub has `/opt/heyearth/xray/xray` (Xray-core 26.3.27, upgraded in previous session). We start a local xray client process on Hub bound to `127.0.0.1:NNNN` as SOCKS5 inbound, with outbound = the Reality URI we want to test. Then `curl --socks5-hostname 127.0.0.1:NNNN https://api.ipify.org` proxies through the URI. If Reality auth succeeds → traffic goes through one of the exit nodes → ipify returns the exit's IP.
 
-Currently only one exit node is online: `89.124.89.126` (NL Amsterdam 32Tb). So the success criterion is: `curl ipify` returns exactly `89.124.89.126`.
+Currently only one exit node is online: `192.0.2.126` (NL Amsterdam 32Tb). So the success criterion is: `curl ipify` returns exactly `192.0.2.126`.
 
 We test 3 critical paths:
 1. **Berëza Chrome (priority 0)** — most-used path, must work.
@@ -432,7 +432,7 @@ go run ./cmd/deploy --ssh 'cat > /tmp/test-bereza-chrome.json << EOF
   "outbounds":[{
     "tag":"bereza-chrome",
     "protocol":"vless",
-    "settings":{"vnext":[{"address":"45.150.39.236","port":443,"users":[{"id":"<UUID>","encryption":"none","flow":"xtls-rprx-vision"}]}]},
+    "settings":{"vnext":[{"address":"198.51.100.236","port":443,"users":[{"id":"<UUID>","encryption":"none","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"<SNI>","fingerprint":"chrome","publicKey":"<PBK>","shortId":"<SID>"}}
   }]
 }
@@ -446,7 +446,7 @@ pkill -f "xray run -config /tmp/test-bereza-chrome.json"
 
 Expected output ends with:
 ```
-89.124.89.126
+192.0.2.126
 STATUS:200 TIME:0.2XXs
 ```
 
@@ -462,7 +462,7 @@ go run ./cmd/deploy --ssh 'cat > /tmp/test-bereza-firefox.json << EOF
   "outbounds":[{
     "tag":"bereza-firefox",
     "protocol":"vless",
-    "settings":{"vnext":[{"address":"45.150.39.236","port":443,"users":[{"id":"<UUID>","encryption":"none","flow":"xtls-rprx-vision"}]}]},
+    "settings":{"vnext":[{"address":"198.51.100.236","port":443,"users":[{"id":"<UUID>","encryption":"none","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"<SNI>","fingerprint":"firefox","publicKey":"<PBK>","shortId":"<SID>"}}
   }]
 }
@@ -474,7 +474,7 @@ pkill -f "xray run -config /tmp/test-bereza-firefox.json"
 '
 ```
 
-Expected: `89.124.89.126` + `STATUS:200`. If firefox FP fails but chrome passes, the uTLS firefox profile may not be supported by the current Xray build — unlikely for 26.3.27, but report this to user before continuing.
+Expected: `192.0.2.126` + `STATUS:200`. If firefox FP fails but chrome passes, the uTLS firefox profile may not be supported by the current Xray build — unlikely for 26.3.27, but report this to user before continuing.
 
 - [ ] **Step 4: Дуб Safari XHTTP test (new transport + new FP combo)**
 
@@ -486,7 +486,7 @@ go run ./cmd/deploy --ssh 'cat > /tmp/test-dub-safari.json << EOF
   "outbounds":[{
     "tag":"dub-safari",
     "protocol":"vless",
-    "settings":{"vnext":[{"address":"45.150.39.236","port":2443,"users":[{"id":"<UUID>","encryption":"none"}]}]},
+    "settings":{"vnext":[{"address":"198.51.100.236","port":2443,"users":[{"id":"<UUID>","encryption":"none"}]}]},
     "streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"host":"hiearth.ru","path":"/","mode":"auto"},"realitySettings":{"serverName":"<SNI>","fingerprint":"safari","publicKey":"<PBK>","shortId":"<SID>"}}
   }]
 }
@@ -498,13 +498,13 @@ pkill -f "xray run -config /tmp/test-dub-safari.json"
 '
 ```
 
-Expected: `89.124.89.126` + `STATUS:200`. The xhttp inbound on :2443 uses `mode: auto` server-side; Xray 26.x clients negotiate to `stream-one` (HTTP/2). Verify the log on Hub mentions `XHTTP is dialing to tcp:45.150.39.236:2443, mode stream-one`:
+Expected: `192.0.2.126` + `STATUS:200`. The xhttp inbound on :2443 uses `mode: auto` server-side; Xray 26.x clients negotiate to `stream-one` (HTTP/2). Verify the log on Hub mentions `XHTTP is dialing to tcp:198.51.100.236:2443, mode stream-one`:
 
 ```bash
 go run ./cmd/deploy --ssh 'grep "XHTTP is dialing" /tmp/test-dub-safari.log | head -1'
 ```
 
-Expected: a line like `transport/internet/splithttp: XHTTP is dialing to tcp:45.150.39.236:2443, mode stream-one, HTTP version 2, host hiearth.ru`.
+Expected: a line like `transport/internet/splithttp: XHTTP is dialing to tcp:198.51.100.236:2443, mode stream-one, HTTP version 2, host hiearth.ru`.
 
 - [ ] **Step 5: Clean up Hub test files**
 
@@ -517,7 +517,7 @@ Expected: no output.
 - [ ] **Step 6: Beads close + status update**
 
 ```bash
-bd update heyearthproject-s7mc --notes "8-entry matrix deployed. Hub self-test passes: Berëza-chrome ✓, Berëza-firefox ✓, Дуб-safari (xhttp stream-one HTTP/2) ✓. All return exit IP 89.124.89.126 (NL)."
+bd update heyearthproject-s7mc --notes "8-entry matrix deployed. Hub self-test passes: Berëza-chrome ✓, Berëza-firefox ✓, Дуб-safari (xhttp stream-one HTTP/2) ✓. All return exit IP 192.0.2.126 (NL)."
 bd close heyearthproject-s7mc
 ```
 

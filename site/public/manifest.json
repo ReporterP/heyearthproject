@@ -1,24 +1,14 @@
 {
   "name": "HiEarth",
   "short_name": "HiEarth",
-  "description": "Устойчивый интернет-доступ с умной эко-маршрутизацией",
+  "description": "Защищённый доступ к интернету в одну кнопку",
   "start_url": "/dashboard",
   "display": "standalone",
-  "background_color": "#0a130f",
-  "theme_color": "#0a130f",
+  "background_color": "#090C14",
+  "theme_color": "#090C14",
   "orientation": "portrait-primary",
   "icons": [
-    {
-      "src": "/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }

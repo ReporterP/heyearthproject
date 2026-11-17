@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-var testHubIPs = []string{"138.16.181.225", "45.150.39.236", "109.172.86.40"}
+var testHubIPs = []string{"203.0.113.225", "198.51.100.236", "192.0.2.40"}
 
 // node-agent's TCP 50052: accepted from the Hub's addresses and loopback only, dropped from
 // everyone else — as the hand-made guard on exit 2 (Beads cudk.77).
@@ -19,7 +19,7 @@ func TestExitAgentGuardConf(t *testing.T) {
 	for _, w := range []string{
 		"\ntable inet heyearth_agent_guard\ndelete table inet heyearth_agent_guard\ntable inet heyearth_agent_guard {\n",
 		"  chain input {\n    type filter hook input priority filter; policy accept;\n" +
-			"    tcp dport 50052 ip saddr { 109.172.86.40, 138.16.181.225, 45.150.39.236, 127.0.0.1 } accept\n" +
+			"    tcp dport 50052 ip saddr { 192.0.2.40, 198.51.100.236, 203.0.113.225, 127.0.0.1 } accept\n" +
 			"    tcp dport 50052 ip6 saddr { ::1 } accept\n" +
 			"    tcp dport 50052 counter drop\n  }\n}\n",
 	} {
@@ -31,15 +31,15 @@ func TestExitAgentGuardConf(t *testing.T) {
 	nftCheck(t, c)
 
 	// Byte-stable whatever the order and spelling of the list; junk is left out, never rendered.
-	c2, err := ExitAgentGuardConf([]string{" 45.150.39.236", "109.172.86.40", "138.16.181.225", "45.150.39.236", "hub.example.com", "127.0.0.1",
-		"0.0.0.0", "fe80::1", "1.2.3.4; flush ruleset", "::ffff:138.16.181.225"})
+	c2, err := ExitAgentGuardConf([]string{" 198.51.100.236", "192.0.2.40", "203.0.113.225", "198.51.100.236", "hub.example.com", "127.0.0.1",
+		"0.0.0.0", "fe80::1", "1.2.3.4; flush ruleset", "::ffff:203.0.113.225"})
 	if err != nil || c2 != c {
 		t.Errorf("reordered/duplicated/junk list must render the same file (err %v):\n%s", err, c2)
 	}
 	// An IPv6 Hub address goes to the ip6 rule.
-	c6, err := ExitAgentGuardConf([]string{"2001:DB8::2", "138.16.181.225"})
+	c6, err := ExitAgentGuardConf([]string{"2001:DB8::2", "203.0.113.225"})
 	if err != nil || !strings.Contains(c6, "    tcp dport 50052 ip6 saddr { 2001:db8::2, ::1 } accept\n") ||
-		!strings.Contains(c6, "    tcp dport 50052 ip saddr { 138.16.181.225, 127.0.0.1 } accept\n") {
+		!strings.Contains(c6, "    tcp dport 50052 ip saddr { 203.0.113.225, 127.0.0.1 } accept\n") {
 		t.Errorf("IPv6 Hub (err %v):\n%s", err, c6)
 	}
 	nftCheck(t, c6)
@@ -82,9 +82,9 @@ func TestExitAgentGuardUnits(t *testing.T) {
 // reload), and is ordered after nftables.service so its load lands after the flush.
 func TestNftUnitsSurviveNftablesReloadAndRestart(t *testing.T) {
 	for name, u := range map[string]struct{ unit, conf string }{
-		"agent guard": {ExitAgentGuardUnit, ExitAgentGuardConfPath},
-		"xray guard":  {ExitXrayGuardUnit, ExitXrayGuardConfPath},
-		"port hop":    {ExitPortHopUnit, ExitPortHopConfPath},
+		"agent guard":  {ExitAgentGuardUnit, ExitAgentGuardConfPath},
+		"tunnel guard": {ExitGuardUnit, ExitGuardConfPath},
+		"port hop":     {ExitPortHopUnit, ExitPortHopConfPath},
 	} {
 		load := "/usr/sbin/nft -f " + u.conf + "\n"
 		for _, w := range []string{"\nPartOf=nftables.service\n", "\nReloadPropagatedFrom=nftables.service\n", "\nExecStart=" + load, "\nExecReload=" + load,
@@ -101,7 +101,7 @@ func TestNftUnitsSurviveNftablesReloadAndRestart(t *testing.T) {
 		}
 	}
 	golden(t, "exit_unit_porthop.golden", []byte(ExitPortHopUnit))
-	golden(t, "exit_unit_xray_guard.golden", []byte(ExitXrayGuardUnit))
+	golden(t, "exit_unit_guard.golden", []byte(ExitGuardUnit))
 }
 
 // node-agent's converge with the guard as its extra: the guard is loaded, enabled and started
@@ -148,7 +148,7 @@ func TestNodeAgentCheckScript(t *testing.T) {
 	const loaded = `table inet heyearth_agent_guard {
 	chain input {
 		type filter hook input priority filter; policy accept;
-		tcp dport 50052 ip saddr { 127.0.0.1, 138.16.181.225 } accept
+		tcp dport 50052 ip saddr { 127.0.0.1, 203.0.113.225 } accept
 		tcp dport 50052 ip6 saddr ::1 accept
 		tcp dport 50052 counter packets 12 bytes 720 drop
 	}

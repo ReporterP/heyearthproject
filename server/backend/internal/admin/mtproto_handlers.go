@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -11,8 +12,7 @@ import (
 // MTProtoSettings — admin-facing representation of all mtproto_* settings.
 type MTProtoSettings struct {
 	Enabled bool   `json:"enabled"`
-	Host    string `json:"host"`
-	Port    string `json:"port"`
+	Port    string `json:"port"` // read-only here: the port every exit listens on (mtproto_port)
 	Secret  string `json:"secret"`
 	// FrontingDomain — fake-TLS domain baked into Secret. MUST resolve to the
 	// MTProto exit nodes: TLS-sniffing clients override the connection
@@ -26,7 +26,6 @@ type MTProtoSettings struct {
 func GetMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 	s := MTProtoSettings{
 		Enabled:        biz.GetSettingOrDefault("mtproto_enabled", "false") == "true",
-		Host:           biz.GetSettingOrDefault("mtproto_host", ""),
 		Port:           biz.GetSettingOrDefault("mtproto_port", "8443"),
 		Secret:         biz.GetSettingOrDefault("mtproto_secret", ""),
 		FrontingDomain: biz.MTProtoFrontingDomain(),
@@ -40,9 +39,19 @@ func GetMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 	var s MTProtoSettings
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid JSON body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
+	s.Secret, s.FrontingDomain = strings.TrimSpace(s.Secret), strings.TrimSpace(s.FrontingDomain)
+	if s.Secret != "" && !mtprotoSecretFor(s.Secret, s.FrontingDomain) {
+		writeAdminError(w, http.StatusBadRequest, "Секрет не подходит к домену маскировки: нажмите «Сгенерировать» после смены домена")
+		return
+	}
+	if s.Enabled && (s.Secret == "" || s.FrontingDomain == "") {
+		writeAdminError(w, http.StatusBadRequest, "Чтобы включить MTProto, задайте домен маскировки и секрет")
+		return
+	}
+	prevSecret := biz.GetSettingOrDefault("mtproto_secret", "")
 
 	enabled := "false"
 	if s.Enabled {
@@ -52,12 +61,11 @@ func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 	if s.AutoInstall {
 		autoInstall = "true"
 	}
+	// host and port are not this form's: the host is picked per request, the port is fixed.
 	for k, v := range map[string]string{
 		"mtproto_enabled":         enabled,
-		"mtproto_host":            s.Host,
-		"mtproto_port":            s.Port,
 		"mtproto_secret":          s.Secret,
-		"mtproto_fronting_domain": strings.TrimSpace(s.FrontingDomain),
+		"mtproto_fronting_domain": s.FrontingDomain,
 		"mtproto_sponsor_channel": s.SponsorChannel,
 		"mtproto_auto_install":    autoInstall,
 	} {
@@ -69,29 +77,45 @@ func UpdateMTProtoSettings(w http.ResponseWriter, r *http.Request) {
 
 	biz.BumpSubscriptionVersion()
 
-	WriteAuditLog(r, "update_mtproto_settings", "settings", "mtproto", nil)
+	WriteAuditLog(r, "update_mtproto_settings", "settings", "mtproto", map[string]any{
+		"enabled": s.Enabled, "auto_install": s.AutoInstall, "fronting_domain": s.FrontingDomain, "secret_changed": s.Secret != prevSecret})
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "MTProto settings updated"})
 }
 
-// GenerateMTProtoSecret — POST /api/admin/mtproto/generate-secret
+// GenerateMTProtoSecret — POST /api/admin/mtproto/generate-secret {fronting_domain?}
 //
-// Produces a full mtg fake-TLS secret: "ee" + 16 random bytes + hex(fronting
-// domain). It used to emit bare 32 hex chars, which is NOT an mtg secret — the
-// installer rejected the format and silently regenerated its own secret on the
-// node, so app_settings and the daemon disagreed and every client deeplink
-// broke. Requires mtproto_fronting_domain to be configured.
+// Produces a full mtg fake-TLS secret: "ee" + 16 random bytes + hex(fronting domain) — for
+// the domain in the form (or the stored one). It only returns it: nothing changes until
+// «Сохранить» (C6), so a stray click does not break every client's deeplink.
 func GenerateMTProtoSecret(w http.ResponseWriter, r *http.Request) {
-	secret, err := biz.BuildMTProtoSecret(biz.MTProtoFrontingDomain())
+	var req struct {
+		FrontingDomain string `json:"fronting_domain"`
+	}
+	_ = decodeOptional(r, &req)
+	domain := strings.TrimSpace(req.FrontingDomain)
+	if domain == "" {
+		domain = biz.MTProtoFrontingDomain()
+	}
+	secret, err := biz.BuildMTProtoSecret(domain)
 	if err != nil {
-		writeAdminError(w, http.StatusBadRequest,
-			"Задайте Fronting domain перед генерацией секрета — он кодируется внутрь секрета")
+		writeAdminError(w, http.StatusBadRequest, "Задайте домен маскировки перед генерацией секрета — он кодируется внутрь секрета")
 		return
 	}
-	if err := biz.SetSetting("mtproto_secret", secret); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to save secret")
-		return
-	}
-	biz.BumpSubscriptionVersion()
-	WriteAuditLog(r, "generate_mtproto_secret", "settings", "mtproto", nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"secret": secret})
 }
+
+// mtprotoSecretFor: an mtg fake-TLS secret («ee» + 32 hex + hex of the domain).
+func mtprotoSecretFor(secret, domain string) bool {
+	s := strings.ToLower(secret)
+	want := "ee"
+	if len(s) != len(want)+32+2*len(domain) || !strings.HasPrefix(s, want) {
+		return false
+	}
+	if _, err := hex.DecodeString(s[2:]); err != nil {
+		return false
+	}
+	return s[34:] == hex.EncodeToString([]byte(strings.ToLower(domain)))
+}
+
+// mtprotoOn: the Telegram proxy is switched on in «MTProto» (a new exit gets it only then).
+var mtprotoOn = func() bool { return biz.GetSettingOrDefault("mtproto_enabled", "false") == "true" }

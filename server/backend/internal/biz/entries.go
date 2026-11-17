@@ -59,11 +59,14 @@ type Entry struct {
 }
 
 // EntryFailover is the auto-swap state (app_settings entry_failover_*): while Active the main
-// subscription lines point at relay Target.
+// subscription lines point at relay Target. Pinned: the owner sent everyone through Target on
+// purpose («Все через резервный вход», e.g. the Hub is cut on mobile networks while it answers
+// from outside) — the entry monitor never switches it back by itself.
 type EntryFailover struct {
 	Active bool      `json:"active"`
 	Target int       `json:"target"`
 	Since  time.Time `json:"since"`
+	Pinned bool      `json:"pinned"`
 }
 
 // EntryCheck is one persisted check of an entry. Status: ext/udp unknown|healthy|unhealthy,
@@ -188,15 +191,16 @@ const (
 	settingFailoverActive = "entry_failover_active"
 	settingFailoverTarget = "entry_failover_target"
 	settingFailoverSince  = "entry_failover_since"
+	settingFailoverPinned = "entry_failover_pinned"
 )
 
-// entryFailoverQuery reads the three failover keys in one statement: one snapshot, so a target
-// and a since written together by SetEntryFailover are never mixed with an older pair.
-const entryFailoverQuery = `SELECT key, value FROM app_settings WHERE key IN ($1, $2, $3)`
+// entryFailoverQuery reads the four failover keys in one statement: one snapshot, so a target,
+// a since and the pin written together by SetEntryFailover are never mixed with older values.
+const entryFailoverQuery = `SELECT key, value FROM app_settings WHERE key IN ($1, $2, $3, $4)`
 
 // GetEntryFailover reads the auto-swap state; a failed read is an error, absent keys are inactive.
 func GetEntryFailover(ctx context.Context) (EntryFailover, error) {
-	rows, err := db.DB.QueryContext(ctx, entryFailoverQuery, settingFailoverActive, settingFailoverTarget, settingFailoverSince)
+	rows, err := db.DB.QueryContext(ctx, entryFailoverQuery, settingFailoverActive, settingFailoverTarget, settingFailoverSince, settingFailoverPinned)
 	if err != nil {
 		return EntryFailover{}, fmt.Errorf("read entry failover: %w", err)
 	}
@@ -212,35 +216,40 @@ func GetEntryFailover(ctx context.Context) (EntryFailover, error) {
 	if err := rows.Err(); err != nil {
 		return EntryFailover{}, fmt.Errorf("read entry failover: %w", err)
 	}
-	return ParseEntryFailover(raw[settingFailoverActive], raw[settingFailoverTarget], raw[settingFailoverSince]), nil
+	return ParseEntryFailover(raw[settingFailoverActive], raw[settingFailoverTarget], raw[settingFailoverSince], raw[settingFailoverPinned]), nil
 }
 
-// ParseEntryFailover: active only with "true" and a positive target; a broken since is zero.
-func ParseEntryFailover(active, target, since string) EntryFailover {
+// ParseEntryFailover: active only with "true" and a positive target; a broken since is zero;
+// pinned only with "true" on an active failover.
+func ParseEntryFailover(active, target, since, pinned string) EntryFailover {
 	id, err := strconv.Atoi(strings.TrimSpace(target))
 	if strings.TrimSpace(active) != "true" || err != nil || id <= 0 {
 		return EntryFailover{}
 	}
 	at, _ := time.Parse(time.RFC3339, strings.TrimSpace(since))
-	return EntryFailover{Active: true, Target: id, Since: at}
+	return EntryFailover{Active: true, Target: id, Since: at, Pinned: strings.TrimSpace(pinned) == "true"}
 }
 
-// SetEntryFailover writes the three keys in one statement (atomic). A zero Since is stored as "".
+// SetEntryFailover writes the four keys in one statement (atomic). A zero Since is stored as "";
+// an inactive failover is never pinned.
 func SetEntryFailover(ctx context.Context, st EntryFailover) error {
 	if st.Active && st.Target <= 0 {
 		return errors.New("entry failover: active without a target")
 	}
-	active, target, since := "false", "0", ""
+	active, target, since, pinned := "false", "0", "", "false"
 	if st.Active {
 		active, target = "true", strconv.Itoa(st.Target)
 		if !st.Since.IsZero() {
 			since = st.Since.UTC().Format(time.RFC3339)
 		}
+		if st.Pinned {
+			pinned = "true"
+		}
 	}
 	_, err := db.DB.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW()), ($3, $4, NOW()), ($5, $6, NOW())
+		INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW()), ($3, $4, NOW()), ($5, $6, NOW()), ($7, $8, NOW())
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-		settingFailoverActive, active, settingFailoverTarget, target, settingFailoverSince, since)
+		settingFailoverActive, active, settingFailoverTarget, target, settingFailoverSince, since, settingFailoverPinned, pinned)
 	if err != nil {
 		return fmt.Errorf("save entry failover: %w", err)
 	}

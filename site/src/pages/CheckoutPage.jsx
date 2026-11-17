@@ -1,211 +1,149 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext.jsx'
+import { resumeTopup } from '../api/wallet.js'
+import PayHeader from '../components/PayHeader.jsx'
+import Alert from '../components/Alert.jsx'
+import Button from '../components/Button.jsx'
+import Flap from '../components/Flap.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { kop, kopNum } from '../lib/format.js'
 
-// YooKassa widget mounts here. Платёж и confirmation_token создаёт предыдущая страница
-// PaymentPage и передаёт через location state или sessionStorage.
-//
-// Документация: https://yookassa.ru/developers/payment-acceptance/integration-scenarios/widget/basics
-// Скрипт: https://yookassa.ru/checkout-widget/v1/checkout-widget.js
+// Оплата /checkout/:paymentId (spec 09 §9.3, artboard «Оплата»): the embedded ЮKassa widget on a white
+// plate, the amount on the right. The confirmation token comes from the previous step (sessionStorage,
+// this tab only); after a reload or in a new tab the API continues the same payment (resume); a payment
+// that cannot go on any more goes straight to its result. No primary button of ours: the widget's
+// button confirms the payment.
+const SCRIPT = 'https://yookassa.ru/checkout-widget/v1/checkout-widget.js'
+const READY_TIMEOUT_MS = 10000
 
-const YOOKASSA_SCRIPT = 'https://yookassa.ru/checkout-widget/v1/checkout-widget.js'
-
-function loadScript(src) {
+// loads the widget script once; a failed tag is removed so «Открыть этот платёж» really retries
+function loadWidget(isCancelled) {
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${src}"]`)
-    if (existing) {
-      // Скрипт уже добавлен — если globals ещё не готовы, ждём
-      if (window.YooMoneyCheckoutWidget) { resolve(); return }
-      existing.addEventListener('load', () => resolve())
-      existing.addEventListener('error', () => reject(new Error('Не удалось загрузить виджет')))
-      // На случай если load уже произошёл до регистрации listener — полинг
-      const poll = setInterval(() => {
-        if (window.YooMoneyCheckoutWidget) {
-          clearInterval(poll); resolve()
-        }
-      }, 100)
-      setTimeout(() => { clearInterval(poll); if (!window.YooMoneyCheckoutWidget) reject(new Error('Таймаут загрузки виджета')) }, 10000)
-      return
+    if (window.YooMoneyCheckoutWidget) { resolve(); return }
+    let s = document.querySelector(`script[src="${SCRIPT}"]`)
+    if (!s) {
+      s = document.createElement('script')
+      s.src = SCRIPT
+      s.async = true
+      document.body.appendChild(s)
     }
-    const s = document.createElement('script')
-    s.src = src
-    s.async = true
-    s.onload = () => {
-      // Ждём пока YooMoneyCheckoutWidget появится в window
-      const poll = setInterval(() => {
-        if (window.YooMoneyCheckoutWidget) { clearInterval(poll); resolve() }
-      }, 50)
-      setTimeout(() => { clearInterval(poll); if (!window.YooMoneyCheckoutWidget) reject(new Error('Виджет не инициализировался')) }, 10000)
-    }
-    s.onerror = () => reject(new Error('Не удалось загрузить виджет ЮKassa'))
-    document.body.appendChild(s)
+    const started = Date.now()
+    const fail = (why) => { clearInterval(poll); s.remove(); reject(new Error(why)) }
+    const poll = setInterval(() => {
+      if (isCancelled()) { clearInterval(poll); reject(new Error('cancelled')); return }
+      if (window.YooMoneyCheckoutWidget) { clearInterval(poll); resolve() }
+      else if (Date.now() - started > READY_TIMEOUT_MS) fail('timeout')
+    }, 60)
+    s.addEventListener('error', () => fail('load'), { once: true })
   })
+}
+
+function readMeta(id) {
+  try { return JSON.parse(sessionStorage.getItem(`checkout_meta_${id}`) || 'null') || {} } catch { return {} }
 }
 
 export default function CheckoutPage() {
   const { paymentId } = useParams()
+  const { token } = useAuth()
   const navigate = useNavigate()
-  const containerRef = useRef(null)
-  const widgetRef = useRef(null)
-
-  const [status, setStatus] = useState('loading') // loading | ready | error | success
-  const [error, setError] = useState('')
-  const [planName, setPlanName] = useState('')
+  const narrow = useMedia('(max-width: 1024px)')
+  usePageMeta('Оплата — HiEarth', { noindex: true })
+  const [state, setState] = useState('loading') // loading | ready | error
+  const [attempt, setAttempt] = useState(0)
+  const [declined, setDeclined] = useState(false)
+  const widget = useRef(null)
+  const planName = sessionStorage.getItem(`checkout_plan_${paymentId}`) || ''
+  const meta = readMeta(paymentId)
+  const toResult = () => navigate(`/wallet?topup=${paymentId}`, { replace: true })
 
   useEffect(() => {
-    // Токен + название тарифа передаёт PaymentPage через sessionStorage
-    const token = sessionStorage.getItem(`checkout_token_${paymentId}`)
-    const plan = sessionStorage.getItem(`checkout_plan_${paymentId}`) || ''
-    setPlanName(plan)
-
-    if (!token) {
-      // Session token is gone (refresh / deep link / new tab). The payment
-      // itself still exists on the server — offer to open it instead of
-      // dead-ending the user.
-      setError('Сессия оплаты не найдена — вероятно, страница была обновлена или открыта заново.')
-      setStatus('error')
-      return
-    }
-
     let cancelled = false
+    setState('loading')
+    const saved = attempt === 0 ? sessionStorage.getItem(`checkout_token_${paymentId}`) : null
+    const tokenReady = saved
+      ? Promise.resolve({ confirmation_token: saved })
+      : resumeTopup(token, paymentId).catch((e) => (e.status === 409 || e.status === 404 ? {} : { error: e }))
 
-    loadScript(YOOKASSA_SCRIPT).then(() => {
-      if (cancelled) return
-      if (!window.YooMoneyCheckoutWidget) {
-        setError('Виджет ЮKassa не доступен. Проверьте соединение и попробуйте снова.')
-        setStatus('error')
-        return
-      }
-
-      try {
-        const checkout = new window.YooMoneyCheckoutWidget({
-          confirmation_token: token,
-          return_url: window.location.origin + '/dashboard?t=1',
-          error_callback(e) {
-            console.error('[yookassa-widget]', e)
-            setError(e?.error?.description || 'Ошибка оплаты')
-            setStatus('error')
-          },
-          customization: {
-            colors: {
-              controlPrimary: '#10b981', // brand emerald («Лес в ночи»)
-              background: '#0a130f',     // ночной лес
-            },
-          },
-        })
-
-        // Событие complete — успешная оплата. ЮKassa сама откроет return_url.
-        checkout.on('complete', () => {
-          // Очищаем временный токен
-          sessionStorage.removeItem(`checkout_token_${paymentId}`)
-          sessionStorage.removeItem(`checkout_plan_${paymentId}`)
-          sessionStorage.setItem('payment_success_plan', planName)
-          setStatus('success')
-          setTimeout(() => navigate('/dashboard?t=1'), 1500)
-        })
-
-        // Событие success — пользователь успешно дошёл до оплаты (но до complete)
-        checkout.on('success', () => {
-          // Закрываем виджет сами, ждём webhook
-          checkout.destroy()
-        })
-
-        checkout.on('fail', () => {
-          setError('Оплата не прошла. Попробуйте другую карту или способ.')
-          setStatus('error')
-        })
-
-        checkout.render('yookassa-checkout-container')
-        widgetRef.current = checkout
-        setStatus('ready')
-      } catch (e) {
-        console.error('[checkout]', e)
-        setError(e.message || 'Не удалось инициализировать виджет')
-        setStatus('error')
-      }
-    }).catch((e) => {
-      if (!cancelled) {
-        setError(e.message)
-        setStatus('error')
-      }
+    tokenReady.then((res) => {
+      if (cancelled) return null
+      if (res.error) { setState('error'); return null }
+      if (res.confirmation_url) { window.location.assign(res.confirmation_url); return null }
+      if (!res.confirmation_token) { toResult(); return null } // paid, canceled or expired: show what happened
+      sessionStorage.setItem(`checkout_token_${paymentId}`, res.confirmation_token)
+      return loadWidget(() => cancelled).then(() => {
+        if (cancelled) return
+        try {
+          const w = new window.YooMoneyCheckoutWidget({
+            confirmation_token: res.confirmation_token,
+            return_url: `${window.location.origin}/wallet?topup=${paymentId}`,
+            // the widget is drawn by ЮKassa on its white plate; our accent for its buttons (01 §10)
+            customization: { colors: { controlPrimary: '#22C55E', controlPrimaryContent: '#052E14', background: '#FFFFFF' } },
+            error_callback() { if (!cancelled) setState('error') },
+          })
+          const done = () => {
+            sessionStorage.removeItem(`checkout_token_${paymentId}`)
+            try { w.destroy() } catch { /* gone */ }
+            toResult()
+          }
+          w.on('success', done)
+          w.on('complete', done)
+          // a declined card: the widget stays, the person can try another card or СБП
+          w.on('fail', () => { if (!cancelled) setDeclined(true) })
+          w.render('yookassa-checkout-container')
+          widget.current = w
+          setState('ready')
+        } catch {
+          setState('error')
+        }
+      }).catch(() => { if (!cancelled) setState('error') })
     })
-
     return () => {
       cancelled = true
-      try { widgetRef.current?.destroy() } catch {}
+      try { widget.current?.destroy() } catch { /* gone */ }
+      widget.current = null
     }
-  }, [paymentId, navigate, planName])
+  }, [paymentId, token, attempt]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const amount = meta.amount_kop ? kopNum(meta.amount_kop) : null
+  const aside = (
+    <aside className="stack gap-3">
+      {amount !== null && (
+        <div className="card card--elevated">
+          <span className="t-label">Пополнение кошелька</span>
+          <div style={{ marginTop: 10 }}><Flap value={amount} suffix="₽" size={40} label={`${amount} рублей`} /></div>
+          {planName && meta.price_kop ? <p className="t-sm muted" style={{ marginTop: 12 }}>После оплаты сразу спишем {kop(meta.price_kop)} с кошелька за «{planName}».</p> : null}
+        </div>
+      )}
+      {declined && state === 'ready' && <Alert tone="bad" title="Оплата не прошла." rise>Деньги не списаны. Попробуйте другую карту или способ.</Alert>}
+      <Alert tone="plain" icon="shield">Данные карты вводятся только в форме ЮKassa. HiEarth их не видит и не хранит.</Alert>
+      {state === 'error' && (
+        <div className="card stack gap-3">
+          <Alert tone="bad" title="Не удалось связаться с оплатой.">Обновите страницу через минуту.</Alert>
+          <div className="row wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setAttempt((a) => a + 1)}>Открыть этот платёж</Button>
+            <Button variant="ghost" size="sm" to="/payment">Выбрать тариф заново</Button>
+          </div>
+        </div>
+      )}
+    </aside>
+  )
 
   return (
-    <section className="relative py-10 md:py-16">
-      <div className="relative max-w-xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">Оплата</h1>
-            {planName && (
-              <p className="text-sm text-text-secondary mt-1">Тариф «{planName}»</p>
-            )}
+    <>
+      <PayHeader step={2} back={{ to: meta.slug ? `/payment?plan=${encodeURIComponent(meta.slug)}` : '/payment', label: 'Оформление' }} planSlug={meta.slug} />
+      <main id="main" className="container" style={{ maxWidth: 1040, paddingTop: 48, paddingBottom: 80 }}>
+        <h1 className="sr">Оплата</h1>
+        <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'minmax(0, 1fr) 340px', gap: 24, alignItems: 'start' }}>
+          {narrow && aside}
+          <div className="widget" role="region" aria-label="Форма оплаты ЮKassa" aria-busy={state === 'loading'} style={{ position: 'relative', padding: state === 'ready' ? 8 : 28 }}>
+            {state === 'loading' && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}><span className="spinner" role="status" aria-label="Готовим оплату" /></div>}
+            <div id="yookassa-checkout-container" />
           </div>
-          <Link to="/payment" className="text-sm text-text-secondary hover:text-brand transition">
-            ← К выбору тарифа
-          </Link>
+          {!narrow && aside}
         </div>
-
-        {status === 'loading' && (
-          <div className="card p-8 flex items-center justify-center min-h-[400px]">
-            <div className="text-center">
-              <div className="inline-block w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin mb-3" />
-              <p className="text-sm text-text-secondary">Подготавливаем форму оплаты…</p>
-            </div>
-          </div>
-        )}
-
-        {status === 'error' && (
-          <div className="card p-6 !border-danger/30">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full bg-danger/15 flex items-center justify-center shrink-0">
-                <svg className="w-5 h-5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h2 className="serif font-semibold mb-1">Не удалось открыть оплату</h2>
-                <p className="text-sm text-text-secondary mb-2">{error}</p>
-                <p className="text-xs text-faint mb-4">
-                  Деньги не списаны. Если платёж уже был создан, его можно продолжить или проверить статус в истории.
-                </p>
-                <div className="flex flex-wrap gap-2.5">
-                  <Link to="/payment" className="btn-primary !py-2.5 !text-sm">Выбрать тариф заново</Link>
-                  {paymentId && <Link to={`/payments/${paymentId}`} className="btn-ghost !py-2.5 !text-sm">Открыть этот платёж</Link>}
-                  <Link to="/payments" className="btn-ghost !py-2.5 !text-sm">История платежей</Link>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {status === 'success' && (
-          <div className="card p-8 text-center !border-brand/30">
-            <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-brand/15 border border-brand/25 flex items-center justify-center">
-              <svg className="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <h2 className="serif text-xl font-semibold mb-1">Оплата прошла</h2>
-            <p className="text-sm text-text-secondary">Переходим в личный кабинет…</p>
-          </div>
-        )}
-
-        {/* Container для виджета — существует всегда чтобы YooKassa могла его найти */}
-        <div
-          id="yookassa-checkout-container"
-          ref={containerRef}
-          className={status === 'ready' ? 'glass-card rounded-2xl p-4 md:p-6 min-h-[600px]' : 'hidden'}
-        />
-
-        <p className="text-xs text-text-secondary text-center mt-6">
-          Оплата проходит через защищённую систему ЮKassa. Мы не получаем данные вашей карты.
-        </p>
-      </div>
-    </section>
+      </main>
+    </>
   )
 }

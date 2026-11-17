@@ -69,7 +69,7 @@ INTERNAL (kept):
                          ▼
               ┌────────────────────────┐
               │  Amsterdam exit-VPS    │
-              │  89.124.89.126:8443    │
+              │  192.0.2.126:8443    │
               │  mtproto-proxy daemon  │
               │  (TelegramMessenger/   │
               │   MTProxy official)    │
@@ -91,7 +91,7 @@ Key choices:
 
 ```
 mtproto_enabled         boolean (default false; admin toggles when ready)
-mtproto_host            text    (default empty; e.g. "mtproxy.hiearth.ru" or "89.124.89.126")
+mtproto_host            text    (default empty; e.g. "mtproxy.hiearth.ru" or "192.0.2.126")
 mtproto_port            integer (default 8443)
 mtproto_secret          text    (32 hex chars, generated; stored as-is for serving)
 mtproto_sponsor_channel text    (default empty; e.g. "@hiearth" later)
@@ -212,7 +212,7 @@ curl -H "Authorization: Bearer <user-jwt>" https://hiearth.ru/api/v1/user/mtprot
 # → { enabled: true, host, port, secret, tg_deeplink, t_me_link }
 
 # 7. Amsterdam mtproto-proxy daemon running
-ssh root@89.124.89.126 'systemctl is-active mtproxy && ss -tln | grep :8443'
+ssh root@192.0.2.126 'systemctl is-active mtproxy && ss -tln | grep :8443'
 # → active + LISTEN
 
 # 8. Site builds without SOCKS5 references

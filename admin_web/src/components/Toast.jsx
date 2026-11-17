@@ -36,7 +36,7 @@ export function ToastProvider({ children }) {
           <div
             key={t.id}
             onClick={() => removeToast(t.id)}
-            className={`px-4 py-3 rounded-lg shadow-lg cursor-pointer text-sm font-medium transition-all animate-slide-in ${typeStyles[t.type]}`}
+            className={`px-4 py-3 rounded-lg cursor-pointer text-sm font-medium transition-all animate-slide-in ${typeStyles[t.type]}`}
           >
             {t.message}
           </div>
@@ -47,10 +47,10 @@ export function ToastProvider({ children }) {
 }
 
 const typeStyles = {
-  info: 'bg-blue-600 text-white',
-  success: 'bg-green-600 text-white',
-  error: 'bg-red-600 text-white',
-  warn: 'bg-yellow-500 text-black',
+  info: 'bg-accent text-white',
+  success: 'bg-success text-white',
+  error: 'bg-danger text-white',
+  warn: 'bg-warning text-canvas',
 }
 
 export function useToast() {

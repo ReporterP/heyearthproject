@@ -1,0 +1,36 @@
+[Unit]
+Description=Official Telegram MTProxy of the WEB proxy (heyearth phase T)
+After=network-online.target heyearth-tg-mtproxy-firewall.service
+Wants=network-online.target
+Requires=heyearth-tg-mtproxy-firewall.service
+
+[Service]
+Type=simple
+User=tgmtproxy
+Group=tgmtproxy
+EnvironmentFile=/etc/heyearth/tg-mtproxy/env
+Environment=MTPROXY_WORKERS=1
+Environment=MTPROXY_MAX_CONNECTIONS=4096
+# Empty on a directly addressed host; --nat-info <local>:<public> behind 1:1 NAT.
+# Unquoted so an empty value expands to no argument.
+Environment=MTPROXY_NAT_ARGS=
+WorkingDirectory=/opt/heyearth/tg-mtproxy
+ExecStart=/opt/heyearth/tg-mtproxy/objs/bin/mtproto-proxy -u tgmtproxy -p 3399 -H 3398 -S ${MTPROXY_SECRET} $MTPROXY_NAT_ARGS --aes-pwd /etc/heyearth/tg-mtproxy/proxy-secret /etc/heyearth/tg-mtproxy/proxy-multi.conf -M ${MTPROXY_WORKERS} -C ${MTPROXY_MAX_CONNECTIONS}
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadOnlyPaths=/etc/heyearth/tg-mtproxy
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,62 +1,48 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, CreditCard, Ticket, Wallet, RotateCcw,
-  Package, BarChart3, Server, Key, Rocket, EyeOff, Route, Send, Zap,
+  LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
   Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X,
-} from 'lucide-react'
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, Gift } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import { Kbd } from './ui/index.js'
 import ThemePicker from './ThemePicker.jsx'
 import { visibleItems } from '../auth/access.js'
+import { useFeatures } from '../hooks/useFeatures.js'
 
+// C10: the main section first; the rest under «Дополнительно»; B2B only when switched on
+// (b2b_enabled, «Настройки → Подключение»).
 const groups = [
   {
-    label: 'ОБЗОР',
+    label: 'ОСНОВНОЕ',
     items: [
       { to: '/dashboard', icon: LayoutDashboard, label: 'navDashboard' },
-      { to: '/traffic',   icon: BarChart3,        label: 'navTraffic' },
+      { to: '/servers',   icon: Server,          label: 'navServers' },
+      { to: '/users',     icon: Users,           label: 'navUsers' },
+      { to: '/plans',     icon: Package,         label: 'navPlans' },
+      { to: '/payments',  icon: Wallet,          label: 'navPayments' },
+      { to: '/alerts',    icon: Bell,            label: 'navAlerts' },
+      { to: '/settings',  icon: Settings,        label: 'navSettings' },
     ],
   },
   {
-    label: 'ПОЛЬЗОВАТЕЛИ',
+    label: 'ДОПОЛНИТЕЛЬНО',
     items: [
-      { to: '/users',         icon: Users,      label: 'navUsers' },
-      { to: '/subscriptions', icon: CreditCard, label: 'navSubscriptions' },
-      { to: '/promocodes',    icon: Ticket,     label: 'navPromocodes' },
-    ],
-  },
-  {
-    label: 'ИНФРАСТРУКТУРА',
-    items: [
-      { to: '/nodes',            icon: Server,   label: 'navNodes' },
-      { to: '/ssh-keys',         icon: Key,      label: 'navSshKeys' },
-      { to: '/releases',         icon: Rocket,   label: 'navReleases' },
-      { to: '/traffic-masking',  icon: EyeOff,   label: 'navTrafficMasking' },
-      { to: '/direct-routes',    icon: Route,    label: 'navDirectRoutes' },
-      { to: '/mtproto',          icon: Send,     label: 'navMTProto' },
-      { to: '/auto-tuner',       icon: Zap,      label: 'navAutoTuner' },
-      { to: '/alerts',           icon: Bell,     label: 'navAlerts' },
-    ],
-  },
-  {
-    label: 'ДЕНЬГИ',
-    items: [
-      { to: '/plans',        icon: Package,   label: 'navPlans' },
-      { to: '/payments',     icon: Wallet,    label: 'navPayments' },
-      { to: '/payment-ops',  icon: RotateCcw, label: 'navPaymentOps' },
-    ],
-  },
-  {
-    label: 'АДМИН',
-    items: [
-      { to: '/admins',        icon: ShieldCheck, label: 'navAdmins' },
+      { to: '/direct-routes', icon: Route,       label: 'navDirectRoutes' },
+      { to: '/mtproto',       icon: Send,        label: 'navMTProto' },
+      { to: '/promocodes',    icon: Ticket,      label: 'navPromocodes' },
+      { to: '/referrals',     icon: Gift,        label: 'navReferrals' },
       { to: '/audit-log',     icon: FileText,    label: 'navAuditLog' },
-      { to: '/tenants',       icon: Building2,   label: 'navTenants' },
-      { to: '/b2b-analytics', icon: TrendingUp,  label: 'navB2BAnalytics' },
-      { to: '/settings',      icon: Settings,    label: 'navSettings' },
+      { to: '/admins',        icon: ShieldCheck, label: 'navAdmins' },
+    ],
+  },
+  {
+    label: 'B2B',
+    feature: 'b2b',
+    items: [
+      { to: '/tenants',       icon: Building2,  label: 'navTenants' },
+      { to: '/b2b-analytics', icon: TrendingUp, label: 'navB2BAnalytics' },
     ],
   },
 ]
@@ -80,6 +66,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK, mobile = 
     localStorage.setItem(GROUPS_KEY, JSON.stringify(next))
   }
 
+  const features = useFeatures()
   const filterItems = (items) => visibleItems(items, { can, isTenantAdmin })
 
   return (
@@ -133,6 +120,7 @@ export default function Sidebar({ collapsed, onToggleCollapse, onCmdK, mobile = 
       {/* Groups */}
       <nav className="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
         {groups.map((g) => {
+          if (g.feature && !features[g.feature]) return null
           const visible = filterItems(g.items)
           if (visible.length === 0) return null
 

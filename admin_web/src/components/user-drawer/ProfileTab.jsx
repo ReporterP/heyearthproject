@@ -6,8 +6,9 @@ import { useToast } from '../Toast.jsx'
 import { updateUser } from '../../api/admin.js'
 import { Input, Select, Button } from '../ui/index.js'
 import { formatDate } from '../../utils/format.js'
+import { telegramId } from '../../utils/users.js'
 
-function EditableField({ label, value, mono, type = 'text', options, canEdit, onSave }) {
+function EditableField({ label, value, mono, type = 'text', options, canEdit, onSave, inputMode }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value ?? '')
   const [busy, setBusy] = useState(false)
@@ -51,6 +52,7 @@ function EditableField({ label, value, mono, type = 'text', options, canEdit, on
           ) : (
             <Input
               type={type}
+              inputMode={inputMode}
               value={draft}
               onChange={e => setDraft(e.target.value)}
               autoFocus
@@ -84,10 +86,13 @@ export default function ProfileTab({ user, onSaved }) {
 
   return (
     <div>
-      <EditableField label={t.fieldUsername}  value={user.username}    canEdit={canEdit} onSave={v => patch('username', v)} />
-      <EditableField label={t.password}        value=""                  canEdit={canEdit} type="password" onSave={v => patch('password', v)} />
-      <EditableField label={t.fieldRole}       value={user.role}         canEdit={canEdit} options={[{ value: 'user', label: 'User' }, { value: 'premium', label: 'Premium' }]} onSave={v => patch('role', v)} />
-      <EditableField label="Telegram ID"       value={user.telegram_id}  mono canEdit={canEdit} onSave={v => patch('telegram_id', v)} />
+      {user.username && <EditableField label="Ник" value={user.username} canEdit={false} />}
+      <EditableField label="Telegram ID" value={user.telegram_id} mono canEdit={canEdit} inputMode="numeric"
+        onSave={v => {
+          const n = telegramId(v)
+          if (n === null) { toast.error('Telegram ID — число, например 123456789'); return Promise.reject(new Error('bad')) }
+          return patch('telegram_id', n)
+        }} />
       <EditableField label={t.fieldUserId}     value={user.user_id}      mono canEdit={false} />
       <EditableField label={t.fieldCreatedAt}  value={formatDate(user.created_at)} canEdit={false} />
       {user.updated_at && (

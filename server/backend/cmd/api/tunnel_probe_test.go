@@ -436,10 +436,10 @@ func TestEvalExitHealthHysteresisAndAlertActions(t *testing.T) {
 }
 
 func TestExitAlertTexts(t *testing.T) {
-	node := biz.ExitNodeTunnel{ID: 2, Name: "NL-1", IPAddress: "89.124.89.126", TunnelProtocol: "hysteria2"}
+	node := biz.ExitNodeTunnel{ID: 2, Name: "NL-1", IPAddress: "192.0.2.126", TunnelProtocol: "hysteria2"}
 	errLine := fmt.Sprintf("hysteria2 exit #%d via 127.0.0.1:1090: GET generate_204 (gstatic, cloudflare) failed: gstatic: timeout after 5s; cloudflare: timeout after 5s", node.ID)
 
-	if got, want := exitDownDetails(node, errLine), "NL-1 (89.124.89.126): "+errLine; got != want {
+	if got, want := exitDownDetails(node, errLine), "NL-1 (192.0.2.126): "+errLine; got != want {
 		t.Fatalf("exitDownDetails = %q, want %q", got, want)
 	}
 	// Status unhealthy while this tick's probe passed (waiting for the 2nd success): no empty error.
@@ -698,7 +698,7 @@ func TestApplyExitAlertsHysteriaPathDown(t *testing.T) {
 	ah := withExitAlertHarness(t)
 	ok := func(ms int) pathProbe { return pathProbe{present: true, ok: true, rttMs: ms} }
 	hyFail := pathProbe{present: true, err: "hysteria2 exit #2 via 127.0.0.1:1090: timeout after 5s"}
-	r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}, db: "healthy"}
+	r := &exitMonitorRun{node: biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "192.0.2.126"}, db: "healthy"}
 	for range 3 {
 		r.tick(exitPathProbe{hyFail, ok(90)})
 	}
@@ -835,7 +835,7 @@ func TestPersistExitVerdict(t *testing.T) {
 }
 
 func TestExitPathAlertTexts(t *testing.T) {
-	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "89.124.89.126"}
+	node := biz.ExitNodeTunnel{ID: 2, Name: "Амстердам", IPAddress: "192.0.2.126"}
 	if exitPathAlertKey(2, "hy") != "exit-path-down-2-hy" || exitPathAlertKey(20, "vr") != "exit-path-down-20-vr" {
 		t.Fatal("unexpected path alert keys")
 	}
@@ -846,7 +846,7 @@ func TestExitPathAlertTexts(t *testing.T) {
 		}
 	}
 	title, details = exitPathDownText(node, "vr", "")
-	for _, want := range []string{"TCP", "10443", "ждём подтверждения"} {
+	for _, want := range []string{"TCP", "ShadowTLS", "443", "heyearth-stls-client-2", "Переустановить", "ждём подтверждения"} {
 		if !strings.Contains(title+details, want) {
 			t.Errorf("TCP path alert lacks %q: %s / %s", want, title, details)
 		}
@@ -864,5 +864,21 @@ func TestMTProtoHealthSkipsDisabled(t *testing.T) {
 		if !strings.Contains(q, want) {
 			t.Errorf("query lacks %q: %s", want, q)
 		}
+	}
+}
+
+// After an API restart the alert journal replays exit alerts, but the
+// monitor's memory (exitHealthByID) is empty: an exit deleted meanwhile kept
+// its alert active forever. The sweep finds those keys from the alerts alone.
+func TestGoneExitAlertKeys(t *testing.T) {
+	active := []string{
+		"exit-down-7", "exit-path-down-7-hy", "exit-path-down-7-vr", // exit 7 is gone
+		"exit-down-2", "exit-path-down-2-vr", // exit 2 is still online
+		"all-exits-down", "exit-path-down-x-hy", "backup-stale", // not per-exit / unparsable
+	}
+	got := goneExitAlertKeys(active, map[int]bool{2: true})
+	want := []string{"exit-down-7", "exit-path-down-7-hy", "exit-path-down-7-vr"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

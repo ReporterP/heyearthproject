@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,10 +40,6 @@ func TestIdempotenceKeyHeader(t *testing.T) {
 			_, err := c.CreateRefundWithKey(refund, "refund-7-3")
 			return err
 		}, func(a, b string) bool { return a == "refund-7-3" && b == "refund-7-3" }},
-		{"refund without a key gets a fresh random key", func() error {
-			_, err := c.CreateRefund(refund)
-			return err
-		}, func(a, b string) bool { return random.MatchString(a) && random.MatchString(b) && a != b }},
 		{"empty key falls back to a random one", func() error {
 			_, err := c.CreateRefundWithKey(refund, "")
 			return err
@@ -140,5 +137,40 @@ func TestWithTimeoutCopies(t *testing.T) {
 	short := c.WithTimeout(25 * time.Second)
 	if short.http.Timeout != 25*time.Second || c.http.Timeout != httpTimeout || short.shopID != "shop" || short.baseURL != c.baseURL {
 		t.Fatalf("copy timeout %v, original %v", short.http.Timeout, c.http.Timeout)
+	}
+}
+
+// The closing receipt is POSTed to /v3/receipts with the caller's key and the
+// settlement against the top-up payment.
+func TestCreateReceiptRequest(t *testing.T) {
+	var gotPath, gotKey, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotKey = r.URL.Path, r.Header.Get("Idempotence-Key")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"rt-1","type":"payment","status":"pending"}`)
+	}))
+	defer srv.Close()
+	c := NewClient("shop", "secret", false)
+	c.baseURL = srv.URL
+	res, err := c.CreateReceipt(CreateReceiptRequest{
+		Type: "payment", PaymentID: "pay-9", Send: true, TaxSystemCode: 2,
+		Customer: &ReceiptCustomer{Email: "a@example.com"},
+		Items: []ReceiptItem{{Description: "Подписка", Quantity: "1.00", Amount: Amount{Value: "300.00", Currency: "RUB"},
+			VATCode: VATCodeNone, PaymentSubject: PaymentSubjectService, PaymentMode: PaymentModeFullPayment}},
+		Settlements: []Settlement{{Type: "prepayment", Amount: Amount{Value: "300.00", Currency: "RUB"}}},
+	}, "wallet-receipt-5")
+	if err != nil || res.ID != "rt-1" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if gotPath != "/receipts" || gotKey != "wallet-receipt-5" {
+		t.Errorf("path %q key %q", gotPath, gotKey)
+	}
+	for _, want := range []string{`"type":"payment"`, `"payment_id":"pay-9"`, `"send":true`, `"settlements":[{"type":"prepayment","amount":{"value":"300.00","currency":"RUB"}}]`,
+		`"payment_mode":"full_payment"`, `"payment_subject":"service"`, `"tax_system_code":2`, `"email":"a@example.com"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("body lacks %s: %s", want, gotBody)
+		}
 	}
 }

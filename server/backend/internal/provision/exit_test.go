@@ -30,7 +30,7 @@ type exitEnv struct {
 	onSleep   func(d time.Duration)
 }
 
-var testExitHubIPs = []string{"138.16.181.225", "45.150.39.236", "109.172.86.40"}
+var testExitHubIPs = []string{"203.0.113.225", "198.51.100.236", "192.0.2.40"}
 
 func exitFixture(t *testing.T, mtproto bool) *exitEnv {
 	t.Helper()
@@ -39,7 +39,7 @@ func exitFixture(t *testing.T, mtproto bool) *exitEnv {
 	e.node.name, e.hub.name, e.node.trace, e.hub.trace = "node", "hub", &e.trace, &e.trace
 	e.store = newMemStore(Node{ID: 7, Name: "Франкфурт", Role: "exit", IP: "203.0.113.7", SSHPort: 22, Password: "root-Pa55word",
 		HostKeyFP: "SHA256:x", HostKeyConfirmed: true, FallbackEnabled: true}, e.h)
-	e.opts = &ExitOptions{HubIPs: testExitHubIPs, MTProtoPort: 8443, HubXray: "/opt/heyearth/xray/xray",
+	e.opts = &ExitOptions{HubIPs: testExitHubIPs, MTProtoPort: 8443,
 		NodeAgent: func() ([]byte, error) { return []byte("node-agent-binary"), nil },
 		CA:        func() ([]byte, []byte, error) { return ca, caKey, nil }}
 	if mtproto {
@@ -103,8 +103,8 @@ func (e *exitEnv) tail(id int64, step string) string {
 
 func opIndex(ops []string, op string) int { return slices.Index(ops, op) }
 
-var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "firewall", "hysteria", "xray", "node_agent", "save_tunnel",
-	"hub_client", "path_hy", "path_tcp", "activate"}
+var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "firewall", "hysteria", "retire_xray", "stls", "node_agent",
+	"save_tunnel", "hub_client", "hub_stls", "path_hy", "path_tcp", "activate"}
 
 func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	e := exitFixture(t, false)
@@ -113,7 +113,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	if err != nil || e.store.jobs[id].Status != JobSucceeded {
 		t.Fatalf("%v %s %v", err, e.store.jobs[id].Error, e.store.statuses(id))
 	}
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "done")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "ok", "done", "done", "done", "done", "done", "ok", "ok", "done")) {
 		t.Fatalf("steps: %v", got)
 	}
 	k := e.keys(t)
@@ -121,12 +121,15 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	y := string(e.node.files[config.ExitHysteriaConfig])
-	if !strings.Contains(y, "  password: "+k.SSPassword+"\n") || !strings.Contains(y, "- reject(203.0.113.7)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/8443)") {
+	if !strings.Contains(y, "  password: "+k.SSPassword+"\n") || !strings.Contains(y, "- reject(203.0.113.7)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/8443)") || !strings.Contains(y, "- direct(203.0.113.7, tcp/3398)") {
 		t.Fatalf("server.yaml:\n%s", y)
 	}
-	xc := string(e.node.files[config.ExitXrayConfig])
-	if !json.Valid([]byte(xc)) || !strings.Contains(xc, k.PrivateKey) || strings.Contains(xc, "shadowsocks") {
-		t.Fatal("xray config")
+	// The backup tunnel: both ends rendered from the tunnel UUID, the exit's config with the MTProxy allowance.
+	wantSrv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443, config.TGMTProxyPort)
+	wantCli, _ := config.HubSTLSClientJSON(7, "203.0.113.7", k.UUID)
+	if string(e.node.files[config.ExitSTLSConfig]) != string(wantSrv) || string(e.hub.files[config.HubSTLSConfigPath(7)]) != string(wantCli) ||
+		string(e.hub.files["/etc/systemd/system/heyearth-stls-client-7.service"]) != config.HubSTLSClientUnit(7, "203.0.113.7") {
+		t.Fatal("backup tunnel configs")
 	}
 	if err := CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow); err != nil {
 		t.Fatalf("node-agent cert: %v", err)
@@ -140,48 +143,54 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	if e.h.tunnel != (Tunnel{UUID: k.UUID, PublicKey: k.PublicKey, ShortID: k.ShortID, SNI: config.ExitRealitySNI, Password: k.SSPassword}) {
 		t.Fatalf("tunnel in DB: %+v", e.h.tunnel)
 	}
-	wantRestarts := map[string]int{"hysteria2": 1, "xray": 1, "node-agent": 1}
-	if !maps.Equal(e.node.restarts, wantRestarts) || !maps.Equal(e.hub.restarts, map[string]int{"hysteria2-client-7": 1}) || len(e.node.authKeys) != 1 {
+	wantRestarts := map[string]int{"hysteria2": 1, config.ExitSTLSUnit: 1, "node-agent": 1}
+	wantHub := map[string]int{"hysteria2-client-7": 1, "heyearth-stls-client-7": 1}
+	if !maps.Equal(e.node.restarts, wantRestarts) || !maps.Equal(e.hub.restarts, wantHub) || len(e.node.authKeys) != 1 {
 		t.Fatalf("restarts node=%v hub=%v keys=%d", e.node.restarts, e.hub.restarts, len(e.node.authKeys))
 	}
+	pw, ssKey, _ := config.STLSSecrets(k.UUID)
 	for _, st := range e.store.jobs[id].Steps {
 		if strings.Contains(st.OutputTail, k.SSPassword) || strings.Contains(st.OutputTail, k.PrivateKey) || strings.Contains(st.OutputTail, k.UUID) ||
+			strings.Contains(st.OutputTail, pw) || strings.Contains(st.OutputTail, ssKey) ||
 			strings.Contains(st.OutputTail, "Pa55word") || strings.Contains(st.OutputTail, "PRIVATE KEY") {
 			t.Fatalf("secret in step %s output: %q", st.Name, st.OutputTail)
 		}
 	}
 
 	// Secrets are root-only (PutFile compares content AND mode, so does every Verify).
-	for p, m := range map[string]uint32{config.ExitKeysPath: 0o600, config.ExitHysteriaConfig: 0o600, config.ExitXrayConfig: 0o600,
-		config.NodeAgentKey: 0o600, config.NodeAgentCert: 0o644, config.NodeAgentBinary: 0o755, config.ExitXrayResolvConfPath: 0o644} {
+	for p, m := range map[string]uint32{config.ExitKeysPath: 0o600, config.ExitHysteriaConfig: 0o600, config.ExitSTLSConfig: 0o600,
+		config.NodeAgentKey: 0o600, config.NodeAgentCert: 0o644, config.NodeAgentBinary: 0o755, config.ExitSTLSResolvConfPath: 0o644} {
 		if e.node.modes[p] != m {
 			t.Errorf("%s: mode %o, want %o", p, e.node.modes[p], m)
 		}
 	}
-	if e.hub.modes[config.HubClientConfigPath(7)] != 0o600 {
-		t.Errorf("Hub client config mode %o", e.hub.modes[config.HubClientConfigPath(7)])
+	for _, p := range []string{config.HubClientConfigPath(7), config.HubSTLSConfigPath(7)} {
+		if e.hub.modes[p] != 0o600 {
+			t.Errorf("Hub client config %s mode %o", p, e.hub.modes[p])
+		}
 	}
 
-	// xray: its resolv.conf and kernel egress guard are written before the converge, whose extra
-	// creates the user and loads the guard before the restart; every written file is in the marker.
-	guard, _ := config.ExitXrayGuardConf("203.0.113.7", 8443)
-	if string(e.node.files[config.ExitXrayGuardConfPath]) != guard || string(e.node.files[config.ExitXrayGuardUnitPath]) != config.ExitXrayGuardUnit ||
-		string(e.node.files[config.ExitXrayResolvConfPath]) != config.ExitXrayResolvConf || !e.node.nft[config.ExitXrayGuardTable] {
-		t.Fatal("xray guard / resolv.conf not installed")
+	// The backup tunnel: its resolv.conf and kernel egress guard are written before the converge,
+	// whose extra creates the user and loads the guard before the restart; every written file is
+	// in the marker.
+	guard, _ := config.ExitGuardConf("203.0.113.7", 8443, config.TGMTProxyPort)
+	if string(e.node.files[config.ExitGuardConfPath]) != guard || string(e.node.files[config.ExitGuardUnitPath]) != config.ExitGuardUnit ||
+		string(e.node.files[config.ExitSTLSResolvConfPath]) != config.ExitSTLSResolvConf || !e.node.nft[config.ExitGuardTable] {
+		t.Fatal("tunnel guard / resolv.conf not installed")
 	}
-	conv := opIndex(e.node.ops, "converge xray")
-	for _, p := range []string{config.ExitXrayResolvConfPath, config.ExitXrayGuardConfPath, config.ExitXrayGuardUnitPath, config.ExitXrayConfig, config.ExitXrayUnitPath} {
+	conv := opIndex(e.node.ops, "converge heyearth-stls")
+	for _, p := range []string{config.ExitSTLSResolvConfPath, config.ExitGuardConfPath, config.ExitGuardUnitPath, config.ExitSTLSConfig, config.ExitSTLSUnitPath} {
 		if i := opIndex(e.node.ops, "put "+p); i < 0 || i > conv {
-			t.Errorf("%s not written before the xray converge", p)
+			t.Errorf("%s not written before the tunnel converge", p)
 		}
-		if e.node.markWrites["xray"][p] != sha256Hex(e.node.files[p]) {
-			t.Errorf("%s missing from xray's restart marker: %v", p, e.node.markWrites["xray"])
+		if e.node.markWrites[config.ExitSTLSUnit][p] != sha256Hex(e.node.files[p]) {
+			t.Errorf("%s missing from the tunnel's restart marker: %v", p, e.node.markWrites[config.ExitSTLSUnit])
 		}
 	}
 	// A unit that Requires= its guard is written after the guard's files (a cut never leaves it
-	// pointing at nothing): xray after its guard and resolv.conf, node-agent after its guard.
+	// pointing at nothing): the tunnel after its guard and resolv.conf, node-agent after its guard.
 	for unit, deps := range map[string][]string{
-		config.ExitXrayUnitPath:  {config.ExitXrayResolvConfPath, config.ExitXrayGuardConfPath, config.ExitXrayGuardUnitPath},
+		config.ExitSTLSUnitPath:  {config.ExitSTLSResolvConfPath, config.ExitGuardConfPath, config.ExitGuardUnitPath},
 		config.NodeAgentUnitPath: {config.ExitAgentGuardConfPath, config.ExitAgentGuardUnitPath},
 	} {
 		for _, d := range deps {
@@ -190,19 +199,25 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 			}
 		}
 	}
-	xs := e.node.scripts["converge xray"]
+	xs := e.node.scripts["converge heyearth-stls"]
 	restart := strings.Index(xs, `restart_checked "$CV_UNIT"`)
-	for _, part := range []string{config.ExitXrayUserScript, config.ExitXrayGuardApplyScript, "run -test -config " + config.ExitXrayConfig} {
+	for _, part := range []string{config.ExitSTLSUserScript, config.ExitGuardApplyScript, config.SingBoxDownloadURL(), " check -c '" + config.ExitSTLSConfig + "'"} {
 		if i := strings.Index(xs, part); i < 0 || i > restart {
-			t.Errorf("xray converge: %q must run before the restart", strings.SplitN(part, "\n", 2)[0])
+			t.Errorf("tunnel converge: %q must run before the restart", strings.SplitN(part, "\n", 2)[0])
 		}
+	}
+	// The Hub's client: pinned sing-box and `sing-box check` before its restart, the strict converge.
+	hs := e.hub.scripts["converge heyearth-stls-client-7"]
+	if i := strings.Index(hs, " check -c '"+config.HubSTLSConfigPath(7)+"'"); i < 0 || i > strings.Index(hs, `restart_checked "$CV_UNIT"`) ||
+		!strings.Contains(hs, config.SingBoxDownloadURL()) {
+		t.Error("the Hub client must be checked before its restart")
 	}
 
 	// node-agent: the Hub-only guard (from the same Hub list as the firewall) before the agent starts.
 	ag, _ := config.ExitAgentGuardConf(testExitHubIPs)
 	if string(e.node.files[config.ExitAgentGuardConfPath]) != ag || string(e.node.files[config.ExitAgentGuardUnitPath]) != config.ExitAgentGuardUnit ||
 		!strings.Contains(string(e.node.files[config.NodeAgentUnitPath]), "\nRequires="+config.ExitAgentGuardService+".service\n") ||
-		!e.node.nft[config.ExitAgentGuardTable] || !strings.Contains(e.node.scripts["firewall"], "ufw allow from 138.16.181.225 to any port 50052") {
+		!e.node.nft[config.ExitAgentGuardTable] || !strings.Contains(e.node.scripts["firewall"], "ufw allow from 203.0.113.225 to any port 50052") {
 		t.Fatal("node-agent guard not installed from the Hub list")
 	}
 	as := e.node.scripts["converge node-agent"]
@@ -213,21 +228,16 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 		t.Error("the Hub client converges softly (Review Focus 3)")
 	}
 
-	// The TCP path probe config (it carries the tunnel UUID) is put at VRProbeConfigPath and gone after.
-	if opIndex(e.hub.ops, "put "+config.VRProbeConfigPath(7)) < 0 || e.hub.files[config.VRProbeConfigPath(7)] != nil {
-		t.Fatalf("probe config: ops %v", e.hub.ops)
-	}
-
-	// The same node again (Drawer → «Переустановить»): nothing written or restarted on the node,
-	// on the Hub only the transient probe config, no sync.
+	// The same node again (Drawer → «Переустановить»): nothing written or restarted on the node
+	// or the Hub, no sync.
 	writes, hubWrites := e.node.writes, e.hub.writes
 	id2, err := e.r.Start(ctx, 7, KindReprovision)
-	if err != nil || e.store.jobs[id2].Status != JobSucceeded || e.node.writes != writes || e.hub.writes != hubWrites+1 ||
-		!maps.Equal(e.node.restarts, wantRestarts) || !maps.Equal(e.hub.restarts, map[string]int{"hysteria2-client-7": 1}) || e.h.syncs != 1 {
+	if err != nil || e.store.jobs[id2].Status != JobSucceeded || e.node.writes != writes || e.hub.writes != hubWrites ||
+		!maps.Equal(e.node.restarts, wantRestarts) || !maps.Equal(e.hub.restarts, wantHub) || e.h.syncs != 1 {
 		t.Fatalf("re-run changed something: %v writes %d→%d hub %d→%d restarts %v syncs %d", e.store.statuses(id2), writes, e.node.writes,
 			hubWrites, e.hub.writes, e.node.restarts, e.h.syncs)
 	}
-	if got := e.store.statuses(id2); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+	if got := e.store.statuses(id2); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("re-run steps: %v", got)
 	}
 }
@@ -238,13 +248,13 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 func TestExitRecipeDropAndResume(t *testing.T) {
 	ctx := context.Background()
 	e := exitFixture(t, false)
-	e.node.dropOnce = "converge xray"
+	e.node.dropOnce = "converge heyearth-stls"
 	id, _ := e.r.Start(ctx, 7, KindProvision)
 	j := e.store.jobs[id]
 	if j.Status != JobFailed || e.h.lifecycle != "failed" || slices.Contains(e.h.history, "online") || e.h.syncs != 0 {
 		t.Fatalf("after the drop: job=%s lifecycle=%s history=%v syncs=%d", j.Status, e.h.lifecycle, e.h.history, e.h.syncs)
 	}
-	if !strings.Contains(j.Error, Title("xray")) {
+	if !strings.Contains(j.Error, Title("stls")) {
 		t.Fatalf("the error must name the step: %q", j.Error)
 	}
 	if err := e.r.Resume(ctx, id); err != nil {
@@ -253,7 +263,7 @@ func TestExitRecipeDropAndResume(t *testing.T) {
 	if e.store.jobs[id].Status != JobSucceeded || e.h.lifecycle != "online" || e.h.syncs != 1 {
 		t.Fatalf("resume: %s %s syncs=%d %v", e.store.jobs[id].Status, e.h.lifecycle, e.h.syncs, e.store.statuses(id))
 	}
-	if !maps.Equal(e.node.restarts, map[string]int{"hysteria2": 1, "xray": 1, "node-agent": 1}) || e.hub.restarts["hysteria2-client-7"] != 1 {
+	if !maps.Equal(e.node.restarts, map[string]int{"hysteria2": 1, config.ExitSTLSUnit: 1, "node-agent": 1}) || e.hub.restarts["hysteria2-client-7"] != 1 {
 		t.Fatalf("restarts node=%v hub=%v", e.node.restarts, e.hub.restarts)
 	}
 	// hysteria converged in the first run, so the resume only verifies it: nft is applied once;
@@ -300,15 +310,15 @@ func TestExitRecipeDropAndResume(t *testing.T) {
 func TestExitReprovisionRestartFailsRollsBack(t *testing.T) {
 	e := exitFixture(t, false)
 	e.start(t, KindProvision)
-	prevYAML, prevXray := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitXrayConfig])
-	restarts, xrayWrites := maps.Clone(e.node.restarts), e.node.count("put "+config.ExitXrayConfig)
+	prevYAML, prevXray := string(e.node.files[config.ExitHysteriaConfig]), string(e.node.files[config.ExitSTLSConfig])
+	restarts, xrayWrites := maps.Clone(e.node.restarts), e.node.count("put "+config.ExitSTLSConfig)
 	e.opts.MTProtoPort = 9443 // changes hysteria's ACL and xray's rules
 	e.node.healthy = func(u string) bool {
 		return u != "hysteria2" || !strings.Contains(string(e.node.files[config.ExitHysteriaConfig]), "tcp/9443")
 	}
 	id := e.start(t, KindReprovision)
 	j := e.store.jobs[id]
-	if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["xray"] != StepPending || e.h.lifecycle != "online" || len(e.h.history) != 2 {
+	if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["stls"] != StepPending || e.h.lifecycle != "online" || len(e.h.history) != 2 {
 		t.Fatalf("job %s %q %v lifecycle %s", j.Status, j.Error, e.store.statuses(id), e.h.lifecycle)
 	}
 	if string(e.node.files[config.ExitHysteriaConfig]) != prevYAML || !e.node.active["hysteria2"] || e.node.marker["hysteria2"] ||
@@ -316,8 +326,8 @@ func TestExitReprovisionRestartFailsRollsBack(t *testing.T) {
 		t.Fatalf("hysteria: previous config back %v, running %v, marker %v, restarts %d", string(e.node.files[config.ExitHysteriaConfig]) == prevYAML,
 			e.node.active["hysteria2"], e.node.marker["hysteria2"], e.node.restarts["hysteria2"])
 	}
-	if string(e.node.files[config.ExitXrayConfig]) != prevXray || e.node.count("put "+config.ExitXrayConfig) != xrayWrites ||
-		e.node.restarts["xray"] != restarts["xray"] || e.node.restarts["node-agent"] != restarts["node-agent"] || !e.node.active["xray"] {
+	if string(e.node.files[config.ExitSTLSConfig]) != prevXray || e.node.count("put "+config.ExitSTLSConfig) != xrayWrites ||
+		e.node.restarts[config.ExitSTLSUnit] != restarts[config.ExitSTLSUnit] || e.node.restarts["node-agent"] != restarts["node-agent"] || !e.node.active[config.ExitSTLSUnit] {
 		t.Fatalf("the other units must be untouched: restarts %v", e.node.restarts)
 	}
 	if !strings.Contains(e.tail(id, "hysteria"), "откачены") || !strings.Contains(j.Error, "не запустился") {
@@ -350,7 +360,7 @@ func TestExitLivePathGuards(t *testing.T) {
 		}
 		id := e.start(t, KindReprovision)
 		j := e.store.jobs[id]
-		if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["xray"] != StepPending || e.h.lifecycle != "online" ||
+		if j.Status != JobFailed || e.steps(id)["hysteria"] != StepRolledBack || e.steps(id)["stls"] != StepPending || e.h.lifecycle != "online" ||
 			!strings.Contains(j.Error, "перестал") {
 			t.Fatalf("job %s %q %v", j.Status, j.Error, e.store.statuses(id))
 		}
@@ -359,8 +369,8 @@ func TestExitLivePathGuards(t *testing.T) {
 			t.Fatalf("hysteria not back: yaml %v hop file %v hop rules %v running %v", string(e.node.files[config.ExitHysteriaConfig]) == legacyYAML,
 				string(e.node.files[config.ExitPortHopConfPath]) == legacyHop, e.node.nftRules[config.ExitPortHopTable] == legacyHop, e.node.active["hysteria2"])
 		}
-		notTouched(t, e, "xray", config.ExitXrayConfig, config.ExitXrayUnitPath, config.ExitXrayGuardConfPath)
-		if kv, _ := runKV(context.Background(), e.hub, config.SocksProbeScript(1095)); kv["HTTP"] != "204" || e.node.restarts["xray"] != 0 {
+		notTouched(t, e, config.ExitSTLSUnit, config.ExitSTLSConfig, config.ExitSTLSUnitPath, config.ExitGuardConfPath)
+		if kv, _ := runKV(context.Background(), e.hub, config.SocksProbeScript(1095)); kv["HTTP"] != "204" || e.node.restarts[config.ExitSTLSUnit] != 0 {
 			t.Fatalf("the main tunnel must answer again after the rollback: %v", kv)
 		}
 	})
@@ -369,7 +379,7 @@ func TestExitLivePathGuards(t *testing.T) {
 		e, _ := legacyExit(t)
 		e.hub.udpChoked = true
 		id := e.start(t, KindReprovision)
-		if st := e.steps(id); e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["xray"] != StepDone || st["path_hy"] != StepSkipped ||
+		if st := e.steps(id); e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["stls"] != StepDone || st["path_hy"] != StepSkipped ||
 			e.node.count("rollback hysteria2") != 0 || e.hub.count("rollback "+config.HubClientUnit(7)) != 0 {
 			t.Fatalf("an already dead path is no reason to roll back: %s %v", e.store.jobs[id].Error, e.store.statuses(id))
 		}
@@ -386,33 +396,33 @@ func TestExitLivePathGuards(t *testing.T) {
 	t.Run("xray ok→dead after hysteria answered", func(t *testing.T) {
 		e := exitFixture(t, false)
 		e.start(t, KindProvision)
-		running := string(e.node.files[config.ExitXrayConfig])
+		running := string(e.node.files[config.ExitSTLSConfig])
 		e.node.onStart = func(u string) {
-			if u == "xray" {
-				running = string(e.node.files[config.ExitXrayConfig])
+			if u == config.ExitSTLSUnit {
+				running = string(e.node.files[config.ExitSTLSConfig])
 			}
 		}
-		e.hub.probeDead = func(op string) bool { return strings.HasPrefix(op, "vr-probe") && strings.Contains(running, "9443") }
-		prevXray, prevGuard := string(e.node.files[config.ExitXrayConfig]), string(e.node.files[config.ExitXrayGuardConfPath])
+		e.hub.probeDead = func(op string) bool { return op == "socks-probe 2095" && strings.Contains(running, "9443") }
+		prevXray, prevGuard := string(e.node.files[config.ExitSTLSConfig]), string(e.node.files[config.ExitGuardConfPath])
 		restarts := maps.Clone(e.node.restarts)
 		e.opts.MTProtoPort = 9443
 		e.trace = nil
 		id := e.start(t, KindReprovision)
 		st := e.steps(id)
-		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepDone || st["xray"] != StepRolledBack || st["node_agent"] != StepPending || e.h.lifecycle != "online" {
+		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepDone || st["stls"] != StepRolledBack || st["node_agent"] != StepPending || e.h.lifecycle != "online" {
 			t.Fatalf("job %q %v", e.store.jobs[id].Error, e.store.statuses(id))
 		}
-		if string(e.node.files[config.ExitXrayConfig]) != prevXray || string(e.node.files[config.ExitXrayGuardConfPath]) != prevGuard ||
-			e.node.nftRules[config.ExitXrayGuardTable] != prevGuard || !e.node.active["xray"] || strings.Contains(running, "9443") {
+		if string(e.node.files[config.ExitSTLSConfig]) != prevXray || string(e.node.files[config.ExitGuardConfPath]) != prevGuard ||
+			e.node.nftRules[config.ExitGuardTable] != prevGuard || !e.node.active[config.ExitSTLSUnit] || strings.Contains(running, "9443") {
 			t.Fatal("xray, its guard file and its kernel rules must be the previous ones, running")
 		}
 		if !strings.Contains(string(e.node.files[config.ExitHysteriaConfig]), "tcp/9443") || e.node.restarts["hysteria2"] != restarts["hysteria2"]+1 ||
-			e.node.restarts["xray"] != restarts["xray"]+2 || e.node.restarts["node-agent"] != restarts["node-agent"] {
+			e.node.restarts[config.ExitSTLSUnit] != restarts[config.ExitSTLSUnit]+2 || e.node.restarts["node-agent"] != restarts["node-agent"] {
 			t.Fatalf("restarts %v (before %v)", e.node.restarts, restarts)
 		}
 		// Never overlapping: hysteria restarted, then its path answered (probed before and after),
 		// and only then the first change of xray; the TCP path was probed around xray's restart.
-		hyConv, xrMark, xrConv := slices.Index(e.trace, "node: converge hysteria2"), slices.Index(e.trace, "node: mark xray"), slices.Index(e.trace, "node: converge xray")
+		hyConv, xrMark, xrConv := slices.Index(e.trace, "node: converge hysteria2"), slices.Index(e.trace, "node: mark heyearth-stls"), slices.Index(e.trace, "node: converge heyearth-stls")
 		hyProbes := []int{}
 		for i, op := range e.trace[:max(xrMark, 0)] {
 			if op == "hub: socks-probe 1095" {
@@ -420,7 +430,7 @@ func TestExitLivePathGuards(t *testing.T) {
 			}
 		}
 		if hyConv < 0 || xrMark < 0 || len(hyProbes) != 2 || hyProbes[0] > hyConv || hyProbes[1] < hyConv || slices.Contains(e.trace, "sleep "+hopSettle.String()) ||
-			slices.Index(e.trace, "hub: vr-probe 3095") > xrMark || !slices.Contains(e.trace[xrConv:], "hub: vr-probe 3095") {
+			slices.Index(e.trace, "hub: socks-probe 2095") > xrMark || !slices.Contains(e.trace[xrConv:], "hub: socks-probe 2095") {
 			t.Fatalf("order: %v", e.trace)
 		}
 	})
@@ -428,11 +438,11 @@ func TestExitLivePathGuards(t *testing.T) {
 	t.Run("xray dead before", func(t *testing.T) {
 		e := exitFixture(t, false)
 		e.start(t, KindProvision)
-		e.hub.vrFail = true
+		e.hub.tcpFail = true
 		e.opts.MTProtoPort = 9443
 		id := e.start(t, KindReprovision)
-		if st := e.steps(id); st["xray"] != StepDone || st["path_tcp"] != StepFailed || e.node.count("rollback xray") != 0 ||
-			!strings.Contains(string(e.node.files[config.ExitXrayConfig]), "9443") || e.h.lifecycle != "online" {
+		if st := e.steps(id); st["stls"] != StepDone || st["path_tcp"] != StepFailed || e.node.count("rollback heyearth-stls") != 0 ||
+			!strings.Contains(string(e.node.files[config.ExitSTLSConfig]), "9443") || e.h.lifecycle != "online" {
 			t.Fatalf("%v", e.store.statuses(id))
 		}
 	})
@@ -458,11 +468,11 @@ func TestExitLivePathGuards(t *testing.T) {
 	t.Run("not live: no probes around changes", func(t *testing.T) {
 		e := exitFixture(t, false)
 		e.start(t, KindProvision)
-		if probes(e, "socks-probe 1095") != 1 || probes(e, "vr-probe 3095") != 1 {
+		if probes(e, "socks-probe 1095") != 1 || probes(e, "socks-probe 2095") != 1 {
 			t.Fatalf("a node out of routing is probed only by path_hy/path_tcp: %v", e.hub.ops)
 		}
 		e.start(t, KindVerify)
-		if probes(e, "socks-probe 1095") != 2 || probes(e, "vr-probe 3095") != 2 {
+		if probes(e, "socks-probe 1095") != 2 || probes(e, "socks-probe 2095") != 2 {
 			t.Fatalf("verify: %v", e.hub.ops)
 		}
 	})
@@ -504,7 +514,7 @@ func TestExitLiveHopChangeWaitsForAHop(t *testing.T) {
 			}
 			continue
 		}
-		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["xray"] != StepPending ||
+		if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["stls"] != StepPending ||
 			string(e.node.files[config.ExitPortHopConfPath]) != oldHop || e.node.nftRules[config.ExitPortHopTable] != oldHop || e.h.lifecycle != "online" {
 			t.Fatalf("broken rules: %q %v", e.store.jobs[id].Error, e.store.statuses(id))
 		}
@@ -612,7 +622,7 @@ func TestExitLivePathCheckSurvivesAPIRestart(t *testing.T) {
 		}
 		st := e.steps(id)
 		if dead {
-			if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["xray"] != StepPending || e.h.lifecycle != "online" ||
+			if e.store.jobs[id].Status != JobFailed || st["hysteria"] != StepRolledBack || st["stls"] != StepPending || e.h.lifecycle != "online" ||
 				string(e.node.files[config.ExitHysteriaConfig]) != legacyYAML || string(e.node.files[config.ExitPortHopConfPath]) != legacyHop ||
 				e.node.nftRules[config.ExitPortHopTable] != legacyHop || !e.node.active["hysteria2"] {
 				t.Fatalf("dead: the recorded writes must be undone: %q %v", e.store.jobs[id].Error, e.store.statuses(id))
@@ -636,17 +646,17 @@ func TestExitProvisionClearsStalePathCheckMarkers(t *testing.T) {
 		h.pathMark[unit] = &fakePathMark{before: true, writes: map[string]string{path: sha256Hex(h.files[path])}}
 	}
 	stale(e.node, "hysteria2", config.ExitHysteriaConfig)
-	stale(e.node, "xray", config.ExitXrayConfig)
+	stale(e.node, config.ExitSTLSUnit, config.ExitSTLSConfig)
 	stale(e.hub, config.HubClientUnit(7), config.HubClientConfigPath(7))
 	writes, restarts, hubRestarts := e.node.writes, maps.Clone(e.node.restarts), maps.Clone(e.hub.restarts)
 	probes := e.hub.count("socks-probe 1095")
 	id := e.start(t, KindProvision)
 	st := e.steps(id)
-	if e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["xray"] != StepDone || st["hub_client"] != StepDone || e.h.lifecycle != "online" {
+	if e.store.jobs[id].Status != JobSucceeded || st["hysteria"] != StepDone || st["stls"] != StepDone || st["hub_client"] != StepDone || e.h.lifecycle != "online" {
 		t.Fatalf("%q %v", e.store.jobs[id].Error, e.store.statuses(id))
 	}
 	if len(e.node.pathMark)+len(e.hub.pathMark) != 0 || e.node.writes != writes || !maps.Equal(e.node.restarts, restarts) || !maps.Equal(e.hub.restarts, hubRestarts) ||
-		e.node.count("rollback hysteria2")+e.node.count("rollback xray")+e.hub.count("rollback "+config.HubClientUnit(7)) != 0 ||
+		e.node.count("rollback hysteria2")+e.node.count("rollback heyearth-stls")+e.hub.count("rollback "+config.HubClientUnit(7)) != 0 ||
 		e.hub.count("socks-probe 1095") != probes+1 {
 		t.Fatalf("markers %v %v, writes %d, restarts %v %v, ops %v", e.node.pathMark, e.hub.pathMark, e.node.writes-writes, e.node.restarts, e.hub.restarts, e.hub.ops)
 	}
@@ -706,23 +716,23 @@ func TestExitVerifyOnlyReportsDrift(t *testing.T) {
 	writes, restarts, syncs := e.node.writes, maps.Clone(e.node.restarts), e.h.syncs
 	id := e.start(t, KindVerify)
 	st := e.steps(id)
-	if st["hysteria"] != StepDrift || st["xray"] != StepOK || st["firewall"] != StepSkipped || st["activate"] != StepOK {
+	if st["hysteria"] != StepDrift || st["stls"] != StepOK || st["firewall"] != StepSkipped || st["activate"] != StepOK {
 		t.Fatalf("%v", st)
 	}
 	if e.node.writes != writes || !maps.Equal(e.node.restarts, restarts) || e.h.syncs != syncs || e.h.lifecycle != "online" {
 		t.Fatal("verify changed the node, the routing or the lifecycle")
 	}
 	// A guard table gone from the kernel (an `nft flush ruleset` by hand) is drift, files intact or not.
-	e.node.nft[config.ExitXrayGuardTable], e.node.nft[config.ExitAgentGuardTable] = false, false
+	e.node.nft[config.ExitGuardTable], e.node.nft[config.ExitAgentGuardTable] = false, false
 	st = e.steps(e.start(t, KindVerify))
-	if st["xray"] != StepDrift || st["node_agent"] != StepDrift {
+	if st["stls"] != StepDrift || st["node_agent"] != StepDrift {
 		t.Fatalf("guards: %v", st)
 	}
 	// «Переустановить» reloads them (the converge's extra) without restarting xray or node-agent:
 	// their files did not change. hysteria gets its config back — one restart.
 	id = e.start(t, KindReprovision)
-	if e.store.jobs[id].Status != JobSucceeded || !e.node.nft[config.ExitXrayGuardTable] || !e.node.nft[config.ExitAgentGuardTable] ||
-		e.node.restarts["xray"] != restarts["xray"] || e.node.restarts["node-agent"] != restarts["node-agent"] ||
+	if e.store.jobs[id].Status != JobSucceeded || !e.node.nft[config.ExitGuardTable] || !e.node.nft[config.ExitAgentGuardTable] ||
+		e.node.restarts[config.ExitSTLSUnit] != restarts[config.ExitSTLSUnit] || e.node.restarts["node-agent"] != restarts["node-agent"] ||
 		e.node.restarts["hysteria2"] != restarts["hysteria2"]+1 {
 		t.Fatalf("guards back: %v restarts %v", e.store.statuses(id), e.node.restarts)
 	}
@@ -782,7 +792,6 @@ func TestRecipeForSetupGuards(t *testing.T) {
 		"loopback":      {n: Node{ID: 7, Role: "exit", IP: "127.0.0.1", Lifecycle: "pending"}},
 		"no agent":      {n: good, mutate: func(o *ExitOptions) { o.NodeAgent = nil }},
 		"no CA":         {n: good, mutate: func(o *ExitOptions) { o.CA = nil }},
-		"no Hub xray":   {n: good, mutate: func(o *ExitOptions) { o.HubXray = " " }},
 		"no Hub IPs":    {n: good, mutate: func(o *ExitOptions) { o.HubIPs = nil }},
 		"junk Hub IPs":  {n: good, mutate: func(o *ExitOptions) { o.HubIPs = []string{"hub.example.com", "127.0.0.1"} }},
 		"deprovisioned": {n: Node{ID: 7, Role: "exit", IP: "203.0.113.7", Lifecycle: "deprovisioning"}},
@@ -794,7 +803,7 @@ func TestRecipeForSetupGuards(t *testing.T) {
 	names := func(r Recipe) []string { return stepNames(r) }
 	s := newState(KindProvision, nil)
 	r, err := RecipeFor(KindProvision, good, s)
-	withMT := slices.Insert(slices.Clone(exitSteps), 7, "mtproxy")
+	withMT := slices.Insert(slices.Clone(exitSteps), 8, "mtproxy")
 	if err != nil || !slices.Equal(names(r), withMT) || s.Begin == nil || s.Fail == nil {
 		t.Fatalf("provision: %v %v", err, names(r))
 	}
@@ -816,11 +825,11 @@ func TestRecipeForSetupGuards(t *testing.T) {
 }
 
 func TestParsePreflight(t *testing.T) {
-	out := "PF os ok Ubuntu 24.04\nPF port_10443 fail порт 10443 занят: users:((\"nginx\"\nPF_TIME " +
+	out := "PF os ok Ubuntu 24.04\nPF port_443 fail порт 443 занят: users:((\"nginx\"\nPF_TIME " +
 		strconv.FormatInt(testNow.Add(-5*time.Minute).Unix(), 10) + "\n"
 	cs := parsePreflight(out, testNow)
 	bad := failedChecks(cs)
-	if len(bad) != 2 || !strings.Contains(strings.Join(bad, ";"), "TCP 10443") || !strings.Contains(strings.Join(bad, ";"), "Часы сервера") {
+	if len(bad) != 2 || !strings.Contains(strings.Join(bad, ";"), "TCP 443 ") || !strings.Contains(strings.Join(bad, ";"), "Часы сервера") {
 		t.Fatalf("%v", bad)
 	}
 	if bad := failedChecks(parsePreflight("PF os ok x\nPF_TIME garbage\n", testNow)); len(bad) != 1 || !strings.Contains(bad[0], "не прочитано") {
@@ -881,30 +890,33 @@ func legacyExit(t *testing.T) (*exitEnv, config.ExitRealityKeys) {
 	return e, k
 }
 
-// The first converge of the live exit 2 (reprovision): a verify first shows every drift and
-// changes nothing; the converge keeps its tunnel keys, rewrites what differs, restarts each
-// changed service exactly once, never touches its lifecycle (no Activate — the Hub's xray is not
-// restarted for it) and syncs once for the tunnel row; a second converge changes nothing.
+// The first converge of the live exit 2 (reprovision) — also its move to the ShadowTLS backup: a
+// verify first shows every drift and changes nothing; the converge keeps its tunnel keys,
+// rewrites what differs, installs the backup tunnel on both ends, retires the old xray, restarts
+// each changed service exactly once, never touches its lifecycle (no Activate — the Hub's xray is
+// not restarted for it) and syncs once for the tunnel row; a second converge changes nothing.
 func TestExitConvergesLiveExit(t *testing.T) {
 	e, k := legacyExit(t)
 	writes, hubWrites := e.node.writes, e.hub.writes
 	id := e.start(t, KindVerify)
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
 		t.Fatalf("verify: %v", got)
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, "права 644") {
 		t.Fatalf("the keys' mode must be the drift: %q", tl)
 	}
-	if e.node.writes != writes || e.hub.writes != hubWrites+1 || len(e.node.restarts)+len(e.hub.restarts) != 0 || e.h.syncs != 0 {
+	if e.node.writes != writes || e.hub.writes != hubWrites || len(e.node.restarts)+len(e.hub.restarts) != 0 || e.h.syncs != 0 ||
+		e.node.files[config.ExitXrayConfig] == nil {
 		t.Fatalf("verify touched something: writes %d hub %d restarts %v %v", e.node.writes-writes, e.hub.writes-hubWrites, e.node.restarts, e.hub.restarts)
 	}
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
-	wantNode, wantHub := map[string]int{"hysteria2": 1, "xray": 1, "node-agent": 1}, map[string]int{"hysteria2-client-7": 1}
+	wantNode := map[string]int{"hysteria2": 1, config.ExitSTLSUnit: 1, "node-agent": 1}
+	wantHub := map[string]int{"hysteria2-client-7": 1, "heyearth-stls-client-7": 1}
 	if !maps.Equal(e.node.restarts, wantNode) || !maps.Equal(e.hub.restarts, wantHub) {
 		t.Fatalf("restarts node=%v hub=%v", e.node.restarts, e.hub.restarts)
 	}
@@ -914,26 +926,36 @@ func TestExitConvergesLiveExit(t *testing.T) {
 	if e.h.lifecycle != "online" || len(e.h.history) != 0 || e.h.syncs != 1 || e.h.bumps != 0 {
 		t.Fatalf("lifecycle %s history %v syncs %d bumps %d", e.h.lifecycle, e.h.history, e.h.syncs, e.h.bumps)
 	}
-	if xc := string(e.node.files[config.ExitXrayConfig]); strings.Contains(xc, "shadowsocks") || !strings.Contains(string(e.node.files[config.ExitXrayUnitPath]), "\nUser=xray\n") ||
-		!e.node.nft[config.ExitXrayGuardTable] {
-		t.Fatal("xray: Shadowsocks inbounds dropped, user xray, egress guard")
+	srv, _ := config.ExitSTLSServerJSON(k.UUID, "203.0.113.7", 8443, config.TGMTProxyPort)
+	if string(e.node.files[config.ExitSTLSConfig]) != string(srv) || !strings.Contains(string(e.node.files[config.ExitSTLSUnitPath]), "\nUser=stls\n") ||
+		!e.node.nft[config.ExitGuardTable] || !e.node.active[config.ExitSTLSUnit] {
+		t.Fatal("the backup tunnel: config from the kept UUID, user stls, egress guard, running")
+	}
+	// The retired xray: unit, config (it carried the tunnel UUID) and service gone — before the
+	// tunnel's converge re-keys the shared kernel guard to the user stls (never unguarded).
+	if r, c := slices.Index(e.trace, "node: retire-xray"), slices.Index(e.trace, "node: converge heyearth-stls"); e.node.files[config.ExitXrayConfig] != nil ||
+		e.node.files[config.ExitXrayUnitPath] != nil || e.node.active["xray"] || r < 0 || c < 0 || r > c {
+		t.Fatal("the old xray must be retired, before the tunnel's guard is re-keyed")
 	}
 	ag, _ := config.ExitAgentGuardConf(testExitHubIPs)
 	if string(e.node.files[config.ExitAgentGuardConfPath]) != ag || CheckNodeCert(e.node.files[config.NodeAgentCert], e.ca, "203.0.113.7", testNow) != nil {
 		t.Fatal("node-agent: the template guard and an own certificate from the Hub CA")
 	}
 	// Every secret file and its .bak (the previous, world-readable version) is root-only now.
-	for _, p := range []string{config.ExitKeysPath, config.ExitHysteriaConfig, config.ExitXrayConfig, config.NodeAgentKey} {
+	for _, p := range []string{config.ExitKeysPath, config.ExitHysteriaConfig, config.NodeAgentKey} {
 		if e.node.modes[p] != 0o600 || e.node.files[p+".bak"] == nil || e.node.modes[p+".bak"]&0o077 != 0 {
 			t.Errorf("%s: mode %o, .bak present %v mode %o", p, e.node.modes[p], e.node.files[p+".bak"] != nil, e.node.modes[p+".bak"])
 		}
 	}
+	if e.node.modes[config.ExitSTLSConfig] != 0o600 || e.hub.modes[config.HubSTLSConfigPath(7)] != 0o600 {
+		t.Error("the backup tunnel's configs carry its secrets: root-only")
+	}
 
 	writes, hubWrites = e.node.writes, e.hub.writes
 	id = e.start(t, KindReprovision)
-	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded || e.node.writes != writes || e.hub.writes != hubWrites+1 ||
+	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded || e.node.writes != writes || e.hub.writes != hubWrites ||
 		!maps.Equal(e.node.restarts, wantNode) || !maps.Equal(e.hub.restarts, wantHub) || e.h.syncs != 1 ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("the second converge changed something: %v writes %d hub %d restarts %v %v syncs %d", got, e.node.writes-writes,
 			e.hub.writes-hubWrites, e.node.restarts, e.hub.restarts, e.h.syncs)
 	}
@@ -1060,7 +1082,7 @@ func TestExitUDPChokedGoesOnlineOnTCPPath(t *testing.T) {
 
 	// Both paths dead: the job fails at the TCP path, the node never routes.
 	e = exitFixture(t, false)
-	e.hub.udpChoked, e.hub.vrFail = true, true
+	e.hub.udpChoked, e.hub.tcpFail = true, true
 	id = e.start(t, KindProvision)
 	if j := e.store.jobs[id]; j.Status != JobFailed || e.h.lifecycle != "failed" || slices.Contains(e.h.history, "online") || e.h.syncs != 0 ||
 		!strings.Contains(j.Error, "оба пути") || e.steps(id)["path_tcp"] != StepFailed {
@@ -1071,7 +1093,7 @@ func TestExitUDPChokedGoesOnlineOnTCPPath(t *testing.T) {
 	e.store.node.FallbackEnabled = false
 	e.hub.udpChoked = true
 	id = e.start(t, KindProvision)
-	if j := e.store.jobs[id]; j.Status != JobFailed || e.h.lifecycle != "failed" || e.steps(id)["path_hy"] != StepFailed || e.hub.count("vr-probe 3095") != 0 {
+	if j := e.store.jobs[id]; j.Status != JobFailed || e.h.lifecycle != "failed" || e.steps(id)["path_hy"] != StepFailed || e.hub.count("socks-probe 2095") != 0 {
 		t.Fatalf("fallback off: %s %q %v", j.Status, j.Error, e.store.statuses(id))
 	}
 }
@@ -1084,7 +1106,7 @@ func TestExitModesAreVerified(t *testing.T) {
 	e.node.modes[config.ExitKeysPath], e.node.modes[config.ExitHysteriaConfig], e.node.modes[config.NodeAgentKey] = 0o644, 0o640, 0o604
 	writes, restarts, marks := e.node.writes, maps.Clone(e.node.restarts), e.node.count("mark hysteria2")
 	id := e.start(t, KindVerify)
-	if st := e.steps(id); st["reality_keys"] != StepDrift || st["hysteria"] != StepDrift || st["node_agent"] != StepDrift || st["xray"] != StepOK {
+	if st := e.steps(id); st["reality_keys"] != StepDrift || st["hysteria"] != StepDrift || st["node_agent"] != StepDrift || st["stls"] != StepOK {
 		t.Fatalf("verify: %v", st)
 	}
 	if !strings.Contains(e.tail(id, "hysteria"), "права доступа "+config.ExitHysteriaConfig+" (640, нужны 600)") {

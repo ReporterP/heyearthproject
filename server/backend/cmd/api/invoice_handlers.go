@@ -6,9 +6,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -34,12 +37,39 @@ import (
 // the right wallet. Before this fix, public invoices left tenant_id empty and
 // the webhook had no way to route the money.
 
+// publicInvoiceLimiter: the site's form creates real YooKassa payments and
+// may create a tenant, so one address gets a few invoices an hour.
+var publicInvoiceLimiter = middleware.NewRateLimiter(10, time.Hour)
+
+// publicInvoiceMaxRub bounds a public invoice; bigger ones go through a manager.
+const publicInvoiceMaxRub = 1_000_000
+
+// handleCreateInvoice is the site's public form. It never links to a tenant
+// by id and never says whether the INN is already a client.
 func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
+	if !biz.B2BEnabled() { // E3: the business invoice form is off
+		http.NotFound(w, r)
+		return
+	}
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if !publicInvoiceLimiter.Allow(middleware.ExtractIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "слишком много счетов, попробуйте через час"})
+		return
+	}
+	createInvoice(w, r, false)
+}
+
+// handleAdminCreateInvoice is the admin's «Выставить счёт» on a tenant
+// (tenants.write): the explicit tenant_id is honoured only here.
+func handleAdminCreateInvoice(w http.ResponseWriter, r *http.Request) {
+	createInvoice(w, r, true)
+}
+
+func createInvoice(w http.ResponseWriter, r *http.Request, byAdmin bool) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
 		return
@@ -52,9 +82,16 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		Email       string `json:"email"`
 		ReturnURL   string `json:"return_url"`
-		TenantID    int    `json:"tenant_id"` // optional: explicit linkage (admin form)
+		TenantID    int    `json:"tenant_id"` // explicit linkage, admin form only
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req)
+	if !byAdmin {
+		req.TenantID = 0
+	} else if req.TenantID <= 0 || !admin.CanAccessTenant(r, req.TenantID) {
+		// A tenant-scoped admin invoices only their own tenants.
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "нет доступа к этой компании"})
+		return
+	}
 
 	req.INN = strings.TrimSpace(req.INN)
 	req.CompanyName = strings.TrimSpace(req.CompanyName)
@@ -75,6 +112,10 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Amount < 100 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "amount должен быть ≥ 100"})
+		return
+	}
+	if !byAdmin && req.Amount > publicInvoiceMaxRub {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "сумма больше 1 000 000 ₽ — напишите нам, выставим счёт вручную"})
 		return
 	}
 	if req.Email == "" {
@@ -189,15 +230,18 @@ func handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	`, tenant.ID, paymentDBID, req.INN, req.CompanyName, float64(req.Amount),
 		description, req.Email, payment.ID)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"payment_id":       paymentDBID,
 		"confirmation_url": confirmationURL,
 		"amount":           req.Amount,
 		"email":            req.Email,
 		"company_name":     req.CompanyName,
-		"tenant_id":        tenant.ID,
-		"tenant_status":    tenant.Status,
-	})
+	}
+	if byAdmin { // the public form must not learn whether an INN is already a client
+		out["tenant_id"] = tenant.ID
+		out["tenant_status"] = tenant.Status
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // resolveTenantForInvoice picks (or creates) the tenant the invoice belongs to.

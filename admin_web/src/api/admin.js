@@ -18,17 +18,11 @@ export function fetchCapacity() {
 export function fetchUsersPaged(params) {
   return pagedFetch('/users', params)
 }
-export function createUser(payload) {
-  return apiFetch('/users', { method: 'POST', body: payload })
-}
 export function updateUser(id, payload) {
   return apiFetch(`/users/${id}`, { method: 'PATCH', body: payload })
 }
 export function deleteUser(id) {
   return apiFetch(`/users/${id}`, { method: 'DELETE' })
-}
-export function fetchUserDevices(userId) {
-  return apiFetch(`/users/${userId}/devices`)
 }
 export function fetchUserSubscriptions(userDbId) {
   return pagedFetch('/subscriptions', { user_db_id: userDbId, page: 1, pageSize: 100, sort: 'valid_until', dir: 'desc' })
@@ -40,10 +34,6 @@ export function fetchUserTraffic(userDbId) {
   return apiFetch(`/users/${userDbId}/traffic`)
 }
 
-// ── Subscriptions ──
-export function fetchSubscriptionsPaged(params) {
-  return pagedFetch('/subscriptions', params)
-}
 export function saveSubscription(payload) {
   return apiFetch('/subscriptions', { method: 'POST', body: payload })
 }
@@ -75,6 +65,8 @@ export function reapplyPromocodePlan(code) {
 export function fetchPaymentsPaged(params) {
   return pagedFetch('/payments', params)
 }
+// Ask YooKassa for the status of every pending payment (the background sync, now).
+export const syncPendingPayments = () => apiFetch('/sync-pending-payments', { method: 'POST' })
 export function createPayment(payload) {
   return apiFetch('/payments', { method: 'POST', body: payload })
 }
@@ -87,22 +79,13 @@ export function cancelPayment(id, reason = '', amount = 0) {
 export function checkPaymentStatus(id) {
   return apiFetch(`/payments/${id}/check-status`, { method: 'POST' })
 }
-export function resendPaymentNotifications() {
-  return apiFetch('/payments/resend', { method: 'POST' })
-}
 
 // ── Servers ──
 export function fetchServersPaged(params) {
   return pagedFetch('/servers', params)
 }
-export function fetchServerDetail(id) {
-  return apiFetch(`/servers/${id}`)
-}
 export function fetchHysteria2Status() {
   return apiFetch('/hysteria2/status')
-}
-export function updateServer(id, payload) {
-  return apiFetch(`/servers/${id}`, { method: 'PATCH', body: payload })
 }
 export function runServerAction(id, action) {
   return apiFetch(`/servers/${id}/actions`, { method: 'POST', body: { action } })
@@ -116,13 +99,20 @@ export const confirmHostKey = (id, fingerprint) => apiFetch(`/servers/${id}/host
 export const preflightNode = (id) => apiFetch(`/servers/${id}/preflight`, { method: 'POST' })
 export const provisionNode = (id, options = {}) => apiFetch(`/servers/${id}/provision`, { method: 'POST', body: options })
 export const verifyNode = (id) => apiFetch(`/servers/${id}/verify`, { method: 'POST' })
-export const deprovisionNode = (id, confirmName) => apiFetch(`/servers/${id}/deprovision`, { method: 'POST', body: { confirm_name: confirmName } })
+// confirmLast: «ОТКЛЮЧИТЬ ВСЕХ» when this is the only working exit (B4; the API answers 409 without it).
+export const deprovisionNode = (id, confirmName, confirmLast = '') =>
+  apiFetch(`/servers/${id}/deprovision`, { method: 'POST', body: { confirm_name: confirmName, confirm_last: confirmLast } })
 export const deleteNode = (id, confirmName) => apiFetch(`/servers/${id}`, { method: 'DELETE', body: { confirm_name: confirmName } })
 export const updateNodeRouting = (id, payload) => apiFetch(`/servers/${id}/routing`, { method: 'PUT', body: payload })
 export const fetchJob = (id) => apiFetch(`/provision-jobs/${id}`)
 export const fetchNodeJobs = (serverId) => apiFetch(`/provision-jobs?server_id=${serverId}`)
 export const resumeJob = (id) => apiFetch(`/provision-jobs/${id}/resume`, { method: 'POST' })
 export const fetchHubKey = () => apiFetch('/ssh-keys/hub')
+// «Серверы» (B1/B5/B6): id 'hub' = the Hub.
+export const fetchHub = () => apiFetch('/hub')
+export const fetchServerLoad = (id, range = '24h') => apiFetch(`/servers/${id}/load?range=${encodeURIComponent(range)}`)
+export const saveServerOwner = (id, body) => apiFetch(`/servers/${id}/capacity`, { method: 'PUT', body })
+export const fetchLaunchChecklist = () => apiFetch('/launch-checklist')
 // «Переустановить Telegram-прокси»: a job of its own → 202 {job_id, kind: 'mtproxy'} (nodes.provision).
 export const reinstallMTProxy = (id) => apiFetch(`/servers/${id}/mtproxy`, { method: 'POST' })
 // Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).
@@ -132,57 +122,6 @@ export function checkServerTunnel(id) {
 export function fetchServerLogs(serverId, { service = 'node-agent', tail = 100 } = {}) {
   const params = new URLSearchParams({ service, tail })
   return apiFetch(`/servers/${serverId}/logs?${params}`).then(data => data.logs || data.error || '')
-}
-export function fetchServerFiles(serverId, path) {
-  const params = new URLSearchParams({ path })
-  return apiFetch(`/servers/${serverId}/files?${params}`)
-}
-
-// ── SSH Keys ──
-export function fetchSshKeys() {
-  return apiFetch('/ssh-keys')
-}
-export function createSshKey(name, privateKey) {
-  return apiFetch('/ssh-keys', { method: 'POST', body: { name, private_key: privateKey } })
-}
-export function updateSshKey(id, name, privateKey) {
-  return apiFetch(`/ssh-keys/${id}`, { method: 'PATCH', body: { name, private_key: privateKey } })
-}
-export function deleteSshKey(id) {
-  return apiFetch(`/ssh-keys/${id}`, { method: 'DELETE' })
-}
-
-// ── Releases ──
-export function fetchReleases() {
-  return apiFetch('/releases')
-}
-export function uploadRelease({ platform, version, releaseNotes, mandatory, minSupportedVersion, file, activate }) {
-  const fd = new FormData()
-  fd.append('platform', platform)
-  fd.append('version', version)
-  if (releaseNotes) fd.append('release_notes', releaseNotes)
-  fd.append('mandatory', mandatory ? 'true' : 'false')
-  if (minSupportedVersion) fd.append('min_supported_version', minSupportedVersion)
-  fd.append('activate', activate ? 'true' : 'false')
-  fd.append('file', file)
-  return apiFetch('/releases', { method: 'POST', body: fd })
-}
-export function activateRelease(id) {
-  return apiFetch('/releases/activate', { method: 'POST', body: { release_id: id } })
-}
-
-// ── Traffic Masking ──
-export function fetchTrafficMaskingRules() {
-  return apiFetch('/traffic-masking')
-}
-export function createTrafficMaskingRule(payload) {
-  return apiFetch('/traffic-masking', { method: 'POST', body: payload })
-}
-export function updateTrafficMaskingRule(id, payload) {
-  return apiFetch(`/traffic-masking/${id}`, { method: 'PATCH', body: payload })
-}
-export function deleteTrafficMaskingRule(id) {
-  return apiFetch(`/traffic-masking/${id}`, { method: 'DELETE' })
 }
 
 // ── Admin Users & Roles ──
@@ -227,13 +166,6 @@ export function fetchAuditLog(params) {
   return pagedFetch('/audit-log', params)
 }
 
-// ── Traffic ──
-export function fetchTrafficUsers(params) {
-  return pagedFetch('/traffic', params)
-}
-export function fetchTrafficUserDetail(userId, period = 'month') {
-  return apiFetch(`/traffic/${encodeURIComponent(userId)}?period=${period}`)
-}
 export function fetchTrafficChart(days = 30) {
   return apiFetch(`/traffic-chart?days=${days}`)
 }
@@ -260,25 +192,66 @@ export function fetchAlertEvents(limit = 100) {
   return apiFetch(`/alerts/events?limit=${limit}`)
 }
 
-// ── Auto-Tuner ──
-export function fetchAutoTunerStatus() {
-  return apiFetch('/auto-tuner/status')
+// ── Entries (Hub + reserve entries in RU) ──
+export function fetchEntries() {
+  return apiFetch('/entries')
 }
-export function fetchAutoTunerHistory(page = 1, pageSize = 30) {
-  return apiFetch(`/auto-tuner/history?page=${page}&page_size=${pageSize}`)
+export function saveEntryAddress(id, payload) {
+  return apiFetch(`/entries/${id}`, { method: 'PUT', body: payload })
 }
-export function toggleAutoTuner(enabled) {
-  return apiFetch('/auto-tuner/toggle', { method: 'POST', body: { enabled } })
+export function saveEntrySettings(patch) {
+  return apiFetch('/entries/settings', { method: 'PUT', body: patch })
 }
-export function setAutoTunerInterval(hours) {
-  return apiFetch('/auto-tuner/interval', { method: 'POST', body: { hours } })
+export function fetchEntriesPreview() {
+  return apiFetch('/entries/preview')
 }
-export function runAutoTunerNow() {
-  return apiFetch('/auto-tuner/run-now', { method: 'POST' })
+// mode: 'hub' | 'relay' (everyone through target) | 'auto'
+export function saveEntryMode(mode, target) {
+  return apiFetch('/entries/mode', { method: 'PUT', body: { mode, target: target || 0 } })
 }
-export function cleanupAutoTunerHistory(days = 7) {
-  return apiFetch('/auto-tuner/cleanup', { method: 'POST', body: { days } })
-}
+// «Проверить с телефона»: start a 30-minute test page on the node / read what reached the phones.
+export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
+export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)
+
+// ── Renewals and the menu's switches (C10) ──
+export const fetchFailingRenewals = () => apiFetch('/renewals/failing')
+export const fetchFeatures = () => apiFetch('/features')
+
+// ── Subscription sharing (C13) ──
+export const fetchUserDialRate = (id) => apiFetch(`/users/${id}/dial-rate`)
+export const fetchDialRateSuspects = () => apiFetch('/dial-rate/suspects')
+
+// ── Direct routes ──
+export const fetchDirectRoutes = (query) => apiFetch(`/direct-routes${query ? `?${query}` : ''}`)
+export const fetchDirectRouteStats = () => apiFetch('/direct-routes/stats')
+export const fetchDirectRouteGroups = () => apiFetch('/direct-routes/groups')
+export const createDirectRoute = (body) => apiFetch('/direct-routes', { method: 'POST', body })
+export const updateDirectRoute = (id, body) => apiFetch(`/direct-routes/${id}`, { method: 'PUT', body })
+export const deleteDirectRoute = (id) => apiFetch(`/direct-routes/${id}`, { method: 'DELETE' })
+export const bulkDirectRoutes = (action, ids) => apiFetch('/direct-routes/bulk', { method: 'POST', body: { action, ids } })
+export const importDirectRoutes = (body) => apiFetch('/direct-routes/import', { method: 'POST', body })
+export const discoverDirectRoute = (rootDomain) => apiFetch('/direct-routes/discover', { method: 'POST', body: { root_domain: rootDomain } })
+
+// ── B2B ──
+export const fetchB2BAnalytics = () => apiFetch('/b2b-analytics')
+export const fetchUnassignedB2BInvoices = () => apiFetch('/payments/unassigned-b2b-invoices')
+export const attachPaymentToTenant = (paymentId, tenantId) => apiFetch(`/payments/${paymentId}/attach-tenant`, { method: 'POST', body: { tenant_id: tenantId } })
+
+// ── MTProto (Telegram proxy) ──
+export const fetchMTProto = () => apiFetch('/mtproto')
+export const saveMTProto = (body) => apiFetch('/mtproto', { method: 'PUT', body })
+// Only returns a new secret for the domain; nothing is saved until saveMTProto.
+export const generateMTProtoSecret = (frontingDomain) => apiFetch('/mtproto/generate-secret', { method: 'POST', body: { fronting_domain: frontingDomain } })
+
+// ── Telegram WEB proxy (tproxy-server on the Hub) ──
+// Every call returns the GET payload (settings + status + last run). The secret is never returned.
+// PUT/POST answer 409 {error} while a run is in progress.
+export const fetchTGWebProxy = () => apiFetch('/telegram/webproxy')
+// Turning on (or a new host while on) starts an install run; turning off starts a disable run.
+export const saveTGWebProxy = ({ enabled, host }) => apiFetch('/telegram/webproxy', { method: 'PUT', body: { enabled, host } })
+export const installTGWebProxy = () => apiFetch('/telegram/webproxy/install', { method: 'POST' })
+// A new secret, then an install run re-applies it: every link handed out before stops working.
+export const rotateTGWebProxySecret = () => apiFetch('/telegram/webproxy/rotate-secret', { method: 'POST' })
 
 // ── Plans (subscription tariffs) ──
 export function fetchPlans() {
@@ -292,4 +265,23 @@ export function updatePlan(id, payload) {
 }
 export function deletePlan(id) {
   return apiFetch(`/plans/${id}`, { method: 'DELETE' })
+}
+
+// «Выставить счёт» for a tenant: the admin route links the invoice to this tenant (tenants.write).
+export function createTenantInvoice(body) {
+  return apiFetch('/b2b/create-invoice', { method: 'POST', body })
+}
+
+// ── Wallet (W6) ──
+export function fetchUserWallet(userDbId) {
+  return apiFetch(`/users/${userDbId}/wallet`)
+}
+export function adjustUserWallet(userDbId, { direction, amountRub, reason, requestId }) {
+  return apiFetch(`/users/${userDbId}/wallet/adjust`, {
+    method: 'POST',
+    body: { direction, amount_rub: amountRub, reason, request_id: requestId },
+  })
+}
+export function fetchWalletStats() {
+  return apiFetch('/wallet-stats')
 }

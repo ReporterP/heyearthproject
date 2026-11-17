@@ -39,8 +39,7 @@ func TestRestoreRunbookSteps(t *testing.T) {
 		"tar -C / -xzf /root/restore/files.tar.gz",
 		"go run ./cmd/deploy --setup-xray",
 		"go run ./cmd/deploy --setup-hysteria2-hub",
-		"go run ./cmd/deploy --setup-awg",
-		"go run ./cmd/deploy --setup-exit-node 89.124.89.126",
+		"go run ./cmd/deploy --setup-exit-node 192.0.2.126",
 		"go run ./cmd/deploy --setup-ops",
 		"Бамбук — только снаружи",
 	}
@@ -106,7 +105,7 @@ func TestRunbookGuardProcedures(t *testing.T) {
 	if egressHyAuthPortsA != "8000,8001" {
 		t.Errorf("the runbook's HY_AUTH_PORTS value must be the phase-A ports %q", egressHyAuthPortsA)
 	}
-	for _, w := range []string{egressGuardPrevDir, "rolled back to the PREVIOUS guard", "Шаги 5–9 идут без kernel egress guard"} {
+	for _, w := range []string{egressGuardPrevDir, "rolled back to the PREVIOUS guard", "Шаги 5–8 идут без kernel egress guard"} {
 		if !strings.Contains(doc, w) {
 			t.Errorf("runbook lacks %q", w)
 		}

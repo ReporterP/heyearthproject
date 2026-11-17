@@ -47,7 +47,7 @@ author: alex
 - [ ] В Hub xray добавлен **аддитивный** `socks-awg` SOCKS5 inbound (`127.0.0.1:10808`, loopback) с `sniffing`; Reality inbounds, routing rules и outbounds НЕ тронуты
 - [ ] tun2socks (hev-socks5-tunnel) upstream = xray `socks-awg` (`127.0.0.1:10808`), НЕ Hysteria2 напрямую — xray делает split
 - [ ] `ip rule from 10.66.66.0/24 lookup 100` + default route через tun2socks в table 100; table `main` НЕ тронут
-- [ ] **Split работает (главный критерий):** заграничный сайт через AWG → **Amsterdam Exit IP**; российский сайт (geosite/geoip) → **Hub direct (Москва, 45.150.39.236)**. То есть AWG наследует тот же domain+geoip split что Reality/Happ
+- [ ] **Split работает (главный критерий):** заграничный сайт через AWG → **Amsterdam Exit IP**; российский сайт (geosite/geoip) → **Hub direct (Москва, 198.51.100.236)**. То есть AWG наследует тот же domain+geoip split что Reality/Happ
 - [ ] DNS-резолв через туннель работает (UDP 53 через SOCKS UDP ASSOCIATE)
 
 ### awg_sync.go фикс

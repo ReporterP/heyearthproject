@@ -1,246 +1,143 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { getPaymentDetail } from '../api/user.js'
+import { useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { getPaymentDetail } from '../api/user.js'
+import NarrowHeader, { Back } from '../components/NarrowHeader.jsx'
+import Alert from '../components/Alert.jsx'
+import Badge, { paymentBadge } from '../components/Badge.jsx'
+import Button from '../components/Button.jsx'
+import Flap from '../components/Flap.jsx'
+import Timeline from '../components/Timeline.jsx'
+import Skeleton from '../components/Skeleton.jsx'
+import { useToast } from '../components/Toast.jsx'
+import useMedia from '../hooks/useMedia.js'
+import usePageMeta from '../hooks/usePageMeta.js'
+import { copyText } from '../lib/clipboard.js'
+import { dateTime, money } from '../lib/format.js'
 
-function formatDate(s) {
-  if (!s) return '—'
-  try {
-    return new Date(s).toLocaleString('ru-RU', {
-      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    })
-  } catch { return s }
-}
+// Платёж /payments/:id (spec 09 §9.7, artboard «Платёж»): what happened, the details, the receipt.
+// A payment still waiting is polled every 3 s (as on the result page).
+const METHOD = { bank_card: 'Банковская карта', sbp: 'СБП', yoo_money: 'ЮMoney', tinkoff_bank: 'T-Pay', sberbank: 'Сбер', alfabank: 'Альфа-Банк' }
+const isPaid = (s) => s === 'succeeded' || s === 'completed' || s === 'refunded'
 
-function statusBadge(status) {
-  const map = {
-    pending:      { text: 'Ожидает оплаты', cls: 'bg-accent/12 text-accent border-accent/30' },
-    succeeded:    { text: 'Оплачено',        cls: 'bg-brand/12 text-brand border-brand/30' },
-    completed:    { text: 'Оплачено',        cls: 'bg-brand/12 text-brand border-brand/30' },
-    waiting_for_capture: { text: 'Ожидает подтверждения', cls: 'bg-brand/10 text-brand border-brand/25' },
-    canceled:     { text: 'Отменён',         cls: 'bg-white/5 text-faint border-brand/10' },
-    cancelled:    { text: 'Отменён',         cls: 'bg-white/5 text-faint border-brand/10' },
-    failed:       { text: 'Ошибка',          cls: 'bg-danger/12 text-danger border-danger/30' },
-    refunded:     { text: 'Возврат',         cls: 'bg-accent/12 text-accent border-accent/30' },
-  }
-  const s = map[status] || { text: status || '—', cls: 'bg-white/5 text-text-secondary border-brand/10' }
-  return <span className={`inline-flex px-2.5 py-1 rounded-lg text-xs font-medium border ${s.cls}`}>{s.text}</span>
+function method(p) {
+  const m = METHOD[p.payment_method_type] || p.payment_method_type || ''
+  const last4 = p.payment_method_details?.card?.last4
+  return m ? `${m}${last4 ? ` · •••• ${last4}` : ''}` : ''
 }
-
-const METHOD_LABELS = {
-  bank_card: 'Банковская карта',
-  sbp: 'СБП',
-  yoo_money: 'ЮMoney',
-  tinkoff_bank: 'T-Pay',
-  sberbank: 'Сбер',
-  alfabank: 'Альфа-Банк',
-}
+const shortId = (s) => (String(s).length > 12 ? `${String(s).slice(0, 4)}…${String(s).slice(-4)}` : String(s))
 
 export default function PaymentDetailPage() {
   const { id } = useParams()
   const { token } = useAuth()
-  const [payment, setPayment] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const toast = useToast()
+  const narrow = useMedia('(max-width: 640px)')
+  usePageMeta('Платёж — HiEarth', { noindex: true })
+  const [p, setP] = useState(null)
+  const [err, setErr] = useState(null) // 'missing' | 'failed'
 
   useEffect(() => {
-    if (!token) return
-    getPaymentDetail(token, id)
-      .then(setPayment)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [id, token])
+    let stop = false
+    let t
+    const load = () => getPaymentDetail(token, id)
+      .then((d) => {
+        if (stop) return
+        setP(d)
+        setErr(null)
+        if (d.status === 'pending' || d.status === 'waiting_for_capture') t = setTimeout(load, 3000)
+      })
+      .catch((e) => { if (!stop && e.kind !== 'auth') setErr(e.status === 404 || e.status === 400 ? 'missing' : 'failed') })
+    load()
+    return () => { stop = true; clearTimeout(t) }
+  }, [token, id])
 
-  if (loading) {
-    return (
-      <section className="py-16 flex items-center justify-center">
-        <div className="w-10 h-10 rounded-full border-2 border-brand/25 border-t-brand animate-spin" />
-      </section>
-    )
+  async function copyYk() {
+    if (await copyText(p.yookassa_payment_id)) toast.ok('Скопировано')
   }
 
-  if (error || !payment) {
-    return (
-      <section className="max-w-xl mx-auto px-4 py-16">
-        <div className="card rounded-[22px] p-6 !border-danger/20">
-          <h1 className="serif text-lg font-semibold text-danger mb-2">Платёж не найден</h1>
-          <p className="text-sm text-text-secondary mb-4">{error || 'Платёж с таким ID не найден или принадлежит другому пользователю.'}</p>
-          <Link to="/payments" className="text-sm text-brand hover:text-brand-light">← К истории платежей</Link>
+  let body
+  if (err === 'missing') {
+    body = (
+      <div className="stack gap-4">
+        <Alert tone="bad" title="Платёж не найден">или принадлежит другому пользователю.</Alert>
+        <div><Back to="/payments" label="История платежей" /></div>
+      </div>
+    )
+  } else if (err) {
+    body = <Alert tone="bad" title="Не удалось загрузить платёж.">Обновите страницу.</Alert>
+  } else if (!p) {
+    body = <div className="stack gap-4" aria-busy="true"><Skeleton w={220} h={14} /><Skeleton w={160} h={44} /></div>
+  } else {
+    const paidNow = isPaid(p.status)
+    const failed = p.status === 'canceled' || p.status === 'cancelled' || p.status === 'failed'
+    const waiting = p.status === 'pending' || p.status === 'waiting_for_capture'
+    const refunded = Number(p.refunded_amount) || 0
+    const badge = paymentBadge(p.status)
+    const steps = [
+      { title: 'Платёж создан', sub: dateTime(p.created_at), state: 'done' },
+      failed
+        ? { title: 'Платёж не прошёл', sub: p.cancellation_reason ? 'отменён банком или ЮKassa' : 'не оплачен', state: 'done' }
+        : { title: paidNow ? 'Оплачен' : 'Ждём подтверждения от банка', sub: paidNow ? [dateTime(p.paid_at), method(p).toLowerCase()].filter(Boolean).join(' · ') : 'проверяем автоматически', state: paidNow ? 'done' : 'now' },
+      ...(failed ? [] : [{ title: 'Чек зарегистрирован в ОФД', sub: p.receipt_registered ? (p.payer_email ? `копия на ${p.payer_email}` : undefined) : paidNow ? 'обычно до нескольких минут' : undefined, state: p.receipt_registered ? 'done' : paidNow ? 'now' : undefined }]),
+      ...(refunded > 0 ? [{ title: `Возвращено ${money(refunded)}`, state: 'done' }] : []),
+    ]
+    const receipt = p.receipt_registered
+      ? { tone: 'ok', badge: 'Передан в ОФД' }
+      : paidNow ? { tone: 'warn', badge: 'Обрабатывается' } : { tone: 'plain', badge: 'После оплаты' }
+
+    body = (
+      <>
+        <div className="row wrap between gap-4" style={{ alignItems: 'flex-end' }}>
+          <div>
+            <h1 className="t-sm subtle" style={{ fontWeight: 400 }}>Платёж · {/пополнен/i.test(p.description || 'пополнение') ? 'пополнение кошелька' : p.description}</h1>
+            <div style={{ marginTop: 8 }}><Flap value={Math.round(Number(p.amount) || 0)} suffix="₽" size={narrow ? 36 : 48} label={money(p.amount)} /></div>
+          </div>
+          <div className="row gap-2">
+            {p.test && <Badge tone="plain">Тестовый платёж</Badge>}
+            <Badge tone={badge.tone} className="swap" style={{ height: 30, fontSize: 13, padding: '0 12px' }}>{badge.text}</Badge>
+          </div>
         </div>
-      </section>
+        {waiting && p.confirmation_url && (
+          <div style={{ marginTop: 16 }}><Button variant="secondary" href={p.confirmation_url}>Продолжить оплату</Button></div>
+        )}
+        <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 16, marginTop: 32, alignItems: 'start' }}>
+          <section className="card">
+            <h2 className="card__title">Что происходило</h2>
+            <div style={{ marginTop: 18 }}><Timeline items={steps} /></div>
+          </section>
+          <section className="card">
+            <h2 className="card__title">Детали</h2>
+            <dl className="kv" style={{ gridTemplateColumns: narrow ? '1fr' : '140px 1fr', marginTop: 18, fontSize: 14 }}>
+              <dt>Создан</dt><dd>{dateTime(p.created_at)}</dd>
+              {method(p) && <><dt>Способ оплаты</dt><dd>{method(p)}</dd></>}
+              {p.payer_email && <><dt>Email для чека</dt><dd className="mono" style={{ wordBreak: 'break-all' }}>{p.payer_email}</dd></>}
+              {p.yookassa_payment_id && (
+                <><dt>ID в ЮKassa</dt><dd className="row gap-2"><span className="mono t-sm" title={p.yookassa_payment_id}>{shortId(p.yookassa_payment_id)}</span><Button variant="ghost" size="sm" onClick={copyYk} style={{ height: 26 }}>Копировать</Button></dd></>
+              )}
+              {refunded > 0 && <><dt>Возвращено</dt><dd>{money(refunded)}</dd></>}
+            </dl>
+          </section>
+          <section className="card" style={narrow ? undefined : { gridColumn: 'span 2' }}>
+            <div className="card__head"><h2 className="card__title">Чек (54-ФЗ)</h2><Badge tone={receipt.tone}>{receipt.badge}</Badge></div>
+            {p.receipt_registered ? (
+              <p className="muted t-sm">Чек передан в ОФД от ЮKassa.{p.payer_email ? <> Копия отправлена на <span className="mono">{p.payer_email}</span>.</> : null}</p>
+            ) : paidNow ? (
+              <Alert tone="warn" title="Чек обрабатывается.">Обычно до нескольких минут.</Alert>
+            ) : (
+              <Alert tone="info">Чек будет выдан после успешной оплаты.</Alert>
+            )}
+          </section>
+        </div>
+      </>
     )
   }
-
-  const details = payment.payment_method_details || {}
-  const methodLabel = METHOD_LABELS[payment.payment_method_type] || payment.payment_method_type || null
-  const refunded = parseFloat(payment.refunded_amount || 0)
-  const hasRefund = refunded > 0
 
   return (
-    <section className="relative py-10 md:py-16">
-      <div className="relative max-w-2xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="serif text-2xl md:text-3xl font-semibold">Платёж #{payment.id}</h1>
-            <p className="text-sm text-text-secondary mt-1">{payment.description || 'Платёж'}</p>
-          </div>
-          <Link to="/payments" className="text-sm text-text-secondary hover:text-brand transition">← История</Link>
-        </div>
-
-        {/* ─── Summary ─── */}
-        <div className="card rounded-[22px] p-6 mb-4">
-          <div className="flex items-start justify-between mb-5">
-            <div>
-              <p className="text-xs text-faint uppercase tracking-wider mb-1">Сумма</p>
-              <p className="serif text-3xl font-semibold tabular-nums">
-                {parseFloat(payment.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {payment.currency}
-              </p>
-              {hasRefund && (
-                <p className="text-sm text-accent mt-1">Возвращено: {refunded.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {payment.currency}</p>
-              )}
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              {statusBadge(payment.status)}
-              {payment.test && <span className="inline-flex px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] font-bold">TEST</span>}
-            </div>
-          </div>
-
-          {payment.cancellation_reason && (
-            <div className="mb-4 px-3 py-2 rounded-lg bg-danger/5 border border-danger/20">
-              <p className="text-xs text-text-secondary">Причина отмены</p>
-              <p className="text-sm text-danger">{payment.cancellation_reason}</p>
-            </div>
-          )}
-
-          {payment.status === 'pending' && payment.confirmation_url && (
-            <a href={payment.confirmation_url} className="btn-primary w-full !py-3">
-              Продолжить оплату
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
-            </a>
-          )}
-        </div>
-
-        {/* ─── Timeline: what happened to this payment, in order ─── */}
-        <div className="card rounded-[22px] p-6 mb-4">
-          <h2 className="serif text-base font-semibold mb-4">Что происходило</h2>
-          <ol className="relative space-y-4">
-            {(() => {
-              const isPaid = ['succeeded', 'completed'].includes(payment.status)
-              const isFailed = ['failed', 'canceled', 'cancelled'].includes(payment.status)
-              const steps = [
-                { key: 'created', title: 'Платёж создан', at: payment.created_at, state: 'done' },
-                isFailed
-                  ? { key: 'failed', title: payment.status === 'refunded' ? 'Возврат' : 'Платёж не прошёл', at: null, state: 'failed', note: payment.cancellation_reason }
-                  : { key: 'paid', title: 'Оплачен', at: payment.paid_at, state: isPaid ? 'done' : 'pending', note: isPaid ? null : 'Ждём подтверждения от банка' },
-                ...(isFailed ? [] : [{
-                  key: 'receipt',
-                  title: 'Чек зарегистрирован в ОФД',
-                  at: null,
-                  state: payment.receipt_registered ? 'done' : isPaid ? 'pending' : 'idle',
-                  note: payment.receipt_registered ? (payment.payer_email ? `Копия отправлена на ${payment.payer_email}` : 'Передан в ОФД') : isPaid ? 'Обычно занимает пару минут' : null,
-                }]),
-                ...(hasRefund ? [{ key: 'refund', title: `Возвращено ${refunded.toLocaleString('ru-RU')} ${payment.currency}`, at: null, state: 'done' }] : []),
-              ]
-              return steps.map((s, i) => (
-                <li key={s.key} className="flex gap-3">
-                  <div className="flex flex-col items-center flex-shrink-0">
-                    <span className={`w-6 h-6 rounded-full grid place-items-center border ${
-                      s.state === 'done' ? 'bg-brand/15 border-brand/30 text-brand'
-                        : s.state === 'failed' ? 'bg-danger/15 border-danger/30 text-danger'
-                        : s.state === 'pending' ? 'bg-accent/12 border-accent/30 text-accent'
-                        : 'bg-white/[0.04] border-brand/10 text-faint'
-                    }`}>
-                      {s.state === 'done' ? (
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12l5 5L20 6" /></svg>
-                      ) : s.state === 'failed' ? (
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
-                      ) : s.state === 'pending' ? (
-                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-                      ) : (
-                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                      )}
-                    </span>
-                    {i < steps.length - 1 && <span className="w-px flex-1 min-h-[14px] bg-brand/12 mt-1" />}
-                  </div>
-                  <div className="pb-1 min-w-0">
-                    <p className={`text-sm font-medium ${s.state === 'idle' ? 'text-faint' : ''}`}>{s.title}</p>
-                    {s.at && <p className="text-xs text-text-secondary mt-0.5">{formatDate(s.at)}</p>}
-                    {s.note && <p className="text-xs text-text-secondary mt-0.5">{s.note}</p>}
-                  </div>
-                </li>
-              ))
-            })()}
-          </ol>
-        </div>
-
-        {/* ─── Details ─── */}
-        <div className="card rounded-[22px] p-6 mb-4">
-          <h2 className="serif text-base font-semibold mb-4">Детали</h2>
-          <dl className="space-y-3 text-sm">
-            <div className="flex justify-between items-start gap-3">
-              <dt className="text-text-secondary">Создан</dt>
-              <dd className="text-right">{formatDate(payment.created_at)}</dd>
-            </div>
-            {payment.paid_at && (
-              <div className="flex justify-between items-start gap-3">
-                <dt className="text-text-secondary">Оплачен</dt>
-                <dd className="text-right text-brand">{formatDate(payment.paid_at)}</dd>
-              </div>
-            )}
-            {methodLabel && (
-              <div className="flex justify-between items-start gap-3">
-                <dt className="text-text-secondary">Способ оплаты</dt>
-                <dd className="text-right">
-                  {methodLabel}
-                  {details.last4 && <span className="text-text-secondary"> •••• {details.last4}</span>}
-                  {details.card_type && <span className="text-text-secondary"> ({details.card_type})</span>}
-                </dd>
-              </div>
-            )}
-            {payment.payer_email && (
-              <div className="flex justify-between items-start gap-3">
-                <dt className="text-text-secondary">Email для чека</dt>
-                <dd className="text-right font-mono text-xs">{payment.payer_email}</dd>
-              </div>
-            )}
-            {payment.yookassa_payment_id && (
-              <div className="flex justify-between items-start gap-3">
-                <dt className="text-text-secondary">ID в ЮKassa</dt>
-                <dd className="text-right font-mono text-xs break-all">{payment.yookassa_payment_id}</dd>
-              </div>
-            )}
-          </dl>
-        </div>
-
-        {/* ─── Чек 54-ФЗ ─── */}
-        <div className="card rounded-[22px] p-6">
-          <h2 className="serif text-base font-semibold mb-3">Чек (54-ФЗ)</h2>
-          {payment.receipt_registered ? (
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-brand/10 border border-brand/20">
-              <svg className="w-5 h-5 text-brand flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-              <div className="flex-1">
-                <p className="text-sm text-brand font-medium">Чек зарегистрирован в ОФД</p>
-                <p className="text-xs text-text-secondary mt-1">
-                  {payment.payer_email
-                    ? <>Копия отправлена на <strong className="text-text-primary">{payment.payer_email}</strong>.</>
-                    : <>Чек передан в ОФД от ЮKassa.</>}
-                  {' '}Если письмо не пришло, проверьте папку «Спам».
-                </p>
-              </div>
-            </div>
-          ) : payment.status === 'succeeded' || payment.status === 'completed' ? (
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-accent/10 border border-accent/20">
-              <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
-              <div>
-                <p className="text-sm text-accent font-medium">Чек обрабатывается</p>
-                <p className="text-xs text-text-secondary mt-1">Чек ещё регистрируется в ОФД. Обычно занимает до нескольких минут.</p>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-text-secondary">Чек будет выдан после успешной оплаты.</p>
-          )}
-        </div>
-      </div>
-    </section>
+    <>
+      <NarrowHeader back={{ to: '/payments', label: 'История платежей' }} />
+      <main id="main" className="container" style={{ maxWidth: 960, paddingTop: 48, paddingBottom: 80 }}>
+        {body}
+      </main>
+    </>
   )
 }

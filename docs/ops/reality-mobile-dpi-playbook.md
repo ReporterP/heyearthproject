@@ -8,7 +8,7 @@
 
 ## 1. Hub topology — what to know cold
 
-- **Hub IP:** `45.150.39.236` (`hiearth.ru`)
+- **Hub IP:** `198.51.100.236` (`hiearth.ru`)
 - **Hub location:** **MOSCOW, RUSSIA** (AS48282, vdsina.ru)
 - **Reality dest / serverNames:** `yandex.ru` (domestic — DPI never blocks it)
 - **Reality shortIds:** 2 entries (rotation-ready)

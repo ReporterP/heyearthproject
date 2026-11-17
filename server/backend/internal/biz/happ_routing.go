@@ -105,32 +105,6 @@ func buildHappDeeplinkFromProfile(profile happRoutingProfile) string {
 	return "happ://routing/onadd/" + base64.StdEncoding.EncodeToString(js)
 }
 
-// BuildHappRoutingDeeplinkForPlan собирает Happ routing-профиль под конкретный план.
-//
-// В DirectIp попадают:
-//   - MTProto exit-IP пользователя (передаются как голые IP, /32 добавляется внутри)
-//   - IP4/IP6/CIDR4/CIDR6 всех активных direct-route сервисов плана
-//
-// В DirectSites попадают домены этих же сервисов, каждый с префиксом "domain:"
-// (Xray-синтаксис, который Happ принимает — матчит сам домен и все поддомены).
-//
-// DnsHosts оставлен пустым: dns_servers сервисов хранятся в БД, но в Happ-профиль
-// не пушатся (out of scope согласно PRD).
-//
-// Возвращает "" если для плана нет ни MTProto-IP, ни direct-сервисов.
-//
-// Если biz.GetDirectRouteServicesForPlan вернёт ошибку — логируем и обрабатываем
-// как «нет сервисов». The subscription endpoint uses BuildHappRoutingDeeplinkForPlanStrict
-// instead: Happ caches the routing profile, and one built without the plan's
-// services would replace the good one until the next refresh.
-func BuildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string) string {
-	deeplink, err := buildHappRoutingDeeplinkForPlan(planID, mtprotoIPs, false)
-	if err != nil {
-		log.Printf("[happ-routing] %v", err)
-	}
-	return deeplink
-}
-
 // BuildHappRoutingDeeplinkForPlanStrict is BuildHappRoutingDeeplinkForPlan that
 // returns a failed read (direct-route services, MTProto fronting domain) as an
 // error instead of building a profile without those entries.
@@ -195,29 +169,9 @@ func buildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string, strict boo
 		}
 	}
 
-	// Collapse all collected FQDNs to unique eTLD+1 — the Xray "domain:"
-	// prefix matches all subdomains, so emitting `domain:yandex.ru` is
-	// equivalent to listing every yandex.ru / yandex.net FQDN explicitly.
-	directSites := []string{}
-	for _, base := range collapseToETLDPlusOne(rawDomains) {
-		directSites = append(directSites, "domain:"+base)
-	}
-
-	// The MTProto fronting domain must be direct too, not just the exit IP.
-	// A TLS-sniffing client rewrites the destination of the fake-TLS flow from
-	// <exit-ip>:<port> to <fronting-domain>:<port>, after which the DirectIp
-	// /32 entry can no longer match — so without this the Telegram-proxy flow
-	// is pushed into the VPN tunnel and reaches the node the long way round
-	// (client → Hub → tunnel → exit → back to itself), or not at all.
-	fronting := MTProtoFrontingDomain()
-	if strict {
-		var err error
-		if fronting, err = MTProtoFrontingDomainStrict(); err != nil {
-			return "", err
-		}
-	}
-	if fronting != "" {
-		directSites = append(directSites, "domain:"+fronting)
+	directSites, err := directSitesFrom(rawDomains, strict)
+	if err != nil {
+		return "", err
 	}
 
 	// Prepend `geoip:ru` shortcut — Happ's trie-lookup against the bundled
@@ -250,26 +204,70 @@ func buildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string, strict boo
 	}), nil
 }
 
-// BuildHappRoutingDeeplink — backwards-compat обёртка. Принимает уже отформатированные
-// CIDR (как делал старый MTProto-only callsite). Новый код должен использовать
-// BuildHappRoutingDeeplinkForPlan.
-func BuildHappRoutingDeeplink(directIPs []string) string {
-	if len(directIPs) == 0 {
-		return ""
+// directSitesFrom collapses the services' FQDNs to `domain:<eTLD+1>` (the Xray
+// "domain:" prefix matches every subdomain, so `domain:yandex.ru` equals listing
+// every yandex.ru FQDN) and appends the MTProto fronting domain.
+func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
+	directSites := []string{}
+	for _, base := range collapseToETLDPlusOne(rawDomains) {
+		directSites = append(directSites, "domain:"+base)
 	}
-	return buildHappDeeplinkFromProfile(happRoutingProfile{
-		Name:           "HeYearth Smart Routing",
-		GlobalProxy:    "true",
-		RemoteDns:      "https://1.1.1.1/dns-query",
-		DomesticDns:    "https://77.88.8.8/dns-query",
-		Geoipurl:       "https://hiearth.ru/static/geoip.dat",
-		DnsHosts:       map[string]string{},
-		DirectSites:    []string{},
-		DirectIp:       directIPs,
-		ProxySites:     []string{},
-		ProxyIp:        []string{},
-		BlockSites:     []string{},
-		BlockIp:        []string{},
-		DomainStrategy: "AsIs",
-	})
+
+	// The MTProto fronting domain must be direct too, not just the exit IP.
+	// A TLS-sniffing client rewrites the destination of the fake-TLS flow from
+	// <exit-ip>:<port> to <fronting-domain>:<port>, after which the DirectIp
+	// /32 entry can no longer match — so without this the Telegram-proxy flow
+	// is pushed into the VPN tunnel and reaches the node the long way round
+	// (client → Hub → tunnel → exit → back to itself), or not at all.
+	// Every exit fronts its own domain (servers.mtproto_domain), so all of them are listed.
+	fronting, err := MTProtoFrontingDomainsStrict()
+	if err != nil {
+		if strict {
+			return nil, err
+		}
+		log.Printf("[happ-routing] mtproto fronting domains: %v", err)
+		if d := MTProtoFrontingDomain(); d != "" {
+			fronting = []string{d}
+		}
+	}
+	for _, d := range fronting {
+		directSites = append(directSites, "domain:"+d)
+	}
+	return directSites, nil
+}
+
+// CompactDirectRoutingStrict is the direct part of the Happ routing profile for
+// a full Xray config (the JSON «Авто» subscription): the same sites, but the IP
+// side is geoip:private + geoip:ru + the MTProto exit IPs instead of the
+// services' ~13 000 addresses — a JSON subscription repeats the rules in every
+// config, and those addresses are RU ones (geoip:ru) or reach the Hub, whose
+// per-plan rules send them out directly anyway. A failed read is an error.
+func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips []string, err error) {
+	var rawDomains []string
+	if planID > 0 {
+		services, err := GetDirectRouteServicesForPlan(planID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("direct-route services of plan %d: %w", planID, err)
+		}
+		for _, svc := range services {
+			if svc.IsActive {
+				rawDomains = append(rawDomains, svc.Domains...)
+			}
+		}
+	}
+	if sites, err = directSitesFrom(rawDomains, true); err != nil {
+		return nil, nil, err
+	}
+	ips = []string{"geoip:private", "geoip:ru"}
+	seen := map[string]bool{}
+	for _, ip := range mtprotoIPs {
+		if ip = strings.TrimSpace(ip); ip == "" {
+			continue
+		}
+		if c := normalizeIPToCIDR(ip); !seen[c] {
+			seen[c] = true
+			ips = append(ips, c)
+		}
+	}
+	return sites, ips, nil
 }

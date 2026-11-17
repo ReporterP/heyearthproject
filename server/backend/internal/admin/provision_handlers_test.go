@@ -97,6 +97,18 @@ func withProvisioning(t *testing.T, p *fakeProvisioner, n provision.Node) *[]pro
 	NodeProvisioner, NodeJobs = p, fakeJobs{node: n}
 	saveNodeOptions = func(_ context.Context, _ int, o provisionPayload) error { *saved = append(*saved, o); return nil }
 	auditLogExec = func(string, ...any) (sql.Result, error) { return driver.RowsAffected(1), nil }
+	// Another exit is on unless a test says otherwise (the last-exit guard, B4).
+	oldCount := countOtherOnlineExits
+	countOtherOnlineExits = func(context.Context, int) (int, error) { return 1, nil }
+	t.Cleanup(func() { countOtherOnlineExits = oldCount })
+	// No whois from tests: the probe's country hint is «DE».
+	oldGeo := ipCountry
+	ipCountry = func(context.Context, string) string { return "DE" }
+	t.Cleanup(func() { ipCountry = oldGeo })
+	// MTProto is switched on unless a test says otherwise (C6).
+	oldMT := mtprotoOn
+	mtprotoOn = func() bool { return true }
+	t.Cleanup(func() { mtprotoOn = oldMT })
 	t.Cleanup(func() {
 		NodeProvisioner, NodeJobs, saveNodeOptions, NodeProbe, auditLogExec = oldP, oldJ, oldS, oldProbe, oldAudit
 	})
@@ -246,6 +258,9 @@ func TestProbeNodeHandler(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), edKey.Fingerprint) || !strings.Contains(rec.Body.String(), ecKey.Fingerprint) {
 		t.Fatalf("every key type must be listed for the owner to compare: %d %s", rec.Code, rec.Body)
 	}
+	if !strings.Contains(rec.Body.String(), `"geo_country":"DE"`) {
+		t.Errorf("the wizard's country hint (B2): %s", rec.Body)
+	}
 	if rec := call(ProbeNodeHandler, "POST", "/api/admin/servers/probe", `{"ip_address":"exit.example.com"}`); rec.Code != 400 {
 		t.Fatalf("hostname: %d", rec.Code)
 	}
@@ -353,11 +368,11 @@ func TestCreateNodeValidation(t *testing.T) {
 	}{
 		"bad ip":            {`{"ip_address":"x","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
 		"loopback ip":       {`{"ip_address":"127.0.0.1","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "IP"},
-		"relay not yet":     {`{"role":"relay","ip_address":"203.0.113.7","country_code":"RU","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "Резервные входы"},
+		"relay abroad":      {`{"role":"relay","ip_address":"203.0.113.7","country_code":"NL","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "RU"},
+		"relay SSH on 443":  {`{"role":"relay","ip_address":"203.0.113.7","ssh_port":443,"ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "пересылает 80, 443"},
 		"no country":        {`{"ip_address":"203.0.113.7","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 400, "страну"},
 		"no fingerprint":    {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p"}`, 400, "отпечаток"},
 		"bad fingerprint":   {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"MD5:aa"}`, 400, "отпечаток"},
-		"no password":       {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_host_key_fp":"` + fp + `"}`, 400, "пароль"},
 		"no encryption key": {`{"ip_address":"203.0.113.7","country_code":"DE","ssh_password":"p","ssh_host_key_fp":"` + fp + `"}`, 503, sshPasswordKeyMissingMsg},
 	} {
 		rec := call(CreateNodeHandler, "POST", "/api/admin/servers", tc.body)
@@ -421,6 +436,54 @@ func TestCreateNodeStoresChosenProbeKey(t *testing.T) {
 	}
 	if !sawBlob || !sawFP || !sawCountry {
 		t.Errorf("chosen key / fingerprint / country not stored: %v", args)
+	}
+}
+
+type stubRemote struct{ err error }
+
+func (r stubRemote) Run(context.Context, string) (string, error) { return "", r.err }
+func (r stubRemote) PutFile(context.Context, string, []byte, uint32) (bool, error) {
+	return false, r.err
+}
+
+// No password: the Hub's key put on the server by the owner must let the Hub in; when it does
+// not, the just stored row goes again and the owner is told to add the key or a password.
+func TestCreateNodeWithoutPassword(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		dialErr error
+		code    int
+	}{{"Hub key works", nil, 201}, {"Hub key refused", provision.ErrNoCredentials, 409}} {
+		t.Run(c.name, func(t *testing.T) {
+			withProvisioning(t, &fakeProvisioner{}, provision.Node{ID: 9})
+			NodeJobs = fakeJobs{node: provision.Node{ID: 9}, allowLoad: true} // the access check loads credentials
+			NodeProbe = func(context.Context, string, int) (provision.ProbeResult, error) { return twoKeys(), nil }
+			prevDial := NodeDial
+			t.Cleanup(func() { NodeDial = prevDial })
+			NodeDial = func(provision.Node) (provision.Remote, error) { return stubRemote{}, c.dialErr }
+			d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
+				switch {
+				case strings.Contains(q, "SELECT EXISTS"):
+					return one([]string{"exists"}, false)
+				case strings.Contains(q, "INSERT INTO servers"):
+					return one([]string{"id"}, int64(9))
+				}
+				return nil
+			}})
+			rec := call(CreateNodeHandler, "POST", "/api/admin/servers",
+				`{"role":"relay","ip_address":"203.0.113.7","ssh_host_key_fp":"`+ecKey.Fingerprint+`"}`)
+			if rec.Code != c.code {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			ins := d.matching("INSERT INTO servers")
+			if enc, _ := ins[0].args[6].([]byte); len(ins) != 1 || len(enc) != 0 {
+				t.Fatalf("insert without a password: %+v", ins)
+			}
+			deleted := len(d.matching("DELETE FROM servers WHERE id = $1 AND lifecycle_state = 'pending'")) == 1
+			if deleted != (c.code == 409) || (c.code == 409 && !strings.Contains(rec.Body.String(), "ключу")) {
+				t.Errorf("deleted=%v body %s", deleted, rec.Body)
+			}
+		})
 	}
 }
 
@@ -721,6 +784,9 @@ func TestNodeRoutingOptionalFields(t *testing.T) {
 			if strings.Contains(q, "FROM servers WHERE id = $1 FOR UPDATE") {
 				return one([]string{"one"}, int64(1))
 			}
+			if q == nodeRoleQuery {
+				return one([]string{"role"}, "exit")
+			}
 			return nil
 		}})
 		rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", c.body)
@@ -739,6 +805,21 @@ func TestNodeRoutingOptionalFields(t *testing.T) {
 	withProvDB(t, &provDB{affected: func(string) int64 { return 0 }})
 	if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", `{"plan_ids":[1]}`); rec.Code != 404 {
 		t.Fatalf("missing node: %d %s", rec.Code, rec.Body)
+	}
+	// A relay has no plans or priority: refused before any write; the TCP switch alone still goes.
+	d := withProvDB(t, &provDB{query: func(q string, _ []driver.Value) *provRows {
+		if q == nodeRoleQuery {
+			return one([]string{"role"}, "relay")
+		}
+		return nil
+	}})
+	for _, body := range []string{`{"plan_ids":[1]}`, `{"load_weight":3}`} {
+		if rec := call(NodeRoutingHandler, "PUT", "/api/admin/servers/7/routing", body); rec.Code != 400 || !strings.Contains(rec.Body.String(), "резервного входа") {
+			t.Errorf("relay %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if len(d.matching("UPDATE servers SET load_weight")) != 0 || len(d.matching("plan_servers")) != 0 {
+		t.Errorf("relay routing written: %+v", d.stmts)
 	}
 }
 
@@ -817,7 +898,9 @@ func listNodeRow(id int64, k provision.HostKey) []driver.Value {
 	return []driver.Value{id, "Франкфурт", "exit", "DE", "203.0.113.9", "online",
 		int64(2), "healthy", true, "disabled",
 		k.Fingerprint, k.Key, true,
-		[]byte("{1,3}"), int64(11), "provision", "succeeded", "skipped", fin, "ok", fin}
+		[]byte("{1,3}"), int64(11), "provision", "succeeded", "skipped", fin, "ok", fin,
+		"online", `{"cpu_usage": 12.5, "memory_usage": 40, "active_connections": 7, "cores": 2, "source": "ssh", "synced_at": "` + time.Now().UTC().Format(time.RFC3339) + `"}`,
+		float64(10), int64(700), nil, nil}
 }
 
 func TestListNodesShape(t *testing.T) {
@@ -859,6 +942,12 @@ func TestListNodesShape(t *testing.T) {
 	if live["hy"].(map[string]any)["status"] != "unhealthy" || live["hy"].(map[string]any)["source"] != "monitor" ||
 		live["tcp"].(map[string]any)["rtt_ms"] != float64(80) {
 		t.Errorf("monitor overlay: %v", live)
+	}
+	// B1: the agent's liveness, the latest sample and the owner's numbers.
+	load, owner := job["load"].(map[string]any), job["owner"].(map[string]any)
+	if job["status"] != "online" || load["cpu_pct"] != 12.5 || load["connections"] != float64(7) || load["stale"] != false ||
+		owner["traffic_quota_tb"] != float64(10) || owner["monthly_price_rub"] != float64(700) || owner["port_mbps"] != nil {
+		t.Errorf("load/owner: %v / %v", load, owner)
 	}
 	for _, k := range []string{"ssh_password", "ssh_host_key", "tunnel_uuid", "tunnel_ss_password"} {
 		if _, ok := job[k]; ok {
@@ -941,15 +1030,12 @@ func TestServerActionsAfterJobs(t *testing.T) {
 	post := func(action string, perms ...string) *httptest.ResponseRecorder {
 		return callAs(ServerActionHandler, "POST", "/api/admin/servers/2/actions", `{"action":"`+action+`"}`, perms...)
 	}
-	// The old in-memory flows answer 410 before touching anything (db.DB is nil here).
-	for _, a := range []string{"hub_provision", "deprovision_soft", "deprovision_hard", "anything"} {
-		if rec := post(a, "server_ops.execute"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "задачи ноды") {
+	// Anything but restart_agent is refused before touching anything (db.DB is nil here); every
+	// change to a node is a job.
+	for _, a := range []string{"hub_provision", "deprovision_soft", "reinstall_mtproxy", "anything"} {
+		if rec := post(a, "server_ops.execute"); rec.Code != http.StatusBadRequest || len(p.kinds) != 0 {
 			t.Errorf("%s: %d %s", a, rec.Code, rec.Body)
 		}
-	}
-	// The MTProxy reinstall moved to POST /servers/{id}/mtproxy: the old action is a 410 pointing there.
-	if rec := post("reinstall_mtproxy", "*"); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "/mtproxy") || len(p.kinds) != 0 {
-		t.Errorf("old reinstall_mtproxy: %d %s %v", rec.Code, rec.Body, p.kinds)
 	}
 	// node-agent is not restarted while a job works on the node (refused before any SSH).
 	NodeJobs = fakeJobs{node: provision.Node{ID: 2}, list: []provision.JobView{{ID: 9, Status: provision.JobRunning}}}
@@ -1036,5 +1122,49 @@ func TestAdminHasNoUnpinnedSSHOrSelfRestart(t *testing.T) {
 	}
 	if _, err := os.Stat("ssh_tofu.go"); err == nil {
 		t.Error("ssh_tofu.go (trust on first use) must be gone")
+	}
+}
+
+// B4: «Отключить» the only working exit needs «ОТКЛЮЧИТЬ ВСЕХ» (409 with code last_exit).
+func TestDeprovisionLastExit(t *testing.T) {
+	p := &fakeProvisioner{}
+	withProvisioning(t, p, provision.Node{ID: 7, Name: "Франкфурт", Role: "exit", Lifecycle: "online", HostKeyConfirmed: true})
+	countOtherOnlineExits = func(context.Context, int) (int, error) { return 0, nil }
+	rec := call(DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт"}`)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "last_exit") {
+		t.Fatalf("last exit without the phrase: %d %s", rec.Code, rec.Body)
+	}
+	rec = call(DeprovisionNodeHandler, "POST", "/api/admin/servers/7/deprovision", `{"confirm_name":"Франкфурт","confirm_last":"ОТКЛЮЧИТЬ ВСЕХ"}`)
+	if rec.Code != 202 {
+		t.Fatalf("with the phrase: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// C6: with MTProto switched off in its section no exit gets the Telegram proxy — neither at
+// setup nor by «Переустановить Telegram-прокси».
+func TestMTProxyNeedsMTProtoOn(t *testing.T) {
+	withProvisioning(t, &fakeProvisioner{}, provision.Node{ID: 3, Role: "exit", Lifecycle: "online", HostKeyConfirmed: true})
+	mtprotoOn = func() bool { return false }
+	rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/3/provision", `{"mtproxy": true}`)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "MTProto выключен") {
+		t.Errorf("setup with the proxy while MTProto is off: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(MTProxyNodeHandler, "POST", "/api/admin/servers/3/mtproxy", ""); rec.Code != 409 {
+		t.Errorf("reinstall while MTProto is off: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMTProtoSecretFor(t *testing.T) {
+	good := "ee" + strings.Repeat("ab", 16) + "6578616d706c652e74657374" // example.test
+	if !mtprotoSecretFor(good, "example.test") || !mtprotoSecretFor(strings.ToUpper(good), "Example.test") {
+		t.Error("a valid secret refused")
+	}
+	for _, bad := range []string{"", strings.Repeat("ab", 16), "ee" + strings.Repeat("zz", 16) + "6578616d706c652e74657374", good + "00"} {
+		if mtprotoSecretFor(bad, "example.test") {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if mtprotoSecretFor(good, "other.test") {
+		t.Error("a secret of another domain accepted")
 	}
 }

@@ -1,0 +1,13 @@
+[Unit]
+Description=Kernel egress guard of the exit backup tunnel (HeYearth)
+After=network.target nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Before=heyearth-stls.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables-heyearth-exit-guard.conf
+ExecReload=/usr/sbin/nft -f /etc/nftables-heyearth-exit-guard.conf
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

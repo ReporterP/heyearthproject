@@ -7,7 +7,6 @@ import { accents } from '../theme/accents.js'
 const previewPalettes = {
   linear:    { canvas: 'oklch(0.16 0.012 260)', elevated: 'oklch(0.20 0.013 260)', text: 'oklch(0.97 0.005 260)' },
   brutalist: { canvas: 'oklch(0.08 0 0)',       elevated: 'oklch(0.12 0 0)',       text: 'oklch(0.98 0 0)' },
-  notion:    { canvas: 'oklch(0.98 0.005 80)',  elevated: 'oklch(1 0 0)',          text: 'oklch(0.20 0.005 80)' },
   terminal:  { canvas: 'oklch(0.06 0 0)',       elevated: 'oklch(0.10 0 0)',       text: 'oklch(0.92 0 0)' },
 }
 
@@ -38,7 +37,7 @@ export default function ThemePicker({ open, onClose, anchor = 'footer' }) {
   return (
     <div
       ref={ref}
-      className={`absolute ${positionCls} z-40 rounded border border-default bg-overlay shadow-2xl p-3 w-72`}
+      className={`absolute ${positionCls} z-40 rounded border border-default bg-overlay p-3 w-72`}
     >
       <div className="text-[10px] uppercase tracking-wider text-tertiary mb-2">Тема</div>
       <div className="grid grid-cols-2 gap-2 mb-4">

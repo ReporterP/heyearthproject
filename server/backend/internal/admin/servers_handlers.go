@@ -4,16 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,41 +22,15 @@ import (
 	"github.com/heyearth/backend/internal/db"
 	pbnode "github.com/heyearth/backend/internal/pb/node_agent_v1"
 	"github.com/heyearth/backend/internal/provision"
-	"github.com/heyearth/backend/internal/shellquote"
-	"golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
-// goneHandler answers 410 Gone with a Russian explanation: endpoints phase 1 removed.
-func goneHandler(msg string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) { writeAdminError(w, http.StatusGone, msg) }
-}
-
 const (
-	fileWriteGoneMsg   = "Запись файлов на серверах из админки отключена: ручная правка конфигов и ключей ломала туннели. Журналы доступны только для чтения."
-	tunnelCredsGoneMsg = "Генерация ключей туннеля в браузере отключена: ключи создаются на самой ноде при настройке."
-	setupGoneMsg       = "Настройка exit из старой формы отключена: она перезапускала API и не доделывала шаги. Новый exit настраивается мастером «Добавить ноду» (следующее обновление админки)."
-
 	// sshPasswordKeyMissingMsg: a password cannot be stored without SSH_ENCRYPTION_KEY (503 — the
 	// Hub is not set up for it; the same answer for «Добавить ноду» and a password change).
 	sshPasswordKeyMissingMsg = "На Hub не задан SSH_ENCRYPTION_KEY — пароль нельзя сохранить зашифрованно. Выполните go run ./cmd/deploy --ensure-hub-provisioning"
 )
-
-// removedServerActions answer 410: they broke the tunnel (fetch_tunnel_creds switched it to
-// shadowsocks:8388; sync_tunnel TCP-dialled the UDP port and marked a working exit unhealthy;
-// sync_metrics overwrote the protocol) or restarted the API itself mid-provisioning.
-var removedServerActions = map[string]string{
-	"fetch_tunnel_creds": "Действие «Получить ключи туннеля» удалено: оно переключало туннель на Shadowsocks и отключало exit. Для проверки используйте «Проверить туннель».",
-	"sync_tunnel":        "Действие «Синхронизировать туннель» удалено: оно помечало рабочий exit недоступным. Для проверки используйте «Проверить туннель».",
-	"sync_metrics":       "Действие «Синхронизировать метрики» удалено: оно перезаписывало протокол туннеля. Метрики обновляются автоматически.",
-	"setup_exit_node":    setupGoneMsg,
-	"reprovision":        setupGoneMsg,
-	"reinstall_mtproxy":  mtproxyMovedMsg,
-}
-
-// mtproxyMovedMsg: the MTProxy reinstall is POST /servers/{id}/mtproxy now (nodes.provision only).
-const mtproxyMovedMsg = "Переустановка Telegram-прокси перенесена: кнопка «Переустановить Telegram-прокси» в карточке ноды (POST /api/admin/servers/{id}/mtproxy)."
 
 // serverLifecycleStates are the values of servers.lifecycle_state (migration 000040).
 var serverLifecycleStates = map[string]bool{
@@ -177,13 +149,11 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user, s.country_code, s.status,
 		       s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 		       s.metrics_synced_at,
-		       s.ssh_key_id, COALESCE(sk.name, ''),
 		       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 		       COALESCE(s.tunnel_error, ''), COALESCE(s.load_weight, 1), s.lifecycle_state, s.mtproto_status,
 		       (COALESCE(TRIM(s.ssh_password), '') <> '' OR COALESCE(octet_length(s.ssh_password_enc), 0) > 0),
 		       (COALESCE(s.tunnel_uuid, '') <> '' OR COALESCE(s.tunnel_ss_password, '') <> '' OR COALESCE(s.tunnel_private_key, '') <> '')
 		FROM servers s
-		LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
@@ -202,16 +172,12 @@ func GetServersHandler(w http.ResponseWriter, r *http.Request) {
 		var s serverResponse
 		var updatedAt time.Time
 		var metricsSyncedAt sql.NullTime
-		var sshKeyName string
-		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &metricsSyncedAt, &s.SshKeyID, &sshKeyName, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight, &s.LifecycleState, &s.MTProtoStatus, &s.HasSSHPassword, &s.HasTunnelCreds); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.IPAddress, &s.SSHPort, &s.SSHUser, &s.CountryCode, &s.Status, &s.LoadMetrics, &updatedAt, &metricsSyncedAt, &s.IsExitNode, &s.TunnelStatus, &s.TunnelProtocol, &s.TunnelPort, &s.TunnelError, &s.LoadWeight, &s.LifecycleState, &s.MTProtoStatus, &s.HasSSHPassword, &s.HasTunnelCreds); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать сервер из базы")
 			return
 		}
 		if len(s.LoadMetrics) == 0 {
 			s.LoadMetrics = json.RawMessage(`{}`)
-		}
-		if sshKeyName != "" {
-			s.SshKeyName = sshKeyName
 		}
 		s.UpdatedAt = updatedAt.Format(time.RFC3339)
 		if metricsSyncedAt.Valid {
@@ -329,9 +295,6 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.SSHUser) == "" {
 		req.SSHUser = existing.SSHUser
 	}
-	if req.SshKeyID == nil {
-		req.SshKeyID = existing.SshKeyID
-	}
 	if strings.TrimSpace(req.CountryCode) == "" {
 		req.CountryCode = existing.CountryCode
 	} else {
@@ -345,8 +308,14 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		req.Status = existing.Status
 	}
 
-	// Все серверы — exit nodes
-	isExitNode := true
+	// The role decides is_exit_node (CHECK servers_relay_not_exit): keep the stored value.
+	isExitNode := existing.IsExitNode
+	if !isExitNode && addrChanged {
+		if err := validateRelaySSHPort(req.SSHPort); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if req.TunnelProtocol == "" {
 		req.TunnelProtocol = existing.TunnelProtocol
 	}
@@ -402,14 +371,14 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.Exec(`
 		UPDATE servers
 		SET name = $1, ip_address = $2, ssh_port = $3, ssh_user = $4,
-		    ssh_key_id = $5, country_code = $6, status = $7,
-		    is_exit_node = $8, tunnel_protocol = $9, tunnel_port = $10,
-		    tunnel_uuid = $11, tunnel_public_key = $12, tunnel_private_key = $13,
-		    tunnel_short_id = $14, tunnel_sni = $15, tunnel_ss_method = $16,
-		    tunnel_ss_password = $17, load_weight = $18, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $19
+		    country_code = $5, status = $6,
+		    is_exit_node = $7, tunnel_protocol = $8, tunnel_port = $9,
+		    tunnel_uuid = $10, tunnel_public_key = $11, tunnel_private_key = $12,
+		    tunnel_short_id = $13, tunnel_sni = $14, tunnel_ss_method = $15,
+		    tunnel_ss_password = $16, load_weight = $17, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $18
 	`, req.Name, req.IPAddress, req.SSHPort, req.SSHUser,
-		req.SshKeyID, req.CountryCode, req.Status,
+		req.CountryCode, req.Status,
 		isExitNode, req.TunnelProtocol, req.TunnelPort,
 		req.TunnelUUID, req.TunnelPublicKey, req.TunnelPrivateKey, req.TunnelShortID,
 		req.TunnelSNI, req.TunnelSSMethod, req.TunnelSSPass, weight, serverID); err != nil {
@@ -449,14 +418,8 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
-// movedServerActionMsg answers the old in-memory flows (hub_provision, deprovision_*): every change
-// to a node is a persisted, resumable job now.
-const movedServerActionMsg = "Действие перенесено в задачи ноды: «Настроить» / «Переустановить», «Проверить», «Отключить» в карточке ноды"
-
-// ServerActionHandler: what is left of the old actions — restarting node-agent over the pinned
-// SSH connection (refused while a job works on the node); the removed actions answer phase 1's
-// 410s (reinstall_mtproxy: a 410 pointing at POST /servers/{id}/mtproxy), the provisioning flows
-// a 410 pointing at the jobs.
+// ServerActionHandler: restarting node-agent over the pinned SSH connection (refused while a job
+// works on the node). Every other change to a node is a job (provision_handlers.go).
 func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "actions")
 	if !ok {
@@ -468,13 +431,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса")
 		return
 	}
-	// Removed actions are refused before the database or a node is touched.
-	action := strings.TrimSpace(payload.Action)
-	if msg, gone := removedServerActions[action]; gone {
-		writeAdminError(w, http.StatusGone, msg)
-		return
-	}
-	switch action {
+	switch strings.TrimSpace(payload.Action) {
 	case "restart_agent":
 		if !provisionReady(w) {
 			return
@@ -498,7 +455,7 @@ func ServerActionHandler(w http.ResponseWriter, r *http.Request) {
 		WriteAuditLog(r, "restart_agent", "server", strconv.Itoa(id), nil)
 		writeAdminJSON(w, http.StatusOK, map[string]string{"message": "node-agent перезапущен"})
 	default:
-		writeAdminError(w, http.StatusGone, movedServerActionMsg)
+		writeAdminError(w, http.StatusBadRequest, "Неизвестное действие: «Настроить», «Проверить», «Отключить» — задачи в карточке сервера")
 	}
 }
 
@@ -508,14 +465,12 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 	var server serverResponse
 	var updatedAt time.Time
 	var metricsSyncedAt sql.NullTime
-	var sshKeyName string
 	if includePassword {
 		query := `
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
 			       COALESCE(s.ssh_password, ''), s.ssh_password_enc,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 			       s.metrics_synced_at,
-			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
 			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
@@ -523,7 +478,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, ''),
 			       COALESCE(s.tunnel_error, ''), s.lifecycle_state, s.mtproto_status, COALESCE(s.load_weight, 1)
 			FROM servers s
-			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
 		`
 		var sshPwEnc []byte
@@ -531,7 +485,7 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.SSHPassword, &sshPwEnc,
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &metricsSyncedAt, &server.SshKeyID, &sshKeyName,
+			&updatedAt, &metricsSyncedAt,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
@@ -552,7 +506,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			SELECT s.id, s.name, s.ip_address, s.ssh_port, s.ssh_user,
 			       s.country_code, s.status, s.load_metrics, COALESCE(s.updated_at, CURRENT_TIMESTAMP),
 			       s.metrics_synced_at,
-			       s.ssh_key_id, COALESCE(sk.name, ''),
 			       s.is_exit_node, s.tunnel_status, s.tunnel_protocol, s.tunnel_port,
 			       COALESCE(s.tunnel_uuid, ''), COALESCE(s.tunnel_public_key, ''),
 			       COALESCE(s.tunnel_private_key, ''), COALESCE(s.tunnel_short_id, ''),
@@ -560,13 +513,12 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 			       COALESCE(s.tunnel_ss_method, ''), COALESCE(s.tunnel_ss_password, ''),
 			       COALESCE(s.tunnel_error, ''), s.lifecycle_state, s.mtproto_status, COALESCE(s.load_weight, 1)
 			FROM servers s
-			LEFT JOIN ssh_keys sk ON sk.id = s.ssh_key_id
 			WHERE s.id = $1
 		`
 		err := db.DB.QueryRow(query, serverID).Scan(
 			&server.ID, &server.Name, &server.IPAddress, &server.SSHPort, &server.SSHUser,
 			&server.CountryCode, &server.Status, &server.LoadMetrics,
-			&updatedAt, &metricsSyncedAt, &server.SshKeyID, &sshKeyName,
+			&updatedAt, &metricsSyncedAt,
 			&server.IsExitNode, &server.TunnelStatus, &server.TunnelProtocol, &server.TunnelPort,
 			&server.TunnelUUID, &server.TunnelPublicKey, &server.TunnelPrivateKey,
 			&server.TunnelShortID, &server.TunnelSNI,
@@ -574,9 +526,6 @@ func loadServerByID(serverID int, includePassword bool) (serverResponse, error) 
 		if err != nil {
 			return server, err
 		}
-	}
-	if sshKeyName != "" {
-		server.SshKeyName = sshKeyName
 	}
 	server.UpdatedAt = updatedAt.Format(time.RFC3339)
 	if metricsSyncedAt.Valid {
@@ -638,50 +587,28 @@ func connectToNodeAgent(ctx context.Context, ip string) (pbnode.NodeAgentClient,
 	return pbnode.NewNodeAgentClient(conn), conn, nil
 }
 
-// GetServerMetricsHandler fetches live metrics from node-agent.
-func GetServerMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "metrics")
-	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
-		return
-	}
-	var ipAddress string
-	var sshPort int
-	err := db.DB.QueryRow(`SELECT ip_address, ssh_port FROM servers WHERE id = $1`, serverID).Scan(&ipAddress, &sshPort)
-	if err != nil {
-		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	agentClient, conn, err := connectToNodeAgent(ctx, ipAddress)
-	if err != nil {
-		writeAdminJSON(w, http.StatusOK, map[string]any{
-			"error": fmt.Sprintf("node-agent недоступен: %v", err),
-		})
-		return
-	}
-	defer conn.Close()
-
-	metrics, err := agentClient.GetMetrics(ctx, &pbnode.GetMetricsRequest{})
-	if err != nil {
-		writeAdminJSON(w, http.StatusOK, map[string]any{
-			"error": fmt.Sprintf("не удалось получить метрики: %v", err),
-		})
-		return
-	}
-
-	writeAdminJSON(w, http.StatusOK, map[string]any{
-		"cpu_usage":          metrics.CpuUsage,
-		"memory_usage":       metrics.MemoryUsage,
-		"active_connections": metrics.ActiveConnections,
-	})
+// nodeLogServices are the units each role really runs (C5): an exit's recipe installs node-agent,
+// xray, hysteria2 and optionally the Telegram proxy; a reserve entry runs nginx (stream to the
+// Hub) and heyearth-relay (its nft forwarding).
+var nodeLogServices = map[string][]string{
+	"exit":  {"node-agent", "xray", "hysteria2", config.MTProxyService},
+	"relay": {"nginx", "heyearth-relay"},
 }
 
-// nodeLogServices are the units on a node whose journal the admin panel may read.
-var nodeLogServices = map[string]bool{"node-agent": true, "xray": true, "hysteria2": true, config.MTProxyService: true}
+// nodeLogService: the asked unit if the server's role runs it, else "" (default: the first).
+func nodeLogService(role, asked string) string {
+	units, ok := nodeLogServices[role]
+	if !ok {
+		units = nodeLogServices["exit"]
+	}
+	if asked == "" {
+		return units[0]
+	}
+	if slices.Contains(units, asked) {
+		return asked
+	}
+	return ""
+}
 
 // GetServerLogsHandler reads a node unit's journal over the pinned SSH connection.
 func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
@@ -690,9 +617,15 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
-	service := r.URL.Query().Get("service")
-	if !nodeLogServices[service] {
-		service = "node-agent"
+	var role string
+	if err := db.DB.QueryRowContext(r.Context(), `SELECT COALESCE(role, 'exit') FROM servers WHERE id = $1`, serverID).Scan(&role); err != nil {
+		writeAdminError(w, http.StatusNotFound, "Сервер не найден")
+		return
+	}
+	service := nodeLogService(role, r.URL.Query().Get("service"))
+	if service == "" {
+		writeAdminError(w, http.StatusBadRequest, "На этом сервере нет такой службы")
+		return
 	}
 	tailN, err := strconv.Atoi(r.URL.Query().Get("tail"))
 	if err != nil || tailN < 1 || tailN > 5000 {
@@ -712,201 +645,4 @@ func GetServerLogsHandler(w http.ResponseWriter, r *http.Request) {
 		resp["error"] = err.Error()
 	}
 	writeAdminJSON(w, http.StatusOK, resp)
-}
-
-// ServerFileBrowserHandler lists files at a given path on the server.
-func ServerFileBrowserHandler(w http.ResponseWriter, r *http.Request) {
-	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "files")
-	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
-		return
-	}
-	dirPath := r.URL.Query().Get("path")
-	if dirPath == "" {
-		dirPath = "/opt/heyearth"
-	}
-	// Node paths are POSIX: path.Clean, not filepath.Clean (which turns "/" into "\" on Windows).
-	dirPath = path.Clean(dirPath)
-	if !isAllowedListPath(dirPath) {
-		writeAdminError(w, http.StatusForbidden, listForbiddenMsg+" (латиница, цифры, . _ / @ + -)")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	rm, err := nodeRemote(ctx, serverID)
-	if err != nil {
-		writeNodeAccessError(w, err)
-		return
-	}
-	defer provision.Close(rm)
-	output, err := rm.Run(ctx, listDirCommand(dirPath))
-	if err != nil && writeNodePathError(w, err, listForbiddenMsg) {
-		return // a symlink out of the allowed directories, or nothing there
-	}
-	entries := parseLsOutput(output)
-	writeAdminJSON(w, http.StatusOK, map[string]any{"path": dirPath, "entries": entries})
-}
-
-// parseLsOutput parses `ls -la` output into structured file entries.
-func parseLsOutput(output string) []map[string]any {
-	var entries []map[string]any
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "total ") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 9 {
-			continue
-		}
-		perms := fields[0]
-		sizeStr := fields[4]
-		name := strings.Join(fields[8:], " ")
-		if name == "." || name == ".." {
-			continue
-		}
-		isDir := len(perms) > 0 && perms[0] == 'd'
-		size, _ := strconv.ParseInt(sizeStr, 10, 64)
-		entries = append(entries, map[string]any{
-			"name":   name,
-			"is_dir": isDir,
-			"size":   size,
-			"perms":  perms,
-		})
-	}
-	if entries == nil {
-		entries = []map[string]any{}
-	}
-	return entries
-}
-
-// ServerFileReadHandler reads file content from a server via SSH.
-// GET /api/admin/servers/{id}/file-content?path=/var/log/syslog (logs only)
-func ServerFileReadHandler(w http.ResponseWriter, r *http.Request) {
-	serverID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "file-content")
-	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
-		return
-	}
-	filePath := r.URL.Query().Get("path")
-	if filePath == "" {
-		writeAdminError(w, http.StatusBadRequest, "Не указан путь")
-		return
-	}
-	filePath = path.Clean(filePath)
-	if !isAllowedReadPath(filePath) {
-		writeAdminError(w, http.StatusForbidden, logReadForbiddenMsg)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	rm, err := nodeRemote(ctx, serverID)
-	if err != nil {
-		writeNodeAccessError(w, err)
-		return
-	}
-	defer provision.Close(rm)
-	output, err := rm.Run(ctx, logReadCommand(filePath))
-	if err != nil {
-		if writeNodePathError(w, err, logReadForbiddenMsg) {
-			return // a symlink out of /var/log, or no such log
-		}
-		writeAdminError(w, http.StatusBadGateway, fmt.Sprintf("Не удалось прочитать файл: %s", strings.TrimSpace(output)))
-		return
-	}
-	writeAdminJSON(w, http.StatusOK, map[string]any{"path": filePath, "content": output})
-}
-
-const (
-	logReadForbiddenMsg = "Можно читать только журналы в /var/log"
-	listForbiddenMsg    = "Просматривать можно только /opt/heyearth и /var/log"
-)
-
-// nodePathRe: the only characters a node path may carry. Paths go into a root shell on the node,
-// so anything a shell could expand, split or quote ($, `, ', ", spaces, ;, |, *, \) is refused
-// outright, on top of the single-quoting in the commands.
-var nodePathRe = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
-
-// safeNodePath: an absolute, already clean POSIX path of safe characters with no ".." segment.
-func safeNodePath(p string) bool {
-	if !strings.HasPrefix(p, "/") || p != path.Clean(p) || !nodePathRe.MatchString(p) {
-		return false
-	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return false
-		}
-	}
-	return true
-}
-
-func underDir(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
-
-// isAllowedReadPath: only logs. Configs and reality-keys.json on a node carry private keys and
-// tunnel passwords, which never leave the Hub (Review Focus 5).
-func isAllowedReadPath(p string) bool { return safeNodePath(p) && underDir(p, "/var/log") }
-
-// isAllowedListPath: directory listings (names only) under /opt/heyearth and /var/log.
-func isAllowedListPath(p string) bool {
-	return safeNodePath(p) && (underDir(p, "/opt/heyearth") || underDir(p, "/var/log"))
-}
-
-// Exit statuses of the node path commands: the path resolves (symlinks followed on the node)
-// outside the allowed directories, or it does not exist.
-const (
-	nodePathOutsideExit = 3
-	nodePathMissingExit = 4
-)
-
-const nodePathMissingMsg = "Файл не найден"
-
-// resolvedNodePathScript resolves p on the node (readlink -f), refuses a target outside the
-// case patterns (exit nodePathOutsideExit) and a missing one (exit nodePathMissingExit), then
-// runs action with the resolved path in "$p". p must already pass safeNodePath.
-func resolvedNodePathScript(p, patterns, action string) string {
-	outside, missing := strconv.Itoa(nodePathOutsideExit), strconv.Itoa(nodePathMissingExit)
-	return "p=$(readlink -f -- " + shellquote.Quote(p) + ") || exit " + missing +
-		`; case "$p" in ` + patterns + ") ;; *) exit " + outside + ";; esac" +
-		`; [ -e "$p" ] || exit ` + missing + "; " + action
-}
-
-// listDirCommand lists a directory on the node (names only) if it resolves into /opt/heyearth
-// or /var/log.
-func listDirCommand(dir string) string {
-	return resolvedNodePathScript(dir, "/opt/heyearth|/opt/heyearth/*|/var/log|/var/log/*", `ls -la -- "$p" 2>&1`)
-}
-
-// logReadCommand reads up to 1 MiB of a log on the node. Symlinks are resolved there first: a
-// link in /var/log pointing at a config or a key is refused.
-func logReadCommand(p string) string {
-	return resolvedNodePathScript(p, "/var/log/*", `head -c 1048576 -- "$p"`)
-}
-
-// nodePathExitStatus maps an exit status of the node path commands to the HTTP answer; ok is
-// false for any other failure.
-func nodePathExitStatus(exit int, forbiddenMsg string) (code int, msg string, ok bool) {
-	switch exit {
-	case nodePathOutsideExit:
-		return http.StatusForbidden, forbiddenMsg, true
-	case nodePathMissingExit:
-		return http.StatusNotFound, nodePathMissingMsg, true
-	}
-	return 0, "", false
-}
-
-// writeNodePathError answers a node path command's verdict (exit 3/4); false when err is not one
-// (provision.SSHRemote.Run wraps the *ssh.ExitError of a script that exited non-zero).
-func writeNodePathError(w http.ResponseWriter, err error, forbiddenMsg string) bool {
-	var exitErr *ssh.ExitError
-	if !errors.As(err, &exitErr) {
-		return false
-	}
-	code, msg, ok := nodePathExitStatus(exitErr.ExitStatus(), forbiddenMsg)
-	if ok {
-		writeAdminError(w, code, msg)
-	}
-	return ok
 }

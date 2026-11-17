@@ -43,7 +43,7 @@ author: alex
 - [ ] Bulk-операция "deactivate" для 5 сервисов через UI → 5 строк получили `is_active=FALSE`, RequestXraySync вызван 1 раз (не 5), audit log содержит одну запись `bulk_deactivate`.
 - [ ] Удаление сервиса каскадно очищает `plan_direct_services`.
 - [ ] Functional smoke: с Happ-клиента на телефоне (план all-inclusive) открыть 2gis.ru → загружается; trace показывает что запрос НЕ ушёл на Hub.
-- [ ] Functional smoke: с V2RayNG на телефоне (тот же план) открыть 2gis.ru → загружается; `curl https://api.ipify.org` через тот же VPN отдаёт `45.150.39.236` (Hub IP) для 2gis-доменов и зарубежный exit-IP для всего остального.
+- [ ] Functional smoke: с V2RayNG на телефоне (тот же план) открыть 2gis.ru → загружается; `curl https://api.ipify.org` через тот же VPN отдаёт `198.51.100.236` (Hub IP) для 2gis-доменов и зарубежный exit-IP для всего остального.
 - [ ] Админ-UI: страница `/direct-routes` доступна только пользователям с permission `routing.direct.view`.
 - [ ] Импорт JSON-формата 2 (HiEarth native) с body `{"version":1,"services":[...]}` работает.
 - [ ] При 0 healthy exit-нод direct-rules сохраняются — Happ-клиент продолжает работать с российскими сервисами.

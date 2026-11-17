@@ -17,7 +17,7 @@ type DayBucket struct {
 
 // MonthBucket aggregates one calendar month of traffic.
 type MonthBucket struct {
-	Month string `json:"month"` // YYYY-MM (UTC)
+	Month string `json:"month"` // YYYY-MM (Moscow)
 	Bytes int64  `json:"bytes"`
 }
 
@@ -92,16 +92,21 @@ func addMonths(t time.Time, n int) time.Time {
 	return time.Date(targetYear, time.Month(targetMonth), day, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 }
 
+// periodUsageQuery: the raw rows from max(from, the retention boundary), plus the per-day
+// sums of whole days before the boundary (traffic_daily.go). A period starting mid-day before
+// the boundary counts that whole day.
+const periodUsageQuery = `
+WITH b AS (SELECT ` + rawBoundarySQL + ` AS ts)
+SELECT (SELECT COALESCE(SUM(upload_bytes + download_bytes), 0) FROM traffic_stats, b
+         WHERE user_id = $1 AND recorded_at >= GREATEST($2::timestamptz, b.ts) AND recorded_at < $3)
+     + (SELECT COALESCE(SUM(upload_bytes + download_bytes), 0) FROM traffic_stats_daily, b
+         WHERE user_id = $1 AND day >= ($2::timestamptz AT TIME ZONE 'Europe/Moscow')::date
+           AND day < (LEAST(b.ts, $3::timestamptz) AT TIME ZONE 'Europe/Moscow')::date)`
+
 // PeriodUsage returns SUM(upload+download) for userUUID in [from, to).
 func PeriodUsage(userUUID string, from, to time.Time) (int64, error) {
 	var bytes sql.NullInt64
-	err := db.DB.QueryRow(`
-		SELECT COALESCE(SUM(upload_bytes + download_bytes), 0)
-		FROM traffic_stats
-		WHERE user_id = $1
-		  AND recorded_at >= $2
-		  AND recorded_at <  $3
-	`, userUUID, from, to).Scan(&bytes)
+	err := db.DB.QueryRow(periodUsageQuery, userUUID, from, to).Scan(&bytes)
 	if err != nil {
 		return 0, fmt.Errorf("period usage: %w", err)
 	}
@@ -139,19 +144,27 @@ func PeriodBreakdownByDay(userUUID string, from, to time.Time) ([]DayBucket, err
 	return out, nil
 }
 
+// periodByMonthQuery: Moscow months of the raw rows after the retention boundary and of the
+// per-day sums before it (as periodUsageQuery).
+const periodByMonthQuery = `
+WITH b AS (SELECT ` + rawBoundarySQL + ` AS ts)
+SELECT month, SUM(bytes)::bigint FROM (
+  SELECT to_char(recorded_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM') AS month, SUM(upload_bytes + download_bytes) AS bytes
+    FROM traffic_stats, b
+   WHERE user_id = $1 AND recorded_at >= GREATEST($2::timestamptz, b.ts) AND recorded_at < $3
+   GROUP BY 1
+  UNION ALL
+  SELECT to_char(day, 'YYYY-MM'), SUM(upload_bytes + download_bytes)
+    FROM traffic_stats_daily, b
+   WHERE user_id = $1 AND day >= ($2::timestamptz AT TIME ZONE 'Europe/Moscow')::date
+     AND day < (LEAST(b.ts, $3::timestamptz) AT TIME ZONE 'Europe/Moscow')::date
+   GROUP BY 1
+) x GROUP BY month ORDER BY month`
+
 // PeriodBreakdownByMonth returns per-month buckets in [from, to). Used by the
 // year period (365 daily bars are too many for a 600px chart).
 func PeriodBreakdownByMonth(userUUID string, from, to time.Time) ([]MonthBucket, error) {
-	rows, err := db.DB.Query(`
-		SELECT to_char(date_trunc('month', recorded_at), 'YYYY-MM') AS month,
-		       SUM(upload_bytes + download_bytes) AS bytes
-		FROM traffic_stats
-		WHERE user_id = $1
-		  AND recorded_at >= $2
-		  AND recorded_at <  $3
-		GROUP BY month
-		ORDER BY month
-	`, userUUID, from, to)
+	rows, err := db.DB.Query(periodByMonthQuery, userUUID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("by-month: %w", err)
 	}
@@ -240,29 +253,6 @@ func IsCycleExceeded(userDBID int, userUUID string) (bool, error) {
 		return false, err
 	}
 	return used >= limit, nil
-}
-
-// ListQuotaExceededUserIDs returns the set of users whose current-cycle usage
-// has reached the limit of their EFFECTIVE subscription (effectiveSubOrderBy:
-// the row ListActiveVlessClients uses as the user's plan). A user is in the set
-// only if that subscription has a positive limit (COALESCE of the
-// subscription's own traffic_limit and the plan's traffic_limit_bytes; NULL or
-// 0 = unlimited, never over quota). Other active subscriptions of the user,
-// e.g. a not-yet-expired free trial next to a paid plan, are ignored.
-//
-// The set is keyed by users.user_id, the same value as
-// ActiveVlessClient.UserID, the xray client "email" and traffic_stats.user_id,
-// NOT by the VLESS UUID (users.vless_uuid): look it up with UserID. Looking it
-// up with the UUID, as xray_sync once did, silently matches nobody.
-//
-// Computed in a single SQL query for performance — called by xray_sync on
-// every sync tick and by checkTrafficLimits after each collector iteration
-// (while the cutoff is disarmed both read it at most hourly, for the log line).
-// Each limited user costs one SUM over its traffic_stats rows of the cycle:
-// idx_traffic_stats_user_time_cov (migration 000058) makes it an index-only
-// scan.
-func ListQuotaExceededUserIDs() (map[string]struct{}, error) {
-	return ListQuotaExceededUserIDsContext(context.Background())
 }
 
 // ListQuotaExceededUserIDsContext is ListQuotaExceededUserIDs bounded by ctx.

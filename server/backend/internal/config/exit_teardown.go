@@ -7,14 +7,16 @@ import (
 
 // Taking an exit out of service (internal/provision DeprovisionRecipe) and its Telegram proxy.
 //
-// The units are the real ones on the exits (checked on exit 2, 2026-10-15): the services
-// hysteria2, xray, node-agent, mtproxy; the oneshots nftables-hysteria (port hop, loads
-// ExitPortHopConfPath) and heyearth-exit-guard (xray's kernel egress guard); the hand-made
+// The units are the real ones on the exits (checked on exit 2, 2026-10-15; the backup tunnel since
+// 2026-11-16): the services hysteria2, heyearth-stls (ShadowTLS, exit_stls.go), node-agent,
+// mtproxy, and xray where the retired Reality path is still installed; the oneshots
+// nftables-hysteria (port hop, loads ExitPortHopConfPath) and heyearth-exit-guard (the backup
+// tunnel's kernel egress guard); the hand-made
 // heyearth-agent-guard (node-agent :50052 from the Hub only). No hysteria2-server /
 // hysteria-server unit exists; nftables.service is not ours (inactive on the exits) and is never
 // touched. Every script tolerates a unit or table that does not exist.
 //
-// Deprovision parks the node: services stopped and disabled, the xray guard and the port hop
+// Deprovision parks the node: services stopped and disabled, the tunnel guard and the port hop
 // removed, the tunnel password rotated — binaries, unit files and the Hub's SSH key stay, so
 // «Настроить» can bring it back. The node-agent Hub-only guard stays too: a parked node keeps
 // :50052 closed to the world. Deleting the record (DELETE /servers/{id}) never touches the node.
@@ -41,7 +43,7 @@ const (
 	MTProxyBinary        = "/usr/local/bin/mtg"
 
 	systemdWantsDir     = "/etc/systemd/system/multi-user.target.wants"
-	exitServiceUnitList = "hysteria2 xray node-agent " + MTProxyService
+	exitServiceUnitList = "hysteria2 " + ExitSTLSUnit + " xray node-agent " + MTProxyService + " " + TGExitMTProxyUnit + " " + TGExitRefreshUnit + ".timer " + TGExitFirewallUnit
 )
 
 // ExitServiceUnits are the long-running services of an exit, stopped and disabled by deprovision.
@@ -55,12 +57,6 @@ func HubClientConfigPath(id int) string {
 	return HubHysteriaDir + "/client-" + strconv.Itoa(id) + ".yaml"
 }
 
-// VRProbeConfigPath is the Hub's short-lived TCP-path probe config of exit id (VRProbeScript; it
-// carries the tunnel UUID and is removed after every probe).
-func VRProbeConfigPath(id int) string {
-	return "/opt/heyearth/state/vr-probe-" + strconv.Itoa(id) + ".json"
-}
-
 // unitOffFunc: unit_off UNIT stops and disables a unit (a missing one is fine) and removes a
 // leftover enable link, so it neither runs nor starts at boot.
 const unitOffFunc = `unit_off() {
@@ -70,32 +66,35 @@ const unitOffFunc = `unit_off() {
 }
 `
 
-// HubClientRemoveScript (Hub): stop and disable the client of exit id (a stray process of it is
-// killed too), move its config and unit into a fresh HubServerArchiveDir/<id>-<time> with the
-// journal tail (only when there is something to archive), delete the .bak copies (they carry the
-// tunnel password), its restart, pending-binary and path-check markers and a leftover TCP-path
-// probe config, daemon-reload.
-// Fails if the client still runs.
+// HubClientRemoveScript (Hub): stop and disable both tunnel clients of exit id — hysteria
+// (HubClientUnit) and the ShadowTLS backup (HubSTLSUnit), a stray process of either killed too —
+// move their configs and units into a fresh HubServerArchiveDir/<id>-<time> with the journal tails
+// (only when there is something to archive), delete the .bak copies (they carry the tunnel
+// secrets) and their restart, pending-binary and path-check markers, daemon-reload. Fails if a
+// client still runs.
 func HubClientRemoveScript(id int) string {
 	n := strconv.Itoa(id)
-	u := HubClientUnit(id)
-	return opLine("hub-client-remove", n) + "set -e\n" + unitOffFunc +
-		"HC_UNIT=" + u + "\nHC_CFG=" + shQuote(HubClientConfigPath(id)) + "\nHC_FILE=" + shQuote(unitFilePath(u)) + "\n" +
-		"HC_ARCHIVE=" + shQuote(HubServerArchiveDir+"/"+n) + "-$(date +%s)\n" +
-		`unit_off "$HC_UNIT"
-pkill -9 -f '(^|[ /])client-` + n + `[.]yaml( |$)' 2>/dev/null || true
+	var b strings.Builder
+	b.WriteString(opLine("hub-client-remove", n) + "set -e\n" + unitOffFunc +
+		"HC_ARCHIVE=" + shQuote(HubServerArchiveDir+"/"+n) + "-$(date +%s)\n")
+	for _, c := range []struct{ unit, cfg, proc string }{
+		{HubClientUnit(id), HubClientConfigPath(id), `(^|[ /])client-` + n + `[.]yaml( |$)`},
+		{HubSTLSUnit(id), HubSTLSConfigPath(id), `(^|[ /])` + HubSTLSUnit(id) + `[.]service/client[.]json( |$)`},
+	} {
+		b.WriteString("HC_UNIT=" + c.unit + "\nHC_CFG=" + shQuote(c.cfg) + "\nHC_FILE=" + shQuote(unitFilePath(c.unit)) + "\n" +
+			`unit_off "$HC_UNIT"
+pkill -9 -f ` + shQuote(c.proc) + ` 2>/dev/null || true
 hc_files=()
 for f in "$HC_CFG" "$HC_FILE"; do
   if [ -f "$f" ]; then hc_files+=("$f"); fi
 done
 if [ "${#hc_files[@]}" -gt 0 ]; then
   (umask 077 && mkdir -p "$HC_ARCHIVE")
-  journalctl -u "$HC_UNIT" -n 100 --no-pager > "$HC_ARCHIVE/journal-snapshot.log" 2>&1 || true
+  journalctl -u "$HC_UNIT" -n 100 --no-pager > "$HC_ARCHIVE/$HC_UNIT.journal.log" 2>&1 || true
   mv -f "${hc_files[@]}" "$HC_ARCHIVE/"
-  echo "[hub] конфигурация и юнит клиента перенесены в архив $HC_ARCHIVE"
+  echo "[hub] конфигурация и юнит $HC_UNIT перенесены в архив $HC_ARCHIVE"
 fi
-rm -f "$HC_CFG.bak" "$HC_FILE.bak" ` + shQuote(RestartMarker(u)) + " " + shQuote(BinaryPendingMarker(u)) + " " + shQuote(PathCheckMarker(u)) + " " +
-		shQuote(VRProbeConfigPath(id)) + " " + shQuote(VRProbeConfigPath(id)+".bak") + `
+rm -f "$HC_CFG.bak" "$HC_FILE.bak" ` + shQuote(RestartMarker(c.unit)) + " " + shQuote(BinaryPendingMarker(c.unit)) + " " + shQuote(PathCheckMarker(c.unit)) + `
 systemctl daemon-reload
 systemctl reset-failed "$HC_UNIT" >/dev/null 2>&1 || true
 if systemctl is-active --quiet "$HC_UNIT"; then
@@ -103,19 +102,33 @@ if systemctl is-active --quiet "$HC_UNIT"; then
   exit 1
 fi
 echo "[hub] клиент туннеля $HC_UNIT снят"
-`
+`)
+	}
+	return b.String()
 }
 
 // HubClientStateScript (Hub) prints UNIT, CONFIG (files present), ACTIVE and LINK (an enable
-// link left) of exit id's client, each 0|1.
+// link left) of exit id's tunnel clients (hysteria and the ShadowTLS backup), each 1 when either
+// client has it, else 0.
 func HubClientStateScript(id int) string {
-	u := HubClientUnit(id)
-	w := shQuote(systemdWantsDir + "/" + u + ".service")
+	var units, cfgs, links []string
+	for _, c := range []struct{ unit, cfg string }{{HubClientUnit(id), HubClientConfigPath(id)}, {HubSTLSUnit(id), HubSTLSConfigPath(id)}} {
+		units = append(units, c.unit)
+		cfgs = append(cfgs, c.cfg)
+		links = append(links, systemdWantsDir+"/"+c.unit+".service")
+	}
+	either := func(test string, args []string, f func(string) string) string {
+		conds := make([]string, len(args))
+		for i, a := range args {
+			conds[i] = test + " " + f(a)
+		}
+		return strings.Join(conds, " || ")
+	}
 	return opLine("hub-client-state", strconv.Itoa(id)) +
-		"if [ -f " + shQuote(unitFilePath(u)) + " ]; then echo UNIT=1; else echo UNIT=0; fi\n" +
-		"if [ -f " + shQuote(HubClientConfigPath(id)) + " ]; then echo CONFIG=1; else echo CONFIG=0; fi\n" +
-		"if systemctl is-active --quiet " + u + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
-		"if [ -e " + w + " ] || [ -L " + w + " ]; then echo LINK=1; else echo LINK=0; fi\n"
+		"if " + either("[ -f", units, func(u string) string { return shQuote(unitFilePath(u)) + " ]" }) + "; then echo UNIT=1; else echo UNIT=0; fi\n" +
+		"if " + either("[ -f", cfgs, func(c string) string { return shQuote(c) + " ]" }) + "; then echo CONFIG=1; else echo CONFIG=0; fi\n" +
+		"if " + either("systemctl is-active --quiet", units, func(u string) string { return u }) + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
+		"if " + either("[ -e", links, func(w string) string { return shQuote(w) + " ] || [ -L " + shQuote(w) + " ]" }) + "; then echo LINK=1; else echo LINK=0; fi\n"
 }
 
 // ExitHysteriaConfigLegacy is the other place a hysteria server config may sit on an exit (the
@@ -255,19 +268,22 @@ fi
 echo "[exit] сняты $NS_WHAT (table inet $NS_TABLE, $NS_UNIT)"
 `
 
-// ExitRemoveGuardScript removes xray's kernel egress guard (ExitXrayGuardConf/Unit) — never
-// while xray runs (it would run unguarded). xray.service Requires= the guard unit, so without it
-// xray cannot be started by hand either.
+// ExitRemoveGuardScript removes the backup tunnel's kernel egress guard (ExitGuardConf/Unit) —
+// never while the tunnel (or a not yet retired xray, the guard's previous subject) runs: it would
+// run unguarded. The tunnel unit Requires= the guard unit, so without it the tunnel cannot be
+// started by hand either.
 const ExitRemoveGuardScript = `# hp:remove-guard
-if systemctl is-active --quiet xray; then
-  echo "[exit] ERROR: xray ещё работает — защиту исходящих не снимаю" >&2
-  exit 1
-fi
-NS_UNIT=` + ExitXrayGuardService + `
-NS_TABLE=` + ExitXrayGuardTable + `
-NS_CONF=` + ExitXrayGuardConfPath + `
-NS_FILE=` + ExitXrayGuardUnitPath + `
-NS_WHAT='правила защиты исходящих xray'
+for u in ` + ExitSTLSUnit + ` xray; do
+  if systemctl is-active --quiet "$u"; then
+    echo "[exit] ERROR: $u ещё работает — защиту исходящих не снимаю" >&2
+    exit 1
+  fi
+done
+NS_UNIT=` + ExitGuardService + `
+NS_TABLE=` + ExitGuardTable + `
+NS_CONF=` + ExitGuardConfPath + `
+NS_FILE=` + ExitGuardUnitPath + `
+NS_WHAT='правила защиты исходящих запасного туннеля'
 ` + nftSetRemoveBody
 
 // ExitRemoveHopScript removes the port hop (ExitPortHopConf / ExitPortHopUnit).
@@ -282,14 +298,14 @@ NS_WHAT='правила прыжков портов'
 // ExitTeardownStateScript prints, for the exit services and both oneshots, ACTIVE_<unit> and
 // ENABLED_<unit> (0|1), and GUARD_TABLE/GUARD_FILES, HOP_TABLE/HOP_FILES (0|1).
 const ExitTeardownStateScript = `# hp:teardown-state
-for u in ` + exitServiceUnitList + ` ` + ExitXrayGuardService + ` ` + ExitPortHopService + `; do
+for u in ` + exitServiceUnitList + ` ` + ExitGuardService + ` ` + ExitPortHopService + `; do
   if systemctl is-active --quiet "$u"; then echo "ACTIVE_$u=1"; else echo "ACTIVE_$u=0"; fi
   case "$(systemctl is-enabled "$u" 2>/dev/null)" in enabled|enabled-runtime) echo "ENABLED_$u=1" ;; *) echo "ENABLED_$u=0" ;; esac
 done
 ts_table() { if command -v nft >/dev/null 2>&1 && nft list table inet "$1" >/dev/null 2>&1; then echo 1; else echo 0; fi; }
 ts_files() { local f; for f in "$@"; do if [ -e "$f" ]; then echo 1; return; fi; done; echo 0; }
-echo "GUARD_TABLE=$(ts_table ` + ExitXrayGuardTable + `)"
-echo "GUARD_FILES=$(ts_files ` + ExitXrayGuardConfPath + ` ` + ExitXrayGuardUnitPath + `)"
+echo "GUARD_TABLE=$(ts_table ` + ExitGuardTable + `)"
+echo "GUARD_FILES=$(ts_files ` + ExitGuardConfPath + ` ` + ExitGuardUnitPath + `)"
 echo "HOP_TABLE=$(ts_table ` + ExitPortHopTable + `)"
 echo "HOP_FILES=$(ts_files ` + ExitPortHopConfPath + ` ` + ExitPortHopUnitPath + `)"
 `
@@ -305,13 +321,26 @@ func MTProxyRunScript(path string, port int, secret, domain string) string {
 }
 
 // MTProxyCheckScript prints ACTIVE (mtproxy.service), LISTEN (mtg on TCP port), SECRET
-// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, and VERSION (mtg's).
+// (MTProxyConfigPath has exactly this secret; compared inside bash), each 0|1, QUEUE, FRONT (the
+// host of the config's [domain-fronting] section, "" when there is none) and VERSION (mtg's).
+//
+// QUEUE is the listening socket's accept queue (Recv-Q of LISTEN): connections the kernel has
+// completed that mtg has not accepted. A live mtg accepts at once, so it is 0; a second sample
+// 2 s later rules out a burst. Above 0 twice means mtg runs and listens but no longer accepts —
+// the 13-14.11.2026 failure (mtg 2.2.8 ended its accept loop on one Accept error and lived on).
 func MTProxyCheckScript(port int, secret string) string {
+	p := strconv.Itoa(port)
 	return opLine("mtproxy-check") + "S=" + shQuote(secret) + "\n" +
 		"if systemctl is-active --quiet " + MTProxyService + "; then echo ACTIVE=1; else echo ACTIVE=0; fi\n" +
-		"if ss -Htlnp 'sport = :" + strconv.Itoa(port) + "' 2>/dev/null | grep -q '\"mtg\"'; then echo LISTEN=1; else echo LISTEN=0; fi\n" +
+		"if ss -Htlnp 'sport = :" + p + "' 2>/dev/null | grep -q '\"mtg\"'; then echo LISTEN=1; else echo LISTEN=0; fi\n" +
+		"mq() { ss -Htln 'sport = :" + p + "' 2>/dev/null | awk '{q += $2} END {print q + 0}'; }\n" +
+		"q=$(mq)\nif [ \"$q\" -gt 0 ] 2>/dev/null; then sleep 2; q=$(mq); fi\necho \"QUEUE=$q\"\n" +
 		"mc=0\nif [ -r " + MTProxyConfigPath + " ]; then\n" +
 		"  while IFS= read -r l || [ -n \"$l\" ]; do if [ \"$l\" = \"secret = \\\"$S\\\"\" ]; then mc=1; fi; done < " + MTProxyConfigPath + "\nfi\n" +
 		"echo \"SECRET=$mc\"\n" +
+		"echo \"FRONT=$(awk '" + mtproxyFrontAwk + "' " + MTProxyConfigPath + " 2>/dev/null)\"\n" +
 		"echo \"VERSION=$(" + MTProxyBinary + " --version 2>/dev/null | awk 'NR==1{print $1}')\"\n"
 }
+
+// mtproxyFrontAwk prints the host of the [domain-fronting] section of mtg's config.toml.
+const mtproxyFrontAwk = `/^\[/ { s = ($0 == "[domain-fronting]") } s && $1 == "host" { gsub(/"/, "", $3); print $3; exit }`

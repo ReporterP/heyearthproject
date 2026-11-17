@@ -102,6 +102,27 @@ func (c scriptConn) QueryContext(_ context.Context, query string, args []driver.
 		}
 		return r, nil
 	}
+	// Several keys in one statement (biz.GetEntryFailover): answered from settings as (key, value)
+	// rows, one read id for the statement.
+	if strings.Contains(q, "SELECT key, value FROM app_settings WHERE key IN (") {
+		keys := make([]string, 0, len(args))
+		for _, a := range args {
+			k, _ := a.Value.(string)
+			keys = append(keys, k)
+		}
+		id := "settings:" + strings.Join(keys, ",")
+		s.seen[id] = true
+		if s.fail == id {
+			return nil, errScriptInjected
+		}
+		r := &scriptRows{cols: []string{"key", "value"}}
+		for _, k := range keys {
+			if v, ok := s.settings[k]; ok {
+				r.rows = append(r.rows, []driver.Value{k, v})
+			}
+		}
+		return r, nil
+	}
 	for _, sq := range s.queries {
 		if strings.Contains(q, sq.match) {
 			s.seen[sq.name] = true
@@ -153,8 +174,6 @@ func goldenScript() *scriptDB {
 			"reality_public_key":      "PBK-test",
 			"reality_short_id":        "ab12",
 			"reality_sni_domain":      "storage.yandexcloud.net",
-			"cdn_enabled":             "true",
-			"cdn_host":                "cdn.example.test",
 			"hysteria2_obfs_password": "obfs-test",
 			"config_version":          "7",
 			"mtproto_fronting_domain": "front.example.test",
@@ -179,10 +198,10 @@ func goldenScript() *scriptDB {
 			{name: "direct-flag", match: "SELECT direct_routing_enabled FROM plans WHERE id = $1", cols: []string{"enabled"}, rows: [][]driver.Value{{true}}},
 			{name: "plan", match: "FROM plans WHERE id = $1", cols: []string{"id", "slug", "name", "description", "price_rub", "duration_days", "traffic_limit_bytes",
 				"allowed_protocols", "features", "is_active", "direct_routing_enabled", "sort_order", "auto_renew_default", "max_activations_per_user",
-				"express_enabled", "express_up_mbps", "express_down_mbps", "amnezia_wg_enabled", "created_at", "updated_at"},
+				"express_enabled", "express_up_mbps", "express_down_mbps", "created_at", "updated_at"},
 				rows: [][]driver.Value{{int64(3), "all-inclusive", "Всё включено", "", int64(300), int64(30), nil,
 					"{vless,hysteria2}", "{}", true, true, int64(4), true, nil,
-					true, int64(30), int64(120), false, "2026-01-01", "2026-01-01"}}},
+					true, int64(30), int64(120), "2026-01-01", "2026-01-01"}}},
 			// Only the old IsProtocolAllowed → GetPlanByID loads the plan's servers.
 			{name: "plan-servers", match: "SELECT server_id FROM plan_servers WHERE plan_id = $1", cols: []string{"server_id"}, rows: [][]driver.Value{{int64(2)}}},
 			{name: "hy2-gate", match: "SELECT p.allowed_protocols, p.express_enabled", cols: []string{"allowed_protocols", "express_enabled"},
@@ -191,14 +210,18 @@ func goldenScript() *scriptDB {
 			{name: "userinfo", match: "us.traffic_limit, p.traffic_limit_bytes", cols: []string{"id", "started_at", "valid_until", "traffic_limit", "traffic_limit_bytes"},
 				rows: [][]driver.Value{{int64(7), nil, vu, nil, nil}}},
 			{name: "period-usage", match: "COALESCE(SUM(upload_bytes + download_bytes), 0) FROM traffic_stats", cols: []string{"sum"}, rows: [][]driver.Value{{int64(123456)}}},
-			{name: "announce", match: "COALESCE(us.traffic_used, 0)", cols: []string{"valid_until", "used", "limit", "slug"},
-				rows: [][]driver.Value{{vu, int64(0), nil, "all-inclusive"}}},
+			{name: "announce", match: "COALESCE(us.traffic_used, 0)", cols: []string{"valid_until", "used", "limit", "slug", "auto_renew", "price", "price_paid", "promo", "uid"},
+				rows: [][]driver.Value{{vu, int64(0), nil, "all-inclusive", false, int64(300), int64(300), "", int64(7)}}},
+			// Per-exit fronting domains: none here (the shared domain only).
+			{name: "mtproto-domains", match: "SELECT DISTINCT LOWER(mtproto_domain)", cols: []string{"d"}},
 			{name: "mtproto-ips", match: "mtproto_status = 'healthy'", cols: []string{"ip_address"}, rows: [][]driver.Value{{"198.51.100.7"}}},
 			{name: "effective-plan", match: "us.plan_id IS NOT NULL AND us.valid_until > CURRENT_TIMESTAMP", cols: []string{"plan_id"}, rows: [][]driver.Value{{int64(3)}}},
 			{name: "direct-services", match: "FROM direct_route_services s WHERE s.is_active = TRUE",
 				cols: []string{"id", "slug", "name", "group_name", "source", "domains", "ip4", "ip6", "cidr4", "cidr6", "dns_servers", "timeout_sec", "is_active", "notes", "created_at", "updated_at"},
 				rows: [][]driver.Value{{int64(1), "bank", "Банк", "banks", "manual", "{online.bank.example,www.bank.example}", "{203.0.113.10}", "{}", "{192.0.2.0/24}", "{}", "{}",
 					int64(60), true, "", "2026-01-01", "2026-01-01"}}},
+			// Reserve entries (phase 3): none here — the goldens above are the profiles without a relay.
+			{name: "relays", match: "LEFT JOIN entry_state e ON e.entry_id = s.id", cols: relayCols},
 		},
 		seen: map[string]bool{},
 	}

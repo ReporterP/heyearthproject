@@ -104,9 +104,10 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		) us ON TRUE
 		LEFT JOIN plans p ON p.id = us.plan_id
 		LEFT JOIN LATERAL (
-			SELECT MAX(ud.last_seen_at) AS last_seen
-			FROM user_devices ud
-			WHERE ud.user_id = u.id
+			SELECT COALESCE(
+			         (SELECT MAX(lt.recorded_at) FROM traffic_stats lt WHERE lt.user_id = u.user_id),
+			         (SELECT MAX(ld.day)::timestamptz FROM traffic_stats_daily ld WHERE ld.user_id = u.user_id)
+			       ) AS last_seen
 		) ls ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM(ts.upload_bytes + ts.download_bytes), 0) AS total_bytes
@@ -169,44 +170,9 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, PagedResponse{Items: users, Total: total, Page: p.Page, PageSize: p.PageSize})
 }
 
-func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
-	var payload userPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if strings.TrimSpace(payload.UserID) == "" {
-		writeAdminError(w, http.StatusBadRequest, "user_id is required")
-		return
-	}
-
-	isBlocked := false
-	if payload.IsBlocked != nil {
-		isBlocked = *payload.IsBlocked
-	}
-	role := strings.TrimSpace(payload.Role)
-	if role == "" {
-		role = "user"
-	}
-
-	var telegramValue any
-	if payload.TelegramID != nil {
-		telegramValue = *payload.TelegramID
-	}
-
-	var id int
-	err := db.DB.QueryRow(`
-		INSERT INTO users (user_id, telegram_id, role, is_blocked, updated_at)
-		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-		RETURNING id
-	`, strings.TrimSpace(payload.UserID), telegramValue, role, isBlocked).Scan(&id)
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to create user")
-		return
-	}
-	WriteAuditLog(r, "create_user", "user", fmt.Sprintf("%d", id), map[string]string{"user_id": payload.UserID})
-	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
-}
+// userHasMoneyQuery: any paid payment or wallet movement of the user.
+const userHasMoneyQuery = `SELECT EXISTS (SELECT 1 FROM payments p JOIN users u ON u.id = $1 WHERE p.user_id = u.id OR p.user_id_text = u.user_id)
+	OR EXISTS (SELECT 1 FROM wallet_transactions WHERE user_id = $1)`
 
 func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parseLastPathInt(r.URL.Path)
@@ -217,12 +183,16 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	var payload userPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeAdminError(w, http.StatusBadRequest, "Invalid request body")
+		writeAdminError(w, http.StatusBadRequest, "Неверное тело запроса (telegram_id — число)")
 		return
 	}
 
 	var telegramValue any
 	if payload.TelegramID != nil {
+		if *payload.TelegramID <= 0 {
+			writeAdminError(w, http.StatusBadRequest, "Telegram ID — положительное число")
+			return
+		}
 		telegramValue = *payload.TelegramID
 	}
 	platform := strings.ToLower(strings.TrimSpace(payload.PreferredPlatform))
@@ -236,10 +206,13 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $6
 	`, strings.TrimSpace(payload.UserID), telegramValue, strings.TrimSpace(payload.Role), payload.IsBlocked, platform, userID); err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to update user")
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить пользователя")
 		return
 	}
-	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), nil)
+	WriteAuditLog(r, "update_user", "user", fmt.Sprintf("%d", userID), payload)
+	if payload.IsBlocked != nil {
+		biz.NotifySubscriptionChange() // a ban or an unban reaches xray and Bamboo at once
+	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User updated"})
 }
 
@@ -247,6 +220,17 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parseLastPathInt(r.URL.Path)
 	if !ok {
 		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
+		return
+	}
+	// Money stays on record (54-ФЗ receipts, the wallet ledger): a user with any payment (pending
+	// ones too) or a wallet movement is blocked, never deleted (C2).
+	var hasMoney bool
+	if err := db.DB.QueryRow(userHasMoneyQuery, userID).Scan(&hasMoney); err != nil {
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить платежи пользователя")
+		return
+	}
+	if hasMoney {
+		writeAdminError(w, http.StatusConflict, "У пользователя есть платежи (в том числе незавершённые) или движения по кошельку — удалять нельзя (учёт и чеки). Заблокируйте его")
 		return
 	}
 	result, err := db.DB.Exec(`DELETE FROM users WHERE id = $1`, userID)
@@ -261,56 +245,6 @@ func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteAuditLog(r, "delete_user", "user", fmt.Sprintf("%d", userID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "User deleted"})
-}
-
-func ListUserDevicesHandler(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "devices")
-	if !ok {
-		writeAdminError(w, http.StatusBadRequest, "Invalid user id")
-		return
-	}
-
-	rows, err := db.DB.Query(`
-		SELECT id, platform, device_id, COALESCE(device_label, ''), COALESCE(linked_via, ''), created_at, last_seen_at
-		FROM user_devices
-		WHERE user_id = $1
-		ORDER BY last_seen_at DESC
-	`, userID)
-	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Failed to list devices")
-		return
-	}
-	defer rows.Close()
-
-	var devices []map[string]any
-	for rows.Next() {
-		var (
-			id          int
-			platform    string
-			deviceID    string
-			deviceLabel string
-			linkedVia   string
-			createdAt   time.Time
-			lastSeenAt  time.Time
-		)
-		if err := rows.Scan(&id, &platform, &deviceID, &deviceLabel, &linkedVia, &createdAt, &lastSeenAt); err != nil {
-			writeAdminError(w, http.StatusInternalServerError, "Failed to scan device")
-			return
-		}
-		devices = append(devices, map[string]any{
-			"id":           id,
-			"platform":     platform,
-			"device_id":    deviceID,
-			"device_label": deviceLabel,
-			"linked_via":   linkedVia,
-			"created_at":   createdAt.Format(time.RFC3339),
-			"last_seen_at": lastSeenAt.Format(time.RFC3339),
-		})
-	}
-	if devices == nil {
-		devices = []map[string]any{}
-	}
-	writeAdminJSON(w, http.StatusOK, devices)
 }
 
 // ListUserTrafficHandler — GET /api/admin/users/{id}/traffic?days=N

@@ -37,7 +37,7 @@ func baseConfig() map[string]any {
 	return map[string]any{
 		"api": map[string]any{"tag": "api", "services": []any{"HandlerService", "RoutingService", "StatsService"}},
 		"inbounds": []any{inbound("vless-reality", 10443, true), inbound("vless-xhttp", 2443, false),
-			map[string]any{"tag": "socks-awg", "port": 10808, "protocol": "socks", "settings": map[string]any{"auth": "noauth"}}},
+			map[string]any{"tag": "socks-local", "port": 10808, "protocol": "socks", "settings": map[string]any{"auth": "noauth"}}},
 		"outbounds": []any{map[string]any{"tag": "block", "protocol": "blackhole"}, map[string]any{"tag": "exit-1", "protocol": "socks"}},
 		"routing": map[string]any{"domainStrategy": "IPIfNonMatch",
 			"balancers": []any{map[string]any{"tag": "exit-balancer", "selector": []any{"exit-1"}},

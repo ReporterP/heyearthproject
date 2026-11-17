@@ -7,23 +7,37 @@ import { matchPasted } from './wizardModel.js'
 export const PRIORITIES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 export const PLANS_HINT = 'Без привязки нода получает только общий пул; тарифы с привязкой ходят только через свои ноды'
 
-// Units whose journal the backend serves (servers_handlers.go nodeLogServices).
-export const LOG_SERVICES = [
-  { key: 'node-agent', label: 'node-agent' },
-  { key: 'xray', label: 'xray' },
-  { key: 'hysteria2', label: 'hysteria2' },
-  { key: 'mtproxy', label: 'mtproxy (Telegram-прокси)' },
-]
+// logServices: the units this server really runs, as the backend serves them (C5,
+// servers_handlers.go nodeLogServices): an exit — node-agent, xray, hysteria2 and the Telegram
+// proxy if it is on; a reserve entry — nginx and its forwarding.
+export function logServices(node) {
+  if (node?.role === 'relay') {
+    return [
+      { key: 'nginx', label: 'nginx (пересылка на Hub)' },
+      { key: 'heyearth-relay', label: 'heyearth-relay (правила пересылки)' },
+    ]
+  }
+  const out = [
+    { key: 'node-agent', label: 'node-agent' },
+    { key: 'xray', label: 'xray' },
+    { key: 'hysteria2', label: 'hysteria2' },
+  ]
+  if (node?.mtproto_status && node.mtproto_status !== 'disabled') out.push({ key: 'mtproxy', label: 'mtproxy (Telegram-прокси)' })
+  return out
+}
 
 const isExit = (n) => n?.role !== 'relay'
 
 export const jobActive = (n) => ['running', 'queued'].includes(n?.last_job?.status)
 
-// drawerTabs: perms = { manage: nodes.provision, logs: servers.logs }.
+// drawerTabs: perms = { manage: nodes.provision, logs: servers.logs }. «Нагрузка» (charts) and
+// «Настройки» (the owner's numbers for «Мощность») are for every server (B1/B5).
 export function drawerTabs(node, { manage = false, logs = false } = {}) {
   return [
     { key: 'overview', label: 'Обзор' },
+    { key: 'load', label: 'Нагрузка' },
     isExit(node) && { key: 'routing', label: 'Тарифы и приоритет' },
+    { key: 'settings', label: 'Настройки' },
     { key: 'jobs', label: 'Задачи' },
     logs && { key: 'logs', label: 'Журналы' },
     manage && { key: 'danger', label: 'Опасная зона' },
@@ -306,8 +320,23 @@ export function reprovisionConsequences() {
   ]
 }
 
-export function deprovisionConsequences(node) {
+// The only working exit (B4): switching it off is confirmed with this phrase, not the name — the
+// API refuses without it (provision_handlers.go lastExitPhrase).
+export const LAST_EXIT_PHRASE = 'ОТКЛЮЧИТЬ ВСЕХ'
+
+// isLastExit: an online exit with no other WORKING exit — switched on, agent answering, tunnel
+// judged healthy, not being switched off (the API's otherOnlineExitsQuery).
+export function isLastExit(node, nodes) {
+  if (!node || !isExit(node) || node.lifecycle_state !== 'online') return false
+  return !(nodes || []).some((n) => n.id !== node.id && isExit(n) && n.lifecycle_state === 'online' && n.status === 'online'
+    && n.tunnel_status === 'healthy' && !(n.last_job?.kind === 'deprovision' && ['queued', 'running'].includes(n.last_job?.status)))
+}
+
+export function deprovisionConsequences(node, { lastExit = false } = {}) {
   const out = []
+  if (lastExit) {
+    out.push('Это единственный работающий выход за границу: у всех пользователей пропадёт интернет, пока не заработает другой выход. Чтобы подтвердить, введите «' + LAST_EXIT_PHRASE + '».')
+  }
   if (node?.lifecycle_state === 'offline') {
     out.push('Нода уже отключена: повтор уберёт с сервера то, что не удалось убрать в прошлый раз (например, если сервер был недоступен).')
   } else {

@@ -5,10 +5,11 @@
 //
 // "Healthy" definition: is_exit_node=TRUE AND lifecycle_state='online' AND
 // mtproto_status='healthy'. The Tunnel-health-monitor maintains the status
-// via per-server TCP probe on the global mtproto_port.
+// via a per-server fake-TLS handshake (internal/mtprobe) on the global mtproto_port.
 package biz
 
 import (
+	"context"
 	crand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -16,6 +17,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/heyearth/backend/internal/db"
@@ -68,15 +72,17 @@ type MTProtoExit struct {
 	ID         int
 	IPAddress  string
 	LoadWeight int
+	Domain     string // servers.mtproto_domain ("" = the shared domain); PickMTProtoExit only
 }
 
 // PickMTProtoExit returns a weighted-random healthy exit's host:port to use
-// for a Telegram MTProto deeplink. `ok` is false if no healthy exit exists.
+// for a Telegram MTProto deeplink, and the fake-TLS domain it fronts ("" = the
+// shared mtproto_fronting_domain). `ok` is false if no healthy exit exists.
 //
 // Port comes from app_settings.mtproto_port (default 8443) — same on every exit.
-func PickMTProtoExit() (host, port string, ok bool) {
+func PickMTProtoExit() (host, port, domain string, ok bool) {
 	rows, err := db.DB.Query(`
-		SELECT id, ip_address, COALESCE(load_weight, 1)
+		SELECT id, ip_address, COALESCE(load_weight, 1), COALESCE(mtproto_domain, '')
 		  FROM servers
 		 WHERE is_exit_node = TRUE
 		   AND lifecycle_state = 'online'
@@ -84,14 +90,14 @@ func PickMTProtoExit() (host, port string, ok bool) {
 	`)
 	if err != nil {
 		log.Printf("[mtproto] PickMTProtoExit query: %v", err)
-		return "", "", false
+		return "", "", "", false
 	}
 	defer rows.Close()
 
 	var pool []MTProtoExit
 	for rows.Next() {
 		var ex MTProtoExit
-		if err := rows.Scan(&ex.ID, &ex.IPAddress, &ex.LoadWeight); err != nil {
+		if err := rows.Scan(&ex.ID, &ex.IPAddress, &ex.LoadWeight, &ex.Domain); err != nil {
 			continue
 		}
 		w := ex.LoadWeight
@@ -103,11 +109,11 @@ func PickMTProtoExit() (host, port string, ok bool) {
 		}
 	}
 	if len(pool) == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	chosen := pool[rand.Intn(len(pool))]
 	port = GetSettingOrDefault("mtproto_port", "8443")
-	return chosen.IPAddress, port, true
+	return chosen.IPAddress, port, chosen.Domain, true
 }
 
 // ListMTProtoExitIPs returns IP addresses of all exit-nodes currently running
@@ -195,4 +201,136 @@ const markMTProtoStatusQuery = `
 func MarkMTProtoStatus(serverID int, status string) error {
 	_, err := db.DB.Exec(markMTProtoStatusQuery, status, serverID)
 	return err
+}
+
+// ── Per-exit fronting domain ──
+//
+// Every exit fronts its own fake-TLS domain: one that resolves to that exit (a sniffing client
+// dials the domain instead of the IP — see MTProtoFrontingDomain). Its secret is the shared key
+// of mtproto_secret with that domain (MTProtoSecretFor), so a client gets the secret of the exit
+// it is handed. servers.mtproto_domain holds the exit's domain ('' = the shared domain).
+
+// MTProtoSecretFor is the shared mtg fake-TLS secret re-issued for domain: the same "ee" + 16-byte
+// key, the domain part replaced. The shared domain gives the shared secret back unchanged.
+func MTProtoSecretFor(secret, domain string) (string, error) {
+	secret, domain = strings.TrimSpace(secret), strings.ToLower(strings.TrimSpace(domain))
+	if len(secret) < 34 || !strings.EqualFold(secret[:2], "ee") {
+		return "", errors.New("mtproto_secret не в формате mtg (ee + 32 hex-символа + домен в hex)")
+	}
+	if _, err := hex.DecodeString(secret[2:34]); err != nil {
+		return "", errors.New("mtproto_secret не в формате mtg (ee + 32 hex-символа + домен в hex)")
+	}
+	if domain == "" {
+		return "", errors.New("домен маскировки MTProxy пуст")
+	}
+	if d, err := hex.DecodeString(secret[34:]); err == nil && strings.EqualFold(string(d), domain) {
+		return secret, nil
+	}
+	return secret[:34] + hex.EncodeToString([]byte(domain)), nil
+}
+
+// Resolvers of ExitFrontingDomain (tests swap them).
+var (
+	mtLookupAddr = net.DefaultResolver.LookupAddr
+	mtLookupHost = net.DefaultResolver.LookupHost
+)
+
+// mtDomainNameRe: a domain mtg and install-mtproxy.sh take (provision's mtDomainRe, lower case).
+var mtDomainNameRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ExitFrontingDomain is the fake-TLS domain of the exit at ip: the one stored for it (as is — its
+// MTProxy runs with it, and a DNS blip must not move a working exit to another domain; the
+// installer checks it still resolves here), else the shared mtproto_fronting_domain, else the
+// exit's reverse-DNS name (hosters name their servers, e.g. v1234567.hosted-by-<hoster>.com) —
+// those two only while they resolve to ip.
+func ExitFrontingDomain(ctx context.Context, ip, stored, shared string) (string, error) {
+	if d := strings.ToLower(strings.TrimSpace(stored)); d != "" {
+		return d, nil
+	}
+	want := net.ParseIP(strings.TrimSpace(ip))
+	if want == nil {
+		return "", fmt.Errorf("адрес выхода %q — не IP", ip)
+	}
+	resolvesHere := func(name string) bool {
+		if len(name) > 253 || !mtDomainNameRe.MatchString(name) {
+			return false
+		}
+		ips, err := mtLookupHost(ctx, name)
+		return err == nil && slices.ContainsFunc(ips, func(s string) bool { return want.Equal(net.ParseIP(s)) })
+	}
+	if d := strings.ToLower(strings.TrimSpace(shared)); resolvesHere(d) {
+		return d, nil
+	}
+	names, err := mtLookupAddr(ctx, want.String())
+	for _, n := range names {
+		if n = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(n), ".")); resolvesHere(n) {
+			return n, nil
+		}
+	}
+	why := "обратной записи нет"
+	if err != nil {
+		why = "обратная запись не прочитана: " + err.Error()
+	} else if len(names) > 0 {
+		why = "обратная запись " + strings.Join(names, ", ") + " не указывает обратно на него"
+	}
+	return "", fmt.Errorf("у выхода %s нет домена для Telegram-прокси: ни %q не указывает на него, %s — попросите хостера задать PTR-запись (имя сервера) и повторите", ip, shared, why)
+}
+
+// dbExecQueryer is *sql.DB or *sql.Tx.
+type dbExecQueryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// ExitMTProtoDomain reads servers.mtproto_domain of exit id (empty: the shared domain).
+func ExitMTProtoDomain(ctx context.Context, q dbExecQueryer, id int) (string, error) {
+	var d string
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(mtproto_domain, '') FROM servers WHERE id = $1`, id).Scan(&d)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return strings.TrimSpace(d), err
+}
+
+// SetExitMTProtoDomain records the domain exit id fronts (before its MTProxy is installed with it:
+// the deeplink hands out the secret of that domain).
+func SetExitMTProtoDomain(ctx context.Context, q dbExecQueryer, id int, domain string) error {
+	_, err := q.ExecContext(ctx, `UPDATE servers SET mtproto_domain = $2 WHERE id = $1 AND mtproto_domain IS DISTINCT FROM $2`, id, domain)
+	return err
+}
+
+// MTProtoFrontingDomainsStrict: every domain a sniffing client may dial for our MTProxy — the
+// shared one and those of the healthy exits — for the direct rules of the Happ routing profile.
+// A failed read is an error.
+func MTProtoFrontingDomainsStrict() ([]string, error) {
+	shared, err := MTProtoFrontingDomainStrict()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	if shared != "" {
+		out = append(out, strings.ToLower(shared))
+	}
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT LOWER(mtproto_domain)
+		  FROM servers
+		 WHERE is_exit_node = TRUE
+		   AND lifecycle_state = 'online'
+		   AND mtproto_status = 'healthy'
+		   AND mtproto_domain <> ''
+		 ORDER BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("list mtproto exit domains: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("list mtproto exit domains: %w", err)
+		}
+		if d != "" && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out, rows.Err()
 }

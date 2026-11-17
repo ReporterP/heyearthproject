@@ -65,13 +65,14 @@ type ExitOptions struct {
 	HubIPs      []string        // node-agent :50052 is allowed only from these
 	MTProtoPort int             // allowed through the ACL / guard rules
 	MTProto     *MTProtoOptions // nil: no MTProxy (mtproto_status = 'disabled')
-	NodeAgent   func() ([]byte, error)
-	CA          func() (cert, key []byte, err error)
+	// TGMTProxy: the Telegram WEB proxy's MTProxy on the exit (nil: the WEB proxy is off).
+	TGMTProxy *TGExitOptions
+	NodeAgent func() ([]byte, error)
+	CA        func() (cert, key []byte, err error)
 	// CASigner, when set, signs node certificates instead of CA()'s key (CA() may then return no
 	// key): the deploy CLI's HubCASigner — the CA key stays on the Hub. nil: the key from CA()
 	// (the API, which runs on the Hub).
 	CASigner func(ctx context.Context, ca *x509.Certificate) (crypto.Signer, error)
-	HubXray  string // the Hub's xray for the TCP path check
 }
 
 // MTProtoOptions: the exit's Telegram proxy (Secret is redacted from every step output).
@@ -79,6 +80,10 @@ type MTProtoOptions struct {
 	Port           int
 	Secret, Domain string
 	Script         []byte // cmd/deploy/install-mtproxy.sh
+	// Record writes Domain as the exit's MTProxy domain (nil: nothing to record). The install
+	// step calls it right before installing: the Telegram deeplink hands out the secret of the
+	// recorded domain, so it must change only together with what mtg runs.
+	Record func(ctx context.Context) error
 }
 
 // State is one job run: the node, the Hub, options, and what steps learnt (keys, changed files).
@@ -87,6 +92,7 @@ type State struct {
 	Kind  string
 	Hub   Remote
 	Exit  ExitOptions
+	Relay RelayOptions // role relay: filled by the API wiring (RelayOptionsFor)
 	Hooks Hooks
 	Keys  config.ExitRealityKeys
 	Begin func(ctx context.Context) error // before the first step (lifecycle → provisioning)
@@ -148,6 +154,9 @@ func (s *State) Secrets() []string {
 	if s.Exit.MTProto != nil {
 		all = append(all, s.Exit.MTProto.Secret)
 	}
+	if s.Exit.TGMTProxy != nil {
+		all = append(all, s.Exit.TGMTProxy.Secret)
+	}
 	var out []string
 	for _, v := range all {
 		if len(v) >= minSecretLen {
@@ -202,13 +211,22 @@ func (t *tailBuffer) String() string { return tail(string(t.b), t.max) }
 var titles = map[string]string{
 	"preflight": "Предпроверка сервера", "hub_key": "Ключ Hub на ноде", "reality_keys": "Ключи туннеля",
 	"base": "Сеть и пакеты", "firewall": "Фаервол", "hysteria": "Основной туннель (Hysteria) и прыжки портов",
-	"xray": "Запасной TCP-туннель (Reality)", "mtproxy": "Telegram-прокси (MTProxy)", "node_agent": "Агент мониторинга",
-	"save_tunnel": "Данные туннеля в базе", "hub_client": "Клиент туннеля на Hub",
+	"stls": "Запасной TCP-туннель (ShadowTLS)", "mtproxy": "Telegram-прокси (MTProxy)", "node_agent": "Агент мониторинга",
+	"save_tunnel": "Данные туннеля в базе", "hub_client": "Клиент туннеля на Hub", "hub_stls": "Клиент запасного туннеля на Hub",
+	"retire_xray": "Снятие старого запасного туннеля (Reality)",
+	// Steps of earlier recipes, still named in old jobs.
+	"xray":    "Запасной TCP-туннель (Reality)",
 	"path_hy": "Проверка пути: основной туннель", "path_tcp": "Проверка пути: запасной TCP",
 	"activate": "Включение в маршрутизацию", "exclude": "Исключение из маршрутизации",
 	"hub_client_remove": "Удаление клиента туннеля на Hub", "rotate_password": "Смена пароля туннеля",
-	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих xray",
+	"stop_services": "Остановка сервисов на ноде", "remove_guard": "Снятие защиты исходящих запасного туннеля",
 	"remove_hop": "Снятие правил прыжков портов", "finalize": "Нода отключена",
+	// The reserve entry (relay.go).
+	"relay_preflight": "Предпроверка", "relay_packages": "Пакеты", "relay_sysctl": "Пересылка и conntrack",
+	"relay_rules": "Правила nftables", "relay_unit": "Юнит heyearth-relay", "relay_firewall": "Фаервол",
+	"relay_fail2ban": "fail2ban для SSH", "relay_path": "Проверка входа снаружи",
+	"relay_stream": "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
+	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",
 }
 
 // Title is the owner-facing name of a step (admin UI and CLI).

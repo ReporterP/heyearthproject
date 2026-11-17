@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +26,11 @@ const testMTSecret = "ee0123456789abcdef0123456789abcdef6578616d706c652e636f6d"
 
 func withExitWiring(t *testing.T, ips []string, settings map[string]string, script string) {
 	t.Helper()
-	oldIPs, oldSet, oldPath := exitHubIPs, exitSetting, mtproxyScriptPath
+	oldIPs, oldSet, oldPath, oldDomain := exitHubIPs, exitSetting, mtproxyScriptPath, exitMTProtoDomainStep
+	oldTG := tgExitOptions
+	tgExitOptions = func(context.Context, int) (*provision.TGExitOptions, error) { return nil, nil } // the WEB proxy off
+	t.Cleanup(func() { tgExitOptions = oldTG })
+	exitMTProtoDomainStep = func(context.Context, provision.Node, *provision.MTProtoOptions) error { return nil }
 	exitHubIPs = func() []string { return ips }
 	exitSetting = func(k, def string) string {
 		if v, ok := settings[k]; ok {
@@ -38,7 +44,9 @@ func withExitWiring(t *testing.T, ips []string, settings map[string]string, scri
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { exitHubIPs, exitSetting, mtproxyScriptPath = oldIPs, oldSet, oldPath })
+	t.Cleanup(func() {
+		exitHubIPs, exitSetting, mtproxyScriptPath, exitMTProtoDomainStep = oldIPs, oldSet, oldPath, oldDomain
+	})
 }
 
 var mtSettings = map[string]string{"mtproto_port": "9443", "mtproto_secret": testMTSecret, "mtproto_fronting_domain": "example.com"}
@@ -50,7 +58,7 @@ func TestApiExitOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.HubIPs, hub) || o.HubXray != xrayUnitBinary || o.NodeAgent == nil || o.CA == nil {
+	if !slices.Equal(o.HubIPs, hub) || o.NodeAgent == nil || o.CA == nil {
 		t.Fatalf("options %+v", o)
 	}
 	if o.MTProto == nil || o.MTProtoPort != 9443 || o.MTProto.Port != o.MTProtoPort ||
@@ -121,6 +129,50 @@ func TestApiRecipe(t *testing.T) {
 		t.Fatalf("setup without Hub addresses must be a refusal (the owner's text): %v", err)
 	}
 	if rc, _, err := apiRecipe(context.Background(), n, provision.KindDeprovision); err != nil || stepNames(rc)[0] != "exclude" {
+		t.Fatalf("deprovision: %v %v", stepNames(rc), err)
+	}
+}
+
+// The relay's DNAT target is main_server_host — never another of the Hub's interface addresses
+// (hubOwnIPs also lists one filtered upstream); SSH may come from all of them. No usable address
+// is a refusal (no job), a failed read an internal error; taking a relay out needs no address.
+func TestApiRelayOptions(t *testing.T) {
+	hubAll := []string{"198.51.100.2", "192.0.2.10"} // 192.0.2.10: an interface address, never the target
+	withExitWiring(t, hubAll, mtSettings, "x")
+	oldHost, oldLookup := relayHubHost, relayHubLookup
+	t.Cleanup(func() { relayHubHost, relayHubLookup = oldHost, oldLookup })
+	setHost := func(v string, err error) { relayHubHost = func(context.Context) (string, error) { return v, err } }
+	relayHubLookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "hub.example.test" {
+			return []netip.Addr{netip.MustParseAddr("198.51.100.2")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	ctx := context.Background()
+	n := provision.Node{ID: 5, Role: "relay", IP: "203.0.113.50", SSHPort: 22, Lifecycle: "pending", HostKeyConfirmed: true}
+	for _, host := range []string{"198.51.100.2", "hub.example.test"} {
+		setHost(host, nil)
+		rc, st, err := apiRecipe(ctx, n, provision.KindProvision)
+		if err != nil || st.Relay.HubIP != "198.51.100.2" || st.Relay.RelayIP != n.IP || !slices.Equal(st.Relay.HubIPs, hubAll) ||
+			st.Relay.VerifyPath == nil || len(rc) == 0 || rc[0].Name != "relay_preflight" || rc[len(rc)-1].Name != "activate" {
+			t.Fatalf("%s: %+v %v %v", host, st, stepNames(rc), err)
+		}
+	}
+	for name, c := range map[string]struct {
+		v   string
+		err error
+	}{"absent": {"", sql.ErrNoRows}, "blank": {" ", nil}, "private": {"10.0.0.1", nil}, "unresolvable": {"nohost.example.test", nil}} {
+		setHost(c.v, c.err)
+		if _, _, err := apiRecipe(ctx, n, provision.KindProvision); !provision.IsRefusal(err) {
+			t.Errorf("%s: want a refusal, got %v", name, err)
+		}
+	}
+	setHost("", errors.New("db down"))
+	if _, _, err := apiRecipe(ctx, n, provision.KindProvision); err == nil || provision.IsRefusal(err) {
+		t.Fatalf("a failed read is internal, not the owner's text: %v", err)
+	}
+	n.Lifecycle = "online"
+	if rc, _, err := apiRecipe(ctx, n, provision.KindDeprovision); err != nil || !slices.Contains(stepNames(rc), "relay_teardown") {
 		t.Fatalf("deprovision: %v %v", stepNames(rc), err)
 	}
 }
@@ -221,66 +273,49 @@ func outboundsByTag(t *testing.T, cfg []byte) map[string]json.RawMessage {
 	return m
 }
 
-type vlessUser struct {
-	ID   string `json:"id"`
-	Flow string `json:"flow"`
-}
-
-type vlessOutbound struct {
-	Settings struct {
-		Vnext []struct {
-			Address string      `json:"address"`
-			Port    int         `json:"port"`
-			Users   []vlessUser `json:"users"`
-		} `json:"vnext"`
-	} `json:"settings"`
-	StreamSettings struct {
-		Network         string `json:"network"`
-		Security        string `json:"security"`
-		RealitySettings struct {
-			Fingerprint string `json:"fingerprint"`
-			ServerName  string `json:"serverName"`
-			PublicKey   string `json:"publicKey"`
-			ShortID     string `json:"shortId"`
-		} `json:"realitySettings"`
-	} `json:"streamSettings"`
-}
-
-// The wizard's TCP path check dials exactly what Xray's exit-<id>.vr outbound (phase 1) dials.
-func TestVRProbeMatchesXrayOutbound(t *testing.T) {
+// The Hub's xray reaches a Hysteria exit's backup path exactly where the recipe puts the Hub's
+// ShadowTLS client of the exit and where its path check probes: SOCKS on
+// 127.0.0.1:config.HubSTLSSocksPort(id) — for the routed outbound exit-<id>.vr and for the
+// monitor's probe pair alike.
+func TestVROutboundIsTheHubSTLSClient(t *testing.T) {
 	ex := testExit(2, "hysteria2")
-	ex.TunnelSNI = config.ExitRealitySNI
-	ex.TunnelPort = 50443 // production: tunnel_port is the hysteria port, the .vr path must still dial :10443
+	ex.TunnelPort = 50443 // production: tunnel_port is the hysteria port, the backup path must not use it
 	in := baseInputs()
 	in.exitNodes = []biz.ExitNodeTunnel{ex}
 	cfg, _ := genConfig(t, in, quotaCutoff{})
 	_, vrTag := exitOutboundTags(2)
-	raw, ok := outboundsByTag(t, cfg)[vrTag]
-	if !ok {
-		t.Fatalf("no %s outbound", vrTag)
+	var socks struct {
+		Protocol string `json:"protocol"`
+		Settings struct {
+			Servers []struct {
+				Address string `json:"address"`
+				Port    int    `json:"port"`
+			} `json:"servers"`
+		} `json:"settings"`
 	}
-	probeCfg, err := config.ExitRealityProbeConfig(config.VRProbeSocksPort(2), config.RealityProbe{ExitIP: ex.IPAddress,
-		UUID: ex.TunnelUUID, PublicKey: ex.TunnelPubKey, ShortID: ex.TunnelShortID, SNI: ex.TunnelSNI})
+	client, err := config.HubSTLSClientJSON(2, ex.IPAddress, ex.TunnelUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var probe struct {
-		Outbounds []vlessOutbound `json:"outbounds"`
+	var cl struct {
+		Inbounds []struct {
+			Listen string `json:"listen"`
+			Port   int    `json:"listen_port"`
+		} `json:"inbounds"`
 	}
-	var x vlessOutbound
-	if json.Unmarshal(probeCfg, &probe) != nil || json.Unmarshal(raw, &x) != nil || len(probe.Outbounds) != 1 {
-		t.Fatal("unparsable")
+	if json.Unmarshal(client, &cl) != nil || len(cl.Inbounds) != 1 {
+		t.Fatal("unparsable client config")
 	}
-	p := probe.Outbounds[0]
-	if len(p.Settings.Vnext) != 1 || len(x.Settings.Vnext) != 1 || len(p.Settings.Vnext[0].Users) != 1 || len(x.Settings.Vnext[0].Users) != 1 {
-		t.Fatalf("xray %+v\nprobe %+v", x, p)
-	}
-	xv, pv := x.Settings.Vnext[0], p.Settings.Vnext[0]
-	if xv.Port != config.ExitRealityPort || xv.Users[0].Flow != config.ExitRealityFlow || x.StreamSettings.Network != "tcp" ||
-		xv.Address != pv.Address || xv.Port != pv.Port || xv.Users[0] != pv.Users[0] ||
-		x.StreamSettings.Network != p.StreamSettings.Network || x.StreamSettings.Security != p.StreamSettings.Security ||
-		x.StreamSettings.RealitySettings != p.StreamSettings.RealitySettings {
-		t.Fatalf("xray %+v\nprobe %+v", x, p)
+	for _, tag := range []string{vrTag, exitProbeTag(2)} {
+		raw, ok := outboundsByTag(t, cfg)[tag]
+		if !ok {
+			t.Fatalf("no %s outbound", tag)
+		}
+		if json.Unmarshal(raw, &socks) != nil || socks.Protocol != "socks" || len(socks.Settings.Servers) != 1 ||
+			socks.Settings.Servers[0].Address != cl.Inbounds[0].Listen || socks.Settings.Servers[0].Port != cl.Inbounds[0].Port ||
+			socks.Settings.Servers[0].Port != config.HubSTLSSocksPort(2) {
+			t.Fatalf("%s: %s\nclient listens on %s:%d", tag, raw, cl.Inbounds[0].Listen, cl.Inbounds[0].Port)
+		}
 	}
 }
 
@@ -456,5 +491,30 @@ func TestUnreadableSSHCiphertexts(t *testing.T) {
 	}
 	if q := strings.Join(strings.Fields(storedCiphertextsQuery), " "); !strings.Contains(q, "COALESCE(octet_length(ssh_password_enc), 0) > 0") {
 		t.Errorf("query: %s", q)
+	}
+}
+
+// B7: an artifact whose sha256 file disagrees is refused; one without the file is accepted.
+func TestArtifactChecksum(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "node-agent")
+	if err := os.WriteFile(p, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err != nil {
+		t.Fatalf("no checksum file: %v", err)
+	}
+	// sha256("binary")
+	if err := os.WriteFile(p+".sha256", []byte("9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err != nil {
+		t.Fatalf("matching checksum: %v", err)
+	}
+	if err := os.WriteFile(p, []byte("binar"), 0o600); err != nil { // cut off
+		t.Fatal(err)
+	}
+	if _, err := readHubFile(p); err == nil || !strings.Contains(err.Error(), "повреждён") {
+		t.Fatalf("cut-off file: %v", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,12 +23,14 @@ import (
 // never reaches YooKassa; payments.write alone is not enough.
 func TestPaymentMoneyActionsRequireRefundPermission(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-jwt-secret")
-	oldActive, oldPA := adminIsActive, PaymentActionHandler
-	t.Cleanup(func() { adminIsActive, PaymentActionHandler = oldActive, oldPA })
-	adminIsActive = func(int) (bool, error) { return true, nil }
+	oldLive, oldPA := adminLiveAccess, PaymentActionHandler
+	t.Cleanup(func() { adminLiveAccess, PaymentActionHandler = oldLive, oldPA })
+	var livePerms []string // what the DB says this admin may do right now
+	adminLiveAccess = func(int) (adminLive, error) { return adminLive{Active: true, Permissions: livePerms}, nil }
 	called := 0
 	PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) { called++; w.WriteHeader(http.StatusOK) }
 	token := func(perms ...string) string {
+		livePerms = perms
 		tok, err := GenerateToken(AdminUser{ID: 7, Username: "operator", Permissions: perms})
 		if err != nil {
 			t.Fatal(err)
@@ -161,5 +164,46 @@ func TestListPaymentsRefundableAmount(t *testing.T) {
 		if !strings.Contains(d.listQuery, want) {
 			t.Errorf("list query lacks %q:\n%s", want, d.listQuery)
 		}
+	}
+}
+
+// A permission revoked after login stops working on the next request, although the 24-hour token still lists it.
+func TestRevokedPermissionStopsAtOnce(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-jwt-secret")
+	oldLive, oldPA := adminLiveAccess, PaymentActionHandler
+	t.Cleanup(func() { adminLiveAccess, PaymentActionHandler = oldLive, oldPA })
+	adminLiveAccess = func(int) (adminLive, error) {
+		return adminLive{Active: true, Permissions: []string{"payments.read"}}, nil
+	}
+	PaymentActionHandler = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+	tok, err := GenerateToken(AdminUser{ID: 7, Username: "operator", Permissions: []string{"payments.refund"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/payments/12/cancel", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	paymentsItemRouter(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("revoked payments.refund: status %d, want 403", rec.Code)
+	}
+}
+
+// A DB error while reading the admin's live access is a 503, not a 401: the admin UI logs out on 401.
+func TestLiveAccessDBErrorIsNotLogout(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-jwt-secret")
+	oldLive := adminLiveAccess
+	t.Cleanup(func() { adminLiveAccess = oldLive })
+	adminLiveAccess = func(int) (adminLive, error) { return adminLive{}, errors.New("pool exhausted") }
+	tok, err := GenerateToken(AdminUser{ID: 7, Username: "operator", Permissions: []string{"*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/anything", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	AuthMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("DB error: status %d, want 503", rec.Code)
 	}
 }

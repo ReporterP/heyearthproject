@@ -371,6 +371,10 @@ func reserveRefund(ctx context.Context, paymentID int, requestedKop int64, reaso
 	if refusal != nil {
 		return refundAttempt{}, refusal
 	}
+	var kind, userText string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(metadata->>'kind', ''), COALESCE(user_id_text, '') FROM payments WHERE id = $1`, paymentID).Scan(&kind, &userText); err != nil {
+		return refundAttempt{}, fmt.Errorf("payment kind: %w", err)
+	}
 	a := refundAttempt{PaymentID: paymentID, YookassaID: st.YookassaID}
 	if resume != nil {
 		// Same key and same body as the first call, or YooKassa would not deduplicate it.
@@ -384,11 +388,189 @@ func reserveRefund(ctx context.Context, paymentID int, requestedKop int64, reaso
 		if _, err := tx.ExecContext(ctx, refundSetKeySQL, a.RowID, a.Key); err != nil {
 			return refundAttempt{}, fmt.Errorf("store idempotence key: %w", err)
 		}
+		if kind == biz.PaymentKindWalletTopup {
+			// The money of a top-up sits on the wallet: hold the refund amount there first.
+			// No more than what is left on the wallet can go back to the card.
+			if err := holdWalletRefundTx(ctx, tx, userText, paymentID, a.RowID, amountKop); err != nil {
+				return refundAttempt{}, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return refundAttempt{}, fmt.Errorf("commit reservation: %w", err)
 	}
+	if kind == biz.PaymentKindWalletTopup && !a.Resumed {
+		alertRefundedReferral(paymentID)
+	}
 	return a, nil
+}
+
+// alertRefundedReferral tells the owner when a refunded top-up paid the purchase that
+// earned a «Приведи друга» reward: the bonuses stay on the wallets until the owner decides.
+func alertRefundedReferral(paymentID int) {
+	var rewardID int64
+	var refKop, friendKop int64
+	if err := db.DB.QueryRow(`
+		SELECT rr.id, rr.referrer_kop, rr.friend_kop FROM referral_rewards rr
+		JOIN wallet_receipts wr ON wr.wallet_tx_id = rr.trigger_wallet_tx
+		WHERE wr.payment_id = $1 AND rr.status = 'paid' LIMIT 1`, paymentID).Scan(&rewardID, &refKop, &friendKop); err != nil {
+		return
+	}
+	RaiseAlert(fmt.Sprintf("referral-refunded-%d", rewardID), AlertWarn, "Возврат платежа, за который выплачен бонус за друга",
+		fmt.Sprintf("Платёж #%d возвращён, а покупка на эти деньги дала бонус «Приведи друга» #%d (%s + %s ₽). Бонусы остались на кошельках — при необходимости спишите их в карточке пользователя.",
+			paymentID, rewardID, rubles(refKop), rubles(friendKop)))
+}
+
+// holdWalletRefundTx debits the top-up's refund amount from the user's wallet (key
+// refund-hold:<reservation id>). releaseFailedWalletRefunds gives it back if YooKassa
+// refuses or cancels the refund.
+func holdWalletRefundTx(ctx context.Context, tx *sql.Tx, userText string, paymentID int, rowID int64, amountKop int64) error {
+	var userDBID int
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userText).Scan(&userDBID); err != nil {
+		return refundRefusal(http.StatusBadRequest, "Пользователь пополнения не найден — вернуть деньги на кошелёк нельзя")
+	}
+	_, err := biz.WalletApply(ctx, tx, userDBID, -amountKop, biz.WalletRefund, fmt.Sprintf("refund-hold:%d", rowID),
+		biz.WalletRefs{PaymentID: paymentID, Comment: fmt.Sprintf("возврат платежа #%d", paymentID)})
+	if errors.Is(err, biz.ErrInsufficientFunds) {
+		bal, _ := biz.WalletBalance(ctx, userDBID)
+		return refundRefusal(http.StatusBadRequest, "На кошельке клиента осталось %s ₽ — вернуть можно не больше (остальное уже потрачено на услуги)", rubles(bal))
+	}
+	if err != nil {
+		return fmt.Errorf("hold refund on the wallet: %w", err)
+	}
+	return nil
+}
+
+// holdExternalWalletRefundsSQL: refunds of wallet top-ups that YooKassa reported but no
+// admin reservation made (a refund from the YooKassa account): settled ones older than
+// 15 min (an admin reservation still matching its webhook row is done by then) without a
+// wallet hold yet.
+const holdExternalWalletRefundsSQL = `
+	SELECT r.id, r.payment_id, ROUND(r.amount * 100)::bigint, COALESCE(p.user_id_text, '')
+	FROM payment_refunds r JOIN payments p ON p.id = r.payment_id
+	WHERE p.metadata->>'kind' = 'wallet_topup'
+	  AND r.idempotence_key IS NULL AND r.status = 'succeeded'
+	  AND r.created_at < NOW() - INTERVAL '15 minutes'
+	  AND NOT EXISTS (SELECT 1 FROM wallet_transactions x WHERE x.idempotency_key = 'refund-hold:' || r.id)
+	ORDER BY r.id LIMIT 100`
+
+// holdExternalWalletRefunds takes a top-up refunded from the YooKassa account off the
+// wallet: the money went back to the card, so it must not stay spendable. What the client
+// already spent cannot be taken: the hold is capped by the balance and the owner is told.
+func holdExternalWalletRefunds() {
+	rows, err := db.DB.Query(holdExternalWalletRefundsSQL)
+	if err != nil {
+		log.Printf("[wallet-refund] external select: %v", err)
+		return
+	}
+	type ext struct {
+		rowID     int64
+		paymentID int
+		kop       int64
+		user      string
+	}
+	var list []ext
+	for rows.Next() {
+		var x ext
+		if err := rows.Scan(&x.rowID, &x.paymentID, &x.kop, &x.user); err == nil {
+			list = append(list, x)
+		}
+	}
+	rows.Close()
+	for _, x := range list {
+		ctx, cancel := context.WithTimeout(context.Background(), refundDBTimeout)
+		err := func() error {
+			tx, err := db.DB.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback() //nolint:errcheck
+			var userDBID int
+			var balance int64
+			if err := tx.QueryRowContext(ctx, `SELECT u.id, COALESCE(w.balance_kop, 0) FROM users u LEFT JOIN user_wallets w ON w.user_id = u.id WHERE u.user_id = $1`, x.user).
+				Scan(&userDBID, &balance); err != nil {
+				return fmt.Errorf("user %q: %w", x.user, err)
+			}
+			hold := x.kop
+			if hold > balance {
+				hold = balance
+			}
+			if hold > 0 {
+				if _, err := biz.WalletApply(ctx, tx, userDBID, -hold, biz.WalletRefund, fmt.Sprintf("refund-hold:%d", x.rowID),
+					biz.WalletRefs{PaymentID: x.paymentID, Comment: fmt.Sprintf("возврат платежа #%d через ЮKassa", x.paymentID)}); err != nil {
+					return err
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			alertRefundedReferral(x.paymentID)
+			if hold < x.kop {
+				RaiseAlert(fmt.Sprintf("wallet-external-refund-%d", x.rowID), AlertWarn, "Возврат пополнения больше остатка кошелька",
+					fmt.Sprintf("Платёж #%d вернули через ЮKassa на %s ₽, а на кошельке клиента было %s ₽ — остальное уже потрачено на услуги. Списано с кошелька %s ₽.",
+						x.paymentID, rubles(x.kop), rubles(balance), rubles(hold)))
+			}
+			return nil
+		}()
+		cancel()
+		if err != nil {
+			log.Printf("[wallet-refund] external refund %d: %v", x.rowID, err)
+		}
+	}
+}
+
+// releaseFailedWalletRefundsSQL: wallet holds whose refund YooKassa refused or canceled
+// and that were not given back yet.
+const releaseFailedWalletRefundsSQL = `
+	SELECT r.id, wt.user_id, -wt.amount_kop, COALESCE(wt.payment_id, 0)
+	FROM payment_refunds r
+	JOIN wallet_transactions wt ON wt.idempotency_key = 'refund-hold:' || r.id
+	WHERE r.status IN ('failed', 'canceled')
+	  AND NOT EXISTS (SELECT 1 FROM wallet_transactions x WHERE x.idempotency_key = 'refund-release:' || r.id)
+	ORDER BY r.id LIMIT 100`
+
+// releaseFailedWalletRefunds puts the held amount of a refused or canceled top-up refund
+// back on the wallet. Idempotent (key refund-release:<reservation id>); run after an
+// admin refund and by the payment sync.
+func releaseFailedWalletRefunds() {
+	rows, err := db.DB.Query(releaseFailedWalletRefundsSQL)
+	if err != nil {
+		log.Printf("[wallet-refund] select: %v", err)
+		return
+	}
+	type rel struct {
+		rowID     int64
+		userDBID  int
+		kop       int64
+		paymentID int
+	}
+	var list []rel
+	for rows.Next() {
+		var x rel
+		if err := rows.Scan(&x.rowID, &x.userDBID, &x.kop, &x.paymentID); err == nil {
+			list = append(list, x)
+		}
+	}
+	rows.Close()
+	for _, x := range list {
+		ctx, cancel := context.WithTimeout(context.Background(), refundDBTimeout)
+		tx, err := db.DB.BeginTx(ctx, nil)
+		if err == nil {
+			_, err = biz.WalletApply(ctx, tx, x.userDBID, x.kop, biz.WalletRefund, fmt.Sprintf("refund-release:%d", x.rowID),
+				biz.WalletRefs{PaymentID: x.paymentID, Comment: fmt.Sprintf("возврат платежа #%d не прошёл — деньги снова на кошельке", x.paymentID)})
+			if err == nil {
+				err = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+		}
+		cancel()
+		if err != nil {
+			log.Printf("[wallet-refund] release of refund %d: %v", x.rowID, err)
+		} else {
+			log.Printf("[wallet-refund] refund %d refused: %s ₽ back on the wallet", x.rowID, rubles(x.kop))
+		}
+	}
 }
 
 // ─── YooKassa call ───────────────────────────────────────────────────────
@@ -450,6 +632,7 @@ func executeRefund(ctx context.Context, a refundAttempt, client refundAPI) (*yoo
 			return nil, fmt.Errorf("mark refund %d failed: %w", a.RowID, err)
 		}
 		log.Printf("[admin-refund] YooKassa rejected %s (%s RUB): %v", a.Key, ykAmount(a.AmountKop), callErr)
+		releaseFailedWalletRefunds() // a held top-up refund goes back on the wallet
 		return nil, refundRefusal(http.StatusBadGateway, "ЮKassa отклонила возврат: %v", callErr)
 	default:
 		log.Printf("[admin-refund] %s unanswered, %s RUB stays reserved: %v", a.Key, ykAmount(a.AmountKop), callErr)

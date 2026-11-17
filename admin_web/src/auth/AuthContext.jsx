@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
-import { setLogoutCallback } from '../api/client.js'
+import { setLogoutCallback, apiFetch } from '../api/client.js'
 
 const AuthContext = createContext()
 
@@ -41,12 +41,8 @@ export function AuthProvider({ children }) {
   // Validate token on mount — auto-logout if expired/revoked
   useEffect(() => {
     if (!token) return
-    const API_BASE = ''
-    fetch(`${API_BASE}/api/admin/overview`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    }).then(res => {
-      if (res.status === 401) logoutAction()
-    }).catch(() => { /* network error — keep session, will fail on next API call */ })
+    // apiFetch logs out on 401 by itself; 403 (no dashboard.read) or a network error keep the session.
+    apiFetch('/overview').catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

@@ -37,7 +37,9 @@ test('paths', () => {
 })
 test('the wizard never skips an unfinished step', () => {
   assert.equal(wizardCanAdvance(0, { role: 'exit', country: 'DE' }), true)
-  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'RU' }), false)
+  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'RU' }), true)
+  assert.equal(wizardCanAdvance(0, { role: 'relay', country: 'DE' }), false)
+  assert.equal(wizardCanAdvance(3, { role: 'relay' }), true, 'the phone check is advisory')
   const fp = 'SHA256:' + 'A'.repeat(43)
   assert.equal(wizardCanAdvance(1, { serverId: 3, fingerprint: fp, fingerprintConfirmed: false }), false)
   assert.equal(wizardCanAdvance(1, { serverId: 3, fingerprint: fp, fingerprintConfirmed: true }), true)
@@ -150,7 +152,7 @@ test('a verify job is worded apart from the monitor’s «Проверяется
   assert.notEqual(job.replace(/…$/, ''), monitor)
 })
 test('nodeHref opens the card on the tab of the node’s role', () => {
-  assert.equal(nodeHref(2), '/nodes?role=exit&node=2')
-  assert.equal(nodeHref(7, 'relay'), '/nodes?role=relay&node=7')
-  assert.equal(nodeHref(3, 'weird'), '/nodes?role=exit&node=3')
+  assert.equal(nodeHref(2), '/servers?tab=exit&node=2')
+  assert.equal(nodeHref(7, 'relay'), '/servers?tab=relay&node=7')
+  assert.equal(nodeHref(3, 'weird'), '/servers?tab=exit&node=3')
 })

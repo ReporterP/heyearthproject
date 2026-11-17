@@ -1,21 +1,44 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { UNAUTHORIZED_EVENT } from '../api/http.js'
 
 const AuthContext = createContext()
+
+export const SESSION_EXPIRED_KEY = 'he_session_expired'
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('token') || '')
 
   const login = useCallback((newToken) => {
+    // a registration left on its «ID выдан» step is over once someone signs in (RegisterPage)
+    try { sessionStorage.removeItem('he_pending_registration') } catch { /* storage off */ }
     localStorage.setItem('token', newToken)
     setToken(newToken)
   }, [])
 
+  // logout forgets the token here and closes its session on the server (the app and other
+  // devices keep theirs). Fire-and-forget: leaving must work offline too.
   const logout = useCallback(() => {
+    const old = localStorage.getItem('token')
+    if (old) {
+      fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${old}` }, keepalive: true }).catch(() => {})
+    }
     localStorage.removeItem('token')
     setToken('')
   }, [])
 
-  // Validate token on mount
+  // Any API call that got 401 (apiFetch) signs the site out; RequireAuth then sends
+  // the client to /login?redirect=<where they were>. A 503 (database hiccup) does not.
+  useEffect(() => {
+    // remember why the person lands on /login: the login page says «Сессия закончилась» (03 §6)
+    const onUnauthorized = () => {
+      try { sessionStorage.setItem(SESSION_EXPIRED_KEY, '1') } catch { /* storage off */ }
+      logout()
+    }
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [logout])
+
+  // Validate the stored token on mount: only a 401 signs out.
   useEffect(() => {
     if (!token) return
     fetch('/api/v1/user/profile', {

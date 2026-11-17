@@ -295,3 +295,100 @@ func TestMTProxyJob(t *testing.T) {
 		t.Fatalf("failed install job: %v %s %v %q", got, store.jobs[id].Status, h.mtproto, store.jobs[id].Error)
 	}
 }
+
+// An mtg that runs and listens with the right secret and version but has stopped accepting (its
+// accept queue fills up: 13-14.11.2026) fails the verify; the job reinstalls it, which restarts
+// it, and then it passes.
+func TestMTProxyVerifyDeafMtg(t *testing.T) {
+	ctx := context.Background()
+	o := testMTOptions()
+	host := newFakeHost()
+	host.active["mtproxy"], host.enabled["mtproxy"], host.mtSecret, host.mtQueue = true, true, testMTSecret, 4097
+	st := NewState(KindMTProxy, Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy"}, host, (&fakeHooks{}).Hooks())
+	err := mtproxyVerify(o)(ctx, host, st)
+	if err == nil || !strings.Contains(err.Error(), "не принимает подключения (в очереди 4097)") {
+		t.Fatalf("deaf mtg passed the verify: %v", err)
+	}
+	host.mtQueue = 0
+	if err := mtproxyVerify(o)(ctx, host, st); err != nil {
+		t.Fatalf("live mtg: %v", err)
+	}
+
+	host.mtQueue = 4097
+	online := Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy", HostKeyConfirmed: true}
+	h := &fakeHooks{lifecycle: "online"}
+	store := newMemStore(online, h)
+	r := &Runner{Store: store, Go: func(f func()) { f() }, Dial: func(Node) (Remote, error) { return host, nil },
+		Recipe: func(_ context.Context, n Node, kind string) (Recipe, *State, error) {
+			st := NewState(kind, n, newFakeHost(), h.Hooks())
+			st.Exit.MTProto = &o
+			rc, err := RecipeFor(kind, n, st)
+			return rc, st, err
+		}}
+	id, err := r.Start(ctx, 7, KindMTProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.statuses(id); !slices.Equal(got, []string{"mtproxy=done"}) || store.jobs[id].Status != JobSucceeded || host.mtQueue != 0 {
+		t.Fatalf("reinstall of a deaf mtg: %v %s queue=%d", got, store.jobs[id].Status, host.mtQueue)
+	}
+}
+
+// The exit's domain is recorded by the install step, right before the install — never by a
+// verify job, and never when the options do not validate.
+func TestMTProxyStepRecordsDomainBeforeInstall(t *testing.T) {
+	ctx := context.Background()
+	var log []string
+	o := testMTOptions()
+	o.Record = func(context.Context) error { log = append(log, "record "+o.Domain); return nil }
+	run := func(status, kind string, host *fakeHost, o MTProtoOptions) {
+		h := &fakeHooks{lifecycle: "provisioning"}
+		store := newMemStore(Node{ID: 7, Role: "exit", MTProtoStatus: status}, h)
+		if _, err := mtproxyRunner(store, h, host, o).Start(ctx, 7, kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := newFakeHost()
+	run("unknown", KindProvision, host, o)
+	if !slices.Equal(log, []string{"record " + o.Domain}) || host.count("mtproxy-install") != 1 {
+		t.Fatalf("install: %v %v", log, host.ops)
+	}
+	log = nil
+	run("healthy", KindVerify, host, o)
+	if len(log) != 0 {
+		t.Fatalf("a verify job recorded: %v", log)
+	}
+	bad := o
+	bad.Domain = "bad_name.example.com"
+	run("unknown", KindProvision, newFakeHost(), bad)
+	if len(log) != 0 {
+		t.Fatalf("an invalid domain was recorded: %v", log)
+	}
+	failing := o
+	failing.Record = func(context.Context) error { return errors.New("db down") }
+	fh := newFakeHost()
+	run("unknown", KindProvision, fh, failing)
+	if fh.count("mtproxy-install") != 0 {
+		t.Fatal("installed although the domain was not recorded")
+	}
+}
+
+// An mtg whose config does not front to the host install-mtproxy.sh pins (installed before
+// MTG_FRONTING_HOST, or edited by hand) fails the verify; the job reinstalls it.
+func TestMTProxyVerifyFrontingHost(t *testing.T) {
+	ctx := context.Background()
+	o := testMTOptions()
+	o.Script = []byte("#!/usr/bin/env bash\nMTG_VERSION=\"2.2.8\"\nMTG_FRONTING_HOST=\"www.twitch.tv\"\n")
+	host := newFakeHost()
+	host.active["mtproxy"], host.enabled["mtproxy"], host.mtSecret = true, true, testMTSecret
+	st := NewState(KindMTProxy, Node{ID: 7, Role: "exit", Lifecycle: "online", MTProtoStatus: "healthy"}, host, (&fakeHooks{}).Hooks())
+	if err := mtproxyVerify(o)(ctx, host, st); err == nil || !strings.Contains(err.Error(), `маскируется под "", а install-mtproxy.sh задаёт www.twitch.tv`) {
+		t.Fatalf("no fronting host passed the verify: %v", err)
+	}
+	if _, err := InstallMTProxy(ctx, host, o); err != nil {
+		t.Fatal(err)
+	}
+	if err := mtproxyVerify(o)(ctx, host, st); err != nil || host.mtFront != "www.twitch.tv" {
+		t.Fatalf("after reinstall: %v (front %q)", err, host.mtFront)
+	}
+}

@@ -49,7 +49,6 @@ func emailsOf(t *testing.T, in map[string]any) []string {
 // other inbound accepts PROXY, and no setting decides any of it.
 func TestBuildXrayConfigRealityPPMirror(t *testing.T) {
 	in := baseInputs()
-	in.settings.cdnEnabled, in.settings.cdnHost, in.settings.cdnXHPath = true, defaultCDNHost, defaultCDNXHPath
 	cfg, _ := genConfig(t, in, quotaCutoff{true, userSet("bob")})
 	ib := inboundsByTag(t, cfg)
 	r, pp := ib[xrayRealityTag], ib[xrayRealityPPTag]

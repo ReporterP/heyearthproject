@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -47,9 +46,18 @@ func StartPaymentSyncCron() {
 		// Первый прогон через минуту после старта
 		time.Sleep(1 * time.Minute)
 		for {
-			syncPendingPayments()
-			reconcilePendingRefunds()
-			syncUnappliedPaymentAlerts()
+			safely("payment-sync", syncPendingPayments)
+			safely("payment-never-created", closeNeverCreatedPayments)
+			safely("wallet-receipts", func() {
+				if walletReceiptsMu.TryLock() {
+					defer walletReceiptsMu.Unlock()
+					sendPendingWalletReceipts()
+				}
+			})
+			safely("refund-reconcile", reconcilePendingRefunds)
+			safely("wallet-refund-release", releaseFailedWalletRefunds)
+			safely("wallet-refund-external", holdExternalWalletRefunds)
+			safely("payment-alerts", syncUnappliedPaymentAlerts)
 			time.Sleep(paymentSyncInterval)
 		}
 	}()
@@ -76,6 +84,19 @@ const (
 		       cancellation_reason = 'auto-canceled: stale payment not found in YooKassa',
 		       updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND status IN ('pending', 'waiting_for_capture') AND paid_at IS NULL`
+	// paymentNeverCreatedSQL closes our payments that never got a YooKassa id within a
+	// day: the call to YooKassa failed, so there is nothing to pay or to check. A payment
+	// created in YooKassa whose answer was lost is linked by its webhook (metadata
+	// payment_db_id) long before that, so it is not touched.
+	paymentNeverCreatedSQL = `
+		UPDATE payments SET status = 'canceled', yookassa_status = 'canceled',
+		       cancellation_reason = 'not created in YooKassa',
+		       updated_at = CURRENT_TIMESTAMP
+		WHERE provider = 'yookassa'
+		  AND COALESCE(yookassa_payment_id, '') = ''
+		  AND status IN ('pending', 'waiting_for_capture')
+		  AND paid_at IS NULL
+		  AND created_at < NOW() - INTERVAL '24 hours'`
 	// paymentUnappliedSQL: paid payments still marked "paid but not applied". No LIMIT: the
 	// set is what waits for a person, and an open alert missing from it gets resolved.
 	paymentUnappliedSQL = `
@@ -173,6 +194,19 @@ func syncPendingPayments() {
 	}
 }
 
+// closeNeverCreatedPayments cancels payments YooKassa never received (see
+// paymentNeverCreatedSQL).
+func closeNeverCreatedPayments() {
+	res, err := db.DB.Exec(paymentNeverCreatedSQL)
+	if err != nil {
+		log.Printf("[payment-sync] close never-created payments: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[payment-sync] closed %d payment(s) never created in YooKassa (older than 24 h)", n)
+	}
+}
+
 // syncUnappliedPaymentAlerts keeps payment-unapplied-<id> in line with the payments'
 // "paid but not applied" mark (see paymentUnapplied), every payment sync run:
 //   - a paid payment that still carries the mark raises its alert again: a raise Telegram
@@ -218,29 +252,4 @@ func syncUnappliedPaymentAlerts() {
 				strings.TrimPrefix(key, unappliedAlertPrefix)))
 		}
 	}
-}
-
-// SyncSinglePayment — ручная синхронизация одного платежа (для админского endpoint).
-// Возвращает актуальный payment и ошибку.
-func SyncSinglePayment(paymentID int) (*yookassa.Payment, error) {
-	var yookassaID string
-	err := db.DB.QueryRow(`SELECT COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1`, paymentID).Scan(&yookassaID)
-	if err == sql.ErrNoRows {
-		return nil, err
-	}
-	if yookassaID == "" {
-		return nil, sql.ErrNoRows
-	}
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		return nil, err
-	}
-	payment, err := client.GetPayment(yookassaID)
-	if err != nil {
-		return nil, err
-	}
-	if err := processPaymentEvent(payment); err != nil {
-		log.Printf("[payment-sync] process single payment %d: %v", paymentID, err)
-	}
-	return payment, nil
 }

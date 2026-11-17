@@ -25,9 +25,7 @@ import (
 // subscription_handler.go) of the Hub's VLESS inbounds — the inbounds with
 // clients: vless-reality (Берёза: sni, pbk, sid, type=tcp, flow; its PROXY-protocol mirror
 // vless-reality-pp is server-internal and skipped), vless-xhttp
-// (Дуб: port, sni, pbk, sid, type=xhttp, path, host, mode) and, while
-// cdn_enabled, vless-xhttp-cdn (Облако: path, host, mode; it appears and
-// disappears with the flag). So the digest covers, per such inbound: tag,
+// (Дуб: port, sni, pbk, sid, type=xhttp, path, host, mode). So the digest covers, per such inbound: tag,
 // protocol, port, decryption, the set of client flows, network, security,
 // realitySettings.serverNames/shortIds/privateKey (pbk is derived from it) and
 // xhttpSettings.path/host/mode. Server-side tuning (sockopt, sniffing, padding,
@@ -52,7 +50,7 @@ func xrayClientFacing(configJSON []byte) (string, error) {
 		settings, _ := in["settings"].(map[string]any)
 		rawClients, ok := settings["clients"]
 		if !ok {
-			continue // not a per-user VLESS inbound (api-in, socks-awg)
+			continue // not a per-user VLESS inbound (api-in, socks-local)
 		}
 		tag, _ := in["tag"].(string)
 		if tag == xrayRealityPPTag {

@@ -1,20 +1,22 @@
 import { useState, useEffect } from 'react'
-import { Trash2, Smartphone } from 'lucide-react'
+import { Trash2, Ban, CircleCheck } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from './Toast.jsx'
-import { updateUser, deleteUser, fetchUserDevices } from '../api/admin.js'
+import { updateUser, deleteUser } from '../api/admin.js'
 import { Drawer } from './ui/Drawer.jsx'
-import { Button, Badge, Dialog } from './ui/index.js'
-import ConfirmDialog from './ConfirmDialog.jsx'
+import { Button, Badge, Dialog, ConfirmDanger } from './ui/index.js'
+import { hasPlan } from '../utils/users.js'
 import ProfileTab from './user-drawer/ProfileTab.jsx'
 import SubscriptionsTab from './user-drawer/SubscriptionsTab.jsx'
 import TrafficPaymentsTab from './user-drawer/TrafficPaymentsTab.jsx'
+import WalletTab from './user-drawer/WalletTab.jsx'
 
 const TABS = [
   { id: 'profile',       key: 'drawerTabProfile' },
   { id: 'subscriptions', key: 'drawerTabSubs' },
   { id: 'traffic',       key: 'drawerTabTraffic' },
+  { id: 'wallet',        key: 'drawerTabWallet' },
 ]
 
 export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUserMutated }) {
@@ -23,9 +25,8 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
   const toast = useToast()
 
   const [activeTab, setActiveTab] = useState(defaultTab)
-  const [devicesOpen, setDevicesOpen] = useState(false)
-  const [devicesItems, setDevicesItems] = useState([])
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmBlock, setConfirmBlock] = useState(false)
   const [busy, setBusy] = useState(false)
 
   // Sync activeTab when defaultTab changes (e.g. URL state ?tab=subscriptions)
@@ -33,22 +34,12 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
 
   if (!user) return null
 
-  async function openDevices() {
-    try {
-      const devs = await fetchUserDevices(user.id)
-      const items = Array.isArray(devs) ? devs : (Array.isArray(devs?.devices) ? devs.devices : [])
-      setDevicesItems(items)
-      setDevicesOpen(true)
-    } catch (err) {
-      toast.error(err.message)
-    }
-  }
-
   async function toggleBlock() {
     setBusy(true)
     try {
       await updateUser(user.id, { is_blocked: !user.is_blocked })
-      toast.success(!user.is_blocked ? (t.quickBlock + ' OK') : (t.quickUnblock + ' OK'))
+      toast.success(user.is_blocked ? 'Пользователь разблокирован' : 'Пользователь заблокирован — подключения закроются в течение минуты')
+      setConfirmBlock(false)
       onUserMutated?.()
     } catch (err) {
       toast.error(err.message)
@@ -57,40 +48,24 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
     }
   }
 
+  // Behind ConfirmDanger: a refusal (the user paid — the API keeps money on record) stays in the dialog.
   async function handleDelete() {
-    setBusy(true)
-    try {
-      await deleteUser(user.id)
-      toast.success(t.delete + ' OK')
-      setConfirmDelete(false)
-      onUserMutated?.()
-      onClose?.()
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setBusy(false)
-    }
+    await deleteUser(user.id)
+    toast.success('Пользователь удалён')
+    onUserMutated?.()
+    onClose?.()
   }
 
   const headerActions = (
     <div className="flex items-center gap-2 flex-wrap">
-      <Button size="sm" variant="ghost" onClick={openDevices} icon={<Smartphone className="w-3.5 h-3.5" />}>
-        Devices
-      </Button>
-      {can('users.write') && (
-        <button
-          onClick={toggleBlock}
-          disabled={busy}
-          title={user.is_blocked ? t.quickUnblock : t.quickBlock}
-          aria-label={user.is_blocked ? t.quickUnblock : t.quickBlock}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${user.is_blocked ? 'bg-danger/30' : 'bg-success/30'}`}
-        >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full transition-transform ${user.is_blocked ? 'translate-x-1 bg-danger' : 'translate-x-[18px] bg-success'}`} />
-        </button>
-      )}
+      {can('users.write') && (user.is_blocked ? (
+        <Button size="sm" variant="secondary" loading={busy} onClick={toggleBlock} icon={<CircleCheck className="w-3.5 h-3.5" />}>Разблокировать</Button>
+      ) : (
+        <Button size="sm" variant="secondary" className="text-danger" onClick={() => setConfirmBlock(true)} icon={<Ban className="w-3.5 h-3.5" />}>Заблокировать</Button>
+      ))}
       {can('users.write') && (
         <Button size="sm" variant="ghost" className="text-danger" onClick={() => setConfirmDelete(true)} icon={<Trash2 className="w-3.5 h-3.5" />}>
-          {t.delete}
+          Удалить
         </Button>
       )}
     </div>
@@ -100,8 +75,8 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
     <span className="flex items-center gap-2 text-xs">
       <span className="font-mono text-tertiary">{user.user_id}</span>
       <span className="text-tertiary">·</span>
-      <Badge variant={user.is_blocked ? 'danger' : (user.plan ? 'accent' : 'default')}>
-        {user.is_blocked ? 'blocked' : (user.plan || 'no plan')}
+      <Badge variant={user.is_blocked ? 'danger' : (hasPlan(user) ? 'accent' : 'default')}>
+        {user.is_blocked ? 'заблокирован' : (hasPlan(user) ? user.current_plan : 'без подписки')}
       </Badge>
     </span>
   )
@@ -141,41 +116,31 @@ export default function UserDrawer({ user, defaultTab = 'profile', onClose, onUs
           {activeTab === 'profile'       && <ProfileTab user={user} onSaved={onUserMutated} />}
           {activeTab === 'subscriptions' && <SubscriptionsTab user={user} onChanged={onUserMutated} />}
           {activeTab === 'traffic'       && <TrafficPaymentsTab user={user} />}
+          {activeTab === 'wallet'        && <WalletTab user={user} />}
         </div>
       </Drawer>
 
-      {/* Devices modal — reuses existing Dialog primitive, not nested in Drawer */}
-      <Dialog
-        open={devicesOpen}
-        onClose={() => setDevicesOpen(false)}
-        title={t.registeredDevicesLabel(devicesItems.length)}
-        maxWidth="max-w-md"
-      >
-        {devicesItems.length === 0 ? (
-          <p className="text-secondary text-sm">{t.usersNoDevices || 'No devices'}</p>
-        ) : (
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {devicesItems.map((d, i) => (
-              <div key={i} className="text-sm bg-elevated rounded p-3 border border-default">
-                <p className="font-mono text-xs text-tertiary">{d.device_id}</p>
-                <p className="text-primary">{d.platform} {d.app_version}</p>
-                {d.last_seen && <p className="text-xs text-tertiary">{t.deviceLastSeen}: {new Date(d.last_seen).toLocaleString()}</p>}
-              </div>
-            ))}
+      <Dialog open={confirmBlock} onClose={() => setConfirmBlock(false)} title="Заблокировать пользователя" maxWidth="max-w-md">
+        <div className="space-y-3 text-sm">
+          <ul className="list-disc pl-5 space-y-1 text-secondary">
+            <li>Все подключения пользователя перестанут работать в течение минуты, новые не пройдут.</li>
+            <li>Подписка, кошелёк и история платежей сохраняются; срок подписки идёт дальше.</li>
+            <li>Разблокировать можно в любой момент этой же кнопкой.</li>
+          </ul>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmBlock(false)}>Отмена</Button>
+            <Button variant="danger" loading={busy} onClick={toggleBlock}>Заблокировать</Button>
           </div>
-        )}
-        <div className="flex justify-end mt-4">
-          <Button variant="ghost" onClick={() => setDevicesOpen(false)}>{t.close}</Button>
         </div>
       </Dialog>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        message={t.deleteUserConfirm(user.user_id || user.id)}
-        onConfirm={handleDelete}
-        onCancel={() => setConfirmDelete(false)}
-        loading={busy}
-      />
+      <ConfirmDanger open={confirmDelete} onClose={() => setConfirmDelete(false)} title="Удалить пользователя"
+        confirmText={user.user_id} actionLabel="Удалить"
+        consequences={[
+          'Запись пользователя, его подписки, устройства и сессии удаляются безвозвратно.',
+          'Если пользователь хоть раз платил или пополнял кошелёк, удалить нельзя (учёт и чеки) — заблокируйте его.',
+        ]}
+        onConfirm={handleDelete} />
     </>
   )
 }

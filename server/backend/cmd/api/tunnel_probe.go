@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 )
 
 // exitProbeTarget is one URL fetched THROUGH an exit tunnel. A 204 proves the whole
@@ -237,7 +238,7 @@ var exitPathProber = probeExitPathsLive
 
 // probeExitPathsLive fetches generate_204 through each path of the exit, both at once: Hysteria
 // through hysteria2-client-N's SOCKS (127.0.0.1:1088+N), TCP through xray's loopback probe inbound
-// probe-vr-N (127.0.0.1:12000+N → VLESS Reality to the exit's :10443). At most
+// probe-vr-N (127.0.0.1:12000+N → the Hub's ShadowTLS client → the exit's :443). At most
 // len(exitProbeTargets) × exitProbeTimeout (10 s) per exit.
 func probeExitPathsLive(node biz.ExitNodeTunnel) exitPathProbe {
 	var p exitPathProbe
@@ -345,7 +346,7 @@ func (h *exitHealth) tick(dbStatus string, p exitPathProbe) exitVerdict {
 		}
 	}
 	if !p.hy.present && !p.vr.present {
-		errs = append(errs, "у exit нет рабочего пути: нужен протокол hysteria2 или учётка VLESS Reality")
+		errs = append(errs, "у exit нет рабочего пути: нужен протокол hysteria2 с tunnel_uuid или учётка VLESS")
 	}
 	v.errText = strings.Join(errs, "; ")
 	h.status = v.status
@@ -423,12 +424,12 @@ func exitPathDownText(node biz.ExitNodeTunnel, path, probeErr string) (title, de
 	}
 	if path == "hy" {
 		return fmt.Sprintf("Exit-нода %s: путь Hysteria (UDP) недоступен", node.Name),
-			fmt.Sprintf("%s (%s): трафик exit идёт по запасному TCP-пути (VLESS Reality :%d); Бамбук через этот exit не работает.\nОшибка: %s\nПроверьте UDP 50443 и hop-диапазон на exit и юнит hysteria2-client-%d на Hub.",
-				node.Name, node.IPAddress, exitVRPort, probeErr, node.ID)
+			fmt.Sprintf("%s (%s): трафик exit идёт по запасному TCP-пути (ShadowTLS :%d); Бамбук через этот exit не работает.\nОшибка: %s\nПроверьте UDP 50443 и hop-диапазон на exit и юнит hysteria2-client-%d на Hub.",
+				node.Name, node.IPAddress, config.ExitSTLSPort, probeErr, node.ID)
 	}
 	return fmt.Sprintf("Exit-нода %s: запасной TCP-путь недоступен", node.Name),
-		fmt.Sprintf("%s (%s): exit работает через Hysteria, но без запаса — при блокировке UDP он отключится целиком.\nОшибка: %s\nПроверьте xray на exit (TCP %d) и фаервол.",
-			node.Name, node.IPAddress, probeErr, exitVRPort)
+		fmt.Sprintf("%s (%s): exit работает через Hysteria, но без запаса — при блокировке UDP он отключится целиком.\nОшибка: %s\nПроверьте %s на exit (TCP %d), юнит %s на Hub и фаервол; нода, не переустановленная после перехода на ShadowTLS, — «Переустановить».",
+			node.Name, node.IPAddress, probeErr, config.ExitSTLSUnit, config.ExitSTLSPort, config.HubSTLSUnit(node.ID))
 }
 
 func exitPathUpText(node biz.ExitNodeTunnel, path string) string {
@@ -439,7 +440,7 @@ func exitPathUpText(node biz.ExitNodeTunnel, path string) string {
 }
 
 // exitPathGoneText closes a path alert because the exit no longer has that path (its protocol
-// or Reality credentials changed; in phase 2 also the owner's TCP-fallback switch): nothing works
+// or tunnel credentials changed; in phase 2 also the owner's TCP-fallback switch): nothing works
 // again, so the recovery text must not say it does.
 func exitPathGoneText(node biz.ExitNodeTunnel, path string) string {
 	if path == "hy" {

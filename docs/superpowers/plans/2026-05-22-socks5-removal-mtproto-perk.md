@@ -707,7 +707,7 @@ echo
 echo "Set these via admin UI → MTProto page → Save."
 ```
 
-- [ ] **Step 2: Transfer + run on Amsterdam (89.124.89.126)**
+- [ ] **Step 2: Transfer + run on Amsterdam (192.0.2.126)**
 
 Use the base64 trick (deploy tool already configured for hub; transfer to exit-VPS requires the same pattern):
 
@@ -715,7 +715,7 @@ Use the base64 trick (deploy tool already configured for hub; transfer to exit-V
 cd "C:\Users\alex\Documents\heyearthproject"
 B64=$(base64 -w0 server/backend/cmd/deploy/install-mtproxy.sh)
 # scp via ssh-from-hub or directly if you have SSH access to Amsterdam:
-ssh root@89.124.89.126 "echo '$B64' | base64 -d > /tmp/install-mtproxy.sh && chmod +x /tmp/install-mtproxy.sh && bash /tmp/install-mtproxy.sh 8443"
+ssh root@192.0.2.126 "echo '$B64' | base64 -d > /tmp/install-mtproxy.sh && chmod +x /tmp/install-mtproxy.sh && bash /tmp/install-mtproxy.sh 8443"
 ```
 
 If direct SSH from your workstation to the exit is set up differently (likely via the existing servers.ssh_password_enc credentials), use the admin Server Actions UI to run the script — or via deploy tool's `--ssh` after first chaining through hub.
@@ -723,7 +723,7 @@ If direct SSH from your workstation to the exit is set up differently (likely vi
 Expected output (final lines):
 ```
 [install-mtproxy] DONE
-  host:   89.124.89.126
+  host:   192.0.2.126
   port:   8443
   secret: <32 hex chars>
 ```
@@ -733,7 +733,7 @@ Record the secret — you'll paste it into admin UI later.
 - [ ] **Step 3: Verify listening**
 
 ```bash
-ssh root@89.124.89.126 "ss -tln | grep :8443; systemctl is-active mtproxy"
+ssh root@192.0.2.126 "ss -tln | grep :8443; systemctl is-active mtproxy"
 ```
 Expected: `LISTEN ... :8443 ...` + `active`.
 
@@ -1084,7 +1084,7 @@ export default function MTProtoPage() {
             value={form.host}
             onChange={(e) => setForm({ ...form, host: e.target.value })}
             className="w-full px-3 py-2 rounded-lg bg-surface-alt border border-white/10 text-sm font-mono"
-            placeholder="89.124.89.126"
+            placeholder="192.0.2.126"
           />
         </div>
 
@@ -1297,7 +1297,7 @@ Expected: both built, uploaded to /var/www/heyearth-site and /var/www/heyearth-a
 In a browser go to https://admin.hiearth.ru/mtproto.
 
 Fill in:
-* **Host**: `89.124.89.126` (or `mtproxy.hiearth.ru` if DNS set up)
+* **Host**: `192.0.2.126` (or `mtproxy.hiearth.ru` if DNS set up)
 * **Port**: `8443`
 * **Secret**: paste the secret printed by Task 6 Step 2 (from `/opt/mtproxy/secret` on Amsterdam)
 * **Sponsor channel**: leave empty for now
@@ -1310,7 +1310,7 @@ Click **Сохранить**. Expect toast "Сохранено. Клиенты �
 ```bash
 cd server/backend && go run ./cmd/deploy --ssh "sudo -u postgres psql heyearth -c \"SELECT key, value FROM app_settings WHERE key LIKE 'mtproto_%';\""
 ```
-Expected: enabled=true, host=89.124.89.126, port=8443, secret=<32 hex>, sponsor empty.
+Expected: enabled=true, host=192.0.2.126, port=8443, secret=<32 hex>, sponsor empty.
 
 - [ ] **Step 4: Verify user endpoint now returns deeplink**
 
@@ -1322,11 +1322,11 @@ Expected:
 ```json
 {
   "enabled": true,
-  "host": "89.124.89.126",
+  "host": "192.0.2.126",
   "port": "8443",
   "secret": "...",
-  "tg_deeplink": "tg://proxy?server=89.124.89.126&port=8443&secret=...",
-  "t_me_link": "https://t.me/proxy?server=89.124.89.126&port=8443&secret=..."
+  "tg_deeplink": "tg://proxy?server=192.0.2.126&port=8443&secret=...",
+  "t_me_link": "https://t.me/proxy?server=192.0.2.126&port=8443&secret=..."
 }
 ```
 
@@ -1349,7 +1349,7 @@ Expected: message delivers normally.
 - [ ] **Step 2: Verify Amsterdam sees the proxy traffic**
 
 ```bash
-ssh root@89.124.89.126 "ss -tn state established '( sport = :8443 )' | wc -l; journalctl -u mtproxy --since '5 minutes ago' --no-pager | tail -10"
+ssh root@192.0.2.126 "ss -tn state established '( sport = :8443 )' | wc -l; journalctl -u mtproxy --since '5 minutes ago' --no-pager | tail -10"
 ```
 Expected: at least 1 ESTABLISHED connection (your phone), recent log lines without errors.
 
@@ -1396,7 +1396,7 @@ User reports: dashboard works, connections page shows VLESS + Telegram button, n
 - [ ] **Step 5: Update Beads memory**
 
 ```bash
-bd remember --key "mtproto-perk-deployed" "MTProto Telegram-button perk is live (sub-project B+C). Daemon: Telegram official mtproto-proxy on 89.124.89.126:8443 (systemd unit mtproxy.service). Shared secret in app_settings.mtproto_secret. Admin page /mtproto. User endpoint /api/v1/user/mtproto. User-facing SOCKS5 (was :1080) and HTTP (was :8080) Xray inbounds fully removed; hub-internal SOCKS to Hysteria2 outbound stays at 127.0.0.1:1090."
+bd remember --key "mtproto-perk-deployed" "MTProto Telegram-button perk is live (sub-project B+C). Daemon: Telegram official mtproto-proxy on 192.0.2.126:8443 (systemd unit mtproxy.service). Shared secret in app_settings.mtproto_secret. Admin page /mtproto. User endpoint /api/v1/user/mtproto. User-facing SOCKS5 (was :1080) and HTTP (was :8080) Xray inbounds fully removed; hub-internal SOCKS to Hysteria2 outbound stays at 127.0.0.1:1090."
 ```
 
 ---

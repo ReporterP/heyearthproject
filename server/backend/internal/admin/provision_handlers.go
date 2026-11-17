@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -319,6 +320,9 @@ type storedKeyView struct {
 type probeResponse struct {
 	provision.ProbeResult
 	Stored *storedKeyView `json:"stored,omitempty"`
+	// GeoCountry: the address's registry country (Team Cymru whois) — the wizard's hint for
+	// the country field (B2); "" when the lookup failed.
+	GeoCountry string `json:"geo_country,omitempty"`
 }
 
 // ProbeNodeHandler — SSH key exchanges only: every host key the node offers (all types, so the
@@ -362,7 +366,9 @@ func ProbeNodeHandler(w http.ResponseWriter, r *http.Request) {
 			stored.KeyType = k.Type
 		}
 	}
-	writeAdminJSON(w, http.StatusOK, probeResponse{ProbeResult: res, Stored: stored})
+	geoCtx, geoCancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer geoCancel()
+	writeAdminJSON(w, http.StatusOK, probeResponse{ProbeResult: res, Stored: stored, GeoCountry: ipCountry(geoCtx, ip)})
 }
 
 type createNodePayload struct {
@@ -402,8 +408,20 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "exit"
 	}
-	if req.Role != "exit" {
-		writeAdminError(w, http.StatusBadRequest, "Резервные входы в РФ добавляются в следующем обновлении")
+	switch req.Role {
+	case "exit":
+	case "relay":
+		c, err := validateRelayCreate(req.CountryCode, nil, false, 1)
+		if err == nil {
+			err = validateRelaySSHPort(port)
+		}
+		if err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.CountryCode = c
+	default:
+		writeAdminError(w, http.StatusBadRequest, "Роль ноды — exit или relay")
 		return
 	}
 	country := strings.ToUpper(strings.TrimSpace(req.CountryCode))
@@ -424,17 +442,19 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Сначала проверьте подключение и подтвердите отпечаток ключа сервера (SHA256:…)")
 		return
 	}
-	if strings.TrimSpace(req.SSHPassword) == "" {
-		writeAdminError(w, http.StatusBadRequest, "Нужен пароль root: он хранится зашифрованно и нужен, пока на сервер не поставлен ключ Hub")
-		return
-	}
-	enc, err := encryptSSHPassword(req.SSHPassword)
-	if err != nil {
-		writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
-		return
+	// No password: the owner put the Hub's public key on the server when creating it; checked
+	// right after the row is stored (hubKeyOnlyAccess), the row goes again when it does not work.
+	var enc []byte
+	if strings.TrimSpace(req.SSHPassword) != "" {
+		if enc, err = encryptSSHPassword(req.SSHPassword); err != nil {
+			writeAdminError(w, http.StatusServiceUnavailable, sshPasswordKeyMissingMsg)
+			return
+		}
 	}
 	name := strings.TrimSpace(req.Name)
-	if name == "" {
+	if name == "" && req.Role == "relay" {
+		name = "Резервный вход " + country
+	} else if name == "" {
 		name = "Выход " + country
 	}
 	// A fast answer before the probe; the unique index (uq_servers_ip_address) decides a race.
@@ -468,8 +488,45 @@ func CreateNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "Не удалось сохранить сервер")
 		return
 	}
+	if len(enc) == 0 && !hubKeyOnlyAccess(w, r.Context(), id) {
+		return
+	}
 	WriteAuditLog(r, "create_node", "server", strconv.Itoa(id), map[string]string{"name": name, "ip": ip, "fingerprint": fp, "key_type": key.Type})
 	writeAdminJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+// hubKeyOnlyMsg: a node added without a password must let the Hub in with its own key.
+const hubKeyOnlyMsg = "Hub не смог войти на сервер по своему ключу. Либо вставьте публичный ключ Hub (раздел «SSH-ключи») " +
+	"в настройки сервера у хостера для пользователя root, либо укажите пароль root"
+
+const deletePendingNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state = 'pending'`
+
+// hubKeyOnlyAccess: the just stored password-less node answers to the Hub's key (one harmless
+// command); otherwise its row is removed and the owner told what to do.
+func hubKeyOnlyAccess(w http.ResponseWriter, ctx context.Context, id int) bool {
+	err := func() error {
+		n, err := NodeJobs.LoadNode(ctx, id)
+		if err != nil {
+			return err
+		}
+		rem, err := NodeDial(n)
+		if err != nil {
+			return err
+		}
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		_, err = rem.Run(c, "true")
+		return err
+	}()
+	if err == nil {
+		return true
+	}
+	log.Printf("[nodes] node %d: Hub key access: %v", id, err)
+	if _, derr := db.DB.ExecContext(ctx, deletePendingNodeQuery, id); derr != nil {
+		log.Printf("[nodes] node %d: remove after failed key access: %v", id, derr)
+	}
+	writeAdminError(w, http.StatusConflict, hubKeyOnlyMsg)
+	return false
 }
 
 const confirmHostKeyQuery = `UPDATE servers SET ssh_host_key = $2, ssh_host_key_fp = $3, ssh_host_key_confirmed_at = NOW(), updated_at = NOW() WHERE id = $1`
@@ -544,6 +601,10 @@ func PreflightNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadGateway, "Проверки не выполнились: "+err.Error())
 		return
 	}
+	// The hoster's firewall, seen from the Hub (B2): before anything is installed.
+	if meta, err := NodeJobs.NodeMeta(ctx, id); err == nil {
+		checks = append(checks, hubReachChecks(ctx, meta.Role, meta.IP)...)
+	}
 	all := true
 	for _, c := range checks {
 		all = all && c.OK
@@ -610,12 +671,30 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, planIDsPositiveMsg)
 		return
 	}
+	if req.MTProxy != nil && *req.MTProxy && !mtprotoOn() {
+		writeAdminError(w, http.StatusConflict, mtprotoOffMsg)
+		return
+	}
 	if !provisionReady(w) {
 		return
 	}
 	n, ok := loadNodeMeta(w, r.Context(), id)
 	if !ok {
 		return
+	}
+	if n.Role == "relay" { // a relay has no plans, MTProxy or priority
+		var planIDs []int
+		if req.PlanIDs != nil {
+			planIDs = *req.PlanIDs
+		}
+		weight := 1
+		if req.LoadWeight != nil {
+			weight = *req.LoadWeight
+		}
+		if _, err := validateRelayCreate("RU", planIDs, req.MTProxy != nil && *req.MTProxy, weight); err != nil {
+			writeAdminError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if !n.HostKeyConfirmed {
 		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
@@ -680,6 +759,9 @@ func VerifyNodeHandler(w http.ResponseWriter, r *http.Request) {
 // the rest too; answered here before a job is attempted).
 const mtproxyNotOnlineMsg = "Telegram-прокси ставится только на работающую ноду — сначала «Настроить»"
 
+// mtprotoOffMsg: MTProto is switched off in its section — no exit gets the proxy (C6).
+const mtprotoOffMsg = "MTProto выключен в разделе «MTProto» — Telegram-прокси на выходы не ставится"
+
 // MTProxyNodeHandler starts «Переустановить Telegram-прокси»: a job of its own (KindMTProxy, the
 // node's one-job lock), verify → reinstall only if the check fails → verify. The guards of
 // «Проверить» (a confirmed host key) plus a working node; the recipe refuses a non-exit and a
@@ -690,11 +772,19 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
 		return
 	}
+	if !mtprotoOn() {
+		writeAdminError(w, http.StatusConflict, mtprotoOffMsg)
+		return
+	}
 	if !provisionReady(w) {
 		return
 	}
 	n, ok := loadNodeMeta(w, r.Context(), id)
 	if !ok {
+		return
+	}
+	if n.Role == "relay" {
+		writeAdminError(w, http.StatusBadRequest, "MTProxy ставится на выход за рубежом, не на резервный вход")
 		return
 	}
 	if !n.HostKeyConfirmed {
@@ -710,11 +800,13 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 
 type confirmPayload struct {
 	ConfirmName string `json:"confirm_name"`
+	// ConfirmLast: «ОТКЛЮЧИТЬ ВСЕХ», typed to switch off the only working exit (B4).
+	ConfirmLast string `json:"confirm_last"`
 }
 
 // confirmedNode loads the node (no credentials) and checks the typed name (ConfirmDanger in the
 // UI, enforced here too); suffix "" = the id is the last path segment.
-func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provision.Node, bool) {
+func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provision.Node, confirmPayload, bool) {
 	var id int
 	var ok bool
 	if suffix == "" {
@@ -725,28 +817,77 @@ func confirmedNode(w http.ResponseWriter, r *http.Request, suffix string) (provi
 	var req confirmPayload
 	if !ok || decodeOptional(r, &req) != nil {
 		writeAdminError(w, http.StatusBadRequest, "Неверный запрос")
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	if !provisionReady(w) {
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	n, ok := loadNodeMeta(w, r.Context(), id)
 	if !ok {
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
 	if strings.TrimSpace(req.ConfirmName) != n.Name {
 		writeAdminError(w, http.StatusBadRequest, confirmNameMsg)
-		return provision.Node{}, false
+		return provision.Node{}, req, false
 	}
-	return n, true
+	return n, req, true
 }
 
 // DeprovisionNodeHandler starts «Отключить»: out of routing first, then the Hub side, then the
 // node (best effort); the row stays offline. An unconfirmed key does not block it.
 func DeprovisionNodeHandler(w http.ResponseWriter, r *http.Request) {
-	if n, ok := confirmedNode(w, r, "deprovision"); ok {
-		startJob(w, r, n.ID, provision.KindDeprovision)
+	n, req, ok := confirmedNode(w, r, "deprovision")
+	if !ok {
+		return
 	}
+	if n.Role != "relay" && n.Lifecycle == "online" {
+		// One check-and-start at a time: two «Отключить» of the last two exits must not both
+		// see the other one as the reserve (the job row exists once startJob returns).
+		lastExitMu.Lock()
+		defer lastExitMu.Unlock()
+		others, err := countOtherOnlineExits(r.Context(), n.ID)
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось проверить другие выходы")
+			return
+		}
+		if lastExitBlocked(others, req.ConfirmLast) {
+			writeAdminJSON(w, http.StatusConflict, map[string]string{"error": lastExitMsg, "code": "last_exit"})
+			return
+		}
+	}
+	if n.Role == "relay" {
+		if err := relayDeprovisionGuard(r.Context(), n.ID); err != nil {
+			writeAdminError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	startJob(w, r, n.ID, provision.KindDeprovision)
+}
+
+// The last working exit (cleanup plan B4): switching it off leaves every user without
+// internet (no-exit mode blocks all traffic), so it needs the phrase, like an entry in use.
+const (
+	lastExitPhrase = "ОТКЛЮЧИТЬ ВСЕХ"
+	lastExitMsg    = "Это единственный работающий выход за границу: после отключения у всех пользователей пропадёт интернет. Чтобы всё равно отключить, введите «" + lastExitPhrase + "»"
+	// Another WORKING exit: switched on, its agent answers, the monitor judged its tunnel
+	// healthy, and no «Отключить» of it is under way (review B: a dead exit is no reserve).
+	otherOnlineExitsQuery = `SELECT COUNT(*) FROM servers s WHERE s.id <> $1 AND COALESCE(s.role, 'exit') <> 'relay'
+		AND s.lifecycle_state = 'online' AND COALESCE(s.status, '') = 'online' AND COALESCE(s.tunnel_status, '') = 'healthy'
+		AND NOT EXISTS (SELECT 1 FROM provision_jobs j WHERE j.server_id = s.id AND j.kind = 'deprovision' AND j.status IN ('queued', 'running'))`
+)
+
+var lastExitMu sync.Mutex
+
+// countOtherOnlineExits is a test seam.
+var countOtherOnlineExits = func(ctx context.Context, id int) (int, error) {
+	var n int
+	err := db.DB.QueryRowContext(ctx, otherOnlineExitsQuery, id).Scan(&n)
+	return n, err
+}
+
+// lastExitBlocked: no other exit is on and the phrase was not typed.
+func lastExitBlocked(otherOnlineExits int, phrase string) bool {
+	return otherOnlineExits == 0 && strings.TrimSpace(phrase) != lastExitPhrase
 }
 
 const deleteNodeQuery = `DELETE FROM servers WHERE id = $1 AND lifecycle_state IN ('pending', 'offline')
@@ -765,7 +906,7 @@ const failedNodeDeleteMsg = "Сначала отключите ноду («От�
 // the Hub-side cleanup in this handler could only be less complete. Hub-only: the node itself is
 // not touched (it keeps its agent guard).
 func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
-	n, ok := confirmedNode(w, r, "")
+	n, _, ok := confirmedNode(w, r, "")
 	if !ok {
 		return
 	}
@@ -788,6 +929,9 @@ func DeleteServerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	biz.BumpSubscriptionVersion()
+	if err := biz.DeleteEntryState(r.Context(), n.ID); err != nil { // a relay's checks go with it (no-op for exits)
+		log.Printf("[nodes] node %d entry state: %v", n.ID, err)
+	}
 	WriteAuditLog(r, "delete_server", "server", strconv.Itoa(n.ID), nil)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "Нода удалена"})
 }
@@ -826,6 +970,22 @@ func NodeRoutingHandler(w http.ResponseWriter, r *http.Request) {
 	if req.PlanIDs != nil && !validPlanIDs(*req.PlanIDs) {
 		writeAdminError(w, http.StatusBadRequest, planIDsPositiveMsg)
 		return
+	}
+	if req.PlanIDs != nil || req.LoadWeight != nil {
+		var role string
+		err := db.DB.QueryRowContext(r.Context(), nodeRoleQuery, id).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAdminError(w, http.StatusNotFound, "Нода не найдена")
+			return
+		}
+		if err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать ноду")
+			return
+		}
+		if role == "relay" {
+			writeAdminError(w, http.StatusBadRequest, relayRoutingMsg)
+			return
+		}
 	}
 	// Always run (with nothing but plan_ids it only touches updated_at): it tells a missing node.
 	res, err := db.DB.ExecContext(r.Context(), routingQuery, id, req.LoadWeight, req.FallbackEnabled)
@@ -956,7 +1116,8 @@ SELECT s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_ad
        COALESCE(s.load_weight, 1), COALESCE(s.tunnel_status, 'unknown'), s.tunnel_fallback_enabled, s.mtproto_status,
        COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''), s.ssh_host_key_confirmed_at IS NOT NULL,
        COALESCE((SELECT array_agg(ps.plan_id ORDER BY ps.plan_id) FROM plan_servers ps WHERE ps.server_id = s.id), '{}'),
-       lj.id, lj.kind, lj.status, hy.status, hy.finished_at, tcp.status, tcp.finished_at
+       lj.id, lj.kind, lj.status, hy.status, hy.finished_at, tcp.status, tcp.finished_at,
+       COALESCE(s.status, ''), COALESCE(s.load_metrics::text, '{}'), s.traffic_quota_tb, s.monthly_price_rub, s.port_mbps, s.cpu_cores
   FROM servers s
   LEFT JOIN LATERAL (SELECT id, kind, status FROM provision_jobs WHERE server_id = s.id ORDER BY id DESC LIMIT 1) lj ON TRUE
   LEFT JOIN LATERAL (SELECT st.status, st.finished_at FROM provision_steps st JOIN provision_jobs j ON j.id = st.job_id
@@ -1011,7 +1172,11 @@ type nodeItem struct {
 	HostKey         nodeHostKey `json:"host_key"`
 	PlanIDs         []int       `json:"plan_ids"`
 	LastJob         *nodeJobRef `json:"last_job"`
-	Paths           struct {
+	// B1: the agent's liveness (online|offline), the latest load sample and the owner's numbers.
+	Status string        `json:"status"`
+	Load   *nodeLoadView `json:"load"`
+	Owner  nodeOwnerView `json:"owner"`
+	Paths  struct {
 		Hy  nodePath `json:"hy"`
 		TCP nodePath `json:"tcp"`
 	} `json:"paths"`
@@ -1050,14 +1215,19 @@ func ListNodesHandler(w http.ResponseWriter, r *http.Request) {
 		var jobID sql.NullInt64
 		var jobKind, jobStatus, hySt, tcpSt sql.NullString
 		var hyAt, tcpAt sql.NullTime
+		var loadRaw string
+		var quota sql.NullFloat64
+		var price, port, cores sql.NullInt64
 		if err := rows.Scan(&it.ID, &it.Name, &it.Role, &it.CountryCode, &it.IPAddress, &it.Lifecycle,
 			&it.LoadWeight, &it.TunnelStatus, &it.FallbackEnabled, &it.MTProtoStatus,
 			&it.HostKey.Fingerprint, &hostKeyBlob, &it.HostKey.Confirmed,
-			&plans, &jobID, &jobKind, &jobStatus, &hySt, &hyAt, &tcpSt, &tcpAt); err != nil {
+			&plans, &jobID, &jobKind, &jobStatus, &hySt, &hyAt, &tcpSt, &tcpAt,
+			&it.Status, &loadRaw, &quota, &price, &port, &cores); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Не удалось прочитать ноду")
 			return
 		}
 		it.HostKey.KeyType = provision.StoredHostKeyType(hostKeyBlob, it.HostKey.Fingerprint)
+		it.Load, it.Owner = parseLoadMetrics(loadRaw, time.Now()), ownerView(quota, price, port, cores)
 		it.PlanIDs = make([]int, len(plans))
 		for i, p := range plans {
 			it.PlanIDs[i] = int(p)

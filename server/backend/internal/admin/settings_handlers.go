@@ -21,7 +21,7 @@ type settingPayload struct {
 var secretSettingKeys = []string{
 	"yookassa_secret_key", "smtp_password",
 	"hysteria2_obfs_password", "hysteria2_stats_secret", "hub_tunnel_password",
-	"awg_server_private_key", "alert_telegram_bot_token", "vless_uuid",
+	"alert_telegram_bot_token", "vless_uuid",
 }
 
 // loadAllSettings is biz.GetAllSettings; tests swap it.
@@ -114,6 +114,13 @@ func UpdateSettingHandler(w http.ResponseWriter, r *http.Request) {
 			"Пустое значение не сохраняется: секрет хранится только на сервере, поле в админке всегда пустое. Введите новое значение, чтобы заменить.")
 		return
 	}
+	// Only the keys of the page, each checked (C9): a typo never becomes a new setting.
+	value, err := normalizeSetting(key, payload.Value)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.Value = value
 	if err := biz.SetSetting(key, payload.Value); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save setting")
 		return

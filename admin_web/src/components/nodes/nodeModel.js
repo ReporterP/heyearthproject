@@ -106,8 +106,8 @@ export function nodeState(n) {
 // pathsStale: a switched-off node is not checked; its last path results are history, not state.
 export const pathsStale = (n) => n.lifecycle_state === 'offline'
 
-// nodeHref: the node card on «Ноды», on the tab of its role (exit unless it is known to be a relay).
-export const nodeHref = (id, role) => `/nodes?role=${role === 'relay' ? 'relay' : 'exit'}&node=${encodeURIComponent(id)}`
+// nodeHref: the server card on «Серверы», on the tab of its role (exit unless it is known to be a relay).
+export const nodeHref = (id, role) => `/servers?tab=${role === 'relay' ? 'relay' : 'exit'}&node=${encodeURIComponent(id)}`
 
 export const STEP_STATUS = {
   pending: { label: 'ждёт', variant: 'default' }, running: { label: 'выполняется', variant: 'info' },
@@ -139,10 +139,11 @@ const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/
 
 export function wizardCanAdvance(step, d) {
   switch (step) {
-    case 0: return d.role === 'exit' && /^[A-Za-z]{2}$/.test(d.country || '')
+    case 0: return (d.role === 'exit' && /^[A-Za-z]{2}$/.test(d.country || '')) || (d.role === 'relay' && d.country === 'RU')
     case 1: return !!d.serverId && FP_RE.test(d.fingerprint || '') && d.fingerprintConfirmed === true
     case 2: return d.preflight?.ok === true
-    case 3: return Number.isInteger(d.loadWeight) && d.loadWeight >= 1 && d.loadWeight <= 10
+    // A relay's step 3 is «Проверка с телефона»: advisory, the owner decides (no options to check).
+    case 3: return d.role === 'relay' || (Number.isInteger(d.loadWeight) && d.loadWeight >= 1 && d.loadWeight <= 10)
     default: return false
   }
 }

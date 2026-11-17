@@ -32,7 +32,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/provision"
+	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -287,8 +289,12 @@ func putHubFile(client *ssh.Client, dst, mode string, data []byte) {
 		fmt.Printf("[hub] %s без изменений\n", dst)
 		return
 	}
+	// The file, then its sha256 next to it (the API checks it before sending the file to a
+	// node: a cut-off upload never reaches an exit).
 	cmd := "set -e; umask 077; mkdir -p " + shQuote(path.Dir(dst)) + "; cat > " + shQuote(dst+".tmp") + "; chmod " + mode + " " + shQuote(dst+".tmp") +
-		"; mv -f " + shQuote(dst+".tmp") + " " + shQuote(dst)
+		"; mv -f " + shQuote(dst+".tmp") + " " + shQuote(dst) +
+		"; echo " + hex.EncodeToString(sum[:]) + " > " + shQuote(dst+".sha256.tmp") + "; chmod 644 " + shQuote(dst+".sha256.tmp") +
+		"; mv -f " + shQuote(dst+".sha256.tmp") + " " + shQuote(dst+".sha256")
 	if _, err := runSSHQuiet(client, cmd, string(data)); err != nil {
 		log.Fatalf("[hub] запись %s: %v", dst, err)
 	}
@@ -375,6 +381,17 @@ func ensureHubProvisioning(client *ssh.Client, cfg *deployConfig) {
 		log.Fatal(err)
 	}
 	putHubFile(client, hubMTProxyScript, "755", mt)
+	// The Telegram WEB proxy relay (phase T): the admin's «Установить / обновить» installs it.
+	if relay, err := tproxybuild.Build(func(f string, a ...any) { fmt.Printf("[hub] "+f+"\n", a...) }); err != nil {
+		fmt.Printf("[hub] WARN: tproxy-server не собран: %v\n", err)
+	} else {
+		putHubFile(client, appDir+"/"+config.TGWebArtifact, "755", relay)
+	}
+	if fwd, err := os.ReadFile(buildGoBinary(cfg.backendRoot, "tgfwd", "heyearth-tgfwd")); err != nil {
+		fmt.Printf("[hub] WARN: heyearth-tgfwd не собран: %v\n", err)
+	} else {
+		putHubFile(client, appDir+"/"+config.TGFwdArtifact, "755", fwd)
+	}
 
 	fmt.Println("[hub] 4/4 CA node-agent на Hub")
 	mode := caRotate

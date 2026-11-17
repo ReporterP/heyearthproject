@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,7 +135,26 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
-	announceText, announceURL, err := buildSubscriptionAnnounce(userID)
+	// The subscription domain (go.<domain>, through the reserve entries): links in
+	// the profile follow the host the client fetched it from, so a client on that
+	// name opens the cabinet on it too. «Авто» (JSON) is the owner's switch.
+	var subDomain, autoMode, autoTestUser string
+	for _, s := range []struct {
+		dst      *string
+		key, def string
+	}{{&subDomain, "sub_domain", ""}, {&autoMode, "sub_auto_mode", autoModeOff}, {&autoTestUser, "sub_auto_test_user", ""}} {
+		if *s.dst, err = subscriptionSetting(s.key, s.def); err != nil {
+			log.Printf("[subscribe] user %s: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+	}
+	linkBase, webPage := publicBaseURL(), "https://hiearth.ru/dashboard"
+	if d := strings.TrimSpace(subDomain); d != "" && requestHost(r.Host) == d {
+		linkBase = "https://" + d
+		webPage = linkBase + "/dashboard"
+	}
+	announceText, announceURL, err := buildSubscriptionAnnounceAt(userID, linkBase)
 	if err != nil {
 		log.Printf("[subscribe] user %s: %v", userID, err)
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
@@ -154,9 +175,36 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// ignore unknown URI schemes safely" assumption proved wrong in practice.
 	uaForRouting := strings.ToLower(r.Header.Get("User-Agent"))
 	wantsHappRouting := strings.Contains(uaForRouting, "happ")
+	// The JSON subscription («⚡ Авто»): on request (?format=json), or for a Happ
+	// client while the owner serves it (all, or the test user only).
+	wantsJSON := format == "json" || (format == "" && wantsHappRouting && autoModeServes(autoMode, autoTestUser, userID))
 
 	var uris []string
-	if wantsHappRouting {
+	var jsonBody []byte
+	if wantsJSON {
+		// The same strictness as the routing profile: a failed read is a 503.
+		mtprotoIPs, err := biz.ListMTProtoExitIPs()
+		if err == nil {
+			var planID int
+			if planID, err = biz.EffectivePlanID(userID); err == nil {
+				var d directRouting
+				if d.sites, d.ips, err = biz.CompactDirectRoutingStrict(planID, mtprotoIPs); err == nil {
+					jsonBody = jsonSubscription(in, d)
+				}
+			}
+		}
+		if err != nil {
+			log.Printf("[subscribe] user %s: json profile: %v", userID, err)
+			writeSubscriptionUnavailable(w, "temporarily unavailable")
+			return
+		}
+		if jsonBody != nil {
+			format = "json"
+		} else if format == "json" {
+			format = "" // no VLESS way in (e.g. a plan without vless): the plain URIs below, never an empty 200
+		}
+	}
+	if wantsHappRouting && jsonBody == nil {
 		// Happ caches the routing profile too: any failed read is a 503, not a
 		// profile without the MTProto IPs or the plan's direct-route services.
 		mtprotoIPs, err := biz.ListMTProtoExitIPs()
@@ -194,10 +242,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	// docs/superpowers/specs/2026-05-23-happ-premium-integration-design.md
 	w.Header().Set("X-Config-Version", configVersion)
 	w.Header().Set("Subscription-Userinfo", userinfo)
-	w.Header().Set("Profile-Update-Interval", "4") // auto-update every 4 hours (matches auto-tuner)
+	// Auto-update every subscription_update_interval_hours (default 4, matches
+	// the auto-tuner); 1 h during an entry failover (phase 3).
+	w.Header().Set("Profile-Update-Interval", strconv.Itoa(max(in.entries.interval, 1)))
 	w.Header().Set("Profile-Title", "HiEarth")
-	w.Header().Set("Profile-Web-Page-Url", "https://hiearth.ru/dashboard")
-	w.Header().Set("Support-Url", "https://hiearth.ru/dashboard")
+	w.Header().Set("Profile-Web-Page-Url", webPage)
+	w.Header().Set("Support-Url", webPage)
 	// Routing-Enable: 1 — we DO want Happ's routing rules to apply, because
 	// the subscription body ships a `happ://routing/onadd/<b64>` profile with
 	// DirectIp exclusions for our MTProto-proxy IPs. Without these exclusions,
@@ -215,6 +265,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch format {
+	case "json":
+		// Happ: the local proxy ports of the configs get Happ's own login.
+		w.Header().Set("Socks-Auth-Mode", "auto")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(jsonBody)
+
 	case "clash":
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=heyearth.yaml")
@@ -240,21 +296,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// buildClashConfig генерирует Clash/ClashMeta YAML конфиг.
-// Returns an error when any input cannot be read (loadHubConnectionInputs);
-// the caller must answer 503 rather than ship a placeholder or degraded
-// profile that would overwrite the client's cached one.
-func buildClashConfig(userID string) (string, error) {
-	in, err := loadHubConnectionInputs(userID)
-	if err != nil {
-		return "", err
-	}
-	return clashProfile(in), nil
-}
-
 // clashProfile builds the Clash/ClashMeta YAML from in. Pure.
 func clashProfile(in hubConnectionInputs) string {
-	host := in.mainServerHost
+	host := in.entries.main // the failover target, or the Hub
+	if host == "" {
+		host = in.mainServerHost
+	}
 	if host == "" {
 		host = "hiearth.ru"
 	}
@@ -271,13 +318,11 @@ func clashProfile(in hubConnectionInputs) string {
 	realityPubKey := in.realityPubKey
 	realityShortID := in.realityShortID
 	realitySNI := in.realitySNI
+	flowLine := ""
+	if flow := in.realityFlow; flow != "" {
+		flowLine = fmt.Sprintf("\n    flow: %s", flow)
+	}
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
-		flow := in.realityFlow
-		flowLine := ""
-		if flow != "" {
-			flowLine = fmt.Sprintf("\n    flow: %s", flow)
-		}
-
 		// Multi-profile: 3 VLESS configs for different ISP aggressiveness.
 		// fp diversification: chrome (most-tested), firefox (second-most-tested),
 		// edge (Chromium-based but distinct JA3). Avoid ios/safari — XTLS #5918,
@@ -290,19 +335,7 @@ func clashProfile(in hubConnectionInputs) string {
 		}
 		for _, p := range profiles {
 			proxyNames = append(proxyNames, p.name)
-			proxies = append(proxies, fmt.Sprintf(
-				`  - name: "%s"
-    type: vless
-    server: %s
-    port: 443
-    uuid: "%s"%s
-    network: tcp
-    tls: true
-    reality-opts:
-      public-key: "%s"
-      short-id: "%s"
-    client-fingerprint: %s
-    servername: %s`, p.name, host, vlessUUID, flowLine, realityPubKey, realityShortID, p.fp, realitySNI))
+			proxies = append(proxies, clashRealityProxy(p.name, host, vlessUUID, flowLine, realityPubKey, realityShortID, p.fp, realitySNI))
 		}
 	}
 
@@ -310,19 +343,7 @@ func clashProfile(in hubConnectionInputs) string {
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		name := "HeYearth-XHTTP"
 		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, fmt.Sprintf(
-			`  - name: "%s"
-    type: vless
-    server: %s
-    port: 2443
-    uuid: "%s"
-    network: xhttp
-    tls: true
-    reality-opts:
-      public-key: "%s"
-      short-id: "%s"
-    client-fingerprint: chrome
-    servername: %s`, name, host, vlessUUID, realityPubKey, realityShortID, realitySNI))
+		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
 
 	// 1c. Hysteria2 Express (premium plans only — auto-routed by Happ for UDP-heavy traffic).
@@ -330,37 +351,65 @@ func clashProfile(in hubConnectionInputs) string {
 	// is blocked (corporate WiFi, mobile carriers throttling QUIC). The auth-backend
 	// enforces plan membership server-side, so even if someone copies the URI to a base-tier
 	// account it will be rejected.
+	//
+	// Per-plan up/down; safe defaults without an Express plan (a failed
+	// plan read never gets here: loadHubConnectionInputs returns it).
+	up, down := 50, 100
+	if plan := in.plan; plan != nil && plan.ExpressEnabled {
+		if plan.ExpressUpMbps > 0 {
+			up = plan.ExpressUpMbps
+		}
+		if plan.ExpressDownMbps > 0 {
+			down = plan.ExpressDownMbps
+		}
+	}
 	if canHysteria2 {
 		hy2Password, obfsPassword := in.hy2Password, in.obfsPassword
-		// Per-plan up/down; safe defaults without an Express plan (a failed
-		// plan read never gets here: loadHubConnectionInputs returns it).
-		up, down := 50, 100
-		if plan := in.plan; plan != nil && plan.ExpressEnabled {
-			if plan.ExpressUpMbps > 0 {
-				up = plan.ExpressUpMbps
-			}
-			if plan.ExpressDownMbps > 0 {
-				down = plan.ExpressDownMbps
-			}
-		}
 		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
-			// Clash.Meta hysteria2 profile. Ports range matches the iptables redirect
-			// configured by cmd/deploy --setup-hysteria2-hub. Happ picks one randomly
-			// and rotates per its port-hop schedule.
-			proxies = append(proxies, fmt.Sprintf(
-				`  - name: "%s"
-    type: hysteria2
-    server: %s
-    ports: 30000-65000
-    password: "%s"
-    obfs: salamander
-    obfs-password: "%s"
-    sni: %s
-    skip-cert-verify: false
-    up: "%d Mbps"
-    down: "%d Mbps"`, name, host, hy2Password, obfsPassword, host, up, down))
+			// sni on the Hub stays the connect host, as it always was (pinned
+			// by the subscription_clash golden). During a failover the server is
+			// a relay IP that no certificate names (skip-cert-verify: false):
+			// the cert domain then, like the URIs and the reserve proxies.
+			// The main Express follows the target only when Бамбук answers
+			// through it; otherwise it stays on the Hub.
+			server, sni := host, host
+			if in.entries.failover && !in.entries.mainUDP {
+				server, sni = in.mainServerHost, in.mainServerHost
+			} else if in.entries.failover {
+				sni = in.hysteria2SNI
+			}
+			proxies = append(proxies, clashHy2Proxy(name, server, hy2Password, obfsPassword, sni, up, down))
+		}
+	}
+
+	// While everyone is pinned to a relay: Home and XHTTP straight to the Hub
+	// (the way out on Wi-Fi if the relay dies), like directOptions.
+	if in.entries.pinned && in.mainServerHost != "" && realityPubKey != "" && vlessUUID != "" && canVLESS {
+		proxyNames = append(proxyNames, "HeYearth-Home"+directLabel, "HeYearth-XHTTP"+directLabel)
+		proxies = append(proxies,
+			clashRealityProxy("HeYearth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+			clashXHTTPProxy("HeYearth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+	}
+
+	// Reserve entries (phase 3): the same proxies through each healthy relay,
+	// after the main ones; Express only through a relay whose UDP is healthy.
+	reserves := shownReserves(in.entries)
+	if in.mainServerHost == "" { // same gate as reserveOptions: no Hub address, no reserve lines
+		reserves = nil
+	}
+	for k, r := range reserves {
+		sfx := reserveSuffix(k)
+		if realityPubKey != "" && vlessUUID != "" && canVLESS {
+			proxyNames = append(proxyNames, "HeYearth-Home"+sfx, "HeYearth-XHTTP"+sfx)
+			proxies = append(proxies,
+				clashRealityProxy("HeYearth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+		}
+		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
+			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)
+			proxies = append(proxies, clashHy2Proxy("HiEarth-Express"+sfx, r.address, in.hy2Password, in.obfsPassword, in.hysteria2SNI, up, down))
 		}
 	}
 
@@ -387,6 +436,69 @@ proxy-groups:
 rules:
   - MATCH,HeYearth
 `, strings.Join(proxies, "\n"), namesList)
+}
+
+// clashRealityProxy is one VLESS Reality TCP proxy (port 443). flowLine is
+// "" or "\n    flow: <flow>".
+func clashRealityProxy(name, host, uuid, flowLine, pbk, sid, fp, sni string) string {
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: vless
+    server: %s
+    port: 443
+    uuid: "%s"%s
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: %s
+    servername: %s`, name, host, uuid, flowLine, pbk, sid, fp, sni)
+}
+
+// clashXHTTPProxy is the VLESS Reality + XHTTP proxy (port 2443). hubHost is
+// main_server_host: the Hub's vless-xhttp inbound checks Host = hubHost and
+// path "/" (xray_sync.go, the URI's host=/path=). A proxy whose server is
+// another address (a relay, the main proxy during a failover) sets both in
+// xhttp-opts — what mihomo sends without them is undocumented. On the Hub
+// itself the proxy stays as it always was (pinned by subscription_clash).
+func clashXHTTPProxy(name, host, uuid, pbk, sid, sni, hubHost string) string {
+	opts := ""
+	if hubHost != "" && host != hubHost {
+		opts = fmt.Sprintf("\n    xhttp-opts:\n      path: \"/\"\n      host: %s", hubHost)
+	}
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: vless
+    server: %s
+    port: 2443
+    uuid: "%s"
+    network: xhttp%s
+    tls: true
+    reality-opts:
+      public-key: "%s"
+      short-id: "%s"
+    client-fingerprint: chrome
+    servername: %s`, name, host, uuid, opts, pbk, sid, sni)
+}
+
+// clashHy2Proxy is a Clash.Meta hysteria2 proxy. Ports range matches the
+// iptables redirect configured by cmd/deploy --setup-hysteria2-hub (a relay
+// forwards the same range to the Hub). Happ picks one randomly and rotates per
+// its port-hop schedule.
+func clashHy2Proxy(name, host, pw, obfs, sni string, up, down int) string {
+	return fmt.Sprintf(
+		`  - name: "%s"
+    type: hysteria2
+    server: %s
+    ports: 30000-65000
+    password: "%s"
+    obfs: salamander
+    obfs-password: "%s"
+    sni: %s
+    skip-cert-verify: false
+    up: "%d Mbps"
+    down: "%d Mbps"`, name, host, pw, obfs, sni, up, down)
 }
 
 // buildSubscriptionUserinfo формирует заголовок Subscription-Userinfo.
@@ -459,7 +571,7 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -479,13 +591,13 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	baseURL := publicBaseURL()
+	baseURL := subscriptionBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
-	// Happ one-tap import requires `happ://crypt5/<encrypted>` per docs.
-	// We fetch from crypto.happ.su lazily and cache in users.happ_crypt_link.
-	// On failure we still return the plain subscribe_url — frontend can copy.
-	happLink, _ := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
+	// One-tap import into Happ: the plain happ://add/<url> deep link, built here. The
+	// cabinet no longer waits for crypto.happ.su (up to 10 s) nor hands the subscription
+	// URL — a bearer secret — to a third party (cleanup plan A6).
+	happLink := happAddLink(subscribeURL)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"subscribe_token": token,
@@ -496,12 +608,11 @@ func handleGetSubscribeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetHappLink — public endpoint for ConnectPage to fetch the Happ
-// crypt5 deeplink by subscribe token (no auth needed; token IS the bearer).
+// import deeplink by subscribe token (no auth needed; token IS the bearer).
 //
 // GET /api/v1/user/happ-link/<token>
-// → 200 OK {"happ_link": "happ://crypt5/..."}
+// → 200 OK {"happ_link": "happ://add/<subscribe url>"}
 // → 404 if token unknown
-// → 502 if crypto.happ.su unreachable on first call (subsequent calls hit cache)
 func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -529,32 +640,30 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseURL := publicBaseURL()
+	baseURL := subscriptionBaseURL()
 	subscribeURL := fmt.Sprintf("%s/api/v1/user/subscribe/%s", baseURL, token)
 
-	happLink, err := biz.GetOrFetchHappCryptLink(userID, subscribeURL)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-			"error":         "crypto.happ.su unavailable",
-			"subscribe_url": subscribeURL,
-		})
-		return
-	}
-
+	_ = userID
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"happ_link":     happLink,
+		"happ_link":     happAddLink(subscribeURL),
 		"subscribe_url": subscribeURL,
 	})
 }
+
+// happAddLink is Happ's import deep link for a subscription URL.
+func happAddLink(subscribeURL string) string { return "happ://add/" + subscribeURL }
 
 // buildSubscriptionAnnounce builds the dynamic Announce + Announce-Url
 // headers shown in Happ as a single clickable line below the progress bar.
 //
 // Priority order:
-//  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /checkout
-//  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /checkout
-//  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /checkout
-//  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /checkout
+//  1. Expired                  → "⚠️ Подписка истекла. Продлите →"   + /payment
+//     1a. auto-renew from the wallet in ≤ 3 days and the wallet is short
+//     → "💳 Пополните кошелёк: подписка закончится DD.MM"            + /wallet
+//     (a covered renewal → "✅ Продлим с кошелька DD.MM"             + /wallet)
+//  2. ≤ 1 day to expiry        → "⏰ Подписка истекает завтра!"        + /payment
+//  3. ≤ 7 days, free-trial     → "⌛ Пробная подписка, осталось Nд"  + /payment
+//  4. ≤ 7 days, paid           → "⌛ Истекает через Nд"               + /payment
 //  5. traffic_used ≥ 80%       → "📊 Использовано N% трафика"         + /dashboard
 //  6. healthy (default)        → "Личный кабинет ↗"                   + /dashboard
 //
@@ -562,23 +671,35 @@ func handleGetHappLink(w http.ResponseWriter, r *http.Request) {
 // Returns empty strings if the user has no subscription record at all
 // (handler should not emit headers in that case); a failed read is an error.
 func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
+	return buildSubscriptionAnnounceAt(userID, publicBaseURL())
+}
+
+// buildSubscriptionAnnounceAt is buildSubscriptionAnnounce with the links on base.
+func buildSubscriptionAnnounceAt(userID, base string) (text, url string, err error) {
 	var (
 		validUntil   time.Time
 		trafficUsed  int64
 		trafficLimit *int64
 		planSlug     sql.NullString
+		autoRenew    bool
+		planPrice    int
+		pricePaid    int
+		promo        string
+		userDBID     int
 	)
 	err = db.DB.QueryRow(`
 		SELECT us.valid_until,
 		       COALESCE(us.traffic_used, 0),
 		       us.traffic_limit,
-		       COALESCE(p.slug, '')
+		       COALESCE(p.slug, ''),
+		       COALESCE(us.auto_renew, FALSE), COALESCE(p.price_rub, 0), COALESCE(us.price_paid, 0),
+		       COALESCE(us.promocode_used, ''), u.id
 		  FROM user_subscriptions us
 		  JOIN users u  ON u.id = us.user_id
 		  LEFT JOIN plans p ON p.id = us.plan_id
 		 WHERE u.user_id = $1
 		 ORDER BY us.valid_until DESC LIMIT 1
-	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug)
+	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug, &autoRenew, &planPrice, &pricePaid, &promo, &userDBID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
@@ -586,8 +707,7 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 		return "", "", fmt.Errorf("subscription announce: %w", err)
 	}
 
-	base := publicBaseURL()
-	checkout := base + "/checkout"
+	checkout := base + "/payment"
 	dashboard := base + "/dashboard"
 	now := time.Now()
 
@@ -598,6 +718,27 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 
 	daysLeft := int(validUntil.Sub(now).Hours() / 24)
 	isTrial := planSlug.Valid && planSlug.String == "free-trial"
+
+	// 1a. Renewal from the wallet (W4/W7): the client must top up before the end.
+	if autoRenew && planPrice > 0 && validUntil.Sub(now) <= 3*24*time.Hour {
+		free := false
+		if pricePaid == 0 {
+			if free, err = biz.IsFreeAccessPromocode(context.Background(), db.DB, promo); err != nil {
+				return "", "", fmt.Errorf("subscription announce: %w", err)
+			}
+		}
+		if !free {
+			balance, err := biz.WalletBalance(context.Background(), userDBID)
+			if err != nil {
+				return "", "", fmt.Errorf("subscription announce: %w", err)
+			}
+			end := validUntil.In(moscowTZ).Format("02.01")
+			if balance < int64(planPrice)*100 {
+				return "💳 Пополните кошелёк: подписка закончится " + end, base + "/wallet", nil
+			}
+			return "✅ Продлим с кошелька " + end, base + "/wallet", nil
+		}
+	}
 
 	// 2. ≤ 1 day
 	if daysLeft <= 1 {
@@ -623,3 +764,24 @@ func buildSubscriptionAnnounce(userID string) (text, url string, err error) {
 	// 6. healthy default — always include link to cabinet (per spec)
 	return "Личный кабинет ↗", dashboard, nil
 }
+
+// writeAuthError answers a failed extractUserFromToken: 503 when only the session
+// lookup failed (a database outage must not log the client out — the site drops its
+// token on 401), 401 otherwise. Messages are Russian; the site tells them apart by the
+// status, not by the text.
+func writeAuthError(w http.ResponseWriter, err error) {
+	if dbErr, ok := sessionLookupFailure(err); ok {
+		log.Printf("[auth] session lookup failed: %v", dbErr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Сессия истекла — войдите снова"})
+}
+
+// moscowTZ is the zone dates in Happ announces are shown in.
+var moscowTZ = func() *time.Location {
+	if l, err := time.LoadLocation("Europe/Moscow"); err == nil {
+		return l
+	}
+	return time.FixedZone("MSK", 3*3600)
+}()

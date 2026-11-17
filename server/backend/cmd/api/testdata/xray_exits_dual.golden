@@ -134,70 +134,26 @@
       "tag": "exit-2.hy"
     },
     {
-      "protocol": "vless",
+      "protocol": "socks",
       "settings": {
-        "vnext": [
+        "servers": [
           {
-            "address": "203.0.113.2",
-            "port": 10443,
-            "users": [
-              {
-                "encryption": "none",
-                "flow": "xtls-rprx-vision",
-                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-              }
-            ]
+            "address": "127.0.0.1",
+            "port": 2090
           }
         ]
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "realitySettings": {
-          "fingerprint": "chrome",
-          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
-          "serverName": "microsoft.com",
-          "shortId": "abcd"
-        },
-        "security": "reality",
-        "sockopt": {
-          "tcpFastOpen": true,
-          "tcpKeepAliveInterval": 30,
-          "tcpNoDelay": true
-        }
       },
       "tag": "exit-2.vr"
     },
     {
-      "protocol": "vless",
+      "protocol": "socks",
       "settings": {
-        "vnext": [
+        "servers": [
           {
-            "address": "203.0.113.2",
-            "port": 10443,
-            "users": [
-              {
-                "encryption": "none",
-                "flow": "xtls-rprx-vision",
-                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-              }
-            ]
+            "address": "127.0.0.1",
+            "port": 2090
           }
         ]
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "realitySettings": {
-          "fingerprint": "chrome",
-          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
-          "serverName": "microsoft.com",
-          "shortId": "abcd"
-        },
-        "security": "reality",
-        "sockopt": {
-          "tcpFastOpen": true,
-          "tcpKeepAliveInterval": 30,
-          "tcpNoDelay": true
-        }
       },
       "tag": "probe-vr-2"
     }

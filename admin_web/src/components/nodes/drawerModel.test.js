@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import {
   jobActive, drawerTabs, initialTab, initialJobId, nodeActions, parsePriority, clampPriority, routingBody, fallbackBody,
   routingDirty, fallbackOffRisky, pathRow, mtprotoView, jobListStatus, probeKeyList, keyRows, initialKeyCheck, keyCheckReducer,
-  canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences, deprovisionConsequences,
-  deleteConsequences, fallbackOffConsequences, LOG_SERVICES, plansNote, plansFailure,
+  canConfirmProbeKey, keyPasteVerdict, storedKeyNotice, keyReplaceWarning, reprovisionConsequences, deprovisionConsequences, isLastExit, LAST_EXIT_PHRASE, logServices,
+  deleteConsequences, fallbackOffConsequences, plansNote, plansFailure,
 } from './drawerModel.js'
 
 const FP_ED = 'SHA256:' + 'E'.repeat(43)
@@ -30,9 +30,9 @@ test('a job is active while running or queued only', () => {
 
 test('tabs: plans and priority only for an exit, logs with servers.logs, the danger zone with nodes.provision', () => {
   const keys = (n, p) => drawerTabs(n, p).map((t) => t.key)
-  assert.deepEqual(keys(node(), ALL), ['overview', 'routing', 'jobs', 'logs', 'danger'])
-  assert.deepEqual(keys(node(), {}), ['overview', 'routing', 'jobs'])
-  assert.deepEqual(keys(node({ role: 'relay' }), ALL), ['overview', 'jobs', 'logs', 'danger'])
+  assert.deepEqual(keys(node(), ALL), ['overview', 'load', 'routing', 'settings', 'jobs', 'logs', 'danger'])
+  assert.deepEqual(keys(node(), {}), ['overview', 'load', 'routing', 'settings', 'jobs'])
+  assert.deepEqual(keys(node({ role: 'relay' }), ALL), ['overview', 'load', 'settings', 'jobs', 'logs', 'danger'])
   assert.equal(drawerTabs(node(), ALL).find((t) => t.key === 'routing').label, 'Тарифы и приоритет')
 })
 
@@ -108,7 +108,6 @@ test('logs: servers.logs and a confirmed key; tunnel check only for an online ex
   assert.equal(nodeActions(node(), {}).logs.show, false)
   assert.equal(nodeActions(node({ lifecycle_state: 'offline' }), ALL).tunnelCheck.show, false)
   assert.equal(nodeActions(node({ role: 'relay' }), ALL).tunnelCheck.show, false)
-  assert.deepEqual(LOG_SERVICES.map((s) => s.key), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
 })
 
 test('priority is an integer 1..10; routing sends only what changed', () => {
@@ -260,4 +259,29 @@ test('consequences explain what happens, in Russian', () => {
   assert.ok(deprovisionConsequences(node({ lifecycle_state: 'offline' })).some((c) => /уже отключена/.test(c)))
   assert.ok(deleteConsequences(node()).some((c) => /хостер/.test(c)))
   assert.ok(fallbackOffConsequences(node({ paths: { hy: { status: 'unhealthy', source: 'monitor' } } })).some((c) => /трафик/.test(c)))
+})
+
+test('the last working exit is switched off only with the phrase (B4)', () => {
+  const a = { id: 1, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'healthy' }
+  const b = { id: 2, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'healthy' }
+  const dead = { id: 5, role: 'exit', lifecycle_state: 'online', status: 'offline', tunnel_status: 'healthy' }
+  const sick = { id: 6, role: 'exit', lifecycle_state: 'online', status: 'online', tunnel_status: 'unhealthy' }
+  const leaving = { ...b, id: 8, last_job: { kind: 'deprovision', status: 'running' } }
+  const r = { id: 3, role: 'relay', lifecycle_state: 'online' }
+  const off = { id: 4, role: 'exit', lifecycle_state: 'offline' }
+  assert.equal(isLastExit(a, [a, r, off]), true, 'a relay or a switched-off exit is no reserve')
+  assert.equal(isLastExit(a, [a, dead, sick, leaving]), true, 'a dead, unhealthy or leaving exit is no reserve')
+  assert.equal(isLastExit(a, [a, b]), false, 'another working exit')
+  assert.equal(isLastExit(r, [r]), false, 'a relay is never «the last exit»')
+  assert.equal(isLastExit(off, [off]), false)
+  assert.equal(LAST_EXIT_PHRASE, 'ОТКЛЮЧИТЬ ВСЕХ')
+  assert.match(deprovisionConsequences(a, { lastExit: true })[0], /у всех пользователей пропадёт интернет/)
+  assert.ok(!deprovisionConsequences(a).some((c) => /пропадёт интернет/.test(c)))
+})
+
+test('journals: only the units the server runs (C5)', () => {
+  const keys = (n) => logServices(n).map((s) => s.key)
+  assert.deepEqual(keys({ role: 'exit', mtproto_status: 'disabled' }), ['node-agent', 'xray', 'hysteria2'])
+  assert.deepEqual(keys({ role: 'exit', mtproto_status: 'healthy' }), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
+  assert.deepEqual(keys({ role: 'relay' }), ['nginx', 'heyearth-relay'])
 })

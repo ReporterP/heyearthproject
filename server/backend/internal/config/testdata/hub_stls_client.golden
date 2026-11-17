@@ -1,0 +1,46 @@
+{
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "listen_port": 2095,
+      "tag": "socks-in",
+      "type": "socks"
+    }
+  ],
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "outbounds": [
+    {
+      "detour": "stls",
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "JAw68XYA+2jMiT4C26okuw==",
+      "tag": "ss",
+      "type": "shadowsocks",
+      "udp_over_tcp": {
+        "enabled": true,
+        "version": 2
+      }
+    },
+    {
+      "password": "16e9458006192d8f8e6f8ed43420832c",
+      "server": "203.0.113.7",
+      "server_port": 443,
+      "tag": "stls",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.twitch.tv",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "type": "shadowtls",
+      "version": 3
+    }
+  ],
+  "route": {
+    "final": "ss"
+  }
+}

@@ -1,0 +1,31 @@
+/* Landing-only layout (spec 06 §6.1 «Локальные классы»): moved from the artboard's <style> as is,
+   tokens only. Do not use these classes on other pages. */
+.he .lp-hero { position: relative; overflow: hidden; padding: 72px 0 96px; }
+.he .lp-hero::before { content: ""; position: absolute; right: -180px; top: -120px; width: 820px; height: 820px; border-radius: 50%; background: radial-gradient(circle, var(--accent-soft), transparent 60%); pointer-events: none; }
+.he .lp-hero__grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); gap: 56px; align-items: center; position: relative; }
+.he .lp-bento { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
+.he .lp-path { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
+.he .lp-step { position: relative; padding-top: 56px; }
+.he .lp-step__n { position: absolute; top: 0; left: 0; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: var(--bg-elevated); border: 1px solid var(--line-strong); font: 700 15px/1 var(--font-mono); }
+.he .lp-well { padding: 12px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
+/* the Netherlands flag of the app-screen illustration (raw colours allowed here: spec 01 §10) */
+.he .lp-flag { width: 30px; height: 20px; border-radius: 4px; flex: none; background: linear-gradient(#AE1C28 0 33%, #FFFFFF 33% 66%, #21468B 66%); }
+/* grey app screen (no subscription): the flag waits for the connection (06 §6.1 item 7) */
+.he .lp-flag--off { filter: grayscale(1); opacity: .45; }
+.he .lp-section { padding: 96px 0; border-top: 1px solid var(--line); }
+.he .lp-faq { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 56px; }
+@media (max-width: 1024px) {
+  .he .lp-hero__grid, .he .lp-faq { grid-template-columns: 1fr; }
+  .he .lp-bento { grid-template-columns: 1fr 1fr; }
+  .he .lp-bento > * { grid-column: auto !important; }
+}
+/* phone layout (artboard «Главная · телефон») */
+@media (max-width: 640px) {
+  .he .lp-hero { padding: 28px 0 40px; }
+  .he .lp-hero::before { right: -160px; top: 120px; width: 420px; height: 420px; }
+  .he .lp-section { padding: 40px 0; }
+  .he .lp-bento { grid-template-columns: 1fr; gap: 12px; }
+  .he .lp-h2 { font-size: 30px; line-height: 1.1; letter-spacing: -.035em; font-weight: 800; }
+  .he .lp-flag { width: 26px; height: 18px; border-radius: 3px; }
+  .he .lp-page { padding-bottom: 80px; }
+}

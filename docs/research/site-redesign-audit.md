@@ -1,5 +1,7 @@
 # Site Redesign Audit & Plan — «Лес в ночи»
 
+> **ИСТОРИЧЕСКИЙ ДОКУМЕНТ.** «Лес в ночи» заменён дизайн-системой «Канон» (`site/design-system/hiearth-canon/`), сайт пересобран и выкачен 2026-11-17; `site/design-system/hiearth/` удалён.
+
 > Epic: `heyearthproject-vk0t`. Source of truth for visuals: `site/design-system/hiearth/MASTER.md`.
 > Scope: **all of `site/`** (marketing + cabinet + payment + B2B). Excludes `admin_web/`, `flutter-app/`.
 > Date: 2026-07-24.

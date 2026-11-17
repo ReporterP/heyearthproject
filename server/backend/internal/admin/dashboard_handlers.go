@@ -29,7 +29,6 @@ func OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		{&overview.OnlineServersCount, `SELECT COUNT(*) FROM servers WHERE status = 'online'`},
 		{&overview.PromocodesCount, `SELECT COUNT(*) FROM promocodes`},
 		{&overview.PaymentsCount, `SELECT COUNT(*) FROM payments`},
-		{&overview.ActiveReleases, `SELECT COUNT(*) FROM app_releases WHERE is_active = TRUE`},
 		{&overview.AdminsCount, `SELECT COUNT(*) FROM admin_users`},
 	}
 	for _, item := range countQueries {

@@ -1,8 +1,8 @@
 package biz
 
 import (
+	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -140,26 +140,28 @@ func (e *SessionLookupError) Error() string        { return ErrSessionLookup.Err
 func (e *SessionLookupError) Is(target error) bool { return target == ErrSessionLookup }
 func (e *SessionLookupError) Unwrap() error        { return e.Err }
 
-// RevokeUserSession deletes a user session by token (for logout).
+// RevokeUserSession deletes the session of a token (logout). Only the holder of the token can
+// name its session, so no other check is needed; an unknown token deletes nothing.
 func RevokeUserSession(token string) error {
-	tokenHash := hashToken(token)
-	_, err := db.DB.Exec(`DELETE FROM user_sessions WHERE token_hash = $1`, tokenHash)
+	_, err := db.DB.Exec(`DELETE FROM user_sessions WHERE token_hash = $1`, hashToken(token))
 	return err
 }
 
-// RevokeAllUserSessions deletes all sessions for a user (password change, etc.).
-func RevokeAllUserSessions(userDBID int) error {
-	_, err := db.DB.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userDBID)
-	return err
+// revokeOtherSessionsQuery closes every session of user $1 but the one whose hash is $2
+// (SetCloudPassword).
+const revokeOtherSessionsQuery = `DELETE FROM user_sessions WHERE user_id = $1 AND token_hash <> $2`
+
+// CleanupExpiredUserSessions deletes sessions past expires_at (ValidateUserToken refuses them
+// anyway); it returns how many went.
+func CleanupExpiredUserSessions(ctx context.Context) (int64, error) {
+	res, err := db.DB.ExecContext(ctx, `DELETE FROM user_sessions WHERE expires_at < NOW()`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return fmt.Sprintf("%x", h)
-}
-
-func randomSessionID() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return fmt.Sprintf("%x", buf)
 }

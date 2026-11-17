@@ -33,7 +33,8 @@ package main
 //	  (IPv6: fc00::/7, fe80::/10), except port 53                        -> REJECT
 //
 //	xray.service's cgroup (xray runs as root, so a uid match would be useless); allowed loopback
-//	  TCP: the exit tunnels' SOCKS ports.
+//	  TCP: the exit tunnels' SOCKS ports — the hysteria clients' and the ShadowTLS backup
+//	  clients' (heyearth-stls-client-<id>, internal/config exit_stls.go).
 //	user hysteria: hysteria2-server (User=hysteria). The per-exit tunnel clients
 //	  hysteria2-client-<id>.service run as ROOT (no User=, see config.HubHysteriaClientUnit, written by internal/provision hub_client) and are not
 //	  covered: they only dial their exit and listen on loopback. Allowed loopback TCP: the SOCKS
@@ -44,7 +45,7 @@ package main
 //	and the same for IPv6 via ip6tables (no 10085 rule: the xray API listens on 127.0.0.1 only).
 //
 // Loopback UDP is RETURNed, never rejected: the datagrams xray sends to 127.0.0.0/8 are replies
-// of its socks-awg inbound to hev-socks5-tunnel's ephemeral port (all UDP of AmneziaWG users, DNS
+// of its socks-local inbound to hev-socks5-tunnel's ephemeral port (all UDP of AmneziaWG users, DNS
 // included) and UDP relayed to a hysteria client's SOCKS UDP-ASSOCIATE port (QUIC, calls, games
 // of VLESS users); hysteria's own DNS goes to the local stub resolver. A rule without connection
 // state cannot tell them from an attack and would break them. The UDP services of this host (the
@@ -95,9 +96,10 @@ package main
 // check `grep url: /etc/hysteria/server.yaml`; then re-run --setup-ops. An env file without
 // HY_AUTH_PORTS (written by an older guard) means phase A.
 //
-// The SOCKS ports are 1088+serverID and server ids are serial and never reused, so the allowed
-// range is generous (egressSocksPorts); a range of 12 would silently cut off exit #12. Nothing
-// else listens on loopback in that range.
+// The SOCKS ports are 1088+serverID (hysteria) and 2088+serverID (ShadowTLS backup), and server
+// ids are serial and never reused, so the allowed ranges are generous (egressSocksPorts,
+// egressSTLSPorts); a range of 12 would silently cut off exit #12. Nothing else listens on
+// loopback in those ranges.
 //
 // The cgroup match pins the cgroup INSTANCE when a rule is loaded, and a restarted service gets
 // a new one: heyearth-egress-guard.sh xray therefore rebuilds the chain from an ExecStartPost
@@ -122,6 +124,9 @@ const (
 	// egressSocksPorts: hysteria2-client-<id> listens on 127.0.0.1:(1088+id); the xray `socks`
 	// outbounds and hysteria-server's via_exit outbound dial them.
 	egressSocksPorts = "1088:1599"
+	// egressSTLSPorts: heyearth-stls-client-<id> listens on 127.0.0.1:(2088+id)
+	// (config.HubSTLSSocksPort); the xray outbound exit-<id>.vr and the probe pair dial it.
+	egressSTLSPorts = "2088:2599"
 	// egressAPIPort: the main heyearth-api listener (the whole REST API, nginx's upstream).
 	egressAPIPort = "8000"
 	// egressHyAuthPort / egressHyAuthPath: the auth-only heyearth-api listener hysteria2-server
@@ -152,6 +157,7 @@ ENV_FILE="${EGRESS_GUARD_ENV:-/etc/heyearth/egress-guard.env}"
 CGROUP_PATH=system.slice/xray.service
 CGROUP_DIR="${CGROUP_DIR:-/sys/fs/cgroup/$CGROUP_PATH}"
 SOCKS_PORTS=__SOCKS_PORTS__
+STLS_PORTS=__STLS_PORTS__
 HUB_EXTRA_IPS=""
 # The hysteria auth callback port(s), decided by deploy --setup-ops: phase A unless the env says B.
 HY_AUTH_PORTS=__HY_AUTH_PORTS_A__
@@ -197,7 +203,7 @@ build_rules() {
     subject_rules "-m owner --uid-owner $HY_UID" "$SOCKS_PORTS,$HY_AUTH_PORTS,53"
   fi
   if [ "$cg" = 1 ]; then
-    subject_rules "-m cgroup --path $CGROUP_PATH" "$SOCKS_PORTS"
+    subject_rules "-m cgroup --path $CGROUP_PATH" "$SOCKS_PORTS,$STLS_PORTS"
   fi
 }
 load_rules() {
@@ -267,6 +273,7 @@ esac
 func renderEgressGuardScript() string {
 	return strings.NewReplacer(
 		"__SOCKS_PORTS__", egressSocksPorts,
+		"__STLS_PORTS__", egressSTLSPorts,
 		"__HY_AUTH_PORTS_A__", egressHyAuthPortsA,
 		"__HY_AUTH_PORTS_B__", egressHyAuthPortsB,
 		"__PRIVATE4__", egressPrivate4,
@@ -284,7 +291,7 @@ const egressGuardDropIn = "# Installed by deploy --setup-ops (cmd/deploy/ops_egr
 // them). Each answers one question:
 //
 //	api_call              the xray API answers for root (the allowed side of the 10085 guard)
-//	xray_socks_check      traffic still flows through xray: the real socks-awg inbound
+//	xray_socks_check      traffic still flows through xray: the real socks-local inbound
 //	                      (127.0.0.1:10808) fetches https://ya.ru
 //	auth_probe [USER]     the HTTP code of a POST to the auth-only listener 127.0.0.1:8001, as
 //	                      root or as USER ("" or 000 = nothing answers; any other code = it does)
@@ -492,12 +499,12 @@ if command -v ip6tables >/dev/null 2>&1; then ip6tables -w 5 -S ` + egressChain 
 // "allowed" paths must keep working, otherwise the guard is rolled back — a guard must never take
 // the API away from its owner, nor the traffic from the users:
 //   - the xray API for the user heyearth-api runs as;
-//   - xray's traffic (socks-awg inbound -> https://ya.ru), if it flowed before;
+//   - xray's traffic (socks-local inbound -> https://ya.ru), if it flowed before;
 //   - the hysteria user's auth callback of the current phase, if it worked before;
 //   - xray's access to an exit tunnel port (a listener in the allowed SOCKS range) from inside
 //     its cgroup;
 //   - a UDP datagram from inside xray's cgroup to a throw-away loopback listener (the path of
-//     the AmneziaWG replies and of a hysteria client's UDP-ASSOCIATE relay).
+//     a hysteria client's UDP-ASSOCIATE relay).
 //
 // "refused" paths must be refused, otherwise the run FAILS (the rules stay, they are harmless —
 // but the protection must not be mistaken for working): user nobody -> 127.0.0.1:10085; the
@@ -530,13 +537,13 @@ fi
 if [ "$xray_before" = 1 ]; then
   if ! xray_socks_check; then
     rollback
-    echo "[ops] FAILED: xray no longer carries traffic (socks-awg -> https://ya.ru) after the egress guard — guard rolled back"; exit 1
+    echo "[ops] FAILED: xray no longer carries traffic (socks-local -> https://ya.ru) after the egress guard — guard rolled back"; exit 1
   fi
-  echo "[ops] egress guard: xray still carries traffic (https://ya.ru through the socks-awg inbound)"
+  echo "[ops] egress guard: xray still carries traffic (https://ya.ru through the socks-local inbound)"
 elif [ "$xray_live" = 1 ]; then
-  echo "[ops] WARN: the socks-awg -> https://ya.ru check did not pass before the guard either — xray traffic not verified"
+  echo "[ops] WARN: the socks-local -> https://ya.ru check did not pass before the guard either — xray traffic not verified"
 else
-  echo "[ops] WARN: curl or the socks-awg inbound (127.0.0.1:10808) is missing — xray traffic not verified"
+  echo "[ops] WARN: curl or the socks-local inbound (127.0.0.1:10808) is missing — xray traffic not verified"
 fi
 wild=$(wild_port || true)
 hubip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4; exit }' || true)
@@ -578,7 +585,7 @@ if [ "$cg" = 1 ] && [ -d "$CGROUP_DIR" ]; then
     echo "[ops] WARN: no exit tunnel listener in ` + egressSocksPorts + ` on loopback — the allowed xray path is not verified"
   fi
   xray_cgroup_udp_loopback && rc=0 || rc=$?
-  if [ "$rc" = 0 ]; then echo "[ops] egress guard: a UDP datagram from xray's cgroup reaches a loopback listener (the AmneziaWG replies and the UDP-ASSOCIATE relay path)"
+  if [ "$rc" = 0 ]; then echo "[ops] egress guard: a UDP datagram from xray's cgroup reaches a loopback listener (the UDP-ASSOCIATE relay path)"
   elif [ "$rc" = 99 ]; then echo "[ops] WARN: cannot test UDP from xray's cgroup (python3 missing or the cgroup cannot be entered) — the loopback UDP path is not verified"
   else
     rollback

@@ -57,11 +57,6 @@ func GetUserByID(userID string) (*User, error) {
 	return getUserByField("user_id", userID)
 }
 
-// GetUserByUsername returns a user by their username.
-func GetUserByUsername(username string) (*User, error) {
-	return getUserByField("username", username)
-}
-
 // GetUserByIDOrUsername tries to find user by user_id first, then by username.
 func GetUserByIDOrUsername(idOrUsername string) (*User, error) {
 	user, err := getUserByField("user_id", idOrUsername)
@@ -106,17 +101,6 @@ type ActiveVlessClient struct {
 	UserID    string
 	IsPremium bool
 	PlanID    int
-}
-
-// ListActiveVlessClients возвращает всех активных VLESS клиентов с информацией о плане.
-// Каждый UUID появляется ровно 1 раз (даже если у пользователя несколько подписок).
-// plan_id берётся от подписки с максимальным valid_until (самая свежая/долгая).
-// The quota cutoff (ListQuotaExceededUserIDs) and the cabinet traffic card judge
-// the SAME subscription row: best_plan_id below is ordered by effectiveSubOrderBy
-// (traffic.go), the ordering shared by the routing, quota and Express-gate
-// queries (its doc lists which lookups use it and which do not).
-func ListActiveVlessClients() ([]ActiveVlessClient, error) {
-	return ListActiveVlessClientsContext(context.Background())
 }
 
 // ListActiveVlessClientsContext is ListActiveVlessClients bounded by ctx. Any
@@ -319,91 +303,6 @@ func GetUserSubscription(userID int) (*Subscription, error) {
 		sub.PlanID = int(planID.Int64)
 	}
 	return &sub, nil
-}
-
-// ApplyPromocode applies a promocode to a user, extending their subscription.
-// Supports new (free_trial/traffic_gift) promo types backed by plan_id_granted.
-func ApplyPromocode(userID int, code string) error {
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var planIDGranted sql.NullInt64
-	var durationDays, maxUses, currentUses, freeDays int
-	var promoType string
-	var expiresAt sql.NullTime
-
-	err = tx.QueryRow(`
-		SELECT plan_id_granted, COALESCE(duration_days, 30),
-		       max_uses, current_uses, expires_at, COALESCE(promo_type, 'free_trial'),
-		       COALESCE(free_days, duration_days, 30)
-		FROM promocodes WHERE code = $1 FOR UPDATE
-	`, code).Scan(&planIDGranted, &durationDays, &maxUses, &currentUses, &expiresAt, &promoType, &freeDays)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("промокод не найден")
-	}
-	if err != nil {
-		return err
-	}
-
-	if maxUses > 0 && currentUses >= maxUses {
-		return fmt.Errorf("промокод исчерпан")
-	}
-	if expiresAt.Valid && time.Now().After(expiresAt.Time) {
-		return fmt.Errorf("промокод истёк")
-	}
-
-	_, err = tx.Exec("UPDATE promocodes SET current_uses = current_uses + 1 WHERE code = $1", code)
-	if err != nil {
-		return err
-	}
-
-	// Determine duration from promo type
-	days := durationDays
-	if promoType == "free_trial" && freeDays > 0 {
-		days = freeDays
-	}
-
-	// Resolve target plan: explicit plan_id_granted wins, else fall back to free-trial.
-	var planID int
-	if planIDGranted.Valid {
-		planID = int(planIDGranted.Int64)
-	} else {
-		if err := tx.QueryRow(`SELECT id FROM plans WHERE slug = 'free-trial' LIMIT 1`).Scan(&planID); err != nil {
-			return fmt.Errorf("resolve free-trial plan: %w", err)
-		}
-	}
-
-	// Try to extend existing active subscription on the same plan; otherwise insert new.
-	baseValidUntil := time.Now().AddDate(0, 0, days)
-	res, err := tx.Exec(`
-		UPDATE user_subscriptions
-		SET valid_until = valid_until + ($1 * INTERVAL '1 day'),
-		    status = 'active', promocode_used = $2
-		WHERE user_id = $3 AND plan_id = $4 AND valid_until > NOW()
-	`, days, code, userID, planID)
-	if err != nil {
-		return err
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		_, err = tx.Exec(`
-			INSERT INTO user_subscriptions (user_id, plan_id, valid_until, status, promocode_used)
-			VALUES ($1, $2, $3, 'active', $4)
-		`, userID, planID, baseValidUntil, code)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	NotifySubscriptionChange()
-	return nil
 }
 
 // UserHasActiveSubscription returns true if user has at least one

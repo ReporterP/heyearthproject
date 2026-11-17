@@ -33,11 +33,11 @@ func StartGhostReconciler() {
 	go func() {
 		time.Sleep(2 * time.Minute) // дать API и Xray устаканиться
 		log.Println("[ghost-reconciler] запущен (каждые 30 минут)")
-		runGhostReconciler() // первый сразу
+		safely("ghost-reconciler", runGhostReconciler) // первый сразу
 		ticker := time.NewTicker(ghostReconcilerInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			runGhostReconciler()
+			safely("ghost-reconciler", runGhostReconciler)
 		}
 	}()
 }
@@ -59,7 +59,7 @@ func runGhostReconciler() {
 		hubSet[id] = true
 	}
 
-	autoCleanup := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_cleanup", "true"), "true")
+	autoCleanup := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_cleanup", "false"), "true")
 	autoRepair := strings.EqualFold(biz.GetSettingOrDefault("ghost_auto_repair", "false"), "true")
 
 	var orphans, missing int
@@ -104,7 +104,9 @@ func runGhostReconciler() {
 	// ── MTProto backfill ──
 	// Auto-install mtproto-proxy on exits that don't have it yet.
 	// Rate-limited to 1 install per tick (30 min) to avoid hammering.
-	autoInstall := biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true"
+	// Only while MTProto itself is on (C6/D2): a switched-off proxy is never put on exits.
+	autoInstall := biz.GetSettingOrDefault("mtproto_enabled", "false") == "true" &&
+		biz.GetSettingOrDefault("mtproto_auto_install", "true") == "true"
 	if autoInstall {
 		needing, err := biz.ListExitsNeedingMTProto()
 		if err != nil {

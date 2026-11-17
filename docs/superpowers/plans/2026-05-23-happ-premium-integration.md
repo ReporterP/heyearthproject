@@ -12,7 +12,7 @@
 
 **Beads epic:** to be created in Task 0.
 
-**Production:** hub 45.150.39.236. No DB migration. Deploy via `cd server/backend && go run quick_deploy.go` then `go run ./cmd/deploy --site` for frontend.
+**Production:** hub 198.51.100.236. No DB migration. Deploy via `cd server/backend && go run quick_deploy.go` then `go run ./cmd/deploy --site` for frontend.
 
 **Verification baseline (2026-05-23 01:27 MSK curl):**
 ```

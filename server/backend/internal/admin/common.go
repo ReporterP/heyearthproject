@@ -2,10 +2,12 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type PaginationParams struct {
@@ -111,4 +113,22 @@ func parseLastPathSegmentBeforeFinal(path, suffix string) (int, bool) {
 	path = strings.Trim(path, "/")
 	path = strings.TrimSuffix(path, "/"+suffix)
 	return parseLastPathInt(path)
+}
+
+// dateRangeWhere adds the «с … по …» filter of a list (C4): ?from=YYYY-MM-DD&to=YYYY-MM-DD,
+// whole days in Moscow time, both ends included. A malformed date is an error for the caller.
+func dateRangeWhere(r *http.Request, col string, where *string, args *[]any, argN *int) error {
+	for _, side := range []struct{ key, op, shift string }{{"from", ">=", ""}, {"to", "<", " + 1"}} {
+		v := strings.TrimSpace(r.URL.Query().Get(side.key))
+		if v == "" {
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", v); err != nil {
+			return fmt.Errorf("дата %q: нужен формат ГГГГ-ММ-ДД", v)
+		}
+		*where += fmt.Sprintf(" AND %s %s (($%d::date%s)::timestamp AT TIME ZONE 'Europe/Moscow')", col, side.op, *argN, side.shift)
+		*args = append(*args, v)
+		*argN++
+	}
+	return nil
 }

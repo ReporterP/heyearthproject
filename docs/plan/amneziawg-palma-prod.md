@@ -604,7 +604,7 @@ The egress now targets xray's `socks-awg` inbound (127.0.0.1:10808). Verify (aft
   ```bash
   # Foreign → must be Amsterdam Exit IP:
   go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org ; echo'
-  # RU site → must be the Hub IP 45.150.39.236 (direct-freedom), NOT Amsterdam:
+  # RU site → must be the Hub IP 198.51.100.236 (direct-freedom), NOT Amsterdam:
   go run ./cmd/deploy --ssh 'curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 https://api-maps.yandex.ru >/dev/null && curl -s --max-time 8 --socks5-hostname 127.0.0.1:10808 "https://yandex.ru" -o /dev/null -w "%{remote_ip}\n"'
   ```
   Expected: the foreign curl returns the **Amsterdam Exit IP**; the Yandex `remote_ip` resolves to a **Yandex/RU address reached directly** (proving RU traffic took `direct-freedom`, not the Exit). If both go to Amsterdam, the global rules aren't applying to the new inbound — STOP and check `routeOnly`/sniffing. (This pair is the split money-shot at the SOCKS layer, before the client even connects.)
@@ -846,16 +846,16 @@ This is the proof the optimal split works end-to-end. On a device connected to A
   curl -s https://api.ipify.org ; echo
   curl -s https://ifconfig.me ; echo
   ```
-  Expected: BOTH return the **Exit/Amsterdam IP** — the SAME IP the pre-flight `--socks5-hostname 127.0.0.1:10808` foreign curl returned — **NOT** the Hub IP `45.150.39.236`.
+  Expected: BOTH return the **Exit/Amsterdam IP** — the SAME IP the pre-flight `--socks5-hostname 127.0.0.1:10808` foreign curl returned — **NOT** the Hub IP `198.51.100.236`.
 - [ ] **Russian site → direct (Hub Moscow), NOT Amsterdam** — this is what makes it «как Happ»:
   ```bash
   # ipinfo via a RU-geosite/geoip dest: check the apparent egress for a RU service.
   # 2ip.ru reports your visible IP; reached over a RU-routed path it should show the
-  # Hub (45.150.39.236), not the Amsterdam Exit.
+  # Hub (198.51.100.236), not the Amsterdam Exit.
   curl -s "https://2ip.ru/" -o /dev/null -w "reached RU site, egress via Hub expected\n"
   curl -s https://api.ipify.org ; echo   # contrast: still Amsterdam for foreign
   ```
-  Expected: Russian/geosite destinations are reached over `direct-freedom` (Hub Moscow IP 45.150.39.236 visible to RU sites), while foreign destinations stay on the Amsterdam Exit. If a RU site shows the Amsterdam IP, the split isn't applying — re-check the Step-0 pre-flight Yandex `remote_ip` test.
+  Expected: Russian/geosite destinations are reached over `direct-freedom` (Hub Moscow IP 198.51.100.236 visible to RU sites), while foreign destinations stay on the Amsterdam Exit. If a RU site shows the Amsterdam IP, the split isn't applying — re-check the Step-0 pre-flight Yandex `remote_ip` test.
 - [ ] **DNS through the tunnel (UDP 53 over SOCKS UDP ASSOCIATE):**
   ```bash
   # On the AWG client (DNS in its .conf, e.g. 1.1.1.1):
@@ -2119,7 +2119,7 @@ Expected (если T6 готов): grep находит строку `http.Handle
 cd C:/Users/alex/Documents/heyearthproject/server/backend
 go run ./cmd/deploy --ssh "curl -sk --resolve hiearth.ru:443:127.0.0.1 -H 'User-Agent: Happ' https://hiearth.ru/api/v1/user/awg-config/d329def4-c54f-4448-9721-8e420fd21425"
 ```
-Expected: WG-INI текст — секции `[Interface]` (PrivateKey, Address=10.66.66.X/32, Jc/Jmin/Jmax/S1/S2/H1-H4) и `[Peer]` (PublicKey Hub'а, Endpoint `45.150.39.236:51820`, AllowedIPs `0.0.0.0/0`). Без этого шага money-shot невозможен. (Если T6 не готов — BLOCKED, см. 8.6.6.)
+Expected: WG-INI текст — секции `[Interface]` (PrivateKey, Address=10.66.66.X/32, Jc/Jmin/Jmax/S1/S2/H1-H4) и `[Peer]` (PublicKey Hub'а, Endpoint `198.51.100.236:51820`, AllowedIPs `0.0.0.0/0`). Без этого шага money-shot невозможен. (Если T6 не готов — BLOCKED, см. 8.6.6.)
 
 - [ ] **8.6.8 RED-LINE: Reality (xray) по-прежнему принимает коннекты.**
 ```bash
@@ -2135,7 +2135,7 @@ Expected: свежие `accepted` строки. setup-awg не должен ло
 > 2. Подключиться (Connect).
 > 3. Открыть `https://ifconfig.me` (или `curl ifconfig.me`) → сообщить IP.
 >
-> Expected: IP — **амстердамский exit** (NL ASN, не российский, не `45.150.39.236`). Это доказывает, что трафик идёт awg0 → tun2socks → Hub→Exit туннель → NL.
+> Expected: IP — **амстердамский exit** (NL ASN, не российский, не `198.51.100.236`). Это доказывает, что трафик идёт awg0 → tun2socks → Hub→Exit туннель → NL.
 
 - [ ] **8.6.10 (после money-shot) Счётчики выросли — трафик реально прошёл.**
 ```bash

@@ -186,25 +186,6 @@ func TestBuildHubConnectionOptions_LookupFailureNeverFallsBackToMasterUUID(t *te
 	}
 }
 
-// The Clash path used to answer 200 with a "# error: no vless uuid" body, which
-// a Clash client would store as its profile. It must report an error instead so
-// the handler can answer 503.
-func TestBuildClashConfig_LookupFailureReturnsError(t *testing.T) {
-	stopLog := useFakeDB(t, fakeDBConnector{settings: testSettingsWithMasterUUID()})
-
-	cfg, err := buildClashConfig("user-1")
-	logged := stopLog()
-	if err == nil {
-		t.Fatalf("expected an error when the per-user uuid lookup fails, got config %q", cfg)
-	}
-	if cfg != "" {
-		t.Errorf("expected an empty config on error, got %q", cfg)
-	}
-	if strings.Contains(cfg+err.Error()+logged, testMasterUUID) {
-		t.Errorf("master uuid leaked (config/error/log)")
-	}
-}
-
 // A database failure on the subscription endpoint must read as "try again
 // later" (503 + Retry-After), not as an invalid link (404) or lost access (403):
 // Happ drops its cached profiles on those. A genuinely unknown token stays 404.

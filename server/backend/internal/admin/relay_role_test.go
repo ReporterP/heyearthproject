@@ -1,0 +1,73 @@
+package admin
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestValidateRelayCreate(t *testing.T) {
+	if c, err := validateRelayCreate("", nil, false, 1); err != nil || c != "RU" {
+		t.Fatalf("defaults: %q %v", c, err)
+	}
+	for name, f := range map[string]func() error{
+		"страна":  func() error { _, err := validateRelayCreate("NL", nil, false, 1); return err },
+		"тарифы":  func() error { _, err := validateRelayCreate("RU", []int{3}, false, 1); return err },
+		"MTProxy": func() error { _, err := validateRelayCreate("ru", nil, true, 1); return err },
+		"вес":     func() error { _, err := validateRelayCreate("RU", nil, false, 5); return err },
+	} {
+		if f() == nil {
+			t.Errorf("%s: exit-only option accepted for a relay", name)
+		}
+	}
+}
+
+func TestValidateRelaySSHPort(t *testing.T) {
+	for _, p := range []int{80, 443, 2443} {
+		if validateRelaySSHPort(p) == nil {
+			t.Errorf("SSH on %d accepted: the relay forwards it to the Hub", p)
+		}
+	}
+	for _, p := range []int{22, 2222, 50443} {
+		if err := validateRelaySSHPort(p); err != nil {
+			t.Errorf("SSH on %d refused: %v", p, err)
+		}
+	}
+}
+
+func TestRelayDeprovisionGuard(t *testing.T) {
+	prev := relayFailoverTarget
+	t.Cleanup(func() { relayFailoverTarget = prev })
+	relayFailoverTarget = func(_ context.Context, id int) (bool, error) { return id == 5, nil }
+	if err := relayDeprovisionGuard(context.Background(), 5); !errors.Is(err, ErrRelayInUse) {
+		t.Fatalf("failover target: %v", err)
+	}
+	if err := relayDeprovisionGuard(context.Background(), 7); err != nil {
+		t.Fatalf("other relay: %v", err)
+	}
+	relayFailoverTarget = func(context.Context, int) (bool, error) { return false, errors.New("db down") }
+	if err := relayDeprovisionGuard(context.Background(), 7); err == nil {
+		t.Fatal("unknown state must refuse, not allow")
+	}
+}
+
+func TestServerMetricsSkipRelays(t *testing.T) {
+	q := strings.ToUpper(strings.Join(strings.Fields(serverMetricsTargetsQuery), " "))
+	if !strings.Contains(q, "COALESCE(ROLE, 'EXIT') <> 'RELAY'") || !strings.Contains(q, "LIFECYCLE_STATE = 'ONLINE'") {
+		t.Fatalf("relays polled for node-agent metrics:\n%s", serverMetricsTargetsQuery)
+	}
+}
+
+// B4: the only working exit is switched off only with «ОТКЛЮЧИТЬ ВСЕХ».
+func TestLastExitGuard(t *testing.T) {
+	if !lastExitBlocked(0, "") || !lastExitBlocked(0, "отключить всех") {
+		t.Error("the last exit went off without the exact phrase")
+	}
+	if lastExitBlocked(0, " ОТКЛЮЧИТЬ ВСЕХ ") {
+		t.Error("the phrase is refused")
+	}
+	if lastExitBlocked(1, "") {
+		t.Error("an exit with another one working needs no phrase")
+	}
+}

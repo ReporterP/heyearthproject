@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { protocolName } from '../utils/protocols.js'
 import { Package } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
@@ -145,7 +146,7 @@ export default function PlansPage() {
 
               <div className="flex flex-wrap gap-1.5 mb-3">
                 {(plan.allowed_protocols || []).map(p => (
-                  <Badge key={p} variant="accent" className="uppercase">{p}</Badge>
+                  <Badge key={p} variant="accent">{protocolName(p)}</Badge>
                 ))}
               </div>
 
@@ -254,7 +255,7 @@ export default function PlansPage() {
                       }}
                       className="rounded"
                     />
-                    <span className="text-sm uppercase text-primary">{proto}</span>
+                    <span className="text-sm text-primary">{protocolName(proto)}</span>
                   </label>
                 ))}
               </div>
@@ -363,26 +364,6 @@ export default function PlansPage() {
               </div>
             </Card>
 
-            <Card className="p-4 mb-4">
-              <label className="text-xs text-tertiary mb-2 block">AmneziaWG (🌴 Пальма)</label>
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={!!editing.amnezia_wg_enabled}
-                  onChange={e => setEditing({...editing, amnezia_wg_enabled: e.target.checked})}
-                  className="rounded mt-1"
-                />
-                <span>
-                  <span className="block text-sm text-primary">Включить 🌴 Пальма</span>
-                  <span className="block text-xs text-tertiary">
-                    AmneziaWG 2.0 — WireGuard + CPS junk-packets. Обход QUIC-DPI
-                    и фингерпринт-блокировок там, где Reality и Hysteria2 уже
-                    задетектены. Per-user ключи и CPS-параметры выдаются автоматически
-                    при выпуске подписки.
-                  </span>
-                </span>
-              </label>
-            </Card>
 
             <Card className="p-4 mb-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

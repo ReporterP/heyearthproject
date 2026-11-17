@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,14 +73,14 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		Promocode        string `json:"promocode"`
 		ReturnURL        string `json:"return_url"`
 		Email            string `json:"email"`
-		SaveCard         *bool  `json:"save_card"`         // nil = use plan default, true/false = explicit
 		ConfirmationType string `json:"confirmation_type"` // "embedded" (widget) | "redirect" (default)
+		RequestID        string `json:"request_id"`        // idempotency of a wallet purchase
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 
@@ -110,20 +111,37 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	originalPrice := plan.PriceRub
 	priceRub := plan.PriceRub
 
-	// Apply promocode
+	// Promocode: validated here, used (counted) only when the purchase goes through —
+	// in the paid-payment claim, or below for a zero price. A free_trial code is a free
+	// grant, not a discount: it is redeemed right away, like in the cabinet.
 	promoUsed := ""
-	if body.Promocode != "" {
-		if err := biz.CheckPromoPerUserLimit(userID, body.Promocode); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if strings.TrimSpace(body.Promocode) != "" {
+		var userDBID int
+		if err := db.DB.QueryRowContext(r.Context(), `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
 			return
 		}
-		finalPrice, _, _, promoErr := biz.ApplyPromoToPrice(priceRub, body.Promocode, plan.ID)
-		if promoErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": promoErr.Error()})
+		promo, err := biz.LoadPromocode(r.Context(), db.DB, userDBID, body.Promocode, plan.ID, false)
+		if err != nil {
+			writePromoError(w, err)
 			return
 		}
-		priceRub = finalPrice
-		promoUsed = strings.ToUpper(strings.TrimSpace(body.Promocode))
+		if promo.Type == biz.PromoFreeTrial {
+			res, err := biz.RedeemPromocode(r.Context(), userID, promo.Code, plan.ID, biz.RedeemSourceCabinet)
+			if err != nil {
+				writePromoError(w, err)
+				return
+			}
+			RequestXraySync()
+			writeJSON(w, http.StatusOK, map[string]any{"status": "activated", "plan": res.PlanName, "message": res.Message})
+			return
+		}
+		if priceRub <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Этот тариф бесплатный — промокод не нужен"})
+			return
+		}
+		priceRub = promo.PriceFor(priceRub)
+		promoUsed = promo.Code
 	}
 
 	// Downgrade guard — fail fast before creating any payment record.
@@ -144,16 +162,22 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Free plan — activate immediately
+	// Free plan (or a 100% discount) — activate immediately.
 	if priceRub <= 0 {
-		if err := biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, promoUsed); err != nil {
+		if err := activateFreePurchase(r.Context(), userID, plan, promoUsed); err != nil {
+			if biz.IsPromoError(err) {
+				writePromoError(w, err)
+				return
+			}
 			if errors.Is(err, biz.ErrDowngradeNotAllowed) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "downgrade_not_allowed"})
 				return
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "activate: " + err.Error()})
+			log.Printf("[payment.create] free activation for %s plan %d: %v", userID, plan.ID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "не удалось активировать тариф, попробуйте позже"})
 			return
 		}
+		RequestXraySync()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "activated",
 			"plan":    plan.Name,
@@ -162,100 +186,59 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create YooKassa payment
-	client, err := yookassa.NewClientFromSettings()
+	// A paid plan goes through the wallet (cleanup plan W3): enough money — paid from it
+	// now; not enough — a top-up for the shortfall whose webhook buys the plan.
+	userDBID, err := userDBIDOf(r.Context(), userID)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены: " + err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
 		return
 	}
-
-	description := fmt.Sprintf("HiEarth %s — %d дн.", plan.Name, plan.DurationDays)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(priceRub), "RUB", "yookassa", description)
+	balance, err := biz.WalletBalance(r.Context(), userDBID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create payment: " + err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
 		return
 	}
-
-	saveCard := false
-	if body.SaveCard != nil {
-		saveCard = *body.SaveCard
-	}
-
-	returnURL := body.ReturnURL
-	if returnURL == "" {
-		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/dashboard"
-	}
-
-	// Выбор типа confirmation: embedded (widget на нашем сайте) vs redirect (старый flow).
-	confirmation := &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL}
-	if body.ConfirmationType == "embedded" {
-		confirmation = &yookassa.Confirmation{Type: yookassa.ConfirmationTypeEmbedded}
-	}
-
-	req := yookassa.CreatePaymentRequest{
-		Amount:            yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(priceRub)), Currency: "RUB"},
-		Description:       description,
-		Confirmation:      confirmation,
-		Capture:           true,
-		SavePaymentMethod: saveCard,
-		Receipt:           buildReceipt(description, float64(priceRub), body.Email, "full_prepayment"),
-		Metadata: map[string]string{
-			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-			"plan_id":       fmt.Sprintf("%d", plan.ID),
-			"plan_slug":     plan.Slug,
-			"user_id":       userID,
-			"promocode":     promoUsed,
-			"kind":          "subscription",
-		},
-		MerchantCustomerID: userID,
-	}
-
-	payment, err := client.CreatePayment(req)
-	if err != nil {
-		log.Printf("[yookassa] create payment failed: %v", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
+	priceKop := int64(priceRub) * 100
+	if balance >= priceKop {
+		// A repeated request (double click, retry after a lost answer) must not buy twice:
+		// the client's request_id; an old page without one reuses the key of a purchase of
+		// the same plan it made in the last 2 minutes (that repeat gets the same result).
+		key := ""
+		if rid := strings.TrimSpace(body.RequestID); rid != "" && len(rid) <= 64 {
+			key = fmt.Sprintf("purchase:%d:%s", userDBID, rid)
+		} else {
+			prefix := fmt.Sprintf("purchase:%d:create:", userDBID)
+			if err := db.DB.QueryRowContext(r.Context(), `
+				SELECT idempotency_key FROM wallet_transactions
+				WHERE user_id = $1 AND plan_id = $2 AND idempotency_key LIKE $3 || '%' AND created_at > NOW() - INTERVAL '2 minutes'
+				ORDER BY id DESC LIMIT 1`, userDBID, plan.ID, prefix).Scan(&key); err != nil {
+				key = fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+			}
+		}
+		res, err := walletPurchaseNow(r.Context(), biz.PurchaseRequest{
+			UserID: userID, PlanID: plan.ID, Promocode: promoUsed,
+			Key: key, Kind: biz.WalletPurchase,
+		})
+		if err != nil {
+			writePurchaseError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":      "activated",
+			"plan":        plan.Name,
+			"message":     fmt.Sprintf("Подписка «%s» оплачена с кошелька до %s", plan.Name, res.ValidUntil.Format("02.01.2006")),
+			"balance_kop": res.BalanceAfterKop,
+		})
 		return
 	}
-
-	confirmationURL := ""
-	confirmationToken := ""
-	if payment.Confirmation != nil {
-		confirmationURL = payment.Confirmation.ConfirmationURL
-		confirmationToken = payment.Confirmation.ConfirmationToken
+	out, code, err := createWalletTopup(r.Context(), userID, priceKop-balance, plan.ID, promoUsed, body.Email, body.ReturnURL, body.ConfirmationType)
+	if err != nil {
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
 	}
-
-	// Persist YooKassa payment details
-	_, updErr := db.DB.Exec(`
-		UPDATE payments SET
-			yookassa_payment_id = $1::text,
-			yookassa_status = $2,
-			confirmation_url = $3,
-			external_id = $1::text,
-			return_url = $4,
-			save_payment_method = $5,
-			test = $6,
-			payer_email = $7,
-			metadata = $8::jsonb,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $9
-	`, payment.ID, payment.Status, confirmationURL, returnURL,
-		saveCard, payment.Test, body.Email,
-		mustJSON(map[string]interface{}{"plan_id": plan.ID, "plan_slug": plan.Slug, "promocode": promoUsed, "kind": "subscription"}),
-		paymentDBID)
-	if updErr != nil {
-		log.Printf("[yookassa] payment %d UPDATE failed: %v (yookassa_id=%s)", paymentDBID, updErr, payment.ID)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"payment_id":         paymentDBID,
-		"yookassa_id":        payment.ID,
-		"status":             payment.Status,
-		"confirmation_url":   confirmationURL,   // для redirect flow
-		"confirmation_token": confirmationToken, // для embedded widget
-		"test":               payment.Test,
-		"original_price":     originalPrice,
-		"final_price":        priceRub,
-	})
+	out["original_price"] = originalPrice
+	out["final_price"] = priceRub
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ─────────────────────── YooKassa Webhook ───────────────────────
@@ -400,41 +383,6 @@ func sendActivationEmail(userIDText string, plan *biz.Plan, priceRub int, isRene
 	})
 }
 
-// saveUserPaymentMethod сохраняет способ оплаты для recurring.
-// Обновляет users.saved_payment_method + saved_payment_methods таблицу.
-func saveUserPaymentMethod(userIDStr string, pm *yookassa.PaymentMethod) {
-	if userIDStr == "" || pm == nil || pm.ID == "" {
-		return
-	}
-	var dbUserID int
-	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userIDStr).Scan(&dbUserID); err != nil {
-		return
-	}
-	// Обновляем flag в users
-	_, _ = db.DB.Exec(`UPDATE users SET saved_payment_method = $1 WHERE id = $2`, pm.ID, dbUserID)
-
-	// Запись в saved_payment_methods
-	last4, cardType, issuer, title := "", "", "", pm.Title
-	if pm.Card != nil {
-		last4 = pm.Card.Last4
-		cardType = pm.Card.CardType
-		issuer = pm.Card.IssuerName
-		if title == "" && last4 != "" {
-			title = "•••• " + last4
-		}
-	}
-	if title == "" {
-		title = pm.Type
-	}
-	detailsJSON, _ := json.Marshal(pm)
-	_, _ = db.DB.Exec(`
-		INSERT INTO saved_payment_methods (user_id, yookassa_payment_method_id, method_type, card_last4, card_type, card_issuer, title, details, is_active, updated_at)
-		VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, $8::jsonb, TRUE, CURRENT_TIMESTAMP)
-		ON CONFLICT (yookassa_payment_method_id) DO UPDATE
-		SET is_active = TRUE, title = EXCLUDED.title, details = EXCLUDED.details, updated_at = CURRENT_TIMESTAMP
-	`, dbUserID, pm.ID, pm.Type, last4, cardType, issuer, title, string(detailsJSON))
-}
-
 // mapYookassaStatus → our local status enum
 func mapYookassaStatus(yk string) string {
 	switch yk {
@@ -492,7 +440,7 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	planIDStr := r.URL.Query().Get("plan_id")
@@ -541,36 +489,6 @@ func handleProrationPreview(w http.ResponseWriter, r *http.Request) {
 
 // ─────────────────────── Other Payment Endpoints ───────────────────────
 
-func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
-		return
-	}
-	access, err := biz.GetUserAccessState(userID, "")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	// Grace period: если подписка только что истекла но есть active retry — даём доступ
-	canConnect := access.CanConnect
-	gracePeriod := false
-	if !canConnect && biz.HasActiveGracePeriod(userID) {
-		canConnect = true
-		gracePeriod = true
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"can_connect":  canConnect,
-		"is_premium":   access.IsPremium,
-		"grace_period": gracePeriod,
-	})
-}
-
 func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -585,7 +503,7 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		writeAuthError(w, err)
 		return
 	}
 	if req.Code == "" {
@@ -600,113 +518,6 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "code redeemed", "tenant_id": tenantID})
 }
 
-func handleTenantTopup(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	userID, err := extractUserFromToken(r)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
-		return
-	}
-	var req struct {
-		TenantID  int    `json:"tenant_id"`
-		Amount    int    `json:"amount"`
-		ReturnURL string `json:"return_url"`
-		Email     string `json:"email"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.TenantID == 0 || req.Amount < 100 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id and amount (>=100) required"})
-		return
-	}
-
-	// Verify the caller has *billing-level* membership in this tenant. Plain
-	// 'user'/'viewer' members can use the proxy but cannot move the company
-	// wallet — that would be a trivial way to grief a coworker.
-	var userDBID int
-	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
-		return
-	}
-	role, ok, err := biz.GetTenantMember(req.TenantID, userDBID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check membership: " + err.Error()})
-		return
-	}
-	if !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "you are not a member of this tenant"})
-		return
-	}
-	if role != "admin" && role != "billing" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role does not allow billing actions"})
-		return
-	}
-
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены"})
-		return
-	}
-
-	description := fmt.Sprintf("HiEarth B2B — пополнение (%d ₽)", req.Amount)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "yookassa", description)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/dashboard"
-	}
-
-	yreq := yookassa.CreatePaymentRequest{
-		Amount:       yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(req.Amount)), Currency: "RUB"},
-		Description:  description,
-		Confirmation: &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
-		Capture:      true,
-		Receipt:      buildReceipt(description, float64(req.Amount), req.Email, "full_payment"),
-		Metadata: map[string]string{
-			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-			"tenant_id":     fmt.Sprintf("%d", req.TenantID),
-			"user_id":       userID,
-			"kind":          "tenant_topup",
-		},
-	}
-	payment, err := client.CreatePayment(yreq)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
-		return
-	}
-
-	confirmationURL := ""
-	if payment.Confirmation != nil {
-		confirmationURL = payment.Confirmation.ConfirmationURL
-	}
-	// Persist tenant_id + kind so the YooKassa webhook can route the credit
-	// when the payment succeeds. user_id is also included to keep a trace of
-	// who initiated the top-up for audit purposes.
-	_, _ = db.DB.Exec(`
-		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2, confirmation_url = $3,
-			external_id = $1::text, metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $6
-	`, payment.ID, payment.Status, confirmationURL,
-		mustJSON(map[string]interface{}{
-			"tenant_id": req.TenantID,
-			"kind":      "tenant_topup",
-			"user_id":   userID,
-		}),
-		payment.Test, paymentDBID)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"payment_id":       paymentDBID,
-		"confirmation_url": confirmationURL,
-	})
-}
-
 func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -715,107 +526,84 @@ func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := extractUserFromToken(r)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		writeAuthError(w, err)
 		return
 	}
 	var req struct {
 		Code string `json:"code"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	code := strings.TrimSpace(req.Code)
-	if code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code required"})
+	if strings.TrimSpace(req.Code) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Введите промокод"})
 		return
 	}
-
-	if err := biz.CheckPromoPerUserLimit(userID, code); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	res, err := biz.RedeemPromocode(r.Context(), userID, req.Code, 0, biz.RedeemSourceCabinet)
+	if err != nil {
+		writePromoError(w, err)
 		return
 	}
-
-	var dbUserID int
-	db.DB.QueryRow("SELECT id FROM users WHERE user_id = $1", userID).Scan(&dbUserID)
-	if err := biz.ApplyPromocode(dbUserID, code); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Промокод активирован"})
+	RequestXraySync()
+	writeJSON(w, http.StatusOK, map[string]string{"message": res.Message})
 }
 
-func handleCreateDonation(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
+// markPaymentNotCreated closes our payment row when YooKassa refused or did not answer
+// the creation call: there is nothing to pay. If YooKassa did create it after all, its
+// webhook finds the row by metadata payment_db_id and the paid claim (which ignores the
+// canceled status) still applies it.
+func markPaymentNotCreated(paymentDBID int, cause error) {
+	reason := "not created in YooKassa: " + cause.Error()
+	if len(reason) > 300 {
+		reason = reason[:300]
+	}
+	if _, err := db.DB.Exec(`UPDATE payments SET status = 'canceled', cancellation_reason = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND status = 'pending' AND paid_at IS NULL`, paymentDBID, reason); err != nil {
+		log.Printf("[yookassa] payment %d: mark not created: %v", paymentDBID, err)
+	}
+}
+
+// writePromoError answers a refused promocode with its Russian text (400), anything
+// else with a generic 500 (the cause goes to the log).
+func writePromoError(w http.ResponseWriter, err error) {
+	if biz.IsPromoError(err) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	userID, err := extractUserFromToken(r)
+	log.Printf("[promocode] %v", err)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось применить промокод, попробуйте позже"})
+}
+
+// activateFreePurchase activates a purchase that costs nothing (a free plan, or a 100%
+// discount code) and records the code in the same transaction.
+func activateFreePurchase(ctx context.Context, userID string, plan *biz.Plan, promo string) error {
+	tx, err := db.DB.BeginTx(ctx, nil)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-		return
+		return err
 	}
-	var req struct {
-		Amount    int    `json:"amount"`
-		ReturnURL string `json:"return_url"`
-		Email     string `json:"email"`
+	defer tx.Rollback() //nolint:errcheck
+	var userDBID int
+	if promo != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+			return err
+		}
+		// Nothing is paid, so the code's limits are checked again under its row lock:
+		// two parallel requests cannot both use a single-use 100% code.
+		if _, err := biz.LoadPromocode(ctx, tx, userDBID, promo, plan.ID, true); err != nil {
+			return err
+		}
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 50 || req.Amount > 100000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "amount 50-100000"})
-		return
+	if _, err := biz.ActivateSubscriptionTx(ctx, tx, userID, plan.ID, plan.DurationDays, 0, promo, biz.ActivateOpts{}); err != nil {
+		return err
 	}
-
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "платежи не настроены"})
-		return
+	if promo != "" {
+		if err := biz.ConsumePaidPromocodeTx(ctx, tx, promo, userDBID, biz.RedeemSourceFree, 0); err != nil {
+			return err
+		}
 	}
-
-	description := fmt.Sprintf("HiEarth — донат (%d ₽)", req.Amount)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(req.Amount), "RUB", "yookassa", description)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	if err := tx.Commit(); err != nil {
+		return err
 	}
-
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/dashboard"
-	}
-
-	yreq := yookassa.CreatePaymentRequest{
-		Amount:       yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(req.Amount)), Currency: "RUB"},
-		Description:  description,
-		Confirmation: &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL},
-		Capture:      true,
-		Receipt:      buildReceipt(description, float64(req.Amount), req.Email, "full_payment"),
-		Metadata: map[string]string{
-			"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-			"user_id":       userID,
-			"kind":          "donation",
-		},
-	}
-	payment, err := client.CreatePayment(yreq)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "yookassa: " + err.Error()})
-		return
-	}
-
-	confirmationURL := ""
-	if payment.Confirmation != nil {
-		confirmationURL = payment.Confirmation.ConfirmationURL
-	}
-	_, _ = db.DB.Exec(`
-		UPDATE payments SET yookassa_payment_id = $1::text, yookassa_status = $2,
-			confirmation_url = $3, external_id = $1::text,
-			metadata = $4::jsonb, test = $5, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $6
-	`, payment.ID, payment.Status, confirmationURL,
-		`{"kind":"donation"}`, payment.Test, paymentDBID)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"payment_id":       paymentDBID,
-		"confirmation_url": confirmationURL,
-	})
+	biz.NotifySubscriptionChange()
+	return nil
 }
 
 // recoverOrphanPayment создаёт запись в payments из YooKassa payment'а,
@@ -886,4 +674,28 @@ func mustJSON(v interface{}) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// The Flutter app still asks this (flutter-app/lib/payment_api.dart): kept as is.
+func handleCheckAccess(w http.ResponseWriter, r *http.Request) {
+	setCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	userID, err := extractUserFromToken(r)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	access, err := biz.GetUserAccessState(userID, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"can_connect":  access.CanConnect,
+		"is_premium":   access.IsPremium,
+		"grace_period": false,
+	})
 }

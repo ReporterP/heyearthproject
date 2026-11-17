@@ -3,12 +3,16 @@ import { Wallet, Copy as CopyIcon, Check } from 'lucide-react'
 import { useT } from '../i18n/index.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus } from '../api/admin.js'
+import { fetchPaymentsPaged, createPayment, updatePayment, checkPaymentStatus, syncPendingPayments } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
-import CrudDialog, { FormField, TextInput, TextArea, SelectInput } from '../components/CrudDialog.jsx'
+import ManualPaymentDialog from '../components/payments/ManualPaymentDialog.jsx'
+import FailingRenewals from '../components/payments/FailingRenewals.jsx'
+import EmailLog from '../components/payments/EmailLog.jsx'
 import RefundDialog from '../components/payments/RefundDialog.jsx'
 import { formatDate } from '../utils/format.js'
 import { refundableAmount } from '../utils/refund.js'
+import { paymentKindLabel } from '../utils/wallet.js'
+import { paymentStatusName } from '../utils/protocols.js'
 import {
   Button,
   Input,
@@ -22,16 +26,12 @@ import {
   Td,
   Badge,
   TableSkeleton,
-  EmptyState,
+  EmptyState, Tabs, TabPanel,
 } from '../components/ui/index.js'
 
 const STATUS_OPTIONS = [
-  { value: '', label: 'Все' },
-  { value: 'pending', label: 'Pending' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'canceled', label: 'Canceled' },
-  { value: 'waiting_for_capture', label: 'Waiting for capture' },
+  { value: '', label: 'Все статусы' },
+  ...['succeeded', 'pending', 'waiting_for_capture', 'canceled', 'failed', 'refunded'].map((value) => ({ value, label: paymentStatusName(value) })),
 ]
 
 const STATUS_VARIANT = {
@@ -108,7 +108,7 @@ function MetadataPopover({ data }) {
         {open ? 'Скрыть' : 'JSON'}
       </Button>
       {open && (
-        <div className="absolute z-30 top-full left-0 mt-1 p-3 rounded bg-overlay border border-default shadow-xl min-w-[280px] max-w-[400px] max-h-[300px] overflow-auto">
+        <div className="absolute z-30 top-full left-0 mt-1 p-3 rounded bg-overlay border border-default min-w-[280px] max-w-[400px] max-h-[300px] overflow-auto">
           <pre className="text-xs text-primary whitespace-pre-wrap break-all font-mono">{jsonStr}</pre>
         </div>
       )}
@@ -116,7 +116,7 @@ function MetadataPopover({ data }) {
   )
 }
 
-export default function PaymentsPage() {
+function PaymentsList() {
   const { t } = useT()
   const { can } = useAuth()
   const toast = useToast()
@@ -132,20 +132,11 @@ export default function PaymentsPage() {
   const [error, setError] = useState('')
   const pageSize = 20
 
-  const [dialog, setDialog] = useState(null)
-  const [saving, setSaving] = useState(false)
+  const [dialog, setDialog] = useState(null) // { mode: 'create' } | { mode: 'edit', item } — manual payments only
   const [refundFor, setRefundFor] = useState(null) // payment in the refund dialog
   const [checkingId, setCheckingId] = useState(null) // payment whose YooKassa status is being fetched
   const canActions = can('payments.write') || can('payments.refund')
 
-  const [userDbId, setUserDbId] = useState('')
-  const [amount, setAmount] = useState('')
-  const [currency, setCurrency] = useState('RUB')
-  const [status, setStatus] = useState('pending')
-  const [provider, setProvider] = useState('manual')
-  const [externalId, setExternalId] = useState('')
-  const [notes, setNotes] = useState('')
-  const [metadata, setMetadata] = useState('')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -172,75 +163,19 @@ export default function PaymentsPage() {
     return items.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
   }, [items])
 
-  function openCreate() {
-    setUserDbId('')
-    setAmount('')
-    setCurrency('RUB')
-    setStatus('pending')
-    setProvider('manual')
-    setExternalId('')
-    setNotes('')
-    setMetadata('')
-    setDialog({ mode: 'create' })
-  }
-
-  function openEdit(item) {
-    const uid = item.user_db_id && item.user_db_id > 0 ? item.user_db_id : (item.user_id || '')
-    setUserDbId(String(uid))
-    setAmount(String(item.amount || ''))
-    setCurrency(item.currency || 'RUB')
-    setStatus(item.status || 'pending')
-    setProvider(item.provider || '')
-    setExternalId(item.external_id || '')
-    setNotes(item.notes || '')
-    setMetadata(item.metadata ? JSON.stringify(item.metadata) : '')
-    setDialog({ mode: 'edit', item })
-  }
-
-  async function handleSave() {
-    setSaving(true)
-    try {
-      const payload = {
-        user_db_id: parseInt(userDbId),
-        amount: parseFloat(amount),
-        currency,
-        status,
-        provider,
-        external_id: externalId || undefined,
-        notes: notes || undefined,
-      }
-      if (metadata) {
-        try { payload.metadata = JSON.parse(metadata) } catch {
-          toast.error(t.paymentMetadataInvalidJson || 'Metadata: невалидный JSON')
-          setSaving(false)
-          return
-        }
-      }
-      if (dialog.mode === 'create') {
-        await createPayment(payload)
-        toast.success(t.create + ' OK')
-      } else {
-        await updatePayment(dialog.item.id, payload)
-        toast.success(t.save + ' OK')
-      }
-      setDialog(null)
-      load()
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setSaving(false)
-    }
+  async function saveManual(body) {
+    if (dialog.mode === 'create') await createPayment(body)
+    else await updatePayment(dialog.item.id, body)
+    toast.success(dialog.mode === 'create' ? 'Ручной платёж записан' : 'Сохранено')
+    setDialog(null)
+    load()
   }
 
   async function handleSyncPending() {
     try {
-      const r = await fetch('/api/admin/sync-pending-payments', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('admin_token') },
-      })
-      const d = await r.json()
-      if (r.ok) { toast.success(d.message || 'Синхронизация запущена'); load() }
-      else toast.error(d.error || 'Ошибка')
+      const d = await syncPendingPayments()
+      toast.success(d?.message || 'Проверка запущена')
+      load()
     } catch (e) { toast.error(e.message) }
   }
 
@@ -248,18 +183,17 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title={`${t.paymentsTitle} (${total})`}
-        subtitle="Платежи и возвраты через ЮKassa"
-        actions={can('payments.write') ? (
-          <>
-            <Button variant="secondary" onClick={handleSyncPending} title="Проверить статус всех pending платежей в ЮKassa">
-              Sync pending
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <p className="text-sm text-secondary">Платежей: <span className="font-mono tabular-nums">{total}</span></p>
+        {can('payments.write') && (
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button variant="secondary" onClick={handleSyncPending} title="Спросить у ЮKassa статус всех ожидающих платежей">
+              Проверить ожидающие
             </Button>
-            <Button variant="primary" onClick={openCreate}>+ {t.createPayment}</Button>
-          </>
-        ) : null}
-      />
+            <Button variant="primary" onClick={() => setDialog({ mode: 'create' })}>+ Ручной платёж</Button>
+          </div>
+        )}
+      </div>
 
       {/* Stats panel */}
       <div className="px-4 py-3 rounded border border-default bg-elevated/40 flex items-center gap-6 flex-wrap">
@@ -334,6 +268,7 @@ export default function PaymentsPage() {
             <Tr>
               <Th sortKey="id" sortState={sortState} onSort={onSort}>ID</Th>
               <Th sortKey="user_id" sortState={sortState} onSort={onSort}>User</Th>
+              <Th>Тип</Th>
               <Th sortKey="amount" sortState={sortState} onSort={onSort} align="right">{t.fieldAmount}</Th>
               <Th sortKey="status" sortState={sortState} onSort={onSort}>{t.fieldStatus}</Th>
               <Th>Метод</Th>
@@ -360,12 +295,16 @@ export default function PaymentsPage() {
                     {isRecovered && <span className="ml-1 text-[9px] text-info align-super" title="Платёж восстановлен через orphan recovery">RECOVERED</span>}
                   </Td>
                   <Td mono className="text-xs">{p.user_id || p.user_db_id || '—'}</Td>
+                  <Td>
+                    <Badge variant={metaObj.kind === 'wallet_topup' ? 'accent' : 'default'}>{paymentKindLabel(metaObj.kind)}</Badge>
+                    {metaObj.purchase_status === 'failed' && <div className="text-[10px] text-warning mt-0.5" title={metaObj.purchase_reason || ''}>покупка не прошла</div>}
+                  </Td>
                   <Td align="right" mono className="font-medium">
                     {parseFloat(p.amount).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {p.currency}
                   </Td>
                   <Td>
                     <span title={cancelReason ? `Причина отмены: ${cancelReason}` : undefined}>
-                      <Badge variant={STATUS_VARIANT[p.status] || 'default'}>{p.status}</Badge>
+                      <Badge variant={STATUS_VARIANT[p.status] || 'default'}>{paymentStatusName(p.status)}</Badge>
                     </span>
                     {cancelReason && p.status === 'canceled' && (
                       <div className="text-[10px] text-danger/80 mt-0.5 max-w-[140px] truncate" title={cancelReason}>
@@ -394,7 +333,7 @@ export default function PaymentsPage() {
                   {canActions && (
                     <Td>
                       <div className="flex gap-1">
-                        {can('payments.write') && <Button size="sm" variant="ghost" onClick={() => openEdit(p)}>{t.edit}</Button>}
+                        {can('payments.write') && p.provider === 'manual' && <Button size="sm" variant="ghost" onClick={() => setDialog({ mode: 'edit', item: p })}>Изменить</Button>}
                         {can('payments.refund') && (p.yookassa_payment_id || p.external_id) && (
                           <>
                             <Button size="sm" variant="ghost" title="Запросить статус в ЮKassa"
@@ -443,41 +382,7 @@ export default function PaymentsPage() {
         </div>
       )}
 
-      <CrudDialog
-        open={!!dialog} title={dialog?.mode === 'create' ? t.createPayment : t.editPayment}
-        onClose={() => setDialog(null)} onSubmit={handleSave} loading={saving}
-      >
-        <FormField label={t.fieldUserDbId}>
-          <TextInput value={userDbId} onChange={setUserDbId} type="number" />
-        </FormField>
-        <FormField label={t.fieldAmount}>
-          <TextInput value={amount} onChange={setAmount} type="number" />
-        </FormField>
-        <FormField label={t.fieldCurrency}>
-          <SelectInput value={currency} onChange={setCurrency} options={[{ value: 'RUB', label: 'RUB' }, { value: 'USD', label: 'USD' }]} />
-        </FormField>
-        <FormField label={t.fieldStatus}>
-          <SelectInput value={status} onChange={setStatus} options={[
-            { value: 'pending', label: 'Pending' },
-            { value: 'succeeded', label: 'Succeeded' },
-            { value: 'waiting_for_capture', label: 'Waiting for capture' },
-            { value: 'failed', label: 'Failed' },
-            { value: 'canceled', label: 'Canceled' },
-          ]} />
-        </FormField>
-        <FormField label={t.fieldProvider}>
-          <TextInput value={provider} onChange={setProvider} />
-        </FormField>
-        <FormField label={t.fieldExternalId}>
-          <TextInput value={externalId} onChange={setExternalId} />
-        </FormField>
-        <FormField label={t.fieldNotes}>
-          <TextInput value={notes} onChange={setNotes} />
-        </FormField>
-        <FormField label={t.fieldMetadata}>
-          <TextArea value={metadata} onChange={setMetadata} placeholder='{"key":"value"}' rows={2} />
-        </FormField>
-      </CrudDialog>
+      {dialog && <ManualPaymentDialog dialog={dialog} onClose={() => setDialog(null)} onSave={saveManual} />}
 
       {refundFor && (
         <RefundDialog
@@ -492,6 +397,32 @@ export default function PaymentsPage() {
           onRefresh={load}
         />
       )}
+    </div>
+  )
+}
+
+const PAYMENT_TABS = [
+  { key: 'payments', label: 'Платежи' },
+  { key: 'renewals', label: 'Не прошло продление' },
+  { key: 'emails', label: 'Письма' },
+]
+
+/**
+ * PaymentsPage — «Платежи»: the payments with refunds and manual records, the subscriptions the
+ * wallet cannot renew (C10: what «Дунинг» was) and the email log (was «Письма»).
+ */
+export default function PaymentsPage() {
+  const [f, setF] = useUrlState({ tab: 'payments' })
+  const tab = PAYMENT_TABS.some((x) => x.key === f.tab) ? f.tab : 'payments'
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Платежи" subtitle="Оплаты и возвраты через ЮKassa, кошельки, письма клиентам" />
+      <Tabs id="payments-tab" label="Раздел платежей" tabs={PAYMENT_TABS} value={tab} onChange={(k) => setF({ tab: k })} />
+      <TabPanel tabsId="payments-tab" tabKey={tab}>
+        {tab === 'payments' && <PaymentsList />}
+        {tab === 'renewals' && <FailingRenewals />}
+        {tab === 'emails' && <EmailLog />}
+      </TabPanel>
     </div>
   )
 }

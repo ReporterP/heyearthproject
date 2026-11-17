@@ -49,12 +49,12 @@ func StartTrafficStatsCollector() {
 	go func() {
 		// Ждём запуск Xray
 		time.Sleep(15 * time.Second)
-		collectTrafficStats()
+		safely("traffic-stats", collectTrafficStats)
 
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			collectTrafficStats()
+			safely("traffic-stats", collectTrafficStats)
 		}
 	}()
 	log.Println("[traffic-stats] Фоновый сборщик трафика запущен (каждые 60 сек)")
@@ -161,7 +161,7 @@ func collectTrafficStats() {
 
 // recordDialRateSamples оценивает per-user dials/min из дельт и записывает в dial_rate_log.
 // Окно = 60 сек (соответствует тикеру collectTrafficStats).
-// Раз в час чистит сэмплы старше 24 часов.
+// Раз в час сводит минуты в сутки (dial_rate_daily) и чистит минуты старше 48 часов.
 func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	if len(deltas) == 0 {
 		return
@@ -205,7 +205,9 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 	}
 	lastDialRateCleanup.Unlock()
 	if doCleanup {
-		if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
+		if err := biz.RollupDialRate(); err != nil {
+			log.Printf("[dial-rate] rollup: %v (the minutes are kept until it succeeds)", err)
+		} else if n, err := biz.CleanupDialRateLog(); err == nil && n > 0 {
 			log.Printf("[dial-rate] Очистка: %d старых записей удалено", n)
 		}
 	}

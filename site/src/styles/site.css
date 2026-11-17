@@ -1,0 +1,56 @@
+/* HiEarth site — glue between the «Канон» stylesheet and the app.
+   Colours, type, radii, shadows and motion come ONLY from ./hiearth.css (a verbatim copy of
+   site/design-system/hiearth-canon/hiearth.css). Tailwind stays for layout utilities only:
+   its palette, shadows, radii and fonts are switched off below, so `bg-slate-*`, `shadow-*`
+   and friends simply do not exist in this build. */
+@import "tailwindcss";
+/* hiearth.css owns these class names; Tailwind's utilities of the same name (visibility:collapse,
+   the breakpoint container) must not be generated */
+@source not inline("collapse container");
+/* In the components layer, so a layout utility on an element (max-sm:hidden, mt-4…) still wins over
+   a component class — unlayered CSS would beat every Tailwind layer regardless of specificity. */
+@import "./hiearth.css" layer(components);
+
+@theme {
+  --color-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-shadow-*: initial;
+  --radius-*: initial;
+  --font-*: initial;
+  --animate-*: initial;
+  /* the two breakpoints of the spec (01 §3): phone ≤640, desktop ≥1025 */
+  --breakpoint-*: initial;
+  --breakpoint-sm: 641px;
+  --breakpoint-lg: 1025px;
+}
+
+/* @fontsource-variable registers Manrope as «Manrope Variable» */
+:root {
+  --font-sans: 'Manrope Variable', 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: dark;
+}
+
+@layer base {
+  html { background: var(--bg); scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); }
+  #root { min-height: 100vh; }
+  /* the root wrapper of every page */
+  .he { min-height: 100vh; display: flex; flex-direction: column; }
+  /* a main.container is a flex item with auto margins: without a width it shrinks to its content
+     and a wide child (the document tabs) pushes the page wider than the phone */
+  .he main { flex: 1 0 auto; width: 100%; }
+}
+
+/* Touch: lifts only on real pointers (03 §1) */
+@media (hover: none), (pointer: coarse) {
+  .he .card--link:hover, .he .plan:hover, .he .dl:hover { transform: none; }
+}
+
+/* Print: documents only (06 §6.3) */
+@media print {
+  .he .site-nav, .he .site-foot, .he .toc, .he .seg, .he .skip, .he .toasts { display: none !important; }
+  .he, .he .doc p, .he .doc li, .he .doc h2, .he h1 { background: #fff !important; color: #000 !important; }
+}

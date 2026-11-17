@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
-	"github.com/heyearth/backend/internal/yookassa"
 )
 
 // ─────────────────────── Subscription & Billing Cron ───────────────────────
@@ -22,7 +24,7 @@ func StartSubscriptionCron() {
 	go func() {
 		time.Sleep(30 * time.Second)
 		for {
-			checkExpiringSubscriptions()
+			safely("subscription-cron", checkExpiringSubscriptions)
 			time.Sleep(1 * time.Hour)
 		}
 	}()
@@ -32,8 +34,8 @@ func StartSubscriptionCron() {
 	go func() {
 		time.Sleep(1 * time.Minute)
 		for {
-			checkMonthlyBilling()
-			checkTenantBalanceWarnings()
+			safely("b2b-billing", checkMonthlyBilling)
+			safely("b2b-balance", checkTenantBalanceWarnings)
 			time.Sleep(1 * time.Hour)
 		}
 	}()
@@ -46,19 +48,12 @@ func checkExpiringSubscriptions() {
 	// IMPORTANT: исключаем подписки, для которых уже есть pending/completed платёж
 	// за последние 24 часа — чтобы не списывать повторно (cron каждый час).
 	rows, err := db.DB.Query(`
-		SELECT u.user_id, us.valid_until, COALESCE(p.name, us.plan, 'unknown'), us.auto_renew
+		SELECT u.user_id, us.id, us.valid_until, COALESCE(p.name, us.plan, 'unknown'), us.auto_renew
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
-		  AND (us.paused_until IS NULL OR us.paused_until < NOW())
-		  AND NOT EXISTS (
-		    SELECT 1 FROM payments pay
-		    WHERE pay.user_id_text = u.user_id
-		      AND pay.description LIKE '%автопродление%'
-		      AND pay.created_at > NOW() - INTERVAL '24 hours'
-		  )
 	`)
 	if err != nil {
 		log.Printf("[subscription-cron] Ошибка проверки истекающих подписок: %v", err)
@@ -69,19 +64,20 @@ func checkExpiringSubscriptions() {
 	expiringCount := 0
 	for rows.Next() {
 		var userID, plan string
+		var subID int
 		var validUntil time.Time
 		var autoRenew bool
-		if err := rows.Scan(&userID, &validUntil, &plan, &autoRenew); err != nil {
+		if err := rows.Scan(&userID, &subID, &validUntil, &plan, &autoRenew); err != nil {
 			continue
 		}
 		expiringCount++
 
 		if autoRenew {
 			// Auto-renew: charge saved payment method
-			if err := processAutoRenew(userID); err != nil {
+			if err := processAutoRenew(userID, subID); err != nil {
 				log.Printf("[subscription-cron] Auto-renew %s (%s): %v", userID, plan, err)
 			} else {
-				log.Printf("[subscription-cron] Auto-renew %s (%s): платёж создан", userID, plan)
+				log.Printf("[subscription-cron] Auto-renew %s (%s): обработано", userID, plan)
 			}
 		} else {
 			log.Printf("[subscription-cron] Подписка %s (%s) истекает %s",
@@ -164,97 +160,85 @@ func checkTenantBalanceWarnings() {
 	log.Printf("[subscription-cron] Проверка балансов завершена")
 }
 
-// processAutoRenew handles auto-renewal for a user.
-// Free plans: extend automatically.
-// Paid plans with saved payment_method_id: charge via YooKassa (no confirmation).
-// Paid plans without saved method: log expiry (user must re-pay manually).
-func processAutoRenew(userID string) error {
-	plan, err := biz.GetUserPlan(userID)
+// processAutoRenew renews one subscription (user_subscriptions.id) that ends within 24 h
+// and has auto_renew set.
+//
+// Free access (owner's decision 13.11): a subscription given by a promocode and paid
+// nothing (price_paid = 0, promocode_used names an existing code) renews free, for the
+// plan's duration, and keeps the code as its mark. A free plan WITHOUT a promocode (the
+// trial taken from the site) never renews: its auto_renew is switched off. Paid plans
+// are paid from the wallet (see below).
+func processAutoRenew(userID string, subID int) error {
+	var planID, pricePaid int
+	var promo string
+	var validUntil time.Time
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(plan_id, 0), COALESCE(price_paid, 0), COALESCE(promocode_used, ''), valid_until
+		FROM user_subscriptions WHERE id = $1 AND valid_until > NOW() AND valid_until < NOW() + INTERVAL '25 hours'`, subID).Scan(&planID, &pricePaid, &promo, &validUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // not due (already renewed, or ended)
+	}
+	if err != nil {
+		return fmt.Errorf("subscription %d: %w", subID, err)
+	}
+	if planID == 0 {
+		return fmt.Errorf("subscription %d has no plan", subID)
+	}
+	plan, err := biz.GetPlanByID(planID)
 	if err != nil || plan == nil {
-		return fmt.Errorf("no active plan for %s", userID)
+		return fmt.Errorf("plan %d of subscription %d: %w", planID, subID, err)
 	}
 
-	// Free plans: extend automatically
-	if plan.PriceRub <= 0 {
-		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, "auto-renew")
+	// Activation extends the user's latest active row; a row that is not that one (an
+	// older trial next to a paid plan) is left to end on its own.
+	var latest int
+	if err := db.DB.QueryRow(`
+		SELECT us.id FROM user_subscriptions us JOIN users u ON u.id = us.user_id
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.plan_id IS NOT NULL
+		ORDER BY us.valid_until DESC LIMIT 1`, userID).Scan(&latest); err != nil {
+		return fmt.Errorf("latest subscription of %s: %w", userID, err)
 	}
-
-	// Защита от двойного списания: если за последние 24 часа уже был
-	// auto-renew платёж (pending/succeeded) — пропускаем. Cron + endpoint
-	// могут сработать параллельно.
-	var recentCount int
-	_ = db.DB.QueryRow(`
-		SELECT COUNT(*) FROM payments
-		WHERE user_id_text = $1
-		  AND description LIKE '%автопродление%'
-		  AND created_at > NOW() - INTERVAL '24 hours'
-	`, userID).Scan(&recentCount)
-	if recentCount > 0 {
-		log.Printf("[auto-renew] User %s: skipped — already has auto-renew payment in last 24h", userID)
+	if latest != subID {
+		log.Printf("[auto-renew] User %s: subscription %d is not the current one (%d) — not renewed", userID, subID, latest)
 		return nil
 	}
 
-	// Check for saved YooKassa payment_method_id
-	var savedPM string
-	db.DB.QueryRow("SELECT COALESCE(saved_payment_method, '') FROM users WHERE user_id = $1", userID).Scan(&savedPM)
-	if savedPM == "" {
-		log.Printf("[auto-renew] User %s: no saved payment method, plan '%s' will expire", userID, plan.Slug)
-		return nil
-	}
-
-	client, err := yookassa.NewClientFromSettings()
-	if err != nil {
-		return fmt.Errorf("yookassa not configured: %w", err)
-	}
-
-	description := fmt.Sprintf("HiEarth %s — автопродление", plan.Name)
-	paymentDBID, err := biz.CreatePaymentRecord(userID, float64(plan.PriceRub), "RUB", "yookassa", description)
-	if err != nil {
-		return fmt.Errorf("create payment record: %w", err)
-	}
-
-	// Email для чека — берём payer_email из последнего платежа юзера или fallback
-	var email string
-	_ = db.DB.QueryRow(`
-		SELECT COALESCE(payer_email, '')
-		FROM payments
-		WHERE user_id_text = $1 AND payer_email IS NOT NULL AND payer_email != ''
-		ORDER BY created_at DESC LIMIT 1
-	`, userID).Scan(&email)
-
-	// При auto-renewal услуга уже оказывается (продление активной подписки) — full_payment
-	receipt := buildReceipt(description, float64(plan.PriceRub), email, "full_payment")
-	metadata := map[string]string{
-		"payment_db_id": fmt.Sprintf("%d", paymentDBID),
-		"plan_id":       fmt.Sprintf("%d", plan.ID),
-		"plan_slug":     plan.Slug,
-		"user_id":       userID,
-		"kind":          "subscription",
-		"auto_renew":    "true",
-	}
-
-	payment, err := client.ChargeRecurring(savedPM,
-		yookassa.Amount{Value: fmt.Sprintf("%.2f", float64(plan.PriceRub)), Currency: "RUB"},
-		description, receipt, metadata)
-	if err != nil {
-		log.Printf("[auto-renew] User %s: recurring charge failed: %v", userID, err)
-		// Планируем retry через dunning (первая попытка через 24ч)
-		var dbUserID int
-		_ = db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&dbUserID)
-		if dbUserID > 0 {
-			_, _ = biz.ScheduleRetry(dbUserID, plan.ID, paymentDBID, err.Error())
+	freePromo := false
+	if pricePaid == 0 {
+		if freePromo, err = biz.IsFreeAccessPromocode(context.Background(), db.DB, promo); err != nil {
+			return fmt.Errorf("check promocode of subscription %d: %w", subID, err)
 		}
-		return fmt.Errorf("yookassa charge: %w", err)
+	}
+	if freePromo {
+		return biz.ActivateSubscriptionWithPlan(userID, plan.ID, plan.DurationDays, 0, biz.NormalizePromocode(promo))
+	}
+	if plan.PriceRub <= 0 {
+		if _, err := db.DB.Exec(`UPDATE user_subscriptions SET auto_renew = FALSE WHERE id = $1`, subID); err != nil {
+			return fmt.Errorf("switch off auto-renew of free subscription %d: %w", subID, err)
+		}
+		log.Printf("[auto-renew] User %s: free plan '%s' without a promocode is not renewed (auto_renew switched off)", userID, plan.Slug)
+		return nil
 	}
 
-	// Сохраняем yookassa_payment_id + метаданные и применяем списание через paid claim:
-	// продлевает тот, кто первый (этот cron или webhook этого списания), второй — нет.
-	// YooKassa возвращает для recurring сразу status=succeeded (без confirmation).
-	if err := recordRecurringCharge(paymentDBID, payment,
-		map[string]any{"plan_id": plan.ID, "plan_slug": plan.Slug, "kind": "subscription", "auto_renew": true}); err != nil {
-		log.Printf("[auto-renew] User %s: charge %s: %v (activation left to the webhook/sync)", userID, payment.ID, err)
-	} else if payment.Status == yookassa.PaymentStatusSucceeded {
-		log.Printf("[auto-renew] User %s: charge %s applied (plan: %s, %d₽)", userID, payment.ID, plan.Slug, plan.PriceRub)
+	// Paid plan: from the wallet (cleanup plan W4 — card recurring and dunning are
+	// gone). The key is the subscription and its current end: the hourly cron, a retry
+	// or a restart never charge one period twice. Not enough money: nothing happens —
+	// Happ shows «Пополните кошелёк» and the reminder email asks to top up; the next
+	// hourly run tries again until the subscription ends.
+	res, err := walletPurchaseNow(context.Background(), biz.PurchaseRequest{
+		UserID: userID, PlanID: plan.ID,
+		Key:  fmt.Sprintf("renew:%d:%d", subID, validUntil.Unix()),
+		Kind: biz.WalletAutoRenew,
+	})
+	if errors.Is(err, biz.ErrInsufficientFunds) {
+		log.Printf("[auto-renew] User %s: not enough on the wallet for '%s' (%d ₽) — waiting for a top-up", userID, plan.Slug, plan.PriceRub)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("renew from wallet: %w", err)
+	}
+	if res.Replayed {
+		log.Printf("[auto-renew] User %s: period already renewed", userID)
 	}
 	return nil
 }

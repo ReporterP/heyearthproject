@@ -15,7 +15,6 @@ type dashboardOverview struct {
 	OnlineServersCount int64 `json:"online_servers_count"`
 	PromocodesCount    int64 `json:"promocodes_count"`
 	PaymentsCount      int64 `json:"payments_count"`
-	ActiveReleases     int64 `json:"active_releases"`
 	AdminsCount        int64 `json:"admins_count"`
 
 	// Трафик
@@ -136,17 +135,6 @@ type paymentResponse struct {
 	CancellationReason   string          `json:"cancellation_reason,omitempty"`
 }
 
-type paymentPayload struct {
-	UserDBID   int             `json:"user_db_id"`
-	Amount     float64         `json:"amount"`
-	Currency   string          `json:"currency"`
-	Status     string          `json:"status"`
-	Provider   string          `json:"provider"`
-	ExternalID string          `json:"external_id"`
-	Notes      string          `json:"notes"`
-	Metadata   json.RawMessage `json:"metadata"`
-}
-
 type serverResponse struct {
 	ID              int             `json:"id"`
 	Name            string          `json:"name"`
@@ -154,8 +142,6 @@ type serverResponse struct {
 	SSHPort         int             `json:"ssh_port"`
 	SSHUser         string          `json:"ssh_user"`
 	SSHPassword     string          `json:"ssh_password,omitempty"`
-	SshKeyID        *int            `json:"ssh_key_id,omitempty"`
-	SshKeyName      string          `json:"ssh_key_name,omitempty"`
 	CountryCode     string          `json:"country_code"`
 	Status          string          `json:"status"`
 	LoadMetrics     json.RawMessage `json:"load_metrics"`
@@ -190,7 +176,6 @@ type serverPayload struct {
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	SSHPassword string `json:"ssh_password"`
-	SshKeyID    *int   `json:"ssh_key_id"`
 	CountryCode string `json:"country_code"`
 	Status      string `json:"status"`
 	// Exit-node / tunnel

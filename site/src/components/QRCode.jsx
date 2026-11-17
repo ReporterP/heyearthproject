@@ -1,41 +1,40 @@
 import { useEffect, useState } from 'react'
+import Dialog, { DialogActions } from './Dialog.jsx'
+import Button from './Button.jsx'
 
-/**
- * QRCode — renders a QR code client-side (no third-party service).
- * The connection string / subscription token never leaves the browser.
- * Dark modules on white for reliable scanning across apps.
- */
-export default function QRCode({ data, size = 180, className = '' }) {
+// QR (spec 02 §19): generated in the browser (the subscription link never leaves it), shown only in
+// a dialog. White plate — the scanner needs it (01 §10 allows #fff here).
+export function QR({ data, size = 184, label = 'QR-код ссылки подписки' }) {
   const [src, setSrc] = useState('')
-
   useEffect(() => {
-    if (!data) { setSrc(''); return }
-    let cancelled = false
-    // Dynamic import keeps the QR library out of the main bundle — it's only
-    // needed on the connection screens (§3 bundle-splitting).
+    if (!data) { setSrc(''); return undefined }
+    let alive = true
     import('qrcode')
-      .then(({ default: QRCodeLib }) => QRCodeLib.toDataURL(data, {
-        width: size,
-        margin: 1,
-        errorCorrectionLevel: 'M',
-        color: { dark: '#0a130f', light: '#ffffff' },
-      }))
-      .then(url => { if (!cancelled) setSrc(url) })
-      .catch(() => { if (!cancelled) setSrc('') })
-    return () => { cancelled = true }
+      .then(({ default: Q }) => Q.toDataURL(data, { width: size * 2, margin: 0, errorCorrectionLevel: 'M' }))
+      .then((u) => { if (alive) setSrc(u) })
+      .catch(() => { if (alive) setSrc('') })
+    return () => { alive = false }
   }, [data, size])
-
-  if (!src) {
-    return <div style={{ width: size, height: size }} className={`rounded-lg bg-white/5 border border-brand/10 animate-pulse ${className}`} aria-hidden="true" />
-  }
   return (
-    <img
-      src={src}
-      alt="QR-код для подключения"
-      width={size}
-      height={size}
-      loading="lazy"
-      className={`rounded-lg bg-white p-2 ${className}`}
-    />
+    <div className="qr" role="img" aria-label={label}>
+      {src ? <img src={src} alt="" width={size} height={size} style={{ display: 'block' }} /> : <span className="spinner" aria-hidden="true" style={{ margin: (size - 28) / 2 }} />}
+    </div>
+  )
+}
+
+// The QR dialog of 08 §8.3, opened from the overview, /connect and /connect?sub=.
+export default function QRDialog({ open, onClose, data, title = 'Отсканируйте с телефона', text }) {
+  return (
+    <Dialog open={open} onClose={onClose} title={title}>
+      <div style={{ display: 'grid', placeItems: 'center', margin: '20px 0 16px' }}>
+        <QR data={data} size={typeof window !== 'undefined' && window.innerWidth <= 640 ? 200 : 184} />
+      </div>
+      <p className="muted t-sm">
+        {text || <>Камерой телефона или из Happ: «+» → «Сканировать QR». Не показывайте код посторонним — это доступ к вашей подписке.</>}
+      </p>
+      <DialogActions>
+        <Button variant="secondary" block onClick={onClose} data-autofocus>Закрыть</Button>
+      </DialogActions>
+    </Dialog>
   )
 }

@@ -12,21 +12,6 @@ import (
 	"github.com/lib/pq"
 )
 
-type PaymentRecord struct {
-	ID              int
-	UserID          string
-	Amount          float64
-	Currency        string
-	Status          string
-	Provider        string
-	YookassaID      string
-	YookassaStatus  string
-	Description     string
-	ConfirmationURL string
-	PaidAt          *time.Time
-	CreatedAt       time.Time
-}
-
 func CreatePaymentRecord(userID string, amount float64, currency, provider, description string) (int, error) {
 	var id int
 	err := db.DB.QueryRow(`
@@ -35,33 +20,6 @@ func CreatePaymentRecord(userID string, amount float64, currency, provider, desc
 		RETURNING id
 	`, userID, amount, currency, provider, provider, description).Scan(&id)
 	return id, err
-}
-
-func UpdatePaymentYookassa(paymentDBID int, yookassaID, yookassaStatus, confirmationURL string) error {
-	_, err := db.DB.Exec(`
-		UPDATE payments
-		SET yookassa_payment_id = $1, yookassa_status = $2, confirmation_url = $3, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $4
-	`, yookassaID, yookassaStatus, confirmationURL, paymentDBID)
-	return err
-}
-
-func GetPaymentByYookassaID(yookassaID string) (*PaymentRecord, error) {
-	var p PaymentRecord
-	err := db.DB.QueryRow(`
-		SELECT id, COALESCE(user_id_text,''), amount, COALESCE(currency,'RUB'), status, COALESCE(provider,'yookassa'),
-		       COALESCE(yookassa_payment_id,''), COALESCE(yookassa_status,''), COALESCE(description,''),
-		       COALESCE(confirmation_url,''), paid_at, created_at
-		FROM payments WHERE yookassa_payment_id = $1
-	`, yookassaID).Scan(
-		&p.ID, &p.UserID, &p.Amount, &p.Currency, &p.Status, &p.Provider,
-		&p.YookassaID, &p.YookassaStatus, &p.Description,
-		&p.ConfirmationURL, &p.PaidAt, &p.CreatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return &p, err
 }
 
 func HasActiveSubscription(userID string) (bool, error) {
@@ -512,55 +470,3 @@ func parseRoleFromCode(code string) string {
 }
 
 // Multiple accounts per telegram user
-
-func LinkTelegramUser(telegramID int64, userID, label string) error {
-	_, err := db.DB.Exec(`
-		INSERT INTO telegram_linked_users (telegram_id, user_id, label)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (telegram_id, user_id) DO UPDATE SET label = $3
-	`, telegramID, userID, label)
-	return err
-}
-
-type LinkedAccount struct {
-	UserID   string
-	Label    string
-	IsActive bool
-}
-
-func GetLinkedAccounts(telegramID int64) ([]LinkedAccount, error) {
-	rows, err := db.DB.Query(`
-		SELECT user_id, label, is_active FROM telegram_linked_users
-		WHERE telegram_id = $1 ORDER BY created_at
-	`, telegramID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var accounts []LinkedAccount
-	for rows.Next() {
-		var a LinkedAccount
-		if err := rows.Scan(&a.UserID, &a.Label, &a.IsActive); err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, a)
-	}
-	return accounts, nil
-}
-
-func SetActiveLinkedAccount(telegramID int64, userID string) error {
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(`UPDATE telegram_linked_users SET is_active = FALSE WHERE telegram_id = $1`, telegramID)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(`UPDATE telegram_linked_users SET is_active = TRUE WHERE telegram_id = $1 AND user_id = $2`, telegramID, userID)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
-}

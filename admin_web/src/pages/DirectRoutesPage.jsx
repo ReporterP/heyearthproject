@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Route, Search } from 'lucide-react'
-import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
+import { fetchDirectRoutes, fetchDirectRouteStats, fetchDirectRouteGroups, bulkDirectRoutes, deleteDirectRoute } from '../api/admin.js'
 import { useUrlState } from '../hooks/useUrlState.js'
 import DirectRouteEditDialog from '../components/DirectRouteEditDialog.jsx'
 import DirectRoutesImportDialog from '../components/DirectRoutesImportDialog.jsx'
@@ -19,11 +19,11 @@ import {
   Td,
   Badge,
   TableSkeleton,
-  EmptyState,
+  EmptyState, ConfirmDanger,
 } from '../components/ui/index.js'
 
 export default function DirectRoutesPage() {
-  const { token } = useAuth()
+  const [danger, setDanger] = useState(null) // { kind: 'bulk' } | { kind: 'one', id, name }
   const toast = useToast()
 
   const [f, setF] = useUrlState({ search: '', group: '', is_active: 'all', sort: '', dir: 'asc', page: 1 })
@@ -65,14 +65,9 @@ export default function DirectRoutesPage() {
       if (f.sort) params.set('sort', f.sort)
       if (f.dir) params.set('dir', f.dir)
 
-      const [respItems, respStats, respGroups] = await Promise.all([
-        fetch(`/api/admin/direct-routes?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/direct-routes/stats', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/direct-routes/groups', { headers: { Authorization: `Bearer ${token}` } }),
+      const [itemsData, statsData, groupsData] = await Promise.all([
+        fetchDirectRoutes(params.toString()), fetchDirectRouteStats(), fetchDirectRouteGroups(),
       ])
-      const itemsData = await respItems.json()
-      const statsData = await respStats.json()
-      const groupsData = await respGroups.json()
       setItems(itemsData.items || [])
       setTotal(itemsData.total || 0)
       setStats(statsData)
@@ -82,7 +77,7 @@ export default function DirectRoutesPage() {
     } finally {
       setLoading(false)
     }
-  }, [token, f.search, f.group, f.is_active, f.sort, f.dir]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [f.search, f.group, f.is_active, f.sort, f.dir]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchAll() }, [fetchAll])
 
@@ -100,42 +95,28 @@ export default function DirectRoutesPage() {
     else setSelected(new Set(items.map((i) => i.id)))
   }
 
+  // bulkAction: delete asks first (ConfirmDanger), the rest run at once.
+  async function runBulk(action) {
+    await bulkDirectRoutes(action, Array.from(selected))
+    toast.success(`Готово: ${selected.size}`)
+    setSelected(new Set())
+    fetchAll()
+  }
   async function bulkAction(action) {
     if (selected.size === 0) return
-    if (action === 'delete' && !window.confirm(`Удалить ${selected.size} сервисов?`)) return
-    try {
-      const resp = await fetch('/api/admin/direct-routes/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action, ids: Array.from(selected) }),
-      })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: resp.statusText }))
-        throw new Error(err.error || resp.statusText)
-      }
-      toast.success(`Готово: ${selected.size}`)
-      setSelected(new Set())
-      fetchAll()
-    } catch (e) {
-      toast.error(e.message)
-    }
+    if (action === 'delete') { setDanger({ kind: 'bulk' }); return }
+    try { await runBulk(action) } catch (e) { toast.error(e.message) }
   }
 
-  async function deleteOne(id, name) {
-    if (!window.confirm(`Удалить «${name}»?`)) return
-    try {
-      const resp = await fetch(`/api/admin/direct-routes/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: resp.statusText }))
-        throw new Error(err.error || resp.statusText)
-      }
+  function deleteOne(id, name) {
+    setDanger({ kind: 'one', id, name })
+  }
+  async function confirmDanger() {
+    if (danger.kind === 'bulk') await runBulk('delete')
+    else {
+      await deleteDirectRoute(danger.id)
       toast.success('Удалено')
       fetchAll()
-    } catch (e) {
-      toast.error(e.message)
     }
   }
 
@@ -253,7 +234,7 @@ export default function DirectRoutesPage() {
                 <Td className="text-xs text-disabled whitespace-nowrap">{(s.updated_at || '').replace('T', ' ').slice(0, 16)}</Td>
                 <Td>
                   <div className="flex gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Edit</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Изменить</Button>
                     <Button size="sm" variant="ghost" className="text-danger" onClick={() => deleteOne(s.id, s.name)}>Del</Button>
                   </div>
                 </Td>
@@ -294,6 +275,11 @@ function Card({ label, value, tone }) {
     <div className="rounded border border-default bg-elevated/40 p-3">
       <div className={`text-xl font-semibold tabular-nums ${toneClass}`}>{value}</div>
       <div className="text-xs text-disabled">{label}</div>
+      <ConfirmDanger open={!!danger} onClose={() => setDanger(null)}
+        title={danger?.kind === 'bulk' ? `Удалить ${selected.size} сервисов` : `Удалить «${danger?.name || ''}»`}
+        confirmText={danger?.kind === 'bulk' ? 'УДАЛИТЬ' : danger?.name || ''} actionLabel="Удалить"
+        consequences={['Домены и адреса сервиса перестанут идти напрямую у всех тарифов, где он подключён.', 'Подписки пользователей обновятся автоматически.']}
+        onConfirm={confirmDanger} />
     </div>
   )
 }

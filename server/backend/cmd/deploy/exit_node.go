@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
 	sshcrypto "github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/provision"
@@ -302,7 +303,7 @@ func cliHubIPs(ctx context.Context, mainClient *ssh.Client, db *sql.DB, deployHo
 // cliExitOptions is the API's apiExitOptions for the deploy CLI: the same Hub files (read over the
 // deploy session) and settings; the CA certificate without its key — node certificates are signed
 // on the Hub (CASigner → provision.HubCASigner), the CA key never comes to this machine.
-func cliExitOptions(ctx context.Context, mainClient *ssh.Client, hub provision.Remote, db *sql.DB, hubIPs []string) (provision.ExitOptions, error) {
+func cliExitOptions(ctx context.Context, mainClient *ssh.Client, hub provision.Remote, db *sql.DB, hubIPs []string, exitIP string, cur exitRowState) (provision.ExitOptions, error) {
 	agent, err := runSSHQuiet(mainClient, "cat "+hubNodeAgentArtifact, "")
 	if err != nil || len(agent) == 0 {
 		return provision.ExitOptions{}, fmt.Errorf("на Hub нет %s — сначала go run ./cmd/deploy --ensure-hub-provisioning (%v)", hubNodeAgentArtifact, err)
@@ -319,13 +320,42 @@ func cliExitOptions(ctx context.Context, mainClient *ssh.Client, hub provision.R
 	return provision.ExitOptions{
 		HubIPs:      hubIPs,
 		MTProtoPort: port,
-		HubXray:     "/opt/heyearth/xray/xray",
 		NodeAgent:   func() ([]byte, error) { return []byte(agent), nil },
 		CA:          func() ([]byte, []byte, error) { return []byte(ca), nil, nil },
 		CASigner: func(ctx context.Context, c *x509.Certificate) (crypto.Signer, error) {
 			return provision.HubCASigner(ctx, hub, hubCertsDir+"/ca-key.pem", c.PublicKey)
 		},
-		MTProto: &provision.MTProtoOptions{Port: port, Secret: appSetting(ctx, db, "mtproto_secret"),
-			Domain: appSetting(ctx, db, "mtproto_fronting_domain"), Script: []byte(script)},
+		MTProto: cliMTProtoOptions(ctx, db, exitIP, cur, &provision.MTProtoOptions{Port: port, Secret: appSetting(ctx, db, "mtproto_secret"),
+			Domain: appSetting(ctx, db, "mtproto_fronting_domain"), Script: []byte(script)}),
 	}, nil
+}
+
+// cliMTProtoOptions points o at the exit's own fronting domain and its secret, like the API's
+// exitMTProtoDomain (o.Record is set once the row exists: withMTProtoRecord). No domain found:
+// o keeps the shared one, and the installer says it does not resolve to the node.
+func cliMTProtoOptions(ctx context.Context, db *sql.DB, exitIP string, cur exitRowState, o *provision.MTProtoOptions) *provision.MTProtoOptions {
+	stored := ""
+	if cur.Found {
+		stored, _ = biz.ExitMTProtoDomain(ctx, db, cur.ID)
+	}
+	domain, err := biz.ExitFrontingDomain(ctx, exitIP, stored, o.Domain)
+	if err != nil {
+		fmt.Printf("[exit-node] %v\n", err)
+		return o
+	}
+	if secret, err := biz.MTProtoSecretFor(o.Secret, domain); err == nil {
+		o.Domain, o.Secret = domain, secret
+	}
+	return o
+}
+
+// withMTProtoRecord lets the install step record the domain the exit's MTProxy fronts. A stored
+// domain always wins in biz.ExitFrontingDomain, so the shared fallback is written only over an
+// empty record (the same secret).
+func withMTProtoRecord(db *sql.DB, id int, o *provision.MTProtoOptions) {
+	if o == nil {
+		return
+	}
+	domain := o.Domain
+	o.Record = func(ctx context.Context) error { return biz.SetExitMTProtoDomain(ctx, db, id, domain) }
 }

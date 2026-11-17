@@ -40,7 +40,6 @@ type deployConfig struct {
 	repoRoot           string
 	serverRoot         string
 	backendRoot        string
-	ansibleRoot        string
 	env                envMap
 	siteDomain         string
 	letsEncryptEmail   string
@@ -66,11 +65,9 @@ func main() {
 	streamPPFlag := flag.String("stream-proxy-protocol", "", "on|off: PROXY protocol на 443 stream (реальные IP клиентов для nginx/API); меняет только upstream'ы nginx stream (8443+10443 ↔ 8446+10444, xray слушает оба входа всегда), выполняется на Hub отдельным юнитом")
 	forceFlag := flag.Bool("force", false, "с --setup-xray: заменить существующий /opt/heyearth/xray/config.json bootstrap-конфигом (на живом Hub отрежет пользователей до синхронизации API)")
 	setupHy2Flag := flag.Bool("setup-hysteria2-hub", false, "установить Hysteria2 сервер на главный сервер (Express routing для premium-планов)")
-	setupAwgFlag := flag.Bool("setup-awg", false, "установить AmneziaWG (Палма) на главный сервер — userspace VPN с CPS-обфускацией")
 	statusMode := flag.Bool("status", false, "проверить состояние сервисов и API на сервере")
-	backupMode := flag.Bool("backup", false, "создать полный бэкап (БД + certs + .env) на сервере")
-	restoreMode := flag.Bool("restore", false, "восстановить из бэкапа")
 	rotateCerts := flag.Bool("rotate-node-agent-certs", false, "перевыпустить на Hub клиентский mTLS-сертификат API от CA Hub (CA и сертификаты нод не меняются; сертификаты нод обновляет их настройка)")
+	tgWebFlag := flag.Bool("tg-webproxy", false, "Telegram WEB-прокси на Hub (фаза T): собрать tproxy-server, выложить артефакт и выполнить рецепт «Установить / обновить» по SSH (настройки — из базы Hub); включает WEB-прокси")
 	ensureHubProv := flag.Bool("ensure-hub-provisioning", false, "подготовить живой Hub к настройке нод (админка и --setup-exit-node): SSH_ENCRYPTION_KEY в api.env, ключ SSH Hub, node-agent, install-mtproxy.sh, собственный CA node-agent на Hub (прежний — как legacy до сведения exit); ничего не перезапускает")
 	setupExitNode := flag.String("setup-exit-node", "", "настроить exit-ноду ядром провижининга (IP или IP:порт; порт игнорируется)")
 	exitNodePassword := flag.String("exit-node-password", "", "SSH пароль root exit-ноды (иначе EXIT_NODE_SSH_PASSWORD или сохранённый в базе)")
@@ -111,39 +108,33 @@ func main() {
 		mode = "setup-xray"
 	case *setupHy2Flag:
 		mode = "setup-hysteria2-hub"
-	case *setupAwgFlag:
-		mode = "setup-awg"
 	case *setupOpsFlag:
 		mode = "setup-ops"
 	case *streamPPFlag != "":
 		mode = "stream-proxy-protocol"
+	case *tgWebFlag:
+		mode = "tg-webproxy"
 	case *sshCmd != "":
 		mode = "ssh"
 	case *statusMode:
 		mode = "status"
-	case *backupMode:
-		mode = "backup"
-	case *restoreMode:
-		mode = "restore"
 	case flag.NArg() == 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-awg, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --backup, --restore, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
 	serverRoot := filepath.Join(repoRoot, "server")
 	backendRoot := filepath.Join(serverRoot, "backend")
-	ansibleRoot := filepath.Join(serverRoot, "ansible")
 	env := loadEnv(serverRoot, repoRoot)
 
 	cfg := &deployConfig{
 		repoRoot:           repoRoot,
 		serverRoot:         serverRoot,
 		backendRoot:        backendRoot,
-		ansibleRoot:        ansibleRoot,
 		env:                env,
 		siteDomain:         env.get("SITE_DOMAIN", "hiearth.ru"),
 		letsEncryptEmail:   env.get("LETSENCRYPT_EMAIL", ""),
@@ -175,10 +166,6 @@ func main() {
 		doStatus(client, cfg)
 		return
 	}
-	if mode == "backup" {
-		doBackup(client, cfg)
-		return
-	}
 	if mode == "fix-db" {
 		doFixDB(client, cfg)
 		return
@@ -194,6 +181,10 @@ func main() {
 
 	if mode == "ensure-hub-provisioning" {
 		ensureHubProvisioning(client, cfg)
+		return
+	}
+	if mode == "tg-webproxy" {
+		tgWebCLI(client, cfg)
 		return
 	}
 	if mode == "rotate-certs" {
@@ -223,10 +214,8 @@ func main() {
 
 	switch mode {
 	case "main":
-		installGoOnServer(client)
 		optimizeNetworkStack(client)
 		installPostgresOnServer(client)
-		installAnsibleOnServer(client)
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		doAdminWeb(sftpClient, client, cfg)
@@ -235,10 +224,8 @@ func main() {
 		doSSL(client, cfg)
 		doNginx(sftpClient, client, cfg) // перезаписать конфиг с учётом SSL
 		seedConnectionSettings(client, cfg)
-		setupAmneziaWGHub(client, cfg)
 		verifyServices(client)
 	case "update-main":
-		// installAnsibleOnServer пропускаем — apt-get update может зависать
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
@@ -272,13 +259,6 @@ func main() {
 		verifyServices(client)
 	case "setup-hysteria2-hub":
 		setupHysteria2Hub(client, cfg)
-	case "setup-awg":
-		setupAmneziaWGHub(client, cfg)
-		setupAWGExitRoute(client, cfg)
-	case "backup":
-		doBackup(client, cfg)
-	case "restore":
-		doRestore(client, sftpClient, cfg)
 	}
 }
 
@@ -306,25 +286,6 @@ func validateLocalConfig(mode string, cfg *deployConfig) {
 	if mode == "status" || mode == "fix-db" || mode == "ssh" {
 		return
 	}
-}
-
-// findFlutterCmd returns true if `fvm` or `flutter` is in PATH.
-func findFlutterCmd() bool {
-	if _, err := exec.LookPath("fvm"); err == nil {
-		return true
-	}
-	if _, err := exec.LookPath("flutter"); err == nil {
-		return true
-	}
-	return false
-}
-
-// flutterExec returns the flutter command parts. Prefers "fvm flutter" if fvm is available.
-func flutterExec() (string, []string) {
-	if _, err := exec.LookPath("fvm"); err == nil {
-		return "fvm", []string{"flutter"}
-	}
-	return "flutter", nil
 }
 
 func loadEnv(paths ...string) envMap {
@@ -547,14 +508,27 @@ func uploadFile(c *sftp.Client, local, remote string) error {
 	if err := sftpMkdirAll(c, remoteDir(remote)); err != nil {
 		return err
 	}
-	_ = c.Remove(remote)
-	dst, err := c.Create(remote)
+	// Write next to the target and rename: a dropped SFTP session leaves the old file
+	// whole (it used to remove it first and leave a truncated binary behind).
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	dst, err := c.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-	_, err = io.Copy(dst, src)
-	return err
+	if _, err = io.Copy(dst, src); err != nil {
+		dst.Close()
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := c.PosixRename(tmp, remote); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func uploadFileContent(c *sftp.Client, content []byte, remote string) error {
@@ -562,14 +536,25 @@ func uploadFileContent(c *sftp.Client, content []byte, remote string) error {
 	if err := sftpMkdirAll(c, remoteDir(remote)); err != nil {
 		return err
 	}
-	_ = c.Remove(remote)
-	dst, err := c.Create(remote)
+	tmp := fmt.Sprintf("%s.tmp-%d", remote, time.Now().UnixNano())
+	dst, err := c.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-	_, err = dst.Write(content)
-	return err
+	if _, err = dst.Write(content); err != nil {
+		dst.Close()
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	if err := c.PosixRename(tmp, remote); err != nil {
+		_ = c.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func uploadDir(c *sftp.Client, localDir, remoteDir string) error {
@@ -663,22 +648,6 @@ echo "[OK] Network stack optimized"
 	_, _ = runSSH(client, script, true)
 }
 
-func installGoOnServer(client *ssh.Client) {
-	script := fmt.Sprintf(`set -e
-if command -v go >/dev/null 2>&1 && go version | grep -q %s; then
-  echo "Go already installed: $(go version)"
-  exit 0
-fi
-cd /tmp
-wget -q %s -O go.tar.gz 2>/dev/null || curl -fsSL %s -o go.tar.gz
-rm -rf %s/go
-tar -C %s -xzf go.tar.gz
-echo 'export PATH=$PATH:%s/go/bin' >/etc/profile.d/go.sh
-chmod 644 /etc/profile.d/go.sh
-`, goVersion, goDownloadURL, goDownloadURL, goInstallPath, goInstallPath, goInstallPath)
-	_, _ = runSSH(client, script, true)
-}
-
 func installPostgresOnServer(client *ssh.Client) {
 	script := `set -e
 apt-get update -qq
@@ -690,22 +659,13 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='heyearth'" 
 	_, _ = runSSH(client, script, true)
 }
 
-func installAnsibleOnServer(client *ssh.Client) {
-	script := `set -e
-apt-get update -qq
-apt-get install -y -qq software-properties-common
-apt-get install -y -qq ansible sshpass
-`
-	_, _ = runSSH(client, script, true)
-}
-
 // uploadNodeProvisioningAssets: node-agent and the MTProxy installer for the API's provisioning,
-// ansible, and the node-agent CA, which is made on the Hub itself (ensureHubNodeCA): no
+// and the node-agent CA, which is made on the Hub itself (ensureHubNodeCA): no
 // certificate or key goes from this machine to the Hub any more (Beads cudk.77). A deploy only
 // creates a CA on a Hub without one and renews the API's client certificate; replacing an old CA
 // is --ensure-hub-provisioning.
 func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+appDir+"/ansible "+hubCertsDir+" "+path.Dir(hubMTProxyScript), true)
+	_, _ = runSSH(client, "mkdir -p "+appDir+"/artifacts "+hubCertsDir+" "+path.Dir(hubMTProxyScript), true)
 
 	nodeAgentPath := buildGoBinary(cfg.backendRoot, "node-agent", "node-agent")
 	if err := uploadFile(c, nodeAgentPath, hubNodeAgentArtifact); err != nil {
@@ -716,9 +676,6 @@ func uploadNodeProvisioningAssets(c *sftp.Client, client *ssh.Client, cfg *deplo
 	}
 	_, _ = runSSH(client, "chmod 755 "+hubMTProxyScript, true)
 
-	if err := uploadDir(c, cfg.ansibleRoot, appDir+"/ansible"); err != nil {
-		log.Fatalf("upload ansible: %v", err)
-	}
 	ctx, hub := context.Background(), provision.NewSSHRemote(client)
 	p, err := ensureHubNodeCA(ctx, hub, hubCertsDir, hubClock(ctx, hub)(), caKeep, false)
 	reportHubCA(p, err, false)
@@ -804,24 +761,38 @@ WantedBy=multi-user.target
 
 // doBot removed — Telegram bot is no longer part of the project.
 
+// doAdminWeb uploads next to the live build and swaps directories at the end: a dropped SFTP
+// session leaves the working admin in place (the old order removed it first). When SFTP keeps
+// dropping, `go run quick_admin_web.go` sends the build as one archive over an SSH pipe.
 func doAdminWeb(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "rm -rf /var/www/heyearth && mkdir -p /var/www/heyearth", true)
+	const live, next = "/var/www/heyearth", "/var/www/heyearth.next"
+	_, _ = runSSH(client, "rm -rf "+next+" && mkdir -p "+next, true)
 	adminBuildDir := buildAdminWeb(cfg.repoRoot, cfg)
-	if err := uploadDir(c, adminBuildDir, "/var/www/heyearth"); err != nil {
-		log.Fatalf("upload admin_web build: %v", err)
+	if err := uploadDir(c, adminBuildDir, next); err != nil {
+		_, _ = runSSH(client, "rm -rf "+next, false)
+		log.Fatalf("upload admin_web build: %v (the live admin is untouched; try: go run quick_admin_web.go)", err)
 	}
-	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth", true)
-	fmt.Println("[admin-web] uploaded to /var/www/heyearth")
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ ! -d %[1]s ] || mv %[1]s %[1]s.old; } && mv %[2]s %[1]s", live, next), true)
+	fmt.Println("[admin-web] uploaded to " + live)
 }
 
+// doVueSite builds the site FIRST, uploads it next to the live one and swaps the
+// directories at the end, like doAdminWeb: a failed build or a dropped SFTP session leaves
+// the working site in place (it used to delete the live site before building). When SFTP
+// keeps dropping, `go run quick_admin_web.go -site` sends it as one archive.
 func doVueSite(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
-	_, _ = runSSH(client, "rm -rf /var/www/heyearth-site && mkdir -p /var/www/heyearth-site", true)
+	const live, next = "/var/www/heyearth-site", "/var/www/heyearth-site.next"
 	vueBuildDir := buildSite(cfg.repoRoot, cfg)
-	if err := uploadDir(c, vueBuildDir, "/var/www/heyearth-site"); err != nil {
-		log.Fatalf("upload vue site build: %v", err)
+	if _, err := os.Stat(filepath.Join(vueBuildDir, "index.html")); err != nil {
+		log.Fatalf("site build has no index.html: %v (the live site is untouched)", err)
 	}
-	_, _ = runSSH(client, "chmod -R 755 /var/www/heyearth-site", true)
-	fmt.Println("[vue-site] uploaded to /var/www/heyearth-site")
+	_, _ = runSSH(client, "rm -rf "+next+" && mkdir -p "+next, true)
+	if err := uploadDir(c, vueBuildDir, next); err != nil {
+		_, _ = runSSH(client, "rm -rf "+next, false)
+		log.Fatalf("upload site build: %v (the live site is untouched; try: go run quick_admin_web.go -site)", err)
+	}
+	_, _ = runSSH(client, fmt.Sprintf("chmod -R 755 %[2]s && rm -rf %[1]s.old && { [ ! -d %[1]s ] || mv %[1]s %[1]s.old; } && mv %[2]s %[1]s", live, next), true)
+	fmt.Println("[vue-site] uploaded to " + live)
 }
 
 // uncToWSLPath converts a Windows UNC path (\\wsl.localhost\Distro\home\...) to WSL Linux path (/home/...).
@@ -851,7 +822,8 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 	}
 	if useWSL && wslPath != "" {
 		// Unset VITE_API_BASE — nginx on site.hiearth.ru proxies /api/ to backend
-		script := fmt.Sprintf("cd %s && rm -rf node_modules package-lock.json && unset VITE_API_BASE && /usr/bin/npm install && /usr/bin/npm run build",
+		// npm ci: the locked versions, never a fresh resolve (package-lock.json stays).
+		script := fmt.Sprintf("cd %s && unset VITE_API_BASE && /usr/bin/npm ci && /usr/bin/npm run build",
 			strings.ReplaceAll(wslPath, "'", "'\"'\"'"))
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
@@ -872,7 +844,7 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 		log.Fatal("npm is required locally to build the site")
 	}
 
-	install := exec.Command(npmPath, "install")
+	install := exec.Command(npmPath, "ci")
 	install.Dir = siteRoot
 	install.Stdout = os.Stdout
 	install.Stderr = os.Stderr
@@ -896,7 +868,6 @@ func buildSite(repoRoot string, cfg *deployConfig) string {
 
 func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "apt-get update -qq && apt-get install -y -qq nginx", true)
-	_, _ = runSSH(client, "mkdir -p "+appDir+"/releases", true)
 
 	domain := cfg.siteDomain
 	certPath := "/etc/letsencrypt/live/" + domain
@@ -916,8 +887,11 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	// from the router file before anything is written; if it cannot be determined, nginx is not
 	// touched at all (fail closed).
 	proxyProtocol := false
+	var managed []string // the router's lines owned by the API (the Telegram WEB proxy host)
 	if xrayActive && ssl {
-		if proxyProtocol, err = streamModeForDeploy(runSSHQuiet(client, streamRouterReadCmd, "")); err != nil {
+		routerOut, routerErr := runSSHQuiet(client, streamRouterReadCmd, "")
+		managed = routerManagedLines(routerOut, routerErr)
+		if proxyProtocol, err = streamModeForDeploy(routerOut, routerErr); err != nil {
 			log.Fatalf("nginx: %v — конфиги nginx не трогаю. Приведите %s в порядок или выполните go run ./cmd/deploy --stream-proxy-protocol on|off",
 				err, streamRouterFile)
 		}
@@ -926,9 +900,9 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	var nginxConf string
 	if ssl {
-		nginxConf = buildNginxConfSSL(domain, appDir, certPath, xrayActive)
+		nginxConf = buildNginxConfSSL(domain, certPath, xrayActive)
 	} else {
-		nginxConf = buildNginxConfHTTP(domain, appDir)
+		nginxConf = buildNginxConfHTTP(domain)
 	}
 
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
@@ -937,11 +911,19 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 
 	// Если Xray активен — настраиваем nginx stream для SNI routing на 443
 	if xrayActive && ssl {
-		streamConf := buildNginxStreamConf(domain, proxyProtocol)
+		streamConf, err := withManagedLines(buildNginxStreamConf(domain, proxyProtocol), managed)
+		if err != nil {
+			log.Fatalf("nginx: строки WEB-прокси Telegram в %s не переносятся: %v — конфиги nginx не трогаю", streamRouterFile, err)
+		}
 		_, _ = runSSH(client, "apt-get install -y -qq libnginx-mod-stream 2>/dev/null || true", true)
 		_, _ = runSSH(client, "mkdir -p /etc/nginx/stream.d", true)
 		if err := uploadFileContent(c, []byte(streamConf), "/etc/nginx/stream.d/heyearth.conf"); err != nil {
 			log.Fatal(err)
+		}
+		// The reserve entries' listener carries the same site names (go.<domain> included). A
+		// failure only leaves the old names there: the files above are still applied below.
+		if err := refreshRelayPP(c, client, streamConf); err != nil {
+			fmt.Printf("WARN: nginx: %s не обновлён: %v\n", config.HubRelayPPConfPath, err)
 		}
 		// Добавить include stream.d в nginx.conf если ещё нет
 		_, _ = runSSH(client, `grep -q 'include /etc/nginx/stream.d' /etc/nginx/nginx.conf || echo 'stream { include /etc/nginx/stream.d/*.conf; }' >> /etc/nginx/nginx.conf`, true)
@@ -961,16 +943,18 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	if _, err := runSSH(client, nginxApplyCmd, true); err != nil {
 		log.Fatalf("nginx: nginx -t / reload не прошли: %v", err)
 	}
+	if ssl {
+		ensureSiteAliasCert(client, domain)
+	}
 }
 
-func buildNginxConfHTTP(domain, appDir string) string {
+func buildNginxConfHTTP(domain string) string {
 	return fmt.Sprintf(`# ── Main site + API (%[1]s) ──────────────────────────────────────
 server {
     listen 80;
     listen [::]:80;
-    server_name %[1]s www.%[1]s;
+    server_name %[1]s www.%[1]s go.%[1]s;
 
-    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
 
@@ -983,8 +967,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
-
-    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
     # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
     # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
@@ -1038,7 +1020,7 @@ server {
 `, domain, appDir)
 }
 
-func buildNginxConfSSL(domain, appDir, certPath string, xrayActive bool) string {
+func buildNginxConfSSL(domain, certPath string, xrayActive bool) string {
 	// Когда Xray активен, порт 443 занят nginx stream для SNI routing.
 	// HTTPS server blocks слушают на 8443 (внутренний), трафик приходит через stream.
 	// Плюс listener 127.0.0.1:8446 с PROXY protocol — цель stream, пока включён
@@ -1056,22 +1038,23 @@ func buildNginxConfSSL(domain, appDir, certPath string, xrayActive bool) string 
 server {
     listen 80;
     listen [::]:80;
-    server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s;
+    server_name %[1]s www.%[1]s admin.%[1]s site.%[1]s go.%[1]s;
     return 301 https://$host$request_uri;
 }
 
 # ── Main site + API (%[1]s) — HTTPS ─────────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name %[1]s www.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    # go.<domain>: the same site and API through the reserve entries (its A records point at
+    # them): the subscription link and the cabinet on mobile networks that cut the Hub.
+    server_name %[1]s www.%[1]s go.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    location /heyearth.v1.ConfigApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
 
@@ -1084,8 +1067,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
     }
-
-    location /releases/ { alias %[2]s/releases/; add_header Cache-Control "public, max-age=3600"; try_files $uri =404; }
 
     # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
     # alias to /etc/hysteria/geoip.dat (Loyalsoldier release, refreshed monthly).
@@ -1103,12 +1084,12 @@ server {
 
 # ── Admin panel (admin.%[1]s) — HTTPS ───────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name admin.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    server_name admin.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -1128,12 +1109,12 @@ server {
 
 # ── Redirect site.%[1]s → %[1]s (HTTPS) ────────────────────────
 server {
-    listen %[4]s ssl http2;
-    listen [::]:%[4]s ssl http2;
-%[5]s    server_name site.%[1]s;
+    listen %[3]s ssl http2;
+    listen [::]:%[3]s ssl http2;
+%[4]s    server_name site.%[1]s;
 
-    ssl_certificate %[3]s/fullchain.pem;
-    ssl_certificate_key %[3]s/privkey.pem;
+    ssl_certificate %[2]s/fullchain.pem;
+    ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -1147,7 +1128,7 @@ server {
     server_name _;
     return 301 https://%[1]s$request_uri;
 }
-`, domain, appDir, certPath, httpsPort, ppListen)
+`, domain, certPath, httpsPort, ppListen)
 }
 
 // buildNginxStreamConf создаёт конфиг nginx stream для SNI routing на порту 443:
@@ -1166,6 +1147,7 @@ map $ssl_preread_server_name $backend {
     www.%[1]s      nginx_https;
     admin.%[1]s    nginx_https;
     site.%[1]s     nginx_https;
+    go.%[1]s       nginx_https;
     default        xray_vless;
 }
 
@@ -1782,58 +1764,6 @@ func serializeEnv(values map[string]string) string {
 	return b.String()
 }
 
-func doBackup(client *ssh.Client, cfg *deployConfig) {
-	timestamp := time.Now().Format("20060102-150405")
-	backupDir := fmt.Sprintf("/opt/heyearth/backups/%s", timestamp)
-
-	fmt.Printf("=== Creating backup at %s ===\n", backupDir)
-
-	cmds := []string{
-		fmt.Sprintf("mkdir -p %s", backupDir),
-		fmt.Sprintf("sudo -u postgres pg_dump heyearth > %s/db.sql 2>/dev/null || pg_dump -h 127.0.0.1 -U heyearth heyearth > %s/db.sql", backupDir, backupDir),
-		fmt.Sprintf("cp -r %s/certs %s/certs 2>/dev/null || true", appDir, backupDir),
-		fmt.Sprintf("cp %s/.env %s/dot-env 2>/dev/null || true", appDir, backupDir),
-		fmt.Sprintf("cp -r /var/www/heyearth %s/admin-web 2>/dev/null || true", backupDir),
-		fmt.Sprintf("cp -r /var/www/heyearth-site %s/site 2>/dev/null || true", backupDir),
-		fmt.Sprintf("cp /etc/nginx/conf.d/heyearth.conf %s/nginx.conf 2>/dev/null || true", backupDir),
-		fmt.Sprintf("tar czf /opt/heyearth/backups/backup-%s.tar.gz -C /opt/heyearth/backups %s", timestamp, timestamp),
-		fmt.Sprintf("rm -rf %s", backupDir),
-		"ls -lah /opt/heyearth/backups/",
-	}
-
-	for _, cmd := range cmds {
-		out, err := runSSH(client, cmd, false)
-		if err != nil {
-			log.Printf("  cmd failed: %s → %v", cmd, err)
-		}
-		if strings.TrimSpace(out) != "" {
-			fmt.Println(out)
-		}
-	}
-
-	fmt.Printf("=== Backup complete: /opt/heyearth/backups/backup-%s.tar.gz ===\n", timestamp)
-}
-
-func doRestore(client *ssh.Client, c *sftp.Client, cfg *deployConfig) {
-	fmt.Println("=== Available backups ===")
-	out, _ := runSSH(client, "ls -lt /opt/heyearth/backups/*.tar.gz 2>/dev/null | head -10", false)
-	fmt.Println(out)
-
-	fmt.Println("To restore, run on the server:")
-	fmt.Println("  cd /opt/heyearth/backups")
-	fmt.Println("  tar xzf backup-XXXXXXXX-XXXXXX.tar.gz")
-	fmt.Println("  sudo -u postgres psql heyearth < XXXXXXXX-XXXXXX/db.sql")
-	fmt.Println("  cp XXXXXXXX-XXXXXX/dot-env /opt/heyearth/mainserver/.env")
-	fmt.Println("  cp -r XXXXXXXX-XXXXXX/certs /opt/heyearth/mainserver/certs")
-	fmt.Println("  systemctl restart heyearth-api")
-	fmt.Println("")
-	fmt.Println("For migration to a new server:")
-	fmt.Println("  1. Run --backup on the old server")
-	fmt.Println("  2. scp /opt/heyearth/backups/backup-*.tar.gz newhost:/opt/heyearth/backups/")
-	fmt.Println("  3. On the new server: run deploy --main first")
-	fmt.Println("  4. Then restore the DB and config from the backup")
-}
-
 // parseExitNodeAddr validates --setup-exit-node: an IP address, optionally with a port (the
 // port is ignored — the exit always uses 443/10443/50443). The IP ends up in root shell scripts
 // on the exit and the Hub, so anything else (a hostname, shell metacharacters) is refused.
@@ -1946,7 +1876,7 @@ func setupExitNodeDeploy(addr string, mainClient *ssh.Client, cfg *deployConfig,
 	if err != nil {
 		log.Fatalf("[exit-node] %v", err)
 	}
-	eo, err := cliExitOptions(ctx, mainClient, hub, db, hubIPs)
+	eo, err := cliExitOptions(ctx, mainClient, hub, db, hubIPs, exitIP, cur)
 	if err != nil {
 		log.Fatalf("[exit-node] %v", err)
 	}
@@ -1986,6 +1916,7 @@ func setupExitNodeDeploy(addr string, mainClient *ssh.Client, cfg *deployConfig,
 			fmt.Printf("[exit-node] запись id %d в базе — «ожидает настройки» (pending): повторите команду (продолжит) или удалите её в админке\n", id)
 		}
 	}
+	withMTProtoRecord(db, id, eo.MTProto)
 	if planKind != "keep" {
 		if err := provision.BindPlans(ctx, db, id, planIDs); err != nil {
 			stranded()

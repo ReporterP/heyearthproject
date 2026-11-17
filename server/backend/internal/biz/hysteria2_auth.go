@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -109,12 +110,11 @@ type Hysteria2AuthResult struct {
 //     'hysteria2' in allowed_protocols AND has express_enabled = TRUE.
 //   - Traffic limit (if any) is not exceeded.
 //
-// The cycle quota here (IsCycleExceeded) is enforced independently of the
-// app_settings flag quota_cutoff_enabled, which only arms the xray_sync cutoff
-// for Reality/XHTTP. This is pre-existing behaviour and intentionally unchanged:
-// gating it would silently let over-quota Express users back in. The subscription
+// The cycle quota here (IsCycleExceeded) follows the same app_settings flag as the
+// xray cutoff, quota_cutoff_enabled (cleanup plan A7: the quota cuts every protocol
+// the same way, or none). A failed read of the flag keeps it armed. The subscription
 // that decides the quota is the same effective one as in the xray cutoff
-// (effectiveSubOrderBy).
+// (effectiveSubOrderBy); a limit of 0 (promocode access) is unlimited.
 func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	password = strings.TrimSpace(password)
 	if password == "" || len(password) != 64 {
@@ -152,8 +152,10 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	// hysteria2-stats collector; IsCycleExceeded reuses the same machinery
 	// that Xray-side cycle limits use, so over-quota Express users are
 	// rejected automatically within ~60s of crossing their limit.
-	if exceeded, _ := IsCycleExceeded(userPK, userID); exceeded {
-		return Hysteria2AuthResult{OK: false}
+	if QuotaCutoffArmed() {
+		if exceeded, _ := IsCycleExceeded(userPK, userID); exceeded {
+			return Hysteria2AuthResult{OK: false}
+		}
 	}
 
 	return Hysteria2AuthResult{
@@ -170,9 +172,11 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 // JOIN plans its first key is constant (plan_id is never NULL here), so compared
 // with the former `ORDER BY us.valid_until DESC` only the tie-break on equal
 // valid_until (newest row) is new and the same users are authorized. The
-// status = 'active' and legacy traffic_used filters are kept on purpose: they
-// can skip the effective subscription and fall back to an older plan row, so
-// the Express gate may judge a different row than the routing/quota code.
+// status = 'active' filter is kept on purpose: it can skip the effective
+// subscription and fall back to an older plan row. The legacy lifetime
+// traffic_used < traffic_limit filter is gone: the quota is the cycle quota of
+// ValidateHysteria2Auth, and that filter read a limit of 0 (unlimited promocode
+// access) as "exceeded".
 var hysteria2AuthPlanQuery = `
 		SELECT p.id, p.allowed_protocols, p.express_enabled,
 		       p.express_up_mbps, p.express_down_mbps
@@ -181,7 +185,6 @@ var hysteria2AuthPlanQuery = `
 		WHERE us.user_id = $1
 		  AND us.valid_until > NOW()
 		  AND us.status = 'active'
-		  AND (us.traffic_limit IS NULL OR us.traffic_used < us.traffic_limit)
 		ORDER BY ` + effectiveSubOrderBy("us") + `
 		LIMIT 1
 	`
@@ -309,4 +312,23 @@ func containsProto(arr []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// QuotaCutoffSetting arms the traffic-quota cutoff on every protocol: over-quota users
+// are dropped from the xray config and refused at the Hysteria2 login. Migration 000063
+// sets it to "true"; only the literal "true" arms it (as in the xray cutoff).
+const QuotaCutoffSetting = "quota_cutoff_enabled"
+
+// QuotaCutoffArmed reports the flag for the Hysteria2 login check. An absent key is
+// off (like the xray side); a failed read keeps the cutoff armed (that path refused
+// over-quota users before the flag applied to it).
+func QuotaCutoffArmed() bool {
+	v, err := GetSettingContext(context.Background(), QuotaCutoffSetting)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(v), "true")
 }

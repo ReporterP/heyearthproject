@@ -28,8 +28,10 @@ type File struct {
 // or binary changed (restart marker first, then the two-sample check), and the node goes into
 // routing only after this job checked both paths — or the TCP path alone when UDP to the exit is
 // choked (Review Focus 3). A second run on a converged exit writes and restarts nothing. On a
-// live exit the steps that restart a path users ride on (hysteria, xray, the Hub's client) are
-// checked end to end around the change (guardPath), one after another.
+// live exit the steps that restart a path users ride on (hysteria, the ShadowTLS backup tunnel,
+// the Hub's clients) are checked end to end around the change (guardPath), one after another.
+// The xray of the retired Reality path goes (retire_xray) before the backup tunnel's step re-keys
+// the shared kernel guard to the user stls, so it never runs unguarded.
 func ExitRecipe(o ExitOptions) Recipe {
 	var hyDown error // set by path_hy's Apply when the main tunnel does not answer; path_tcp decides
 	r := Recipe{
@@ -39,29 +41,34 @@ func ExitRecipe(o ExitOptions) Recipe {
 		{Name: "base", Apply: baseApply, Verify: baseVerify},
 		{Name: "firewall", Apply: firewallApply(o)},
 		{Name: "hysteria", Apply: guardPath(hyPath, onNode("hysteria2"), false, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
-		{Name: "xray", Apply: guardPath(vrPath(o), onNode("xray"), false, xrayApply(o)), Verify: xrayVerify(o), Rollback: unitRollback("xray")},
+		{Name: "retire_xray", Apply: retireXrayApply, Verify: retireXrayVerify},
+		{Name: "stls", Apply: guardPath(stlsPath, onNode(config.ExitSTLSUnit), false, stlsApply(o)), Verify: stlsVerify(o), Rollback: unitRollback(config.ExitSTLSUnit)},
 	}
 	if o.MTProto != nil {
 		r = append(r, Step{Name: "mtproxy", Apply: mtproxyApply(*o.MTProto), Verify: mtproxyVerify(*o.MTProto)})
+	}
+	if o.TGMTProxy != nil {
+		r = append(r, tgExitStepOptional(*o.TGMTProxy))
 	}
 	return append(r,
 		Step{Name: "node_agent", Apply: agentApply(o), Verify: agentVerify(o), Rollback: unitRollback("node-agent")},
 		Step{Name: "save_tunnel", Apply: tunnelApply, Verify: tunnelVerify},
 		Step{Name: "hub_client", Apply: guardPath(hyPath, hubUnit, true, hubClientApply), Verify: hubClientVerify, Rollback: hubClientRollback},
+		Step{Name: "hub_stls", Apply: guardPath(stlsPath, hubSTLSUnit, true, hubSTLSApply), Verify: hubSTLSVerify, Rollback: hubSTLSRollback},
 		Step{Name: "path_hy", Apply: pathHyDegraded(&hyDown), Verify: pathHysteria},
-		Step{Name: "path_tcp", Verify: pathTCP(o, &hyDown)},
+		Step{Name: "path_tcp", Verify: pathTCP(&hyDown)},
 		Step{Name: "activate", Apply: activateApply, Verify: lifecycleIs("online")},
 	)
 }
 
-// recipeForSetup: the setup kinds of an exit. provision takes a node that is not in service
-// (pending, failed, offline, or provisioning when resumed) through provisioning → online, a
-// failure leaves it failed; reprovision converges a working (online) exit and never touches its
-// lifecycle; verify only compares. Everything the recipe renders is checked here, so a refused
-// recipe creates no job.
+// recipeForSetup: the setup kinds of an exit or a relay (relaySetup, relay.go). provision takes a
+// node that is not in service (pending, failed, offline, or provisioning when resumed) through
+// provisioning → online, a failure leaves it failed; reprovision converges a working (online)
+// node and never touches its lifecycle; verify only compares. Everything the recipe renders is
+// checked here, so a refused recipe creates no job.
 func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
-	if n.Role != "exit" {
-		return nil, fmt.Errorf("настройка роли «%s» появится вместе с резервными входами", n.Role)
+	if n.Role != "exit" && n.Role != "relay" {
+		return nil, fmt.Errorf("неизвестная роль ноды %q", n.Role)
 	}
 	switch kind {
 	case KindProvision:
@@ -76,13 +83,22 @@ func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
 	default:
 		return nil, fmt.Errorf("неизвестный вид задачи %q", kind)
 	}
-	// The renderers' contract (config.ValidateExitIP): ExitHysteriaServerYAML cannot fail and would
-	// silently leave out the rules that refuse the exit's own address.
-	if err := config.ValidateExitIP(n.IP); err != nil {
-		return nil, fmt.Errorf("адрес ноды не подходит для выхода: %w", err)
-	}
-	if err := st.Exit.validate(); err != nil {
-		return nil, err
+	var rc Recipe
+	if n.Role == "relay" {
+		var err error
+		if rc, err = relaySetup(n, st); err != nil {
+			return nil, err
+		}
+	} else {
+		// The renderers' contract (config.ValidateExitIP): ExitHysteriaServerYAML cannot fail and
+		// would silently leave out the rules that refuse the exit's own address.
+		if err := config.ValidateExitIP(n.IP); err != nil {
+			return nil, fmt.Errorf("адрес ноды не подходит для выхода: %w", err)
+		}
+		if err := st.Exit.validate(); err != nil {
+			return nil, err
+		}
+		rc = ExitRecipe(st.Exit)
 	}
 	if kind == KindProvision {
 		st.Begin = func(ctx context.Context) error {
@@ -90,7 +106,7 @@ func recipeForSetup(kind string, n Node, st *State) (Recipe, error) {
 		}
 		st.Fail = func(ctx context.Context) { _ = st.Hooks.SetLifecycle(ctx, n.ID, []string{"provisioning"}, "failed") }
 	}
-	return ExitRecipe(st.Exit), nil
+	return rc, nil
 }
 
 // validate: what every exit recipe needs from the wiring (API / CLI).
@@ -100,8 +116,6 @@ func (o ExitOptions) validate() error {
 		return errors.New("не задан источник бинарника node-agent на Hub")
 	case o.CA == nil:
 		return errors.New("не задан CA node-agent на Hub")
-	case strings.TrimSpace(o.HubXray) == "":
-		return errors.New("не задан xray Hub для проверки запасного пути")
 	}
 	if _, err := config.ExitAgentGuardConf(o.HubIPs); err != nil {
 		return fmt.Errorf("адреса Hub не определены — агент ноды остался бы без защиты или без связи с Hub: %w", err)
@@ -128,7 +142,7 @@ type Check struct {
 
 var checkNames = map[string]string{"os": "Операционная система", "arch": "Архитектура", "root": "Вход под root",
 	"disk": "Свободное место", "internet": "Выход в интернет", "port_50443": "UDP 50443 (основной туннель)",
-	"port_10443": "TCP 10443 (запасной туннель)", "port_50052": "TCP 50052 (агент)"}
+	"port_443": "TCP 443 (запасной туннель)", "port_50052": "TCP 50052 (агент)"}
 
 // maxClockSkew: node certificates are backdated an hour, Reality refuses clients whose clock is
 // off by more than its window — two minutes keeps both far away.
@@ -465,7 +479,7 @@ func hysteriaFiles(o ExitOptions, s *State) ([]File, error) {
 		return nil, err
 	}
 	return []File{
-		{config.ExitHysteriaConfig, []byte(config.ExitHysteriaServerYAML(s.Keys.SSPassword, exitIP(s), o.MTProtoPort)), 0o600},
+		{config.ExitHysteriaConfig, []byte(config.ExitHysteriaServerYAML(s.Keys.SSPassword, exitIP(s), o.MTProtoPort, config.TGMTProxyPort)), 0o600},
 		{config.ExitHysteriaUnitPath, []byte(config.ExitHysteriaUnit), 0o644},
 	}, nil
 }
@@ -538,67 +552,67 @@ func hysteriaVerify(o ExitOptions) stepFunc {
 	}
 }
 
-// ── xray (TCP fallback, VLESS Reality :10443) under its kernel egress guard ──
+// ── the backup tunnel (ShadowTLS v3 → Shadowsocks 2022, sing-box) under its kernel egress guard ──
 
-// xrayFiles: the guard's files and xray's resolv.conf come first — the new xray.service Requires=
-// the guard unit and bind-mounts the resolv.conf, so an interrupted write never leaves a unit
-// pointing at files that are not there yet. config.ExitXrayPrepareScript (the converge extra)
-// creates the user xray and loads the guard before xray restarts.
-func xrayFiles(o ExitOptions, s *State) ([]File, error) {
-	cfg, err := config.ExitXrayConfigJSON(s.Keys, exitIP(s), o.MTProtoPort)
+// stlsFiles: the guard's files and sing-box's resolv.conf come first — the unit Requires= the
+// guard unit and bind-mounts the resolv.conf, so an interrupted write never leaves a unit pointing
+// at files that are not there yet. config.ExitSTLSPrepareScript (the converge extra) creates the
+// user stls, loads the guard and installs the pinned sing-box before the restart.
+func stlsFiles(o ExitOptions, s *State) ([]File, error) {
+	cfg, err := config.ExitSTLSServerJSON(s.Keys.UUID, exitIP(s), o.MTProtoPort, config.TGMTProxyPort)
 	if err != nil {
 		return nil, err
 	}
-	guard, err := config.ExitXrayGuardConf(exitIP(s), o.MTProtoPort)
+	guard, err := config.ExitGuardConf(exitIP(s), o.MTProtoPort, config.TGMTProxyPort)
 	if err != nil {
 		return nil, err
 	}
 	return []File{
-		{config.ExitXrayResolvConfPath, []byte(config.ExitXrayResolvConf), 0o644},
-		{config.ExitXrayGuardConfPath, []byte(guard), 0o644},
-		{config.ExitXrayGuardUnitPath, []byte(config.ExitXrayGuardUnit), 0o644},
-		{config.ExitXrayConfig, cfg, 0o600},
-		{config.ExitXrayUnitPath, []byte(config.ExitXrayUnit), 0o644},
+		{config.ExitSTLSResolvConfPath, []byte(config.ExitSTLSResolvConf), 0o644},
+		{config.ExitGuardConfPath, []byte(guard), 0o644},
+		{config.ExitGuardUnitPath, []byte(config.ExitGuardUnit), 0o644},
+		{config.ExitSTLSConfig, cfg, 0o600},
+		{config.ExitSTLSUnitPath, []byte(config.ExitSTLSUnitFile), 0o644},
 	}, nil
 }
 
-func xrayApply(o ExitOptions) stepFunc {
+func stlsApply(o ExitOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		if err := s.needKeys(); err != nil {
 			return err
 		}
-		files, err := xrayFiles(o, s)
+		files, err := stlsFiles(o, s)
 		if err != nil {
 			return err
 		}
-		_, err = installUnit(ctx, r, s, "xray", files, config.UnitConvergeScript("xray", config.ExitXrayPrepareScript()))
+		_, err = installUnit(ctx, r, s, config.ExitSTLSUnit, files, config.UnitConvergeScript(config.ExitSTLSUnit, config.ExitSTLSPrepareScript()))
 		return err
 	}
 }
 
-func xrayVerify(o ExitOptions) stepFunc {
+func stlsVerify(o ExitOptions) stepFunc {
 	return func(ctx context.Context, r Remote, s *State) error {
 		if err := s.needKeys(); err != nil {
 			return err
 		}
-		files, err := xrayFiles(o, s)
+		files, err := stlsFiles(o, s)
 		if err != nil {
 			return err
 		}
-		if err := unitVerify(ctx, r, "xray", files); err != nil {
+		if err := unitVerify(ctx, r, config.ExitSTLSUnit, files); err != nil {
 			return err
 		}
-		kv, err := runKV(ctx, r, config.XrayCheckScript)
+		kv, err := runKV(ctx, r, config.STLSCheckScript)
 		if err != nil {
 			return err
 		}
-		switch want := strings.TrimPrefix(config.XrayExitVersion, "v"); {
-		case kv["VERSION"] != want:
-			return fmt.Errorf("xray %s, нужна %s", orNone(kv["VERSION"]), want)
+		switch {
+		case kv["VERSION"] != config.SingBoxVersion:
+			return fmt.Errorf("sing-box %s, нужна %s", orNone(kv["VERSION"]), config.SingBoxVersion)
 		case kv["LISTEN"] != "1":
-			return errors.New("xray не слушает TCP 10443")
+			return fmt.Errorf("sing-box не слушает TCP %d", config.ExitSTLSPort)
 		case kv["GUARD"] != "1":
-			return errors.New("защита исходящих xray (nft table inet " + config.ExitXrayGuardTable + ") не загружена")
+			return errors.New("защита исходящих запасного туннеля (nft table inet " + config.ExitGuardTable + ") не загружена")
 		}
 		return nil
 	}
@@ -890,6 +904,51 @@ func hubClientRollback(ctx context.Context, _ Remote, s *State) error {
 	return runPrint(config.UnitRollbackScript(hubUnit(s), s.changed[hubUnit(s)]))(ctx, s.Hub, s)
 }
 
+func hubSTLSUnit(s *State) string { return config.HubSTLSUnit(s.Node.ID) }
+
+func hubSTLSFiles(s *State) ([]File, error) {
+	id := s.Node.ID
+	cfg, err := config.HubSTLSClientJSON(id, exitIP(s), s.Keys.UUID)
+	if err != nil {
+		return nil, err
+	}
+	return []File{
+		{config.HubSTLSConfigPath(id), cfg, 0o600},
+		{"/etc/systemd/system/" + hubSTLSUnit(s) + ".service", []byte(config.HubSTLSClientUnit(id, exitIP(s))), 0o644},
+	}, nil
+}
+
+// hubSTLSApply converges the Hub's ShadowTLS client of the exit (pinned sing-box, sing-box check
+// of the config first). The client listens whether or not the exit answers (it dials per
+// connection), so a dead path never makes it crash-loop: the strict converge, and path_tcp judges
+// the path end to end.
+func hubSTLSApply(ctx context.Context, _ Remote, s *State) error {
+	if err := s.needKeys(); err != nil {
+		return err
+	}
+	files, err := hubSTLSFiles(s)
+	if err != nil {
+		return err
+	}
+	_, err = installUnit(ctx, s.Hub, s, hubSTLSUnit(s), files, config.UnitConvergeScript(hubSTLSUnit(s), config.HubSTLSPrepareScript(s.Node.ID)))
+	return err
+}
+
+func hubSTLSVerify(ctx context.Context, _ Remote, s *State) error {
+	if err := s.needKeys(); err != nil {
+		return err
+	}
+	files, err := hubSTLSFiles(s)
+	if err != nil {
+		return err
+	}
+	return unitVerify(ctx, s.Hub, hubSTLSUnit(s), files)
+}
+
+func hubSTLSRollback(ctx context.Context, _ Remote, s *State) error {
+	return runPrint(config.UnitRollbackScript(hubSTLSUnit(s), s.changed[hubSTLSUnit(s)]))(ctx, s.Hub, s)
+}
+
 // ── end-to-end paths: the probes, and the guard around a live exit's risky restarts ──
 
 // pathCheck is one end-to-end path users' traffic rides on: its owner-facing name, its probe
@@ -917,31 +976,16 @@ var hyPath = pathCheck{"основной туннель", func(ctx context.Conte
 	return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
 }, func(s *State) []pathUnit { return []pathUnit{{"hysteria2", false}, {hubUnit(s), true}} }}
 
-// vrPath: the TCP fallback — generate_204 through a short-lived xray on the Hub over VLESS
-// Reality to the exit's :10443 (exit-<id>.vr). The probe config carries the tunnel UUID: it is
-// put at VRProbeConfigPath and removed by the probe script.
-func vrPath(o ExitOptions) pathCheck {
-	return pathCheck{"запасной TCP-путь", func(ctx context.Context, s *State) (bool, string, error) {
-		if err := s.needKeys(); err != nil {
-			return false, "", err
-		}
-		port := config.VRProbeSocksPort(s.Node.ID)
-		cfg, err := config.ExitRealityProbeConfig(port, config.RealityProbe{ExitIP: exitIP(s), UUID: s.Keys.UUID,
-			PublicKey: s.Keys.PublicKey, ShortID: s.Keys.ShortID, SNI: config.ExitRealitySNI})
-		if err != nil {
-			return false, "", err
-		}
-		path := config.VRProbeConfigPath(s.Node.ID)
-		if _, err := s.Hub.PutFile(ctx, path, cfg, 0o600); err != nil {
-			return false, "", err
-		}
-		kv, err := runKV(ctx, s.Hub, config.VRProbeScript(o.HubXray, path, port))
-		if err != nil {
-			return false, "", err
-		}
-		return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
-	}, func(*State) []pathUnit { return []pathUnit{{"xray", false}} }}
-}
+// stlsPath: the backup TCP path — generate_204 through the Hub's ShadowTLS client of the exit
+// (SOCKS 127.0.0.1:2088+id → ShadowTLS v3 → the exit's :443), the very hop the Hub's xray takes
+// as exit-<id>.vr.
+var stlsPath = pathCheck{"запасной TCP-путь", func(ctx context.Context, s *State) (bool, string, error) {
+	kv, err := runKV(ctx, s.Hub, config.SocksProbeScript(config.HubSTLSSocksPort(s.Node.ID)))
+	if err != nil {
+		return false, "", err
+	}
+	return kv["HTTP"] == "204", orNone(kv["HTTP"]), nil
+}, func(s *State) []pathUnit { return []pathUnit{{config.ExitSTLSUnit, false}, {hubSTLSUnit(s), true}} }}
 
 // liveExit: the job converges an exit that carries users (reprovision runs only on online nodes).
 func liveExit(s *State) bool { return s.Kind == KindReprovision && s.Node.Lifecycle == "online" }
@@ -1169,13 +1213,13 @@ func pathHyDegraded(hyDown *error) stepFunc {
 	}
 }
 
-func pathTCP(o ExitOptions, hyDown *error) stepFunc {
+func pathTCP(hyDown *error) stepFunc {
 	return func(ctx context.Context, _ Remote, s *State) error {
 		if !s.Node.FallbackEnabled {
 			s.Printf("запасной TCP-путь выключен владельцем — не проверяю")
 			return nil
 		}
-		ok, code, err := vrPath(o).probe(ctx, s)
+		ok, code, err := stlsPath.probe(ctx, s)
 		if err != nil {
 			return err
 		}
@@ -1185,10 +1229,31 @@ func pathTCP(o ExitOptions, hyDown *error) stepFunc {
 			}
 			return fmt.Errorf("через запасной TCP-путь нет ответа 204 (код %s)", code)
 		}
-		s.Printf("generate_204 через VLESS Reality %s:%d — 204", exitIP(s), config.ExitRealityPort)
+		s.Printf("generate_204 через ShadowTLS %s:%d — 204", exitIP(s), config.ExitSTLSPort)
 		if *hyDown != nil {
 			s.Printf("выход работает по одному пути — запасному TCP; основной туннель вернётся сам, когда UDP восстановится")
 		}
 		return nil
 	}
+}
+
+// ── the retired backup path: the exit's xray (VLESS Reality :10443) ──
+
+// retireXrayApply removes the exit's xray of the old TCP path (config.ExitRetireXrayScript).
+// Nothing dials it: the API that runs this recipe builds exit-<id>.vr over ShadowTLS. It runs
+// before the stls step, whose guard file names only the user stls — the old xray must be gone
+// before its kernel guard rule is.
+func retireXrayApply(ctx context.Context, r Remote, s *State) error {
+	return runPrint(config.ExitRetireXrayScript)(ctx, r, s)
+}
+
+func retireXrayVerify(ctx context.Context, r Remote, _ *State) error {
+	kv, err := runKV(ctx, r, config.ExitXrayStateScript)
+	if err != nil {
+		return err
+	}
+	if kv["XRAY"] != "0" {
+		return errors.New("на ноде остался xray старого запасного пути (VLESS Reality :10443)")
+	}
+	return nil
 }

@@ -45,7 +45,7 @@ Transient (не permanent) — указывает на **rate-limited / heuristi
 **Митигация per VoidMob:** «Fragmenting server responses into several approximately 15-20KB data bundles across different TCP connections.»
 
 **Применимость к нам:**
-- Наш Hub IP `45.150.39.236` = vdsina hosting (RU-physically but recognized как hosting subnet, not residential ISP) → попадает под «foreign-datacenter-like» классификацию для DPI.
+- Наш Hub IP `198.51.100.236` = vdsina hosting (RU-physically but recognized как hosting subnet, not residential ISP) → попадает под «foreign-datacenter-like» классификацию для DPI.
 - Берёза (TCP :443) и Дуб (XHTTP :2443) — оба TCP+TLS 1.3. Берёза с XTLS Vision уже фрагментирует записи; Дуб с XHTTP внутри TLS — тяжелее.
 
 ### 3. QUIC blocked, Hysteria2 + Salamander — best для RU

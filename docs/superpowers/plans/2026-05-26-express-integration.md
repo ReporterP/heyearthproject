@@ -1737,7 +1737,7 @@ Spec §A6 prescribes the section format:
 === Express (Hysteria2) ===
   server: active, UDP :50443, clients: 12
   tunnel mode: dedicated (2 healthy exits)
-  bound exit: NL 89.124.89.126 (RTT 18ms)
+  bound exit: NL 192.0.2.126 (RTT 18ms)
   config_version: 23
   obfs rotation: 4 days ago
 ```

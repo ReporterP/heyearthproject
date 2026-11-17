@@ -22,22 +22,34 @@ func RegisterRoutes() {
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodGet:
+		case http.MethodGet: // users are created by the clients themselves (C2: no form here)
 			RequirePermission("users.read", ListUsersHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("users.write", CreateUserHandler).ServeHTTP(w, r)
 		default:
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
+	http.HandleFunc("/api/admin/referrals", withMethod(http.MethodGet, RequirePermission("users.read", ReferralsOverviewHandler)))
+	http.HandleFunc("/api/admin/wallet-stats", withMethod(http.MethodGet, RequirePermission("dashboard.read", WalletStatsHandler)))
 	http.HandleFunc("/api/admin/users/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSuffix(r.URL.Path, "/")
-		if strings.HasSuffix(trimmed, "/traffic") {
-			RequirePermission("users.read", ListUserTrafficHandler).ServeHTTP(w, r)
+		if strings.HasSuffix(trimmed, "/wallet/adjust") && r.Method == http.MethodPost {
+			RequirePermission(permWalletAdjust, UserWalletAdjustHandler).ServeHTTP(w, r)
 			return
 		}
-		if strings.HasSuffix(trimmed, "/devices") {
-			RequirePermission("users.read", ListUserDevicesHandler).ServeHTTP(w, r)
+		if strings.HasSuffix(trimmed, "/dial-rate") && r.Method == http.MethodGet { // C13
+			RequirePermission("users.read", UserDialRateHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/referrals") && r.Method == http.MethodGet {
+			RequirePermission("users.read", UserReferralsHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/wallet") && r.Method == http.MethodGet {
+			RequirePermission("users.read", UserWalletHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/traffic") {
+			RequirePermission("users.read", ListUserTrafficHandler).ServeHTTP(w, r)
 			return
 		}
 		switch r.Method {
@@ -113,7 +125,6 @@ func RegisterRoutes() {
 	}))
 	http.HandleFunc("/api/admin/payments/", AuthMiddleware(paymentsItemRouter))
 
-	http.HandleFunc("/api/admin/servers/generate-tunnel-creds", withMethod(http.MethodGet, AuthMiddleware(goneHandler(tunnelCredsGoneMsg))))
 	// Node provisioning (provision_handlers.go): reads servers.read, every change nodes.provision.
 	http.HandleFunc("/api/admin/servers/probe", withMethod(http.MethodPost, RequirePermission("nodes.provision", ProbeNodeHandler)))
 	http.HandleFunc("/api/admin/nodes", withMethod(http.MethodGet, RequirePermission("servers.read", ListNodesHandler)))
@@ -158,6 +169,17 @@ func RegisterRoutes() {
 				return
 			}
 		}
+		if strings.HasSuffix(r.URL.Path, "/mobile-check") { // «Проверить с телефона» (mobile_check.go)
+			switch r.Method {
+			case http.MethodPost:
+				RequirePermission("nodes.provision", StartMobileCheckHandler).ServeHTTP(w, r)
+			case http.MethodGet:
+				RequirePermission("servers.read", GetMobileCheckHandler).ServeHTTP(w, r)
+			default:
+				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/routing") {
 			withMethod(http.MethodPut, RequirePermission("nodes.provision", NodeRoutingHandler)).ServeHTTP(w, r)
 			return
@@ -166,27 +188,16 @@ func RegisterRoutes() {
 			withMethod(http.MethodPost, RequirePermission("server_ops.execute", ServerActionHandler)).ServeHTTP(w, r)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/metrics") {
-			withMethod(http.MethodGet, RequirePermission("servers.read", GetServerMetricsHandler)).ServeHTTP(w, r)
+		if strings.HasSuffix(r.URL.Path, "/load") { // B1: the card's «Нагрузка» charts; servers/hub/load = the Hub
+			withMethod(http.MethodGet, RequirePermission("servers.read", ServerLoadHandler)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/capacity") { // B5: the owner's numbers (quota, price, port, cores)
+			withMethod(http.MethodPut, RequirePermission("servers.write", ServerOwnerHandler)).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/logs") {
 			withMethod(http.MethodGet, RequirePermission("servers.logs", GetServerLogsHandler)).ServeHTTP(w, r)
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/files") || strings.Contains(r.URL.Path, "/files/") {
-			RequirePermission("servers.files", ServerFileBrowserHandler).ServeHTTP(w, r)
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/file-content") {
-			switch r.Method {
-			case http.MethodGet:
-				RequirePermission("servers.files", ServerFileReadHandler).ServeHTTP(w, r)
-			case http.MethodPut:
-				RequirePermission("servers.write", goneHandler(fileWriteGoneMsg)).ServeHTTP(w, r)
-			default:
-				writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-			}
 			return
 		}
 		switch r.Method {
@@ -204,16 +215,16 @@ func RegisterRoutes() {
 	// Hysteria2 (Express) status — read-only snapshot for the Hub server detail page.
 	http.HandleFunc("/api/admin/hysteria2/status", withMethod(http.MethodGet, RequirePermission("servers.read", Hysteria2StatusHandler)))
 
+	// «Платежи → Не прошло продление» and the menu's switches (C10).
+	http.HandleFunc("/api/admin/renewals/failing", withMethod(http.MethodGet, RequirePermission("payments.read", FailingRenewalsHandler)))
+	http.HandleFunc("/api/admin/features", withMethod(http.MethodGet, AuthMiddleware(FeaturesHandler)))
+	http.HandleFunc("/api/admin/dial-rate/suspects", withMethod(http.MethodGet, RequirePermission("users.read", DialRateSuspectsHandler)))
+
+	// The Hub's row on «Серверы» (B1).
+	http.HandleFunc("/api/admin/hub", withMethod(http.MethodGet, RequirePermission("servers.read", HubHandler)))
+
 	// Capacity widget — read-only Hub+Exit headroom snapshot (CPU/traffic vs ceiling).
 	http.HandleFunc("/api/admin/capacity", withMethod(http.MethodGet, RequirePermission("dashboard.read", CapacityHandler)))
-
-	// Auto-tuner
-	http.HandleFunc("/api/admin/auto-tuner/status", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerStatusHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/history", withMethod(http.MethodGet, RequirePermission("settings.read", AutoTunerHistoryHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/toggle", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerToggleHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/interval", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerIntervalHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/run-now", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerRunNowHandler)))
-	http.HandleFunc("/api/admin/auto-tuner/cleanup", withMethod(http.MethodPost, RequirePermission("settings.write", AutoTunerCleanupHandler)))
 
 	// Plans (subscription tariffs)
 	http.HandleFunc("/api/admin/plans", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -236,18 +247,6 @@ func RegisterRoutes() {
 			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	}))
-
-	http.HandleFunc("/api/admin/releases", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("releases.read", ListReleasesHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("releases.write", UploadReleaseHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/releases/activate", withMethod(http.MethodPost, RequirePermission("releases.write", ActivateReleaseHandler)))
 
 	http.HandleFunc("/api/admin/admin-users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -274,27 +273,6 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/admin-roles/", withMethod(http.MethodPatch, RequirePermission("admins.write", UpdateAdminRoleHandler)))
 	http.HandleFunc("/api/admin/admin-permissions", withMethod(http.MethodGet, RequirePermission("admins.read", ListAdminPermissionsHandler)))
 
-	http.HandleFunc("/api/admin/ssh-keys", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("servers.read", ListSshKeysHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("servers.write", CreateSshKeyHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/ssh-keys/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPatch:
-			RequirePermission("servers.write", UpdateSshKeyHandler).ServeHTTP(w, r)
-		case http.MethodDelete:
-			RequirePermission("servers.write", DeleteSshKeyHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-
 	http.HandleFunc("/api/admin/settings", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -308,6 +286,19 @@ func RegisterRoutes() {
 
 	// MTProto settings
 	http.HandleFunc("/api/admin/mtproto/generate-secret", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", GenerateMTProtoSecret))))
+	// Telegram WEB proxy (phase T)
+	http.HandleFunc("/api/admin/telegram/webproxy/install", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", InstallTGWebProxy))))
+	http.HandleFunc("/api/admin/telegram/webproxy/rotate-secret", withMethod(http.MethodPost, AuthMiddleware(RequirePermission("settings.write", RotateTGWebProxySecret))))
+	http.HandleFunc("/api/admin/telegram/webproxy", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			RequirePermission("settings.read", GetTGWebProxy).ServeHTTP(w, r)
+		case http.MethodPut:
+			RequirePermission("settings.write", UpdateTGWebProxy).ServeHTTP(w, r)
+		default:
+			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
 	http.HandleFunc("/api/admin/mtproto", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -350,28 +341,6 @@ func RegisterRoutes() {
 	// B2B analytics — aggregate KPIs (counts by status, MRR, top tenants).
 	http.HandleFunc("/api/admin/b2b-analytics",
 		AuthMiddleware(RequirePermission("tenants.read", B2BAnalyticsHandler).ServeHTTP))
-
-	// Traffic masking
-	http.HandleFunc("/api/admin/traffic-masking", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			RequirePermission("traffic_masking.read", ListTrafficMaskingRulesHandler).ServeHTTP(w, r)
-		case http.MethodPost:
-			RequirePermission("traffic_masking.write", CreateTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
-	http.HandleFunc("/api/admin/traffic-masking/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPatch:
-			RequirePermission("traffic_masking.write", UpdateTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		case http.MethodDelete:
-			RequirePermission("traffic_masking.write", DeleteTrafficMaskingRuleHandler).ServeHTTP(w, r)
-		default:
-			writeAdminError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	}))
 
 	// ------------------------------------------------------------------
 	// Direct routing (services that bypass the proxy chain)
@@ -438,16 +407,6 @@ func RegisterRoutes() {
 	// Email log
 	http.HandleFunc("/api/admin/email-log", withMethod(http.MethodGet, RequirePermission("payments.read", ListEmailLogHandler)))
 
-	// Payment retry queue (dunning)
-	http.HandleFunc("/api/admin/payment-retries", withMethod(http.MethodGet, RequirePermission("payments.read", ListRetryQueueHandler)))
-	http.HandleFunc("/api/admin/payment-retries/", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/cancel") && r.Method == http.MethodPost {
-			RequirePermission("payments.write", CancelRetryHandler).ServeHTTP(w, r)
-			return
-		}
-		writeAdminError(w, http.StatusNotFound, "not found")
-	}))
-
 	// Traffic
 	http.HandleFunc("/api/admin/traffic-chart", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficChartHandler)))
 	http.HandleFunc("/api/admin/traffic", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -460,7 +419,6 @@ func RegisterRoutes() {
 	http.HandleFunc("/api/admin/traffic/", withMethod(http.MethodGet, RequirePermission("dashboard.read", TrafficUserDetailHandler)))
 
 	http.HandleFunc("/api/public/create-tenant", publicLimiter.Middleware(PublicCreateTenantHandler))
-	http.HandleFunc("/api/public/tariff/calculate", publicLimiter.Middleware(PublicTariffCalculateHandler))
 }
 
 // permPaymentsRefund guards every action that moves money or touches YooKassa for a payment.

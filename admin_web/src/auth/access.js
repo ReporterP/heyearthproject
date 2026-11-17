@@ -4,22 +4,18 @@
 // href → permission; null = every admin (account, theme, logout live on /settings).
 export const PAGE_PERMS = {
   '/dashboard': 'dashboard.read',
-  '/traffic': 'dashboard.read',
   '/users': 'users.read',
-  '/subscriptions': 'subscriptions.read',
   '/promocodes': 'promocodes.read',
-  '/servers': 'servers.read', // redirects to /nodes
-  '/nodes': 'servers.read',
-  '/ssh-keys': 'servers.read',
-  '/releases': 'releases.read',
-  '/traffic-masking': 'traffic_masking.read',
+  '/servers': 'servers.read', // «Серверы»: exits, entries in RU, the Hub, «Мощность»
+  '/nodes': 'servers.read', // old address → /servers
+  '/entries': 'servers.read', // old address → /servers?tab=relay
   '/direct-routes': 'routing.direct.view',
   '/mtproto': 'settings.read',
-  '/auto-tuner': 'settings.read',
   '/alerts': 'settings.read',
   '/plans': 'settings.read',
   '/payments': 'payments.read',
-  '/payment-ops': 'payments.read',
+  '/payment-ops': 'payments.read', // old address → /payments?tab=emails
+  '/referrals': 'users.read',
   '/admins': 'admins.read',
   '/audit-log': 'audit.read',
   '/tenants': 'tenants.read',
@@ -29,8 +25,7 @@ export const PAGE_PERMS = {
 
 // Pages a tenant (B2B) admin never sees, whatever the permissions.
 export const TENANT_HIDDEN = new Set([
-  '/servers', '/nodes', '/ssh-keys', '/releases', '/traffic-masking', '/direct-routes', '/mtproto',
-  '/auto-tuner', '/alerts', '/admins', '/audit-log', '/tenants', '/b2b-analytics', '/settings',
+  '/servers', '/nodes', '/entries', '/direct-routes', '/mtproto', '/alerts', '/admins', '/audit-log', '/tenants', '/b2b-analytics', '/settings',
 ])
 
 export function canOpen(href, { can, isTenantAdmin }) {

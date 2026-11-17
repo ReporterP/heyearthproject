@@ -113,44 +113,6 @@ func (n *Notification) ExtractPaymentID() string {
 	return ""
 }
 
-// ExtractRefundPaymentID возвращает payment_id из refund.* объекта.
-func (n *Notification) ExtractRefundPaymentID() string {
-	if n.Object == nil {
-		return ""
-	}
-	if v, ok := n.Object["payment_id"].(string); ok {
-		return v
-	}
-	return ""
-}
-
-// ExtractObjectAsPayment — попытка распаковать Object как Payment.
-// Возвращает ошибку если Object не соответствует Payment JSON.
-func (n *Notification) ExtractObjectAsPayment() (*Payment, error) {
-	raw, err := json.Marshal(n.Object)
-	if err != nil {
-		return nil, err
-	}
-	var p Payment
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// ExtractObjectAsRefund — попытка распаковать Object как Refund.
-func (n *Notification) ExtractObjectAsRefund() (*Refund, error) {
-	raw, err := json.Marshal(n.Object)
-	if err != nil {
-		return nil, err
-	}
-	var r Refund
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
 // VerifyPayment делает повторный GET /payments/{id} чтобы удостовериться что статус соответствует.
 // Это второй уровень защиты (первый — IP whitelist). Возвращает актуальный Payment.
 func (c *Client) VerifyPayment(paymentID string) (*Payment, error) {
