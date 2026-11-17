@@ -208,6 +208,20 @@ func SupportReply(body string) (subject, htmlBody, text string) {
 	return
 }
 
+// PasswordReset — support reset the password: the temporary one, and that the cabinet will ask
+// for a new one. email_log keeps the subject only, never the body with the password.
+func PasswordReset(tempPassword string) (subject, htmlBody, text string) {
+	subject = "Пароль HiEarth сброшен"
+	htmlBody = wrap(subject, h1("Пароль сброшен")+
+		para("Поддержка сбросила пароль от вашего аккаунта HiEarth. Войти можно с временным паролем:")+
+		`<div style="font:700 20px/1.4 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.06em;color:#edf6f0;background:rgba(255,255,255,0.04);border-radius:12px;padding:14px 18px;margin:0 0 22px">`+html.EscapeString(tempPassword)+`</div>`+
+		para("После входа кабинет попросит придумать свой пароль. На других устройствах аккаунт вышел — войдите снова.")+
+		button("/login", "Войти")+
+		`<p style="font-size:13px;line-height:1.5;color:#648677;margin:18px 0 0">Если вы не просили сбросить пароль — напишите в поддержку.</p>`, "")
+	text = fmt.Sprintf("Поддержка сбросила пароль от вашего аккаунта HiEarth.\n\nВременный пароль: %s\n\nПосле входа кабинет попросит придумать свой пароль. На других устройствах аккаунт вышел — войдите снова.\n\n%s/login\n\nЕсли вы не просили сбросить пароль — напишите в поддержку.", tempPassword, SiteURL)
+	return
+}
+
 // Template names (email_log.template).
 const (
 	TemplateSubscriptionActivated = "subscription_activated"
@@ -218,4 +232,5 @@ const (
 	TemplateWalletTopup           = "wallet_topup"
 	TemplateReferralBonus         = "referral_bonus"
 	TemplateSupportReply          = "support_reply"
+	TemplatePasswordReset         = "password_reset"
 )

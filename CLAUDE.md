@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 86 SQL migrations (000001-000086), applied at API start
+│   │   ├── migrations/            # 87 SQL migrations (000001-000087), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (86)
+# Auto-runs the migrations on startup (87)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -251,6 +251,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 ### Security
 
 - **JWT user**: custom HMAC-SHA256, 30 дней, validates vs `user_sessions` (revocable): `POST /api/v1/auth/logout` closes one, a changed password closes all but the caller's, expired ones are deleted. gRPC ClientApi checks the token too (`cmd/api/grpc_auth.go`).
+- **Password reset by support** (admin user card «Сбросить пароль», permission `users.password_reset`, `internal/admin/password_reset.go`, `biz.ResetPasswordByAdmin`): a temporary password shown to the admin once (a confirmed address also gets it by mail; email_log keeps the subject only), every session of the user closed, `users.password_must_change` raised (audit `user.password_reset`, never the password). Signing in with it works everywhere and keeps the flag; the profile's `must_change_password` puts a non-closable banner on every cabinet page; `SetCloudPassword` clears it (the new password must differ). Accounts without a password are refused (409).
 - **JWT admin**: golang-jwt/v5, 24h, RBAC с 16 permissions
 - **SSH**: the Hub's own key (`/api/admin/ssh-keys/hub`) or a password in AES-256-GCM (`ssh_password_enc`); the owner-confirmed host key only
 - **mTLS**: CA 10yr + leaf 1yr, TLS 1.3+
@@ -273,7 +274,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 86 migrations)
+## Database (PostgreSQL, 87 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 

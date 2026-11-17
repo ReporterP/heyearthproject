@@ -24,7 +24,11 @@ export function explain(e) {
   const raw = String(e?.data?.error || '').toLowerCase()
   if (e?.kind === 'rate' || e?.status === 429) return { field: null, title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
   if (raw === 'user not found') return { field: 'id', title: 'Аккаунт не найден.', text: 'Проверьте ID — его легко перепутать с похожими символами.' }
-  if (raw === 'invalid password' || raw === 'password required' || raw === 'invalid credentials') return { field: 'pw', title: 'Неверный пароль.', text: 'Если пароль не задавали — оставьте поле пустым.' }
+  // «password required»: the account has a password and the field was empty (a login name
+  // always has one — SetUsername needs a password first). «invalid password» only happens
+  // when a password is set too, so neither says «leave the field empty».
+  if (raw === 'password required') return { field: 'pw', title: 'У этого аккаунта есть пароль.', text: 'Введите его. Забыли — напишите в поддержку, пароль сбросят.' }
+  if (raw === 'invalid password' || raw === 'invalid credentials') return { field: 'pw', title: 'Неверный пароль.', text: 'Проверьте раскладку и Caps Lock. Забыли — напишите в поддержку, пароль сбросят.' }
   if (raw === 'user is blocked') return { field: null, title: 'Аккаунт заблокирован.', text: 'Напишите в поддержку — разберёмся.' }
   if (e?.kind === 'network') return { field: null, title: 'Нет связи с сервером.', text: 'Проверьте интернет и попробуйте ещё раз.' }
   return { field: null, title: 'Не удалось войти.', text: 'Попробуйте ещё раз через минуту.' }
@@ -105,7 +109,7 @@ export default function LoginPage() {
             spellCheck={false}
           />
         </Field>
-        <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
+        <Field label="Пароль" aside="если задавали" hint={err?.field === 'pw' ? null : 'Не задавали пароль — оставьте поле пустым.'}>
           <Input
             ref={pwRef}
             aria-errormessage={err?.field === 'pw' ? 'login-err' : undefined}
@@ -121,7 +125,7 @@ export default function LoginPage() {
         <Button variant="primary" size="lg" block type="submit" loading={busy} className="rise" style={{ '--d': '200ms' }}>Войти</Button>
         <hr className="divider" />
         <p className="t-sm muted">Нет аккаунта? <Link to={registerHref} className="link">Создайте новый</Link> — это один клик.</p>
-        <p className="t-sm muted">Потеряли ID? Напишите в <Link to="/help#lost-id" className="link">поддержку</Link> — найдём аккаунт по платежу.</p>
+        <p className="t-sm muted">Потеряли ID или забыли пароль? Напишите в <Link to="/help#lost-id" className="link">поддержку</Link> — найдём аккаунт по платежу и сбросим пароль.</p>
       </form>
     </AuthLayout>
   )

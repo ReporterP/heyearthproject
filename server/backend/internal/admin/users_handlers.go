@@ -93,7 +93,10 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 		       us.valid_until,
 		       ls.last_seen,
 		       COALESCE(t30.total_bytes, 0) AS traffic_30d_bytes,
-		       COALESCE(p.traffic_limit_bytes, 0) AS traffic_limit_bytes
+		       COALESCE(p.traffic_limit_bytes, 0) AS traffic_limit_bytes,
+		       COALESCE(u.password_hash, '') <> '' AS has_password,
+		       COALESCE(u.password_must_change, FALSE), u.password_reset_at,
+		       (u.email_verified_at IS NOT NULL AND COALESCE(u.email, '') <> '') AS has_confirmed_email
 		FROM users u
 		LEFT JOIN LATERAL (
 			SELECT us2.plan_id, us2.valid_until
@@ -135,6 +138,7 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 			&row.ID, &row.UserID, &row.Username, &row.TelegramID, &row.Role, &row.IsBlocked, &row.PreferredPlatform,
 			&row.CreatedAt, &row.UpdatedAt, &row.CurrentPlan, &row.ValidUntil,
 			&row.LastSeen, &row.Traffic30dBytes, &row.TrafficLimitBytes,
+			&row.HasPassword, &row.PasswordMustChange, &row.PasswordResetAt, &row.HasConfirmedEmail,
 		); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Failed to scan user")
 			return
@@ -151,6 +155,14 @@ func ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 			"updated_at":          row.UpdatedAt.Format(time.RFC3339),
 			"traffic_30d_bytes":   row.Traffic30dBytes,
 			"traffic_limit_bytes": row.TrafficLimitBytes,
+			// «Сбросить пароль»: only an account with a password has one to reset; the
+			// dialog says in advance whether the temporary password also goes by mail.
+			"has_password":         row.HasPassword,
+			"password_must_change": row.HasPassword && row.PasswordMustChange,
+			"has_confirmed_email":  row.HasConfirmedEmail,
+		}
+		if row.PasswordResetAt.Valid {
+			payload["password_reset_at"] = row.PasswordResetAt.Time.Format(time.RFC3339)
 		}
 		if row.TelegramID.Valid {
 			payload["telegram_id"] = row.TelegramID.Int64

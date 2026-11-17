@@ -239,7 +239,7 @@ function TgLogin({ onDone, onBack, onBrowser }) {
             <Input ref={idRef} mono size="lg" value={id} invalid={err?.field === 'id'} autoComplete="username" autoCapitalize="none" spellCheck={false}
               onChange={(e) => { setId(e.target.value); setIdEmpty(false); if (err?.field === 'id') setErr(null) }} />
           </Field>
-          <Field label="Пароль" aside="если задавали" hint="Не задавали пароль — оставьте поле пустым.">
+          <Field label="Пароль" aside="если задавали" hint={err?.field === 'pw' ? null : 'Не задавали пароль — оставьте поле пустым.'}>
             <Input type="password" size="lg" value={pw} placeholder="Ваш пароль" invalid={err?.field === 'pw'} autoComplete="current-password"
               onChange={(e) => { setPw(e.target.value); if (err?.field === 'pw') setErr(null) }} />
           </Field>

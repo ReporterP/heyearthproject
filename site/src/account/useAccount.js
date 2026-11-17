@@ -25,6 +25,10 @@ export const FRESH_MS = 60_000
 
 let cache = { token: '', parts: {} } // part → { value, at } | { promise }
 
+// Every mounted hook hears a part that was (re)loaded, so one page's reload reaches the rest
+// of the screen: Settings changes the password → AppShell's banner reads the new profile.
+const listeners = new Set()
+
 function cached(token, part) {
   if (cache.token !== token) return undefined
   const c = cache.parts[part]
@@ -43,7 +47,13 @@ export function loadPart(token, part, force = false) {
   const promise = FETCHERS[part](token).then(
     // Written only while this request is still the part's own: an invalidation or a newer
     // forced load replaces it, and its late answer must not bring old data back.
-    (value) => { if (cache === mine && mine.parts[part]?.promise === promise) mine.parts[part] = { value, at: Date.now() }; return value },
+    (value) => {
+      if (cache === mine && mine.parts[part]?.promise === promise) {
+        mine.parts[part] = { value, at: Date.now() }
+        listeners.forEach((l) => l(token, part, value))
+      }
+      return value
+    },
     (err) => { if (cache === mine && mine.parts[part]?.promise === promise) delete mine.parts[part]; throw err },
   )
   mine.parts[part] = { promise }
@@ -94,6 +104,16 @@ export default function useAccount(parts, { optional = [] } = {}) {
   }, [token, key, opt])
 
   useEffect(() => { run(false) }, [run])
+
+  useEffect(() => {
+    const mine = new Set(key ? key.split(',') : [])
+    const hear = (t, part, value) => {
+      if (t !== token || !mine.has(part) || !alive.current) return
+      setState((s) => (s.data[part] === value ? s : { ...s, data: { ...s.data, [part]: value } }))
+    }
+    listeners.add(hear)
+    return () => { listeners.delete(hear) }
+  }, [token, key])
 
   // reload refetches the named parts (all of this hook's when none is named) and re-reads.
   const reload = useCallback((...only) => {

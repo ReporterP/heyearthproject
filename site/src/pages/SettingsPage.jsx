@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import { updateProfile } from '../api/user.js'
@@ -31,9 +31,9 @@ function strength(pw) {
   return s <= 1 ? 1 : s === 2 ? 2 : 3
 }
 
-function Section({ title, text, children, id }) {
+function Section({ title, text, children, id, sectionRef }) {
   return (
-    <section className="set" id={id}>
+    <section className="set" id={id} ref={sectionRef}>
       <div><h2 className="t-h4">{title}</h2>{text && <p className="t-sm subtle" style={{ marginTop: 4 }}>{text}</p>}</div>
       <div style={{ minWidth: 0 }}>{children}</div>
     </section>
@@ -64,6 +64,15 @@ export default function SettingsPage() {
   useEffect(() => { if (profile) setUsername(profile.username || '') }, [profile?.username]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasPw = !!profile?.has_password
+  // a temporary password from support (08 §8.4): the current one is «Временный пароль»
+  const mustChange = hasPw && !!profile?.must_change_password
+  const { hash } = useLocation()
+  const pwSection = useRef(null)
+  // «Сменить пароль» in the banner leads here: the person lands in the first password field
+  useEffect(() => {
+    if (hash !== '#password' || !profile) return
+    pwSection.current?.querySelector('input[autocomplete$="password"]')?.focus({ preventScroll: true })
+  }, [hash, !!profile]) // eslint-disable-line react-hooks/exhaustive-deps
   const nameChanged = profile && username.trim() !== (profile.username || '')
   const pwChanged = pw.length > 0
   const changed = !!(nameChanged || pwChanged)
@@ -71,8 +80,9 @@ export default function SettingsPage() {
     username: nameChanged && (!hasPw && !pwChanged ? 'Сначала задайте пароль — без него логин не сохранится'
       : username.trim().length < 5 ? 'Имя пользователя должно быть не менее 5 символов'
       : !/^[A-Za-z0-9_-]+$/.test(username.trim()) ? 'Имя может содержать только латинские буквы, цифры, «_» и «-»' : null),
-    cur: pwChanged && hasPw && !cur ? 'Введите текущий пароль' : null,
-    pw: pwChanged && pw.length < 4 ? 'Пароль должен быть не менее 4 символов' : null,
+    cur: pwChanged && hasPw && !cur ? (mustChange ? 'Введите временный пароль' : 'Введите текущий пароль') : null,
+    pw: pwChanged && pw.length < 4 ? 'Пароль должен быть не менее 4 символов'
+      : pwChanged && mustChange && pw === cur ? 'Придумайте новый пароль — он должен отличаться от временного' : null,
     pw2: pwChanged && pw2 !== pw ? 'Пароли не совпадают' : null,
   }
   const show = (k) => (tried && errs[k]) || (srvErr?.field === k && srvErr.text) || null
@@ -101,8 +111,9 @@ export default function SettingsPage() {
       else if (raw.startsWith('username can only contain')) setSrvErr({ field: 'username', text: 'Имя может содержать только латинские буквы, цифры, «_» и «-»' })
       else if (raw.includes('облачный пароль')) setSrvErr({ field: 'username', text: 'Сначала задайте пароль — без него логин не сохранится' })
       else if (raw.includes('имя пользователя должно быть')) setSrvErr({ field: 'username', text: 'Имя пользователя должно быть не менее 5 символов' })
-      else if (raw === 'invalid current password') setSrvErr({ field: 'cur', text: 'Неверный текущий пароль' })
-      else if (raw === 'current password required') setSrvErr({ field: 'cur', text: 'Введите текущий пароль' })
+      else if (raw === 'invalid current password') setSrvErr({ field: 'cur', text: mustChange ? 'Неверный временный пароль' : 'Неверный текущий пароль' })
+      else if (raw === 'current password required') setSrvErr({ field: 'cur', text: mustChange ? 'Введите временный пароль' : 'Введите текущий пароль' })
+      else if (raw === 'new password must differ from the temporary one') setSrvErr({ field: 'pw', text: 'Придумайте новый пароль — он должен отличаться от временного' })
       else if (raw.startsWith('password must be at least')) setSrvErr({ field: 'pw', text: 'Пароль должен быть не менее 4 символов' })
       else setSrvErr({ title: 'Не удалось сохранить.', text: 'Попробуйте снова.' })
     } finally {
@@ -128,7 +139,7 @@ export default function SettingsPage() {
               <CopyField value={profile.user_id} label="HiEarth ID" buttonLabel="Скопировать" />
               <dl className="kv sm:grid-cols-[max-content_minmax(0,1fr)]">
                 <dt>Имя пользователя</dt><dd className={profile.username ? 'mono' : 'subtle'}>{profile.username || 'не задано'}</dd>
-                <dt>Пароль</dt><dd>{hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
+                <dt>Пароль</dt><dd>{mustChange ? <Badge tone="warn">Временный</Badge> : hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
                 <dt>Подписка</dt>
                 <dd>{sub?.active ? `${sub.plan_name} · до ${date(sub.valid_until)}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
               </dl>
@@ -136,15 +147,15 @@ export default function SettingsPage() {
           </div>
         </Section>
 
-        <Section title={profile.username || hasPw ? 'Логин и пароль' : 'Создать логин и пароль'} text="Входить по короткому имени вместо длинного HiEarth ID.">
+        <Section id="password" sectionRef={pwSection} title={profile.username || hasPw ? 'Логин и пароль' : 'Создать логин и пароль'} text="Входить по короткому имени вместо длинного HiEarth ID.">
           <form className="card stack gap-4" onSubmit={save} noValidate>
             {srvErr && !srvErr.field && <Alert tone="bad" title={srvErr.title} rise>{srvErr.text}</Alert>}
             <Field label="Имя пользователя" hint="минимум 5 символов" error={show('username')}>
               <Input value={username} autoComplete="username" autoCapitalize="none" spellCheck={false} onChange={(e) => { setUsername(e.target.value); setSrvErr(null) }} />
             </Field>
             {hasPw && (
-              <Field label="Текущий пароль" error={show('cur')}>
-                <Input type="password" value={cur} placeholder="Нужен, чтобы сменить пароль" autoComplete="current-password" onChange={(e) => { setCur(e.target.value); setSrvErr(null) }} />
+              <Field label={mustChange ? 'Временный пароль' : 'Текущий пароль'} error={show('cur')}>
+                <Input type="password" value={cur} placeholder={mustChange ? 'Из письма или от поддержки' : 'Нужен, чтобы сменить пароль'} autoComplete="current-password" onChange={(e) => { setCur(e.target.value); setSrvErr(null) }} />
               </Field>
             )}
             <div className="grid g-2" style={{ gap: 12 }}>

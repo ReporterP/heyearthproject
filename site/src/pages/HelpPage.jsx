@@ -17,7 +17,7 @@ const TOPICS = [
   { id: 'connect', label: 'Как подключиться' },
   { id: 'mobile', label: 'Не работает на мобильном' },
   { id: 'expired', label: 'Подписка закончилась' },
-  { id: 'lost-id', label: 'Потерял ID аккаунта' },
+  { id: 'lost-id', label: 'Потерял ID или пароль' },
   { id: 'refund', label: 'Как вернуть деньги' },
   { id: 'support', label: 'Связаться с поддержкой' },
 ]
@@ -85,9 +85,12 @@ export default function HelpPage() {
             </section>
 
             <section id="lost-id" className="card" style={{ padding: narrow ? 22 : 30 }}>
-              <h2 className="t-h2">Потерял ID аккаунта</h2>
+              <h2 className="t-h2">Потерял ID или пароль</h2>
               <p className="muted" style={{ marginTop: 10, maxWidth: 680 }}>
                 ID — единственный ключ входа, поэтому восстановить его без пароля нельзя. Если вы задавали логин и пароль — <Link to="/login" className="link">войдите по логину</Link>. Если нет — напишите в поддержку и укажите дату и сумму оплаты: найдём аккаунт по платежу.
+              </p>
+              <p className="muted" style={{ marginTop: 10, maxWidth: 680 }}>
+                Забыли пароль — напишите в поддержку и назовите HiEarth ID или логин. Пароль сбросят и выдадут временный (если почта подтверждена, он придёт и письмом). После входа кабинет попросит придумать свой пароль.
               </p>
             </section>
 

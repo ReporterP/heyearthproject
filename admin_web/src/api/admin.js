@@ -349,6 +349,11 @@ export function createTenantInvoice(body) {
   return apiFetch('/b2b/create-invoice', { method: 'POST', body })
 }
 
+// «Сбросить пароль»: { temp_password, sessions_closed, email_sent } — the password is shown once.
+export function resetUserPassword(userDbId) {
+  return apiFetch(`/users/${userDbId}/password/reset`, { method: 'POST' })
+}
+
 // ── Wallet (W6) ──
 export function fetchUserWallet(userDbId) {
   return apiFetch(`/users/${userDbId}/wallet`)

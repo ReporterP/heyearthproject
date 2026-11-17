@@ -19,6 +19,7 @@ var PaymentActionHandler http.HandlerFunc
 func RegisterRoutes() {
 	http.HandleFunc("/api/admin/login", adminLoginLimiter.Middleware(withMethod(http.MethodPost, LoginHandler)))
 	http.HandleFunc("/api/admin/overview", withMethod(http.MethodGet, RequirePermission("dashboard.read", OverviewHandler)))
+	http.HandleFunc("/api/admin/me", withMethod(http.MethodGet, AuthMiddleware(AdminMeHandler)))
 
 	http.HandleFunc("/api/admin/users", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -34,6 +35,10 @@ func RegisterRoutes() {
 		trimmed := strings.TrimSuffix(r.URL.Path, "/")
 		if strings.HasSuffix(trimmed, "/wallet/adjust") && r.Method == http.MethodPost {
 			RequirePermission(permWalletAdjust, UserWalletAdjustHandler).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(trimmed, "/password/reset") && r.Method == http.MethodPost {
+			RequirePermission(permUserPasswordReset, UserPasswordResetHandler).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasSuffix(trimmed, "/dial-rate") && r.Method == http.MethodGet { // C13
