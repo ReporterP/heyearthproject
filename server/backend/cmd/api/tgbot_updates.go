@@ -126,8 +126,11 @@ func newTGCtx(ctx context.Context, bot *tg.Bot, from tg.User) (*tgCtx, error) {
 func handleTGMessage(c *tgCtx, m *tg.Message) {
 	text := strings.TrimSpace(m.Text)
 	if cmd, arg, ok := parseTGCommand(text); ok {
+		log.Printf("[tg-bot] …%04d: /%s (аккаунт привязан: %v)", c.chat%10000, cmd, c.user != nil)
 		if cmd != "support" && c.user != nil {
-			_ = biz.SetTGChatState(c.ctx, c.chat, "", 0) // any command ends the support mode
+			if err := biz.SetTGChatState(c.ctx, c.chat, "", 0); err != nil { // any command ends the support mode
+				log.Printf("[tg-bot] режим чата …%04d: %v", c.chat%10000, err)
+			}
 		}
 		switch cmd {
 		case "start":
@@ -158,7 +161,12 @@ func handleTGMessage(c *tgCtx, m *tg.Message) {
 		return
 	}
 	// a reply to a support answer, or the support mode: the message goes to the ticket
-	if c.user != nil && (isReplyToSupport(c, m) || biz.GetTGChatState(c.ctx, c.chat) == "support") {
+	mode := ""
+	if c.user != nil {
+		mode = biz.GetTGChatState(c.ctx, c.chat)
+	}
+	log.Printf("[tg-bot] …%04d: сообщение (привязан: %v, режим: %q)", c.chat%10000, c.user != nil, mode)
+	if c.user != nil && (mode == "support" || isReplyToSupport(c, m)) {
 		tgSupportMessage(c, m)
 		return
 	}

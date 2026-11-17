@@ -397,7 +397,9 @@ func tgSupportStart(c *tgCtx) {
 	if !requireLinked(c) {
 		return
 	}
-	_ = biz.SetTGChatState(c.ctx, c.chat, "support", tgSupportModeTTL)
+	if err := biz.SetTGChatState(c.ctx, c.chat, "support", tgSupportModeTTL); err != nil {
+		log.Printf("[support] режим поддержки …%04d не включился: %v", c.chat%10000, err)
+	}
 	_, _ = c.reply("<b>Поддержка</b>\n\nНапишите вопрос одним или несколькими сообщениями — можно приложить скриншот. Ответим сюда и в кабинете, обычно в течение дня.",
 		tg.Keyboard(tg.Row(tg.CallbackButton("Закончить", "sup:end")), tg.Row(tg.WebAppButton("Переписка в кабинете", miniAppURL("support")))))
 }
@@ -465,6 +467,8 @@ func tgSupportMessage(c *tgCtx, m *tg.Message) {
 		msg := "Не удалось передать сообщение — попробуйте через минуту."
 		if errors.Is(err, biz.ErrSupportTooMany) || errors.Is(err, biz.ErrSupportTooLong) || errors.Is(err, biz.ErrSupportEmpty) {
 			msg = err.Error()
+		} else {
+			log.Printf("[support] сообщение из бота …%04d: %v", c.chat%10000, err)
 		}
 		_, _ = c.reply(html.EscapeString(msg), nil)
 		return
