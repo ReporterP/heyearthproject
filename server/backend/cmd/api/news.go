@@ -165,6 +165,17 @@ func validateNews(in biz.NewsInput, send bool) string {
 	if err := tg.ValidateHTML(in.Body); err != nil {
 		return "Текст: " + err.Error()
 	}
+	if len([]rune(in.Body)) > 4000 {
+		return "Текст длиннее 4000 символов"
+	}
+	if in.Image != "" {
+		if !supportImageRe.MatchString(in.Image) {
+			return "Картинка не найдена — загрузите её ещё раз"
+		}
+		if _, err := os.Stat(filepath.Join(newsDir(), in.Image)); err != nil {
+			return "Картинка не найдена — загрузите её ещё раз"
+		}
+	}
 	if (in.ButtonText == "") != (in.ButtonURL == "") {
 		return "У кнопки нужны и текст, и ссылка — или ни того, ни другого"
 	}
@@ -201,7 +212,10 @@ func newsInputOf(p *biz.NewsPost) biz.NewsInput {
 
 // publishNews sends a claimed post to every place it targets. The channel post is synchronous
 // (its error is shown in the admin); bot copies go through the outbox.
-func publishNews(ctx context.Context, id int) (*biz.NewsPost, error) {
+func publishNews(parent context.Context, id int) (*biz.NewsPost, error) {
+	// not the request's context: a dropped admin connection must not leave the post half-sent
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 15*time.Minute)
+	defer cancel()
 	p, err := biz.ClaimNewsForSending(ctx, id)
 	if err != nil {
 		return nil, err
@@ -283,8 +297,10 @@ func queueNewsForBot(ctx context.Context, p *biz.NewsPost) (int, error) {
 	return n, nil
 }
 
-// publishDueNews publishes scheduled posts (called by the outbox loop, one instance).
+// publishDueNews publishes scheduled posts (called by the outbox loop, one instance) and
+// releases posts stuck in 'sending' (a crash mid-publish) as failed.
 func publishDueNews(ctx context.Context) {
+	_ = biz.ReleaseStuckNews(ctx)
 	ids, err := biz.DueNews(ctx)
 	if err != nil {
 		return
@@ -496,18 +512,15 @@ func handleAdminNewsItem(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 			return
 		}
-		if cur.Status != "draft" && cur.Status != "scheduled" && cur.Status != "failed" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "Новость уже отправлена"})
+		if ok, err := biz.ScheduleNews(ctx, id, &req.At); err != nil || !ok {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Новость уже отправлена или отправляется"})
 			return
 		}
-		_ = biz.SetNewsStatus(ctx, id, "scheduled", &req.At, "")
 		admin.WriteAuditLog(r, "news_schedule", "news", strconv.Itoa(id), map[string]any{"at": req.At})
 		p, _ := biz.GetNews(ctx, id)
 		writeJSON(w, http.StatusOK, p)
 	case action == "unschedule" && r.Method == http.MethodPost:
-		if cur.Status == "scheduled" {
-			_ = biz.SetNewsStatus(ctx, id, "draft", nil, "")
-		}
+		_, _ = biz.ScheduleNews(ctx, id, nil)
 		p, _ := biz.GetNews(ctx, id)
 		writeJSON(w, http.StatusOK, p)
 	default:
@@ -517,6 +530,7 @@ func handleAdminNewsItem(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/admin/news/upload (multipart image) → {image}
 func handleAdminNewsUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, supportBodyLimit)
 	if err := r.ParseMultipartForm(supportBodyLimit); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Картинка больше 5 МБ"})
 		return

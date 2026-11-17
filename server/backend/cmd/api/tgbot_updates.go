@@ -82,12 +82,15 @@ func handleUserBotUpdate(ctx context.Context, u tg.Update) {
 			return
 		}
 		c, err := newTGCtx(ctx, bot, *m.From)
-		if err != nil {
-			log.Printf("[tg-bot] пользователь %d: %v", m.From.ID, err)
+		if m.SuccessfulPayment != nil {
+			if err != nil { // the account could not be read: the payment still gets an answer (a refund)
+				c = &tgCtx{ctx: ctx, bot: bot, from: *m.From, chat: m.From.ID}
+			}
+			handleStarsPaid(c, m)
 			return
 		}
-		if m.SuccessfulPayment != nil {
-			handleStarsPaid(c, m)
+		if err != nil {
+			log.Printf("[tg-bot] пользователь %d: %v", m.From.ID, err)
 			return
 		}
 		handleTGMessage(c, m)

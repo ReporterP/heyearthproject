@@ -348,8 +348,12 @@ func handleStarsPaid(c *tgCtx, m *tg.Message) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return // this payment was handled already
 	}
-	if err != nil {
-		log.Printf("[stars] запись платежа %s: %v", sp.TelegramPaymentChargeID, err)
+	if err != nil { // not recorded: give the Stars back rather than keep them without a subscription
+		log.Printf("[stars] запись платежа %s: %v — возвращаем звёзды", sp.TelegramPaymentChargeID, err)
+		rerr := c.bot.RefundStarPayment(c.ctx, c.from.ID, sp.TelegramPaymentChargeID)
+		RaiseAlert("stars-payment-unrecorded-"+sp.TelegramPaymentChargeID, AlertCritical, "Оплата звёздами не записана",
+			fmt.Sprintf("Telegram %d, %d ⭐, charge %s: %v; возврат: %v", c.from.ID, sp.TotalAmount, sp.TelegramPaymentChargeID, err, rerr))
+		_, _ = c.reply("Не получилось включить подписку — звёзды возвращаем. Напишите в /paysupport, если они не вернулись.", nil)
 		return
 	}
 	fail := func(reason string) {
@@ -398,6 +402,40 @@ func handleStarsPaid(c *tgCtx, m *tg.Message) {
 	log.Printf("[stars] ✓ %s купил «%s» за %d ⭐ (платёж %d) до %s", c.user.UserID, plan.Slug, sp.TotalAmount, payID, until.Format("2006-01-02"))
 	_, _ = c.reply(fmt.Sprintf("Подписка «%s» оплачена и действует до %s. Спасибо!", html.EscapeString(plan.Name), ruDate(until)),
 		tg.Keyboard(tg.Row(tg.WebAppButton("Подключить", miniAppURL("connect")).Styled(tg.StyleSuccess)), tg.Row(openCabinetButton(""))))
+}
+
+// reconcileStarsPayments refunds payments that stayed 'paid' (a crash between recording and
+// activating): the person never got the plan. Runs in the outbox loop (one instance).
+func reconcileStarsPayments(ctx context.Context, bot *tg.Bot) {
+	rows, err := db.DB.QueryContext(ctx, `
+		SELECT id, telegram_id, charge_id, stars FROM stars_payments
+		 WHERE status = 'paid' AND created_at < NOW() - INTERVAL '5 minutes' ORDER BY id LIMIT 20`)
+	if err != nil {
+		return
+	}
+	type stuck struct {
+		id     int
+		tgID   int64
+		charge string
+		stars  int
+	}
+	var list []stuck
+	for rows.Next() {
+		var s stuck
+		if rows.Scan(&s.id, &s.tgID, &s.charge, &s.stars) == nil {
+			list = append(list, s)
+		}
+	}
+	rows.Close()
+	for _, s := range list {
+		status, note := "refunded", "не включилась после оплаты — звёзды возвращены"
+		if err := bot.RefundStarPayment(ctx, s.tgID, s.charge); err != nil {
+			status, note = "failed", "не включилась после оплаты; возврат: "+err.Error()
+		}
+		_, _ = db.DB.ExecContext(ctx, `UPDATE stars_payments SET status = $2, error = $3, updated_at = NOW() WHERE id = $1 AND status = 'paid'`, s.id, status, note)
+		RaiseAlert(fmt.Sprintf("stars-payment-%d", s.id), AlertWarn, "Оплата звёздами зависла", fmt.Sprintf("Платёж #%d (Telegram %d, %d ⭐): %s", s.id, s.tgID, s.stars, note))
+		_, _ = enqueueTGChat(ctx, 0, s.tgID, "stars-refund", strconv.Itoa(s.id), tgOut{Text: "Подписка после оплаты звёздами не включилась — звёзды возвращены. Вопросы — /paysupport."}, 0)
+	}
 }
 
 func planPrice(p *biz.Plan) int {
@@ -492,28 +530,35 @@ func handleAdminStarsRefund(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	var tgID int64
-	var charge, status string
-	if err := db.DB.QueryRowContext(r.Context(), `SELECT telegram_id, charge_id, status FROM stars_payments WHERE id = $1`, id).Scan(&tgID, &charge, &status); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Платёж не найден"})
-		return
-	}
-	if status == "refunded" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Звёзды уже возвращены"})
-		return
-	}
 	bot := userBot()
 	if bot == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Бот не настроен"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	// claim the row first: two admins (or a double click) refund once
+	var tgID int64
+	var charge, prev string
+	err = db.DB.QueryRowContext(r.Context(), `
+		WITH old AS (SELECT id, status FROM stars_payments WHERE id = $1 FOR UPDATE)
+		UPDATE stars_payments s SET status = 'refunding', updated_at = NOW() FROM old
+		 WHERE s.id = old.id AND old.status IN ('paid', 'activated', 'failed')
+		RETURNING s.telegram_id, s.charge_id, old.status`, id).Scan(&tgID, &charge, &prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Платёж не найден или звёзды уже возвращаются"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "БД недоступна"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	if err := bot.RefundStarPayment(ctx, tgID, charge); err != nil {
+		_, _ = db.DB.ExecContext(ctx, `UPDATE stars_payments SET status = $2, error = $3, updated_at = NOW() WHERE id = $1`, id, prev, "возврат: "+err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Telegram не вернул звёзды: " + err.Error()})
 		return
 	}
-	_, _ = db.DB.ExecContext(r.Context(), `UPDATE stars_payments SET status = 'refunded', updated_at = NOW() WHERE id = $1`, id)
+	_, _ = db.DB.ExecContext(ctx, `UPDATE stars_payments SET status = 'refunded', updated_at = NOW() WHERE id = $1`, id)
 	admin.WriteAuditLog(r, "stars_refund", "stars_payment", strconv.Itoa(id), nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

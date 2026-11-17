@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS stars_payments (
     price_rub       INT NOT NULL DEFAULT 0, -- the plan's list price at the moment of payment
     charge_id       TEXT NOT NULL UNIQUE,
     payload         TEXT NOT NULL DEFAULT '',
-    status          TEXT NOT NULL DEFAULT 'paid' CHECK (status IN ('paid', 'activated', 'refunded', 'failed')),
+    status          TEXT NOT NULL DEFAULT 'paid' CHECK (status IN ('paid', 'activated', 'refunding', 'refunded', 'failed')),
     subscription_id INT,
     error           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

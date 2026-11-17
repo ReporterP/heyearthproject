@@ -17,7 +17,7 @@ function convert(node, key) {
   if (node.nodeType !== 1) return null
   const name = node.nodeName.toLowerCase()
   const children = Array.from(node.childNodes).map((c, i) => convert(c, i))
-  const Tag = TAGS[name]
+  const Tag = Object.hasOwn(TAGS, name) ? TAGS[name] : null
   if (!Tag) return <Fragment key={key}>{children}</Fragment>
   if (name === 'a') {
     const href = safeHref(node.getAttribute('href'))

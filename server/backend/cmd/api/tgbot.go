@@ -351,6 +351,9 @@ func runTGOutbox(ctx context.Context) {
 	for ctx.Err() == nil {
 		if time.Since(happAt) > time.Minute {
 			refreshHappNews(ctx)
+			if bot := userBot(); bot != nil {
+				reconcileStarsPayments(ctx, bot)
+			}
 			happAt = time.Now()
 		}
 		if bot := userBot(); bot != nil {

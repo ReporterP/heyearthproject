@@ -200,6 +200,33 @@ func SetNewsStatus(ctx context.Context, id int, status string, at *time.Time, er
 	return err
 }
 
+// ScheduleNews sets (at != nil) or removes (nil) the schedule of a post that is not sent and not
+// being sent; false when the post moved on meanwhile.
+func ScheduleNews(ctx context.Context, id int, at *time.Time) (bool, error) {
+	q := `UPDATE news_posts SET status = 'scheduled', scheduled_at = $2, error = NULL, updated_at = NOW()
+		 WHERE id = $1 AND status IN ('draft', 'scheduled', 'failed')`
+	args := []any{id, at}
+	if at == nil {
+		q = `UPDATE news_posts SET status = 'draft', updated_at = NOW() WHERE id = $1 AND status = 'scheduled'`
+		args = []any{id}
+	}
+	res, err := db.DB.ExecContext(ctx, q, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// ReleaseStuckNews marks posts left in 'sending' for 15 minutes as failed (can be sent again;
+// bot copies already queued are not repeated).
+func ReleaseStuckNews(ctx context.Context) error {
+	_, err := db.DB.ExecContext(ctx, `
+		UPDATE news_posts SET status = 'failed', error = 'Отправка прервалась — отправьте ещё раз', updated_at = NOW()
+		 WHERE status = 'sending' AND updated_at < NOW() - INTERVAL '15 minutes'`)
+	return err
+}
+
 // ClaimNewsForSending flips a draft/scheduled/failed post to 'sending' (one publisher wins).
 func ClaimNewsForSending(ctx context.Context, id int) (*NewsPost, error) {
 	p, err := scanNews(db.DB.QueryRowContext(ctx, `

@@ -32,7 +32,7 @@ function toNodes(node, key) {
   if (node.nodeType !== 1) return null
   const name = node.nodeName.toLowerCase()
   const kids = Array.from(node.childNodes).map((c, i) => toNodes(c, i))
-  const Tag = TAGS[name]
+  const Tag = Object.hasOwn(TAGS, name) ? TAGS[name] : null
   if (!Tag) return <Fragment key={key}>{kids}</Fragment>
   if (name === 'a') {
     const href = node.getAttribute('href') || ''
