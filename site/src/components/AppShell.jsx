@@ -8,6 +8,7 @@ import { useLayer } from '../lib/layers.js'
 import Logo from './Logo.jsx'
 import Icon from './Icon.jsx'
 import Button from './Button.jsx'
+import Alert from './Alert.jsx'
 import Dialog, { DialogActions } from './Dialog.jsx'
 import { IdChip, shortId } from './Nomerok.jsx'
 import { isMiniApp } from '../lib/telegram.js'
@@ -151,7 +152,10 @@ export default function AppShell({ children }) {
           </div>
         </div>
         <div className="max-lg:hidden" style={{ height: 28 }} />
-        <main id="main">{children}</main>
+        <main id="main">
+          {profile?.must_change_password && <PasswordNotice here={pathname === '/settings'} />}
+          {children}
+        </main>
       </div>
 
       <div id="cabinet-drawer" ref={drawer} className={`drawer lg:hidden ${open ? 'is-open' : ''}`} aria-hidden={!open}>
@@ -169,6 +173,25 @@ export default function AppShell({ children }) {
 
       <LogoutDialog open={logoutDlg.open} onClose={logoutDlg.hide} profile={profile} />
     </div>
+  )
+}
+
+// «Смените временный пароль» (02 §30): support reset the password, the person signed in with the
+// temporary one. On every cabinet page, no close cross; it goes when the profile stops reporting
+// must_change_password (the password was changed in Settings).
+function PasswordNotice({ here }) {
+  const navigate = useNavigate()
+  const go = () => {
+    if (!here) { navigate('/settings#password'); return }
+    const sec = document.getElementById('password')
+    sec?.scrollIntoView({ block: 'start' })
+    sec?.querySelector('input[type="password"],input[autocomplete$="password"]')?.focus({ preventScroll: true })
+  }
+  return (
+    <Alert tone="warn" title="Смените временный пароль." className="app__notice">
+      Его выдала поддержка — придумайте свой, чтобы аккаунт был только вашим.
+      <span className="app__notice-act"><Button variant="secondary" size="sm" onClick={go}>Сменить пароль</Button></span>
+    </Alert>
   )
 }
 
