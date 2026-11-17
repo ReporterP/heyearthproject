@@ -83,6 +83,8 @@ func main() {
 	setupHardeningFlag := flag.Bool("setup-hardening", false, "защита Hub: sysctl (SYN flood, conntrack), автообновления безопасности, лимиты sshd, таблица nft против флуда с одного адреса; изменения sshd и файрвола откатываются сами за 5 мин без подтверждения новым входом")
 	ddosMode := flag.String("ddos-mode", "", "observe|enforce: таблица nft против флуда только считает или режет (--setup-hardening/--setup-ops; без флага — как сейчас на Hub, впервые — observe)")
 	sshPassword := flag.String("ssh-password", "", "on|off: вход root по паролю на Hub (--setup-hardening/--setup-ops; off только с DEPLOY_SSH_KEY_FILE; без флага — как сейчас)")
+	hardenNodesFlag := flag.Bool("harden-nodes", false, "защита всех нод из базы (exit и входы) через Hub: sysctl, лимиты sshd, автообновления, fail2ban на exit; ключ хоста сверяется с подтверждённым")
+	nodeUpgrade := flag.Bool("node-upgrade", false, "с --harden-nodes: поставить ожидающие обновления безопасности на нодах (без перезагрузки)")
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	flag.Parse()
 
@@ -116,6 +118,8 @@ func main() {
 		mode = "setup-ops"
 	case *setupHardeningFlag:
 		mode = "setup-hardening"
+	case *hardenNodesFlag:
+		mode = "harden-nodes"
 	case *streamPPFlag != "":
 		mode = "stream-proxy-protocol"
 	case *tgWebFlag:
@@ -129,7 +133,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --harden-nodes, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -178,6 +182,13 @@ func main() {
 	}
 	if mode == "setup-ops" {
 		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient, *ddosMode, *sshPassword)
+		return
+	}
+	if mode == "harden-nodes" {
+		if err := hardenNodes(client, *nodeUpgrade); err != nil {
+			log.Fatalf("[nodes] %v", err)
+		}
+		fmt.Println("[nodes] all nodes hardened")
 		return
 	}
 	if mode == "setup-hardening" {

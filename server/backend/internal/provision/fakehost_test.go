@@ -449,6 +449,8 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		return "LISTEN=" + b01(h.active["node-agent"]) + "\nGUARD=" + b01(h.nft[config.ExitAgentGuardTable]) + "\n", nil
 	case "base-check":
 		return "BBR=1\nPKGS=1\n", nil
+	case "harden-check":
+		return "SYN=8192\nPERSOURCE=3\nTIMER=enabled\n", nil
 	case "authkey":
 		if k := between(script, "KEY='", "'"); !slices.Contains(h.authKeys, k) {
 			h.authKeys = append(h.authKeys, k)

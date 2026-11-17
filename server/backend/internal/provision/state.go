@@ -225,7 +225,8 @@ var titles = map[string]string{
 	"relay_preflight": "Предпроверка", "relay_packages": "Пакеты", "relay_sysctl": "Пересылка и conntrack",
 	"relay_rules": "Правила nftables", "relay_unit": "Юнит heyearth-relay", "relay_firewall": "Фаервол",
 	"relay_fail2ban": "fail2ban для SSH", "relay_path": "Проверка входа снаружи",
-	"relay_stream": "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
+	"host_hardening": "Защита узла (sysctl, sshd, автообновления)",
+	"relay_stream":   "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
 	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",
 }
 

@@ -76,3 +76,18 @@ func TestSSHDConfPasswordSwitch(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeHardeningScriptParses(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	for _, jail := range []bool{true, false} {
+		s := nodeSSHFunc + "nodessh 2 <<'HEYEARTH_NODE_EOF'\n" + renderNodeHardeningScript(jail, 22, true) + "HEYEARTH_NODE_EOF\n"
+		if out, code := runBashStdin(t, s, "-n"); code != 0 {
+			t.Errorf("jail=%v: bash -n failed (%d): %s", jail, code, out)
+		}
+		if strings.Contains(renderNodeHardeningScript(jail, 22, false), "HEYEARTH_NODE_EOF") {
+			t.Error("the node script must not contain the heredoc terminator")
+		}
+	}
+}

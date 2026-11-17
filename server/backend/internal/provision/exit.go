@@ -39,6 +39,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 		{Name: "hub_key", Apply: hubKeyApply, Verify: hubKeyVerify},
 		{Name: "reality_keys", Apply: keysApply, Verify: keysVerify},
 		{Name: "base", Apply: baseApply, Verify: baseVerify},
+		hostHardeningStep(true),
 		{Name: "firewall", Apply: firewallApply(o)},
 		{Name: "hysteria", Apply: guardPath(hyPath, onNode("hysteria2"), false, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
 		{Name: "retire_xray", Apply: retireXrayApply, Verify: retireXrayVerify},

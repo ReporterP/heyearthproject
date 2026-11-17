@@ -103,7 +103,7 @@ func (e *exitEnv) tail(id int64, step string) string {
 
 func opIndex(ops []string, op string) int { return slices.Index(ops, op) }
 
-var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "firewall", "hysteria", "retire_xray", "stls", "node_agent",
+var exitSteps = []string{"preflight", "hub_key", "reality_keys", "base", "host_hardening", "firewall", "hysteria", "retire_xray", "stls", "node_agent",
 	"save_tunnel", "hub_client", "hub_stls", "path_hy", "path_tcp", "activate"}
 
 func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
@@ -113,7 +113,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 	if err != nil || e.store.jobs[id].Status != JobSucceeded {
 		t.Fatalf("%v %s %v", err, e.store.jobs[id].Error, e.store.statuses(id))
 	}
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "ok", "done", "done", "done", "done", "done", "ok", "ok", "done")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "done", "done", "done", "done", "ok", "done", "done", "done", "done", "done", "ok", "ok", "done")) {
 		t.Fatalf("steps: %v", got)
 	}
 	k := e.keys(t)
@@ -237,7 +237,7 @@ func TestExitRecipeFreshNodeThenNoOpRerun(t *testing.T) {
 		t.Fatalf("re-run changed something: %v writes %d→%d hub %d→%d restarts %v syncs %d", e.store.statuses(id2), writes, e.node.writes,
 			hubWrites, e.hub.writes, e.node.restarts, e.h.syncs)
 	}
-	if got := e.store.statuses(id2); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+	if got := e.store.statuses(id2); !slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("re-run steps: %v", got)
 	}
 }
@@ -803,7 +803,7 @@ func TestRecipeForSetupGuards(t *testing.T) {
 	names := func(r Recipe) []string { return stepNames(r) }
 	s := newState(KindProvision, nil)
 	r, err := RecipeFor(KindProvision, good, s)
-	withMT := slices.Insert(slices.Clone(exitSteps), 8, "mtproxy")
+	withMT := slices.Insert(slices.Clone(exitSteps), 9, "mtproxy")
 	if err != nil || !slices.Equal(names(r), withMT) || s.Begin == nil || s.Fail == nil {
 		t.Fatalf("provision: %v %v", err, names(r))
 	}
@@ -899,7 +899,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 	e, k := legacyExit(t)
 	writes, hubWrites := e.node.writes, e.hub.writes
 	id := e.start(t, KindVerify)
-	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
+	if got := e.store.statuses(id); !slices.Equal(got, withStatus(exitSteps, "ok", "drift", "drift", "ok", "drift", "skipped", "drift", "drift", "drift", "drift", "drift", "drift", "drift", "ok", "ok", "ok")) {
 		t.Fatalf("verify: %v", got)
 	}
 	if tl := e.tail(id, "reality_keys"); !strings.Contains(tl, "права 644") {
@@ -912,7 +912,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "done", "done", "ok", "done", "done", "done", "done", "done", "done", "done", "done", "done", "ok", "ok", "ok")) {
 		t.Fatalf("converge: %s %v", e.store.jobs[id].Error, got)
 	}
 	wantNode := map[string]int{"hysteria2": 1, config.ExitSTLSUnit: 1, "node-agent": 1}
@@ -955,7 +955,7 @@ func TestExitConvergesLiveExit(t *testing.T) {
 	id = e.start(t, KindReprovision)
 	if got := e.store.statuses(id); e.store.jobs[id].Status != JobSucceeded || e.node.writes != writes || e.hub.writes != hubWrites ||
 		!maps.Equal(e.node.restarts, wantNode) || !maps.Equal(e.hub.restarts, wantHub) || e.h.syncs != 1 ||
-		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
+		!slices.Equal(got, withStatus(exitSteps, "ok", "ok", "ok", "ok", "ok", "done", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok")) {
 		t.Fatalf("the second converge changed something: %v writes %d hub %d restarts %v %v syncs %d", got, e.node.writes-writes,
 			e.hub.writes-hubWrites, e.node.restarts, e.hub.restarts, e.h.syncs)
 	}
