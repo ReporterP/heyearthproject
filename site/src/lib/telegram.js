@@ -1,11 +1,11 @@
 // Telegram Mini App bridge (spec 12 §12.4). The site is the same; inside Telegram the root gets
 // .he--tg, Telegram's BackButton follows the router history, MainButton repeats the screen's one
 // primary button, toasts give haptic feedback and links leave the webview the Telegram way.
-// telegram-web-app.js (a copy in /tg/, Telegram's official bridge) is loaded only on /tg and in
+// telegram-web-app.js (a copy at /telegram-web-app.js, Telegram's official bridge) is loaded only on /tg and in
 // an already opened Mini App (flag in sessionStorage) — never on the plain site.
 
 const FLAG = 'he_tg'
-const SCRIPT = '/tg/telegram-web-app.js'
+const SCRIPT = '/telegram-web-app.js' // not under /tg/: a folder there makes nginx redirect /tg
 const BG = '#090C14' // --bg
 const ACCENT = '#22C55E' // --accent
 const ACCENT_INK = '#052E14' // --accent-ink
