@@ -498,6 +498,13 @@
 .he .side-link__count{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--accent-soft);color:var(--accent-fg);font:700 12px/20px var(--font-mono);text-align:center}
 @media (max-width:640px){.he .msg{max-width:92%}}
 
+/* ───────────── 12e. News feed (spec 08 §8.7) ───────────── */
+.he .news__img{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin-bottom:16px;border:1px solid var(--line)}
+.he .news__body{margin-top:6px;font-size:15px;line-height:1.6;color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere}
+.he .news__body code,.he .news__body pre{font-family:var(--font-mono);font-size:13px}
+.he .news__body pre{white-space:pre-wrap;background:var(--bg-elevated);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0}
+.he .news__body blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--line-strong);color:var(--fg-muted)}
+
 /* ───────────── 12. Responsive ───────────── */
 @media (max-width:1024px){
   .he .container{padding:0 24px}

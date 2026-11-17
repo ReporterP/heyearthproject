@@ -36,6 +36,7 @@ import HelpPage from './pages/HelpPage.jsx'
 import { EmailConfirmPage, EmailUnsubscribePage } from './pages/EmailLinkPage.jsx'
 import TelegramEntryPage from './pages/TelegramEntryPage.jsx'
 import SupportPage from './pages/SupportPage.jsx'
+import NewsPage from './pages/NewsPage.jsx'
 import MagicLinkPage from './pages/MagicLinkPage.jsx'
 import MiniAppPay from './components/PayOnSite.jsx'
 import { isMiniApp, loadTelegram, setBackButton, shouldLoad } from './lib/telegram.js'
@@ -132,6 +133,7 @@ function App() {
             <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/support" element={<RequireAuth><SupportPage /></RequireAuth>} />
+            <Route path="/news" element={<RequireAuth><NewsPage /></RequireAuth>} />
             <Route path="/payment" element={<RequireAuth><MiniAppPay><PaymentPage /></MiniAppPay></RequireAuth>} />
             <Route path="/checkout/:paymentId" element={<RequireAuth><MiniAppPay><CheckoutPage /></MiniAppPay></RequireAuth>} />
             {/* Old links (Happ's «Продлите» before 13.11) pointed at /checkout without an id */}
