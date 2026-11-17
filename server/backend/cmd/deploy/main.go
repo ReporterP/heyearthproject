@@ -1091,6 +1091,10 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
     # Security headers (ops_headers.go); repeated in every location that sets its own add_header.
     include /etc/nginx/heyearth-headers/site.conf;
+    # nginx's own 429 (limit_req / limit_conn, ops_nginx_limits.go): the page of spec 06 §6.4a, JSON under /api/.
+    error_page 429 /429.html;
+    location = /429.html { root /var/www/heyearth-site; internal; include /etc/nginx/heyearth-headers/site.conf; }
+    location @he429 { default_type application/json; return 429 '{"error":"Слишком много запросов — подождите минуту"}'; }
 
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
@@ -1103,6 +1107,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
+        error_page 429 = @he429;
     }
 
     # geoip.dat for Happ-client smart-routing (Geoipurl in subscription deeplink).
@@ -1130,6 +1135,9 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
     include /etc/nginx/heyearth-headers/admin.conf;
+    error_page 429 /429.html;
+    location = /429.html { root /var/www/heyearth-site; internal; include /etc/nginx/heyearth-headers/admin.conf; }
+    location @he429 { default_type application/json; return 429 '{"error":"Слишком много запросов — подождите минуту"}'; }
 
     location /api/admin/ {
         proxy_pass http://127.0.0.1:8000;
@@ -1139,6 +1147,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 512m;
+        error_page 429 = @he429;
     }
 
     location / { root /var/www/heyearth; try_files $uri $uri/ /index.html; }

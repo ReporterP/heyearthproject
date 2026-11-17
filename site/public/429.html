@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<title>429 — HiEarth</title>
+<!-- spec 06 §6.4a. Static on purpose: nginx serves it while a client is over the limits, so no
+     scripts, no bundle, no third-party requests. Token values copied from hiearth.css (01). -->
+<style>
+:root{--bg:#090C14;--fg:#EEF2F7;--fg-muted:#A1ABBD;--fg-subtle:#8490A4;--accent:#22C55E;--accent-hover:#34D46D;--accent-ink:#052E14;--accent-fg:#4ADE80}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+main{min-height:100vh;display:grid;place-items:center;grid-template-columns:minmax(0,1fr);padding:24px 16px}
+.mini{max-width:420px;width:100%;text-align:center}
+.mark{font-size:14px;font-weight:700;letter-spacing:.02em;color:var(--fg-muted);margin:0 0 20px}
+h1{font-size:28px;line-height:1.2;font-weight:800;margin:0 0 12px}
+.muted{color:var(--fg-muted);font-size:16px;line-height:1.6;margin:0 0 24px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 24px;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:16px;text-decoration:none}
+.btn:hover{background:var(--accent-hover)}
+.btn:focus-visible{outline:2px solid var(--accent-fg);outline-offset:3px}
+.subtle{color:var(--fg-subtle);font-size:13px;margin:20px 0 0}
+.subtle a{color:var(--accent-fg)}
+</style>
+</head>
+<body>
+<main>
+  <div class="mini">
+    <p class="mark">HiEarth</p>
+    <h1>Слишком много запросов</h1>
+    <p class="muted">С вашего адреса пришло слишком много запросов за короткое время. Подождите минуту и обновите страницу.</p>
+    <a class="btn" href="">Обновить</a>
+    <p class="subtle">Если ошибка повторяется — напишите в <a href="/support">поддержку</a>.</p>
+  </div>
+</main>
+</body>
+</html>

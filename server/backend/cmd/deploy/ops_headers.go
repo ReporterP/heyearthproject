@@ -70,6 +70,28 @@ func vhostWithoutHeaders(v string) string {
 	return r.Replace(v)
 }
 
+// vhostWithout429 is the vhost before nginx's own 429 page (spec 06 §6.4a) was added.
+func vhostWithout429(v string) string {
+	var out []string
+	for _, l := range strings.Split(v, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "# nginx's own 429") || t == "error_page 429 /429.html;" || t == "error_page 429 = @he429;" ||
+			strings.HasPrefix(t, "location = /429.html ") || strings.HasPrefix(t, "location @he429 ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// previousVhostShas: the generator's earlier outputs the live file may still be ("a|b" for a
+// shell case pattern); replacing one of them with the current output loses nothing. The script
+// also accepts the sha it stored after its last write (/etc/heyearth/heyearth-vhost.sha256).
+func previousVhostShas(v string) string {
+	no429 := vhostWithout429(v)
+	return sha256hex(no429) + "|" + sha256hex(vhostWithoutHeaders(no429))
+}
+
 func sha256hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
@@ -90,12 +112,15 @@ mkdir -p "$BK"; chmod 700 "$BK"; rm -f "$BK"/*
 cp -p "$V" "$BK/heyearth.conf"
 for f in site admin; do [ -f `+nginxHeadersDir+`/$f.conf ] && cp -p `+nginxHeadersDir+`/$f.conf "$BK/$f.conf" || true; done
 `+headerSnippetsScript()+`live=$(sha256sum "$V" | cut -c1-64)
+stored=$(cat /etc/heyearth/heyearth-vhost.sha256 2>/dev/null || true)
+NEW='`+base64.StdEncoding.EncodeToString([]byte(vhost))+`'
 case "$live" in
   `+sha256hex(vhost)+`) echo "[ops] headers: vhost already current" ;;
-  `+sha256hex(vhostWithoutHeaders(vhost))+`) put_file "$V" 644 '`+base64.StdEncoding.EncodeToString([]byte(vhost))+`' ;;
-  *) echo "[ops] FAILED: $V differs from the generator (hand edits?) — not touched; run deploy --nginx or merge by hand"; exit 1 ;;
+  `+previousVhostShas(vhost)+`) put_file "$V" 644 "$NEW" ;;
+  *) if [ -n "$stored" ] && [ "$live" = "$stored" ]; then put_file "$V" 644 "$NEW"
+     else echo "[ops] FAILED: $V differs from the generator (hand edits?) — not touched; run deploy --nginx or merge by hand"; exit 1; fi ;;
 esac
-restore() { cp -p "$BK/heyearth.conf" "$V"; nginx -t >/dev/null 2>&1 && systemctl reload nginx; }
+restore() { cp -p "$BK/heyearth.conf" "$V"; nginx -t >/dev/null 2>&1 && systemctl reload nginx; rm -f /etc/heyearth/heyearth-vhost.sha256; }
 if ! nginx -t; then restore; echo "[ops] FAILED: nginx -t rejected the headers — restored"; exit 1; fi
 systemctl reload nginx
 sleep 1
@@ -104,6 +129,7 @@ adm=$(curl -sk -D - -o /dev/null --resolve admin.__D__:8443:127.0.0.1 https://ad
 api=$(curl -sk -o /dev/null -w '%{http_code}' --resolve __D__:8443:127.0.0.1 https://__D__:8443/api/v1/health)
 printf '%s\n' "$site" | grep -qi '^strict-transport-security:' && printf '%s\n' "$adm" | grep -qi '^content-security-policy:' && [ "$api" = 200 ] ||
   { restore; echo "[ops] FAILED: headers missing or the API stopped answering — restored"; exit 1; }
+mkdir -p /etc/heyearth; sha256sum "$V" | cut -c1-64 > /etc/heyearth/heyearth-vhost.sha256
 echo "[ops] headers: site $(printf '%s\n' "$site" | head -1 | awk '{print $2}') with HSTS + CSP report-only, admin $(printf '%s\n' "$adm" | head -1 | awk '{print $2}') with CSP + DENY framing, api $api"
 `, "__D__", domain)
 }

@@ -94,7 +94,7 @@ func TestNodeHardeningScriptParses(t *testing.T) {
 
 func TestVhostHeaderIncludes(t *testing.T) {
 	v := buildNginxConfSSL("example.org", "/etc/letsencrypt/live/example.org", true)
-	if strings.Count(v, "include /etc/nginx/heyearth-headers/site.conf;") != 3 || strings.Count(v, "include /etc/nginx/heyearth-headers/admin.conf;") != 2 {
+	if strings.Count(v, "include /etc/nginx/heyearth-headers/site.conf;") != 4 || strings.Count(v, "include /etc/nginx/heyearth-headers/admin.conf;") != 3 {
 		t.Fatalf("header includes:\n%s", v)
 	}
 	old := vhostWithoutHeaders(v)
@@ -106,5 +106,19 @@ func TestVhostHeaderIncludes(t *testing.T) {
 	}
 	if out, code := runBashStdin(t, renderHeadersApply("example.org"), "-n"); code != 0 {
 		t.Fatalf("bash -n: %s", out)
+	}
+}
+
+func TestVhost429AndPreviousVersions(t *testing.T) {
+	v := buildNginxConfSSL("example.org", "/etc/letsencrypt/live/example.org", true)
+	if strings.Count(v, "error_page 429 /429.html;") != 2 || strings.Count(v, "error_page 429 = @he429;") != 2 || strings.Count(v, "location @he429 ") != 2 {
+		t.Fatalf("429 handling in both servers and both API locations:\n%s", v)
+	}
+	no429 := vhostWithout429(v)
+	if strings.Contains(no429, "429") {
+		t.Fatal("vhostWithout429 left 429 lines")
+	}
+	if !strings.Contains(previousVhostShas(v), sha256hex(no429)) || !strings.Contains(previousVhostShas(v), sha256hex(vhostWithoutHeaders(no429))) {
+		t.Fatal("previous versions")
 	}
 }
