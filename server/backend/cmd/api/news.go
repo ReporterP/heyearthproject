@@ -102,8 +102,14 @@ func handleNewsImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", http.DetectContentType(data))
+	ct := http.DetectContentType(data)
+	if !strings.HasPrefix(ct, "image/") { // only pictures are served from the site's origin
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(data)
 }

@@ -91,3 +91,20 @@ func TestNodeHardeningScriptParses(t *testing.T) {
 		}
 	}
 }
+
+func TestVhostHeaderIncludes(t *testing.T) {
+	v := buildNginxConfSSL("example.org", "/etc/letsencrypt/live/example.org", true)
+	if strings.Count(v, "include /etc/nginx/heyearth-headers/site.conf;") != 3 || strings.Count(v, "include /etc/nginx/heyearth-headers/admin.conf;") != 2 {
+		t.Fatalf("header includes:\n%s", v)
+	}
+	old := vhostWithoutHeaders(v)
+	if strings.Contains(old, "heyearth-headers") || !strings.Contains(old, `add_header X-Content-Type-Options "nosniff" always;`) {
+		t.Fatal("vhostWithoutHeaders must give the pre-header vhost back")
+	}
+	if !haveBash() {
+		return
+	}
+	if out, code := runBashStdin(t, renderHeadersApply("example.org"), "-n"); code != 0 {
+		t.Fatalf("bash -n: %s", out)
+	}
+}

@@ -442,5 +442,8 @@ func setupHardening(client *ssh.Client, cfg *deployConfig, ddosMode, sshPassword
 	step("nginx limits + scanner jail", func() error {
 		return guardedApply(client, cfg, "nginx-limits", renderNginxLimitsApply(cfg.siteDomain), nginxLimitsRollback)
 	})
+	step("security headers", func() error {
+		return guardedApply(client, cfg, "headers", renderHeadersApply(cfg.siteDomain), headersRollback)
+	})
 	return failed
 }

@@ -934,6 +934,12 @@ func doNginx(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 		nginxConf = buildNginxConfHTTP(domain)
 	}
 
+	// The vhost includes the security-header snippets (ops_headers.go): they must exist first.
+	if ssl {
+		if _, err := runSSHBash(client, "nginx header snippets", "set -eu\n"+headerSnippetsScript(), true); err != nil {
+			log.Fatalf("nginx: header snippets: %v", err)
+		}
+	}
 	if err := uploadFileContent(c, []byte(nginxConf), "/etc/nginx/conf.d/heyearth.conf"); err != nil {
 		log.Fatal(err)
 	}
@@ -1083,6 +1089,8 @@ server {
     ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    # Security headers (ops_headers.go); repeated in every location that sets its own add_header.
+    include /etc/nginx/heyearth-headers/site.conf;
 
     location /heyearth.v1.ClientApi/ { grpc_pass 127.0.0.1:50051; grpc_set_header Host $host; }
     location = /robots.txt { default_type text/plain; return 200 "User-agent: *\nDisallow: /api/\n"; }
@@ -1104,11 +1112,11 @@ server {
         alias /etc/hysteria/geoip.dat;
         default_type application/octet-stream;
         add_header Cache-Control "public, max-age=86400" always;
-        add_header X-Content-Type-Options "nosniff" always;
+        include /etc/nginx/heyearth-headers/site.conf;
     }
 
     location / { root /var/www/heyearth-site; try_files $uri $uri/ /index.html; }
-    location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
+    location = /index.html { root /var/www/heyearth-site; add_header Cache-Control "no-cache, no-store, must-revalidate" always; include /etc/nginx/heyearth-headers/site.conf; }
 }
 
 # ── Admin panel (admin.%[1]s) — HTTPS ───────────────────────────
@@ -1121,6 +1129,7 @@ server {
     ssl_certificate_key %[2]s/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    include /etc/nginx/heyearth-headers/admin.conf;
 
     location /api/admin/ {
         proxy_pass http://127.0.0.1:8000;
@@ -1133,7 +1142,7 @@ server {
     }
 
     location / { root /var/www/heyearth; try_files $uri $uri/ /index.html; }
-    location = /index.html { root /var/www/heyearth; add_header Cache-Control "no-cache, no-store, must-revalidate" always; }
+    location = /index.html { root /var/www/heyearth; add_header Cache-Control "no-cache, no-store, must-revalidate" always; include /etc/nginx/heyearth-headers/admin.conf; }
 }
 
 # ── Redirect site.%[1]s → %[1]s (HTTPS) ────────────────────────

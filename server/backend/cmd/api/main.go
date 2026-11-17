@@ -991,6 +991,7 @@ func main() {
 	http.HandleFunc("/api/v1/plans", apiLimiter.Middleware(handlePublicPlans))
 	http.HandleFunc("/api/v1/legal-info", apiLimiter.Middleware(handleLegalInfo))
 	http.HandleFunc("/api/v1/site-info", apiLimiter.Middleware(handleSiteInfo))
+	http.HandleFunc("/api/v1/csp-report", handleCSPReport) // rate limited inside (csp_report.go)
 	// E8: the cabinet's e-mail, its confirmation link and the one-click unsubscribe.
 	http.HandleFunc("/api/v1/user/email", apiLimiter.Middleware(handleUserEmail))
 	http.HandleFunc("/api/v1/user/email/reminders", apiLimiter.Middleware(handleUserEmailReminders))
