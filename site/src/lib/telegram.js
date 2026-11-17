@@ -6,9 +6,21 @@
 
 const FLAG = 'he_tg'
 const SCRIPT = '/telegram-web-app.js' // not under /tg/: a folder there makes nginx redirect /tg
-const BG = '#090C14' // --bg
-const ACCENT = '#22C55E' // --accent
-const ACCENT_INK = '#052E14' // --accent-ink
+// Telegram needs plain colour strings: read the «Канон» tokens (hiearth.css) at run time.
+function token(name) {
+  try {
+    const probe = document.createElement('div')
+    probe.className = 'he'
+    probe.hidden = true
+    document.body.appendChild(probe)
+    const v = getComputedStyle(probe).getPropertyValue(name).trim()
+    probe.remove()
+    return v
+  } catch { return '' }
+}
+const BG = () => token('--bg')
+const ACCENT = () => token('--accent')
+const ACCENT_INK = () => token('--accent-ink')
 
 let ready = null
 
@@ -75,12 +87,13 @@ function setup() {
   try {
     w.ready()
     w.expand()
-    if (versionAtLeast('6.1')) { w.setHeaderColor(BG); w.setBackgroundColor(BG) }
-    if (versionAtLeast('7.10')) w.setBottomBarColor(BG)
+    const bg = BG()
+    if (bg && versionAtLeast('6.1')) { w.setHeaderColor(bg); w.setBackgroundColor(bg) }
+    if (bg && versionAtLeast('7.10')) w.setBottomBarColor(bg)
     if (versionAtLeast('7.7')) w.disableVerticalSwipes()
     const phone = w.platform === 'ios' || w.platform === 'android'
     if (phone && versionAtLeast('8.0') && !w.isFullscreen) w.requestFullscreen()
-    w.MainButton.setParams({ color: ACCENT, text_color: ACCENT_INK, is_visible: false })
+    w.MainButton.setParams({ color: ACCENT(), text_color: ACCENT_INK(), is_visible: false })
   } catch { /* an old client: the cabinet still works */ }
   document.addEventListener('click', onLinkClick, true)
   return w
@@ -168,7 +181,7 @@ export function syncMainButton() {
   try {
     // hideProgress() re-activates the button in telegram-web-app.js: call it before is_active
     if (!loading) mb.hideProgress?.()
-    mb.setParams({ text: (text || 'Продолжить').slice(0, 64), color: ACCENT, text_color: ACCENT_INK, is_active: !disabled && !loading, is_visible: true })
+    mb.setParams({ text: (text || 'Продолжить').slice(0, 64), color: ACCENT(), text_color: ACCENT_INK(), is_active: !disabled && !loading, is_visible: true })
     if (loading) mb.showProgress?.(false)
   } catch { mb.hide(); return }
   mainHandler = () => { if (!p.get().disabled && !p.get().loading) p.el.click() }
