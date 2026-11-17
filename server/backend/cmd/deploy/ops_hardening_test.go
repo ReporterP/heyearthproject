@@ -7,8 +7,11 @@ import (
 
 func TestDDoSNftObserveNeverDrops(t *testing.T) {
 	nft := renderDDoSNft("observe", defaultDDoSLimits)
-	if strings.Contains(nft, " drop") {
-		t.Fatalf("observe mode must not drop:\n%s", nft)
+	for _, l := range strings.Split(nft, "\n") {
+		// The only drop in observe mode: strangers on the entries' PROXY port.
+		if strings.Contains(l, " drop") && !strings.Contains(l, "tcp dport 8447 counter name not_relay_8447 drop") {
+			t.Fatalf("observe mode must not drop: %s", l)
+		}
 	}
 	if !strings.Contains(nft, "mode observe.") {
 		t.Fatalf("header must carry the mode (hardeningState parses it):\n%s", nft)

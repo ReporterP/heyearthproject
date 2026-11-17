@@ -214,12 +214,15 @@ table inet heyearth_ddos {
 	for _, c := range []string{"over_tcp", "over_tcp_lo", "over_ssh", "over_udp", "over_udp_lo"} {
 		fmt.Fprintf(&sb, "\tcounter %s { }\n", c)
 	}
-	sb.WriteString(`	chain input {
+	// 8447 is the entries' listener (PROXY protocol): only servers may connect, in both modes.
+	sb.WriteString(`	counter not_relay_8447 { }
+	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iif "lo" return
 		ip saddr @allow4 return
 		ip6 saddr @allow6 return
 		ct direction reply return
+		tcp dport 8447 counter name not_relay_8447 drop
 `)
 	for _, fam := range []struct{ f, a string }{{"4", "ip saddr"}, {"6", "ip6 saddr"}} {
 		fmt.Fprintf(&sb, "\t\ttcp dport 22 ct state new update @ssh%s { %s limit rate over %d/minute burst %d packets } counter name over_ssh%s%s\n", fam.f, fam.a, l.sshPerMin, l.sshPerMin, logSSH, act)
