@@ -13,7 +13,7 @@ import Flap from '../components/Flap.jsx'
 import ListRow from '../components/ListRow.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
 import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
-import useMedia from '../hooks/useMedia.js'
+import useMedia, { CABINET_NARROW } from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { date, dateTime, kop, kopNum, group } from '../lib/format.js'
@@ -50,7 +50,8 @@ function txRow(tx) {
 function Wallet() {
   const { token } = useAuth()
   const navigate = useNavigate()
-  const narrow = useMedia('(max-width: 1024px)')
+  const narrow = useMedia(CABINET_NARROW) // one column beside the side menu (01 §3)
+  const tight = useMedia('(max-width: 1024px)')
   usePageMeta('Кошелёк — HiEarth', { noindex: true })
   const acc = useAccount(['wallet', 'subscription'], { optional: ['subscription'] })
   const wallet = acc.data.wallet
@@ -126,12 +127,12 @@ function Wallet() {
     body = (
       <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'minmax(0, 1fr) 360px', gap: 16, alignItems: 'start' }}>
         <div className="stack gap-4">
-          <form id="topup" className="card rise" style={{ padding: narrow ? 22 : 30 }} onSubmit={topup} noValidate>
+          <form id="topup" className="card rise" style={{ padding: tight ? 22 : 30 }} onSubmit={topup} noValidate>
             <div className="row wrap between gap-2" style={{ alignItems: 'flex-end' }}>
               <span className="card__title">На кошельке</span>
               {note && <span className="t-sm subtle">{note}</span>}
             </div>
-            <div style={{ marginTop: 12 }}><Flap value={bal} suffix="₽" size={narrow ? 40 : 56} label={`${bal} рублей на кошельке`} /></div>
+            <div style={{ marginTop: 12 }}><Flap value={bal} suffix="₽" size={tight ? 40 : 56} label={`${bal} рублей на кошельке`} /></div>
             <hr className="divider" style={{ margin: '26px 0 22px' }} />
             <span className="t-label" id="amounts-l">Пополнить</span>
             <div className="amounts" role="radiogroup" aria-labelledby="amounts-l" style={{ marginTop: 10 }}>
@@ -142,7 +143,7 @@ function Wallet() {
                 </span>
               ))}
             </div>
-            <div className="grid" style={{ gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12, marginTop: 14 }}>
+            <div className="grid" style={{ gridTemplateColumns: tight ? '1fr' : '1fr 1fr', gap: 12, marginTop: 14 }}>
               <Field id="own" label="Своя сумма" error={fieldErr || null}>
                 <Input id="own" mono inputMode="numeric" placeholder="до 100 000 ₽ за раз"
                   value={ownFocus || !own ? own : group(ownNum)}
@@ -156,7 +157,7 @@ function Wallet() {
             </div>
             {err && <Alert tone="bad" rise className="mt-4">{err}</Alert>}
             <div className="row wrap gap-4" style={{ marginTop: 20 }}>
-              <Button variant="primary" size="lg" type="submit" block={narrow} loading={busy} disabled={!sum}>{sum ? `Пополнить на ${group(sum)} ₽` : 'Пополнить'}</Button>
+              <Button variant="primary" size="lg" type="submit" block={tight} loading={busy} disabled={!sum}>{sum ? `Пополнить на ${group(sum)} ₽` : 'Пополнить'}</Button>
               <span className="t-sm subtle">На защищённой странице ЮKassa</span>
             </div>
           </form>
