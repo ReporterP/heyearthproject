@@ -56,6 +56,49 @@ type Message struct {
 	Photo          []PhotoSize `json:"photo,omitempty"`
 	Document       *Document   `json:"document,omitempty"`
 	ReplyToMessage *Message    `json:"reply_to_message,omitempty"`
+	// Payments in Telegram Stars
+	SuccessfulPayment *SuccessfulPayment `json:"successful_payment,omitempty"`
+}
+
+// LabeledPrice is one line of an invoice (Stars: amount in whole Stars).
+type LabeledPrice struct {
+	Label  string `json:"label"`
+	Amount int    `json:"amount"`
+}
+
+// PreCheckoutQuery must be answered within 10 seconds (answerPreCheckoutQuery).
+type PreCheckoutQuery struct {
+	ID             string `json:"id"`
+	From           User   `json:"from"`
+	Currency       string `json:"currency"`
+	TotalAmount    int    `json:"total_amount"`
+	InvoicePayload string `json:"invoice_payload"`
+}
+
+type SuccessfulPayment struct {
+	Currency                string `json:"currency"`
+	TotalAmount             int    `json:"total_amount"`
+	InvoicePayload          string `json:"invoice_payload"`
+	TelegramPaymentChargeID string `json:"telegram_payment_charge_id"`
+	ProviderPaymentChargeID string `json:"provider_payment_charge_id,omitempty"`
+}
+
+// Invoice is a Stars invoice (currency XTR, no provider token).
+type Invoice struct {
+	Title       string
+	Description string
+	Payload     string
+	Stars       int
+	PhotoURL    string
+}
+
+func (inv Invoice) params() map[string]any {
+	p := map[string]any{"title": inv.Title, "description": inv.Description, "payload": inv.Payload,
+		"currency": "XTR", "prices": []LabeledPrice{{Label: inv.Title, Amount: inv.Stars}}}
+	if inv.PhotoURL != "" {
+		p["photo_url"] = inv.PhotoURL
+	}
+	return p
 }
 
 // LargestPhoto is the biggest size of a photo message (nil without a photo).
@@ -98,6 +141,7 @@ type Update struct {
 	EditedMessage *Message           `json:"edited_message,omitempty"`
 	CallbackQuery *CallbackQuery     `json:"callback_query,omitempty"`
 	MyChatMember  *ChatMemberUpdated `json:"my_chat_member,omitempty"`
+	PreCheckout   *PreCheckoutQuery  `json:"pre_checkout_query,omitempty"`
 }
 
 type File struct {

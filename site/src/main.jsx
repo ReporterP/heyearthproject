@@ -38,7 +38,7 @@ import TelegramEntryPage from './pages/TelegramEntryPage.jsx'
 import SupportPage from './pages/SupportPage.jsx'
 import NewsPage from './pages/NewsPage.jsx'
 import MagicLinkPage from './pages/MagicLinkPage.jsx'
-import MiniAppPay from './components/PayOnSite.jsx'
+import MiniAppPay from './components/StarsPay.jsx'
 import { isMiniApp, loadTelegram, setBackButton, shouldLoad } from './lib/telegram.js'
 
 

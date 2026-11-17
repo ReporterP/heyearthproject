@@ -187,6 +187,16 @@ export function registerPrimary(entry) {
   }
 }
 
+// ── Stars invoices (Bot API 6.1+): resolves to paid | cancelled | failed | pending ──
+
+export function openInvoice(url) {
+  const w = webApp()
+  return new Promise((resolve) => {
+    if (!w) { resolve('failed'); return }
+    try { w.openInvoice(url, (status) => resolve(status || 'cancelled')) } catch { resolve('failed') }
+  })
+}
+
 // ── «Добавить на экран «Домой»» (Bot API 8.0) ──
 
 export function homeScreenStatus() {

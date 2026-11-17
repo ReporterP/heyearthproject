@@ -14,7 +14,6 @@ import ListRow from '../components/ListRow.jsx'
 import PaymentResult from '../components/PaymentResult.jsx'
 import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import useMedia from '../hooks/useMedia.js'
-import { PayOnSiteButton } from '../components/PayOnSite.jsx'
 import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
@@ -137,9 +136,9 @@ function Wallet() {
             <hr className="divider" style={{ margin: '26px 0 22px' }} />
             {isMiniApp() ? (
               <div className="stack gap-4">
-                <span className="t-label">Пополнение</span>
-                <p className="muted t-sm">Telegram не даёт оплачивать подписку внутри приложения, поэтому пополнение проходит на hiearth.ru. Кнопка откроет сайт в браузере уже с входом — ничего вводить не нужно.</p>
-                <div><PayOnSiteButton next="/wallet" block={narrow}>Пополнить на сайте</PayOnSiteButton></div>
+                <span className="t-label">Оплата в Telegram</span>
+                <p className="muted t-sm">В Telegram подписку оплачивают звёздами — дни добавятся к текущей. Автопродление списывает подписку с этого баланса.</p>
+                <div><Button variant="primary" size="lg" block={narrow} to="/payment">Оплатить звёздами</Button></div>
               </div>
             ) : (<>
             <span className="t-label" id="amounts-l">Пополнить</span>

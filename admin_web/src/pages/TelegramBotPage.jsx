@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom'
 import { CheckCircle2, RefreshCw, Send, TriangleAlert } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
-import { checkTelegramBot, checkTelegramChannel, fetchTelegramSettings, saveTelegramSettings } from '../api/admin.js'
-import { Badge, Button, Card, CardBody, CardHeader, CopyButton, Input, PageHeader, Spinner } from '../components/ui/index.js'
+import { checkTelegramBot, checkTelegramChannel, fetchStars, fetchTelegramSettings, refundStars, saveStarsRate, saveTelegramSettings } from '../api/admin.js'
+import { formatDate } from '../utils/format.js'
+import { Badge, Button, Card, CardBody, CardHeader, CopyButton, Input, PageHeader, Spinner, Table, Thead, Tbody, Tr, Th, Td } from '../components/ui/index.js'
 
 // «Telegram-бот» (plan TG7): the users' bot (token write-only, Mini App), the news channel and the
 // owner's alerts bot side by side, with the steps the owner does in Telegram.
@@ -29,6 +30,101 @@ function Result({ r }) {
       <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0 text-danger" aria-hidden="true" />
       <span className="text-primary break-words">{r.text}</span>
     </div>
+  )
+}
+
+const STARS_STATUS = {
+  paid: { label: 'оплачен', variant: 'warning' },
+  activated: { label: 'подписка включена', variant: 'success' },
+  refunded: { label: 'звёзды возвращены', variant: 'default' },
+  failed: { label: 'ошибка', variant: 'danger' },
+}
+
+// Paying in Stars: Telegram's terms (6.2) allow only Telegram Stars for digital goods inside the
+// bot and the Mini App, so this is the only way to pay there.
+function StarsCard({ canWrite, canRefund }) {
+  const toast = useToast()
+  const [d, setD] = useState(null)
+  const [rate, setRate] = useState('')
+  const [err, setErr] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [refunding, setRefunding] = useState(0)
+  const [confirm, setConfirm] = useState(0)
+
+  async function load() {
+    try { const r = await fetchStars(); setD(r); setRate(r.rate || ''); setErr('') } catch (e) { setErr(e.message) }
+  }
+  useEffect(() => { load() }, [])
+
+  async function save() {
+    setSaving(true)
+    try { const r = await saveStarsRate(rate.trim()); setD(r); toast.success(r.enabled ? 'Курс сохранён — оплата звёздами включена' : 'Оплата звёздами выключена') }
+    catch (e) { toast.error(e.message) } finally { setSaving(false) }
+  }
+
+  async function refund(id) {
+    setRefunding(id)
+    try { await refundStars(id); toast.success('Звёзды возвращены'); setConfirm(0); load() }
+    catch (e) { toast.error(e.message) } finally { setRefunding(0) }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-primary">Оплата звёздами</h3>
+          {d && (d.enabled ? <Badge variant="success">включена</Badge> : <Badge variant="warning">выключена</Badge>)}
+        </div>
+      </CardHeader>
+      <CardBody className="space-y-4">
+        <p className="text-xs text-secondary">Правила Telegram: внутри бота и Mini App подписку можно продавать только за звёзды. Ссылок на оплату на сайте там нет — на сайте остаётся ЮKassa. Один платёж — один срок тарифа, дни добавляются к текущей подписке.</p>
+        {err && <p role="alert" className="text-sm text-danger">{err}</p>}
+        <div>
+          <label htmlFor="stars-rate" className="text-xs text-tertiary block mb-1">Курс: рублей за 1 ⭐</label>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input id="stars-rate" value={rate} onChange={e => setRate(e.target.value)} placeholder="например 1.3" inputMode="decimal" className="font-mono sm:w-40" disabled={!canWrite} />
+            {canWrite && <Button onClick={save} loading={saving}>Сохранить</Button>}
+          </div>
+          <p className="text-xs text-tertiary mt-1">Цена в звёздах = цена тарифа / курс, с округлением вверх. Пусто или 0 — оплата звёздами выключена.</p>
+        </div>
+        {d?.plans?.length > 0 && (
+          <dl className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 gap-y-1 text-sm">
+            {d.plans.map(p => (
+              <div key={p.name} className="contents">
+                <dt className="text-secondary truncate">{p.name}</dt>
+                <dd className="font-mono tabular-nums text-tertiary text-right">{p.price_rub} ₽</dd>
+                <dd className="font-mono tabular-nums text-primary text-right">{p.stars ? `${p.stars} ⭐` : '—'}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {d?.payments?.length > 0 && (
+          <Table>
+            <Thead><Tr><Th>Когда</Th><Th>Пользователь</Th><Th>Тариф</Th><Th align="right">⭐</Th><Th>Статус</Th><Th align="right" /></Tr></Thead>
+            <Tbody>
+              {d.payments.map(p => {
+                const st = STARS_STATUS[p.status] || STARS_STATUS.paid
+                return (
+                  <Tr key={p.id}>
+                    <Td mono>{formatDate(p.created_at)}</Td>
+                    <Td mono>{p.user_id ? `${p.user_id.slice(0, 4)}…${p.user_id.slice(-4)}` : p.telegram_id}</Td>
+                    <Td>{p.plan_name || '—'}</Td>
+                    <Td mono align="right">{p.stars}</Td>
+                    <Td><Badge variant={st.variant}>{st.label}</Badge>{p.error && <p className="text-xs text-danger max-w-[220px] truncate" title={p.error}>{p.error}</p>}</Td>
+                    <Td align="right">
+                      {canRefund && p.status !== 'refunded' && (confirm === p.id
+                        ? <span className="inline-flex gap-1"><Button variant="danger" size="sm" onClick={() => refund(p.id)} loading={refunding === p.id}>Вернуть</Button><Button variant="ghost" size="sm" onClick={() => setConfirm(0)}>Нет</Button></span>
+                        : <Button variant="ghost" size="sm" onClick={() => setConfirm(p.id)}>Вернуть звёзды</Button>)}
+                    </Td>
+                  </Tr>
+                )
+              })}
+            </Tbody>
+          </Table>
+        )}
+        {d?.payments?.length > 0 && <p className="text-xs text-tertiary">Возврат звёзд не сокращает подписку — при необходимости сократите её в карточке пользователя.</p>}
+      </CardBody>
+    </Card>
   )
 }
 
@@ -166,6 +262,8 @@ export default function TelegramBotPage() {
               <Result r={chCheck} />
             </CardBody>
           </Card>
+
+          <StarsCard canWrite={canWrite} canRefund={can('payments.refund')} />
 
           <Card>
             <CardHeader><h3 className="text-sm font-semibold text-primary">Бот алертов</h3></CardHeader>

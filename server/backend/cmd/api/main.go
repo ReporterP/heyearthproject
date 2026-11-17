@@ -1006,6 +1006,7 @@ func main() {
 	registerTelegramRoutes(authLimiter, apiLimiter)
 	registerSupportRoutes(apiLimiter)
 	registerNewsRoutes(apiLimiter)
+	registerStarsRoutes(apiLimiter)
 
 	// Admin panel
 	admin.RegisterRoutes()

@@ -219,6 +219,15 @@ export function checkTelegramBot() {
 export function checkTelegramChannel() {
   return apiFetch('/telegram/channel/check', { method: 'POST' })
 }
+export function fetchStars() {
+  return apiFetch('/telegram/stars')
+}
+export function saveStarsRate(rate) {
+  return apiFetch('/telegram/stars', { method: 'PUT', body: { rate } })
+}
+export function refundStars(id) {
+  return apiFetch(`/telegram/stars/${id}/refund`, { method: 'POST' })
+}
 export function fetchNews() {
   return apiFetch('/news')
 }

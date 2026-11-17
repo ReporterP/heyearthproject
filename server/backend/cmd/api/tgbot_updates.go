@@ -29,15 +29,16 @@ var tgCommands = []tg.BotCommand{
 	{Command: "start", Description: "Кабинет и приветствие"},
 	{Command: "status", Description: "Подписка, дни и баланс"},
 	{Command: "connect", Description: "Ссылка подписки и «Добавить в Happ»"},
-	{Command: "wallet", Description: "Баланс и пополнение на сайте"},
+	{Command: "wallet", Description: "Баланс и оплата звёздами"},
 	{Command: "friend", Description: "Пригласить друга"},
 	{Command: "support", Description: "Написать в поддержку"},
 	{Command: "news", Description: "Последние новости"},
 	{Command: "settings", Description: "Уведомления и привязка"},
+	{Command: "paysupport", Description: "Вопросы об оплате"},
 }
 
 const (
-	tgBotDescription      = "Кабинет HiEarth в Telegram: подписка, подключение, кошелёк, поддержка и новости. Напоминания о подписке приходят сюда же. Оплата — на сайте hiearth.ru."
+	tgBotDescription      = "Кабинет HiEarth в Telegram: подписка, подключение, кошелёк, поддержка и новости. Напоминания о подписке приходят сюда же. Подписку можно оплатить звёздами Telegram."
 	tgBotShortDescription = "Кабинет HiEarth: подписка, подключение, поддержка"
 	tgSupportModeTTL      = 30 * time.Minute
 )
@@ -73,6 +74,8 @@ func handleUserBotUpdate(ctx context.Context, u tg.Update) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	switch {
+	case u.PreCheckout != nil:
+		handleStarsPreCheckout(ctx, bot, u.PreCheckout)
 	case u.Message != nil:
 		m := u.Message
 		if m.Chat.Type != "private" || m.From == nil || m.From.IsBot {
@@ -81,6 +84,10 @@ func handleUserBotUpdate(ctx context.Context, u tg.Update) {
 		c, err := newTGCtx(ctx, bot, *m.From)
 		if err != nil {
 			log.Printf("[tg-bot] пользователь %d: %v", m.From.ID, err)
+			return
+		}
+		if m.SuccessfulPayment != nil {
+			handleStarsPaid(c, m)
 			return
 		}
 		handleTGMessage(c, m)
@@ -138,6 +145,10 @@ func handleTGMessage(c *tgCtx, m *tg.Message) {
 			tgNews(c)
 		case "settings":
 			tgSettings(c, 0)
+		case "paysupport":
+			tgPaySupport(c)
+		case "buy":
+			tgStarsChoose(c)
 		default:
 			tgUnknown(c)
 		}
@@ -303,16 +314,11 @@ func (s *tgSummary) actionRow() []tg.InlineKeyboardButton {
 	case !s.HasSub:
 		return tg.Row(tg.WebAppButton("Включить подписку", miniAppURL("dashboard")))
 	case !s.Active:
-		return tg.Row(payButton("Продлить на сайте", "/dashboard"))
+		return starsChooseButton("Продлить за ⭐")
 	case s.AutoRenew && !s.FreePlan && s.BalanceKop < s.PriceKop:
-		return tg.Row(payButton("Пополнить на сайте", "/wallet"))
+		return starsChooseButton("Продлить звёздами")
 	}
 	return nil
-}
-
-// payButton asks the bot for a one-time sign-in link to a page of the site.
-func payButton(text, path string) tg.InlineKeyboardButton {
-	return tg.CallbackButton(text, "pay:"+path)
 }
 
 // ── /status /connect /wallet /friend /settings ──
@@ -381,12 +387,15 @@ func tgWallet(c *tgCtx) {
 		_, _ = c.reply("Не удалось загрузить данные — попробуйте через минуту.", nil)
 		return
 	}
-	text := fmt.Sprintf("<b>Кошелёк:</b> %s.\n\nПодписка оплачивается с баланса. Пополнить можно картой или через СБП — на сайте, он откроется в браузере уже с входом.", rub(s.BalanceKop))
+	text := fmt.Sprintf("<b>Кошелёк:</b> %s.\n\nАвтопродление списывает подписку с баланса.", rub(s.BalanceKop))
+	if starsRate() > 0 {
+		text += " В Telegram подписку можно оплатить звёздами — дни добавятся к текущей."
+	}
 	if s.Active && s.AutoRenew && !s.FreePlan && s.BalanceKop < s.PriceKop {
 		text += fmt.Sprintf("\n\nДо продления %s не хватает %s.", ruDate(s.ValidUntil), rub(s.PriceKop-s.BalanceKop))
 	}
 	_, _ = c.reply(text, tg.Keyboard(
-		tg.Row(payButton("Пополнить на сайте", "/wallet").Styled(tg.StyleSuccess)),
+		starsChooseButton("Оплатить звёздами"),
 		tg.Row(tg.WebAppButton("История", miniAppURL("wallet"))),
 	))
 }
@@ -471,13 +480,13 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 	}
 	answer := func(text string) { _ = c.bot.AnswerCallbackQuery(c.ctx, q.ID, text) }
 	switch {
-	case strings.HasPrefix(data, "pay:"):
-		if c.user == nil || c.user.Blocked {
-			answer("Сначала войдите в кабинет")
-			return
-		}
-		tgSendMagicLink(c, q, biz.SafeNextPath(strings.TrimPrefix(data, "pay:")))
+	case data == "stars:choose" || strings.HasPrefix(data, "pay:"): // pay: — buttons of older messages
 		answer("")
+		tgStarsChoose(c)
+	case strings.HasPrefix(data, "stars:plan:"):
+		answer("")
+		id, _ := strconv.Atoi(strings.TrimPrefix(data, "stars:plan:"))
+		tgStarsPlan(c, id)
 	case data == "set:rem" || data == "set:news":
 		if c.user == nil {
 			answer("Сначала войдите в кабинет")
@@ -547,24 +556,6 @@ func handleTGCallback(c *tgCtx, q *tg.CallbackQuery) {
 	default:
 		answer("")
 	}
-}
-
-// tgSendMagicLink sends a 5-minute sign-in link to a page of the site, shown only to the person
-// (an ephemeral reply to the button, Bot API 10.4); a normal message when that fails.
-func tgSendMagicLink(c *tgCtx, q *tg.CallbackQuery, path string) {
-	token, err := biz.CreateMagicToken(c.ctx, c.user.DBID, path)
-	if err != nil {
-		_, _ = c.reply("Не удалось подготовить ссылку — попробуйте через минуту.", nil)
-		return
-	}
-	link := magicURL(token)
-	text := "Оплата — на сайте: ссылка откроет его в браузере уже с входом. Она действует 5 минут и срабатывает один раз."
-	kb := tg.Keyboard(tg.Row(tg.URLButton("Открыть сайт", link).Styled(tg.StyleSuccess)))
-	if _, err := c.bot.SendMessage(c.ctx, tg.SendMessage{Text: text, ReplyMarkup: kb,
-		Ephemeral: &tg.EphemeralMessageParameters{CallbackQueryID: q.ID}}); err == nil {
-		return
-	}
-	_, _ = c.reply(text, kb)
 }
 
 // magicURL is the site page that exchanges a one-time token for a session.

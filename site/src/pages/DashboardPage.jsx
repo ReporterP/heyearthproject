@@ -23,7 +23,6 @@ import PromoCard from '../components/PromoCard.jsx'
 import usePlans from '../hooks/usePlans.js'
 import useMtproto from '../hooks/useMtproto.js'
 import useMedia, { PHONE } from '../hooks/useMedia.js'
-import { PayOnSiteButton } from '../components/PayOnSite.jsx'
 import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
@@ -289,7 +288,7 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
             : plans.error && !plan
               ? <Button variant="secondary" size="lg" block={phone} icon="refresh" onClick={plans.reload}>Обновить тарифы</Button>
               : isMiniApp()
-            ? <PayOnSiteButton next="/dashboard" block={phone}>Продлить на сайте</PayOnSiteButton>
+            ? <Button variant="primary" size="lg" block={phone} to={plan ? `/payment?plan=${encodeURIComponent(plan.slug)}` : '/payment'}>Продлить звёздами</Button>
             : buyable
             ? <Button variant="primary" size="lg" block={phone} loading={busy} onClick={renew}>{short > 0 ? `Пополнить на ${money(topup)} и продлить` : `Продлить за ${money(price)}`}</Button>
             : <Button variant="primary" size="lg" block={phone} to="/payment">Выбрать тариф</Button>}

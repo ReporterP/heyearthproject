@@ -269,5 +269,39 @@ func (b *Bot) DownloadFile(ctx context.Context, fileID string) ([]byte, string, 
 	return data, f.FilePath, nil
 }
 
+// CreateInvoiceLink makes a Stars payment link (the Mini App opens it with openInvoice).
+func (b *Bot) CreateInvoiceLink(ctx context.Context, inv Invoice) (string, error) {
+	var link string
+	if err := b.Call(ctx, "createInvoiceLink", inv.params(), &link); err != nil {
+		return "", err
+	}
+	return link, nil
+}
+
+// SendInvoice sends a Stars invoice to a chat.
+func (b *Bot) SendInvoice(ctx context.Context, chatID any, inv Invoice) (*Message, error) {
+	p := inv.params()
+	p["chat_id"] = chatID
+	var m Message
+	if err := b.send(ctx, "sendInvoice", p, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// AnswerPreCheckoutQuery confirms (ok) or refuses the payment with a reason shown to the person.
+func (b *Bot) AnswerPreCheckoutQuery(ctx context.Context, id string, ok bool, errMsg string) error {
+	p := map[string]any{"pre_checkout_query_id": id, "ok": ok}
+	if !ok {
+		p["error_message"] = errMsg
+	}
+	return b.Call(ctx, "answerPreCheckoutQuery", p, nil)
+}
+
+// RefundStarPayment returns the Stars of a successful payment.
+func (b *Bot) RefundStarPayment(ctx context.Context, userID int64, chargeID string) error {
+	return b.Call(ctx, "refundStarPayment", map[string]any{"user_id": userID, "telegram_payment_charge_id": chargeID}, nil)
+}
+
 // ChatIDString formats a numeric chat id.
 func ChatIDString(id int64) string { return strconv.FormatInt(id, 10) }

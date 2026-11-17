@@ -14,6 +14,7 @@
 //   bot      linked | unlinked | blocked | off — the HiEarth Telegram bot (settings «Telegram»)
 //   support  answered | waiting | closed | empty — the support conversation
 //   news     unread | read | empty             — the cabinet's «Новости»
+//   stars    on | off                          — paying in Telegram Stars (Mini App)
 //   email    confirmed | pending | none
 //   login    password | nopassword            — has a login+password
 //   referral on | off
@@ -29,7 +30,7 @@
 const DEFAULT = {
   sub: 'active', wallet: 'low', trial: 'used', renew: 'on', history: 'full', tg: 'both', email: 'confirmed',
   login: 'password', referral: 'on', b2b: 'off', tenant: 'active', members: 'many', pay: 'succeeded',
-  sublink: 'ok', fail: '', delay: '350', bot: 'unlinked', support: 'answered', news: 'unread',
+  sublink: 'ok', fail: '', delay: '350', bot: 'unlinked', support: 'answered', news: 'unread', stars: 'on',
 }
 const S = { ...DEFAULT }
 const OPTIONS = {
@@ -40,6 +41,7 @@ const OPTIONS = {
   sublink: ['ok', 'fail'], delay: ['0', '350', '1500'], bot: ['linked', 'unlinked', 'blocked', 'off'],
   support: ['answered', 'waiting', 'closed', 'empty'],
   news: ['unread', 'read', 'empty'],
+  stars: ['on', 'off'],
 }
 
 const USER_ID = '3f2b8c1e-7a4d-4e9b-8c21-5d6e7f8a9b0c'
@@ -402,6 +404,13 @@ function route(method, path, q, body, authed) {
     if (S.news === 'empty') return [200, { items: [], unread: 0, channel_url: '' }]
     return [200, { items: newsItems(), unread: S.news === 'unread' && !NEWS.read ? 1 : 0, channel_url: 'https://t.me/hiearth_news' }]
   }
+  if (path === '/api/v1/stars/plans') {
+    const rate = 1.3
+    const cur = sub() ? CUR.id : 0
+    return [200, { enabled: S.stars === 'on', plans: PLANS.filter((p) => p.price_rub > 0).map((p) => ({ ...p, stars: Math.ceil(p.price_rub / rate), current: p.id === cur,
+      allowed: !cur || p.id === cur || p.price_rub >= CUR.price_rub, reason: cur && p.id !== cur && p.price_rub < CUR.price_rub ? 'Переход доступен после 14 февраля' : '' })) }]
+  }
+  if (path === '/api/v1/stars/invoice') return [200, { url: 'https://t.me/$mock-invoice', stars: 231 }]
   if (path === '/api/v1/news/read') { NEWS.read = true; return [200, { unread: 0 }] }
   if (path === '/api/v1/support/unread') return [200, { unread: S.support === 'answered' && !SUPPORT.read ? 1 : 0 }]
   if (path === '/api/v1/auth/telegram') return [200, { linked: false, telegram: { first_name: 'Иван' } }]

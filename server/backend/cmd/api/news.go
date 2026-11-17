@@ -547,7 +547,8 @@ func handleAdminNewsUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name += "." + ext
-	if err := os.MkdirAll(newsDir(), 0o750); err == nil {
+	err = os.MkdirAll(newsDir(), 0o750)
+	if err == nil {
 		err = os.WriteFile(filepath.Join(newsDir(), name), data, 0o640)
 	}
 	if err != nil {

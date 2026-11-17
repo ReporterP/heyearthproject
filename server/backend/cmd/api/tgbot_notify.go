@@ -51,15 +51,18 @@ func tgReminderMessage(r reminder) tgOut {
 		if r.Today {
 			head = fmt.Sprintf("Сегодня последний день подписки %s.", plan)
 		}
-		text = fmt.Sprintf("%s Для автопродления пополните кошелёк: на балансе %s, не хватает %s.", head, rub(r.BalanceKop), rub(priceKop-r.BalanceKop))
-		kb = tg.Keyboard(tg.Row(payButton("Пополнить на сайте", "/wallet").Styled(tg.StyleSuccess)), cabinetRow(""))
+		text = fmt.Sprintf("%s Для автопродления на кошельке не хватает %s (на балансе %s).", head, rub(priceKop-r.BalanceKop), rub(r.BalanceKop))
+		if starsRate() > 0 {
+			text += " Продлить можно звёздами прямо здесь."
+		}
+		kb = tg.Keyboard(starsChooseButton("Продлить звёздами"), cabinetRow(""))
 	default: // auto-renew off
 		head := fmt.Sprintf("Подписка %s закончится %s — автопродление выключено.", plan, end)
 		if r.Today {
 			head = fmt.Sprintf("Сегодня последний день подписки %s — автопродление выключено.", plan)
 		}
-		text = head + " Продлите её на сайте или включите автопродление в кабинете."
-		kb = tg.Keyboard(tg.Row(payButton("Продлить на сайте", "/dashboard").Styled(tg.StyleSuccess)),
+		text = head + " Продлите её или включите автопродление в кабинете."
+		kb = tg.Keyboard(starsChooseButton("Продлить звёздами"),
 			tg.Row(tg.WebAppButton("Включить автопродление", miniAppURL("payments"))))
 	}
 	return tgOut{Text: text, ParseMode: "HTML", Keyboard: kb}
@@ -139,7 +142,7 @@ func queueTGExpired(ctx context.Context, now time.Time) (int, error) {
 	for _, e := range list {
 		m := tgOut{ParseMode: "HTML",
 			Text:     fmt.Sprintf("Подписка «%s» закончилась — подключение на паузе. Подписка в Happ остаётся: после оплаты потяните список вниз в Happ, чтобы обновить её.", html.EscapeString(e.plan)),
-			Keyboard: tg.Keyboard(tg.Row(payButton("Продлить на сайте", "/dashboard").Styled(tg.StyleSuccess)), cabinetRow(""))}
+			Keyboard: tg.Keyboard(starsChooseButton("Продлить звёздами"), cabinetRow(""))}
 		if ok, err := enqueueTG(ctx, e.user, tgKindExpired, subRef(e.sub, e.until), m); err == nil && ok {
 			n++
 		}
@@ -168,9 +171,9 @@ func notifyTGRenewShort(userID string, subID int, until time.Time, planName stri
 		}
 		price := int64(priceRub) * 100
 		m := tgOut{ParseMode: "HTML",
-			Text: fmt.Sprintf("Не получилось продлить подписку «%s»: на кошельке %s, нужно %s. Пополните на %s — продлим автоматически до конца подписки (%s).",
+			Text: fmt.Sprintf("Не получилось продлить подписку «%s»: на кошельке %s, нужно %s — не хватает %s. Автопродление попробует снова до конца подписки (%s).",
 				html.EscapeString(planName), rub(bal), rub(price), rub(price-bal), ruDate(until)),
-			Keyboard: tg.Keyboard(tg.Row(payButton("Пополнить на сайте", "/wallet").Styled(tg.StyleSuccess)))}
+			Keyboard: tg.Keyboard(starsChooseButton("Продлить звёздами"))}
 		if _, err := enqueueTG(ctx, userDBID, tgKindReminderToday, subRef(subID, until), m); err != nil {
 			log.Printf("[tg-notify] renew short %s: %v", userID, err)
 		}

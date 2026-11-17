@@ -64,8 +64,15 @@ func TestTGReminderMessages(t *testing.T) {
 		t.Errorf("fine: %q", m.Text)
 	}
 	m := tgReminderMessage(short)
-	if !strings.Contains(m.Text, "не хватает 180 ₽") || m.Keyboard == nil || m.Keyboard.InlineKeyboard[0][0].CallbackData != "pay:/wallet" {
-		t.Errorf("short: %q %+v", m.Text, m.Keyboard)
+	if !strings.Contains(m.Text, "не хватает 180 ₽") || strings.Contains(m.Text, "сайт") {
+		t.Errorf("short: %q", m.Text)
+	}
+	for _, row := range m.Keyboard.InlineKeyboard {
+		for _, b := range row {
+			if strings.HasPrefix(b.CallbackData, "pay:") || b.URL != "" {
+				t.Errorf("no payment outside Telegram may be offered in the bot: %+v", b)
+			}
+		}
 	}
 	short.Today = true
 	if m := tgReminderMessage(short); !strings.HasPrefix(m.Text, "Сегодня последний день") {
