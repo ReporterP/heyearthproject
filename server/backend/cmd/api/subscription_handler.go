@@ -342,9 +342,9 @@ func clashProfile(in hubConnectionInputs) string {
 		// #4852 regressions cause flapping handshake on RU mobile DPI
 		// (research: docs/research/2026-05-27-happ-tele2-tls-handshake.md).
 		profiles := []struct{ name, fp string }{
-			{"HeYearth-Home", "chrome"},
-			{"HeYearth-Mobile", "firefox"},
-			{"HeYearth-Strict", "edge"},
+			{"HiEarth-Home", "chrome"},
+			{"HiEarth-Mobile", "firefox"},
+			{"HiEarth-Strict", "edge"},
 		}
 		for _, p := range profiles {
 			proxyNames = append(proxyNames, p.name)
@@ -354,7 +354,7 @@ func clashProfile(in hubConnectionInputs) string {
 
 	// 1b. VLESS Reality + XHTTP (port 2443)
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
-		name := "HeYearth-XHTTP"
+		name := "HiEarth-XHTTP"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
@@ -381,17 +381,17 @@ func clashProfile(in hubConnectionInputs) string {
 		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
-			// sni on the Hub stays the connect host, as it always was (pinned
-			// by the subscription_clash golden). During a failover the server is
-			// a relay IP that no certificate names (skip-cert-verify: false):
-			// the cert domain then, like the URIs and the reserve proxies.
-			// The main Express follows the target only when Бамбук answers
-			// through it; otherwise it stays on the Hub.
-			server, sni := host, host
+			// sni is the certificate's domain, as in Happ's Бамбук line: the connect
+			// address may be an IP or a relay that no certificate names
+			// (skip-cert-verify: false), QA 2026-11-18. The main Express follows the
+			// failover target only when Бамбук answers through it; otherwise it
+			// stays on the Hub.
+			server, sni := host, in.hysteria2SNI
 			if in.entries.failover && !in.entries.mainUDP {
-				server, sni = in.mainServerHost, in.mainServerHost
-			} else if in.entries.failover {
-				sni = in.hysteria2SNI
+				server = in.mainServerHost
+			}
+			if sni == "" { // no certificate domain known: the connect host, as before
+				sni = server
 			}
 			proxies = append(proxies, clashHy2Proxy(name, server, hy2Password, obfsPassword, sni, up, down))
 		}
@@ -400,10 +400,10 @@ func clashProfile(in hubConnectionInputs) string {
 	// While everyone is pinned to a relay: Home and XHTTP straight to the Hub
 	// (the way out on Wi-Fi if the relay dies), like directOptions.
 	if in.entries.pinned && in.mainServerHost != "" && realityPubKey != "" && vlessUUID != "" && canVLESS {
-		proxyNames = append(proxyNames, "HeYearth-Home"+directLabel, "HeYearth-XHTTP"+directLabel)
+		proxyNames = append(proxyNames, "HiEarth-Home"+directLabel, "HiEarth-XHTTP"+directLabel)
 		proxies = append(proxies,
-			clashRealityProxy("HeYearth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-			clashXHTTPProxy("HeYearth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+			clashRealityProxy("HiEarth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+			clashXHTTPProxy("HiEarth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
 
 	// Reserve entries (phase 3): the same proxies through each healthy relay,
@@ -415,10 +415,10 @@ func clashProfile(in hubConnectionInputs) string {
 	for k, r := range reserves {
 		sfx := reserveSuffix(k)
 		if realityPubKey != "" && vlessUUID != "" && canVLESS {
-			proxyNames = append(proxyNames, "HeYearth-Home"+sfx, "HeYearth-XHTTP"+sfx)
+			proxyNames = append(proxyNames, "HiEarth-Home"+sfx, "HiEarth-XHTTP"+sfx)
 			proxies = append(proxies,
-				clashRealityProxy("HeYearth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+				clashRealityProxy("HiEarth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+				clashXHTTPProxy("HiEarth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 		}
 		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
 			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)
@@ -431,7 +431,7 @@ func clashProfile(in hubConnectionInputs) string {
 		namesList += fmt.Sprintf("\n      - \"%s\"", n)
 	}
 
-	return fmt.Sprintf(`# HeYearth — Clash/ClashMeta Config
+	return fmt.Sprintf(`# HiEarth — Clash/ClashMeta Config
 mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -441,13 +441,13 @@ proxies:
 %s
 
 proxy-groups:
-  - name: "HeYearth"
+  - name: "HiEarth"
     type: select
     proxies:%s
       - DIRECT
 
 rules:
-  - MATCH,HeYearth
+  - MATCH,HiEarth
 `, strings.Join(proxies, "\n"), namesList)
 }
 
@@ -536,7 +536,7 @@ func buildSubscriptionUserinfo(userID string) (string, error) {
 		JOIN users u ON u.id = us.user_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC
+		ORDER BY (us.tenant_id IS NULL) DESC, us.valid_until DESC -- own before company-paid, as routed
 		LIMIT 1
 	`, userID).Scan(&userDBID, &startedAt, &validUntil, &subLimit, &planLimit)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -716,7 +716,9 @@ func buildSubscriptionAnnounceAt(userID, base string) (text, url string, err err
 		  JOIN users u  ON u.id = us.user_id
 		  LEFT JOIN plans p ON p.id = us.plan_id
 		 WHERE u.user_id = $1
-		 ORDER BY us.valid_until DESC LIMIT 1
+		 -- a live row first, the person's own before the company-paid one: the wallet renewal
+		 -- notice is about their own subscription, the company row has no term for them
+		 ORDER BY (us.valid_until > NOW()) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC LIMIT 1
 	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug, &autoRenew, &planPrice, &pricePaid, &promo, &userDBID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
@@ -796,6 +798,10 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	if dbErr, ok := sessionLookupFailure(err); ok {
 		log.Printf("[auth] session lookup failed: %v", dbErr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
+		return
+	}
+	if errors.Is(err, errNoToken) { // never signed in: nothing has expired
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Нужен вход в аккаунт"})
 		return
 	}
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Сессия истекла — войдите снова"})

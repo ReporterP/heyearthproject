@@ -19,7 +19,8 @@ import { HAPP, detectDevice } from '../lib/apps.js'
 // purpose — the main action already happened by itself.
 const TIMEOUT_MS = 2500
 
-// Android: an intent URI falls back to Google Play by itself when Happ is not installed
+// Android: an intent URI; without Happ the browser goes to browser_fallback_url — the official
+// site happ.info (Google Play has no Happ any more, only clones)
 function androidIntent(happLink) {
   const tail = happLink.replace(/^happ:\/\//, '')
   return `intent://${tail}#Intent;scheme=happ;package=com.happproxy;S.browser_fallback_url=${encodeURIComponent(HAPP.android.url)};end`
@@ -98,7 +99,7 @@ export default function ConnectPage() {
           {phase === 'preparing'
             ? <span className="spinner" aria-hidden="true" style={{ margin: '40px 0 12px' }} />
             : <ConnectOrb active small onClick={happ ? open : undefined} ariaLabel={happ ? 'Подписка готова — открыть Happ ещё раз' : 'Подписка готова к добавлению'} />}
-          <h1 className="t-h1" style={{ marginTop: 10 }} aria-live="polite">{phase === 'preparing' ? 'Готовим ссылку…' : 'Открываем Happ…'}</h1>
+          <h1 className="t-h1" style={{ marginTop: 10 }} aria-live="polite">{phase === 'preparing' ? 'Готовим ссылку…' : phase === 'not-installed' ? 'Happ не открылся' : 'Открываем Happ…'}</h1>
           {phase !== 'preparing' && (
             <p className="muted" style={{ maxWidth: 520 }}>Если приложение не открылось само, выберите устройство ниже. После установки вернитесь и нажмите кнопку ещё раз.</p>
           )}

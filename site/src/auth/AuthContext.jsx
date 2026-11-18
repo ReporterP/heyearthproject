@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { UNAUTHORIZED_EVENT } from '../api/http.js'
 import { isMiniApp } from '../lib/telegram.js'
 
@@ -34,6 +35,18 @@ export function AuthProvider({ children }) {
     setToken('')
   }, [])
 
+  // A voluntary logout first goes home (`state.signOut`) and signs out there: signing out on a
+  // cabinet page let the auth guard win the race against the navigation and land on
+  // /login?redirect=<page> as if the session had expired (spec 08: «Выйти» → `/`). The state is
+  // cleared at once, so Back/Forward to this entry never signs anyone out again.
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (!location.state?.signOut) return
+    logout()
+    navigate(location.pathname + location.search, { replace: true, state: null })
+  }, [location, logout, navigate])
+
   // Any API call that got 401 (apiFetch) signs the site out; RequireAuth then sends
   // the client to /login?redirect=<where they were>. A 503 (database hiccup) does not.
   useEffect(() => {
@@ -57,7 +70,9 @@ export function AuthProvider({ children }) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <AuthContext.Provider value={{ token, isLoggedIn: !!token, login, logout }}>
+    // while a voluntary logout is on its way home the page already counts as signed out (no
+    // one-frame «В кабинет» on the landing before the token is dropped)
+    <AuthContext.Provider value={{ token, isLoggedIn: !!token && !location.state?.signOut, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

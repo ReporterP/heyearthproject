@@ -76,7 +76,7 @@ func TestUserPasswordReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := biz.GenerateUserSessionToken("reset-me", uid); err != nil {
+		if _, err := biz.GenerateUserSessionToken("reset-me", uid, biz.SessionSourceSite); err != nil {
 			t.Fatal(err)
 		}
 	}

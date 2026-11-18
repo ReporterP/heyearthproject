@@ -22,6 +22,7 @@ import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { splitPlans, savings, featuredId, planList, termLabel } from '../lib/plans.js'
 import { date, kop, money, daysLeft, group } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Тарифы → Оформление (spec 09 §9.1–9.2) on one route: /payment is step 1, /payment?plan=<slug> is
 // step 2 (a history entry, so «Назад» returns to the grid). Paying: enough on the wallet → buy from
@@ -32,7 +33,8 @@ export default function PaymentPage() {
   const plans = usePlans()
   const acc = useAccount(['profile', 'subscription', 'wallet'], { optional: ['subscription', 'wallet'] })
   const sub = currentSub(acc.data.subscription)
-  const active = sub?.active ? sub : null
+  // the person's own subscription only: a purchase never extends the company-paid one (09 §9.1)
+  const active = sub?.active && !sub.company ? sub : null
   const chosen = slug ? plans.list.find((p) => p.slug === slug) : null
   const [done, setDone] = useState(null) // { title, text } after a purchase without ЮKassa
   usePageMeta(slug ? 'Оформление — HiEarth' : 'Тарифы — HiEarth', { noindex: true })
@@ -124,7 +126,7 @@ function Tariffs({ plans, active, acc, onPick, onDone, unknownSlug }) {
       <h1 className="t-h1">Выберите тариф</h1>
       {(allUnlimited || active) && (
         <p className="muted" style={{ marginTop: 6 }}>
-          {[allUnlimited && 'Безлимитный трафик во всех тарифах.', active && `Сейчас у вас «${active.plan_name}» до ${date(active.valid_until)}.`].filter(Boolean).join(' ')}
+          {[allUnlimited && 'Безлимитный трафик во всех платных тарифах.', active && `Сейчас у вас «${active.plan_name}» до ${date(active.valid_until)}.`].filter(Boolean).join(' ')}
         </p>
       )}
       {unknownSlug && <Alert tone="info" className="mt-4">Такого тарифа сейчас нет — выберите из списка.</Alert>}
@@ -303,7 +305,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
     } catch (e) {
       if (e?.kind !== 'network') setRequestId(newRequestId())
       if (e?.status === 409 || e?.status === 402) { setErr(e.message); invalidateAccount('wallet'); acc.reload('wallet'); setQuoteNonce((x) => x + 1) }
-      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      else setErr(payErrorText(e))
     } finally {
       inFlight.current = false
       setBusy(false)
@@ -315,6 +317,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
   }
 
   const btnLabel = isFree ? 'Активировать бесплатно' : quoteBusy ? 'Считаем…'
+    : !quote ? 'Оплатить' // no price yet (the quote failed): no «0 ₽» on the button
     : freeCode ? 'Активировать промокод'
       : enough ? `Оплатить с кошелька — ${kop(price)}`
         : `Оплатить ${money(topupRub)}`
@@ -351,7 +354,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
           </div>
           <div className="card stack gap-4">
             <form onSubmit={applyCode} noValidate>
-              <Field id="pc" label="Промокод" optional error={promoErr || null} hint={applied && discount > 0 ? (quote?.promo_message || `Скидка ${pct}% — минус ${kop(discount)}`) : applied && freeCode ? (quote?.promo_message || 'Промокод даёт бесплатные дни') : null} hintTone="ok">
+              <Field id="pc" label="Промокод" optional error={promoErr || null} hint={applied && discount > 0 ? (quote?.promo_message || `Скидка ${pct}% — минус ${kop(discount)}`) : applied && freeCode ? (quote?.promo_message || 'Промокод даёт бесплатные дни') : applied && quote?.promo_type === 'traffic_gift' ? (quote?.promo_message || null) : null} hintTone="ok">
                 <div className="input-group">
                   <Input id="pc" aria-describedby={promoErr || applied ? 'pc-msg' : undefined} value={applied || promo} readOnly={!!applied} placeholder="Например, ЛЕТО10" autoCapitalize="characters" spellCheck={false}
                     onChange={(e) => { setPromo(e.target.value.toUpperCase()); setPromoErr('') }} invalid={!!promoErr} />
@@ -368,7 +371,12 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
               <p className="t-sm muted">Чек придёт на <span className="mono" style={{ color: 'var(--fg)' }}>{confirmed}</span>.</p>
             )}
           </div>
-          {quoteErr && <Alert tone="bad" title="Не удалось рассчитать стоимость.">{quoteErr === 'Не удалось рассчитать стоимость.' ? 'Обновите страницу.' : quoteErr}</Alert>}
+          {quoteErr && !quoteBusy && (
+            <Alert tone="bad" title="Не удалось рассчитать стоимость.">
+              {quoteErr === 'Не удалось рассчитать стоимость.' ? 'Попробуйте пересчитать.' : quoteErr}
+              <div style={{ marginTop: 8 }}><Button variant="ghost" size="sm" onClick={() => setQuoteNonce((n) => n + 1)}>Пересчитать</Button></div>
+            </Alert>
+          )}
           {blocked && <Alert tone="warn">Сейчас у вас тариф дороже — сменить на более дешёвый можно после окончания текущего{active ? `, ${date(active.valid_until)}` : ''}.</Alert>}
           {quote && !freeCode && !blocked && (enough
             ? <Alert tone="ok" title="Хватает на кошельке.">Спишем {kop(price)} с баланса — без ЮKassa.</Alert>

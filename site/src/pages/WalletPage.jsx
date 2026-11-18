@@ -16,8 +16,9 @@ import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import useMedia, { CABINET_NARROW } from '../hooks/useMedia.js'
 import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
-import { currentSub } from '../lib/account.js'
+import { currentSub, quoteCompany } from '../lib/account.js'
 import { date, dateTime, kop, kopNum, group } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Кошелёк (spec 09 §9.5, artboard «Кошелёк»). /wallet?topup=<id> is where ЮKassa returns: it shows the
 // payment's result instead (9.4).
@@ -105,7 +106,7 @@ function Wallet() {
       if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
       throw new Error('')
     } catch (e2) {
-      setErr(e2?.status === 400 && e2.message ? e2.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      setErr(payErrorText(e2))
     } finally {
       inFlight.current = false
       setBusy(false)
@@ -121,7 +122,7 @@ function Wallet() {
     const ar = wallet.auto_renew
     const note = ar?.free ? 'Подписка по промокоду продлевается бесплатно'
       : ar?.enabled ? `автопродление ${date(ar.renew_at)} · ${kop(ar.price_kop)}`
-        : sub?.active ? `Подписка действует до ${date(sub.valid_until)}` : ''
+        : sub?.active ? (sub.company ? `Доступ от компании ${quoteCompany(sub.company.name)}` : `Подписка действует до ${date(sub.valid_until)}`) : ''
     const rows = (wallet.transactions || []).slice(0, 5)
     const bal = kopNum(wallet.balance_kop)
 
@@ -183,7 +184,7 @@ function Wallet() {
           <h2 className="t-h3">Что такое кошелёк</h2>
           <p className="t-sm muted">Вы пополняете кошелёк картой, а подписка оплачивается с него — сразу или автопродлением.</p>
           <p className="t-sm muted">Если денег не хватает, при оплате тарифа мы пополним кошелёк ровно на недостающую сумму.</p>
-          <p className="t-sm muted">Деньги на кошельке идут только на услуги HiEarth; подробности — в <Link to="/offer" className="link">оферте</Link>.</p>
+          <p className="t-sm muted">Деньги на кошельке идут на услуги HiEarth. Неиспользованные можно вернуть по заявке — подробности в <Link to="/refund" className="link">условиях возврата</Link>.</p>
           <hr className="divider" />
           <p className="t-sm muted">Включить или выключить автопродление — в разделе <Link to="/payments" className="link">«Оплата и подписка»</Link>.</p>
         </aside>

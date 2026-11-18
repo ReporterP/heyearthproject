@@ -269,7 +269,7 @@ func TestCreatePaymentFromWalletOnce(t *testing.T) {
 	uid := testpg.NewUser(t, conn, "dbl")
 	testpg.MustExec(t, conn, `INSERT INTO user_wallets (user_id, balance_kop) VALUES ($1, 90000)`, uid)
 	t.Setenv("JWT_SECRET", "test-secret")
-	token, err := biz.GenerateUserSessionToken("dbl", uid)
+	token, err := biz.GenerateUserSessionToken("dbl", uid, biz.SessionSourceSite)
 	if err != nil {
 		t.Fatal(err)
 	}

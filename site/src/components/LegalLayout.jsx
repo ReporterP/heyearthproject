@@ -5,6 +5,9 @@ import SiteFooter from './SiteFooter.jsx'
 import Toc, { useScrollSpy } from './Toc.jsx'
 import useMedia from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
+import Skeleton from './Skeleton.jsx'
+import Alert from './Alert.jsx'
+import Button from './Button.jsx'
 
 // One template for the documents (spec 06 §6.3): a segmented switch between them (each is its own
 // route), «Содержание» built from the document's own h2 headings, the text in `doc` typography.
@@ -17,7 +20,9 @@ const DOCS = [
   { to: '/refund', label: 'Условия возврата' },
 ]
 
-export default function LegalLayout({ title, updated, children }) {
+// status: the operator's details ('loading' | 'ready' | 'error'); the text shows only when ready,
+// never with placeholders in place of the contractor (spec 06 §6.3).
+export default function LegalLayout({ title, updated, status = 'ready', onRetry, children }) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const narrow = useMedia('(max-width: 1024px)')
@@ -37,7 +42,7 @@ export default function LegalLayout({ title, updated, children }) {
       if (!h.id) h.id = `sec-${i + 1}`
       return { id: h.id, label: h.textContent.trim().replace(/^\d+\.\s*/, '') }
     }))
-  }, [pathname])
+  }, [pathname, status])
 
   const [current] = useScrollSpy(items.map((i) => i.id))
 
@@ -83,7 +88,16 @@ export default function LegalLayout({ title, updated, children }) {
           <article className="doc" ref={doc}>
             <h1 className="t-h1">{title}</h1>
             {updated && <p className="subtle t-sm" style={{ marginTop: 10 }}>{updated}</p>}
-            {children}
+            {status === 'ready' ? children : status === 'error' ? (
+              <Alert tone="bad" title="Не удалось загрузить документ." style={{ marginTop: 24 }}>
+                Проверьте интернет и попробуйте ещё раз.
+                <div style={{ marginTop: 8 }}><Button variant="ghost" size="sm" onClick={onRetry}>Повторить</Button></div>
+              </Alert>
+            ) : (
+              <div className="stack gap-3" style={{ marginTop: 24 }} aria-busy="true" aria-label="Загружаем документ">
+                {[100, 92, 96, 70, 100, 88].map((w, i) => <Skeleton key={i} w={`${w}%`} />)}
+              </div>
+            )}
           </article>
         </div>
       </main>

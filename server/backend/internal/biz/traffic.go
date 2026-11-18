@@ -212,8 +212,12 @@ func PeriodBreakdownByMonth(userUUID string, from, to time.Time) ([]MonthBucket,
 // (notably a later plan-less legacy subscription), and switching them would
 // change protocol, AmneziaWG, auto-renew and pricing decisions, not just a
 // tie-break, so they are left as they are.
+//
+// A member's own subscription comes before the company-paid one (tenant_id, jzd5.24): what
+// the member paid for keeps routing, quota and protocols; the company row takes over when
+// theirs ends. For people without a company the order is unchanged.
 func effectiveSubOrderBy(alias string) string {
-	return fmt.Sprintf("(%[1]s.plan_id IS NOT NULL) DESC, %[1]s.valid_until DESC, %[1]s.id DESC", alias)
+	return fmt.Sprintf("(%[1]s.plan_id IS NOT NULL) DESC, (%[1]s.tenant_id IS NULL) DESC, %[1]s.valid_until DESC, %[1]s.id DESC", alias)
 }
 
 // effectiveLimitQuery: limit and cycle anchor of the effective subscription

@@ -32,6 +32,8 @@ export const PERMISSION_LABELS = {
   'routing.direct.view': 'Прямая маршрутизация: просмотр',
   'routing.direct.manage': 'Прямая маршрутизация: изменение',
   'audit.read': 'Журнал аудита',
+  'support.manage': 'Поддержка: обращения и ответы',
+  'news.manage': 'Новости: публикация в канал, бот и кабинет',
 }
 export const permissionLabel = (key) => PERMISSION_LABELS[key] || key
 

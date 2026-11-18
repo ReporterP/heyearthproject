@@ -865,7 +865,9 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	})
 
 	config := map[string]interface{}{
-		"log": map[string]string{"loglevel": "warning"},
+		// No access log: one journal line per connection (address, site, account) that nothing
+		// reads and the privacy policy rules out (2026-11-18).
+		"log": map[string]string{"loglevel": "warning", "access": "none"},
 		// DNS: только IPv4 (IPv6 сломан у многих РФ-провайдеров — убираем задержку на AAAA)
 		"dns": map[string]interface{}{
 			"servers":       settings.dnsServers,

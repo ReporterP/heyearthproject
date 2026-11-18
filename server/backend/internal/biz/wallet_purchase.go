@@ -100,6 +100,9 @@ func PurchaseFromWalletTx(ctx context.Context, tx *sql.Tx, req PurchaseRequest) 
 		if p.Type == PromoFreeTrial {
 			return nil, &PromoError{"Этот промокод даёт бесплатные дни — активируйте его в кабинете, оплата не нужна"}
 		}
+		if err := PromoFitsPlan(p, PlanTrafficLimit(plan)); err != nil {
+			return nil, err
+		}
 		price = p.PriceFor(price)
 		promo = p.Code
 	}

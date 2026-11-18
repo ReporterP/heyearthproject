@@ -72,6 +72,11 @@ export default function CheckoutPage() {
       if (res.confirmation_url) { window.location.assign(res.confirmation_url); return null }
       if (!res.confirmation_token) { toResult(); return null } // paid, canceled or expired: show what happened
       sessionStorage.setItem(`checkout_token_${paymentId}`, res.confirmation_token)
+      // a resume (new tab, another session) brings back what the payment is for (spec 09 §9.2)
+      if (res.amount_kop && !readMeta(paymentId).amount_kop) {
+        sessionStorage.setItem(`checkout_meta_${paymentId}`, JSON.stringify({ slug: res.plan_slug || '', amount_kop: res.amount_kop, price_kop: res.price_kop || 0 }))
+        if (res.plan_name) sessionStorage.setItem(`checkout_plan_${paymentId}`, res.plan_name)
+      }
       return loadWidget(() => cancelled).then(() => {
         if (cancelled) return
         try {

@@ -64,7 +64,7 @@ func validInitData(w http.ResponseWriter, raw string) (*tg.InitData, bool) {
 
 // writeSession answers a successful sign-in like /auth/login does.
 func writeSession(w http.ResponseWriter, userID string, userDBID int, extra map[string]any) {
-	token, err := biz.GenerateUserSessionToken(userID, userDBID)
+	token, err := biz.GenerateUserSessionToken(userID, userDBID, biz.SessionSourceTelegram)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
 		return

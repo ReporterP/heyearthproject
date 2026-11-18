@@ -94,10 +94,15 @@ export async function apiFetch(path, { token, method = 'GET', body, form, fallba
     throw new ApiError(MSG.auth, { status: 401, kind: 'auth', data })
   }
   if (res.status === 503 || res.status === 502 || res.status === 504) {
-    throw new ApiError((data && data.error && res.status === 503) ? translateError(data.error) : MSG.unavailable, { status: res.status, kind: 'unavailable', data })
+    // the API's own reason for 502/503 (payments: «Оплата временно недоступна…»); a 504 comes from
+    // the proxy in front of it, so its body is never shown
+    throw new ApiError((data && data.error && res.status !== 504) ? translateError(data.error) : MSG.unavailable, { status: res.status, kind: 'unavailable', data })
   }
   if (res.status === 429) {
-    throw new ApiError(MSG.rate, { status: 429, kind: 'rate', data })
+    // the server's Retry-After is the real wait (the promo-code limit is 10 minutes, 05 §7)
+    const wait = Number(res.headers?.get?.('Retry-After')) || 0
+    const msg = wait > 90 ? `Слишком много попыток — подождите ${Math.ceil(wait / 60)} мин. и попробуйте снова.` : MSG.rate
+    throw new ApiError(msg, { status: 429, kind: 'rate', data })
   }
   if (!res.ok) {
     throw new ApiError(translateError(data && data.error) || fallback, { status: res.status, kind: 'error', data })

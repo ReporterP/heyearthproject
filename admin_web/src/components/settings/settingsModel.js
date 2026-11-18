@@ -59,6 +59,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'hub_main_server_host', label: 'Домен сертификата Бамбука', hint: 'Домен TLS-сертификата Бамбука на Hub, он же имя в строках подписки. Это не адрес подключения. Менять только вместе с сертификатом', kind: 'host' },
       { key: 'api_endpoints', label: 'Адреса API для приложения', hint: 'Через запятую, по порядку попыток', kind: 'text' },
       { key: 'b2b_enabled', label: 'Раздел B2B (компании)', hint: 'Выключено — разделы «Компании» и «B2B-аналитика» скрыты в меню', kind: 'bool', def: 'false' },
+      { key: 'b2b_member_plan', label: 'Тариф сотрудников компаний', hint: 'Слаг тарифа со страницы «Тарифы»: его получает каждый участник активной компании, пока она платит', kind: 'slug', def: 'all-inclusive' },
     ],
   },
 ]
@@ -86,6 +87,10 @@ export function checkSetting(field, raw) {
       return v === '' || HOST_RE.test(v) || IPV4_RE.test(v) ? { value: v, error: '' } : { value: null, error: 'Имя хоста или IP, без http:// и порта' }
     case 'inn':
       return v === '' || /^(\d{10}|\d{12})$/.test(v) ? { value: v, error: '' } : { value: null, error: 'ИНН — 10 или 12 цифр' }
+    case 'slug': {
+      const low = v.toLowerCase()
+      return low === '' || /^[a-z0-9][a-z0-9-]{0,63}$/.test(low) ? { value: low, error: '' } : { value: null, error: 'Слаг тарифа: латиница, цифры и дефис' }
+    }
     default:
       return { value: v, error: '' }
   }

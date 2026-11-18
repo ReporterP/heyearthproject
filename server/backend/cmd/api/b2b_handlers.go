@@ -71,11 +71,15 @@ type b2bTenantSummary struct {
 	MaxServers         int     `json:"max_servers"`
 	UseProviderServers bool    `json:"use_provider_servers"`
 	CreatedAt          string  `json:"created_at"`
+	// MonthlyCharge is what the billing takes on the 1st; a top-up of an inactive or suspended
+	// company that covers it is charged at once and turns the members' access on (jzd5.23).
+	MonthlyCharge float64 `json:"monthly_charge"`
 }
 
 type b2bMember struct {
 	UserID   int    `json:"user_db_id"`
-	UserGUID string `json:"user_id"`
+	UserGUID string `json:"user_id"` // shortened (2f6c…a91b), never the full ID
+	IsMe     bool   `json:"is_me"`
 	Username string `json:"username,omitempty"`
 	Email    string `json:"email,omitempty"`
 	Role     string `json:"role"`
@@ -89,6 +93,18 @@ type b2bTransaction struct {
 	Description string  `json:"description"`
 	PaymentID   *int    `json:"payment_id,omitempty"`
 	CreatedAt   string  `json:"created_at"`
+}
+
+// b2bOnly answers 404 while B2B is switched off (b2b_enabled), like the site's business pages:
+// existing members don't keep a working API behind a hidden product (QA 2026-11-18).
+func b2bOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !biz.B2BEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // resolveCaller returns the calling user's DB id and the tenant context (id +
@@ -153,7 +169,6 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no dashboard access for this role"})
 		return
 	}
-	_ = userDBID // not used downstream yet; kept to make future audit-logging easy
 
 	tenant, err := biz.GetTenantByID(tenantID)
 	if err != nil || tenant == nil {
@@ -189,6 +204,8 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 			MaxServers:         tenant.MaxServers,
 			UseProviderServers: tenant.UseProviderServers,
 			CreatedAt:          tenant.CreatedAt.Format(time.RFC3339),
+			MonthlyCharge: biz.CalculateTenantMonthlyCharge(biz.TenantBillingInfo{Plan: tenant.Plan, MaxUsers: tenant.MaxUsers,
+				MaxServers: tenant.MaxServers, UseProviderServers: tenant.UseProviderServers}),
 		},
 		Role:         role,
 		Members:      make([]b2bMember, 0, len(members)),
@@ -196,13 +213,12 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		Invoices:     invoices,
 	}
 	for _, m := range members {
-		guid := m.UserGUID
-		if role != "admin" { // the HiEarth ID opens an account without a password (audit F4/F6)
-			guid = shortHiEarthID(guid)
-		}
+		// Never the full HiEarth ID, not even to the company's admin: it signs in to an account
+		// without a password (audit F4/F6, QA 2026-11-18). Actions use user_db_id; «(вы)» is is_me.
 		resp.Members = append(resp.Members, b2bMember{
 			UserID:   m.UserID,
-			UserGUID: guid,
+			UserGUID: shortHiEarthID(m.UserGUID),
+			IsMe:     m.UserID == userDBID,
 			Username: m.Username,
 			Email:    m.Email,
 			Role:     m.Role,

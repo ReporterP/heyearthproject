@@ -45,7 +45,7 @@ export default function SettingField({ field, settings, canEdit, onSave }) {
       <div className="flex flex-col sm:flex-row gap-2">
         <Input id={id} value={value} disabled={!canEdit || saving} inputMode={numeric ? 'numeric' : undefined}
           onChange={(e) => { setValue(e.target.value); setError('') }} aria-invalid={error ? true : undefined}
-          className={`w-full sm:flex-1 ${numeric || field.kind === 'host' || field.kind === 'inn' ? 'font-mono tabular-nums' : ''}`} />
+          className={`w-full sm:flex-1 ${numeric || field.kind === 'host' || field.kind === 'inn' || field.kind === 'slug' ? 'font-mono tabular-nums' : ''}`} />
         {canEdit && <Button type="submit" variant="secondary" loading={saving} disabled={value === current} className="w-full sm:w-auto">Сохранить</Button>}
       </div>
       {error && <p role="alert" className="text-xs text-danger mt-1">{error}</p>}

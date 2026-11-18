@@ -10,6 +10,7 @@ import Button from '../components/Button.jsx'
 import CopyField from '../components/CopyField.jsx'
 import EmailCard from '../components/EmailCard.jsx'
 import TelegramLinkCard, { useTelegramLink } from '../components/TelegramLinkCard.jsx'
+import SessionsCard from '../components/SessionsCard.jsx'
 import { isMiniApp } from '../lib/telegram.js'
 import Field, { Input } from '../components/Field.jsx'
 import Nomerok from '../components/Nomerok.jsx'
@@ -17,7 +18,7 @@ import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { Meter, STRENGTH } from './RegisterPage.jsx'
 import usePageMeta from '../hooks/usePageMeta.js'
-import { currentSub } from '../lib/account.js'
+import { currentSub, quoteCompany } from '../lib/account.js'
 import { date } from '../lib/format.js'
 
 // Настройки (spec 08 §8.4, artboard «Настройки»): sections `set` — title on the left, content right.
@@ -112,6 +113,7 @@ export default function SettingsPage() {
       else if (raw.includes('облачный пароль')) setSrvErr({ field: 'username', text: 'Сначала задайте пароль — без него логин не сохранится' })
       else if (raw.includes('имя пользователя должно быть')) setSrvErr({ field: 'username', text: 'Имя пользователя должно быть не менее 5 символов' })
       else if (raw === 'invalid current password') setSrvErr({ field: 'cur', text: mustChange ? 'Неверный временный пароль' : 'Неверный текущий пароль' })
+      else if (raw === 'too many attempts') setSrvErr({ field: 'cur', text: 'Слишком много попыток — подождите 15 минут и попробуйте снова' })
       else if (raw === 'current password required') setSrvErr({ field: 'cur', text: mustChange ? 'Введите временный пароль' : 'Введите текущий пароль' })
       else if (raw === 'new password must differ from the temporary one') setSrvErr({ field: 'pw', text: 'Придумайте новый пароль — он должен отличаться от временного' })
       else if (raw.startsWith('password must be at least')) setSrvErr({ field: 'pw', text: 'Пароль должен быть не менее 4 символов' })
@@ -141,7 +143,7 @@ export default function SettingsPage() {
                 <dt>Имя пользователя</dt><dd className={profile.username ? 'mono' : 'subtle'}>{profile.username || 'не задано'}</dd>
                 <dt>Пароль</dt><dd>{mustChange ? <Badge tone="warn">Временный</Badge> : hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
                 <dt>Подписка</dt>
-                <dd>{sub?.active ? `${sub.plan_name} · до ${date(sub.valid_until)}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
+                <dd>{sub?.active ? `${sub.plan_name} · ${sub.company ? `от компании ${quoteCompany(sub.company.name)}` : `до ${date(sub.valid_until)}`}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
               </dl>
             </div>
           </div>
@@ -186,6 +188,10 @@ export default function SettingsPage() {
             <TelegramLinkCard state={tgLink} />
           </Section>
         )}
+
+        <Section id="sessions" title="Входы" text="Где открыт ваш аккаунт. Незнакомый вход — закройте его и задайте пароль.">
+          <SessionsCard token={token} />
+        </Section>
 
         {!tgApp && (
           <Section title="Выход" text="Для входа понадобится HiEarth ID или логин.">

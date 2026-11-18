@@ -70,7 +70,7 @@ func TestRefundRequestAcceptsSucceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("JWT_SECRET", "test-secret")
-	token, err := biz.GenerateUserSessionToken("payer", uid)
+	token, err := biz.GenerateUserSessionToken("payer", uid, biz.SessionSourceSite)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestAuthErrorStatus(t *testing.T) {
 	conn := testpg.Open(t)
 	uid := testpg.NewUser(t, conn, "someone")
 	t.Setenv("JWT_SECRET", "test-secret")
-	token, err := biz.GenerateUserSessionToken("someone", uid)
+	token, err := biz.GenerateUserSessionToken("someone", uid, biz.SessionSourceSite)
 	if err != nil {
 		t.Fatal(err)
 	}

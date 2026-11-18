@@ -1,9 +1,11 @@
 // Happ and the other apps that take a subscription link. /api/v1/user/downloads answers an empty map
-// today, so these are the store pages (the same links the site used before the rebuild).
+// today, so these are the store pages. Google Play dropped Happ (404 on 2026-11-18, only clones
+// left): Android and desktop builds come from the official site happ.info. The bot's list is
+// happStores in server/backend/cmd/api/tgbot_menu.go — keep the two in sync.
 export const HAPP = {
   ios: { label: 'iPhone и iPad', store: 'App Store', url: 'https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108', icon: 'phone' },
-  android: { label: 'Android', store: 'Google Play', url: 'https://play.google.com/store/apps/details?id=com.happproxy', icon: 'android' },
-  desktop: { label: 'Компьютер', store: 'Windows, macOS, Linux', url: 'https://www.happ.su/main/ru', icon: 'monitor' },
+  android: { label: 'Android', store: 'APK с сайта Happ', url: 'https://happ.info/ru/', icon: 'android' },
+  desktop: { label: 'Компьютер', store: 'Windows, macOS, Linux', url: 'https://happ.info/ru/', icon: 'monitor' },
 }
 
 export const OTHER_APPS = [

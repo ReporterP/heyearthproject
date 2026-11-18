@@ -54,6 +54,7 @@ func checkExpiringSubscriptions() {
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.valid_until > NOW()
 		  AND us.valid_until < NOW() + INTERVAL '24 hours'
+		  AND us.tenant_id IS NULL -- company-paid rows follow the company, never the wallet
 	`)
 	if err != nil {
 		log.Printf("[subscription-cron] Ошибка проверки истекающих подписок: %v", err)
@@ -195,6 +196,7 @@ func processAutoRenew(userID string, subID int) error {
 	if err := db.DB.QueryRow(`
 		SELECT us.id FROM user_subscriptions us JOIN users u ON u.id = us.user_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.plan_id IS NOT NULL
+		  AND us.tenant_id IS NULL
 		ORDER BY us.valid_until DESC LIMIT 1`, userID).Scan(&latest); err != nil {
 		return fmt.Errorf("latest subscription of %s: %w", userID, err)
 	}

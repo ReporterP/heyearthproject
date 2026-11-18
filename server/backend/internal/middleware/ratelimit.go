@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +97,20 @@ func (rl *RateLimiter) Spent(key string) bool {
 		return false
 	}
 	return b.tokens <= 0
+}
+
+// retryAfter is the number of seconds until key's window opens again (at least 1).
+func (rl *RateLimiter) retryAfter(key string) int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	sec := int(rl.window.Seconds())
+	if b, ok := rl.buckets[key]; ok {
+		sec = int(math.Ceil((rl.window - time.Since(b.lastReset)).Seconds()))
+	}
+	if sec < 1 {
+		sec = 1
+	}
+	return sec
 }
 
 func (rl *RateLimiter) cleanup() {
@@ -198,7 +214,7 @@ func (rl *RateLimiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		key, limit := rl.keyFor(r)
 		if !rl.allowN(key, limit) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Retry-After", strconv.Itoa(rl.retryAfter(key)))
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":"too many requests"}`))
 			return

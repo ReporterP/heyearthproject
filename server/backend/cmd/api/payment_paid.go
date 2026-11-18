@@ -439,8 +439,11 @@ func creditTenantFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 		return nil, fmt.Errorf("credit tenant %d for %s payment %s: %w", tenantID, kind, p.ID, err)
 	}
 	return func() {
-		log.Printf("[yookassa-webhook] ✓ %s tenant_id=%d credited %.2f ₽ (balance=%.2f, activated=%v)",
-			kind, tenantID, amount, res.NewBalance, res.Activated)
+		log.Printf("[yookassa-webhook] ✓ %s tenant_id=%d credited %.2f ₽ (balance=%.2f, activated=%v, resumed=%v, month=%.2f)",
+			kind, tenantID, amount, res.NewBalance, res.Activated, res.Resumed, res.Charged)
+		if res.AccessChanged {
+			biz.NotifySubscriptionChange() // members got the company-paid access (jzd5.23)
+		}
 		if kind == biz.PaymentKindB2BInvoice {
 			// Best effort, idempotent: the invoice row may not exist.
 			_, _ = db.DB.Exec(`
@@ -449,7 +452,7 @@ func creditTenantFromPaymentTx(ctx context.Context, tx *sql.Tx, p *yookassa.Paym
 				WHERE payment_id = $1 AND status != 'paid'
 			`, paymentDBID)
 		}
-		go sendTenantCreditEmail(tenantID, amount, res.NewBalance, res.Activated, kind, paymentDBID)
+		go sendTenantCreditEmail(tenantID, amount, res, kind, paymentDBID)
 	}, nil
 }
 

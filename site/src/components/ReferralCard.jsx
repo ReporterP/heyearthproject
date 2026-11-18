@@ -48,7 +48,7 @@ export default function ReferralCard({ token, referral, reload, phone }) {
 
   if (phone) {
     return (
-      <section id="referral" className="card row gap-3">
+      <section id="referral" className="card row wrap gap-3">
         <Hedgehog mood="happy" size={56} style={{ flex: 'none' }} />
         <span className="t-sm" style={{ flex: 1 }}><b>Пригласить друга</b><br /><span className="subtle">{me === friend ? `По ${me} ₽ вам и ему` : `Вам ${me} ₽, ему ${friend} ₽`}</span></span>
         <Button variant="secondary" size="sm" onClick={copy} aria-live="polite">{copied ? '✓ Скопировано' : 'Ссылка'}</Button>

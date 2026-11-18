@@ -16,6 +16,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -93,7 +94,7 @@ func loadRenewInfo(ctx context.Context, userDBID int, balance int64) (*walletRen
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT p.name, p.price_rub, COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, ''), us.auto_renew, us.valid_until
 		FROM user_subscriptions us JOIN plans p ON p.id = us.plan_id
-		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.tenant_id IS NULL
 		ORDER BY us.valid_until DESC LIMIT 1`, userDBID).Scan(&planName, &price, &pricePaid, &promo, &autoRenew, &validUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -180,6 +181,9 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 	price := plan.PriceRub
 	if strings.TrimSpace(promocode) != "" {
 		p, err := biz.LoadPromocode(ctx, db.DB, userDBID, promocode, plan.ID, false)
+		if err == nil {
+			err = biz.PromoFitsPlan(p, biz.PlanTrafficLimit(plan))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -188,6 +192,12 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 		case biz.PromoFreeTrial:
 			q.Free = true
 			q.PromoMessage = fmt.Sprintf("Промокод даёт %d дн. бесплатно", p.FreeDays)
+			// the code may grant another plan than the one on the page: name the one the person gets
+			if g := p.PlanIDGranted; g > 0 {
+				if gp, err := biz.GetPlanByID(g); err == nil && gp != nil {
+					q.PromoMessage = fmt.Sprintf("Промокод даёт %d дн. тарифа «%s» бесплатно", p.FreeDays, gp.Name)
+				}
+			}
 		case biz.PromoTrafficGift:
 			q.PromoMessage = fmt.Sprintf("После оплаты +%s трафика", biz.FormatGB(p.TrafficGiftBytes))
 		default:
@@ -210,6 +220,21 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 		q.NewValidUntil, q.BonusDays, q.IsDowngradeBlocked = pr.NewValidUntil, pr.BonusDays, pr.IsDowngradeBlocked
 	}
 	return q, nil
+}
+
+// codeLimitedWhenPromo counts a price quote against the promo-code limiter only when it carries a
+// code: guessing codes is what the limiter stops, while the payment page asks for a plain quote
+// on every open and every balance change (QA 2026-11-18: buyers ran out of quotes). It reads the
+// same `promocode` query parameter handleWalletQuote does — keep the two in sync.
+func codeLimitedWhenPromo(rl *middleware.RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	limited := rl.Middleware(next)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(r.URL.Query().Get("promocode")) == "" {
+			next(w, r)
+			return
+		}
+		limited(w, r)
+	}
 }
 
 func handleWalletQuote(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +377,7 @@ const topupDescription = "Пополнение лицевого счёта HiEar
 
 // createWalletTopup creates the payment row and the YooKassa payment of a top-up of
 // amountKop; with planID > 0 its webhook buys that plan right after the credit.
-func createWalletTopup(ctx context.Context, userID string, amountKop int64, planID int, promocode, email, returnURL, confirmationType string) (map[string]any, int, error) {
+func createWalletTopup(ctx context.Context, userID string, amountKop int64, planID int, priceKop int64, promocode, email, returnURL, confirmationType string) (map[string]any, int, error) {
 	client, err := yookassa.NewClientFromSettings()
 	if err != nil {
 		return nil, http.StatusServiceUnavailable, errors.New("Оплата временно недоступна — попробуйте позже")
@@ -386,6 +411,7 @@ func createWalletTopup(ctx context.Context, userID string, amountKop int64, plan
 		ykMeta["purchase_promocode"] = promo
 		dbMeta["purchase_plan_id"] = planID
 		dbMeta["purchase_promocode"] = promo
+		dbMeta["purchase_price_kop"] = priceKop // a resumed checkout shows what will be charged
 	}
 	payment, err := client.CreatePayment(yookassa.CreatePaymentRequest{
 		Amount:             yookassa.Amount{Value: biz.KopToRubString(amountKop), Currency: "RUB"},
@@ -436,6 +462,7 @@ func handleWalletTopup(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	minRub := walletMinTopupRub()
 	planID, promo := 0, ""
+	var priceKop int64
 	if body.Purchase != nil && body.Purchase.PlanID > 0 {
 		q, err := buildQuote(r.Context(), userID, userDBID, body.Purchase.PlanID, body.Purchase.Promocode)
 		if err != nil {
@@ -458,12 +485,13 @@ func handleWalletTopup(w http.ResponseWriter, r *http.Request) {
 		// not apply to it (the client should not pay more than they need).
 		minRub = int((q.ShortfallKop + 99) / 100)
 		planID, promo = body.Purchase.PlanID, body.Purchase.Promocode
+		priceKop = q.PriceKop
 	}
 	if body.AmountRub < minRub || body.AmountRub > walletMaxTopupRub {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Сумма пополнения — от %d до %d ₽", minRub, walletMaxTopupRub)})
 		return
 	}
-	out, code, err := createWalletTopup(r.Context(), userID, int64(body.AmountRub)*100, planID, promo, strings.TrimSpace(body.Email), body.ReturnURL, body.ConfirmationType)
+	out, code, err := createWalletTopup(r.Context(), userID, int64(body.AmountRub)*100, planID, priceKop, promo, strings.TrimSpace(body.Email), body.ReturnURL, body.ConfirmationType)
 	if err != nil {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return
@@ -763,9 +791,10 @@ const topupNotResumableMsg = "Этот платёж уже нельзя прод
 // it and the client had to start over while the old payment hung as pending. YooKassa returns
 // the confirmation of a payment as long as it waits for the client.
 func resumeWalletTopup(w http.ResponseWriter, r *http.Request, userID string, id int) {
-	var status, ykID string
-	err := db.DB.QueryRowContext(r.Context(), `SELECT status, COALESCE(yookassa_payment_id, '') FROM payments WHERE id = $1 AND user_id_text = $2`, id, userID).
-		Scan(&status, &ykID)
+	var status, ykID, amount, metaText string
+	err := db.DB.QueryRowContext(r.Context(), `SELECT status, COALESCE(yookassa_payment_id, ''), amount::text, COALESCE(metadata::text, '{}')
+		FROM payments WHERE id = $1 AND user_id_text = $2`, id, userID).
+		Scan(&status, &ykID, &amount, &metaText)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Платёж не найден"})
 		return
@@ -791,7 +820,9 @@ func resumeWalletTopup(w http.ResponseWriter, r *http.Request, userID string, id
 	}
 	if p.Status == "pending" && p.Confirmation != nil {
 		if t := strings.TrimSpace(p.Confirmation.ConfirmationToken); t != "" {
-			writeJSON(w, http.StatusOK, map[string]string{"confirmation_token": t})
+			out := resumeDetails(amount, metaText)
+			out["confirmation_token"] = t
+			writeJSON(w, http.StatusOK, out)
 			return
 		}
 		if u := strings.TrimSpace(p.Confirmation.ConfirmationURL); u != "" {
@@ -800,6 +831,31 @@ func resumeWalletTopup(w http.ResponseWriter, r *http.Request, userID string, id
 		}
 	}
 	writeJSON(w, http.StatusConflict, map[string]string{"error": topupNotResumableMsg})
+}
+
+// resumeDetails: what a resumed checkout shows beside the widget (spec 09: the top-up amount and,
+// for a top-up with a purchase, the plan and the price charged right after) — a new tab has
+// none of it in its sessionStorage.
+func resumeDetails(amount, metaText string) map[string]any {
+	out := map[string]any{}
+	if kop, err := biz.ParseRubToKop(amount); err == nil && kop > 0 {
+		out["amount_kop"] = kop
+	}
+	var meta map[string]any
+	if json.Unmarshal([]byte(metaText), &meta) != nil {
+		return out
+	}
+	planID, _ := meta["purchase_plan_id"].(float64)
+	if planID <= 0 {
+		return out
+	}
+	if plan, err := biz.GetPlanByID(int(planID)); err == nil && plan != nil {
+		out["plan_name"], out["plan_slug"] = plan.Name, plan.Slug
+	}
+	if price, _ := meta["purchase_price_kop"].(float64); price > 0 {
+		out["price_kop"] = int64(price)
+	}
+	return out
 }
 
 // sameSiteURL: an absolute https URL on the site's own host (PUBLIC_BASE_URL / site_url) or one of

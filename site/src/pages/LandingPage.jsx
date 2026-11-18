@@ -20,13 +20,14 @@ import { dateShort, days, daysLeft, kopNum, traffic } from '../lib/format.js'
 import useAccount from '../account/useAccount.js'
 import { currentSub, subState } from '../lib/account.js'
 import './landing.css'
+import useSiteInfo, { exitPlaces, throughExit } from '../hooks/useSiteInfo.js'
 
 // Главная (spec 06 §6.1, artboards «Главная · /» and «Главная · телефон»). Persuade.
 // One main action — the free week (or «Получить HiEarth ID» / «В кабинет»), repeated at the end.
 const SAMPLE_ID = '7c1e4a9b-2f60-4d8e-a3b5-0c91d27e6f48' // an example tag: the real ID is a UUID (02 §34.3)
 
 const FAQ = [
-  { q: 'Работает ли на мобильном интернете?', a: 'Да. Если путь закрыт в вашей сети, приложение переключится на другой. Если сайты не открываются — обновите подписку в Happ: потяните список вниз.' },
+  { mobile: true, q: 'Работает ли на мобильном интернете?', a: 'Да. Если путь закрыт в вашей сети, приложение переключится на другой. Если сайты не открываются — обновите подписку в Happ: потяните список вниз.' },
   { q: 'Нужны ли мои данные?', a: 'Нет. HiEarth ID выдаётся анонимно. Восстановить его нельзя — сохраните номерок или задайте логин и пароль.' },
   { q: 'Как оплатить и спишете ли вы с карты?', a: 'Вы пополняете кошелёк через ЮKassa картой или СБП. Данные карты мы не храним и ничего не списываем сами.' },
   { q: 'Можно вернуть деньги?', a: <>Да, по условиям возврата — порядок и сроки на странице <Link to="/refund" className="link">«Условия возврата»</Link>.</> },
@@ -53,6 +54,8 @@ function useReferralTerms() {
 // «Экран приложения» (06 §6.1 item 7): the person's real subscription when they are signed in and it is
 // active; grey «Подключиться» for a guest or without a subscription. The orb is the big button (02 §34.1).
 function AppScreen({ phone, isLoggedIn, guestTo }) {
+  const { info: site } = useSiteInfo()
+  const exit = exitPlaces(site.exit_countries)
   const { data, loading, error } = useAccount(isLoggedIn ? ['subscription', 'traffic'] : [], { optional: ['traffic'] })
   const sub = currentSub(data?.subscription)
   const state = !isLoggedIn || error ? 'none' : loading && !data?.subscription ? 'loading' : subState(sub)
@@ -74,12 +77,12 @@ function AppScreen({ phone, isLoggedIn, guestTo }) {
         <ConnectOrb active={live} label={orb.label} to={orb.to} ariaLabel={orb.aria} style={phone ? { width: 168, height: 168 } : undefined} />
       </div>
       <div className="row gap-3" style={{ padding: phone ? '12px 14px' : '14px 16px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)' }}>
-        <span className={`lp-flag ${live ? '' : 'lp-flag--off'}`} aria-hidden="true" />
+        {exit.nl && <span className={`lp-flag ${live ? '' : 'lp-flag--off'}`} aria-hidden="true" />}
         {phone
-          ? <b style={{ flex: 1, color: live ? undefined : 'var(--fg-muted)' }}>Нидерланды</b>
+          ? <b style={{ flex: 1, color: live ? undefined : 'var(--fg-muted)' }}>{exit.names || 'За рубежом'}</b>
           : (
             <span style={{ flex: 1 }}>
-              <b style={{ display: 'block', color: live ? undefined : 'var(--fg-muted)' }}>Нидерланды</b>
+              <b style={{ display: 'block', color: live ? undefined : 'var(--fg-muted)' }}>{exit.names || 'За рубежом'}</b>
               <span className="t-xs subtle">{live ? 'путь выбран автоматически' : 'откроется после подключения'}</span>
             </span>
           )}
@@ -127,6 +130,10 @@ function PathRow({ tone, title, note, badge, phone }) {
 export default function LandingPage() {
   const { isLoggedIn } = useAuth()
   const phone = useMedia(PHONE)
+  const { info: site } = useSiteInfo()
+  const mobile = !!site.mobile_ready // the mobile-network promise only when an entry for them works
+  const through = throughExit(site.exit_countries)
+  const Through = through.charAt(0).toUpperCase() + through.slice(1)
   const plans = usePlans()
   const ref = useReferralTerms()
   const showSkel = useDelayed(plans.loading, 300)
@@ -138,6 +145,7 @@ export default function LandingPage() {
   const minPrice = minPaidPrice(plans.list)
   const allUnlimited = paid.length > 0 && paid.every((p) => !Number(p.traffic_limit_bytes))
   const freeDays = free ? days(Number(free.duration_days) || 7) : ''
+  const freeLimit = free ? Number(free.traffic_limit_bytes) || 0 : 0 // the trial is not unlimited: say how much
 
   const main = isLoggedIn
     ? { label: 'В кабинет', to: '/dashboard' }
@@ -216,15 +224,15 @@ export default function LandingPage() {
               </h1>
               <p className={`${phone ? 'muted' : 't-lead'} rise`} style={{ '--d': '120ms', marginTop: phone ? 16 : 24, maxWidth: 540, fontSize: phone ? 16 : undefined, lineHeight: phone ? 1.55 : undefined }}>
                 {phone
-                  ? 'Через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, телефона и привязки карты.'
-                  : 'Сайты и приложения открываются через Нидерланды — по Wi-Fi и на мобильном интернете. Без почты, без телефона, без привязки карты.'}
+                  ? `${Through}${mobile ? ' — по Wi-Fi и на мобильном интернете' : ''}. Без почты, телефона и привязки карты.`
+                  : `Сайты и приложения открываются ${through}${mobile ? ' — по Wi-Fi и на мобильном интернете' : ''}. Без почты, без телефона, без привязки карты.`}
               </p>
               {phone && <div className="rise" style={{ '--d': '200ms', marginTop: 26 }}><AppScreen phone isLoggedIn={isLoggedIn} guestTo={main.to} /></div>}
               <div ref={heroCta} className={`${phone ? 'stack gap-2' : 'row wrap gap-3'} rise`} style={{ '--d': phone ? '280ms' : '200ms', marginTop: phone ? 20 : 36 }}>
                 <Button variant={isLoggedIn ? 'secondary' : 'primary'} size="lg" block={phone} to={main.to} iconRight={phone || isLoggedIn ? undefined : 'arrowRight'}>{main.label}</Button>
                 <Button variant="secondary" size="lg" block={phone} to="/#plans">{tariffsLabel}</Button>
               </div>
-              {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS — через бесплатное приложение Happ</p>}
+              {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS · Linux — через бесплатное приложение Happ</p>}
             </div>
             {!phone && (
               <div className="rise" style={{ '--d': '200ms', position: 'relative', justifySelf: 'end', width: '100%', maxWidth: 460, marginTop: 40 }}>
@@ -240,6 +248,7 @@ export default function LandingPage() {
           <div className="container">
             <h2 className={phone ? 'lp-h2' : 't-d2'} style={{ maxWidth: 720 }}>{phone ? 'Всё, что нужно' : <>Всё, что нужно, — и&nbsp;ничего лишнего</>}</h2>
             <div className="lp-bento" style={{ marginTop: phone ? 22 : 48 }}>
+              {mobile && (
               <article className="card" style={{ gridColumn: 'span 4', padding: phone ? 20 : 30 }}>
                 <h3 className={phone ? 't-h3' : 't-h2'}>{phone ? 'Работает на мобильном' : 'Работает на мобильном интернете'}</h3>
                 <p className={`muted ${phone ? 't-sm' : ''}`} style={{ marginTop: phone ? 6 : 10, maxWidth: 520 }}>
@@ -251,7 +260,8 @@ export default function LandingPage() {
                   {!phone && <PathRow tone="idle" title="Запасной канал" note="наготове" badge="Готов" />}
                 </div>
               </article>
-              <article className={phone ? 'card row gap-4' : 'card'} style={{ gridColumn: 'span 2', padding: phone ? 20 : 30, display: 'flex', flexDirection: phone ? 'row' : 'column', alignItems: phone ? 'flex-start' : undefined }}>
+              )}
+              <article className={phone ? 'card row gap-4' : 'card'} style={{ gridColumn: mobile ? 'span 2' : 'span 6', padding: phone ? 20 : 30, display: 'flex', flexDirection: phone ? 'row' : 'column', alignItems: phone ? 'flex-start' : undefined }}>
                 <div style={phone ? { flex: 1 } : undefined}>
                   <h3 className={phone ? 't-h3' : 't-h2'}>Анонимно</h3>
                   <p className={`muted ${phone ? 't-sm' : ''}`} style={{ marginTop: phone ? 6 : 10 }}>{phone ? 'Вместо почты и телефона — номерок, HiEarth ID.' : 'Вместо почты и телефона — номерок: HiEarth ID за один клик.'}</p>
@@ -305,7 +315,7 @@ export default function LandingPage() {
               </>
             ) : (
               <ol className="grid g-3" style={{ marginTop: 96, gap: 32 }}>
-                {[['Получите HiEarth ID', 'Один клик, без почты и телефона. Сохраните номерок — восстановить его нельзя.'], ['Установите Happ', 'Бесплатное приложение для iPhone, Android, Windows и macOS.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама. Включите — и всё, дальше путь выбирается автоматически.']].map(([t, d], i) => (
+                {[['Получите HiEarth ID', 'Один клик, без почты и телефона. Сохраните номерок — восстановить его нельзя.'], ['Установите Happ', 'Бесплатное приложение для iPhone, Android, Windows, macOS и Linux.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама. Включите — и всё, дальше путь выбирается автоматически.']].map(([t, d], i) => (
                   <li key={t} className="lp-step"><span className="lp-step__n" aria-hidden="true">{i + 1}</span><h3 className="t-h3">{t}</h3><p className="muted t-sm" style={{ marginTop: 8 }}>{d}</p></li>
                 ))}
               </ol>
@@ -321,8 +331,8 @@ export default function LandingPage() {
               {(allUnlimited || free) && (
                 <p className={`muted ${phone ? 't-sm' : ''}`} style={{ maxWidth: 440 }}>
                   {phone
-                    ? [allUnlimited && 'Безлимитный трафик.', free && 'Неделя — бесплатно.'].filter(Boolean).join(' ')
-                    : [allUnlimited && 'Безлимитный трафик во всех тарифах.', free && 'Первая неделя — бесплатно и без карты.'].filter(Boolean).join(' ')}
+                    ? [allUnlimited && 'Безлимитный трафик в платных тарифах.', free && `Неделя — бесплатно${freeLimit ? `, ${traffic(freeLimit)}` : ''}.`].filter(Boolean).join(' ')
+                    : [allUnlimited && 'Безлимитный трафик во всех платных тарифах.', free && `Первая неделя — бесплатно и без карты${freeLimit ? `, ${traffic(freeLimit)} трафика` : ''}.`].filter(Boolean).join(' ')}
                 </p>
               )}
             </div>
@@ -349,7 +359,7 @@ export default function LandingPage() {
               <p className="muted" style={{ marginTop: phone ? 8 : 16 }}>Не нашли ответ? <Link to="/help" className="link">Вся помощь</Link></p>
             </div>
             <div className="acc">
-              {FAQ.map((f) => (
+              {FAQ.filter((f) => mobile || !f.mobile).map((f) => (
                 <details key={f.q}>
                   <summary style={phone ? { fontSize: 16 } : undefined}>{f.q}</summary>
                   <p className={`acc__b ${phone ? 't-sm' : ''}`}>{f.a}</p>

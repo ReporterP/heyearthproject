@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -90,6 +91,9 @@ func (s *server) UpdateProfile(ctx context.Context, req *heyearth_v1.UpdateProfi
 	if newPassword := req.GetNewPassword(); newPassword != "" {
 		md, _ := metadata.FromIncomingContext(ctx)
 		if err := biz.SetCloudPassword(userID, newPassword, req.GetCurrentPassword(), bearerFromMD(md)); err != nil {
+			if errors.Is(err, biz.ErrTooManyPasswordAttempts) {
+				return nil, status.Errorf(codes.ResourceExhausted, "%v", err)
+			}
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 	}
@@ -499,9 +503,10 @@ func planEntries(mainHost string, relays []biz.Entry, fo biz.EntryFailover, forc
 }
 
 // shownReserves: the reserves that get lines of their own — all of them, except
-// the pinned target (the main lines already point at it).
+// the target the main lines already point at: pinned, and during an active failover
+// (a «· резерв» line for it was the same entry twice in Happ; owner, QA 2026-11-18).
 func shownReserves(p entryPlan) []reserveEntry {
-	if !p.pinned {
+	if !p.pinned && !p.failover {
 		return p.reserves
 	}
 	var out []reserveEntry
@@ -723,7 +728,7 @@ func deviceFromProto(device *heyearth_v1.DeviceContext) biz.DeviceRegistration {
 // ─────────────────────── JWT ───────────────────────
 
 func issueUserJWT(userID string, userDBID int) (string, error) {
-	token, err := biz.GenerateUserSessionToken(userID, userDBID)
+	token, err := biz.GenerateUserSessionToken(userID, userDBID, biz.SessionSourceApp) // the app (gRPC)
 	if err != nil {
 		return "", err
 	}

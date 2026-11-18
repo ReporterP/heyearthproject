@@ -218,7 +218,7 @@ function TgLogin({ onDone, onBack, onBrowser }) {
       const r = await apiFetch('/api/v1/auth/telegram/login', { method: 'POST', body: { init_data: initData(), id_or_username: value, password: pw }, signOutOn401: false })
       onDone(r.token)
     } catch (e2) {
-      setErr(e2?.status === 409 ? { title: 'Не удалось привязать Telegram.', text: e2.message } : explain(e2))
+      setErr(e2?.status === 409 ? { title: 'Не удалось привязать Telegram.', text: e2.message } : explain(e2, value))
     } finally {
       inFlight.current = false
       setBusy(false)

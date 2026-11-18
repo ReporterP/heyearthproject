@@ -19,8 +19,12 @@
 //   login    password | nopassword | temporary — has a login+password; temporary = support reset it
 //            (password 1234 is the temporary one: the cabinet's «Смените временный пароль» banner)
 //   referral on | off
-//   b2b      off | admin | billing | viewer   — site-info.b2b_enabled + role in /business/me
+//   b2b      off | admin | billing | viewer | user — site-info.b2b_enabled + role in /business/me
+//            (user = employee: /business/me answers 403, as the API does)
 //   tenant   active | inactive | suspended
+//   company  off | only | also               — a company-paid subscription (spec 08 §8.1): only = the
+//            subscription is the company's (sub=expired → ended; why by tenant, else «left»);
+//            also = the person's own plus a live company one
 //   members  many | solo
 //   pay      succeeded | pending | canceled   — what a top-up turns into
 //   sublink  ok | fail                        — /user/subscribe-token fails (link unavailable)
@@ -32,17 +36,19 @@ const DEFAULT = {
   sub: 'active', wallet: 'low', trial: 'used', renew: 'on', history: 'full', tg: 'both', email: 'confirmed',
   login: 'password', referral: 'on', b2b: 'off', tenant: 'active', members: 'many', pay: 'succeeded',
   sublink: 'ok', fail: '', delay: '350', bot: 'unlinked', support: 'answered', news: 'unread', stars: 'on',
+  company: 'off',
 }
 const S = { ...DEFAULT }
 const OPTIONS = {
   sub: ['active', 'none', 'expired'], wallet: ['enough', 'low', 'zero'], trial: ['available', 'used'], renew: ['on', 'off'],
   history: ['full', 'empty'], tg: ['both', 'web', 'classic', 'none'], email: ['confirmed', 'pending', 'none'],
-  login: ['password', 'nopassword', 'temporary'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer'],
+  login: ['password', 'nopassword', 'temporary'], referral: ['on', 'off'], b2b: ['off', 'admin', 'billing', 'viewer', 'user'],
   tenant: ['active', 'inactive', 'suspended'], members: ['many', 'solo'], pay: ['succeeded', 'pending', 'canceled'],
   sublink: ['ok', 'fail'], delay: ['0', '350', '1500'], bot: ['linked', 'unlinked', 'blocked', 'off'],
   support: ['answered', 'waiting', 'closed', 'empty'],
   news: ['unread', 'read', 'empty'],
   stars: ['on', 'off'],
+  company: ['off', 'only', 'also'],
 }
 
 const USER_ID = '3f2b8c1e-7a4d-4e9b-8c21-5d6e7f8a9b0c'
@@ -67,6 +73,22 @@ function balanceKop() {
   return 43000
 }
 
+const COMPANY = 'ООО «Ромашка»'
+
+// the company-paid row (spec 08 §8.1): no term for the person, the company's status says why it ended
+function companySub(active) {
+  const status = active ? 'active' : S.tenant !== 'active' ? S.tenant : 'left'
+  const full = PLANS[2]
+  return { id: 77, plan_id: full.id, plan_name: full.name, valid_until: iso(active ? now() + 35 * DAY : now() - 2 * DAY), auto_renew: false, active, plan: full.slug, price_rub: 0, company: { name: COMPANY, status } }
+}
+
+function subItems() {
+  if (S.company === 'only') return S.sub === 'none' ? null : [companySub(S.sub === 'active')]
+  const own = sub()
+  if (S.company === 'also') return own?.active ? [own, companySub(true)] : [companySub(true), ...(own ? [own] : [])]
+  return own ? [own] : null
+}
+
 function sub() {
   if (S.sub === 'none') return null
   const active = S.sub === 'active'
@@ -84,7 +106,8 @@ function profile() {
 
 function autoRenew() {
   const s = sub()
-  if (!s || !s.active) return null
+  // the company-paid row never renews from the wallet (the API skips it)
+  if (!s || !s.active || S.company === 'only') return null
   const bal = balanceKop()
   const price = CUR.price_rub * 100
   return { enabled: S.renew === 'on', plan_name: CUR.name, price_kop: price, renew_at: s.valid_until, enough: bal >= price, shortfall_kop: Math.max(0, price - bal), free: false }
@@ -175,7 +198,7 @@ function quote(planId, promo) {
 function business() {
   const role = S.b2b
   const members = [
-    { user_db_id: 7, user_id: USER_ID, username: 'ivan_moscow', email: 'anna@romashka.ru', role: role === 'admin' ? 'admin' : role, joined_at: iso(now() - 14 * DAY) },
+    { user_db_id: 7, user_id: `${USER_ID.slice(0, 4)}…${USER_ID.slice(-4)}`, is_me: true, username: 'ivan_moscow', email: 'anna@romashka.ru', role: role === 'admin' ? 'admin' : role, joined_at: iso(now() - 14 * DAY) },
     ...(S.members === 'many' ? [
       { user_db_id: 8, user_id: 'a1', username: 'igor_p', role: 'billing', joined_at: iso(now() - 13 * DAY) },
       { user_db_id: 9, user_id: 'a2', username: 'maria_s', role: 'user', joined_at: iso(now() - 2 * DAY) },
@@ -183,7 +206,7 @@ function business() {
     ] : []),
   ]
   return {
-    tenant: { id: 42, name: 'ООО «Ромашка»', slug: 'romashka', status: S.tenant, plan: 'basic', contact_email: 'buh@romashka.ru', balance: S.tenant === 'active' ? 12500 : 0, inn: '7707083893', max_users: 10, max_servers: 5, use_provider_servers: true, created_at: iso(now() - 15 * DAY) },
+    tenant: { id: 42, name: COMPANY, slug: 'romashka', status: S.tenant, plan: 'basic', contact_email: 'buh@romashka.ru', balance: S.tenant === 'active' ? 12500 : S.tenant === 'suspended' ? 100 : 0, inn: '7707083893', max_users: 10, max_servers: 5, use_provider_servers: true, created_at: iso(now() - 15 * DAY), monthly_charge: 3500 },
     role,
     members,
     transactions: S.history === 'empty' ? [] : [
@@ -223,7 +246,7 @@ function route(method, path, q, body, authed) {
   if (path === '/api/v1/business/create-invoice') {
     if (S.b2b === 'off') return [404, null]
     if (!/^\d{10}$|^\d{12}$/.test(String(body?.inn || ''))) return [400, { error: 'ИНН должен содержать 10 (юрлицо) или 12 (физлицо/ИП) цифр' }]
-    return [200, { payment_id: 602, confirmation_url: 'https://yoomoney.ru/checkout/payments/v2/contract?orderId=mock', amount: body.amount, email: body.email, company_name: body.company_name }]
+    return [200, { payment_id: 602, invoice_id: 41, confirmation_url: 'https://yoomoney.ru/checkout/payments/v2/contract?orderId=mock', amount: body.amount, email: body.email, company_name: body.company_name }]
   }
 
   // auth
@@ -255,7 +278,7 @@ function route(method, path, q, body, authed) {
     }
     return [200, profile()]
   }
-  if (path === '/api/v1/user/subscription') return failing('subscription') ? UNAVAILABLE : [200, { items: sub() ? [sub()] : null }]
+  if (path === '/api/v1/user/subscription') return failing('subscription') ? UNAVAILABLE : [200, { items: subItems() }]
   if (path === '/api/v1/user/traffic') return failing('traffic') ? UNAVAILABLE : [200, traffic()]
   if (path === '/api/v1/user/subscribe-token') {
     if (S.sublink === 'fail' || failing('sublink')) return UNAVAILABLE
@@ -325,7 +348,13 @@ function route(method, path, q, body, authed) {
   if (path === '/api/v1/payment/apply-promocode' || path === '/api/v1/payment/redeem-code') {
     const code = String(body?.code || '').trim()
     if (!code) return [400, { error: 'Введите промокод' }]
-    if (path.endsWith('redeem-code')) return code.startsWith('tn-') ? [200, { message: 'code redeemed', tenant_id: 42 }] : [400, { error: 'invalid or expired code' }]
+    if (path.endsWith('redeem-code')) {
+      if (!code.startsWith('tn-')) return [400, { error: 'invalid or expired code' }]
+      const role = (code.match(/^tn-r-(admin|billing|viewer|user)-/) || [])[1] || 'user'
+      // the member now has the company-paid subscription (live while the company is active)
+      if (S.company === 'off') { S.company = 'only'; S.sub = S.tenant === 'active' ? 'active' : 'expired' }
+      return [200, { message: 'code redeemed', tenant_id: 42, tenant_name: COMPANY, tenant_status: S.tenant, role }]
+    }
     if (code.toUpperCase() === 'НЕДЕЛЯ') { S.sub = 'active'; return [200, { message: 'Промокод применён: +7 дней' }] }
     return [400, { error: 'Промокод не найден' }]
   }
@@ -356,7 +385,7 @@ function route(method, path, q, body, authed) {
   if (path.startsWith('/api/v1/business/')) {
     if (failing('business')) return UNAVAILABLE
     if (S.b2b === 'off') return [404, { error: 'no B2B membership' }]
-    if (path === '/api/v1/business/me') return [200, business()]
+    if (path === '/api/v1/business/me') return S.b2b === 'user' ? [403, { error: 'no dashboard access for this role' }] : [200, business()]
     if (path === '/api/v1/business/topup-init') return S.b2b === 'viewer' ? [403, { error: 'your role does not allow billing actions' }] : [200, { payment_id: 601, confirmation_url: 'https://yoomoney.ru/checkout/mock', tenant_id: 42, amount: body?.amount }]
     if (path === '/api/v1/business/invite') return S.b2b !== 'admin' ? [403, { error: 'admin role required' }] : [200, { code: 'tn-r-user-abcdefghijkl', claim_url: 'http://localhost:5175/claim/tn-r-user-abcdefghijkl', role: body?.role || 'user', expires_at: iso(now() + 7 * DAY) }]
     if ((m = path.match(/^\/api\/v1\/business\/members\/(\d+)$/))) {

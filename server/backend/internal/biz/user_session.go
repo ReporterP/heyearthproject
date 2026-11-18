@@ -46,7 +46,14 @@ func userJWTSecret() []byte {
 }
 
 // GenerateUserSessionToken creates a JWT token for a user and stores the session.
-func GenerateUserSessionToken(userID string, userDBID int) (string, error) {
+// Where a session was opened (user_sessions.platform): the cabinet's «Входы» names it.
+const (
+	SessionSourceSite     = "site"
+	SessionSourceApp      = "app"
+	SessionSourceTelegram = "telegram"
+)
+
+func GenerateUserSessionToken(userID string, userDBID int, source string) (string, error) {
 	now := time.Now()
 	claims := userJWTClaims{
 		UserID:   userID,
@@ -73,9 +80,9 @@ func GenerateUserSessionToken(userID string, userDBID int) (string, error) {
 	// Store session in DB
 	tokenHash := hashToken(token)
 	_, err := db.DB.Exec(`
-		INSERT INTO user_sessions (user_id, token_hash, expires_at)
-		VALUES ($1, $2, $3)
-	`, userDBID, tokenHash, now.Add(userTokenExpiry))
+		INSERT INTO user_sessions (user_id, token_hash, expires_at, platform)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
+	`, userDBID, tokenHash, now.Add(userTokenExpiry), source)
 	if err != nil {
 		return "", fmt.Errorf("store session: %w", err)
 	}
@@ -179,4 +186,52 @@ func newTokenID() string {
 		panic("crypto/rand: " + err.Error())
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// UserSessionInfo is one sign-in as the cabinet lists it: where from and when, never an address.
+type UserSessionInfo struct {
+	ID        int       `json:"id"`
+	Source    string    `json:"source"` // site | app | telegram | "" (opened before sources were kept)
+	CreatedAt time.Time `json:"created_at"`
+	Current   bool      `json:"current"`
+}
+
+// ListUserSessions returns the user's live sessions, newest first; current marks the caller's.
+func ListUserSessions(ctx context.Context, userDBID int, callerToken string) ([]UserSessionInfo, error) {
+	rows, err := db.DB.QueryContext(ctx, `
+		SELECT id, COALESCE(platform, ''), created_at, token_hash = $2
+		FROM user_sessions WHERE user_id = $1 AND expires_at > NOW()
+		ORDER BY created_at DESC, id DESC LIMIT 100`, userDBID, hashToken(callerToken))
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+	out := []UserSessionInfo{}
+	for rows.Next() {
+		var s UserSessionInfo
+		if err := rows.Scan(&s.ID, &s.Source, &s.CreatedAt, &s.Current); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// CloseUserSession ends one of the user's own sessions; false when there is no such session.
+func CloseUserSession(ctx context.Context, userDBID, sessionID int) (bool, error) {
+	res, err := db.DB.ExecContext(ctx, `DELETE FROM user_sessions WHERE id = $1 AND user_id = $2`, sessionID, userDBID)
+	if err != nil {
+		return false, fmt.Errorf("close session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// CloseOtherUserSessions ends every session of the user except the caller's.
+func CloseOtherUserSessions(ctx context.Context, userDBID int, callerToken string) (int64, error) {
+	res, err := db.DB.ExecContext(ctx, `DELETE FROM user_sessions WHERE user_id = $1 AND token_hash <> $2`, userDBID, hashToken(callerToken))
+	if err != nil {
+		return 0, fmt.Errorf("close other sessions: %w", err)
+	}
+	return res.RowsAffected()
 }

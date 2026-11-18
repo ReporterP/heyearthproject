@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { canOpen, visibleItems, PAGE_PERMS, TENANT_HIDDEN } from './access.js'
+import { canOpen, visibleItems, pageGate, PAGE_PERMS, TENANT_HIDDEN } from './access.js'
 
 const ctx = (perms, isTenantAdmin = false) => ({ can: (p) => perms.includes(p), isTenantAdmin })
 
@@ -44,4 +44,26 @@ test('object built-ins are not pages', () => {
   for (const href of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
     assert.equal(canOpen(href, { can: () => true, isTenantAdmin: false }), false, href)
   }
+})
+
+test('a page the admin may not open is refused by the router, not rendered empty (QA 2026-11-18)', () => {
+  const support = ctx(['dashboard.read', 'users.read', 'support.manage'])
+  assert.equal(pageGate('/plans', support), 'denied')
+  assert.equal(pageGate('/audit-log', support), 'denied')
+  assert.equal(pageGate('/admins', support), 'denied')
+  assert.equal(pageGate('/support', support), 'open')
+  assert.equal(pageGate('/settings', support), 'open')
+  assert.equal(pageGate('/servers/12', ctx(['servers.read'])), 'open', 'a nested path takes its section\'s permission')
+  assert.equal(pageGate('/servers/12', support), 'denied')
+  assert.equal(pageGate('/nowhere', support), 'open', 'unknown paths fall through to the catch-all redirect')
+})
+
+test('every page route in main.jsx sits under PageGuard', () => {
+  const src = readFileSync(new URL('../main.jsx', import.meta.url), 'utf8')
+  const guard = src.indexOf('<Route element={<PageGuard />}>')
+  assert.ok(guard > 0, 'main.jsx has no <Route element={<PageGuard />}>')
+  const first = src.indexOf('path="/dashboard"')
+  const close = src.indexOf('</Route>', guard)
+  assert.ok(first > guard && first < close, 'the page routes are not inside the PageGuard route')
+  assert.ok(src.indexOf('path="/telegram-bot"') < close, 'the last page route is outside the PageGuard route')
 })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
 import useAccount, { invalidateAccount } from '../account/useAccount.js'
 import { createPayment } from '../api/user.js'
@@ -25,17 +25,20 @@ import useMtproto from '../hooks/useMtproto.js'
 import useMedia, { PHONE, CABINET_NARROW } from '../hooks/useMedia.js'
 import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
-import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
+import { currentSub, subState, liveCompanySub, quoteCompany, readChecklist, writeChecklist, usageLead } from '../lib/account.js'
 import { date, kopNum, money, days as dayWord } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Обзор кабинета (spec 08 §8.1): artboards «активна», «нет подписки», «закончилась», «телефон».
 // The state comes from the subscription: active · none · expired. Main action — «Добавить в Happ»
-// (active), the free week or «Выбрать тариф» (none), renewing (expired).
+// (active), the free week or «Выбрать тариф» (none), renewing (expired). A company-paid
+// subscription (item `company`) has its own card and its own «expired» (08 §8.1 п. 9', expired п. 5).
 const span = (n) => ({ gridColumn: `span ${n}` })
 
 export default function DashboardPage() {
   const { token } = useAuth()
   const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
   const toast = useToast()
   const phone = useMedia(PHONE)
   const narrow = useMedia(CABINET_NARROW)
@@ -47,6 +50,8 @@ export default function DashboardPage() {
   const profile = acc.data.profile
   const sub = currentSub(acc.data.subscription)
   const state = subState(sub)
+  // the person's own subscription is current and the company pays too (08 §8.1 п. 9'')
+  const alsoCompany = sub?.active && !sub.company ? liveCompanySub(acc.data.subscription) : null
   const tg = useMtproto(token, state === 'active')
   const wallet = acc.data.wallet
   const showSkel = useDelayed(acc.loading && !profile, 300)
@@ -58,6 +63,19 @@ export default function DashboardPage() {
   const markHapp = () => setCheck((c) => { const v = { ...c, 2: true }; writeChecklist(profile?.user_id, v); return v })
 
   const reloadAll = () => { invalidateAccount(); acc.reload(); reloadReferral() }
+
+  // after an employee joined by an invitation (/claim → ?joined=1, 10.5): one toast, then the
+  // parameter goes away
+  const joined = useRef(false)
+  const subscription = acc.data.subscription
+  useEffect(() => {
+    if (joined.current || params.get('joined') !== '1' || !subscription) return
+    joined.current = true
+    const company = (subscription.items || []).find((s) => s.company)?.company
+    if (company?.name) toast.ok(`Вы в компании ${quoteCompany(company.name)}`)
+    params.delete('joined')
+    setParams(params, { replace: true })
+  }, [subscription]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const plan = sub ? plans.list.find((p) => p.id === sub.plan_id) || plans.list.find((p) => p.slug === sub.plan) : null
   const freePlan = plans.list.find((p) => Number(p.price_rub) === 0) || null
@@ -76,7 +94,7 @@ export default function DashboardPage() {
       </div>
     )
   } else if (state === 'active') {
-    body = <Active {...{ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll, traffic: acc.data.traffic }} />
+    body = <Active {...{ phone, narrow, sub, plan, alsoCompany, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll, traffic: acc.data.traffic }} />
   } else if (state === 'none') {
     body = <NoSub {...{ phone, narrow, wallet, freePlan, plansLoading: plans.loading, token, reloadAll, toast, referral, reloadReferral }} />
   } else {
@@ -86,7 +104,7 @@ export default function DashboardPage() {
   const head = state === 'none' && profile
     ? { title: 'Добро пожаловать', lead: 'Осталось включить подписку — и можно подключаться.' }
     : state === 'active' && profile
-      ? { title: 'Обзор', lead: 'Всё работает. Если на мобильном не грузит — обновите подписку в Happ.' }
+      ? { title: 'Обзор', lead: usageLead(acc.data.traffic) }
       : { title: 'Обзор' }
 
   return (
@@ -100,7 +118,7 @@ export default function DashboardPage() {
 // cards enter in columns: 0 / 80 / 160 ms (04 §3, cabinet)
 const R = ({ d = 0, style, children }) => <div className="rise" style={{ '--d': `${d}ms`, ...style }}>{children}</div>
 
-function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll }) {
+function Active({ phone, narrow, sub, plan, alsoCompany, wallet, acc, tg, referral, reloadReferral, token, check, toggle, markHapp, reloadAll }) {
   const subLink = acc.data.subLink
   const traffic = acc.data.traffic
   const refOn = referral?.enabled
@@ -110,7 +128,7 @@ function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadRef
     return (
       <div className="stack gap-3">
         <R><ActiveConnect subLink={subLink} tg={tg} phone={phone} onHapp={markHapp} /></R>
-        <R d={80}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} phone={phone} started={acc.data.traffic?.subscription?.started_at} /></R>
+        <R d={80}><SubscriptionCard sub={sub} plan={plan} alsoCompany={alsoCompany} autoRenew={wallet?.auto_renew} phone={phone} started={acc.data.traffic?.subscription?.started_at} /></R>
         {wallet && <R d={160}><WalletCard wallet={wallet} phone={phone} /></R>}
         {traffic && <TrafficCard data={traffic} phone={phone} />}
         {refOn && <ReferralCard token={token} referral={referral} reload={reloadReferral} phone={phone} />}
@@ -123,7 +141,7 @@ function Active({ phone, narrow, sub, plan, wallet, acc, tg, referral, reloadRef
   return (
     <div className="grid g-12" style={{ gap: 16, alignItems: 'start' }}>
       <R style={span(7)}><ActiveConnect subLink={subLink} tg={tg} onHapp={markHapp} /></R>
-      <R d={80} style={{ ...span(5), alignSelf: 'stretch' }}><SubscriptionCard sub={sub} plan={plan} autoRenew={wallet?.auto_renew} started={acc.data.traffic?.subscription?.started_at} /></R>
+      <R d={80} style={{ ...span(5), alignSelf: 'stretch' }}><SubscriptionCard sub={sub} plan={plan} alsoCompany={alsoCompany} autoRenew={wallet?.auto_renew} started={acc.data.traffic?.subscription?.started_at} /></R>
       {wallet && <R d={160} style={span(4)}><WalletCard wallet={wallet} /></R>}
       {traffic && <div style={span(wallet ? (refOn ? 5 : 8) : (refOn ? 9 : 12))}><TrafficCard data={traffic} /></div>}
       {refOn && <div style={{ ...span(3), alignSelf: 'stretch' }}><ReferralCard token={token} referral={referral} reload={reloadReferral} /></div>}
@@ -267,14 +285,25 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
     } catch (e) {
       if (e?.kind !== 'network') setRequestId(newRequestId())
       if (e?.status === 402 || e?.status === 409) { setErr(e.message); reloadAll() }
-      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      else setErr(payErrorText(e))
     } finally {
       inFlight.current = false
       setBusy(false)
     }
   }
 
-  const main = (
+  const company = sub.company ? companyEnded(sub.company) : null
+  const main = company ? (
+    <section className="card" style={phone ? { padding: 24 } : { display: 'grid', gridTemplateColumns: narrow ? '1fr' : '180px minmax(0, 1fr)', gap: 28, alignItems: 'center', padding: 32 }}>
+      {!narrow && <Hedgehog mood="sleep" size={170} />}
+      <div className="stack gap-3">
+        <Badge tone="warn" style={{ width: 'max-content' }}>Доступ от компании закончился</Badge>
+        <h2 className="t-h2">{company.title}</h2>
+        <p className="muted">{company.text}</p>
+        <div style={{ marginTop: 6 }}><Button variant="primary" size="lg" block={phone} to="/payment">Выбрать тариф</Button></div>
+      </div>
+    </section>
+  ) : (
     <section className="card" style={phone ? { padding: 24 } : { display: 'grid', gridTemplateColumns: narrow ? '1fr' : '180px minmax(0, 1fr)', gap: 28, alignItems: 'center', padding: 32 }}>
       {!narrow && <Hedgehog mood="sleep" size={170} />}
       <div className="stack gap-3">
@@ -298,7 +327,7 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
     </section>
   )
   const walletCard = wallet && (
-    <WalletCard wallet={wallet} phone={phone} note={buyable && short > 0 ? `Не хватает ${money(short)} до продления` : undefined} noteTone="warn" />
+    <WalletCard wallet={wallet} phone={phone} note={!company && buyable && short > 0 ? `Не хватает ${money(short)} до продления` : undefined} noteTone="warn" />
   )
   if (narrow) {
     return (
@@ -321,6 +350,16 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
       <div style={span(referral?.enabled ? 7 : 12)}><PromoCard onApplied={reloadAll} /></div>
     </div>
   )
+}
+
+// 08 §8.1 expired п. 5: why the company-paid access ended, by the company's status
+function companyEnded({ name, status }) {
+  const q = quoteCompany(name)
+  const back = 'Доступ вернётся сам, как только компания пополнит кошелёк. Нужно подключиться сейчас — оформите свою подписку.'
+  if (status === 'suspended') return { title: `Компания ${q} приостановлена`, text: back }
+  if (status === 'inactive') return { title: `Аккаунт компании ${q} не активен`, text: back }
+  if (status === 'left') return { title: `Вы больше не в компании ${q}`, text: 'Доступ оплачивала компания. Чтобы подключаться дальше, оформите свою подписку.' }
+  return { title: `Доступ от компании ${q} не действует`, text: 'Спросите администратора компании или оформите свою подписку.' }
 }
 
 // phone: the other sections as a list at the bottom (8.5)

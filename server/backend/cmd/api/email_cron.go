@@ -75,7 +75,7 @@ SELECT u.id, u.user_id, u.email, us.id, us.valid_until, COALESCE(p.name, ''), p.
  WHERE u.email_verified_at IS NOT NULL AND COALESCE(u.email, '') <> '' AND NOT u.email_reminders_off
    AND NOT COALESCE(u.is_blocked, FALSE)
    AND p.price_rub > 0
-   AND us.valid_until > $1 AND us.valid_until <= $2
+   AND us.valid_until > $1 AND us.valid_until <= $2 AND us.tenant_id IS NULL
    AND NOT EXISTS (SELECT 1 FROM user_subscriptions n WHERE n.user_id = us.user_id AND n.valid_until > us.valid_until)`
 
 // pickReminders: the letters due at now. The 3-day letter goes for a subscription ending in

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,15 @@ type UserSubscriptionDetail struct {
 	Active     bool   `json:"active"`
 	Plan       string `json:"plan"`
 	PriceRub   int    `json:"price_rub"`
+	// Company: the row is the company-paid access (jzd5.24), absent for the member's own.
+	Company *SubscriptionCompany `json:"company,omitempty"`
+}
+
+// SubscriptionCompany names the company that pays for a subscription row. Status is the
+// company's status while the user is a member (active, suspended, inactive), «left» after.
+type SubscriptionCompany struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 // UserPaymentDetail is returned in payment lists.
@@ -100,11 +110,26 @@ func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
 // LoginByIDOrUsernameFrom is LoginByIDOrUsername with the client's address (site, Mini App,
 // gRPC peer) for the wrong-password throttle; "" counts in the account-wide backstop only.
 func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, error) {
-	user, err := GetUserByIDOrUsername(strings.TrimSpace(idOrUsername))
+	login := strings.TrimSpace(idOrUsername)
+	user, err := GetUserByIDOrUsername(login)
 	if err != nil {
+		// A login name is short and guessable: an unknown one answers like a known one with a
+		// wrong or missing password (every login name has a password), with a bcrypt run for a
+		// like timing, so login names can't be enumerated. A HiEarth ID is a random UUID —
+		// nobody guesses one — so «user not found» stays to help a person who mistyped theirs.
+		if err.Error() == "user not found" && !LooksLikeHiEarthID(login) {
+			if password == "" {
+				return nil, fmt.Errorf("password required")
+			}
+			burnPasswordCheck(password)
+			return nil, fmt.Errorf("invalid password")
+		}
 		return nil, fmt.Errorf("user not found")
 	}
-	if user.IsBlocked {
+	// A blocked account with a password says «blocked» only after the right password: otherwise
+	// blocked login names could be enumerated (review of the QA 2026-11-18 fixes).
+	hasPassword := user.PasswordHash.Valid && user.PasswordHash.String != ""
+	if user.IsBlocked && !hasPassword {
 		return nil, fmt.Errorf("user is blocked")
 	}
 
@@ -119,6 +144,7 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 		// addresses) stops a distributed guess (security audit F15/F18/F46). The texts stay as they
 		// are: the site and the bot match on them.
 		if loginThrottled(user.ID, source) {
+			burnPasswordCheck(password) // the same timing as a real check
 			return nil, fmt.Errorf("invalid password")
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(password)); err != nil {
@@ -127,9 +153,68 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 		}
 		loginSucceeded(user.ID, source)
 	}
+	if user.IsBlocked {
+		return nil, fmt.Errorf("user is blocked")
+	}
 
 	touchLastSeen(user.ID)
 	return user, nil
+}
+
+var hiEarthIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// LooksLikeHiEarthID: the input has the shape of a HiEarth ID (a UUID), not of a login name.
+func LooksLikeHiEarthID(s string) bool { return hiEarthIDRe.MatchString(s) }
+
+var dummyHash struct {
+	once sync.Once
+	h    []byte
+}
+
+// burnPasswordCheck spends the time of one bcrypt check, so a refusal without a real check
+// (unknown login name, throttled address) takes as long as one with it.
+func burnPasswordCheck(password string) {
+	dummyHash.once.Do(func() {
+		dummyHash.h, _ = bcrypt.GenerateFromPassword([]byte("heyearth-dummy-password"), bcrypt.DefaultCost)
+	})
+	_ = bcrypt.CompareHashAndPassword(dummyHash.h, []byte(password))
+}
+
+// ErrTooManyPasswordAttempts: too many wrong current passwords on a password change.
+var ErrTooManyPasswordAttempts = errors.New("too many attempts")
+
+// Wrong current passwords on a password change are counted per account (by HiEarth ID): whoever
+// guesses holds a session of that very account (a stolen token), so an address split would not help.
+const (
+	pwChangeFailMax    = 10
+	pwChangeFailWindow = 15 * time.Minute
+)
+
+func pwChangeKey(userID string) string { return "pw|" + userID }
+
+// pwChangeReserve takes one attempt for the account under one lock, before the slow bcrypt
+// check, so parallel requests can't all pass a «still under the limit» test (false when spent).
+// A right password gives the attempt back via pwChangeSucceeded.
+func pwChangeReserve(userID string) bool {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	k := pwChangeKey(userID)
+	st := loginFails.m[k]
+	if st == nil || time.Since(st.start) >= pwChangeFailWindow {
+		st = &loginFailState{start: time.Now()}
+		loginFails.m[k] = st
+	}
+	if st.n >= pwChangeFailMax {
+		return false
+	}
+	st.n++
+	return true
+}
+
+func pwChangeSucceeded(userID string) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	delete(loginFails.m, pwChangeKey(userID))
 }
 
 const (
@@ -259,9 +344,13 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 		if currentPassword == "" {
 			return fmt.Errorf("current password required")
 		}
+		if !pwChangeReserve(user.UserID) {
+			return ErrTooManyPasswordAttempts
+		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(currentPassword)); err != nil {
 			return fmt.Errorf("invalid current password")
 		}
+		pwChangeSucceeded(user.UserID)
 		if user.PasswordMustChange && newPassword == currentPassword {
 			return ErrSameAsTemporaryPassword
 		}
@@ -387,15 +476,14 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		return state, nil
 	}
 
+	// A member of an active company has a company-paid subscription row (SyncTenantAccessTx),
+	// so membership alone no longer means access: users.tenant_id was never cleared when a
+	// member left or the company was suspended, and it let such a client «connect» to nothing.
 	hasSub, err := HasActiveSubscription(userID)
 	if err != nil {
 		return nil, fmt.Errorf("active subscription: %w", err)
 	}
-	isTenant, err := isMemberOfTenant(userID)
-	if err != nil {
-		return nil, err
-	}
-	if !hasSub && !isTenant {
+	if !hasSub {
 		state.CanConnect = false
 		state.Reason = "no_active_subscription"
 	}
@@ -406,22 +494,6 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 	return state, nil
 }
 
-// isMemberOfTenant: the user belongs to a B2B tenant. An unknown user is not; a
-// failed read is an error.
-func isMemberOfTenant(userID string) (bool, error) {
-	var tenantID int
-	err := db.DB.QueryRow(`
-		SELECT COALESCE(tenant_id, 0) FROM users WHERE user_id = $1
-	`, strings.TrimSpace(userID)).Scan(&tenantID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("tenant membership: %w", err)
-	}
-	return tenantID > 0, nil
-}
-
 // ─────────────────────── Subscriptions & Payments Lists ───────────────────────
 
 // ListUserSubscriptions returns all subscriptions for a user.
@@ -430,14 +502,21 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Live rows first, the member's own before the company-paid one (the order the access is
+	// used in, effectiveSubOrderBy): the cabinet shows the first live row as «the» subscription.
 	rows, err := db.DB.Query(`
 		SELECT us.id, COALESCE(us.plan_id, 0), COALESCE(p.name, 'standard'),
 		       us.valid_until, us.auto_renew, us.valid_until > NOW(),
-		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0)
+		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0),
+		       COALESCE(t.name, ''),
+		       CASE WHEN t.id IS NULL THEN ''
+		            WHEN EXISTS (SELECT 1 FROM tenant_members m WHERE m.tenant_id = t.id AND m.user_id = us.user_id) THEN t.status
+		            ELSE 'left' END
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
+		LEFT JOIN tenants t ON t.id = us.tenant_id
 		WHERE us.user_id = $1
-		ORDER BY us.valid_until DESC
+		ORDER BY (us.valid_until > NOW()) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC
 	`, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list user subscriptions: %w", err)
@@ -448,10 +527,15 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 	for rows.Next() {
 		var item UserSubscriptionDetail
 		var validUntil time.Time
-		if err := rows.Scan(&item.ID, &item.PlanID, &item.PlanName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub); err != nil {
+		var company, companyStatus string
+		if err := rows.Scan(&item.ID, &item.PlanID, &item.PlanName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub,
+			&company, &companyStatus); err != nil {
 			return nil, err
 		}
 		item.ValidUntil = validUntil.Format(time.RFC3339)
+		if companyStatus != "" {
+			item.Company = &SubscriptionCompany{Name: company, Status: companyStatus}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

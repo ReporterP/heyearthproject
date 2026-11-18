@@ -235,7 +235,7 @@ export default function DirectRoutesPage() {
                 <Td>
                   <div className="flex gap-1">
                     <Button size="sm" variant="ghost" onClick={() => { setEditService(s); setEditOpen(true) }}>Изменить</Button>
-                    <Button size="sm" variant="ghost" className="text-danger" onClick={() => deleteOne(s.id, s.name)}>Del</Button>
+                    <Button size="sm" variant="ghost" className="text-danger" onClick={() => deleteOne(s.id, s.name)}>Удалить</Button>
                   </div>
                 </Td>
               </Tr>

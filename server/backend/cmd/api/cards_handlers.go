@@ -108,7 +108,8 @@ func handleToggleAutoRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := db.DB.Exec("UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW()", req.AutoRenew, dbUserID)
+	// The company-paid row (tenant_id) follows the company, never the wallet: not switched.
+	result, err := db.DB.Exec("UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW() AND tenant_id IS NULL", req.AutoRenew, dbUserID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -7,6 +7,17 @@ export function currentSub(subscription) {
   return items.find((s) => s.active) || items[0] || null
 }
 
+// the live company-paid subscription (spec 08 §8.1 п. 9''), null without one
+export function liveCompanySub(subscription) {
+  return (subscription?.items || []).find((s) => s.active && s.company) || null
+}
+
+// a company's name in «ёлочки» unless it has them already (ООО «Ромашка» stays as it is) — 08 §8.1
+export function quoteCompany(name) {
+  const n = String(name || '').trim()
+  return /[«»"]/.test(n) ? n : `«${n}»`
+}
+
 // active | expired | none
 export function subState(sub) {
   if (!sub) return 'none'
@@ -39,4 +50,14 @@ export function readChecklist(id) {
 }
 export function writeChecklist(id, v) {
   try { localStorage.setItem(KEY(id), JSON.stringify(v)) } catch { /* storage off */ }
+}
+
+// usageLead: the cabinet's lead for an active subscription, from real traffic (spec 08 row 1) —
+// «Всё работает» only when something went through in the last day (QA 2026-11-18).
+export function usageLead(traffic) {
+  const p = traffic?.periods
+  if (!p) return 'Подписка активна. Если не грузит — обновите подписку в Happ.'
+  if (Number(p.day?.used_bytes) > 0) return 'Всё работает. Если на мобильном не грузит — обновите подписку в Happ.'
+  if (!(Number(p.year?.used_bytes) > 0) && !(Number(p.month?.used_bytes) > 0)) return 'Осталось добавить подписку в Happ — кнопка ниже.'
+  return 'Подписка активна. Если не грузит — обновите подписку в Happ.'
 }

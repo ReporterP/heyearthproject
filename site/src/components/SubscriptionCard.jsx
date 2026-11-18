@@ -4,20 +4,23 @@ import Button from './Button.jsx'
 import Flap from './Flap.jsx'
 import { Progress } from './Controls.jsx'
 import { date, kop, money } from '../lib/format.js'
-import { termShare } from '../lib/account.js'
+import { quoteCompany, termShare } from '../lib/account.js'
 
 // «Подписка» on the overview (spec 08 §8.1 item 9–11): plan, end date, days left as flap,
-// term progress, what auto-renewal will do, «Продлить» / «Сменить тариф».
+// term progress, what auto-renewal will do, «Продлить» / «Сменить тариф». A company-paid
+// subscription (item 9') has no term or renewal for the person; alsoCompany — a live company one
+// next to the person's own (item 9'').
 export function renewText(sub, ar) {
   if (ar?.free) return { lead: 'Подписка по промокоду', text: 'продлевается бесплатно.', short: 'Подписка по промокоду продлевается бесплатно' }
   const enabled = ar ? ar.enabled : sub?.auto_renew
   const at = date(ar?.renew_at || sub?.valid_until)
   const price = ar ? kop(ar.price_kop) : money(sub?.price_rub || 0)
-  if (enabled) return { lead: 'Автопродление включено.', text: `${at} спишем ${price} с кошелька, если на балансе хватит.`, short: `Автопродление включено · ${price} с кошелька` }
+  if (enabled) return { lead: 'Автопродление включено.', text: `За сутки до ${at} спишем ${price} с кошелька, если на балансе хватит.`, short: `Автопродление включено · ${price} с кошелька` }
   return { off: true, text: `Автопродление выключено — подписка закончится ${at}` }
 }
 
-export default function SubscriptionCard({ sub, plan, autoRenew, phone, started }) {
+export default function SubscriptionCard({ sub, plan, autoRenew, phone, started, alsoCompany }) {
+  if (sub?.company) return <CompanySubscription sub={sub} phone={phone} />
   const { left, pct } = termShare(sub, plan, started)
   const warn = left <= 3
   const renew = renewText(sub, autoRenew)
@@ -39,6 +42,7 @@ export default function SubscriptionCard({ sub, plan, autoRenew, phone, started 
         </>
       )}
       {pct !== null && <div style={{ marginTop: 14 }}><Progress value={pct} warn={warn} label="Осталось от срока подписки" /></div>}
+      {alsoCompany && <p className="t-sm subtle" style={{ marginTop: 10 }}>Ещё действует доступ от компании {quoteCompany(alsoCompany.company.name)} — когда подписка закончится, подключение продолжит работать.</p>}
       {phone ? (
         <p className="t-xs subtle" style={{ marginTop: 10 }}>{renew.off ? <>{renew.text}. <Link to="/payments" className="link">Включить</Link></> : renew.short}</p>
       ) : (
@@ -54,6 +58,18 @@ export default function SubscriptionCard({ sub, plan, autoRenew, phone, started 
           <Button variant="ghost" to="/payment">Сменить тариф</Button>
         </div>
       )}
+    </section>
+  )
+}
+
+// 08 §8.1 item 9': the company pays while its account is active — no term, renewal or «Продлить»
+function CompanySubscription({ sub, phone }) {
+  return (
+    <section className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="card__head"><h2 className="card__title">Подписка</h2><Badge tone="ok">Активна</Badge></div>
+      <p className={phone ? 't-h3' : 't-h2'}>{sub.plan_name}</p>
+      <p className="muted t-sm" style={{ marginTop: 6 }}>Доступ от компании {quoteCompany(sub.company.name)}</p>
+      <p className="muted t-sm" style={{ marginTop: 16 }}>Оплачивает компания — подписка действует, пока её аккаунт активен.</p>
     </section>
   )
 }

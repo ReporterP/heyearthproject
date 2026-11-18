@@ -31,10 +31,13 @@ const (
 	tgInlineRefreshEach = 30 * time.Minute
 )
 
+// happStores: where to get Happ. Google Play dropped it (404 on 2026-11-18, only clones left):
+// Android and desktop builds come from the official site happ.info. The site's list is
+// site/src/lib/apps.js — keep the two in sync.
 var happStores = map[string][2]string{
 	"ios":     {"App Store", "https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108"},
-	"android": {"Google Play", "https://play.google.com/store/apps/details?id=com.happproxy"},
-	"pc":      {"сайт Happ", "https://www.happ.su/main/ru"},
+	"android": {"сайт Happ (APK)", "https://happ.info/ru/"},
+	"pc":      {"сайт Happ", "https://happ.info/ru/"},
 }
 
 func backRow() []tg.InlineKeyboardButton {
@@ -109,6 +112,8 @@ func tgHome(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 		b.WriteString("👋 <b>Здравствуйте!</b>\n\n")
 	}
 	switch {
+	case s.Active && s.Company != "":
+		fmt.Fprintf(&b, "✅ Доступ от компании «%s» — тариф «%s»\n", html.EscapeString(s.Company), html.EscapeString(s.PlanName))
 	case s.Active:
 		d := tgDaysLeft(s.ValidUntil)
 		fmt.Fprintf(&b, "✅ Подписка «%s» — до %s (%d %s)\n", html.EscapeString(s.PlanName), ruDate(s.ValidUntil), d, plural(d, "день", "дня", "дней"))
@@ -191,6 +196,10 @@ func tgSubscription(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 		return tgLoadFail()
 	}
 	switch {
+	case s.Active && s.Company != "":
+		return fmt.Sprintf("📅 <b>Подписка</b>\n\nТариф: <b>«%s»</b>\nДоступ от компании «%s» — оплачивает компания, пока её аккаунт активен.",
+				html.EscapeString(s.PlanName), html.EscapeString(s.Company)),
+			tg.Keyboard(tg.Row(tg.CallbackButton("🔌 Подключить", "m:con")), backRow())
 	case s.Active:
 		d := tgDaysLeft(s.ValidUntil)
 		var b strings.Builder
@@ -217,7 +226,7 @@ func tgSubscription(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 
 // tgSetAutoRenew switches auto-renewal of the current subscription.
 func tgSetAutoRenew(c *tgCtx, on bool) string {
-	res, err := db.DB.ExecContext(c.ctx, `UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW()`, on, c.user.DBID)
+	res, err := db.DB.ExecContext(c.ctx, `UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW() AND tenant_id IS NULL`, on, c.user.DBID)
 	if err != nil {
 		return "Не удалось изменить — попробуйте ещё раз"
 	}
@@ -512,7 +521,12 @@ func tgLoginByID(c *tgCtx, m *tg.Message) {
 		switch err.Error() {
 		case "password required":
 			_ = biz.SetTGChatState(c.ctx, c.chat, "", 0)
-			_, _ = c.reply("🔒 У этого аккаунта есть пароль — войдите через кабинет, там же Telegram привяжется.", tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Войти в кабинете", miniAppURL("")))))
+			text := "🔒 У этого аккаунта есть пароль — войдите через кабинет, там же Telegram привяжется."
+			if !biz.LooksLikeHiEarthID(strings.TrimSpace(m.Text)) {
+				// a login name: the server answers an unknown one the same way, so no «this account»
+				text = "🔒 По логину вход только с паролем — войдите через кабинет, там же Telegram привяжется."
+			}
+			_, _ = c.reply(text, tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Войти в кабинете", miniAppURL("")))))
 		case "user is blocked":
 			_, _ = c.reply("🚫 Аккаунт заблокирован. Напишите в поддержку.", nil)
 		default:

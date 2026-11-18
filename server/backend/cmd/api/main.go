@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -162,7 +163,7 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 
 	bindReferralOnRegister(r, user.ID, req.ReferralCode)
 
-	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID, biz.SessionSourceSite)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
 		return
@@ -206,7 +207,7 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID, biz.SessionSourceSite)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
 		return
@@ -248,10 +249,13 @@ func handleUserLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// errNoToken: the request carries no Authorization header at all (never signed in).
+var errNoToken = errors.New("missing Authorization header")
+
 func extractUserFromToken(r *http.Request) (string, error) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return "", fmt.Errorf("missing Authorization header")
+		return "", errNoToken
 	}
 	token := strings.TrimPrefix(auth, "Bearer ")
 	claims, err := biz.ValidateUserToken(token)
@@ -299,6 +303,11 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 		// works in one POST.
 		if req.NewPassword != "" {
 			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword, bearerToken(r)); err != nil {
+				if errors.Is(err, biz.ErrTooManyPasswordAttempts) {
+					w.Header().Set("Retry-After", "900") // the per-account window (15 min)
+					writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+					return
+				}
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
@@ -852,6 +861,9 @@ func main() {
 	// Data retention (D5): per-day traffic sums, raw traffic 45 days, expired sessions.
 	StartRetentionLoop()
 
+	// Company-paid access (jzd5.24): re-check every company's members against its status.
+	StartTenantAccessLoop()
+
 	// Monitoring → Telegram alerts: external loop probe of the entry via an exit,
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
 	StartMonitor()
@@ -863,10 +875,10 @@ func main() {
 	// Rate limiters. Our servers' own addresses (exits, entries) are shared by many users:
 	// counted per user there (shared_sources.go).
 	startSharedSourceRefresh(context.Background())
-	authLimiter := middleware.NewRateLimiter(10, time.Minute)                       // 10 req/min per IP (auth)
-	apiLimiter := middleware.NewRateLimiter(100, time.Minute).PerUserBehindShared() // 100 req/min per IP (general API)
-	webhookLimiter := middleware.NewRateLimiter(30, time.Minute)                    // 30 req/min per IP (webhooks)
-	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute)                    // promocodes and activation codes: guessing is the attack
+	authLimiter := middleware.NewRateLimiter(10, time.Minute)                          // 10 req/min per IP (auth)
+	apiLimiter := middleware.NewRateLimiter(100, time.Minute).PerUserBehindShared()    // 100 req/min per IP (general API)
+	webhookLimiter := middleware.NewRateLimiter(30, time.Minute)                       // 30 req/min per IP (webhooks)
+	codeLimiter := middleware.NewRateLimiter(10, 10*time.Minute).PerUserBehindShared() // promocodes and activation codes: guessing is the attack
 
 	grpcAddr := "127.0.0.1:50051"
 	httpAddr := "127.0.0.1:8000"
@@ -903,6 +915,8 @@ func main() {
 	http.HandleFunc("/api/v1/auth/login", authLimiter.Middleware(handleUserLogin))
 	http.HandleFunc("/api/v1/auth/logout", authLimiter.Middleware(handleUserLogout))
 	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
+	http.HandleFunc("/api/v1/user/sessions", apiLimiter.Middleware(handleUserSessions))
+	http.HandleFunc("/api/v1/user/sessions/", apiLimiter.Middleware(handleUserSessionAction))
 	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
 	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))
 	// Детали одного платежа: GET /api/v1/user/payments/{id}
@@ -933,7 +947,7 @@ func main() {
 
 	// Wallet (phase W)
 	http.HandleFunc("/api/v1/wallet", apiLimiter.Middleware(handleWallet))
-	http.HandleFunc("/api/v1/wallet/quote", apiLimiter.Middleware(codeLimiter.Middleware(handleWalletQuote)))
+	http.HandleFunc("/api/v1/wallet/quote", apiLimiter.Middleware(codeLimitedWhenPromo(codeLimiter, handleWalletQuote)))
 	http.HandleFunc("/api/v1/wallet/purchase", apiLimiter.Middleware(handleWalletPurchase))
 	http.HandleFunc("/api/v1/wallet/topup", apiLimiter.Middleware(handleWalletTopup))
 	http.HandleFunc("/api/v1/wallet/topup/", apiLimiter.Middleware(handleWalletTopupStatus))
@@ -958,11 +972,11 @@ func main() {
 	http.HandleFunc("/api/admin/b2b/create-invoice", admin.RequirePermission("tenants.write", handleAdminCreateInvoice))
 	// B2B self-service (Phase P1): tenant dashboard + topup + invite + member mgmt.
 	// All endpoints check tenant_members for role-based access.
-	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(handleBusinessMe))
-	http.HandleFunc("/api/v1/business/topup-init", apiLimiter.Middleware(handleBusinessTopupInit))
-	http.HandleFunc("/api/v1/business/invite", apiLimiter.Middleware(handleBusinessInvite))
+	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(b2bOnly(handleBusinessMe)))
+	http.HandleFunc("/api/v1/business/topup-init", apiLimiter.Middleware(b2bOnly(handleBusinessTopupInit)))
+	http.HandleFunc("/api/v1/business/invite", apiLimiter.Middleware(b2bOnly(handleBusinessInvite)))
 	// DELETE /api/v1/business/members/{user_db_id} — uses trailing slash routing.
-	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(handleBusinessMembers))
+	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(b2bOnly(handleBusinessMembers)))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 

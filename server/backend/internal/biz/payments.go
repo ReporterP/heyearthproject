@@ -93,11 +93,17 @@ const UnappliedReasonKey = "unapplied_reason"
 // Tenant wallet
 
 // CreditTenantWalletResult tells the caller what happened so they can fire
-// downstream side-effects (welcome email, log entry) idempotently. Activated
-// is true iff this credit transitioned the tenant from 'inactive' to 'active'.
+// downstream side-effects (welcome email, log entry, access sync) idempotently.
 type CreditTenantWalletResult struct {
-	NewBalance float64
-	Activated  bool
+	NewBalance float64 // after the credit and the month taken, if one was
+	Activated  bool    // inactive → active by this credit (the first month taken)
+	Resumed    bool    // suspended → active by this credit (the month taken)
+	Charged    float64 // the month taken at activation or resume, 0 otherwise
+	// MonthlyCharge is what a month costs the company; when the company stays inactive or
+	// suspended the wallet had less than this.
+	MonthlyCharge float64
+	// AccessChanged: the members' access changed — call NotifySubscriptionChange after commit.
+	AccessChanged bool
 }
 
 // ErrPaymentAlreadyCredited: the payment was credited to a wallet before
@@ -109,14 +115,19 @@ var ErrPaymentAlreadyCredited = errors.New("payment already credited to a tenant
 // ctx. A second credit for the same payment returns ErrPaymentAlreadyCredited instead of
 // doubling the balance — the failed INSERT leaves the transaction unusable, so the
 // caller must roll back.
+//
+// An inactive or suspended company whose wallet now covers the monthly charge is charged
+// for the month at once and becomes active, and its members get access in the same
+// transaction (jzd5.23, the owner's decisions of 2026-11-18: suspended, and inactive by the
+// same rule — otherwise any top-up would open a month of access for every seat). Short of the
+// month, the money is credited and the status stays.
 func CreditTenantWalletTx(ctx context.Context, tx *sql.Tx, tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
 	var res CreditTenantWalletResult
 
-	// Capture the pre-credit status under FOR UPDATE so we can detect the
-	// inactive→active transition. Locking the row also serializes concurrent
-	// credits against the same tenant (e.g. two webhooks racing).
-	var oldStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&oldStatus); err != nil {
+	// Lock the row first: it serializes concurrent credits (two webhooks racing) and the
+	// monthly billing, and the pre-credit status tells whether this credit may activate.
+	info, oldStatus, err := tenantBillingTx(ctx, tx, tenantID)
+	if err != nil {
 		return res, fmt.Errorf("lock tenant %d: %w", tenantID, err)
 	}
 
@@ -131,12 +142,9 @@ func CreditTenantWalletTx(ctx context.Context, tx *sql.Tx, tenantID int, amount 
 		return res, fmt.Errorf("insert wallet txn: %w", err)
 	}
 
-	// Apply credit; auto-activate if tenant was inactive (first payment unlocks
-	// the account). Status stays 'suspended' or 'active' otherwise.
 	if err := tx.QueryRowContext(ctx, `
 		UPDATE tenants
 		SET balance = balance + $1,
-		    status = CASE WHEN status = 'inactive' THEN 'active' ELSE status END,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2
 		RETURNING balance::float8
@@ -144,8 +152,25 @@ func CreditTenantWalletTx(ctx context.Context, tx *sql.Tx, tenantID int, amount 
 		return res, fmt.Errorf("update tenant balance: %w", err)
 	}
 
-	if oldStatus == "inactive" {
-		res.Activated = true
+	res.MonthlyCharge = CalculateTenantMonthlyCharge(info)
+	if (oldStatus != "inactive" && oldStatus != "suspended") || res.NewBalance < res.MonthlyCharge {
+		return res, nil
+	}
+	what := "при активации"
+	if oldStatus == "suspended" {
+		what = "при возобновлении"
+	}
+	bal, err := debitTenantTx(ctx, tx, tenantID, res.MonthlyCharge, fmt.Sprintf("Списание за месяц %s: %s", what, info.Name))
+	if err != nil {
+		return res, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tenants SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, tenantID); err != nil {
+		return res, fmt.Errorf("activate tenant %d: %w", tenantID, err)
+	}
+	res.NewBalance, res.Charged = bal, res.MonthlyCharge
+	res.Activated, res.Resumed = oldStatus == "inactive", oldStatus == "suspended"
+	if res.AccessChanged, err = SyncTenantAccessTx(ctx, tx, tenantID); err != nil {
+		return res, err
 	}
 	return res, nil
 }
@@ -172,21 +197,52 @@ type TenantMember struct {
 	JoinedAt time.Time
 }
 
+// AddTenantMember adds a member (or changes the role of one) and gives them the company-paid
+// access in the same transaction while the company is active.
 func AddTenantMember(tenantID, userID int, role string) error {
 	if role == "" {
 		role = "user"
 	}
-	_, err := db.DB.Exec(`
+	return changeTenantMembers(tenantID, `
 		INSERT INTO tenant_members (tenant_id, user_id, role)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = $3
 	`, tenantID, userID, role)
-	return err
 }
 
+// RemoveTenantMember removes a member; their company-paid access ends in the same transaction.
 func RemoveTenantMember(tenantID, userID int) error {
-	_, err := db.DB.Exec(`DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID)
-	return err
+	return changeTenantMembers(tenantID, `DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID)
+}
+
+// changeTenantMembers runs one change of tenant_members and SyncTenantAccessTx together. The
+// tenant row is locked first, as the claim and the billing lock it: the member row's foreign
+// key takes a share lock on it, and two changes upgrading it afterwards would deadlock.
+func changeTenantMembers(tenantID int, q string, args ...any) error {
+	ctx := context.Background()
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var locked int
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&locked); err != nil {
+		return fmt.Errorf("lock tenant %d: %w", tenantID, err)
+	}
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return err
+	}
+	changed, err := SyncTenantAccessTx(ctx, tx, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if changed {
+		NotifySubscriptionChange()
+	}
+	return nil
 }
 
 // GetTenantMember returns the role for (tenantID, userID), or ok=false if no
@@ -357,37 +413,6 @@ func slugifyINN(inn string) string {
 	return "inn-" + strings.TrimSpace(inn)
 }
 
-func DebitTenantWallet(tenantID int, amount float64, description string) error {
-	tx, err := db.DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var balance float64
-	if err := tx.QueryRow(`SELECT balance FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&balance); err != nil {
-		return err
-	}
-	if balance < amount {
-		return fmt.Errorf("insufficient balance: have %.2f, need %.2f", balance, amount)
-	}
-
-	_, err = tx.Exec(`
-		INSERT INTO tenant_wallet_transactions (tenant_id, amount, direction, description)
-		VALUES ($1, $2, 'debit', $3)
-	`, tenantID, amount, description)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(`UPDATE tenants SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, amount, tenantID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
 // Tenant claim codes
 
 // RedeemTenantClaimCode binds the calling user to a tenant via a one-shot
@@ -402,55 +427,133 @@ func DebitTenantWallet(tenantID int, amount float64, description string) error {
 //	tn-r-viewer-XXX   → viewer role
 //	tn-r-user-XXX     → user role (default)
 //	anything else     → user role
-func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err error) {
-	tx, err := db.DB.Begin()
+//
+// A code never lowers the role of someone already in the company (that would bypass the
+// last-admin guard of the role change), and a newcomer needs a free seat (max_users).
+// A member of an active company gets the company-paid access in the same transaction
+// (SyncTenantAccessTx); the result names the company and the role the caller now has, so the
+// site can send an employee to their own cabinet (jzd5.24).
+func RedeemTenantClaimCode(code, userID, userName string) (res TenantClaimResult, err error) {
+	ctx := context.Background()
+	tx, err := db.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	defer tx.Rollback()
+	var tenantID int
 
 	var codeID, maxUses, usedCount int
-	err = tx.QueryRow(`
+	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, max_uses, used_count FROM tenant_claim_codes
 		WHERE code = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		FOR UPDATE
 	`, code).Scan(&codeID, &tenantID, &maxUses, &usedCount)
 	if err == sql.ErrNoRows {
-		return 0, fmt.Errorf("invalid or expired code")
+		return res, fmt.Errorf("invalid or expired code")
 	}
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	if maxUses > 0 && usedCount >= maxUses {
-		return 0, fmt.Errorf("code usage limit reached")
-	}
-
-	_, err = tx.Exec(`UPDATE tenant_claim_codes SET used_count = used_count + 1 WHERE id = $1`, codeID)
-	if err != nil {
-		return 0, err
+		return res, fmt.Errorf("code usage limit reached")
 	}
 
 	// Resolve user numeric id — needed for tenant_members FK.
 	var userDBID int
-	if err = tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
-		return 0, fmt.Errorf("resolve user id: %w", err)
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
+		return res, fmt.Errorf("resolve user id: %w", err)
+	}
+
+	// The tenant row is locked so two newcomers can't both take the last seat.
+	var maxUsers int
+	if err = tx.QueryRowContext(ctx, `SELECT max_users FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&maxUsers); err != nil {
+		return res, fmt.Errorf("lock tenant: %w", err)
+	}
+	role := parseRoleFromCode(code)
+	var current string
+	err = tx.QueryRowContext(ctx, `SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userDBID).Scan(&current)
+	switch {
+	case err == sql.ErrNoRows:
+		var members int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1`, tenantID).Scan(&members); err != nil {
+			return res, err
+		}
+		if maxUsers > 0 && members >= maxUsers {
+			return res, ErrTenantNoSeats
+		}
+	case err != nil:
+		return res, err
+	case tenantRoleRank(current) >= tenantRoleRank(role):
+		// Already a member with this role or a higher one: the code changes nothing.
+		return claimResult(ctx, tx, tenantID, current)
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE tenant_claim_codes SET used_count = used_count + 1 WHERE id = $1`, codeID)
+	if err != nil {
+		return res, err
 	}
 
 	// Mirror primary tenant on users for legacy code paths that still filter on it.
-	if _, err = tx.Exec(`UPDATE users SET tenant_id = $1 WHERE id = $2`, tenantID, userDBID); err != nil {
-		return 0, err
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET tenant_id = $1 WHERE id = $2`, tenantID, userDBID); err != nil {
+		return res, err
 	}
 
-	// Add membership with role parsed from code prefix.
-	role := parseRoleFromCode(code)
-	if _, err = tx.Exec(`
+	// Add the membership, or raise the role a higher code grants.
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO tenant_members (tenant_id, user_id, role)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role
 	`, tenantID, userDBID, role); err != nil {
-		return 0, fmt.Errorf("add membership: %w", err)
+		return res, fmt.Errorf("add membership: %w", err)
 	}
+	changed, err := SyncTenantAccessTx(ctx, tx, tenantID)
+	if err != nil {
+		return res, err
+	}
+	if res, err = claimResult(ctx, tx, tenantID, role); err != nil {
+		return res, err
+	}
+	if changed {
+		NotifySubscriptionChange()
+	}
+	return res, nil
+}
 
-	return tenantID, tx.Commit()
+// TenantClaimResult: the company a claim code joined, its status (active: the member has the
+// company-paid access now) and the caller's role in it.
+type TenantClaimResult struct {
+	TenantID     int
+	TenantName   string
+	TenantStatus string
+	Role         string
+}
+
+// claimResult reads the company and commits the claim transaction.
+func claimResult(ctx context.Context, tx *sql.Tx, tenantID int, role string) (TenantClaimResult, error) {
+	res := TenantClaimResult{TenantID: tenantID, Role: role}
+	if err := tx.QueryRowContext(ctx, `SELECT name, status FROM tenants WHERE id = $1`, tenantID).Scan(&res.TenantName, &res.TenantStatus); err != nil {
+		return TenantClaimResult{}, fmt.Errorf("tenant name: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return TenantClaimResult{}, err
+	}
+	return res, nil
+}
+
+// ErrTenantNoSeats: the company has as many members as max_users allows.
+var ErrTenantNoSeats = errors.New("no seats left")
+
+// tenantRoleRank orders the roles as PrimaryTenantForUser does: admin > billing > viewer > user.
+func tenantRoleRank(role string) int {
+	switch role {
+	case "admin":
+		return 4
+	case "billing":
+		return 3
+	case "viewer":
+		return 2
+	}
+	return 1
 }
 
 // parseRoleFromCode extracts the role hint embedded in the claim code by

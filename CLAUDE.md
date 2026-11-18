@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 90 SQL migrations (000001-000090), applied at API start
+│   │   ├── migrations/            # 91 SQL migrations (000001-000091), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (90)
+# Auto-runs the migrations on startup (91)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -226,6 +226,12 @@ Runbook: `docs/runbooks/telegram-bot.md`; site spec: `spec/12-telegram.md`, 08 �
 - **Payments inside Telegram are Telegram Stars only** (Developer Terms 6.2; links to pay on the site, ЮKassa, crypto/TON = ban risk). `cmd/api/stars.go`: price = ⌈plan ₽ / `tg_stars_rub`⌉, one payment = one plan period, `stars_payments` per charge id, refund on failure, `/paysupport`. Never add a site-payment link to the bot or the Mini App.
 - Support (`support.go`, admin «Поддержка», `support.manage`), news (`news.go`, admin «Новости», `news.manage`: channel + bot + cabinet feed + Happ line `📣`), settings in admin «Telegram-бот» (token write-only, channel, Stars rate).
 
+### B2B company access (jzd5.24/.23, since 2026-11-18, behind `b2b_enabled`)
+
+- While a company (`tenants`) is `active`, every member (`tenant_members`, any role) has a `user_subscriptions` row with `tenant_id` on the member plan (setting `b2b_member_plan`, default `all-inclusive`). `biz.SyncTenantAccessTx` (tenant row lock first) keeps it in step; hourly `StartTenantAccessLoop`. `valid_until` is a 35-day technical horizon — the company's status is the truth.
+- Paths of the member's own money/reminders skip company rows (`tenant_id IS NULL`); the member's own subscription wins (`effectiveSubOrderBy`). A new query over `user_subscriptions` must decide which it is.
+- 1st of the month: `BillTenantMonth` charges or suspends (access ends at once); a credit that leaves ≥ the monthly charge on an inactive/suspended company takes the month and activates it. PRD/plan: `docs/{prd,plan}/b2b-member-access*`.
+
 ### Entries (mobile networks)
 
 - Reserve entry = RU VPS of another provider (`servers.role='relay'`), added in admin «Входы» (wizard; Hub key instead of a root password; «Проверить с телефона» = `mobile_check`).
@@ -274,7 +280,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 90 migrations)
+## Database (PostgreSQL, 91 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -298,6 +304,12 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 ```
 
 **Important**: stop service before binary upload: `deploy --ssh 'systemctl stop heyearth-api && rm -f /opt/heyearth/mainserver/heyearth-api'` then `go run quick_deploy.go`
+
+**Branches** (since 2026-11-18): `main` is the single integration branch; everything else merged into it.
+- Start new work from the current `main`; merge `main` into your branch before you deliver.
+- Deliver by merging into `main` (fast-forward when possible). Deploy only from a `main` commit, from a clean worktree, so a deploy never rolls back someone else's fix.
+- No long-lived side branches (`security/hardening`, `telegram/bot` were folded in on 2026-11-18). Delete merged branches with `git branch -d`.
+- `main` stays local-first: push to GitHub only on the owner's request (the repo is public).
 
 ---
 
@@ -413,3 +425,17 @@ that you think outside the box!
 - Product: **HiEarth** (current). Domain: `hiearth.ru`.
 - User-facing: call it **SOCKS** (not "SOCKS5"). No VLESS/Shadowsocks/Xray/VPN in UI.
 - Marketing (site, since 2026-11-16): «защищённое подключение / защищённый доступ к интернету»; the eco theme is dropped; never "VPN". Full copy rules: `site/design-system/hiearth-canon/spec/05-content.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Beads (`bd`, issue prefix `heyearthproject-`); never GitHub Issues — the repo is public. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The default five as Beads labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the root, created lazily. See `docs/agents/domain.md`.

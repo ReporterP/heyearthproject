@@ -48,3 +48,20 @@ export function countryFlag(code) {
   if (!/^[A-Z]{2}$/.test(c)) return ''
   return String.fromCodePoint(...[...c].map((ch) => 0x1f1a5 + ch.charCodeAt(0)))
 }
+
+// exitPlaces: what the copy says about the exit countries (spec 05 §2) — only what the API lists.
+// nl: exactly one exit, the Netherlands (the copy keeps «через Нидерланды» and the drawn flag);
+// names: «Германия», «Германия и Латвия», «Германия, Латвия и Польша»; '' when there are none.
+export function exitPlaces(codes) {
+  const list = (codes || []).map((c) => String(c || '').toUpperCase()).filter(Boolean)
+  const names = list.map(countryName)
+  const joined = names.length <= 1 ? names[0] || '' : `${names.slice(0, -1).join(', ')} и ${names[names.length - 1]}`
+  return { nl: list.length === 1 && list[0] === 'NL', names: joined }
+}
+
+// throughExit: «через Нидерланды» / «через зарубежный выход: Германия» / «через зарубежный выход».
+export function throughExit(codes) {
+  const { nl, names } = exitPlaces(codes)
+  if (nl) return 'через Нидерланды'
+  return names ? `через зарубежный выход: ${names}` : 'через зарубежный выход'
+}

@@ -20,7 +20,9 @@ import { detectDevice, OTHER_APPS } from '../lib/apps.js'
 
 // Подключение /connect (spec 08 §8.2): composed from the overview's «Подключение» card and the
 // «Подключение» artboard parts. A 503 on /user/connections is «временно недоступно», never «нет подписки».
-const VERSION_KEY = 'heyearth_config_version'
+// subscription_version: the server bumps it whenever users' subscription lines change (entries,
+// exits, entry mode). config_version is no longer written by anything (QA 2026-11-18).
+const VERSION_KEY = 'heyearth_subscription_version'
 
 const GUIDE = {
   ios: [
@@ -30,7 +32,7 @@ const GUIDE = {
     <><b>Включите подключение</b> переключателем в приложении.</>,
   ],
   android: [
-    <><b>Установите Happ</b> из Google Play.</>,
+    <><b>Скачайте Happ</b> с сайта happ.info — файл APK (в Google Play его нет).</>,
     <><b>Нажмите «Добавить в Happ»</b> выше — приложение откроется само.</>,
     <>Если не открылось: <b>скопируйте ссылку</b>, в приложении → + → Импорт из буфера обмена.</>,
     <><b>Включите подключение</b> переключателем.</>,
@@ -57,17 +59,17 @@ export default function ConnectionsPage() {
   const [qr, setQr] = useState(false)
   const showSkel = useDelayed(loading && !conn, 300)
 
-  // «Настройки обновились»: config_version grew since this browser last acknowledged it
+  // «Настройки обновились»: subscription_version changed since this browser last acknowledged it
   useEffect(() => {
-    const v = conn?.config_version
-    if (!v) return
+    const v = conn?.subscription_version
+    if (v === undefined || v === null) return
     let saved = null
     try { saved = localStorage.getItem(VERSION_KEY) } catch { /* storage off */ }
     if (!saved) { try { localStorage.setItem(VERSION_KEY, String(v)) } catch { /* storage off */ } return }
     if (saved !== String(v)) setUpdated(true)
-  }, [conn?.config_version])
+  }, [conn?.subscription_version])
   const acknowledge = () => {
-    try { localStorage.setItem(VERSION_KEY, String(conn?.config_version)) } catch { /* storage off */ }
+    try { localStorage.setItem(VERSION_KEY, String(conn?.subscription_version)) } catch { /* storage off */ }
     setUpdated(false)
   }
 
@@ -139,7 +141,6 @@ export default function ConnectionsPage() {
             <h2 className="t-h3">Или добавить вручную</h2>
             <p className="muted t-sm" style={{ marginTop: 4 }}>Отсканируйте QR-код в приложении или скопируйте ссылку подписки.</p>
             <div className="stack gap-3" style={{ marginTop: 16 }}>
-              <span className="field__label">Ссылка подписки</span>
               <CopyField value={url} label="Ссылка подписки" expandable secret />
               <div><Button variant="ghost" size="sm" icon="qr" onClick={() => setQr(true)}>Показать QR-код</Button></div>
               <p className="t-xs subtle">Работает в Happ и других приложениях, которые принимают ссылку подписки. Настройки обновляются сами.</p>

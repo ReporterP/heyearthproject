@@ -277,7 +277,8 @@ func touchLastSeen(userDBID int) {
 }
 
 // GetUserSubscription returns the best active subscription for a user.
-// Returns the longest-running active subscription (by valid_until).
+// Returns the longest-running active subscription (by valid_until), the member's own before
+// a company-paid one.
 func GetUserSubscription(userID int) (*Subscription, error) {
 	var sub Subscription
 	var planID sql.NullInt64
@@ -292,7 +293,7 @@ func GetUserSubscription(userID int) (*Subscription, error) {
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC
+		ORDER BY (us.tenant_id IS NULL) DESC, us.valid_until DESC
 		LIMIT 1
 	`, userID).Scan(&sub.ID, &planID, &sub.PlanName, &sub.IsPremium, &sub.Plan, &sub.PriceRub, &sub.ValidUntil)
 

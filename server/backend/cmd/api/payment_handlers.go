@@ -126,6 +126,9 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		promo, err := biz.LoadPromocode(r.Context(), db.DB, userDBID, body.Promocode, plan.ID, false)
+		if err == nil {
+			err = biz.PromoFitsPlan(promo, biz.PlanTrafficLimit(plan))
+		}
 		if err != nil {
 			writePromoError(w, err)
 			return
@@ -235,7 +238,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	out, code, err := createWalletTopup(r.Context(), userID, priceKop-balance, plan.ID, promoUsed, body.Email, body.ReturnURL, body.ConfirmationType)
+	out, code, err := createWalletTopup(r.Context(), userID, priceKop-balance, plan.ID, priceKop, promoUsed, body.Email, body.ReturnURL, body.ConfirmationType)
 	if err != nil {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return
@@ -324,19 +327,27 @@ func handleYookassaWebhook(w http.ResponseWriter, r *http.Request) {
 // sendTenantCreditEmail informs the tenant's contact_email about a successful
 // wallet credit (topup or B2B invoice). Best-effort — silently skipped if SMTP
 // is disabled or the tenant has no contact email.
-func sendTenantCreditEmail(tenantID int, amount, newBalance float64, activated bool, kind string, paymentDBID int) {
+func sendTenantCreditEmail(tenantID int, amount float64, res biz.CreditTenantWalletResult, kind string, paymentDBID int) {
 	t, err := biz.GetTenantByID(tenantID)
 	if err != nil || t == nil || t.ContactEmail == "" {
 		return
 	}
 	subj := fmt.Sprintf("[HiEarth] Кошелёк компании пополнен на %.2f ₽", amount)
-	if activated {
+	note := "Спасибо за продолжение работы с нами."
+	switch {
+	case res.Activated:
 		subj = "[HiEarth] Аккаунт компании активирован"
+		note = fmt.Sprintf("Списали %.2f ₽ за месяц — аккаунт активен, сотрудники получили доступ к HiEarth.", res.Charged)
+	case res.Resumed:
+		subj = "[HiEarth] Аккаунт компании возобновлён"
+		note = fmt.Sprintf("Списали %.2f ₽ за месяц — аккаунт снова активен, доступ сотрудников вернулся.", res.Charged)
+	case t.Status == "inactive" || t.Status == "suspended":
+		note = fmt.Sprintf("Месяц стоит %.2f ₽ — пополните кошелёк ещё на %.2f ₽, и мы сразу включим доступ сотрудникам.",
+			res.MonthlyCharge, res.MonthlyCharge-res.NewBalance)
 	}
 	body := fmt.Sprintf(
 		"Здравствуйте!\n\nКошелёк компании «%s» пополнен на %.2f ₽.\nТекущий баланс: %.2f ₽.\n\nОснование: %s, платёж #%d.\n\n%s\n\n—\nHiEarth",
-		t.Name, amount, newBalance, kind, paymentDBID,
-		map[bool]string{true: "Это первое поступление — аккаунт переведён в статус Active.", false: "Спасибо за продолжение работы с нами."}[activated],
+		t.Name, amount, res.NewBalance, kind, paymentDBID, note,
 	)
 	_ = email.Send(email.Message{
 		To:       t.ContactEmail,
@@ -361,7 +372,7 @@ func sendActivationEmail(userIDText string, plan *biz.Plan, priceRub int, isRene
 	_ = db.DB.QueryRow(`
 		SELECT valid_until FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW()
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.tenant_id IS NULL
 		ORDER BY us.valid_until DESC LIMIT 1
 	`, userIDText).Scan(&validUntil)
 
@@ -514,12 +525,15 @@ func handleRedeemCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code required"})
 		return
 	}
-	tenantID, err := biz.RedeemTenantClaimCode(req.Code, userID, req.Name)
+	claim, err := biz.RedeemTenantClaimCode(req.Code, userID, req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": "code redeemed", "tenant_id": tenantID})
+	// role and tenant_name let the site send an employee (role user, no company dashboard) to
+	// their own cabinet, where the company-paid access is (jzd5.24).
+	writeJSON(w, http.StatusOK, map[string]any{"message": "code redeemed", "tenant_id": claim.TenantID,
+		"tenant_name": claim.TenantName, "tenant_status": claim.TenantStatus, "role": claim.Role})
 }
 
 func handleApplyPromocode(w http.ResponseWriter, r *http.Request) {
