@@ -18,10 +18,14 @@ Q_=$(printf '%s' "$URI" | sed -E 's#^[^?]*\?##; s/#.*$//')
 param() { printf '%s' "$Q_" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1 | sed 's/%2[Ff]/\//g; s/%3[Dd]/=/g; s/%2[Bb]/+/g'; }
 SNI=$(param sni); OBFS=$(param obfs-password)
 KEY=/opt/heyearth/state/hub-ssh/id_ed25519
+EXIT_FP=$(Q "select coalesce(ssh_host_key_fp,'') from servers where ip_address='$EXIT' limit 1")
+KH=$(mktemp); trap 'rm -f "$KH"' EXIT
+ssh-keyscan -T 10 -t ed25519 "$EXIT" 2>/dev/null > "$KH"
+[ -n "$EXIT_FP" ] && [ "$(ssh-keygen -lf "$KH" | awk '{print $2}')" = "$EXIT_FP" ] || { echo "bamboo: the exit's host key does not match the confirmed one"; exit 1; }
 for PORT in 50443 41234; do
   CFG=$(printf 'server: %s:%s\nauth: %s\ntls:\n  sni: %s\nsocks5:\n  listen: 127.0.0.1:18089\n' "$HUB" "$PORT" "$AUTH" "$SNI")
   [ -n "$OBFS" ] && CFG=$(printf '%s\nobfs:\n  type: salamander\n  salamander:\n    password: %s\n' "$CFG" "$OBFS")
-  R=$(printf '%s\n' "$CFG" | ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@$EXIT" '
+  R=$(printf '%s\n' "$CFG" | ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KH" "root@$EXIT" '
     umask 077; cat > /tmp/he-bamboo.yaml
     (timeout 25 hysteria client -c /tmp/he-bamboo.yaml >/tmp/he-bamboo.log 2>&1 &)
     sleep 4

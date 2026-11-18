@@ -61,6 +61,8 @@ func renderSysctlScript() string {
 hs=/sys/module/nf_conntrack/parameters/hashsize
 if [ -w "$hs" ] && [ "$(cat "$hs")" -lt 131072 ]; then echo 131072 > "$hs"; fi
 sysctl -q -p /etc/sysctl.d/60-heyearth-net.conf
+# The Reality private key and the master UUID: root only (claude-security F45/F49).
+[ -f /opt/heyearth/state/reality-keys.json ] && chmod 600 /opt/heyearth/state/reality-keys.json
 echo "[ops] sysctl: syn_backlog=$(sysctl -n net.ipv4.tcp_max_syn_backlog) synack_retries=$(sysctl -n net.ipv4.tcp_synack_retries) conntrack=$(sysctl -n net.netfilter.nf_conntrack_count)/$(sysctl -n net.netfilter.nf_conntrack_max) hash=$(cat "$hs")"
 `
 }

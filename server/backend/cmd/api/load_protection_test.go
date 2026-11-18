@@ -32,3 +32,16 @@ func TestPerTokenLimit(t *testing.T) {
 		t.Fatal("the limit is per token")
 	}
 }
+
+func TestSameSiteURL(t *testing.T) {
+	t.Setenv("PUBLIC_BASE_URL", "https://example.org")
+	for raw, want := range map[string]bool{
+		"https://example.org/wallet?topup=5": true, "https://go.example.org/x": true,
+		"https://evil.org/": false, "http://example.org/": false, "https://example.org.evil.org/": false,
+		"https://user@example.org/": false, "javascript:alert(1)": false, "": false, "//evil.org/": false,
+	} {
+		if sameSiteURL(raw) != want {
+			t.Errorf("%q: want %v", raw, want)
+		}
+	}
+}

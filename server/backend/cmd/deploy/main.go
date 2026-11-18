@@ -1308,6 +1308,7 @@ if [ ! -f "$KEYS_FILE" ]; then
   "ssPassword": "$SS_PASSWORD"
 }
 KEYSEOF
+  chmod 600 "$KEYS_FILE"
   echo "[xray] Ключи сгенерированы: UUID=$UUID"
 else
   echo "[xray] Ключи уже существуют"

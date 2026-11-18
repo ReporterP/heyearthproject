@@ -259,10 +259,10 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("invalid current password")
 	}
-	if replaced {
-		if _, err = tx.Exec(revokeOtherSessionsQuery, user.ID, hashToken(keepToken)); err != nil {
-			return fmt.Errorf("close other sessions: %w", err)
-		}
+	// The other sessions close also when the first password is set: they were opened with the
+	// bare HiEarth ID, which may be exactly why a password is being set now (audit F31).
+	if _, err = tx.Exec(revokeOtherSessionsQuery, user.ID, hashToken(keepToken)); err != nil {
+		return fmt.Errorf("close other sessions: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("set cloud password: %w", err)

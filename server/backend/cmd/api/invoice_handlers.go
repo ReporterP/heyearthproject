@@ -143,6 +143,9 @@ func createInvoice(w http.ResponseWriter, r *http.Request, byAdmin bool) {
 	}
 
 	returnURL := req.ReturnURL
+	if !sameSiteURL(returnURL) { // only back to our own site (audit F40)
+		returnURL = ""
+	}
 	if returnURL == "" {
 		returnURL = biz.GetSettingOrDefault("site_url", "https://hiearth.ru") + "/business"
 	}

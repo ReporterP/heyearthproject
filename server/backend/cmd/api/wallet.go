@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -364,7 +365,9 @@ func createWalletTopup(ctx context.Context, userID string, amountKop int64, plan
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("create payment: %w", err)
 	}
-	if returnURL == "" {
+	// ЮKassa sends the payer back here: only our own site (audit F35 — any URL made a genuine
+	// payment page redirect to a stranger's site).
+	if returnURL == "" || !sameSiteURL(returnURL) {
 		returnURL = publicBaseURL() + "/wallet?topup=" + strconv.Itoa(paymentDBID)
 	}
 	confirmation := &yookassa.Confirmation{Type: yookassa.ConfirmationTypeRedirect, ReturnURL: returnURL}
@@ -797,4 +800,19 @@ func resumeWalletTopup(w http.ResponseWriter, r *http.Request, userID string, id
 		}
 	}
 	writeJSON(w, http.StatusConflict, map[string]string{"error": topupNotResumableMsg})
+}
+
+// sameSiteURL: an absolute https URL on the site's own host (PUBLIC_BASE_URL / site_url) or one of
+// its subdomains.
+func sameSiteURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return false
+	}
+	base, err := url.Parse(publicBaseURL())
+	if err != nil || base.Host == "" {
+		return false
+	}
+	h, b := strings.ToLower(u.Hostname()), strings.ToLower(base.Hostname())
+	return h == b || strings.HasSuffix(h, "."+b)
 }

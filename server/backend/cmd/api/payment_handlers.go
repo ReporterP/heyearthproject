@@ -96,6 +96,10 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			plan = &plans[0]
 		}
 	}
+	// A hidden (inactive) plan is not for sale here — not even for 0 ₽ or with a code (audit F47).
+	if err == nil && plan != nil && !plan.IsActive {
+		plan = nil
+	}
 	if err != nil || plan == nil {
 		log.Printf("[payment.create] план не найден: userID=%q body.PlanID=%d body.Plan=%q err=%v plan_nil=%v", userID, body.PlanID, body.Plan, err, plan == nil)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "план не найден"})

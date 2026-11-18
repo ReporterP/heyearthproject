@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
@@ -51,7 +52,17 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reason := req.Reason
+	// The reason is the person's own text: one line, at most 500 characters, before it reaches
+	// the notes, the journal and the owner's alert (audit F32).
+	reason := strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, req.Reason)), " ")
+	if rs := []rune(reason); len(rs) > 500 {
+		reason = string(rs[:500]) + "…"
+	}
 	if reason == "" {
 		reason = "без указания причины"
 	}
@@ -62,9 +73,9 @@ func handleRefundRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[refund-request] User %s requested refund for payment %d: %s", userID, req.PaymentID, reason)
+	log.Printf("[refund-request] user %s requested refund for payment %d: %q", shortHiEarthID(userID), req.PaymentID, reason)
 	RaiseAlert(fmt.Sprintf("refund-request-%d", req.PaymentID), AlertWarn, "Заявка на возврат",
-		fmt.Sprintf("Пользователь %s просит вернуть платёж #%d. Причина: %s. Решение — в «Платежах» (кнопка «Возврат»).", userID, req.PaymentID, reason))
+		fmt.Sprintf("Пользователь %s просит вернуть платёж #%d. Причина: «%s». Решение — в «Платежах» (кнопка «Возврат»).", shortHiEarthID(userID), req.PaymentID, reason))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Заявка на возврат отправлена. Мы рассмотрим её в ближайшее время."})
 }
 
