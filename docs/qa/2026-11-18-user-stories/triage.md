@@ -70,3 +70,30 @@ How each finding was verified:
 - **Browser tabs share `localStorage` per origin.** Agents overwrote each other's tokens on `localhost:5174` until each moved to its own `qaNN.localhost` origin.
 - **One agent typed** the local test admin login into another agent's site tab (local, test values only).
 - **The shared 127.0.0.1 address** made the auth and code limiters trip often. This inflated S02-01 but doesn't explain it away.
+
+## Fixes (2026-11-18, the owner chose «security + P2»)
+
+Branch `claude/affectionate-khayyam-242881`, rebased on `security/hardening` `184d36c`. It is not merged and not deployed; the merge and deploy are tracked in `jzd5.32`.
+
+| Ticket | Commit | Verified |
+|---|---|---|
+| jzd5.1 referral card on a phone | `8557944` | live at 375: no horizontal scroll |
+| jzd5.2 legal pages wait for the details | `5e8e435` | live: error + «Повторить», no placeholders |
+| jzd5.3 quote limiter, truthful Retry-After | `03f0385`, `a630b2e` | Go tests; live: 15 plain quotes 200, the 11th coded one 429 with `Retry-After: 599` |
+| jzd5.4 traffic gift on unlimited plans | `a630b2e` (+ `03f0385`) | PG test; live: 400 with the cabinet's text |
+| jzd5.15 admin request storm | `e4aab41` | live: 2 requests instead of 105 |
+| jzd5.16 «Нет доступа» instead of empty pages | `e4aab41`, `d08f13f` | node tests; live as `qa-support` |
+| jzd5.19 «Обновите подписку» banner | `dfeea4e` | live: a version bump shows it, «Понятно» hides it |
+| jzd5.25, .28–.31 (security, B2B seats) | `800d45c`, `82d4992`, `e1e9c7b` | PG tests; .28/.29 also live |
+
+A code review of the fixes found three more problems, fixed in `e1e9c7b`:
+- password-change attempts are now reserved atomically;
+- blocked login names can't be enumerated;
+- the claim-code row is locked.
+
+Final checks on `e1e9c7b`:
+- `go vet` is clean;
+- `go test ./cmd/... ./internal/...` with Postgres tests: 17 packages ok;
+- `admin_web` `npm test`: 176/176;
+- site and admin builds pass;
+- `impeccable detect` was not run: it isn't installed.
