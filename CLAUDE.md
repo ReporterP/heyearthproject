@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 89 SQL migrations (000001-000089), applied at API start
+│   │   ├── migrations/            # 90 SQL migrations (000001-000090), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (89)
+# Auto-runs the migrations on startup (90)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -274,7 +274,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 89 migrations)
+## Database (PostgreSQL, 90 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -320,6 +320,7 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 - **Reality**: requires tcp + xtls-rprx-vision. Never change transport/flow (the auto-tuner is gone since 13.11).
 - **Per-country SNI**: Hub(RU) uses yandex.ru/vk.com. Exit(NL/LV) uses github.com/twitch.tv.
 - **apple.com bad SNI**: ASN mismatch visible to DPI. Removed from candidates.
+- **Hub→exit Hysteria2 tunnel is pinned**: the Hub client config carries `pinSHA256` of the exit's self-signed certificate (`servers.tunnel_cert_sha256`, migration 000090, step `hy_pin` of the exit recipe). An exit not reprovisioned since then runs unpinned; a regenerated exit certificate needs a reprovision (else the tunnel refuses it).
 - **Hysteria2 port hopping**: port-only `DNAT --to-destination :50443`, never `REDIRECT` (rewrites dst to ens3's primary IP; salamander replies use the route source → conntrack clash → EPERM, Бамбук dead 2026-10-12). After any Hub IP/route/NAT change, test Бамбук from the exit node, not from the Hub. The DNAT matches `-m addrtype --dst-type LOCAL` only: unrestricted, it rewrote forwarded UDP of AWG users/docker (calls, games broke).
 - **Egress guard phases** (`--setup-ops`): the hysteria user may reach the API auth-only listener `127.0.0.1:8001`; phase A also keeps `:8000` open until the API with that listener is deployed and `/etc/hysteria/server.yaml` points at 8001 — then re-run `--setup-ops` (phase B closes 8000). The output names the phase.
 - **PROXY protocol on the 443 stream** (`--stream-proxy-protocol on|off`, default off): without it nginx/API see every HTTPS client as 127.0.0.1 (YooKassa webhooks 403, global rate limits). Both backends ALWAYS have two loopback entry points — http nginx `8443` (plain) + `127.0.0.1:8446` (`proxy_protocol`, realip), xray `vless-reality` 10443 + mirror `vless-reality-pp` 10444 (`acceptProxyProtocol`, same clients) — so the switch is only the stream's upstream choice + `proxy_protocol on;` (one nginx reload, no xray/API restart). Deploys preserve the live mode and refuse to touch nginx if it can't be determined. **Before rolling the API back below b7d653b (or deploying any build without the `vless-reality-pp` mirror, e.g. a hotfix from main before the merge) run `--stream-proxy-protocol off` first** — in ON mode the stream sends Reality to 127.0.0.1:10444. `deploy --status` shows the mode and the 10444 listener. Runbook: `docs/runbooks/stream-proxy-protocol.md`.
