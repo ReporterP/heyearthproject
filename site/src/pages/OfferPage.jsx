@@ -1,16 +1,16 @@
 import { Link } from 'react-router-dom'
 import LegalLayout from '../components/LegalLayout.jsx'
-import useLegalInfo from '../hooks/useLegalInfo.js'
+import { useLegalDoc } from '../hooks/useLegalInfo.js'
 
 export default function OfferPage() {
-  const s = useLegalInfo()
+  const { info: s, status, retry } = useLegalDoc()
   const company = s.legal_company_name || '…'
   const email = s.legal_email || ''
   const address = s.legal_address || 'Указывается по запросу'
   const inn = s.legal_inn || ''
 
   return (
-    <LegalLayout title="Договор-оферта" updated="Редакция от 13 ноября 2026 г.">
+    <LegalLayout title="Договор-оферта" updated="Редакция от 13 ноября 2026 г." status={status} onRetry={retry}>
       <div>
         <h2>1. Предмет договора</h2>
         <p>{company} (далее — Исполнитель) предоставляет услуги прокси-маршрутизации интернет-трафика (далее — Сервис) посредством веб-сайта hiearth.ru и приложения HiEarth.</p>

@@ -1,14 +1,14 @@
 import { Link } from 'react-router-dom'
 import LegalLayout from '../components/LegalLayout.jsx'
-import useLegalInfo from '../hooks/useLegalInfo.js'
+import { useLegalDoc } from '../hooks/useLegalInfo.js'
 
 export default function RefundPage() {
-  const settings = useLegalInfo()
+  const { info: settings, status, retry } = useLegalDoc()
   const companyName = settings.legal_company_name || '…'
   const email = settings.legal_email || ''
 
   return (
-    <LegalLayout title="Условия возврата и отмены" updated="Редакция от 13 ноября 2026 г.">
+    <LegalLayout title="Условия возврата и отмены" updated="Редакция от 13 ноября 2026 г." status={status} onRetry={retry}>
       <div>
         <h2>1. Общие положения</h2>
         <p>Настоящие условия определяют порядок возврата денежных средств за услуги прокси-маршрутизации трафика, предоставляемые сервисом HiEarth ({companyName}).</p>

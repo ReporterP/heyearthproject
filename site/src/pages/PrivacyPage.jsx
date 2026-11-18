@@ -1,14 +1,14 @@
 import LegalLayout from '../components/LegalLayout.jsx'
-import useLegalInfo from '../hooks/useLegalInfo.js'
+import { useLegalDoc } from '../hooks/useLegalInfo.js'
 
 export default function PrivacyPage() {
-  const s = useLegalInfo()
+  const { info: s, status, retry } = useLegalDoc()
   const company = s.legal_company_name || '…'
   const email = s.legal_email || ''
   const address = s.legal_address || 'Указывается по запросу'
 
   return (
-    <LegalLayout title="Политика конфиденциальности" updated="Редакция от 13 ноября 2026 г.">
+    <LegalLayout title="Политика конфиденциальности" updated="Редакция от 13 ноября 2026 г." status={status} onRetry={retry}>
       <div>
         <h2>1. Общие положения</h2>
         <p>Настоящая Политика конфиденциальности (далее — Политика) определяет порядок обработки и защиты персональных данных пользователей сервиса HiEarth (hiearth.ru), предоставляемого {company} (далее — Оператор).</p>
