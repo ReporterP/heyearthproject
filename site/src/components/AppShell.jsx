@@ -38,7 +38,6 @@ export function useLogoutDialog() {
 }
 
 export function LogoutDialog({ open, onClose, profile }) {
-  const { logout } = useAuth()
   const navigate = useNavigate()
   const id = profile?.user_id
   const login = profile?.username
@@ -50,7 +49,7 @@ export function LogoutDialog({ open, onClose, profile }) {
       </p>
       <DialogActions>
         <Button variant="ghost" onClick={onClose} data-autofocus>Остаться</Button>
-        <Button variant="danger" onClick={() => { onClose(); logout(); navigate('/') }}>Выйти</Button>
+        <Button variant="danger" onClick={() => { onClose(); navigate('/', { state: { signOut: true } }) }}>Выйти</Button>
       </DialogActions>
     </Dialog>
   )

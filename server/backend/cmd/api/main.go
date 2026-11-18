@@ -249,10 +249,13 @@ func handleUserLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// errNoToken: the request carries no Authorization header at all (never signed in).
+var errNoToken = errors.New("missing Authorization header")
+
 func extractUserFromToken(r *http.Request) (string, error) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return "", fmt.Errorf("missing Authorization header")
+		return "", errNoToken
 	}
 	token := strings.TrimPrefix(auth, "Bearer ")
 	claims, err := biz.ValidateUserToken(token)

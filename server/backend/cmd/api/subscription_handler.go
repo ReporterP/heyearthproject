@@ -798,6 +798,10 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Сервис временно недоступен, попробуйте через минуту"})
 		return
 	}
+	if errors.Is(err, errNoToken) { // never signed in: nothing has expired
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Нужен вход в аккаунт"})
+		return
+	}
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Сессия истекла — войдите снова"})
 }
 
