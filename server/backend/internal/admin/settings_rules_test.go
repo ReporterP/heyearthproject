@@ -16,6 +16,8 @@ func TestNormalizeSetting(t *testing.T) {
 		{"legal_inn", "123456789012", "123456789012"},
 		{"referral_reward_friend_rub", "0", "0"},
 		{"smtp_password", " p@ss ", " p@ss "},
+		{"b2b_member_plan", " All-Inclusive ", "all-inclusive"},
+		{"b2b_member_plan", "", ""},
 	}
 	for _, c := range ok {
 		got, err := normalizeSetting(c.key, c.in)
@@ -38,6 +40,8 @@ func TestNormalizeSetting(t *testing.T) {
 		{"legal_inn", "12345"},
 		{"smtp_port", "70000"},
 		{"smtp_password", "  "},
+		{"b2b_member_plan", "полный"},
+		{"b2b_member_plan", "all inclusive"},
 	}
 	for _, c := range bad {
 		if v, err := normalizeSetting(c.key, c.in); err == nil {

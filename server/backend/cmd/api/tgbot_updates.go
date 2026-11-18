@@ -285,15 +285,20 @@ type tgSummary struct {
 	PriceKop   int64
 	FreePlan   bool
 	BalanceKop int64
+	Company    string // the subscription is the company-paid one (tenant_id): the company's name
 }
 
 func loadTGSummary(ctx context.Context, u *biz.TGLinkedUser) (*tgSummary, error) {
 	s := &tgSummary{}
 	var price int
 	err := db.DB.QueryRowContext(ctx, `
-		SELECT us.valid_until, COALESCE(p.name, us.plan, ''), COALESCE(us.auto_renew, FALSE), COALESCE(p.price_rub, 0)
+		SELECT us.valid_until, COALESCE(p.name, us.plan, ''), COALESCE(us.auto_renew, FALSE), COALESCE(p.price_rub, 0),
+		       COALESCE(t.name, '')
 		  FROM user_subscriptions us LEFT JOIN plans p ON p.id = us.plan_id
-		 WHERE us.user_id = $1 ORDER BY us.valid_until DESC LIMIT 1`, u.DBID).Scan(&s.ValidUntil, &s.PlanName, &s.AutoRenew, &price)
+		  LEFT JOIN tenants t ON t.id = us.tenant_id
+		 WHERE us.user_id = $1
+		 ORDER BY (us.valid_until > NOW()) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC LIMIT 1`, u.DBID).
+		Scan(&s.ValidUntil, &s.PlanName, &s.AutoRenew, &price, &s.Company)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:

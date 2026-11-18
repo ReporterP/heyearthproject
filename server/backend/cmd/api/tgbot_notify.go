@@ -111,7 +111,7 @@ SELECT u.id, us.id, us.valid_until, COALESCE(p.name, us.plan, '')
   JOIN users u ON u.id = us.user_id
   LEFT JOIN plans p ON p.id = us.plan_id
  WHERE u.telegram_id IS NOT NULL AND NOT u.tg_blocked AND u.notify_reminders AND NOT COALESCE(u.is_blocked, FALSE)
-   AND us.valid_until > $1 AND us.valid_until <= $2
+   AND us.valid_until > $1 AND us.valid_until <= $2 AND us.tenant_id IS NULL
    AND NOT EXISTS (SELECT 1 FROM user_subscriptions n WHERE n.user_id = us.user_id AND n.valid_until > us.valid_until)`
 
 // queueTGExpired queues «подписка закончилась» for subscriptions that ended in the last 3 hours.

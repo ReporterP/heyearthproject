@@ -71,6 +71,9 @@ type b2bTenantSummary struct {
 	MaxServers         int     `json:"max_servers"`
 	UseProviderServers bool    `json:"use_provider_servers"`
 	CreatedAt          string  `json:"created_at"`
+	// MonthlyCharge is what the billing takes on the 1st; a top-up of an inactive or suspended
+	// company that covers it is charged at once and turns the members' access on (jzd5.23).
+	MonthlyCharge float64 `json:"monthly_charge"`
 }
 
 type b2bMember struct {
@@ -201,6 +204,8 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 			MaxServers:         tenant.MaxServers,
 			UseProviderServers: tenant.UseProviderServers,
 			CreatedAt:          tenant.CreatedAt.Format(time.RFC3339),
+			MonthlyCharge: biz.CalculateTenantMonthlyCharge(biz.TenantBillingInfo{Plan: tenant.Plan, MaxUsers: tenant.MaxUsers,
+				MaxServers: tenant.MaxServers, UseProviderServers: tenant.UseProviderServers}),
 		},
 		Role:         role,
 		Members:      make([]b2bMember, 0, len(members)),

@@ -14,8 +14,9 @@ func TestEffectiveSubOrderBy(t *testing.T) {
 		alias string
 		want  string
 	}{
-		{"us", "(us.plan_id IS NOT NULL) DESC, us.valid_until DESC, us.id DESC"},
-		{"sub", "(sub.plan_id IS NOT NULL) DESC, sub.valid_until DESC, sub.id DESC"},
+		// the member's own subscription before the company-paid one (tenant_id, jzd5.24)
+		{"us", "(us.plan_id IS NOT NULL) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC, us.id DESC"},
+		{"sub", "(sub.plan_id IS NOT NULL) DESC, (sub.tenant_id IS NULL) DESC, sub.valid_until DESC, sub.id DESC"},
 	}
 	for _, tt := range tests {
 		if got := effectiveSubOrderBy(tt.alias); got != tt.want {

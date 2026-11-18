@@ -329,7 +329,7 @@ var userPlanQuery = `
 		SELECT us.plan_id FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
-		ORDER BY us.valid_until DESC LIMIT 1
+		ORDER BY (us.tenant_id IS NULL) DESC, us.valid_until DESC LIMIT 1
 	`
 
 // ActiveUserPlan is GetUserPlan with a strict error contract, for callers that
@@ -500,6 +500,7 @@ func ActivateSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, plan
 		FROM user_subscriptions us
 		JOIN plans p ON p.id = us.plan_id
 		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		  AND us.tenant_id IS NULL -- a purchase never extends or converts the company-paid row
 		ORDER BY us.valid_until DESC LIMIT 1
 		FOR UPDATE OF us
 	`, dbUserID).Scan(&currentSubID, &currentPlanID, &currentPriceRub, &currentDurationDays, &currentValidUntil, &currentPricePaid)
@@ -617,7 +618,7 @@ func CheckPlanActivationLimit(userID string, planID int) error {
 	db.DB.QueryRow(`
 		SELECT COUNT(*) FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
-		WHERE u.user_id = $1 AND us.plan_id = $2
+		WHERE u.user_id = $1 AND us.plan_id = $2 AND us.tenant_id IS NULL
 	`, userID, planID).Scan(&count)
 
 	if count >= limit {
@@ -674,7 +675,7 @@ func CalculateProrationCredit(userID string, newPlanID int) (*ProrationResult, e
 		FROM user_subscriptions us
 		JOIN users u ON u.id = us.user_id
 		JOIN plans p ON p.id = us.plan_id
-		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		WHERE u.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.tenant_id IS NULL
 		ORDER BY us.valid_until DESC LIMIT 1
 	`, userID).Scan(&currentPlanID, &currentPrice, &currentDuration, &validUntil)
 	if scanErr != nil {

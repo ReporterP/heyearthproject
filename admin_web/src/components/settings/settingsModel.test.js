@@ -22,6 +22,8 @@ test('values are checked like the API checks them', () => {
   assert.match(checkSetting(field('hub_main_server_host'), 'https://example.test').error, /без http/)
   assert.equal(checkSetting(field('hub_main_server_host'), '203.0.113.1').error, '')
   assert.match(checkSetting(field('legal_inn'), '123').error, /ИНН/)
+  assert.deepEqual(checkSetting(field('b2b_member_plan'), ' All-Inclusive '), { value: 'all-inclusive', error: '' })
+  assert.match(checkSetting(field('b2b_member_plan'), 'полный').error, /Слаг/)
   assert.equal(shownValue(field('smtp_port'), {}), '587')
   assert.equal(shownValue(field('smtp_port'), { smtp_port: '465' }), '465')
 })

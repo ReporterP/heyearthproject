@@ -83,7 +83,7 @@ func currentPlanOf(ctx context.Context, userDBID int) (planID, priceRub int, unt
 	err = db.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(us.plan_id, 0), COALESCE(p.price_rub, 0), us.valid_until
 		  FROM user_subscriptions us LEFT JOIN plans p ON p.id = us.plan_id
-		 WHERE us.user_id = $1 AND us.valid_until > NOW()
+		 WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.tenant_id IS NULL
 		 ORDER BY us.valid_until DESC LIMIT 1`, userDBID).Scan(&planID, &priceRub, &until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, time.Time{}, nil
