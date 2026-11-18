@@ -4,6 +4,7 @@ import { ImagePlus, Plus, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { useToast } from '../components/Toast.jsx'
 import { createNews, deleteNews, fetchNews, scheduleNews, sendNews, unscheduleNews, updateNews, uploadNewsImage } from '../api/admin.js'
 import { formatDate } from '../utils/format.js'
+import { NEWS_SCENES, newsPicture, sceneURL, switchPicture } from '../utils/newsPicture.js'
 import { Badge, Button, Card, Dialog, EmptyState, Input, PageHeader, TableSkeleton, Table, Thead, Tbody, Tr, Th, Td, Textarea } from '../components/ui/index.js'
 
 // «Новости» (plan TG6): one post → the Telegram channel, the bot (all / with a subscription /
@@ -23,7 +24,12 @@ const STATUS = {
   sent: { label: 'отправлено', variant: 'success' },
   failed: { label: 'ошибка', variant: 'danger' },
 }
-const EMPTY = { title: '', body: '', image: '', button_text: '', button_url: '', targets: ['channel', 'bot_all', 'site'], happ_days: 3 }
+const PICTURES = [
+  { key: 'scene', label: 'Ёжик' },
+  { key: 'image', label: 'Своя картинка' },
+  { key: 'none', label: 'Без картинки' },
+]
+const EMPTY = { title: '', body: '', image: '', scene: 'news', button_text: '', button_url: '', targets: ['channel', 'bot_all', 'site'], happ_days: 3 }
 
 // Preview of the Telegram HTML subset (allow-list, the same as the cabinet's RichText).
 const TAGS = { b: 'b', strong: 'b', i: 'i', em: 'i', u: 'u', ins: 'u', s: 's', strike: 's', del: 's', code: 'code', pre: 'pre', blockquote: 'blockquote', 'tg-spoiler': 'span', a: 'a' }
@@ -50,12 +56,13 @@ function Rich({ html }) {
 
 function Preview({ form }) {
   const img = form.image ? `/api/v1/news/images/${form.image}` : ''
+  const tgImg = form.scene ? sceneURL(form.scene) : img // the cabinet feed never shows a scene
   return (
     <div className="space-y-4">
       <div>
         <p className="text-xs text-tertiary mb-1">Как в Telegram</p>
         <div className="rounded-md border border-default bg-canvas p-3 text-sm text-primary space-y-2">
-          {img && <img src={img} alt="" className="w-full max-h-48 object-cover rounded" />}
+          {tgImg && <img src={tgImg} alt="" className="w-full max-h-48 object-cover rounded" />}
           {form.title && <p className="font-semibold">{form.title}</p>}
           {form.body && <Rich html={form.body} />}
           {form.button_text && <div className="rounded border border-accent/40 bg-accent/10 py-1.5 text-center text-xs text-accent">{form.button_text}</div>}
@@ -89,7 +96,9 @@ function Editor({ post, audience, channel, onClose, onSaved }) {
   const [err, setErr] = useState('')
   const [confirm, setConfirm] = useState(false)
   const [at, setAt] = useState('')
+  const [picture, setPicture] = useState(() => newsPicture(form))
   const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setErr('') }
+  const pick = (kind) => { setPicture(kind); setForm(f => switchPicture(f, kind)); setErr('') }
   const toggle = k => set('targets', form.targets.includes(k) ? form.targets.filter(x => x !== k) : [...form.targets, k])
   const botCount = form.targets.includes('bot_all') || (form.targets.includes('bot_active') && form.targets.includes('bot_inactive'))
     ? audience.bot_all : (form.targets.includes('bot_active') ? audience.bot_active : 0) + (form.targets.includes('bot_inactive') ? audience.bot_inactive : 0)
@@ -97,7 +106,7 @@ function Editor({ post, audience, channel, onClose, onSaved }) {
   async function save() {
     setBusy('save')
     try {
-      const payload = { title: form.title, body: form.body, image: form.image, button_text: form.button_text, button_url: form.button_url, targets: form.targets, happ_days: Number(form.happ_days) || 3 }
+      const payload = { title: form.title, body: form.body, image: form.image, scene: form.scene || '', button_text: form.button_text, button_url: form.button_url, targets: form.targets, happ_days: Number(form.happ_days) || 3 }
       const p = post ? await updateNews(post.id, payload) : await createNews(payload)
       toast.success(sent ? 'Сохранено — правка уходит в канал и бот' : 'Черновик сохранён')
       onSaved(p)
@@ -157,16 +166,47 @@ function Editor({ post, audience, channel, onClose, onSaved }) {
             <Textarea id="news-body" rows={7} value={form.body} onChange={e => set('body', e.target.value)} className="font-mono text-xs" />
             <p className="text-xs text-tertiary mt-1">HTML Telegram: &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;s&gt;, &lt;a href="https://…"&gt;, &lt;code&gt;, &lt;blockquote&gt;, &lt;tg-spoiler&gt;. Символы &lt; &gt; &amp; в тексте — как &amp;lt; &amp;gt; &amp;amp;. Без слова «VPN».</p>
           </div>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-            {form.image
-              ? <><span className="font-mono text-xs text-secondary truncate">{form.image}</span>{!sent && <Button variant="ghost" size="sm" onClick={() => set('image', '')}>Убрать картинку</Button>}</>
-              : !sent && (
-                <label className="inline-flex">
-                  <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={upload} />
-                  <span className="inline-flex h-8 items-center gap-1.5 rounded border border-default px-3 text-sm text-secondary hover:bg-elevated cursor-pointer"><ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />{busy === 'upload' ? 'Загружаем…' : 'Картинка'}</span>
-                </label>
-              )}
-            <span className="text-xs text-tertiary">С картинкой текст — до 1024 символов</span>
+          <div className="space-y-2">
+            <p id="news-picture" className="text-xs text-tertiary">Картинка</p>
+            {sent ? (
+              <p className="text-xs text-secondary">
+                {form.scene ? <>Ёжик <span className="font-mono">{form.scene}</span></> : form.image ? <span className="font-mono">{form.image}</span> : 'Без картинки'}
+              </p>
+            ) : (
+              <>
+                <div role="radiogroup" aria-labelledby="news-picture" className="inline-flex flex-wrap rounded border border-default p-0.5">
+                  {PICTURES.map(p => (
+                    <button key={p.key} type="button" role="radio" aria-checked={picture === p.key} onClick={() => pick(p.key)}
+                      className={`h-7 rounded px-3 text-sm ${picture === p.key ? 'bg-accent/10 text-primary' : 'text-secondary hover:bg-hover'}`}>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                {picture === 'scene' && (
+                  <div className="flex flex-wrap gap-2">
+                    {NEWS_SCENES.map(s => (
+                      <button key={s.slug} type="button" aria-pressed={form.scene === s.slug} title={s.label} onClick={() => set('scene', s.slug)}
+                        className={`overflow-hidden rounded border ${form.scene === s.slug ? 'border-accent' : 'border-default hover:border-strong'}`}>
+                        <img src={sceneURL(s.slug)} alt={`Ёжик: ${s.label}`} width="96" height="54" loading="lazy" className="block h-[54px] w-24" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {picture === 'image' && (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    {form.image
+                      ? <><span className="font-mono text-xs text-secondary truncate">{form.image}</span><Button variant="ghost" size="sm" onClick={() => set('image', '')}>Убрать картинку</Button></>
+                      : (
+                        <label className="inline-flex">
+                          <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={upload} />
+                          <span className="inline-flex h-8 items-center gap-1.5 rounded border border-default px-3 text-sm text-secondary hover:bg-elevated cursor-pointer"><ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />{busy === 'upload' ? 'Загружаем…' : 'Загрузить'}</span>
+                        </label>
+                      )}
+                  </div>
+                )}
+                {picture !== 'none' && <p className="text-xs text-tertiary">С картинкой текст — до 1024 символов</p>}
+              </>
+            )}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
