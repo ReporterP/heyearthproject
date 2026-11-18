@@ -436,3 +436,21 @@ func promoGuessFailed(userDBID int) {
 	}
 	w.n++
 }
+
+// PromoFitsPlan reports whether a code makes sense for a purchase of a plan with that traffic
+// limit (0 = unlimited): a traffic gift is refused on an unlimited plan with the cabinet's text,
+// before anything is charged or the code is used (QA 2026-11-18).
+func PromoFitsPlan(p *Promocode, planLimitBytes int64) error {
+	if p != nil && p.Type == PromoTrafficGift && planLimitBytes <= 0 {
+		return ErrPromoUnlimited
+	}
+	return nil
+}
+
+// PlanTrafficLimit is the plan's traffic limit in bytes, 0 when unlimited.
+func PlanTrafficLimit(plan *Plan) int64 {
+	if plan == nil || plan.TrafficLimitBytes == nil || *plan.TrafficLimitBytes < 0 {
+		return 0
+	}
+	return *plan.TrafficLimitBytes
+}

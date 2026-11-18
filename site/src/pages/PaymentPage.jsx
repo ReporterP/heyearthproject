@@ -315,6 +315,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
   }
 
   const btnLabel = isFree ? 'Активировать бесплатно' : quoteBusy ? 'Считаем…'
+    : !quote ? 'Оплатить' // no price yet (the quote failed): no «0 ₽» on the button
     : freeCode ? 'Активировать промокод'
       : enough ? `Оплатить с кошелька — ${kop(price)}`
         : `Оплатить ${money(topupRub)}`
@@ -351,7 +352,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
           </div>
           <div className="card stack gap-4">
             <form onSubmit={applyCode} noValidate>
-              <Field id="pc" label="Промокод" optional error={promoErr || null} hint={applied && discount > 0 ? (quote?.promo_message || `Скидка ${pct}% — минус ${kop(discount)}`) : applied && freeCode ? (quote?.promo_message || 'Промокод даёт бесплатные дни') : null} hintTone="ok">
+              <Field id="pc" label="Промокод" optional error={promoErr || null} hint={applied && discount > 0 ? (quote?.promo_message || `Скидка ${pct}% — минус ${kop(discount)}`) : applied && freeCode ? (quote?.promo_message || 'Промокод даёт бесплатные дни') : applied && quote?.promo_type === 'traffic_gift' ? (quote?.promo_message || null) : null} hintTone="ok">
                 <div className="input-group">
                   <Input id="pc" aria-describedby={promoErr || applied ? 'pc-msg' : undefined} value={applied || promo} readOnly={!!applied} placeholder="Например, ЛЕТО10" autoCapitalize="characters" spellCheck={false}
                     onChange={(e) => { setPromo(e.target.value.toUpperCase()); setPromoErr('') }} invalid={!!promoErr} />
@@ -368,7 +369,12 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
               <p className="t-sm muted">Чек придёт на <span className="mono" style={{ color: 'var(--fg)' }}>{confirmed}</span>.</p>
             )}
           </div>
-          {quoteErr && <Alert tone="bad" title="Не удалось рассчитать стоимость.">{quoteErr === 'Не удалось рассчитать стоимость.' ? 'Обновите страницу.' : quoteErr}</Alert>}
+          {quoteErr && !quoteBusy && (
+            <Alert tone="bad" title="Не удалось рассчитать стоимость.">
+              {quoteErr === 'Не удалось рассчитать стоимость.' ? 'Попробуйте пересчитать.' : quoteErr}
+              <div style={{ marginTop: 8 }}><Button variant="ghost" size="sm" onClick={() => setQuoteNonce((n) => n + 1)}>Пересчитать</Button></div>
+            </Alert>
+          )}
           {blocked && <Alert tone="warn">Сейчас у вас тариф дороже — сменить на более дешёвый можно после окончания текущего{active ? `, ${date(active.valid_until)}` : ''}.</Alert>}
           {quote && !freeCode && !blocked && (enough
             ? <Alert tone="ok" title="Хватает на кошельке.">Спишем {kop(price)} с баланса — без ЮKassa.</Alert>

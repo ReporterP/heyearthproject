@@ -126,6 +126,9 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		promo, err := biz.LoadPromocode(r.Context(), db.DB, userDBID, body.Promocode, plan.ID, false)
+		if err == nil {
+			err = biz.PromoFitsPlan(promo, biz.PlanTrafficLimit(plan))
+		}
 		if err != nil {
 			writePromoError(w, err)
 			return
