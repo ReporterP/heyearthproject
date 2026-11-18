@@ -106,7 +106,8 @@ function profile() {
 
 function autoRenew() {
   const s = sub()
-  if (!s || !s.active) return null
+  // the company-paid row never renews from the wallet (the API skips it)
+  if (!s || !s.active || S.company === 'only') return null
   const bal = balanceKop()
   const price = CUR.price_rub * 100
   return { enabled: S.renew === 'on', plan_name: CUR.name, price_kop: price, renew_at: s.valid_until, enough: bal >= price, shortfall_kop: Math.max(0, price - bal), free: false }

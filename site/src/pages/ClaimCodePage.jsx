@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.jsx'
+import { invalidateAccount } from '../account/useAccount.js'
 import MiniPage from '../components/MiniPage.jsx'
 import Hedgehog from '../components/Hedgehog.jsx'
 import Button from '../components/Button.jsx'
@@ -52,7 +53,8 @@ export default function ClaimCodePage() {
       const refused = !r.ok && r.status >= 400 && r.status < 500 && r.status !== 429
       const body = r.ok || refused ? await r.json().catch(() => ({})) : {}
       setNoSeats(refused && String(body.error || '') === 'no seats left')
-      if (r.ok) setJoined(body)
+      // the cabinet must not show a subscription cached before the company's access
+      if (r.ok) { setJoined(body); invalidateAccount() }
       setState(r.ok ? 'joined' : refused ? 'failed' : 'temp')
     } catch {
       setState('temp')
