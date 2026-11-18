@@ -19,7 +19,8 @@ import { HAPP, detectDevice } from '../lib/apps.js'
 // purpose — the main action already happened by itself.
 const TIMEOUT_MS = 2500
 
-// Android: an intent URI falls back to Google Play by itself when Happ is not installed
+// Android: an intent URI; without Happ the browser goes to browser_fallback_url — the official
+// site happ.info (Google Play has no Happ any more, only clones)
 function androidIntent(happLink) {
   const tail = happLink.replace(/^happ:\/\//, '')
   return `intent://${tail}#Intent;scheme=happ;package=com.happproxy;S.browser_fallback_url=${encodeURIComponent(HAPP.android.url)};end`

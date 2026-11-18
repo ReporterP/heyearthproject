@@ -31,10 +31,13 @@ const (
 	tgInlineRefreshEach = 30 * time.Minute
 )
 
+// happStores: where to get Happ. Google Play dropped it (404 on 2026-11-18, only clones left):
+// Android and desktop builds come from the official site happ.info. The site's list is
+// site/src/lib/apps.js — keep the two in sync.
 var happStores = map[string][2]string{
 	"ios":     {"App Store", "https://apps.apple.com/us/app/happ-proxy-utility-plus/id6517741108"},
-	"android": {"Google Play", "https://play.google.com/store/apps/details?id=com.happproxy"},
-	"pc":      {"сайт Happ", "https://www.happ.su/main/ru"},
+	"android": {"сайт Happ (APK)", "https://happ.info/ru/"},
+	"pc":      {"сайт Happ", "https://happ.info/ru/"},
 }
 
 func backRow() []tg.InlineKeyboardButton {
