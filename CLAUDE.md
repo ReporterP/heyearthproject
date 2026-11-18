@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 91 SQL migrations (000001-000091), applied at API start
+│   │   ├── migrations/            # 93 SQL migrations (000001-000093), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (91)
+# Auto-runs the migrations on startup (93)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -224,7 +224,8 @@ Runbook: `docs/runbooks/telegram-bot.md`; site spec: `spec/12-telegram.md`, 08 �
 - `cmd/api/tgbot*.go`: pollers (users' bot; alerts bot for owner replies) and `tg_outbox` under Postgres advisory locks; `/start link_…|ref_…`, `/status /connect /wallet /friend /support /news /settings /paysupport`; notifications hang on the e-mail/Happ events (`tgbot_notify.go`).
 - Mini App `/tg`: initData → session (`POST /api/v1/auth/telegram[/register|/login]`), the cabinet pages in Mini App mode (`site/src/lib/telegram.js`: MainButton mirrors the screen's primary, BackButton, safe areas, haptics).
 - **Payments inside Telegram are Telegram Stars only** (Developer Terms 6.2; links to pay on the site, ЮKassa, crypto/TON = ban risk). `cmd/api/stars.go`: price = ⌈plan ₽ / `tg_stars_rub`⌉, one payment = one plan period, `stars_payments` per charge id, refund on failure, `/paysupport`. Never add a site-payment link to the bot or the Mini App.
-- Support (`support.go`, admin «Поддержка», `support.manage`), news (`news.go`, admin «Новости», `news.manage`: channel + bot + cabinet feed + Happ line `📣`), settings in admin «Telegram-бот» (token write-only, channel, Stars rate).
+- Hedgehog scenes (spec 12 §12.6, `cmd/api/tgscenes/*.gif` embedded, drawn by `docs/telegram-brand/scenes/render.py`): `tgOut.Scene` sends `sendAnimation` (file_id cached per bot); event notices only, the menu stays text; caption > 1024 → plain text.
+- Support (`support.go`, admin «Поддержка», `support.manage`), news (`news.go`, admin «Новости», `news.manage`: channel + bot + cabinet feed + Happ line `📣`; a post's picture is an upload or a hedgehog scene), settings in admin «Telegram-бот» (token write-only, channel, Stars rate).
 
 ### B2B company access (jzd5.24/.23, since 2026-11-18, behind `b2b_enabled`)
 
@@ -280,7 +281,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 91 migrations)
+## Database (PostgreSQL, 93 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
