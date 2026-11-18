@@ -119,8 +119,11 @@ func (c *atConn) QueryContext(_ context.Context, query string, args []driver.Nam
 			}
 		}
 		return one([]string{"sum", "count"}, sum, count), nil
-	case strings.HasPrefix(q, "SELECT status FROM tenants WHERE id = $1 FOR UPDATE"):
-		return one([]string{"status"}, "active"), nil
+	case strings.HasPrefix(q, "SELECT id, name, plan, max_users, max_servers, use_provider_servers, balance::float8, status FROM tenants WHERE id = $1 FOR UPDATE"):
+		// an active company: the credit is only a credit (no month taken, no access sync)
+		tenant := args[0].Value.(int64)
+		return one([]string{"id", "name", "plan", "max_users", "max_servers", "use_provider_servers", "balance", "status"},
+			tenant, fmt.Sprintf("Tenant %d", tenant), "basic", int64(10), int64(5), false, st.balance[tenant], "active"), nil
 	case strings.HasPrefix(q, "UPDATE tenants SET balance = balance + $1"):
 		tenant := args[1].Value.(int64)
 		before := st.balance[tenant]

@@ -861,6 +861,9 @@ func main() {
 	// Data retention (D5): per-day traffic sums, raw traffic 45 days, expired sessions.
 	StartRetentionLoop()
 
+	// Company-paid access (jzd5.24): re-check every company's members against its status.
+	StartTenantAccessLoop()
+
 	// Monitoring → Telegram alerts: external loop probe of the entry via an exit,
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
 	StartMonitor()

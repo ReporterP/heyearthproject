@@ -33,7 +33,8 @@ export default function PaymentPage() {
   const plans = usePlans()
   const acc = useAccount(['profile', 'subscription', 'wallet'], { optional: ['subscription', 'wallet'] })
   const sub = currentSub(acc.data.subscription)
-  const active = sub?.active ? sub : null
+  // the person's own subscription only: a purchase never extends the company-paid one (09 §9.1)
+  const active = sub?.active && !sub.company ? sub : null
   const chosen = slug ? plans.list.find((p) => p.slug === slug) : null
   const [done, setDone] = useState(null) // { title, text } after a purchase without ЮKassa
   usePageMeta(slug ? 'Оформление — HiEarth' : 'Тарифы — HiEarth', { noindex: true })

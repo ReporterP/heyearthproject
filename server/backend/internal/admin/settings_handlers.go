@@ -1,13 +1,16 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/db"
 )
 
 type settingPayload struct {
@@ -126,9 +129,29 @@ func UpdateSettingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload.Value = value
+	memberPlan := key == biz.TenantMemberPlanSetting
+	if memberPlan && value != "" {
+		var exists bool
+		if err := db.DB.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM plans WHERE slug = $1)`, value).Scan(&exists); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "check plan: "+err.Error())
+			return
+		}
+		if !exists {
+			writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("Тарифа со слагом %q нет — слаги на странице «Тарифы»", value))
+			return
+		}
+	}
 	if err := biz.SetSetting(key, payload.Value); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "Failed to save setting")
 		return
+	}
+	if memberPlan {
+		// Every company's members move to the new plan now, not at the next hourly check.
+		go func() {
+			if _, err := biz.SyncAllTenantAccess(context.Background()); err != nil {
+				log.Printf("[admin] member plan changed, access sync: %v (the hourly loop retries)", err)
+			}
+		}()
 	}
 	// Never write sensitive values to audit log in plaintext.
 	auditValue := payload.Value

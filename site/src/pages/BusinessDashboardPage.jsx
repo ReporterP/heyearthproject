@@ -173,6 +173,11 @@ export default function BusinessDashboardPage() {
   const invoices = data.invoices || []
   const operations = data.transactions || []
   const balance = Math.round((Number(t.balance) || 0) * 100) / 100
+  // what the 1st takes; a top-up of an inactive/suspended company up to it is charged at once and
+  // turns the employees' access on (10.4 «Доступ сотрудников»). Older servers do not send it.
+  const charge = t.monthly_charge == null ? null : Number(t.monthly_charge) || 0
+  const need = charge == null ? null : Math.max(0, Math.ceil(charge - balance))
+  const topUpBy = need ? `хотя бы на ${money(need)}` : 'на сумму месячного списания'
   const span = (n) => (narrow ? undefined : { gridColumn: `span ${n}` })
   const seats = max > 0
     ? <span className="mono">{members.length} из {max} {plural(max, ['места', 'мест', 'мест'])}</span>
@@ -190,14 +195,14 @@ export default function BusinessDashboardPage() {
           <Badge tone={status.tone} style={{ height: 30, padding: '0 12px', fontSize: 13 }}>{status.text}</Badge>
         </div>
 
-        {t.status === 'inactive' && <Alert tone="warn" rise className="mb-4"><b>Аккаунт неактивен.</b> Пополните кошелёк — после первого платежа аккаунт активируется автоматически.</Alert>}
-        {t.status === 'suspended' && <Alert tone="bad" rise className="mb-4"><b>Аккаунт приостановлен.</b> Баланс закончился. Пополните — доступ восстановится после ежемесячного списания.</Alert>}
+        {t.status === 'inactive' && <Alert tone="warn" rise className="mb-4"><b>Аккаунт неактивен.</b> Пополните кошелёк {topUpBy} — сразу спишем первый месяц, и сотрудники получат доступ.</Alert>}
+        {t.status === 'suspended' && <Alert tone="bad" rise className="mb-4"><b>Аккаунт приостановлен</b> — у сотрудников нет доступа. Пополните кошелёк {topUpBy} — сразу спишем месяц, и доступ вернётся.</Alert>}
 
         <div className="grid" style={{ gridTemplateColumns: narrow ? 'minmax(0,1fr)' : 'repeat(12, minmax(0,1fr))', gap: 16 }}>
           <Card title="Баланс компании" className="rise" style={{ ...span(4), '--d': '60ms' }}>
             <Flap value={group(balance)} suffix="₽" size={phone ? 36 : 44} label={money(balance)} />
             <p className="t-sm subtle" style={{ marginTop: 10 }}>
-              {t.status === 'active' && <>Следующее списание — {date(nextCharge())}: {t.plan === 'super' ? 'по фиксированному тарифу' : max > 0 ? `${max} ${plural(max, ['место', 'места', 'мест'])}` : 'по числу мест'}.</>}
+              {t.status === 'active' && <>Следующее списание — {date(nextCharge())}: {charge ? `${money(charge)} ` : ''}{t.plan === 'super' ? 'по фиксированному тарифу' : max > 0 ? `${charge ? 'за ' : ''}${max} ${plural(max, ['место', 'места', 'мест'])}` : 'по числу мест'}.</>}
             </p>
             {canBill
               ? <Button variant="primary" block onClick={() => setTopup(true)} style={{ marginTop: 16 }}>Пополнить кошелёк</Button>
@@ -217,7 +222,7 @@ export default function BusinessDashboardPage() {
             {members.length <= 1 && (
               <EmptyState small title="Сотрудники не привязаны" actions={isAdmin ? <Button size="sm" onClick={() => setInvite(true)}>Пригласить первого</Button> : null}>
                 {isAdmin
-                  ? 'Создайте ссылку-приглашение — сотрудник получит доступ без отдельной регистрации.'
+                  ? 'Создайте ссылку-приглашение — сотруднику нужен только HiEarth ID, он выдаётся анонимно в один клик.'
                   : 'Приглашать сотрудников может администратор компании.'}
               </EmptyState>
             )}

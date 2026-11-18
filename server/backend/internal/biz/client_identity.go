@@ -64,6 +64,15 @@ type UserSubscriptionDetail struct {
 	Active     bool   `json:"active"`
 	Plan       string `json:"plan"`
 	PriceRub   int    `json:"price_rub"`
+	// Company: the row is the company-paid access (jzd5.24), absent for the member's own.
+	Company *SubscriptionCompany `json:"company,omitempty"`
+}
+
+// SubscriptionCompany names the company that pays for a subscription row. Status is the
+// company's status while the user is a member (active, suspended, inactive), «left» after.
+type SubscriptionCompany struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 // UserPaymentDetail is returned in payment lists.
@@ -467,15 +476,14 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		return state, nil
 	}
 
+	// A member of an active company has a company-paid subscription row (SyncTenantAccessTx),
+	// so membership alone no longer means access: users.tenant_id was never cleared when a
+	// member left or the company was suspended, and it let such a client «connect» to nothing.
 	hasSub, err := HasActiveSubscription(userID)
 	if err != nil {
 		return nil, fmt.Errorf("active subscription: %w", err)
 	}
-	isTenant, err := isMemberOfTenant(userID)
-	if err != nil {
-		return nil, err
-	}
-	if !hasSub && !isTenant {
+	if !hasSub {
 		state.CanConnect = false
 		state.Reason = "no_active_subscription"
 	}
@@ -486,22 +494,6 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 	return state, nil
 }
 
-// isMemberOfTenant: the user belongs to a B2B tenant. An unknown user is not; a
-// failed read is an error.
-func isMemberOfTenant(userID string) (bool, error) {
-	var tenantID int
-	err := db.DB.QueryRow(`
-		SELECT COALESCE(tenant_id, 0) FROM users WHERE user_id = $1
-	`, strings.TrimSpace(userID)).Scan(&tenantID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("tenant membership: %w", err)
-	}
-	return tenantID > 0, nil
-}
-
 // ─────────────────────── Subscriptions & Payments Lists ───────────────────────
 
 // ListUserSubscriptions returns all subscriptions for a user.
@@ -510,14 +502,21 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Live rows first, the member's own before the company-paid one (the order the access is
+	// used in, effectiveSubOrderBy): the cabinet shows the first live row as «the» subscription.
 	rows, err := db.DB.Query(`
 		SELECT us.id, COALESCE(us.plan_id, 0), COALESCE(p.name, 'standard'),
 		       us.valid_until, us.auto_renew, us.valid_until > NOW(),
-		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0)
+		       COALESCE(p.slug, us.plan, 'standard'), COALESCE(us.price_paid, p.price_rub, us.price_rub, 0),
+		       COALESCE(t.name, ''),
+		       CASE WHEN t.id IS NULL THEN ''
+		            WHEN EXISTS (SELECT 1 FROM tenant_members m WHERE m.tenant_id = t.id AND m.user_id = us.user_id) THEN t.status
+		            ELSE 'left' END
 		FROM user_subscriptions us
 		LEFT JOIN plans p ON p.id = us.plan_id
+		LEFT JOIN tenants t ON t.id = us.tenant_id
 		WHERE us.user_id = $1
-		ORDER BY us.valid_until DESC
+		ORDER BY (us.valid_until > NOW()) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC
 	`, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list user subscriptions: %w", err)
@@ -528,10 +527,15 @@ func ListUserSubscriptions(userID string) ([]UserSubscriptionDetail, error) {
 	for rows.Next() {
 		var item UserSubscriptionDetail
 		var validUntil time.Time
-		if err := rows.Scan(&item.ID, &item.PlanID, &item.PlanName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub); err != nil {
+		var company, companyStatus string
+		if err := rows.Scan(&item.ID, &item.PlanID, &item.PlanName, &validUntil, &item.AutoRenew, &item.Active, &item.Plan, &item.PriceRub,
+			&company, &companyStatus); err != nil {
 			return nil, err
 		}
 		item.ValidUntil = validUntil.Format(time.RFC3339)
+		if companyStatus != "" {
+			item.Company = &SubscriptionCompany{Name: company, Status: companyStatus}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

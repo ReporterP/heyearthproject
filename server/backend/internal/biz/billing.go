@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -34,40 +35,43 @@ func CalculateTenantMonthlyCharge(t TenantBillingInfo) float64 {
 	return charge
 }
 
+// RunMonthlyTenantBilling charges every active company for the month (the 1st, cmd/api
+// checkMonthlyBilling). Each company is billed under its own row lock (BillTenantMonth): short
+// of money it is suspended and its members lose access at once (jzd5.23); a top-up that
+// covers the month resumes it (CreditTenantWalletTx).
 func RunMonthlyTenantBilling() error {
-	rows, err := db.DB.Query(`
-		SELECT id, name, plan, max_users, max_servers, use_provider_servers, balance::float8
-		FROM tenants
-		WHERE status = 'active'
-	`)
+	ctx := context.Background()
+	rows, err := db.DB.QueryContext(ctx, `SELECT id FROM tenants WHERE status = 'active' ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("query tenants: %w", err)
 	}
-	defer rows.Close()
-
-	var tenants []TenantBillingInfo
+	var ids []int
 	for rows.Next() {
-		var t TenantBillingInfo
-		if err := rows.Scan(&t.TenantID, &t.Name, &t.Plan, &t.MaxUsers, &t.MaxServers, &t.UseProviderServers, &t.Balance); err != nil {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return fmt.Errorf("scan tenant: %w", err)
 		}
-		tenants = append(tenants, t)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("query tenants: %w", err)
 	}
 
-	for _, t := range tenants {
-		charge := CalculateTenantMonthlyCharge(t)
-		err := DebitTenantWallet(t.TenantID, charge, fmt.Sprintf("Monthly billing: %s", t.Name))
-		if err != nil {
-			log.Printf("billing: tenant %d (%s): debit %.2f failed: %v", t.TenantID, t.Name, charge, err)
-			_, _ = db.DB.Exec(`UPDATE tenants SET status = 'suspended', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, t.TenantID)
-			log.Printf("billing: tenant %d (%s) suspended due to insufficient balance", t.TenantID, t.Name)
-			go sendTenantSuspensionEmail(t.TenantID, t.Name, charge, t.Balance)
-			continue
+	for _, id := range ids {
+		res, err := BillTenantMonth(ctx, id)
+		switch {
+		case err != nil:
+			log.Printf("billing: tenant %d: %v", id, err)
+		case res.Charged:
+			log.Printf("billing: tenant %d (%s): charged %.2f", id, res.Name, res.Charge)
+			// Email summary so the company sees what was billed and what remains.
+			go sendTenantBilledEmail(id, res.Name, res.Charge, res.Balance)
+		case res.Suspended:
+			log.Printf("billing: tenant %d (%s) suspended: %.2f on the wallet, %.2f due; members' access ended", id, res.Name, res.Balance, res.Charge)
+			go sendTenantSuspensionEmail(id, res.Name, res.Charge, res.Balance)
 		}
-		log.Printf("billing: tenant %d (%s): charged %.2f", t.TenantID, t.Name, charge)
-		// Email summary so the company sees what was billed and what remains.
-		newBalance := t.Balance - charge
-		go sendTenantBilledEmail(t.TenantID, t.Name, charge, newBalance)
 	}
 	return nil
 }
@@ -106,8 +110,8 @@ func sendTenantSuspensionEmail(tenantID int, name string, charge, balance float6
 		return
 	}
 	body := fmt.Sprintf(
-		"Здравствуйте!\n\nКомпания «%s» приостановлена: не хватило средств для ежемесячного списания.\nТребовалось: %.2f ₽. Остаток на кошельке: %.2f ₽.\n\nПополните кошелёк в кабинете компании — после первого успешного платежа аккаунт автоматически возобновится.\n\nКабинет компании: https://hiearth.ru/business/dashboard\n\n—\nHiEarth",
-		name, charge, balance,
+		"Здравствуйте!\n\nКомпания «%s» приостановлена: не хватило средств для ежемесячного списания, и сотрудники потеряли доступ к HiEarth.\nТребовалось: %.2f ₽. Остаток на кошельке: %.2f ₽.\n\nПополните кошелёк хотя бы на %.2f ₽ — мы сразу спишем месяц, и доступ сотрудников вернётся.\n\nКабинет компании: https://hiearth.ru/business/dashboard\n\n—\nHiEarth",
+		name, charge, balance, charge-balance,
 	)
 	_ = email.Send(email.Message{
 		To:       to,
@@ -123,8 +127,9 @@ func sendTenantSuspensionEmail(tenantID int, name string, charge, balance float6
 // prefix "[notify]" so we don't spam the same tenant multiple times per month.
 //
 // Threshold logic:
-//   estimatedNextCharge = CalculateTenantMonthlyCharge(tenant)
-//   IF balance < 0.5 * estimatedNextCharge → warn
+//
+//	estimatedNextCharge = CalculateTenantMonthlyCharge(tenant)
+//	IF balance < 0.5 * estimatedNextCharge → warn
 //
 // Idempotent within a calendar month via dedup on a synthetic
 // 'low_balance_notify' wallet entry (amount=0, direction='credit').

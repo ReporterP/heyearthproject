@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -159,6 +160,11 @@ func UpdateTenantHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "update tenant: "+err.Error())
 		return
 	}
+	// The status decides the members' access (jzd5.23/.24); a failed sync is redone by the
+	// hourly loop.
+	if err := biz.SyncTenantAccess(r.Context(), id); err != nil {
+		log.Printf("[admin] tenant %d updated, access sync failed (the hourly loop retries): %v", id, err)
+	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -177,6 +183,7 @@ func DeleteTenantHandler(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "delete tenant: "+err.Error())
 		return
 	}
+	biz.NotifySubscriptionChange() // the company's subscription rows went with it (ON DELETE CASCADE)
 	writeAdminJSON(w, http.StatusOK, map[string]string{"message": "deleted"})
 }
 
@@ -483,11 +490,13 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If the payment is already paid — credit the tenant wallet now. We do
-	// this through biz to get the auto-activate side-effect for free.
+	// this through biz to get the activate/resume side-effect (and the members' access).
+	var credit biz.CreditTenantWalletResult
 	if paid {
 		paymentDBID := paymentID
 		desc := fmt.Sprintf("Admin-attached %s payment #%d", kind, paymentID)
-		_, err := biz.CreditTenantWalletTx(ctx, tx, req.TenantID, float64(creditKop)/100, desc, &paymentDBID)
+		var err error
+		credit, err = biz.CreditTenantWalletTx(ctx, tx, req.TenantID, float64(creditKop)/100, desc, &paymentDBID)
 		if errors.Is(err, biz.ErrPaymentAlreadyCredited) {
 			writeAdminError(w, http.StatusConflict, "Этот платёж уже зачислен")
 			return
@@ -500,6 +509,9 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "commit: "+err.Error())
 		return
+	}
+	if credit.AccessChanged {
+		biz.NotifySubscriptionChange()
 	}
 	credited := fmt.Sprintf("%d.%02d", creditKop/100, creditKop%100)
 	if paid && wasUnapplied && PaymentUnappliedResolvedFn != nil {
@@ -515,6 +527,8 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if paid {
 		resp["credited_amount"] = float64(creditKop) / 100
+		resp["activated"] = credit.Activated || credit.Resumed
+		resp["charged"] = credit.Charged
 	}
 	writeAdminJSON(w, http.StatusOK, resp)
 }

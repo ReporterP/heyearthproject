@@ -112,6 +112,8 @@ func tgHome(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 		b.WriteString("👋 <b>Здравствуйте!</b>\n\n")
 	}
 	switch {
+	case s.Active && s.Company != "":
+		fmt.Fprintf(&b, "✅ Доступ от компании «%s» — тариф «%s»\n", html.EscapeString(s.Company), html.EscapeString(s.PlanName))
 	case s.Active:
 		d := tgDaysLeft(s.ValidUntil)
 		fmt.Fprintf(&b, "✅ Подписка «%s» — до %s (%d %s)\n", html.EscapeString(s.PlanName), ruDate(s.ValidUntil), d, plural(d, "день", "дня", "дней"))
@@ -194,6 +196,10 @@ func tgSubscription(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 		return tgLoadFail()
 	}
 	switch {
+	case s.Active && s.Company != "":
+		return fmt.Sprintf("📅 <b>Подписка</b>\n\nТариф: <b>«%s»</b>\nДоступ от компании «%s» — оплачивает компания, пока её аккаунт активен.",
+				html.EscapeString(s.PlanName), html.EscapeString(s.Company)),
+			tg.Keyboard(tg.Row(tg.CallbackButton("🔌 Подключить", "m:con")), backRow())
 	case s.Active:
 		d := tgDaysLeft(s.ValidUntil)
 		var b strings.Builder
@@ -220,7 +226,7 @@ func tgSubscription(c *tgCtx) (string, *tg.InlineKeyboardMarkup) {
 
 // tgSetAutoRenew switches auto-renewal of the current subscription.
 func tgSetAutoRenew(c *tgCtx, on bool) string {
-	res, err := db.DB.ExecContext(c.ctx, `UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW()`, on, c.user.DBID)
+	res, err := db.DB.ExecContext(c.ctx, `UPDATE user_subscriptions SET auto_renew = $1 WHERE user_id = $2 AND valid_until > NOW() AND tenant_id IS NULL`, on, c.user.DBID)
 	if err != nil {
 		return "Не удалось изменить — попробуйте ещё раз"
 	}

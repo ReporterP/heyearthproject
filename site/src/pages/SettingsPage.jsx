@@ -18,7 +18,7 @@ import { SkeletonCard, useDelayed } from '../components/Skeleton.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { Meter, STRENGTH } from './RegisterPage.jsx'
 import usePageMeta from '../hooks/usePageMeta.js'
-import { currentSub } from '../lib/account.js'
+import { currentSub, quoteCompany } from '../lib/account.js'
 import { date } from '../lib/format.js'
 
 // Настройки (spec 08 §8.4, artboard «Настройки»): sections `set` — title on the left, content right.
@@ -143,7 +143,7 @@ export default function SettingsPage() {
                 <dt>Имя пользователя</dt><dd className={profile.username ? 'mono' : 'subtle'}>{profile.username || 'не задано'}</dd>
                 <dt>Пароль</dt><dd>{mustChange ? <Badge tone="warn">Временный</Badge> : hasPw ? <Badge tone="ok">Установлен</Badge> : <Badge tone="plain">Не установлен</Badge>}</dd>
                 <dt>Подписка</dt>
-                <dd>{sub?.active ? `${sub.plan_name} · до ${date(sub.valid_until)}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
+                <dd>{sub?.active ? `${sub.plan_name} · ${sub.company ? `от компании ${quoteCompany(sub.company.name)}` : `до ${date(sub.valid_until)}`}` : <>Нет активной подписки · <Link to="/payment" className="link">Выбрать тариф</Link></>}</dd>
               </dl>
             </div>
           </div>

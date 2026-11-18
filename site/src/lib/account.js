@@ -7,6 +7,17 @@ export function currentSub(subscription) {
   return items.find((s) => s.active) || items[0] || null
 }
 
+// the live company-paid subscription (spec 08 §8.1 п. 9''), null without one
+export function liveCompanySub(subscription) {
+  return (subscription?.items || []).find((s) => s.active && s.company) || null
+}
+
+// a company's name in «ёлочки» unless it has them already (ООО «Ромашка» stays as it is) — 08 §8.1
+export function quoteCompany(name) {
+  const n = String(name || '').trim()
+  return /[«»"]/.test(n) ? n : `«${n}»`
+}
+
 // active | expired | none
 export function subState(sub) {
   if (!sub) return 'none'

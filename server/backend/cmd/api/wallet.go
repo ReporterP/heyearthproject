@@ -94,7 +94,7 @@ func loadRenewInfo(ctx context.Context, userDBID int, balance int64) (*walletRen
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT p.name, p.price_rub, COALESCE(us.price_paid, 0), COALESCE(us.promocode_used, ''), us.auto_renew, us.valid_until
 		FROM user_subscriptions us JOIN plans p ON p.id = us.plan_id
-		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active'
+		WHERE us.user_id = $1 AND us.valid_until > NOW() AND us.status = 'active' AND us.tenant_id IS NULL
 		ORDER BY us.valid_until DESC LIMIT 1`, userDBID).Scan(&planName, &price, &pricePaid, &promo, &autoRenew, &validUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

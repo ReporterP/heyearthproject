@@ -13,7 +13,7 @@ import (
 // checked before it reaches app_settings. Everything else has its own page (MTProto, alerts,
 // entries, the Hub's numbers) or is gone (migration 000069).
 type settingRule struct {
-	kind     string // bool | int | text | email | secret | host | inn
+	kind     string // bool | int | text | email | secret | host | inn | slug
 	min, max int
 }
 
@@ -53,9 +53,12 @@ var editableSettings = map[string]settingRule{
 	"hub_main_server_host": {kind: "host"},
 	"api_endpoints":        {kind: "text"},
 	"b2b_enabled":          {kind: "bool"},
+	"b2b_member_plan":      {kind: "slug"}, // the plan members of an active company get (jzd5.24)
 }
 
 var innRe = regexp.MustCompile(`^(\d{10}|\d{12})$`)
+
+var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // normalizeSetting checks a value against its rule and returns what is stored.
 func normalizeSetting(key, value string) (string, error) {
@@ -92,6 +95,11 @@ func normalizeSetting(key, value string) (string, error) {
 	case "inn":
 		if v != "" && !innRe.MatchString(v) {
 			return "", fmt.Errorf("ИНН — 10 или 12 цифр")
+		}
+	case "slug":
+		v = strings.ToLower(v)
+		if v != "" && !slugRe.MatchString(v) {
+			return "", fmt.Errorf("слаг тарифа: латиница, цифры и дефис")
 		}
 	case "secret":
 		if v == "" {
