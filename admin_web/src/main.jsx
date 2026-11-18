@@ -13,6 +13,7 @@ import { ThemeProvider } from './theme/ThemeContext.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import RequireAuth from './auth/RequireAuth.jsx'
+import PageGuard from './auth/PageGuard.jsx'
 import LoginPage from './auth/LoginPage.jsx'
 import Layout from './components/Layout.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
@@ -48,6 +49,8 @@ createRoot(document.getElementById('root')).render(
               <Route path="/login" element={<LoginPage />} />
               <Route element={<RequireAuth />}>
                 <Route element={<Layout />}>
+                  {/* a page the admin may not open shows «Нет доступа» and makes no requests */}
+                  <Route element={<PageGuard />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/users" element={<UsersPage />} />
                   <Route path="/promocodes" element={<PromocodesPage />} />
@@ -70,6 +73,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/news" element={<NewsPage />} />
                   <Route path="/telegram-bot" element={<TelegramBotPage />} />
                   <Route path="/direct-routes" element={<DirectRoutesPage />} />
+                  </Route>
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
               </Route>

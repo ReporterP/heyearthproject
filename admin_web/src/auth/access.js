@@ -38,6 +38,14 @@ export function canOpen(href, { can, isTenantAdmin }) {
   return perm === null || can(perm)
 }
 
+// pageGate: what the router does with pathname — 'open' or 'denied'. A nested path takes its
+// section's permission (/servers/12 → /servers); an unknown section is left to the catch-all.
+export function pageGate(pathname, ctx) {
+  const href = '/' + (String(pathname || '').split('/')[1] || '')
+  if (!Object.hasOwn(PAGE_PERMS, href)) return 'open'
+  return canOpen(href, ctx) ? 'open' : 'denied'
+}
+
 // visibleItems keeps the pages an admin may open (by i.href or i.to) and every action.
 export function visibleItems(items, ctx) {
   return items.filter((i) => i.kind === 'action' || canOpen(i.href ?? i.to, ctx))

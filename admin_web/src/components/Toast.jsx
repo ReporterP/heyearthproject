@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, useRef } from 'react'
 
 const ToastContext = createContext()
 
@@ -21,12 +21,15 @@ export function ToastProvider({ children }) {
     return id
   }, [removeToast])
 
-  const toast = {
+  // One object for the provider's life: pages put `toast` into effect and callback deps, and a
+  // new object on every render made «error → toast → re-render → reload → error» an endless
+  // request loop (/admins under a role without admins.read, QA 2026-11-18).
+  const toast = useMemo(() => ({
     info: (msg) => addToast(msg, 'info'),
     success: (msg) => addToast(msg, 'success'),
     error: (msg) => addToast(msg, 'error'),
     warn: (msg) => addToast(msg, 'warn'),
-  }
+  }), [addToast])
 
   return (
     <ToastContext.Provider value={toast}>
