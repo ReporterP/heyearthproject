@@ -20,9 +20,16 @@ nodessh() {
   local id=$1 ip port fp kh got rc
   ip=$(Q "select ip_address from servers where id=$id"); port=$(Q "select coalesce(ssh_port,22) from servers where id=$id")
   fp=$(Q "select coalesce(ssh_host_key_fp,'') from servers where id=$id")
-  kh=$(mktemp); ssh-keyscan -T 10 -p "$port" -t ed25519 "$ip" 2>/dev/null > "$kh"
-  got=$(ssh-keygen -lf "$kh" 2>/dev/null | awk '{print $2}')
-  if [ -z "$fp" ] || [ "$got" != "$fp" ]; then echo "[nodes] node $id: host key does not match the confirmed one — skipped"; rm -f "$kh"; return 1; fi
+  # Any key type may be the confirmed one (the provisioning pins what the node offered first):
+  # keep only the scanned key whose fingerprint is the pinned one, and trust nothing else.
+  kh=$(mktemp); one=$(mktemp)
+  # one key type per connection: the nodes allow few unauthenticated connections per address
+  for t in ed25519 ecdsa rsa; do ssh-keyscan -T 10 -p "$port" -t "$t" "$ip" 2>/dev/null; done | grep -v '^#' | while IFS= read -r line; do
+    printf '%s\n' "$line" > "$one"
+    [ -n "$fp" ] && [ "$(ssh-keygen -lf "$one" 2>/dev/null | awk '{print $2}')" = "$fp" ] && printf '%s\n' "$line" >> "$kh"
+  done
+  rm -f "$one"
+  if [ ! -s "$kh" ]; then echo "[nodes] node $id: no host key matches the confirmed one — skipped"; rm -f "$kh"; return 1; fi
   timeout 900 ssh -i /opt/heyearth/state/hub-ssh/id_ed25519 -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$kh" "root@$ip" 'bash -s'
   rc=$?; rm -f "$kh"; return $rc
 }

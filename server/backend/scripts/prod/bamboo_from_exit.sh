@@ -19,9 +19,16 @@ param() { printf '%s' "$Q_" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1 | sed '
 SNI=$(param sni); OBFS=$(param obfs-password)
 KEY=/opt/heyearth/state/hub-ssh/id_ed25519
 EXIT_FP=$(Q "select coalesce(ssh_host_key_fp,'') from servers where ip_address='$EXIT' limit 1")
-KH=$(mktemp); trap 'rm -f "$KH"' EXIT
-ssh-keyscan -T 10 -t ed25519 "$EXIT" 2>/dev/null > "$KH"
-[ -n "$EXIT_FP" ] && [ "$(ssh-keygen -lf "$KH" | awk '{print $2}')" = "$EXIT_FP" ] || { echo "bamboo: the exit's host key does not match the confirmed one"; exit 1; }
+KH=$(mktemp); ONE=$(mktemp); trap 'rm -f "$KH" "$ONE"' EXIT
+# keep only the scanned key (any type) whose fingerprint is the confirmed one
+# one key type per connection: the exits allow few unauthenticated connections per address
+for t in ed25519 ecdsa rsa; do ssh-keyscan -T 10 -t "$t" "$EXIT" 2>/dev/null; done | grep -v '^#' | while IFS= read -r line; do
+  printf '%s
+' "$line" > "$ONE"
+  [ -n "$EXIT_FP" ] && [ "$(ssh-keygen -lf "$ONE" 2>/dev/null | awk '{print $2}')" = "$EXIT_FP" ] && printf '%s
+' "$line" >> "$KH"
+done
+[ -s "$KH" ] || { echo "bamboo: no host key of the exit matches the confirmed one"; exit 1; }
 for PORT in 50443 41234; do
   CFG=$(printf 'server: %s:%s\nauth: %s\ntls:\n  sni: %s\nsocks5:\n  listen: 127.0.0.1:18089\n' "$HUB" "$PORT" "$AUTH" "$SNI")
   [ -n "$OBFS" ] && CFG=$(printf '%s\nobfs:\n  type: salamander\n  salamander:\n    password: %s\n' "$CFG" "$OBFS")
