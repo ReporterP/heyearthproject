@@ -474,10 +474,10 @@ func tgCreateAccount(c *tgCtx, msgID int) {
 	c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID)
 	text := fmt.Sprintf("🎉 <b>Аккаунт создан!</b>\n\nВаш HiEarth ID — единственный ключ от аккаунта, восстановить его нельзя:\n\n<code>%s</code>\n\n💾 Сохраните его в надёжном месте — например, перешлите себе в «Избранное». Логин и пароль можно задать в кабинете.", user.UserID)
 	kb := tg.Keyboard(tg.Row(tg.CopyButton("📋 Скопировать ID", user.UserID)), tg.Row(tg.CallbackButton("✅ Сохранил — в меню", "m:home").Styled(tg.StyleSuccess)))
-	if msgID > 0 && c.bot.EditMessageText(c.ctx, c.chat, msgID, text, "HTML", kb) == nil {
-		return
+	if msgID > 0 { // the welcome menu gives way to the greeting scene (spec 12 §12.6)
+		_ = c.bot.DeleteMessage(c.ctx, c.chat, msgID)
 	}
-	_, _ = c.reply(text, kb)
+	_, _ = c.replyScene("wave", text, kb)
 }
 
 func tgAskLogin(c *tgCtx) {
@@ -545,6 +545,6 @@ func tgLoginByID(c *tgCtx, m *tg.Message) {
 	}
 	_ = biz.SetTGChatState(c.ctx, c.chat, "", 0)
 	c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID)
-	_, _ = c.reply(fmt.Sprintf("✅ Готово — Telegram привязан к HiEarth ID <code>%s</code>.", shortHiEarthID(user.UserID)), nil)
+	_, _ = c.replyScene("wave", fmt.Sprintf("✅ Готово — Telegram привязан к HiEarth ID <code>%s</code>.", shortHiEarthID(user.UserID)), nil)
 	tgShow(c, "home", 0)
 }

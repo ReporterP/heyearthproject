@@ -86,10 +86,26 @@ func TestTGChatMenu(t *testing.T) {
 	if w, _ := tgRender(s, "home"); !strings.Contains(w, "Войдите или создайте") {
 		t.Fatalf("welcome: %q", w)
 	}
+	// /start without an account: the «wave» scene with the greeting, then the menu; a link_ start
+	// gets no greeting (spec 12 §12.6)
+	fake.calls = nil
+	tgStart(s, "")
+	if len(fake.calls) < 2 || !strings.HasPrefix(fake.calls[0], "sendAnimation ") || !strings.Contains(fake.calls[0], "Привет! Это HiEarth") ||
+		!strings.Contains(fake.calls[0], `filename="wave.gif"`) || !strings.HasPrefix(fake.calls[len(fake.calls)-1], "sendMessage ") {
+		t.Fatalf("/start without an account: %v", heads(fake.calls))
+	}
+	fake.calls = nil
+	tgStart(s, "link_nope")
+	if fake.last("sendAnimation") != "" {
+		t.Fatal("a link_ start must not greet")
+	}
 	tgAskLogin(s)
 	handleTGMessage(s, &tgapi.Message{MessageID: 41, From: &tgapi.User{ID: 8200}, Chat: tgapi.Chat{ID: 8200, Type: "private"}, Text: "chat-login-2222-3333"})
 	if !strings.Contains(fake.last("deleteMessage"), `"message_id":41`) {
 		t.Errorf("the message with the ID must be deleted: %s", fake.last("deleteMessage"))
+	}
+	if !strings.Contains(fake.last("sendAnimation"), "Telegram привязан") {
+		t.Errorf("sign-in by ID must answer with the «wave» scene: %.200s", fake.last("sendAnimation"))
 	}
 	var linked int64
 	_ = conn.QueryRow(`SELECT COALESCE(telegram_id, 0) FROM users WHERE id = $1`, other).Scan(&linked)
@@ -117,8 +133,8 @@ func TestTGChatMenu(t *testing.T) {
 			answer = call
 		}
 	}
-	if !strings.Contains(answer, `"web_app"`) || !strings.Contains(answer, "Открыть кабинет") {
-		t.Errorf("the link answer must open the Mini App: %s", answer)
+	if !strings.Contains(answer, `"web_app"`) || !strings.Contains(answer, "Открыть кабинет") || !strings.HasPrefix(answer, "sendAnimation ") {
+		t.Errorf("the link answer must be the «wave» scene opening the Mini App: %.300s", answer)
 	}
 
 	// a newcomer creates an account in the chat
@@ -126,7 +142,16 @@ func TestTGChatMenu(t *testing.T) {
 	tgCreateAccount(n, 0)
 	var created int
 	_ = conn.QueryRow(`SELECT COUNT(*) FROM users WHERE telegram_id = 8300`).Scan(&created)
-	if created != 1 || !strings.Contains(fake.last("sendMessage"), "Аккаунт создан") {
-		t.Fatalf("account in the chat: %d, %s", created, fake.last("sendMessage"))
+	if created != 1 || !strings.Contains(fake.last("sendAnimation"), "Аккаунт создан") {
+		t.Fatalf("account in the chat: %d, %.200s", created, fake.last("sendAnimation"))
 	}
+}
+
+// heads keeps the method names of recorded Bot API calls (for failure messages).
+func heads(calls []string) []string {
+	var out []string
+	for _, c := range calls {
+		out = append(out, strings.SplitN(c, " ", 2)[0])
+	}
+	return out
 }

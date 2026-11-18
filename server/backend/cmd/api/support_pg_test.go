@@ -129,8 +129,30 @@ func TestSupportFullCircle(t *testing.T) {
 		_ = conn.QueryRow(`SELECT COUNT(*) FROM tg_outbox WHERE user_id = $1 AND kind = 'support' AND chat_id = 4242`, u).Scan(&n)
 		return n == 1
 	})
-	if n, _ := biz.SupportUnreadForUser(ctx, u); n != 1 {
-		t.Fatalf("the site shows 1 unread answer, got %d", n)
+	// only the ticket's first answer carries the «support» scene (spec 12 §12.6)
+	second, owner, err := biz.SupportAddAdminMessage(ctx, added.Ticket.ID, nil, "И перезапустите Happ", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliverSupportAnswer(owner, second)
+	waitFor(t, "the second answer queued for the bot", func() bool {
+		var n int
+		_ = conn.QueryRow(`SELECT COUNT(*) FROM tg_outbox WHERE user_id = $1 AND kind = 'support'`, u).Scan(&n)
+		return n == 2
+	})
+	var scenes []string
+	srows, _ := conn.Query(`SELECT COALESCE(payload->>'scene', '') FROM tg_outbox WHERE user_id = $1 AND kind = 'support' ORDER BY id`, u)
+	for srows.Next() {
+		var s string
+		_ = srows.Scan(&s)
+		scenes = append(scenes, s)
+	}
+	srows.Close()
+	if strings.Join(scenes, ",") != "support," {
+		t.Fatalf("support answer scenes %q, want [support, none]", scenes)
+	}
+	if n, _ := biz.SupportUnreadForUser(ctx, u); n != 2 {
+		t.Fatalf("the site shows 2 unread answers, got %d", n)
 	}
 	_ = biz.SupportMarkReadByUser(ctx, u)
 	if n, _ := biz.SupportUnreadForUser(ctx, u); n != 0 {

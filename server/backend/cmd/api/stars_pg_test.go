@@ -122,6 +122,9 @@ func TestStarsPreCheckoutAndActivation(t *testing.T) {
 	if subs != 1 || rows != 1 || status != "activated" {
 		t.Fatalf("activation: subs=%d rows=%d status=%q", subs, rows, status)
 	}
+	if !strings.Contains(fake.last("sendAnimation"), "оплачена и действует") || !strings.Contains(fake.last("sendAnimation"), `filename="coin.gif"`) {
+		t.Fatalf("the paid answer must be the «coin» scene: %.200s", fake.last("sendAnimation"))
+	}
 	var until time.Time
 	_ = conn.QueryRow(`SELECT valid_until FROM user_subscriptions WHERE user_id = $1`, u).Scan(&until)
 	if d := time.Until(until); d < 29*24*time.Hour || d > 31*24*time.Hour {

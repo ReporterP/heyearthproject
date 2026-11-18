@@ -67,6 +67,22 @@ func (c *tgCtx) reply(text string, kb *tg.InlineKeyboardMarkup) (*tg.Message, er
 	return m, err
 }
 
+// replyScene answers with a hedgehog scene and the text as its caption (spec 12 §12.6); the text
+// goes alone when the scene cannot (too long, unknown).
+func (c *tgCtx) replyScene(scene, text string, kb *tg.InlineKeyboardMarkup) (int, error) {
+	id, err := sendTGOut(c.ctx, c.bot, tg.ChatIDString(c.chat), tgOut{Text: text, ParseMode: "HTML", Keyboard: kb, Scene: scene})
+	if err != nil {
+		log.Printf("[tg-bot] ответ в %d: %v", c.chat, err)
+		if tg.IsBlocked(err) {
+			_ = biz.SetTGBlocked(c.ctx, c.chat, true)
+		}
+	}
+	return id, err
+}
+
+// tgWelcomeCaption greets a person without an account before the menu (spec 12 §12.6).
+const tgWelcomeCaption = "👋 Привет! Это HiEarth — защищённый доступ к интернету в одну кнопку."
+
 // handleUserBotUpdate is the poller's handler (one update at a time, in order).
 func handleUserBotUpdate(ctx context.Context, u tg.Update) {
 	defer recoverBG("tg-user-update")
@@ -208,6 +224,9 @@ func tgStart(c *tgCtx, arg string) {
 			log.Printf("[tg-bot] код друга для %d: %v", c.from.ID, err)
 		}
 	}
+	if c.user == nil {
+		_, _ = c.replyScene("wave", tgWelcomeCaption, nil)
+	}
 	tgShow(c, "home", 0)
 }
 
@@ -246,7 +265,7 @@ func tgLinkFromSite(c *tgCtx, token string) {
 	}
 	// the Mini App now opens by itself (spec 12 §12.5): offer it right here
 	open := tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Открыть кабинет", miniAppURL("")).Styled(tg.StyleSuccess)))
-	_, _ = c.reply(fmt.Sprintf("%s к HiEarth ID <code>%s</code>.\n\nСюда будут приходить напоминания о подписке, ответы поддержки и новости. "+
+	_, _ = c.replyScene("wave", fmt.Sprintf("%s к HiEarth ID <code>%s</code>.\n\nСюда будут приходить напоминания о подписке, ответы поддержки и новости. "+
 		"Отключить их можно в «⚙️ Настройках».", head, shortHiEarthID(userID)), open)
 	if c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID); c.user != nil {
 		tgShow(c, "home", 0)

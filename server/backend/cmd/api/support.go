@@ -296,7 +296,12 @@ func deliverSupportAnswer(userDBID int, m *biz.SupportMessage) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if userBotToken() != "" {
+			scene := "" // the hedgehog with a headset greets the ticket's first answer only (spec 12 §12.6)
+			if first, err := biz.SupportIsFirstAnswer(ctx, m.TicketID, m.ID); err == nil && first {
+				scene = "support"
+			}
 			_, err := enqueueTG(ctx, userDBID, "support", strconv.FormatInt(m.ID, 10), tgOut{
+				Scene:     scene,
 				Text:      "💬 <b>Ответ поддержки</b>\n\n" + html.EscapeString(m.Body) + "\n\n<i>Чтобы ответить, напишите ответом на это сообщение.</i>",
 				ParseMode: "HTML",
 				Keyboard:  tg.Keyboard(tg.Row(tg.WebAppButton("Открыть переписку", miniAppURL("support")))),

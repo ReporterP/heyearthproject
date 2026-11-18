@@ -367,7 +367,7 @@ func handleStarsPaid(c *tgCtx, m *tg.Message) {
 	var until time.Time
 	_ = db.DB.QueryRowContext(c.ctx, `SELECT valid_until FROM user_subscriptions WHERE id = $1`, subID).Scan(&until)
 	log.Printf("[stars] ✓ %s купил «%s» за %d ⭐ (платёж %d) до %s", shortHiEarthID(c.user.UserID), plan.Slug, sp.TotalAmount, payID, until.Format("2006-01-02"))
-	_, _ = c.reply(fmt.Sprintf("🎉 Подписка «%s» оплачена и действует до %s. Спасибо!", html.EscapeString(plan.Name), ruDate(until)),
+	_, _ = c.replyScene("coin", fmt.Sprintf("🎉 Подписка «%s» оплачена и действует до %s. Спасибо!", html.EscapeString(plan.Name), ruDate(until)),
 		tg.Keyboard(tg.Row(tg.CallbackButton("🔌 Подключить", "m:con").Styled(tg.StyleSuccess)), tg.Row(tg.CallbackButton("🏠 Меню", "m:home"))))
 }
 
