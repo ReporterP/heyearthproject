@@ -3,6 +3,7 @@ package biz
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/heyearth/backend/internal/testpg"
@@ -69,5 +70,31 @@ func TestRedeemNeverLowersAnExistingRole(t *testing.T) {
 	}
 	if got := memberRole(t, tenant, admin); got != "admin" {
 		t.Errorf("role after a viewer code: %q, want admin", got)
+	}
+}
+
+// A single-use code joins one person even when two redeem it at the same moment.
+func TestSingleUseCodeRedeemsOnceUnderARace(t *testing.T) {
+	conn := testpg.Open(t)
+	tenant := newTestTenant(t, conn, 10)
+	users := []string{"b8b8b8b8-8888-4888-8888-888888888881", "b8b8b8b8-8888-4888-8888-888888888882"}
+	for _, u := range users {
+		testpg.NewUser(t, conn, u)
+	}
+	testpg.MustExec(t, conn, `INSERT INTO tenant_claim_codes (tenant_id, code, max_uses, used_count) VALUES ($1, 'tn-r-user-once', 1, 0)`, tenant)
+	var wg sync.WaitGroup
+	errs := make([]error, len(users))
+	for i, u := range users {
+		wg.Add(1)
+		go func(i int, u string) {
+			defer wg.Done()
+			_, errs[i] = RedeemTenantClaimCode("tn-r-user-once", u, "")
+		}(i, u)
+	}
+	wg.Wait()
+	var members int
+	_ = conn.QueryRow(`SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1`, tenant).Scan(&members)
+	if members != 1 {
+		t.Fatalf("a single-use code joined %d people (errors: %v)", members, errs)
 	}
 }

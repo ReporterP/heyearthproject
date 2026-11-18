@@ -41,6 +41,14 @@ func TestLoginAnswersDoNotRevealLoginNames(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
+	// A blocked account says so only to someone who knows its password.
+	testpg.MustExec(t, conn, `UPDATE users SET is_blocked = TRUE WHERE user_id = $1`, id)
+	if got := answer("known-name", "nope"); got != "invalid password" {
+		t.Errorf("blocked name, wrong password: got %q, want invalid password", got)
+	}
+	if got := answer("known-name", "right-pass-1"); got != "user is blocked" {
+		t.Errorf("blocked name, right password: got %q, want user is blocked", got)
+	}
 }
 
 // Changing the password with a stolen session must not allow guessing the current one:

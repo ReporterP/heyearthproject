@@ -416,6 +416,7 @@ func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err err
 	err = tx.QueryRow(`
 		SELECT id, tenant_id, max_uses, used_count FROM tenant_claim_codes
 		WHERE code = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		FOR UPDATE
 	`, code).Scan(&codeID, &tenantID, &maxUses, &usedCount)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("invalid or expired code")

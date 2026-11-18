@@ -117,7 +117,10 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 		}
 		return nil, fmt.Errorf("user not found")
 	}
-	if user.IsBlocked {
+	// A blocked account with a password says «blocked» only after the right password: otherwise
+	// blocked login names could be enumerated (review of the QA 2026-11-18 fixes).
+	hasPassword := user.PasswordHash.Valid && user.PasswordHash.String != ""
+	if user.IsBlocked && !hasPassword {
 		return nil, fmt.Errorf("user is blocked")
 	}
 
@@ -140,6 +143,9 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 			return nil, fmt.Errorf("invalid password")
 		}
 		loginSucceeded(user.ID, source)
+	}
+	if user.IsBlocked {
+		return nil, fmt.Errorf("user is blocked")
 	}
 
 	touchLastSeen(user.ID)
@@ -177,13 +183,10 @@ const (
 
 func pwChangeKey(userID string) string { return "pw|" + userID }
 
-func pwChangeThrottled(userID string) bool {
-	loginFails.Lock()
-	defer loginFails.Unlock()
-	return loginCount(pwChangeKey(userID), pwChangeFailWindow) >= pwChangeFailMax
-}
-
-func pwChangeFailed(userID string) {
+// pwChangeReserve takes one attempt for the account under one lock, before the slow bcrypt
+// check, so parallel requests can't all pass a «still under the limit» test (false when spent).
+// A right password gives the attempt back via pwChangeSucceeded.
+func pwChangeReserve(userID string) bool {
 	loginFails.Lock()
 	defer loginFails.Unlock()
 	k := pwChangeKey(userID)
@@ -192,7 +195,11 @@ func pwChangeFailed(userID string) {
 		st = &loginFailState{start: time.Now()}
 		loginFails.m[k] = st
 	}
+	if st.n >= pwChangeFailMax {
+		return false
+	}
 	st.n++
+	return true
 }
 
 func pwChangeSucceeded(userID string) {
@@ -328,11 +335,10 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 		if currentPassword == "" {
 			return fmt.Errorf("current password required")
 		}
-		if pwChangeThrottled(user.UserID) {
+		if !pwChangeReserve(user.UserID) {
 			return ErrTooManyPasswordAttempts
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(currentPassword)); err != nil {
-			pwChangeFailed(user.UserID)
 			return fmt.Errorf("invalid current password")
 		}
 		pwChangeSucceeded(user.UserID)

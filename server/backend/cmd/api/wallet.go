@@ -218,7 +218,8 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 
 // codeLimitedWhenPromo counts a price quote against the promo-code limiter only when it carries a
 // code: guessing codes is what the limiter stops, while the payment page asks for a plain quote
-// on every open and every balance change (QA 2026-11-18: buyers ran out of quotes).
+// on every open and every balance change (QA 2026-11-18: buyers ran out of quotes). It reads the
+// same `promocode` query parameter handleWalletQuote does — keep the two in sync.
 func codeLimitedWhenPromo(rl *middleware.RateLimiter, next http.HandlerFunc) http.HandlerFunc {
 	limited := rl.Middleware(next)
 	return func(w http.ResponseWriter, r *http.Request) {
