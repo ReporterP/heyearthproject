@@ -413,3 +413,17 @@ that you think outside the box!
 - Product: **HiEarth** (current). Domain: `hiearth.ru`.
 - User-facing: call it **SOCKS** (not "SOCKS5"). No VLESS/Shadowsocks/Xray/VPN in UI.
 - Marketing (site, since 2026-11-16): «защищённое подключение / защищённый доступ к интернету»; the eco theme is dropped; never "VPN". Full copy rules: `site/design-system/hiearth-canon/spec/05-content.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Beads (`bd`, issue prefix `heyearthproject-`); never GitHub Issues — the repo is public. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The default five as Beads labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the root, created lazily. See `docs/agents/domain.md`.
