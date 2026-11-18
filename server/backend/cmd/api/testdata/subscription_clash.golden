@@ -63,7 +63,7 @@ proxies:
     password: "hy2-password-test"
     obfs: salamander
     obfs-password: "obfs-test"
-    sni: hub.example.test
+    sni: tls.example.test
     skip-cert-verify: false
     up: "30 Mbps"
     down: "120 Mbps"

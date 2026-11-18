@@ -381,17 +381,17 @@ func clashProfile(in hubConnectionInputs) string {
 		if hy2Password != "" && obfsPassword != "" {
 			name := "HiEarth-Express"
 			proxyNames = append(proxyNames, name)
-			// sni on the Hub stays the connect host, as it always was (pinned
-			// by the subscription_clash golden). During a failover the server is
-			// a relay IP that no certificate names (skip-cert-verify: false):
-			// the cert domain then, like the URIs and the reserve proxies.
-			// The main Express follows the target only when Бамбук answers
-			// through it; otherwise it stays on the Hub.
-			server, sni := host, host
+			// sni is the certificate's domain, as in Happ's Бамбук line: the connect
+			// address may be an IP or a relay that no certificate names
+			// (skip-cert-verify: false), QA 2026-11-18. The main Express follows the
+			// failover target only when Бамбук answers through it; otherwise it
+			// stays on the Hub.
+			server, sni := host, in.hysteria2SNI
 			if in.entries.failover && !in.entries.mainUDP {
-				server, sni = in.mainServerHost, in.mainServerHost
-			} else if in.entries.failover {
-				sni = in.hysteria2SNI
+				server = in.mainServerHost
+			}
+			if sni == "" { // no certificate domain known: the connect host, as before
+				sni = server
 			}
 			proxies = append(proxies, clashHy2Proxy(name, server, hy2Password, obfsPassword, sni, up, down))
 		}
