@@ -192,6 +192,12 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 		case biz.PromoFreeTrial:
 			q.Free = true
 			q.PromoMessage = fmt.Sprintf("Промокод даёт %d дн. бесплатно", p.FreeDays)
+			// the code may grant another plan than the one on the page: name the one the person gets
+			if g := p.PlanIDGranted; g > 0 {
+				if gp, err := biz.GetPlanByID(g); err == nil && gp != nil {
+					q.PromoMessage = fmt.Sprintf("Промокод даёт %d дн. тарифа «%s» бесплатно", p.FreeDays, gp.Name)
+				}
+			}
 		case biz.PromoTrafficGift:
 			q.PromoMessage = fmt.Sprintf("После оплаты +%s трафика", biz.FormatGB(p.TrafficGiftBytes))
 		default:

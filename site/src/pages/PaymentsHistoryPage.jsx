@@ -162,7 +162,7 @@ export default function PaymentsHistoryPage() {
   } else if (!payments) {
     history = <div aria-busy="true" style={{ minHeight: 160 }}>{showSkel && [0, 1, 2].map((i) => <div key={i} className="skel" style={{ height: 52, marginTop: i ? 10 : 0 }} />)}</div>
   } else if (!payments.length) {
-    history = <EmptyState title="Платежей пока нет">Здесь появятся все оплаты и чеки после первой покупки.</EmptyState>
+    history = <EmptyState title="Платежей пока нет">Здесь появятся оплаты картой и чеки к ним. Покупки с кошелька — в разделе <Link to="/wallet" className="link">«Кошелёк»</Link>.</EmptyState>
   } else {
     const groups = []
     for (const p of payments) {

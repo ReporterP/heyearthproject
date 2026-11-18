@@ -125,7 +125,7 @@ function Tariffs({ plans, active, acc, onPick, onDone, unknownSlug }) {
       <h1 className="t-h1">Выберите тариф</h1>
       {(allUnlimited || active) && (
         <p className="muted" style={{ marginTop: 6 }}>
-          {[allUnlimited && 'Безлимитный трафик во всех тарифах.', active && `Сейчас у вас «${active.plan_name}» до ${date(active.valid_until)}.`].filter(Boolean).join(' ')}
+          {[allUnlimited && 'Безлимитный трафик во всех платных тарифах.', active && `Сейчас у вас «${active.plan_name}» до ${date(active.valid_until)}.`].filter(Boolean).join(' ')}
         </p>
       )}
       {unknownSlug && <Alert tone="info" className="mt-4">Такого тарифа сейчас нет — выберите из списка.</Alert>}

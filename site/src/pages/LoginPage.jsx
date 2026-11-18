@@ -132,7 +132,7 @@ export default function LoginPage() {
         <Button variant="primary" size="lg" block type="submit" loading={busy} className="rise" style={{ '--d': '200ms' }}>Войти</Button>
         <hr className="divider" />
         <p className="t-sm muted">Нет аккаунта? <Link to={registerHref} className="link">Создайте новый</Link> — это один клик.</p>
-        <p className="t-sm muted">Потеряли ID или забыли пароль? Напишите в <Link to="/help#lost-id" className="link">поддержку</Link> — найдём аккаунт по платежу и сбросим пароль.</p>
+        <p className="t-sm muted">Забыли пароль или потеряли ID? Если вы оплачивали подписку, напишите в <Link to="/help#lost-id" className="link">поддержку</Link> — найдём аккаунт по платежу.</p>
       </form>
     </AuthLayout>
   )

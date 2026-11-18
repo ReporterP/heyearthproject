@@ -141,7 +141,6 @@ export default function ConnectionsPage() {
             <h2 className="t-h3">Или добавить вручную</h2>
             <p className="muted t-sm" style={{ marginTop: 4 }}>Отсканируйте QR-код в приложении или скопируйте ссылку подписки.</p>
             <div className="stack gap-3" style={{ marginTop: 16 }}>
-              <span className="field__label">Ссылка подписки</span>
               <CopyField value={url} label="Ссылка подписки" expandable secret />
               <div><Button variant="ghost" size="sm" icon="qr" onClick={() => setQr(true)}>Показать QR-код</Button></div>
               <p className="t-xs subtle">Работает в Happ и других приложениях, которые принимают ссылку подписки. Настройки обновляются сами.</p>

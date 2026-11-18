@@ -138,6 +138,7 @@ export default function LandingPage() {
   const minPrice = minPaidPrice(plans.list)
   const allUnlimited = paid.length > 0 && paid.every((p) => !Number(p.traffic_limit_bytes))
   const freeDays = free ? days(Number(free.duration_days) || 7) : ''
+  const freeLimit = free ? Number(free.traffic_limit_bytes) || 0 : 0 // the trial is not unlimited: say how much
 
   const main = isLoggedIn
     ? { label: 'В кабинет', to: '/dashboard' }
@@ -321,8 +322,8 @@ export default function LandingPage() {
               {(allUnlimited || free) && (
                 <p className={`muted ${phone ? 't-sm' : ''}`} style={{ maxWidth: 440 }}>
                   {phone
-                    ? [allUnlimited && 'Безлимитный трафик.', free && 'Неделя — бесплатно.'].filter(Boolean).join(' ')
-                    : [allUnlimited && 'Безлимитный трафик во всех тарифах.', free && 'Первая неделя — бесплатно и без карты.'].filter(Boolean).join(' ')}
+                    ? [allUnlimited && 'Безлимитный трафик в платных тарифах.', free && `Неделя — бесплатно${freeLimit ? `, ${traffic(freeLimit)}` : ''}.`].filter(Boolean).join(' ')
+                    : [allUnlimited && 'Безлимитный трафик во всех платных тарифах.', free && `Первая неделя — бесплатно и без карты${freeLimit ? `, ${traffic(freeLimit)} трафика` : ''}.`].filter(Boolean).join(' ')}
                 </p>
               )}
             </div>
