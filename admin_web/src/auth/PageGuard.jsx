@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { ShieldOff } from 'lucide-react'
 import { useAuth } from './AuthContext.jsx'
-import { pageGate } from './access.js'
+import { canOpen, pageGate } from './access.js'
 import { EmptyState } from '../components/ui/EmptyState.jsx'
 import { Button } from '../components/ui/Button.jsx'
 
@@ -11,13 +11,16 @@ export default function PageGuard() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { can, isTenantAdmin } = useAuth()
-  if (pageGate(pathname, { can, isTenantAdmin }) === 'open') return <Outlet />
+  const ctx = { can, isTenantAdmin }
+  if (pageGate(pathname, ctx) === 'open') return <Outlet />
+  // a role without the dashboard lands here after sign-in: send it to a page it may open
+  const home = canOpen('/dashboard', ctx) ? { to: '/dashboard', label: 'На дашборд' } : { to: '/settings', label: 'В настройки' }
   return (
     <EmptyState
       icon={<ShieldOff size={28} strokeWidth={1.5} />}
       title="Нет доступа"
       description="У вашей роли нет права на этот раздел. Если он нужен для работы — попросите владельца добавить право."
-      action={<Button variant="secondary" size="sm" onClick={() => navigate('/dashboard')}>На дашборд</Button>}
+      action={<Button variant="secondary" size="sm" onClick={() => navigate(home.to)}>{home.label}</Button>}
     />
   )
 }
