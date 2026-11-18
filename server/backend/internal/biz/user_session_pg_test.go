@@ -44,13 +44,16 @@ func TestPasswordChangeAndLogoutCloseSessions(t *testing.T) {
 	add(id, "phone", "30 days")
 	add(other, "x", "30 days")
 
-	// The first password: nobody is signed out.
+	// The first password closes the sessions opened with the bare HiEarth ID, the caller's stays
+	// (audit F31); then the other devices sign in again with the password.
 	if err := SetCloudPassword("sess-user", "first-pass", "", "site"); err != nil {
 		t.Fatal(err)
 	}
-	if got := left(id); len(got) != 3 {
-		t.Fatalf("first password closed sessions: %v", got)
+	if got := left(id); len(got) != 1 || got[0] != "site" {
+		t.Fatalf("first password: sessions left %v, want [site]", got)
 	}
+	add(id, "app", "30 days")
+	add(id, "phone", "30 days")
 	// A wrong current password changes nothing.
 	if err := SetCloudPassword("sess-user", "second-pass", "wrong", "site"); err == nil {
 		t.Fatal("a wrong current password was accepted")

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,15 @@ func TestEmailConfirmAndReminders(t *testing.T) {
 	}
 	if p, _ := biz.LoadEmailPrefs(ctx, u); !p.RemindersOff {
 		t.Fatal("the link did not switch reminders off")
+	}
+	// The current form: the account number + its own signature (a legacy signature does not fit).
+	iq := biz.UnsubscribeQueryID(u)
+	isig := iq[strings.Index(iq, "&s=")+3:]
+	if err := biz.UnsubscribeByIDLink(ctx, strconv.Itoa(u), sig); err != biz.ErrEmailToken {
+		t.Fatalf("a legacy signature on the id form: %v", err)
+	}
+	if err := biz.UnsubscribeByIDLink(ctx, strconv.Itoa(u), isig); err != nil {
+		t.Fatalf("id link: %v", err)
 	}
 	if err := biz.SetEmailReminders(ctx, u, true); err != nil {
 		t.Fatal(err)
@@ -164,7 +174,9 @@ func TestEmailConfirmAndReminders(t *testing.T) {
 		t.Fatalf("first run sent %d letters", len(sent))
 	}
 	for _, m := range sent {
-		if !strings.Contains(m.UnsubscribeURL, "/api/v1/email/unsubscribe?u="+m.UserIDText+"&s=") || !strings.Contains(m.HTMLBody, "/email/unsubscribe?u=") {
+		// The account number, never the HiEarth ID (the key of a password-less account), audit F5.
+		if !strings.Contains(m.UnsubscribeURL, "/api/v1/email/unsubscribe?i=") || !strings.Contains(m.HTMLBody, "/email/unsubscribe?i=") ||
+			strings.Contains(m.UnsubscribeURL, m.UserIDText) || strings.Contains(m.HTMLBody, "unsubscribe?u=") {
 			t.Errorf("%s: no one-click unsubscribe: %q", m.UserIDText, m.UnsubscribeURL)
 		}
 	}
