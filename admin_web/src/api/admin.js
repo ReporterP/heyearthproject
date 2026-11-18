@@ -360,10 +360,10 @@ export function resetUserPassword(userDbId) {
 export function fetchUserWallet(userDbId) {
   return apiFetch(`/users/${userDbId}/wallet`)
 }
-export function adjustUserWallet(userDbId, { direction, amountRub, reason, requestId }) {
+export function adjustUserWallet(userDbId, { direction, amountRub, reason, clientText = '', requestId }) {
   return apiFetch(`/users/${userDbId}/wallet/adjust`, {
     method: 'POST',
-    body: { direction, amount_rub: amountRub, reason, request_id: requestId },
+    body: { direction, amount_rub: amountRub, reason, client_text: clientText, request_id: requestId },
   })
 }
 export function fetchWalletStats() {

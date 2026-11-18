@@ -162,10 +162,18 @@ func WalletTxTitle(kind, comment string) string {
 		return "Бонус за друга"
 	case WalletReferralWelcome:
 		return "Бонус по приглашению друга"
+	// An admin's reason is internal (audit log); comment holds only the text written for the
+	// client, if any (QA 2026-11-18).
 	case WalletAdminCredit:
-		return "Начислено администратором: " + comment
+		if comment == "" {
+			return "Начисление от HiEarth"
+		}
+		return comment
 	case WalletAdminDebit:
-		return "Списано администратором: " + comment
+		if comment == "" {
+			return "Списание HiEarth"
+		}
+		return comment
 	case WalletRefund:
 		return "Возврат на карту"
 	}

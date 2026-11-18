@@ -15,6 +15,7 @@ export default function WalletTab({ user }) {
   const [direction, setDirection] = useState('credit')
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
+  const [clientText, setClientText] = useState('') // optional: what the client sees in the wallet history
   const [requestId, setRequestId] = useState(newRequestId)
   const [busy, setBusy] = useState(false)
 
@@ -30,9 +31,9 @@ export default function WalletTab({ user }) {
     if (!reason.trim()) { toast.error('Укажите причину'); return }
     setBusy(true)
     try {
-      await adjustUserWallet(user.id, { direction, amountRub: rub, reason: reason.trim(), requestId })
+      await adjustUserWallet(user.id, { direction, amountRub: rub, reason: reason.trim(), clientText: clientText.trim(), requestId })
       toast.success(direction === 'credit' ? 'Начислено' : 'Списано')
-      setAmount(''); setReason(''); setRequestId(newRequestId())
+      setAmount(''); setReason(''); setClientText(''); setRequestId(newRequestId())
       load()
     } catch (err) {
       toast.error(err.message)
@@ -63,8 +64,9 @@ export default function WalletTab({ user }) {
           </div>
           <div className="flex flex-col sm:flex-row gap-2">
             <Input inputMode="decimal" placeholder="Сумма, ₽" value={amount} onChange={e => setAmount(e.target.value)} aria-label="Сумма, ₽" className="font-mono sm:!w-32" />
-            <Input placeholder="Причина (обязательно, видна клиенту)" value={reason} onChange={e => setReason(e.target.value)} maxLength={300} aria-label="Причина" />
+            <Input placeholder="Причина (обязательно, только в журнал аудита)" value={reason} onChange={e => setReason(e.target.value)} maxLength={300} aria-label="Причина" />
           </div>
+          <Input placeholder={`Текст для клиента (необязательно; без него — «${direction === 'credit' ? 'Начисление от HiEarth' : 'Списание HiEarth'}»)`} value={clientText} onChange={e => setClientText(e.target.value)} maxLength={200} aria-label="Текст для клиента" />
           <Button type="submit" size="sm" variant={direction === 'debit' ? 'danger' : 'primary'} loading={busy}>
             {direction === 'credit' ? 'Начислить' : 'Списать'}
           </Button>

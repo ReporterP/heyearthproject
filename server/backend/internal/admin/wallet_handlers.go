@@ -49,7 +49,7 @@ func UserWalletHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // UserWalletAdjustHandler — POST /api/admin/users/{id}/wallet/adjust
-// {"direction": "credit"|"debit", "amount_rub": 100.5, "reason": "...", "request_id": "..."}.
+// {"direction": "credit"|"debit", "amount_rub": 100.5, "reason": "...", "client_text": "...", "request_id": "..."}.
 func UserWalletAdjustHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := userIDFromWalletPath(r.URL.Path)
 	if !ok {
@@ -59,7 +59,8 @@ func UserWalletAdjustHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Direction string  `json:"direction"`
 		AmountRub float64 `json:"amount_rub"`
-		Reason    string  `json:"reason"`
+		Reason    string  `json:"reason"`      // internal, audit log only
+		Client    string  `json:"client_text"` // optional, what the client sees in the wallet history
 		RequestID string  `json:"request_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -69,6 +70,11 @@ func UserWalletAdjustHandler(w http.ResponseWriter, r *http.Request) {
 	reason := strings.TrimSpace(body.Reason)
 	if reason == "" || len([]rune(reason)) > 300 {
 		writeAdminError(w, http.StatusBadRequest, "Укажите причину (до 300 символов)")
+		return
+	}
+	clientText := strings.TrimSpace(body.Client)
+	if len([]rune(clientText)) > 200 {
+		writeAdminError(w, http.StatusBadRequest, "Текст для клиента — до 200 символов")
 		return
 	}
 	kop, err := biz.ParseRubToKop(strconv.FormatFloat(body.AmountRub, 'f', -1, 64))
@@ -111,7 +117,7 @@ func UserWalletAdjustHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry, err := biz.WalletApply(ctx, tx, id, delta, kind, fmt.Sprintf("admin:%d:%s", adminID, rid),
-		biz.WalletRefs{AdminID: adminID, Comment: reason})
+		biz.WalletRefs{AdminID: adminID, Comment: clientText})
 	if errors.Is(err, biz.ErrInsufficientFunds) {
 		writeAdminError(w, http.StatusBadRequest, "На кошельке меньше этой суммы — списать нельзя")
 		return
@@ -126,7 +132,7 @@ func UserWalletAdjustHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if !entry.Replayed {
 		WriteAuditLog(r, "wallet."+body.Direction, "user", strconv.Itoa(id), map[string]any{
-			"amount_kop": kop, "reason": reason, "balance_after_kop": entry.BalanceAfterKop, "wallet_tx_id": entry.TxID,
+			"amount_kop": kop, "reason": reason, "client_text": clientText, "balance_after_kop": entry.BalanceAfterKop, "wallet_tx_id": entry.TxID,
 		})
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]any{"balance_kop": entry.BalanceAfterKop, "wallet_tx_id": entry.TxID})
