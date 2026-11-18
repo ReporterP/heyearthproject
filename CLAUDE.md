@@ -305,6 +305,12 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 
 **Important**: stop service before binary upload: `deploy --ssh 'systemctl stop heyearth-api && rm -f /opt/heyearth/mainserver/heyearth-api'` then `go run quick_deploy.go`
 
+**Branches** (since 2026-11-18): `main` is the single integration branch; everything else merged into it.
+- Start new work from the current `main`; merge `main` into your branch before you deliver.
+- Deliver by merging into `main` (fast-forward when possible). Deploy only from a `main` commit, from a clean worktree, so a deploy never rolls back someone else's fix.
+- No long-lived side branches (`security/hardening`, `telegram/bot` were folded in on 2026-11-18). Delete merged branches with `git branch -d`.
+- `main` stays local-first: push to GitHub only on the owner's request (the repo is public).
+
 ---
 
 ## Gotchas
