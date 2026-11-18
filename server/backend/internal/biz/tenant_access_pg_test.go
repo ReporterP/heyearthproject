@@ -150,11 +150,19 @@ func TestTenantAccessFollowsTheMemberList(t *testing.T) {
 	tenant, _, members := accessCompany(t, conn)
 	syncAccess(t, tenant)
 
+	// users.tenant_id is the legacy mirror a claim writes and nothing clears.
+	testpg.MustExec(t, conn, `UPDATE users SET tenant_id = $1 WHERE id = $2`, tenant, members[accUser])
+	if st, err := GetUserAccessState(accUser, ""); err != nil || !st.CanConnect {
+		t.Fatalf("member: can_connect %+v %v, want true", st, err)
+	}
 	if err := RemoveTenantMember(tenant, members[accUser]); err != nil {
 		t.Fatal(err)
 	}
 	if row, _ := companyRow(t, conn, members[accUser], tenant); row.Live {
 		t.Errorf("a removed member keeps the company access: %+v", row)
+	}
+	if st, err := GetUserAccessState(accUser, ""); err != nil || st.CanConnect {
+		t.Errorf("a removed member (users.tenant_id still set) may connect: %+v %v", st, err)
 	}
 	if row, _ := companyRow(t, conn, members[accViewer], tenant); !row.Live {
 		t.Errorf("another member lost access with the removal: %+v", row)

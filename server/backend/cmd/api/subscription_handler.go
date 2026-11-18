@@ -536,7 +536,7 @@ func buildSubscriptionUserinfo(userID string) (string, error) {
 		JOIN users u ON u.id = us.user_id
 		LEFT JOIN plans p ON p.id = us.plan_id
 		WHERE u.user_id = $1 AND us.valid_until > NOW()
-		ORDER BY us.valid_until DESC
+		ORDER BY (us.tenant_id IS NULL) DESC, us.valid_until DESC -- own before company-paid, as routed
 		LIMIT 1
 	`, userID).Scan(&userDBID, &startedAt, &validUntil, &subLimit, &planLimit)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -716,7 +716,9 @@ func buildSubscriptionAnnounceAt(userID, base string) (text, url string, err err
 		  JOIN users u  ON u.id = us.user_id
 		  LEFT JOIN plans p ON p.id = us.plan_id
 		 WHERE u.user_id = $1
-		 ORDER BY us.valid_until DESC LIMIT 1
+		 -- a live row first, the person's own before the company-paid one: the wallet renewal
+		 -- notice is about their own subscription, the company row has no term for them
+		 ORDER BY (us.valid_until > NOW()) DESC, (us.tenant_id IS NULL) DESC, us.valid_until DESC LIMIT 1
 	`, userID).Scan(&validUntil, &trafficUsed, &trafficLimit, &planSlug, &autoRenew, &planPrice, &pricePaid, &promo, &userDBID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil

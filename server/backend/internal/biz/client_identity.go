@@ -476,15 +476,14 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 		return state, nil
 	}
 
+	// A member of an active company has a company-paid subscription row (SyncTenantAccessTx),
+	// so membership alone no longer means access: users.tenant_id was never cleared when a
+	// member left or the company was suspended, and it let such a client «connect» to nothing.
 	hasSub, err := HasActiveSubscription(userID)
 	if err != nil {
 		return nil, fmt.Errorf("active subscription: %w", err)
 	}
-	isTenant, err := isMemberOfTenant(userID)
-	if err != nil {
-		return nil, err
-	}
-	if !hasSub && !isTenant {
+	if !hasSub {
 		state.CanConnect = false
 		state.Reason = "no_active_subscription"
 	}
@@ -493,22 +492,6 @@ func GetUserAccessState(userID string, platform string) (*UserAccessState, error
 	state.TrafficMaskingAvailable = profile.IsPremium
 
 	return state, nil
-}
-
-// isMemberOfTenant: the user belongs to a B2B tenant. An unknown user is not; a
-// failed read is an error.
-func isMemberOfTenant(userID string) (bool, error) {
-	var tenantID int
-	err := db.DB.QueryRow(`
-		SELECT COALESCE(tenant_id, 0) FROM users WHERE user_id = $1
-	`, strings.TrimSpace(userID)).Scan(&tenantID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("tenant membership: %w", err)
-	}
-	return tenantID > 0, nil
 }
 
 // ─────────────────────── Subscriptions & Payments Lists ───────────────────────

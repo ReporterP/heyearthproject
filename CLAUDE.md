@@ -226,6 +226,12 @@ Runbook: `docs/runbooks/telegram-bot.md`; site spec: `spec/12-telegram.md`, 08 �
 - **Payments inside Telegram are Telegram Stars only** (Developer Terms 6.2; links to pay on the site, ЮKassa, crypto/TON = ban risk). `cmd/api/stars.go`: price = ⌈plan ₽ / `tg_stars_rub`⌉, one payment = one plan period, `stars_payments` per charge id, refund on failure, `/paysupport`. Never add a site-payment link to the bot or the Mini App.
 - Support (`support.go`, admin «Поддержка», `support.manage`), news (`news.go`, admin «Новости», `news.manage`: channel + bot + cabinet feed + Happ line `📣`), settings in admin «Telegram-бот» (token write-only, channel, Stars rate).
 
+### B2B company access (jzd5.24/.23, since 2026-11-18, behind `b2b_enabled`)
+
+- While a company (`tenants`) is `active`, every member (`tenant_members`, any role) has a `user_subscriptions` row with `tenant_id` on the member plan (setting `b2b_member_plan`, default `all-inclusive`). `biz.SyncTenantAccessTx` (tenant row lock first) keeps it in step; hourly `StartTenantAccessLoop`. `valid_until` is a 35-day technical horizon — the company's status is the truth.
+- Paths of the member's own money/reminders skip company rows (`tenant_id IS NULL`); the member's own subscription wins (`effectiveSubOrderBy`). A new query over `user_subscriptions` must decide which it is.
+- 1st of the month: `BillTenantMonth` charges or suspends (access ends at once); a credit that leaves ≥ the monthly charge on an inactive/suspended company takes the month and activates it. PRD/plan: `docs/{prd,plan}/b2b-member-access*`.
+
 ### Entries (mobile networks)
 
 - Reserve entry = RU VPS of another provider (`servers.role='relay'`), added in admin «Входы» (wizard; Hub key instead of a root password; «Проверить с телефона» = `mobile_check`).
