@@ -148,8 +148,9 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 			"🎋 Бамбук 1 only WiFi": eHub + ":50443", "🎋 Бамбук 2 only WiFi": eHub + ":50443"})
 		body, _ := entriesRequest(t, entriesScript(t, "failover_no_udp"), "clash-verge/2.0", "?format=clash")
 		express := clashBlock(t, body, "HiEarth-Express")
-		if !strings.Contains(express, "server: "+eHub) || !strings.Contains(express, "sni: "+eHub) {
-			t.Errorf("main Express must stay on the Hub (server and sni) without UDP through the target:\n%s", express)
+		// the server stays the Hub; sni is the certificate's domain, as in Happ (QA 2026-11-18)
+		if !strings.Contains(express, "server: "+eHub) || !strings.Contains(express, "sni: tls.example.test") {
+			t.Errorf("main Express must stay on the Hub without UDP through the target, sni = the cert domain:\n%s", express)
 		}
 	})
 	t.Run("pinned: everyone through the target, direct lines, no duplicate reserve", func(t *testing.T) {
