@@ -10,6 +10,7 @@ import Button from '../components/Button.jsx'
 import CopyField from '../components/CopyField.jsx'
 import EmailCard from '../components/EmailCard.jsx'
 import TelegramLinkCard, { useTelegramLink } from '../components/TelegramLinkCard.jsx'
+import SessionsCard from '../components/SessionsCard.jsx'
 import { isMiniApp } from '../lib/telegram.js'
 import Field, { Input } from '../components/Field.jsx'
 import Nomerok from '../components/Nomerok.jsx'
@@ -187,6 +188,10 @@ export default function SettingsPage() {
             <TelegramLinkCard state={tgLink} />
           </Section>
         )}
+
+        <Section id="sessions" title="Входы" text="Где открыт ваш аккаунт. Незнакомый вход — закройте его и задайте пароль.">
+          <SessionsCard token={token} />
+        </Section>
 
         {!tgApp && (
           <Section title="Выход" text="Для входа понадобится HiEarth ID или логин.">

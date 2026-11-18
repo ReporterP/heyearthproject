@@ -163,7 +163,7 @@ func handleUserRegister(w http.ResponseWriter, r *http.Request) {
 
 	bindReferralOnRegister(r, user.ID, req.ReferralCode)
 
-	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID, biz.SessionSourceSite)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
 		return
@@ -207,7 +207,7 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID)
+	token, err := biz.GenerateUserSessionToken(user.UserID, user.ID, biz.SessionSourceSite)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session: " + err.Error()})
 		return
@@ -912,6 +912,8 @@ func main() {
 	http.HandleFunc("/api/v1/auth/login", authLimiter.Middleware(handleUserLogin))
 	http.HandleFunc("/api/v1/auth/logout", authLimiter.Middleware(handleUserLogout))
 	http.HandleFunc("/api/v1/user/profile", apiLimiter.Middleware(handleUserProfile))
+	http.HandleFunc("/api/v1/user/sessions", apiLimiter.Middleware(handleUserSessions))
+	http.HandleFunc("/api/v1/user/sessions/", apiLimiter.Middleware(handleUserSessionAction))
 	http.HandleFunc("/api/v1/user/subscription", apiLimiter.Middleware(handleUserSubscription))
 	http.HandleFunc("/api/v1/user/payments", apiLimiter.Middleware(handleUserPayments))
 	// Детали одного платежа: GET /api/v1/user/payments/{id}

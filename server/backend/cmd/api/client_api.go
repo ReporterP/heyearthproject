@@ -728,7 +728,7 @@ func deviceFromProto(device *heyearth_v1.DeviceContext) biz.DeviceRegistration {
 // ─────────────────────── JWT ───────────────────────
 
 func issueUserJWT(userID string, userDBID int) (string, error) {
-	token, err := biz.GenerateUserSessionToken(userID, userDBID)
+	token, err := biz.GenerateUserSessionToken(userID, userDBID, biz.SessionSourceApp) // the app (gRPC)
 	if err != nil {
 		return "", err
 	}
