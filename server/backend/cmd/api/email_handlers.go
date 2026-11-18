@@ -160,9 +160,21 @@ func handleEmailUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
 		// A link scanner must not unsubscribe anyone: the page asks for the one click.
-		http.Redirect(w, r, "/email/unsubscribe?"+url.Values{"u": {q.Get("u")}, "s": {q.Get("s")}}.Encode(), http.StatusFound)
+		v := url.Values{"s": {q.Get("s")}}
+		if q.Get("i") != "" {
+			v.Set("i", q.Get("i"))
+		} else {
+			v.Set("u", q.Get("u")) // letters sent before 18.11
+		}
+		http.Redirect(w, r, "/email/unsubscribe?"+v.Encode(), http.StatusFound)
 	case http.MethodPost:
-		if err := biz.UnsubscribeByLink(r.Context(), strings.TrimSpace(q.Get("u")), strings.TrimSpace(q.Get("s"))); err != nil {
+		var err error
+		if i := strings.TrimSpace(q.Get("i")); i != "" {
+			err = biz.UnsubscribeByIDLink(r.Context(), i, strings.TrimSpace(q.Get("s")))
+		} else {
+			err = biz.UnsubscribeByLink(r.Context(), strings.TrimSpace(q.Get("u")), strings.TrimSpace(q.Get("s")))
+		}
+		if err != nil {
 			if errors.Is(err, biz.ErrEmailToken) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Ссылка неверна — отключите напоминания в личном кабинете"})
 				return

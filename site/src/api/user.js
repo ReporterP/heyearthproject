@@ -105,7 +105,8 @@ export async function setEmailReminders(token, enabled) {
 export async function confirmEmail(t) {
   return apiFetch('/api/v1/email/confirm', { method: 'POST', body: { token: t }, signOutOn401: false, fallback: 'Не удалось подтвердить почту.' })
 }
-export async function unsubscribeEmail(u, s) {
-  const q = new URLSearchParams({ u, s })
+// i = the account's number (links since 18.11), u = the HiEarth ID (older letters).
+export async function unsubscribeEmail(u, s, i) {
+  const q = new URLSearchParams(i ? { i, s } : { u, s })
   return apiFetch(`/api/v1/email/unsubscribe?${q}`, { method: 'POST', signOutOn401: false, fallback: 'Не удалось отписаться.' })
 }

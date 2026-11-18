@@ -81,7 +81,7 @@ export function EmailUnsubscribePage() {
   async function unsubscribe() {
     setState('busy')
     try {
-      await unsubscribeEmail(params.get('u') || '', params.get('s') || '')
+      await unsubscribeEmail(params.get('u') || '', params.get('s') || '', params.get('i') || '')
       setState('ok')
     } catch (e) {
       setState(e.status === 400 || e.status === 404 ? 'bad' : 'temp')

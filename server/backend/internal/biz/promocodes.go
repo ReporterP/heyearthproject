@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
@@ -74,17 +75,18 @@ type PromoError struct{ Msg string }
 func (e *PromoError) Error() string { return e.Msg }
 
 var (
-	ErrPromoNotFound    = &PromoError{"Промокод не найден"}
-	ErrPromoInactive    = &PromoError{"Промокод больше не действует"}
-	ErrPromoExpired     = &PromoError{"Срок действия промокода истёк"}
-	ErrPromoExhausted   = &PromoError{"Промокод уже использован максимальное число раз"}
-	ErrPromoUsedByUser  = &PromoError{"Вы уже использовали этот промокод"}
-	ErrPromoWrongPlan   = &PromoError{"Промокод не действует на этот тариф"}
-	ErrPromoNeedsPlan   = &PromoError{"Это промокод на скидку — введите его при оплате тарифа"}
-	ErrPromoUnlimited   = &PromoError{"У вас безлимитный трафик — подарок трафика не нужен"}
-	ErrPromoNoSub       = &PromoError{"Подарок трафика добавляется к действующей подписке — сначала оформите подписку"}
-	ErrPromoHigherPlan  = &PromoError{"У вас уже есть подписка дороже — промокод можно будет применить после её окончания"}
-	ErrPromoUnknownType = &PromoError{"Промокод настроен неверно — напишите в поддержку"}
+	ErrPromoNotFound       = &PromoError{"Промокод не найден"}
+	ErrPromoTooManyGuesses = &PromoError{"Слишком много неверных кодов — попробуйте через 10 минут"}
+	ErrPromoInactive       = &PromoError{"Промокод больше не действует"}
+	ErrPromoExpired        = &PromoError{"Срок действия промокода истёк"}
+	ErrPromoExhausted      = &PromoError{"Промокод уже использован максимальное число раз"}
+	ErrPromoUsedByUser     = &PromoError{"Вы уже использовали этот промокод"}
+	ErrPromoWrongPlan      = &PromoError{"Промокод не действует на этот тариф"}
+	ErrPromoNeedsPlan      = &PromoError{"Это промокод на скидку — введите его при оплате тарифа"}
+	ErrPromoUnlimited      = &PromoError{"У вас безлимитный трафик — подарок трафика не нужен"}
+	ErrPromoNoSub          = &PromoError{"Подарок трафика добавляется к действующей подписке — сначала оформите подписку"}
+	ErrPromoHigherPlan     = &PromoError{"У вас уже есть подписка дороже — промокод можно будет применить после её окончания"}
+	ErrPromoUnknownType    = &PromoError{"Промокод настроен неверно — напишите в поддержку"}
 )
 
 // IsPromoError reports a client-facing promocode refusal.
@@ -118,6 +120,12 @@ func LoadPromocode(ctx context.Context, q queryer, userDBID int, code string, pl
 	if norm == "" {
 		return nil, ErrPromoNotFound
 	}
+	// Every path that takes a code (quote, purchase, top-up with a purchase, payment/create, the
+	// apply/redeem endpoints) comes here: unknown codes are counted per account, so guessing is
+	// throttled however the request arrives (security audit F9/F48).
+	if promoGuessSpent(userDBID) {
+		return nil, ErrPromoTooManyGuesses
+	}
 	query := promocodeSelect
 	if lock {
 		query += ` FOR UPDATE`
@@ -130,6 +138,7 @@ func LoadPromocode(ctx context.Context, q queryer, userDBID int, code string, pl
 	err := q.QueryRowContext(ctx, query, norm).Scan(&p.Code, &p.Type, &p.DiscountPercent, &p.DiscountFixedRub,
 		&p.FreeDays, &p.TrafficGiftBytes, &p.PlanIDGranted, &plans, &active, &maxUses, &curUses, &expires, &perUser)
 	if errors.Is(err, sql.ErrNoRows) {
+		promoGuessFailed(userDBID)
 		return nil, ErrPromoNotFound
 	}
 	if err != nil {
@@ -389,4 +398,41 @@ func IsFreeAccessPromocode(ctx context.Context, q queryer, label string) (bool, 
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// promoGuesses: unknown promo codes per account in the current 10-minute window.
+var promoGuesses = struct {
+	sync.Mutex
+	m map[int]*promoGuessWindow
+}{m: map[int]*promoGuessWindow{}}
+
+type promoGuessWindow struct {
+	n     int
+	start time.Time
+}
+
+const (
+	promoGuessMax       = 10
+	promoGuessWindowLen = 10 * time.Minute
+)
+
+func promoGuessSpent(userDBID int) bool {
+	promoGuesses.Lock()
+	defer promoGuesses.Unlock()
+	w := promoGuesses.m[userDBID]
+	return w != nil && time.Since(w.start) < promoGuessWindowLen && w.n >= promoGuessMax
+}
+
+func promoGuessFailed(userDBID int) {
+	promoGuesses.Lock()
+	defer promoGuesses.Unlock()
+	if len(promoGuesses.m) > 100000 {
+		promoGuesses.m = map[int]*promoGuessWindow{}
+	}
+	w := promoGuesses.m[userDBID]
+	if w == nil || time.Since(w.start) >= promoGuessWindowLen {
+		w = &promoGuessWindow{start: time.Now()}
+		promoGuesses.m[userDBID] = w
+	}
+	w.n++
 }

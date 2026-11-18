@@ -196,9 +196,13 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		Invoices:     invoices,
 	}
 	for _, m := range members {
+		guid := m.UserGUID
+		if role != "admin" { // the HiEarth ID opens an account without a password (audit F4/F6)
+			guid = shortHiEarthID(guid)
+		}
 		resp.Members = append(resp.Members, b2bMember{
 			UserID:   m.UserID,
-			UserGUID: m.UserGUID,
+			UserGUID: guid,
 			Username: m.Username,
 			Email:    m.Email,
 			Role:     m.Role,

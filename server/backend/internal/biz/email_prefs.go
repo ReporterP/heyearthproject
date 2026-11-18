@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,8 +144,26 @@ func UnsubscribeQuery(userIDText string) string {
 	return "u=" + userIDText + "&s=" + unsubscribeSig(userIDText)
 }
 
+// UnsubscribeQueryID is the query string of a reminder's one-click link: the account's DB id and a
+// signature. The HiEarth ID is the only key of an account without a password — it must not sit in
+// letters, mail logs and List-Unsubscribe headers (security audit F5/F27/F29/F30).
+func UnsubscribeQueryID(userDBID int) string {
+	id := strconv.Itoa(userDBID)
+	return "i=" + id + "&s=" + unsubscribeSig("id:"+id)
+}
+
+// UnsubscribeByIDLink switches the reminders off for a valid i=<db id>&s=<sig> link.
+func UnsubscribeByIDLink(ctx context.Context, idText, sig string) error {
+	id, err := strconv.Atoi(idText)
+	if err != nil || id <= 0 || !hmac.Equal([]byte(sig), []byte(unsubscribeSig("id:"+idText))) {
+		return ErrEmailToken
+	}
+	_, err = db.DB.ExecContext(ctx, `UPDATE users SET email_reminders_off = TRUE WHERE id = $1`, id)
+	return err
+}
+
 // UnsubscribeByLink switches the reminders off for the user of a valid link (users.user_id +
-// signature); a wrong signature changes nothing.
+// signature); a wrong signature changes nothing. Letters sent before 18.11 carry this form.
 func UnsubscribeByLink(ctx context.Context, userIDText, sig string) error {
 	if userIDText == "" || !hmac.Equal([]byte(sig), []byte(unsubscribeSig(userIDText))) {
 		return ErrEmailToken

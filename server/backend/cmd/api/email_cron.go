@@ -149,14 +149,14 @@ func sendReminders() {
 		if email.AlreadySent(r.UserDBID, tpl, reminderDedup[tpl]) {
 			continue
 		}
-		q := biz.UnsubscribeQuery(r.UserIDText)
+		q := biz.UnsubscribeQueryID(r.UserDBID)
 		subj, html, text := email.Reminder(r.kind(), r.PlanName, r.PriceRub, r.ValidUntil, r.BalanceKop, r.Today, email.SiteURL+"/email/unsubscribe?"+q)
 		if err := sendReminderMail(email.Message{
 			To: r.To, Subject: subj, HTMLBody: html, TextBody: text, Template: tpl,
 			UserID: r.UserDBID, UserIDText: r.UserIDText, SubscriptionID: r.SubID,
 			UnsubscribeURL: email.SiteURL + "/api/v1/email/unsubscribe?" + q,
 		}); err != nil {
-			log.Printf("[email-cron] reminder to %s: %v", r.UserIDText, err)
+			log.Printf("[email-cron] reminder to user %d: %v", r.UserDBID, err)
 			continue
 		}
 		sent++

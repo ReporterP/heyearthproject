@@ -72,11 +72,18 @@ func TrafficUsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	// The HiEarth ID opens an account without a password: a dashboard-only role sees it shortened
+	// (security audit F8); users.read shows it in full, as on the users page.
+	claims, _ := ClaimsFromContext(r.Context())
+	fullIDs := claims != nil && claimsAllow(claims, "users.read")
 	var users []trafficUserRow
 	for rows.Next() {
 		var u trafficUserRow
 		if err := rows.Scan(&u.UserID, &u.Username, &u.Upload, &u.Download, &u.Total); err != nil {
 			continue
+		}
+		if !fullIDs {
+			u.UserID = maskHiEarthID(u.UserID)
 		}
 		users = append(users, u)
 	}
@@ -204,4 +211,12 @@ func extractPathParam(path, prefix string) string {
 		rest = rest[:len(rest)-1]
 	}
 	return rest
+}
+
+// maskHiEarthID is «3f2b…9b0c» (the cabinet's short form, spec 05 §4).
+func maskHiEarthID(id string) string {
+	if len(id) <= 12 {
+		return "…"
+	}
+	return id[:4] + "…" + id[len(id)-4:]
 }
