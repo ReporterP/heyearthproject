@@ -70,7 +70,9 @@ export function AuthProvider({ children }) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <AuthContext.Provider value={{ token, isLoggedIn: !!token, login, logout }}>
+    // while a voluntary logout is on its way home the page already counts as signed out (no
+    // one-frame «В кабинет» on the landing before the token is dropped)
+    <AuthContext.Provider value={{ token, isLoggedIn: !!token && !location.state?.signOut, login, logout }}>
       {children}
     </AuthContext.Provider>
   )
