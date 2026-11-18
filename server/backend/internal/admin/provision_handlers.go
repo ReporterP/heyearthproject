@@ -1102,7 +1102,9 @@ func HubKeyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	pub, err := HubPublicKey(r.Context())
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, err.Error())
+		// the owner reads this in the node wizard: a sentence, the process output goes to the log
+		log.Printf("[provision] hub key: %v", err)
+		writeAdminError(w, http.StatusInternalServerError, "Не удалось получить ключ Hub — подробности в журнале API (journalctl -u heyearth-api)")
 		return
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]string{"public_key": pub, "fingerprint": provision.HubKeyFingerprint(pub)})

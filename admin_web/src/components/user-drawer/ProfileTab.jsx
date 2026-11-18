@@ -76,7 +76,7 @@ export default function ProfileTab({ user, onSaved }) {
   async function patch(field, value) {
     try {
       await updateUser(user.id, { [field]: value })
-      toast.success(t.save + ' OK')
+      toast.success('Профиль сохранён')
       onSaved?.()
     } catch (err) {
       toast.error(err.message)

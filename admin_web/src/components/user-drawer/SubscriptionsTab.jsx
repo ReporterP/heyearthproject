@@ -80,7 +80,7 @@ export default function SubscriptionsTab({ user, onChanged }) {
           auto_renew: !!draft.auto_renew,
           status: draft.status,
         })
-        toast.success(t.create + ' OK')
+        toast.success('Подписка добавлена')
       } else {
         await updateSubscription(editing.id, {
           plan_id: Number(draft.plan_id) || 0,
@@ -88,7 +88,7 @@ export default function SubscriptionsTab({ user, onChanged }) {
           auto_renew: !!draft.auto_renew,
           status: draft.status,
         })
-        toast.success(t.save + ' OK')
+        toast.success('Подписка сохранена')
       }
       setEditing(null)
       load()
@@ -104,7 +104,7 @@ export default function SubscriptionsTab({ user, onChanged }) {
     setBusy(true)
     try {
       await deleteSubscription(confirm.id)
-      toast.success(t.delete + ' OK')
+      toast.success('Подписка удалена')
       setConfirm(null)
       load()
       onChanged?.()

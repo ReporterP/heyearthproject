@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   normalizePermissions, adminFormFrom, adminPayload, roleFormFrom, rolePayload, toggle, roleNames, permissionLabel,
 } from './adminForms.js'
+import { PAGE_PERMS } from '../auth/access.js'
 
 test('admin form: the fields the API reads (role_keys), the checks before it', () => {
   const f = adminFormFrom({ username: 'helper', display_name: 'Хелпер', roles: ['support'], is_active: true })
@@ -31,4 +32,10 @@ test('permissions in words; role names', () => {
     [{ key: 'users.read', label: 'Пользователи: просмотр', hint: 'View users' }, { key: 'x.y', label: 'x.y', hint: '' }])
   assert.equal(permissionLabel('payments.refund'), 'Платежи: возвраты (деньги уходят со счёта)')
   assert.deepEqual(roleNames(['support', 'gone'], [{ role_key: 'support', name: 'Поддержка' }]), ['Поддержка', 'gone'])
+})
+
+test('every page permission has a Russian label (no raw keys like support.manage in the role dialog)', () => {
+  for (const perm of Object.values(PAGE_PERMS).filter(Boolean)) {
+    assert.notEqual(permissionLabel(perm), perm, `${perm} has no label`)
+  }
 })

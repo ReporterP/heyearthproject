@@ -122,10 +122,10 @@ export default function TenantsPage() {
       }
       if (dialog.mode === 'create') {
         await createTenant(payload)
-        toast.success(t.create + ' OK')
+        toast.success('Компания создана')
       } else {
         await updateTenant(dialog.item.id, payload)
-        toast.success(t.save + ' OK')
+        toast.success('Компания сохранена')
       }
       setDialog(null)
       paged.reload()
@@ -140,7 +140,7 @@ export default function TenantsPage() {
     setSaving(true)
     try {
       await deleteTenant(confirm.id)
-      toast.success(t.delete + ' OK')
+      toast.success('Компания удалена')
       setConfirm(null)
       paged.reload()
     } catch (err) {

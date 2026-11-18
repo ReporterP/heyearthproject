@@ -9,6 +9,7 @@ import { fetchPromocodesPaged, createPromocode, updatePromocode, deletePromocode
 import SearchPaginationBar from '../components/SearchPaginationBar.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { formatBytes } from '../utils/format.js'
+import { promoState } from '../utils/promos.js'
 import {
   Badge,
   Button,
@@ -201,9 +202,12 @@ export default function PromocodesPage() {
                     : <span className="text-success">Все</span>}
                 </Td>
                 <Td align="center">
-                  {item.is_active
-                    ? <Badge variant="success">активен</Badge>
-                    : <Badge variant="warning">выключен</Badge>}
+                  {{
+                    active: <Badge variant="success">активен</Badge>,
+                    expired: <Badge variant="warning">истёк</Badge>,
+                    used_up: <Badge variant="warning">исчерпан</Badge>,
+                    off: <Badge variant="warning">выключен</Badge>,
+                  }[promoState(item)]}
                 </Td>
                 <Td>
                   {can('promocodes.write') && (
