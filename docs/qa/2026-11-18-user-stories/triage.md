@@ -97,3 +97,23 @@ Final checks on `e1e9c7b`:
 - `admin_web` `npm test`: 176/176;
 - site and admin builds pass;
 - `impeccable detect` was not run: it isn't installed.
+
+## Fixes, part 2 (2026-11-18, the owner chose «P3»)
+
+On the same branch: commits `1c24608` to `b498b13`.
+
+| Ticket | Commit | Verified |
+|---|---|---|
+| jzd5.8 logout, no-token text | `1c24608`, `b498b13` | Go test; live: logout lands on `/`, no-token 401 says «Нужен вход в аккаунт» |
+| jzd5.7 payment errors, resumed checkout | `f622f34`, `b498b13` | PG test for the resume answer |
+| jzd5.6 site copy pass | `a000720` | PG test for the free-days hint; live. Item (c) «Linux» is left for the owner: spec 08 and spec 05 disagree |
+| jzd5.5 country and mobile copy from site-info | `4b3e1f1` | live with a DE exit and the entry offline |
+| jzd5.17 admin small fixes | `7e497a3` | Go test + node tests |
+| jzd5.20 Clash brand | `38c1aa6`, `f268124` | goldens regenerated; the diff is the brand only |
+| jzd5.26 B2B details | `decafc3`, `b498b13` | PG test for b2bOnly; live 404; `invoice_id` without a handler test (no YooKassa seam) |
+
+A code review of part 2 led to `b498b13`. Final checks on it:
+- `go vet` is clean;
+- full `go test` with Postgres tests: 17 packages ok (`cmd/api` re-run on `b498b13`);
+- admin `npm test`: 178/178;
+- both builds pass.
