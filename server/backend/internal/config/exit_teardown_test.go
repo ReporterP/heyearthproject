@@ -279,7 +279,7 @@ func TestTeardownNamesMatchTemplates(t *testing.T) {
 			ExitHysteriaUnitPath == unitFilePath("hysteria2") && ExitSTLSUnitPath == unitFilePath(ExitSTLSUnit) &&
 			ExitXrayUnitPath == unitFilePath("xray") && NodeAgentUnitPath == unitFilePath("node-agent"),
 		"hub client": strings.Contains(HubHysteriaClientUnit(7, "203.0.113.7"), " -c "+HubClientConfigPath(7)+"\n") &&
-			strings.Contains(HubHysteriaClientYAML(7, "203.0.113.7", "x", 1095), "server id=7"),
+			strings.Contains(HubHysteriaClientYAML(7, "203.0.113.7", "x", 1095, ""), "server id=7"),
 		"hub stls client": strings.Contains(HubSTLSClientUnit(7, "203.0.113.7"), "LoadCredential=client.json:"+HubSTLSConfigPath(7)+"\n") &&
 			strings.Contains(HubClientRemoveScript(7), shQuote(RestartMarker(HubSTLSUnit(7)))) &&
 			strings.Contains(HubClientRemoveScript(7), shQuote(PathCheckMarker(HubSTLSUnit(7)))),

@@ -31,13 +31,14 @@ type HysteriaClientConfig struct {
 	ExitPort  int    // Hysteria2 server port range, usually "20000-50000" passed via ExitPortRange
 	AuthKey   string // matches Hysteria2 server `auth.password`
 	SocksPort int    // local SOCKS5 listener (1088 + ServerID)
+	CertPin   string // servers.tunnel_cert_sha256: the exit's certificate (config.HubHysteriaClientYAML)
 }
 
 // hysteriaClientYAML returns the rendered config for a given server: the shared template
 // config.HubHysteriaClientYAML (port hopping, hopInterval, client-side ACL), which deploy
 // --setup-exit-node writes as well.
 func hysteriaClientYAML(c HysteriaClientConfig) string {
-	return config.HubHysteriaClientYAML(c.ServerID, c.ExitIP, c.AuthKey, c.SocksPort)
+	return config.HubHysteriaClientYAML(c.ServerID, c.ExitIP, c.AuthKey, c.SocksPort, c.CertPin)
 }
 
 // hysteriaServiceUnit returns the systemd unit for hysteria2-client-<id>.service (shared

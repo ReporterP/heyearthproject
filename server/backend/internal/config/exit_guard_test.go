@@ -244,12 +244,12 @@ systemctl() { echo "systemctl $*" >> ./systemctl.log; }
 func TestHysteriaPasswordSameOnHubAndExit(t *testing.T) {
 	for _, pw := range []string{"c2VjcmV0LXR1bm5lbC1wdw==", "s3cret", "12345678", "true", "x\ny: z", ""} {
 		tok := yamlPassword(pw)
-		if !strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", pw, 1090), "\nauth: "+tok+"\n") ||
+		if !strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", pw, 1090, ""), "\nauth: "+tok+"\n") ||
 			!strings.Contains(ExitHysteriaServerYAML(pw, "203.0.113.7", 8443), "\n  password: "+tok+"\n") {
 			t.Errorf("password %q is not rendered as %s on both ends", pw, tok)
 		}
 	}
-	golden(t, "hub_hysteria_client.golden", []byte(HubHysteriaClientYAML(2, "203.0.113.7", "c2VjcmV0LXR1bm5lbC1wdw==", 1090)))
+	golden(t, "hub_hysteria_client.golden", []byte(HubHysteriaClientYAML(2, "203.0.113.7", "c2VjcmV0LXR1bm5lbC1wdw==", 1090, "")))
 }
 
 // The exit's static files, pinned byte for byte.

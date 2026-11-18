@@ -39,6 +39,7 @@ var ErrNoRollback = errors.New("без отката")
 // protocol/port other than hysteria2:50443 is still stored.
 type Tunnel struct {
 	UUID, PublicKey, ShortID, SNI, Password string
+	CertPin                                 string // sha256 of the exit's Hysteria2 certificate (000090)
 	Stale                                   bool
 }
 
@@ -95,6 +96,7 @@ type State struct {
 	Relay RelayOptions // role relay: filled by the API wiring (RelayOptionsFor)
 	Hooks Hooks
 	Keys  config.ExitRealityKeys
+	HyPin string                          // the exit's Hysteria2 certificate pin, read by step hy_pin
 	Begin func(ctx context.Context) error // before the first step (lifecycle → provisioning)
 	Fail  func(ctx context.Context)       // after a failed step (provisioning → failed)
 	Now   func() time.Time
@@ -225,6 +227,7 @@ var titles = map[string]string{
 	"relay_preflight": "Предпроверка", "relay_packages": "Пакеты", "relay_sysctl": "Пересылка и conntrack",
 	"relay_rules": "Правила nftables", "relay_unit": "Юнит heyearth-relay", "relay_firewall": "Фаервол",
 	"relay_fail2ban": "fail2ban для SSH", "relay_path": "Проверка входа снаружи",
+	"hy_pin":         "Отпечаток сертификата туннеля",
 	"host_hardening": "Защита узла (sysctl, sshd, автообновления)",
 	"relay_stream":   "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
 	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",

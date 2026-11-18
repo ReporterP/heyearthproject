@@ -42,6 +42,7 @@ func ExitRecipe(o ExitOptions) Recipe {
 		hostHardeningStep(true),
 		{Name: "firewall", Apply: firewallApply(o)},
 		{Name: "hysteria", Apply: guardPath(hyPath, onNode("hysteria2"), false, hysteriaApply(o)), Verify: hysteriaVerify(o), Rollback: unitRollback("hysteria2")},
+		{Name: "hy_pin", Apply: hyPinStep, Verify: hyPinStep},
 		{Name: "retire_xray", Apply: retireXrayApply, Verify: retireXrayVerify},
 		{Name: "stls", Apply: guardPath(stlsPath, onNode(config.ExitSTLSUnit), false, stlsApply(o)), Verify: stlsVerify(o), Rollback: unitRollback(config.ExitSTLSUnit)},
 	}
@@ -809,7 +810,21 @@ func probeAgent(ctx context.Context, s *State) error {
 // ── DB tunnel row, Hub client, end-to-end paths ──
 
 func wantTunnel(s *State) Tunnel {
-	return Tunnel{UUID: s.Keys.UUID, PublicKey: s.Keys.PublicKey, ShortID: s.Keys.ShortID, SNI: config.ExitRealitySNI, Password: s.Keys.SSPassword}
+	return Tunnel{UUID: s.Keys.UUID, PublicKey: s.Keys.PublicKey, ShortID: s.Keys.ShortID, SNI: config.ExitRealitySNI, Password: s.Keys.SSPassword, CertPin: s.HyPin}
+}
+
+// hyPinStep reads the exit's Hysteria2 certificate pin (Apply and Verify alike: later steps — the
+// tunnel record and the Hub's client config — need it in every kind of run).
+func hyPinStep(ctx context.Context, r Remote, s *State) error {
+	kv, err := runKV(ctx, r, config.ExitCertPinScript)
+	if err != nil {
+		return err
+	}
+	if !config.ValidCertPin(kv["PIN"]) {
+		return errors.New("не удалось прочитать отпечаток сертификата Hysteria2 на ноде")
+	}
+	s.HyPin = kv["PIN"]
+	return nil
 }
 
 func tunnelVerify(ctx context.Context, _ Remote, s *State) error {
@@ -848,7 +863,7 @@ func hubUnit(s *State) string { return config.HubClientUnit(s.Node.ID) }
 func hubClientFiles(s *State) []File {
 	id := s.Node.ID
 	return []File{
-		{config.HubClientConfigPath(id), []byte(config.HubHysteriaClientYAML(id, exitIP(s), s.Keys.SSPassword, 1088+id)), 0o600},
+		{config.HubClientConfigPath(id), []byte(config.HubHysteriaClientYAML(id, exitIP(s), s.Keys.SSPassword, 1088+id, s.HyPin)), 0o600},
 		{"/etc/systemd/system/" + hubUnit(s) + ".service", []byte(config.HubHysteriaClientUnit(id, exitIP(s))), 0o644},
 	}
 }

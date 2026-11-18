@@ -6,7 +6,7 @@ import (
 )
 
 func TestHubHysteriaClientTemplates(t *testing.T) {
-	y := HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093)
+	y := HubHysteriaClientYAML(5, "203.0.113.7", "s3cret", 1093, "")
 	for _, w := range []string{"server: 203.0.113.7:20000-50000\n", "auth: \"s3cret\"\n", "transport:\n  udp:\n    hopInterval: 30s\n",
 		"listen: 127.0.0.1:1093\n", "acl:\n  inline:\n", "    - reject(10.0.0.0/8)\n", "    - reject(all, tcp/6881-6889)\n", "    - direct(all)\n"} {
 		if !strings.Contains(y, w) {
@@ -27,7 +27,7 @@ func TestHubHysteriaClientTemplates(t *testing.T) {
 // Production tuning of the Hub→exit clients (benchmark 2026-10-12, hysteria 2.13): Brutal at
 // 100/100 mbps and the large QUIC windows. Re-provisioning must never change them silently.
 func TestHubHysteriaClientTuningPinned(t *testing.T) {
-	y := HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090)
+	y := HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090, "")
 	for _, w := range []string{
 		"quic:\n  initStreamReceiveWindow: 26843545\n  maxStreamReceiveWindow: 26843545\n  initConnReceiveWindow: 67108864\n  maxConnReceiveWindow: 67108864\n",
 		"bandwidth:\n  up: 100 mbps\n  down: 100 mbps\n",
@@ -41,5 +41,19 @@ func TestHubHysteriaClientTuningPinned(t *testing.T) {
 		if strings.Contains(y, bad) {
 			t.Errorf("client yaml contains %q", bad)
 		}
+	}
+}
+
+func TestHubHysteriaClientPinsTheExitCertificate(t *testing.T) {
+	pin := strings.Repeat("ab", 32)
+	y := HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090, pin)
+	if !strings.Contains(y, "tls:\n  insecure: true\n  pinSHA256: "+pin+"\n") {
+		t.Fatalf("pin missing:\n%s", y)
+	}
+	if strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090, "not-a-pin"), "pinSHA256") {
+		t.Fatal("a malformed pin must not be written")
+	}
+	if !ValidCertPin(pin) || ValidCertPin(strings.ToUpper(pin)) {
+		t.Fatal("ValidCertPin")
 	}
 }

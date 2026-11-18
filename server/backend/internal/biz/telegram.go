@@ -327,7 +327,6 @@ func SafeNextPath(p string) string {
 	return p
 }
 
-
 // DeleteFreshUser removes an account created a moment ago that could not be linked (it has no
 // payments, wallet or subscription yet). Anything referencing it keeps it.
 func DeleteFreshUser(ctx context.Context, userDBID int) error {

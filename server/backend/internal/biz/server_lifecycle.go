@@ -179,11 +179,12 @@ func HubProvisionExisting(serverID int, progressCh chan<- ProvisionEvent) error 
 	var (
 		exitIP     string
 		ssPassword string
+		certPin    string
 	)
 	err := db.DB.QueryRow(`
-		SELECT ip_address, COALESCE(tunnel_ss_password, '')
+		SELECT ip_address, COALESCE(tunnel_ss_password, ''), COALESCE(tunnel_cert_sha256, '')
 		  FROM servers WHERE id=$1 AND is_exit_node = TRUE
-	`, serverID).Scan(&exitIP, &ssPassword)
+	`, serverID).Scan(&exitIP, &ssPassword, &certPin)
 	if err != nil {
 		emit(progressCh, "load_server", "error", err.Error())
 		return fmt.Errorf("load server %d: %w", serverID, err)
@@ -217,6 +218,7 @@ func HubProvisionExisting(serverID int, progressCh chan<- ProvisionEvent) error 
 		ExitIP:    exitIP,
 		AuthKey:   ssPassword,
 		SocksPort: 1088 + serverID,
+		CertPin:   certPin,
 	}); err != nil {
 		emit(progressCh, "write_config", "error", err.Error())
 		_ = TransitionState(serverID, LifecycleProvisioning, LifecycleFailed)

@@ -200,15 +200,16 @@ SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) W
 	setLifecycleQuery   = `UPDATE servers SET lifecycle_state = $2, lifecycle_updated_at = NOW(), updated_at = NOW()
  WHERE id = $1 AND lifecycle_state = ANY($3)`
 	loadTunnelQuery = `SELECT COALESCE(tunnel_uuid, ''), COALESCE(tunnel_public_key, ''), COALESCE(tunnel_short_id, ''),
-       COALESCE(tunnel_sni, ''), COALESCE(tunnel_ss_password, ''),
+       COALESCE(tunnel_sni, ''), COALESCE(tunnel_ss_password, ''), COALESCE(tunnel_cert_sha256, ''),
        COALESCE(tunnel_private_key, '') <> '' OR tunnel_protocol IS DISTINCT FROM 'hysteria2' OR tunnel_port IS DISTINCT FROM 50443
   FROM servers WHERE id = $1`
 	saveTunnelQuery = `UPDATE servers
    SET tunnel_protocol = 'hysteria2', tunnel_port = 50443, tunnel_uuid = $2, tunnel_public_key = $3,
-       tunnel_short_id = $4, tunnel_sni = $5, tunnel_ss_password = $6, tunnel_private_key = NULL, updated_at = NOW()
+       tunnel_short_id = $4, tunnel_sni = $5, tunnel_ss_password = $6, tunnel_cert_sha256 = $7, tunnel_private_key = NULL, updated_at = NOW()
  WHERE id = $1 AND (tunnel_protocol IS DISTINCT FROM 'hysteria2' OR tunnel_port IS DISTINCT FROM 50443
        OR tunnel_uuid IS DISTINCT FROM $2 OR tunnel_public_key IS DISTINCT FROM $3 OR tunnel_short_id IS DISTINCT FROM $4
-       OR tunnel_sni IS DISTINCT FROM $5 OR tunnel_ss_password IS DISTINCT FROM $6 OR tunnel_private_key IS NOT NULL)`
+       OR tunnel_sni IS DISTINCT FROM $5 OR tunnel_ss_password IS DISTINCT FROM $6 OR tunnel_cert_sha256 IS DISTINCT FROM $7
+       OR tunnel_private_key IS NOT NULL)`
 	forgetTunnelQuery = `UPDATE servers SET tunnel_ss_password = NULL, tunnel_private_key = NULL, tunnel_status = 'unknown', updated_at = NOW() WHERE id = $1`
 	activateQuery     = `UPDATE servers SET lifecycle_state = 'online', tunnel_status = 'healthy', tunnel_error = '',
        lifecycle_updated_at = NOW(), updated_at = NOW()
@@ -460,11 +461,11 @@ func (s *SQLStore) Hooks(requestSync func(), probeAgent func(context.Context, st
 		},
 		LoadTunnel: func(ctx context.Context, id int) (Tunnel, error) {
 			var t Tunnel
-			err := s.DB.QueryRowContext(ctx, loadTunnelQuery, id).Scan(&t.UUID, &t.PublicKey, &t.ShortID, &t.SNI, &t.Password, &t.Stale)
+			err := s.DB.QueryRowContext(ctx, loadTunnelQuery, id).Scan(&t.UUID, &t.PublicKey, &t.ShortID, &t.SNI, &t.Password, &t.CertPin, &t.Stale)
 			return t, err
 		},
 		SaveTunnel: func(ctx context.Context, id int, t Tunnel) (bool, error) {
-			res, err := s.DB.ExecContext(ctx, saveTunnelQuery, id, t.UUID, t.PublicKey, t.ShortID, t.SNI, t.Password)
+			res, err := s.DB.ExecContext(ctx, saveTunnelQuery, id, t.UUID, t.PublicKey, t.ShortID, t.SNI, t.Password, t.CertPin)
 			if err != nil {
 				return false, err
 			}

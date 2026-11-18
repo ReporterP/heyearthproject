@@ -451,6 +451,8 @@ func (h *fakeHost) run(op, script string) (string, error) {
 		return "BBR=1\nPKGS=1\n", nil
 	case "harden-check":
 		return "SYN=8192\nPERSOURCE=3\nTIMER=enabled\n", nil
+	case "hy-pin":
+		return "PIN=" + strings.Repeat("ab", 32) + "\n", nil
 	case "authkey":
 		if k := between(script, "KEY='", "'"); !slices.Contains(h.authKeys, k) {
 			h.authKeys = append(h.authKeys, k)
@@ -562,3 +564,6 @@ func atoi(s string) int {
 	fmt.Sscanf(s, "%d", &n)
 	return n
 }
+
+// fakeCertPin: the pin the fake exit reports for its Hysteria2 certificate (step hy_pin).
+var fakeCertPin = strings.Repeat("ab", 32)

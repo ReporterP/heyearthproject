@@ -83,7 +83,7 @@ func TestPortHopPartsAreTheScript(t *testing.T) {
 	}
 	// Live exit 2 (2026-10-15): redirect over 20000-50000, the range the Hub's clients hop across;
 	// guarded so only UDP addressed to the exit itself is redirected (Beads tte5).
-	if ExitHopRange != "20000-50000" || !strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090), "server: 203.0.113.7:"+ExitHopRange+"\n") {
+	if ExitHopRange != "20000-50000" || !strings.Contains(HubHysteriaClientYAML(2, "203.0.113.7", "pw", 1090, ""), "server: 203.0.113.7:"+ExitHopRange+"\n") {
 		t.Errorf("exit hop range %q must be the live 20000-50000 and the Hub clients' range", ExitHopRange)
 	}
 	if !strings.Contains(ExitPortHopConf, "\n    udp dport 20000-50000 fib daddr type local counter redirect to :50443\n") {
