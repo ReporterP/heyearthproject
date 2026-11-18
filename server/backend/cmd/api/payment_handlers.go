@@ -238,7 +238,7 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	out, code, err := createWalletTopup(r.Context(), userID, priceKop-balance, plan.ID, promoUsed, body.Email, body.ReturnURL, body.ConfirmationType)
+	out, code, err := createWalletTopup(r.Context(), userID, priceKop-balance, plan.ID, priceKop, promoUsed, body.Email, body.ReturnURL, body.ConfirmationType)
 	if err != nil {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return

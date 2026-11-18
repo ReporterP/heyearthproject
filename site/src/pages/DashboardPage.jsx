@@ -27,6 +27,7 @@ import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
 import { date, kopNum, money, days as dayWord } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Обзор кабинета (spec 08 §8.1): artboards «активна», «нет подписки», «закончилась», «телефон».
 // The state comes from the subscription: active · none · expired. Main action — «Добавить в Happ»
@@ -267,7 +268,7 @@ function Expired({ phone, narrow, sub, plan, plans, wallet, token, reloadAll, to
     } catch (e) {
       if (e?.kind !== 'network') setRequestId(newRequestId())
       if (e?.status === 402 || e?.status === 409) { setErr(e.message); reloadAll() }
-      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      else setErr(payErrorText(e))
     } finally {
       inFlight.current = false
       setBusy(false)

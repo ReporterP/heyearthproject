@@ -94,7 +94,8 @@ export async function apiFetch(path, { token, method = 'GET', body, form, fallba
     throw new ApiError(MSG.auth, { status: 401, kind: 'auth', data })
   }
   if (res.status === 503 || res.status === 502 || res.status === 504) {
-    throw new ApiError((data && data.error && res.status === 503) ? translateError(data.error) : MSG.unavailable, { status: res.status, kind: 'unavailable', data })
+    // the server's own reason when it gives one (502/503 from payments: «Оплата временно недоступна…»)
+    throw new ApiError((data && data.error) ? translateError(data.error) : MSG.unavailable, { status: res.status, kind: 'unavailable', data })
   }
   if (res.status === 429) {
     // the server's Retry-After is the real wait (the promo-code limit is 10 minutes, 05 §7)

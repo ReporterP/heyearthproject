@@ -18,6 +18,7 @@ import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { date, dateTime, kop, kopNum, group } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Кошелёк (spec 09 §9.5, artboard «Кошелёк»). /wallet?topup=<id> is where ЮKassa returns: it shows the
 // payment's result instead (9.4).
@@ -105,7 +106,7 @@ function Wallet() {
       if (d.confirmation_url) { window.location.href = d.confirmation_url; return }
       throw new Error('')
     } catch (e2) {
-      setErr(e2?.status === 400 && e2.message ? e2.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      setErr(payErrorText(e2))
     } finally {
       inFlight.current = false
       setBusy(false)

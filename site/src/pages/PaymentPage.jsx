@@ -22,6 +22,7 @@ import usePageMeta from '../hooks/usePageMeta.js'
 import { currentSub } from '../lib/account.js'
 import { splitPlans, savings, featuredId, planList, termLabel } from '../lib/plans.js'
 import { date, kop, money, daysLeft, group } from '../lib/format.js'
+import { payErrorText } from '../lib/payError.js'
 
 // Тарифы → Оформление (spec 09 §9.1–9.2) on one route: /payment is step 1, /payment?plan=<slug> is
 // step 2 (a history entry, so «Назад» returns to the grid). Paying: enough on the wallet → buy from
@@ -303,7 +304,7 @@ function Review({ plan, plansLoading, acc, active, onChange, onDone }) {
     } catch (e) {
       if (e?.kind !== 'network') setRequestId(newRequestId())
       if (e?.status === 409 || e?.status === 402) { setErr(e.message); invalidateAccount('wallet'); acc.reload('wallet'); setQuoteNonce((x) => x + 1) }
-      else setErr(e?.status === 400 && e.message ? e.message : 'Не удалось открыть оплату — попробуйте ещё раз.')
+      else setErr(payErrorText(e))
     } finally {
       inFlight.current = false
       setBusy(false)

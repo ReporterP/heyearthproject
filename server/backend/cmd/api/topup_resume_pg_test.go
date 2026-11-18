@@ -80,3 +80,40 @@ func TestWalletTopupResume(t *testing.T) {
 		t.Errorf("status poll: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A resumed checkout (new tab, refresh in another session) gets back what the payment is for:
+// the top-up amount, and for a top-up with a purchase the plan and the price to charge.
+func TestWalletTopupResumeCarriesAmountAndPlan(t *testing.T) {
+	conn := testpg.Open(t)
+	t.Setenv("JWT_SECRET", "test-secret-resume-meta")
+	uid := testpg.NewUser(t, conn, "resume-meta-user")
+	var planID, payID int
+	if err := conn.QueryRow(`INSERT INTO plans (slug, name, description, price_rub, duration_days, allowed_protocols, is_active)
+		VALUES ('full', 'Полный', '', 300, 30, ARRAY['all'], TRUE) RETURNING id`).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`INSERT INTO payments (user_id_text, amount, currency, status, provider, yookassa_payment_id, metadata)
+		VALUES ('resume-meta-user', 180, 'RUB', 'pending', 'yookassa', 'yk-meta', jsonb_build_object('purchase_plan_id', $1::int, 'purchase_price_kop', 30000))
+		RETURNING id`, planID).Scan(&payID); err != nil {
+		t.Fatal(err)
+	}
+	prev := newTopupResumeClient
+	t.Cleanup(func() { newTopupResumeClient = prev })
+	newTopupResumeClient = func() (paymentGetter, error) {
+		return resumeGetter{"yk-meta": {ID: "yk-meta", Status: "pending", Confirmation: &yookassa.Confirmation{Type: "embedded", ConfirmationToken: "ct-meta"}}}, nil
+	}
+	tok, err := issueUserJWT("resume-meta-user", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wallet/topup/"+strconv.Itoa(payID)+"/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	handleWalletTopupStatus(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{`"confirmation_token":"ct-meta"`, `"amount_kop":18000`, `"plan_name":"Полный"`, `"plan_slug":"full"`, `"price_kop":30000`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("resume answer %d %s: no %s", rec.Code, body, want)
+		}
+	}
+}
