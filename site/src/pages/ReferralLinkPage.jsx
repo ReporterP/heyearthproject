@@ -11,11 +11,13 @@ import Flap from '../components/Flap.jsx'
 import useMedia from '../hooks/useMedia.js'
 import usePageMeta from '../hooks/usePageMeta.js'
 import { kopNum } from '../lib/format.js'
+import useSiteInfo, { throughExit } from '../hooks/useSiteInfo.js'
 
 // /r/<code> (spec 06 §6.5, artboard «Приглашение»): the code is saved in the browser (sent with the
 // registration, or taken by the «Код друга» field in a young account's cabinet) and the invited friend
 // sees what they get. The program's amounts come from /api/v1/referral/terms.
 export default function ReferralLinkPage() {
+  const { info: site } = useSiteInfo()
   const { code } = useParams()
   const { isLoggedIn } = useAuth()
   const narrow = useMedia('(max-width: 1024px)')
@@ -45,7 +47,7 @@ export default function ReferralLinkPage() {
             <Hedgehog mood="happy" size={narrow ? 112 : 140} className="pop" />
             <h1 className="t-d1 rise" style={{ marginTop: 20 }}>Друг пригласил вас в&nbsp;HiEarth</h1>
             <p className="t-lead rise" style={{ '--d': '120ms', marginTop: 18, maxWidth: 540 }}>
-              Защищённое подключение через Нидерланды — для телефона и компьютера.
+              Защищённое подключение {throughExit(site.exit_countries)} — для телефона и компьютера.
               {active && (same
                 ? ` После вашей первой оплаты вам и другу придёт по ${bonus} ₽ на кошелёк.`
                 : ` После вашей первой оплаты вам придёт ${bonus} ₽ на кошелёк.`)}

@@ -10,11 +10,14 @@ import { useToast } from './Toast.jsx'
 import { primaryTelegramLink } from './telegramProxyModel.js'
 import { happHref } from '../lib/account.js'
 import { copyText } from '../lib/clipboard.js'
+import useSiteInfo, { exitPlaces } from '../hooks/useSiteInfo.js'
 import { detectDevice, HAPP } from '../lib/apps.js'
 
 // «Подключение» on the overview (spec 08 §8.1): the orb shows the subscription, «Добавить в Happ» is
 // the screen's main action. Phone: centred orb, the button, then Telegram · QR-код · Ссылка (8.5).
 export function ActiveConnect({ subLink, tg, phone, onHapp }) {
+  const { info: site } = useSiteInfo()
+  const exitNames = exitPlaces(site.exit_countries).names // only what the API lists (spec 05 §2)
   const toast = useToast()
   const [qr, setQr] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -39,7 +42,7 @@ export function ActiveConnect({ subLink, tg, phone, onHapp }) {
       <section className="card card--glow stack gap-3" style={{ alignItems: 'center', textAlign: 'center', padding: 24 }} aria-labelledby="cc-t">
         <h2 id="cc-t" className="sr">Подключение</h2>
         <ConnectOrb active label="Готово" style={{ width: 160, height: 160 }} to={url ? happHref(url) : '/connect'} onClick={url ? onHapp : undefined} ariaLabel={url ? 'Подписка активна — добавить в Happ' : 'Подписка активна — открыть подключение'} />
-        <p className="muted t-sm">Выход — Нидерланды</p>
+        {exitNames && <p className="muted t-sm">Выход — {exitNames}</p>}
         {missing || (
           <>
             <Button variant="primary" size="lg" block to={happHref(url)} onClick={onHapp}>Добавить в Happ</Button>
@@ -61,7 +64,7 @@ export function ActiveConnect({ subLink, tg, phone, onHapp }) {
       <div className="stack gap-3" style={{ minWidth: 0 }}>
         <div>
           <h2 id="cc-t" className="t-h2">Подключение</h2>
-          <p className="muted t-sm" style={{ marginTop: 4 }}>Выход — Нидерланды. Путь выбирается автоматически.</p>
+          <p className="muted t-sm" style={{ marginTop: 4 }}>{exitNames ? `Выход — ${exitNames}. ` : ''}Путь выбирается автоматически.</p>
         </div>
         {missing || (
           <>
