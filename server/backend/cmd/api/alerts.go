@@ -100,7 +100,8 @@ type alertOutgoing struct {
 	ev       alertEvent
 	send     bool
 	inc      *alertIncident
-	recovery bool // resolve: sent only if the incident's raise was actually delivered (decided in the worker, in queue order)
+	recovery bool          // resolve: sent only if the incident's raise was actually delivered (decided in the worker, in queue order)
+	flushed  chan struct{} // flush barrier, not an event: closed once everything queued before it is delivered
 }
 
 type alertManager struct {
@@ -114,7 +115,6 @@ type alertManager struct {
 	cooldown  time.Duration
 	initRetry time.Duration
 	queue     chan alertOutgoing // nil → deliver synchronously (tests)
-	pending   sync.WaitGroup     // events queued but not yet delivered (flush)
 	state     map[string]*alertState
 	loaded    bool // journal replay succeeded
 	retrying  bool // background replay retry running
@@ -151,14 +151,26 @@ func (m *alertManager) startWorker(size int) {
 	m.queue = make(chan alertOutgoing, size)
 	go func() {
 		for o := range m.queue {
+			if o.flushed != nil {
+				close(o.flushed)
+				continue
+			}
 			m.deliver(o)
-			m.pending.Done()
 		}
 	}()
 }
 
-// flush waits until everything queued so far is delivered (tests).
-func (m *alertManager) flush() { m.pending.Wait() }
+// flush waits until everything queued so far is delivered, journal rows handed to record
+// included (tests). It queues a barrier rather than counting with a WaitGroup: a Raise from
+// another goroutine may come at any moment, and a WaitGroup panics when Add races its Wait.
+func (m *alertManager) flush() {
+	if m.queue == nil {
+		return // synchronous delivery: nothing is in flight
+	}
+	done := make(chan struct{})
+	m.queue <- alertOutgoing{flushed: done}
+	<-done
+}
 
 // Init restores which alerts are active from the journal (no duplicate messages after a
 // deploy) and starts the daily retention purge. Call once from main right after db.InitDB.
@@ -377,11 +389,9 @@ func (m *alertManager) submitLocked(o alertOutgoing, prev alertState) {
 		m.deliver(o)
 		return
 	}
-	m.pending.Add(1)
 	select {
 	case m.queue <- o:
 	default:
-		m.pending.Done()
 		*m.state[o.ev.Key] = prev // not delivered, not journaled: the next Raise/Resolve retries
 		log.Printf("[alerts] WARN: очередь переполнена, событие %s/%s отброшено, состояние ключа откатено", o.ev.Key, o.ev.Kind)
 	}
@@ -822,26 +832,44 @@ func sendTestAlert() error {
 // While the DB hangs the queue fills up; further rows are dropped with a log line.
 type alertJournal struct {
 	write   func(ev alertEvent)
-	queue   chan alertEvent
+	queue   chan alertJournalEntry
 	dropped atomic.Int64
+}
+
+// alertJournalEntry is a row to write, or a flush barrier (flushed != nil).
+type alertJournalEntry struct {
+	ev      alertEvent
+	flushed chan struct{} // closed once every row queued before it is written
 }
 
 var alertJournalQueue = newAlertJournal(recordAlertEvent, alertJournalSize)
 
 func newAlertJournal(write func(ev alertEvent), size int) *alertJournal {
-	j := &alertJournal{write: write, queue: make(chan alertEvent, size)}
+	j := &alertJournal{write: write, queue: make(chan alertJournalEntry, size)}
 	go func() {
-		for ev := range j.queue {
-			j.write(ev)
+		for e := range j.queue {
+			if e.flushed != nil {
+				close(e.flushed)
+				continue
+			}
+			j.write(e.ev)
 		}
 	}()
 	return j
 }
 
+// flush waits until every row queued so far is written (tests: a test that swaps db.DB
+// waits for rows of the previous test first). A barrier, like alertManager.flush.
+func (j *alertJournal) flush() {
+	done := make(chan struct{})
+	j.queue <- alertJournalEntry{flushed: done}
+	<-done
+}
+
 // record queues ev and returns at once.
 func (j *alertJournal) record(ev alertEvent) {
 	select {
-	case j.queue <- ev:
+	case j.queue <- alertJournalEntry{ev: ev}:
 	default:
 		n := j.dropped.Add(1)
 		log.Printf("[alerts] WARN: очередь записи alert_events переполнена (БД не отвечает?), событие %s/%s %s не записано (потеряно всего: %d)",
@@ -851,13 +879,15 @@ func (j *alertJournal) record(ev alertEvent) {
 
 const alertEventColumns = `id, alert_key, level, kind, title, details, delivered, error, created_at`
 
+// recordAlertEvent reads db.DB once: the nil check and the write use the same handle.
 func recordAlertEvent(ev alertEvent) {
-	if db.DB == nil {
+	conn := db.DB
+	if conn == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertDBTimeout)
 	defer cancel()
-	if _, err := db.DB.ExecContext(ctx, `INSERT INTO alert_events (alert_key, level, kind, title, details, delivered, error, created_at)
+	if _, err := conn.ExecContext(ctx, `INSERT INTO alert_events (alert_key, level, kind, title, details, delivered, error, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		ev.Key, string(ev.Level), ev.Kind, ev.Title, ev.Details, ev.Delivered, ev.Error, ev.At); err != nil {
 		log.Printf("[alerts] запись в alert_events: %v", err)

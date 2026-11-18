@@ -443,6 +443,7 @@ func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
 	t.Helper()
 	fake := sql.OpenDB(d)
 	e := &peEffects{}
+	drainAlerts() // rows queued by an earlier test must not reach the fake
 	prevDB, prevEffects, prevRaise, prevResolve, prevLog := db.DB, paidPaymentEffects, raisePaymentAlert, resolvePaymentAlert, log.Writer()
 	prevUnapplied, prevOpen := raiseUnappliedAlert, openUnappliedAlerts
 	db.DB = fake
@@ -469,6 +470,7 @@ func usePaymentFakes(t *testing.T, d *peDB) *peEffects {
 	resolvePaymentAlert = func(key, msg string) { e.mu.Lock(); e.resolve = append(e.resolve, key); e.mu.Unlock() }
 	openUnappliedAlerts = func() []string { e.mu.Lock(); defer e.mu.Unlock(); return append([]string(nil), e.open...) }
 	t.Cleanup(func() {
+		drainAlerts()
 		db.DB, paidPaymentEffects, raisePaymentAlert, resolvePaymentAlert = prevDB, prevEffects, prevRaise, prevResolve
 		raiseUnappliedAlert, openUnappliedAlerts = prevUnapplied, prevOpen
 		log.SetOutput(prevLog)

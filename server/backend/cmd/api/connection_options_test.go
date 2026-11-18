@@ -120,6 +120,7 @@ func (r *fakeDBRows) Next(dest []driver.Value) error {
 func useFakeDB(t *testing.T, c fakeDBConnector) (stopLog func() string) {
 	t.Helper()
 	fakeDB := sql.OpenDB(c)
+	drainAlerts() // rows queued by an earlier test must not reach the fake
 	prevDB := db.DB
 	db.DB = fakeDB
 
@@ -132,6 +133,7 @@ func useFakeDB(t *testing.T, c fakeDBConnector) (stopLog func() string) {
 	}
 	t.Cleanup(func() {
 		log.SetOutput(prevLogOut) // idempotent: stopLog may already have run
+		drainAlerts()
 		db.DB = prevDB
 		_ = fakeDB.Close() // close our own handle, never whatever db.DB points at
 	})

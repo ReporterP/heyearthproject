@@ -778,6 +778,7 @@ func (y *rfYooKassa) created() int { y.mu.Lock(); defer y.mu.Unlock(); return le
 func useRefundFakes(t *testing.T, d *rfDB, y *rfYooKassa) {
 	t.Helper()
 	fake := sql.OpenDB(d)
+	drainAlerts() // rows queued by an earlier test must not reach the fake
 	prevDB, prevClient, prevLog := db.DB, newRefundClient, log.Writer()
 	db.DB = fake
 	newRefundClient = func() (refundAPI, error) { return y, nil }
@@ -788,6 +789,7 @@ func useRefundFakes(t *testing.T, d *rfDB, y *rfYooKassa) {
 		d.mu.Unlock()
 	}
 	t.Cleanup(func() {
+		drainAlerts()
 		db.DB, newRefundClient = prevDB, prevClient
 		log.SetOutput(prevLog)
 		_ = fake.Close()

@@ -231,11 +231,13 @@ func goldenScript() *scriptDB {
 func useScriptDB(t *testing.T, s *scriptDB) {
 	t.Helper()
 	conn := sql.OpenDB(s)
+	drainAlerts() // a row queued by an earlier test would be an unscripted query
 	prevDB, prevOut := db.DB, log.Writer()
 	db.DB = conn
 	log.SetOutput(io.Discard)
 	t.Setenv("PUBLIC_BASE_URL", "https://site.example.test")
 	t.Cleanup(func() {
+		drainAlerts()
 		db.DB = prevDB
 		log.SetOutput(prevOut)
 		_ = conn.Close()

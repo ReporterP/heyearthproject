@@ -32,6 +32,22 @@ func migrationsDir() string {
 	return filepath.Join(filepath.Dir(file), "..", "..", "migrations")
 }
 
+// beforeSwap holds the functions BeforeSwap registered.
+var beforeSwap []func()
+
+// BeforeSwap registers f to run each time Open is about to point db.DB at a test database
+// and each time it is about to point it back. A package whose background goroutines reach
+// the DB through db.DB registers a function that waits for them (cmd/api: the alert delivery
+// worker and the alert journal), so work queued during a test is done on that test's
+// database — never on the next test's, on a closed handle, or on nil. Call it from init.
+func BeforeSwap(f func()) { beforeSwap = append(beforeSwap, f) }
+
+func quiesce() {
+	for _, f := range beforeSwap {
+		f()
+	}
+}
+
 // Open creates a fresh database, applies all migrations, points db.DB at it for the
 // duration of the test and drops it afterwards. It skips the test when
 // TEST_DATABASE_URL is not set.
@@ -74,9 +90,11 @@ func Open(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	conn.SetMaxOpenConns(20)
+	quiesce()
 	prev := db.DB
 	db.DB = conn
 	t.Cleanup(func() {
+		quiesce() // background work of this test finishes on its own database
 		db.DB = prev
 		conn.Close()
 		// Other connections may linger for a moment; FORCE ends them.

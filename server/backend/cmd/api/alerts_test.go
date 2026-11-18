@@ -525,9 +525,7 @@ func TestAlertQueueOverflowRollsBackState(t *testing.T) {
 		loaded:   true,
 	}
 	drain := func() alertOutgoing {
-		o := <-m.queue
-		m.pending.Done()
-		return o
+		return <-m.queue
 	}
 
 	m.Raise("a", AlertWarn, "A", "") // fills the queue
