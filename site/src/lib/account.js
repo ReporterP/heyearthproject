@@ -40,3 +40,13 @@ export function readChecklist(id) {
 export function writeChecklist(id, v) {
   try { localStorage.setItem(KEY(id), JSON.stringify(v)) } catch { /* storage off */ }
 }
+
+// usageLead: the cabinet's lead for an active subscription, from real traffic (spec 08 row 1) —
+// «Всё работает» only when something went through in the last day (QA 2026-11-18).
+export function usageLead(traffic) {
+  const p = traffic?.periods
+  if (!p) return 'Подписка активна. Если не грузит — обновите подписку в Happ.'
+  if (Number(p.day?.used_bytes) > 0) return 'Всё работает. Если на мобильном не грузит — обновите подписку в Happ.'
+  if (!(Number(p.year?.used_bytes) > 0) && !(Number(p.month?.used_bytes) > 0)) return 'Осталось добавить подписку в Happ — кнопка ниже.'
+  return 'Подписка активна. Если не грузит — обновите подписку в Happ.'
+}

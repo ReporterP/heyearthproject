@@ -25,7 +25,7 @@ import useMtproto from '../hooks/useMtproto.js'
 import useMedia, { PHONE, CABINET_NARROW } from '../hooks/useMedia.js'
 import { isMiniApp } from '../lib/telegram.js'
 import usePageMeta from '../hooks/usePageMeta.js'
-import { currentSub, subState, readChecklist, writeChecklist } from '../lib/account.js'
+import { currentSub, subState, readChecklist, writeChecklist, usageLead } from '../lib/account.js'
 import { date, kopNum, money, days as dayWord } from '../lib/format.js'
 import { payErrorText } from '../lib/payError.js'
 
@@ -87,7 +87,7 @@ export default function DashboardPage() {
   const head = state === 'none' && profile
     ? { title: 'Добро пожаловать', lead: 'Осталось включить подписку — и можно подключаться.' }
     : state === 'active' && profile
-      ? { title: 'Обзор', lead: 'Всё работает. Если на мобильном не грузит — обновите подписку в Happ.' }
+      ? { title: 'Обзор', lead: usageLead(acc.data.traffic) }
       : { title: 'Обзор' }
 
   return (
