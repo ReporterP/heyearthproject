@@ -503,9 +503,10 @@ func planEntries(mainHost string, relays []biz.Entry, fo biz.EntryFailover, forc
 }
 
 // shownReserves: the reserves that get lines of their own — all of them, except
-// the pinned target (the main lines already point at it).
+// the target the main lines already point at: pinned, and during an active failover
+// (a «· резерв» line for it was the same entry twice in Happ; owner, QA 2026-11-18).
 func shownReserves(p entryPlan) []reserveEntry {
-	if !p.pinned {
+	if !p.pinned && !p.failover {
 		return p.reserves
 	}
 	var out []reserveEntry

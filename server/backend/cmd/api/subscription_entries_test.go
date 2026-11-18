@@ -134,7 +134,13 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 	t.Run("failover", func(t *testing.T) {
 		lines, h := happ(t, entriesScript(t, "failover"))
 		wantLines(t, lines, map[string]string{"🌳 Берёза 1": eR5 + ":443", "🌳 Берёза 2": eR5 + ":443", "🌲 Дуб 1": eR5 + ":2443",
-			"🎋 Бамбук 2 only WiFi": eR5 + ":50443", "🌳 Берёза · резерв": eR5 + ":443"})
+			"🎋 Бамбук 2 only WiFi": eR5 + ":50443"})
+		// the main lines already point at the target: no «· резерв» duplicate of it (owner, QA 2026-11-18)
+		for label, l := range lines {
+			if strings.Contains(label, "резерв") && l.host == eR5 {
+				t.Errorf("duplicate reserve line %q → %s during failover", label, l.host+":"+l.port)
+			}
+		}
 		if hp := lines["🌲 Дуб 1"].hostParam; hp != eHub {
 			t.Errorf("main XHTTP host= changed to %q during failover", hp)
 		}
