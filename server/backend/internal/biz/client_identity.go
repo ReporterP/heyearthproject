@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/db"
@@ -106,13 +107,64 @@ func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
 		if password == "" {
 			return nil, fmt.Errorf("password required")
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(password)); err != nil {
+		// Per account, whatever the address or channel (site, Mini App, bot, gRPC): after
+		// loginFailMax wrong passwords in loginFailWindow every attempt is refused with the same
+		// answer until the window passes (security audit F15/F18/F46). The texts stay as they are:
+		// the site and the bot match on them.
+		if loginThrottled(user.ID) {
 			return nil, fmt.Errorf("invalid password")
 		}
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(password)); err != nil {
+			loginFailed(user.ID)
+			return nil, fmt.Errorf("invalid password")
+		}
+		loginSucceeded(user.ID)
 	}
 
 	touchLastSeen(user.ID)
 	return user, nil
+}
+
+const (
+	loginFailMax    = 20
+	loginFailWindow = 15 * time.Minute
+)
+
+var loginFails = struct {
+	sync.Mutex
+	m map[int]*loginFailState
+}{m: map[int]*loginFailState{}}
+
+type loginFailState struct {
+	n     int
+	start time.Time
+}
+
+func loginThrottled(userDBID int) bool {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	st := loginFails.m[userDBID]
+	return st != nil && time.Since(st.start) < loginFailWindow && st.n >= loginFailMax
+}
+
+func loginFailed(userDBID int) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	if len(loginFails.m) > 100000 {
+		loginFails.m = map[int]*loginFailState{}
+	}
+	st := loginFails.m[userDBID]
+	if st == nil || time.Since(st.start) >= loginFailWindow {
+		st = &loginFailState{start: time.Now()}
+		loginFails.m[userDBID] = st
+	}
+	st.n++
+}
+
+func loginSucceeded(userDBID int) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	delete(loginFails.m, userDBID)
 }
 
 // SetUsername sets or updates the user's username (alias for their ID).

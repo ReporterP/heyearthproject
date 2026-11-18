@@ -167,6 +167,32 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 	}
 }
 
+// Hysteria2StillAllowed answers for an OPEN Bamboo session (hysteria id = users.user_id) the same
+// question ValidateHysteria2Auth answers at connect time: not blocked, a plan with Bamboo, quota
+// not used up. The stats loop kicks sessions that fail it (security audit F19/F20/F22).
+func Hysteria2StillAllowed(userID string) bool {
+	var userPK int
+	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1 AND is_blocked = FALSE`, userID).Scan(&userPK); err != nil {
+		return false
+	}
+	var planID int
+	var allowed []string
+	var enabled bool
+	var up, down int
+	if err := db.DB.QueryRow(hysteria2AuthPlanQuery, userPK).Scan(&planID, pq.Array(&allowed), &enabled, &up, &down); err != nil {
+		return false
+	}
+	if !enabled || !containsProto(allowed, "hysteria2") {
+		return false
+	}
+	if QuotaCutoffArmed() {
+		if exceeded, _ := IsCycleExceeded(userPK, userID); exceeded {
+			return false
+		}
+	}
+	return true
+}
+
 // hysteria2AuthPlanQuery picks the plan row that authorizes an Express login
 // (us.user_id = $1, users.id). Ordered by effectiveSubOrderBy; with the inner
 // JOIN plans its first key is constant (plan_id is never NULL here), so compared

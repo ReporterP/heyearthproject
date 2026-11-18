@@ -15,7 +15,9 @@ package main
 // starts is only a baseline too (see cumulativeDeltas).
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -26,6 +28,8 @@ import (
 
 const (
 	hysteria2StatsURL    = "http://127.0.0.1:7653/traffic"
+	hysteria2OnlineURL   = "http://127.0.0.1:7653/online"
+	hysteria2KickURL     = "http://127.0.0.1:7653/kick"
 	hysteria2StatsPeriod = 60 * time.Second
 )
 
@@ -55,6 +59,11 @@ func StartHysteria2StatsLoop() {
 		defer ticker.Stop()
 		for range ticker.C {
 			safely("hysteria2-stats", collectHysteria2Stats)
+			safely("hysteria2-revoke", func() {
+				if secret, err := biz.GetSetting("hysteria2_stats_secret"); err == nil && secret != "" {
+					revokeHysteria2Sessions(secret)
+				}
+			})
 		}
 	}()
 	log.Println("[hysteria2-stats] collector started (every 60s)")
@@ -116,5 +125,54 @@ func collectHysteria2Stats() {
 
 	if saved > 0 {
 		log.Printf("[hysteria2-stats] recorded deltas: %d users", saved)
+	}
+}
+
+// revokeHysteria2Sessions kicks open Bamboo sessions whose user may no longer use it (blocked,
+// subscription over, quota used up): hysteria checks access only when a session starts, so
+// without this a banned user keeps the tunnel until they reconnect (security audit F19/F20/F22).
+// GET /online lists the connected ids, POST /kick drops them; their client's next connect goes
+// through the auth callback again and is refused. A DB error keeps everybody connected.
+func revokeHysteria2Sessions(secret string) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", hysteria2OnlineURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", secret)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var online map[string]int
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&online); err != nil {
+		return
+	}
+	if err := db.DB.Ping(); err != nil {
+		return
+	}
+	var kick []string
+	for id := range online {
+		if !biz.Hysteria2StillAllowed(id) {
+			kick = append(kick, id)
+		}
+	}
+	if len(kick) == 0 {
+		return
+	}
+	body, _ := json.Marshal(kick)
+	kr, err := http.NewRequest("POST", hysteria2KickURL, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	kr.Header.Set("Authorization", secret)
+	kr.Header.Set("Content-Type", "application/json")
+	if r2, err := client.Do(kr); err == nil {
+		r2.Body.Close()
+		log.Printf("[hysteria2-stats] kicked %d session(s) without access any more", len(kick))
 	}
 }
