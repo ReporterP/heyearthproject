@@ -118,9 +118,9 @@ var ErrPaymentAlreadyCredited = errors.New("payment already credited to a tenant
 //
 // An inactive or suspended company whose wallet now covers the monthly charge is charged
 // for the month at once and becomes active, and its members get access in the same
-// transaction (jzd5.23; the owner's decision of 2026-11-18 for suspended — inactive follows
-// the same rule, otherwise any top-up would open a month of access for every seat). Short of
-// the month, the money is credited and the status stays.
+// transaction (jzd5.23, the owner's decisions of 2026-11-18: suspended, and inactive by the
+// same rule — otherwise any top-up would open a month of access for every seat). Short of the
+// month, the money is credited and the status stays.
 func CreditTenantWalletTx(ctx context.Context, tx *sql.Tx, tenantID int, amount float64, description string, paymentID *int) (CreditTenantWalletResult, error) {
 	var res CreditTenantWalletResult
 
