@@ -93,7 +93,7 @@ export function WaitingConnect() {
       <div className="row wrap gap-2" style={{ marginTop: 16 }}>
         <Button variant="secondary" href={HAPP.ios.url} target="_blank" rel="noopener noreferrer">{HAPP.ios.label}</Button>
         <Button variant="secondary" href={HAPP.android.url} target="_blank" rel="noopener noreferrer">{HAPP.android.label}</Button>
-        <Button variant="secondary" href={HAPP.desktop.url} target="_blank" rel="noopener noreferrer">Windows и macOS</Button>
+        <Button variant="secondary" href={HAPP.desktop.url} target="_blank" rel="noopener noreferrer">Windows, macOS и Linux</Button>
       </div>
     </section>
   )

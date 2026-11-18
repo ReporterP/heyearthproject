@@ -232,7 +232,7 @@ export default function LandingPage() {
                 <Button variant={isLoggedIn ? 'secondary' : 'primary'} size="lg" block={phone} to={main.to} iconRight={phone || isLoggedIn ? undefined : 'arrowRight'}>{main.label}</Button>
                 <Button variant="secondary" size="lg" block={phone} to="/#plans">{tariffsLabel}</Button>
               </div>
-              {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS — через бесплатное приложение Happ</p>}
+              {!phone && <p className="t-sm subtle rise" style={{ '--d': '280ms', marginTop: 28 }}>iPhone · Android · Windows · macOS · Linux — через бесплатное приложение Happ</p>}
             </div>
             {!phone && (
               <div className="rise" style={{ '--d': '200ms', position: 'relative', justifySelf: 'end', width: '100%', maxWidth: 460, marginTop: 40 }}>
@@ -315,7 +315,7 @@ export default function LandingPage() {
               </>
             ) : (
               <ol className="grid g-3" style={{ marginTop: 96, gap: 32 }}>
-                {[['Получите HiEarth ID', 'Один клик, без почты и телефона. Сохраните номерок — восстановить его нельзя.'], ['Установите Happ', 'Бесплатное приложение для iPhone, Android, Windows и macOS.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама. Включите — и всё, дальше путь выбирается автоматически.']].map(([t, d], i) => (
+                {[['Получите HiEarth ID', 'Один клик, без почты и телефона. Сохраните номерок — восстановить его нельзя.'], ['Установите Happ', 'Бесплатное приложение для iPhone, Android, Windows, macOS и Linux.'], ['Нажмите «Добавить в Happ»', 'Подписка добавится сама. Включите — и всё, дальше путь выбирается автоматически.']].map(([t, d], i) => (
                   <li key={t} className="lp-step"><span className="lp-step__n" aria-hidden="true">{i + 1}</span><h3 className="t-h3">{t}</h3><p className="muted t-sm" style={{ marginTop: 8 }}>{d}</p></li>
                 ))}
               </ol>

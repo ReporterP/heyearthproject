@@ -59,7 +59,7 @@ export default function HelpPage() {
               </ol>
               <div className="row wrap gap-2" style={{ marginTop: 20 }}>
                 {[HAPP.ios, HAPP.android].map((a) => <Button key={a.url} variant="secondary" href={a.url} block={narrow}>{a.label} · {a.store}</Button>)}
-                <Button variant="secondary" href={HAPP.desktop.url} block={narrow}>Windows и macOS</Button>
+                <Button variant="secondary" href={HAPP.desktop.url} block={narrow}>Windows, macOS и Linux</Button>
               </div>
             </section>
 
