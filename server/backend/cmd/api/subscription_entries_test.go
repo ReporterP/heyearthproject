@@ -173,11 +173,11 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 			t.Errorf("pinned: interval %q, want the normal 6", got)
 		}
 		body, _ := entriesRequest(t, entriesScript(t, "pinned"), "clash-verge/2.0", "?format=clash")
-		direct := clashBlock(t, body, "HeYearth-XHTTP · напрямую")
+		direct := clashBlock(t, body, "HiEarth-XHTTP · напрямую")
 		if !strings.Contains(direct, "server: "+eHub) || strings.Contains(direct, "xhttp-opts") {
 			t.Errorf("direct Clash XHTTP must be the plain Hub proxy:\n%s", direct)
 		}
-		if res := clashBlock(t, body, "HeYearth-Home · резерв"); !strings.Contains(res, "server: "+eR7) {
+		if res := clashBlock(t, body, "HiEarth-Home · резерв"); !strings.Contains(res, "server: "+eR7) {
 			t.Errorf("Clash: the first reserve must be 7, not the pinned target:\n%s", res)
 		}
 	})
@@ -217,9 +217,9 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 	})
 	t.Run("clash", func(t *testing.T) {
 		body, _ := entriesRequest(t, entriesScript(t, "relay"), "clash-verge/2.0", "?format=clash")
-		for _, want := range []string{"name: \"HeYearth-Home · резерв\"\n    type: vless\n    server: " + eR5,
-			"name: \"HeYearth-XHTTP · резерв 2\"\n    type: vless\n    server: " + eR7,
-			"name: \"HiEarth-Express · резерв\"\n    type: hysteria2\n    server: " + eR5, "      - \"HeYearth-Home · резерв\""} {
+		for _, want := range []string{"name: \"HiEarth-Home · резерв\"\n    type: vless\n    server: " + eR5,
+			"name: \"HiEarth-XHTTP · резерв 2\"\n    type: vless\n    server: " + eR7,
+			"name: \"HiEarth-Express · резерв\"\n    type: hysteria2\n    server: " + eR5, "      - \"HiEarth-Home · резерв\""} {
 			if !strings.Contains(body, want) {
 				t.Errorf("clash lacks %q", want)
 			}
@@ -229,12 +229,12 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 		}
 		// Дуб through a relay: the Hub's vless-xhttp inbound checks Host = main_server_host and
 		// path "/" (the same path as the URI's path=%2F).
-		for _, name := range []string{"HeYearth-XHTTP · резерв", "HeYearth-XHTTP · резерв 2"} {
+		for _, name := range []string{"HiEarth-XHTTP · резерв", "HiEarth-XHTTP · резерв 2"} {
 			if b := clashBlock(t, body, name); !strings.Contains(b, clashXHTTPHubOpts) {
 				t.Errorf("clash %q through a relay lacks the Hub Host/path:\n%s", name, b)
 			}
 		}
-		if b := clashBlock(t, body, "HeYearth-XHTTP"); strings.Contains(b, "xhttp-opts") {
+		if b := clashBlock(t, body, "HiEarth-XHTTP"); strings.Contains(b, "xhttp-opts") {
 			t.Errorf("clash main XHTTP on the Hub must stay as before (no xhttp-opts):\n%s", b)
 		}
 		if b := clashBlock(t, body, "HiEarth-Express · резерв"); !strings.Contains(b, "\n    sni: tls.example.test\n") {
@@ -242,10 +242,10 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 		}
 
 		body, _ = entriesRequest(t, entriesScript(t, "failover"), "clash-verge/2.0", "?format=clash")
-		if !strings.Contains(body, "name: \"HeYearth-Home\"\n    type: vless\n    server: "+eR5) {
+		if !strings.Contains(body, "name: \"HiEarth-Home\"\n    type: vless\n    server: "+eR5) {
 			t.Error("clash main proxy not moved to the reserve during failover")
 		}
-		if b := clashBlock(t, body, "HeYearth-XHTTP"); !strings.Contains(b, "\n    server: "+eR5+"\n") || !strings.Contains(b, clashXHTTPHubOpts) {
+		if b := clashBlock(t, body, "HiEarth-XHTTP"); !strings.Contains(b, "\n    server: "+eR5+"\n") || !strings.Contains(b, clashXHTTPHubOpts) {
 			t.Errorf("clash main XHTTP during failover: must point at the relay with the Hub Host/path:\n%s", b)
 		}
 		b := clashBlock(t, body, "HiEarth-Express")
