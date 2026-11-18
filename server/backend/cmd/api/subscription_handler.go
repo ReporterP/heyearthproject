@@ -342,9 +342,9 @@ func clashProfile(in hubConnectionInputs) string {
 		// #4852 regressions cause flapping handshake on RU mobile DPI
 		// (research: docs/research/2026-05-27-happ-tele2-tls-handshake.md).
 		profiles := []struct{ name, fp string }{
-			{"HeYearth-Home", "chrome"},
-			{"HeYearth-Mobile", "firefox"},
-			{"HeYearth-Strict", "edge"},
+			{"HiEarth-Home", "chrome"},
+			{"HiEarth-Mobile", "firefox"},
+			{"HiEarth-Strict", "edge"},
 		}
 		for _, p := range profiles {
 			proxyNames = append(proxyNames, p.name)
@@ -354,7 +354,7 @@ func clashProfile(in hubConnectionInputs) string {
 
 	// 1b. VLESS Reality + XHTTP (port 2443)
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
-		name := "HeYearth-XHTTP"
+		name := "HiEarth-XHTTP"
 		proxyNames = append(proxyNames, name)
 		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
@@ -400,10 +400,10 @@ func clashProfile(in hubConnectionInputs) string {
 	// While everyone is pinned to a relay: Home and XHTTP straight to the Hub
 	// (the way out on Wi-Fi if the relay dies), like directOptions.
 	if in.entries.pinned && in.mainServerHost != "" && realityPubKey != "" && vlessUUID != "" && canVLESS {
-		proxyNames = append(proxyNames, "HeYearth-Home"+directLabel, "HeYearth-XHTTP"+directLabel)
+		proxyNames = append(proxyNames, "HiEarth-Home"+directLabel, "HiEarth-XHTTP"+directLabel)
 		proxies = append(proxies,
-			clashRealityProxy("HeYearth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-			clashXHTTPProxy("HeYearth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+			clashRealityProxy("HiEarth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+			clashXHTTPProxy("HiEarth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 	}
 
 	// Reserve entries (phase 3): the same proxies through each healthy relay,
@@ -415,10 +415,10 @@ func clashProfile(in hubConnectionInputs) string {
 	for k, r := range reserves {
 		sfx := reserveSuffix(k)
 		if realityPubKey != "" && vlessUUID != "" && canVLESS {
-			proxyNames = append(proxyNames, "HeYearth-Home"+sfx, "HeYearth-XHTTP"+sfx)
+			proxyNames = append(proxyNames, "HiEarth-Home"+sfx, "HiEarth-XHTTP"+sfx)
 			proxies = append(proxies,
-				clashRealityProxy("HeYearth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-				clashXHTTPProxy("HeYearth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+				clashRealityProxy("HiEarth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
+				clashXHTTPProxy("HiEarth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
 		}
 		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
 			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)
@@ -431,7 +431,7 @@ func clashProfile(in hubConnectionInputs) string {
 		namesList += fmt.Sprintf("\n      - \"%s\"", n)
 	}
 
-	return fmt.Sprintf(`# HeYearth — Clash/ClashMeta Config
+	return fmt.Sprintf(`# HiEarth — Clash/ClashMeta Config
 mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -441,13 +441,13 @@ proxies:
 %s
 
 proxy-groups:
-  - name: "HeYearth"
+  - name: "HiEarth"
     type: select
     proxies:%s
       - DIRECT
 
 rules:
-  - MATCH,HeYearth
+  - MATCH,HiEarth
 `, strings.Join(proxies, "\n"), namesList)
 }
 

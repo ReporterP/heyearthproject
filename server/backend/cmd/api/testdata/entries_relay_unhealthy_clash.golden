@@ -1,11 +1,11 @@
-# HeYearth — Clash/ClashMeta Config
+# HiEarth — Clash/ClashMeta Config
 mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: info
 
 proxies:
-  - name: "HeYearth-Home"
+  - name: "HiEarth-Home"
     type: vless
     server: hub.example.test
     port: 443
@@ -18,7 +18,7 @@ proxies:
       short-id: "ab12"
     client-fingerprint: chrome
     servername: storage.yandexcloud.net
-  - name: "HeYearth-Mobile"
+  - name: "HiEarth-Mobile"
     type: vless
     server: hub.example.test
     port: 443
@@ -31,7 +31,7 @@ proxies:
       short-id: "ab12"
     client-fingerprint: firefox
     servername: storage.yandexcloud.net
-  - name: "HeYearth-Strict"
+  - name: "HiEarth-Strict"
     type: vless
     server: hub.example.test
     port: 443
@@ -44,7 +44,7 @@ proxies:
       short-id: "ab12"
     client-fingerprint: edge
     servername: storage.yandexcloud.net
-  - name: "HeYearth-XHTTP"
+  - name: "HiEarth-XHTTP"
     type: vless
     server: hub.example.test
     port: 2443
@@ -69,15 +69,15 @@ proxies:
     down: "120 Mbps"
 
 proxy-groups:
-  - name: "HeYearth"
+  - name: "HiEarth"
     type: select
     proxies:
-      - "HeYearth-Home"
-      - "HeYearth-Mobile"
-      - "HeYearth-Strict"
-      - "HeYearth-XHTTP"
+      - "HiEarth-Home"
+      - "HiEarth-Mobile"
+      - "HiEarth-Strict"
+      - "HiEarth-XHTTP"
       - "HiEarth-Express"
       - DIRECT
 
 rules:
-  - MATCH,HeYearth
+  - MATCH,HiEarth
