@@ -4,7 +4,7 @@ import { ImagePlus, Plus, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { useToast } from '../components/Toast.jsx'
 import { createNews, deleteNews, fetchNews, scheduleNews, sendNews, unscheduleNews, updateNews, uploadNewsImage } from '../api/admin.js'
 import { formatDate } from '../utils/format.js'
-import { NEWS_SCENES, newsPicture, sceneURL, switchPicture } from '../utils/newsPicture.js'
+import { NEWS_SCENES, newsImageURL, newsPicture, sceneURL, switchPicture } from '../utils/newsPicture.js'
 import { Badge, Button, Card, Dialog, EmptyState, Input, PageHeader, TableSkeleton, Table, Thead, Tbody, Tr, Th, Td, Textarea } from '../components/ui/index.js'
 
 // «Новости» (plan TG6): one post → the Telegram channel, the bot (all / with a subscription /
@@ -55,7 +55,7 @@ function Rich({ html }) {
 }
 
 function Preview({ form }) {
-  const img = form.image ? `/api/v1/news/images/${form.image}` : ''
+  const img = newsImageURL(form.image)
   const tgImg = form.scene ? sceneURL(form.scene) : img // the cabinet feed never shows a scene
   return (
     <div className="space-y-4">
