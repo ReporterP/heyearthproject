@@ -81,6 +81,7 @@ type Message struct {
 	Text           string      `json:"text,omitempty"`
 	Caption        string      `json:"caption,omitempty"`
 	Photo          []PhotoSize `json:"photo,omitempty"`
+	Animation      *Animation  `json:"animation,omitempty"`
 	Document       *Document   `json:"document,omitempty"`
 	ReplyToMessage *Message    `json:"reply_to_message,omitempty"`
 	// Payments in Telegram Stars
@@ -283,6 +284,22 @@ type SendMessage struct {
 	ReplyParameters     *ReplyParameters            `json:"reply_parameters,omitempty"`
 	DisableNotification bool                        `json:"disable_notification,omitempty"`
 	Ephemeral           *EphemeralMessageParameters `json:"ephemeral_message_parameters,omitempty"`
+}
+
+// Animation is a GIF or a silent MP4 sent with sendAnimation.
+type Animation struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+}
+
+// SendAnimation with an existing file_id (an upload goes through SendAnimationBytes).
+type SendAnimation struct {
+	ChatID              any                   `json:"chat_id"`
+	Animation           string                `json:"animation"`
+	Caption             string                `json:"caption,omitempty"`
+	ParseMode           string                `json:"parse_mode,omitempty"`
+	ReplyMarkup         *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	DisableNotification bool                  `json:"disable_notification,omitempty"`
 }
 
 // SendPhoto with an existing file_id or URL (an upload goes through SendPhotoBytes).

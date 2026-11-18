@@ -128,6 +128,23 @@ func (b *Bot) SendPhoto(ctx context.Context, p SendPhoto) (*Message, error) {
 
 // SendPhotoBytes uploads a photo; the returned message carries its file_id for reuse.
 func (b *Bot) SendPhotoBytes(ctx context.Context, chatID, caption, parseMode string, kb *InlineKeyboardMarkup, fileName string, data []byte) (*Message, error) {
+	return b.uploadFile(ctx, "sendPhoto", "photo", mediaFields(chatID, caption, parseMode, kb, false), fileName, data)
+}
+
+func (b *Bot) SendAnimation(ctx context.Context, p SendAnimation) (*Message, error) {
+	var m Message
+	if err := b.send(ctx, "sendAnimation", p, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// SendAnimationBytes uploads a GIF/MP4 animation; the returned message carries Animation.FileID for reuse.
+func (b *Bot) SendAnimationBytes(ctx context.Context, chatID, caption, parseMode string, kb *InlineKeyboardMarkup, silent bool, fileName string, data []byte) (*Message, error) {
+	return b.uploadFile(ctx, "sendAnimation", "animation", mediaFields(chatID, caption, parseMode, kb, silent), fileName, data)
+}
+
+func mediaFields(chatID, caption, parseMode string, kb *InlineKeyboardMarkup, silent bool) map[string]string {
 	fields := map[string]string{"chat_id": chatID}
 	if caption != "" {
 		fields["caption"] = caption
@@ -139,12 +156,20 @@ func (b *Bot) SendPhotoBytes(ctx context.Context, chatID, caption, parseMode str
 		raw, _ := json.Marshal(kb)
 		fields["reply_markup"] = string(raw)
 	}
-	req, err := MultipartRequest(b.Token, "sendPhoto", fields, "photo", fileName, data)
+	if silent {
+		fields["disable_notification"] = "true"
+	}
+	return fields
+}
+
+// uploadFile sends one file as multipart (sendPhoto, sendAnimation).
+func (b *Bot) uploadFile(ctx context.Context, method, fileField string, fields map[string]string, fileName string, data []byte) (*Message, error) {
+	req, err := MultipartRequest(b.Token, method, fields, fileField, fileName, data)
 	if err != nil {
 		return nil, err
 	}
 	req.Timeout = 60 * time.Second
-	if err := b.Limiter.Wait(ctx, chatID); err != nil {
+	if err := b.Limiter.Wait(ctx, fields["chat_id"]); err != nil {
 		return nil, err
 	}
 	var m Message
