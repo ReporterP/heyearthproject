@@ -184,7 +184,7 @@ function Wallet() {
           <h2 className="t-h3">Что такое кошелёк</h2>
           <p className="t-sm muted">Вы пополняете кошелёк картой, а подписка оплачивается с него — сразу или автопродлением.</p>
           <p className="t-sm muted">Если денег не хватает, при оплате тарифа мы пополним кошелёк ровно на недостающую сумму.</p>
-          <p className="t-sm muted">Деньги на кошельке идут только на услуги HiEarth; подробности — в <Link to="/offer" className="link">оферте</Link>.</p>
+          <p className="t-sm muted">Деньги на кошельке идут на услуги HiEarth. Неиспользованные можно вернуть по заявке — подробности в <Link to="/refund" className="link">условиях возврата</Link>.</p>
           <hr className="divider" />
           <p className="t-sm muted">Включить или выключить автопродление — в разделе <Link to="/payments" className="link">«Оплата и подписка»</Link>.</p>
         </aside>
