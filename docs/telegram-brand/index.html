@@ -88,6 +88,22 @@ table.style th { color: var(--subtle); font: 600 12px/1.4 var(--mono); text-tran
     <p class="note">Файлы лежат в репозитории: <code>docs/telegram-brand/</code>. Обложка — для картинки описания бота (её спрашивает @BotFather) и для постов без своей картинки.</p>
   </section>
 
+  <section id="scenes">
+    <h2>Сценки ежа<small>Короткие гифки 640×360 по кругу, без звука. Бот сам прикладывает их к сообщениям: оплата, пополнение, напоминания, поддержка, новости. Меню бота остаётся текстом.</small></h2>
+    <div class="assets">
+      <div class="asset"><img src="scenes/wave.gif" alt="Ёжик: машет лапой" loading="lazy" width="640" height="360"><span>wave.gif · первый /start, аккаунт создан, Telegram привязан</span></div>
+      <div class="asset"><img src="scenes/coin.gif" alt="Ёжик: монетка" loading="lazy" width="640" height="360"><span>coin.gif · подписка оплачена или продлена</span></div>
+      <div class="asset"><img src="scenes/piggy.gif" alt="Ёжик: копилка" loading="lazy" width="640" height="360"><span>piggy.gif · кошелёк пополнен</span></div>
+      <div class="asset"><img src="scenes/gift.gif" alt="Ёжик: подарок" loading="lazy" width="640" height="360"><span>gift.gif · бонус за друга</span></div>
+      <div class="asset"><img src="scenes/alarm.gif" alt="Ёжик: будильник" loading="lazy" width="640" height="360"><span>alarm.gif · осталось 3 дня, последний день</span></div>
+      <div class="asset"><img src="scenes/wallet.gif" alt="Ёжик: пустой кошелёк" loading="lazy" width="640" height="360"><span>wallet.gif · на автопродление не хватает</span></div>
+      <div class="asset"><img src="scenes/sleep.gif" alt="Ёжик: спит" loading="lazy" width="640" height="360"><span>sleep.gif · подписка закончилась</span></div>
+      <div class="asset"><img src="scenes/news.gif" alt="Ёжик: газета" loading="lazy" width="640" height="360"><span>news.gif · новость в боте и канале</span></div>
+      <div class="asset"><img src="scenes/support.gif" alt="Ёжик: гарнитура" loading="lazy" width="640" height="360"><span>support.gif · первый ответ поддержки</span></div>
+    </div>
+    <p class="note">Рисует их скрипт <code>docs/telegram-brand/scenes/render.py</code> — тот же ёжик, что на сайте. <b>wave.gif</b> можно поставить картинкой описания бота: @BotFather → <code>/mybots</code> → бот → Edit Bot → Edit Description Picture. Её видят до нажатия «Запустить».</p>
+  </section>
+
   <section id="bot">
     <h2>Бот @hiearthapp<small>Всё ниже — в чате с @BotFather. Меню команд и кнопку «Кабинет» сервер ставит сам, их трогать не нужно.</small></h2>
 
