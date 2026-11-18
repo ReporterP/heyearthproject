@@ -112,6 +112,7 @@ export default function SettingsPage() {
       else if (raw.includes('облачный пароль')) setSrvErr({ field: 'username', text: 'Сначала задайте пароль — без него логин не сохранится' })
       else if (raw.includes('имя пользователя должно быть')) setSrvErr({ field: 'username', text: 'Имя пользователя должно быть не менее 5 символов' })
       else if (raw === 'invalid current password') setSrvErr({ field: 'cur', text: mustChange ? 'Неверный временный пароль' : 'Неверный текущий пароль' })
+      else if (raw === 'too many attempts') setSrvErr({ field: 'cur', text: 'Слишком много попыток — подождите 15 минут и попробуйте снова' })
       else if (raw === 'current password required') setSrvErr({ field: 'cur', text: mustChange ? 'Введите временный пароль' : 'Введите текущий пароль' })
       else if (raw === 'new password must differ from the temporary one') setSrvErr({ field: 'pw', text: 'Придумайте новый пароль — он должен отличаться от временного' })
       else if (raw.startsWith('password must be at least')) setSrvErr({ field: 'pw', text: 'Пароль должен быть не менее 4 символов' })

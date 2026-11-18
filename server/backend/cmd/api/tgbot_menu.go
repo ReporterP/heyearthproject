@@ -512,7 +512,12 @@ func tgLoginByID(c *tgCtx, m *tg.Message) {
 		switch err.Error() {
 		case "password required":
 			_ = biz.SetTGChatState(c.ctx, c.chat, "", 0)
-			_, _ = c.reply("🔒 У этого аккаунта есть пароль — войдите через кабинет, там же Telegram привяжется.", tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Войти в кабинете", miniAppURL("")))))
+			text := "🔒 У этого аккаунта есть пароль — войдите через кабинет, там же Telegram привяжется."
+			if !biz.LooksLikeHiEarthID(strings.TrimSpace(m.Text)) {
+				// a login name: the server answers an unknown one the same way, so no «this account»
+				text = "🔒 По логину вход только с паролем — войдите через кабинет, там же Telegram привяжется."
+			}
+			_, _ = c.reply(text, tg.Keyboard(tg.Row(tg.WebAppButton("🌐 Войти в кабинете", miniAppURL("")))))
 		case "user is blocked":
 			_, _ = c.reply("🚫 Аккаунт заблокирован. Напишите в поддержку.", nil)
 		default:

@@ -19,16 +19,23 @@ function readExpired() {
   } catch { return false }
 }
 
-// server answer → which field is wrong and the catalogue text (05 §7)
-export function explain(e) {
+const HIEARTH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// server answer → which field is wrong and the catalogue text (05 §7). `login` is what was
+// typed: for a login name the server answers an unknown one like a known one (no enumeration),
+// so the texts don't claim the account exists.
+export function explain(e, login = '') {
   const raw = String(e?.data?.error || '').toLowerCase()
+  const byName = !!login && !HIEARTH_ID.test(login)
   if (e?.kind === 'rate' || e?.status === 429) return { field: null, title: 'Слишком много попыток.', text: 'Подождите минуту и попробуйте снова.' }
   if (raw === 'user not found') return { field: 'id', title: 'Аккаунт не найден.', text: 'Проверьте ID — его легко перепутать с похожими символами.' }
   // «password required»: the account has a password and the field was empty (a login name
   // always has one — SetUsername needs a password first). «invalid password» only happens
   // when a password is set too, so neither says «leave the field empty».
-  if (raw === 'password required') return { field: 'pw', title: 'У этого аккаунта есть пароль.', text: 'Введите его. Забыли — напишите в поддержку, пароль сбросят.' }
-  if (raw === 'invalid password' || raw === 'invalid credentials') return { field: 'pw', title: 'Неверный пароль.', text: 'Проверьте раскладку и Caps Lock. Забыли — напишите в поддержку, пароль сбросят.' }
+  if (raw === 'password required') return byName
+    ? { field: 'pw', title: 'Введите пароль.', text: 'Вход по логину — всегда с паролем. Забыли — напишите в поддержку, пароль сбросят.' }
+    : { field: 'pw', title: 'У этого аккаунта есть пароль.', text: 'Введите его. Забыли — напишите в поддержку, пароль сбросят.' }
+  if (raw === 'invalid password' || raw === 'invalid credentials') return { field: 'pw', title: byName ? 'Неверный логин или пароль.' : 'Неверный пароль.', text: 'Проверьте раскладку и Caps Lock. Забыли — напишите в поддержку, пароль сбросят.' }
   if (raw === 'user is blocked') return { field: null, title: 'Аккаунт заблокирован.', text: 'Напишите в поддержку — разберёмся.' }
   if (e?.kind === 'network') return { field: null, title: 'Нет связи с сервером.', text: 'Проверьте интернет и попробуйте ещё раз.' }
   return { field: null, title: 'Не удалось войти.', text: 'Попробуйте ещё раз через минуту.' }
@@ -67,7 +74,7 @@ export default function LoginPage() {
       login(data.token)
       navigate(redirectTo, { replace: true })
     } catch (e2) {
-      const x = explain(e2)
+      const x = explain(e2, value)
       setErr(x)
       // the person lands on the field to fix (03 §9)
       requestAnimationFrame(() => (x.field === 'pw' ? pwRef.current : idRef.current)?.focus())

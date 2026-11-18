@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -299,6 +300,11 @@ func handleUserProfile(w http.ResponseWriter, r *http.Request) {
 		// works in one POST.
 		if req.NewPassword != "" {
 			if err := biz.SetCloudPassword(userID, req.NewPassword, req.CurrentPassword, bearerToken(r)); err != nil {
+				if errors.Is(err, biz.ErrTooManyPasswordAttempts) {
+					w.Header().Set("Retry-After", "900") // the per-account window (15 min)
+					writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+					return
+				}
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}

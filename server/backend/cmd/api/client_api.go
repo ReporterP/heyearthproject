@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -90,6 +91,9 @@ func (s *server) UpdateProfile(ctx context.Context, req *heyearth_v1.UpdateProfi
 	if newPassword := req.GetNewPassword(); newPassword != "" {
 		md, _ := metadata.FromIncomingContext(ctx)
 		if err := biz.SetCloudPassword(userID, newPassword, req.GetCurrentPassword(), bearerFromMD(md)); err != nil {
+			if errors.Is(err, biz.ErrTooManyPasswordAttempts) {
+				return nil, status.Errorf(codes.ResourceExhausted, "%v", err)
+			}
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 	}

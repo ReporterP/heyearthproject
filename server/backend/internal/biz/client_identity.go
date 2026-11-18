@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -100,8 +101,20 @@ func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
 // LoginByIDOrUsernameFrom is LoginByIDOrUsername with the client's address (site, Mini App,
 // gRPC peer) for the wrong-password throttle; "" counts in the account-wide backstop only.
 func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, error) {
-	user, err := GetUserByIDOrUsername(strings.TrimSpace(idOrUsername))
+	login := strings.TrimSpace(idOrUsername)
+	user, err := GetUserByIDOrUsername(login)
 	if err != nil {
+		// A login name is short and guessable: an unknown one answers like a known one with a
+		// wrong or missing password (every login name has a password), with a bcrypt run for a
+		// like timing, so login names can't be enumerated. A HiEarth ID is a random UUID —
+		// nobody guesses one — so «user not found» stays to help a person who mistyped theirs.
+		if err.Error() == "user not found" && !LooksLikeHiEarthID(login) {
+			if password == "" {
+				return nil, fmt.Errorf("password required")
+			}
+			burnPasswordCheck(password)
+			return nil, fmt.Errorf("invalid password")
+		}
 		return nil, fmt.Errorf("user not found")
 	}
 	if user.IsBlocked {
@@ -119,6 +132,7 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 		// addresses) stops a distributed guess (security audit F15/F18/F46). The texts stay as they
 		// are: the site and the bot match on them.
 		if loginThrottled(user.ID, source) {
+			burnPasswordCheck(password) // the same timing as a real check
 			return nil, fmt.Errorf("invalid password")
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(password)); err != nil {
@@ -130,6 +144,61 @@ func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, erro
 
 	touchLastSeen(user.ID)
 	return user, nil
+}
+
+var hiEarthIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// LooksLikeHiEarthID: the input has the shape of a HiEarth ID (a UUID), not of a login name.
+func LooksLikeHiEarthID(s string) bool { return hiEarthIDRe.MatchString(s) }
+
+var dummyHash struct {
+	once sync.Once
+	h    []byte
+}
+
+// burnPasswordCheck spends the time of one bcrypt check, so a refusal without a real check
+// (unknown login name, throttled address) takes as long as one with it.
+func burnPasswordCheck(password string) {
+	dummyHash.once.Do(func() {
+		dummyHash.h, _ = bcrypt.GenerateFromPassword([]byte("heyearth-dummy-password"), bcrypt.DefaultCost)
+	})
+	_ = bcrypt.CompareHashAndPassword(dummyHash.h, []byte(password))
+}
+
+// ErrTooManyPasswordAttempts: too many wrong current passwords on a password change.
+var ErrTooManyPasswordAttempts = errors.New("too many attempts")
+
+// Wrong current passwords on a password change are counted per account (by HiEarth ID): whoever
+// guesses holds a session of that very account (a stolen token), so an address split would not help.
+const (
+	pwChangeFailMax    = 10
+	pwChangeFailWindow = 15 * time.Minute
+)
+
+func pwChangeKey(userID string) string { return "pw|" + userID }
+
+func pwChangeThrottled(userID string) bool {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	return loginCount(pwChangeKey(userID), pwChangeFailWindow) >= pwChangeFailMax
+}
+
+func pwChangeFailed(userID string) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	k := pwChangeKey(userID)
+	st := loginFails.m[k]
+	if st == nil || time.Since(st.start) >= pwChangeFailWindow {
+		st = &loginFailState{start: time.Now()}
+		loginFails.m[k] = st
+	}
+	st.n++
+}
+
+func pwChangeSucceeded(userID string) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	delete(loginFails.m, pwChangeKey(userID))
 }
 
 const (
@@ -259,9 +328,14 @@ func SetCloudPassword(userID, newPassword, currentPassword, keepToken string) er
 		if currentPassword == "" {
 			return fmt.Errorf("current password required")
 		}
+		if pwChangeThrottled(user.UserID) {
+			return ErrTooManyPasswordAttempts
+		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(currentPassword)); err != nil {
+			pwChangeFailed(user.UserID)
 			return fmt.Errorf("invalid current password")
 		}
+		pwChangeSucceeded(user.UserID)
 		if user.PasswordMustChange && newPassword == currentPassword {
 			return ErrSameAsTemporaryPassword
 		}
