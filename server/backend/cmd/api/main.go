@@ -200,7 +200,7 @@ func handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := biz.LoginByIDOrUsername(req.IDOrUsername, req.Password)
+	user, err := biz.LoginByIDOrUsernameFrom(req.IDOrUsername, req.Password, middleware.ExtractIP(r))
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return

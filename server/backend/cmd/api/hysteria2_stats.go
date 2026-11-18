@@ -156,12 +156,25 @@ func revokeHysteria2Sessions(secret string) {
 		return
 	}
 	var kick []string
+	failed := 0
 	for id := range online {
-		if !biz.Hysteria2StillAllowed(id) {
+		ok, err := biz.Hysteria2StillAllowed(id)
+		if err != nil {
+			failed++ // could not tell: keep the session
+			continue
+		}
+		if !ok {
 			kick = append(kick, id)
 		}
 	}
-	if len(kick) == 0 {
+	if failed > 0 {
+		log.Printf("[hysteria2-stats] access of %d session(s) not checked (DB errors) — kept", failed)
+	}
+	// A guard against a wrong mass verdict: more than half of a busy server at once is not kicked.
+	if len(kick) == 0 || (len(online) >= 10 && len(kick)*2 > len(online)) {
+		if len(kick) > 0 {
+			log.Printf("[hysteria2-stats] %d of %d sessions would be kicked — too many at once, skipped", len(kick), len(online))
+		}
 		return
 	}
 	body, _ := json.Marshal(kick)

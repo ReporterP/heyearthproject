@@ -169,28 +169,45 @@ func ValidateHysteria2Auth(password string) Hysteria2AuthResult {
 
 // Hysteria2StillAllowed answers for an OPEN Bamboo session (hysteria id = users.user_id) the same
 // question ValidateHysteria2Auth answers at connect time: not blocked, a plan with Bamboo, quota
-// not used up. The stats loop kicks sessions that fail it (security audit F19/F20/F22).
-func Hysteria2StillAllowed(userID string) bool {
+// not used up. The stats loop kicks sessions that get a definite «no» (security audit
+// F19/F20/F22). err != nil means «could not tell» (a DB hiccup): the caller keeps the session.
+func Hysteria2StillAllowed(userID string) (bool, error) {
 	var userPK int
-	if err := db.DB.QueryRow(`SELECT id FROM users WHERE user_id = $1 AND is_blocked = FALSE`, userID).Scan(&userPK); err != nil {
-		return false
+	var blocked bool
+	err := db.DB.QueryRow(`SELECT id, is_blocked FROM users WHERE user_id = $1`, userID).Scan(&userPK, &blocked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if blocked {
+		return false, nil
 	}
 	var planID int
 	var allowed []string
 	var enabled bool
 	var up, down int
-	if err := db.DB.QueryRow(hysteria2AuthPlanQuery, userPK).Scan(&planID, pq.Array(&allowed), &enabled, &up, &down); err != nil {
-		return false
+	err = db.DB.QueryRow(hysteria2AuthPlanQuery, userPK).Scan(&planID, pq.Array(&allowed), &enabled, &up, &down)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil // no active subscription with a plan any more
+	}
+	if err != nil {
+		return true, err
 	}
 	if !enabled || !containsProto(allowed, "hysteria2") {
-		return false
+		return false, nil
 	}
 	if QuotaCutoffArmed() {
-		if exceeded, _ := IsCycleExceeded(userPK, userID); exceeded {
-			return false
+		exceeded, qerr := IsCycleExceeded(userPK, userID)
+		if qerr != nil {
+			return true, qerr
+		}
+		if exceeded {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // hysteria2AuthPlanQuery picks the plan row that authorizes an Express login

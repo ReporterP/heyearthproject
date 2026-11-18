@@ -87,8 +87,12 @@ var certPinRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // ExitCertPinScript prints PIN=<sha256 of the exit's DER certificate> (run on the exit).
 const ExitCertPinScript = `# hp:hy-pin
 set -e
+set -o pipefail
 [ -s ` + ExitHysteriaCert + ` ] || { echo "нет сертификата ` + ExitHysteriaCert + `" >&2; exit 1; }
-echo "PIN=$(openssl x509 -in ` + ExitHysteriaCert + ` -outform der | sha256sum | cut -c1-64)"
+der=$(mktemp); trap 'rm -f "$der"' EXIT
+openssl x509 -in ` + ExitHysteriaCert + ` -outform der -out "$der"
+[ -s "$der" ] || { echo "сертификат не прочитан" >&2; exit 1; }
+echo "PIN=$(sha256sum "$der" | cut -c1-64)"
 `
 
 // ValidCertPin reports whether pin is a SHA-256 in lower-case hex.

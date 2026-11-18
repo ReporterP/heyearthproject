@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -49,7 +51,7 @@ func (s *server) Login(ctx context.Context, req *heyearth_v1.LoginRequest) (*hey
 		return nil, status.Error(codes.InvalidArgument, "id_or_username is required")
 	}
 
-	user, err := biz.LoginByIDOrUsername(idOrUsername, req.GetPassword())
+	user, err := biz.LoginByIDOrUsernameFrom(idOrUsername, req.GetPassword(), grpcPeerHost(ctx))
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "%v", err)
 	}
@@ -726,4 +728,17 @@ func issueUserJWT(userID string, userDBID int) (string, error) {
 		return "", err
 	}
 	return token, nil
+}
+
+// grpcPeerHost is the gRPC client's address (the wrong-password throttle's key), "" if unknown.
+func grpcPeerHost(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(p.Addr.String())
+	if err != nil {
+		return p.Addr.String()
+	}
+	return host
 }

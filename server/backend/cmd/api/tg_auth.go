@@ -182,7 +182,7 @@ func handleAuthTelegramLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Введите HiEarth ID или логин"})
 		return
 	}
-	user, err := biz.LoginByIDOrUsername(req.IDOrUsername, req.Password)
+	user, err := biz.LoginByIDOrUsernameFrom(req.IDOrUsername, req.Password, middleware.ExtractIP(r))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}) // the site's RU table translates it
 		return

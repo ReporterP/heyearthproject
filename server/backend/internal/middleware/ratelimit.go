@@ -216,8 +216,8 @@ var SharedSource func(ip string) bool
 // allowance (it stands for every user behind that exit).
 const sharedAnonFactor = 20
 
-// ValidBearer reports whether an Authorization value carries a token this API issued (signature
-// and expiry, no database). Set by cmd/api; nil = never.
+// ValidBearer reports whether an Authorization value carries a live session token of this API
+// (signature, expiry and the session row). Set by cmd/api; nil = never.
 var ValidBearer func(authorization string) bool
 
 // PerUserBehindShared makes the limiter count each signed-in user separately when the request

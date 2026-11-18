@@ -94,6 +94,12 @@ func RegisterAnonymousUser(device DeviceRegistration) (*User, error) {
 // LoginByIDOrUsername authenticates a user by their HeYearth ID or username.
 // If the user has a cloud password set, the provided password must match.
 func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
+	return LoginByIDOrUsernameFrom(idOrUsername, password, "")
+}
+
+// LoginByIDOrUsernameFrom is LoginByIDOrUsername with the client's address (site, Mini App,
+// gRPC peer) for the wrong-password throttle; "" counts in the account-wide backstop only.
+func LoginByIDOrUsernameFrom(idOrUsername, password, source string) (*User, error) {
 	user, err := GetUserByIDOrUsername(strings.TrimSpace(idOrUsername))
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
@@ -107,18 +113,19 @@ func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
 		if password == "" {
 			return nil, fmt.Errorf("password required")
 		}
-		// Per account, whatever the address or channel (site, Mini App, bot, gRPC): after
-		// loginFailMax wrong passwords in loginFailWindow every attempt is refused with the same
-		// answer until the window passes (security audit F15/F18/F46). The texts stay as they are:
-		// the site and the bot match on them.
-		if loginThrottled(user.ID) {
+		// Wrong passwords are throttled per (account, address): loginFailMax in loginFailWindow,
+		// then that address gets the same answer until the window passes — a stranger cannot lock
+		// the owner out from elsewhere. An account-wide backstop (loginFailMaxAll per hour from all
+		// addresses) stops a distributed guess (security audit F15/F18/F46). The texts stay as they
+		// are: the site and the bot match on them.
+		if loginThrottled(user.ID, source) {
 			return nil, fmt.Errorf("invalid password")
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(password)); err != nil {
-			loginFailed(user.ID)
+			loginFailed(user.ID, source)
 			return nil, fmt.Errorf("invalid password")
 		}
-		loginSucceeded(user.ID)
+		loginSucceeded(user.ID, source)
 	}
 
 	touchLastSeen(user.ID)
@@ -126,45 +133,68 @@ func LoginByIDOrUsername(idOrUsername, password string) (*User, error) {
 }
 
 const (
-	loginFailMax    = 20
-	loginFailWindow = 15 * time.Minute
+	loginFailMax       = 10
+	loginFailWindow    = 15 * time.Minute
+	loginFailMaxAll    = 200
+	loginFailWindowAll = time.Hour
 )
 
 var loginFails = struct {
 	sync.Mutex
-	m map[int]*loginFailState
-}{m: map[int]*loginFailState{}}
+	m map[string]*loginFailState
+}{m: map[string]*loginFailState{}}
 
 type loginFailState struct {
 	n     int
 	start time.Time
 }
 
-func loginThrottled(userDBID int) bool {
-	loginFails.Lock()
-	defer loginFails.Unlock()
-	st := loginFails.m[userDBID]
-	return st != nil && time.Since(st.start) < loginFailWindow && st.n >= loginFailMax
+func loginKeys(userDBID int, source string) (pair, all string) {
+	return fmt.Sprintf("%d|%s", userDBID, source), fmt.Sprintf("%d|*", userDBID)
 }
 
-func loginFailed(userDBID int) {
-	loginFails.Lock()
-	defer loginFails.Unlock()
-	if len(loginFails.m) > 100000 {
-		loginFails.m = map[int]*loginFailState{}
+func loginCount(k string, window time.Duration) int {
+	if st := loginFails.m[k]; st != nil && time.Since(st.start) < window {
+		return st.n
 	}
-	st := loginFails.m[userDBID]
-	if st == nil || time.Since(st.start) >= loginFailWindow {
-		st = &loginFailState{start: time.Now()}
-		loginFails.m[userDBID] = st
-	}
-	st.n++
+	return 0
 }
 
-func loginSucceeded(userDBID int) {
+func loginThrottled(userDBID int, source string) bool {
 	loginFails.Lock()
 	defer loginFails.Unlock()
-	delete(loginFails.m, userDBID)
+	pair, all := loginKeys(userDBID, source)
+	return (source != "" && loginCount(pair, loginFailWindow) >= loginFailMax) || loginCount(all, loginFailWindowAll) >= loginFailMaxAll
+}
+
+func loginFailed(userDBID int, source string) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	if len(loginFails.m) > 200000 {
+		loginFails.m = map[string]*loginFailState{}
+	}
+	pair, all := loginKeys(userDBID, source)
+	for _, kw := range []struct {
+		k string
+		w time.Duration
+	}{{pair, loginFailWindow}, {all, loginFailWindowAll}} {
+		if kw.k == pair && source == "" {
+			continue
+		}
+		st := loginFails.m[kw.k]
+		if st == nil || time.Since(st.start) >= kw.w {
+			st = &loginFailState{start: time.Now()}
+			loginFails.m[kw.k] = st
+		}
+		st.n++
+	}
+}
+
+func loginSucceeded(userDBID int, source string) {
+	loginFails.Lock()
+	defer loginFails.Unlock()
+	pair, _ := loginKeys(userDBID, source)
+	delete(loginFails.m, pair)
 }
 
 // SetUsername sets or updates the user's username (alias for their ID).
