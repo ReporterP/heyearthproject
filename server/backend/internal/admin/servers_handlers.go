@@ -291,6 +291,12 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.IPAddress, req.SSHPort, addrChanged = ip, port, true
+		// Repointing a node is the provisioning power (where the Hub sends tunnels and the stored
+		// root password), not a plain edit (security audit F23).
+		if claims, _ := ClaimsFromContext(r.Context()); claims == nil || !claimsAllow(claims, "nodes.provision") {
+			writeAdminError(w, http.StatusForbidden, "Адрес ноды меняет администратор с правом «Настройка нод»")
+			return
+		}
 	}
 	if strings.TrimSpace(req.SSHUser) == "" {
 		req.SSHUser = existing.SSHUser
@@ -393,6 +399,14 @@ func UpdateServerHandler(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(clearHostKeyQuery, serverID); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
 			return
+		}
+		// The stored root password belongs to the old machine: it must not follow the node to
+		// a new address (audit F50); the Hub key, or a password entered now, is used from here on.
+		if newSSHPasswordEnc == nil {
+			if _, err := tx.Exec(`UPDATE servers SET ssh_password = '', ssh_password_enc = NULL WHERE id = $1`, serverID); err != nil {
+				writeAdminError(w, http.StatusInternalServerError, "Не удалось обновить сервер")
+				return
+			}
 		}
 	}
 	if newSSHPasswordEnc != nil {

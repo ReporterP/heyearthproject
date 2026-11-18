@@ -209,9 +209,24 @@ func withServerDB(t *testing.T) *serverDB {
 }
 
 func patchServer(body string) *httptest.ResponseRecorder {
+	return patchServerAs(body, []string{"servers.write", "nodes.provision"})
+}
+
+func patchServerAs(body string, perms []string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	UpdateServerHandler(rec, httptest.NewRequest(http.MethodPatch, "/api/admin/servers/2", strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/servers/2", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminClaimsContextKey, &Claims{AdminID: 1, Permissions: perms}))
+	UpdateServerHandler(rec, req)
 	return rec
+}
+
+// servers.write alone may edit a node but not repoint it (audit F23).
+func TestUpdateServerAddressNeedsProvisionRight(t *testing.T) {
+	t.Setenv("SSH_ENCRYPTION_KEY", "")
+	fake := withServerDB(t)
+	if rec := patchServerAs(`{"ip_address":"203.0.113.9"}`, []string{"servers.write"}); rec.Code != http.StatusForbidden || len(fake.updates()) != 0 {
+		t.Fatalf("repoint without nodes.provision: %d %s", rec.Code, rec.Body)
+	}
 }
 
 // An edit without a new password leaves both SSH password columns alone: ssh_password is
