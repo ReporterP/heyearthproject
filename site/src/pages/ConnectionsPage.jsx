@@ -20,7 +20,9 @@ import { detectDevice, OTHER_APPS } from '../lib/apps.js'
 
 // Подключение /connect (spec 08 §8.2): composed from the overview's «Подключение» card and the
 // «Подключение» artboard parts. A 503 on /user/connections is «временно недоступно», never «нет подписки».
-const VERSION_KEY = 'heyearth_config_version'
+// subscription_version: the server bumps it whenever users' subscription lines change (entries,
+// exits, entry mode). config_version is no longer written by anything (QA 2026-11-18).
+const VERSION_KEY = 'heyearth_subscription_version'
 
 const GUIDE = {
   ios: [
@@ -57,17 +59,17 @@ export default function ConnectionsPage() {
   const [qr, setQr] = useState(false)
   const showSkel = useDelayed(loading && !conn, 300)
 
-  // «Настройки обновились»: config_version grew since this browser last acknowledged it
+  // «Настройки обновились»: subscription_version changed since this browser last acknowledged it
   useEffect(() => {
-    const v = conn?.config_version
-    if (!v) return
+    const v = conn?.subscription_version
+    if (v === undefined || v === null) return
     let saved = null
     try { saved = localStorage.getItem(VERSION_KEY) } catch { /* storage off */ }
     if (!saved) { try { localStorage.setItem(VERSION_KEY, String(v)) } catch { /* storage off */ } return }
     if (saved !== String(v)) setUpdated(true)
-  }, [conn?.config_version])
+  }, [conn?.subscription_version])
   const acknowledge = () => {
-    try { localStorage.setItem(VERSION_KEY, String(conn?.config_version)) } catch { /* storage off */ }
+    try { localStorage.setItem(VERSION_KEY, String(conn?.subscription_version)) } catch { /* storage off */ }
     setUpdated(false)
   }
 
