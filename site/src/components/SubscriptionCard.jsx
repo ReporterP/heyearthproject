@@ -13,7 +13,7 @@ export function renewText(sub, ar) {
   const enabled = ar ? ar.enabled : sub?.auto_renew
   const at = date(ar?.renew_at || sub?.valid_until)
   const price = ar ? kop(ar.price_kop) : money(sub?.price_rub || 0)
-  if (enabled) return { lead: 'Автопродление включено.', text: `${at} спишем ${price} с кошелька, если на балансе хватит.`, short: `Автопродление включено · ${price} с кошелька` }
+  if (enabled) return { lead: 'Автопродление включено.', text: `За сутки до ${at} спишем ${price} с кошелька, если на балансе хватит.`, short: `Автопродление включено · ${price} с кошелька` }
   return { off: true, text: `Автопродление выключено — подписка закончится ${at}` }
 }
 

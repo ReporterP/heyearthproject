@@ -137,9 +137,9 @@ func Reminder(kind ReminderKind, planName string, priceRub int, validUntil time.
 	switch kind {
 	case ReminderRenewsFine:
 		subject = fmt.Sprintf("Продлим подписку с кошелька: %d ₽", priceRub)
-		text = fmt.Sprintf("Подписка «%s» заканчивается %s. Спишем %d ₽ с кошелька — денег хватает, ничего делать не нужно.", planName, when, priceRub)
+		text = fmt.Sprintf("Подписка «%s» заканчивается %s. За сутки до окончания спишем %d ₽ с кошелька — денег хватает, ничего делать не нужно.", planName, when, priceRub)
 		htmlBody = wrap(subject, h1("Скоро продление")+
-			para("Подписка "+strong("«"+planName+"»")+" заканчивается "+strong(when)+". Спишем с кошелька "+strong(fmt.Sprintf("%d ₽", priceRub))+" — денег хватает, ничего делать не нужно.")+
+			para("Подписка "+strong("«"+planName+"»")+" заканчивается "+strong(when)+". За сутки до окончания спишем с кошелька "+strong(fmt.Sprintf("%d ₽", priceRub))+" — денег хватает, ничего делать не нужно.")+
 			facts("Спишем", fmt.Sprintf("%d ₽", priceRub), "На кошельке", rubKop(balanceKop))+
 			para(`Не нужна подписка дальше? Выключите автопродление в разделе <a href="`+SiteURL+`/payments" style="color:#34d399">«Оплата и подписка»</a> — доступ сохранится до конца оплаченного периода.`), unsubscribeURL)
 	case ReminderTopUp:

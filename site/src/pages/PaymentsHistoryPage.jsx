@@ -143,7 +143,7 @@ export default function PaymentsHistoryPage() {
                 <b>Автопродление</b><br />
                 <span className="t-sm subtle">
                   {renew
-                    ? <>В день окончания спишем {price} с кошелька.{ar && !ar.enough ? <> На кошельке {kop(wallet.balance_kop)} — <Link to="/wallet" className="link">пополнить</Link></> : null}</>
+                    ? <>За сутки до окончания спишем {price} с кошелька.{ar && !ar.enough ? <> На кошельке {kop(wallet.balance_kop)} — <Link to="/wallet" className="link">пополнить</Link></> : null}</>
                     : 'Подписка закончится и не продлится автоматически.'}
                 </span>
               </label>
