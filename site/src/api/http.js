@@ -97,7 +97,10 @@ export async function apiFetch(path, { token, method = 'GET', body, form, fallba
     throw new ApiError((data && data.error && res.status === 503) ? translateError(data.error) : MSG.unavailable, { status: res.status, kind: 'unavailable', data })
   }
   if (res.status === 429) {
-    throw new ApiError(MSG.rate, { status: 429, kind: 'rate', data })
+    // the server's Retry-After is the real wait (the promo-code limit is 10 minutes, 05 §7)
+    const wait = Number(res.headers?.get?.('Retry-After')) || 0
+    const msg = wait > 90 ? `Слишком много попыток — подождите ${Math.ceil(wait / 60)} мин. и попробуйте снова.` : MSG.rate
+    throw new ApiError(msg, { status: 429, kind: 'rate', data })
   }
   if (!res.ok) {
     throw new ApiError(translateError(data && data.error) || fallback, { status: res.status, kind: 'error', data })

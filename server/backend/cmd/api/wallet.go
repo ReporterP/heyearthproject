@@ -16,6 +16,7 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/yookassa"
 )
 
@@ -180,6 +181,9 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 	price := plan.PriceRub
 	if strings.TrimSpace(promocode) != "" {
 		p, err := biz.LoadPromocode(ctx, db.DB, userDBID, promocode, plan.ID, false)
+		if err == nil {
+			err = biz.PromoFitsPlan(p, biz.PlanTrafficLimit(plan))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -210,6 +214,20 @@ func buildQuote(ctx context.Context, userID string, userDBID, planID int, promoc
 		q.NewValidUntil, q.BonusDays, q.IsDowngradeBlocked = pr.NewValidUntil, pr.BonusDays, pr.IsDowngradeBlocked
 	}
 	return q, nil
+}
+
+// codeLimitedWhenPromo counts a price quote against the promo-code limiter only when it carries a
+// code: guessing codes is what the limiter stops, while the payment page asks for a plain quote
+// on every open and every balance change (QA 2026-11-18: buyers ran out of quotes).
+func codeLimitedWhenPromo(rl *middleware.RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	limited := rl.Middleware(next)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(r.URL.Query().Get("promocode")) == "" {
+			next(w, r)
+			return
+		}
+		limited(w, r)
+	}
 }
 
 func handleWalletQuote(w http.ResponseWriter, r *http.Request) {
