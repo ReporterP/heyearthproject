@@ -505,20 +505,31 @@ func sendTGScene(ctx context.Context, bot *tg.Bot, chat string, m tgOut) (int, e
 	if !tgCaptionFits(m.Text) {
 		return 0, nil, false
 	}
-	if id, ok := tgSceneIDs.Load(m.Scene); ok {
+	// a blocked chat or a 429 is the outbox's business; anything else must not lose the message
+	keep := func(err error) bool { _, wait := tg.RetryAfter(err); return tg.IsBlocked(err) || wait }
+	key := tgSceneKey(bot.Token, m.Scene)
+	if id, ok := tgSceneIDs.Load(key); ok {
 		msg, err := bot.SendAnimation(ctx, tg.SendAnimation{ChatID: chat, Animation: id.(string), Caption: m.Text,
 			ParseMode: m.ParseMode, ReplyMarkup: m.Keyboard, DisableNotification: m.Silent})
-		if err != nil {
+		if err == nil {
+			return msg.MessageID, nil, true
+		}
+		if keep(err) {
 			return 0, err, true
 		}
-		return msg.MessageID, nil, true
+		tgSceneIDs.Delete(key) // a stale id: upload the GIF again
+		log.Printf("[tg-bot] сценка %s по file_id: %v — загружаем заново", m.Scene, err)
 	}
 	msg, err := bot.SendAnimationBytes(ctx, chat, m.Text, m.ParseMode, m.Keyboard, m.Silent, m.Scene+".gif", data)
 	if err != nil {
-		return 0, err, true
+		if keep(err) {
+			return 0, err, true
+		}
+		log.Printf("[tg-bot] сценка %s не ушла: %v — отправляем текстом", m.Scene, err)
+		return 0, nil, false
 	}
 	if msg.Animation != nil && msg.Animation.FileID != "" {
-		tgSceneIDs.Store(m.Scene, msg.Animation.FileID)
+		tgSceneIDs.Store(key, msg.Animation.FileID)
 	}
 	return msg.MessageID, nil, true
 }

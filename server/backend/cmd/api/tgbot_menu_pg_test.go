@@ -145,6 +145,14 @@ func TestTGChatMenu(t *testing.T) {
 	if created != 1 || !strings.Contains(fake.last("sendAnimation"), "Аккаунт создан") {
 		t.Fatalf("account in the chat: %d, %.200s", created, fake.last("sendAnimation"))
 	}
+	// from the welcome menu (a callback): the menu message goes only after the ID message is sent
+	m2, _ := newTGCtx(ctx, bot, tgapi.User{ID: 8350, FirstName: "Ира"})
+	fake.calls = nil
+	tgCreateAccount(m2, 77)
+	order := strings.Join(heads(fake.calls), ",")
+	if !strings.Contains(order, "sendAnimation,deleteMessage") || !strings.Contains(fake.last("deleteMessage"), `"message_id":77`) {
+		t.Fatalf("account from the menu: %s", order)
+	}
 }
 
 // heads keeps the method names of recorded Bot API calls (for failure messages).

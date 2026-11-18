@@ -200,8 +200,8 @@ func validateNews(in biz.NewsInput, send bool) string {
 	}
 	p := &biz.NewsPost{Title: in.Title, Body: in.Body}
 	n := len([]rune(newsText(p)))
-	if (in.Image != "" || in.Scene != "") && n > 1024 {
-		return fmt.Sprintf("С картинкой текст не длиннее 1024 символов (ограничение Telegram), сейчас %d", n)
+	if cl := tgCaptionLen(newsText(p)); (in.Image != "" || in.Scene != "") && cl > tgCaptionMax {
+		return fmt.Sprintf("С картинкой текст не длиннее 1024 символов (ограничение Telegram), сейчас %d", cl)
 	}
 	if n > 4096 {
 		return "Текст длиннее 4096 символов (ограничение Telegram)"
@@ -344,10 +344,7 @@ func updateNewsEverywhere(p *biz.NewsPost) {
 		}
 		text := newsText(p)
 		edit := func(chat any, msg int, kb *tg.InlineKeyboardMarkup) error {
-			if p.Image != "" || p.Scene != "" {
-				return bot.EditMessageCaption(ctx, chat, msg, text, "HTML", kb)
-			}
-			return bot.EditMessageText(ctx, chat, msg, text, "HTML", kb)
+			return editNewsCopy(ctx, bot, chat, msg, text, kb, p.Image != "" || p.Scene != "")
 		}
 		if p.ChannelMessageID > 0 {
 			if err := edit(p.ChannelChat, int(p.ChannelMessageID), newsKeyboard(p, false)); err != nil {
@@ -364,6 +361,24 @@ func updateNewsEverywhere(p *biz.NewsPost) {
 			}
 		}
 	}()
+}
+
+// editNewsCopy edits one sent copy of a post (the channel post or a bot message).
+// A copy may differ from the post: a scene post that went out as text (the scene fell back), or a
+// post sent by an older build — so a failed edit tries the other kind once.
+func editNewsCopy(ctx context.Context, bot *tg.Bot, chat any, msg int, text string, kb *tg.InlineKeyboardMarkup, picture bool) error {
+	first, other := bot.EditMessageText, bot.EditMessageCaption
+	if picture {
+		first, other = other, first
+	}
+	err := first(ctx, chat, msg, text, "HTML", kb)
+	if _, wait := tg.RetryAfter(err); err == nil || wait || tg.IsBlocked(err) {
+		return err
+	}
+	if other(ctx, chat, msg, text, "HTML", kb) == nil {
+		return nil
+	}
+	return err
 }
 
 // deleteNewsEverywhere removes the channel post and the bot copies the bot may still delete.

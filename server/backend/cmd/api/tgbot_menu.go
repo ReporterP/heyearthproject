@@ -474,10 +474,11 @@ func tgCreateAccount(c *tgCtx, msgID int) {
 	c.user, _ = biz.UserByTelegramID(c.ctx, c.from.ID)
 	text := fmt.Sprintf("🎉 <b>Аккаунт создан!</b>\n\nВаш HiEarth ID — единственный ключ от аккаунта, восстановить его нельзя:\n\n<code>%s</code>\n\n💾 Сохраните его в надёжном месте — например, перешлите себе в «Избранное». Логин и пароль можно задать в кабинете.", user.UserID)
 	kb := tg.Keyboard(tg.Row(tg.CopyButton("📋 Скопировать ID", user.UserID)), tg.Row(tg.CallbackButton("✅ Сохранил — в меню", "m:home").Styled(tg.StyleSuccess)))
-	if msgID > 0 { // the welcome menu gives way to the greeting scene (spec 12 §12.6)
+	// the welcome menu gives way to the greeting scene (spec 12 §12.6) — only once the message
+	// with the ID is out: it is the person's only copy of the ID
+	if _, err := c.replyScene("wave", text, kb); err == nil && msgID > 0 {
 		_ = c.bot.DeleteMessage(c.ctx, c.chat, msgID)
 	}
-	_, _ = c.replyScene("wave", text, kb)
 }
 
 func tgAskLogin(c *tgCtx) {

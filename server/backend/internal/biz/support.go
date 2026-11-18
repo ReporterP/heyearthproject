@@ -239,7 +239,6 @@ func scanTicket(row *sql.Row) (*SupportTicket, error) {
 
 const ticketCols = `id, user_id, status, created_at, updated_at, last_user_at, last_admin_at`
 
-// SupportUserThread is the person's latest ticket and its messages (nil ticket: never wrote).
 // SupportIsFirstAnswer: msgID is the first admin message of its ticket.
 func SupportIsFirstAnswer(ctx context.Context, ticketID int, msgID int64) (bool, error) {
 	var earlier bool
@@ -248,6 +247,7 @@ func SupportIsFirstAnswer(ctx context.Context, ticketID int, msgID int64) (bool,
 	return err == nil && !earlier, err
 }
 
+// SupportUserThread is the person's latest ticket and its messages (nil ticket: never wrote).
 func SupportUserThread(ctx context.Context, userDBID int) (*SupportTicket, []SupportMessage, error) {
 	t, err := scanTicket(db.DB.QueryRowContext(ctx, `SELECT `+ticketCols+` FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, userDBID))
 	if errors.Is(err, sql.ErrNoRows) {
