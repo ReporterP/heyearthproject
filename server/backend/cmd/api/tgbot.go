@@ -260,6 +260,7 @@ type tgOut struct {
 	ParseMode string                   `json:"parse_mode,omitempty"`
 	Keyboard  *tg.InlineKeyboardMarkup `json:"keyboard,omitempty"`
 	Photo     string                   `json:"photo,omitempty"` // file_id, or an uploads path ("file:<name>")
+	Scene     string                   `json:"scene,omitempty"` // a hedgehog scene (tgscenes.go); a photo wins
 	Silent    bool                     `json:"silent,omitempty"`
 }
 
@@ -452,8 +453,13 @@ func sendTGOutRow(ctx context.Context, bot *tg.Bot, r tgOutRow) time.Duration {
 	return 0
 }
 
-// sendTGOut sends one message (text, or a photo with a caption).
+// sendTGOut sends one message (text, a photo with a caption, or a hedgehog scene with a caption).
 func sendTGOut(ctx context.Context, bot *tg.Bot, chat string, m tgOut) (int, error) {
+	if m.Photo == "" && m.Scene != "" {
+		if id, err, ok := sendTGScene(ctx, bot, chat, m); ok {
+			return id, err
+		}
+	}
 	if m.Photo == "" {
 		msg, err := bot.SendMessage(ctx, tg.SendMessage{ChatID: chat, Text: m.Text, ParseMode: m.ParseMode, ReplyMarkup: m.Keyboard,
 			LinkPreviewOptions: &tg.LinkPreviewOptions{IsDisabled: true}, DisableNotification: m.Silent})
@@ -486,4 +492,33 @@ func sendTGOut(ctx context.Context, bot *tg.Bot, chat string, m tgOut) (int, err
 		return 0, err
 	}
 	return msg.MessageID, nil
+}
+
+// sendTGScene sends m with its scene; ok=false when the scene cannot go (unknown slug, caption
+// over the limit) and the caller sends plain text instead.
+func sendTGScene(ctx context.Context, bot *tg.Bot, chat string, m tgOut) (int, error, bool) {
+	data, found := tgSceneGIF(m.Scene)
+	if !found {
+		log.Printf("[tg-bot] сценка %q не найдена — отправляем текстом", m.Scene)
+		return 0, nil, false
+	}
+	if !tgCaptionFits(m.Text) {
+		return 0, nil, false
+	}
+	if id, ok := tgSceneIDs.Load(m.Scene); ok {
+		msg, err := bot.SendAnimation(ctx, tg.SendAnimation{ChatID: chat, Animation: id.(string), Caption: m.Text,
+			ParseMode: m.ParseMode, ReplyMarkup: m.Keyboard, DisableNotification: m.Silent})
+		if err != nil {
+			return 0, err, true
+		}
+		return msg.MessageID, nil, true
+	}
+	msg, err := bot.SendAnimationBytes(ctx, chat, m.Text, m.ParseMode, m.Keyboard, m.Silent, m.Scene+".gif", data)
+	if err != nil {
+		return 0, err, true
+	}
+	if msg.Animation != nil && msg.Animation.FileID != "" {
+		tgSceneIDs.Store(m.Scene, msg.Animation.FileID)
+	}
+	return msg.MessageID, nil, true
 }

@@ -33,6 +33,7 @@ func registerNewsRoutes(apiLimiter *middleware.RateLimiter) {
 	http.HandleFunc("/api/v1/news", apiLimiter.Middleware(handleNewsFeed))
 	http.HandleFunc("/api/v1/news/read", apiLimiter.Middleware(handleNewsRead))
 	http.HandleFunc("/api/v1/news/images/", apiLimiter.Middleware(handleNewsImage))
+	http.HandleFunc("/api/v1/tg/scenes/", apiLimiter.Middleware(handleTGScene))
 	http.HandleFunc("/api/v1/user/badges", apiLimiter.Middleware(handleUserBadges))
 
 	http.HandleFunc("/api/admin/news", admin.RequirePermission(newsPerm, handleAdminNews))
