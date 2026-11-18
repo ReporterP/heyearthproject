@@ -1,0 +1,1 @@
+ALTER TABLE news_posts DROP COLUMN IF EXISTS scene;

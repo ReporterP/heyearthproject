@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	tgapi "github.com/heyearth/backend/internal/telegram"
 	"github.com/heyearth/backend/internal/testpg"
 )
 
@@ -110,4 +111,68 @@ func TestNewsAudienceQueueFeedAndHapp(t *testing.T) {
 	if text, _, _ := buildSubscriptionAnnounceAt("news-active", "https://example.test"); text != "Личный кабинет ↗" {
 		t.Fatalf("after happ_days: %q", text)
 	}
+}
+
+// A post with a scene: the channel and the bot get the animation, /news in the bot too, and an edit
+// changes the caption (spec 12 §12.6).
+func TestNewsSceneEverywhere(t *testing.T) {
+	conn := testpg.Open(t)
+	ctx := context.Background()
+	tgCfg.forget(tgBotTokenSetting, tgChannelSetting)
+	testpg.MustExec(t, conn, `INSERT INTO app_settings (key, value) VALUES ('tg_bot_token', $1), ('tg_channel_id', '-100777')
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, fakeBotToken)
+	fake := &fakeTelegram{}
+	oldRoute := telegram
+	telegram = fake.route()
+	tgSceneIDs.Clear()
+	t.Cleanup(func() { telegram = oldRoute; tgCfg.forget(tgBotTokenSetting, tgChannelSetting); tgSceneIDs.Clear() })
+
+	reader := testpg.NewUser(t, conn, "news-scene-reader")
+	testpg.MustExec(t, conn, `UPDATE users SET telegram_id = 7700 WHERE id = $1`, reader)
+
+	in := biz.NewsInput{Title: "Ёжик с газетой", Body: "Новость со сценкой.", Scene: "news", Targets: []string{"channel", "bot_all", "site"}, HappDays: 3}
+	in.Clean()
+	if msg := validateNews(in, true); msg != "" {
+		t.Fatal(msg)
+	}
+	p, err := biz.CreateNews(ctx, in, nil)
+	if err != nil || p.Scene != "news" {
+		t.Fatalf("created: %+v %v", p, err)
+	}
+	if _, err := publishNews(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	channelCall := ""
+	fake.mu.Lock()
+	for _, c := range fake.calls {
+		if strings.HasPrefix(c, "sendAnimation ") && strings.Contains(c, "-100777") {
+			channelCall = c
+		}
+	}
+	fake.mu.Unlock()
+	if !strings.Contains(channelCall, `filename="news.gif"`) || !strings.Contains(channelCall, "Ёжик с газетой") {
+		t.Fatalf("the channel post must be the «news» scene: %.300s", channelCall)
+	}
+	var scene string
+	_ = conn.QueryRow(`SELECT COALESCE(payload->>'scene', '') FROM tg_outbox WHERE user_id = $1 AND kind = 'news'`, reader).Scan(&scene)
+	if scene != "news" {
+		t.Fatalf("the bot copy scene %q, want news", scene)
+	}
+
+	c, err := newTGCtx(ctx, userBot(), tgapi.User{ID: 7700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgNews(c)
+	if !fake.sent("sendAnimation 7700") && !fake.sent(`name="chat_id"`+"\r\n\r\n7700") {
+		t.Fatal("/news in the bot must send the scene")
+	}
+
+	sent, err := biz.GetNews(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent.Body = "Новость со сценкой, исправлено."
+	updateNewsEverywhere(sent)
+	waitFor(t, "the channel caption edited", func() bool { return fake.sent("editMessageCaption") })
 }

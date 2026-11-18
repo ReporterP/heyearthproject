@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -36,5 +37,32 @@ func TestTGNoticeScenes(t *testing.T) {
 		if c.m.Scene != c.scene || !strings.Contains(c.m.Text, c.text) {
 			t.Errorf("%s: scene %q (want %q), text %q", c.name, c.m.Scene, c.scene, c.m.Text)
 		}
+	}
+}
+
+// A news post carries a scene or its own picture, never both; the caption limit applies to a scene
+// too; the site feed never shows the scene (one hedgehog per screen).
+func TestValidateNewsScene(t *testing.T) {
+	base := biz.NewsInput{Title: "Новое", Body: "Коротко.", Targets: []string{"channel"}}
+	with := func(f func(*biz.NewsInput)) biz.NewsInput { in := base; f(&in); return in }
+	cases := []struct {
+		name string
+		in   biz.NewsInput
+		want string
+	}{
+		{"scene alone", with(func(in *biz.NewsInput) { in.Scene = "news" }), ""},
+		{"scene and picture", with(func(in *biz.NewsInput) { in.Scene = "news"; in.Image = "a1b2c3d4e5f6a7b8.png" }), "Выберите что-то одно: ёжик или своя картинка."},
+		{"unknown scene", with(func(in *biz.NewsInput) { in.Scene = "nope" }), "Неизвестная сценка."},
+		{"scene with a long text", with(func(in *biz.NewsInput) { in.Scene = "news"; in.Body = strings.Repeat("я", 1100) }), "С картинкой текст не длиннее 1024"},
+	}
+	for _, c := range cases {
+		got := validateNews(c.in, true)
+		if (c.want == "" && got != "") || (c.want != "" && !strings.Contains(got, c.want)) {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	raw, _ := json.Marshal(toNewsItem(biz.NewsPost{ID: 1, Title: "x", Scene: "news"}))
+	if strings.Contains(string(raw), "scene") || strings.Contains(string(raw), "image_url\":\"/") {
+		t.Errorf("the site feed must not show the scene: %s", raw)
 	}
 }

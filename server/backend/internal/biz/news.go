@@ -24,6 +24,7 @@ type NewsPost struct {
 	Title            string     `json:"title"`
 	Body             string     `json:"body"`
 	Image            string     `json:"image"`
+	Scene            string     `json:"scene"` // a hedgehog scene instead of an image (spec 12 §12.6)
 	ButtonText       string     `json:"button_text"`
 	ButtonURL        string     `json:"button_url"`
 	Targets          []string   `json:"targets"`
@@ -51,13 +52,13 @@ type NewsStats struct {
 func (p *NewsPost) Has(target string) bool { return slices.Contains(p.Targets, target) }
 
 const newsCols = `id, title, body, COALESCE(image_path, ''), button_text, button_url, targets, happ_days, status,
-	scheduled_at, sent_at, COALESCE(channel_chat, ''), COALESCE(channel_message_id, 0), COALESCE(error, ''), created_at, updated_at`
+	scheduled_at, sent_at, COALESCE(channel_chat, ''), COALESCE(channel_message_id, 0), COALESCE(error, ''), created_at, updated_at, COALESCE(scene, '')`
 
 func scanNews(sc interface{ Scan(...any) error }) (*NewsPost, error) {
 	p := &NewsPost{}
 	var sched, sent sql.NullTime
 	if err := sc.Scan(&p.ID, &p.Title, &p.Body, &p.Image, &p.ButtonText, &p.ButtonURL, pq.Array(&p.Targets), &p.HappDays, &p.Status,
-		&sched, &sent, &p.ChannelChat, &p.ChannelMessageID, &p.Error, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		&sched, &sent, &p.ChannelChat, &p.ChannelMessageID, &p.Error, &p.CreatedAt, &p.UpdatedAt, &p.Scene); err != nil {
 		return nil, err
 	}
 	if sched.Valid {
@@ -77,6 +78,7 @@ type NewsInput struct {
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
 	Image      string   `json:"image"`
+	Scene      string   `json:"scene"`
 	ButtonText string   `json:"button_text"`
 	ButtonURL  string   `json:"button_url"`
 	Targets    []string `json:"targets"`
@@ -88,6 +90,7 @@ func (in *NewsInput) Clean() {
 	in.Title = strings.TrimSpace(in.Title)
 	in.Body = strings.TrimSpace(strings.ReplaceAll(in.Body, "\r\n", "\n"))
 	in.ButtonText = strings.TrimSpace(in.ButtonText)
+	in.Scene = strings.TrimSpace(in.Scene)
 	in.ButtonURL = strings.TrimSpace(in.ButtonURL)
 	var t []string
 	for _, x := range in.Targets {
@@ -106,20 +109,21 @@ func (in *NewsInput) Clean() {
 
 func CreateNews(ctx context.Context, in NewsInput, adminID *int) (*NewsPost, error) {
 	return scanNews(db.DB.QueryRowContext(ctx, `
-		INSERT INTO news_posts (title, body, image_path, button_text, button_url, targets, happ_days, created_by)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8) RETURNING `+newsCols,
-		in.Title, in.Body, in.Image, in.ButtonText, in.ButtonURL, pq.Array(in.Targets), in.HappDays, adminID))
+		INSERT INTO news_posts (title, body, image_path, button_text, button_url, targets, happ_days, created_by, scene)
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, NULLIF($9, '')) RETURNING `+newsCols,
+		in.Title, in.Body, in.Image, in.ButtonText, in.ButtonURL, pq.Array(in.Targets), in.HappDays, adminID, in.Scene))
 }
 
 // UpdateNews changes the text; targets and Happ days only while it is not sent yet.
 func UpdateNews(ctx context.Context, id int, in NewsInput) (*NewsPost, error) {
 	p, err := scanNews(db.DB.QueryRowContext(ctx, `
 		UPDATE news_posts SET title = $2, body = $3, image_path = CASE WHEN status = 'sent' THEN image_path ELSE NULLIF($4, '') END,
+		       scene = CASE WHEN status = 'sent' THEN scene ELSE NULLIF($9, '') END,
 		       button_text = $5, button_url = $6,
 		       targets = CASE WHEN status IN ('draft', 'scheduled', 'failed') THEN $7 ELSE targets END,
 		       happ_days = $8, updated_at = NOW()
 		 WHERE id = $1 AND status <> 'sending' RETURNING `+newsCols,
-		id, in.Title, in.Body, in.Image, in.ButtonText, in.ButtonURL, pq.Array(in.Targets), in.HappDays))
+		id, in.Title, in.Body, in.Image, in.ButtonText, in.ButtonURL, pq.Array(in.Targets), in.HappDays, in.Scene))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNewsNotFound
 	}

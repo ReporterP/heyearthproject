@@ -175,6 +175,12 @@ func validateNews(in biz.NewsInput, send bool) string {
 	if len([]rune(in.Body)) > 4000 {
 		return "Текст длиннее 4000 символов"
 	}
+	if in.Image != "" && in.Scene != "" {
+		return "Выберите что-то одно: ёжик или своя картинка."
+	}
+	if in.Scene != "" && !isTGScene(in.Scene) {
+		return "Неизвестная сценка."
+	}
 	if in.Image != "" {
 		if !supportImageRe.MatchString(in.Image) {
 			return "Картинка не найдена — загрузите её ещё раз"
@@ -194,7 +200,7 @@ func validateNews(in biz.NewsInput, send bool) string {
 	}
 	p := &biz.NewsPost{Title: in.Title, Body: in.Body}
 	n := len([]rune(newsText(p)))
-	if in.Image != "" && n > 1024 {
+	if (in.Image != "" || in.Scene != "") && n > 1024 {
 		return fmt.Sprintf("С картинкой текст не длиннее 1024 символов (ограничение Telegram), сейчас %d", n)
 	}
 	if n > 4096 {
@@ -212,7 +218,7 @@ func validateNews(in biz.NewsInput, send bool) string {
 }
 
 func newsInputOf(p *biz.NewsPost) biz.NewsInput {
-	return biz.NewsInput{Title: p.Title, Body: p.Body, Image: p.Image, ButtonText: p.ButtonText, ButtonURL: p.ButtonURL, Targets: p.Targets, HappDays: p.HappDays}
+	return biz.NewsInput{Title: p.Title, Body: p.Body, Image: p.Image, Scene: p.Scene, ButtonText: p.ButtonText, ButtonURL: p.ButtonURL, Targets: p.Targets, HappDays: p.HappDays}
 }
 
 // ── publishing ──
@@ -263,6 +269,13 @@ func postNewsToChannel(ctx context.Context, p *biz.NewsPost) error {
 		return errors.New("бот или канал не настроены в «Telegram»")
 	}
 	text, kb := newsText(p), newsKeyboard(p, false)
+	if p.Image == "" && p.Scene != "" {
+		id, err := sendTGOut(ctx, bot, ch, tgOut{Text: text, ParseMode: "HTML", Keyboard: kb, Scene: p.Scene})
+		if err != nil {
+			return err
+		}
+		return biz.SetNewsChannelMessage(ctx, p.ID, ch, int64(id))
+	}
 	var m *tg.Message
 	var err error
 	if p.Image != "" {
@@ -288,7 +301,7 @@ func queueNewsForBot(ctx context.Context, p *biz.NewsPost) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	m := tgOut{Text: newsText(p), ParseMode: "HTML", Keyboard: newsKeyboard(p, true), Silent: true}
+	m := tgOut{Text: newsText(p), ParseMode: "HTML", Keyboard: newsKeyboard(p, true), Silent: true, Scene: p.Scene}
 	if p.Image != "" {
 		m.Photo = "file:news/" + p.Image
 	}
@@ -331,7 +344,7 @@ func updateNewsEverywhere(p *biz.NewsPost) {
 		}
 		text := newsText(p)
 		edit := func(chat any, msg int, kb *tg.InlineKeyboardMarkup) error {
-			if p.Image != "" {
+			if p.Image != "" || p.Scene != "" {
 				return bot.EditMessageCaption(ctx, chat, msg, text, "HTML", kb)
 			}
 			return bot.EditMessageText(ctx, chat, msg, text, "HTML", kb)
@@ -606,8 +619,12 @@ func tgNews(c *tgCtx) {
 	} else if len(more) > 0 {
 		kb.InlineKeyboard = append(kb.InlineKeyboard, more)
 	}
-	if p.Image != "" {
-		if _, err := sendTGOut(c.ctx, c.bot, tg.ChatIDString(c.chat), tgOut{Text: newsText(p), ParseMode: "HTML", Keyboard: kb, Photo: "file:news/" + p.Image}); err == nil {
+	if p.Image != "" || p.Scene != "" {
+		out := tgOut{Text: newsText(p), ParseMode: "HTML", Keyboard: kb, Scene: p.Scene}
+		if p.Image != "" {
+			out.Photo = "file:news/" + p.Image
+		}
+		if _, err := sendTGOut(c.ctx, c.bot, tg.ChatIDString(c.chat), out); err == nil {
 			return
 		}
 	}
