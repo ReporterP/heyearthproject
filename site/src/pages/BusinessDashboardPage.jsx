@@ -197,7 +197,7 @@ export default function BusinessDashboardPage() {
           <Card title="Баланс компании" className="rise" style={{ ...span(4), '--d': '60ms' }}>
             <Flap value={group(balance)} suffix="₽" size={phone ? 36 : 44} label={money(balance)} />
             <p className="t-sm subtle" style={{ marginTop: 10 }}>
-              Следующее списание — {date(nextCharge())}: {max > 0 ? `${max} ${plural(max, ['место', 'места', 'мест'])}` : 'места'} × тариф «{t.plan}».
+              {t.status === 'active' && <>Следующее списание — {date(nextCharge())}: {t.plan === 'super' ? 'по фиксированному тарифу' : max > 0 ? `${max} ${plural(max, ['место', 'места', 'мест'])}` : 'по числу мест'}.</>}
             </p>
             {canBill
               ? <Button variant="primary" block onClick={() => setTopup(true)} style={{ marginTop: 16 }}>Пополнить кошелёк</Button>

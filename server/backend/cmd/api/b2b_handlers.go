@@ -92,6 +92,18 @@ type b2bTransaction struct {
 	CreatedAt   string  `json:"created_at"`
 }
 
+// b2bOnly answers 404 while B2B is switched off (b2b_enabled), like the site's business pages:
+// existing members don't keep a working API behind a hidden product (QA 2026-11-18).
+func b2bOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !biz.B2BEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // resolveCaller returns the calling user's DB id and the tenant context (id +
 // role). Used at the top of every B2B endpoint. Returns (0,0,"") if the user
 // has no membership — the caller decides how to respond (404 typically).

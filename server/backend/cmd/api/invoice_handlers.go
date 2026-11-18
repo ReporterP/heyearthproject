@@ -225,13 +225,16 @@ func createInvoice(w http.ResponseWriter, r *http.Request, byAdmin bool) {
 	// Persist a denormalized invoice record so the tenant's dashboard can list
 	// historic invoices without parsing payment JSONB metadata. Status here
 	// mirrors payment.status — webhook updates it to 'paid' on success.
-	_, _ = db.DB.Exec(`
+	// The invoice number shown to the client is this record's id — the one the cabinet lists.
+	var invoiceID int
+	_ = db.DB.QueryRow(`
 		INSERT INTO invoice_records (tenant_id, payment_id, inn, legal_name, amount, currency,
 		                              status, description, payer_email, yookassa_payment_id)
 		VALUES ($1, $2, $3, $4, $5, 'RUB', 'pending', $6, $7, $8)
 		ON CONFLICT DO NOTHING
+		RETURNING id
 	`, tenant.ID, paymentDBID, req.INN, req.CompanyName, float64(req.Amount),
-		description, req.Email, payment.ID)
+		description, req.Email, payment.ID).Scan(&invoiceID)
 
 	out := map[string]any{
 		"payment_id":       paymentDBID,
@@ -239,6 +242,9 @@ func createInvoice(w http.ResponseWriter, r *http.Request, byAdmin bool) {
 		"amount":           req.Amount,
 		"email":            req.Email,
 		"company_name":     req.CompanyName,
+	}
+	if invoiceID > 0 {
+		out["invoice_id"] = invoiceID
 	}
 	if byAdmin { // the public form must not learn whether an INN is already a client
 		out["tenant_id"] = tenant.ID

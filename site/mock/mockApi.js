@@ -223,7 +223,7 @@ function route(method, path, q, body, authed) {
   if (path === '/api/v1/business/create-invoice') {
     if (S.b2b === 'off') return [404, null]
     if (!/^\d{10}$|^\d{12}$/.test(String(body?.inn || ''))) return [400, { error: 'ИНН должен содержать 10 (юрлицо) или 12 (физлицо/ИП) цифр' }]
-    return [200, { payment_id: 602, confirmation_url: 'https://yoomoney.ru/checkout/payments/v2/contract?orderId=mock', amount: body.amount, email: body.email, company_name: body.company_name }]
+    return [200, { payment_id: 602, invoice_id: 41, confirmation_url: 'https://yoomoney.ru/checkout/payments/v2/contract?orderId=mock', amount: body.amount, email: body.email, company_name: body.company_name }]
   }
 
   // auth

@@ -124,7 +124,7 @@ export default function BusinessInvoicePage() {
         {result && (
           <section className="card card--elevated card--glow stack gap-3 swap" style={{ marginTop: 28, padding: 28 }} aria-live="polite">
             <Badge tone="ok" style={{ width: 'max-content' }}>Счёт создан</Badge>
-            <h2 className="t-h3" ref={resultHead} tabIndex={-1} style={{ outline: 'none' }}>Счёт № {result.payment_id} сформирован для {result.company_name || company}</h2>
+            <h2 className="t-h3" ref={resultHead} tabIndex={-1} style={{ outline: 'none' }}>Счёт № {result.invoice_id || result.payment_id} сформирован для {result.company_name || company}</h2>
             <Flap value={Number(result.amount) || amountNum} suffix="₽" size={34} label={`${group(Number(result.amount) || amountNum)} рублей`} />
             {result.confirmation_url && (
               <>

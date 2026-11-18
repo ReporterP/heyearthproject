@@ -967,11 +967,11 @@ func main() {
 	http.HandleFunc("/api/admin/b2b/create-invoice", admin.RequirePermission("tenants.write", handleAdminCreateInvoice))
 	// B2B self-service (Phase P1): tenant dashboard + topup + invite + member mgmt.
 	// All endpoints check tenant_members for role-based access.
-	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(handleBusinessMe))
-	http.HandleFunc("/api/v1/business/topup-init", apiLimiter.Middleware(handleBusinessTopupInit))
-	http.HandleFunc("/api/v1/business/invite", apiLimiter.Middleware(handleBusinessInvite))
+	http.HandleFunc("/api/v1/business/me", apiLimiter.Middleware(b2bOnly(handleBusinessMe)))
+	http.HandleFunc("/api/v1/business/topup-init", apiLimiter.Middleware(b2bOnly(handleBusinessTopupInit)))
+	http.HandleFunc("/api/v1/business/invite", apiLimiter.Middleware(b2bOnly(handleBusinessInvite)))
 	// DELETE /api/v1/business/members/{user_db_id} — uses trailing slash routing.
-	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(handleBusinessMembers))
+	http.HandleFunc("/api/v1/business/members/", apiLimiter.Middleware(b2bOnly(handleBusinessMembers)))
 	// YooKassa webhook (HTTP Notifications) — единственный активный платёжный webhook
 	http.HandleFunc("/api/v1/webhooks/yookassa", webhookLimiter.Middleware(handleYookassaWebhook))
 

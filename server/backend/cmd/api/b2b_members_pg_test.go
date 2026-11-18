@@ -59,3 +59,15 @@ func TestBusinessMeNeverReturnsFullMemberIDs(t *testing.T) {
 		}
 	}
 }
+
+// With B2B switched off (b2b_enabled, the default) the company endpoints answer 404 like the
+// site's business pages, also for people who are members already.
+func TestBusinessEndpointsAreOffWithTheFlag(t *testing.T) {
+	testpg.Open(t)
+	h := b2bOnly(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/api/v1/business/me", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("flag off: %d, want 404", rec.Code)
+	}
+}
