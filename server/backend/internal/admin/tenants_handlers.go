@@ -519,6 +519,12 @@ func AttachPaymentToTenantHandler(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, http.StatusOK, resp)
 }
 
+// Bounds for the public sign-up form (it accepts up to five digits of employees).
+const (
+	publicTenantMaxUsers   = 99999
+	publicTenantMaxServers = 1000
+)
+
 // PublicCreateTenantHandler is a public endpoint for the promo site to create a new tenant.
 func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 	if !biz.B2BEnabled() { // E3: the business sign-up is off
@@ -546,6 +552,10 @@ func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Email) == "" || strings.TrimSpace(req.CompanyName) == "" {
 		writeAdminError(w, http.StatusBadRequest, "company_name and email are required")
+		return
+	}
+	if req.MaxUsers < 1 || req.MaxUsers > publicTenantMaxUsers || req.MaxServers < 0 || req.MaxServers > publicTenantMaxServers {
+		writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("max_users must be 1–%d, max_servers 0–%d", publicTenantMaxUsers, publicTenantMaxServers))
 		return
 	}
 
@@ -588,45 +598,23 @@ func PublicCreateTenantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Link this email to a user so the signer can sign in and see their
-	// dashboard. Two cases:
-	//   (a) email already belongs to an existing user — make them admin of
-	//       the new tenant. They sign in with their existing credentials.
-	//   (b) no user has this email — generate a single-use claim code; the
-	//       welcome email tells them to register first, then redeem the
-	//       code. This is intentionally low-magic so we don't have to
-	//       provision login credentials in the public endpoint.
-	var existingUserDBID int
-	_ = db.DB.QueryRow(`SELECT id FROM users WHERE email = $1 ORDER BY created_at ASC LIMIT 1`, req.Email).Scan(&existingUserDBID)
-
+	// The signer joins through a single-use claim code, opened while signed in (registering
+	// first if needed). The endpoint is unauthenticated, so an e-mail that matches an existing
+	// account never makes that account a member by itself (QA 2026-11-18): only its owner can,
+	// by redeeming the code. tenant_claim_codes has no `role` column, so the intended role is
+	// encoded into the code itself (`tn-r-admin-XXX`) — the redeem flow reads this back.
 	var claimCode string
-	if existingUserDBID > 0 {
-		// Promote the existing account to tenant admin. If the user already
-		// has another tenant they keep it as their primary; this just adds
-		// a second membership.
-		_, _ = db.DB.Exec(`
-			INSERT INTO tenant_members (tenant_id, user_id, role)
-			VALUES ($1, $2, 'admin')
-			ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = 'admin'
-		`, tenantID, existingUserDBID)
-	} else {
-		// Stash a single-use claim code that the would-be admin redeems
-		// after registering. tenant_claim_codes has no `role` column, so we
-		// encode the intended role into the code itself (`tn-r-admin-XXX`)
-		// — the redeem flow reads this back. See b2b_handlers.go.
-		code := "tn-r-admin-" + randomSignupCode(10)
-		_, err := db.DB.Exec(`
-			INSERT INTO tenant_claim_codes (tenant_id, code, max_uses, used_count, expires_at)
-			VALUES ($1, $2, 1, 0, NOW() + INTERVAL '14 days')
-		`, tenantID, code)
-		if err == nil {
-			claimCode = code
-		}
+	code := "tn-r-admin-" + randomSignupCode(10)
+	if _, err := db.DB.Exec(`
+		INSERT INTO tenant_claim_codes (tenant_id, code, max_uses, used_count, expires_at)
+		VALUES ($1, $2, 1, 0, NOW() + INTERVAL '14 days')
+	`, tenantID, code); err == nil {
+		claimCode = code
 	}
 
 	// Fire-and-forget welcome email. SMTP may not be configured (returns
 	// nil from email.Send), so we don't surface failures back to the caller.
-	go sendTenantWelcomeEmail(tenantID, req.CompanyName, req.Email, existingUserDBID > 0, claimCode)
+	go tenantWelcomeEmail(tenantID, req.CompanyName, req.Email, claimCode)
 
 	resp := map[string]any{
 		"tenant_id": tenantID,
@@ -742,7 +730,11 @@ func getSettingFallback(key, def string) string {
 // sendTenantWelcomeEmail informs the new tenant admin how to access their
 // dashboard. Best-effort — silently no-op if SMTP isn't configured or the
 // email package returns an error.
-func sendTenantWelcomeEmail(tenantID int, name, to string, userExists bool, claimCode string) {
+// tenantWelcomeEmail is the sender the public sign-up calls (a seam: tests swap it out, since
+// the fire-and-forget goroutine would outlive the test database).
+var tenantWelcomeEmail = sendTenantWelcomeEmail
+
+func sendTenantWelcomeEmail(tenantID int, name, to, claimCode string) {
 	if to == "" {
 		return
 	}
@@ -756,16 +748,10 @@ func sendTenantWelcomeEmail(tenantID int, name, to string, userExists bool, clai
 	body.WriteString("Здравствуйте!\n\n")
 	body.WriteString("Корпоративный аккаунт «" + name + "» создан в HiEarth.\n\n")
 	body.WriteString("Что дальше:\n")
-	if userExists {
-		body.WriteString("1) Войдите в личный кабинет: " + siteURL + "/login\n")
-		body.WriteString("2) Перейдите в раздел «Кабинет компании»: " + siteURL + "/business/dashboard\n")
-		body.WriteString("3) Пополните кошелёк — после первого успешного платежа аккаунт переведётся в статус «Активен» и станет доступен для сотрудников.\n\n")
-	} else {
-		body.WriteString("1) Зарегистрируйтесь на сайте: " + siteURL + "/register\n")
-		body.WriteString("2) Привяжитесь к компании по ссылке: " + siteURL + "/claim/" + claimCode + "\n")
-		body.WriteString("   (Ссылка действует 14 дней.)\n")
-		body.WriteString("3) Перейдите в «Кабинет компании»: " + siteURL + "/business/dashboard и пополните кошелёк.\n\n")
-	}
+	body.WriteString("1) Войдите в аккаунт HiEarth: " + siteURL + "/login (нет аккаунта — зарегистрируйтесь: " + siteURL + "/register)\n")
+	body.WriteString("2) Привяжитесь к компании по ссылке: " + siteURL + "/claim/" + claimCode + "\n")
+	body.WriteString("   (Ссылка действует 14 дней.)\n")
+	body.WriteString("3) Перейдите в «Кабинет компании»: " + siteURL + "/business/dashboard и пополните кошелёк.\n\n")
 	body.WriteString("Возникли вопросы — ответьте на это письмо.\n\n—\nHiEarth")
 
 	_ = email.Send(email.Message{

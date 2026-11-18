@@ -206,7 +206,7 @@ export default function BusinessDashboardPage() {
 
           <Card
             title={<>Сотрудники · {seats}</>}
-            action={isAdmin && members.length > 1 ? <Button size="sm" onClick={() => setInvite(true)}>+ Пригласить</Button> : null}
+            action={isAdmin && members.length > 1 ? <Button size="sm" onClick={() => setInvite(true)} disabled={full}>+ Пригласить</Button> : null}
             className="rise"
             style={{ ...span(8), '--d': '120ms' }}
             id="staff"
@@ -225,7 +225,7 @@ export default function BusinessDashboardPage() {
               ? (
                 <div className="rows">
                   {members.map((m) => {
-                    const me = m.user_id === myId
+                    const me = !!m.is_me
                     const locked = !myId || me // until the profile is known, no row is editable
                     return (
                       <div key={m.user_db_id} className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}>
@@ -255,7 +255,7 @@ export default function BusinessDashboardPage() {
                   <thead><tr><th>Сотрудник</th><th>Роль</th><th>В компании</th>{isAdmin && <th><span className="sr">Действия</span></th>}</tr></thead>
                   <tbody>
                     {members.map((m) => {
-                      const me = m.user_id === myId
+                      const me = !!m.is_me
                       const locked = !myId || me // until the profile is known, no row is editable
                       const cell = (c) => <div className={`collapse ${leaving === m.user_db_id ? '' : 'is-open'}`}><div>{c}</div></div>
                       return (

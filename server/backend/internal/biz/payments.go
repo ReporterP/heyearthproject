@@ -402,6 +402,9 @@ func DebitTenantWallet(tenantID int, amount float64, description string) error {
 //	tn-r-viewer-XXX   → viewer role
 //	tn-r-user-XXX     → user role (default)
 //	anything else     → user role
+//
+// A code never lowers the role of someone already in the company (that would bypass the
+// last-admin guard of the role change), and a newcomer needs a free seat (max_users).
 func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err error) {
 	tx, err := db.DB.Begin()
 	if err != nil {
@@ -424,15 +427,38 @@ func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err err
 		return 0, fmt.Errorf("code usage limit reached")
 	}
 
-	_, err = tx.Exec(`UPDATE tenant_claim_codes SET used_count = used_count + 1 WHERE id = $1`, codeID)
-	if err != nil {
-		return 0, err
-	}
-
 	// Resolve user numeric id — needed for tenant_members FK.
 	var userDBID int
 	if err = tx.QueryRow(`SELECT id FROM users WHERE user_id = $1`, userID).Scan(&userDBID); err != nil {
 		return 0, fmt.Errorf("resolve user id: %w", err)
+	}
+
+	// The tenant row is locked so two newcomers can't both take the last seat.
+	var maxUsers int
+	if err = tx.QueryRow(`SELECT max_users FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&maxUsers); err != nil {
+		return 0, fmt.Errorf("lock tenant: %w", err)
+	}
+	role := parseRoleFromCode(code)
+	var current string
+	err = tx.QueryRow(`SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`, tenantID, userDBID).Scan(&current)
+	switch {
+	case err == sql.ErrNoRows:
+		var members int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM tenant_members WHERE tenant_id = $1`, tenantID).Scan(&members); err != nil {
+			return 0, err
+		}
+		if maxUsers > 0 && members >= maxUsers {
+			return 0, ErrTenantNoSeats
+		}
+	case err != nil:
+		return 0, err
+	case tenantRoleRank(current) >= tenantRoleRank(role):
+		return tenantID, nil // already a member with this role or a higher one: the code changes nothing
+	}
+
+	_, err = tx.Exec(`UPDATE tenant_claim_codes SET used_count = used_count + 1 WHERE id = $1`, codeID)
+	if err != nil {
+		return 0, err
 	}
 
 	// Mirror primary tenant on users for legacy code paths that still filter on it.
@@ -440,8 +466,7 @@ func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err err
 		return 0, err
 	}
 
-	// Add membership with role parsed from code prefix.
-	role := parseRoleFromCode(code)
+	// Add the membership, or raise the role a higher code grants.
 	if _, err = tx.Exec(`
 		INSERT INTO tenant_members (tenant_id, user_id, role)
 		VALUES ($1, $2, $3)
@@ -451,6 +476,22 @@ func RedeemTenantClaimCode(code, userID, userName string) (tenantID int, err err
 	}
 
 	return tenantID, tx.Commit()
+}
+
+// ErrTenantNoSeats: the company has as many members as max_users allows.
+var ErrTenantNoSeats = errors.New("no seats left")
+
+// tenantRoleRank orders the roles as PrimaryTenantForUser does: admin > billing > viewer > user.
+func tenantRoleRank(role string) int {
+	switch role {
+	case "admin":
+		return 4
+	case "billing":
+		return 3
+	case "viewer":
+		return 2
+	}
+	return 1
 }
 
 // parseRoleFromCode extracts the role hint embedded in the claim code by

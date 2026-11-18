@@ -75,7 +75,8 @@ type b2bTenantSummary struct {
 
 type b2bMember struct {
 	UserID   int    `json:"user_db_id"`
-	UserGUID string `json:"user_id"`
+	UserGUID string `json:"user_id"` // shortened (2f6c…a91b), never the full ID
+	IsMe     bool   `json:"is_me"`
 	Username string `json:"username,omitempty"`
 	Email    string `json:"email,omitempty"`
 	Role     string `json:"role"`
@@ -153,7 +154,6 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no dashboard access for this role"})
 		return
 	}
-	_ = userDBID // not used downstream yet; kept to make future audit-logging easy
 
 	tenant, err := biz.GetTenantByID(tenantID)
 	if err != nil || tenant == nil {
@@ -196,13 +196,12 @@ func handleBusinessMe(w http.ResponseWriter, r *http.Request) {
 		Invoices:     invoices,
 	}
 	for _, m := range members {
-		guid := m.UserGUID
-		if role != "admin" { // the HiEarth ID opens an account without a password (audit F4/F6)
-			guid = shortHiEarthID(guid)
-		}
+		// Never the full HiEarth ID, not even to the company's admin: it signs in to an account
+		// without a password (audit F4/F6, QA 2026-11-18). Actions use user_db_id; «(вы)» is is_me.
 		resp.Members = append(resp.Members, b2bMember{
 			UserID:   m.UserID,
-			UserGUID: guid,
+			UserGUID: shortHiEarthID(m.UserGUID),
+			IsMe:     m.UserID == userDBID,
 			Username: m.Username,
 			Email:    m.Email,
 			Role:     m.Role,

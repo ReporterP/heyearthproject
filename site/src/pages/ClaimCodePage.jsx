@@ -18,6 +18,7 @@ export default function ClaimCodePage() {
   const navigate = useNavigate()
   usePageMeta('Приглашение в компанию — HiEarth', { noindex: true })
   const [state, setState] = useState('confirm') // confirm | busy | joined | failed | temp
+  const [noSeats, setNoSeats] = useState(false) // «failed» because the company is full
   const inFlight = useRef(false)
 
   useEffect(() => {
@@ -41,7 +42,10 @@ export default function ClaimCodePage() {
       // the session ended: back through the login, the code is kept in `redirect`
       if (r.status === 401) { navigate(`/login?redirect=${encodeURIComponent(`/claim/${code}`)}`, { replace: true }); return }
       // a refused code (400/404/409) is «истёк или использован»; anything else is a temporary failure
-      setState(r.ok ? 'joined' : r.status >= 400 && r.status < 500 && r.status !== 429 ? 'failed' : 'temp')
+      const refused = !r.ok && r.status >= 400 && r.status < 500 && r.status !== 429
+      const why = refused ? String((await r.json().catch(() => ({}))).error || '') : ''
+      setNoSeats(why === 'no seats left')
+      setState(r.ok ? 'joined' : refused ? 'failed' : 'temp')
     } catch {
       setState('temp')
     } finally {
@@ -75,7 +79,7 @@ export default function ClaimCodePage() {
         <div key={state} className="swap stack" style={{ alignItems: 'center', gap: 14, width: '100%' }}>
           <Hedgehog mood="worried" size={110} />
           <h1 className="t-h2">Не удалось активировать код</h1>
-          <p className="muted t-sm" role="alert">{state === 'temp' ? 'Сервис временно недоступен. Попробуйте ещё раз через минуту.' : 'Код мог истечь или быть использован. Попросите администратора компании выслать новый.'}</p>
+          <p className="muted t-sm" role="alert">{state === 'temp' ? 'Сервис временно недоступен. Попробуйте ещё раз через минуту.' : noSeats ? 'В компании не осталось мест. Попросите администратора освободить место или увеличить лимит.' : 'Код мог истечь или быть использован. Попросите администратора компании выслать новый.'}</p>
           <div className="row wrap gap-2" style={{ justifyContent: 'center' }}>
             <Button variant="secondary" to="/dashboard">В кабинет</Button>
             <Button variant="ghost" onClick={join}>Повторить</Button>

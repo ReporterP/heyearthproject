@@ -175,7 +175,7 @@ function quote(planId, promo) {
 function business() {
   const role = S.b2b
   const members = [
-    { user_db_id: 7, user_id: USER_ID, username: 'ivan_moscow', email: 'anna@romashka.ru', role: role === 'admin' ? 'admin' : role, joined_at: iso(now() - 14 * DAY) },
+    { user_db_id: 7, user_id: `${USER_ID.slice(0, 4)}…${USER_ID.slice(-4)}`, is_me: true, username: 'ivan_moscow', email: 'anna@romashka.ru', role: role === 'admin' ? 'admin' : role, joined_at: iso(now() - 14 * DAY) },
     ...(S.members === 'many' ? [
       { user_db_id: 8, user_id: 'a1', username: 'igor_p', role: 'billing', joined_at: iso(now() - 13 * DAY) },
       { user_db_id: 9, user_id: 'a2', username: 'maria_s', role: 'user', joined_at: iso(now() - 2 * DAY) },
