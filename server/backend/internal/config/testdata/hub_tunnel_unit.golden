@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
 ExecStartPre=-ip link del he-r6
 ExecStart=ip tunnel add he-r6 mode gre local 198.51.100.2 remote 198.51.100.42 ttl 64
 ExecStart=ip addr add 10.77.0.25 peer 10.77.0.26 dev he-r6

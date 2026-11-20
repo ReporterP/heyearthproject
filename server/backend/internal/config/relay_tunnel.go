@@ -80,6 +80,8 @@ func HubTunnelUFWComment(id int) string { return "heyearth-tunnel-" + strconv.It
 // TunnelUnit is the unit of one end: dev from local to remote (public IPv4, RelayHubIP rules),
 // own address addr with the other end peer (both in RelayTunnelPool). A start deletes a leftover
 // device first, so a restart re-creates it with the file's values (a changed Hub address).
+// A start that fails (at boot, say) is retried every 5 s: the relay's DNAT points into the
+// tunnel and has no other way to the Hub.
 func TunnelUnit(dev, local, remote string, addr, peer netip.Addr) (string, error) {
 	if !tunnelDevRe.MatchString(dev) {
 		return "", fmt.Errorf("имя интерфейса туннеля %q не подходит", dev)
@@ -106,6 +108,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
 ExecStartPre=-ip link del %[1]s
 ExecStart=ip tunnel add %[1]s mode gre local %[2]s remote %[3]s ttl 64
 ExecStart=ip addr add %[4]s peer %[5]s dev %[1]s

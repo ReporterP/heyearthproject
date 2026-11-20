@@ -162,3 +162,19 @@ IPEOF`,
 		t.Errorf("a foreign point-to-point peer was allowed:\n%s", got)
 	}
 }
+
+// The entries' tunnels: their devices are exempt like the entries' addresses, and the tunnel pool
+// arriving on any other interface is dropped before the allow set could let it through.
+func TestDDoSNftTunnelDevices(t *testing.T) {
+	for _, mode := range []string{"observe", "enforce"} {
+		nft := renderDDoSNft(mode, defaultDDoSLimits)
+		spoofRule := "ip saddr 10.77.0.0/16 counter name spoof_tunnel"
+		if mode == "enforce" {
+			spoofRule += " drop"
+		}
+		dev, spoof, allow := strings.Index(nft, `iifname "he-r*" return`), strings.Index(nft, spoofRule+"\n"), strings.Index(nft, "ip saddr @allow4 return")
+		if dev < 0 || spoof < 0 || !(dev < spoof && spoof < allow) {
+			t.Errorf("%s: tunnel rules missing or out of order (dev %d, spoof %d, allow %d)", mode, dev, spoof, allow)
+		}
+	}
+}

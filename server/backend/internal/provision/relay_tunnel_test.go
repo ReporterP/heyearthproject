@@ -204,3 +204,39 @@ func TestHubTunnelNeedsNewAllowScript(t *testing.T) {
 		t.Fatal("the tunnel stayed")
 	}
 }
+
+// Review: an interrupted run armed the guard and wrote the unit; the rerun finds the unit in
+// place. It must not leave the old timer running (it would remove the tunnel the rerun checked
+// good), and a failing rerun removes the unconfirmed tunnel at once.
+func TestHubTunnelInterruptedRunGuard(t *testing.T) {
+	o := testRelayOpts()
+	h, l, s := hubTunnelEnv(t, nil)
+	if err := l.up(context.Background(), h, s, o); err != nil {
+		t.Fatal(err)
+	}
+	// What the interrupted run left: its guard script and an armed timer.
+	if _, err := h.Run(context.Background(), l.script("arm", o, relayUfwOn+hubTunnelArmSh)); err != nil {
+		t.Fatal(err)
+	}
+	if !h.exists("/state/active-heyearth-tunnel-guard-r9.timer") {
+		t.Fatal("no timer armed")
+	}
+	if err := l.up(context.Background(), h, NewState(KindProvision, Node{ID: 9}, h, Hooks{}), o); err != nil {
+		t.Fatal(err)
+	}
+	if h.exists("/state/active-heyearth-tunnel-guard-r9.timer") || h.exists("/opt/heyearth/state/tunnel-guard/heyearth-tunnel-guard-r9.sh") {
+		t.Fatal("the rerun left the interrupted run's guard armed: it would remove a good tunnel")
+	}
+	// The same leftover, but the rerun fails after writing nothing: the tunnel goes now.
+	if _, err := h.Run(context.Background(), l.script("arm", o, relayUfwOn+hubTunnelArmSh)); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewState(KindProvision, Node{ID: 9}, h, Hooks{})
+	s2.out = &tailBuffer{max: 1 << 16}
+	if err := l.rollback(context.Background(), h, s2, o); err != nil {
+		t.Fatal(err)
+	}
+	if h.exists(hubUnitRel) || h.exists("/state/live-heyearth-tunnel-r9.service") || h.exists("/state/active-heyearth-tunnel-guard-r9.timer") {
+		t.Fatalf("unconfirmed tunnel left: %s", s2.out.String())
+	}
+}

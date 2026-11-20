@@ -338,7 +338,14 @@ func (l hubTunnelLayout) up(ctx context.Context, hub Remote, s *State, o RelayOp
 		return noRollback("%w", err)
 	}
 	_, existed := states[f.Path]
-	if !existed {
+	// A guard left by an interrupted run means its tunnel was never confirmed: guard this run too
+	// (re-armed from now) and always disarm on success — else the old timer would remove a
+	// tunnel this run checked good.
+	pending, err := hub.Run(ctx, l.script("guard-state", o, `if [ -f "$GUARD_DIR/$GUARD.sh" ]; then echo PENDING; fi`+"\n"))
+	if err != nil {
+		return noRollback("%w", err)
+	}
+	if !existed || strings.Contains(pending, "PENDING") {
 		out, err := hub.Run(ctx, l.script("arm", o, relayUfwOn+hubTunnelArmSh))
 		s.Printf("%s", out)
 		if err != nil {
@@ -370,10 +377,8 @@ func (l hubTunnelLayout) up(ctx context.Context, hub Remote, s *State, o RelayOp
 	if hubBase(after) != hubBase(before) {
 		return fmt.Errorf("туннель изменил маршруты или адреса Hub — откатываю.\nбыло:\n%s\nстало:\n%s", hubBase(before), hubBase(after))
 	}
-	if !existed {
-		if _, err := hub.Run(ctx, l.script("disarm", o, hubTunnelDisarmSh)); err != nil {
-			return noRollback("туннель на Hub работает, но предохранитель не снят (через %d с он снимет туннель — повторите шаг): %w", HubTunnelGuardSeconds, err)
-		}
+	if _, err := hub.Run(ctx, l.script("disarm", o, hubTunnelDisarmSh)); err != nil {
+		return noRollback("туннель на Hub работает, но предохранитель не снят (через %d с он снимет туннель — повторите шаг): %w", HubTunnelGuardSeconds, err)
 	}
 	s.Printf("Hub: маршрут по умолчанию, источник и адреса не изменились")
 	return nil
@@ -394,14 +399,17 @@ func (l hubTunnelLayout) check(ctx context.Context, hub Remote, o RelayOptions) 
 }
 
 // rollback: this run's unit change undone — the previous file back and restarted, or the new
-// tunnel removed — and the guard disarmed. Nothing to undo when the run did not write the unit.
+// tunnel removed — and the guard disarmed. When this run wrote nothing, an unconfirmed tunnel an
+// interrupted run left (its guard script is still there) is removed now; otherwise nothing.
 func (l hubTunnelLayout) rollback(ctx context.Context, hub Remote, s *State, o RelayOptions) error {
 	if hub == nil {
 		return errors.New("нет доступа к Hub")
 	}
 	if len(s.changed[hubTunnelChangedKey]) == 0 {
-		_, err := hub.Run(ctx, l.script("disarm", o, hubTunnelDisarmSh))
-		s.Printf("Hub: в этом запуске туннель не менялся — возвращать нечего")
+		out, err := hub.Run(ctx, l.script("rollback-pending", o, `if [ -f "$GUARD_DIR/$GUARD.sh" ]; then bash "$GUARD_DIR/$GUARD.sh"; echo "Hub: снят неподтверждённый туннель прерванного запуска"
+else echo "Hub: в этом запуске туннель не менялся — возвращать нечего"; fi
+`+hubTunnelDisarmSh))
+		s.Printf("%s", out)
 		return err
 	}
 	out, err := hub.Run(ctx, l.script("rollback", o, relayUfwOn+`if [ -f "$UNIT.bak" ]; then

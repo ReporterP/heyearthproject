@@ -25,6 +25,7 @@ if not psk:
 lock = threading.Lock()
 ok = {"tcp": 0, "udp": 0}
 bad = {"tcp": [], "udp": []}
+skipped = {"tcp": 0, "udp": 0}  # a source port this host cannot bind says nothing about the path
 sem = threading.Semaphore(20)
 
 
@@ -35,7 +36,12 @@ def tcp_probe(i):
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # RST: no TIME_WAIT
-            s.bind(("0.0.0.0", src))
+            try:
+                s.bind(("0.0.0.0", src))
+            except OSError:
+                with lock:
+                    skipped["tcp"] += 1
+                return
             s.settimeout(6)
             s.connect((entry, tcp_port))
             c = ssl.create_default_context()
@@ -68,7 +74,12 @@ def udp_probe(i):
     with sem:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            s.bind(("0.0.0.0", src))
+            try:
+                s.bind(("0.0.0.0", src))
+            except OSError:
+                with lock:
+                    skipped["udp"] += 1
+                return
             s.settimeout(4)
             p = bytearray(os.urandom(1200))
             p[0] = 0xC0 | (p[0] & 0x0F)
@@ -110,7 +121,9 @@ for t in ts:
     t.start()
 for t in ts:
     t.join()
-print("MATRIX tcp=%d/%d udp=%d/%d" % (ok["tcp"], ntcp, ok["udp"], nudp))
+print("MATRIX tcp=%d/%d udp=%d/%d" % (ok["tcp"], ntcp - skipped["tcp"], ok["udp"], nudp - skipped["udp"]))
+if skipped["tcp"] or skipped["udp"]:
+    print("skipped (source port busy on this host): tcp %d udp %d" % (skipped["tcp"], skipped["udp"]))
 if bad["tcp"]:
     print("failed tcp source ports: " + " ".join(str(p) for p in sorted(bad["tcp"])))
 if bad["udp"]:

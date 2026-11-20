@@ -9,19 +9,19 @@ created: 2026-11-20
 # Tasklist: GRE-туннель вход ↔ хаб
 
 ## Фаза 1: код
-- [ ] **heyearthproject-w4x1** — генераторы туннеля (адреса, юниты, nft, nginx, доверие)
+- [x] **heyearthproject-w4x1** — генераторы туннеля (адреса, юниты, nft, nginx, доверие)
   - Файлы: `server/backend/internal/config/relay_tunnel.go`, `relay_nft.go`, `relay_stream.go`
   - Verify: `go test ./internal/config/`
-- [ ] **heyearthproject-1pop** — шаги рецепта: хаб и вход, preflight, deprovision (blocks: w4x1)
+- [x] **heyearthproject-1pop** — шаги рецепта: хаб и вход, preflight, deprovision (blocks: w4x1)
   - Файлы: `server/backend/internal/provision/relay_tunnel.go`, `relay.go`, `relay_stream.go`
   - Verify: `go test ./internal/provision/`
-- [ ] **heyearthproject-cfpt** — монитор проверяет :2443, wiring `ServerID`
+- [x] **heyearthproject-cfpt** — монитор проверяет :2443, wiring `ServerID`
   - Файлы: `server/backend/cmd/api/entry_monitor.go`, `provision_wiring.go`
   - Verify: `go test ./cmd/api/ -run 'Entry|Relay'`
-- [ ] **heyearthproject-onmd** — allow-скрипт хаба знает адреса туннелей
+- [x] **heyearthproject-onmd** — allow-скрипт хаба знает адреса туннелей
   - Файлы: `server/backend/cmd/deploy/ops_hardening.go`
   - Verify: `go test ./cmd/deploy/ -run DDoS`
-- [ ] **heyearthproject-2fc3** — `deploy --relay-tunnel` с матрицей и предохранителями (blocks: 1pop)
+- [x] **heyearthproject-2fc3** — `deploy --relay-tunnel` с матрицей и предохранителями (blocks: 1pop)
   - Файлы: `server/backend/cmd/deploy/relay_tunnel.go`, `relay_matrix.py`, `main.go`
   - Verify: `go test ./cmd/deploy/ -run RelayTunnel`
 
@@ -30,3 +30,8 @@ created: 2026-11-20
   - Verify: матрица после ≥ 99 % (TCP 2443 и UDP), `deploy --status`
 
 ## Verification log
+- **w4x1** (20.11): `go test ./internal/config/` ok; лаборатория в docker (2 контейнера, настоящий GRE, nginx 1.27 с golden-конфигом): через туннель хаб видит адрес туннеля входа; туннель мёртв — 2 тайм-аута по 1 с, затем backup; туннель вернулся — снова туннель.
+- **1pop** (20.11): `go test ./internal/provision/` ok (свежая установка → повтор без изменений, откаты шагов туннеля, отказ при пересечении пула, откат при смене маршрута хаба, старый allow-скрипт, deprovision).
+- **cfpt** (20.11): `TestEntryMonitorRelay2443`: туннель лёг (443 жив, 2443 нет) → unhealthy за 3 проверки; одна потеря 2443 → повтор, вход здоров.
+- **onmd** (20.11): `TestDDoSAllowScriptTunnelPeers`: адрес туннеля в allow4, чужой point-to-point peer — нет.
+- **2fc3** (20.11): тесты скриптов, решения и Python-матрицы (против TLS и UDP-ответчика на Go); контейнерная лаборатория apply: успех, плохой замер «после» (все файлы вернулись побайтно), сдвиг маршрута хаба (откат до входа).

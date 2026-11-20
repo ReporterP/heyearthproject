@@ -49,8 +49,9 @@ const (
 	relayTunnelRelayGuard = 900  // s
 	relayTunnelWait       = 40 * time.Minute
 	// Source ports of the matrix: before and after differ (see the file comment).
-	relayTunnelTCPBefore, relayTunnelUDPBefore = 42001, 43001
-	relayTunnelTCPAfter, relayTunnelUDPAfter   = 44001, 45001
+	// Below the exits' ephemeral range (32768-60999): their own tunnels never hold these ports.
+	relayTunnelTCPBefore, relayTunnelUDPBefore = 25001, 26001
+	relayTunnelTCPAfter, relayTunnelUDPAfter   = 27001, 28001
 	relayTunnelRoutesMark                      = "===HEYEARTH-ROUTES==="
 	relayTunnelAddrsMark                       = "===HEYEARTH-ADDRS==="
 	relayTunnelNetEnd                          = "===HEYEARTH-NET-END==="
@@ -179,7 +180,9 @@ fail() { echo "RELAY_APPLY_FAIL $*"; exit 0; }
 for k in unit nft nginx jail; do v="B64_$k"; printf '%s' "${!v}" | base64 -d > "$ST/new.$k"; done
 head -n 1 "$NGINX" 2>/dev/null | grep -qF 'config.RelayNginxConf' || fail "$NGINX написан не рецептом входа — не трогаю"
 head -n 1 "$NFT" 2>/dev/null | grep -qF 'config.RelayNftRuleset' || fail "$NFT написан не рецептом входа — не трогаю"
-if [ "$(cat "$ST/run" 2>/dev/null)" != "$RUN_ID" ]; then
+# The snapshot is taken once per unconfirmed change: a rerun after a run that was neither
+# confirmed nor rolled back ($ST/run still there) keeps the original files and only re-arms.
+if [ ! -f "$ST/run" ]; then
   for f in "$NFT" "$NGINX" "$UNIT" "$JAIL"; do b="$ST/prev.${f##*/}"; if [ -f "$f" ]; then cp -p "$f" "$b"; else rm -f "$b"; fi; done
   { echo '#!/bin/bash'; declare -p ST NFT NGINX UN UNIT JAIL G; cat <<'HEYEARTH_REVERT'
 set -u
@@ -194,6 +197,9 @@ rm -f "$ST/run"
 echo RELAY_REVERTED
 HEYEARTH_REVERT
   } > "$ST/revert.sh"
+  echo pending > "$ST/run"
+fi
+if [ "$(cat "$ST/run" 2>/dev/null)" != "$RUN_ID" ]; then
   systemctl stop "$G.timer" "$G.service" >/dev/null 2>&1 || true
   systemctl reset-failed "$G.timer" "$G.service" >/dev/null 2>&1 || true
   systemd-run --quiet --unit="$G" --on-active="$GUARD" /bin/bash "$ST/revert.sh" || fail "предохранитель не поставлен — ничего не менял"
@@ -230,7 +236,10 @@ echo "вход: DNAT 2443 и UDP-хопы → $HUB_TUN, nginx → туннель
 echo RELAY_APPLY_OK
 `
 
-const relayTunnelRelayConfirmSh = `systemctl enable --quiet heyearth-tunnel.service
+const relayTunnelRelayConfirmSh = `systemctl enable --quiet heyearth-tunnel.service || true
+if ! systemctl is-enabled --quiet heyearth-tunnel.service || ! systemctl is-active --quiet heyearth-tunnel.service; then
+  echo "RELAY_CONFIRM_FAIL туннель на входе не работает (предохранитель уже откатил?)"; exit 0
+fi
 systemctl stop heyearth-relay-tunnel-guard.timer >/dev/null 2>&1 || true
 systemctl reset-failed heyearth-relay-tunnel-guard.timer heyearth-relay-tunnel-guard.service >/dev/null 2>&1 || true
 rm -f /root/.heyearth-relay-tunnel/run
@@ -272,16 +281,22 @@ func relayTunnelApplyRun(p relayTunnelPlan, runID, before, beforeSelf string) st
 		{"TRUST", p.trustPath}, {"ALLOW", "/opt/heyearth/bin/heyearth-ddos-allow.sh"}, {"COMMENT", config.HubTunnelUFWComment(p.id)},
 		{"HG", fmt.Sprintf("heyearth-relay-tunnel-hub-guard-%d", p.id)}, {"HUB_GUARD", strconv.Itoa(relayTunnelHubGuard)},
 		{"MIN", strconv.Itoa(relayTunnelMinPct)}, {"TLSMIN", strconv.Itoa(relayTunnelTLSMinPct)},
-		{"BEFORE", before}, {"BEFORE_SELF", beforeSelf}}) +
+		{"BEFORE", before}, {"BEFORE_SELF", beforeSelf}, {"RUN_ID", runID}, {"RELAY_GUARD", strconv.Itoa(relayTunnelRelayGuard)}}) +
 		relayTunnelCommonSh + relayTunnelDecideSh + relayTunnelHubNetSh + `ufw_on() { local st; st=$(LC_ALL=C ufw status 2>/dev/null) || return 1; grep -q '^Status: active' <<<"$st"; }
 printf '%s' ` + b64(relayApply) + ` | base64 -d > "$HST/relay-apply.sh"
 printf '%s' ` + b64(relayTunnelRelayConfirmSh) + ` | base64 -d > "$HST/relay-confirm.sh"
 printf '%s' ` + b64(relayTunnelRelayRevertSh) + ` | base64 -d > "$HST/relay-revert.sh"
 printf '%s' ` + b64(selfSh) + ` | base64 -d > "$HST/relay-self.sh"
 # ── the Hub's end, guarded ──
-for f in "$UNIT" "$TRUST" "$ALLOW"; do b="$HST/prev.${f##*/}"; if [ -f "$f" ]; then cp -p "$f" "$b"; else rm -f "$b"; fi; done
-UFW_HAD=0
-if ufw_on && LC_ALL=C ufw status | awk -v c="$COMMENT" '{ s = $0; sub(/[[:space:]]+$/, "", s) } s ~ ("# " c "$") { f = 1 } END { exit !f }'; then UFW_HAD=1; fi
+# One snapshot per unconfirmed change (see the entry's part): $HST/run is removed by the
+# confirmation and by the revert.
+if [ ! -f "$HST/run" ]; then
+  for f in "$UNIT" "$TRUST" "$ALLOW"; do b="$HST/prev.${f##*/}"; if [ -f "$f" ]; then cp -p "$f" "$b"; else rm -f "$b"; fi; done
+  had=0
+  if ufw_on && LC_ALL=C ufw status | awk -v c="$COMMENT" '{ s = $0; sub(/[[:space:]]+$/, "", s) } s ~ ("# " c "$") { f = 1 } END { exit !f }'; then had=1; fi
+  echo "$had" > "$HST/ufw_had"
+fi
+UFW_HAD=$(cat "$HST/ufw_had" 2>/dev/null || echo 0)
 { echo '#!/bin/bash'; declare -p HST UNIT_NAME UNIT TRUST ALLOW COMMENT HG UFW_HAD; declare -f ufw_on; cat <<'HEYEARTH_REVERT'
 set -u
 r() { b="$HST/prev.${1##*/}"; if [ -f "$b" ]; then cp -p "$b" "$1"; else rm -f "$1"; fi; }
@@ -297,15 +312,29 @@ if [ "$UFW_HAD" = 0 ] && ufw_on; then
   done
 fi
 systemctl stop "$HG.timer" >/dev/null 2>&1 || true
+rm -f "$HST/run"
 echo HUB_REVERTED
 HEYEARTH_REVERT
 } > "$HST/hub-revert.sh"
 hub_revert() { bash "$HST/hub-revert.sh"; }
-relay_revert() { if node "$RID" "$HST/relay-revert.sh" RELAY_REVERTED >/dev/null; then say "вход: прежние файлы возвращены"; else say "вход: откат по SSH не прошёл — его предохранитель вернёт прежнее сам"; fi; }
-give_up() { say "откат: $*"; relay_revert; hub_revert; echo "RELAY_TUNNEL_FAIL $*"; exit 0; }
-systemctl stop "$HG.timer" "$HG.service" >/dev/null 2>&1 || true
-systemctl reset-failed "$HG.timer" "$HG.service" >/dev/null 2>&1 || true
-systemd-run --quiet --unit="$HG" --on-active="$HUB_GUARD" /bin/bash "$HST/hub-revert.sh" || { echo "RELAY_TUNNEL_FAIL предохранитель на Hub не поставлен — ничего не менял"; exit 0; }
+relay_revert() {
+  if node "$RID" "$HST/relay-revert.sh" RELAY_REVERTED >/dev/null; then say "вход: прежние файлы возвращены"; return 0; fi
+  say "вход: откат по SSH не прошёл — его предохранитель вернёт прежнее сам"; return 1
+}
+# The entry DNATs into the tunnel: the Hub's end goes only after the entry's is back, else the
+# Hub's guard (armed to fire after the entry's) takes it later.
+give_up() {
+  say "откат: $*"
+  if relay_revert; then hub_revert; else say "Hub: свой конец откатит предохранитель $HG — после предохранителя входа"; fi
+  echo "RELAY_TUNNEL_FAIL $*"; exit 0
+}
+arm_hub() {
+  systemctl stop "$HG.timer" "$HG.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$HG.timer" "$HG.service" >/dev/null 2>&1 || true
+  systemd-run --quiet --unit="$HG" --on-active="$1" /bin/bash "$HST/hub-revert.sh"
+}
+arm_hub "$HUB_GUARD" || { echo "RELAY_TUNNEL_FAIL предохранитель на Hub не поставлен — ничего не менял"; exit 0; }
+echo "$RUN_ID" > "$HST/run"
 say "Hub: предохранитель $HG вернёт прежнее через $HUB_GUARD с, если запуск не подтвердится"
 base=$(hubnet)
 printf '%s' ` + b64(ddosAllowScript) + ` | base64 -d > "$HST/new.allow"
@@ -326,7 +355,10 @@ grep -qF "link/gre $HUB peer $RELAY" <<<"$link" || give_up "$DEV — не тун
 [ "$(hubnet)" = "$base" ] || { printf 'было:\n%s\nстало:\n%s\n' "$base" "$(hubnet)"; give_up "туннель изменил маршруты или адреса Hub"; }
 say "Hub: туннель $DEV $HUB_TUN ↔ $RELAY_TUN поднят, ufw и allow4 пускают вход, маршруты Hub не изменились"
 # ── the entry's end, guarded ──
-out=$(node "$RID" "$HST/relay-apply.sh" 'RELAY_APPLY_OK\|RELAY_APPLY_FAIL') || give_up "SSH до входа $RID не удался"
+out=$(node "$RID" "$HST/relay-apply.sh" 'RELAY_APPLY_OK\|RELAY_APPLY_FAIL') || out=""
+# From here the entry's guard may be armed: the Hub's fires 5 minutes after it.
+arm_hub $((RELAY_GUARD + 300)) || true
+[ -n "$out" ] || give_up "SSH до входа $RID не удался"
 printf '%s\n' "$out" | grep -v '^$' | sed 's/^/  /'
 grep -q RELAY_APPLY_OK <<<"$out" || give_up "вход не переключился: $(grep -m 1 RELAY_APPLY_FAIL <<<"$out")"
 ok=0; for _ in 1 2 3; do if ping -c 1 -W 2 "$RELAY_TUN" >/dev/null 2>&1; then ok=1; break; fi; done
@@ -342,9 +374,11 @@ echo "BEFORE_$BEFORE_SELF"
 verdict=$(decide "$BEFORE" "$(grep -m 1 '^AFTER MATRIX' <<<"$after")" "$self")
 say "решение: $verdict"
 case "$verdict" in OK*) ;; *) give_up "${verdict#NO }" ;; esac
-node "$RID" "$HST/relay-confirm.sh" RELAY_CONFIRMED >/dev/null || { echo "RELAY_TUNNEL_FAIL замер прошёл, но подтверждение на входе не дошло — оба конца откатятся сами (вход через $(( ` + strconv.Itoa(relayTunnelRelayGuard) + ` / 60 )) мин, Hub через $(( HUB_GUARD / 60 )) мин); запустите снова"; exit 0; }
+conf=$(node "$RID" "$HST/relay-confirm.sh" 'RELAY_CONFIRMED\|RELAY_CONFIRM_FAIL') || { echo "RELAY_TUNNEL_FAIL замер прошёл, но подтверждение на входе не дошло — оба конца откатятся сами (вход через $(( RELAY_GUARD / 60 )) мин, Hub на 5 мин позже); запустите снова"; exit 0; }
+grep -q RELAY_CONFIRMED <<<"$conf" || give_up "$(grep -m 1 RELAY_CONFIRM_FAIL <<<"$conf")"
 systemctl enable --quiet "$UNIT_NAME"
 systemctl stop "$HG.timer" >/dev/null 2>&1 || true
+rm -f "$HST/run"
 systemctl reset-failed "$HG.timer" "$HG.service" >/dev/null 2>&1 || true
 say "оба конца подтверждены: юниты туннеля включены в автозапуск, предохранители сняты"
 echo "RELAY_TUNNEL_OK ${verdict#OK }"

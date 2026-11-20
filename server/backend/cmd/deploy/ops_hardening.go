@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/heyearth/backend/internal/config"
 )
 
 // guardSeconds: how long a guarded change lives without a confirming login.
@@ -217,10 +219,17 @@ table inet heyearth_ddos {
 		fmt.Fprintf(&sb, "\tcounter %s { }\n", c)
 	}
 	// 8447 is the entries' listener (PROXY protocol): only servers may connect, in both modes.
+	// The entries' GRE tunnels (internal/config relay_tunnel.go): what arrives on a tunnel device
+	// is an entry's traffic (like an entry's public address in allow4); an address of the
+	// tunnel pool on any other interface is forged — counted, and in enforce mode dropped before
+	// it could pass as an entry.
 	sb.WriteString(`	counter not_relay_8447 { }
+	counter spoof_tunnel { }
 	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iif "lo" return
+		iifname "he-r*" return
+		ip saddr ` + config.RelayTunnelPool + ` counter name spoof_tunnel` + act + `
 		ip saddr @allow4 return
 		ip6 saddr @allow6 return
 		ct direction reply return
