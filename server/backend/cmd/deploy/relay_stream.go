@@ -146,55 +146,63 @@ HEYEARTH_NODE_EOF
   echo "[relay-stream] SSH до входа %d не удался (попытка $try), повтор"
 done
 `, relayStreamSSHTries, id, entry, id)
-	launch := relayStreamLaunchScript(id, run)
-	out, err := runSSHBash(client, fmt.Sprintf("relay-stream %d start", id), launch, true)
-	if err != nil || !strings.Contains(out, "RELAY_STREAM_STARTED") {
-		return fmt.Errorf("вход %d: запуск на Hub не начался: %v", id, err)
+	l, err := hubJob(client, "relay-stream", id, run, relayStreamWait)
+	if err != nil {
+		return fmt.Errorf("вход %d: %w", id, err)
 	}
-	// Follow the log; the run itself does not depend on this session (relayStreamLaunchScript).
-	logPath := relayStreamLogPath(id)
-	fails := 0
-	for deadline := time.Now().Add(relayStreamWait); time.Now().Before(deadline); {
-		time.Sleep(5 * time.Second)
-		l, err := runSSHBash(client, "relay-stream log", "cat "+logPath, true)
-		if err != nil {
-			if fails++; fails >= 6 {
-				return fmt.Errorf("вход %d: связь с Hub потеряна, запуск продолжается там; лог: %s", id, logPath)
-			}
-			continue
-		}
-		fails = 0
-		if !strings.Contains(l, "RELAY_STREAM_DONE") {
-			continue
-		}
-		fmt.Print(l)
-		if !strings.Contains(l, "RELAY_STREAM_OK") {
-			return fmt.Errorf("вход %d: nginx stream не сведён (см. вывод выше)", id)
-		}
-		return nil
+	fmt.Print(l)
+	if !strings.Contains(l, "RELAY_STREAM_OK") {
+		return fmt.Errorf("вход %d: nginx stream не сведён (см. вывод выше)", id)
 	}
-	return fmt.Errorf("вход %d: за %s запуск не закончился; лог на Hub: %s", id, relayStreamWait, logPath)
+	return nil
 }
 
 const relayStreamWait = 20 * time.Minute
 
-func relayStreamLogPath(id int) string {
-	return fmt.Sprintf("/var/log/heyearth-relay-stream-%d.log", id)
+// hubJobLogPath is the log of a detached Hub job (hubJobLaunchScript).
+func hubJobLogPath(job string, id int) string {
+	return fmt.Sprintf("/var/log/heyearth-%s-%d.log", job, id)
 }
 
-// relayStreamLaunchScript starts run on the Hub detached from this SSH session (setsid, stdin
-// closed): the owner's link to the Hub drops sessions, and a dropped session must not kill the
-// change half-way (new nginx.conf in place, the check and the rollback not yet run). One run at a
-// time: the lock is held by the detached run itself (fd 9 is inherited). The log ends with
-// RELAY_STREAM_DONE.
-func relayStreamLaunchScript(id int, run string) string {
+// hubJob runs run on the Hub detached from this SSH session and follows its log until the job
+// ends (or wait passes); it returns the whole log. The job itself does not depend on this session.
+func hubJob(client *ssh.Client, job string, id int, run string, wait time.Duration) (string, error) {
+	out, err := runSSHBash(client, fmt.Sprintf("%s %d start", job, id), hubJobLaunchScript(job, id, run), true)
+	if err != nil || !strings.Contains(out, "HEYEARTH_JOB_STARTED") {
+		return "", fmt.Errorf("запуск на Hub не начался: %v %s", err, strings.TrimSpace(out))
+	}
+	logPath := hubJobLogPath(job, id)
+	fails := 0
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+		time.Sleep(5 * time.Second)
+		l, err := runSSHBash(client, job+" log", "cat "+logPath, true)
+		if err != nil {
+			if fails++; fails >= 6 {
+				return "", fmt.Errorf("связь с Hub потеряна, задание продолжается там; лог: %s", logPath)
+			}
+			continue
+		}
+		fails = 0
+		if strings.Contains(l, "HEYEARTH_JOB_DONE") {
+			return l, nil
+		}
+	}
+	return "", fmt.Errorf("за %s задание не закончилось; лог на Hub: %s", wait, logPath)
+}
+
+// hubJobLaunchScript starts run on the Hub detached from this SSH session (setsid, stdin closed):
+// the owner's link to the Hub drops sessions, and a dropped session must not kill a change
+// half-way (a new nginx.conf in place, its check and rollback not yet run). One job at a time on
+// the Hub: the lock is held by the detached job itself (fd 9 is inherited). The log ends with
+// HEYEARTH_JOB_DONE.
+func hubJobLaunchScript(job string, id int, run string) string {
 	return fmt.Sprintf(`set -u
-LOG=%[1]s; RUN=/root/.heyearth-relay-stream-%[2]d.sh
-exec 9>/run/heyearth-relay-stream.lock
-if ! flock -n 9; then echo "RELAY_STREAM_FAIL на Hub уже идёт другой --relay-stream"; exit 1; fi
-printf '%%s' %[3]s | base64 -d > "$RUN"
+LOG=%[1]s; RUN=/root/.heyearth-%[2]s-%[3]d.sh
+exec 9>/run/heyearth-hub-job.lock
+if ! flock -n 9; then echo "HEYEARTH_JOB_BUSY на Hub уже идёт другое задание (--relay-stream / --path-matrix)"; exit 1; fi
+printf '%%s' %[4]s | base64 -d > "$RUN"
 : > "$LOG"
-setsid bash -c 'bash "$1" > "$2" 2>&1; echo RELAY_STREAM_DONE >> "$2"; rm -f "$1"' _ "$RUN" "$LOG" </dev/null >/dev/null 2>&1 &
-echo RELAY_STREAM_STARTED
-`, shQuote(relayStreamLogPath(id)), id, shQuote(base64.StdEncoding.EncodeToString([]byte(run))))
+setsid bash -c 'bash "$1" > "$2" 2>&1; echo HEYEARTH_JOB_DONE >> "$2"; rm -f "$1"' _ "$RUN" "$LOG" </dev/null >/dev/null 2>&1 &
+echo HEYEARTH_JOB_STARTED
+`, shQuote(hubJobLogPath(job, id)), job, id, shQuote(base64.StdEncoding.EncodeToString([]byte(run))))
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
@@ -219,6 +220,21 @@ func TestEntriesSubscriptionLines(t *testing.T) {
 			s.settings["subscription_update_interval_hours"] = raw
 			if _, h := happ(t, s); h.Get("Profile-Update-Interval") != want {
 				t.Errorf("setting %q → %q, want %q", raw, h.Get("Profile-Update-Interval"), want)
+			}
+		}
+	})
+	// «Срочное обновление»: hourly while it lasts, the setting's interval once it is over or broken.
+	t.Run("urgent update", func(t *testing.T) {
+		for raw, want := range map[string]string{
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339):  "1",
+			time.Now().Add(-time.Hour).UTC().Format(time.RFC3339): "6",
+			"": "6", "garbage": "6",
+		} {
+			s := entriesScript(t, "relay")
+			s.settings["subscription_update_interval_hours"] = "6"
+			s.settings[subUrgentKey] = raw
+			if _, h := happ(t, s); h.Get("Profile-Update-Interval") != want {
+				t.Errorf("urgent %q → %q, want %q", raw, h.Get("Profile-Update-Interval"), want)
 			}
 		}
 	})
