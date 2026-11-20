@@ -50,9 +50,9 @@ func TestRotationOffRefusedForFailoverTarget(t *testing.T) {
 
 func TestRotationTestNeedsFreshPathCheck(t *testing.T) {
 	for name, job := range map[string]*entryJob{
-		"none":   nil,
-		"old":    passJob(61 * time.Minute),
-		"failed": {Kind: provision.KindPathCheck, Status: provision.JobFailed, FinishedAt: ago(time.Minute)},
+		"none":    nil,
+		"old":     passJob(61 * time.Minute),
+		"failed":  {Kind: provision.KindPathCheck, Status: provision.JobFailed, FinishedAt: ago(time.Minute)},
 		"running": {Kind: provision.KindPathCheck, Status: provision.JobRunning},
 	} {
 		in := rotIn(biz.EntryRotationOff, biz.EntryRotationTest)
@@ -153,7 +153,9 @@ func useActionsFake(t *testing.T) *actionsFake {
 		{ID: 6, Name: "Вход 6", Kind: biz.EntryKindRelay, Lifecycle: "online", Rotation: biz.EntryRotationOff, RotationReason: "потери",
 			RotationAt: ago(time.Hour), Tunnel: true}}
 	l, j, s, r, tn := entriesList, entriesJobs, entriesStartJob, entriesSetRotation, entriesSetTunnel
-	t.Cleanup(func() { entriesList, entriesJobs, entriesStartJob, entriesSetRotation, entriesSetTunnel = l, j, s, r, tn })
+	t.Cleanup(func() {
+		entriesList, entriesJobs, entriesStartJob, entriesSetRotation, entriesSetTunnel = l, j, s, r, tn
+	})
 	entriesList = func(context.Context) ([]biz.Entry, error) { return f.entries, nil }
 	entriesJobs = func(context.Context, []int) (map[int]entryChecks, error) { return f.jobs, nil }
 	entriesStartJob = func(_ context.Context, id int, kind string) (int64, error) {
