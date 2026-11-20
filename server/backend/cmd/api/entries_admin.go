@@ -88,7 +88,7 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	vals := map[string]string{}
 	for _, k := range []string{"entry_failover_enabled", "entry_failover_test_user", "entry_probe_simulate_hub_fail_until", "subscription_update_interval_hours",
-		"sub_domain", "sub_auto_mode", "sub_auto_test_user"} {
+		"sub_domain", "sub_auto_mode", "sub_auto_test_user", subUrgentKey} {
 		if err == nil {
 			vals[k], err = entriesSetting(k)
 		}
@@ -110,9 +110,14 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 	if t, perr := time.Parse(time.RFC3339, vals["entry_probe_simulate_hub_fail_until"]); perr == nil && t.After(entriesNow()) {
 		view.SimulateUntil = &t
 	}
+	var urgentUntil *time.Time
+	if t, perr := time.Parse(time.RFC3339, vals[subUrgentKey]); perr == nil && t.After(entriesNow()) {
+		urgentUntil = &t
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"entries": entries, "failover": view, "history": history,
 		"update_interval_hours": planEntries("", nil, biz.EntryFailover{}, false, vals["subscription_update_interval_hours"]).interval,
+		"urgent_until":          urgentUntil,
 		"domain_mode_available": biz.EntryDomainModeAvailable(),
 		"subscription":          subDomainStatus(ctx, vals["sub_domain"], vals["sub_auto_mode"], vals["sub_auto_test_user"], entries),
 	})
@@ -189,6 +194,7 @@ type entrySettingsRequest struct {
 	SubDomain           *string `json:"sub_domain"`     // «Подписка для мобильных»: go.<domain>, "" = the site's own
 	AutoMode            *string `json:"auto_mode"`      // JSON «Авто»: off | test | on
 	AutoTestUser        *string `json:"auto_test_user"` // who gets «Авто» in mode test
+	UrgentHours         *int    `json:"urgent_hours"`   // «Срочное обновление»: hourly updates for 1–48 h, 0 stops (subUrgentKey)
 }
 
 // writes returns the app_settings to write, or a user-facing error message.
@@ -241,6 +247,16 @@ func (req entrySettingsRequest) writes(now time.Time) (map[string]string, string
 		}
 		out["sub_auto_test_user"] = u
 	}
+	if v := req.UrgentHours; v != nil {
+		switch {
+		case *v == 0:
+			out[subUrgentKey] = ""
+		case *v < 0 || *v > 48:
+			return nil, "срочное обновление: от 1 до 48 часов (0 — остановить)"
+		default:
+			out[subUrgentKey] = now.Add(time.Duration(*v) * time.Hour).UTC().Format(time.RFC3339)
+		}
+	}
 	if len(out) == 0 {
 		return nil, "нечего сохранять"
 	}
@@ -290,7 +306,8 @@ func handleAdminEntrySettings(w http.ResponseWriter, r *http.Request) {
 	_, testUser := writes["entry_failover_test_user"]
 	_, autoMode := writes["sub_auto_mode"]
 	_, autoUser := writes["sub_auto_test_user"]
-	if interval || testUser || autoMode || autoUser { // the subscription content changed
+	_, urgent := writes[subUrgentKey]
+	if interval || testUser || autoMode || autoUser || urgent { // the subscription content changed
 		if err := entriesBump(ctx); err != nil {
 			log.Printf("[entries-admin] subscription_version: %v", err)
 		}

@@ -125,6 +125,43 @@ func TestAdminEntrySettings(t *testing.T) {
 	if f.written["entry_probe_simulate_hub_fail_until"] != "" {
 		t.Fatal("0 minutes must stop the drill")
 	}
+
+	// «Срочное обновление»: 1–48 h from now, 0 stops; it changes the subscription (version bump).
+	for _, bad := range []string{`{"urgent_hours":-1}`, `{"urgent_hours":49}`} {
+		if rec := callEntries(handleAdminEntrySettings, http.MethodPut, "/api/admin/entries/settings", bad); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", bad, rec.Code)
+		}
+	}
+	bumps := f.bumps
+	if rec := callEntries(handleAdminEntrySettings, http.MethodPut, "/api/admin/entries/settings", `{"urgent_hours":24}`); rec.Code != http.StatusOK ||
+		f.written[subUrgentKey] != "2026-10-13T12:00:00Z" || f.bumps != bumps+1 {
+		t.Fatalf("urgent 24 h: %d written %q bumps %d", rec.Code, f.written[subUrgentKey], f.bumps-bumps)
+	}
+	callEntries(handleAdminEntrySettings, http.MethodPut, "/api/admin/entries/settings", `{"urgent_hours":0}`)
+	if f.written[subUrgentKey] != "" {
+		t.Fatal("0 hours must stop the urgent update")
+	}
+}
+
+// The page shows «Срочное обновление» only while it lasts.
+func TestAdminEntriesUrgentView(t *testing.T) {
+	f := useEntriesFake(t)
+	get := func() map[string]any {
+		rec := callEntries(handleAdminEntries, http.MethodGet, "/api/admin/entries", "")
+		var v map[string]any
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &v) != nil {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return v
+	}
+	f.settings[subUrgentKey] = entriesNow().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	if v := get(); v["urgent_until"] == nil {
+		t.Fatal("an urgent update in progress is not shown")
+	}
+	f.settings[subUrgentKey] = entriesNow().Add(-time.Minute).UTC().Format(time.RFC3339)
+	if v := get(); v["urgent_until"] != nil {
+		t.Fatalf("a finished urgent update is shown: %v", v["urgent_until"])
+	}
 }
 
 // The preview runs the real line builder on the subscription fixture and leaks nothing.

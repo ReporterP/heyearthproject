@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
@@ -458,6 +459,20 @@ func directOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.Conn
 // (matches the auto-tuner); 1 h during a failover.
 const defaultUpdateIntervalHours = 4
 
+// subUrgentKey is «Срочное обновление» (page «Входы»): until this time (RFC 3339; empty or past =
+// off) every subscription asks the apps to update hourly. It cannot reach an app before that app's
+// next update under the interval it already has, but from then on every further fix of an incident
+// arrives within an hour (incident 2026-11-20: the revert waited for a 12 h interval).
+const subUrgentKey = "subscription_urgent_until"
+
+// urgentInterval is intervalRaw, or "1" while «Срочное обновление» lasts.
+func urgentInterval(intervalRaw, urgentUntil string, now time.Time) string {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(urgentUntil)); err == nil && now.Before(t) {
+		return "1"
+	}
+	return intervalRaw
+}
+
 type reserveEntry struct {
 	id      int
 	address string
@@ -555,7 +570,11 @@ func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
 	if err != nil {
 		return entryPlan{}, err
 	}
-	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, interval)
+	urgent, err := subscriptionSetting(subUrgentKey, "")
+	if err != nil {
+		return entryPlan{}, err
+	}
+	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, urgentInterval(interval, urgent, time.Now()))
 	return applyHubTransition(p, hubTransitionOn(transition)), nil
 }
 
