@@ -134,6 +134,24 @@ type fakeHub struct {
 	scripts   []string
 	hideAdd   bool // ip addr add "succeeds" but the address never shows up
 	failWrite bool // netplan generate fails
+
+	now        func() time.Time
+	onScript   func(script string)
+	timerArmed bool
+	armedUntil []time.Time
+	marker     bool // the revert script ran
+}
+
+var fhOnActive = regexp.MustCompile(`--on-active=(\d+)s`)
+
+// revertNow is what the revert script does on the Hub: route source and main_server_host back,
+// the marker.
+func (f *fakeHub) revertNow(w *testWizard) {
+	f.mu.Lock()
+	f.src, f.marker, f.timerArmed = tCur, true, false
+	f.mu.Unlock()
+	w.set["main_server_host"] = tCur
+	delete(w.set, hubAddrTransitionKey)
 }
 
 func newFakeHub() *fakeHub {
@@ -149,10 +167,36 @@ var (
 )
 
 func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
+	if f.onScript != nil {
+		f.onScript(script)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.scripts = append(f.scripts, script)
 	switch {
+	case strings.Contains(script, "systemd-run") && strings.Contains(script, "hubaddr-revert"):
+		if f.marker {
+			return "REVERT_RUNNING", errors.New("exit 3")
+		}
+		f.timerArmed = true
+		if m := fhOnActive.FindStringSubmatch(script); m != nil && f.now != nil {
+			secs, _ := time.ParseDuration(m[1] + "s")
+			f.armedUntil = append(f.armedUntil, f.now().Add(secs))
+		}
+		return "ARMED", nil
+	case strings.Contains(script, "DISARMED"):
+		f.timerArmed = false
+		return "DISARMED", nil
+	case strings.HasPrefix(script, "test -e "):
+		if f.marker {
+			return "YES", nil
+		}
+		return "NO", nil
+	case strings.HasPrefix(script, "systemctl is-active"):
+		if f.timerArmed {
+			return "active", nil
+		}
+		return "inactive", nil
 	case script == hubnet.RouteShowScript:
 		return fmt.Sprintf(`[{"dst":"default","gateway":%q,"dev":"ens3","protocol":"static","prefsrc":%q,"metric":100}]`, tGW, f.src), nil
 	case strings.HasPrefix(script, "ip -j -4 addr show dev"):

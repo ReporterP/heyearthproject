@@ -21,6 +21,8 @@ type fakeRunner struct {
 	byJob   map[int64]int
 	reads   map[int64]int
 	status  map[int]string
+	hold    map[int]int // server id → reads a job stays running
+	onStart func(id int)
 }
 
 func newFakeRunner() *fakeRunner {
@@ -33,6 +35,9 @@ func (f *fakeRunner) Start(_ context.Context, id int, kind string) (int64, error
 	f.next++
 	f.started, f.kinds = append(f.started, id), append(f.kinds, kind)
 	f.byJob[f.next] = id
+	if f.onStart != nil {
+		f.onStart(id)
+	}
 	return f.next, nil
 }
 func (f *fakeRunner) Resume(context.Context, int64) error { return nil }
@@ -50,7 +55,7 @@ func (f *fakeRunner) JobView(_ context.Context, job int64) (provision.JobView, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads[job]++
-	if f.reads[job] == 1 {
+	if f.reads[job] == 1 || f.reads[job] <= f.hold[f.byJob[job]] {
 		return provision.JobView{ID: job, Status: provision.JobRunning}, nil
 	}
 	st := f.status[f.byJob[job]]

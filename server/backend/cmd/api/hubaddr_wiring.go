@@ -68,8 +68,10 @@ func defaultHubAddrEnv() hubAddrEnv {
 		PhoneRead: func(ctx context.Context) (bool, []admin.MobileCheckResult, error) {
 			return admin.ReadMobileCheckOn(ctx, provision.LocalRemote{})
 		},
-		Alert: func(key, text string) { RaiseAlert(key, AlertCritical, "Смена адреса хаба", text) },
-		Go:    func(f func()) { go f() },
+		ExitTunnels: hubExitTunnels,
+		Sync:        RequestXraySync,
+		Alert:       func(key, text string) { RaiseAlert(key, AlertCritical, "Смена адреса хаба", text) },
+		Go:          func(f func()) { go f() },
 	}
 }
 
@@ -95,6 +97,29 @@ func initHubAddr() {
 		log.Printf("[hub-address] %d шаг(ов) смены адреса прерваны перезапуском API — запустите их снова", n)
 	}
 	hubAddr = newHubAddrEngine(defaultHubAddrEnv())
+}
+
+// hubExitTunnels: tunnel_status of every online exit (the tunnel monitor writes it every 30 s).
+func hubExitTunnels(ctx context.Context) ([]hubAddrProbe, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT COALESCE(name, ''), COALESCE(tunnel_status, '') FROM servers
+		WHERE role = 'exit' AND lifecycle_state = 'online' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []hubAddrProbe
+	for rows.Next() {
+		var name, status string
+		if err := rows.Scan(&name, &status); err != nil {
+			return nil, err
+		}
+		p := hubAddrProbe{Name: "туннель к " + name, OK: status == "healthy"}
+		if !p.OK {
+			p.Error = "tunnel_status " + status
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func listHubAddrNodes(ctx context.Context) ([]hubAddrNode, error) {

@@ -48,6 +48,11 @@ type hubAddrNodesChecks struct {
 
 // reprovisionNode starts a reprovision job and waits for it (polling, capped).
 func (e *hubAddrEngine) reprovisionNode(ctx context.Context, id int) (int64, error) {
+	return e.reprovisionNodeWith(ctx, id, nil)
+}
+
+// reprovisionNodeWith is reprovisionNode calling onPoll at every poll (an error stops waiting).
+func (e *hubAddrEngine) reprovisionNodeWith(ctx context.Context, id int, onPoll func() error) (int64, error) {
 	if e.env.Nodes == nil || e.env.Jobs == nil {
 		return 0, fmt.Errorf("провижн не подключён")
 	}
@@ -73,6 +78,11 @@ func (e *hubAddrEngine) reprovisionNode(ctx context.Context, id int) (int64, err
 		}
 		if e.env.Now().After(deadline) {
 			return job, fmt.Errorf("задача %d не закончилась за %s", job, hubJobCap)
+		}
+		if onPoll != nil {
+			if err := onPoll(); err != nil {
+				return job, err
+			}
 		}
 		if err := e.env.Sleep(ctx, hubJobPoll); err != nil {
 			return job, err

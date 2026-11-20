@@ -109,15 +109,18 @@ type hubAddrEnv struct {
 	YooKassa    func(ctx context.Context, dial hubnet.DialFunc) error    // nil: not configured
 	PhoneStart  func(ctx context.Context, bind string) (url string, expires time.Time, err error)
 	PhoneRead   func(ctx context.Context) (active bool, results []admin.MobileCheckResult, err error)
+	ExitTunnels func(ctx context.Context) ([]hubAddrProbe, error) // tunnel health per online exit
+	Sync        func()                                            // RequestXraySync (nil in tests)
 	Alert       func(key, text string)
 	Go          func(f func())
 	Tries       int // outbound connects per target and address (0 = 24)
 }
 
 type hubAddrEngine struct {
-	env  hubAddrEnv
-	mu   sync.Mutex
-	busy map[int64]string
+	env       hubAddrEnv
+	mu        sync.Mutex
+	busy      map[int64]string
+	reverting map[int64]bool // the owner asked for a revert: the switch step stops at its next poll
 }
 
 // hubAddr is the API's engine (main wires it once the DB is up).
@@ -133,7 +136,7 @@ func newHubAddrEngine(env hubAddrEnv) *hubAddrEngine {
 	if env.Go == nil {
 		env.Go = func(f func()) { go f() }
 	}
-	return &hubAddrEngine{env: env, busy: map[int64]string{}}
+	return &hubAddrEngine{env: env, busy: map[int64]string{}, reverting: map[int64]bool{}}
 }
 
 // stepLog is a step's human log, kept short in the record.

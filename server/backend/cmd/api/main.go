@@ -808,6 +808,7 @@ func main() {
 	// installer (before StartGhostReconciler and admin.RegisterRoutes, which use them).
 	initProvisioning()
 	initHubAddr()
+	startHubAddrWatcher()
 
 	// Wire the biz-layer sync orchestrator. biz.RequestSync() debounces
 	// 2s and fans out to both Xray and Hysteria2. All subscription/plan
