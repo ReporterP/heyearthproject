@@ -170,13 +170,14 @@ type entryMonitor struct {
 	logf         func(format string, args ...any)
 
 	tcp, udp    map[int]*entryTrack
+	rot         map[int]string // the rotation of each relay at the last run (its alerts close once on 'off')
 	blindSince  time.Time
 	blindRaised bool // the blind alert is up: a verdict resolves it (no resolve noise every minute)
 	skipLog     logGate
 }
 
 var entryMon = &entryMonitor{
-	now: time.Now, list: biz.ListEntries, readFailover: biz.GetEntryFailover, saveFailover: biz.SetEntryFailover,
+	now: time.Now, list: biz.ListMonitoredEntries, readFailover: biz.GetEntryFailover, saveFailover: biz.SetEntryFailover,
 	saveCheck: biz.SaveEntryCheck, bump: biz.BumpSubscriptionVersionContext,
 	setting:    func(key string) (string, error) { return settingOrEmpty(biz.GetSetting, key) },
 	exits:      func() ([]int, error) { return liveExitSocksPorts(bambooMaxExits) },
@@ -294,6 +295,7 @@ func (m *entryMonitor) run() {
 	live := map[int]bool{}
 	for _, e := range entries {
 		live[e.ID] = true
+		m.noteRotation(e)
 		m.checkTCP(now, port, e, cfg)
 		if e.Kind == biz.EntryKindRelay && cfg.psk != "" {
 			m.checkUDP(now, port, e, cfg.psk)
@@ -305,7 +307,41 @@ func (m *entryMonitor) run() {
 			delete(m.udp, id)
 		}
 	}
+	for id := range m.rot {
+		if !live[id] {
+			delete(m.rot, id)
+		}
+	}
 	m.failover(now, cur, cfg.enabled, entries)
+}
+
+// inRotation: the entry is published to every user ('all'; the Hub and entries of tests carry
+// no rotation). Only these can be the failover target.
+func inRotation(e biz.Entry) bool { return e.Rotation == "" || e.Rotation == biz.EntryRotationAll }
+
+// quietEntry: an entry out of rotation is still checked (its health and stability stay visible
+// on «Входы»), but raises no alerts — nobody's subscription has it.
+func quietEntry(e biz.Entry) bool { return e.Rotation == biz.EntryRotationOff }
+
+// relayAlertKinds are every alert the monitor raises for a relay.
+var relayAlertKinds = []string{"unreachable-external", "bamboo", "unstable"}
+
+// noteRotation closes a relay's alerts once when it leaves the rotation (also after a restart:
+// Resolve of an inactive key does nothing).
+func (m *entryMonitor) noteRotation(e biz.Entry) {
+	if e.Kind != biz.EntryKindRelay {
+		return
+	}
+	if m.rot == nil {
+		m.rot = map[int]string{}
+	}
+	prev, seen := m.rot[e.ID]
+	m.rot[e.ID] = e.Rotation
+	if quietEntry(e) && (!seen || prev != biz.EntryRotationOff) {
+		for _, k := range relayAlertKinds {
+			m.resolve(relayAlertKey(e.ID, k), fmt.Sprintf("Вход «%s» (%s) выведен из ротации — тревоги по нему не приходят, пока он не вернётся.", e.Name, e.Address))
+		}
+	}
 }
 
 // relayXHTTPTries: a relay's :2443 (Дуб) is its DNAT path into the GRE tunnel — the one TCP path
@@ -341,8 +377,8 @@ func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryC
 	m.verdict(now)
 	t := m.track(&m.tcp, e.ID, e.Health.External)
 	m.publish(e, "ext", t, t.record(now, v == entryOK), now, err)
-	if e.Kind != biz.EntryKindRelay {
-		return // the Hub's own alerts come from the loop probe (entry-unreachable-external)
+	if e.Kind != biz.EntryKindRelay || quietEntry(e) {
+		return // the Hub's own alerts come from the loop probe (entry-unreachable-external); an entry out of rotation raises none
 	}
 	key := relayAlertKey(e.ID, "unreachable-external")
 	switch {
@@ -368,6 +404,9 @@ func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string
 	}
 	t := m.track(&m.udp, e.ID, e.Health.UDP)
 	m.publish(e, "udp", t, t.record(now, verdict == bambooOK), now, err)
+	if quietEntry(e) {
+		return
+	}
 	key := relayAlertKey(e.ID, "bamboo")
 	switch {
 	case t.streak.fails >= entryFailThreshold:
@@ -393,7 +432,7 @@ func (m *entryMonitor) publish(e biz.Entry, kind string, t *entryTrack, changed 
 		m.logf("[entries] вход %d (%s): состояние не сохранено, повтор при следующей проверке: %v", e.ID, kind, err)
 		return
 	}
-	if t.dirty && e.Kind == biz.EntryKindRelay {
+	if t.dirty && e.Kind == biz.EntryKindRelay && !quietEntry(e) { // nobody's subscription has an entry out of rotation
 		if err := m.bump(ctx); err != nil {
 			m.logf("[entries] subscription_version не увеличена: %v", err)
 		}
@@ -406,8 +445,8 @@ func (m *entryMonitor) failover(now time.Time, cur biz.EntryFailover, enabled bo
 	in := failoverInput{now: now, enabled: enabled, cur: cur, hub: *hub}
 	names := map[int]string{}
 	for _, e := range entries {
-		if e.Kind != biz.EntryKindRelay {
-			continue
+		if e.Kind != biz.EntryKindRelay || !inRotation(e) {
+			continue // a canary or an entry out of rotation never carries everyone's main lines
 		}
 		in.relays++
 		names[e.ID] = fmt.Sprintf("«%s» (%s)", e.Name, e.Address)

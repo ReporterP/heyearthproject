@@ -387,6 +387,10 @@ func handleAdminEntryMode(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "резервный вход не найден"})
 			return
 		}
+		if entries[i].Lifecycle != "online" || !inRotation(entries[i]) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "этот вход не в ротации — сначала верните его всем на «Входах» (через «только тест»)"})
+			return
+		}
 		if entries[i].Health.External != biz.EntryHealthy {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "этот резервный вход сейчас не отвечает снаружи — дождитесь зелёной проверки во «Входах»"})
 			return

@@ -20,11 +20,13 @@ import (
 // failover of the main lines to the target relay, Profile-Update-Interval. Through the real code
 // down to SQL (scriptDB of subscription_golden_test.go).
 
-var relayCols = []string{"id", "name", "ip_address", "country_code", "lifecycle_state", "address_mode", "domain",
-	"ext_status", "ext_checked_at", "ext_error", "udp_status", "udp_checked_at", "udp_error", "ru_status", "ru_checked_at", "ru_link"}
+var relayCols = []string{"id", "name", "ip_address", "country_code", "lifecycle_state", "relay_tunnel", "address_mode", "domain",
+	"ext_status", "ext_checked_at", "ext_error", "udp_status", "udp_checked_at", "udp_error", "ru_status", "ru_checked_at", "ru_link",
+	"rotation", "rotation_reason", "rotation_at", "rotation_by"}
 
 func relayRow(id int64, ip, ext, udp string) []driver.Value {
-	return []driver.Value{id, fmt.Sprintf("Резерв %d", id), ip, "RU", "online", "ip", "", ext, nil, "", udp, nil, "", "unknown", nil, ""}
+	return []driver.Value{id, fmt.Sprintf("Резерв %d", id), ip, "RU", "online", false, "ip", "", ext, nil, "", udp, nil, "", "unknown", nil, "",
+		"all", "", nil, ""}
 }
 
 const (
