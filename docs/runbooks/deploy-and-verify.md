@@ -33,3 +33,6 @@
 
 ## Проверка из админ-API
 `scripts/prod/admin_token.sh` логинится бутстрап-админом из `api.env` на Hub и кладёт токен в `$TOK`.
+
+## Смена адреса хаба
+Только мастером в админке: `docs/runbooks/hub-address-change.md`.
