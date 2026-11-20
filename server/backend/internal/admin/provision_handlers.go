@@ -83,6 +83,9 @@ func provisionReady(w http.ResponseWriter) bool {
 	return true
 }
 
+// WriteJobError answers a job start error as the nodes pages do (cmd/api «Входы» starts jobs too).
+func WriteJobError(w http.ResponseWriter, err error) { writeJobError(w, err) }
+
 func writeJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, provision.ErrJobActive):

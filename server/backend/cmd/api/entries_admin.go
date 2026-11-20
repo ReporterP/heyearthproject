@@ -21,7 +21,7 @@ import (
 
 // Admin «Входы» (phase 3). Side effects are variables (tests swap them).
 var (
-	entriesList       = biz.ListEntries
+	entriesList       = biz.ListAdminEntries // every relay in any state: «Входы» shows the ones out of rotation too
 	entriesFailover   = biz.GetEntryFailover
 	entriesSetting    = func(key string) (string, error) { return settingOrEmpty(biz.GetSetting, key) }
 	entriesSetSetting = biz.SetSettingContext
@@ -52,8 +52,8 @@ func registerEntryAdminRoutes() {
 			admin.RequirePermission("nodes.provision", handleAdminEntrySettings)(w, r)
 		case "mode":
 			admin.RequirePermission("nodes.provision", handleAdminEntryMode)(w, r)
-		default:
-			admin.RequirePermission("nodes.provision", handleAdminEntryUpdate)(w, r)
+		default: // {id} (address mode), {id}/{rotation|tunnel|pathcheck|tunnelcheck}
+			admin.RequirePermission("nodes.provision", handleAdminEntryAction)(w, r)
 		}
 	})
 }
@@ -98,6 +98,10 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		history, err = entriesHistory(50)
 	}
+	var checks map[int]entryChecks
+	if err == nil {
+		checks, err = entriesJobs(ctx, relayIDs(entries))
+	}
 	if err != nil {
 		entriesUnavailable(w, err)
 		return
@@ -116,12 +120,12 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 		urgentUntil = &t
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"entries": entries, "failover": view, "history": history,
+		"entries": entryViews(entries, checks, entriesNow()), "failover": view, "history": history,
 		"update_interval_hours": planEntries("", nil, biz.EntryFailover{}, false, vals["subscription_update_interval_hours"]).interval,
 		"urgent_until":          urgentUntil,
 		"direct_by_name":        cmp.Or(strings.TrimSpace(vals[subDirectByNameKey]), autoModeOff),
 		"domain_mode_available": biz.EntryDomainModeAvailable(),
-		"subscription":          subDomainStatus(ctx, vals["sub_domain"], vals["sub_auto_mode"], vals["sub_auto_test_user"], entries),
+		"subscription":          subDomainStatus(ctx, vals["sub_domain"], vals["sub_auto_mode"], vals["sub_auto_test_user"], publishedEntries(entries)),
 	})
 }
 

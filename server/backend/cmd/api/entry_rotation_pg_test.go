@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/heyearth/backend/internal/testpg"
 )
@@ -38,5 +40,34 @@ func TestPGSubscriptionTestEntryOnlyForTestUser(t *testing.T) {
 	}
 	if got := ids(""); len(got) != 1 {
 		t.Fatalf("no user: %v", got)
+	}
+}
+
+// The newest job of each kind per entry; Setup is the newer of provision / reprovision.
+func TestPGLastEntryJobs(t *testing.T) {
+	conn := testpg.Open(t)
+	testpg.MustExec(t, conn, `INSERT INTO servers (id, name, ip_address, role, lifecycle_state, status, is_exit_node) VALUES
+		(41, 'e', '198.51.100.41', 'relay', 'online', 'online', FALSE), (42, 'f', '198.51.100.42', 'relay', 'online', 'online', FALSE)`)
+	testpg.MustExec(t, conn, `INSERT INTO provision_jobs (id, server_id, kind, status, finished_at) VALUES
+		(101, 41, 'pathcheck', 'failed', NOW() - interval '2 hours'),
+		(102, 41, 'provision', 'succeeded', NOW() - interval '90 minutes'),
+		(103, 41, 'reprovision', 'succeeded', NOW() - interval '1 hour'),
+		(104, 41, 'pathcheck', 'succeeded', NOW() - interval '10 minutes'),
+		(105, 41, 'tunnelcheck', 'interrupted', NOW() - interval '5 minutes'),
+		(106, 42, 'verify', 'succeeded', NOW())`)
+	got, err := lastEntryJobs(context.Background(), []int{41, 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := got[41]
+	if c.Path == nil || c.Path.ID != 104 || c.Setup == nil || c.Setup.ID != 103 || c.Tunnel == nil || c.Tunnel.Status != "interrupted" || c.Path.FinishedAt == nil {
+		t.Fatalf("entry 41: %+v", c)
+	}
+	if c := got[42]; c.Path != nil || c.Setup != nil || c.Tunnel != nil {
+		t.Fatalf("entry 42 has only a verify job: %+v", c)
+	}
+	c.judge(time.Now())
+	if !c.PathFresh || c.TunnelFresh {
+		t.Fatalf("fresh: %+v", c)
 	}
 }
