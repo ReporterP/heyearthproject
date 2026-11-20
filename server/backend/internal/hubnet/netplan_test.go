@@ -91,3 +91,45 @@ func TestNetplanSetDefaultFrom(t *testing.T) {
 		t.Error("no default route: expected a refusal")
 	}
 }
+
+// The Hub's real shape (2026-11-20): a policy-routing default route in table 2 next to the main
+// table's. Only the main table's default route (no `table:`, or table main/254) gets `from:`.
+const hubNetplanTable2 = `network:
+  version: 2
+  ethernets:
+    ens3:
+      addresses:
+        - 203.0.113.5/24
+        - 192.0.2.99/24
+        - 192.0.2.10/32
+      routes:
+        - to: default
+          via: 203.0.113.1
+          on-link: true
+          from: 192.0.2.10
+        - to: default
+          via: 203.0.113.1
+          on-link: true
+          table: 2
+      routing-policy:
+        - from: 192.0.2.99
+          table: 2
+`
+
+func TestNetplanSetDefaultFromIgnoresOtherTables(t *testing.T) {
+	src := netip.MustParseAddr("198.51.100.20")
+	out, changed, err := NetplanSetDefaultFrom([]byte(hubNetplanTable2), "ens3", src)
+	if err != nil || !changed || string(out) != strings.Replace(hubNetplanTable2, "from: 192.0.2.10", "from: 198.51.100.20", 1) {
+		t.Fatalf("only the main table's route changes: changed=%v err=%v\n%s", changed, err, out)
+	}
+	noFrom := strings.Replace(hubNetplanTable2, "          from: 192.0.2.10\n", "", 1)
+	out, changed, err = NetplanSetDefaultFrom([]byte(noFrom), "ens3", src)
+	want := strings.Replace(noFrom, "          on-link: true\n        - to: default", "          on-link: true\n          from: 198.51.100.20\n        - to: default", 1)
+	if err != nil || !changed || string(out) != want {
+		t.Fatalf("from inserted into the main table's route only: changed=%v err=%v\n%s", changed, err, out)
+	}
+	main254 := strings.Replace(hubNetplanTable2, "          table: 2\n      routing", "          table: 254\n      routing", 1)
+	if _, _, err := NetplanSetDefaultFrom([]byte(main254), "ens3", src); err == nil {
+		t.Fatal("table 254 is the main table: two main default routes must be refused")
+	}
+}

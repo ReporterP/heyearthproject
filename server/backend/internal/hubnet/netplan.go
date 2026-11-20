@@ -176,13 +176,21 @@ func checkAddrs(out []byte, iface string, a netip.Addr, want bool) ([]byte, bool
 	return out, true, nil
 }
 
+// mainTable: a route without `table:` (or table main / 254) — the one the kernel's main default
+// route comes from; a policy-routing route of another table is left alone.
+func mainTable(r *yaml.Node) bool {
+	t := val(mapGet(r, "table"))
+	return t == "" || t == "254" || strings.EqualFold(t, "main")
+}
+
 func isDefaultDst(v string) bool {
 	v = strings.TrimSpace(v)
 	return v == "default" || v == "0.0.0.0/0"
 }
 
-// NetplanSetDefaultFrom sets `from: <src>` on the interface's default route (to: default or
-// 0.0.0.0/0): the value is replaced, or a line is added after the route's last key.
+// NetplanSetDefaultFrom sets `from: <src>` on the interface's main-table default route (to: default
+// or 0.0.0.0/0, no other `table:`): the value is replaced, or a line is added after the route's
+// last key. Default routes of other tables (policy routing) are left alone.
 func NetplanSetDefaultFrom(doc []byte, iface string, src netip.Addr) ([]byte, bool, error) {
 	if !src.Is4() {
 		return nil, false, fmt.Errorf("источник %s не IPv4", src)
@@ -197,7 +205,7 @@ func NetplanSetDefaultFrom(doc []byte, iface string, src netip.Addr) ([]byte, bo
 	}
 	var def *yaml.Node
 	for _, r := range routes.Content {
-		if r.Kind == yaml.MappingNode && isDefaultDst(val(mapGet(r, "to"))) {
+		if r.Kind == yaml.MappingNode && isDefaultDst(val(mapGet(r, "to"))) && mainTable(r) {
 			if def != nil {
 				return nil, false, errors.New("netplan: у интерфейса несколько маршрутов по умолчанию — правьте вручную")
 			}
@@ -245,7 +253,7 @@ func NetplanSetDefaultFrom(doc []byte, iface string, src netip.Addr) ([]byte, bo
 	ok := false
 	if rs := mapGet(eth2, "routes"); rs != nil {
 		for _, r := range rs.Content {
-			if isDefaultDst(val(mapGet(r, "to"))) && val(mapGet(r, "from")) == want {
+			if isDefaultDst(val(mapGet(r, "to"))) && mainTable(r) && val(mapGet(r, "from")) == want {
 				ok = true
 			}
 		}
