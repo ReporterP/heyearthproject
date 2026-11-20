@@ -85,6 +85,8 @@ func main() {
 	sshPassword := flag.String("ssh-password", "", "on|off: вход root по паролю на Hub (--setup-hardening/--setup-ops; off только с DEPLOY_SSH_KEY_FILE; без флага — как сейчас)")
 	hardenNodesFlag := flag.Bool("harden-nodes", false, "защита всех нод из базы (exit и входы) через Hub: sysctl, лимиты sshd, автообновления, fail2ban на exit; ключ хоста сверяется с подтверждённым")
 	nodeUpgrade := flag.Bool("node-upgrade", false, "с --harden-nodes: поставить ожидающие обновления безопасности на нодах (без перезагрузки)")
+	relayStreamID := flag.Int("relay-stream", 0, "ID входа: свести его nginx stream к config.RelayNginxConf (повтор соединения до Hub по новому 5-tuple) через Hub, с замером до/после и автооткатом; lifecycle входа не меняется")
+	relayStreamCheck := flag.Bool("relay-stream-check", false, "с --relay-stream: только замер пути вход → Hub, без изменений")
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	flag.Parse()
 
@@ -120,6 +122,8 @@ func main() {
 		mode = "setup-hardening"
 	case *hardenNodesFlag:
 		mode = "harden-nodes"
+	case *relayStreamID > 0:
+		mode = "relay-stream"
 	case *streamPPFlag != "":
 		mode = "stream-proxy-protocol"
 	case *tgWebFlag:
@@ -133,7 +137,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --harden-nodes, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --harden-nodes, --relay-stream ID, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -182,6 +186,13 @@ func main() {
 	}
 	if mode == "setup-ops" {
 		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient, *ddosMode, *sshPassword)
+		return
+	}
+	if mode == "relay-stream" {
+		if err := relayStream(client, *relayStreamID, !*relayStreamCheck); err != nil {
+			log.Fatalf("[relay-stream] %v", err)
+		}
+		fmt.Println("[relay-stream] OK")
 		return
 	}
 	if mode == "harden-nodes" {

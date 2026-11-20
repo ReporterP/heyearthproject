@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -288,13 +289,30 @@ func TestRelayNginxConf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, must := range []string{"listen 443 ", "proxy_pass " + labHub + ":8447;", "proxy_protocol on;", "listen 80;", "proxy_pass " + labHub + ":80;", "stream {"} {
+	for _, must := range []string{"listen 443 ", "proxy_pass heyearth_hub_pp;", "proxy_protocol on;", "listen 80;", "proxy_pass heyearth_hub_80;", "stream {"} {
 		if !strings.Contains(c, must) {
 			t.Errorf("relay nginx.conf lacks %q:\n%s", must, c)
 		}
 	}
 	if strings.Contains(c, "http {") || strings.Count(c, "proxy_protocol on;") != 1 {
 		t.Errorf("relay nginx.conf: no http block, PROXY on 443 only:\n%s", c)
+	}
+	// Incident 2026-11-20: every connection to the Hub is retried on a new 5-tuple — the same Hub
+	// address RelayUpstreamTries times per upstream, never marked down, a short connect timeout,
+	// and as many tries as copies on both servers.
+	for _, up := range []string{labHub + ":8447", labHub + ":80"} {
+		if n := strings.Count(c, "server "+up+" max_fails=0;"); n != RelayUpstreamTries {
+			t.Errorf("upstream %s: %d copies, want %d", up, n, RelayUpstreamTries)
+		}
+	}
+	for _, must := range []string{"proxy_connect_timeout " + RelayConnectTimeout + ";", "proxy_next_upstream on;",
+		fmt.Sprintf("proxy_next_upstream_tries %d;", RelayUpstreamTries), "proxy_next_upstream_timeout " + RelayNextUpstreamCap + ";"} {
+		if n := strings.Count(c, must); n != 2 {
+			t.Errorf("%q on %d servers, want both (443 and 80)", must, n)
+		}
+	}
+	if strings.Contains(c, "proxy_pass "+labHub) || strings.Contains(c, "proxy_connect_timeout 10s") {
+		t.Errorf("a server still goes to the Hub without the retrying upstream:\n%s", c)
 	}
 	if _, err := RelayNginxConf("10.0.0.1"); err == nil {
 		t.Error("a private Hub address accepted")
