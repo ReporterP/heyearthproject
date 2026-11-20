@@ -230,6 +230,8 @@ var permissionCatalog = []permissionCatalogItem{
 	// Also seeded by migrations 000084/000085 (Telegram bot plan).
 	{Key: "support.manage", Name: "Support", Description: "Read and answer support tickets"},
 	{Key: "news.manage", Name: "News", Description: "Write and publish news to the channel, the bot, the cabinet and Happ"},
+	// Also seeded by migration 000095.
+	{Key: "hub.address", Name: "Hub Address", Description: "Change the Hub's public address: add, check, switch with auto-revert, retire"},
 }
 
 func ValidateConfig() error {
