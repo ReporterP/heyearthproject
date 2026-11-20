@@ -152,7 +152,7 @@ func realityTCPOutbound(in hubConnectionInputs, host, fp string) xrayObj {
 }
 
 // realityXHTTPOutbound is Дуб (xhttpURI) as an Xray outbound: no flow, the Host
-// header is always the Hub's main_server_host (the XHTTP inbound checks it).
+// header is always the Hub's Дуб Host (dubHost: the XHTTP inbound checks it).
 func realityXHTTPOutbound(in hubConnectionInputs, host, fp string) xrayObj {
 	port := 2443
 	fmt.Sscanf(in.xhttpPort, "%d", &port)
@@ -162,7 +162,7 @@ func realityXHTTPOutbound(in hubConnectionInputs, host, fp string) xrayObj {
 			"users": []any{xrayObj{"id": in.vlessUUID, "encryption": "none"}}}}},
 		"streamSettings": xrayObj{"network": "xhttp", "security": "reality",
 			"realitySettings": realitySettings(in, fp),
-			"xhttpSettings":   xrayObj{"path": "/", "host": in.mainServerHost, "mode": "auto"},
+			"xhttpSettings":   xrayObj{"path": "/", "host": in.dubHost(), "mode": "auto"},
 			"sockopt":         jsonSockopt},
 	}
 }

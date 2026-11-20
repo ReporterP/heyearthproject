@@ -297,7 +297,8 @@ var xrayDBReads = xraySyncReads{
 // (absent/blank key only) and parsed.
 type xraySettings struct {
 	realitySNI     string   // reality_sni_domain
-	mainServerHost string   // main_server_host (XHTTP Host header)
+	mainServerHost string   // main_server_host
+	xhttpHost      string   // hub_xhttp_host: the XHTTP inbound's Host ("" = mainServerHost)
 	dnsServers     []string // dns_servers
 	muxConcurrency int      // mux_concurrency (Hub→exit tunnels)
 	// reality_fingerprint is deliberately not an input: the Hub→exit TCP path has its own fixed
@@ -345,6 +346,9 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 		return in, err
 	}
 	if s.mainServerHost, err = setting("main_server_host", defaultMainServerHost); err != nil {
+		return in, err
+	}
+	if s.xhttpHost, err = setting("hub_xhttp_host", ""); err != nil {
 		return in, err
 	}
 	dns, err := setting("dns_servers", defaultDNSServers)
@@ -539,7 +543,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 					// realitySettings.serverNames (yandex.ru) but happ sends
 					// Host: hiearth.ru → silent handshake failure (Reality OK,
 					// xhttp layer rejects). This was the «н/д» bug.
-					"host":          settings.mainServerHost,
+					"host":          xhttpHostOr(settings.xhttpHost, settings.mainServerHost),
 					"mode":          "auto",
 					"xPaddingBytes": "100-1000",
 					// R4: cap each POST chunk under 15 KB so a single TCP doesn't

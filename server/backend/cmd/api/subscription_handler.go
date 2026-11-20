@@ -356,7 +356,7 @@ func clashProfile(in hubConnectionInputs) string {
 	if realityPubKey != "" && vlessUUID != "" && canVLESS {
 		name := "HiEarth-XHTTP"
 		proxyNames = append(proxyNames, name)
-		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+		proxies = append(proxies, clashXHTTPProxy(name, host, vlessUUID, realityPubKey, realityShortID, realitySNI, in.dubHost()))
 	}
 
 	// 1c. Hysteria2 Express (premium plans only — auto-routed by Happ for UDP-heavy traffic).
@@ -403,7 +403,7 @@ func clashProfile(in hubConnectionInputs) string {
 		proxyNames = append(proxyNames, "HiEarth-Home"+directLabel, "HiEarth-XHTTP"+directLabel)
 		proxies = append(proxies,
 			clashRealityProxy("HiEarth-Home"+directLabel, in.mainServerHost, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-			clashXHTTPProxy("HiEarth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+			clashXHTTPProxy("HiEarth-XHTTP"+directLabel, in.mainServerHost, vlessUUID, realityPubKey, realityShortID, realitySNI, in.dubHost()))
 	}
 
 	// Reserve entries (phase 3): the same proxies through each healthy relay,
@@ -418,7 +418,7 @@ func clashProfile(in hubConnectionInputs) string {
 			proxyNames = append(proxyNames, "HiEarth-Home"+sfx, "HiEarth-XHTTP"+sfx)
 			proxies = append(proxies,
 				clashRealityProxy("HiEarth-Home"+sfx, r.address, vlessUUID, flowLine, realityPubKey, realityShortID, "chrome", realitySNI),
-				clashXHTTPProxy("HiEarth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.mainServerHost))
+				clashXHTTPProxy("HiEarth-XHTTP"+sfx, r.address, vlessUUID, realityPubKey, realityShortID, realitySNI, in.dubHost()))
 		}
 		if canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
 			proxyNames = append(proxyNames, "HiEarth-Express"+sfx)

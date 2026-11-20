@@ -198,6 +198,10 @@ type hubConnectionInputs struct {
 	obfsPassword string // shared Salamander password (only with canHysteria2)
 	hysteria2SNI string // hub_main_server_host (hiearth.ru): the cert domain
 
+	// xhttpHost is hub_xhttp_host: Дуб's Host header, frozen so a change of the Hub's address
+	// (main_server_host) never changes it ("" = main_server_host; see dubHost).
+	xhttpHost string
+
 	entries entryPlan // where the lines point (phase 3): reserves, failover, update interval
 }
 
@@ -215,6 +219,9 @@ func subscriptionSetting(key, def string) (string, error) {
 func loadHubSettingInputs(in *hubConnectionInputs) error {
 	var err error
 	if in.mainServerHost, err = subscriptionSetting("main_server_host", ""); err != nil {
+		return err
+	}
+	if in.xhttpHost, err = subscriptionSetting("hub_xhttp_host", ""); err != nil {
 		return err
 	}
 	for _, r := range []struct {
@@ -384,7 +391,7 @@ func hubConnectionOptions(in hubConnectionInputs) []*heyearth_v1.ConnectionOptio
 			xhttpFPs := []string{"chrome", "firefox"}
 			for i, fp := range xhttpFPs {
 				label := fmt.Sprintf("🌲 Дуб %d", i+1)
-				opts = append(opts, vlessOption(rp.xhttpURI(connect, in.xhttpPort, fp, mainServerHost, label), label, int32(i+2))) // 2..3
+				opts = append(opts, vlessOption(rp.xhttpURI(connect, in.xhttpPort, fp, in.dubHost(), label), label, int32(i+2))) // 2..3
 			}
 		}
 
@@ -431,7 +438,7 @@ func directOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.Conn
 	label := "🌳 Берёза" + directLabel
 	opts := []*heyearth_v1.ConnectionOption{vlessOption(rp.tcpURI(in.mainServerHost, "chrome", label), label, 10)}
 	label = "🌲 Дуб" + directLabel
-	return append(opts, vlessOption(rp.xhttpURI(in.mainServerHost, in.xhttpPort, "chrome", in.mainServerHost, label), label, 11))
+	return append(opts, vlessOption(rp.xhttpURI(in.mainServerHost, in.xhttpPort, "chrome", in.dubHost(), label), label, 11))
 }
 
 // ── Entries (phase 3): reserve lines and the failover of the main address ──
@@ -559,7 +566,19 @@ func (p realityParams) tcpURI(host, fp, label string) string {
 		p.uuid, host, p.sni, fp, p.pbk, p.sid, p.flowParam, url.PathEscape(label))
 }
 
-// xhttpURI: hostHeader is ALWAYS the Hub's main_server_host — the XHTTP inbound checks it.
+// xhttpHostOr: Дуб's Host header — hub_xhttp_host (frozen), or main_server_host while the setting
+// is absent or blank (the value it was seeded from).
+func xhttpHostOr(frozen, mainHost string) string {
+	if h := strings.TrimSpace(frozen); h != "" {
+		return h
+	}
+	return mainHost
+}
+
+// dubHost is the Host header of every Дуб line and outbound (the Hub's XHTTP inbound checks it).
+func (in hubConnectionInputs) dubHost() string { return xhttpHostOr(in.xhttpHost, in.mainServerHost) }
+
+// xhttpURI: hostHeader is ALWAYS the Hub's Дуб Host (dubHost) — the XHTTP inbound checks it.
 func (p realityParams) xhttpURI(host, port, fp, hostHeader, label string) string {
 	return fmt.Sprintf("vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%%2F&host=%s&mode=auto&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100#%s",
 		p.uuid, host, port, p.sni, fp, p.pbk, p.sid, url.QueryEscape(hostHeader), url.PathEscape(label))
@@ -617,7 +636,7 @@ func reserveOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.Con
 			label := "🌳 Берёза" + sfx
 			opts = append(opts, vlessOption(rp.tcpURI(r.address, "chrome", label), label, base))
 			label = "🌲 Дуб" + sfx
-			opts = append(opts, vlessOption(rp.xhttpURI(r.address, in.xhttpPort, "chrome", in.mainServerHost, label), label, base+1))
+			opts = append(opts, vlessOption(rp.xhttpURI(r.address, in.xhttpPort, "chrome", in.dubHost(), label), label, base+1))
 		}
 		if in.canHysteria2 && in.hy2Password != "" && in.obfsPassword != "" && r.udp {
 			for i, v := range bambooVariants {
