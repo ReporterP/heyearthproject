@@ -308,8 +308,28 @@ func (m *entryMonitor) run() {
 	m.failover(now, cur, cfg.enabled, entries)
 }
 
+// relayXHTTPTries: a relay's :2443 (Дуб) is its DNAT path into the GRE tunnel — the one TCP path
+// that has no backup when the tunnel is down (443/80 fall back to the Hub's public address in the
+// relay's nginx). One retry on a new connection: one lost flow is not a dead path.
+const relayXHTTPTries = 2
+
+// relayTLSCheck: :443, then for a relay :2443 too — an entry whose tunnel is down answers on 443
+// through the backup but not on 2443, and must leave the subscription all the same.
+func (m *entryMonitor) relayTLSCheck(port int, e biz.Entry, sni string) error {
+	if err := m.tlsCheck(port, e.Address, 443, sni); err != nil || e.Kind != biz.EntryKindRelay {
+		return err
+	}
+	var err error
+	for range relayXHTTPTries {
+		if err = m.tlsCheck(port, e.Address, 2443, sni); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("TLS :2443 (Дуб, через туннель до Hub): %w", err)
+}
+
 func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryConfig) {
-	err := m.tlsCheck(port, e.Address, 443, cfg.sni)
+	err := m.relayTLSCheck(port, e, cfg.sni)
 	v := decideEntry(err, func() error { return m.control(port) })
 	if e.ID == 0 && now.Before(cfg.simUntil) {
 		v, err = entryFail, fmt.Errorf("учебная авария до %s (админка → Входы)", cfg.simUntil.In(mskZone).Format("15:04"))
@@ -328,8 +348,8 @@ func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryC
 	switch {
 	case t.streak.fails >= entryFailThreshold:
 		m.raise(key, AlertWarn, "Резервный вход недоступен снаружи", fmt.Sprintf(
-			"Резервный вход «%s» (%s): %d проверок подряд через выход за рубежом :%d не прошли, строки «· резерв» этого входа убраны из подписки.\nПоследняя ошибка: %v\nНа ретрансляторе: systemctl status heyearth-relay; nft list table ip heyearth_relay.",
-			e.Name, e.Address, t.streak.fails, port, err))
+			"Резервный вход «%s» (%s): %d проверок подряд через выход за рубежом :%d не прошли, строки «· резерв» этого входа убраны из подписки.\nПоследняя ошибка: %v\nНа ретрансляторе: systemctl status heyearth-tunnel heyearth-relay; ip -d link show he-hub; nft list table ip heyearth_relay. На Hub: systemctl status heyearth-tunnel-r%d.",
+			e.Name, e.Address, t.streak.fails, port, err, e.ID))
 	case t.streak.recovered():
 		m.resolve(key, fmt.Sprintf("Резервный вход «%s» (%s) снова доступен снаружи.", e.Name, e.Address))
 	}

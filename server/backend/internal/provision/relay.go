@@ -36,7 +36,9 @@ import (
 // RelayOptions is everything a relay recipe needs besides the node row (RelayOptionsFor + the API
 // wiring).
 type RelayOptions struct {
-	RelayIP string // servers.ip_address of the relay: a public IPv4 (the rule set is family ip)
+	// ServerID is the relay's servers.id: its GRE tunnel's addresses (config.RelayTunnelAddrs).
+	ServerID int
+	RelayIP  string // servers.ip_address of the relay: a public IPv4 (the rule set is family ip)
 	// HubIP is the DNAT target (config.RelayHubIP): main_server_host, the address users reach the
 	// Hub at — its replies come from it. Never one of the Hub's other interface addresses.
 	HubIP string
@@ -75,7 +77,7 @@ func DefaultHubLookup(ctx context.Context, host string) ([]netip.Addr, error) {
 // main_server_host — an IPv4 literal or a name resolved through lookup that must give exactly one
 // IPv4 (several would make the DNAT target a guess). The result is validated; VerifyPath calls
 // RelayPathVerifier as it is when the step runs.
-func RelayOptionsFor(ctx context.Context, relayIP string, sshPort int, hubHost string,
+func RelayOptionsFor(ctx context.Context, serverID int, relayIP string, sshPort int, hubHost string,
 	lookup func(ctx context.Context, host string) ([]netip.Addr, error)) (RelayOptions, error) {
 	hub, err := relayHubAddr(ctx, hubHost, lookup)
 	if err != nil {
@@ -85,7 +87,7 @@ func RelayOptionsFor(ctx context.Context, relayIP string, sshPort int, hubHost s
 	if a, err := netip.ParseAddr(ip); err == nil {
 		ip = a.Unmap().String()
 	}
-	o := RelayOptions{RelayIP: ip, HubIP: hub, SSHPort: sshPort, VerifyPath: func(ctx context.Context) error {
+	o := RelayOptions{ServerID: serverID, RelayIP: ip, HubIP: hub, SSHPort: sshPort, VerifyPath: func(ctx context.Context) error {
 		if RelayPathVerifier == nil {
 			return fmt.Errorf("%w: API не подключил проверку входа", ErrProbeUnavailable)
 		}
@@ -158,7 +160,28 @@ func (o RelayOptions) validate() error {
 	if slices.Contains(config.RelayTCPPorts, o.SSHPort) {
 		return fmt.Errorf("SSH-порт %d ретранслятор пересылает на Hub — Hub потерял бы доступ к серверу; перенесите SSH на другой порт", o.SSHPort)
 	}
+	if _, _, err := config.RelayTunnelAddrs(o.ServerID); err != nil {
+		return err
+	}
 	return nil
+}
+
+// relayTunnel: the two ends of the relay's GRE tunnel inside it — the Hub's address (the DNAT
+// and nginx target) and the relay's own. Invalid options (validate refuses them) give zeros,
+// which every renderer refuses.
+type relayTunnel struct{ hub, relay netip.Addr }
+
+func (o RelayOptions) tunnel() relayTunnel {
+	h, r, _ := config.RelayTunnelAddrs(o.ServerID)
+	return relayTunnel{h, r}
+}
+
+// str: an address as a shell value ("" for a zero one).
+func str(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
 }
 
 // relaySSHFrom: the Hub's IPv4 addresses (HubIP first, then HubIPs), canonical, once each — the
@@ -175,7 +198,10 @@ func (o RelayOptions) relaySSHFrom() []string {
 }
 
 // relayLayout is where a relay keeps its files.
-type relayLayout struct{ osRelease, nft, unit, wants, sysctl, modules, jail, state, nginx, proc string }
+type relayLayout struct {
+	osRelease, nft, unit, wants, sysctl, modules, jail, state, nginx, proc string
+	tunnel                                                                 string // the GRE tunnel's unit (relay_tunnel.go)
+}
 
 // relayPaths is the layout of a real relay (tests root it in a temp dir).
 var relayPaths = relayLayout{
@@ -189,6 +215,7 @@ var relayPaths = relayLayout{
 	state:     "/opt/heyearth/state/relay-pending",
 	nginx:     config.RelayNginxConfPath,
 	proc:      "/proc",
+	tunnel:    "/etc/systemd/system/" + config.RelayTunnelUnitName,
 }
 
 // RelayRecipe is the setup of a relay (relaySetup adds the activate step).
@@ -207,9 +234,10 @@ func RelayPreflight(ctx context.Context, r Remote, o RelayOptions) ([]Check, err
 // Pending markers of the steps that write files (relayLayout.state/<marker>) and the keys of
 // State.changed for the writes of this run.
 const (
-	relayMarkRules = "rules"
-	relayMarkUnit  = "unit"
-	relayMarkJail  = "jail"
+	relayMarkRules  = "rules"
+	relayMarkUnit   = "unit"
+	relayMarkJail   = "jail"
+	relayMarkTunnel = "tunnel"
 )
 
 func relayChangedKey(marker string) string { return "relay:" + marker }
@@ -222,7 +250,9 @@ func (l relayLayout) script(op string, o RelayOptions, body string) string {
 	for _, kv := range [][2]string{{"HUB", o.HubIP}, {"SSH_PORT", strconv.Itoa(o.SSHPort)}, {"TABLE", config.RelayNftTable},
 		{"UNIT_NAME", config.RelayUnitName}, {"OS_RELEASE", l.osRelease}, {"NFT", l.nft}, {"UNIT", l.unit}, {"WANTS", l.wants},
 		{"SYSCTL", l.sysctl}, {"MODULES", l.modules}, {"JAIL", l.jail}, {"STATE", l.state}, {"NGINX", l.nginx}, {"PROC", l.proc},
-		{"CHECK_UNIT", config.MobileCheckUnit}} {
+		{"CHECK_UNIT", config.MobileCheckUnit}, {"RELAY", o.RelayIP}, {"TUN_DEV", config.RelayTunnelDev},
+		{"TUN_UNIT_NAME", config.RelayTunnelUnitName}, {"TUN_UNIT", l.tunnel}, {"TUN_ADDR", str(o.tunnel().relay)},
+		{"TUN_PEER", str(o.tunnel().hub)}, {"TUN_MTU", strconv.Itoa(config.RelayTunnelMTU)}} {
 		b.WriteString(kv[0] + "=" + shellquote.Quote(kv[1]) + "\n")
 	}
 	b.WriteString(body)
@@ -334,6 +364,7 @@ fi
 var relayCheckNames = []struct{ key, name string }{
 	{"root", "Вход под root"}, {"os", "Операционная система"}, {"arch", "Архитектура"}, {"systemd", "systemd"},
 	{"docker", "Docker"}, {"ports", "Порты TCP 80/443/2443 и UDP 50443"}, {"forward", "Пересылка (FORWARD)"}, {"hub", "Связь с Hub"},
+	{"tunnel", "Туннель до Hub"},
 }
 
 // relayStopCheckPageSh stops the phone check's page if it runs.
@@ -401,12 +432,58 @@ elif grep -q '^-P FORWARD DROP' <<<"$fwd_ipt"; then
 elif grep -qE 'hook forward .*policy drop' <<<"$fwd_nft"; then
   pf forward fail "в nftables есть собственный фильтр пересылки (policy drop): пересылка будет отброшена"
 else pf forward ok; fi
+# Three tries per port, each a new connection (a new source port): a transit link that loses
+# some 5-tuples (incident 2026-11-20) must not fail the check on one unlucky tuple.
 down=""
 for p in ` + strings.Join(tcp, " ") + `; do
-  if ! timeout 5 bash -c "exec 3<>/dev/tcp/$HUB/$p" 2>/dev/null; then down="$down $p"; fi
+  ok=0
+  for _ in 1 2 3; do
+    if timeout 5 bash -c "exec 3<>/dev/tcp/$HUB/$p" 2>/dev/null; then ok=1; break; fi
+  done
+  if [ "$ok" != 1 ]; then down="$down $p"; fi
 done
 if [ -z "$down" ]; then pf hub ok "$HUB"; else pf hub fail "Hub $HUB (TCP${down}) недоступен с этого сервера"; fi
+# The GRE tunnel: the module, then (decided in Go: config.TunnelOverlap) the routes and addresses.
+if modinfo -n ip_gre >/dev/null 2>&1 || [ -d /sys/module/ip_gre ]; then pf tunnel ok; else pf tunnel fail "в ядре нет модуля ip_gre — туннель до Hub не создать"; fi
+echo "` + relayNetMark + `"
+ip -4 -o route show table all 2>/dev/null || true
+echo "` + relayAddrMark + `"
+ip -4 -o addr show 2>/dev/null || true
 `
+}
+
+// The markers between which relayPreflightSh (and the Hub's tunnel step) print the routes and the
+// addresses for config.TunnelOverlap.
+const (
+	relayNetMark  = "===HEYEARTH-ROUTES==="
+	relayAddrMark = "===HEYEARTH-ADDRS==="
+)
+
+// splitNet cuts the routes and the addresses out of a script output with relayNetMark/relayAddrMark.
+func splitNet(out string) (routes, addrs string, ok bool) {
+	_, rest, ok1 := strings.Cut(out, relayNetMark+"\n")
+	routes, addrs, ok2 := strings.Cut(rest, relayAddrMark+"\n")
+	return routes, addrs, ok1 && ok2
+}
+
+// tunnelCheck completes the preflight's "tunnel" check: the relay's /30 must be free here.
+func tunnelCheck(c Check, out string, o RelayOptions) Check {
+	if !c.OK {
+		return c
+	}
+	block, err := config.RelayTunnelBlock(o.ServerID)
+	if err != nil {
+		return Check{Detail: err.Error()}
+	}
+	routes, addrs, ok := splitNet(out)
+	if !ok {
+		return Check{Detail: "маршруты и адреса сервера не прочитаны"}
+	}
+	if err := config.TunnelOverlap(routes, addrs, config.RelayTunnelDev, block); err != nil {
+		return Check{Detail: err.Error()}
+	}
+	t := o.tunnel()
+	return Check{OK: true, Detail: fmt.Sprintf("GRE до Hub, адреса %s ↔ %s", t.relay, t.hub)}
 }
 
 func (l relayLayout) checks(ctx context.Context, r Remote, o RelayOptions) ([]Check, error) {
@@ -431,8 +508,11 @@ func (l relayLayout) checks(ctx context.Context, r Remote, o RelayOptions) ([]Ch
 	cs := make([]Check, 0, len(relayCheckNames))
 	for _, n := range relayCheckNames {
 		c, ok := got[n.key]
-		if !ok {
+		switch {
+		case !ok:
 			c = Check{Detail: "проверка не выполнилась"}
+		case n.key == "tunnel":
+			c = tunnelCheck(c, out, o)
 		}
 		c.Name = n.name
 		cs = append(cs, c)
@@ -549,13 +629,14 @@ func (l relayLayout) sysctlVerify(o RelayOptions) stepFunc {
 }
 
 func (l relayLayout) rulesFile(o RelayOptions) (File, error) {
-	rules, err := config.RelayNftRuleset(o.HubIP)
+	rules, err := config.RelayNftRulesetVia(o.HubIP, str(o.tunnel().hub))
 	return File{l.nft, []byte(rules), 0o644}, err
 }
 
-// relayRulesLiveSh: the kernel holds the table with exactly the two DNATs to the Hub, the
-// masquerade, the accept of the Hub's replies and the final drop (as `nft list` prints them —
-// scripts/relay_netns_lab.sh greps the same lines on a real kernel).
+// relayRulesLiveSh: the kernel holds the table with exactly the two DNATs to the Hub's tunnel
+// address hub (TUN_PEER), the masquerade, the accept of the Hub's replies, the MSS clamp into the
+// tunnel and the final drop (as `nft list` prints them — scripts/relay_netns_lab.sh greps the same
+// lines on a real kernel).
 func relayRulesLiveSh(hub string) string {
 	q := shellquote.Quote
 	return `if ! live=$(nft list table ip "$TABLE" 2>/dev/null); then echo "RELAY_FAIL таблицы $TABLE в ядре нет — правила не загружены"; exit 0; fi
@@ -563,13 +644,15 @@ live=$(sed 's/^[[:space:]]*//' <<<"$live")
 has() { grep -qxF -- "$1" <<<"$live"; }
 n=$(grep -c 'dnat to' <<<"$live" || true)
 if [ "$n" != 2 ]; then echo "RELAY_FAIL в таблице $TABLE правил DNAT: $n, нужно 2"; fi
-has ` + q("fib daddr type local tcp dport "+config.RelayDNATTCPMatch()+" dnat to "+hub) + ` || echo "RELAY_FAIL нет пересылки TCP ` + portList("/") + ` на Hub $HUB"
+has ` + q("fib daddr type local tcp dport "+config.RelayDNATTCPMatch()+" dnat to "+hub) + ` || echo "RELAY_FAIL нет пересылки TCP ` + portList("/") + ` на Hub через туннель (` + hub + `)"
 has ` + q(fmt.Sprintf("fib daddr type local udp dport %d-%d dnat to %s:%d", config.RelayHopMin, config.RelayHopMax, hub, config.RelayBambooPort)) +
-		` || echo "RELAY_FAIL нет пересылки UDP ` + fmt.Sprintf("%d-%d на Hub $HUB:%d", config.RelayHopMin, config.RelayHopMax, config.RelayBambooPort) + `"
-has ` + q("ip daddr "+hub+" ct status dnat masquerade") + ` || echo "RELAY_FAIL нет masquerade на Hub $HUB"
-awk -v h="$HUB" 'index($0, "ct status dnat") && index($0, h) && /accept$/ { f = 1 } END { exit !f }' <<<"$live" ||
+		` || echo "RELAY_FAIL нет пересылки UDP ` + fmt.Sprintf("%d-%d на Hub через туннель (%s:%d)", config.RelayHopMin, config.RelayHopMax, hub, config.RelayBambooPort) + `"
+has ` + q("ip daddr "+hub+" ct status dnat masquerade") + ` || echo "RELAY_FAIL нет masquerade в туннель до Hub"
+awk -v h=` + q(hub) + ` 'index($0, "ct status dnat") && index($0, h) && /accept$/ { f = 1 } END { exit !f }' <<<"$live" ||
   echo "RELAY_FAIL в цепочке forward нет разрешения потоков на Hub"
 grep -qE '(^| )drop$' <<<"$live" || echo "RELAY_FAIL в цепочке forward нет правила drop — ретранслятор пересылал бы что угодно"
+awk -v d=` + q(`oifname "`+config.RelayTunnelDev+`"`) + ` -v m=` + q(config.RelayTunnelClampMark) + ` 'index($0, d) && index($0, m) { f = 1 } END { exit !f }' <<<"$live" ||
+  echo "RELAY_FAIL нет ограничения MSS для туннеля — большие пакеты TCP не пройдут"
 `
 }
 
@@ -595,7 +678,7 @@ echo "правила загружены: TCP `+portList("/")+` и UDP `+fmt.Spri
 `); err != nil {
 			return err
 		}
-		if err := l.check(ctx, r, "rules-live", o, relayRulesLiveSh(o.HubIP)); err != nil {
+		if err := l.check(ctx, r, "rules-live", o, relayRulesLiveSh(str(o.tunnel().hub))); err != nil {
 			return fmt.Errorf("после загрузки: %w", err)
 		}
 		return l.unmark(ctx, r, o, relayMarkRules)
@@ -611,7 +694,7 @@ func (l relayLayout) rulesVerify(o RelayOptions) stepFunc {
 		if err := filesMatch(ctx, r, []File{f}); err != nil {
 			return err
 		}
-		return l.check(ctx, r, "rules-verify", o, pendingCheck(relayMarkRules, "правила")+relayRulesLiveSh(o.HubIP))
+		return l.check(ctx, r, "rules-verify", o, pendingCheck(relayMarkRules, "правила")+relayRulesLiveSh(str(o.tunnel().hub)))
 	}
 }
 
@@ -738,8 +821,10 @@ const relayUfwOn = `ufw_on() {
 }
 `
 
-// relayRouteRule: one ufw route rule of the relay as `ufw status` lists it: <Hub> <ports>/<proto>
-// ALLOW FWD (the forwarded flows after the DNAT — TCP to the same ports, UDP to 50443).
+// relayRouteRule: one ufw route rule of the relay as `ufw status` lists it: <Hub's tunnel address>
+// <ports>/<proto> ALLOW FWD (the forwarded flows after the DNAT — TCP to the same ports, UDP to
+// 50443). Rules an install before the tunnel added for the Hub's public address stay (harmless:
+// the nft forward chain drops every flow not DNATed to the tunnel).
 func relayRoutes() [][2]string {
 	return [][2]string{{"tcp", portList(",")}, {"udp", strconv.Itoa(config.RelayBambooPort)}}
 }
@@ -764,12 +849,13 @@ else
 fi
 `)
 	for _, rt := range relayRoutes() {
-		b.WriteString(`ufw route allow proto ` + rt[0] + ` to "$HUB" port ` + rt[1] + ` comment heyearth-relay >/dev/null` + "\n")
+		b.WriteString(`ufw route allow proto ` + rt[0] + ` to "$TUN_PEER" port ` + rt[1] + ` comment heyearth-relay >/dev/null` + "\n")
 	}
+	b.WriteString(`ufw allow proto gre from "$HUB" to "$RELAY" comment heyearth-relay >/dev/null` + "\n")
 	for _, p := range config.RelayStreamTCPPorts { // the relay's own nginx stream (relay_stream)
 		b.WriteString(`ufw allow ` + strconv.Itoa(p) + `/tcp comment heyearth-relay >/dev/null` + "\n")
 	}
-	b.WriteString(`echo "ufw: пересылка на Hub $HUB разрешена (TCP ` + portList(",") + `, UDP ` + strconv.Itoa(config.RelayBambooPort) + `)"
+	b.WriteString(`echo "ufw: туннель GRE от Hub $HUB и пересылка в него разрешены (TCP ` + portList(",") + `, UDP ` + strconv.Itoa(config.RelayBambooPort) + `)"
 `)
 	return b.String()
 }
@@ -779,10 +865,12 @@ func relayFirewallCheckSh() string {
 	b.WriteString(relayUfwOn + `if ! ufw_on; then exit 0; fi
 st=$(LC_ALL=C ufw status verbose 2>/dev/null) || st=""
 awk -v p="$SSH_PORT" ` + shellquote.Quote(config.UfwHasPortAwk) + ` <<<"$st" || echo "RELAY_FAIL ufw: для SSH-порта $SSH_PORT нет правила — Hub потерял бы доступ"
-route() { awk -v to="$HUB" -v port="$1" '$1 == to && $2 == port && $3 == "ALLOW" && $4 == "FWD" { f = 1 } END { exit !f }' <<<"$st"; }
+route() { awk -v to="$TUN_PEER" -v port="$1" '$1 == to && $2 == port && $3 == "ALLOW" && $4 == "FWD" { f = 1 } END { exit !f }' <<<"$st"; }
+awk -v h="$HUB" 'index($0, "gre") && index($0, "ALLOW") && index($0, h) { f = 1 } END { exit !f }' <<<"$st" ||
+  echo "RELAY_FAIL ufw: GRE от Hub $HUB не разрешён — туннель не поднимется"
 `)
 	for _, rt := range relayRoutes() {
-		b.WriteString(`route ` + rt[1] + "/" + rt[0] + ` || echo "RELAY_FAIL ufw: нет разрешения пересылки ` + strings.ToUpper(rt[0]) + " " + rt[1] + ` на Hub $HUB"` + "\n")
+		b.WriteString(`route ` + rt[1] + "/" + rt[0] + ` || echo "RELAY_FAIL ufw: нет разрешения пересылки ` + strings.ToUpper(rt[0]) + " " + rt[1] + ` в туннель до Hub ($TUN_PEER)"` + "\n")
 	}
 	for _, p := range config.RelayStreamTCPPorts {
 		ps := strconv.Itoa(p)
@@ -885,6 +973,23 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 			return l.check(ctx, r, "packages-check", o, relayPackagesCheckSh)
 		}},
 		{Name: "relay_sysctl", Apply: l.sysctlApply(o), Verify: l.sysctlVerify(o)},
+		// The GRE tunnel (relay_tunnel.go): the Hub's end first, then the relay's, which checks
+		// that the Hub answers through it. The rules and the stream below use it.
+		{Name: "relay_hub_tunnel", Apply: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelUp(ctx, s.Hub, s, o)
+		}, Verify: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelCheck(ctx, s.Hub, o)
+		}, Rollback: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelRollback(ctx, s.Hub, s, o)
+		}},
+		{Name: "relay_tunnel", Apply: l.tunnelApply(o), Verify: l.tunnelVerify(o), Rollback: l.tunnelRollback(o)},
+		// The Hub trusts this relay's PROXY header — from its tunnel address too — before the
+		// relay's nginx sends it through the tunnel and before the check from outside.
+		{Name: "relay_hub_trust", Apply: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTrust(ctx, s.Hub, o.RelayIP, str(o.tunnel().relay), true)
+		}, Verify: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTrustCheck(ctx, s.Hub, o.RelayIP, str(o.tunnel().relay))
+		}},
 		{Name: "relay_rules", Apply: l.rulesApply(o), Verify: l.rulesVerify(o), Rollback: l.rulesRollback(o)},
 		{Name: "relay_unit", Apply: l.unitApply(o), Verify: l.unitVerify(o), Rollback: l.unitRollback(o)},
 		{Name: "relay_stream", Apply: l.streamApply(o), Verify: l.streamVerify(o)},
@@ -896,12 +1001,6 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 			return l.check(ctx, r, "firewall-check", o, relayFirewallCheckSh())
 		}},
 		{Name: "relay_fail2ban", Apply: l.jailApply(o), Verify: l.jailVerify(o), Rollback: l.jailRollback(o)},
-		// The Hub trusts this relay's PROXY header before the check from outside goes through it.
-		{Name: "relay_hub_trust", Apply: func(ctx context.Context, _ Remote, s *State) error {
-			return relayHubTrust(ctx, s.Hub, o.RelayIP, true)
-		}, Verify: func(ctx context.Context, _ Remote, s *State) error {
-			return relayHubTrustCheck(ctx, s.Hub, o.RelayIP)
-		}},
 		{Name: "relay_path", Verify: relayPathVerify(o)},
 	}
 }
@@ -920,6 +1019,9 @@ func relaySetup(n Node, st *State) (Recipe, error) {
 	if a, err := netip.ParseAddr(strings.TrimSpace(n.IP)); err != nil || a.Unmap().String() != o.RelayIP {
 		return nil, fmt.Errorf("параметры ретранслятора собраны для %s, а адрес ноды %q", o.RelayIP, n.IP)
 	}
+	if o.ServerID != n.ID {
+		return nil, fmt.Errorf("параметры ретранслятора собраны для сервера %d, а это сервер %d", o.ServerID, n.ID)
+	}
 	return append(RelayRecipe(o), Step{Name: "activate", Apply: activateApply, Verify: lifecycleIs("online")}), nil
 }
 
@@ -933,10 +1035,11 @@ func relaySetup(n Node, st *State) (Recipe, error) {
 const relayTeardownSh = `sysctl -q -w net.ipv4.ip_forward=0
 systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
 systemctl disable --now nginx >/dev/null 2>&1 || true
+systemctl disable --now "$TUN_UNIT_NAME" >/dev/null 2>&1 || true
 nft delete table ip "$TABLE" >/dev/null 2>&1 || true
 jail=0
 if [ -e "$JAIL" ]; then jail=1; fi
-for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL"; do rm -f "$f" "$f.bak" "$f.rollback.tmp"; done
+for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL" "$TUN_UNIT"; do rm -f "$f" "$f.bak" "$f.rollback.tmp"; done
 rm -f "$WANTS/$UNIT_NAME"
 rm -rf "$STATE"
 rm -f "${STATE%/*}/relay-nginx-ours"
@@ -948,7 +1051,8 @@ echo "пересылка снята: таблицы $TABLE нет, ip_forward в
 const relayTeardownCheckSh = `if nft list table ip "$TABLE" >/dev/null 2>&1; then echo "RELAY_FAIL таблица $TABLE ещё загружена"; fi
 if systemctl is-active --quiet nginx; then echo "RELAY_FAIL nginx входа работает"; fi
 if systemctl is-active --quiet "$UNIT_NAME"; then echo "RELAY_FAIL $UNIT_NAME работает"; fi
-for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL" "$WANTS/$UNIT_NAME"; do
+if systemctl is-active --quiet "$TUN_UNIT_NAME"; then echo "RELAY_FAIL туннель $TUN_UNIT_NAME работает"; fi
+for f in "$UNIT" "$NFT" "$SYSCTL" "$MODULES" "$JAIL" "$TUN_UNIT" "$WANTS/$UNIT_NAME"; do
   if [ -e "$f" ]; then echo "RELAY_FAIL остался $f"; fi
 done
 if [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != 0 ]; then echo "RELAY_FAIL ip_forward включён"; fi
@@ -978,7 +1082,11 @@ func relayDeprovision(l relayLayout) Recipe {
 	return Recipe{
 		// The Hub stops trusting the relay's PROXY header first (its address may be reused).
 		{Name: "relay_hub_untrust", Apply: bestEffort(func(ctx context.Context, _ Remote, s *State) error {
-			return relayHubTrust(ctx, s.Hub, s.Node.IP, false)
+			return relayHubTrust(ctx, s.Hub, s.Node.IP, "", false)
+		})},
+		// The Hub's end of the tunnel goes before the relay's: nothing is sent into it any more.
+		{Name: "relay_hub_tunnel_remove", Apply: bestEffort(func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelDown(ctx, s.Hub, s.Node.ID, s)
 		})},
 		{Name: "relay_teardown", Apply: bestEffort(func(ctx context.Context, r Remote, s *State) error {
 			return l.run(ctx, r, s, "teardown", o, relayTeardownSh)

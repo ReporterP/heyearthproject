@@ -231,6 +231,7 @@ var titles = map[string]string{
 	"host_hardening": "Защита узла (sysctl, sshd, автообновления)",
 	"relay_stream":   "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
 	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",
+	"relay_hub_tunnel": "Туннель на Hub", "relay_tunnel": "Туннель до Hub", "relay_hub_tunnel_remove": "Снятие туннеля на Hub",
 }
 
 // Title is the owner-facing name of a step (admin UI and CLI).

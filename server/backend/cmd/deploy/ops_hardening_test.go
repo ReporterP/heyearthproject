@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -120,5 +122,59 @@ func TestVhost429AndPreviousVersions(t *testing.T) {
 	}
 	if !strings.Contains(previousVhostShas(v), sha256hex(no429)) || !strings.Contains(previousVhostShas(v), sha256hex(vhostWithoutHeaders(no429))) {
 		t.Fatal("previous versions")
+	}
+}
+
+// The entries' GRE tunnels: the far end of every he-r<id> device joins allow4 (through the tunnel
+// an entry connects from it), other point-to-point peers do not.
+func TestDDoSAllowScriptTunnelPeers(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	stubs := map[string]string{
+		"runuser": `echo 192.0.2.2; echo 198.51.100.42`,
+		"ip": `cat <<'IPEOF'
+2: ens3    inet 203.0.113.10/32 scope global ens3
+7: he-r6    inet 10.77.0.25 peer 10.77.0.26/32 scope global he-r6
+8: wg0    inet 10.9.0.1 peer 10.9.0.2/32 scope global wg0
+IPEOF`,
+		"nft": `case "$*" in "list table inet heyearth_ddos") exit 0 ;; "-f -") cat > "$OUT" ;; esac`,
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(dir, "nft.in")
+	script := "export PATH=" + shQuote(shellDir(dir)) + ":\"$PATH\" OUT=" + shQuote(shellDir(out)) + "\n" + ddosAllowScript
+	if o, code := runBashStdin(t, script); code != 0 {
+		t.Fatalf("allow script: %d %s", code, o)
+	}
+	b, _ := os.ReadFile(out)
+	got := string(b)
+	for _, want := range []string{"10.77.0.26", "10.77.0.25", "192.0.2.2", "198.51.100.42", "203.0.113.10"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("allow4 lacks %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "10.9.0.2") {
+		t.Errorf("a foreign point-to-point peer was allowed:\n%s", got)
+	}
+}
+
+// The entries' tunnels: their devices are exempt like the entries' addresses, and the tunnel pool
+// arriving on any other interface is dropped before the allow set could let it through.
+func TestDDoSNftTunnelDevices(t *testing.T) {
+	for _, mode := range []string{"observe", "enforce"} {
+		nft := renderDDoSNft(mode, defaultDDoSLimits)
+		spoofRule := "ip saddr 10.77.0.0/16 counter name spoof_tunnel"
+		if mode == "enforce" {
+			spoofRule += " drop"
+		}
+		dev, spoof, allow := strings.Index(nft, `iifname "he-r*" return`), strings.Index(nft, spoofRule+"\n"), strings.Index(nft, "ip saddr @allow4 return")
+		if dev < 0 || spoof < 0 || !(dev < spoof && spoof < allow) {
+			t.Errorf("%s: tunnel rules missing or out of order (dev %d, spoof %d, allow %d)", mode, dev, spoof, allow)
+		}
 	}
 }
