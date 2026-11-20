@@ -208,7 +208,14 @@ func buildHappRoutingDeeplinkForPlan(planID int, mtprotoIPs []string, strict boo
 // "domain:" prefix matches every subdomain, so `domain:yandex.ru` equals listing
 // every yandex.ru FQDN) and appends the MTProto fronting domain.
 func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
-	directSites := []string{}
+	sites, _, err := directSitesAndFronting(rawDomains, strict)
+	return sites, err
+}
+
+// directSitesAndFronting is directSitesFrom that also returns the fronting entries
+// on their own (a subset of sites).
+func directSitesAndFronting(rawDomains []string, strict bool) (directSites, frontingSites []string, err error) {
+	directSites = []string{}
 	for _, base := range collapseToETLDPlusOne(rawDomains) {
 		directSites = append(directSites, "domain:"+base)
 	}
@@ -223,7 +230,7 @@ func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
 	fronting, err := MTProtoFrontingDomainsStrict()
 	if err != nil {
 		if strict {
-			return nil, err
+			return nil, nil, err
 		}
 		log.Printf("[happ-routing] mtproto fronting domains: %v", err)
 		if d := MTProtoFrontingDomain(); d != "" {
@@ -232,8 +239,9 @@ func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
 	}
 	for _, d := range fronting {
 		directSites = append(directSites, "domain:"+d)
+		frontingSites = append(frontingSites, "domain:"+d)
 	}
-	return directSites, nil
+	return directSites, frontingSites, nil
 }
 
 // CompactDirectRoutingStrict is the direct part of the Happ routing profile for
@@ -241,13 +249,16 @@ func directSitesFrom(rawDomains []string, strict bool) ([]string, error) {
 // side is geoip:private + geoip:ru + the MTProto exit IPs instead of the
 // services' ~13 000 addresses — a JSON subscription repeats the rules in every
 // config, and those addresses are RU ones (geoip:ru) or reach the Hub, whose
-// per-plan rules send them out directly anyway. A failed read is an error.
-func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips []string, err error) {
+// per-plan rules send them out directly anyway. fronting is the MTProto fronting
+// entries of sites on their own: a config that re-addresses connections by their
+// sniffed name must leave those alone (their fake-TLS SNI names another site, the
+// connection belongs to our exit's address). A failed read is an error.
+func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips, fronting []string, err error) {
 	var rawDomains []string
 	if planID > 0 {
 		services, err := GetDirectRouteServicesForPlan(planID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("direct-route services of plan %d: %w", planID, err)
+			return nil, nil, nil, fmt.Errorf("direct-route services of plan %d: %w", planID, err)
 		}
 		for _, svc := range services {
 			if svc.IsActive {
@@ -255,8 +266,8 @@ func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips []s
 			}
 		}
 	}
-	if sites, err = directSitesFrom(rawDomains, true); err != nil {
-		return nil, nil, err
+	if sites, fronting, err = directSitesAndFronting(rawDomains, true); err != nil {
+		return nil, nil, nil, err
 	}
 	ips = []string{"geoip:private", "geoip:ru"}
 	seen := map[string]bool{}
@@ -269,5 +280,5 @@ func CompactDirectRoutingStrict(planID int, mtprotoIPs []string) (sites, ips []s
 			ips = append(ips, c)
 		}
 	}
-	return sites, ips, nil
+	return sites, ips, fronting, nil
 }

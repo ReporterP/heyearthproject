@@ -38,10 +38,35 @@ const (
 	autoModeOn   = "on"   // JSON «Авто» for every Happ client
 )
 
+// subDirectByNameKey switches how direct connections dial (off | test | on, the
+// test user is sub_auto_test_user; absent = off).
+//
+//	off — the address the app chose. Happ desktop's TUN (sing-box) hands Windows an
+//	  IPv6 address and route even on a network without IPv6 and accepts every TCP
+//	  connection at once, so a browser settles on the AAAA of a RU site; geoip:ru
+//	  sends that IPv6 address direct and the dial dies (ya.ru and every RU site with
+//	  an AAAA record stop opening).
+//	on — by name: a sniffed connection carries its name (routeOnly off), geoip:ru
+//	  decides by the name's addresses (IPOnDemand), direct dials the name IPv4
+//	  first. The Hub sniffs and re-addresses by name itself, so proxied traffic
+//	  reaches it as before.
+const subDirectByNameKey = "sub_direct_by_name"
+
 // directRouting is what goes straight out of the device, never through a way in.
 type directRouting struct {
-	sites []string // Xray domain rules: "domain:sberbank.ru", …
-	ips   []string // "geoip:private", "geoip:ru", "203.0.113.7/32", …
+	sites    []string // Xray domain rules: "domain:sberbank.ru", …
+	ips      []string // "geoip:private", "geoip:ru", "203.0.113.7/32", …
+	fronting []string // the MTProto fronting entries of sites: never re-addressed by name
+	byName   bool     // direct by the sniffed name, IPv4 first (subDirectByNameKey)
+}
+
+// routingStrategy: by name, a domain is resolved when an IP rule is reached, so
+// geoip:ru and geoip:private still see the addresses behind it.
+func (d directRouting) routingStrategy() string {
+	if d.byName {
+		return "IPOnDemand"
+	}
+	return "AsIs"
 }
 
 type xrayObj = map[string]any
@@ -168,9 +193,14 @@ func realityXHTTPOutbound(in hubConnectionInputs, host, fp string) xrayObj {
 }
 
 // jsonInbounds: the local SOCKS/HTTP ports Happ's tunnel feeds (socks-auth-mode
-// auto: Happ puts its own login on them). Sniffing is for routing only.
-func jsonInbounds() []any {
-	sniff := xrayObj{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "routeOnly": true}
+// auto: Happ puts its own login on them). Sniffing is for routing only, or by
+// name (d.byName) it re-addresses the connection to the sniffed name — except the
+// MTProto fronting domains.
+func jsonInbounds(d directRouting) []any {
+	sniff := xrayObj{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "routeOnly": !d.byName}
+	if d.byName && len(d.fronting) > 0 {
+		sniff["domainsExcluded"] = d.fronting
+	}
 	return []any{
 		xrayObj{"tag": "socks", "listen": "127.0.0.1", "port": 10808, "protocol": "socks",
 			"settings": xrayObj{"auth": "noauth", "udp": true}, "sniffing": sniff},
@@ -217,11 +247,14 @@ func jsonRules(hub, siteHost string, d directRouting, final xrayObj) []any {
 	return append(rules, last)
 }
 
-func jsonTailOutbounds() []any {
-	return []any{
-		xrayObj{"tag": "direct", "protocol": "freedom"},
-		xrayObj{"tag": "block", "protocol": "blackhole"},
+// jsonTailOutbounds: direct and block. By name, direct resolves the name and dials
+// IPv4 first, IPv6 only for a name without IPv4 (Xray ≥ 26: sockopt.domainStrategy).
+func jsonTailOutbounds(d directRouting) []any {
+	direct := xrayObj{"tag": "direct", "protocol": "freedom"}
+	if d.byName {
+		direct["streamSettings"] = xrayObj{"sockopt": xrayObj{"domainStrategy": "UseIPv4v6"}}
 	}
+	return []any{direct, xrayObj{"tag": "block", "protocol": "blackhole"}}
 }
 
 // autoProbeURL is what the observatory fetches through every way in.
@@ -257,12 +290,12 @@ func balancedConfig(label, description, prefix, fallback, hub, siteHost string, 
 		"remarks":   label,
 		"meta":      xrayObj{"serverDescription": description},
 		"log":       xrayObj{"loglevel": "warning"},
-		"inbounds":  jsonInbounds(),
-		"outbounds": append(outbounds, jsonTailOutbounds()...),
+		"inbounds":  jsonInbounds(d),
+		"outbounds": append(outbounds, jsonTailOutbounds(d)...),
 		"burstObservatory": xrayObj{"subjectSelector": []string{prefix}, "pingConfig": xrayObj{
 			"destination": autoProbeURL, "interval": probeInterval, "sampling": probeSampling, "timeout": "5s"}},
 		"routing": xrayObj{
-			"domainStrategy": "AsIs",
+			"domainStrategy": d.routingStrategy(),
 			"balancers": []any{xrayObj{"tag": "auto", "selector": []string{prefix}, "fallbackTag": fallback,
 				"strategy": xrayObj{"type": "leastLoad", "settings": xrayObj{
 					"expected": 1, "maxRTT": probeMaxRTT, "tolerance": probeTolerance,

@@ -202,12 +202,18 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 	var jsonBody []byte
 	if wantsJSON {
 		// The same strictness as the routing profile: a failed read is a 503.
+		var d directRouting
+		var byName string
 		mtprotoIPs, err := biz.ListMTProtoExitIPs()
 		if err == nil {
+			// Direct by name: the owner's switch, all or the «Авто» test user first.
+			byName, err = subscriptionSetting(subDirectByNameKey, autoModeOff)
+		}
+		if err == nil {
+			d.byName = autoModeServes(byName, autoTestUser, userID)
 			var planID int
 			if planID, err = biz.EffectivePlanID(userID); err == nil {
-				var d directRouting
-				if d.sites, d.ips, err = biz.CompactDirectRoutingStrict(planID, mtprotoIPs); err == nil {
+				if d.sites, d.ips, d.fronting, err = biz.CompactDirectRoutingStrict(planID, mtprotoIPs); err == nil {
 					jsonBody = jsonSubscription(in, d)
 				}
 			}
