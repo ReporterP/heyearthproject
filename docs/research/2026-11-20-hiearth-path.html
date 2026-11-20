@@ -1,0 +1,403 @@
+<title>Путь трафика HiEarth</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide flow figure (device → line → entry → hub → tunnel → exit), then two
+   explanatory tables and a second, smaller figure for the site/API path. */
+:root {
+  --bg: #F3F5F8; --surface: #FFFFFF; --surface-2: #EBEFF4; --line: #D3DAE3; --line-strong: #AEB9C7;
+  --fg: #0D1420; --muted: #4A5768; --subtle: #6B788A;
+  --ok: #15803D; --ok-soft: rgba(21,128,61,.10);
+  --bad: #C62828; --bad-soft: rgba(198,40,40,.09); --on-bad: #FFFFFF;
+  --warn: #9A5B00; --warn-soft: rgba(154,91,0,.12);
+  --path: #5C6B7E; --hatch: rgba(154,91,0,.16);
+  --font-ui: "Manrope", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #090C14; --surface: #0F141F; --surface-2: #151B28; --line: #1F2735; --line-strong: #2C3648;
+    --fg: #EEF2F7; --muted: #A1ABBD; --subtle: #8490A4;
+    --ok: #4ADE80; --ok-soft: rgba(34,197,94,.13);
+    --bad: #F87171; --bad-soft: rgba(248,113,113,.13); --on-bad: #1A0606;
+    --warn: #F5B544; --warn-soft: rgba(245,181,68,.13);
+    --path: #8D99AD; --hatch: rgba(245,181,68,.14);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #090C14; --surface: #0F141F; --surface-2: #151B28; --line: #1F2735; --line-strong: #2C3648;
+  --fg: #EEF2F7; --muted: #A1ABBD; --subtle: #8490A4;
+  --ok: #4ADE80; --ok-soft: rgba(34,197,94,.13);
+  --bad: #F87171; --bad-soft: rgba(248,113,113,.13); --on-bad: #1A0606;
+  --warn: #F5B544; --warn-soft: rgba(245,181,68,.13);
+  --path: #8D99AD; --hatch: rgba(245,181,68,.14);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font: 400 15px/1.55 var(--font-ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 56px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 40px; }
+header { display: grid; gap: 8px; }
+h1 { font: 800 clamp(26px, 3.4vw, 36px)/1.1 var(--font-ui); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+h2 { font: 700 20px/1.25 var(--font-ui); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.meta { font: 400 12.5px/1.5 var(--font-mono); color: var(--muted); }
+.lead { max-width: 72ch; color: var(--muted); margin: 0; }
+section { display: grid; gap: 14px; min-width: 0; }
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.scroll svg { display: block; width: 100%; min-width: 1080px; height: auto; }
+.scroll.small svg { min-width: 860px; }
+figcaption { color: var(--muted); font-size: 13.5px; max-width: 90ch; }
+
+/* SVG vocabulary */
+.box { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1; }
+.box2 { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+.hubframe { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1.2; }
+.boxbad { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.2; }
+.boxwarn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1; }
+.t { fill: var(--fg); font: 700 12.5px var(--font-ui); }
+.s { fill: var(--muted); font: 400 10.5px var(--font-mono); }
+.tag { fill: var(--subtle); font: 500 9.5px var(--font-mono); letter-spacing: .04em; }
+.hd { fill: var(--subtle); font: 600 10.5px var(--font-mono); letter-spacing: .08em; }
+.lbl { fill: var(--muted); font: 500 10.5px var(--font-mono); }
+.lblok { fill: var(--ok); font: 600 10.5px var(--font-mono); }
+.lblbad { fill: var(--bad); font: 600 10.5px var(--font-mono); }
+.e { fill: none; stroke: var(--path); stroke-width: 1.4; }
+.eok { fill: none; stroke: var(--ok); stroke-width: 1.6; }
+.ebad { fill: none; stroke: var(--bad); stroke-width: 1.8; stroke-dasharray: 6 4; }
+.ethin { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+.ahead { fill: var(--path); } .aok { fill: var(--ok); } .abad { fill: var(--bad); }
+.band { fill: url(#hatch); stroke: var(--warn); stroke-width: 1; stroke-dasharray: 3 3; }
+.hatchline { stroke: var(--hatch); stroke-width: 6; }
+.x { stroke: var(--bad); stroke-width: 2.6; stroke-linecap: round; }
+.pillok { fill: var(--ok-soft); } .pillbad { fill: var(--bad-soft); }
+.mk circle { fill: var(--bad); } .mk text { fill: var(--on-bad); font: 800 11px var(--font-ui); text-anchor: middle; }
+.divider { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 2 4; }
+
+/* Failure list */
+.fails { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.fails li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.num { width: 22px; height: 22px; border-radius: 50%; background: var(--bad); color: var(--on-bad);
+  font: 800 12px/22px var(--font-ui); text-align: center; }
+.fails b { display: block; font-weight: 700; margin-bottom: 2px; }
+.fails span { color: var(--muted); font-size: 13.5px; }
+
+/* Latency strip */
+.lat { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.lat div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 4px; }
+.lat .k { font: 500 11px var(--font-mono); color: var(--subtle); letter-spacing: .06em; }
+.lat .v { font: 700 22px/1.2 var(--font-ui); font-variant-numeric: tabular-nums; }
+.lat .d { font: 400 12.5px var(--font-mono); color: var(--muted); }
+
+/* Tables */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font: 600 11px var(--font-mono); letter-spacing: .06em; color: var(--subtle); background: var(--surface-2); }
+tr:last-child td { border-bottom: 0; }
+td code, .mono { font: 400 12.5px var(--font-mono); }
+.ok { color: var(--ok); font-weight: 700; } .no { color: var(--bad); font-weight: 700; } .part { color: var(--warn); font-weight: 700; }
+a { color: inherit; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+footer { color: var(--subtle); font: 400 12px/1.6 var(--font-mono); }
+</style>
+
+<div class="wrap">
+<header>
+  <h1>Путь трафика HiEarth</h1>
+  <div class="meta">состояние на 20.11.2026, 10:00 МСК · после revert 71241f7 («⚡ Авто» снова через хаб первым) · режим входов relay, цель — вход 5</div>
+  <p class="lead">Как пакет пользователя идёт от телефона до сайта за рубежом: строка Happ, ТСПУ оператора, вход в РФ или хаб, туннель за рубеж, выход. Красные номера — места, где путь ломается сейчас или ломался в последние дни.</p>
+</header>
+
+<section>
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1280 612" role="img" aria-label="Устройство выбирает строку Happ; строки ведут напрямую на хаб или через входы Timeweb, которые пересылают трафик на порт 8447 хаба; хаб распределяет трафик по туннелям Hysteria2 и ShadowTLS на три выхода в Нидерландах. На мобильной сети ТСПУ режет прямые пути на хаб; путь вход 6 → хаб теряет 40–60 % потоков.">
+  <defs>
+    <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="8" class="hatchline"/>
+    </pattern>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+    <marker id="arok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="aok"/></marker>
+    <marker id="arbad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="abad"/></marker>
+  </defs>
+
+  <!-- column headers -->
+  <text x="86" y="26" class="hd" text-anchor="middle">УСТРОЙСТВО</text>
+  <text x="291" y="26" class="hd" text-anchor="middle">СТРОКА ПОДПИСКИ</text>
+  <text x="420" y="26" class="hd" text-anchor="middle">ТСПУ</text>
+  <text x="562" y="26" class="hd" text-anchor="middle">ВХОД RU · TIMEWEB</text>
+  <text x="851" y="26" class="hd" text-anchor="middle">ХАБ · VDSINA, МОСКВА</text>
+  <text x="1120" y="26" class="hd" text-anchor="middle">ВЫХОД NL</text>
+  <text x="1237" y="26" class="hd" text-anchor="middle">СЕТЬ</text>
+
+  <!-- TSPU band -->
+  <rect x="404" y="44" width="32" height="496" rx="4" class="band"/>
+  <text transform="translate(424 420) rotate(-90)" class="lbl" text-anchor="middle">ТСПУ оператора</text>
+
+  <!-- devices -->
+  <rect x="16" y="150" width="140" height="56" rx="6" class="box"/>
+  <text x="28" y="173" class="t">Телефон</text>
+  <text x="28" y="192" class="s">мобильная сеть</text>
+  <rect x="16" y="360" width="140" height="56" rx="6" class="box"/>
+  <text x="28" y="383" class="t">Ноутбук, телефон</text>
+  <text x="28" y="402" class="s">Wi‑Fi дома</text>
+  <path d="M156,178 H178 M156,388 H178 M178,178 V388 M178,283 H188" class="e"/>
+  <line x1="190" y1="60" x2="190" y2="484" class="ethin"/>
+  <path d="M178,283 H186" class="e" marker-end="url(#ar)"/>
+  <text x="86" y="446" class="s" text-anchor="middle">одна подписка на все</text>
+  <text x="86" y="460" class="s" text-anchor="middle">устройства; в каждый</text>
+  <text x="86" y="474" class="s" text-anchor="middle">момент работает одна строка</text>
+
+  <!-- lines -->
+  <rect x="196" y="60" width="190" height="44" rx="6" class="box"/>
+  <text x="208" y="78" class="t">· напрямую</text><text x="376" y="74" class="tag" text-anchor="end">URI</text>
+  <text x="208" y="95" class="s">Берёза/Дуб → адрес хаба</text>
+
+  <rect x="196" y="114" width="190" height="80" rx="6" class="box"/>
+  <text x="208" y="133" class="t">⚡ Авто</text><text x="376" y="129" class="tag" text-anchor="end">HAPP</text>
+  <text x="208" y="150" class="s">хаб первым: цена 1</text>
+  <text x="208" y="165" class="s">входы 5, 6: цена 10 000</text>
+  <text x="208" y="180" class="s">проба generate_204 / мин</text>
+
+  <rect x="196" y="204" width="190" height="46" rx="6" class="box"/>
+  <text x="208" y="223" class="t">🎋 Бамбук 1 / 2</text><text x="376" y="219" class="tag" text-anchor="end">HAPP</text>
+  <text x="208" y="240" class="s">UDP · хаб, затем входы</text>
+
+  <rect x="196" y="300" width="190" height="44" rx="6" class="box"/>
+  <text x="208" y="318" class="t">Берёза / Дуб</text><text x="376" y="314" class="tag" text-anchor="end">URI</text>
+  <text x="208" y="335" class="s">→ вход 5 (relay, закреплён)</text>
+
+  <rect x="196" y="440" width="190" height="44" rx="6" class="box"/>
+  <text x="208" y="458" class="t">· резерв</text><text x="376" y="454" class="tag" text-anchor="end">URI</text>
+  <text x="208" y="475" class="s">→ вход 6</text>
+
+  <!-- direct lanes to the hub (cut on mobile) -->
+  <path d="M386,82 H714" class="e" marker-end="url(#ar)"/>
+  <path d="M386,130 H714" class="e" marker-end="url(#ar)"/>
+  <path d="M386,214 C400,214 400,178 414,178 H714" class="e" marker-end="url(#ar)"/>
+  <text x="452" y="76" class="lbl">· напрямую → :443 / :2443 · ≈5 мс</text>
+  <text x="452" y="124" class="lbl">Авто → хаб, первым · ≈5 мс</text>
+  <text x="452" y="172" class="lbl">Бамбук → UDP :50443 + hop · ≈5 мс</text>
+  <g><line x1="414" y1="74" x2="426" y2="90" class="x"/><line x1="426" y1="74" x2="414" y2="90" class="x"/></g>
+  <g><line x1="414" y1="122" x2="426" y2="138" class="x"/><line x1="426" y1="122" x2="414" y2="138" class="x"/></g>
+  <g><line x1="414" y1="170" x2="426" y2="186" class="x"/><line x1="426" y1="170" x2="414" y2="186" class="x"/></g>
+  <g class="mk"><circle cx="420" cy="54" r="9"/><text x="420" y="58">1</text></g>
+  <g class="mk"><circle cx="386" cy="114" r="9"/><text x="386" y="118">4</text></g>
+
+  <!-- ways through the entries -->
+  <text x="452" y="250" class="lbl">≈45 мс до входа (Сибирь)</text>
+  <path d="M386,170 C430,170 420,292 450,292" class="eok" marker-end="url(#arok)"/>
+  <path d="M386,240 C420,240 424,308 450,308" class="eok" marker-end="url(#arok)"/>
+  <path d="M386,322 H450" class="e" marker-end="url(#ar)"/>
+  <path d="M386,184 C440,184 412,432 450,432" class="eok" marker-end="url(#arok)"/>
+  <path d="M386,246 C432,246 418,448 450,448" class="eok" marker-end="url(#arok)"/>
+  <path d="M386,462 H450" class="e" marker-end="url(#ar)"/>
+
+  <!-- entries -->
+  <rect x="452" y="258" width="220" height="124" rx="6" class="box"/>
+  <text x="464" y="278" class="t">Вход 5 · Timeweb</text>
+  <text x="464" y="296" class="s">nginx stream :443, :80</text>
+  <text x="464" y="311" class="s">→ хаб :8447, PROXY protocol</text>
+  <text x="464" y="326" class="s">nft DNAT :2443, UDP → хаб</text>
+  <rect x="464" y="342" width="196" height="26" rx="4" class="pillok"/>
+  <text x="474" y="359" class="lblok">здоров · цель режима relay</text>
+
+  <rect x="452" y="402" width="220" height="124" rx="6" class="boxbad"/>
+  <text x="464" y="422" class="t">Вход 6 · Timeweb</text>
+  <text x="464" y="440" class="s">nginx stream :443, :80</text>
+  <text x="464" y="455" class="s">→ хаб :8447, PROXY protocol</text>
+  <text x="464" y="470" class="s">nft DNAT :2443, UDP → хаб</text>
+  <rect x="464" y="486" width="196" height="26" rx="4" class="pillbad"/>
+  <text x="474" y="503" class="lblbad">монитор: «здоров»</text>
+
+  <!-- entries → hub -->
+  <path d="M672,300 L714,224" class="eok" marker-end="url(#arok)"/>
+  <text x="672" y="216" class="lblok">42 мс</text>
+  <path d="M672,446 L714,244" class="ebad" marker-end="url(#arbad)"/>
+  <g class="mk"><circle cx="694" cy="352" r="9"/><text x="694" y="356">2</text></g>
+  <text x="546" y="556" class="lblbad" text-anchor="middle">хаб → вход 6: теряется 40–60 % потоков (по 5-tuple)</text>
+
+  <!-- hub -->
+  <rect x="716" y="44" width="270" height="556" rx="8" class="hubframe"/>
+  <g class="mk"><circle cx="986" cy="44" r="9"/><text x="986" y="48">3</text></g>
+  <rect x="730" y="62" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="79" class="t">nginx stream :443</text><text x="742" y="94" class="s">SNI → Берёза :10443 / сайт</text>
+  <rect x="730" y="110" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="127" class="t">xray · Дуб (XHTTP)</text><text x="742" y="142" class="s">:2443 · Host = адрес хаба</text>
+  <rect x="730" y="158" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="175" class="t">hysteria2 · Бамбук</text><text x="742" y="190" class="s">UDP :50443 · hop → DNAT</text>
+  <rect x="730" y="206" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="223" class="t">:8447 · PROXY от входов</text><text x="742" y="238" class="s">nft: только адреса серверов</text>
+  <rect x="730" y="254" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="271" class="t">xray · Берёза (Reality)</text><text x="742" y="286" class="s">:10443 · зеркало PP :10444</text>
+  <path d="M972,130 H980 M972,178 H980 M972,274 H980 M980,130 V338" class="e"/>
+  <path d="M980,338 H974" class="e" marker-end="url(#ar)"/>
+  <rect x="730" y="318" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="335" class="t">балансировщик plan-N</text><text x="742" y="350" class="s">выходы 2, 3, 4 · веса 1 / 1 / 3</text>
+  <rect x="730" y="366" width="242" height="40" rx="5" class="box"/>
+  <text x="742" y="383" class="t">клиенты туннелей</text><text x="742" y="398" class="s">hy2 :1088+N · stls :2088+N</text>
+  <path d="M851,358 V364" class="e"/>
+  <line x1="730" y1="424" x2="972" y2="424" class="divider"/>
+  <text x="742" y="440" class="tag">ТОТ ЖЕ СЕРВЕР, НЕ VPN</text>
+  <rect x="730" y="448" width="242" height="40" rx="5" class="box2"/>
+  <text x="742" y="465" class="t">nginx → API :8000</text><text x="742" y="480" class="s">hiearth.ru · admin · подписка</text>
+  <rect x="730" y="496" width="242" height="40" rx="5" class="box2"/>
+  <text x="742" y="513" class="t">API: монитор, бот, оплаты</text><text x="742" y="528" class="s">xray-sync · алерты в Telegram</text>
+  <g class="mk"><circle cx="972" cy="496" r="9"/><text x="972" y="500">7</text></g>
+  <rect x="730" y="544" width="242" height="40" rx="5" class="box2"/>
+  <text x="742" y="561" class="t">PostgreSQL</text><text x="742" y="576" class="s">пользователи, кошелёк, платежи</text>
+
+  <!-- tunnels -->
+  <rect x="1004" y="60" width="264" height="112" rx="6" class="box"/>
+  <text x="1016" y="80" class="t">Туннель хаб → выход</text>
+  <text x="1016" y="99" class="s">Hysteria2 QUIC :50443 — основной</text>
+  <text x="1016" y="114" class="s">ShadowTLS v3 → SS-2022 :443 — резерв</text>
+  <text x="1016" y="133" class="s">ping 40–44 мс (утром до 126)</text>
+  <text x="1016" y="148" class="s">через туннель ≈140 мс</text>
+  <text x="1016" y="163" class="s">сертификат выхода закреплён</text>
+  <path d="M972,386 H990 C1020,386 1020,315 1048,315" class="e" marker-end="url(#ar)"/>
+  <path d="M990,386 C1020,386 1020,390 1048,390" class="e" marker-end="url(#ar)"/>
+  <path d="M990,386 C1020,386 1020,465 1048,465" class="e" marker-end="url(#ar)"/>
+  <line x1="1030" y1="172" x2="1030" y2="300" class="divider"/>
+
+  <!-- exits -->
+  <rect x="1050" y="290" width="140" height="50" rx="6" class="box"/>
+  <text x="1062" y="310" class="t">Выход 2</text><text x="1062" y="327" class="s">Амстердам · вес 1</text>
+  <rect x="1050" y="360" width="140" height="60" rx="6" class="boxwarn"/>
+  <text x="1062" y="380" class="t">Выход 3</text><text x="1062" y="397" class="s">вес 1 · резерв мёртв</text>
+  <text x="1062" y="411" class="s">latency до 1745 мс</text>
+  <g class="mk"><circle cx="1190" cy="360" r="9"/><text x="1190" y="364">5</text></g>
+  <rect x="1050" y="440" width="140" height="50" rx="6" class="box"/>
+  <text x="1062" y="460" class="t">Выход 4</text><text x="1062" y="477" class="s">вес 3 · и free-trial</text>
+
+  <rect x="1212" y="290" width="50" height="200" rx="6" class="box2"/>
+  <text transform="translate(1242 390) rotate(-90)" class="t" text-anchor="middle">Интернет</text>
+  <path d="M1190,315 H1210 M1190,390 H1210 M1190,465 H1210" class="e"/>
+  <g class="mk"><circle cx="1237" cy="506" r="9"/><text x="1237" y="510">6</text></g>
+  <text x="1237" y="530" class="lbl" text-anchor="middle">IPv6 нет</text>
+</svg>
+</div>
+<figcaption>Строки «⚡ Авто» и «🎋 Бамбук» получает Happ (JSON-подписка), URI-строки — остальные клиенты (v2rayTun, INCY). Прямые пути на хаб (серые, сверху) на мобильной сети режет ТСПУ. Пути через входы (зелёные) проходят, но добавляют ≈85 мс на круг, а у входа 6 участок вход → хаб теряет часть соединений.</figcaption>
+</figure>
+</section>
+
+<section>
+  <h2>Где ломается</h2>
+  <ol class="fails">
+    <li><div class="num">1</div><div><b>ТСПУ режет подсеть хаба на мобильных</b><span>С 07–12.11. Мёртвыми становятся «· напрямую», Бамбук через хаб и сайт <span class="mono">hiearth.ru</span> без туннеля. Маленький запрос иногда проскакивает, реальный трафик умирает.</span></div></li>
+    <li><div class="num">2</div><div><b>Вход 6 теряет потоки до хаба</b><span>Неисправный ECMP/LAG на транзите Ростелекома. Каждый 5-tuple либо всегда проходит, либо всегда пропадает, ping при этом идёт. Сейчас 40–60 % потоков; Берёза ждёт 10 с и рвётся, Дуб и Бамбук через DNAT умирают молча.</span></div></li>
+    <li><div class="num">3</div><div><b>Хаб — единая точка отказа</b><span>На одной VPS всё: VPN, сайт, оплаты, API, БД, монитор и алерты. 19.11 хаб был выключен 33 минуты (11:07–11:40), алертов не было ни одного.</span></div></li>
+    <li><div class="num">4</div><div><b>Пробы «Авто» не видят частичную потерю</b><span><span class="mono">generate_204</span> весит сотни байт, «заморозку» после 16–20 КБ он не ловит. Путь выбывает только при 2 провалах из 5 проб, xmux держит старое соединение. Без хаба цены у всех путей входов одинаковые, порядок Берёза → Дуб теряется.</span></div></li>
+    <li><div class="num">5</div><div><b>Выход 3 без резервного туннеля</b><span>ShadowTLS до выхода 3 — dial timeout, observatory пишет «exit-3.vr is dead», latency доходила до 1745 мс. Выход при этом стоит во всех платных тарифах с весом 1.</span></div></li>
+    <li><div class="num">6</div><div><b>У выходов нет IPv6</b><span>Тысячи ошибок <span class="mono">dial tcp6</span> в час в hysteria2-client. Клиенты сначала ждут IPv6 и лишь потом откатываются на IPv4.</span></div></li>
+    <li><div class="num">7</div><div><b>Мониторинг смотрит только из NL</b><span>Входы и хаб проверяются через выход за рубежом. Мобильный РФ не видит никто: check-host отвечает 403. Если хаб лежит, молчит всё, потому что монитор и бот живут на нём же.</span></div></li>
+  </ol>
+</section>
+
+<section>
+  <h2>Задержки на плечах</h2>
+  <div class="lat">
+    <div><span class="k">НАПРЯМУЮ</span><span class="v">≈5 + 40 мс</span><span class="d">устройство → хаб (Москва) → выход</span></div>
+    <div><span class="k">ЧЕРЕЗ ВХОД</span><span class="v">≈45 + 42 + 40 мс</span><span class="d">устройство → вход (Сибирь) → хаб → выход</span></div>
+    <div><span class="k">ЦЕНА ВХОДА</span><span class="v">+≈85 мс</span><span class="d">на каждый круг: рукопожатие, каждый запрос</span></div>
+    <div><span class="k">ХАБ → ВЫХОД</span><span class="v">40–126 мс</span><span class="d">ping; через туннель ≈140 мс</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>Где режет ТСПУ</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>ПУТЬ</th><th>WI‑FI</th><th>МОБИЛЬНАЯ СЕТЬ</th><th>ПОЧЕМУ</th></tr></thead>
+    <tbody>
+      <tr><td>⚡ Авто → хаб (сейчас первым)</td><td class="ok">работает</td><td class="no">режется</td><td>Подсеть хаба на мобильных отрезана. Маленькая проба может пройти, и тогда Авто «залипает» на хабе: из-за этого и делали <span class="mono">1a92c81</span>.</td></tr>
+      <tr><td>⚡ Авто → вход 5</td><td class="ok">работает</td><td class="ok">работает</td><td>Адрес Timeweb на мобильных пропускают, +≈85 мс.</td></tr>
+      <tr><td>⚡ Авто → вход 6, «· резерв»</td><td class="part">частично</td><td class="part">частично</td><td>Ломается не ТСПУ, а транзит вход 6 ↔ хаб.</td></tr>
+      <tr><td>🎋 Бамбук → хаб, UDP</td><td class="ok">работает</td><td class="no">режется</td><td>Подсеть хаба. UDP и QUIC на мобильных режут вдобавок.</td></tr>
+      <tr><td>🎋 Бамбук → входы, UDP</td><td class="ok">работает</td><td class="part">нестабильно</td><td>QUIC на мобильных: по данным с форумов, режут по-разному у разных операторов.</td></tr>
+      <tr><td>URI «· напрямую» → хаб</td><td class="ok">работает</td><td class="no">режется</td><td>Подсеть хаба.</td></tr>
+      <tr><td><span class="mono">hiearth.ru</span>, оплата, кабинет</td><td class="ok">работает</td><td class="no">без туннеля — нет</td><td>Внутри «Авто» адрес хаба :80/:443 уходит в туннель, поэтому с включённым Happ сайт открывается.</td></tr>
+      <tr><td><span class="mono">go.hiearth.ru</span> (подписка через вход)</td><td class="ok">работает</td><td class="ok">работает</td><td>Вход → хаб :8447 → nginx :8446 → API.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+<figure>
+<div class="scroll small">
+<svg viewBox="0 0 1000 268" role="img" aria-label="Сайт, оплата и подписка: hiearth.ru и admin указывают на хаб, go и tg — на вход, который пересылает трафик на порт 8447 хаба; оба пути сходятся в API на хабе. Бот ходит в Telegram через выход за рубежом.">
+  <text x="106" y="22" class="hd" text-anchor="middle">КТО</text>
+  <text x="336" y="22" class="hd" text-anchor="middle">DNS (CLOUDFLARE)</text>
+  <text x="551" y="22" class="hd" text-anchor="middle">ВХОД</text>
+  <text x="825" y="22" class="hd" text-anchor="middle">ХАБ</text>
+
+  <rect x="16" y="36" width="180" height="50" rx="6" class="box"/>
+  <text x="28" y="56" class="t">Браузер, Happ</text><text x="28" y="73" class="s">сайт, кабинет, подписка</text>
+  <rect x="16" y="110" width="180" height="50" rx="6" class="box"/>
+  <text x="28" y="130" class="t">ЮKassa</text><text x="28" y="147" class="s">вебхук об оплате</text>
+  <rect x="16" y="190" width="180" height="50" rx="6" class="box"/>
+  <text x="28" y="210" class="t">Telegram</text><text x="28" y="227" class="s">бот, Mini App</text>
+
+  <rect x="236" y="36" width="200" height="50" rx="6" class="box2"/>
+  <text x="248" y="56" class="t">hiearth.ru · admin.</text><text x="248" y="73" class="s">A → адрес хаба</text>
+  <rect x="236" y="130" width="200" height="50" rx="6" class="box2"/>
+  <text x="248" y="150" class="t">go. · tg.</text><text x="248" y="167" class="s">A → адрес входа</text>
+
+  <rect x="476" y="130" width="150" height="50" rx="6" class="box"/>
+  <text x="488" y="150" class="t">Вход 5 / 6</text><text x="488" y="167" class="s">→ хаб :8447, PROXY</text>
+
+  <rect x="666" y="34" width="318" height="216" rx="8" class="hubframe"/>
+  <rect x="680" y="46" width="180" height="40" rx="5" class="box"/>
+  <text x="692" y="63" class="t">nginx :443 → :8443</text><text x="692" y="78" class="s">SNI-роутер, TLS сайта</text>
+  <rect x="680" y="134" width="180" height="40" rx="5" class="box"/>
+  <text x="692" y="151" class="t">:8447 → nginx :8446</text><text x="692" y="166" class="s">realip из PROXY</text>
+  <rect x="880" y="46" width="92" height="128" rx="5" class="box"/>
+  <text x="926" y="104" class="t" text-anchor="middle">API</text><text x="926" y="120" class="s" text-anchor="middle">:8000</text>
+  <rect x="680" y="196" width="292" height="40" rx="5" class="box2"/>
+  <text x="692" y="213" class="t">API → Telegram Bot API</text><text x="692" y="228" class="s">через SOCKS выхода: напрямую хаб не достаёт</text>
+
+  <path d="M196,61 H234" class="e" marker-end="url(#ar2)"/>
+  <path d="M196,74 C216,74 214,155 234,155" class="e" marker-end="url(#ar2)"/>
+  <path d="M196,135 C214,135 214,70 234,70" class="e" marker-end="url(#ar2)"/>
+  <path d="M196,206 C220,206 214,82 234,82" class="e" marker-end="url(#ar2)"/>
+  <path d="M436,61 H678" class="e" marker-end="url(#ar2)"/>
+  <path d="M436,155 H474" class="e" marker-end="url(#ar2)"/>
+  <path d="M626,155 H678" class="e" marker-end="url(#ar2)"/>
+  <path d="M860,66 H878 M860,154 H878" class="e"/>
+  <path d="M680,226 C440,226 400,224 198,224" class="e" marker-end="url(#ar2)"/>
+  <text x="456" y="54" class="lbl">прямо на хаб: на мобильных режется</text>
+  <text x="440" y="218" class="lbl">исходящие хаба в Telegram — через выход NL</text>
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+  </defs>
+</svg>
+</div>
+<figcaption>Сайт, оплата, API, БД и бот живут на хабе. <span class="mono">go.hiearth.ru</span> — единственный путь к API, который не зависит от того, пропускают ли адрес хаба. Вебхук ЮKassa всегда идёт на адрес хаба.</figcaption>
+</figure>
+</section>
+
+<section>
+  <h2>Кто что проверяет</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>ПРОВЕРКА</th><th>ОТКУДА</th><th>ЧТО ЛОВИТ</th><th>ЧЕГО НЕ ВИДИТ</th></tr></thead>
+    <tbody>
+      <tr><td>Монитор входов: TLS к входу :443, UDP-проба</td><td>хаб → SOCKS выхода в NL, раз в минуту</td><td>вход мёртв целиком (3 провала подряд), и тогда его строки убираются из подписки</td><td>Частичную потерю: вход 6 «здоров» при 17–60 % потерь. Мобильную РФ.</td></tr>
+      <tr><td>Loop-проба хаба, Бамбук-проба</td><td>хаб → выход → хаб</td><td>адрес хаба недоступен снаружи</td><td>Мобильную РФ.</td></tr>
+      <tr><td>check-host (взгляд из РФ)</td><td>внешний сервис</td><td class="no">сейчас HTTP 403, результат игнорируется</td><td>Всё.</td></tr>
+      <tr><td>Монитор туннелей, observatory xray</td><td>хаб, раз в 30 с</td><td>туннель хаб → выход, «exit-3.vr is dead»</td><td>—</td></tr>
+      <tr><td>burstObservatory в Happ</td><td>устройство, <span class="mono">generate_204</span> раз в минуту по каждому пути</td><td>путь, мёртвый целиком</td><td>Заморозку после 16–20 КБ, частичную потерю потоков. xmux держит старое соединение.</td></tr>
+      <tr><td>Алерты</td><td>бот на хабе → Telegram через выход</td><td>всё, что заметили мониторы выше</td><td>Отказ самого хаба: 19.11 33 минуты тишины.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Источники: <span class="mono">docs/incidents/2026-11-20.md</span>, <span class="mono">docs/research/2026-11-20-vpn-architecture-review.md</span>. Адресов в схеме нет: репозиторий публичный.</footer>
+</div>
