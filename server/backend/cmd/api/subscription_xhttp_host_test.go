@@ -107,3 +107,47 @@ func TestXrayXHTTPInboundUsesFrozenHost(t *testing.T) {
 	}
 	t.Fatal("no vless-xhttp inbound")
 }
+
+// The site and the admin go through the tunnel by their names too (20.11): after the A records
+// moved to the Hub's new address, the IP rule (main_server_host) no longer matched, geoip:ru sent
+// the site direct, and a mobile network that cuts the Hub's range cut the site even with the VPN on.
+func TestJSONSiteDomainsThroughTunnel(t *testing.T) {
+	in := autoInputs()
+	in.siteHost = "site.example.test"
+	var cs []map[string]any
+	if err := json.Unmarshal(jsonSubscription(in, directRouting{ips: []string{"geoip:ru"}}), &cs); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		rules := c["routing"].(map[string]any)["rules"].([]any)
+		var domainAt, directAt = -1, -1
+		for i, r := range rules {
+			m := r.(map[string]any)
+			if d, ok := m["domain"].([]any); ok && len(d) == 3 && d[0] == "full:site.example.test" && d[1] == "full:www.site.example.test" && d[2] == "full:admin.site.example.test" {
+				if m["balancerTag"] != "auto" || m["port"] != "80,443" {
+					t.Fatalf("the site rule goes to the tunnel on 80/443: %v", m)
+				}
+				domainAt = i
+			}
+			if m["outboundTag"] == "direct" && directAt < 0 {
+				directAt = i
+			}
+		}
+		if domainAt < 0 || directAt < 0 || domainAt > directAt {
+			t.Fatalf("%v: the site rule (%d) must come before the direct rules (%d)", c["remarks"], domainAt, directAt)
+		}
+	}
+	in.siteHost = ""
+	body := string(jsonSubscription(in, directRouting{}))
+	if strings.Contains(body, "full:www.") {
+		t.Fatal("no site host, no site rule")
+	}
+}
+
+func TestSiteHostOf(t *testing.T) {
+	for in, want := range map[string]string{"https://hiearth.example": "hiearth.example", "https://Site.Example/": "site.example", "": "", "not a url": ""} {
+		if got := siteHostOf(in); got != want {
+			t.Errorf("siteHostOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

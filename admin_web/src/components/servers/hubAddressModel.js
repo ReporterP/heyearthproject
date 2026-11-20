@@ -48,6 +48,7 @@ export function stepView(change) {
       const again = rec.status === 'failed' || rec.status === 'interrupted'
       row.primary = { label: s.key === 'add' ? 'Повторить' : again ? `${RUN_LABEL[s.key]} ещё раз` : RUN_LABEL[s.key], action: `step:${s.key}` }
       if (s.key === 'add' && !again) row.primary = null // step 1 runs by itself when the change starts
+      if (s.key === 'dns') row.secondary = { label: 'Я поменял DNS — дальше', action: 'dns-trust' }
     }
     return row
   })
@@ -87,3 +88,10 @@ export function changeBanner(change) {
 
 /** hubAddrActive: a change the page should show (not final). */
 export const hubAddrActive = (change) => Boolean(change) && !['finished', 'cancelled', 'reverted'].includes(change.state)
+
+/** dnsAutoRecheck: re-run the DNS check every 30 s once the owner ran it and it has not passed yet. */
+export function dnsAutoRecheck(change) {
+  if (change?.state !== 'nodes_ready' || change?.running) return false
+  const st = change?.steps?.dns?.status
+  return st === 'failed' || st === 'interrupted'
+}

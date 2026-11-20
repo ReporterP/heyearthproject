@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { HUB_STEPS, stepView, roleLabel, countdown, transitionBlockers, changeBanner } from './hubAddressModel.js'
+import { HUB_STEPS, stepView, roleLabel, countdown, transitionBlockers, changeBanner, dnsAutoRecheck } from './hubAddressModel.js'
 
 const change = (state, extra = {}) => ({ id: 1, state, steps: {}, running: '', ...extra })
 
@@ -77,4 +77,15 @@ test('transitionBlockers and changeBanner', () => {
   assert.match(changeBanner(change('reverting', { revert_reason: 'таймер' })).text, /откатывается.*таймер/)
   assert.equal(changeBanner(change('reverting')).tone, 'danger')
   assert.equal(changeBanner(change('added')), null)
+})
+
+test('stepView: DNS — the owner may go on on their word; the check repeats every 30 s', () => {
+  const dns = stepView(change('nodes_ready', { steps: { dns: { status: 'failed' } } })).find((s) => s.key === 'dns')
+  assert.equal(dns.primary.action, 'step:dns')
+  assert.equal(dns.secondary.action, 'dns-trust')
+  assert.equal(dns.secondary.label, 'Я поменял DNS — дальше')
+  assert.equal(dnsAutoRecheck(change('nodes_ready', { steps: { dns: { status: 'failed' } } })), true)
+  assert.equal(dnsAutoRecheck(change('nodes_ready', { running: 'dns' })), false)
+  assert.equal(dnsAutoRecheck(change('nodes_ready')), false) // not before the owner ran it once
+  assert.equal(dnsAutoRecheck(change('dns_ready')), false)
 })

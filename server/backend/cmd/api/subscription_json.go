@@ -186,7 +186,7 @@ func jsonInbounds() []any {
 // balancer). Other ports of the Hub (the owner's SSH) stay direct: through the
 // tunnel they would end on the Hub itself, which lets its proxy reach its own
 // address on 80/443 only.
-func jsonRules(hub string, d directRouting, final xrayObj) []any {
+func jsonRules(hub, siteHost string, d directRouting, final xrayObj) []any {
 	var rules []any
 	if hub != "" {
 		r := xrayObj{"type": "field", "port": "80,443"}
@@ -195,6 +195,14 @@ func jsonRules(hub string, d directRouting, final xrayObj) []any {
 		} else {
 			r["domain"] = []string{"full:" + hub}
 		}
+		maps.Copy(r, final)
+		rules = append(rules, r)
+	}
+	// The site, its www and the admin by name (sniffed SNI / Host): whatever address their A
+	// records point at — a new Hub address is a RU address that geoip:ru would send direct.
+	if siteHost != "" {
+		r := xrayObj{"type": "field", "port": "80,443",
+			"domain": []string{"full:" + siteHost, "full:www." + siteHost, "full:admin." + siteHost}}
 		maps.Copy(r, final)
 		rules = append(rules, r)
 	}
@@ -234,7 +242,7 @@ const (
 // balancedConfig is one line: ways (tags starting with prefix) behind a leastLoad
 // balancer over a burst observatory, fallback until the first probes answer. The
 // first matching cost applies: the entries ("<prefix>r…") first.
-func balancedConfig(label, description, prefix, fallback, hub string, ways []jsonWay, d directRouting) xrayObj {
+func balancedConfig(label, description, prefix, fallback, hub, siteHost string, ways []jsonWay, d directRouting) xrayObj {
 	costs := []any{xrayObj{"regexp": true, "match": "^" + prefix + "r", "value": entryCost}}
 	if prefix == "p-" {
 		costs = append(costs, xrayObj{"regexp": true, "match": "-xhttp$", "value": dubCost})
@@ -260,7 +268,7 @@ func balancedConfig(label, description, prefix, fallback, hub string, ways []jso
 					"expected": 1, "maxRTT": probeMaxRTT, "tolerance": probeTolerance,
 					"costs": costs,
 				}}}},
-			"rules": jsonRules(hub, d, xrayObj{"balancerTag": "auto"}),
+			"rules": jsonRules(hub, siteHost, d, xrayObj{"balancerTag": "auto"}),
 		},
 	}
 }
@@ -282,11 +290,11 @@ func jsonSubscription(in hubConnectionInputs, d directRouting) []byte {
 			break
 		}
 	}
-	configs := []any{balancedConfig("⚡ Авто", "сам выбирает самый быстрый вход", "p-", fallback, in.mainServerHost, ways, d)}
+	configs := []any{balancedConfig("⚡ Авто", "сам выбирает самый быстрый вход", "p-", fallback, in.mainServerHost, in.siteHost, ways, d)}
 	for _, b := range bambooJSON {
 		// Бамбук is for Wi-Fi, where the Hub answers: the Hub first.
 		if bw := bambooWays(in, b.quic); len(bw) > 0 {
-			configs = append(configs, balancedConfig(b.label, "UDP, только Wi-Fi · сам выбирает вход", "b-", bw[0].tag, in.mainServerHost, bw, d))
+			configs = append(configs, balancedConfig(b.label, "UDP, только Wi-Fi · сам выбирает вход", "b-", bw[0].tag, in.mainServerHost, in.siteHost, bw, d))
 		}
 	}
 	body, err := json.Marshal(configs)
