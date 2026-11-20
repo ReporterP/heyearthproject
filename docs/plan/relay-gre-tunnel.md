@@ -2,7 +2,7 @@
 id: relay-gre-tunnel
 beads_id: heyearthproject-x9n9
 prd: ../prd/relay-gre-tunnel.prd.md
-status: in_progress
+status: done
 created: 2026-11-20
 ---
 

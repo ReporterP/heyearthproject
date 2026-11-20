@@ -2,7 +2,7 @@
 id: relay-gre-tunnel
 beads_id: heyearthproject-x9n9
 plan: ../plan/relay-gre-tunnel.md
-status: in_progress
+status: done
 created: 2026-11-20
 ---
 
@@ -26,7 +26,7 @@ created: 2026-11-20
   - Verify: `go test ./cmd/deploy/ -run RelayTunnel`
 
 ## Фаза 2: выдача
-- [ ] **heyearthproject-2pcf** — runbook, CLAUDE.md, ревью, слияние в main, деплой на вход 6 по «да» владельца, итог в инциденте
+- [x] **heyearthproject-2pcf** — runbook, CLAUDE.md, ревью, слияние в main, деплой на вход 6 по «да» владельца, итог в инциденте
   - Verify: матрица после ≥ 99 % (TCP 2443 и UDP), `deploy --status`
 
 ## Verification log
@@ -35,3 +35,4 @@ created: 2026-11-20
 - **cfpt** (20.11): `TestEntryMonitorRelay2443`: туннель лёг (443 жив, 2443 нет) → unhealthy за 3 проверки; одна потеря 2443 → повтор, вход здоров.
 - **onmd** (20.11): `TestDDoSAllowScriptTunnelPeers`: адрес туннеля в allow4, чужой point-to-point peer — нет.
 - **2fc3** (20.11): тесты скриптов, решения и Python-матрицы (против TLS и UDP-ответчика на Go); контейнерная лаборатория apply: успех, плохой замер «после» (все файлы вернулись побайтно), сдвиг маршрута хаба (откат до входа).
+- **2pcf** (20.11): ревью (7 находок, исправлены), слито в main; прод: API `a9098c8` ~15:58 (health 200), `--relay-tunnel 6` ~16:10 — TCP 2443 0→100/100, UDP 0→100/100, :443 входа 0→40/40; `--path-matrix 6` через выход :443 50/50, :2443 50/50.
