@@ -547,7 +547,12 @@ func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
 	if err != nil {
 		return entryPlan{}, err
 	}
-	return planEntries(mainHost, relays, fo, userID != "" && testUser == userID, interval), nil
+	transition, err := subscriptionSetting(hubAddrTransitionKey, "")
+	if err != nil {
+		return entryPlan{}, err
+	}
+	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, interval)
+	return applyHubTransition(p, hubTransitionOn(transition)), nil
 }
 
 // reserveSuffix labels the k-th reserve (0-based): " · резерв", " · резерв 2", …

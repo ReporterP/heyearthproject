@@ -97,6 +97,12 @@ func handleSubscriptionLink(w http.ResponseWriter, r *http.Request) {
 		writeSubscriptionUnavailable(w, "temporarily unavailable")
 		return
 	}
+	// The fetch time feeds the Hub address change's «обновили подписку N из M»; a failure only logs.
+	if _, err := withSyncTimeout(func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, touchSubscriptionFetch(ctx, db.DB, userID)
+	}); err != nil {
+		log.Printf("[subscribe] user %s: fetch time not recorded: %v", userID, err)
+	}
 
 	// Проверяем доступ
 	access, err := biz.GetUserAccessState(userID, "")
