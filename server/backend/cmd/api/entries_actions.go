@@ -33,8 +33,9 @@ const (
 
 // Side effects of the entry actions (tests swap them).
 var (
-	entriesJobs     = lastEntryJobs
-	entriesStartJob = func(ctx context.Context, id int, kind string) (int64, error) {
+	entriesJobs      = lastEntryJobs
+	entriesStability = biz.EntryStabilityAll
+	entriesStartJob  = func(ctx context.Context, id int, kind string) (int64, error) {
 		return admin.NodeProvisioner.Start(ctx, id, kind)
 	}
 	entriesSetRotation = biz.SetEntryRotation
@@ -426,7 +427,8 @@ func handleAdminEntryAction(w http.ResponseWriter, r *http.Request) {
 // entryView is one row of «Входы»: the entry and its last checks.
 type entryView struct {
 	biz.Entry
-	Checks entryChecks `json:"checks"`
+	Checks    entryChecks         `json:"checks"`
+	Stability *biz.EntryStability `json:"stability"` // nil: no samples yet
 }
 
 func relayIDs(entries []biz.Entry) []int {
@@ -439,12 +441,16 @@ func relayIDs(entries []biz.Entry) []int {
 	return ids
 }
 
-func entryViews(entries []biz.Entry, checks map[int]entryChecks, now time.Time) []entryView {
+func entryViews(entries []biz.Entry, checks map[int]entryChecks, stability map[int]biz.EntryStability, now time.Time) []entryView {
 	out := make([]entryView, 0, len(entries))
 	for _, e := range entries {
 		c := checks[e.ID]
 		c.judge(now)
-		out = append(out, entryView{Entry: e, Checks: c})
+		v := entryView{Entry: e, Checks: c}
+		if st, ok := stability[e.ID]; ok {
+			v.Stability = &st
+		}
+		out = append(out, v)
 	}
 	return out
 }

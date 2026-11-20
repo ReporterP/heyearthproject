@@ -102,6 +102,10 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		checks, err = entriesJobs(ctx, relayIDs(entries))
 	}
+	var stability map[int]biz.EntryStability
+	if err == nil {
+		stability, err = entriesStability(ctx)
+	}
 	if err != nil {
 		entriesUnavailable(w, err)
 		return
@@ -120,7 +124,7 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 		urgentUntil = &t
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"entries": entryViews(entries, checks, entriesNow()), "failover": view, "history": history,
+		"entries": entryViews(entries, checks, stability, entriesNow()), "failover": view, "history": history,
 		"update_interval_hours": planEntries("", nil, biz.EntryFailover{}, false, vals["subscription_update_interval_hours"]).interval,
 		"urgent_until":          urgentUntil,
 		"direct_by_name":        cmp.Or(strings.TrimSpace(vals[subDirectByNameKey]), autoModeOff),

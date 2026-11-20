@@ -43,9 +43,18 @@ func runRetention() {
 	} else if n > 0 {
 		log.Printf("[retention] telegram: %d expired tokens removed", n)
 	}
+	if n, err := biz.PurgeEntrySamples(ctx, entrySamplesKeep); err != nil {
+		log.Printf("[retention] entry samples: %v", err)
+	} else if n > 0 {
+		log.Printf("[retention] entries: %d stability samples older than 3 days removed", n)
+	}
 	if n, err := biz.CleanupExpiredUserSessions(ctx); err != nil {
 		log.Printf("[retention] sessions: %v", err)
 	} else if n > 0 {
 		log.Printf("[retention] sessions: %d expired removed", n)
 	}
 }
+
+// entrySamplesKeep: the entries' stability samples (entry_probe_samples) are kept 3 days — «Входы»
+// shows 1 h and 24 h.
+const entrySamplesKeep = 72 * time.Hour

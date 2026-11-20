@@ -28,8 +28,9 @@ func useEntriesFake(t *testing.T) *entriesFake {
 		entriesList, entriesFailover, entriesSetting, entriesSetSetting, entriesSetMode, entriesBump, entriesHistory, entriesAudit, entriesNow, entriesSetFO = l, fo, s, ss, sm, b, h, a, n, sf
 	})
 	entriesSetFO = func(_ context.Context, st biz.EntryFailover) error { f.fo = append(f.fo, st); return nil }
-	prevJobs := entriesJobs
-	t.Cleanup(func() { entriesJobs = prevJobs })
+	prevJobs, prevStab := entriesJobs, entriesStability
+	t.Cleanup(func() { entriesJobs, entriesStability = prevJobs, prevStab })
+	entriesStability = func(context.Context) (map[int]biz.EntryStability, error) { return map[int]biz.EntryStability{}, nil }
 	entriesJobs = func(context.Context, []int) (map[int]entryChecks, error) { return map[int]entryChecks{}, nil }
 	entriesList = func(context.Context) ([]biz.Entry, error) {
 		return []biz.Entry{{ID: 0, Name: "Hub", Kind: biz.EntryKindHub, Address: "198.51.100.1"},

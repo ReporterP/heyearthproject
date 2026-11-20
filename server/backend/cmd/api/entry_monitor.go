@@ -170,12 +170,17 @@ type entryMonitor struct {
 	// udpFlow: one Bamboo VN probe through a random hop port, no retry (a flow of the stability
 	// and path checks).
 	udpFlow func(socksPort int, host string, psk []byte) error
-	raise   func(key string, level AlertLevel, title, details string)
-	resolve func(key, message string)
-	logf    func(format string, args ...any)
+	// tlsFlow: one TLS flow of the stability samples (nil: no samples; the verdict uses tlsCheck).
+	tlsFlow     func(socksPort int, host string, port int, sni string) error
+	saveSamples func(ctx context.Context, id int, at time.Time, s []biz.EntrySample) error
+	stability   func(ctx context.Context) (map[int]biz.EntryStability, error)
+	raise       func(key string, level AlertLevel, title, details string)
+	resolve     func(key, message string)
+	logf        func(format string, args ...any)
 
 	tcp, udp    map[int]*entryTrack
 	rot         map[int]string // the rotation of each relay at the last run (its alerts close once on 'off')
+	unstable    map[int]bool   // relay-<id>-unstable is up (a restart re-raises it: Raise keeps one incident)
 	blindSince  time.Time
 	blindRaised bool // the blind alert is up: a verdict resolves it (no resolve noise every minute)
 	skipLog     logGate
@@ -184,12 +189,15 @@ type entryMonitor struct {
 var entryMon = &entryMonitor{
 	now: time.Now, list: biz.ListMonitoredEntries, readFailover: biz.GetEntryFailover, saveFailover: biz.SetEntryFailover,
 	saveCheck: biz.SaveEntryCheck, bump: biz.BumpSubscriptionVersionContext,
-	setting:    func(key string) (string, error) { return settingOrEmpty(biz.GetSetting, key) },
-	exits:      func() ([]int, error) { return liveExitSocksPorts(bambooMaxExits) },
-	control:    exitTCPControl,
-	tlsCheck:   entryTLSCheck,
-	udpCheck:   func(port int, host string, psk []byte) error { _, _, err := probeBamboo(port, host, psk); return err },
-	udpControl: func(port int) error { return defaultBambooProber.control(port) },
+	setting:     func(key string) (string, error) { return settingOrEmpty(biz.GetSetting, key) },
+	exits:       func() ([]int, error) { return liveExitSocksPorts(bambooMaxExits) },
+	control:     exitTCPControl,
+	tlsCheck:    entryTLSCheck,
+	tlsFlow:     entryTLSCheck,
+	saveSamples: biz.SaveEntrySamples,
+	stability:   biz.EntryStabilityAll,
+	udpCheck:    func(port int, host string, psk []byte) error { _, _, err := probeBamboo(port, host, psk); return err },
+	udpControl:  func(port int) error { return defaultBambooProber.control(port) },
 	udpFlow: func(port int, host string, psk []byte) error {
 		_, err := defaultBambooProber.attempt(port, host, randomHopPort(defaultBambooProber.rand), psk)
 		return err
@@ -321,6 +329,7 @@ func (m *entryMonitor) run() {
 			delete(m.rot, id)
 		}
 	}
+	m.checkStability(entries)
 	m.failover(now, cur, cfg.enabled, entries)
 }
 
@@ -386,6 +395,7 @@ func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryC
 	m.verdict(now)
 	t := m.track(&m.tcp, e.ID, e.Health.External)
 	m.publish(e, "ext", t, t.record(now, v == entryOK), now, err)
+	m.tcpSamples(now, port, e, cfg.sni)
 	if e.Kind != biz.EntryKindRelay || quietEntry(e) {
 		return // the Hub's own alerts come from the loop probe (entry-unreachable-external); an entry out of rotation raises none
 	}
@@ -413,6 +423,7 @@ func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string
 	}
 	t := m.track(&m.udp, e.ID, e.Health.UDP)
 	m.publish(e, "udp", t, t.record(now, verdict == bambooOK), now, err)
+	m.udpSamples(now, port, e, []byte(psk))
 	if quietEntry(e) {
 		return
 	}
@@ -618,4 +629,114 @@ func (m *entryMonitor) flows(relayIP string, n int) (provision.FlowCounts, error
 		c.UDP = countFlows(n, func() error { return m.udpFlow(port, relayIP, []byte(cfg.psk)) })
 	}
 	return c, nil
+}
+
+// ── stability (docs/prd/entries-management.prd.md §4) ──
+
+// Flows of the stability samples per check: each a new connection through the exit, so its own
+// 5-tuple on every leg up to the Hub. The verdict above is unchanged (and so is the failover).
+const (
+	flowsTCP = 8
+	flowsUDP = 4
+	// The alert: below unstableRaisePct over the last hour with at least unstableMinChecks checks of
+	// a kind; resolved when every kind with enough checks is back at unstableResolvePct.
+	unstableRaisePct   = 95
+	unstableResolvePct = 98
+	unstableMinChecks  = 30
+)
+
+func (m *entryMonitor) saveFlowSamples(now time.Time, id int, s []biz.EntrySample) {
+	ctx, cancel := context.WithTimeout(context.Background(), entryDBTimeout)
+	defer cancel()
+	if err := m.saveSamples(ctx, id, now, s); err != nil {
+		m.logf("[entries] вход %d: стабильность не сохранена: %v", id, err)
+	}
+}
+
+// tcpSamples: :443 of every entry, :2443 of a relay (its DNAT path).
+func (m *entryMonitor) tcpSamples(now time.Time, port int, e biz.Entry, sni string) {
+	if m.tlsFlow == nil || m.saveSamples == nil {
+		return
+	}
+	s := []biz.EntrySample{{Kind: biz.EntrySampleTCP443, Total: flowsTCP,
+		OK: countFlows(flowsTCP, func() error { return m.tlsFlow(port, e.Address, 443, sni) })}}
+	if e.Kind == biz.EntryKindRelay {
+		s = append(s, biz.EntrySample{Kind: biz.EntrySampleTCP2443, Total: flowsTCP,
+			OK: countFlows(flowsTCP, func() error { return m.tlsFlow(port, e.Address, 2443, sni) })})
+	}
+	m.saveFlowSamples(now, e.ID, s)
+}
+
+func (m *entryMonitor) udpSamples(now time.Time, port int, e biz.Entry, psk []byte) {
+	if m.udpFlow == nil || m.saveSamples == nil {
+		return
+	}
+	ok := countFlows(flowsUDP, func() error { return m.udpFlow(port, e.Address, psk) })
+	m.saveFlowSamples(now, e.ID, []biz.EntrySample{{Kind: biz.EntrySampleUDP, OK: ok, Total: flowsUDP}})
+}
+
+// unstableVerdict (pure): raise below unstableRaisePct with enough checks; resolve once every
+// kind with enough checks is at unstableResolvePct again (no data keeps the state).
+func unstableVerdict(w map[string]biz.StabilityWindow, raised bool) (raise, resolve bool) {
+	judged, low, recovered := 0, false, true
+	for _, s := range w {
+		if s.Checks < unstableMinChecks || s.Total == 0 {
+			continue
+		}
+		judged++
+		if 100*s.OK < unstableRaisePct*s.Total {
+			low = true
+		}
+		if 100*s.OK < unstableResolvePct*s.Total {
+			recovered = false
+		}
+	}
+	if !raised {
+		return low, false
+	}
+	return false, judged > 0 && recovered
+}
+
+func pct(s biz.StabilityWindow) string {
+	if s.Total == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f %%", 100*float64(s.OK)/float64(s.Total))
+}
+
+// checkStability raises relay-<id>-unstable for an entry in rotation or on the canary that loses
+// flows over the last hour; an entry out of rotation never raises it (noteRotation closed it).
+func (m *entryMonitor) checkStability(entries []biz.Entry) {
+	if m.stability == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), entryDBTimeout)
+	st, err := m.stability(ctx)
+	cancel()
+	if err != nil {
+		m.logf("[entries] стабильность не прочитана: %v", err)
+		return
+	}
+	if m.unstable == nil {
+		m.unstable = map[int]bool{}
+	}
+	for _, e := range entries {
+		if e.Kind != biz.EntryKindRelay || quietEntry(e) {
+			delete(m.unstable, e.ID)
+			continue
+		}
+		w := st[e.ID].H1
+		raise, resolve := unstableVerdict(w, m.unstable[e.ID])
+		key := relayAlertKey(e.ID, "unstable")
+		switch {
+		case raise:
+			m.unstable[e.ID] = true
+			m.raise(key, AlertWarn, "Вход теряет подключения", fmt.Sprintf(
+				"Вход «%s» (%s) нестабилен: за час успешных подключений через выход — :443 %s, :2443 %s, Бамбук %s (порог %d %%).\nВход остаётся в подписке: решите на «Входах» — «Проверить путь», «Вывести из ротации».",
+				e.Name, e.Address, pct(w[biz.EntrySampleTCP443]), pct(w[biz.EntrySampleTCP2443]), pct(w[biz.EntrySampleUDP]), unstableRaisePct))
+		case resolve:
+			delete(m.unstable, e.ID)
+			m.resolve(key, fmt.Sprintf("Вход «%s» (%s) снова стабилен: за час не меньше %d %% успешных подключений.", e.Name, e.Address, unstableResolvePct))
+		}
+	}
 }
