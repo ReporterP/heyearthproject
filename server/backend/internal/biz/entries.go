@@ -189,10 +189,14 @@ func ListEntries(ctx context.Context) ([]Entry, error) { return listWithHub(ctx,
 
 // ListMonitoredEntries: the Hub and every online relay whatever its rotation (the entries
 // monitor checks an entry out of rotation too — the owner sees whether it recovered).
-func ListMonitoredEntries(ctx context.Context) ([]Entry, error) { return listWithHub(ctx, relaysOnline) }
+func ListMonitoredEntries(ctx context.Context) ([]Entry, error) {
+	return listWithHub(ctx, relaysOnline)
+}
 
 // ListAdminEntries: the Hub and every relay in any lifecycle state («Входы»).
-func ListAdminEntries(ctx context.Context) ([]Entry, error) { return listWithHub(ctx, relaysEveryState) }
+func ListAdminEntries(ctx context.Context) ([]Entry, error) {
+	return listWithHub(ctx, relaysEveryState)
+}
 
 func listWithHub(ctx context.Context, where string) ([]Entry, error) {
 	host, err := entrySetting(ctx, "main_server_host", "")
