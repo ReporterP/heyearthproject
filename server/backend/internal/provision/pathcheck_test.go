@@ -15,7 +15,7 @@ func TestPathVerdictFloors(t *testing.T) {
 	}{
 		{"EXPECT 1\nRAW hub→entry:443 48/50 +\n", true},
 		{"EXPECT 1\nRAW hub→entry:443 47/50 -\n", false}, // 94 % < 95
-		{"EXPECT 1\nUSER via-exit:443 49/50\n", false},  // 98 % < 99
+		{"EXPECT 1\nUSER via-exit:443 49/50\n", false},   // 98 % < 99
 		{"EXPECT 1\nUSER via-exit:443 50/50\n", true},
 		{"EXPECT 1\nUDP via-exit:bamboo 48/50\n", true},
 		{"EXPECT 1\nUDP via-exit:bamboo 47/50\n", false},
