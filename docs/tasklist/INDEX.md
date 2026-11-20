@@ -27,6 +27,7 @@ bd list --status in_progress       # что сейчас в работе
 | `heyearthproject-3pc0` | Express — Hysteria2 client inbound for premium plans | draft | [prd](../prd/express-routing.prd.md) | [plan](../plan/express-routing.md) | [tasks](express-routing.md) | — |
 | `heyearthproject-ei6j` | Tele2 mobile DPI mitigation v2 (chrome fp + Yandex Cloud SNI) | ready (P1) | [prd](../prd/tele2-mobile-dpi-v2.prd.md) | [plan](../plan/tele2-mobile-dpi-v2.md) | [tasks](tele2-mobile-dpi-v2.md) | — |
 | `heyearthproject-jzd5.24` (+ .23, .27) | B2B: доступ сотрудников за счёт компании, жизненный цикл статуса, тексты | in progress (P1) | [prd](../prd/b2b-member-access.prd.md) | [plan](../plan/b2b-member-access.md) | [tasks](b2b-member-access.md) | — |
+| `heyearthproject-x9n9` | GRE-туннель вход ↔ хаб (инцидент 20.11) | in progress (P1) | [prd](../prd/relay-gre-tunnel.prd.md) | [plan](../plan/relay-gre-tunnel.md) | [tasks](relay-gre-tunnel.md) | — |
 
 ## Как добавить новый эпик
 
