@@ -55,6 +55,8 @@ func (e *hubAddrEngine) watchOnce(ctx context.Context) {
 		if err := e.apiRevert(ctx, c, reason); err != nil {
 			log.Printf("[hub-address] change %d revert: %v", c.ID, err)
 		}
+	case hubAddrTransition:
+		e.sampleCounter(ctx, c)
 	case hubAddrReverting:
 		if e.env.Now().Sub(e.revertRecord(c).LastTry) < hubRevertRetry {
 			return

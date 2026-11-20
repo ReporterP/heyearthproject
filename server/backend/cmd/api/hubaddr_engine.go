@@ -109,8 +109,9 @@ type hubAddrEnv struct {
 	YooKassa    func(ctx context.Context, dial hubnet.DialFunc) error    // nil: not configured
 	PhoneStart  func(ctx context.Context, bind string) (url string, expires time.Time, err error)
 	PhoneRead   func(ctx context.Context) (active bool, results []admin.MobileCheckResult, err error)
-	ExitTunnels func(ctx context.Context) ([]hubAddrProbe, error) // tunnel health per online exit
-	Sync        func()                                            // RequestXraySync (nil in tests)
+	ExitTunnels func(ctx context.Context) ([]hubAddrProbe, error)                // tunnel health per online exit
+	Progress    func(ctx context.Context, since time.Time) (n, m int, err error) // subscriptionRefreshProgress
+	Sync        func()                                                           // RequestXraySync (nil in tests)
 	Alert       func(key, text string)
 	Go          func(f func())
 	Tries       int // outbound connects per target and address (0 = 24)

@@ -69,9 +69,12 @@ func defaultHubAddrEnv() hubAddrEnv {
 			return admin.ReadMobileCheckOn(ctx, provision.LocalRemote{})
 		},
 		ExitTunnels: hubExitTunnels,
-		Sync:        RequestXraySync,
-		Alert:       func(key, text string) { RaiseAlert(key, AlertCritical, "Смена адреса хаба", text) },
-		Go:          func(f func()) { go f() },
+		Progress: func(ctx context.Context, since time.Time) (int, int, error) {
+			return subscriptionRefreshProgress(ctx, db.DB, since)
+		},
+		Sync:  RequestXraySync,
+		Alert: func(key, text string) { RaiseAlert(key, AlertCritical, "Смена адреса хаба", text) },
+		Go:    func(f func()) { go f() },
 	}
 }
 

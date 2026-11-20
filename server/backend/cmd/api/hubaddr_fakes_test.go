@@ -140,6 +140,8 @@ type fakeHub struct {
 	timerArmed bool
 	armedUntil []time.Time
 	marker     bool // the revert script ran
+	counter    uint64
+	gw         string // "" = tGW
 }
 
 var fhOnActive = regexp.MustCompile(`--on-active=(\d+)s`)
@@ -174,7 +176,7 @@ func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
 	defer f.mu.Unlock()
 	f.scripts = append(f.scripts, script)
 	switch {
-	case strings.Contains(script, "systemd-run") && strings.Contains(script, "hubaddr-revert"):
+	case strings.Contains(script, "systemd-run") && strings.Contains(script, "heyearth-hubaddr-"):
 		if f.marker {
 			return "REVERT_RUNNING", errors.New("exit 3")
 		}
@@ -198,7 +200,13 @@ func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
 		}
 		return "inactive", nil
 	case script == hubnet.RouteShowScript:
-		return fmt.Sprintf(`[{"dst":"default","gateway":%q,"dev":"ens3","protocol":"static","prefsrc":%q,"metric":100}]`, tGW, f.src), nil
+		gw := f.gw
+		if gw == "" {
+			gw = tGW
+		}
+		return fmt.Sprintf(`[{"dst":"default","gateway":%q,"dev":"ens3","protocol":"static","prefsrc":%q,"metric":100}]`, gw, f.src), nil
+	case script == hubnet.CounterReadScript():
+		return fmt.Sprintf("table inet heyearth_hubaddr {\n\tcounter old_new {\n\t\tpackets %d bytes 1\n\t}\n}\n", f.counter), nil
 	case strings.HasPrefix(script, "ip -j -4 addr show dev"):
 		var ai []string
 		for _, a := range f.addrs {
