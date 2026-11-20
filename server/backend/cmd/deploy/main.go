@@ -87,6 +87,8 @@ func main() {
 	nodeUpgrade := flag.Bool("node-upgrade", false, "с --harden-nodes: поставить ожидающие обновления безопасности на нодах (без перезагрузки)")
 	relayStreamID := flag.Int("relay-stream", 0, "ID входа: свести его nginx stream к config.RelayNginxConf (повтор соединения до Hub по новому 5-tuple) через Hub, с замером до/после и автооткатом; lifecycle входа не меняется")
 	relayStreamCheck := flag.Bool("relay-stream-check", false, "с --relay-stream: только замер пути вход → Hub, без изменений")
+	relayTunnelID := flag.Int("relay-tunnel", 0, "ID входа: перевести его пути на Hub в GRE-туннель (config.RelayTunnelAddrs) на обоих концах через Hub: замер с выхода до/после, предохранители и автооткат; lifecycle входа не меняется")
+	relayTunnelCheck := flag.Bool("relay-tunnel-check", false, "с --relay-tunnel: только замер (TCP 2443 и UDP Бамбука с разных source port через выход) и проверка адресов туннеля, без изменений")
 	pathMatrixID := flag.Int("path-matrix", 0, "ID входа: поточечная проверка пути Hub ↔ вход (50 source port в обе стороны + TLS через выход), вердикт PASS/FAIL; ничего не меняет")
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	flag.Parse()
@@ -127,6 +129,8 @@ func main() {
 		mode = "relay-stream"
 	case *pathMatrixID > 0:
 		mode = "path-matrix"
+	case *relayTunnelID > 0:
+		mode = "relay-tunnel"
 	case *streamPPFlag != "":
 		mode = "stream-proxy-protocol"
 	case *tgWebFlag:
@@ -140,7 +144,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --harden-nodes, --relay-stream ID, --path-matrix ID, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hardening, --harden-nodes, --relay-stream ID, --relay-tunnel ID, --path-matrix ID, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -189,6 +193,13 @@ func main() {
 	}
 	if mode == "setup-ops" {
 		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient, *ddosMode, *sshPassword)
+		return
+	}
+	if mode == "relay-tunnel" {
+		if err := relayTunnel(client, *relayTunnelID, !*relayTunnelCheck); err != nil {
+			log.Fatalf("[relay-tunnel] %v", err)
+		}
+		fmt.Println("[relay-tunnel] OK")
 		return
 	}
 	if mode == "path-matrix" {
