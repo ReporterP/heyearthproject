@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
@@ -136,7 +137,7 @@ func relayStream(client *ssh.Client, id int, apply bool) error {
 		return err
 	}
 	entry := relayStreamEntryScript(conf, hub, sni, hub, apply)
-	script := nodeSSHFunc + fmt.Sprintf(`for try in $(seq 1 %d); do
+	run := nodeSSHFunc + fmt.Sprintf(`for try in $(seq 1 %d); do
   out=$(nodessh %d <<'HEYEARTH_NODE_EOF'
 %s
 HEYEARTH_NODE_EOF
@@ -145,13 +146,55 @@ HEYEARTH_NODE_EOF
   echo "[relay-stream] SSH до входа %d не удался (попытка $try), повтор"
 done
 `, relayStreamSSHTries, id, entry, id)
-	out, err := runSSHBash(client, fmt.Sprintf("relay-stream %d", id), script, false)
-	fmt.Print(out)
-	if err != nil {
-		return err
+	launch := relayStreamLaunchScript(id, run)
+	out, err := runSSHBash(client, fmt.Sprintf("relay-stream %d start", id), launch, true)
+	if err != nil || !strings.Contains(out, "RELAY_STREAM_STARTED") {
+		return fmt.Errorf("вход %d: запуск на Hub не начался: %v", id, err)
 	}
-	if !strings.Contains(out, "RELAY_STREAM_OK") {
-		return fmt.Errorf("вход %d: nginx stream не сведён (см. вывод выше)", id)
+	// Follow the log; the run itself does not depend on this session (relayStreamLaunchScript).
+	logPath := relayStreamLogPath(id)
+	fails := 0
+	for deadline := time.Now().Add(relayStreamWait); time.Now().Before(deadline); {
+		time.Sleep(5 * time.Second)
+		l, err := runSSHBash(client, "relay-stream log", "cat "+logPath, true)
+		if err != nil {
+			if fails++; fails >= 6 {
+				return fmt.Errorf("вход %d: связь с Hub потеряна, запуск продолжается там; лог: %s", id, logPath)
+			}
+			continue
+		}
+		fails = 0
+		if !strings.Contains(l, "RELAY_STREAM_DONE") {
+			continue
+		}
+		fmt.Print(l)
+		if !strings.Contains(l, "RELAY_STREAM_OK") {
+			return fmt.Errorf("вход %d: nginx stream не сведён (см. вывод выше)", id)
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("вход %d: за %s запуск не закончился; лог на Hub: %s", id, relayStreamWait, logPath)
+}
+
+const relayStreamWait = 20 * time.Minute
+
+func relayStreamLogPath(id int) string {
+	return fmt.Sprintf("/var/log/heyearth-relay-stream-%d.log", id)
+}
+
+// relayStreamLaunchScript starts run on the Hub detached from this SSH session (setsid, stdin
+// closed): the owner's link to the Hub drops sessions, and a dropped session must not kill the
+// change half-way (new nginx.conf in place, the check and the rollback not yet run). One run at a
+// time: the lock is held by the detached run itself (fd 9 is inherited). The log ends with
+// RELAY_STREAM_DONE.
+func relayStreamLaunchScript(id int, run string) string {
+	return fmt.Sprintf(`set -u
+LOG=%[1]s; RUN=/root/.heyearth-relay-stream-%[2]d.sh
+exec 9>/run/heyearth-relay-stream.lock
+if ! flock -n 9; then echo "RELAY_STREAM_FAIL на Hub уже идёт другой --relay-stream"; exit 1; fi
+printf '%%s' %[3]s | base64 -d > "$RUN"
+: > "$LOG"
+setsid bash -c 'bash "$1" > "$2" 2>&1; echo RELAY_STREAM_DONE >> "$2"; rm -f "$1"' _ "$RUN" "$LOG" </dev/null >/dev/null 2>&1 &
+echo RELAY_STREAM_STARTED
+`, shQuote(relayStreamLogPath(id)), id, shQuote(base64.StdEncoding.EncodeToString([]byte(run))))
 }

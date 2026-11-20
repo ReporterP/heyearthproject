@@ -129,6 +129,45 @@ func TestRelayStreamEntryScript(t *testing.T) {
 	})
 }
 
+// The Hub-side launcher parses as bash, takes the lock before anything else, detaches the run
+// (setsid, stdin closed) and carries the run script intact.
+func TestRelayStreamLaunchScript(t *testing.T) {
+	run := "echo RELAY_STREAM_OK 'quoted $x'\n"
+	s := relayStreamLaunchScript(6, run)
+	for _, must := range []string{"flock -n 9", "setsid bash -c", "</dev/null", "/var/log/heyearth-relay-stream-6.log", "echo RELAY_STREAM_STARTED", "RELAY_STREAM_DONE"} {
+		if !strings.Contains(s, must) {
+			t.Errorf("launcher lacks %q:\n%s", must, s)
+		}
+	}
+	if strings.Index(s, "flock -n 9") > strings.Index(s, "setsid") {
+		t.Error("the lock must be taken before the run starts")
+	}
+	if !haveBash() {
+		t.Skip("no bash")
+	}
+	if out, rc := runBashStdin(t, s, "-n"); rc != 0 {
+		t.Fatalf("launcher does not parse: %s", out)
+	}
+	// The embedded run script decodes back byte for byte.
+	out, rc := runBash(t, `printf '%s' `+lineAfter(s, "printf '%s' ")+` >/dev/null; echo ok`)
+	if rc != 0 || !strings.Contains(out, "ok") {
+		t.Fatalf("payload line broken: %s", out)
+	}
+}
+
+// lineAfter returns the shell word that follows prefix on its line in s.
+func lineAfter(s, prefix string) string {
+	i := strings.Index(s, prefix)
+	if i < 0 {
+		return "''"
+	}
+	rest := s[i+len(prefix):]
+	if j := strings.Index(rest, " | base64"); j >= 0 {
+		return rest[:j]
+	}
+	return "''"
+}
+
 // The probe script the entry runs is valid Python as shipped (syntax only; it needs the entry's
 // 127.0.0.1:443/80 to do anything).
 func TestRelayStreamCheckPyMentionsBothPorts(t *testing.T) {
