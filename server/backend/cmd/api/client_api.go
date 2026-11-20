@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
@@ -201,6 +202,9 @@ type hubConnectionInputs struct {
 	// xhttpHost is hub_xhttp_host: Дуб's Host header, frozen so a change of the Hub's address
 	// (main_server_host) never changes it ("" = main_server_host; see dubHost).
 	xhttpHost string
+	// siteHost is the site's domain (PUBLIC_BASE_URL / SITE_DOMAIN): the JSON subscription sends it,
+	// its www and its admin through the tunnel by name ("" = no such rule).
+	siteHost string
 
 	entries entryPlan // where the lines point (phase 3): reserves, failover, update interval
 }
@@ -224,6 +228,7 @@ func loadHubSettingInputs(in *hubConnectionInputs) error {
 	if in.xhttpHost, err = subscriptionSetting("hub_xhttp_host", ""); err != nil {
 		return err
 	}
+	in.siteHost = siteHostOf(publicBaseURL())
 	for _, r := range []struct {
 		dst      *string
 		key, def string
@@ -454,6 +459,20 @@ func directOptions(in hubConnectionInputs, rp realityParams) []*heyearth_v1.Conn
 // (matches the auto-tuner); 1 h during a failover.
 const defaultUpdateIntervalHours = 4
 
+// subUrgentKey is «Срочное обновление» (page «Входы»): until this time (RFC 3339; empty or past =
+// off) every subscription asks the apps to update hourly. It cannot reach an app before that app's
+// next update under the interval it already has, but from then on every further fix of an incident
+// arrives within an hour (incident 2026-11-20: the revert waited for a 12 h interval).
+const subUrgentKey = "subscription_urgent_until"
+
+// urgentInterval is intervalRaw, or "1" while «Срочное обновление» lasts.
+func urgentInterval(intervalRaw, urgentUntil string, now time.Time) string {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(urgentUntil)); err == nil && now.Before(t) {
+		return "1"
+	}
+	return intervalRaw
+}
+
 type reserveEntry struct {
 	id      int
 	address string
@@ -551,7 +570,11 @@ func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
 	if err != nil {
 		return entryPlan{}, err
 	}
-	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, interval)
+	urgent, err := subscriptionSetting(subUrgentKey, "")
+	if err != nil {
+		return entryPlan{}, err
+	}
+	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, urgentInterval(interval, urgent, time.Now()))
 	return applyHubTransition(p, hubTransitionOn(transition)), nil
 }
 
@@ -569,6 +592,15 @@ type realityParams struct{ uuid, sni, pbk, sid, flowParam string }
 func (p realityParams) tcpURI(host, fp, label string) string {
 	return fmt.Sprintf("vless://%s@%s:443?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&tcpKeepAliveInterval=15&tcpKeepAliveIdle=100%s#%s",
 		p.uuid, host, p.sni, fp, p.pbk, p.sid, p.flowParam, url.PathEscape(label))
+}
+
+// siteHostOf is the lower-case host of a base URL ("" when it has none).
+func siteHostOf(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
 
 // xhttpHostOr: Дуб's Host header — hub_xhttp_host (frozen), or main_server_host while the setting

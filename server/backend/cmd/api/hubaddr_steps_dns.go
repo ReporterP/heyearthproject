@@ -17,11 +17,13 @@ import (
 // on it for that name.
 
 type hubAddrDNSChecks struct {
-	Before   map[string]string `json:"before"`
-	Rows     []hubnet.DNSRow   `json:"rows"`
-	Answered int               `json:"answered"`
-	Certs    []hubAddrProbe    `json:"certs"`
-	Passed   bool              `json:"passed"`
+	Before    map[string]string `json:"before"`
+	Rows      []hubnet.DNSRow   `json:"rows"`
+	Answered  int               `json:"answered"`
+	Certs     []hubAddrProbe    `json:"certs"`
+	Passed    bool              `json:"passed"`
+	Trusted   bool              `json:"trusted"` // the owner moved on on their word
+	TrustedBy string            `json:"trusted_by"`
 }
 
 // hubDNSNames: the names to look at, de-duplicated, blanks skipped.
@@ -103,4 +105,37 @@ func (e *hubAddrEngine) stepDNS(ctx context.Context, c hubAddrChange, prev hubAd
 	ch.Passed = true
 	lg.printf("DNS сошёлся на %s", nw)
 	return ch, e.advance(ctx, c, hubAddrDNSReady, nil)
+}
+
+// TrustDNS: the owner says the records are changed — move on without waiting for the resolvers'
+// caches (the old address stays on the Hub until step 7, so a stale answer still reaches the site).
+func (e *hubAddrEngine) TrustDNS(ctx context.Context, id int64, by string) error {
+	c, err := e.env.Repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.State == hubAddrDNSReady {
+		return nil
+	}
+	if c.State != hubAddrNodesReady {
+		return fmt.Errorf("DNS подтверждают после шага «Подготовить узлы», сейчас «%s»", c.State)
+	}
+	e.mu.Lock()
+	running := e.busy[id] != ""
+	e.mu.Unlock()
+	if running {
+		return errHubAddrBusy
+	}
+	var ch hubAddrDNSChecks
+	if s, ok := c.Steps[hubStepDNS]; ok && len(s.Checks) > 0 {
+		_ = json.Unmarshal(s.Checks, &ch)
+	}
+	ch.Trusted, ch.TrustedBy, ch.Passed = true, by, true
+	b, _ := json.Marshal(ch)
+	now := e.env.Now().UTC()
+	if err := e.env.Repo.SaveStep(ctx, id, hubStepDNS, hubAddrStep{Status: hubStepOK, FinishedAt: &now, Checks: b,
+		Log: "DNS подтверждён владельцем (" + by + "): кеши резолверов не ждали"}); err != nil {
+		return err
+	}
+	return e.env.Repo.SetState(ctx, id, hubAddrNodesReady, hubAddrDNSReady, nil)
 }

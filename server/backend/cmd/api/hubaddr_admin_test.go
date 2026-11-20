@@ -105,6 +105,7 @@ func TestHubAddrRoutePermissions(t *testing.T) {
 		{http.MethodPost, "7/revert", permHubAddress, true},
 		{http.MethodPost, "7/finish", permHubAddress, true},
 		{http.MethodPost, "7/cancel", permHubAddress, true},
+		{http.MethodPost, "7/dns-trust", permHubAddress, true},
 		{http.MethodGet, "7/confirm", "", false},
 		{http.MethodPost, "x/confirm", "", false},
 		{http.MethodPost, "7/unknown", "", false},
@@ -137,6 +138,7 @@ func TestHubAddrActionsCallTheEngineAndAudit(t *testing.T) {
 		{"7/exclude-node", `{"server_id":6}`, "exclude 6", "hub_address.exclude_node"},
 		{"7/phone-check", `{"which":"current"}`, "phone current", "hub_address.phone_check"},
 		{"7/cancel", ``, "cancel", "hub_address.cancel"},
+		{"7/dns-trust", ``, "dns-trust owner", "hub_address.dns_trust"},
 	} {
 		rec := hubAddrDo(t, http.MethodPost, tc.rest, tc.body)
 		if rec.Code >= 300 {
@@ -179,4 +181,9 @@ func TestHubAddrEngineMissing(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no engine: %d", rec.Code)
 	}
+}
+
+func (f *fakeHubAPI) TrustDNS(_ context.Context, _ int64, by string) error {
+	f.note("dns-trust " + by)
+	return nil
 }

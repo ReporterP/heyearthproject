@@ -144,8 +144,8 @@ func TestRelayStreamEntryScript(t *testing.T) {
 // (setsid, stdin closed) and carries the run script intact.
 func TestRelayStreamLaunchScript(t *testing.T) {
 	run := "echo RELAY_STREAM_OK 'quoted $x'\n"
-	s := relayStreamLaunchScript(6, run)
-	for _, must := range []string{"flock -n 9", "setsid bash -c", "</dev/null", "/var/log/heyearth-relay-stream-6.log", "echo RELAY_STREAM_STARTED", "RELAY_STREAM_DONE"} {
+	s := hubJobLaunchScript("relay-stream", 6, run)
+	for _, must := range []string{"flock -n 9", "setsid bash -c", "</dev/null", "/var/log/heyearth-relay-stream-6.log", "echo HEYEARTH_JOB_STARTED", "HEYEARTH_JOB_DONE"} {
 		if !strings.Contains(s, must) {
 			t.Errorf("launcher lacks %q:\n%s", must, s)
 		}

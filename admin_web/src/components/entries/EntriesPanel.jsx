@@ -319,6 +319,19 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
               <p className="text-xs text-tertiary mt-1">Во время аварии — всегда раз в час.</p>
             </div>
             <div>
+              <div className="text-xs text-tertiary mb-1">Срочное обновление</div>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <p className="text-xs text-secondary">
+                  {data.urgent_until
+                    ? <>Идёт до <span className="font-mono tabular-nums">{formatDate(data.urgent_until)}</span>: приложения обновляют подписку раз в час.</>
+                    : 'Сутки все приложения обновляют подписку раз в час — начиная со своего следующего обновления. Включайте при аварии: следующие правки дойдут до всех за час.'}
+                </p>
+                {canEdit && (data.urgent_until
+                  ? <Button variant="secondary" loading={saving} onClick={() => save({ urgent_hours: 0 }, 'Срочное обновление остановлено')}>Остановить</Button>
+                  : <Button variant="secondary" loading={saving} onClick={() => save({ urgent_hours: 24 }, 'Срочное обновление включено на 24 часа')}>Включить на 24 ч</Button>)}
+              </div>
+            </div>
+            <div>
               <label htmlFor="entries-test-user" className="text-xs text-tertiary block mb-1">Тестовый пользователь (видит подписку как при аварии)</label>
               <Input id="entries-test-user" className="font-mono" placeholder="ID из «Пользователей»" disabled={!canEdit}
                 value={form.testUser} onChange={e => setForm({ ...form, testUser: e.target.value })} />
