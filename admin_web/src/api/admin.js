@@ -112,6 +112,14 @@ export const resumeJob = (id) => apiFetch(`/provision-jobs/${id}/resume`, { meth
 export const fetchHubKey = () => apiFetch('/ssh-keys/hub')
 // «Серверы» (B1/B5/B6): id 'hub' = the Hub.
 export const fetchHub = () => apiFetch('/hub')
+// «Адрес хаба»: the wizard that moves the Hub to an additional address (servers.read to look,
+// hub.address to act).
+export const fetchHubAddresses = () => apiFetch('/hub/addresses')
+export const startHubAddressChange = (ip) => apiFetch('/hub/address-changes', { method: 'POST', body: { ip } })
+export const fetchHubAddressChange = (id) => apiFetch(`/hub/address-changes/${id}`)
+export const runHubAddressStep = (id, step) => apiFetch(`/hub/address-changes/${id}/steps/${step}`, { method: 'POST' })
+export const hubAddressAction = (id, action, body = {}) => apiFetch(`/hub/address-changes/${id}/${action}`, { method: 'POST', body })
+export const fetchHubAddressPhone = (id) => apiFetch(`/hub/address-changes/${id}/phone-check`)
 export const fetchServerLoad = (id, range = '24h') => apiFetch(`/servers/${id}/load?range=${encodeURIComponent(range)}`)
 export const saveServerOwner = (id, body) => apiFetch(`/servers/${id}/capacity`, { method: 'PUT', body })
 export const fetchLaunchChecklist = () => apiFetch('/launch-checklist')
