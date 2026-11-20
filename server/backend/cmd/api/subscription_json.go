@@ -48,8 +48,10 @@ const (
 //	  an AAAA record stop opening).
 //	on — by name: a sniffed connection carries its name (routeOnly off), geoip:ru
 //	  decides by the name's addresses (IPOnDemand), direct dials the name IPv4
-//	  first. The Hub sniffs and re-addresses by name itself, so proxied traffic
-//	  reaches it as before.
+//	  first. Proxied traffic now reaches the Hub by name: its VLESS inbounds
+//	  (Берёза, Дуб) sniff and re-address by name themselves, so nothing changes
+//	  there; Бамбук's hysteria2 does not sniff, it now resolves the name on the
+//	  Hub instead of dialing the client's address.
 const subDirectByNameKey = "sub_direct_by_name"
 
 // directRouting is what goes straight out of the device, never through a way in.
