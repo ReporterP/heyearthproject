@@ -60,10 +60,9 @@ func remarks(cs []autoConfig) []string {
 	return names
 }
 
-// Three lines: «⚡ Авто» (Берёза fp firefox + Дуб fp chrome through each healthy
-// entry, never the Hub while an entry is healthy — owner, 2026-11-19) and
-// «🎋 Бамбук 1/2» (through the Hub and each entry whose UDP answers), each a
-// leastLoad balancer over a burst observatory.
+// Three lines: «⚡ Авто» (Берёза fp firefox + Дуб fp chrome through the Hub and
+// each healthy entry) and «🎋 Бамбук 1/2» (through the Hub and each entry whose
+// UDP answers), each a leastLoad balancer over a burst observatory.
 func TestJSONSubscriptionWays(t *testing.T) {
 	d := directRouting{sites: []string{"domain:bank.example"}, ips: []string{"geoip:private", "geoip:ru", "198.51.100.7/32"}}
 	cs := parseAuto(t, jsonSubscription(autoInputs(), d))
@@ -71,11 +70,8 @@ func TestJSONSubscriptionWays(t *testing.T) {
 		t.Fatalf("configs %q, want %q", remarks(cs), want)
 	}
 	auto := cs[0]
-	if got := outboundTags(auto); !slices.Equal(got, []string{"p-r5-tcp", "p-r5-xhttp", "p-r6-tcp", "p-r6-xhttp", "direct", "block"}) {
+	if got := outboundTags(auto); !slices.Equal(got, []string{"p-hub-tcp", "p-hub-xhttp", "p-r5-tcp", "p-r5-xhttp", "p-r6-tcp", "p-r6-xhttp", "direct", "block"}) {
 		t.Fatalf("auto outbounds %v", got)
-	}
-	if body, _ := json.Marshal(auto.Outbounds); strings.Contains(string(body), `"address":"203.0.113.1"`) {
-		t.Fatalf("«Авто» still dials the Hub: %s", body)
 	}
 	b := auto.Routing.Balancers[0]
 	st := b["strategy"].(map[string]any)
@@ -101,8 +97,8 @@ func TestJSONSubscriptionWays(t *testing.T) {
 		t.Fatalf("auto rules %v", rules)
 	}
 	// A Берёза: TCP, flow, fp firefox, port 443; a Дуб: XHTTP, no flow, fp chrome, the Hub's Host.
-	tcp, _ := json.Marshal(auto.Outbounds[0])
-	xh, _ := json.Marshal(auto.Outbounds[1])
+	tcp, _ := json.Marshal(auto.Outbounds[2])
+	xh, _ := json.Marshal(auto.Outbounds[3])
 	for _, s := range []string{`"address":"203.0.113.5"`, `"port":443`, `"flow":"xtls-rprx-vision"`, `"fingerprint":"firefox"`, `"network":"tcp"`, `"publicKey":"PBK-test"`} {
 		if !strings.Contains(string(tcp), s) {
 			t.Errorf("Берёза через вход lacks %s: %s", s, tcp)
@@ -175,9 +171,8 @@ func TestBambooJSONMatchesURIVariants(t *testing.T) {
 	}
 }
 
-// A server-side failover changes nothing: the balancer probes its ways itself.
-// Without Бамбук (plan gate) only «Авто»; without a healthy entry «Авто» falls
-// back to the Hub alone, so the line never goes dead.
+// A server-side failover changes nothing: the balancer probes the Hub itself.
+// Without Бамбук (plan gate) only «Авто»; without a healthy entry the Hub alone.
 func TestJSONSubscriptionVariants(t *testing.T) {
 	in := autoInputs()
 	in.entries.main, in.entries.failover = "203.0.113.5", true

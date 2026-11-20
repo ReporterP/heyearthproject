@@ -13,25 +13,22 @@ import (
 // A Happ subscription body may be a JSON array of full Xray configs: each one is
 // a line in the app («remarks» is its name, meta.serverDescription the subtitle)
 // and goes to the Xray core exactly as written — Happ's own routing profile is
-// not applied to it. Three lines, each a balancer over ways in:
+// not applied to it. Three lines, each a balancer over every way in (the Hub and
+// each healthy reserve entry):
 //
-//	⚡ Авто — Берёза (fp firefox) and Дуб (fp chrome) through each healthy reserve
-//	  entry only; the Hub's own address is a way only while no entry is healthy;
+//	⚡ Авто — Берёза (fp firefox) and Дуб (fp chrome) through each entry;
 //	🎋 Бамбук 1 / 2 only WiFi — Hysteria2 with Salamander (Xray ≥ 26.3: finalmask)
-//	  through the Hub and each entry whose UDP answers; BBR / Brutal 20/80 like the
-//	  URI lines.
-//
-// Why «Авто» skips the Hub (owner, 2026-11-19): mobile networks cut the Hub's
-// subnet, but the TSPU drops connections only after the first packets or 5–16 KB,
-// so a small probe through the Hub often passed while real traffic died — «Авто»
-// kept sending a phone to the Hub. And VPN-like traffic on the Hub's address puts
-// the site and payments that live there at risk; the entries exist to carry it.
+//	  through each entry whose UDP answers; BBR / Brutal 20/80 like the URI lines.
 //
 // The choice is leastLoad over a burst observatory: every way is probed about
 // once a minute, the last 5 probes count, and a way with 2 failed among them is
-// left out (at the start, any failure). Among the ways left a Берёза goes before a
-// Дуб by costs far above the probes' jitter (leastLoad ranks by the RTT deviation;
-// ranking by 3–5 noisy samples alone flipped the choice every few minutes).
+// left out (at the start, any failure). A mobile network that cuts the Hub lets a
+// small probe through now and then (the TSPU drops connections only after the
+// first packets or 5–16 KB): a lucky probe must not send traffic to the Hub.
+// Among the ways left the order is fixed — the Hub's Берёза, the Hub's Дуб, then
+// the entries — by costs far above the probes' jitter: leastLoad ranks by the RTT
+// deviation, and ranking the Hub against an entry by 3–5 noisy samples flipped
+// the choice every few minutes (Happ's ping jumping 0.15 ↔ 0.5 s).
 // Until the first probes answer, traffic takes a fixed way (fallbackTag).
 
 // Subscription formats of handleSubscriptionLink.
@@ -61,9 +58,9 @@ type wayEntry struct {
 	udp       bool // Бамбук answers through it
 }
 
-// wayEntries: the Hub, then every healthy reserve entry (by id) — the ways of the
-// Бамбук lines (Wi-Fi, where the Hub answers). A server-side failover changes
-// nothing here.
+// wayEntries: the Hub, then every healthy reserve entry (by id). The Hub is
+// always there: the balancer probes it itself, and a Hub cut on one network
+// still answers on another; a server-side failover changes nothing here.
 func wayEntries(in hubConnectionInputs) []wayEntry {
 	es := []wayEntry{{"hub", in.mainServerHost, true}}
 	for _, r := range in.entries.reserves {
@@ -74,24 +71,14 @@ func wayEntries(in hubConnectionInputs) []wayEntry {
 	return es
 }
 
-// autoWayEntries: the ways of «⚡ Авто» — the healthy reserve entries only; the
-// Hub alone while there is none, so the line never goes dead.
-func autoWayEntries(in hubConnectionInputs) []wayEntry {
-	es := wayEntries(in)
-	if len(es) > 1 {
-		return es[1:]
-	}
-	return es
-}
-
-// autoWays: Берёза and Дуб through every way of «Авто». Empty without VLESS (no
-// keys, no UUID, plan without vless).
+// autoWays: Берёза and Дуб through every entry. Empty without VLESS (no keys,
+// no UUID, plan without vless).
 func autoWays(in hubConnectionInputs) []jsonWay {
 	if in.mainServerHost == "" || in.vlessUUID == "" || in.realityPubKey == "" || !in.canVLESS {
 		return nil
 	}
 	var ways []jsonWay
-	for _, e := range autoWayEntries(in) {
+	for _, e := range wayEntries(in) {
 		ways = append(ways,
 			jsonWay{"p-" + e.key + "-tcp", e.host, realityTCPOutbound(in, e.host, "firefox")},
 			jsonWay{"p-" + e.key + "-xhttp", e.host, realityXHTTPOutbound(in, e.host, "chrome")})
@@ -286,9 +273,15 @@ func jsonSubscription(in hubConnectionInputs, d directRouting) []byte {
 	if len(ways) == 0 {
 		return nil
 	}
-	// Before the first probes: the first way's Берёза — the first entry's (it
-	// answers on Wi-Fi and on a mobile network alike), the Hub's without entries.
+	// Before the first probes: the first reserve entry's Берёза — an entry answers
+	// on Wi-Fi and on a mobile network alike.
 	fallback := ways[0].tag
+	for _, w := range ways {
+		if w.host != in.mainServerHost {
+			fallback = w.tag
+			break
+		}
+	}
 	configs := []any{balancedConfig("⚡ Авто", "сам выбирает самый быстрый вход", "p-", fallback, in.mainServerHost, ways, d)}
 	for _, b := range bambooJSON {
 		// Бамбук is for Wi-Fi, where the Hub answers: the Hub first.
