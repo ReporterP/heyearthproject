@@ -259,3 +259,13 @@ export function routingRequest(s) {
 export function closeNeedsConfirm(s) {
   return s.step !== INSTALL_STEP && (s.serverId != null || !!s.probe || s.passwordEntered === true)
 }
+
+// relayFinishText: the last words of the wizard for a new entry. It goes online on the canary —
+// only the «Тестовый пользователь» of «Входы» gets it (docs/runbooks/subscription-changes.md) —
+// and reaches everyone with «Всем» on «Входы» after a day and a fresh «Проверить путь».
+export function relayFinishText({ testUser = '' } = {}) {
+  const who = testUser
+    ? `Сейчас его получает только тестовый пользователь (${testUser}): проверьте вход на своём телефоне — в мобильной сети и в Wi-Fi.`
+    : 'Сейчас его не получает никто: задайте «Тестовый пользователь» в настройках «Входов» — вход получит только он.'
+  return `Вход настроен. ${who} Через сутки — «Проверить путь» и «Всем» в панели входа на «Входах».`
+}

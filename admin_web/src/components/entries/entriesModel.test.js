@@ -53,3 +53,73 @@ test('AUTO_MODES: the three switches the API accepts', () => {
   assert.deepEqual(AUTO_MODES.map((m) => m.key), ['off', 'test', 'on'])
   assert.equal(suggestedSubDomain('hiearth.ru'), 'go.hiearth.ru')
 })
+
+// ── entries management (docs/prd/entries-management.prd.md) ──
+import { stabilityView, rotationView, entryActions, formatPct } from './entriesModel.js'
+
+const w = (ok, total, checks) => ({ ok, total, checks })
+
+test('stabilityView: the worst kind, tones by 99 / 95 %, few checks', () => {
+  const v = stabilityView({ h1: { tcp443: w(796, 800, 100), tcp2443: w(776, 800, 100) }, h24: { tcp443: w(9000, 9000, 1200), tcp2443: w(9000, 9500, 1200) } })
+  assert.equal(v.h1.tone, 'warning') // 97 %
+  assert.equal(v.h1.text, '97,0 %')
+  assert.equal(v.h24.tone, 'danger') // 94,7 %
+  assert.equal(stabilityView({ h1: { tcp443: w(800, 800, 100) } }).h1.tone, 'success')
+  const few = stabilityView({ h1: { tcp443: w(8, 8, 1) } }).h1
+  assert.equal(few.few, true)
+  assert.equal(few.tone, 'default')
+  assert.equal(stabilityView(null).h1.text, '—')
+  assert.deepEqual(stabilityView({ h1: { udp: w(3, 4, 1), tcp443: w(8, 8, 1) } }).byKind.map((k) => k.label), [':443', 'Бамбук'])
+  assert.equal(formatPct(0.9995), '99,9 %')
+})
+
+test('rotationView: lifecycle first, then the rotation with its reason', () => {
+  assert.equal(rotationView({ kind: 'hub' }).label, 'основной')
+  assert.equal(rotationView({ kind: 'relay', lifecycle: 'failed', rotation: 'all' }).label, 'ошибка настройки')
+  assert.equal(rotationView({ kind: 'relay', lifecycle: 'online', rotation: 'all' }).tone, 'success')
+  const off = rotationView({ kind: 'relay', lifecycle: 'online', rotation: 'off', rotation_reason: 'потери у провайдера' })
+  assert.equal(off.label, 'вне ротации')
+  assert.equal(off.reason, 'потери у провайдера')
+  assert.equal(rotationView({ kind: 'relay', lifecycle: 'online', rotation: 'test' }).label, 'только тест')
+})
+
+const now = new Date('2026-11-21T12:00:00Z')
+const relay = (patch) => ({ id: 6, kind: 'relay', lifecycle: 'online', rotation: 'off', tunnel: false,
+  rotation_at: '2026-11-20T10:00:00Z', checks: { path_fresh: true, tunnel_fresh: false }, ...patch })
+
+test('entryActions: what each button needs, and why it is off', () => {
+  const ctx = { testUser: 'canary', failover: {}, now }
+  let a = entryActions(relay(), ctx)
+  assert.equal(a.toTest.enabled, true)
+  assert.equal(a.out.enabled, false)
+  assert.equal(a.tunnelOn.enabled, false)
+  assert.match(a.tunnelOn.reason, /Проверить туннель/)
+  assert.equal(a.tunnelcheck.enabled, true)
+  a = entryActions(relay({ checks: { path_fresh: false } }), ctx)
+  assert.match(a.toTest.reason, /Проверить путь/)
+  a = entryActions(relay(), { ...ctx, testUser: '' })
+  assert.match(a.toTest.reason, /Тестовый пользователь/)
+  a = entryActions(relay({ rotation: 'test', rotation_at: '2026-11-21T09:00:00Z' }), ctx)
+  assert.equal(a.toAll.enabled, true)
+  assert.equal(a.toAll.early, true)
+  assert.equal(entryActions(relay({ rotation: 'test', rotation_at: '2026-11-19T09:00:00Z' }), ctx).toAll.early, false)
+  a = entryActions(relay({ rotation: 'all' }), { ...ctx, failover: { active: true, target: 6 } })
+  assert.equal(a.out.enabled, false)
+  assert.match(a.out.reason, /режим/)
+  a = entryActions(relay({ tunnel: true }), ctx)
+  assert.equal(a.tunnelOff.enabled, true)
+  assert.equal(a.tunnelcheck.enabled, false)
+  a = entryActions(relay({ lifecycle: 'offline' }), ctx)
+  assert.equal(a.remove.stage, 'record')
+  assert.equal(a.pathcheck.enabled, false)
+  assert.equal(entryActions(relay(), ctx).remove.stage, 'deprovision')
+})
+
+test('healthyRelays: a mode target must be in rotation and online', () => {
+  const list = healthyRelays([
+    { id: 1, kind: 'relay', rotation: 'all', lifecycle: 'online', health: { external: 'healthy' } },
+    { id: 2, kind: 'relay', rotation: 'test', lifecycle: 'online', health: { external: 'healthy' } },
+    { id: 3, kind: 'relay', rotation: 'off', lifecycle: 'online', health: { external: 'healthy' } },
+  ])
+  assert.deepEqual(list.map((e) => e.id), [1])
+})

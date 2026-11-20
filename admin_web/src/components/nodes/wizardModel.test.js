@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid,
-  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, wizardSteps,
+  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, wizardSteps, relayFinishText,
   routingRequest, closeNeedsConfirm, normalizePlans,
 } from './wizardModel.js'
 
@@ -345,4 +345,11 @@ test('relay: RU fixed, steps of its own, no exit options in the requests', () =>
   assert.equal(routingRequest({ ...r, fallback: false, fallbackStored: true }), null)
   assert.equal(wizardSteps('relay')[3], 'Проверка с телефона')
   assert.equal(wizardSteps('exit')[3], 'Настройки')
+})
+
+test('relayFinishText: a new entry starts on the canary', () => {
+  assert.match(relayFinishText({ testUser: '' }), /задайте «Тестовый пользователь»/)
+  const t = relayFinishText({ testUser: 'canary-user' })
+  assert.match(t, /только тестовый пользователь \(canary-user\)/)
+  assert.match(t, /«Всем»/)
 })

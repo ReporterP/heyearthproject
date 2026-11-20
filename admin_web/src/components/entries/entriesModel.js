@@ -43,7 +43,9 @@ export const ENTRY_MODES = [
 ]
 
 // healthyRelays: reserve entries that answer from outside right now (the only valid «relay» targets).
-export const healthyRelays = (entries) => (entries || []).filter((e) => e?.kind === 'relay' && e?.health?.external === 'healthy')
+// A target of «Все через резервный вход» must also be online and in rotation (the API refuses the rest).
+export const healthyRelays = (entries) => (entries || []).filter((e) => e?.kind === 'relay' && e?.health?.external === 'healthy'
+  && (e?.rotation || 'all') === 'all' && (e?.lifecycle || 'online') === 'online')
 
 // modeBanner: what the owner sees on top of «Входы» for the current state.
 export function modeBanner(failover, entries) {
@@ -107,4 +109,84 @@ export function subscriptionDomainState(sub) {
     return { tone: 'warning', text: `Работает. Входы без A-записи: ${s.dns_missing.join(', ')} — добавьте, чтобы подписка не зависела от одного входа.` }
   }
   return { tone: 'success', text: `Работает: ссылки подписки выдаются на ${s.domain}, обновление идёт через входы в РФ.` }
+}
+
+// ── Entries management (docs/prd/entries-management.prd.md) ──
+
+// The kinds of the stability samples (entry_probe_samples) as «Входы» names them.
+export const STABILITY_KINDS = [['tcp443', ':443'], ['tcp2443', ':2443'], ['udp', 'Бамбук']]
+export const FEW_CHECKS = 20
+
+// formatPct: a share 0..1 as «99,6 %» (one decimal, truncated: 99,95 % is not «100,0 %»).
+export function formatPct(share) {
+  const v = Math.floor(share * 1000) / 10
+  return `${v.toFixed(1).replace('.', ',')} %`
+}
+
+function windowView(win) {
+  const kinds = STABILITY_KINDS.filter(([k]) => win?.[k]?.total > 0)
+  if (kinds.length === 0) return { share: null, text: '—', tone: 'default', few: true }
+  let worst = 1
+  let checks = 0
+  for (const [k] of kinds) {
+    worst = Math.min(worst, win[k].ok / win[k].total)
+    checks = Math.max(checks, win[k].checks || 0)
+  }
+  const few = checks < FEW_CHECKS
+  const tone = few ? 'default' : worst >= 0.99 ? 'success' : worst >= 0.95 ? 'warning' : 'danger'
+  return { share: worst, text: formatPct(worst), tone, few }
+}
+
+// stabilityView: the worst kind over 1 h and 24 h (tones: ≥ 99 % success, ≥ 95 % warning, below danger;
+// fewer than FEW_CHECKS checks — «мало данных»), and each kind for the entry panel.
+export function stabilityView(st) {
+  const byKind = STABILITY_KINDS.filter(([k]) => st?.h1?.[k] || st?.h24?.[k]).map(([kind, label]) => ({
+    kind, label, h1: windowView({ [kind]: st?.h1?.[kind] }), h24: windowView({ [kind]: st?.h24?.[kind] }),
+  }))
+  return { h1: windowView(st?.h1), h24: windowView(st?.h24), byKind }
+}
+
+const LIFECYCLE_LABEL = {
+  pending: ['ждёт настройки', 'default'], provisioning: ['настраивается', 'info'], failed: ['ошибка настройки', 'danger'],
+  deprovisioning: ['отключается', 'warning'], offline: ['отключён', 'default'],
+}
+const ROTATION_LABEL = { all: ['в ротации', 'success'], test: ['только тест', 'warning'], off: ['вне ротации', 'danger'] }
+
+// rotationView: the «Состояние» cell — a setup state first (an entry not online serves nobody), then
+// the rotation with its reason and since when.
+export function rotationView(e) {
+  if (e?.kind !== 'relay') return { label: 'основной', tone: 'default', reason: '', since: null }
+  const life = LIFECYCLE_LABEL[e.lifecycle]
+  if (life) return { label: life[0], tone: life[1], reason: '', since: null }
+  const [label, tone] = ROTATION_LABEL[e.rotation] || ROTATION_LABEL.all
+  return { label, tone, reason: e.rotation_reason || '', since: e.rotation === 'all' ? null : e.rotation_at || null }
+}
+
+const DAY_MS = 24 * 3600 * 1000
+const on = (enabled, reason = '') => ({ enabled: !!enabled && !reason, reason })
+
+// entryActions: every button of the entry panel with why it is off (the API checks the same).
+// ctx: { testUser (the «Тестовый пользователь» of «Входы»), failover, now }.
+export function entryActions(e, { testUser = '', failover = {}, now = new Date() } = {}) {
+  const relay = e?.kind === 'relay'
+  const online = relay && e.lifecycle === 'online'
+  const rotation = e?.rotation || 'all'
+  const target = !!failover?.active && failover?.target === e?.id
+  const checks = e?.checks || {}
+  const notOnline = online ? '' : 'вход не настроен — сначала «Переустановить» в карточке сервера'
+  const noPath = checks.path_fresh ? '' : 'нужна успешная «Проверить путь» за последний час (и после последней настройки)'
+  const early = rotation === 'test' && (!e.rotation_at || now - new Date(e.rotation_at) < DAY_MS)
+  return {
+    pathcheck: on(online, notOnline),
+    tunnelcheck: on(online && !e.tunnel, notOnline || (e?.tunnel ? 'вход уже на туннеле: его путь проверяет «Проверить путь»' : '')),
+    out: on(relay && rotation !== 'off', target ? 'на этот вход ведут основные строки подписки — сначала смените режим «Куда подключаются пользователи»' : ''),
+    toTest: on(relay && rotation === 'off', notOnline || noPath || (testUser ? '' : 'задайте «Тестовый пользователь» в настройках «Входов»')),
+    toAll: { ...on(relay && rotation === 'test', notOnline || noPath), early },
+    tunnelOn: on(online && !e.tunnel, notOnline || (checks.tunnel_fresh ? '' : 'сначала «Проверить туннель»: нужен успешный результат за последние сутки')),
+    tunnelOff: on(online && e.tunnel, notOnline),
+    remove: {
+      ...on(relay, target ? 'на этот вход ведут основные строки подписки — сначала смените режим' : ''),
+      stage: relay && ['offline', 'pending'].includes(e.lifecycle) ? 'record' : 'deprovision',
+    },
+  }
 }

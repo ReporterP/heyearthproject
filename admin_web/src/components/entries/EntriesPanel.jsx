@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Plus, RefreshCw, Smartphone, TriangleAlert } from 'lucide-react'
+import { CheckCircle2, Plus, RefreshCw, Settings2, Smartphone, TriangleAlert } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
-import { fetchEntries, fetchEntriesPreview, saveEntryAddress, saveEntrySettings, saveEntryMode } from '../../api/admin.js'
+import { fetchEntries, fetchEntriesPreview, saveEntrySettings, saveEntryMode } from '../../api/admin.js'
 import { formatDate } from '../../utils/format.js'
 import {
   Badge, Button, Card, CardHeader, CardBody, Dialog, Input, Select, Skeleton,
@@ -12,7 +12,8 @@ import { confirmMatches } from '../ui/confirm.js' // the typed-confirmation rule
 import MobileCheckPanel from './MobileCheckPanel.jsx'
 import HubKeyBox from './HubKeyBox.jsx'
 import SubscriptionCard from './SubscriptionCard.jsx'
-import { ENTRY_MODES, healthyRelays, modeBanner } from './entriesModel.js'
+import EntryPanel from './EntryPanel.jsx'
+import { ENTRY_MODES, healthyRelays, modeBanner, rotationView, stabilityView } from './entriesModel.js'
 import { loadView } from '../servers/serversModel.js'
 
 const STATUS = {
@@ -142,16 +143,16 @@ function ModeCard({ data, canEdit, onSaved }) {
             <label htmlFor="entry-target" className="text-xs text-secondary">Резервный вход</label>
             <Select id="entry-target" className="w-full sm:w-auto" value={String(target)} disabled={!canEdit}
               onChange={e => setTarget(Number(e.target.value))}>
-              {allRelays.map(r => (
-                <option key={r.id} value={r.id} disabled={r.health.external !== 'healthy'}>
-                  {r.name} — {r.address}{r.health.external !== 'healthy' ? ' (сейчас не отвечает)' : ''}
-                </option>
-              ))}
+              {allRelays.map(r => {
+                const why = r.lifecycle !== 'online' ? ' (не настроен)' : r.rotation === 'test' ? ' (только тест)'
+                  : r.rotation === 'off' ? ' (вне ротации)' : r.health.external !== 'healthy' ? ' (сейчас не отвечает)' : ''
+                return <option key={r.id} value={r.id} disabled={!!why}>{r.name} — {r.address}{why}</option>
+              })}
             </Select>
           </div>
         )}
         {mode === 'relay' && relays.length === 0 && allRelays.length > 0 && (
-          <p className="text-xs text-warning">Ни один резервный вход сейчас не отвечает снаружи — выбрать его можно, когда проверка станет зелёной.</p>
+          <p className="text-xs text-warning">Ни один резервный вход в ротации сейчас не отвечает снаружи — выбрать его можно, когда проверка станет зелёной.</p>
         )}
         {canEdit && (
           <Button loading={saving} disabled={!changed || (mode === 'relay' && !relays.some(r => r.id === target))} onClick={save}>Сохранить режим</Button>
@@ -183,6 +184,31 @@ function LoadCells({ node }) {
   )
 }
 
+const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 'text-danger', default: 'text-tertiary' }
+
+// Stability: the worst kind over 1 h / 24 h (stabilityView), «мало данных» while the monitor collects.
+function StabilityCell({ stability }) {
+  const v = stabilityView(stability)
+  const part = (w) => <span className={TONE_TEXT[w.tone]}>{w.few ? '—' : w.text}</span>
+  const title = v.byKind.map((k) => `${k.label}: ${k.h1.few ? 'мало данных' : k.h1.text} за час, ${k.h24.few ? 'мало данных' : k.h24.text} за сутки`).join('\n')
+  return (
+    <span className="whitespace-nowrap font-mono tabular-nums text-xs" title={title || 'данных пока нет'}>
+      {part(v.h1)} <span className="text-tertiary">/</span> {part(v.h24)}
+    </span>
+  )
+}
+
+function StateCell({ entry }) {
+  const v = rotationView(entry)
+  return (
+    <div className="flex flex-col items-start gap-0.5 min-w-0 max-w-[14rem]">
+      <Badge variant={v.tone}>{v.label}</Badge>
+      {v.reason && <span className="text-[11px] text-tertiary truncate max-w-full" title={v.reason}>{v.reason}</span>}
+      {v.since && <span className="text-[11px] font-mono tabular-nums text-tertiary">с {formatDate(v.since)}</span>}
+    </div>
+  )
+}
+
 /**
  * EntriesPanel — the «Входы в РФ» tab of «Серверы» (was the «Входы» page): where users connect
  * (hub / pinned relay / auto), the subscription domain and «Авто», every entry's health and load, the phone check, the
@@ -201,6 +227,7 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
   const [form, setForm] = useState({ interval: 4, testUser: '' })
   const [saving, setSaving] = useState(false)
   const [drill, setDrill] = useState({ open: false, minutes: '15', word: '' })
+  const [panelId, setPanelId] = useState(null) // the entry whose «Управление» is open
 
   async function load() {
     try {
@@ -226,14 +253,6 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
       setDrill({ open: false, minutes: '15', word: '' })
       await load()
     } catch (e) { toast.error(e.message) } finally { setSaving(false) }
-  }
-
-  async function setAddressMode(entry, mode) {
-    try {
-      await saveEntryAddress(entry.id, { address_mode: mode })
-      toast.success('Адрес входа сохранён')
-      await load()
-    } catch (e) { toast.error(e.message) }
   }
 
   if (!data && !error) return <div className="space-y-3"><Skeleton className="h-10" /><Skeleton className="h-32" /><Skeleton className="h-40" /></div>
@@ -266,40 +285,44 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
 
       {relays.length > 0 && <SubscriptionCard data={data} canEdit={canEdit} onSaved={load} />}
 
-      <Table>
-        <Thead><Tr><Th>Вход</Th><Th>Адрес</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th align="right">CPU</Th><Th align="right">Канал, Мбит/с</Th><Th align="right">conntrack</Th><Th>Адрес в подписке</Th><Th>Мобильные сети</Th></Tr></Thead>
-        <Tbody>
-          {data.entries.map(e => (
-            <Tr key={e.id}>
-              <Td>
-                {e.kind === 'relay' && onOpenNode
-                  ? <button type="button" onClick={() => onOpenNode(e.id)} className="text-left text-primary hover:text-accent rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">{e.name}</button>
-                  : <span className="text-primary">{e.name}</span>}
-                {e.kind === 'relay' && <span className="block text-[11px] text-tertiary">вход в РФ</span>}
-              </Td>
-              <Td mono className="text-secondary">{e.address || '—'}</Td>
-              <Td><Health status={e.health.external} at={e.health.external_at} detail={e.health.external_error} /></Td>
-              <Td>{e.kind === 'relay' ? <Health status={e.health.udp} at={e.health.udp_at} detail={e.health.udp_error} /> : <span className="text-tertiary">см. «Алерты»</span>}</Td>
-              <Td><Health status={e.health.ru} at={e.health.ru_at} link={e.health.ru_link} /></Td>
-              {e.kind === 'relay'
-                ? <LoadCells node={nodesById[e.id]} />
-                : <><Td align="right"><span className="text-xs text-tertiary">вкладка «Hub»</span></Td><Td /><Td /></>}
-              <Td>
-                <Select aria-label={`Адрес входа ${e.name}`} value={e.address_mode} disabled={!canEdit}
-                  onChange={ev => setAddressMode(e, ev.target.value)} className="h-7 text-xs">
-                  <option value="ip">IP-адрес</option>
-                  <option value="domain" disabled={!data.domain_mode_available}>домен{data.domain_mode_available ? '' : ' — после раздела «Домены»'}</option>
-                </Select>
-              </Td>
-              <Td>
+      <div className="space-y-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <p className="text-xs text-tertiary">
+            Стабильность — доля успешных подключений через выход за рубежом за час / сутки: каждую минуту несколько подключений с разных портов.
+            Ниже 95 % за час — тревога в Telegram.
+          </p>
+          {canEdit && onAdd && relays.length > 0 && (
+            <Button size="sm" variant="secondary" icon={<Plus className="w-3.5 h-3.5" />} onClick={onAdd} className="w-full sm:w-auto shrink-0">Добавить вход</Button>
+          )}
+        </div>
+        <Table>
+          <Thead><Tr><Th>Вход</Th><Th>Состояние</Th><Th>Стабильность 1 ч / 24 ч</Th><Th>Снаружи</Th><Th>Бамбук через вход</Th><Th>Из РФ</Th><Th>Туннель</Th><Th align="right">CPU</Th><Th align="right">Канал, Мбит/с</Th><Th align="right">conntrack</Th><Th><span className="sr-only">Управление</span></Th></Tr></Thead>
+          <Tbody>
+            {data.entries.map(e => (
+              <Tr key={e.id}>
+                <Td>
+                  <span className="block text-primary">{e.name}</span>
+                  <span className="block font-mono tabular-nums text-[11px] text-tertiary">{e.address || '—'}</span>
+                </Td>
+                <Td><StateCell entry={e} /></Td>
+                <Td><StabilityCell stability={e.stability} /></Td>
+                <Td><Health status={e.health.external} at={e.health.external_at} detail={e.health.external_error} /></Td>
+                <Td>{e.kind === 'relay' ? <Health status={e.health.udp} at={e.health.udp_at} detail={e.health.udp_error} /> : <span className="text-xs text-tertiary">см. «Алерты»</span>}</Td>
+                <Td><Health status={e.health.ru} at={e.health.ru_at} link={e.health.ru_link} /></Td>
+                <Td>{e.kind === 'relay' ? <Badge variant={e.tunnel ? 'accent' : 'default'}>{e.tunnel ? 'GRE' : 'нет'}</Badge> : <span className="text-tertiary">—</span>}</Td>
                 {e.kind === 'relay'
-                  ? <Button size="sm" variant="secondary" icon={<Smartphone className="w-3.5 h-3.5" />} onClick={() => onPhone?.(e.id)}>Проверить с телефона</Button>
-                  : <span className="text-xs text-tertiary">режется операторами</span>}
-              </Td>
-            </Tr>
-          ))}
-        </Tbody>
-      </Table>
+                  ? <LoadCells node={nodesById[e.id]} />
+                  : <><Td align="right"><span className="text-xs text-tertiary">вкладка «Hub»</span></Td><Td /><Td /></>}
+                <Td align="right">
+                  {e.kind === 'relay'
+                    ? <Button size="sm" variant="secondary" icon={<Settings2 className="w-3.5 h-3.5" />} onClick={() => setPanelId(e.id)}>Управление</Button>
+                    : <span className="text-xs text-tertiary">режется операторами</span>}
+                </Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -375,6 +398,9 @@ export default function EntriesPanel({ nodesById = {}, onAdd, onOpenNode, phoneI
           </div>
         </div>
       </Dialog>
+
+      <EntryPanel entry={panelId == null || phone ? null : relays.find(r => r.id === panelId) || null} data={data} node={nodesById[panelId]}
+        canEdit={canEdit} onClose={() => setPanelId(null)} onChanged={load} onOpenNode={onOpenNode} onPhone={onPhone} />
 
       <Dialog open={!!phone} onClose={() => onPhone?.(null)} title={phone ? `Проверка с телефона — ${phone.name}` : ''} maxWidth="max-w-2xl">
         {phone && <MobileCheckPanel serverId={phone.id} canStart={canEdit} />}
