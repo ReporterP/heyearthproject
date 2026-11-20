@@ -334,7 +334,7 @@ func apiRelayOptions(ctx context.Context, n provision.Node) (provision.RelayOpti
 	case err != nil:
 		return provision.RelayOptions{}, fmt.Errorf("main_server_host не прочитан: %w", err)
 	}
-	o, err := provision.RelayOptionsFor(ctx, n.IP, n.SSHPort, host, relayHubLookup)
+	o, err := provision.RelayOptionsFor(ctx, n.ID, n.IP, n.SSHPort, host, relayHubLookup)
 	if err != nil {
 		return provision.RelayOptions{}, provision.Refusal(err)
 	}

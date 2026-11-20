@@ -22,11 +22,49 @@ import (
 // through the real putFile (.bak semantics included), and these stand in for the system. Each logs
 // "<name> <args>" to $T/calls; the kernel, systemd, ufw and dpkg state lives in $T/state.
 var relayStubs = map[string]string{
-	"id":         `if [ "${1:-}" = -u ]; then echo "${STUB_UID:-0}"; fi`,
-	"uname":      `echo "${UNAME_M:-x86_64}"`,
-	"ss":         `printf '%s\n' "${SS_LINES:-}" | sed '/^$/d'`,
-	"iptables":   `if [ "${1:-}" = -S ]; then echo "-P ${2:-FORWARD} ${FORWARD_POLICY:-ACCEPT}"; fi`,
-	"timeout":    `[ "${HUB_DOWN:-0}" != 1 ]`,
+	"id":       `if [ "${1:-}" = -u ]; then echo "${STUB_UID:-0}"; fi`,
+	"uname":    `echo "${UNAME_M:-x86_64}"`,
+	"ss":       `printf '%s\n' "${SS_LINES:-}" | sed '/^$/d'`,
+	"iptables": `if [ "${1:-}" = -S ]; then echo "-P ${2:-FORWARD} ${FORWARD_POLICY:-ACCEPT}"; fi`,
+	"timeout": `case "$*" in
+*"/10.77."*) [ "${TUN_TCP_DOWN:-0}" != 1 ] && ls "$T/state"/live-heyearth-tunnel* >/dev/null 2>&1 ;;
+*) [ "${HUB_DOWN:-0}" != 1 ] ;;
+esac`,
+	"ping":        `[ "${PING_FAIL:-0}" != 1 ] && ls "$T/state"/live-heyearth-tunnel* >/dev/null 2>&1`,
+	"modinfo":     `[ "${NO_GRE:-0}" != 1 ]`,
+	"systemd-run": `u=""; for a; do case "$a" in --unit=*) u=${a#--unit=} ;; esac; done; touch "$T/state/active-$u.timer"; echo "$*" > "$T/state/guard-cmd"`,
+	// The GRE tunnels: a running tunnel unit is its unit file copied to state/live-<unit> at start
+	// (a changed file that was not restarted still shows the old device).
+	"ip": `S="$T/state"
+unit_of() { case "$1" in he-hub) echo heyearth-tunnel.service ;; he-r*) echo "heyearth-tunnel-r${1#he-r}.service" ;; esac; }
+dev_of() { case "$1" in heyearth-tunnel.service) echo he-hub ;; heyearth-tunnel-r*.service) n=${1#heyearth-tunnel-r}; echo "he-r${n%.service}" ;; esac; }
+tun() { f="$S/live-$(unit_of "$1")"; [ -f "$f" ] || return 1
+  lr=$(sed -n 's/^ExecStart=ip tunnel add [^ ]* mode gre local \([^ ]*\) remote \([^ ]*\) .*/\1 \2/p' "$f")
+  ap=$(sed -n 's/^ExecStart=ip addr add \([^ ]*\) peer \([^ ]*\) dev .*/\1 \2/p' "$f")
+  m=$(sed -n 's/^ExecStart=ip link set [^ ]* mtu \([0-9]*\) up$/\1/p' "$f")
+  echo "$lr $ap $m"; }
+tunnels() { for f in "$S"/live-heyearth-tunnel*; do [ -f "$f" ] && dev_of "${f##*/live-}"; done; }
+addr_lines() { for d in $(tunnels); do set -- $(tun "$d"); printf '7: %s    inet %s peer %s/32 scope global %s\n' "$d" "$3" "$4" "$d"; done; }
+a="$*"
+case "$a" in
+"-o link show dev "*) d=${a##* }; v=$(tun "$d") || exit 1; set -- $v
+  printf '7: %s@NONE: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu %s qdisc noqueue state UNKNOWN mode DEFAULT\\    link/gre %s peer %s\n' "$d" "$5" "$1" "$2" ;;
+"-o -4 addr show dev "*) d=${a##* }; v=$(tun "$d") || exit 1; set -- $v; printf '7: %s    inet %s peer %s/32 scope global %s\n' "$d" "$3" "$4" "$d" ;;
+"-4 -o route show table all")
+  echo "default via 203.0.113.1 dev eth0 table main proto static"
+  echo "203.0.113.0/24 dev eth0 table main proto kernel scope link src 203.0.113.50"
+  if [ -n "${EXTRA_ROUTE:-}" ]; then echo "$EXTRA_ROUTE"; fi
+  for d in $(tunnels); do set -- $(tun "$d"); echo "$4 dev $d table main proto kernel scope link src $3"; done ;;
+"-4 -o addr show"|"-o -4 addr show")
+  echo "2: eth0    inet 203.0.113.50/24 brd 203.0.113.255 scope global eth0"
+  if [ -n "${EXTRA_ADDR:-}" ]; then echo "$EXTRA_ADDR"; fi
+  addr_lines ;;
+"-4 route show table all default") echo "default via 203.0.113.1 dev eth0 proto static" ;;
+"-4 route get 1.1.1.1") src=203.0.113.50
+  if [ -n "${SRC_FLIP:-}" ] && [ -n "$(tunnels)" ]; then src=$SRC_FLIP; fi
+  echo "1.1.1.1 via 203.0.113.1 dev eth0 src $src uid 0" ;;
+*) echo "ip stub: $*" >&2; exit 2 ;;
+esac`,
 	"sleep":      `:`,
 	"journalctl": `:`,
 	"modprobe":   `touch "$T/state/mod-$1"`,
@@ -65,6 +103,8 @@ case "$*" in
   # as nft prints it: a one-element set is the bare value (dport { 2443 } -> dport 2443)
   sed -e '/^#/d' -e '/^table ip heyearth_relay$/d' -e '/^delete table/d' -e 's/^ */\t/' -e 's/counter drop/counter packets 0 bytes 0 drop/' \
     -e 's/dport { \([0-9-]*\) }/dport \1/' "$L" ;;
+"list table inet heyearth_ddos") [ "${DDOS:-0}" = 1 ] ;;
+"get element inet heyearth_ddos allow4 "*) a="$*"; e=${a#*\{ }; e=${e% \}}; grep -qxF -- "$e" "$T/state/allow4" 2>/dev/null ;;
 "list ruleset") if [ -f "$L" ]; then cat "$L"; fi
   if [ "${NFT_FWD_DROP:-0}" = 1 ]; then printf 'table inet filter {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n'; fi ;;
 "delete table ip heyearth_relay") if [ -f "$L" ]; then
@@ -80,6 +120,7 @@ now=0; u=""
 for a; do case "$a" in --now) now=1 ;; -*) ;; *) if [ -z "$u" ]; then u=$a; fi ;; esac; done
 R=heyearth-relay.service
 fwd() { echo "$1" > "$S/sysctl/net.ipv4.ip_forward"; }
+t_start() { [ "${TUNNEL_START_FAIL:-0}" != 1 ] && [ -f "$TUNNEL_UNITS_DIR/$1" ] || { echo "Job for $1 failed" >&2; return 1; }; cp "$TUNNEL_UNITS_DIR/$1" "$S/live-$1"; }
 r_start() { if [ -f "$RELAY_NFT" ] && [ "${NFT_LOAD_FAIL:-0}" != 1 ]; then cp "$RELAY_NFT" "$S/live.nft"; fwd 1; else fwd 0; echo "Job for $R failed" >&2; return 1; fi; }
 r_stop() { fwd 0; rm -f "$S/live.nft"; } # config.RelayUnit's ExecStop order (TestRelayUnit)
 f_start() {
@@ -90,18 +131,20 @@ case "$cmd" in
 is-active) if [ "$u" = docker ]; then [ "${DOCKER:-0}" = 1 ]; exit; fi; [ -e "$S/active-$u" ] ;;
 is-enabled) if [ -e "$S/enabled-$u" ]; then echo enabled; else echo disabled; exit 1; fi ;;
 enable) if [ "$u" = $R ] && [ ! -f "$RELAY_UNIT" ]; then echo "Unit file $R does not exist." >&2; exit 1; fi; touch "$S/enabled-$u" ;;
-disable) rm -f "$S/enabled-$u"; if [ "$now" = 1 ] && [ -e "$S/active-$u" ]; then rm -f "$S/active-$u"; if [ "$u" = $R ]; then r_stop; fi; fi ;;
+disable) rm -f "$S/enabled-$u"; if [ "$now" = 1 ] && [ -e "$S/active-$u" ]; then rm -f "$S/active-$u" "$S/live-$u"; if [ "$u" = $R ]; then r_stop; fi; fi ;;
 start) if [ -e "$S/active-$u" ]; then exit 0; fi
   if [ "$u" = $R ]; then r_start || exit 1; fi
   if [ "$u" = fail2ban ]; then f_start || exit 1; fi
+  case "$u" in heyearth-tunnel*.service) t_start "$u" || exit 1 ;; esac
   touch "$S/active-$u" ;;
 restart) if [ "$u" = $R ]; then r_stop; rm -f "$S/active-$u"; r_start || exit 1; fi
+  case "$u" in heyearth-tunnel*.service) rm -f "$S/active-$u" "$S/live-$u"; t_start "$u" || exit 1 ;; esac
   if [ "$u" = fail2ban ]; then f_start || exit 1; fi
   touch "$S/active-$u" ;;
 reload) [ -e "$S/active-$u" ] || { echo "$u not active, cannot reload" >&2; exit 1; }
   [ "${RELOAD_FAIL:-0}" != 1 ] || { echo "Job for $u reload failed" >&2; exit 1; }
   if [ "$u" = $R ]; then cp "$RELAY_NFT" "$S/live.nft"; fi ;;
-stop) if [ -e "$S/active-$u" ]; then rm -f "$S/active-$u"; if [ "$u" = $R ]; then r_stop; fi; fi ;;
+stop) if [ -e "$S/active-$u" ]; then rm -f "$S/active-$u" "$S/live-$u"; if [ "$u" = $R ]; then r_stop; fi; fi ;;
 daemon-reload|reset-failed) ;;
 *) echo "systemctl stub: $cmd" >&2; exit 2 ;;
 esac`,
@@ -185,7 +228,14 @@ func (h *relayHost) layout() relayLayout {
 	return relayLayout{osRelease: p("/etc/os-release"), nft: p("/etc/heyearth/relay.nft"), unit: p("/etc/systemd/system/heyearth-relay.service"),
 		wants: p("/etc/systemd/system/multi-user.target.wants"), sysctl: p("/etc/sysctl.d/90-heyearth-relay.conf"),
 		modules: p("/etc/modules-load.d/heyearth-relay.conf"), jail: p("/etc/fail2ban/jail.d/heyearth-sshd.local"),
-		state: p("/opt/heyearth/state/relay-pending"), nginx: p("/etc/nginx/nginx.conf"), proc: p("/proc")}
+		state: p("/opt/heyearth/state/relay-pending"), nginx: p("/etc/nginx/nginx.conf"), proc: p("/proc"),
+		tunnel: p("/etc/systemd/system/heyearth-tunnel.service")}
+}
+
+// hubLayout roots the Hub's tunnel files in the same temp dir (the Hub tests use the same stubs).
+func (h *relayHost) hubLayout() hubTunnelLayout {
+	return hubTunnelLayout{units: h.sh + "/etc/systemd/system", allow: h.sh + "/opt/heyearth/bin/heyearth-ddos-allow.sh",
+		guard: h.sh + "/opt/heyearth/state/tunnel-guard"}
 }
 
 // The files of the layout, relative to the root (Go side).
@@ -197,6 +247,8 @@ const (
 	rJail  = "/etc/fail2ban/jail.d/heyearth-sshd.local"
 	rState = "/opt/heyearth/state/relay-pending"
 	rLive  = "/state/live.nft"
+	rTun   = "/etc/systemd/system/heyearth-tunnel.service"
+	rTunUp = "/state/live-heyearth-tunnel.service"
 )
 
 func (h *relayHost) path(rel string) string { return filepath.Join(h.root, filepath.FromSlash(rel)) }
@@ -260,7 +312,7 @@ func (h *relayHost) Run(ctx context.Context, script string) (string, error) {
 	l := h.layout()
 	var b strings.Builder
 	fmt.Fprintf(&b, "export T=%s\nexport PATH=\"$T/bin:$PATH\"\n", shellquote.Quote(h.sh))
-	for k, v := range map[string]string{"RELAY_NFT": l.nft, "RELAY_UNIT": l.unit, "RELAY_JAIL": l.jail} {
+	for k, v := range map[string]string{"RELAY_NFT": l.nft, "RELAY_UNIT": l.unit, "RELAY_JAIL": l.jail, "TUNNEL_UNITS_DIR": h.sh + "/etc/systemd/system"} {
 		fmt.Fprintf(&b, "export %s=%s\n", k, shellquote.Quote(v))
 	}
 	for k, v := range h.env {
@@ -298,11 +350,14 @@ func (h *relayHost) PutFile(ctx context.Context, path string, data []byte, mode 
 const (
 	tHub   = "198.51.100.2"
 	tRelay = "203.0.113.50"
+	// The tunnel of relay 9 (the fixture's row): the Hub's and the relay's address.
+	tHubTun   = "10.77.0.37"
+	tRelayTun = "10.77.0.38"
 )
 
 func testRelayOpts() RelayOptions {
 	// The Hub's IPv6 address gets no SSH rule (the Hub reaches the relay's IPv4 address).
-	return RelayOptions{RelayIP: tRelay, HubIP: tHub, HubIPs: []string{tHub, "198.51.100.3", "2001:db8::1"}, SSHPort: 2222,
+	return RelayOptions{ServerID: 9, RelayIP: tRelay, HubIP: tHub, HubIPs: []string{tHub, "198.51.100.3", "2001:db8::1"}, SSHPort: 2222,
 		VerifyPath: func(context.Context) error { return nil }}
 }
 
@@ -316,24 +371,50 @@ type relayEnv struct {
 	verified int
 	pathErr  error
 	dialErr  error
-	hubTrust []string // relayHubTrust calls: "<ip> <on>"
+	hubTrust []string // relayHubTrust calls: "<ip> <tunnel ip> <on>"
 	trusted  bool
+	hubTun   []string // the Hub tunnel step's calls: up, rollback, down <id>
+	hubTunUp bool
 }
 
 func relayFixture(t *testing.T, env map[string]string) *relayEnv {
 	t.Helper()
 	e := &relayEnv{h: newRelayHost(t, env), hooks: &fakeHooks{lifecycle: "pending"}}
 	prevTrust, prevCheck := relayHubTrust, relayHubTrustCheck
-	t.Cleanup(func() { relayHubTrust, relayHubTrustCheck = prevTrust, prevCheck })
-	relayHubTrust = func(_ context.Context, _ Remote, ip string, on bool) error {
-		e.hubTrust = append(e.hubTrust, fmt.Sprintf("%s %v", ip, on))
+	prevUp, prevTunCheck, prevRollback, prevDown := relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown
+	t.Cleanup(func() {
+		relayHubTrust, relayHubTrustCheck = prevTrust, prevCheck
+		relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown = prevUp, prevTunCheck, prevRollback, prevDown
+	})
+	relayHubTrust = func(_ context.Context, _ Remote, ip, tun string, on bool) error {
+		e.hubTrust = append(e.hubTrust, fmt.Sprintf("%s %s %v", ip, tun, on))
 		e.trusted = on
 		return nil
 	}
-	relayHubTrustCheck = func(context.Context, Remote, string) error {
+	relayHubTrustCheck = func(context.Context, Remote, string, string) error {
 		if !e.trusted {
 			return errors.New("Hub не доверяет входу")
 		}
+		return nil
+	}
+	relayHubTunnelUp = func(_ context.Context, _ Remote, _ *State, o RelayOptions) error {
+		e.hubTun = append(e.hubTun, fmt.Sprintf("up %d", o.ServerID))
+		e.hubTunUp = true
+		return nil
+	}
+	relayHubTunnelCheck = func(context.Context, Remote, RelayOptions) error {
+		if !e.hubTunUp {
+			return errors.New("на Hub нет туннеля")
+		}
+		return nil
+	}
+	relayHubTunnelRollback = func(context.Context, Remote, *State, RelayOptions) error {
+		e.hubTun = append(e.hubTun, "rollback")
+		return nil
+	}
+	relayHubTunnelDown = func(_ context.Context, _ Remote, id int, _ *State) error {
+		e.hubTun = append(e.hubTun, fmt.Sprintf("down %d", id))
+		e.hubTunUp = false
 		return nil
 	}
 	e.opts = testRelayOpts()
@@ -384,8 +465,8 @@ func (e *relayEnv) dump(id int64) string {
 	return b.String()
 }
 
-var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_rules", "relay_unit", "relay_stream", "relay_firewall",
-	"relay_fail2ban", "relay_hub_trust", "relay_path", "activate"}
+var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_hub_tunnel", "relay_tunnel", "relay_hub_trust",
+	"relay_rules", "relay_unit", "relay_stream", "relay_firewall", "relay_fail2ban", "relay_path", "activate"}
 
 func allSteps(names []string, status string) map[string]string {
 	m := map[string]string{}
@@ -423,7 +504,8 @@ func runRelaySteps(t *testing.T, h *relayHost, o RelayOptions, names ...string) 
 }
 
 const wantRelayUfw = "2222/tcp ALLOW IN 198.51.100.2\n2222/tcp ALLOW IN 198.51.100.3\n" +
-	"198.51.100.2 2443/tcp ALLOW FWD Anywhere # heyearth-relay\n198.51.100.2 50443/udp ALLOW FWD Anywhere # heyearth-relay\n" +
+	tHubTun + " 2443/tcp ALLOW FWD Anywhere # heyearth-relay\n" + tHubTun + " 50443/udp ALLOW FWD Anywhere # heyearth-relay\n" +
+	"/gre ALLOW IN 198.51.100.2 # heyearth-relay\n" +
 	"80/tcp ALLOW IN Anywhere # heyearth-relay\n443/tcp ALLOW IN Anywhere # heyearth-relay\n"
 
 func TestRelayProvisionFreshThenNoOpRerun(t *testing.T) {
@@ -435,7 +517,7 @@ func TestRelayProvisionFreshThenNoOpRerun(t *testing.T) {
 		t.Fatalf("fresh relay:\n%s", e.dump(id))
 	}
 	h := e.h
-	rules, _ := config.RelayNftRuleset(tHub)
+	rules, _ := config.RelayNftRulesetVia(tHub, tHubTun)
 	if h.file(rNft) != rules || h.file(rLive) != rules || h.ipForward() != "1" {
 		t.Fatalf("forwarding: file=%v live=%v ip_forward=%s", h.file(rNft) == rules, h.file(rLive) == rules, h.ipForward())
 	}
@@ -456,6 +538,14 @@ func TestRelayProvisionFreshThenNoOpRerun(t *testing.T) {
 	}
 	if len(h.markers()) != 0 || e.verified != 1 {
 		t.Fatalf("markers %v, checks from outside %d", h.markers(), e.verified)
+	}
+	// The tunnel: the Hub's end first, the relay's unit running with this relay's addresses, the
+	// Hub trusting the tunnel address, nginx going through it.
+	tun, _ := config.TunnelUnit(config.RelayTunnelDev, tRelay, tHub, netip.MustParseAddr(tRelayTun), netip.MustParseAddr(tHubTun))
+	nginx, _ := config.RelayNginxConfVia(tHub, tHubTun)
+	if h.file(rTun) != tun || h.file(rTunUp) != tun || h.file("/etc/nginx/nginx.conf") != nginx ||
+		!slices.Equal(e.hubTun, []string{"up 9"}) || !slices.Equal(e.hubTrust, []string{tRelay + " " + tRelayTun + " true"}) {
+		t.Fatalf("tunnel: unit=%v live=%v nginx=%v hub %v trust %v", h.file(rTun) == tun, h.file(rTunUp) == tun, h.file("/etc/nginx/nginx.conf") == nginx, e.hubTun, e.hubTrust)
 	}
 	// Published once, after the check from outside: provisioning → online in one Activate.
 	if !slices.Equal(e.hooks.history, []string{"provisioning", "online"}) || e.hooks.bumps != 1 || e.hooks.syncs != 1 {
@@ -535,6 +625,9 @@ func TestRelayPreflightRefuses(t *testing.T) {
 		{"CentOS", map[string]string{"OS_ID": "centos"}, "не поддерживается"},
 		{"armv7", map[string]string{"UNAME_M": "armv7l"}, "архитектура armv7l"},
 		{"не root", map[string]string{"STUB_UID": "1000"}, "root"},
+		{"нет GRE", map[string]string{"NO_GRE": "1"}, "ip_gre"},
+		{"сеть провайдера 10/8", map[string]string{"EXTRA_ROUTE": "10.0.0.0/8 via 203.0.113.1 dev eth0 table main"}, "пересекается с адресами туннеля"},
+		{"чужой адрес из пула", map[string]string{"EXTRA_ADDR": "3: eth1    inet 10.77.0.37/24 scope global eth1"}, "пересекается с адресами туннеля"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newRelayHost(t, c.env)
@@ -572,7 +665,7 @@ const oldRelayRules = "table ip heyearth_relay\ndelete table ip heyearth_relay\n
 // interrupted run recorded — never one an earlier job already checked.
 func TestRelayRulesRollback(t *testing.T) {
 	o := testRelayOpts()
-	rules, _ := config.RelayNftRuleset(tHub)
+	rules, _ := config.RelayNftRulesetVia(tHub, tHubTun)
 
 	t.Run("the previous file comes back and is loaded", func(t *testing.T) {
 		h := newRelayHost(t, map[string]string{"NFT_LOAD_FAIL": "1"})
@@ -830,7 +923,7 @@ func TestRelayDeprovision(t *testing.T) {
 			t.Fatalf("second deprovision:\n%s", e.dump(id))
 		}
 	}
-	for _, f := range []string{rLive, rNft, rUnit, rSys, rMod, rJail, rState, "/etc/systemd/system/multi-user.target.wants/heyearth-relay.service"} {
+	for _, f := range []string{rLive, rNft, rUnit, rSys, rMod, rJail, rState, rTun, rTunUp, "/etc/systemd/system/multi-user.target.wants/heyearth-relay.service"} {
 		if h.exists(f) {
 			t.Errorf("%s left after deprovision", f)
 		}
@@ -843,6 +936,9 @@ func TestRelayDeprovision(t *testing.T) {
 	}
 	if !strings.Contains(h.calls(), "systemctl restart fail2ban") || h.file("/state/f2b-loaded") == config.RelayJail(2222, tHub) {
 		t.Fatalf("fail2ban still runs the relay's jail")
+	}
+	if e.hubTunUp || !slices.Contains(e.hubTun, "down 9") {
+		t.Fatalf("the Hub's end of the tunnel left: %v", e.hubTun)
 	}
 	h.noWindow(t)
 	// Forwarding and the table left without the unit (unit file deleted by hand): the teardown
@@ -878,7 +974,8 @@ func TestRelayOptionsFor(t *testing.T) {
 		}
 		return nil, errors.New("no such host")
 	}
-	if o, err := RelayOptionsFor(ctx, " 203.0.113.50 ", 22, "hub.example.test", lookup); err != nil || o.HubIP != tHub || o.RelayIP != tRelay {
+	if o, err := RelayOptionsFor(ctx, 9, " 203.0.113.50 ", 22, "hub.example.test", lookup); err != nil || o.HubIP != tHub || o.RelayIP != tRelay ||
+		o.ServerID != 9 || o.tunnel().hub.String() != tHubTun {
 		t.Fatalf("domain Hub: %+v %v", o, err)
 	}
 	for name, c := range map[string]struct {
@@ -888,11 +985,16 @@ func TestRelayOptionsFor(t *testing.T) {
 		"several IPv4": {tRelay, "rr.example.test", 22}, "relay = Hub": {tHub, tHub, 22}, "ssh port 0": {tRelay, tHub, 0},
 		"ssh on 443": {tRelay, tHub, 443}, "ssh on 2443": {tRelay, tHub, 2443}, "private relay": {"192.168.1.5", tHub, 22},
 		"IPv6 relay": {"2001:db8::5", tHub, 22}, "relay name": {"relay.example.test", tHub, 22}} {
-		if _, err := RelayOptionsFor(ctx, c.relay, c.port, c.hub, lookup); err == nil {
+		if _, err := RelayOptionsFor(ctx, 9, c.relay, c.port, c.hub, lookup); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
-	o, err := RelayOptionsFor(ctx, tRelay, 22, tHub, lookup)
+	for _, id := range []int{0, -3, config.RelayTunnelMaxID + 1} {
+		if _, err := RelayOptionsFor(ctx, id, tRelay, 22, tHub, lookup); err == nil {
+			t.Errorf("server id %d accepted (no tunnel addresses)", id)
+		}
+	}
+	o, err := RelayOptionsFor(ctx, 9, tRelay, 22, tHub, lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +1014,7 @@ func TestRelayOptionsFor(t *testing.T) {
 // The phase 2 dispatch: a relay ends online only through activate (after relay_path), and its
 // teardown sits between the lifecycle steps of DeprovisionRecipe.
 func TestRelayStitching(t *testing.T) {
-	if dep := stepNames(DeprovisionRecipe("relay")); !slices.Equal(dep, []string{"exclude", "relay_hub_untrust", "relay_teardown", "relay_firewall_remove", "finalize"}) {
+	if dep := stepNames(DeprovisionRecipe("relay")); !slices.Equal(dep, []string{"exclude", "relay_hub_untrust", "relay_hub_tunnel_remove", "relay_teardown", "relay_firewall_remove", "finalize"}) {
 		t.Fatalf("relay deprovision: %v", dep)
 	}
 	for _, s := range append(relayRecipe(testRelayOpts(), relayPaths), RelayDeprovisionRecipe()...) {
@@ -920,7 +1022,7 @@ func TestRelayStitching(t *testing.T) {
 			t.Errorf("%s: no title or nothing to run", s.Name)
 		}
 	}
-	n := Node{ID: 7, Role: "relay", IP: tRelay, Lifecycle: "pending"}
+	n := Node{ID: 9, Role: "relay", IP: tRelay, Lifecycle: "pending"}
 	st := NewState(KindProvision, n, nil, Hooks{})
 	if _, err := RecipeFor(KindProvision, n, st); err == nil || !IsRefusal(err) {
 		t.Fatalf("a relay without RelayOptions must be refused: %v", err)
@@ -932,6 +1034,7 @@ func TestRelayStitching(t *testing.T) {
 		"ssh on 443":    func(_ *Node, o *RelayOptions) { o.SSHPort = 443 },
 		"bad Hub":       func(_ *Node, o *RelayOptions) { o.HubIP = "127.0.0.1" },
 		"online":        func(n *Node, _ *RelayOptions) { n.Lifecycle = "online" },
+		"other row":     func(_ *Node, o *RelayOptions) { o.ServerID = 8 },
 	} {
 		nn, s := n, NewState(KindProvision, n, nil, Hooks{})
 		s.Relay = testRelayOpts()

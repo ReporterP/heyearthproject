@@ -238,17 +238,20 @@ table inet heyearth_ddos {
 }
 
 // ddosAllowScript fills allow4/allow6 with the addresses of every server in the DB (exits and
-// entries: one address for many users) and the Hub's own addresses. A DB error keeps the current
-// sets (an empty set would put the entries under the per-source limits).
+// entries: one address for many users), the Hub's own addresses and the entries' GRE tunnel
+// addresses (the far end of every he-r<id> device, internal/config relay_tunnel.go: through the
+// tunnel an entry connects from it — :8447 would be dropped, its users limited as one source). A
+// DB error keeps the current sets (an empty set would put the entries under the per-source limits).
 const ddosAllowScript = `#!/bin/sh
 # Installed by deploy --setup-hardening (cmd/deploy/ops_hardening.go): the flood table's allow sets
 # and nginx's trusted list (ops_nginx_limits.go) — the addresses of every server + the Hub's own.
 set -u
 db=$(runuser -u postgres -- psql -d heyearth -tAc "SELECT DISTINCT ip_address FROM servers WHERE ip_address IS NOT NULL" 2>/dev/null) || { echo "heyearth-ddos-allow: DB unavailable, lists kept"; exit 0; }
 own=$(ip -o addr show | awk '{print $4}' | cut -d/ -f1)
+peers=$(ip -o -4 addr show | awk '$2 ~ /^he-r[0-9]+$/ && $5 == "peer" { sub(/\/.*/, "", $6); print $6 }')
 if nft list table inet heyearth_ddos >/dev/null 2>&1; then
   v4=""; v6=""
-  for ip in $(printf '%s\n' $db $own | sort -u); do
+  for ip in $(printf '%s\n' $db $own $peers | sort -u); do
     case "$ip" in
       *[!0-9a-fA-F:.]*) continue ;;
       *:*) v6="$v6${v6:+, }$ip" ;;

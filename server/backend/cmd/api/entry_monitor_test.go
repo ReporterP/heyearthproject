@@ -311,6 +311,63 @@ func TestEntryMonitorRestartAndReserveChanges(t *testing.T) {
 	}
 }
 
+// The GRE tunnel of a relay down: :443 still answers (nginx falls back to the Hub's public
+// address) but :2443 does not — three checks and the relay is unhealthy, out of the subscription.
+// One lost :2443 flow is retried on a new connection and is no failure.
+func TestEntryMonitorRelay2443(t *testing.T) {
+	e := newEntryEnv()
+	var tries []int
+	dead := map[int]bool{2443: true}
+	e.m.tlsCheck = func(_ int, host string, port int, _ string) error {
+		if host == tR5 {
+			tries = append(tries, port)
+			if dead[port] {
+				return errBlocked
+			}
+		}
+		return e.tcp[host]
+	}
+	for i := 0; i < 3; i++ {
+		e.step(nil)
+	}
+	if e.m.tcp[5].status != biz.EntryUnhealthy || !e.has("raise relay-5-unreachable-external warn") || e.bumps != 1 {
+		t.Fatalf("tunnel down, 443 alive: status %s events %v bumps %d", e.m.tcp[5].status, e.events, e.bumps)
+	}
+	if want := []int{443, 2443, 2443}; !slices.Equal(tries[:3], want) {
+		t.Fatalf("tries %v, want %v per check", tries, want)
+	}
+	// One unlucky flow: the retry passes, the relay stays healthy.
+	e = newEntryEnv()
+	n := 0
+	e.m.tlsCheck = func(_ int, host string, port int, _ string) error {
+		if host == tR5 && port == 2443 {
+			if n++; n%2 == 1 {
+				return errBlocked
+			}
+		}
+		return e.tcp[host]
+	}
+	for i := 0; i < 3; i++ {
+		e.step(nil)
+	}
+	if e.m.tcp[5].status == biz.EntryUnhealthy || e.has("raise relay-5-unreachable-external warn") {
+		t.Fatalf("one lost flow per check made the relay unhealthy: %v", e.events)
+	}
+	// The Hub itself is checked on :443 only.
+	e = newEntryEnv()
+	var hubPorts []int
+	e.m.tlsCheck = func(_ int, host string, port int, _ string) error {
+		if host == tHub {
+			hubPorts = append(hubPorts, port)
+		}
+		return nil
+	}
+	e.step(nil)
+	if !slices.Equal(hubPorts, []int{443}) {
+		t.Fatalf("Hub checked on %v", hubPorts)
+	}
+}
+
 func TestEntryMonitorBambooThroughRelay(t *testing.T) {
 	e := newEntryEnv()
 	e.settings["hysteria2_obfs_password"] = "psk"

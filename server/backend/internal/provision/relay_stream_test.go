@@ -45,7 +45,7 @@ const stubRouter = "map $ssl_preread_server_name $backend {\n    hiearth.ru ngin
 func TestRelayHubTrust(t *testing.T) {
 	ctx := context.Background()
 	h := &hubStub{router: stubRouter, files: map[string]string{}}
-	if err := relayHubTrust(ctx, h, tRelay, true); err != nil {
+	if err := relayHubTrust(ctx, h, tRelay, "", true); err != nil {
 		t.Fatal(err)
 	}
 	trustPath := config.HubRelayTrustPath(tRelay)
@@ -55,8 +55,16 @@ func TestRelayHubTrust(t *testing.T) {
 	if last := h.cmds[len(h.cmds)-1]; !strings.Contains(last, "nginx -t -q") || !strings.Contains(last, "ufw allow 8447/tcp") {
 		t.Errorf("reload: %q", last)
 	}
+	// Through the tunnel the Hub trusts the relay's tunnel address too.
+	if err := relayHubTrust(ctx, h, tRelay, tRelayTun, true); err != nil ||
+		!strings.Contains(h.files[trustPath], "set_real_ip_from "+tRelay+";\nset_real_ip_from "+tRelayTun+";\n") {
+		t.Fatalf("tunnel trust %v: %q", err, h.files[trustPath])
+	}
+	if err := relayHubTrust(ctx, h, tRelay, tHub, true); err == nil {
+		t.Error("a public address trusted as the tunnel's")
+	}
 	// Removal: the relay's file goes, the shared server stays.
-	if err := relayHubTrust(ctx, h, tRelay, false); err != nil {
+	if err := relayHubTrust(ctx, h, tRelay, "", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := h.files[trustPath]; ok {
@@ -67,7 +75,7 @@ func TestRelayHubTrust(t *testing.T) {
 	}
 	// A refused config takes the relay's trust away again.
 	bad := &hubStub{router: stubRouter, files: map[string]string{}, reloadErr: errors.New("exit status 1")}
-	if err := relayHubTrust(ctx, bad, tRelay, true); err == nil || !strings.Contains(err.Error(), "не принял") {
+	if err := relayHubTrust(ctx, bad, tRelay, "", true); err == nil || !strings.Contains(err.Error(), "не принял") {
 		t.Fatalf("refused config: %v", err)
 	}
 	if _, ok := bad.files[trustPath]; ok {
@@ -75,7 +83,7 @@ func TestRelayHubTrust(t *testing.T) {
 	}
 	// No router map: refuse before writing anything (the site would go to xray).
 	none := &hubStub{router: "server { listen 443; }", files: map[string]string{}}
-	if err := relayHubTrust(ctx, none, tRelay, true); err == nil || len(none.files) != 0 {
+	if err := relayHubTrust(ctx, none, tRelay, "", true); err == nil || len(none.files) != 0 {
 		t.Fatalf("no router map: %v %v", err, none.files)
 	}
 }

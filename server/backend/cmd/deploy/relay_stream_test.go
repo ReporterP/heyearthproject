@@ -120,6 +120,17 @@ func TestRelayStreamEntryScript(t *testing.T) {
 		}
 	})
 
+	t.Run("an entry already on the tunnel is never touched (the tunnel would be undone)", func(t *testing.T) {
+		tun, err := config.RelayNginxConfVia(relayStreamTestHub, "10.77.0.25")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, exit, conf, _ := relayStreamHarness(t, tun, true, nil, true)
+		if exit == 0 || conf != tun || !strings.Contains(out, "--relay-tunnel") {
+			t.Fatalf("exit %d:\n%s", exit, out)
+		}
+	})
+
 	t.Run("check only: measures, changes nothing", func(t *testing.T) {
 		out, exit, conf, prev := relayStreamHarness(t, oldRelayConf, true,
 			[]string{"CHECK tls=21/40 http=6/10"}, false)

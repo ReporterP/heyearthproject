@@ -72,6 +72,7 @@ CONF=${RELAY_NGINX_CONF:-/etc/nginx/nginx.conf}; PREV="$CONF.heyearth-prev"
 NEW=$(mktemp); PY=$(mktemp); trap 'rm -f "$NEW" "$PY"' EXIT
 printf '%%s' "$NEWB64" | base64 -d > "$NEW"; printf '%%s' "$CHECKB64" | base64 -d > "$PY"
 head -n 1 "$CONF" | grep -qF 'config.RelayNginxConf' || { echo "RELAY_STREAM_FAIL $CONF написан не рецептом входа — не трогаю"; exit 1; }
+if head -n 1 "$CONF" | grep -qF 'through the tunnel'; then echo "RELAY_STREAM_FAIL вход уже ходит на Hub через туннель — его nginx сводит --relay-tunnel, не трогаю"; exit 1; fi
 head -n 1 "$CONF" | grep -qF "to the Hub $HUB." || { echo "RELAY_STREAM_FAIL $CONF ведёт не на Hub $HUB — не трогаю"; exit 1; }
 check() { python3 "$PY" "$SNI" "$HOST" ` + "%d %d" + `; }
 pct() { awk -v s="$1" 'BEGIN { split(s, a, /[=\/ ]/); print (a[4] > 0 ? int(100 * a[3] / a[4]) : 0) }'; } # "CHECK tls=21/40 …" → 52

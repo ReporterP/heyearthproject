@@ -14,7 +14,7 @@ import (
 )
 
 func (l relayLayout) streamFile(o RelayOptions) (File, error) {
-	c, err := config.RelayNginxConf(o.HubIP)
+	c, err := config.RelayNginxConfVia(o.HubIP, str(o.tunnel().hub))
 	if err != nil {
 		return File{}, err
 	}
@@ -26,7 +26,7 @@ func (l relayLayout) streamFile(o RelayOptions) (File, error) {
 const relayStreamSh = `nginx -t -q -c "$NGINX"
 systemctl enable --quiet nginx
 if systemctl is-active --quiet nginx; then systemctl reload nginx; else systemctl start nginx; fi
-echo "nginx на входе принимает TCP 443 и 80 и передаёт их на Hub $HUB"
+echo "nginx на входе принимает TCP 443 и 80 и передаёт их на Hub через туннель ($TUN_PEER), запасной путь — $HUB"
 `
 
 const relayStreamCheckSh = `if ! systemctl is-active --quiet nginx; then echo "RELAY_FAIL nginx не работает"; fi
@@ -76,11 +76,11 @@ fi
 echo "Hub: nginx принимает входы на порту %[1]d"
 `, config.RelayHubPPPort)
 
-// relayHubTrust adds (on) or removes the Hub's trust of relayIP: the relays' stream server
-// (regenerated from the 443 router's SNI map) and the relay's set_real_ip_from file, then a
-// checked reload. A refused config takes the relay's file away again. Swapped in tests (the
-// relay tests run against a stub Hub).
-var relayHubTrust = func(ctx context.Context, hub Remote, relayIP string, on bool) error {
+// relayHubTrust adds (on) or removes the Hub's trust of relayIP and of its tunnel address relayTun
+// ("" = none): the relays' stream server (regenerated from the 443 router's SNI map) and the
+// relay's set_real_ip_from file, then a checked reload. A refused config takes the relay's file
+// away again. Swapped in tests (the relay tests run against a stub Hub).
+var relayHubTrust = func(ctx context.Context, hub Remote, relayIP, relayTun string, on bool) error {
 	if hub == nil {
 		return errors.New("нет доступа к Hub")
 	}
@@ -100,7 +100,7 @@ var relayHubTrust = func(ctx context.Context, hub Remote, relayIP string, on boo
 	if err != nil {
 		return err
 	}
-	trust, err := config.HubRelayTrustFile(relayIP)
+	trust, err := config.HubRelayTrustFileVia(relayIP, relayTun)
 	if err != nil {
 		return err
 	}
@@ -118,11 +118,11 @@ var relayHubTrust = func(ctx context.Context, hub Remote, relayIP string, on boo
 }
 
 // relayHubTrustCheck: the relay's trust file is in place and the Hub listens on RelayHubPPPort.
-var relayHubTrustCheck = func(ctx context.Context, hub Remote, relayIP string) error {
+var relayHubTrustCheck = func(ctx context.Context, hub Remote, relayIP, relayTun string) error {
 	if hub == nil {
 		return errors.New("нет доступа к Hub")
 	}
-	trust, err := config.HubRelayTrustFile(relayIP)
+	trust, err := config.HubRelayTrustFileVia(relayIP, relayTun)
 	if err != nil {
 		return err
 	}
