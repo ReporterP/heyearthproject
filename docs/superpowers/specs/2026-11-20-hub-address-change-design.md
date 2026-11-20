@@ -234,8 +234,9 @@ admin and old links on `hiearth.ru` move here (TCP works on both addresses).
    «Вернуть как было» runs the revert at once.
 
 Revert (timer fired, button, or the API finding the route source ≠ `<new>` while `switching`): the
-script restores the Hub side; the API (immediately, or on start-up via the marker) cancels in-flight
-entry jobs of the change, moves it to `reverting`, reprovisions the entries back to the current address
+script restores the Hub side; the API (immediately, or on start-up via the marker) moves the change to
+`reverting`, waits for in-flight entry jobs of the change to end (the runner has no cancel; jobs are
+bounded), clears the transition flag, reprovisions the entries back to the current address
 and sends an alert to the alerts bot. Entries that fail to re-point are retried every 5 minutes while the
 API runs (one alert, not one per retry) and can be retried from the page; the change becomes `reverted`
 with the reason once every online entry is back. TCP through entries keeps working throughout a revert
