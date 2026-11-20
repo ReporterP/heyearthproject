@@ -9,9 +9,11 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/provision"
 )
 
 // ── Entries monitor (phase 3, spec 2026-10-12 section 4) ──
@@ -165,9 +167,12 @@ type entryMonitor struct {
 	tlsCheck     func(socksPort int, host string, port int, sni string) error
 	udpCheck     func(socksPort int, host string, psk []byte) error
 	udpControl   func(socksPort int) error
-	raise        func(key string, level AlertLevel, title, details string)
-	resolve      func(key, message string)
-	logf         func(format string, args ...any)
+	// udpFlow: one Bamboo VN probe through a random hop port, no retry (a flow of the stability
+	// and path checks).
+	udpFlow func(socksPort int, host string, psk []byte) error
+	raise   func(key string, level AlertLevel, title, details string)
+	resolve func(key, message string)
+	logf    func(format string, args ...any)
 
 	tcp, udp    map[int]*entryTrack
 	rot         map[int]string // the rotation of each relay at the last run (its alerts close once on 'off')
@@ -185,7 +190,11 @@ var entryMon = &entryMonitor{
 	tlsCheck:   entryTLSCheck,
 	udpCheck:   func(port int, host string, psk []byte) error { _, _, err := probeBamboo(port, host, psk); return err },
 	udpControl: func(port int) error { return defaultBambooProber.control(port) },
-	raise:      RaiseAlert, resolve: ResolveAlert, logf: log.Printf,
+	udpFlow: func(port int, host string, psk []byte) error {
+		_, err := defaultBambooProber.attempt(port, host, randomHopPort(defaultBambooProber.rand), psk)
+		return err
+	},
+	raise: RaiseAlert, resolve: ResolveAlert, logf: log.Printf,
 }
 
 func runEntryMonitor() { entryMon.run() }
@@ -558,4 +567,55 @@ func (m *entryMonitor) verifyRelay(relayIP string) error {
 		m.logf("[relay-verify] %s: UDP не проверен (выход не передаёт UDP): %v / %v", relayIP, uerr, cerr)
 	}
 	return nil
+}
+
+// relayFlowParallel bounds the flows of one kind that run at once through the exit's SOCKS.
+const relayFlowParallel = 10
+
+// countFlows runs n flows (each a new connection: its own source port on every leg) and counts
+// the successes.
+func countFlows(n int, flow func() error) int {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, relayFlowParallel)
+	ok := 0
+	for range n {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if flow() == nil {
+				mu.Lock()
+				ok++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return ok
+}
+
+// relayFlowProbe is provision.RelayFlowProbe: n TLS flows with the Reality SNI to the entry's
+// :443 and :2443 and n Bamboo probes through random hop ports, all through the first exit whose
+// control passes — what users get through the entry. UDP -1 when Bamboo is not deployed.
+func relayFlowProbe(_ context.Context, relayIP string, n int) (provision.FlowCounts, error) {
+	return entryMon.flows(relayIP, n)
+}
+
+func (m *entryMonitor) flows(relayIP string, n int) (provision.FlowCounts, error) {
+	cfg, err := m.readConfig()
+	if err != nil {
+		return provision.FlowCounts{}, err
+	}
+	port, err := m.pickExit()
+	if err != nil {
+		return provision.FlowCounts{}, fmt.Errorf("%w: %v", provision.ErrProbeUnavailable, err)
+	}
+	c := provision.FlowCounts{N: n, UDP: -1}
+	c.TLS443 = countFlows(n, func() error { return m.tlsCheck(port, relayIP, 443, cfg.sni) })
+	c.TLS2443 = countFlows(n, func() error { return m.tlsCheck(port, relayIP, 2443, cfg.sni) })
+	if cfg.psk != "" && m.udpFlow != nil {
+		c.UDP = countFlows(n, func() error { return m.udpFlow(port, relayIP, []byte(cfg.psk)) })
+	}
+	return c, nil
 }

@@ -9,7 +9,7 @@ export const ROLE_TABS = [
 
 export const JOB_KIND = {
   provision: 'Настройка', reprovision: 'Переустановка', verify: 'Проверка', deprovision: 'Отключение',
-  mtproxy: 'Telegram-прокси',
+  mtproxy: 'Telegram-прокси', tg_mtproxy: 'Telegram WEB-прокси', pathcheck: 'Проверка пути', tunnelcheck: 'Проверка туннеля',
 }
 
 // The wording of «Приоритет» (load_weight) everywhere in the admin panel.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -94,5 +95,30 @@ func TestEntryModeRelayNeedsAllRotation(t *testing.T) {
 		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "ротации") {
 			t.Fatalf("%s/%s: %d %s", c.rotation, c.lifecycle, rec.Code, rec.Body)
 		}
+	}
+}
+
+// «Проверить путь» through the exit: n flows of each kind, counted; no Bamboo without its psk.
+func TestEntryFlowsCounts(t *testing.T) {
+	e := newEntryEnv()
+	var calls atomic.Int32 // the flows run in parallel
+	e.m.tlsCheck = func(_ int, _ string, port int, _ string) error {
+		if n := calls.Add(1); port == 2443 && n%5 == 0 {
+			return errBlocked
+		}
+		return nil
+	}
+	c, err := e.m.flows(tR5, 20)
+	if err != nil || c.N != 20 || c.TLS443 != 20 || c.UDP != -1 || c.TLS2443 >= 20 {
+		t.Fatalf("flows %+v %v", c, err)
+	}
+	e.settings["hysteria2_obfs_password"] = "psk"
+	e.m.udpFlow = func(int, string, []byte) error { return errBlocked }
+	if c, _ = e.m.flows(tR5, 4); c.UDP != 0 {
+		t.Fatalf("udp %+v", c)
+	}
+	e.exits = nil
+	if _, err := e.m.flows(tR5, 4); err == nil {
+		t.Fatal("no exit must be an error")
 	}
 }

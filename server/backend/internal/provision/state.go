@@ -232,6 +232,11 @@ var titles = map[string]string{
 	"relay_stream":   "Приём TCP 443 и 80 на входе", "relay_hub_trust": "Доверие входу на Hub", "relay_hub_untrust": "Снятие доверия входу на Hub",
 	"relay_teardown": "Снятие пересылки", "relay_firewall_remove": "Снятие правил фаервола",
 	"relay_hub_tunnel": "Туннель на Hub", "relay_tunnel": "Туннель до Hub", "relay_hub_tunnel_remove": "Снятие туннеля на Hub",
+	"relay_tunnel_remove": "Снятие туннеля на входе",
+	"path_hub_to_entry": "Хаб → вход: потоки с разных портов", "path_entry_to_hub": "Вход → хаб: потоки с разных портов",
+	"path_via_exit": "Как у пользователя: через выход за рубежом", "path_verdict": "Итог проверки пути",
+	"tunnel_preflight": "Предпроверка туннеля", "tunnel_relay_firewall": "Фаервол входа: GRE от Hub",
+	"tunnel_relay_up": "Туннель на входе (на время проверки)", "tunnel_flows": "Потоки через туннель", "tunnel_verdict": "Итог проверки туннеля",
 }
 
 // Title is the owner-facing name of a step (admin UI and CLI).

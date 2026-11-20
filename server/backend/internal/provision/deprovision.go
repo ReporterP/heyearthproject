@@ -321,6 +321,10 @@ func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return mtproxyRecipe(n, st)
 	case KindTGMTProxy:
 		return tgExitRecipe(n, st)
+	case KindPathCheck:
+		return pathCheckRecipe(n, st, relayPaths)
+	case KindTunnelCheck:
+		return tunnelCheckRecipe(n, st, relayPaths)
 	}
 	return recipeForSetup(kind, n, st)
 }

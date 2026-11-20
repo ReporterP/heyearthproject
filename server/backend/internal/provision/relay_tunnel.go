@@ -311,6 +311,13 @@ var relayHubTunnelDown = func(ctx context.Context, hub Remote, id int, s *State)
 }
 
 func (l hubTunnelLayout) up(ctx context.Context, hub Remote, s *State, o RelayOptions) error {
+	return l.upGuarded(ctx, hub, s, o, false)
+}
+
+// upGuarded is up; keepGuard (the trial tunnel of «Проверить туннель») arms the guard for a tunnel
+// that already exists too and never disarms it: the tunnel goes by itself within
+// HubTunnelGuardSeconds even if the job never reaches its removal step.
+func (l hubTunnelLayout) upGuarded(ctx context.Context, hub Remote, s *State, o RelayOptions, keepGuard bool) error {
 	if hub == nil {
 		return noRollback("нет доступа к Hub")
 	}
@@ -345,7 +352,7 @@ func (l hubTunnelLayout) up(ctx context.Context, hub Remote, s *State, o RelayOp
 	if err != nil {
 		return noRollback("%w", err)
 	}
-	if !existed || strings.Contains(pending, "PENDING") {
+	if !existed || keepGuard || strings.Contains(pending, "PENDING") {
 		out, err := hub.Run(ctx, l.script("arm", o, relayUfwOn+hubTunnelArmSh))
 		s.Printf("%s", out)
 		if err != nil {
@@ -376,6 +383,10 @@ func (l hubTunnelLayout) up(ctx context.Context, hub Remote, s *State, o RelayOp
 	}
 	if hubBase(after) != hubBase(before) {
 		return fmt.Errorf("туннель изменил маршруты или адреса Hub — откатываю.\nбыло:\n%s\nстало:\n%s", hubBase(before), hubBase(after))
+	}
+	if keepGuard {
+		s.Printf("Hub: туннель поднят на время проверки, предохранитель снимет его через %d с", HubTunnelGuardSeconds)
+		return nil
 	}
 	if _, err := hub.Run(ctx, l.script("disarm", o, hubTunnelDisarmSh)); err != nil {
 		return noRollback("туннель на Hub работает, но предохранитель не снят (через %d с он снимет туннель — повторите шаг): %w", HubTunnelGuardSeconds, err)
