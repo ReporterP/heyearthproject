@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 95 SQL migrations (000001-000095), applied at API start
+│   │   ├── migrations/            # 98 SQL migrations (000001-000098), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (95)
+# Auto-runs the migrations on startup (98)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -236,8 +236,10 @@ Runbook: `docs/runbooks/telegram-bot.md`; site spec: `spec/12-telegram.md`, 08 �
 ### Entries (mobile networks)
 
 - Reserve entry = RU VPS of another provider (`servers.role='relay'`), added in admin «Входы» (wizard; Hub key instead of a root password; «Проверить с телефона» = `mobile_check`).
+- Rotation of an entry (`entry_state.rotation`, migration 000097; PRD `docs/prd/entries-management.prd.md`): `all` — every subscription, `test` — only `entry_failover_test_user` (the canary), `off` — nobody. An entry out of rotation keeps lifecycle `online`: the monitor checks it (no alerts), a reprovision and the Hub address wizard keep it converged. «Входы» → «Управление»: «Вывести из ротации» (reason), «Вернуть: только тест» and «Всем» need a «Проверить путь» PASS (job `pathcheck` = `--path-matrix` from the API) within an hour and after the last setup job; «Всем» before a day on `test` only with ДОСРОЧНО, and it turns the urgent update on. A new entry (any setup job bringing a relay online) starts on `test`. `biz.ListRelayEntries` = online + `all` (every published consumer); the monitor uses `ListMonitoredEntries`, «Входы» `ListAdminEntries`.
+- Stability (`entry_probe_samples`, migration 000098, 3 days): every minute 8 TLS flows to :443 and :2443 and 4 Bamboo probes per entry through an exit, beside the unchanged health verdict; «Входы» shows 1 h / 24 h, alert `relay-<id>-unstable` below 95 % over an hour (≥ 30 checks), resolved at 98 %.
 - Relay: TCP 443/80 via its nginx stream → Hub `:8447` with PROXY protocol (`/etc/nginx/stream.d/relay-pp.conf`, trust per relay in `/etc/nginx/heyearth-relays/<ip>.conf`); TCP 2443 + UDP 30000–65000 via nft DNAT.
-- GRE tunnel per relay (since 2026-11-20, incident: a transit link lost whole 5-tuples towards entry 6): every relay → Hub path goes to the Hub's tunnel address (`internal/config/relay_tunnel.go`, pool `10.77.0.0/16`, a /30 per servers.id: Hub `+4·id+1`, relay `+2`; devices `he-r<id>` / `he-hub`, units `heyearth-tunnel-r<id>` / `heyearth-tunnel`, MTU 1476, MSS clamp). nginx keeps the Hub's public address as `backup`; DNAT has no fallback, so the monitor checks :2443 too and a dead tunnel takes the entry out of the subscription. The recipe's steps `relay_hub_tunnel` / `relay_tunnel` (guarded on the Hub); runbook `docs/runbooks/relay-tunnel.md`.
+- GRE tunnel per relay, the owner's choice (`servers.relay_tunnel`, migration 000096, off by default; entry 6 on; «Проверить туннель» = job `tunnelcheck`, a trial tunnel up, measured and down, before «Включить туннель»; turning it off is a reprovision that moves nft/nginx to the public address first; since 2026-11-20, incident: a transit link lost whole 5-tuples towards entry 6): with it every relay → Hub path goes to the Hub's tunnel address (`internal/config/relay_tunnel.go`, pool `10.77.0.0/16`, a /30 per servers.id: Hub `+4·id+1`, relay `+2`; devices `he-r<id>` / `he-hub`, units `heyearth-tunnel-r<id>` / `heyearth-tunnel`, MTU 1476, MSS clamp). nginx keeps the Hub's public address as `backup`; DNAT has no fallback, so the monitor checks :2443 too and a dead tunnel takes the entry out of the subscription. The recipe's steps `relay_hub_tunnel` / `relay_tunnel` (guarded on the Hub); runbook `docs/runbooks/relay-tunnel.md`.
 - Subscription modes (`PUT /api/admin/entries/mode`): hub / relay (pinned: everyone through one entry, «· напрямую» lines) / auto (failover after 3 real failures, back after 2 OK + 30 min). Monitor: `cmd/api/entry_monitor.go`.
 
 ### Plans System
@@ -282,7 +284,7 @@ Per-plan Xray routing: каждый план получает свой бала�
 
 ---
 
-## Database (PostgreSQL, 95 migrations)
+## Database (PostgreSQL, 98 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -316,6 +318,8 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 ---
 
 ## Gotchas
+
+- **Entry rotation and API rollback** (since entries-management, migration 000097): an older API publishes every `online` relay, so an entry out of rotation or on `test` would reach everyone. Before rolling the API back below it: `UPDATE servers SET lifecycle_state='offline' WHERE role='relay' AND id IN (SELECT entry_id FROM entry_state WHERE entry_id > 0 AND rotation <> 'all');` (the down migration does the same). An API older than 000096 also sets up the GRE tunnel on every reprovision.
 
 - **Subscription ways change only canary-first** (incident 2026-11-20, `docs/runbooks/subscription-changes.md`): any change of where users' traffic goes (JSON «⚡ Авто»/Бамбук ways, URI lines, entry mode, an entry in or out of rotation, the Hub address) goes to the test user first (`sub_auto_mode=test` + `sub_auto_test_user`, `entry_failover_test_user`), 24 h, then everyone — together with «Срочное обновление» (`subscription_urgent_until`, hourly updates for 24 h). A path becomes mandatory only after `go run ./cmd/deploy --path-matrix <entry id>` says PASS (50 source ports both ways + TLS through an exit); one probe proves nothing — a broken provider link may drop only some 5-tuples.
 
