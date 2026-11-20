@@ -409,9 +409,35 @@ func relayTunnelParseCheck(l string) (routes, addrs, self, matrix string, err er
 	return routes, addrs, self, matrix, nil
 }
 
-func relayTunnel(client *ssh.Client, id int, apply bool) error {
+// relayTunnelJob runs a Hub job and follows its log. The owner's link drops SSH connections; a
+// dead connection fails every poll of hubJob, so the log is then followed on new connections
+// until the job ends — the job itself runs on the Hub whatever happens to this session.
+func relayTunnelJob(client **ssh.Client, cfg *deployConfig, job string, id int, run string) (string, error) {
+	l, err := hubJob(*client, job, id, run, relayTunnelWait)
+	if err == nil || !strings.Contains(err.Error(), "связь с Hub потеряна") {
+		return l, err
+	}
+	logPath := hubJobLogPath(job, id)
+	fmt.Printf("[relay-tunnel] связь с Hub потеряна — задание идёт там, переподключаюсь и читаю %s\n", logPath)
+	for deadline := time.Now().Add(relayTunnelWait); time.Now().Before(deadline); time.Sleep(10 * time.Second) {
+		c, derr := sshDialHub(cfg)
+		if derr != nil {
+			continue
+		}
+		(*client).Close()
+		*client = c
+		out, rerr := runSSHQuiet(c, "cat "+logPath, "")
+		if rerr == nil && strings.Contains(out, "HEYEARTH_JOB_DONE") {
+			return out, nil
+		}
+	}
+	return "", fmt.Errorf("за %s задание не закончилось; лог на Hub: %s", relayTunnelWait, logPath)
+}
+
+func relayTunnel(client *ssh.Client, cfg *deployConfig, id int, apply bool) error {
+	// Quiet: the answers include the obfs password; nothing of the DB is printed.
 	q := func(sql string) (string, error) {
-		out, err := runSSHBash(client, "relay-tunnel db", `runuser -u postgres -- psql -d heyearth -tAc `+shQuote(sql), true)
+		out, err := runSSHQuiet(client, `runuser -u postgres -- psql -d heyearth -tAc `+shQuote(sql), "")
 		return strings.TrimSpace(out), err
 	}
 	row, err := q("select coalesce(role,'')||'|'||coalesce(ip_address,'')||'|'||coalesce(ssh_port,22)||'|'||coalesce(lifecycle_state,'') from servers where id=" + strconv.Itoa(id))
@@ -455,7 +481,7 @@ func relayTunnel(client *ssh.Client, id int, apply bool) error {
 	}
 	fmt.Printf("[relay-tunnel] вход %d %s (%s), Hub %s, туннель %s ↔ %s, замер с выхода %d\n", id, p.relay, f[3], hub, p.hubTun, p.relayTun, exitID)
 
-	l, err := hubJob(client, "relay-tunnel-check", id, relayTunnelCheckRun(p), relayTunnelWait)
+	l, err := relayTunnelJob(&client, cfg, "relay-tunnel-check", id, relayTunnelCheckRun(p))
 	if err != nil {
 		return fmt.Errorf("замер: %w", err)
 	}
@@ -474,7 +500,7 @@ func relayTunnel(client *ssh.Client, id int, apply bool) error {
 	if err := config.TunnelOverlap(routes, addrs, config.RelayTunnelDev, block); err != nil {
 		return fmt.Errorf("на входе: %w", err)
 	}
-	hubNet, err := runSSHBash(client, "relay-tunnel hub net", "ip -4 -o route show table all; echo "+relayTunnelAddrsMark+"; ip -4 -o addr show", true)
+	hubNet, err := runSSHQuiet(client, "ip -4 -o route show table all; echo "+relayTunnelAddrsMark+"; ip -4 -o addr show", "")
 	if err != nil {
 		return err
 	}
@@ -487,7 +513,7 @@ func relayTunnel(client *ssh.Client, id int, apply bool) error {
 		return nil
 	}
 	runID := strconv.FormatInt(time.Now().Unix(), 10)
-	l, err = hubJob(client, "relay-tunnel", id, relayTunnelApplyRun(p, runID, before, self), relayTunnelWait)
+	l, err = relayTunnelJob(&client, cfg, "relay-tunnel", id, relayTunnelApplyRun(p, runID, before, self))
 	if err != nil {
 		return err
 	}

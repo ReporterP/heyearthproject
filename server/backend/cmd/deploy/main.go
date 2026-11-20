@@ -196,7 +196,7 @@ func main() {
 		return
 	}
 	if mode == "relay-tunnel" {
-		if err := relayTunnel(client, *relayTunnelID, !*relayTunnelCheck); err != nil {
+		if err := relayTunnel(client, cfg, *relayTunnelID, !*relayTunnelCheck); err != nil {
 			log.Fatalf("[relay-tunnel] %v", err)
 		}
 		fmt.Println("[relay-tunnel] OK")
