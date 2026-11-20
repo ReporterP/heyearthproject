@@ -31,6 +31,7 @@ type hubAddrAPI interface {
 	Revert(ctx context.Context, id int64, reason string) error
 	Finish(ctx context.Context, id int64, override bool, by string) ([]string, error)
 	Cancel(ctx context.Context, id int64) ([]string, error)
+	TrustDNS(ctx context.Context, id int64, by string) error
 }
 
 // Seams (tests swap them).
@@ -242,6 +243,9 @@ func hubAddrRoute(method, rest string) (string, http.HandlerFunc, bool) {
 		"finish": func(ctx context.Context, svc hubAddrAPI, id int64, b hubAddrBody, by string) (any, error) {
 			notes, err := svc.Finish(ctx, id, b.Override, by)
 			return map[string]any{"notes": notes}, err
+		},
+		"dns-trust": func(ctx context.Context, svc hubAddrAPI, id int64, _ hubAddrBody, by string) (any, error) {
+			return map[string]string{"status": "ok"}, svc.TrustDNS(ctx, id, by)
 		},
 		"cancel": func(ctx context.Context, svc hubAddrAPI, id int64, _ hubAddrBody, _ string) (any, error) {
 			notes, err := svc.Cancel(ctx, id)

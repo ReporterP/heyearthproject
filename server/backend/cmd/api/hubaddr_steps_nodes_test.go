@@ -212,3 +212,30 @@ func TestDNSStepNamesAndGate(t *testing.T) {
 		t.Fatalf("DNS converged: %s\n%s", c.State, c.Steps[hubStepDNS].Log)
 	}
 }
+
+// The owner's word on DNS (20.11): «Я поменял DNS — дальше» moves on without waiting for the
+// resolvers' caches; it is recorded in the step.
+func TestDNSTrustAdvances(t *testing.T) {
+	w := newTestWizard(t)
+	id := wizardAt(t, w, hubAddrNodesReady)
+	if err := w.e.TrustDNS(context.Background(), id, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	c := w.change(t, id)
+	if c.State != hubAddrDNSReady || c.Steps[hubStepDNS].Status != hubStepOK {
+		t.Fatalf("state %s step %+v", c.State, c.Steps[hubStepDNS])
+	}
+	var ch hubAddrDNSChecks
+	checksOf(t, c.Steps[hubStepDNS], &ch)
+	if !ch.Trusted || ch.TrustedBy != "owner" {
+		t.Fatalf("the owner's word is recorded: %+v", ch)
+	}
+	if err := w.e.TrustDNS(context.Background(), id, "owner"); err != nil {
+		t.Fatalf("again in dns_ready: a no-op, got %v", err)
+	}
+	w2 := newTestWizard(t)
+	id2 := wizardAt(t, w2, hubAddrChecked)
+	if err := w2.e.TrustDNS(context.Background(), id2, "owner"); err == nil {
+		t.Fatal("before the nodes are ready it must be refused")
+	}
+}

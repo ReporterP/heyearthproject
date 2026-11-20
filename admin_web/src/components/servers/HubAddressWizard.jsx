@@ -3,7 +3,7 @@ import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
 import { runHubAddressStep, hubAddressAction, fetchHubAddressPhone } from '../../api/admin.js'
 import { Badge, Button, ConfirmDanger, Stepper, Table, Thead, Tbody, Tr, Th, Td } from '../ui/index.js'
-import { HUB_STEPS, stepView, countdown, transitionBlockers, changeBanner } from './hubAddressModel.js'
+import { HUB_STEPS, stepView, countdown, transitionBlockers, changeBanner, dnsAutoRecheck } from './hubAddressModel.js'
 
 const STATUS = {
   done: { v: 'success', t: 'готово' }, current: { v: 'accent', t: 'сейчас' }, running: { v: 'info', t: 'выполняется' },
@@ -212,6 +212,13 @@ export default function HubAddressWizard({ change, onChanged }) {
     return () => clearInterval(id)
   }, [change.state])
 
+  const recheck = canAct && dnsAutoRecheck(change)
+  useEffect(() => {
+    if (!recheck) return undefined
+    const id = setInterval(() => { runHubAddressStep(change.id, 'dns').then(() => onChanged?.()).catch(() => {}) }, 30000)
+    return () => clearInterval(id)
+  }, [recheck, change.id, onChanged])
+
   const view = stepView(change)
   const idx = HUB_STEPS.findIndex((s) => s.key === (view.find((v) => v.status === 'current' || v.status === 'running' || v.status === 'failed')?.key))
   const current = idx < 0 ? HUB_STEPS.length : idx
@@ -237,6 +244,7 @@ export default function HubAddressWizard({ change, onChanged }) {
     if (action === 'confirm') return act(() => hubAddressAction(change.id, 'confirm', {}), 'Подтверждено: таймер отката снят').catch(() => {})
     if (action === 'finish') return act(() => hubAddressAction(change.id, 'finish', {}), 'Старый адрес выведен').catch(() => {})
     if (action === 'revert') return setConfirm('revert')
+    if (action === 'dns-trust') return act(() => hubAddressAction(change.id, 'dns-trust'), 'Принято: DNS поменян, дальше — переключение').catch(() => {})
     return undefined
   }
   const onPhone = async (which) => {
@@ -287,7 +295,7 @@ export default function HubAddressWizard({ change, onChanged }) {
                       {s.primary && <Button variant="primary" size="sm" loading={busy} disabled={busy || s.primary.disabled} onClick={() => run(s.primary.action)}>{s.primary.label}</Button>}
                       {s.primary?.disabled && s.primary.action === 'confirm' && <Button variant="secondary" size="sm" disabled={busy} onClick={() => setConfirm('force')}>Подтвердить несмотря на…</Button>}
                       {s.primary?.disabled && s.primary.action === 'finish' && <Button variant="secondary" size="sm" disabled={busy} onClick={() => setConfirm('override')}>Вывести несмотря на…</Button>}
-                      {s.secondary && <Button variant="danger" size="sm" disabled={busy} onClick={() => run(s.secondary.action)}>{s.secondary.label}</Button>}
+                      {s.secondary && <Button variant={s.secondary.action === 'revert' ? 'danger' : 'secondary'} size="sm" disabled={busy} onClick={() => run(s.secondary.action)}>{s.secondary.label}</Button>}
                     </div>
                   )}
                 </div>
