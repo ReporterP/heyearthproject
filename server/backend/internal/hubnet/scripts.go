@@ -265,3 +265,8 @@ fi
 if [ "$added" = 1 ]; then echo SSH_ALLOW_ADDED; else echo SSH_ALLOW_NOT_NEEDED; fi
 `, sshPort, add, strings.Join(hubs, " "))
 }
+
+// NetplanRestoreScript puts the wizard's backup of path back and regenerates.
+func NetplanRestoreScript(path, backup string) string {
+	return fmt.Sprintf("set -e\ncp -p %s %s && netplan generate\necho NETPLAN_RESTORED\n", q(backup), q(path))
+}

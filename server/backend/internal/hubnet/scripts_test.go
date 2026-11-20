@@ -156,3 +156,11 @@ func TestNodeSSHAllowScript(t *testing.T) {
 	}
 	bashSyntax(t, s)
 }
+
+func TestNetplanRestoreScript(t *testing.T) {
+	s := NetplanRestoreScript("/etc/netplan/01-netcfg.yaml", "/etc/netplan/01-netcfg.yaml.bak-hubaddr-7")
+	if !strings.Contains(s, "cp -p /etc/netplan/01-netcfg.yaml.bak-hubaddr-7 /etc/netplan/01-netcfg.yaml && netplan generate") {
+		t.Fatalf("restore:\n%s", s)
+	}
+	bashSyntax(t, s)
+}

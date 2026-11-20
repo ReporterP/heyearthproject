@@ -75,6 +75,29 @@ func TestMobileCheckStartScript(t *testing.T) {
 	}
 }
 
+// On the Hub the page listens on one address only (the one being checked), never on 80 (nginx),
+// and the firewall rule opens that port on that address only.
+func TestMobileCheckStartScriptBind(t *testing.T) {
+	s := MobileCheckStartScript("abcd1234", 1800, "198.51.100.20")
+	for _, want := range []string{"for p in 8080 8880;", `ufw allow proto tcp to 198.51.100.20 port "$PORT"`,
+		"ExecStopPost=+/usr/sbin/ufw delete allow proto tcp to 198.51.100.20 port $PORT", "check.py \"$PORT\" abcd1234 " + mobileCheckLog + " 2097152 198.51.100.20",
+		`ss -Hltn "sport = :$p"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("bound start script lacks %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "for p in 80 ") {
+		t.Errorf("port 80 is nginx's on the Hub:\n%s", s)
+	}
+	if MobileCheckStartScript("abcd1234", 1800, "") != mobileCheckStartScript("abcd1234", 1800) {
+		t.Error("without a bind address the nodes' script is unchanged")
+	}
+	if !strings.Contains(mobileCheckResponder, `BIND = sys.argv[5] if len(sys.argv) > 5 else "0.0.0.0"`) ||
+		!strings.Contains(mobileCheckResponder, "S((BIND, PORT), H)") {
+		t.Error("the responder binds to argv[5] (0.0.0.0 by default)")
+	}
+}
+
 // The responder is valid Python (compiled when a python3 is around; skipped otherwise).
 func TestMobileCheckResponderCompiles(t *testing.T) {
 	py, err := exec.LookPath("python3")

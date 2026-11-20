@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -44,6 +45,7 @@ const (
 // the log is one JSON event.
 const mobileCheckResponder = `import http.server, json, os, socket, socketserver, struct, sys, time
 PORT, TOKEN, LOG, SIZE = int(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
+BIND = sys.argv[5] if len(sys.argv) > 5 else "0.0.0.0"
 CHUNK = os.urandom(65536)
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Проверка входа</title>
 <style>body{font:17px/1.5 system-ui,sans-serif;margin:24px;background:#111;color:#eee}b{font-size:22px}</style></head><body>
@@ -140,7 +142,7 @@ class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-S(("0.0.0.0", PORT), H).serve_forever()
+S((BIND, PORT), H).serve_forever()
 `
 
 // mobileCheckStartScript starts the responder for secs seconds on the first free port of
@@ -148,23 +150,34 @@ S(("0.0.0.0", PORT), H).serve_forever()
 // the port, a firewall rule only while ufw is active (removed when the unit stops). A previous
 // run is stopped first.
 func mobileCheckStartScript(token string, secs int) string {
+	return MobileCheckStartScript(token, secs, "")
+}
+
+// MobileCheckStartScript is mobileCheckStartScript with the page bound to one address (bind):
+// the Hub checks a new public address this way — port 80 is nginx's there, so only 8080/8880,
+// and the ufw rule opens the port on that address only. bind "" = every address (the nodes).
+func MobileCheckStartScript(token string, secs int, bind string) string {
+	ports, allow, del, arg := "80 8080 8880", `ufw allow "$PORT/tcp" comment %[1]s >/dev/null`, "delete allow $PORT/tcp", ""
+	if bind != "" {
+		ports = "8080 8880"
+		allow = `ufw allow proto tcp to ` + bind + ` port "$PORT" comment %[1]s >/dev/null`
+		del = "delete allow proto tcp to " + bind + " port $PORT"
+		arg = " " + bind
+	}
 	return fmt.Sprintf(`set -e
 command -v python3 >/dev/null || { echo "на сервере нет python3"; exit 3; }
 systemctl stop %[1]s 2>/dev/null || true
 PORT=""
-for p in 80 8080 8880; do
+for p in `+ports+`; do
   if ! ss -Hltn "sport = :$p" | grep -q .; then PORT=$p; break; fi
 done
-[ -n "$PORT" ] || { echo "порты 80, 8080 и 8880 заняты"; exit 3; }
+[ -n "$PORT" ] || { echo "порты `+strings.ReplaceAll(ports, " ", ", ")+` заняты"; exit 3; }
 STOP=()
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
-  ufw allow "$PORT/tcp" comment %[1]s >/dev/null
-  STOP=(--property="ExecStopPost=+/usr/sbin/ufw delete allow $PORT/tcp")
+  `+allow+`
+  STOP=(--property="ExecStopPost=+/usr/sbin/ufw `+del+`")
 fi
-systemd-run --unit=%[1]s --collect --quiet "${STOP[@]}" \
-  -p DynamicUser=yes -p AmbientCapabilities=CAP_NET_BIND_SERVICE -p CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
-  -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p LogsDirectory=%[1]s \
-  /usr/bin/timeout %[4]d /usr/bin/python3 %[2]s/check.py "$PORT" %[5]s %[3]s %[6]d
+systemd-run --unit=%[1]s --collect --quiet "${STOP[@]}"   -p DynamicUser=yes -p AmbientCapabilities=CAP_NET_BIND_SERVICE -p CapabilityBoundingSet=CAP_NET_BIND_SERVICE   -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p LogsDirectory=%[1]s   /usr/bin/timeout %[4]d /usr/bin/python3 %[2]s/check.py "$PORT" %[5]s %[3]s %[6]d`+arg+`
 sleep 1
 systemctl is-active --quiet %[1]s || { echo "тестовая страница не запустилась"; journalctl -u %[1]s -n 5 --no-pager; exit 3; }
 echo "PORT=$PORT"
@@ -357,25 +370,17 @@ func mobileCheckNode(w http.ResponseWriter, r *http.Request) (provision.Node, pr
 	return n, rem, true
 }
 
-// StartMobileCheckHandler (POST …/{id}/mobile-check) starts the responder and returns its link.
-func StartMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
-	n, rem, ok := mobileCheckNode(w, r)
-	if !ok {
-		return
-	}
+// StartMobileCheckOn uploads the responder through rem and starts it (bound to bind, "" = every
+// address); the link names host (the address the phone opens). Expires is when the page stops.
+func StartMobileCheckOn(ctx context.Context, rem provision.Remote, host, bind string) (url string, expires time.Time, err error) {
 	token, err := newMobileCheckToken()
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "Не удалось начать проверку")
-		return
+		return "", time.Time{}, errors.New("Не удалось начать проверку")
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
 	if _, err := rem.PutFile(ctx, mobileCheckDir+"/check.py", []byte(mobileCheckResponder), 0o644); err != nil {
-		log.Printf("[mobile-check] node %d: %v", n.ID, err)
-		writeAdminError(w, http.StatusBadGateway, "Не удалось подготовить проверку на сервере — проверьте SSH-доступ")
-		return
+		return "", time.Time{}, fmt.Errorf("Не удалось подготовить проверку на сервере — проверьте SSH-доступ: %w", err)
 	}
-	out, err := rem.Run(ctx, mobileCheckStartScript(token, int(mobileCheckDuration.Seconds())))
+	out, err := rem.Run(ctx, MobileCheckStartScript(token, int(mobileCheckDuration.Seconds()), bind))
 	port := ""
 	for _, line := range strings.Split(out, "\n") {
 		if p, ok := strings.CutPrefix(strings.TrimSpace(line), "PORT="); ok {
@@ -383,43 +388,34 @@ func StartMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil || port == "" {
-		log.Printf("[mobile-check] node %d: %v: %s", n.ID, err, out)
 		msg := "Тестовая страница не запустилась"
 		if t := strings.TrimSpace(out); t != "" && len(t) < 200 {
 			msg += ": " + t
 		}
-		writeAdminError(w, http.StatusBadGateway, msg)
-		return
+		return "", time.Time{}, &mobileCheckStartError{msg: msg, cause: err, out: out}
 	}
-	host := n.IP
 	if port != "80" {
-		host = net.JoinHostPort(n.IP, port)
+		host = net.JoinHostPort(host, port)
 	}
-	st := mobileCheckState{URL: "http://" + host + "/" + token + "/", Expires: time.Now().Add(mobileCheckDuration)}
-	mobileChecksMu.Lock()
-	mobileChecks[n.ID] = st
-	mobileChecksMu.Unlock()
-	WriteAuditLog(r, "node_mobile_check", "server", strconv.Itoa(n.ID), map[string]string{"port": port})
-	writeAdminJSON(w, http.StatusOK, map[string]any{"url": st.URL, "qr": mobileCheckQR(st.URL), "expires_at": st.Expires, "hint": mobileCheckWifiHint})
+	return "http://" + host + "/" + token + "/", time.Now().Add(mobileCheckDuration), nil
 }
 
-// GetMobileCheckHandler (GET …/{id}/mobile-check): whether the page still runs and what reached
-// each phone so far.
-func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
-	n, rem, ok := mobileCheckNode(w, r)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
+type mobileCheckStartError struct {
+	msg, out string
+	cause    error
+}
+
+func (e *mobileCheckStartError) Error() string { return e.msg }
+
+// ReadMobileCheckOn reads the responder's state and what reached each phone so far (operators
+// looked up by address; a failed lookup only logs).
+func ReadMobileCheckOn(ctx context.Context, rem provision.Remote) (active bool, results []MobileCheckResult, err error) {
 	out, err := rem.Run(ctx, mobileCheckReadScript)
 	if err != nil {
-		log.Printf("[mobile-check] node %d read: %v", n.ID, err)
-		writeAdminError(w, http.StatusBadGateway, "Не удалось прочитать результат с сервера")
-		return
+		return false, nil, err
 	}
 	state, logText, _ := strings.Cut(out, "---")
-	results := parseMobileCheckLog(logText)
+	results = parseMobileCheckLog(logText)
 	if len(results) > 0 {
 		ips := make([]string, len(results))
 		for i, res := range results {
@@ -433,6 +429,63 @@ func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[mobile-check] operator lookup: %v", err)
 		}
 	}
+	return strings.TrimSpace(state) == "active", results, nil
+}
+
+// MobileCheckQR is the QR code (data URL) of a check link.
+func MobileCheckQR(url string) string { return mobileCheckQR(url) }
+
+// StartMobileCheckHandler (POST …/{id}/mobile-check) starts the responder and returns its link.
+func StartMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
+	n, rem, ok := mobileCheckNode(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	url, expires, err := StartMobileCheckOn(ctx, rem, n.IP, "")
+	if err != nil {
+		var se *mobileCheckStartError
+		if errors.As(err, &se) {
+			log.Printf("[mobile-check] node %d: %v: %s", n.ID, se.cause, se.out)
+		} else {
+			log.Printf("[mobile-check] node %d: %v", n.ID, err)
+		}
+		writeAdminError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	st := mobileCheckState{URL: url, Expires: expires}
+	mobileChecksMu.Lock()
+	mobileChecks[n.ID] = st
+	mobileChecksMu.Unlock()
+	WriteAuditLog(r, "node_mobile_check", "server", strconv.Itoa(n.ID), map[string]string{"port": portOfURL(url)})
+	writeAdminJSON(w, http.StatusOK, map[string]any{"url": st.URL, "qr": mobileCheckQR(st.URL), "expires_at": st.Expires, "hint": mobileCheckWifiHint})
+}
+
+func portOfURL(u string) string {
+	rest := strings.TrimPrefix(u, "http://")
+	host, _, _ := strings.Cut(rest, "/")
+	if _, p, err := net.SplitHostPort(host); err == nil {
+		return p
+	}
+	return "80"
+}
+
+// GetMobileCheckHandler (GET …/{id}/mobile-check): whether the page still runs and what reached
+// each phone so far.
+func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
+	n, rem, ok := mobileCheckNode(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	active, results, err := ReadMobileCheckOn(ctx, rem)
+	if err != nil {
+		log.Printf("[mobile-check] node %d read: %v", n.ID, err)
+		writeAdminError(w, http.StatusBadGateway, "Не удалось прочитать результат с сервера")
+		return
+	}
 	for _, res := range results {
 		if res.OK {
 			rememberMobileOK(ctx, n.ID, res.At)
@@ -442,7 +495,6 @@ func GetMobileCheckHandler(w http.ResponseWriter, r *http.Request) {
 	mobileChecksMu.Lock()
 	st := mobileChecks[n.ID]
 	mobileChecksMu.Unlock()
-	active := strings.TrimSpace(state) == "active"
 	resp := map[string]any{"active": active, "results": results, "hint": mobileCheckWifiHint}
 	if active && st.URL != "" {
 		resp["url"], resp["qr"], resp["expires_at"] = st.URL, mobileCheckQR(st.URL), st.Expires

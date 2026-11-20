@@ -807,6 +807,7 @@ func main() {
 	// encryption of legacy plaintext SSH passwords, the admin handlers' runner, the MTProxy
 	// installer (before StartGhostReconciler and admin.RegisterRoutes, which use them).
 	initProvisioning()
+	initHubAddr()
 
 	// Wire the biz-layer sync orchestrator. biz.RequestSync() debounces
 	// 2s and fans out to both Xray and Hysteria2. All subscription/plan

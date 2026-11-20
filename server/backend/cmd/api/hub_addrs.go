@@ -59,6 +59,14 @@ func (c *hubIPCache) get(compute func() []string, warn func(string)) []string {
 	return ips
 }
 
+// reset forgets the cached addresses: the Hub address wizard calls it after adding or removing an
+// address, so the next sync (and the next node job) sees the new list.
+func (c *hubIPCache) reset() {
+	c.mu.Lock()
+	c.ips = nil
+	c.mu.Unlock()
+}
+
 var (
 	hubIPs     hubIPCache
 	hubIPsWarn logGate // at most one warning an hour: the syncs run every few minutes
