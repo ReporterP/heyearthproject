@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
+	"github.com/heyearth/backend/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -49,24 +50,39 @@ print("%s %d/%d %s" % (name, out.count("+"), n, out))
 `
 
 // pathMatrixRun is the Hub-side job: $ENTRY, $HUB, $SNI, $SOCKS (an exit's local SOCKS port), $N.
-func pathMatrixRun(id int, entry, hub, sni string, socks int) string {
+// An entry on a GRE tunnel (he-r<id> on the Hub, he-hub on the entry; config.RelayTunnelAddrs)
+// sends everything to the Hub through it: the raw groups then run between the tunnel addresses
+// and count; the public addresses are only nginx's backup upstream, printed as BACKUP and left
+// out of the verdict. The job prints EXPECT <groups> so a missing group fails the verdict.
+func pathMatrixRun(id int, entry, hub, sni string, socks int, hubT, relayT string) string {
 	py := base64.StdEncoding.EncodeToString([]byte(pathMatrixProbePy))
 	entryScript := fmt.Sprintf(`P=$(mktemp); trap 'rm -f "$P"' EXIT; printf '%%s' %[1]s | base64 -d > "$P"
-for t in "entry→hub:8447 %[2]s 8447" "entry→hub:443 %[2]s 443" "entry→hub:2443 %[2]s 2443"; do set -- $t; echo "RAW $(python3 "$P" "$1" "$2" "$3" %[3]d)"; done
+PUB=RAW; TUN=0; if ip link show he-hub >/dev/null 2>&1; then PUB=BACKUP; TUN=1; fi
+for t in "entry→hub:8447 %[2]s 8447" "entry→hub:443 %[2]s 443" "entry→hub:2443 %[2]s 2443"; do set -- $t; echo "$PUB $(python3 "$P" "$1" "$2" "$3" %[3]d)"; done
+if [ "$TUN" = 1 ]; then
+  for port in 8447 443 2443; do echo "RAW $(python3 "$P" "tunnel-entry→hub:$port" %[4]s "$port" %[3]d)"; done
+fi
 echo PATH_MATRIX_ENTRY_DONE
-`, shQuote(py), hub, pathMatrixTuples)
+`, shQuote(py), hub, pathMatrixTuples, shQuote(hubT))
 	return nodeSSHFunc + fmt.Sprintf(`set -u
-ENTRY=%[1]s; SNI=%[2]s; SOCKS=%[3]d; N=%[4]d
+ENTRY=%[1]s; SNI=%[2]s; SOCKS=%[3]d; N=%[4]d; RELAYT=%[9]s
 P=$(mktemp); trap 'rm -f "$P"' EXIT; printf '%%s' %[5]s | base64 -d > "$P"
+if ip link show he-r%[6]d >/dev/null 2>&1; then
+  PUB=BACKUP; TUN=1; echo "EXPECT 6"
+  echo "== вход %[6]d на GRE-туннеле: публичный путь — запасной upstream nginx (BACKUP, в вердикт не идёт)"
+else
+  PUB=RAW; TUN=0; echo "EXPECT 7"
+fi
 echo "== hub → entry %[6]d"
-for port in 443 2443; do echo "RAW $(python3 "$P" "hub→entry:$port" "$ENTRY" "$port" "$N")"; done
+for port in 443 2443; do echo "$PUB $(python3 "$P" "hub→entry:$port" "$ENTRY" "$port" "$N")"; done
+if [ "$TUN" = 1 ]; then echo "RAW $(python3 "$P" "tunnel-hub→entry:443" "$RELAYT" 443 "$N")"; fi
 echo "== entry %[6]d → hub"
 for try in $(seq 1 %[7]d); do
   out=$(nodessh %[6]d <<'HEYEARTH_NODE_EOF'
 %[8]s
 HEYEARTH_NODE_EOF
 )
-  if grep -q PATH_MATRIX_ENTRY_DONE <<<"$out"; then grep '^RAW ' <<<"$out"; break; fi
+  if grep -q PATH_MATRIX_ENTRY_DONE <<<"$out"; then grep -E '^(RAW|BACKUP) ' <<<"$out"; break; fi
   echo "(SSH до входа: попытка $try не удалась)"
 done
 grep -q PATH_MATRIX_ENTRY_DONE <<<"${out:-}" || echo "RAW entry→hub:ssh 0/1 SSH до входа не удался"
@@ -80,14 +96,22 @@ for port in 443 2443; do
   ok=$(grep -vc '^000$' /tmp/heyearth-pm-$port); rm -f /tmp/heyearth-pm-$port
   echo "USER via-exit:$port $ok/$N"
 done
-`, shQuote(entry), shQuote(sni), socks, pathMatrixTuples, shQuote(py), id, relayStreamSSHTries, entryScript)
+`, shQuote(entry), shQuote(sni), socks, pathMatrixTuples, shQuote(py), id, relayStreamSSHTries, entryScript, shQuote(relayT))
 }
 
-// pathMatrixVerdict reads the RAW/USER lines of a run: every group must reach its floor.
+// pathMatrixVerdict reads the RAW/USER lines of a run: every group must reach its floor, and the
+// run must have as many groups as its EXPECT line says (7 without the line). BACKUP lines (the
+// public path of an entry on a tunnel) are shown, never judged.
 func pathMatrixVerdict(log string) (pass bool, failed []string) {
-	seen := 0
+	seen, expect := 0, 7
 	for _, l := range strings.Split(log, "\n") {
 		f := strings.Fields(l)
+		if len(f) == 2 && f[0] == "EXPECT" {
+			if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
+				expect = n
+			}
+			continue
+		}
 		if len(f) < 3 || (f[0] != "RAW" && f[0] != "USER") {
 			continue
 		}
@@ -107,7 +131,10 @@ func pathMatrixVerdict(log string) (pass bool, failed []string) {
 			failed = append(failed, fmt.Sprintf("%s %d/%d < %d%%", f[1], a, b, floor))
 		}
 	}
-	return seen >= 7 && len(failed) == 0, failed
+	if seen != expect {
+		failed = append(failed, fmt.Sprintf("групп %d из %d", seen, expect))
+	}
+	return len(failed) == 0, failed
 }
 
 func pathMatrix(client *ssh.Client, id int) error {
@@ -143,7 +170,11 @@ func pathMatrix(client *ssh.Client, id int) error {
 	if ex == 0 {
 		return fmt.Errorf("нет живого выхода для проверки «как у пользователя»")
 	}
-	l, err := hubJob(client, "path-matrix", id, pathMatrixRun(id, entry, hub, sni, 1088+ex), 20*time.Minute)
+	hubT, relayT, err := config.RelayTunnelAddrs(id)
+	if err != nil {
+		return err
+	}
+	l, err := hubJob(client, "path-matrix", id, pathMatrixRun(id, entry, hub, sni, 1088+ex, hubT.String(), relayT.String()), 20*time.Minute)
 	if err != nil {
 		return fmt.Errorf("вход %d: %w", id, err)
 	}
