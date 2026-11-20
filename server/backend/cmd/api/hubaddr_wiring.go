@@ -51,7 +51,8 @@ func defaultHubAddrEnv() hubAddrEnv {
 			}
 			return entryTLSCheck(socks, host, port, sni)
 		},
-		SiteTLS: hubSiteTLSCheck,
+		SiteTLS:   hubSiteTLSCheck,
+		CertCheck: hubLocalCertCheck,
 		Bamboo: func(socks int, host string) error {
 			_, _, err := probeBamboo(socks, host, []byte(biz.GetHysteria2ObfsPassword()))
 			return err
@@ -132,6 +133,19 @@ func hubSiteTLSCheck(socks int, host, serverName string) error {
 	}
 	defer conn.Close()
 	return tls.Client(conn, &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}).HandshakeContext(ctx)
+}
+
+// hubLocalCertCheck: TLS to host:443 from the Hub itself with serverName — the certificate must
+// verify for that name.
+func hubLocalCertCheck(ctx context.Context, host, serverName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, "443"))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // hubSMTPAuth: the mail account accepts a login from dial's address (errHubCheckSkipped when

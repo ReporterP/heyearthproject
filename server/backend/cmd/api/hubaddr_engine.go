@@ -97,15 +97,16 @@ type hubAddrEnv struct {
 	Sleep       func(ctx context.Context, d time.Duration) error
 	Bound       func(bind netip.Addr) hubnet.DialFunc
 	Resolve     hubnet.Resolve
-	PickExit    func() (int, error)                                   // SOCKS port of a live exit
-	RealityTLS  func(socks int, host string, port int) error          // Reality handshake through the exit
-	SiteTLS     func(socks int, host, serverName string) error        // the site's certificate through the exit
-	Bamboo      func(socks int, host string) error                    // Бамбук probe through the exit
-	Setting     func(key, def string) (string, error)                 // app_settings (def for absent/blank)
-	SetSetting  func(key, val string) error                           // "" deletes
-	ResetHubIPs func()                                                // hubIPs.reset
-	SMTPAuth    func(ctx context.Context, dial hubnet.DialFunc) error // nil: SMTP is off
-	YooKassa    func(ctx context.Context, dial hubnet.DialFunc) error // nil: not configured
+	PickExit    func() (int, error)                                      // SOCKS port of a live exit
+	RealityTLS  func(socks int, host string, port int) error             // Reality handshake through the exit
+	SiteTLS     func(socks int, host, serverName string) error           // the site's certificate through the exit
+	CertCheck   func(ctx context.Context, host, serverName string) error // the site's certificate on host:443, from the Hub
+	Bamboo      func(socks int, host string) error                       // Бамбук probe through the exit
+	Setting     func(key, def string) (string, error)                    // app_settings (def for absent/blank)
+	SetSetting  func(key, val string) error                              // "" deletes
+	ResetHubIPs func()                                                   // hubIPs.reset
+	SMTPAuth    func(ctx context.Context, dial hubnet.DialFunc) error    // nil: SMTP is off
+	YooKassa    func(ctx context.Context, dial hubnet.DialFunc) error    // nil: not configured
 	PhoneStart  func(ctx context.Context, bind string) (url string, expires time.Time, err error)
 	PhoneRead   func(ctx context.Context) (active bool, results []admin.MobileCheckResult, err error)
 	Alert       func(key, text string)
