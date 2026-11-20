@@ -25,7 +25,8 @@ const (
 	hubArmCap        = 40 * time.Minute
 	hubConfirmWindow = 600 * time.Second
 	hubRevertRetry   = 5 * time.Minute
-	hubStepRevert    = "revert" // record of the API-side revert
+	hubProbeBudget   = 8 * time.Minute // the checks after the entries: tunnels up to 2 min, probes
+	hubStepRevert    = "revert"        // record of the API-side revert
 )
 
 var errHubTimerFired = errors.New("таймер отката сработал — смена откатывается")
@@ -59,8 +60,8 @@ func (t *revertTimer) arm(ctx context.Context, end time.Time) error {
 	if secs < 1 {
 		secs = 1
 	}
-	out, err := t.e.env.Hub.Run(ctx, hubnet.ArmTimerScript(hubRevertUnit(t.id), hubRevertScriptPath(t.id), secs))
-	if strings.Contains(out, "REVERT_RUNNING") {
+	out, err := t.e.env.Hub.Run(ctx, hubnet.ArmTimerScript(hubRevertUnit(t.id), hubRevertScriptPath(t.id), secs, hubRevertMarker(t.id)))
+	if strings.Contains(out, "REVERT_RUNNING") || strings.Contains(out, "REVERT_DONE") {
 		return errHubTimerFired
 	}
 	if err != nil {
@@ -68,6 +69,14 @@ func (t *revertTimer) arm(ctx context.Context, end time.Time) error {
 	}
 	t.end, t.lastArm = end, now
 	return nil
+}
+
+// extend pushes the timer's end to at least end (no 40-minute cap: the bounded probe phase).
+func (t *revertTimer) extend(ctx context.Context, end time.Time) error {
+	if !end.After(t.end) {
+		return nil
+	}
+	return t.arm(ctx, end)
 }
 
 // tick runs while entry jobs are polled: every 2 minutes the timer is pushed to now+5 min (capped
@@ -137,6 +146,11 @@ func (e *hubAddrEngine) stepSwitch(ctx context.Context, c hubAddrChange, lg *ste
 	relays, err := e.relaysToRepoint(ctx, c)
 	if err != nil {
 		return ch, err
+	}
+	if _, doc, err := e.readNetplan(ctx, c.Iface); err != nil {
+		return ch, err
+	} else if _, _, err := hubnet.NetplanSetDefaultFrom(doc, c.Iface, nw); err != nil {
+		return ch, fmt.Errorf("netplan: %v — источник маршрута не закрепить, переключение не начато", err)
 	}
 
 	// 1. Revert first: installed and armed before anything changes.
@@ -217,7 +231,10 @@ func (e *hubAddrEngine) stepSwitch(ctx context.Context, c hubAddrChange, lg *ste
 		ch.Relays = append(ch.Relays, r)
 	}
 
-	// 5. Checks from outside.
+	// 5. Checks from outside, under a timer that outlasts them.
+	if err := timer.extend(ctx, e.env.Now().Add(hubProbeBudget)); err != nil {
+		return ch, err
+	}
 	ch.Probes = e.switchProbes(ctx, nw)
 	ch.Green = allOK
 	for _, p := range ch.Probes {
@@ -316,6 +333,12 @@ func (e *hubAddrEngine) markerExists(ctx context.Context, id int64) bool {
 	return strings.TrimSpace(out) == "YES"
 }
 
+func (e *hubAddrEngine) revertServiceActive(ctx context.Context, id int64) bool {
+	out, _ := e.env.Hub.Run(ctx, "systemctl is-active "+hubRevertUnit(id)+".service\n")
+	st := strings.TrimSpace(out)
+	return st == "active" || st == "activating"
+}
+
 // Confirm ends the switch: the timer is disarmed and netplan gets `from: <new>`. Refused while
 // the step runs, after the timer fired, when the route source is not the new address, or on red
 // checks without force.
@@ -328,12 +351,12 @@ func (e *hubAddrEngine) Confirm(ctx context.Context, id int64, force bool) error
 		return fmt.Errorf("подтверждать нечего: смена в состоянии «%s»", c.State)
 	}
 	e.mu.Lock()
-	running := e.busy[id] != ""
+	running := e.busy[id] != "" || e.reverting[id]
 	e.mu.Unlock()
 	if running {
 		return errHubAddrBusy
 	}
-	if e.markerExists(ctx, id) {
+	if e.markerExists(ctx, id) || e.revertServiceActive(ctx, id) {
 		return errHubTimerFired
 	}
 	st, err := e.readHub(ctx)
@@ -348,11 +371,12 @@ func (e *hubAddrEngine) Confirm(ctx context.Context, id int64, force bool) error
 	if !ch.Green && !force {
 		return errors.New("проверки после переключения не зелёные — подтвердите с отметкой «несмотря на» или верните как было")
 	}
-	if out, err := e.env.Hub.Run(ctx, hubnet.DisarmTimerScript(hubRevertUnit(id))); err != nil {
-		return fmt.Errorf("таймер не снят: %v: %s", err, out)
-	}
+	// netplan first: if it cannot be written, the timer stays armed and the change reverts by itself.
 	if err := e.setNetplanFrom(ctx, c, mustAddr(c.NewIP)); err != nil {
-		return fmt.Errorf("таймер снят, но netplan не записан (после перезагрузки хаб вернётся на старый источник): %w", err)
+		return fmt.Errorf("netplan не записан, таймер отката не снят: %w", err)
+	}
+	if out, err := e.env.Hub.Run(ctx, hubnet.DisarmTimerScript(hubRevertUnit(id))); err != nil {
+		return fmt.Errorf("netplan записан, но таймер не снят — подтвердите ещё раз: %v: %s", err, out)
 	}
 	now := e.env.Now().UTC()
 	return e.env.Repo.SetState(ctx, id, hubAddrSwitching, hubAddrTransition, func(x *hubAddrChange) { x.ConfirmedAt = &now })
@@ -375,8 +399,10 @@ func (e *hubAddrEngine) setNetplanFrom(ctx context.Context, c hubAddrChange, src
 }
 
 // Revert («Вернуть как было», switching or transition): the revert script runs now (unless the
-// timer already ran it), netplan goes back to the old source, then the API side (entries).
+// timer already ran it), netplan goes back to the old source, then the API side (entries) in the
+// background — none of it dies with the admin's HTTP request.
 func (e *hubAddrEngine) Revert(ctx context.Context, id int64, reason string) error {
+	ctx = context.WithoutCancel(ctx)
 	c, err := e.env.Repo.Get(ctx, id)
 	if err != nil {
 		return err
@@ -385,11 +411,16 @@ func (e *hubAddrEngine) Revert(ctx context.Context, id int64, reason string) err
 		return fmt.Errorf("возвращать нечего: смена в состоянии «%s»", c.State)
 	}
 	e.mu.Lock()
+	if e.reverting[id] {
+		e.mu.Unlock()
+		return errHubAddrBusy
+	}
 	e.reverting[id] = true
 	e.mu.Unlock()
-	defer func() { e.mu.Lock(); delete(e.reverting, id); e.mu.Unlock() }()
-	if !e.markerExists(ctx, id) {
+	done := func() { e.mu.Lock(); delete(e.reverting, id); e.mu.Unlock() }
+	if !e.markerExists(ctx, id) && !e.revertServiceActive(ctx, id) {
 		if out, err := e.env.Hub.Run(ctx, "/bin/sh "+hubRevertScriptPath(id)+"\n"); err != nil {
+			done()
 			return fmt.Errorf("скрипт отката: %v: %s", err, strings.TrimSpace(out))
 		}
 	}
@@ -400,22 +431,27 @@ func (e *hubAddrEngine) Revert(ctx context.Context, id int64, reason string) err
 			e.env.Alert("hub-address-netplan", "netplan не возвращён на старый источник: "+err.Error())
 		}
 	}
-	for i := 0; i < 1200; i++ { // the switch step stops at its next poll
-		e.mu.Lock()
-		running := e.busy[id] != ""
-		e.mu.Unlock()
-		if !running {
-			break
+	e.env.Go(func() {
+		defer done()
+		bctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		for i := 0; i < 1200; i++ { // the switch step stops at its next poll
+			e.mu.Lock()
+			running := e.busy[id] != ""
+			e.mu.Unlock()
+			if !running || e.env.Sleep(bctx, time.Second) != nil {
+				break
+			}
 		}
-		if e.env.Sleep(ctx, time.Second) != nil {
-			break
+		cur, err := e.env.Repo.Get(bctx, id)
+		if err == nil {
+			err = e.apiRevert(bctx, cur, reason)
 		}
-	}
-	c, err = e.env.Repo.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	return e.apiRevert(ctx, c, reason)
+		if err != nil {
+			e.env.Alert("hub-address-revert", "откат смены адреса хаба: "+err.Error())
+		}
+	})
+	return nil
 }
 
 // revertFromStep: the switch step failed after the timer was armed — the script runs now.
@@ -439,8 +475,7 @@ type hubAddrRevertChecks struct {
 }
 
 // apiRevert is the API side of a revert: the record goes to «reverting», the Hub side is made
-// sure of (settings, route, timer, counter — a reboot leaves the settings as they were), then
-// the entries are re-pointed (retried by the watcher until all are back).
+// sure of, then the entries are re-pointed (retried by the watcher until all are back).
 func (e *hubAddrEngine) apiRevert(ctx context.Context, c hubAddrChange, reason string) error {
 	if c.State == hubAddrSwitching || c.State == hubAddrTransition {
 		if err := e.env.Repo.SetState(ctx, c.ID, c.State, hubAddrReverting, func(x *hubAddrChange) { x.RevertReason = reason }); err != nil {
@@ -448,11 +483,20 @@ func (e *hubAddrEngine) apiRevert(ctx context.Context, c hubAddrChange, reason s
 		}
 	}
 	var lg stepLog
+	if err := e.ensureHubReverted(ctx, c, &lg); err != nil {
+		return err
+	}
+	return e.retryRevertRelays(ctx, c, &lg)
+}
+
+// ensureHubReverted: settings, timer, counter and route source as before the switch (a reboot or
+// a half-done revert leaves some of them behind).
+func (e *hubAddrEngine) ensureHubReverted(ctx context.Context, c hubAddrChange, lg *stepLog) error {
 	if v, err := e.env.Setting("main_server_host", ""); err == nil && strings.TrimSpace(v) != c.OldIP {
 		if err := e.env.SetSetting("main_server_host", c.OldIP); err != nil {
 			return err
 		}
-		e.bumpConfigVersion(&lg)
+		e.bumpConfigVersion(lg)
 	}
 	_ = e.env.SetSetting(hubAddrTransitionKey, "")
 	_, _ = e.env.Hub.Run(ctx, hubnet.DisarmTimerScript(hubRevertUnit(c.ID)))
@@ -470,7 +514,7 @@ func (e *hubAddrEngine) apiRevert(ctx context.Context, c hubAddrChange, reason s
 	if e.env.Sync != nil {
 		e.env.Sync()
 	}
-	return e.retryRevertRelays(ctx, c, &lg)
+	return nil
 }
 
 func (e *hubAddrEngine) revertRecord(c hubAddrChange) hubAddrRevertChecks {

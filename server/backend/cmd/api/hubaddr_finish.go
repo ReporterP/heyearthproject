@@ -68,6 +68,16 @@ func (e *hubAddrEngine) sampleCounter(ctx context.Context, c hubAddrChange) {
 		return
 	}
 	out, err := e.env.Hub.Run(ctx, hubnet.CounterReadScript())
+	if err != nil { // the table is not persistent: a reboot drops it — count again from zero
+		if _, cErr := e.env.Hub.Run(ctx, hubnet.CounterTableScript(mustAddr(c.OldIP))); cErr == nil {
+			rec.Samples = nil
+			err = fmt.Errorf("счётчик старого адреса пересоздан (после перезагрузки) — считаю заново")
+			rec.Error = err.Error()
+			b, _ := json.Marshal(rec)
+			_ = e.env.Repo.SaveStep(ctx, c.ID, hubStepTransition, hubAddrStep{Status: hubStepRunning, FinishedAt: &now, Checks: b})
+			return
+		}
+	}
 	if err == nil {
 		var p uint64
 		if p, err = hubnet.ParseCounter(out); err == nil {
@@ -207,7 +217,7 @@ func (e *hubAddrEngine) removeOldAddr(ctx context.Context, c hubAddrChange) erro
 	if _, err := e.env.Hub.PutFile(ctx, hubReaddScriptPath(c.ID), []byte(readd), 0o700); err != nil {
 		return err
 	}
-	if out, err := e.env.Hub.Run(ctx, hubnet.ArmTimerScript(hubReaddUnit(c.ID), hubReaddScriptPath(c.ID), int(hubConfirmWindow.Seconds()))); err != nil {
+	if out, err := e.env.Hub.Run(ctx, hubnet.ArmTimerScript(hubReaddUnit(c.ID), hubReaddScriptPath(c.ID), int(hubConfirmWindow.Seconds()), "")); err != nil {
 		return fmt.Errorf("таймер возврата адреса: %v: %s", err, out)
 	}
 	path, doc, err := e.readNetplan(ctx, c.Iface)

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"path/filepath"
+	"strings"
 
 	"github.com/heyearth/backend/internal/hubnet"
 )
@@ -67,6 +69,16 @@ func (e *hubAddrEngine) stepAdd(ctx context.Context, c hubAddrChange, prev hubAd
 		return ch, err
 	}
 	ch.NetplanPath, ch.Backup = path, hubNetplanBackup(path, c.ID)
+	// Refuse before changing anything: the switch will need `from:` on the default route of this
+	// very file, and a file cloud-init rewrites at boot would drop the change after a reboot.
+	if _, _, err := hubnet.NetplanSetDefaultFrom(doc, c.Iface, newA); err != nil {
+		return ch, fmt.Errorf("netplan %s: %v — мастер не сможет закрепить источник маршрута; приведите маршрут по умолчанию к виду routes: [{to: default, via: …}] в этом файле", path, err)
+	}
+	if strings.Contains(filepath.Base(path), "cloud-init") {
+		if out, _ := e.env.Hub.Run(ctx, hubnet.CloudInitNetDisabledScript()); strings.TrimSpace(out) == "" {
+			return ch, fmt.Errorf("netplan %s пишет cloud-init: после перезагрузки он перепишет файл и смена пропадёт — отключите сеть cloud-init (/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg: «network: {config: disabled}») и запустите шаг снова", path)
+		}
+	}
 
 	addedNow := false
 	if !hubnet.HasAddr(st.addrs, newA) {

@@ -108,8 +108,9 @@ func TestRevertScriptRestoresSourceAndSetting(t *testing.T) {
 }
 
 func TestTimerScripts(t *testing.T) {
-	arm := ArmTimerScript("heyearth-hubaddr-revert-7", "/opt/heyearth/state/hubaddr/7-revert.sh", 600)
-	for _, want := range []string{"systemd-run", "--unit=heyearth-hubaddr-revert-7", "--on-active=600s", "/opt/heyearth/state/hubaddr/7-revert.sh"} {
+	arm := ArmTimerScript("heyearth-hubaddr-revert-7", "/opt/heyearth/state/hubaddr/7-revert.sh", 600, "/opt/heyearth/state/hubaddr/7-reverted")
+	for _, want := range []string{"systemd-run", "--unit=heyearth-hubaddr-revert-7", "--on-active=600s", "/opt/heyearth/state/hubaddr/7-revert.sh",
+		"if [ -e /opt/heyearth/state/hubaddr/7-reverted ]; then echo REVERT_DONE; exit 4; fi"} {
 		if !strings.Contains(arm, want) {
 			t.Errorf("arm missing %q:\n%s", want, arm)
 		}
@@ -121,6 +122,10 @@ func TestTimerScripts(t *testing.T) {
 	bashSyntax(t, arm)
 	bashSyntax(t, dis)
 	bashSyntax(t, RestartTunnelsScript())
+	bashSyntax(t, CloudInitNetDisabledScript())
+	if strings.Contains(ArmTimerScript("u", "/s.sh", 60, ""), "REVERT_DONE") {
+		t.Error("no marker, no check")
+	}
 }
 
 func TestCounterScripts(t *testing.T) {

@@ -61,7 +61,11 @@ func (e *hubAddrEngine) watchOnce(ctx context.Context) {
 		if e.env.Now().Sub(e.revertRecord(c).LastTry) < hubRevertRetry {
 			return
 		}
-		if err := e.retryRevertRelays(ctx, c, nil); err != nil {
+		var lg stepLog
+		if err := e.ensureHubReverted(ctx, c, &lg); err != nil {
+			log.Printf("[hub-address] change %d revert (hub side): %v", c.ID, err)
+		}
+		if err := e.retryRevertRelays(ctx, c, &lg); err != nil {
 			log.Printf("[hub-address] change %d revert retry: %v", c.ID, err)
 		}
 	}

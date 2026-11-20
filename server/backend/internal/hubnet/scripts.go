@@ -165,16 +165,27 @@ func dirOf(p string) string {
 }
 
 // ArmTimerScript (re)arms the revert: an armed timer is stopped first; a revert already running
-// is never touched (exit 3, REVERT_RUNNING). --collect unloads the units once they ran.
-func ArmTimerScript(unit, script string, secs int) string {
+// is never touched (exit 3, REVERT_RUNNING), and once it ran (marker exists, "" = no check) nothing
+// is armed again (exit 4, REVERT_DONE). --collect unloads the units once they ran.
+func ArmTimerScript(unit, script string, secs int, marker string) string {
 	u := q(unit)
+	done := ""
+	if marker != "" {
+		done = "if [ -e " + q(marker) + " ]; then echo REVERT_DONE; exit 4; fi\n"
+	}
 	return fmt.Sprintf(`set -u
-if systemctl is-active --quiet %[1]s.service; then echo REVERT_RUNNING; exit 3; fi
+`+done+`if systemctl is-active --quiet %[1]s.service; then echo REVERT_RUNNING; exit 3; fi
 systemctl stop %[1]s.timer 2>/dev/null || true
 systemctl reset-failed %[1]s.timer %[1]s.service 2>/dev/null || true
 systemd-run --quiet --collect --unit=%[1]s --on-active=%[3]ds /bin/sh %[2]s
 echo ARMED
 `, u, q(script), secs)
+}
+
+// CloudInitNetDisabledScript prints the cloud-init file that disables its network config, or
+// nothing (then cloud-init rewrites 50-cloud-init.yaml at boot).
+func CloudInitNetDisabledScript() string {
+	return "grep -rlsE 'config:[[:space:]]*disabled' /etc/cloud/cloud.cfg.d/ /etc/cloud/cloud.cfg 2>/dev/null | head -1\n"
 }
 
 // DisarmTimerScript stops the timer only: a revert that already started finishes.

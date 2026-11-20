@@ -142,7 +142,14 @@ type fakeHub struct {
 	marker     bool // the revert script ran
 	counter    uint64
 	gw         string // "" = tGW
+
+	revertActive   bool // the revert service is running right now
+	counterMissing bool // the nft table is gone (a reboot)
+	cloudInitOff   bool // /etc/cloud/cloud.cfg.d disables cloud-init's network config
+	armLog         []armEvent
 }
+
+type armEvent struct{ at, end time.Time }
 
 var fhOnActive = regexp.MustCompile(`--on-active=(\d+)s`)
 
@@ -168,7 +175,10 @@ var (
 	fhRoute   = regexp.MustCompile(`ip route replace default via \S+ dev \S+ src (\S+)`)
 )
 
-func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
+func (f *fakeHub) Run(ctx context.Context, script string) (string, error) {
+	if ctx.Err() != nil { // LocalRemote kills the script when the context ends
+		return "", ctx.Err()
+	}
 	if f.onScript != nil {
 		f.onScript(script)
 	}
@@ -177,13 +187,19 @@ func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
 	f.scripts = append(f.scripts, script)
 	switch {
 	case strings.Contains(script, "systemd-run") && strings.Contains(script, "heyearth-hubaddr-"):
-		if f.marker {
+		if f.marker && strings.Contains(script, "REVERT_DONE") { // ArmTimerScript's own marker check
+			return "REVERT_DONE", errors.New("exit 4")
+		}
+		if f.revertActive {
 			return "REVERT_RUNNING", errors.New("exit 3")
 		}
 		f.timerArmed = true
 		if m := fhOnActive.FindStringSubmatch(script); m != nil && f.now != nil {
 			secs, _ := time.ParseDuration(m[1] + "s")
 			f.armedUntil = append(f.armedUntil, f.now().Add(secs))
+			if strings.Contains(script, "hubaddr-revert") {
+				f.armLog = append(f.armLog, armEvent{at: f.now(), end: f.now().Add(secs)})
+			}
 		}
 		return "ARMED", nil
 	case strings.Contains(script, "DISARMED"):
@@ -194,6 +210,21 @@ func (f *fakeHub) Run(_ context.Context, script string) (string, error) {
 			return "YES", nil
 		}
 		return "NO", nil
+	case strings.HasPrefix(script, "systemctl is-active") && strings.Contains(script, ".service"):
+		if f.revertActive {
+			return "active", nil
+		}
+		return "inactive", nil
+	case strings.Contains(script, "cloud.cfg"):
+		if f.cloudInitOff {
+			return "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg", nil
+		}
+		return "", nil
+	case script == hubnet.CounterReadScript() && f.counterMissing:
+		return "Error: No such file or directory", errors.New("exit 1")
+	case strings.Contains(script, "COUNTER_OK"):
+		f.counterMissing = false
+		return "COUNTER_OK", nil
 	case strings.HasPrefix(script, "systemctl is-active"):
 		if f.timerArmed {
 			return "active", nil
