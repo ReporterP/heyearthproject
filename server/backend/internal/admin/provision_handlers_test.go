@@ -1168,3 +1168,30 @@ func TestMTProtoSecretFor(t *testing.T) {
 		t.Error("a secret of another domain accepted")
 	}
 }
+
+// «Туннель до Hub» (servers.relay_tunnel) is the wizard's choice for an entry only.
+func TestProvisionSavesRelayTunnel(t *testing.T) {
+	p := &fakeProvisioner{}
+	saved := withProvisioning(t, p, provision.Node{ID: 7, Role: "relay", Lifecycle: "pending", HostKeyConfirmed: true})
+	if rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/7/provision", `{"relay_tunnel":true}`); rec.Code != 202 {
+		t.Fatalf("relay: %d %s", rec.Code, rec.Body)
+	}
+	if len(*saved) != 1 || (*saved)[0].RelayTunnel == nil || !*(*saved)[0].RelayTunnel {
+		t.Fatalf("saved %+v", *saved)
+	}
+	withProvisioning(t, p, provision.Node{ID: 8, Role: "exit", Lifecycle: "pending", HostKeyConfirmed: true})
+	if rec := call(ProvisionNodeHandler, "POST", "/api/admin/servers/8/provision", `{"relay_tunnel":true}`); rec.Code != 400 || !strings.Contains(rec.Body.String(), "только для входа") {
+		t.Fatalf("exit: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSaveNodeOptionsRelayTunnel(t *testing.T) {
+	on := true
+	d := withProvDB(t, &provDB{})
+	if err := saveNodeOptionsDB(context.Background(), 7, provisionPayload{RelayTunnel: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if st := d.matching("SET relay_tunnel = $2", "role = 'relay'"); len(st) != 1 {
+		t.Fatalf("statements: %+v", d.stmts)
+	}
+}

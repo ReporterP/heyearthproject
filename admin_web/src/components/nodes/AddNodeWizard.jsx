@@ -491,6 +491,10 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
             {mobile.state === 'fail' && (
               <p className="mt-3 text-xs text-warning">Адрес не проходит: настраивать его для мобильных бессмысленно. Смените IP у хостера, закройте мастер и добавьте сервер заново (старую запись удалите в «Нодах»).</p>
             )}
+            <div className="mt-5 border-t border-default pt-4">
+              <Switch checked={s.tunnel} onChange={(v) => set({ tunnel: v })} label="Туннель до Hub"
+                description="GRE между входом и хабом: все подключения идут к хабу одной парой адресов. Нужен, если у провайдера входа часть потоков до хаба теряется. Обычно не нужен — проверить и включить его можно позже на «Входах»." />
+            </div>
           </>
         )}
         {s.step === 3 && !relay && (

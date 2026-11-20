@@ -38,6 +38,7 @@ export function initialWizard(initialRole = 'exit') {
     loadWeight: 1,
     fallback: true,
     fallbackStored: true, // servers.tunnel_fallback_enabled of a new node (DEFAULT true)
+    tunnel: false, // an entry's «Туннель до Hub» (servers.relay_tunnel): off by default
     jobId: null,
   }
 }
@@ -237,7 +238,8 @@ export function createRequest(s, password) {
 // provisionRequest: plan_ids only when the plans were read — without them (no settings.read) the
 // node keeps no bindings (common pool) instead of being sent an empty list by mistake.
 export function provisionRequest(s) {
-  if (s.role === 'relay') return {} // no plans, MTProxy or priority (the server refuses them)
+  // An entry has no plans, MTProxy or priority (the server refuses them): only its tunnel choice.
+  if (s.role === 'relay') return { relay_tunnel: !!s.tunnel }
   const out = { mtproxy: s.mtproxy, load_weight: s.loadWeight }
   if (s.plansState === 'ready') out.plan_ids = s.planIds || []
   return out

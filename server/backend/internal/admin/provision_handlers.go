@@ -616,13 +616,19 @@ type provisionPayload struct {
 	MTProxy    *bool  `json:"mtproxy"`
 	PlanIDs    *[]int `json:"plan_ids"`
 	LoadWeight *int   `json:"load_weight"`
+	// RelayTunnel: «Туннель до Hub» of an entry (servers.relay_tunnel); nil keeps the stored choice.
+	RelayTunnel *bool `json:"relay_tunnel"`
 }
 
 const (
 	mtproxyEnableQuery  = `UPDATE servers SET mtproto_status = 'unknown', updated_at = NOW() WHERE id = $1 AND mtproto_status = 'disabled'`
 	mtproxyDisableQuery = `UPDATE servers SET mtproto_status = 'disabled', mtproto_installed_at = NULL, updated_at = NOW() WHERE id = $1`
 	loadWeightQuery     = `UPDATE servers SET load_weight = $2, updated_at = NOW() WHERE id = $1`
+	relayTunnelQuery    = `UPDATE servers SET relay_tunnel = $2, updated_at = NOW() WHERE id = $1 AND role = 'relay'`
 )
+
+// relayTunnelOnlyMsg: the tunnel option belongs to entries (relays) only.
+const relayTunnelOnlyMsg = "«Туннель до Hub» — только для входа"
 
 // saveNodeOptionsDB stores the wizard's choices before the job (they must survive a resume, and
 // the runner reads mtproto_status when it loads the node: MTProxy on turns 'disabled' back into
@@ -645,6 +651,11 @@ func saveNodeOptionsDB(ctx context.Context, id int, o provisionPayload) error {
 			q = mtproxyDisableQuery
 		}
 		if _, err := db.DB.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	if o.RelayTunnel != nil {
+		if _, err := db.DB.ExecContext(ctx, relayTunnelQuery, id, *o.RelayTunnel); err != nil {
 			return err
 		}
 	}
@@ -680,6 +691,10 @@ func ProvisionNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	n, ok := loadNodeMeta(w, r.Context(), id)
 	if !ok {
+		return
+	}
+	if req.RelayTunnel != nil && n.Role != "relay" {
+		writeAdminError(w, http.StatusBadRequest, relayTunnelOnlyMsg)
 		return
 	}
 	if n.Role == "relay" { // a relay has no plans, MTProxy or priority
