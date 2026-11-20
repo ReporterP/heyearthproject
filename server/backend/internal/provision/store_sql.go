@@ -71,7 +71,8 @@ var ErrNodeNotFound = errors.New("не найдена")
 const nodeMetaColumns = `s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_address,
        COALESCE(s.ssh_port, 22), COALESCE(s.ssh_user, 'root'), COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''),
        s.ssh_host_key_confirmed_at IS NOT NULL,
-       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled`
+       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled,
+       COALESCE(s.relay_tunnel, FALSE)`
 
 // nodeMetaQuery: what the admin panel needs to decide about a node — no password, no key.
 const nodeMetaQuery = `SELECT ` + nodeMetaColumns + `
@@ -90,7 +91,7 @@ func scanNodeMeta(row *sql.Row, id int, extra ...any) (Node, error) {
 	var n Node
 	var hostKeyBlob string
 	dest := append([]any{&n.ID, &n.Name, &n.Role, &n.CountryCode, &n.IP, &n.SSHPort, &n.SSHUser, &n.HostKeyFP, &hostKeyBlob,
-		&n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight, &n.MTProtoStatus, &n.FallbackEnabled}, extra...)
+		&n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight, &n.MTProtoStatus, &n.FallbackEnabled, &n.RelayTunnel}, extra...)
 	if err := row.Scan(dest...); errors.Is(err, sql.ErrNoRows) {
 		return Node{}, fmt.Errorf("нода %d %w", id, ErrNodeNotFound)
 	} else if err != nil {

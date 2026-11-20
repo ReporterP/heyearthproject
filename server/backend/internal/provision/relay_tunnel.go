@@ -434,3 +434,56 @@ func (l hubTunnelLayout) down(ctx context.Context, hub Remote, id int, s *State)
 	s.Printf("%s", out)
 	return err
 }
+
+// ── taking a tunnel down (a relay without the tunnel, servers.relay_tunnel off) ──
+
+// relayTunnelRemoveSh: the relay's end gone — unit stopped (its ExecStop deletes the device),
+// disabled and removed with its .bak and its pending marker. The rules and the stream already go
+// to the Hub's public address (the steps before this one).
+const relayTunnelRemoveSh = `systemctl disable --now "$TUN_UNIT_NAME" >/dev/null 2>&1 || true
+rm -f "$TUN_UNIT" "$TUN_UNIT.bak" "$TUN_UNIT.rollback.tmp" "$STATE/tunnel"
+systemctl daemon-reload
+if ip -o link show dev "$TUN_DEV" >/dev/null 2>&1; then ip tunnel del "$TUN_DEV" >/dev/null 2>&1 || true; fi
+echo "туннель $TUN_DEV снят: вход пересылает на Hub $HUB по публичному адресу"
+`
+
+// relayTunnelGoneSh: no tunnel unit running, no unit file, no device.
+const relayTunnelGoneSh = `if systemctl is-active --quiet "$TUN_UNIT_NAME"; then echo "RELAY_FAIL туннель $TUN_UNIT_NAME работает"; fi
+if [ -e "$TUN_UNIT" ]; then echo "RELAY_FAIL остался $TUN_UNIT"; fi
+if ip -o link show dev "$TUN_DEV" >/dev/null 2>&1; then echo "RELAY_FAIL есть интерфейс $TUN_DEV"; fi
+`
+
+// hubTunnelGoneSh: the Hub has no unit, no running unit and no device of this relay's tunnel.
+const hubTunnelGoneSh = `if systemctl is-active --quiet "$UNIT_NAME"; then echo "RELAY_FAIL на Hub работает $UNIT_NAME"; fi
+if [ -e "$UNIT" ]; then echo "RELAY_FAIL на Hub остался $UNIT"; fi
+if ip -o link show dev "$DEV" >/dev/null 2>&1; then echo "RELAY_FAIL на Hub есть интерфейс $DEV"; fi
+`
+
+// relayHubTunnelGone is the Verify of the Hub's removal step (swapped in the relay tests).
+var relayHubTunnelGone = func(ctx context.Context, hub Remote, id int) error {
+	return hubTunnelPaths.gone(ctx, hub, id)
+}
+
+func (l hubTunnelLayout) gone(ctx context.Context, hub Remote, id int) error {
+	if hub == nil {
+		return errors.New("нет доступа к Hub")
+	}
+	return hubCheck(ctx, hub, l.script("gone", RelayOptions{ServerID: id}, hubTunnelGoneSh))
+}
+
+// tunnelRemoveSteps: the relay's end of a tunnel first (nothing is sent into it any more), then the
+// Hub's. On a relay that never had a tunnel both Verify pass and nothing runs.
+func (l relayLayout) tunnelRemoveSteps(o RelayOptions) Recipe {
+	return Recipe{
+		{Name: "relay_tunnel_remove", Apply: func(ctx context.Context, r Remote, s *State) error {
+			return l.run(ctx, r, s, "tunnel-remove", o, relayTunnelRemoveSh)
+		}, Verify: func(ctx context.Context, r Remote, _ *State) error {
+			return l.check(ctx, r, "tunnel-gone", o, relayTunnelGoneSh)
+		}},
+		{Name: "relay_hub_tunnel_remove", Apply: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelDown(ctx, s.Hub, o.ServerID, s)
+		}, Verify: func(ctx context.Context, _ Remote, s *State) error {
+			return relayHubTunnelGone(ctx, s.Hub, o.ServerID)
+		}},
+	}
+}

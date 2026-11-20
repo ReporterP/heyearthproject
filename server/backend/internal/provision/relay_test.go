@@ -357,7 +357,7 @@ const (
 
 func testRelayOpts() RelayOptions {
 	// The Hub's IPv6 address gets no SSH rule (the Hub reaches the relay's IPv4 address).
-	return RelayOptions{ServerID: 9, RelayIP: tRelay, HubIP: tHub, HubIPs: []string{tHub, "198.51.100.3", "2001:db8::1"}, SSHPort: 2222,
+	return RelayOptions{ServerID: 9, Tunnel: true, RelayIP: tRelay, HubIP: tHub, HubIPs: []string{tHub, "198.51.100.3", "2001:db8::1"}, SSHPort: 2222,
 		VerifyPath: func(context.Context) error { return nil }}
 }
 
@@ -373,6 +373,7 @@ type relayEnv struct {
 	dialErr  error
 	hubTrust []string // relayHubTrust calls: "<ip> <tunnel ip> <on>"
 	trusted  bool
+	trustTun string   // the tunnel address in the Hub's trust file ("" = the public address only)
 	hubTun   []string // the Hub tunnel step's calls: up, rollback, down <id>
 	hubTunUp bool
 }
@@ -381,19 +382,23 @@ func relayFixture(t *testing.T, env map[string]string) *relayEnv {
 	t.Helper()
 	e := &relayEnv{h: newRelayHost(t, env), hooks: &fakeHooks{lifecycle: "pending"}}
 	prevTrust, prevCheck := relayHubTrust, relayHubTrustCheck
-	prevUp, prevTunCheck, prevRollback, prevDown := relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown
+	prevUp, prevTunCheck, prevRollback, prevDown, prevGone := relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown, relayHubTunnelGone
 	t.Cleanup(func() {
 		relayHubTrust, relayHubTrustCheck = prevTrust, prevCheck
-		relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown = prevUp, prevTunCheck, prevRollback, prevDown
+		relayHubTunnelUp, relayHubTunnelCheck, relayHubTunnelRollback, relayHubTunnelDown, relayHubTunnelGone = prevUp, prevTunCheck, prevRollback, prevDown, prevGone
 	})
 	relayHubTrust = func(_ context.Context, _ Remote, ip, tun string, on bool) error {
 		e.hubTrust = append(e.hubTrust, fmt.Sprintf("%s %s %v", ip, tun, on))
-		e.trusted = on
+		e.trusted, e.trustTun = on, tun
 		return nil
 	}
-	relayHubTrustCheck = func(context.Context, Remote, string, string) error {
+	// As the real check: the trust file must be the one for exactly this tunnel address.
+	relayHubTrustCheck = func(_ context.Context, _ Remote, _ string, tun string) error {
 		if !e.trusted {
 			return errors.New("Hub не доверяет входу")
+		}
+		if tun != e.trustTun {
+			return fmt.Errorf("файл доверия Hub для туннеля %q, нужен %q", e.trustTun, tun)
 		}
 		return nil
 	}
@@ -415,6 +420,12 @@ func relayFixture(t *testing.T, env map[string]string) *relayEnv {
 	relayHubTunnelDown = func(_ context.Context, _ Remote, id int, _ *State) error {
 		e.hubTun = append(e.hubTun, fmt.Sprintf("down %d", id))
 		e.hubTunUp = false
+		return nil
+	}
+	relayHubTunnelGone = func(context.Context, Remote, int) error {
+		if e.hubTunUp {
+			return errors.New("на Hub есть туннель")
+		}
 		return nil
 	}
 	e.opts = testRelayOpts()

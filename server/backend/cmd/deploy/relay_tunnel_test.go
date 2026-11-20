@@ -245,3 +245,9 @@ func TestRelayTunnelLabDump(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayTunnelFlagSQL(t *testing.T) {
+	if got := relayTunnelFlagSQL(6); got != "update servers set relay_tunnel = true, updated_at = now() where id = 6 and role = 'relay'" {
+		t.Fatalf("flag SQL: %q", got)
+	}
+}

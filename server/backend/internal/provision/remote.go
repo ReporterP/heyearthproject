@@ -71,6 +71,7 @@ type Node struct {
 	Password                          string     // decrypted ssh_password_enc
 	HubSigner                         ssh.Signer // the Hub's own key, nil until created
 	HostKeyConfirmed, FallbackEnabled bool
+	RelayTunnel                       bool // servers.relay_tunnel: a relay forwards to the Hub through its GRE tunnel
 	// credErr: why a stored credential is unusable (a password that does not decrypt, a corrupt
 	// Hub key). LoadNode does not fail on it — Hub-side steps (deprovision) need no credentials —
 	// and DialNode reports it when the login cannot succeed without that credential.
