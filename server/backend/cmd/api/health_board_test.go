@@ -183,6 +183,9 @@ func TestPaymentsCellReflectsProvider(t *testing.T) {
 	}{
 		{"transport error", downGetter{errors.New("http do: dial tcp: i/o timeout")}, "warn", "провайдер оплат не отвечает"},
 		{"provider 5xx", downGetter{&yookassa.APIError{HTTPStatus: 502}}, "warn", "провайдер оплат не отвечает"},
+		// a revoked or wrong key: nobody can top up — the provider answers, but refuses us
+		{"provider refuses the key", downGetter{&yookassa.APIError{HTTPStatus: 401, Code: "invalid_credentials"}}, "warn", "провайдер оплат отказывает в доступе"},
+		{"provider forbids", downGetter{&yookassa.APIError{HTTPStatus: 403}}, "warn", "провайдер оплат отказывает в доступе"},
 		{"provider answers", fakeGetter{}, "ok", "сверка платежей с ЮKassa прошла"},
 		{"unknown payment", fakeGetter{gone: map[string]bool{"p-1": true}}, "ok", "сверка платежей с ЮKassa прошла"},
 	} {

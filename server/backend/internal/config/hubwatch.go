@@ -159,12 +159,15 @@ hub_ok() {
 # The bot token goes to curl as a config on stdin (-K -), never as an argument: «ps» shows
 # a process's arguments to every user of the exit. printf is a shell builtin (no process).
 # Backslashes and quotes are escaped for the config with a quoted replacement: an unquoted
-# backslash in a ${…//…/…} replacement behaves differently across bash versions.
+# backslash in a ${…//…/…} replacement behaves differently across bash versions. A line break
+# would end the quoted value and start another curl option: it is written as \n (\r as \r).
 send() {
   . "$ENV"
   local bs='\' t
   t=${1//"$bs"/"$bs$bs"}
   t=${t//\"/"$bs\""}
+  t=${t//$'\n'/"${bs}n"}
+  t=${t//$'\r'/"${bs}r"}
   printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata-urlencode = "chat_id=%s"\ndata-urlencode = "text=%s"\n' "$BOT_TOKEN" "$CHAT_ID" "$t" |
     curl -fsS -m 15 -o /dev/null -K - 2>/dev/null
 }

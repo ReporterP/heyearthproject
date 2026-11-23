@@ -189,8 +189,9 @@ func TestHubWatchTokenNotInArguments(t *testing.T) {
 	}
 }
 
-// The text reaches Telegram as written, quotes and backslashes included: the real curl parses
-// the config the script writes (a local server stands in for the Bot API).
+// The text reaches Telegram as written — quotes, backslashes and line breaks included — and a
+// line break cannot smuggle another curl option into the config: the real curl parses the
+// config the script writes (a local server stands in for the Bot API).
 func TestHubWatchSendRealCurl(t *testing.T) {
 	if !haveBash() {
 		t.Skip("no working bash")
@@ -198,13 +199,14 @@ func TestHubWatchSendRealCurl(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("no curl")
 	}
-	got := make(chan url.Values, 1)
+	type call struct {
+		path string
+		form url.Values
+	}
+	got := make(chan call, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		if !strings.HasSuffix(r.URL.Path, "/bot123456:AAfake/sendMessage") {
-			t.Errorf("path %q", r.URL.Path)
-		}
-		got <- r.PostForm
+		got <- call{r.URL.Path, r.PostForm}
 	}))
 	defer srv.Close()
 	dir := hubWatchDir(t)
@@ -214,15 +216,30 @@ func TestHubWatchSendRealCurl(t *testing.T) {
 	fn := script[strings.Index(script, "send() {"):]
 	fn = fn[:strings.Index(fn, "\n}\n")+3]
 	fn = strings.Replace(fn, "https://api.telegram.org", srv.URL, 1)
-	text := `🔴 Хаб «недоступен» "q" a\b & x=1 (взгляд: выход 3)`
-	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = strings.NewReader("ENV='" + p.EnvPath + "'\n" + fn + "send '" + strings.ReplaceAll(text, "'", `'\''`) + "'\n")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("send: %v\n%s", err, out)
+	for _, text := range []string{
+		`🔴 Хаб «недоступен» "q" a\b & x=1 (взгляд: выход 3)`,
+		"строка 1\nurl = \"" + srv.URL + "/evil\"\r\noutput = \"/tmp/x\"",
+	} {
+		// the text comes in an environment variable, as at run time: a bash reading a script
+		// on Windows drops a carriage return from its source
+		cmd := exec.Command("bash", "-s")
+		cmd.Env = append(os.Environ(), "HW_TEXT="+text)
+		cmd.Stdin = strings.NewReader("ENV='" + p.EnvPath + "'\n" + fn + "send \"$HW_TEXT\"\n")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("send %q: %v\n%s", text, err, out)
+		}
+		c := <-got
+		if !strings.HasSuffix(c.path, "/bot123456:AAfake/sendMessage") {
+			t.Errorf("text %q went to %q", text, c.path)
+		}
+		if c.form.Get("text") != text || c.form.Get("chat_id") != "-100123" {
+			t.Errorf("Telegram got text %q chat %q, want %q -100123", c.form.Get("text"), c.form.Get("chat_id"), text)
+		}
 	}
-	form := <-got
-	if form.Get("text") != text || form.Get("chat_id") != "-100123" {
-		t.Fatalf("Telegram got text %q chat %q, want %q -100123", form.Get("text"), form.Get("chat_id"), text)
+	select {
+	case c := <-got:
+		t.Errorf("an extra request to %q: a line break added a curl option", c.path)
+	default:
 	}
 }
 

@@ -128,21 +128,31 @@ var (
 )
 
 // setPaymentsCell puts the result of a payment-sync pass on the health board: «Оплаты» is
-// warn when the provider did not answer in that pass (providerErr from syncPendingPayments).
+// warn when the provider did not answer or refused our key in that pass (syncPendingPayments).
 func setPaymentsCell(providerErr error) {
 	if providerErr != nil {
-		healthBoard.Set("payments", "Оплаты", "warn", "провайдер оплат не отвечает: "+biz.ScrubOpsText(providerErr.Error()))
+		what := "провайдер оплат не отвечает"
+		var apiErr *yookassa.APIError
+		if errors.As(providerErr, &apiErr) && (apiErr.HTTPStatus == http.StatusUnauthorized || apiErr.HTTPStatus == http.StatusForbidden) {
+			what = "провайдер оплат отказывает в доступе — проверьте ключи магазина"
+		}
+		healthBoard.Set("payments", "Оплаты", "warn", what+": "+biz.ScrubOpsText(providerErr.Error()))
 		return
 	}
 	healthBoard.Set("payments", "Оплаты", "ok", "сверка платежей с ЮKassa прошла")
 }
 
-// paymentProviderDown tells a provider that did not answer (a network error, 429, 5xx) from
-// one that answered about a payment (404 for a payment it does not know, 4xx on bad input).
+// paymentProviderDown tells a provider that cannot serve us — no answer (a network error, 429,
+// 5xx) or a refused key (401, 403) — from one that answered about a payment (404 for a payment
+// it does not know, another 4xx on bad input).
 func paymentProviderDown(err error) bool {
 	var apiErr *yookassa.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.HTTPStatus >= 500 || apiErr.HTTPStatus == http.StatusTooManyRequests
+		switch apiErr.HTTPStatus {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+			return true
+		}
+		return apiErr.HTTPStatus >= 500
 	}
 	return err != nil
 }
