@@ -1,6 +1,8 @@
 package provision
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -18,7 +20,7 @@ func noTunnelOpts() RelayOptions {
 }
 
 func TestRelayRecipeWithoutTunnelSteps(t *testing.T) {
-	want := []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_rules", "relay_unit", "relay_stream", "relay_firewall",
+	want := []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_firewall", "relay_rules", "relay_unit", "relay_stream",
 		"relay_fail2ban", "relay_hub_trust", "relay_tunnel_remove", "relay_hub_tunnel_remove", "relay_path"}
 	if got := stepNames(relayRecipe(noTunnelOpts(), relayPaths)); !slices.Equal(got, want) {
 		t.Fatalf("steps without the tunnel:\n got %v\nwant %v", got, want)
@@ -120,5 +122,52 @@ func TestRelayTurnTunnelOff(t *testing.T) {
 	h.resetCalls()
 	if id = e.start(t, KindReprovision); e.store.jobs[id].Status != JobSucceeded || e.steps(id)["relay_tunnel_remove"] != StepOK {
 		t.Fatalf("rerun:\n%s", e.dump(id))
+	}
+}
+
+// Review 2026-11-23: an active ufw drops forwarded flows without a route rule and GRE without an
+// allow — the firewall step comes before the tunnel and before the DNAT moves, in both recipes.
+func TestRelayFirewallBeforeForwarding(t *testing.T) {
+	for _, o := range []RelayOptions{testRelayOpts(), noTunnelOpts()} {
+		names := stepNames(relayRecipe(o, relayPaths))
+		fw := slices.Index(names, "relay_firewall")
+		for _, later := range []string{"relay_hub_tunnel", "relay_tunnel", "relay_rules", "relay_stream"} {
+			if i := slices.Index(names, later); i >= 0 && i < fw {
+				t.Fatalf("tunnel=%v: %s before relay_firewall: %v", o.Tunnel, later, names)
+			}
+		}
+	}
+}
+
+// «Включить туннель» (review 2026-11-23): the choice is committed by the job's last step — a job
+// that fails leaves servers.relay_tunnel as it was.
+func TestTunnelToggleCommitsOnlyOnSuccess(t *testing.T) {
+	e := relayFixture(t, map[string]string{"UFW_ACTIVE": "1"})
+	e.opts.Tunnel = false
+	if id := e.start(t, KindProvision); e.store.jobs[id].Status != JobSucceeded {
+		t.Fatalf("setup:\n%s", e.dump(id))
+	}
+	id := e.start(t, KindTunnelOn)
+	if e.store.jobs[id].Status != JobSucceeded || !e.hubTunUp || !slices.Equal(e.hooks.relayTunnel, []bool{true}) {
+		t.Fatalf("tunnel on: flag %v hub %v\n%s", e.hooks.relayTunnel, e.hubTunUp, e.dump(id))
+	}
+	rules, _ := config.RelayNftRulesetVia(tHub, tHubTun)
+	if e.h.file(rLive) != rules {
+		t.Fatal("the rules did not move into the tunnel")
+	}
+
+	f := relayFixture(t, map[string]string{"UFW_ACTIVE": "1"})
+	f.opts.Tunnel = false
+	if id := f.start(t, KindProvision); f.store.jobs[id].Status != JobSucceeded {
+		t.Fatalf("setup 2:\n%s", f.dump(id))
+	}
+	relayHubTunnelUp = func(context.Context, Remote, *State, RelayOptions) error { return errors.New("GRE не проходит") }
+	id = f.start(t, KindTunnelOn)
+	if f.store.jobs[id].Status != JobFailed || len(f.hooks.relayTunnel) != 0 {
+		t.Fatalf("a failed tunnel on must not commit the flag: %v\n%s", f.hooks.relayTunnel, f.dump(id))
+	}
+	// The stored choice is still off (the fake commit does not touch the node row): off is refused.
+	if _, err := f.r.Start(context.Background(), 9, KindTunnelOff); err == nil || !strings.Contains(err.Error(), "уже выключен") {
+		t.Fatalf("tunnel off of an entry without it: %v", err)
 	}
 }

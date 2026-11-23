@@ -39,7 +39,6 @@ var (
 		return admin.NodeProvisioner.Start(ctx, id, kind)
 	}
 	entriesSetRotation = biz.SetEntryRotation
-	entriesSetTunnel   = setRelayTunnel
 )
 
 // entryJob is the last job of one kind on an entry.
@@ -80,7 +79,7 @@ func (c *entryChecks) judge(now time.Time) {
 // lastEntryJobsQuery: the newest job of each kind that matters to «Входы», per entry.
 const lastEntryJobsQuery = `SELECT DISTINCT ON (server_id, kind) server_id, id, kind, status, finished_at
   FROM provision_jobs
- WHERE server_id = ANY($1) AND kind IN ('pathcheck', 'tunnelcheck', 'provision', 'reprovision')
+ WHERE server_id = ANY($1) AND kind IN ('pathcheck', 'tunnelcheck', 'provision', 'reprovision', 'tunnelon', 'tunneloff')
  ORDER BY server_id, kind, id DESC`
 
 func lastEntryJobs(ctx context.Context, ids []int) (map[int]entryChecks, error) {
@@ -105,7 +104,7 @@ func lastEntryJobs(ctx context.Context, ids []int) (map[int]entryChecks, error) 
 			c.Path = j
 		case provision.KindTunnelCheck:
 			c.Tunnel = j
-		default: // the newer of provision / reprovision
+		default: // the newest setup job: provision, reprovision, tunnel on / off
 			if c.Setup == nil || j.ID > c.Setup.ID {
 				c.Setup = j
 			}
@@ -113,13 +112,6 @@ func lastEntryJobs(ctx context.Context, ids []int) (map[int]entryChecks, error) 
 		out[id] = c
 	}
 	return out, rows.Err()
-}
-
-const relayTunnelSetQuery = `UPDATE servers SET relay_tunnel = $2, updated_at = NOW() WHERE id = $1 AND role = 'relay'`
-
-func setRelayTunnel(ctx context.Context, id int, on bool) error {
-	_, err := db.DB.ExecContext(ctx, relayTunnelSetQuery, id, on)
-	return err
 }
 
 // ── rotation ──
@@ -346,22 +338,19 @@ func handleEntryTunnel(w http.ResponseWriter, r *http.Request, id int) {
 			return
 		}
 	}
-	if err := entriesSetTunnel(ctx, id, *req.On); err != nil {
-		log.Printf("[entries-admin] вход %d: relay_tunnel: %v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "не удалось сохранить выбор туннеля"})
-		return
+	// The job writes servers.relay_tunnel as its last step (provision.KindTunnelOn/Off): a job that
+	// fails leaves the stored choice what it was (review 2026-11-23).
+	kind := provision.KindTunnelOff
+	if *req.On {
+		kind = provision.KindTunnelOn
 	}
-	jobID, err := entriesStartJob(ctx, id, provision.KindReprovision)
+	jobID, err := entriesStartJob(ctx, id, kind)
 	if err != nil {
-		// No job, no change on the servers: the stored choice goes back to what runs.
-		if rerr := entriesSetTunnel(ctx, id, e.Tunnel); rerr != nil {
-			log.Printf("[entries-admin] вход %d: relay_tunnel не возвращён: %v", id, rerr)
-		}
 		admin.WriteJobError(w, err)
 		return
 	}
 	entriesAudit(r, "entry_tunnel", "entry", strconv.Itoa(id), map[string]any{"on": *req.On, "job_id": jobID})
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID, "kind": provision.KindReprovision})
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID, "kind": kind})
 }
 
 func handleEntryCheck(w http.ResponseWriter, r *http.Request, id int, kind string) {

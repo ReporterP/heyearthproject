@@ -11,10 +11,10 @@ ALTER TABLE entry_state ADD COLUMN IF NOT EXISTS rotation_reason TEXT NOT NULL D
 ALTER TABLE entry_state ADD COLUMN IF NOT EXISTS rotation_at TIMESTAMPTZ;
 ALTER TABLE entry_state ADD COLUMN IF NOT EXISTS rotation_by TEXT NOT NULL DEFAULT '';
 
--- «Проверить путь» and «Проверить туннель» are provisioning jobs of their own.
+-- «Проверить путь», «Проверить туннель» and «Включить / Выключить туннель» are provisioning jobs of their own.
 ALTER TABLE provision_jobs DROP CONSTRAINT IF EXISTS provision_jobs_kind_check;
 ALTER TABLE provision_jobs ADD CONSTRAINT provision_jobs_kind_check
-  CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy', 'tg_mtproxy', 'pathcheck', 'tunnelcheck'));
+  CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy', 'tg_mtproxy', 'pathcheck', 'tunnelcheck', 'tunnelon', 'tunneloff'));
 
 -- Entry 6 was taken out of rotation by SQL on 2026-11-20 (lifecycle offline, docs/incidents/2026-11-20.md):
 -- it stays configured (GRE tunnel since 16:10) and becomes an entry out of rotation with that reason.

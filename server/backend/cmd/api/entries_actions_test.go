@@ -142,7 +142,6 @@ type actionsFake struct {
 	jobs     map[int]entryChecks
 	started  []string
 	rotation []string
-	tunnel   []string
 	startErr error
 }
 
@@ -152,10 +151,8 @@ func useActionsFake(t *testing.T) *actionsFake {
 	f.entries = []biz.Entry{{ID: 0, Kind: biz.EntryKindHub, Rotation: biz.EntryRotationAll, Lifecycle: "online"},
 		{ID: 6, Name: "Вход 6", Kind: biz.EntryKindRelay, Lifecycle: "online", Rotation: biz.EntryRotationOff, RotationReason: "потери",
 			RotationAt: ago(time.Hour), Tunnel: true}}
-	l, j, s, r, tn := entriesList, entriesJobs, entriesStartJob, entriesSetRotation, entriesSetTunnel
-	t.Cleanup(func() {
-		entriesList, entriesJobs, entriesStartJob, entriesSetRotation, entriesSetTunnel = l, j, s, r, tn
-	})
+	l, j, s, r := entriesList, entriesJobs, entriesStartJob, entriesSetRotation
+	t.Cleanup(func() { entriesList, entriesJobs, entriesStartJob, entriesSetRotation = l, j, s, r })
 	entriesList = func(context.Context) ([]biz.Entry, error) { return f.entries, nil }
 	entriesJobs = func(context.Context, []int) (map[int]entryChecks, error) { return f.jobs, nil }
 	entriesStartJob = func(_ context.Context, id int, kind string) (int64, error) {
@@ -164,10 +161,6 @@ func useActionsFake(t *testing.T) *actionsFake {
 	}
 	entriesSetRotation = func(_ context.Context, id int, from []string, to, reason, by string) error {
 		f.rotation = append(f.rotation, to+" "+reason)
-		return nil
-	}
-	entriesSetTunnel = func(_ context.Context, id int, on bool) error {
-		f.tunnel = append(f.tunnel, map[bool]string{true: "on", false: "off"}[on])
 		return nil
 	}
 	entriesNow = func() time.Time { return rotNow }
@@ -199,8 +192,8 @@ func TestTunnelOnNeedsTunnelCheck(t *testing.T) {
 	put := func(body string) int {
 		return callEntries(handleAdminEntryAction, http.MethodPut, "/api/admin/entries/6/tunnel", body).Code
 	}
-	if code := put(`{"on":true}`); code != http.StatusConflict || len(f.tunnel) != 0 || len(f.started) != 0 {
-		t.Fatalf("without a trial: %d %v %v", code, f.tunnel, f.started)
+	if code := put(`{"on":true}`); code != http.StatusConflict || len(f.started) != 0 {
+		t.Fatalf("without a trial: %d %v", code, f.started)
 	}
 	f.jobs[6] = entryChecks{Tunnel: &entryJob{Kind: provision.KindTunnelCheck, Status: provision.JobSucceeded, FinishedAt: ago(25 * time.Hour)}}
 	if code := put(`{"on":true}`); code != http.StatusConflict {
@@ -217,21 +210,23 @@ func TestTunnelOnRefusesInterruptedCheck(t *testing.T) {
 	}
 }
 
+// The toggle starts the tunnel on / off job, which commits the choice itself (review 2026-11-23):
+// the handler writes no flag.
 func TestTunnelToggleStartsReprovision(t *testing.T) {
 	f := useActionsFake(t)
 	f.entries[1].Tunnel = false
 	f.jobs[6] = entryChecks{Tunnel: &entryJob{Kind: provision.KindTunnelCheck, Status: provision.JobSucceeded, FinishedAt: ago(time.Hour)}}
 	rec := callEntries(handleAdminEntryAction, http.MethodPut, "/api/admin/entries/6/tunnel", `{"on":true}`)
-	if rec.Code != http.StatusAccepted || len(f.tunnel) != 1 || f.tunnel[0] != "on" || len(f.started) != 1 || f.started[0] != provision.KindReprovision ||
+	if rec.Code != http.StatusAccepted || len(f.started) != 1 || f.started[0] != provision.KindTunnelOn ||
 		!strings.Contains(rec.Body.String(), `"job_id":77`) {
-		t.Fatalf("%d %s %v %v", rec.Code, rec.Body, f.tunnel, f.started)
+		t.Fatalf("%d %s %v", rec.Code, rec.Body, f.started)
 	}
-	// Off needs no trial; a job that cannot start puts the flag back.
+	// Off needs no trial; a busy node answers 409.
 	f.entries[1].Tunnel = true
 	f.startErr = provision.ErrJobActive
 	rec = callEntries(handleAdminEntryAction, http.MethodPut, "/api/admin/entries/6/tunnel", `{"on":false}`)
-	if rec.Code != http.StatusConflict || len(f.tunnel) != 3 || f.tunnel[1] != "off" || f.tunnel[2] != "on" {
-		t.Fatalf("job busy: %d %v", rec.Code, f.tunnel)
+	if rec.Code != http.StatusConflict || f.started[1] != provision.KindTunnelOff {
+		t.Fatalf("job busy: %d %v", rec.Code, f.started)
 	}
 	f.entries[1].Lifecycle = "failed"
 	if rec := callEntries(handleAdminEntryAction, http.MethodPut, "/api/admin/entries/6/tunnel", `{"on":false}`); rec.Code != http.StatusConflict {

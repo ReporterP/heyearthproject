@@ -15,7 +15,7 @@ func TestPGEveryKindAllowed(t *testing.T) {
 	if err := conn.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'provision_jobs_kind_check'`).Scan(&def); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy, KindPathCheck, KindTunnelCheck} {
+	for _, k := range []string{KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy, KindPathCheck, KindTunnelCheck, KindTunnelOn, KindTunnelOff} {
 		if !ValidKind(k) {
 			t.Fatalf("%s is not a valid kind", k)
 		}

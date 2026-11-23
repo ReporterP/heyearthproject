@@ -488,6 +488,16 @@ func (s *SQLStore) Hooks(requestSync func(), probeAgent func(context.Context, st
 			_, err := s.DB.ExecContext(ctx, forgetTunnelQuery, id)
 			return err
 		},
+		SetRelayTunnel: func(ctx context.Context, id int, on bool) error {
+			res, err := s.DB.ExecContext(ctx, `UPDATE servers SET relay_tunnel = $2, updated_at = NOW() WHERE id = $1 AND role = 'relay'`, id, on)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errors.New("вход не найден — выбор туннеля не сохранён")
+			}
+			return nil
+		},
 		Activate: func(ctx context.Context, id int) error {
 			// One transaction: an entry is never online without its rotation (the subscription
 			// would publish a new entry to everyone).

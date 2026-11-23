@@ -9,6 +9,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -309,14 +310,19 @@ func (m *entryMonitor) run() {
 		m.skip(now, err.Error())
 		return
 	}
+	// The stability flows run beside the verdicts and are awaited only after the failover is decided
+	// (review 2026-11-23): a blocked entry's 15 s timeouts never hold back a swap.
+	collect := m.startSamples(port, entries, cfg)
+	judged := map[int]map[string]bool{}
 	live := map[int]bool{}
 	for _, e := range entries {
 		live[e.ID] = true
 		m.noteRotation(e)
-		m.checkTCP(now, port, e, cfg)
+		tcp, udp := m.checkTCP(now, port, e, cfg), false
 		if e.Kind == biz.EntryKindRelay && cfg.psk != "" {
-			m.checkUDP(now, port, e, cfg.psk)
+			udp = m.checkUDP(now, port, e, cfg.psk)
 		}
+		judged[e.ID] = map[string]bool{biz.EntrySampleTCP443: tcp, biz.EntrySampleTCP2443: tcp, biz.EntrySampleUDP: udp}
 	}
 	for id := range m.tcp {
 		if !live[id] {
@@ -329,8 +335,9 @@ func (m *entryMonitor) run() {
 			delete(m.rot, id)
 		}
 	}
-	m.checkStability(entries)
 	m.failover(now, cur, cfg.enabled, entries)
+	m.saveSamplesOf(now, collect(), judged)
+	m.checkStability(entries)
 }
 
 // inRotation: the entry is published to every user ('all'; the Hub and entries of tests carry
@@ -382,7 +389,8 @@ func (m *entryMonitor) relayTLSCheck(port int, e biz.Entry, sni string) error {
 	return fmt.Errorf("TLS :2443 (Дуб, через туннель до Hub): %w", err)
 }
 
-func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryConfig) {
+// checkTCP reports whether it judged the entry (false: a skip — its stability flows are not stored).
+func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryConfig) bool {
 	err := m.relayTLSCheck(port, e, cfg.sni)
 	v := decideEntry(err, func() error { return m.control(port) })
 	if e.ID == 0 && now.Before(cfg.simUntil) {
@@ -390,14 +398,13 @@ func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryC
 	}
 	if v == entrySkip {
 		m.skip(now, fmt.Sprintf("вход %s не проверен через выход :%d: %v", e.Address, port, err))
-		return
+		return false
 	}
 	m.verdict(now)
 	t := m.track(&m.tcp, e.ID, e.Health.External)
 	m.publish(e, "ext", t, t.record(now, v == entryOK), now, err)
-	m.tcpSamples(now, port, e, cfg.sni)
 	if e.Kind != biz.EntryKindRelay || quietEntry(e) {
-		return // the Hub's own alerts come from the loop probe (entry-unreachable-external); an entry out of rotation raises none
+		return true // the Hub's own alerts come from the loop probe (entry-unreachable-external); an entry out of rotation raises none
 	}
 	key := relayAlertKey(e.ID, "unreachable-external")
 	switch {
@@ -408,9 +415,10 @@ func (m *entryMonitor) checkTCP(now time.Time, port int, e biz.Entry, cfg entryC
 	case t.streak.recovered():
 		m.resolve(key, fmt.Sprintf("Резервный вход «%s» (%s) снова доступен снаружи.", e.Name, e.Address))
 	}
+	return true
 }
 
-func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string) {
+func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string) bool {
 	err := m.udpCheck(port, e.Address, []byte(psk))
 	var cerr error
 	if bambooNeedsControl(err) {
@@ -419,13 +427,12 @@ func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string
 	verdict := decideBamboo(err, cerr)
 	if verdict == bambooSkip {
 		m.skip(now, fmt.Sprintf("Бамбук через вход %s не проверен: %v (контроль UDP: %v)", e.Address, err, cerr))
-		return
+		return false
 	}
 	t := m.track(&m.udp, e.ID, e.Health.UDP)
 	m.publish(e, "udp", t, t.record(now, verdict == bambooOK), now, err)
-	m.udpSamples(now, port, e, []byte(psk))
 	if quietEntry(e) {
-		return
+		return true
 	}
 	key := relayAlertKey(e.ID, "bamboo")
 	switch {
@@ -436,6 +443,7 @@ func (m *entryMonitor) checkUDP(now time.Time, port int, e biz.Entry, psk string
 	case t.streak.recovered():
 		m.resolve(key, fmt.Sprintf("Бамбук через резервный вход «%s» снова отвечает.", e.Name))
 	}
+	return true
 }
 
 // publish persists the published status; a changed reserve bumps subscription_version (apps
@@ -653,26 +661,56 @@ func (m *entryMonitor) saveFlowSamples(now time.Time, id int, s []biz.EntrySampl
 	}
 }
 
-// tcpSamples: :443 of every entry, :2443 of a relay (its DNAT path).
-func (m *entryMonitor) tcpSamples(now time.Time, port int, e biz.Entry, sni string) {
-	if m.tlsFlow == nil || m.saveSamples == nil {
-		return
+// startSamples starts the stability flows of every entry at once — :443 of each, :2443 of a relay
+// (its DNAT path), Bamboo of a relay — and returns the wait for their samples. Nil flows (tests) or
+// no store: nothing runs. The flows only use the function fields: safe beside the run's goroutine.
+func (m *entryMonitor) startSamples(port int, entries []biz.Entry, cfg entryConfig) func() map[int][]biz.EntrySample {
+	if m.saveSamples == nil || (m.tlsFlow == nil && m.udpFlow == nil) {
+		return func() map[int][]biz.EntrySample { return nil }
 	}
-	s := []biz.EntrySample{{Kind: biz.EntrySampleTCP443, Total: flowsTCP,
-		OK: countFlows(flowsTCP, func() error { return m.tlsFlow(port, e.Address, 443, sni) })}}
-	if e.Kind == biz.EntryKindRelay {
-		s = append(s, biz.EntrySample{Kind: biz.EntrySampleTCP2443, Total: flowsTCP,
-			OK: countFlows(flowsTCP, func() error { return m.tlsFlow(port, e.Address, 2443, sni) })})
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	out := map[int][]biz.EntrySample{}
+	add := func(id int, kind string, n int, flow func() error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok := countFlows(n, flow)
+			mu.Lock()
+			out[id] = append(out[id], biz.EntrySample{Kind: kind, OK: ok, Total: n})
+			mu.Unlock()
+		}()
 	}
-	m.saveFlowSamples(now, e.ID, s)
+	for _, e := range entries {
+		addr, relay := e.Address, e.Kind == biz.EntryKindRelay
+		if m.tlsFlow != nil {
+			add(e.ID, biz.EntrySampleTCP443, flowsTCP, func() error { return m.tlsFlow(port, addr, 443, cfg.sni) })
+			if relay {
+				add(e.ID, biz.EntrySampleTCP2443, flowsTCP, func() error { return m.tlsFlow(port, addr, 2443, cfg.sni) })
+			}
+		}
+		if relay && m.udpFlow != nil && cfg.psk != "" {
+			psk := []byte(cfg.psk)
+			add(e.ID, biz.EntrySampleUDP, flowsUDP, func() error { return m.udpFlow(port, addr, psk) })
+		}
+	}
+	return func() map[int][]biz.EntrySample { wg.Wait(); return out }
 }
 
-func (m *entryMonitor) udpSamples(now time.Time, port int, e biz.Entry, psk []byte) {
-	if m.udpFlow == nil || m.saveSamples == nil {
-		return
+// saveSamplesOf stores the samples of the kinds this run judged (a skipped check stores nothing).
+func (m *entryMonitor) saveSamplesOf(now time.Time, samples map[int][]biz.EntrySample, judged map[int]map[string]bool) {
+	for id, ss := range samples {
+		var keep []biz.EntrySample
+		for _, s := range ss {
+			if judged[id][s.Kind] {
+				keep = append(keep, s)
+			}
+		}
+		if len(keep) > 0 {
+			slices.SortFunc(keep, func(a, b biz.EntrySample) int { return strings.Compare(a.Kind, b.Kind) })
+			m.saveFlowSamples(now, id, keep)
+		}
 	}
-	ok := countFlows(flowsUDP, func() error { return m.udpFlow(port, e.Address, psk) })
-	m.saveFlowSamples(now, e.ID, []biz.EntrySample{{Kind: biz.EntrySampleUDP, OK: ok, Total: flowsUDP}})
 }
 
 // unstableVerdict (pure): raise below unstableRaisePct with enough checks; resolve once every

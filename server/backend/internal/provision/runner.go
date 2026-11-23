@@ -25,6 +25,10 @@ const (
 	// «Проверить туннель» — a trial GRE tunnel brought up, measured and taken down again.
 	KindPathCheck   = "pathcheck"
 	KindTunnelCheck = "tunnelcheck"
+	// KindTunnelOn / KindTunnelOff: «Включить туннель» / «Выключить туннель» — the relay recipe with the
+	// other choice, which writes servers.relay_tunnel as its last step (only a finished job commits it).
+	KindTunnelOn  = "tunnelon"
+	KindTunnelOff = "tunneloff"
 
 	JobRunning     = "running"
 	JobSucceeded   = "succeeded"
@@ -130,7 +134,7 @@ type Runner struct {
 // ValidKind reports whether k is a job kind.
 func ValidKind(k string) bool {
 	switch k {
-	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy, KindPathCheck, KindTunnelCheck:
+	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy, KindPathCheck, KindTunnelCheck, KindTunnelOn, KindTunnelOff:
 		return true
 	}
 	return false

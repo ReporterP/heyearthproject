@@ -476,8 +476,8 @@ func (e *relayEnv) dump(id int64) string {
 	return b.String()
 }
 
-var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_hub_tunnel", "relay_tunnel", "relay_hub_trust",
-	"relay_rules", "relay_unit", "relay_stream", "relay_firewall", "relay_fail2ban", "relay_path", "activate"}
+var relaySteps = []string{"relay_preflight", "relay_packages", "relay_sysctl", "relay_firewall", "relay_hub_tunnel", "relay_tunnel", "relay_hub_trust",
+	"relay_rules", "relay_unit", "relay_stream", "relay_fail2ban", "relay_path", "activate"}
 
 func allSteps(names []string, status string) map[string]string {
 	m := map[string]string{}
@@ -836,7 +836,7 @@ func TestRelayInterruptedProvisioningResumes(t *testing.T) {
 	e := relayFixture(t, map[string]string{"UFW_ACTIVE": "1"})
 	e.h.dropAfter = "relay-unit-converge" // the unit started, the Hub never heard back
 	id := e.start(t, KindProvision)
-	if st := e.steps(id); e.store.jobs[id].Status != JobFailed || st["relay_unit"] != StepFailed || st["relay_firewall"] != StepPending {
+	if st := e.steps(id); e.store.jobs[id].Status != JobFailed || st["relay_unit"] != StepFailed || st["relay_stream"] != StepPending {
 		t.Fatalf("drop:\n%s", e.dump(id))
 	}
 	if !slices.Equal(e.hooks.history, []string{"provisioning", "failed"}) || e.hooks.bumps != 0 {

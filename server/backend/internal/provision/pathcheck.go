@@ -334,3 +334,34 @@ func tunnelCheckRecipe(n Node, st *State, l relayLayout) (Recipe, error) {
 		return nil
 	}}), nil
 }
+
+// tunnelToggleRecipe: «Включить туннель» / «Выключить туннель» of a working entry — the relay
+// recipe (as «Переустановить») for the other choice, then the choice is committed. A job that fails
+// leaves servers.relay_tunnel as it was: the stored choice never claims a tunnel the entry does not
+// have, and the next reprovision converges the entry back to it.
+func tunnelToggleRecipe(n Node, st *State, on bool) (Recipe, error) {
+	if n.Role != "relay" {
+		return nil, errors.New("туннель — только у входа")
+	}
+	if n.Lifecycle != "online" {
+		return nil, fmt.Errorf("туннель переключает переустановка, а вход «%s» — сначала «Настроить»", n.Lifecycle)
+	}
+	if n.RelayTunnel == on {
+		return nil, fmt.Errorf("туннель уже %s", map[bool]string{true: "включён", false: "выключен"}[on])
+	}
+	st.Relay.Tunnel = on
+	rc, err := relaySetup(n, st)
+	if err != nil {
+		return nil, err
+	}
+	return append(rc, Step{Name: "relay_tunnel_flag", Apply: func(ctx context.Context, _ Remote, s *State) error {
+		if s.Hooks.SetRelayTunnel == nil {
+			return errors.New("API не подключил запись выбора туннеля")
+		}
+		if err := s.Hooks.SetRelayTunnel(ctx, n.ID, on); err != nil {
+			return err
+		}
+		s.Printf("выбор сохранён: туннель %s", map[bool]string{true: "включён", false: "выключен"}[on])
+		return nil
+	}}), nil
+}

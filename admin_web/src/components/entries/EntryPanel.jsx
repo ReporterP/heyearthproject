@@ -106,7 +106,7 @@ export default function EntryPanel({ entry, data, node, canEdit, onClose, onChan
     tunnelOn: {
       title: 'Включить туннель до Hub', actionLabel: 'Включить', confirmText: name,
       consequences: [
-        'Флаг туннеля сохранится, и начнётся «Переустановить»: сначала поднимется туннель, затем пересылка и nginx входа перейдут в него.',
+        'Начнётся задача «Включение туннеля» — переустановка входа с туннелем: сначала поднимется туннель, затем пересылка и nginx входа перейдут в него. Выбор сохранится, только если задача пройдёт до конца.',
         ...reprovisionConsequences(),
       ],
       onConfirm: () => confirmed(() => setEntryTunnel(entry.id, true), 'Туннель включается — следите за задачей'),
@@ -114,7 +114,7 @@ export default function EntryPanel({ entry, data, node, canEdit, onClose, onChan
     tunnelOff: {
       title: 'Выключить туннель до Hub', actionLabel: 'Выключить', confirmText: name,
       consequences: [
-        'Начнётся «Переустановить»: пересылка и nginx входа перейдут на публичный адрес Hub, затем оба конца туннеля снимутся.',
+        'Начнётся задача «Выключение туннеля»: пересылка и nginx входа перейдут на публичный адрес Hub, затем оба конца туннеля снимутся. Выбор сохранится, только если задача пройдёт до конца.',
         'Если у провайдера входа теряются потоки до Hub, без туннеля это снова дойдёт до пользователей.',
         ...reprovisionConsequences(),
       ],

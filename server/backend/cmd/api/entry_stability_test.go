@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,5 +108,39 @@ func TestUnstableAlertOnlyAllTest(t *testing.T) {
 	e.step(nil)
 	if !e.has("resolve relay-5-unstable") {
 		t.Fatalf("recovered: %v", e.events)
+	}
+}
+
+// Review 2026-11-23: the stability flows never hold back the failover — they run beside the
+// verdicts, and the monitor decides the failover before it waits for them.
+func TestEntrySamplesDoNotDelayFailover(t *testing.T) {
+	e := newEntryEnv()
+	saved := withSamples(e)
+	e.step(errBlocked) // two failed checks: the third one swaps
+	e.step(errBlocked)
+	release := make(chan struct{})
+	var once sync.Once
+	e.m.tlsFlow = func(_ int, host string, _ int, _ string) error {
+		<-release // a flow that hangs until the failover was decided
+		return e.tcp[host]
+	}
+	save := e.m.saveFailover
+	e.m.saveFailover = func(ctx context.Context, st biz.EntryFailover) error {
+		once.Do(func() { close(release) })
+		return save(ctx, st)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.step(errBlocked)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("the failover waited for the stability flows")
+	}
+	if !e.fo.Active || len(*saved) == 0 {
+		t.Fatalf("failover %+v samples %v", e.fo, *saved)
 	}
 }

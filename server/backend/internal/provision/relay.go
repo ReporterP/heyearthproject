@@ -1035,6 +1035,17 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 			return l.check(ctx, r, "packages-check", o, relayPackagesCheckSh)
 		}},
 		{Name: "relay_sysctl", Apply: l.sysctlApply(o), Verify: l.sysctlVerify(o)},
+		// ufw before anything moves (review 2026-11-23): an active ufw drops forwarded flows without
+		// a route rule (DEFAULT_FORWARD_POLICY=DROP) and GRE without an allow — rules for where the
+		// flows are about to go must exist before the tunnel comes up and before the DNAT moves, or
+		// a live entry loses :2443 and the UDP hops in between. No rollback: on a live relay it
+		// would remove the rules an earlier job added; an extra allow is harmless (the nft forward
+		// chain drops every flow not DNATed to the Hub).
+		{Name: "relay_firewall", Apply: func(ctx context.Context, r Remote, s *State) error {
+			return l.run(ctx, r, s, "firewall", o, relayFirewallSh(o))
+		}, Verify: func(ctx context.Context, r Remote, _ *State) error {
+			return l.check(ctx, r, "firewall-check", o, relayFirewallCheckSh(o))
+		}},
 	}
 	trust := Step{Name: "relay_hub_trust", Apply: func(ctx context.Context, _ Remote, s *State) error {
 		return relayHubTrust(ctx, s.Hub, o.RelayIP, o.relayTun(), true)
@@ -1045,13 +1056,6 @@ func relayRecipe(o RelayOptions, l relayLayout) Recipe {
 		{Name: "relay_rules", Apply: l.rulesApply(o), Verify: l.rulesVerify(o), Rollback: l.rulesRollback(o)},
 		{Name: "relay_unit", Apply: l.unitApply(o), Verify: l.unitVerify(o), Rollback: l.unitRollback(o)},
 		{Name: "relay_stream", Apply: l.streamApply(o), Verify: l.streamVerify(o)},
-		// No rollback: on a live relay it would remove the rules an earlier job added; an extra
-		// allow is harmless (the nft forward chain drops every flow not DNATed to the Hub).
-		{Name: "relay_firewall", Apply: func(ctx context.Context, r Remote, s *State) error {
-			return l.run(ctx, r, s, "firewall", o, relayFirewallSh(o))
-		}, Verify: func(ctx context.Context, r Remote, _ *State) error {
-			return l.check(ctx, r, "firewall-check", o, relayFirewallCheckSh(o))
-		}},
 		{Name: "relay_fail2ban", Apply: l.jailApply(o), Verify: l.jailVerify(o), Rollback: l.jailRollback(o)},
 	}
 	path := Step{Name: "relay_path", Verify: relayPathVerify(o)}

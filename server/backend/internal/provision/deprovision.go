@@ -325,6 +325,8 @@ func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return pathCheckRecipe(n, st, relayPaths)
 	case KindTunnelCheck:
 		return tunnelCheckRecipe(n, st, relayPaths)
+	case KindTunnelOn, KindTunnelOff:
+		return tunnelToggleRecipe(n, st, kind == KindTunnelOn)
 	}
 	return recipeForSetup(kind, n, st)
 }
