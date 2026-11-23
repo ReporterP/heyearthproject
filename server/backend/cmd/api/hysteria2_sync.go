@@ -185,6 +185,16 @@ func applyBambooChoice(choice biz.ExpressChoice, render func(socksPort int) stri
 		log.Printf("[hysteria2-sync] Бамбук → exit #%d (127.0.0.1:%d, сглаженный RTT %d мс): %s",
 			choice.ExitID, choice.SocksPort, choice.RTTms, choice.Reason)
 	}
+	if changed {
+		// install restarted hysteria2-server: every Bamboo session was dropped (К2).
+		why := "изменился конфиг"
+		if choice.Switched {
+			why = fmt.Sprintf("выход #%d — %s", choice.ExitID, choice.Reason)
+		}
+		recordOps(biz.OpsEvent{Kind: "restart", Actor: "system", Target: "bamboo", Impact: biz.ImpactK2, OK: true,
+			Summary: "сервер Бамбука перезапущен: " + why,
+			Details: map[string]any{"exit_id": choice.ExitID, "switched": choice.Switched, "optimisation": choice.Optimisation}})
+	}
 	return changed, nil
 }
 

@@ -27,7 +27,12 @@ import (
 )
 
 // migrationsDir is server/backend/migrations, found from this file's location.
+// TEST_MIGRATIONS_DIR names it instead when the test binary runs away from the source tree
+// (cross-compiled and started inside a container next to the test database).
 func migrationsDir() string {
+	if d := os.Getenv("TEST_MIGRATIONS_DIR"); d != "" {
+		return d
+	}
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..", "..", "migrations")
 }

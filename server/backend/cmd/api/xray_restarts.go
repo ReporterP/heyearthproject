@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/heyearth/backend/internal/biz"
 )
 
 const (
@@ -90,6 +92,8 @@ func recordXrayRestart(cause string) {
 	if cause == "" {
 		cause = "unknown"
 	}
+	recordOps(biz.OpsEvent{Kind: "restart", Actor: "system", Target: "xray", Impact: biz.ImpactK3, OK: true,
+		Summary: "xray перезапущен: " + cause, Details: map[string]any{"cause": cause}})
 	evaluateXrayRestartStorm(xrayRestarts.AddLabeled(1, cause))
 }
 

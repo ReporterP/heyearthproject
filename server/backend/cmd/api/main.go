@@ -1032,6 +1032,9 @@ func main() {
 	// Admin panel
 	admin.RegisterRoutes()
 
+	// The ops feed: which build starts now, which ran before, and whether the Hub just booted.
+	// Here, after every check that can stop the start, so a refused start leaves no record.
+	recordStartEvents()
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
 	log.Fatal(newMainHTTPServer(httpAddr, loadShed(limitPublicBodies(http.DefaultServeMux))).ListenAndServe())

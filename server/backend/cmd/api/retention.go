@@ -48,6 +48,11 @@ func runRetention() {
 	} else if n > 0 {
 		log.Printf("[retention] entries: %d stability samples older than 3 days removed", n)
 	}
+	if n, err := biz.PurgeOpsEvents(ctx, opsEventsKeep); err != nil {
+		log.Printf("[retention] ops feed: %v", err)
+	} else if n > 0 {
+		log.Printf("[retention] ops feed: %d records older than 180 days removed", n)
+	}
 	if n, err := biz.CleanupExpiredUserSessions(ctx); err != nil {
 		log.Printf("[retention] sessions: %v", err)
 	} else if n > 0 {
