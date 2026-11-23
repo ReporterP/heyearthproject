@@ -75,11 +75,11 @@ func TestCanaryStandPG(t *testing.T) {
 		}
 		return int64(runs), "pass", nil
 	}
-	r.d.failingOf = func(context.Context, int64, string) []string {
+	r.d.failingOf = func(context.Context, int64, string) ([]string, error) {
 		if bad {
-			return []string{"⚡ Авто//blocked"}
+			return []string{"⚡ Авто//blocked"}, nil
 		}
-		return nil
+		return nil, nil
 	}
 	r.d.raise = func(key string, _ AlertLevel, _, _ string) { raised = append(raised, key) }
 	r.d.resolve = func(string, string) {}

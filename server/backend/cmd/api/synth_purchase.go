@@ -100,8 +100,23 @@ func purchaseInRolledBackTx(ctx context.Context, d purchaseDeps) purchaseCheck {
 		return c
 	}
 	defer tx.Rollback() //nolint:errcheck // ALWAYS rolled back: nothing of this run stays
+	var userDBID int
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, user).Scan(&userDBID); err != nil {
+		c.Blind, c.Detail = true, "тестовый пользователь не найден"
+		return c
+	}
+	// The renewal path: the test user's own paid plan (the one with every line); without one,
+	// the dearest active paid plan — never a cheaper plan over a dearer active one (a downgrade
+	// the purchase refuses by design).
 	var planID, priceRub int
-	err = tx.QueryRowContext(ctx, `SELECT id, price_rub FROM plans WHERE is_active AND price_rub > 0 ORDER BY price_rub, id LIMIT 1`).Scan(&planID, &priceRub)
+	err = tx.QueryRowContext(ctx, `
+		SELECT p.id, p.price_rub FROM user_subscriptions us JOIN plans p ON p.id = us.plan_id
+		 WHERE us.user_id = $1 AND us.status = 'active' AND us.valid_until > now() AND us.tenant_id IS NULL
+		   AND p.is_active AND p.price_rub > 0
+		 ORDER BY us.valid_until DESC LIMIT 1`, userDBID).Scan(&planID, &priceRub)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `SELECT id, price_rub FROM plans WHERE is_active AND price_rub > 0 ORDER BY price_rub DESC, id LIMIT 1`).Scan(&planID, &priceRub)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		c.Blind, c.Detail = true, "нет платного активного тарифа"
 		return c
@@ -110,17 +125,16 @@ func purchaseInRolledBackTx(ctx context.Context, d purchaseDeps) purchaseCheck {
 		c.Detail = "тариф: " + err.Error()
 		return c
 	}
-	var userDBID int
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE user_id = $1`, user).Scan(&userDBID); err != nil {
-		c.Blind, c.Detail = true, "тестовый пользователь не найден"
-		return c
-	}
 	key := "synthetic-purchase:" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	if _, err := biz.WalletApply(ctx, tx, userDBID, int64(priceRub)*100, biz.WalletAdminCredit, key+":credit", biz.WalletRefs{}); err != nil {
 		c.Detail = "пополнение: " + biz.ScrubOpsText(err.Error())
 		return c
 	}
 	res, err := biz.PurchaseFromWalletTx(ctx, tx, biz.PurchaseRequest{UserID: user, PlanID: planID, Key: key, Kind: biz.WalletPurchase})
+	if errors.Is(err, biz.ErrDowngradeBlock) {
+		c.Blind, c.Detail = true, "у тестового пользователя тариф дороже проверяемого"
+		return c
+	}
 	if err != nil {
 		c.Detail = "покупка: " + biz.ScrubOpsText(err.Error())
 		return c

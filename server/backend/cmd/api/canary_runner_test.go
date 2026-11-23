@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -80,7 +81,7 @@ func (h *canaryHarness) runner() *canaryRunner {
 			}
 			return int64(h.runs), r.State, nil
 		},
-		failingOf: func(ctx context.Context, id int64, state string) []string { return h.lastFailing(id) },
+		failingOf: func(ctx context.Context, id int64, state string) ([]string, error) { return h.lastFailing(id), nil },
 		latest: func(ctx context.Context) (canaryRun, error) {
 			return canaryRun{At: h.now.Add(-2 * time.Minute), State: "pass"}, nil
 		},
@@ -245,4 +246,122 @@ func TestCanaryRunnerRefusals(t *testing.T) {
 		t.Error("bypass with a short reason")
 	}
 	_ = h
+}
+
+// Review finding 2: a flag write that fails never advances the change.
+func TestCanaryRunnerFlagWriteFails(t *testing.T) {
+	canaryQueuedFailing = map[int64][]string{}
+	h, r := newCanaryHarness(t)
+	ctx := context.Background()
+	if _, err := r.startTest(ctx, "sub_json_dns", "on", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	h.tickTo(r, 31, nil)
+	apply := r.d.apply
+	r.d.apply = func(ctx context.Context, f subFlag, to string) (string, bool, error) {
+		return "", false, errors.New("db down")
+	}
+	if _, err := r.promote(ctx, "sub_json_dns", "owner"); err == nil {
+		t.Fatal("promote with a failing write must report it")
+	}
+	if c, _ := h.store.open(ctx); c == nil || c.Phase != canaryReady || h.flags["sub_json_dns"] != "test" {
+		t.Fatalf("after a failed promote: %+v flags %v", c, h.flags)
+	}
+	r.d.apply = apply
+	if _, err := r.promote(ctx, "sub_json_dns", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	// the automatic rollback fails to write: the change stays in the guard hour and tries again
+	r.d.apply = func(ctx context.Context, f subFlag, to string) (string, bool, error) {
+		return "", false, errors.New("db down")
+	}
+	h.tickTo(r, 45, map[int][]string{h.runs + 1: {"⚡ Авто//blocked"}, h.runs + 2: {"⚡ Авто//blocked"}})
+	if c, _ := h.store.open(ctx); c == nil || c.Phase != canaryGuard || h.flags["sub_json_dns"] != "on" {
+		t.Fatalf("a rollback that could not write: %+v flags %v", c, h.flags)
+	}
+	if slices.Contains(h.raised, "flag-rollback:sub_json_dns") {
+		t.Error("«откатилось само» raised for a rollback that did not happen")
+	}
+	r.d.apply = apply
+	h.tickTo(r, 55, map[int][]string{h.runs + 1: {"⚡ Авто//blocked"}, h.runs + 2: {"⚡ Авто//blocked"}})
+	if h.flags["sub_json_dns"] != "off" {
+		t.Errorf("the rollback is retried once the write works: flags %v", h.flags)
+	}
+}
+
+// Review finding 2: the flag moved by someone else (or never reached «test») — the change closes.
+func TestCanaryFlagChangedOutside(t *testing.T) {
+	canaryQueuedFailing = map[int64][]string{}
+	h, r := newCanaryHarness(t)
+	ctx := context.Background()
+	if _, err := r.startTest(ctx, "sub_json_dns", "on", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	h.flags["sub_json_dns"] = "off" // the «Входы» page, SQL…
+	h.tickTo(r, 2, nil)
+	if c, _ := h.store.open(ctx); c != nil {
+		t.Fatalf("the change goes on over a flag that is not in «test»: %+v", c)
+	}
+	if last := h.store.rows[0]; last.Phase != canaryAborted || !strings.Contains(last.Note, "мимо канарейки") {
+		t.Errorf("closed as %+v", last)
+	}
+	if _, err := r.bypass(ctx, "sub_json_dns", "all", "Instagram не открывается на Tele2", "owner"); err == nil {
+		t.Error("bypass to a state the flag does not have")
+	}
+	if len(h.store.rows) != 1 {
+		t.Errorf("a refused bypass stored a row: %d", len(h.store.rows))
+	}
+}
+
+// Review finding 4: a failed run whose failing checks cannot be read proves nothing.
+func TestCanaryFailWithUnreadableKeysIsBlind(t *testing.T) {
+	canaryQueuedFailing = map[int64][]string{}
+	h, r := newCanaryHarness(t)
+	ctx := context.Background()
+	if _, err := r.startTest(ctx, "sub_json_dns", "on", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	r.d.failingOf = func(context.Context, int64, string) ([]string, error) { return nil, errors.New("db down") }
+	h.next = []canaryRun{{State: "fail"}}
+	h.tickTo(r, 6, nil)
+	c, _ := h.store.open(ctx)
+	if c.GoodRuns != 0 || c.BlindStreak != 1 {
+		t.Errorf("a fail run with unreadable keys: good %d blind %d — want blind", c.GoodRuns, c.BlindStreak)
+	}
+}
+
+// Review finding 3: a human «Откат» does not wait for a running synthetic check.
+func TestCanaryRollbackNotBlockedByRun(t *testing.T) {
+	canaryQueuedFailing = map[int64][]string{}
+	h, r := newCanaryHarness(t)
+	ctx := context.Background()
+	if _, err := r.startTest(ctx, "sub_json_dns", "on", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	r.d.run = func(context.Context, string) (int64, string, error) {
+		close(started)
+		<-release
+		return 99, "pass", nil
+	}
+	h.now = canaryT0.Add(6 * time.Minute)
+	done := make(chan struct{})
+	go func() { r.tick(ctx); close(done) }()
+	<-started
+	rb := make(chan error, 1)
+	go func() { _, err := r.rollback(ctx, "sub_json_dns", "owner"); rb <- err }()
+	select {
+	case err := <-rb:
+		if err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("«Откат» waited for the running check")
+	}
+	close(release)
+	<-done
+	if last := h.store.rows[0]; last.Phase != canaryAborted || last.GoodRuns != 0 {
+		t.Errorf("the run finished after the rollback changed the change: %+v", last)
+	}
 }

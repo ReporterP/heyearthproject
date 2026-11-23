@@ -98,3 +98,37 @@ func TestSyntheticPurchaseLeavesNothing(t *testing.T) {
 		t.Errorf("a sync was requested %d times", n)
 	}
 }
+
+// Review finding: the test user holds the plan with every line (the dearest); the check must
+// renew THAT plan, not try the cheapest one (a downgrade the purchase refuses) — else a false
+// critical alert every hour.
+func TestSyntheticPurchaseRenewsTheUsersPlan(t *testing.T) {
+	conn := testpg.Open(t)
+	ctx := context.Background()
+	var cheap, dear int
+	if err := conn.QueryRow(`INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes, allowed_protocols, is_active, auto_renew_default)
+		VALUES ('t-cheap', 't-cheap', '', 250, 30, NULL, ARRAY['vless-reality'], TRUE, TRUE) RETURNING id`).Scan(&cheap); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`INSERT INTO plans (slug, name, description, price_rub, duration_days, traffic_limit_bytes, allowed_protocols, is_active, auto_renew_default)
+		VALUES ('t-all', 't-all', '', 300, 30, NULL, ARRAY['all'], TRUE, TRUE) RETURNING id`).Scan(&dear); err != nil {
+		t.Fatal(err)
+	}
+	uid := testpg.NewUser(t, conn, "synth-user")
+	if _, err := conn.Exec(`INSERT INTO user_subscriptions (user_id, plan_id, status, valid_until, price_paid) VALUES ($1, $2, 'active', now() + interval '20 days', 300)`, uid, dear); err != nil {
+		t.Fatal(err)
+	}
+	d := purchaseDeps{
+		plans: func(context.Context) (int, []byte, error) {
+			return 200, []byte(`[{"price_rub":250,"is_active":true}]`), nil
+		},
+		provider: func(context.Context) error { return nil },
+		testUser: func(context.Context) (string, error) { return "synth-user", nil },
+	}
+	checks := syntheticPurchaseWith(ctx, d)
+	last := checks[len(checks)-1]
+	if !last.OK || last.Blind {
+		t.Fatalf("wallet-purchase over the user's dearer plan: %+v", last)
+	}
+	_ = cheap
+}
