@@ -2,7 +2,7 @@
 id: stability-operations
 beads_id: heyearthproject-lyf3
 title: Стабильность — видеть, менять безопасно, действовать с пульта
-status: draft
+status: approved
 created: 2026-11-23
 author: alex
 ---
