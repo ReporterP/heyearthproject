@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # HiEarth
 
-Proxy-эко service with anonymous registration, a wallet (balance) that pays for subscriptions, «приведи друга», and a Hub-and-spoke network with exits abroad and reserve entries in RU. Go backend, Flutter client (frozen), React admin panel (19 pages), React site + cabinet (28 pages), a Telegram users' bot (Mini App cabinet, notifications, support, news, Stars payments).
+Proxy-эко service with anonymous registration, a wallet (balance) that pays for subscriptions, «приведи друга», and a Hub-and-spoke network with exits abroad and reserve entries in RU. Go backend, Flutter client (frozen), React admin panel (20 pages), React site + cabinet (28 pages), a Telegram users' bot (Mini App cabinet, notifications, support, news, Stars payments).
 
 **Production**: `hiearth.ru` (admin: `admin.hiearth.ru`). Hub: the A record of `hiearth.ru` (VDSina; the Hub's old primary address is filtered upstream — never use it). Exit 2: Amsterdam. Real addresses live in `server/.env` and the admin, never in the repo (it is public): docs and tests use RFC 5737 addresses (`203.0.113.x`, `198.51.100.x`, `192.0.2.x`).
 **Payment**: YooKassa (`internal/yookassa`, webhook `/api/v1/webhooks/yookassa` — the only path YooKassa calls; the old `/api/webhooks/yookassa` is gone). Money goes through the wallet: a top-up is a YooKassa payment («предоплата 100 %» receipt), a subscription is paid from the balance (closing receipt with prepayment settlement). No saved cards, no recurring charges.
@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 98 SQL migrations (000001-000098), applied at API start
+│   │   ├── migrations/            # 101 SQL migrations (000001-000101), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -103,7 +103,7 @@ heyearthproject/
 │   └── packages/flutter_v2ray_plus/  # Local Xray plugin
 ├── admin_web/                     # React 19 admin panel (Vite + Tailwind v4)
 │   └── src/
-│       ├── pages/                 # 19 pages («Серверы» = exits, RU entries, Hub, «Мощность»; «Поддержка», «Новости», «Telegram-бот»)
+│       ├── pages/                 # 20 pages («Операции» = the console: paths, alerts, probes, feed; «Серверы» = exits, RU entries, Hub, «Мощность»; «Поддержка», «Новости», «Telegram-бот»)
 │       ├── components/            # ~27 components (nodes/ wizard, entries/ MobileCheckPanel, ui/ primitives)
 │       └── i18n/                  # ru/en translations
 └── site/                          # React 19 marketing + user portal (Vite + Tailwind v4)
@@ -281,10 +281,24 @@ Per-plan Xray routing: каждый план получает свой бала�
 - `StartTunnelHealthMonitor()` — 30s, protocol-aware (VLESS TLS, Hysteria2 local SOCKS, SS TCP)
 - `StartCertExpiryMonitor()` — 24h cert check
 - Traffic block when no exit nodes (blackhole socks/http inbound)
+- **Soft cutoff** (`cmd/api/xray_revoked.go`, since 2026-11-23): a user removed live (quota, blocked, expired) is refused new connections at once; the open ones are cut only by an xray restart, which drops EVERYONE (К3). Setting `xray_revoke_restart`: `off` (default — no restart; `revoked-still-online` after a day), `night` (one restart in 04:00–05:30 MSK), `now` (the old behaviour: 5 restarts in two days on 21–22.11).
+
+### Stability: impact classes, the synthetic client, the watchdog (since 2026-11-23)
+
+Spec `docs/prd/stability-operations.prd.md`, plan `docs/plan/stability-operations.md`.
+- **Impact classes** — name one before every deploy and every action on prod, and wait for the owner's yes: **К0** nobody notices; **К1** seconds for the site and new logins (an API restart); **К2** some users' connections drop (the Bamboo server, tunnels to one exit, an entry's nginx, a node reboot); **К3** everyone's drop (xray, a Hub nginx restart, a Hub reboot, the Hub address). К2 and К3 are never started by the executor — only by the owner. Automation is К0 or «restart what is already dead».
+- **Quiet window** 04:00–05:30 MSK (`biz.InQuietWindow`): the only time automation may drop live connections. Бамбук moves to a faster exit only there, once a night, at 40 %+ gain (`bamboo_optimise`: `night` | `off`); leaving a dead exit is immediate.
+- **Ops feed** (`ops_events`, `biz.RecordOpsEvent`, migration 000099): API starts with the build SHA (`GET /api/admin/version`; both deploy tools stamp it, `internal/buildmeta`), every xray (К3) and Bamboo (К2) restart with its cause, Hub boots. `biz.ScrubOpsText` keeps addresses, tokens and full user ids out of the feed, alerts and the console.
+- **Synthetic client** (`internal/synth`, `cmd/api/synth_monitor.go`, migration 000100): a real xray on the Hub runs the test user's (`sub_auto_test_user`) JSON subscription through an exit's SOCKS every 10 min — per line a lint, 64 KB through every way, a blocked and a RU site through the config as served. 3 failed runs raise `synth-way:*` / `synth-line:*` / `synth-all-ways`, 2 good resolve; streaks live in `probe_streaks`. A blind run (no exit, no test user, no JSON subscription) raises nothing; 3 in a row → `synthetic-blind`. Behind a proxy a Bamboo way dials one random hop port (xray refuses `udphop` there). The test user needs a plan with every line.
+- **RU view**: Globalping from RU home networks instead of check-host (`ru_probe_provider`, `cmd/api/globalping.go`); 250 probe results an hour without a token.
+- **Watchdog**: the Hub's pulse (`deploy --setup-watchdog`, `WATCHDOG_PULSE_URL` in `server/.env`) and the API's (`watchdog_api_pulse_url`) to a hosted service; the Hub watcher on exits (job `watchdog`, «Поставить сторожа», bot `watchdog_bot_token`) writes to the alert chat itself. Runbook when the Hub is dead: `docs/runbooks/hub-down.md`.
+- **Alerts**: every key has a catalogue entry (`cmd/api/alert_catalog.go`; a test fails on a new key without one); an alert explained by an active cause is journaled `inhibited`, not sent; 3 incidents in 6 h → `<key>~unstable`; undelivered for 15 min → `alert_email`; digest at 09:00 MSK.
+- **Console** «Операции» (`/operations`, `GET /api/admin/ops/overview`, `/api/admin/ops/probes`): read-only in phase 1; «Алерты» is its «Настройки» tab.
+- **Hygiene** `deploy --setup-hygiene` (К0): journal 45 days / 4 GB, `Restart=on-failure`, weekly restore drill, Bamboo log level (takes effect at the next restart of `hysteria2-server`).
 
 ---
 
-## Database (PostgreSQL, 98 migrations)
+## Database (PostgreSQL, 101 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 

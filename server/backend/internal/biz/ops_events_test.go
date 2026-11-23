@@ -22,7 +22,7 @@ func TestScrubOpsText(t *testing.T) {
 		"xray перезапущен: structural (inbounds)":            "xray перезапущен: structural (inbounds)",
 		"сборка abc123def456, Xray 26.3.27":                  "сборка abc123def456, Xray 26.3.27", // three numbers are a version, not an address
 		"вход 198.51.100.20:443 не отвечает":                 "вход <адрес>:443 не отвечает",
-		"token 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw": "token <токен>",
+		"token 123456789:AAfake_Fake-fake_FAKE-fake_fake01234": "token <токен>",
 		"https://api.telegram.org/bot42:XyZ_-9/sendMessage":  "https://api.telegram.org/<токен>/sendMessage",
 		"": "",
 	} {
