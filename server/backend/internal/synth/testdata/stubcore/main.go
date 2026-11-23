@@ -35,6 +35,15 @@ func main() {
 		}()
 	}
 	mode := os.Getenv("SYNTH_STUB")
+	for _, a := range os.Args {
+		if a == "-test" { // xray run -test: accept (exit 0) or, in mode reject, refuse (exit 23)
+			if mode == "reject" {
+				os.Stdout.WriteString("Failed to start: invalid config\n")
+				os.Exit(23)
+			}
+			os.Exit(0)
+		}
+	}
 	if mode == "nolisten" {
 		time.Sleep(time.Hour)
 		return

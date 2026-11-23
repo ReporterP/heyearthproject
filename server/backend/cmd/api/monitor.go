@@ -105,6 +105,10 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, domainCheckEvery, func() {
 		safely("срок домена", checkDomainExpiry)
 	})
+	// The subscription as each client app gets it (synth_clients.go): checked hourly.
+	go runEvery(15*time.Minute, 10*time.Minute, func() {
+		safely("виды клиентов", runClientKinds)
+	})
 	// The canary of subscription flags (canary_runner.go): a tick a minute while a change runs.
 	go runEvery(2*time.Minute, time.Minute, func() {
 		safely("канарейка", runCanaryTick)
