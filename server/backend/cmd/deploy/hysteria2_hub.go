@@ -277,6 +277,9 @@ WorkingDirectory=/etc/hysteria
 # iptables rules do not survive a reboot on this host (no iptables-persistent),
 # so re-apply it idempotently on every start. '+' runs it as root despite User=.
 ExecStartPre=+/bin/sh -c '__PORTHOP__'
+# Errors only: at the default level the server logs every connection with the user id and
+# the destination (~100 000 lines a day).
+Environment=HYSTERIA_LOG_LEVEL=error
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/server.yaml --disable-update-check
 # SIGHUP hot-reload is not relied on (v2.6.x terminated on SIGHUP instead of
 # reloading). heyearth-api hysteria2_sync.go uses systemctl restart after config writes.
@@ -339,6 +342,27 @@ chmod 640 /etc/hysteria/server.yaml
 __START__
 echo "[hysteria2-hub] Setup complete."
 `)
+}
+
+// bambooLogLevelDropIn sets the log level of a hysteria2-server that is already installed (the
+// unit above carries the same line for a fresh install).
+const bambooLogLevelDropIn = "# Installed by deploy --setup-hygiene (cmd/deploy/hysteria2_hub.go)\n[Service]\nEnvironment=HYSTERIA_LOG_LEVEL=error\n"
+
+// renderBambooLogLevelScript installs the drop-in and reloads the unit files. It never restarts
+// hysteria2-server — that drops every Bamboo session (impact class К2) and is the owner's call:
+// the level takes effect at the next restart, whoever makes it.
+func renderBambooLogLevelScript() string {
+	return `set -eu
+` + opsPutFileFunc + putFileCalls([]opsFile{{"/etc/systemd/system/hysteria2-server.service.d/10-loglevel.conf", "644", bambooLogLevelDropIn}}) + `if [ "$PUT_CHANGED" = 1 ]; then systemctl daemon-reload; fi
+pid=$(systemctl show -p MainPID --value hysteria2-server 2>/dev/null) || pid=0
+live=""
+if [ "${pid:-0}" != 0 ] && [ -r "/proc/$pid/environ" ]; then live=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^HYSTERIA_LOG_LEVEL=//p'); fi
+if [ "$live" = error ]; then
+  echo "[ops] Бамбук: уровень лога error уже действует"
+else
+  echo "[ops] Бамбук: уровень лога error записан; начнёт действовать после следующего перезапуска hysteria2-server (К2 — только по команде владельца)"
+fi
+`
 }
 
 // hysteria2HubMarkPending runs right after step 1 of hysteria2HubScript: a binary replaced in

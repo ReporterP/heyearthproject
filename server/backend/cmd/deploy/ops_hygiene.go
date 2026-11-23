@@ -13,7 +13,55 @@ import (
 
 // ───────────────────────── journald + fail2ban ─────────────────────────
 
-const journaldConf = "# Installed by deploy --setup-ops (cmd/deploy/ops_hygiene.go)\n[Journal]\nSystemMaxUse=1G\n"
+// journaldConf keeps 45 days of the journal within 4 GB. With the old 1 GB cap the Hub held
+// about six days — too little to look back at an incident (REGISTRY H-3).
+const journaldConf = "# Installed by deploy --setup-ops (cmd/deploy/ops_hygiene.go)\n[Journal]\nSystemMaxUse=4G\nMaxRetentionSec=45day\n"
+
+// journaldPart installs the drop-in (journald restarts only when it changed; that does not
+// touch any other service) and trims the journal to the same limits. Needs opsPutFileFunc.
+var journaldPart = putFileCalls([]opsFile{{"/etc/systemd/journald.conf.d/heyearth.conf", "644", journaldConf}}) + `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi
+journalctl --vacuum-size=4G --vacuum-time=45d >/dev/null 2>&1 || true
+echo "[ops] journald: $(journalctl --disk-usage)"
+`
+
+// renderJournaldScript is the journal step alone (deploy --setup-hygiene).
+func renderJournaldScript() string {
+	return "set -eu\n" + opsPutFileFunc + journaldPart
+}
+
+// ───────────────────────── Restart=on-failure (PRD A4) ─────────────────────────
+
+// restartPolicyDropIn makes systemd raise a fallen service; three falls in ten minutes stop the
+// attempts (the monitor's alert takes over).
+const restartPolicyDropIn = "# Installed by deploy --setup-hygiene (cmd/deploy/ops_hygiene.go)\n[Unit]\nStartLimitIntervalSec=600\nStartLimitBurst=3\n\n[Service]\nRestart=on-failure\nRestartSec=3s\n"
+
+// restartPolicyFunc defines ensure_restart_policy <unit>: an installed unit without any restart
+// policy (Restart=no) gets the drop-in under $UNIT_ROOT and RP_CHANGED=1. A unit that has a
+// policy already (on-failure, always, …) is left alone; a unit that is not installed is skipped
+// — systemd reports Restart=no for those too. Needs put_file.
+var restartPolicyFunc = `ensure_restart_policy() {
+  local u="$1" cur
+  if [ "$(systemctl show -p LoadState --value "$u")" != loaded ]; then echo "[ops] restart policy: $u is not installed — skipped"; return 0; fi
+  cur=$(systemctl show -p Restart --value "$u")
+  if [ "$cur" != no ]; then echo "[ops] restart policy: $u has Restart=$cur"; return 0; fi
+  PUT_CHANGED=0
+  put_file "$UNIT_ROOT/$u.d/10-heyearth-restart.conf" 644 ` + b64(restartPolicyDropIn) + `
+  if [ "$PUT_CHANGED" = 1 ]; then RP_CHANGED=1; echo "[ops] restart policy: $u Restart=no -> on-failure"; fi
+}
+`
+
+// renderRestartPolicyScript gives every VPN-path service of the Hub a restart policy. It only
+// writes drop-ins and reloads the unit files: no service is restarted.
+func renderRestartPolicyScript() string {
+	return `set -eu
+` + opsPutFileFunc + `UNIT_ROOT=/etc/systemd/system
+RP_CHANGED=0
+` + restartPolicyFunc + `UNITS="xray.service hysteria2-server.service nginx.service heyearth-api.service $(systemctl list-units --type=service --all --no-legend --plain 'hysteria2-client-*.service' 'heyearth-stls-client-*.service' 'heyearth-tunnel*.service' | awk '{print $1}')"
+for u in $UNITS; do ensure_restart_policy "$u"; done
+if [ "$RP_CHANGED" = 1 ]; then systemctl daemon-reload; fi
+for u in $UNITS; do echo "[ops] $u Restart=$(systemctl show -p Restart --value "$u")"; done
+`
+}
 
 // fail2banIgnoreScript computes the jail's ignoreip at run time into IGNORE. It needs
 // NEVER_IGNORE (space separated IPs, may be empty): the backup target.
@@ -54,16 +102,13 @@ const fail2banJailFunc = `render_jail() {
 }
 `
 
-// renderHostHygieneScript caps journald (restart only when the drop-in changed, vacuum every
-// time), installs fail2ban if missing (apt failure aborts: no half-configured jail) and writes
+// renderHostHygieneScript sets the journal limits (journaldPart: restart only when the drop-in
+// changed, vacuum every time), installs fail2ban if missing (apt failure aborts: no half-configured jail) and writes
 // the sshd jail. The jail must answer `fail2ban-client status sshd` afterwards. neverIgnore is
 // the backup target (an exit): it is never whitelisted.
 func renderHostHygieneScript(sshPort int, neverIgnore string) string {
 	return `set -eu
-` + opsPutFileFunc + putFileCalls([]opsFile{{"/etc/systemd/journald.conf.d/heyearth.conf", "644", journaldConf}}) + `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi
-journalctl --vacuum-size=1G >/dev/null 2>&1 || true
-echo "[ops] journald: $(journalctl --disk-usage)"
-if ! command -v fail2ban-client >/dev/null 2>&1; then
+` + opsPutFileFunc + journaldPart + `if ! command -v fail2ban-client >/dev/null 2>&1; then
   timeout 300 apt-get update -qq || true
   DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y -qq fail2ban python3-systemd
 fi

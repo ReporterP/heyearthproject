@@ -426,13 +426,13 @@ func TestFail2banIgnore(t *testing.T) {
 
 func TestHostHygieneScript(t *testing.T) {
 	s := renderHostHygieneScript(2222, "192.0.2.126")
-	if got := payloadFrom(t, s, "/etc/systemd/journald.conf.d/heyearth.conf"); !strings.Contains(got, "[Journal]\nSystemMaxUse=1G\n") {
+	if got := payloadFrom(t, s, "/etc/systemd/journald.conf.d/heyearth.conf"); !strings.Contains(got, "[Journal]\nSystemMaxUse=4G\nMaxRetentionSec=45day\n") {
 		t.Errorf("journald drop-in: %q", got)
 	}
 	for _, want := range []string{
 		"SSHD_PORT=2222\n", "NEVER_IGNORE='192.0.2.126'\n", "put_file /etc/fail2ban/jail.d/heyearth-sshd.conf 644 \"$(render_jail | base64 -w0)\"",
 		`if ! command -v fail2ban-client`, "apt-get install -y -qq fail2ban python3-systemd", // installed only when missing; failure aborts (set -e)
-		`journalctl --vacuum-size=1G`, `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi`,
+		`journalctl --vacuum-size=4G --vacuum-time=45d`, `if [ "$PUT_CHANGED" = 1 ]; then systemctl restart systemd-journald; fi`,
 		`[ "$PUT_CHANGED" = 1 ] || ! systemctl is-active --quiet fail2ban`, "fail2ban-client status sshd", "jail sshd is not running",
 	} {
 		if !strings.Contains(s, want) {

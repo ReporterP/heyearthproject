@@ -154,6 +154,38 @@ const backupOnCalendar = "*-*-* 04:00:00 Europe/Moscow"
 
 const backupTimerUnit = "[Unit]\nDescription=Daily HiEarth Hub backup at 04:00 MSK\n\n[Timer]\nOnCalendar=" + backupOnCalendar + "\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
 
+// The restore drill (PRD A9): once a week the newest archive is restored into a scratch
+// database. The outcome goes to backupVerifyStatusFile ("<unix time> <systemd service result>",
+// "success" when the drill passed) for the API's monitor.
+const (
+	backupVerifyOnCalendar = "Sun *-*-* 05:00:00 Europe/Moscow"
+	backupVerifyStatusFile = "/opt/heyearth/state/backup-verify.status"
+)
+
+// In a unit file %% is a literal %; systemd sets SERVICE_RESULT for ExecStopPost.
+const backupVerifyServiceUnit = "[Unit]\nDescription=HiEarth Hub backup restore drill (newest archive into a scratch database)\nAfter=postgresql.service\n\n[Service]\nType=oneshot\nExecStart=/opt/heyearth/bin/heyearth-backup-verify.sh\nExecStopPost=/bin/sh -c 'echo \"$(date +%%s) $SERVICE_RESULT\" > " + backupVerifyStatusFile + "'\nNice=10\nIOSchedulingClass=idle\nTimeoutStartSec=30min\n"
+
+const backupVerifyTimerUnit = "[Unit]\nDescription=Weekly HiEarth Hub backup restore drill, Sunday 05:00 MSK\n\n[Timer]\nOnCalendar=" + backupVerifyOnCalendar + "\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+
+// backupVerifyUnitFiles are the drill's units; the script itself is installed with the backup.
+var backupVerifyUnitFiles = []opsFile{
+	{"/etc/systemd/system/heyearth-backup-verify.service", "644", backupVerifyServiceUnit},
+	{"/etc/systemd/system/heyearth-backup-verify.timer", "644", backupVerifyTimerUnit},
+}
+
+// renderBackupVerifyTimerScript installs only the drill's timer on a Hub whose backup is set up
+// already (deploy --setup-hygiene). It does not run the drill.
+func renderBackupVerifyTimerScript() string {
+	return `set -eu
+[ -x /opt/heyearth/bin/heyearth-backup-verify.sh ] || { echo "[ops] ABORT: /opt/heyearth/bin/heyearth-backup-verify.sh is missing — run deploy --setup-ops first; drill timer not installed"; exit 1; }
+systemd-analyze calendar "` + backupVerifyOnCalendar + `" >/dev/null 2>&1 || { echo "[ops] ABORT: this systemd cannot parse OnCalendar with a time zone — drill timer not installed"; exit 1; }
+` + opsPutFileFunc + `mkdir -p /opt/heyearth/state
+` + putFileCalls(backupVerifyUnitFiles) + `systemctl daemon-reload
+systemctl enable --now heyearth-backup-verify.timer
+systemctl list-timers heyearth-backup-verify.timer --no-pager
+`
+}
+
 func renderBackupEnv(bc backupConfig) string {
 	return fmt.Sprintf("BACKUP_DIR=/opt/heyearth/backups\nKEEP=14\nTARGET_HOST=%s\nTARGET_PORT=%d\nSSH_KEY=%s\nAGE_RECIPIENT=%s\nAGE_RECIPIENT_FILE=%s\n",
 		bc.target, bc.port, backupSSHKey, bc.ageRecipient, backupAgeRecipientFile)
@@ -171,6 +203,7 @@ func renderBackupInstallScript(bc backupConfig) string {
 		{"/etc/systemd/system/heyearth-backup.service", "644", backupServiceUnit},
 		{"/etc/systemd/system/heyearth-backup.timer", "644", backupTimerUnit},
 	}
+	files = append(files, backupVerifyUnitFiles...)
 	ageInstall := ""
 	if bc.ageRecipient != "" {
 		files = append(files, opsFile{backupAgeRecipientFile, "644", bc.ageRecipient + "\n"})
@@ -187,15 +220,17 @@ for t in pg_dump pg_restore psql runuser tar gzip sha256sum ssh ssh-keygen base6
   command -v "$t" >/dev/null 2>&1 || { echo "[ops] ABORT: $t is not installed — backup timer not installed"; exit 1; }
 done
 systemd-analyze calendar "` + backupOnCalendar + `" >/dev/null 2>&1 || { echo "[ops] ABORT: this systemd cannot parse OnCalendar with a time zone — backup timer not installed"; exit 1; }
+systemd-analyze calendar "` + backupVerifyOnCalendar + `" >/dev/null 2>&1 || { echo "[ops] ABORT: this systemd cannot parse the drill's OnCalendar — backup timer not installed"; exit 1; }
 ` + ageInstall + opsPutFileFunc + `
-mkdir -p /etc/heyearth /opt/heyearth/bin /opt/heyearth/backups /root/.ssh
+mkdir -p /etc/heyearth /opt/heyearth/bin /opt/heyearth/backups /opt/heyearth/state /root/.ssh
 chmod 700 /opt/heyearth/backups /root/.ssh
 ` + putFileCalls(files) + `K=` + backupSSHKey + `
 if [ ! -f "$K" ]; then ssh-keygen -q -t ed25519 -N '' -C ` + backupKeyComment + ` -f "$K"; echo "[ops] generated $K"; fi
 if [ ! -s "$K.pub" ]; then echo "$(ssh-keygen -y -f "$K") ` + backupKeyComment + `" > "$K.pub"; fi
 systemctl daemon-reload
 systemctl enable --now heyearth-backup.timer
-systemctl list-timers heyearth-backup.timer --no-pager
+systemctl enable --now heyearth-backup-verify.timer
+systemctl list-timers heyearth-backup.timer heyearth-backup-verify.timer --no-pager
 `
 }
 

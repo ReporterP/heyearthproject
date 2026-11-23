@@ -79,6 +79,38 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 	fmt.Println("[ops] setup-ops: all steps OK")
 }
 
+// hygieneStep is one step of deploy --setup-hygiene.
+type hygieneStep struct{ name, script string }
+
+// hygieneSteps are the Hub steps of stability phase 0 that change nothing for users (impact
+// class К0): none restarts or reloads a VPN service (TestHygieneSteps). setup-ops applies the
+// journal and the drill timer as well; the other two only live here.
+func hygieneSteps() []hygieneStep {
+	return []hygieneStep{
+		{"journald retention", renderJournaldScript()},
+		{"restart on failure", renderRestartPolicyScript()},
+		{"backup restore drill timer", renderBackupVerifyTimerScript()},
+		{"Bamboo log level", renderBambooLogLevelScript()},
+	}
+}
+
+// setupHygiene runs hygieneSteps on the Hub (deploy --setup-hygiene).
+func setupHygiene(client *ssh.Client) {
+	fmt.Println("[hygiene] К0: xray, Бамбук, nginx, туннели и API не перезапускаются")
+	var failed []string
+	for _, st := range hygieneSteps() {
+		fmt.Printf("[hygiene] -- %s\n", st.name)
+		if err := runOpsScript(client, st.name+" (setup-hygiene)", st.script); err != nil {
+			fmt.Printf("[hygiene] FAILED %s: %v\n", st.name, err)
+			failed = append(failed, st.name)
+		}
+	}
+	if len(failed) > 0 {
+		log.Fatalf("[hygiene] %d step(s) failed: %s", len(failed), strings.Join(failed, ", "))
+	}
+	fmt.Println("[hygiene] setup-hygiene: all steps OK")
+}
+
 // ageRecipientRe is an age X25519 public key: "age1" + 58 bech32 characters.
 var ageRecipientRe = regexp.MustCompile(`^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$`)
 
