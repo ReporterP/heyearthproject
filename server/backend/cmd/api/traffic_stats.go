@@ -221,8 +221,9 @@ func recordDialRateSamples(deltas map[string]*trafficDelta) {
 // restores one). While nothing changes — a user may stay over quota for a whole
 // cycle — no sync is requested. An armed sync removes the user live
 // (`xray api rmu`), which only refuses NEW connections; sessions already open
-// keep working until the soft cutoff guard sees their traffic in the next full
-// stats window and forces a restart (≈1–2 min, checkRevokedStillOnline).
+// keep working until they close by themselves: the soft cutoff guard
+// (checkRevokedStillOnline) watches their traffic and restarts xray for them only
+// if the owner chose so (xray_revoke_restart: off by default, night, now).
 // Per-user lines in both modes go through quotaWarnings: a user is logged when
 // first seen over quota (new offenders at once), then at most once per
 // quotaWarnEvery while they stay over it; the per-sync summary line of

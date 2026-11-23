@@ -123,7 +123,7 @@ func TestRevokedWatchLongPollAndQuietDrop(t *testing.T) {
 	var forced []revokedHit
 	for m := 1; m <= 13; m++ {
 		start, end := window(float64(m))
-		v := w.check(trickle(), start, end)
+		v := w.check(trickle(), start, end, revokePolicyNow)
 		forced = append(forced, v.force...)
 		if m < 10 && len(v.force)+len(v.deferred) != 0 {
 			t.Fatalf("minute %d: heartbeats within the TTL must not force anything: %+v", m, v)
@@ -147,6 +147,7 @@ func TestRevokedGuardCoalescesRestarts(t *testing.T) {
 	syncs := 0
 	g := revokedGuard{
 		watch:       w,
+		policy:      policyOf(revokePolicyNow),
 		markStale:   func(cause, reason string) { marks = append(marks, cause+"|"+reason) },
 		requestSync: func() { syncs++ },
 	}
@@ -204,7 +205,7 @@ func TestRevokedWatchPersisted(t *testing.T) {
 	w := newRevokedWatch(path)
 	w.record([]string{"Alice", "bob"}, map[string]string{"alice": "quota", "bob": "blocked"}, nil, revokedT0)
 	start, end := window(1)
-	if v := w.check(map[string]*trafficDelta{"alice": {download: 1 << 20}}, start, end); len(v.force) != 1 {
+	if v := w.check(map[string]*trafficDelta{"alice": {download: 1 << 20}}, start, end, revokePolicyNow); len(v.force) != 1 {
 		t.Fatalf("alice must be forced: %+v", v)
 	}
 	info, err := os.Stat(path)
@@ -231,7 +232,7 @@ func TestRevokedWatchPersisted(t *testing.T) {
 	}
 	// bob online right after the API restart: still within alice's cooldown.
 	start, end = window(3)
-	if v := next.check(map[string]*trafficDelta{"bob": {download: 1 << 20}}, start, end); len(v.force) != 0 || len(v.deferred) != 2 {
+	if v := next.check(map[string]*trafficDelta{"bob": {download: 1 << 20}}, start, end, revokePolicyNow); len(v.force) != 0 || len(v.deferred) != 2 {
 		t.Fatalf("after the API restart the cooldown must hold: %+v", v)
 	}
 
@@ -292,6 +293,7 @@ func TestRevokedGuardToApplierOneRestart(t *testing.T) {
 	marks, syncs := 0, 0
 	g := revokedGuard{
 		watch:       w,
+		policy:      policyOf(revokePolicyNow),
 		markStale:   func(cause, reason string) { marks++; f.st.markStaleCause(cause, reason) },
 		requestSync: func() { syncs++ },
 	}
@@ -328,5 +330,243 @@ func TestRevokedRestartCause(t *testing.T) {
 	got := revokedRestartCause([]revokedHit{{"a", "quota"}, {"b", "blocked"}, {"c", "quota"}, {"d", ""}})
 	if got != "revoked(blocked,quota,unknown)" {
 		t.Errorf("cause = %q", got)
+	}
+}
+
+// ─────────────── Restart policy (xray_revoke_restart) ───────────────
+
+func policyOf(p revokePolicy) func() revokePolicy { return func() revokePolicy { return p } }
+
+func onlineUsers(users ...string) map[string]*trafficDelta {
+	d := map[string]*trafficDelta{}
+	for _, u := range users {
+		d[u] = &trafficDelta{download: 1 << 20}
+	}
+	return d
+}
+
+func TestRevokeRestartAllowed(t *testing.T) {
+	day := time.Date(2026, 11, 23, 11, 0, 0, 0, time.UTC)   // 14:00 MSK
+	night := time.Date(2026, 11, 23, 1, 10, 0, 0, time.UTC) // 04:10 MSK
+	cases := []struct {
+		p    revokePolicy
+		now  time.Time
+		want bool
+	}{
+		{revokePolicyOff, day, false}, {revokePolicyOff, night, false},
+		{revokePolicyNow, day, true}, {revokePolicyNow, night, true},
+		{revokePolicyNight, day, false}, {revokePolicyNight, night, true},
+		{"", night, false}, {"always", night, false}, // empty or unknown: as off
+	}
+	for _, c := range cases {
+		if got := revokeRestartAllowed(c.p, c.now); got != c.want {
+			t.Errorf("revokeRestartAllowed(%q, %s) = %v, want %v", c.p, c.now.Format(time.RFC3339), got, c.want)
+		}
+	}
+	for in, want := range map[string]revokePolicy{"now": revokePolicyNow, " Night ": revokePolicyNight, "off": revokePolicyOff, "": revokePolicyOff, "yes": revokePolicyOff} {
+		if got := parseRevokePolicy(in); got != want {
+			t.Errorf("parseRevokePolicy(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Policy off (the default): a revoked user still online after the TTL restarts
+// nothing. The entry stays pending, the restart cooldown is not started, and the
+// log line appears at most once an hour.
+func TestRevokedGuardSoftKeepsPending(t *testing.T) {
+	w := newRevokedWatch("")
+	marks, syncs := 0, 0
+	g := revokedGuard{
+		watch:       w,
+		policy:      policyOf(revokePolicyOff),
+		heldLog:     &logGate{},
+		markStale:   func(string, string) { marks++ },
+		requestSync: func() { syncs++ },
+	}
+	logs := captureLog(t)
+	w.record([]string{"11111111-2222-3333-4444-555555555555"}, map[string]string{"11111111-2222-3333-4444-555555555555": "quota"}, nil, revokedT0)
+	online := onlineUsers("11111111-2222-3333-4444-555555555555")
+	for m := 11.0; m < 60; m++ { // past the TTL, 49 windows inside one hour
+		start, end := window(m)
+		g.observe(online, start, end)
+	}
+	if marks != 0 || syncs != 0 {
+		t.Fatalf("policy off: marks=%d syncs=%d, want no restart", marks, syncs)
+	}
+	w.mu.Lock()
+	e, ok := w.users["11111111-2222-3333-4444-555555555555"]
+	lastForce := w.lastForce
+	w.mu.Unlock()
+	if !ok || !e.Pending {
+		t.Fatalf("entry = %+v (watched=%v), want it kept pending", e, ok)
+	}
+	if !lastForce.IsZero() {
+		t.Errorf("a held restart must not start the restart cooldown: lastForce=%s", lastForce)
+	}
+	const line = "xray не перезапускается"
+	if n := strings.Count(logs.String(), line); n != 1 {
+		t.Fatalf("held line logged %d times within an hour, want once:\n%s", n, logs.String())
+	}
+	if strings.Contains(logs.String(), "11111111-2222-3333-4444-555555555555") || !strings.Contains(logs.String(), "11111111 (quota)") {
+		t.Errorf("the held line names a user by the first 8 characters only:\n%s", logs.String())
+	}
+	start, end := window(72)
+	g.observe(online, start, end)
+	if n := strings.Count(logs.String(), line); n != 2 {
+		t.Errorf("an hour later the held line is logged again: got %d", n)
+	}
+}
+
+// A guard built without a policy never restarts (safe default).
+func TestRevokedGuardNoPolicyIsOff(t *testing.T) {
+	w := newRevokedWatch("")
+	marks := 0
+	g := revokedGuard{watch: w, markStale: func(string, string) { marks++ }, requestSync: func() { marks++ }}
+	captureLog(t)
+	w.record([]string{"alice"}, map[string]string{"alice": "blocked"}, nil, revokedT0)
+	start, end := window(1)
+	g.observe(onlineUsers("alice"), start, end)
+	if marks != 0 {
+		t.Fatalf("no policy: %d restart calls, want none", marks)
+	}
+}
+
+// Policy now: the behaviour before the soft cutoff.
+func TestRevokedGuardNowRestarts(t *testing.T) {
+	w := newRevokedWatch("")
+	var marks []string
+	syncs := 0
+	g := revokedGuard{
+		watch:       w,
+		policy:      policyOf(revokePolicyNow),
+		markStale:   func(cause, reason string) { marks = append(marks, cause) },
+		requestSync: func() { syncs++ },
+	}
+	captureLog(t)
+	w.record([]string{"alice"}, map[string]string{"alice": "quota"}, nil, revokedT0)
+	start, end := window(1)
+	g.observe(onlineUsers("alice"), start, end)
+	if len(marks) != 1 || marks[0] != "revoked(quota)" || syncs != 1 {
+		t.Fatalf("policy now: marks=%v syncs=%d, want one restart with cause revoked(quota)", marks, syncs)
+	}
+}
+
+// Policy night: held during the day, one restart in the quiet window, and at
+// most one a night (PRD A7).
+func TestRevokedGuardNightOncePerNight(t *testing.T) {
+	w := newRevokedWatch("")
+	marks := 0
+	g := revokedGuard{
+		watch:       w,
+		policy:      policyOf(revokePolicyNight),
+		heldLog:     &logGate{},
+		markStale:   func(string, string) { marks++ },
+		requestSync: func() {},
+	}
+	captureLog(t)
+	msk := func(day, h, m int) time.Time { return time.Date(2026, 11, day, h-3, m, 0, 0, time.UTC) }
+	observeAt := func(at time.Time, users ...string) { g.observe(onlineUsers(users...), at.Add(-time.Minute), at) }
+
+	w.record([]string{"alice"}, map[string]string{"alice": "quota"}, nil, msk(23, 13, 0))
+	observeAt(msk(23, 14, 0), "alice")
+	if marks != 0 {
+		t.Fatalf("14:00 MSK: %d restarts, want the batch held until the night", marks)
+	}
+	observeAt(msk(24, 4, 10), "alice")
+	if marks != 1 {
+		t.Fatalf("04:10 MSK: %d restarts, want one", marks)
+	}
+	w.reset() // the restart happened
+	w.record([]string{"bob"}, map[string]string{"bob": "quota"}, nil, msk(24, 4, 15))
+	observeAt(msk(24, 4, 40), "bob")
+	if marks != 1 {
+		t.Fatalf("04:40 MSK the same night: %d restarts, want still one", marks)
+	}
+	observeAt(msk(25, 4, 10), "bob")
+	if marks != 2 {
+		t.Fatalf("04:10 MSK the next night: %d restarts, want two", marks)
+	}
+}
+
+// A held user leaves the watch by itself once its sessions have been silent for
+// as long as xray's connIdle: xray has closed them, nothing is left to cut.
+func TestRevokedPendingLeavesAfterIdleHour(t *testing.T) {
+	w := newRevokedWatch("")
+	w.record([]string{"alice"}, map[string]string{"alice": "quota"}, nil, revokedT0)
+	start, end := window(11)
+	if v := w.check(onlineUsers("alice"), start, end, revokePolicyOff); len(v.held) != 1 || len(v.force) != 0 {
+		t.Fatalf("online past the TTL under policy off: %+v, want one held", v)
+	}
+	for i := 1; i <= revokedPendingQuietWindows; i++ {
+		start, end = window(float64(11 + i))
+		w.check(nil, start, end, revokePolicyOff)
+		got := watchedEmails(w)
+		if i < revokedPendingQuietWindows && len(got) != 1 {
+			t.Fatalf("quiet window %d: watched=%v, want alice still watched", i, got)
+		}
+		if i == revokedPendingQuietWindows && len(got) != 0 {
+			t.Fatalf("after %d quiet windows watched=%v, want nobody", i, got)
+		}
+	}
+}
+
+// Pending for more than a day → one warn alert with the number of users and
+// the reasons, without identifiers; gone from the watch → resolved.
+func TestRevokedStillOnlineAlert(t *testing.T) {
+	w := newRevokedWatch("")
+	type raised struct {
+		key, title, details string
+		level               AlertLevel
+	}
+	var raises []raised
+	var resolves []string
+	g := revokedGuard{
+		watch:       w,
+		policy:      policyOf(revokePolicyOff),
+		heldLog:     &logGate{},
+		markStale:   func(string, string) {},
+		requestSync: func() {},
+		raise: func(key string, level AlertLevel, title, details string) {
+			raises = append(raises, raised{key, title, details, level})
+		},
+		resolve: func(key, message string) { resolves = append(resolves, key) },
+	}
+	captureLog(t)
+	const alice, bob = "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"
+	w.record([]string{alice, bob}, map[string]string{alice: "quota", bob: "blocked"}, nil, revokedT0)
+
+	start, end := window(11)
+	g.observe(onlineUsers(alice, bob), start, end)
+	if len(raises) != 0 {
+		t.Fatalf("online for 12 minutes: raised %+v, want nothing yet", raises)
+	}
+	start, end = window(24*60 + 1)
+	g.observe(onlineUsers(alice, bob), start, end)
+	if len(raises) != 1 {
+		t.Fatalf("online for more than a day: %d raises, want one", len(raises))
+	}
+	r := raises[0]
+	if r.key != "revoked-still-online" || r.level != AlertWarn {
+		t.Errorf("raise = %s [%s], want revoked-still-online [warn]", r.key, r.level)
+	}
+	text := r.title + " " + r.details
+	for _, want := range []string{"2 ", "quota", "blocked"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("alert text lacks %q: %s", want, text)
+		}
+	}
+	for _, id := range []string{alice, bob, "aaaaaaaa", "bbbbbbbb"} {
+		if strings.Contains(text, id) {
+			t.Errorf("alert text carries a user identifier %q: %s", id, text)
+		}
+	}
+
+	// Both get their access back (a live apply adds them): the alert is resolved.
+	resolves = nil
+	w.record(nil, nil, []string{alice, bob}, end)
+	start, end = window(24*60 + 2)
+	g.observe(nil, start, end)
+	if len(resolves) != 1 || resolves[0] != "revoked-still-online" {
+		t.Fatalf("after the entries left the watch: resolves=%v, want one for revoked-still-online", resolves)
 	}
 }

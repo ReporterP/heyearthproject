@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/mail"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -13,8 +14,9 @@ import (
 // checked before it reaches app_settings. Everything else has its own page (MTProto, alerts,
 // entries, the Hub's numbers) or is gone (migration 000069).
 type settingRule struct {
-	kind     string // bool | int | text | email | secret | host | inn | slug
+	kind     string // bool | int | text | email | secret | host | inn | slug | enum
 	min, max int
+	values   []string // enum: the allowed values, lower case
 }
 
 var editableSettings = map[string]settingRule{
@@ -43,6 +45,12 @@ var editableSettings = map[string]settingRule{
 	"support_contact":    {kind: "text"},
 	// Лимиты
 	"quota_cutoff_enabled": {kind: "bool"},
+	// Автоматика, которая рвёт соединения (docs/prd/stability-operations.prd.md, A6 и A7).
+	// xray_revoke_restart: what a revoked user still online leads to — off (nothing, default),
+	// night (one xray restart in 04:00–05:30 MSK), now (restart at once: К3, drops everyone).
+	"xray_revoke_restart": {kind: "enum", values: []string{"off", "night", "now"}},
+	// bamboo_optimise: moving Бамбук to a faster exit — night (quiet window only, default) | off.
+	"bamboo_optimise": {kind: "enum", values: []string{"night", "off"}},
 	// Приведи друга
 	"referral_enabled":             {kind: "bool"},
 	"referral_reward_referrer_rub": {kind: "int", min: 0, max: 10000},
@@ -100,6 +108,11 @@ func normalizeSetting(key, value string) (string, error) {
 		v = strings.ToLower(v)
 		if v != "" && !slugRe.MatchString(v) {
 			return "", fmt.Errorf("слаг тарифа: латиница, цифры и дефис")
+		}
+	case "enum":
+		v = strings.ToLower(v)
+		if !slices.Contains(rule.values, v) {
+			return "", fmt.Errorf("значение: %s", strings.Join(rule.values, " | "))
 		}
 	case "secret":
 		if v == "" {

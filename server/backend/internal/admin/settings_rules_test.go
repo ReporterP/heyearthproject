@@ -18,6 +18,11 @@ func TestNormalizeSetting(t *testing.T) {
 		{"smtp_password", " p@ss ", " p@ss "},
 		{"b2b_member_plan", " All-Inclusive ", "all-inclusive"},
 		{"b2b_member_plan", "", ""},
+		{"xray_revoke_restart", " Night ", "night"},
+		{"xray_revoke_restart", "off", "off"},
+		{"xray_revoke_restart", "now", "now"},
+		{"bamboo_optimise", "off", "off"},
+		{"bamboo_optimise", "night", "night"},
 	}
 	for _, c := range ok {
 		got, err := normalizeSetting(c.key, c.in)
@@ -42,6 +47,9 @@ func TestNormalizeSetting(t *testing.T) {
 		{"smtp_password", "  "},
 		{"b2b_member_plan", "полный"},
 		{"b2b_member_plan", "all inclusive"},
+		{"xray_revoke_restart", ""},
+		{"xray_revoke_restart", "always"},
+		{"bamboo_optimise", "now"}, // an optimisation never runs by day
 	}
 	for _, c := range bad {
 		if v, err := normalizeSetting(c.key, c.in); err == nil {
