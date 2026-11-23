@@ -89,7 +89,7 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	vals := map[string]string{}
 	for _, k := range []string{"entry_failover_enabled", "entry_failover_test_user", "entry_probe_simulate_hub_fail_until", "subscription_update_interval_hours",
-		"sub_domain", "sub_auto_mode", "sub_auto_test_user", subUrgentKey, subDirectByNameKey} {
+		"sub_domain", "sub_auto_mode", "sub_auto_test_user", subUrgentKey, subDirectByNameKey, subJSONDNSKey} {
 		if err == nil {
 			vals[k], err = entriesSetting(k)
 		}
@@ -128,6 +128,7 @@ func handleAdminEntries(w http.ResponseWriter, r *http.Request) {
 		"update_interval_hours": planEntries("", nil, biz.EntryFailover{}, false, vals["subscription_update_interval_hours"]).interval,
 		"urgent_until":          urgentUntil,
 		"direct_by_name":        cmp.Or(strings.TrimSpace(vals[subDirectByNameKey]), autoModeOff),
+		"json_dns":              cmp.Or(strings.TrimSpace(vals[subJSONDNSKey]), autoModeOff),
 		"domain_mode_available": biz.EntryDomainModeAvailable(),
 		"subscription":          subDomainStatus(ctx, vals["sub_domain"], vals["sub_auto_mode"], vals["sub_auto_test_user"], publishedEntries(entries)),
 	})
@@ -206,6 +207,7 @@ type entrySettingsRequest struct {
 	AutoTestUser        *string `json:"auto_test_user"` // who gets «Авто» in mode test
 	UrgentHours         *int    `json:"urgent_hours"`   // «Срочное обновление»: hourly updates for 1–48 h, 0 stops (subUrgentKey)
 	DirectByName        *string `json:"direct_by_name"` // JSON direct by the sniffed name: off | test (the «Авто» test user) | on
+	JSONDNS             *string `json:"json_dns"`       // by-name JSON resolves names through the tunnel: off | test | on (subJSONDNSKey)
 }
 
 // writes returns the app_settings to write, or a user-facing error message.
@@ -257,6 +259,13 @@ func (req entrySettingsRequest) writes(now time.Time) (map[string]string, string
 			return nil, "прямые по имени: off, test или on"
 		}
 		out[subDirectByNameKey] = m
+	}
+	if v := req.JSONDNS; v != nil {
+		m := strings.TrimSpace(*v)
+		if m != autoModeOff && m != autoModeTest && m != autoModeOn {
+			return nil, "DNS через туннель: off, test или on"
+		}
+		out[subJSONDNSKey] = m
 	}
 	if v := req.AutoTestUser; v != nil {
 		u := strings.TrimSpace(*v)
@@ -326,7 +335,8 @@ func handleAdminEntrySettings(w http.ResponseWriter, r *http.Request) {
 	_, autoUser := writes["sub_auto_test_user"]
 	_, urgent := writes[subUrgentKey]
 	_, byName := writes[subDirectByNameKey]
-	if interval || testUser || autoMode || autoUser || urgent || byName { // the subscription content changed
+	_, jsonDNS := writes[subJSONDNSKey]
+	if interval || testUser || autoMode || autoUser || urgent || byName || jsonDNS { // the subscription content changed
 		if err := entriesBump(ctx); err != nil {
 			log.Printf("[entries-admin] subscription_version: %v", err)
 		}

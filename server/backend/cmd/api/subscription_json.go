@@ -54,12 +54,35 @@ const (
 //	  Hub instead of dialing the client's address.
 const subDirectByNameKey = "sub_direct_by_name"
 
+// subJSONDNSKey switches where a by-name config resolves names (off | test | on, the
+// test user is sub_auto_test_user; absent = off; nothing changes while not by name).
+//
+//	off — no "dns" in the config: Xray resolves with the device's own resolver. By
+//	  name every connection on 80/443 is resolved (the first rule has an IP
+//	  condition), so on a RU network the operator's DNS decides geoip:ru: the TSPU
+//	  steers plain DNS to the national DNS, which has no records for blocked names
+//	  (instagram.com was removed from it) or answers with a stub — a stub in
+//	  geoip:ru/private sends the site direct, where it is blocked; a resolver that
+//	  does not answer holds every new connection for the DNS timeout.
+//	on — the names are resolved by public DoH through the line's own balancer
+//	  (jsonDNSServers behind the way in), never by the operator.
+const subJSONDNSKey = "sub_json_dns"
+
+// jsonDNSTag is the inbound tag of the config's own DNS queries (dns.tag): the first
+// routing rule sends them to the balancer.
+const jsonDNSTag = "dns-tunnel"
+
+// jsonDNSServers: DoH by address (no name to resolve first, the certificates carry the
+// addresses); https:// is dispatched through routing, unlike https+local://.
+var jsonDNSServers = []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}
+
 // directRouting is what goes straight out of the device, never through a way in.
 type directRouting struct {
-	sites    []string // Xray domain rules: "domain:sberbank.ru", …
-	ips      []string // "geoip:private", "geoip:ru", "203.0.113.7/32", …
-	fronting []string // the MTProto fronting entries of sites: never re-addressed by name
-	byName   bool     // direct by the sniffed name, IPv4 first (subDirectByNameKey)
+	sites     []string // Xray domain rules: "domain:sberbank.ru", …
+	ips       []string // "geoip:private", "geoip:ru", "203.0.113.7/32", …
+	fronting  []string // the MTProto fronting entries of sites: never re-addressed by name
+	byName    bool     // direct by the sniffed name, IPv4 first (subDirectByNameKey)
+	dnsTunnel bool     // by name, names are resolved through the tunnel (subJSONDNSKey)
 }
 
 // routingStrategy: by name, a domain is resolved when an IP rule is reached, so
@@ -69,6 +92,18 @@ func (d directRouting) routingStrategy() string {
 		return "IPOnDemand"
 	}
 	return "AsIs"
+}
+
+// resolvesThroughTunnel: the config carries its own DNS (only by name: AsIs never
+// resolves in routing, and direct dials the address it was given).
+func (d directRouting) resolvesThroughTunnel() bool { return d.byName && d.dnsTunnel }
+
+// jsonDNS is the config's "dns", nil when it resolves with the device's resolver.
+func jsonDNS(d directRouting) xrayObj {
+	if !d.resolvesThroughTunnel() {
+		return nil
+	}
+	return xrayObj{"tag": jsonDNSTag, "servers": jsonDNSServers}
 }
 
 type xrayObj = map[string]any
@@ -220,6 +255,12 @@ func jsonInbounds(d directRouting) []any {
 // address on 80/443 only.
 func jsonRules(hub, siteHost string, d directRouting, final xrayObj) []any {
 	var rules []any
+	if d.resolvesThroughTunnel() {
+		// The config's own DNS queries go through the tunnel, before any rule that resolves.
+		r := xrayObj{"type": "field", "inboundTag": []string{jsonDNSTag}}
+		maps.Copy(r, final)
+		rules = append(rules, r)
+	}
 	if hub != "" {
 		r := xrayObj{"type": "field", "port": "80,443"}
 		if net.ParseIP(hub) != nil {
@@ -288,7 +329,7 @@ func balancedConfig(label, description, prefix, fallback, hub, siteHost string, 
 		maps.Copy(ob, w.outbound)
 		outbounds = append(outbounds, ob)
 	}
-	return xrayObj{
+	cfg := xrayObj{
 		"remarks":   label,
 		"meta":      xrayObj{"serverDescription": description},
 		"log":       xrayObj{"loglevel": "warning"},
@@ -306,6 +347,10 @@ func balancedConfig(label, description, prefix, fallback, hub, siteHost string, 
 			"rules": jsonRules(hub, siteHost, d, xrayObj{"balancerTag": "auto"}),
 		},
 	}
+	if dns := jsonDNS(d); dns != nil {
+		cfg["dns"] = dns
+	}
+	return cfg
 }
 
 // jsonSubscription builds the JSON subscription body of in: «⚡ Авто», then
