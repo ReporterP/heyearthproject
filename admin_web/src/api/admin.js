@@ -405,3 +405,11 @@ export function fetchOpsProbes(hours = 24) {
 export function runOpsProbes() {
   return apiFetch('/ops/probes/run', { method: 'POST' })
 }
+
+// ── «Операции → Подписка»: flags, the canary, «Срочное обновление» ──
+export const fetchOpsFlags = () => apiFetch('/ops/flags')
+export const flagToTest = (key, to = 'on') => apiFetch(`/ops/flags/${encodeURIComponent(key)}/test`, { method: 'POST', body: { to } })
+export const flagPromote = (key) => apiFetch(`/ops/flags/${encodeURIComponent(key)}/promote`, { method: 'POST' })
+export const flagRollback = (key) => apiFetch(`/ops/flags/${encodeURIComponent(key)}/rollback`, { method: 'POST' })
+export const flagBypass = (key, to, reason) => apiFetch(`/ops/flags/${encodeURIComponent(key)}/bypass`, { method: 'POST', body: { to, reason } })
+export const setOpsUrgent = (hours) => apiFetch('/ops/urgent', { method: 'POST', body: { hours } })

@@ -185,3 +185,8 @@ export function ruViewLine(ruAlerts) {
 export function needsBeforeFetch(entry) {
   return !entry || (!entry.loading && !!entry.error)
 }
+
+// targetLabel: what a check opens, in words (the matrix and the «Подписка» tab).
+export function targetLabel(target) {
+  return TARGET[target] || target
+}
