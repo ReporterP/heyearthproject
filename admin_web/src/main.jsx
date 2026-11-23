@@ -31,7 +31,7 @@ import PlansPage from './pages/PlansPage.jsx'
 import B2BAnalyticsPage from './pages/B2BAnalyticsPage.jsx'
 import MTProtoPage from './pages/MTProtoPage.jsx'
 import DirectRoutesPage from './pages/DirectRoutesPage.jsx'
-import AlertsPage from './pages/AlertsPage.jsx'
+import OperationsPage from './pages/OperationsPage.jsx'
 import SupportPage from './pages/SupportPage.jsx'
 import NewsPage from './pages/NewsPage.jsx'
 import TelegramBotPage from './pages/TelegramBotPage.jsx'
@@ -68,7 +68,8 @@ createRoot(document.getElementById('root')).render(
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/plans" element={<PlansPage />} />
                   <Route path="/mtproto" element={<MTProtoPage />} />
-                  <Route path="/alerts" element={<AlertsPage />} />
+                  <Route path="/operations" element={<OperationsPage />} />
+                  <Route path="/alerts" element={<Navigate to="/operations?tab=settings" replace />} />
                   <Route path="/support" element={<SupportPage />} />
                   <Route path="/news" element={<NewsPage />} />
                   <Route path="/telegram-bot" element={<TelegramBotPage />} />

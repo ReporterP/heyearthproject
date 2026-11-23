@@ -37,7 +37,7 @@ export const openStep = (choice, job) => (choice === undefined ? autoOpenStep(jo
 
 const RUNNING = {
   provision: 'Идёт настройка', reprovision: 'Идёт переустановка', verify: 'Идёт проверка',
-  deprovision: 'Идёт отключение', mtproxy: 'Идёт установка Telegram-прокси',
+  deprovision: 'Идёт отключение', mtproxy: 'Идёт установка Telegram-прокси', watchdog: 'Ставится сторож хаба',
 }
 
 export function jobHeadline(job) {

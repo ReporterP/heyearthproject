@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Bell, Gift, LifeBuoy, Newspaper, Bot,
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Bell, Gift, LifeBuoy, Newspaper, Bot, Activity,
 } from 'lucide-react'
 
 /**
@@ -11,6 +11,7 @@ import {
  */
 export const commands = [
   // Overview
+  { id: 'go-operations',    label: 'Операции',               icon: Activity,        kind: 'page', href: '/operations',    group: 'Обзор' },
   { id: 'go-dashboard',     label: 'Дашборд',                icon: LayoutDashboard, kind: 'page', href: '/dashboard',     group: 'Обзор',          shortcut: ['⌘', 'D'] },
 
   // Users
@@ -24,7 +25,7 @@ export const commands = [
   { id: 'go-servers',         label: 'Серверы',              icon: Server,          kind: 'page', href: '/servers',         group: 'Инфраструктура' },
   { id: 'go-direct-routes',   label: 'Прямая маршрутизация', icon: Route,           kind: 'page', href: '/direct-routes',   group: 'Инфраструктура' },
   { id: 'go-mtproto',         label: 'Telegram',             icon: Send,            kind: 'page', href: '/mtproto',         group: 'Инфраструктура' },
-  { id: 'go-alerts',          label: 'Алерты',               icon: Bell,            kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
+  { id: 'go-alerts',          label: 'Тревоги: настройки и журнал', icon: Bell,     kind: 'page', href: '/alerts',          group: 'Инфраструктура' },
 
   // Money
   { id: 'go-plans',        label: 'Тарифы',                  icon: Package,         kind: 'page', href: '/plans',        group: 'Деньги' },

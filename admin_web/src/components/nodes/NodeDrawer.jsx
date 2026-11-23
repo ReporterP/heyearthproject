@@ -4,7 +4,7 @@ import { useAuth } from '../../auth/AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
 import {
   verifyNode, provisionNode, deprovisionNode, deleteNode, updateNodeRouting, fetchNodeJobs, fetchPlans, fetchServerLogs,
-  probeNode, confirmHostKey, reinstallMTProxy, runServerAction,
+  probeNode, confirmHostKey, reinstallMTProxy, installWatchdog, runServerAction,
 } from '../../api/admin.js'
 import { formatDate, formatRelativeRu } from '../../utils/format.js'
 import {
@@ -275,7 +275,7 @@ function LoadRow({ node }) {
   )
 }
 
-function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunnelCheck, onVerify, onSetup, onMtproxy, onRestartAgent, canRestart, onChanged }) {
+function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunnelCheck, onVerify, onSetup, onMtproxy, onWatchdog, onRestartAgent, canRestart, onChanged }) {
   const st = nodeState(node)
   const exit = node.role !== 'relay'
   const mt = mtprotoView(node.mtproto_status)
@@ -335,7 +335,7 @@ function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunne
         </Section>
       )}
 
-      {(acts.setup.show || acts.mtproxy.show || canRestart) && (
+      {(acts.setup.show || acts.mtproxy.show || acts.watchdog.show || canRestart) && (
         <Section title="Обслуживание">
           {acts.setup.show && (
             <ActionItem label={acts.setup.label} onClick={onSetup} reason={acts.setup.reason} loading={busy === 'setup'} disabled={!!busy}
@@ -344,6 +344,10 @@ function OverviewTab({ node, acts, manage, busy, fallbackOn, onFallback, onTunne
           {acts.mtproxy.show && (
             <ActionItem label="Переустановить Telegram-прокси" onClick={onMtproxy} reason={acts.mtproxy.reason} loading={busy === 'mtproxy'} disabled={!!busy}
               description="Задача сначала проверяет Telegram-прокси и ставит его заново, только если проверка не прошла; пока идёт установка, прокси этой ноды может быть недоступен. Туннель и трафик выхода это не затрагивает." />
+          )}
+          {acts.watchdog.show && (
+            <ActionItem label="Поставить сторожа" onClick={onWatchdog} reason={acts.watchdog.reason} loading={busy === 'watchdog'} disabled={!!busy}
+              description="Ставит на выход таймер, который раз в минуту смотрит на хаб снаружи и сам пишет в чат тревог, если хаб не открывается. Туннели, файрвол и трафик выхода не затрагиваются. Нужен токен бота-сторожа: «Операции → Настройки»." />
           )}
           {canRestart && (
             <ActionItem label="Перезапустить агент" onClick={onRestartAgent} loading={busy === 'restart'} disabled={!!busy}
@@ -670,6 +674,7 @@ function NodeCard({ node, lastExit = false, onClose, onChanged }) {
               onVerify={() => startJob('verify', () => verifyNode(node.id))}
               onSetup={onSetup}
               onMtproxy={() => startJob('mtproxy', () => reinstallMTProxy(node.id))}
+              onWatchdog={() => startJob('watchdog', () => installWatchdog(node.id))}
               canRestart={exit && node.lifecycle_state === 'online' && can('server_ops.execute')}
               onRestartAgent={() => act('restart', async () => {
                 await runServerAction(node.id, 'restart_agent')

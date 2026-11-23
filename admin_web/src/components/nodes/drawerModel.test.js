@@ -285,3 +285,11 @@ test('journals: only the units the server runs (C5)', () => {
   assert.deepEqual(keys({ role: 'exit', mtproto_status: 'healthy' }), ['node-agent', 'xray', 'hysteria2', 'mtproxy'])
   assert.deepEqual(keys({ role: 'relay' }), ['nginx', 'heyearth-relay'])
 })
+
+test('«Поставить сторожа»: a working exit only, behind the same gates as the other jobs', () => {
+  assert.deepEqual(nodeActions(node(), { manage: true }).watchdog, { show: true, reason: '' })
+  assert.equal(nodeActions(node(), { manage: false }).watchdog.show, false, 'needs nodes.provision')
+  assert.equal(nodeActions(node({ role: 'relay' }), { manage: true }).watchdog.show, false, 'an entry sits in RU: it sees what the Hub sees')
+  assert.equal(nodeActions(node({ lifecycle_state: 'failed' }), { manage: true }).watchdog.show, false)
+  assert.match(nodeActions(node({ host_key: { confirmed: false } }), { manage: true }).watchdog.reason, /подтвердите отпечаток/i)
+})

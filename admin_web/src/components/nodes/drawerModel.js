@@ -102,7 +102,7 @@ export function nodeActions(node, { manage = false, logs = false } = {}) {
   const out = {
     tunnelCheck: { show: exit && life === 'online', reason: '' },
     logs: logs ? { show: true, reason: keyOK ? '' : KEY_FIRST } : HIDDEN,
-    verify: HIDDEN, setup: HIDDEN, mtproxy: HIDDEN, deprovision: HIDDEN, remove: HIDDEN, fallback: HIDDEN, routing: HIDDEN,
+    verify: HIDDEN, setup: HIDDEN, mtproxy: HIDDEN, watchdog: HIDDEN, deprovision: HIDDEN, remove: HIDDEN, fallback: HIDDEN, routing: HIDDEN,
   }
   if (!manage) return out
   if (exit) {
@@ -112,6 +112,7 @@ export function nodeActions(node, { manage = false, logs = false } = {}) {
     out.setup = setupAction(n, gate)
     if (life === 'online') { // POST /servers/{id}/mtproxy: nodes.provision only
       out.mtproxy = { show: true, reason: gate(n.mtproto_status === 'disabled' ? 'Telegram-прокси для этой ноды выключен' : '') }
+      out.watchdog = { show: true, reason: gate() } // POST /servers/{id}/watchdog: the Hub watcher (К0)
     }
   }
   out.deprovision = {

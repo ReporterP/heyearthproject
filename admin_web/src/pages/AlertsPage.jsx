@@ -12,6 +12,9 @@ import {
 
 const KIND = {
   raise:      { label: 'Тревога',       variant: 'danger' },
+  inhibited:  { label: 'Следствие',     variant: 'default' },
+  notice:     { label: 'Сообщение',     variant: 'info' },
+  digest:     { label: 'Сводка',        variant: 'info' },
   repeat:     { label: 'Повтор',        variant: 'warning' },
   resolve:    { label: 'Восстановлено', variant: 'success' },
   suppressed: { label: 'Подавлено',     variant: 'default' },
@@ -63,7 +66,7 @@ function LevelBadge({ ev }) {
 }
 
 function Delivery({ ev }) {
-  if (ev.kind === 'suppressed' || ev.kind === 'cleared') return <span className="text-tertiary">—</span>
+  if (ev.kind === 'suppressed' || ev.kind === 'cleared' || ev.kind === 'inhibited') return <span className="text-tertiary">—</span>
   if (ev.delivered) return <span className="text-success">отправлено</span>
   const range = ev.count > 1 ? `${ev.count} попыток подряд, первая: ${formatDate(ev.firstAt)}` : ''
   return (
@@ -128,7 +131,8 @@ function UndeliveredList({ items }) {
   )
 }
 
-export default function AlertsPage() {
+// embedded: the page is the «Настройки» tab of «Операции» — no header of its own.
+export default function AlertsPage({ embedded = false }) {
   const { can } = useAuth()
   const toast = useToast()
   const canWrite = can('settings.write')
@@ -206,10 +210,12 @@ export default function AlertsPage() {
 
   return (
     <div className="max-w-7xl space-y-6">
-      <PageHeader
-        title="Алерты"
-        subtitle="Доступность входа (снаружи и из РФ), Бамбук, exit-ноды, отключение по квоте, xray, база данных, сертификат, бэкапы и диск — сообщения в Telegram-чат администратора."
-      />
+      {!embedded && (
+        <PageHeader
+          title="Алерты"
+          subtitle="Доступность входа (снаружи и из РФ), Бамбук, exit-ноды, отключение по квоте, xray, база данных, сертификат, бэкапы и диск — сообщения в Telegram-чат администратора."
+        />
+      )}
 
       <UndeliveredBanner items={undelivered} />
 

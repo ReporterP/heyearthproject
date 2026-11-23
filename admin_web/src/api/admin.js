@@ -125,6 +125,8 @@ export const saveServerOwner = (id, body) => apiFetch(`/servers/${id}/capacity`,
 export const fetchLaunchChecklist = () => apiFetch('/launch-checklist')
 // «Переустановить Telegram-прокси»: a job of its own → 202 {job_id, kind: 'mtproxy'} (nodes.provision).
 export const reinstallMTProxy = (id) => apiFetch(`/servers/${id}/mtproxy`, { method: 'POST' })
+// «Поставить сторожа»: the Hub watcher on an exit, a job of its own → 202 {job_id, kind: 'watchdog'} (nodes.provision).
+export const installWatchdog = (id) => apiFetch(`/servers/${id}/watchdog`, { method: 'POST' })
 // Read-only: generate_204 through the exit's Hysteria and TCP paths (nothing is changed).
 export function checkServerTunnel(id) {
   return apiFetch(`/servers/${id}/check-tunnel`, { method: 'POST' })
@@ -389,3 +391,17 @@ export const getTOTPStatus = () => apiFetch('/me/totp')
 export const setupTOTP = () => apiFetch('/me/totp/setup', { method: 'POST' })
 export const enableTOTP = (code) => apiFetch('/me/totp/enable', { method: 'POST', body: { code } })
 export const disableTOTP = (password, code) => apiFetch('/me/totp/disable', { method: 'POST', body: { password, code } })
+
+// ── «Операции»: the overview, the synthetic client's runs, the build ──
+export function fetchOpsOverview({ feedHours = 24, before = '' } = {}) {
+  const q = new URLSearchParams()
+  if (before) q.set('before', before)
+  else q.set('feed_hours', String(feedHours))
+  return apiFetch(`/ops/overview?${q.toString()}`)
+}
+export function fetchOpsProbes(hours = 24) {
+  return apiFetch(`/ops/probes?hours=${hours}`)
+}
+export function runOpsProbes() {
+  return apiFetch('/ops/probes/run', { method: 'POST' })
+}

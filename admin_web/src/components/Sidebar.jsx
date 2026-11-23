@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Ticket, Wallet, Package, Server, Route, Send,
-  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search, Bell,
-  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, Gift, LifeBuoy, Newspaper, Bot } from 'lucide-react'
+  Settings, ShieldCheck, FileText, Building2, TrendingUp, LogOut, Search,
+  ChevronDown, PanelLeftClose, PanelLeftOpen, Palette, X, Gift, LifeBuoy, Newspaper, Bot, Activity } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useT } from '../i18n/index.jsx'
 import { Kbd } from './ui/index.js'
@@ -17,6 +17,7 @@ const groups = [
   {
     label: 'ОСНОВНОЕ',
     items: [
+      { to: '/operations', icon: Activity,       label: 'navOperations' },
       { to: '/dashboard', icon: LayoutDashboard, label: 'navDashboard' },
       { to: '/servers',   icon: Server,          label: 'navServers' },
       { to: '/users',     icon: Users,           label: 'navUsers' },
@@ -24,7 +25,6 @@ const groups = [
       { to: '/payments',  icon: Wallet,          label: 'navPayments' },
       { to: '/support',   icon: LifeBuoy,        label: 'navSupport' },
       { to: '/news',      icon: Newspaper,       label: 'navNews' },
-      { to: '/alerts',    icon: Bell,            label: 'navAlerts' },
       { to: '/settings',  icon: Settings,        label: 'navSettings' },
     ],
   },

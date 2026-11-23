@@ -30,6 +30,7 @@ export default {
   navAuditLog: 'Журнал аудита',
   navMTProto: 'Telegram',
   navAlerts: 'Алерты',
+  navOperations: 'Операции',
   navSupport: 'Поддержка',
   navNews: 'Новости',
   navTelegramBot: 'Telegram-бот',
