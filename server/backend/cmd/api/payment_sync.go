@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -129,6 +130,7 @@ var (
 
 // setPaymentsCell puts the result of a payment-sync pass on the health board: «Оплаты» is
 // warn when the provider did not answer or refused our key in that pass (syncPendingPayments).
+// The cell shows the worse of this and the hourly synthetic purchase (setPaymentsPart).
 func setPaymentsCell(providerErr error) {
 	if providerErr != nil {
 		what := "провайдер оплат не отвечает"
@@ -136,10 +138,35 @@ func setPaymentsCell(providerErr error) {
 		if errors.As(providerErr, &apiErr) && (apiErr.HTTPStatus == http.StatusUnauthorized || apiErr.HTTPStatus == http.StatusForbidden) {
 			what = "провайдер оплат отказывает в доступе — проверьте ключи магазина"
 		}
-		healthBoard.Set("payments", "Оплаты", "warn", what+": "+biz.ScrubOpsText(providerErr.Error()))
+		setPaymentsPart("sync", "warn", what+": "+biz.ScrubOpsText(providerErr.Error()))
 		return
 	}
-	healthBoard.Set("payments", "Оплаты", "ok", "сверка платежей с ЮKassa прошла")
+	setPaymentsPart("sync", "ok", "сверка платежей с ЮKassa прошла")
+}
+
+// The «Оплаты» cell has two sources; it shows the worse one.
+var (
+	paymentsPartsMu sync.Mutex
+	paymentsParts   = map[string][2]string{} // part → {state, detail}
+)
+
+var paymentsStateRank = map[string]int{"ok": 0, "unknown": 1, "warn": 2, "down": 3}
+
+func setPaymentsPart(part, state, detail string) {
+	paymentsPartsMu.Lock()
+	defer paymentsPartsMu.Unlock()
+	paymentsParts[part] = [2]string{state, detail}
+	best := [2]string{"ok", ""}
+	for _, p := range []string{"sync", "purchase"} {
+		v, ok := paymentsParts[p]
+		if !ok {
+			continue
+		}
+		if best[1] == "" || paymentsStateRank[v[0]] > paymentsStateRank[best[0]] {
+			best = v
+		}
+	}
+	healthBoard.Set("payments", "Оплаты", best[0], best[1])
 }
 
 // paymentProviderDown tells a provider that cannot serve us — no answer (a network error, 429,

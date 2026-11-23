@@ -105,6 +105,10 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, domainCheckEvery, func() {
 		safely("срок домена", checkDomainExpiry)
 	})
+	// The synthetic purchase (synth_purchase.go): the money path walked hourly, rolled back.
+	go runEvery(20*time.Minute, 10*time.Minute, func() {
+		safely("синтетическая покупка", runSyntheticPurchase)
+	})
 	// The subscription as each client app gets it (synth_clients.go): checked hourly.
 	go runEvery(15*time.Minute, 10*time.Minute, func() {
 		safely("виды клиентов", runClientKinds)

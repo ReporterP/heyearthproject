@@ -247,3 +247,10 @@ func getSetting(key string) (string, error) {
 	}
 	return value, nil
 }
+
+// Me — GET /v3/me: the shop's own record. The synthetic purchase uses it to prove the provider
+// answers with our credentials, without creating a payment.
+func (c *Client) Me() error {
+	var out map[string]any
+	return c.doGET("/me", &out)
+}

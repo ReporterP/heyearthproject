@@ -153,6 +153,10 @@ var alertCatalog = []alertEntry{
 		Meaning: "Синтетическая проверка ничего не видит: о строках подписки сейчас нет данных, тревоги по ним не поднимаются и не снимаются.",
 		Usual:   "Нет живого выхода, через который смотреть; у тестового пользователя нет подписки со всеми строками; ядро не запускается.",
 		Actions: []string{"probes.run", "exit.verify"}}},
+	{Key: synthPurchaseAlert, Info: alertInfo{
+		Meaning: "Покупка из кошелька не проходит: синтетическая покупка тестовым пользователем (в транзакции, которая всегда откатывается) падает — люди не могут продлить.",
+		Usual:   "Изменение кода оплат или тарифов; база; у тестового пользователя что-то не так с кошельком.",
+		Actions: []string{"hub.status", "probes.run"}}},
 	{Prefix: clientKindsAlertPrefix, Info: alertInfo{
 		Meaning: "Приложение этого вида получает подписку, которую ядро не принимает: строка не превращается в рабочий конфиг или через неё не идут данные.",
 		Usual:   "Изменение формата подписки или флага; новое поле, которое приложение понимает иначе.",
@@ -315,7 +319,7 @@ func alertInfoFor(key string) alertInfo {
 // exits, the entries, Бамбук from outside) says something of its own and is sent as usual: the
 // VPN lives through a database outage, and a dead exit during one is news.
 var (
-	dbDependentKeys = []string{canaryBlindAlert, "xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
+	dbDependentKeys = []string{synthPurchaseAlert, canaryBlindAlert, "xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
 		"backup-stale", "offsite-backup-stale", "backup-verify-failed", capacityAlertKey, sshCiphertextsAlertKey}
 	dbDependentPrefixes = []string{settingOutsideAlertPrefix, canaryRollbackAlertPrefix, "payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
 )
