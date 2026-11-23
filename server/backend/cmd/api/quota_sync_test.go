@@ -231,22 +231,29 @@ func TestQuotaSyncWiring(t *testing.T) {
 	if !refs["buildXrayConfig"]["excludes"] {
 		t.Error("buildXrayConfig no longer cuts off by the decision it gets (quota.excludes)")
 	}
-	// applyXrayConfig hands the decision it gets to the generator.
-	handsQuota := false
-	ast.Inspect(decls["applyXrayConfig"].Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "buildXrayConfig" && len(call.Args) == 2 {
-			if arg, ok := call.Args[1].(*ast.Ident); ok && arg.Name == "quota" {
-				handsQuota = true
+	// applyXrayConfig hands the decision it gets to the generator — through renderXrayConfig
+	// (shared with the restart prediction), which hands it on to buildXrayConfig.
+	callsWithQuota := func(fn, callee string) bool {
+		found := false
+		ast.Inspect(decls[fn].Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
 			}
-		}
-		return true
-	})
-	if !handsQuota {
-		t.Error("applyXrayConfig must call buildXrayConfig(…, quota)")
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == callee && len(call.Args) == 2 {
+				if arg, ok := call.Args[1].(*ast.Ident); ok && arg.Name == "quota" {
+					found = true
+				}
+			}
+			return true
+		})
+		return found
+	}
+	if !callsWithQuota("applyXrayConfig", "renderXrayConfig") {
+		t.Error("applyXrayConfig must call renderXrayConfig(…, quota)")
+	}
+	if !callsWithQuota("renderXrayConfig", "buildXrayConfig") {
+		t.Error("renderXrayConfig must call buildXrayConfig(…, quota)")
 	}
 }
 
