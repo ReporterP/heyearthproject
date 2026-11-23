@@ -756,10 +756,12 @@ func TestForgetGoneExitsClearsAlertsSilently(t *testing.T) {
 	const id = 9003
 	t.Cleanup(func() { exitHealthByID.Delete(id); biz.ForgetExitPaths(id) })
 	exitHealthFor(id)
-	RaiseAlert(exitDownAlertKey(id), AlertWarn, "Exit-нода недоступна", "d")
+	// the path first, the whole exit after: raised the other way round the path's alert would be
+	// kept back as explained by «exit down» (alert_catalog.go: inhibitedBy)
 	RaiseAlert(exitPathAlertKey(id, "hy"), AlertWarn, "путь Hysteria недоступен", "d")
+	RaiseAlert(exitDownAlertKey(id), AlertWarn, "Exit-нода недоступна", "d")
 	forgetGoneExits(nil)
-	want := "raise exit-down-9003, raise exit-path-down-9003-hy, cleared exit-down-9003, cleared exit-path-down-9003-hy"
+	want := "raise exit-path-down-9003-hy, raise exit-down-9003, cleared exit-down-9003, cleared exit-path-down-9003-hy"
 	if got := alertLog(ah); got != want {
 		t.Fatalf("journal %q, want %q", got, want)
 	}

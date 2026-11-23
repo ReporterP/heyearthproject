@@ -57,6 +57,9 @@ var editableSettings = map[string]settingRule{
 	// ru_probe_provider: who looks at the entries from RU — globalping (default) | checkhost.
 	"ru_probe_provider": {kind: "enum", values: []string{"globalping", "checkhost"}},
 	"probe_agent_token": {kind: "secret"},
+	// alert_email: the second channel — an alert Telegram has not taken for 15 minutes is sent
+	// here (empty: no second channel).
+	"alert_email": {kind: "email"},
 	// Сторож вне хаба (cmd/api/watchdog.go): written here, never read back.
 	"watchdog_api_pulse_url": {kind: "secret_url"},
 	"watchdog_bot_token":     {kind: "secret"},

@@ -643,4 +643,19 @@ func syntheticTick(trigger string) {
 	default:
 		log.Printf("[synth] прогон %d (%s): %s", id, trigger, state)
 	}
+	// The Hub itself came up moments before this API: the first run is its self-check.
+	if trigger == "start" && hubBootedAtStart && err == nil {
+		notifyOps("Хаб перезагрузился", bootNoticeText(state))
+	}
+}
+
+// bootNoticeText sums the self-check after a Hub boot up for the owner.
+func bootNoticeText(state string) string {
+	switch state {
+	case "pass":
+		return "Хаб загрузился, все соединения были разорваны. Самопроверка после загрузки прошла: синтетический клиент открыл все цели через все пути."
+	case "fail":
+		return "Хаб загрузился, все соединения были разорваны. Самопроверка после загрузки НЕ прошла: часть путей не несёт данные — смотрите «Операции → Проверки»."
+	}
+	return "Хаб загрузился, все соединения были разорваны. Самопроверка после загрузки ничего не увидела (нет живого выхода или подписки тестового пользователя) — смотрите «Операции → Проверки»."
 }

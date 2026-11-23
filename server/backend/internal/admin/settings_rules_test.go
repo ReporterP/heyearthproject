@@ -23,6 +23,8 @@ func TestNormalizeSetting(t *testing.T) {
 		{"xray_revoke_restart", "now", "now"},
 		{"bamboo_optimise", "off", "off"},
 		{"bamboo_optimise", "night", "night"},
+		{"alert_email", "owner@example.test", "owner@example.test"},
+		{"alert_email", "", ""}, // empty: the second channel is off
 	}
 	for _, c := range ok {
 		got, err := normalizeSetting(c.key, c.in)
@@ -50,6 +52,7 @@ func TestNormalizeSetting(t *testing.T) {
 		{"xray_revoke_restart", ""},
 		{"xray_revoke_restart", "always"},
 		{"bamboo_optimise", "now"}, // an optimisation never runs by day
+		{"alert_email", "not an address"},
 	}
 	for _, c := range bad {
 		if v, err := normalizeSetting(c.key, c.in); err == nil {

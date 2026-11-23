@@ -57,7 +57,9 @@ var (
 	mskZone                = time.FixedZone("MSK", 3*60*60)
 )
 
-// alertEvent is one alert_events row. Kind: raise | repeat | suppressed | resolve | cleared | test.
+// alertEvent is one alert_events row. Kind: raise | repeat | suppressed | resolve | cleared | test,
+// and since migration 000101: inhibited (kept, not sent: its cause is already reported) |
+// notice (a one-off message) | digest (the daily summary).
 type alertEvent struct {
 	ID        int64      `json:"id"`
 	Key       string     `json:"key"`
@@ -83,6 +85,7 @@ type alertIncident struct {
 	failures      int
 	firstFailAt   time.Time
 	lastAttemptAt time.Time
+	emailed       bool // the second channel (e-mail) has been used for this incident
 }
 
 type alertState struct {
@@ -94,6 +97,9 @@ type alertState struct {
 	recoveredAt time.Time // time of the last delivered recovery; equal to lastSent → the last message was "all clear"
 	retryAt     time.Time // after a failed raise/repeat: no new attempt (and no journal row) before this moment; survives Resolve
 	inc         *alertIncident
+	// inhibitedBy: the active alert that explains this one (alert_catalog.go). While it is set
+	// the incident is journaled once as «inhibited» and nothing is sent.
+	inhibitedBy string
 }
 
 type alertOutgoing struct {
@@ -102,6 +108,7 @@ type alertOutgoing struct {
 	inc      *alertIncident
 	recovery bool          // resolve: sent only if the incident's raise was actually delivered (decided in the worker, in queue order)
 	flushed  chan struct{} // flush barrier, not an event: closed once everything queued before it is delivered
+	release  []string      // a notice: the alerts it tells about for the first time (unrelease when it is not delivered)
 }
 
 type alertManager struct {
@@ -115,9 +122,15 @@ type alertManager struct {
 	cooldown  time.Duration
 	initRetry time.Duration
 	queue     chan alertOutgoing // nil → deliver synchronously (tests)
-	state     map[string]*alertState
-	loaded    bool // journal replay succeeded
-	retrying  bool // background replay retry running
+	// The second channel: an incident Telegram has not taken for alertEmailAfter goes to
+	// emailTo() by email, once. nil: no second channel.
+	email    func(to, subject, body string) error
+	emailTo  func() string
+	link     func(key string) string // the alert's card on the console, added to its messages; nil: none
+	flap     *flapTracker            // nil: flapping is not tracked
+	state    map[string]*alertState
+	loaded   bool // journal replay succeeded
+	retrying bool // background replay retry running
 }
 
 var alerts = newProdAlertManager()
@@ -132,6 +145,10 @@ func newProdAlertManager() *alertManager {
 		warm:      warmAlertCaches,
 		cooldown:  alertCooldown,
 		initRetry: alertReplayRetry,
+		email:     sendAlertEmail,
+		emailTo:   alertEmailAddress,
+		link:      alertConsoleLink,
+		flap:      newFlapTracker(),
 		state:     map[string]*alertState{},
 	}
 	m.startWorker(alertQueueSize)
@@ -185,6 +202,9 @@ func (m *alertManager) Init() {
 	}
 	if m.purge != nil {
 		go m.purgeLoop()
+	}
+	if m.flap != nil {
+		go m.flapLoop()
 	}
 }
 
@@ -315,7 +335,21 @@ func (m *alertManager) raise(key string, level AlertLevel, title, details string
 		m.mu.Unlock()
 		return
 	}
-	send := kind != "suppressed"
+	// A new incident of the key (sent or held back): the flap tracker counts it.
+	newIncident := !st.active
+	// An alert whose cause is already reported is kept, not sent — journaled once per incident.
+	if kind == "raise" || kind == "repeat" {
+		if parent := inhibitedBy(key, m.activeLocked); parent != "" {
+			if st.active && st.inhibitedBy != "" {
+				m.mu.Unlock()
+				return
+			}
+			kind, st.inhibitedBy = "inhibited", parent
+		} else {
+			st.inhibitedBy = ""
+		}
+	}
+	send := kind != "suppressed" && kind != "inhibited"
 	if !st.active || st.inc == nil {
 		st.inc = &alertIncident{}
 	}
@@ -327,7 +361,13 @@ func (m *alertManager) raise(key string, level AlertLevel, title, details string
 		st.notified, st.lastSent = true, now
 	}
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: level, Kind: kind, Title: title, Details: details, At: now}, send: send, inc: st.inc}
+	escalate := newIncident && m.flap != nil && m.flap.onRaise(key, now)
 	m.submitLocked(o, prev)
+	if escalate {
+		m.raise(key+flapSuffix, AlertWarn, "Нестабильно: "+title,
+			fmt.Sprintf("Тревога %s поднималась %d раза за последние %d часов. Причина появляется и пропадает — отдельные срабатывания можно не разбирать, искать нужно её. Закроется сама через час без новых срабатываний.",
+				key, flapThreshold, int(flapWindow/time.Hour)), false)
+	}
 }
 
 // cooledDown reports whether the flapping cooldown since the key's last message is over.
@@ -360,9 +400,17 @@ func (m *alertManager) Resolve(key, message string) {
 		kind, send = "resolve", true // final decision is taken in the worker, once the raise outcome is known
 		st.lastSent = now
 	}
-	st.active, st.notified = false, false
+	st.active, st.notified, st.inhibitedBy = false, false, ""
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: kind, Title: st.title, Details: message, At: now}, send: send, inc: inc, recovery: send}
+	// The alerts this one muted that are still active: the owner hears of them now, in one message.
+	released, lines, level := m.releaseLocked(key, now)
+	title := st.title
 	m.submitLocked(o, prev)
+	if len(released) > 0 {
+		m.enqueue(alertOutgoing{send: true, release: released, ev: alertEvent{Key: key, Level: level, Kind: "notice", At: now,
+			Title:   "Остаются активны",
+			Details: "«" + title + "» снято, но эти тревоги ещё активны:" + alertNewline + strings.Join(lines, alertNewline)}})
+	}
 }
 
 // Clear closes the open incident of key silently, as Resolve does for an incident nobody was told
@@ -375,7 +423,7 @@ func (m *alertManager) Clear(key, reason string) {
 		return
 	}
 	prev := *st
-	st.active, st.notified = false, false
+	st.active, st.notified, st.inhibitedBy = false, false, ""
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: "cleared", Title: st.title, Details: reason, At: m.now()}, inc: st.inc}
 	m.submitLocked(o, prev)
 }
@@ -411,13 +459,21 @@ func (m *alertManager) deliver(o alertOutgoing) {
 	}
 	var sendErr error
 	if send {
-		if sendErr = m.send(formatAlertText(ev)); sendErr != nil {
+		if sendErr = m.send(m.messageText(ev)); sendErr != nil {
 			ev.Error = sendErr.Error()
 		} else {
 			ev.Delivered = true
 		}
 	}
+	if len(o.release) > 0 && !ev.Delivered {
+		m.unrelease(o.release) // the alerts it told about are reported by themselves instead
+	}
 	attempt, journal := m.settle(o, ev, send, errors.Is(sendErr, errAlertsNotConfigured))
+	if (o.ev.Kind == "raise" || o.ev.Kind == "repeat") && !ev.Delivered {
+		if to, due := m.emailDue(o.inc); due {
+			m.sendFallbackEmail(to, ev, o.inc)
+		}
+	}
 	if !journal {
 		log.Printf("[alerts] %s %s [%s]: снова не доставлено (попытка %d, та же ошибка, в журнал не пишется): %s",
 			ev.Kind, ev.Key, ev.Level, attempt, ev.Error)
@@ -548,8 +604,8 @@ func (m *alertManager) undelivered() []alertUndelivered {
 func replayAlertEvents(events []alertEvent) map[string]*alertState {
 	state := make(map[string]*alertState)
 	for _, ev := range events {
-		if ev.Kind == "test" {
-			continue
+		if ev.Kind == "test" || ev.Kind == "notice" || ev.Kind == "digest" {
+			continue // not incidents
 		}
 		st := state[ev.Key]
 		if st == nil {
@@ -557,7 +613,7 @@ func replayAlertEvents(events []alertEvent) map[string]*alertState {
 			state[ev.Key] = st
 		}
 		switch ev.Kind {
-		case "raise", "repeat", "suppressed":
+		case "raise", "repeat", "suppressed", "inhibited":
 			if !st.active || st.inc == nil {
 				st.inc = &alertIncident{}
 				st.level = ev.Level
@@ -566,8 +622,8 @@ func replayAlertEvents(events []alertEvent) map[string]*alertState {
 			}
 			st.active, st.title = true, ev.Title
 			switch {
-			case ev.Kind == "suppressed":
-				st.notified = false
+			case ev.Kind == "suppressed" || ev.Kind == "inhibited":
+				st.notified = false // nobody was told: the next raise decides again
 			case ev.Delivered:
 				st.notified, st.lastSent, st.retryAt = true, ev.At, time.Time{}
 				inc := st.inc
@@ -607,6 +663,10 @@ func formatAlertText(ev alertEvent) string {
 		head = "ВОССТАНОВЛЕНО"
 	case "test":
 		head = "ТЕСТ"
+	case "notice":
+		head = "СООБЩЕНИЕ"
+	case "digest":
+		head = "СВОДКА"
 	}
 	details := ev.Details
 	if r := []rune(details); len(r) > 3000 { // Telegram limit is 4096 chars
@@ -885,13 +945,19 @@ func recordAlertEvent(ev alertEvent) {
 	if conn == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), alertDBTimeout)
-	defer cancel()
-	if _, err := conn.ExecContext(ctx, `INSERT INTO alert_events (alert_key, level, kind, title, details, delivered, error, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		ev.Key, string(ev.Level), ev.Kind, ev.Title, ev.Details, ev.Delivered, ev.Error, ev.At); err != nil {
+	if err := insertAlertEvent(conn, ev); err != nil {
 		log.Printf("[alerts] запись в alert_events: %v", err)
 	}
+}
+
+// insertAlertEvent writes one journal row.
+func insertAlertEvent(conn *sql.DB, ev alertEvent) error {
+	ctx, cancel := context.WithTimeout(context.Background(), alertDBTimeout)
+	defer cancel()
+	_, err := conn.ExecContext(ctx, `INSERT INTO alert_events (alert_key, level, kind, title, details, delivered, error, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		ev.Key, string(ev.Level), ev.Kind, ev.Title, ev.Details, ev.Delivered, ev.Error, ev.At)
+	return err
 }
 
 // loadRecentAlertEvents returns the journal rows replayAlertEvents needs, oldest first:
