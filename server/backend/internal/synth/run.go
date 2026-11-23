@@ -66,6 +66,14 @@ func (r Runner) Probe(ctx context.Context, cfg map[string]any, socksPort int, ta
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	// Something already listens on the port: the core could not bind, and the fetches would go
+	// through that stranger — refuse before anything is judged by it.
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
+	if c, err := net.DialTimeout("tcp", addr, 300*time.Millisecond); err == nil {
+		c.Close()
+		return nil, fmt.Errorf("the SOCKS port %d is busy: something else listens on it (a core left by another run?)", socksPort)
+	}
+
 	asset := r.AssetDir
 	if asset == "" {
 		asset = filepath.Dir(r.XrayBin)
@@ -92,7 +100,6 @@ func (r Runner) Probe(ctx context.Context, cfg map[string]any, socksPort int, ta
 	}()
 	_ = os.WriteFile(filepath.Join(dir, "pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
 	if err := waitListening(ctx, addr, startTimeout, exited); err != nil {
 		return nil, fmt.Errorf("xray did not start: %w: %s", err, out.String())
 	}
@@ -118,6 +125,11 @@ func waitListening(ctx context.Context, addr string, timeout time.Duration, exit
 		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
 			c.Close()
+			select {
+			case <-exited: // the answer is not the core's: it is gone
+				return errors.New("the core exited, the port is answered by something else")
+			default:
+			}
 			return nil
 		}
 		select {

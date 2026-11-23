@@ -12,7 +12,7 @@ import AlertCard from '../components/ops/AlertCard.jsx'
 import OpsFeed from '../components/ops/OpsFeed.jsx'
 import ProbesMatrix from '../components/ops/ProbesMatrix.jsx'
 import WatchdogSettings from '../components/ops/WatchdogSettings.jsx'
-import { buildLine, probeSummary, sortAlerts } from '../components/ops/opsModel.js'
+import { buildLine, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
 import AlertsPage from './AlertsPage.jsx'
 
 const POLL_MS = 15000
@@ -113,9 +113,7 @@ function ProbesTab({ canRun, ruAlerts }) {
             Мобильные сети операторов так не видны — зонда с SIM-картой пока нет.
           </p>
           <p className="text-sm text-secondary">
-            Взгляд из домашних сетей РФ (Globalping, раз в 15 минут): {ruAlerts.length === 0
-              ? 'сайт, домен подписки, хаб и входы в ротации открываются.'
-              : <>не открываются — {ruAlerts.map(a => a.title).join('; ')}.</>}
+            Взгляд из домашних сетей РФ на сайт, домен подписки, хаб и входы в ротации (раз в 15 минут): {ruViewLine(ruAlerts)}
           </p>
         </CardBody>
       </Card>

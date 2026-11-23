@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // ─────────────── The alert catalogue ───────────────
 // An alert nobody can read is noise. Every key the code can raise has an entry here: what it
@@ -291,10 +294,32 @@ func alertInfoFor(key string) alertInfo {
 	return best
 }
 
+// dbDependentKeys and dbDependentPrefixes: the alerts «база недоступна» explains — their check
+// reads or writes the database and fails with it. Everything else (the disk, certificates, the
+// exits, the entries, Бамбук from outside) says something of its own and is sent as usual: the
+// VPN lives through a database outage, and a dead exit during one is news.
+var (
+	dbDependentKeys = []string{"xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
+		"backup-stale", "offsite-backup-stale", "backup-verify-failed", capacityAlertKey, sshCiphertextsAlertKey}
+	dbDependentPrefixes = []string{"payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
+)
+
+func dbDependent(key string) bool {
+	if slices.Contains(dbDependentKeys, key) {
+		return true
+	}
+	for _, p := range dbDependentPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // inhibitedBy returns the active alert that already explains key — its cause — or "".
 // active reports whether an alert is active right now.
 //
-//	db-unreachable              mutes everything but itself and hysteria-auth-listener
+//	db-unreachable              mutes what cannot work without the database (dbDependent)
 //	all-exits-down              mutes exit-down-*, exit-path-down-*, synth-*, synthetic-blind, bamboo-*, tg-webproxy-readyz
 //	entry-unreachable-external  mutes bamboo-unreachable-external, synth-*, relay-*
 //	exit-down-<N>               mutes exit-path-down-<N>-*
@@ -309,10 +334,7 @@ func inhibitedBy(key string, active func(string) bool) string {
 		}
 		return false
 	}
-	switch {
-	case key == dbAlertKey || key == hysteria2AuthListenerAlertKey:
-		return ""
-	case active(dbAlertKey):
+	if key != dbAlertKey && dbDependent(key) && active(dbAlertKey) {
 		return dbAlertKey
 	}
 	const allExits, entryExternal = "all-exits-down", "entry-unreachable-external"

@@ -176,6 +176,8 @@ type fakeSynthStore struct {
 	runs    []synthRunRecord
 	rows    [][]synthResult
 	loadErr error
+	// saveCtxErr: the state of the context the last save was called with
+	saveCtxErr error
 }
 
 func (s *fakeSynthStore) loadStreaks(context.Context) (map[string]streak, error) {
@@ -189,7 +191,8 @@ func (s *fakeSynthStore) loadStreaks(context.Context) (map[string]streak, error)
 	return out, nil
 }
 
-func (s *fakeSynthStore) save(_ context.Context, run synthRunRecord, rows []synthResult, streaks map[string]streak) (int64, error) {
+func (s *fakeSynthStore) save(ctx context.Context, run synthRunRecord, rows []synthResult, streaks map[string]streak) (int64, error) {
+	s.saveCtxErr = ctx.Err()
 	s.runs = append(s.runs, run)
 	s.rows = append(s.rows, rows)
 	if streaks != nil {
@@ -493,5 +496,84 @@ func TestWayTitle(t *testing.T) {
 		if got := wayTitle(tag); got != want {
 			t.Errorf("wayTitle(%q) = %q, want %q", tag, got, want)
 		}
+	}
+}
+
+// Review finding: a probe the run's time budget cut short says nothing about its way. It must
+// not be stored as a failure (three slow runs would raise an alert on a healthy way), and what
+// the run did see must still be saved — on a deadline of its own, the budget is spent.
+func TestRunSyntheticBudgetCutIsNotAFailure(t *testing.T) {
+	h := newSynthHarness(t)
+	captureLog(t)
+	h.m.budget = 80 * time.Millisecond
+	inner := h.m.probe
+	calls := 0
+	h.m.probe = func(ctx context.Context, cfg map[string]any, targets []synth.Target, d time.Duration) ([]synth.Result, error) {
+		calls++
+		if calls < 3 {
+			return inner(ctx, cfg, targets, d)
+		}
+		<-ctx.Done() // the budget ends inside the third probe: the core is killed mid-download
+		return []synth.Result{{Target: targets[0].Name, Err: "context deadline exceeded"}}, nil
+	}
+	id, state, err := h.m.run(context.Background(), "timer")
+	if err != nil || id != 1 {
+		t.Fatalf("run = %d, %q, %v; want it stored", id, state, err)
+	}
+	if h.store.saveCtxErr != nil {
+		t.Errorf("the run was saved with a dead context (%v): a real store would have lost it", h.store.saveCtxErr)
+	}
+	if calls != 3 {
+		t.Errorf("%d probes; want the run to stop at the one the budget cut", calls)
+	}
+	bulk := 0
+	for _, r := range h.store.rows[0] {
+		if !r.OK {
+			t.Errorf("row %+v is stored as a failure: the budget cut it, the way was not judged", r)
+		}
+		if r.Target == "bulk" {
+			bulk++
+		}
+	}
+	if bulk != 2 {
+		t.Errorf("%d bulk rows; want only the two probes that ended", bulk)
+	}
+	if run := h.store.runs[0]; run.State != "pass" || !strings.Contains(run.Summary, "прерван") {
+		t.Errorf("run = %+v; want a pass that says it was cut short", run)
+	}
+	for key, st := range h.store.streaks {
+		if st.Fails > 0 {
+			t.Errorf("streak %s = %+v after a run that saw no failure", key, st)
+		}
+	}
+	if len(h.raised) != 0 {
+		t.Errorf("raised %v", h.raised)
+	}
+}
+
+// The same cut inside the served-config probe: neither «blocked» nor «ru» is judged.
+func TestRunSyntheticBudgetCutInServedProbe(t *testing.T) {
+	h := newSynthHarness(t)
+	captureLog(t)
+	h.m.budget = 80 * time.Millisecond
+	inner := h.m.probe
+	h.m.probe = func(ctx context.Context, cfg map[string]any, targets []synth.Target, d time.Duration) ([]synth.Result, error) {
+		if len(targets) == 2 { // the served config: blocked + ru
+			<-ctx.Done()
+			return nil, context.DeadlineExceeded
+		}
+		return inner(ctx, cfg, targets, d)
+	}
+	_, state, err := h.m.run(context.Background(), "timer")
+	if err != nil || state != "pass" {
+		t.Fatalf("run = %q, %v; want a pass: nothing it finished had failed", state, err)
+	}
+	for _, r := range h.store.rows[0] {
+		if r.Target == "blocked" || r.Target == "ru" {
+			t.Errorf("row %+v stored although the budget cut its probe", r)
+		}
+	}
+	if len(h.raised) != 0 {
+		t.Errorf("raised %v", h.raised)
 	}
 }

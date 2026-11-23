@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -14,8 +15,9 @@ import (
 // Telegram, the Hub may be dead. A watcher bot of its own carries it, so the main bot's token
 // never sits on a server abroad.
 //
-// The exit itself may be the sick one (no way out, no path to RU): before any message it
-// checks a neutral address abroad and stays silent when that fails too.
+// The exit itself may be the sick one: before any message it checks a neutral address abroad
+// (no way out at all) and a neutral one in RU (no path to RU — then the Hub's own monitor
+// reports the exit) and stays silent when either fails.
 
 const (
 	HubWatchScriptPath  = "/opt/heyearth/bin/heyearth-hubwatch.sh"
@@ -27,6 +29,9 @@ const (
 	HubWatchServiceUnit = "heyearth-hubwatch.service"
 	// HubWatchControlURL: a neutral address abroad that answers when the exit has a way out.
 	HubWatchControlURL = "https://www.gstatic.com/generate_204"
+	// HubWatchControlRUURL: a neutral address in RU; any HTTP answer from it means the exit
+	// has a path to RU.
+	HubWatchControlRUURL = "https://ya.ru/"
 )
 
 // HubWatchParams is what the watcher on one exit is rendered with.
@@ -34,8 +39,10 @@ type HubWatchParams struct {
 	HubAddr    string // the Hub's public IP: the check goes to it whatever DNS says
 	SiteHost   string // the site's name (SNI and Host of the health check)
 	ControlURL string // a neutral https address abroad
-	ExitName   string // «выход 3» — named in the message instead of any address
-	StaggerSec int    // a pause before the message, different per exit
+	// ControlRUURL: a neutral https address in RU (any HTTP answer counts).
+	ControlRUURL string
+	ExitName     string // «выход 3» — named in the message instead of any address
+	StaggerSec   int    // a pause before the message, different per exit
 	// StatePath and EnvPath default to HubWatchStatePath and HubWatchEnvPath (tests set them).
 	StatePath, EnvPath string
 }
@@ -55,6 +62,8 @@ func (p HubWatchParams) Validate() error {
 		return fmt.Errorf("имя сайта %q не имя хоста", p.SiteHost)
 	case !hubWatchURLRe.MatchString(p.ControlURL):
 		return fmt.Errorf("контрольный адрес %q не https-адрес", p.ControlURL)
+	case !hubWatchURLRe.MatchString(p.ControlRUURL):
+		return fmt.Errorf("контрольный адрес в РФ %q не https-адрес", p.ControlRUURL)
 	case p.ExitName == "" || strings.ContainsAny(p.ExitName, "'\"\\$`\n"):
 		return fmt.Errorf("имя выхода %q не годится для сообщения", p.ExitName)
 	case p.StaggerSec < 0 || p.StaggerSec > 45:
@@ -68,7 +77,26 @@ func (p HubWatchParams) Validate() error {
 	return nil
 }
 
-// HubWatchEnv is hubwatch.env: the watcher bot's token and the chat. Mode 0600 on the exit.
+var (
+	hubWatchTokenRe = regexp.MustCompile(`^[0-9]{3,20}:[A-Za-z0-9_-]{10,100}$`)
+	hubWatchChatRe  = regexp.MustCompile(`^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31})$`)
+)
+
+// ValidateHubWatchCreds refuses a bot token or a chat that is not exactly one: both go into a
+// file root sources on the exit, so nothing with a quote, a space or a `$` may get there. The
+// messages never repeat the value.
+func ValidateHubWatchCreds(botToken, chatID string) error {
+	if !hubWatchTokenRe.MatchString(botToken) {
+		return errors.New("токен бота-сторожа не похож на токен Telegram-бота (<число>:<буквы, цифры, _ и ->)")
+	}
+	if !hubWatchChatRe.MatchString(chatID) {
+		return errors.New("чат тревог не число и не @имя канала")
+	}
+	return nil
+}
+
+// HubWatchEnv is hubwatch.env: the watcher bot's token and the chat (both must have passed
+// ValidateHubWatchCreds). Mode 0600 on the exit.
 func HubWatchEnv(botToken, chatID string) string {
 	return fmt.Sprintf("BOT_TOKEN='%s'\nCHAT_ID='%s'\n", botToken, chatID)
 }
@@ -76,7 +104,7 @@ func HubWatchEnv(botToken, chatID string) string {
 // HubWatchUnits are the watcher's service and its once-a-minute timer.
 func HubWatchUnits() (service, timer string) {
 	service = "[Unit]\nDescription=HiEarth: look at the Hub from outside\nWants=network-online.target\nAfter=network-online.target\n\n" +
-		"[Service]\nType=oneshot\nExecStart=" + HubWatchScriptPath + "\nTimeoutStartSec=90\nNice=10\n"
+		"[Service]\nType=oneshot\nExecStart=" + HubWatchScriptPath + "\nTimeoutStartSec=180\nNice=10\n"
 	timer = "[Unit]\nDescription=HiEarth: look at the Hub from outside, every minute\n\n" +
 		"[Timer]\nOnCalendar=minutely\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n"
 	return service, timer
@@ -86,9 +114,12 @@ func HubWatchUnits() (service, timer string) {
 //
 //	the Hub answers → the failure count is 0; after an alert, the second good run in a row
 //	  sends «снова доступен»;
-//	it does not → the count grows; from the third failure in a row: the control address must
+//	it does not → the count grows; from the third failure in a row: both control addresses must
 //	  answer (else silence, the count is kept), then a pause of StaggerSec and one more look at
 //	  the Hub, then «Хаб недоступен снаружи» — repeated at most every 30 minutes.
+//
+// The worst run (two looks at the Hub of 20 s, two controls of 10 s, the pause of at most 45 s,
+// the message 15 s) is 120 s: the unit's TimeoutStartSec is 180.
 func HubWatchScript(p HubWatchParams) string {
 	state, env := p.StatePath, p.EnvPath
 	if state == "" {
@@ -104,6 +135,7 @@ set -u
 HUB_ADDR='` + p.HubAddr + `'
 SITE_HOST='` + p.SiteHost + `'
 CONTROL_URL='` + p.ControlURL + `'
+CONTROL_RU_URL='` + p.ControlRUURL + `'
 EXIT_NAME='` + p.ExitName + `'
 STAGGER_SEC=` + fmt.Sprint(p.StaggerSec) + `
 STATE=` + state + `
@@ -143,6 +175,9 @@ now=$(date +%s)
 if [ "$alerted" = 1 ] && [ $((now - last_alert)) -lt "$REPEAT_SEC" ]; then exit 0; fi
 # The exit itself may be the sick one: without a neutral address abroad answering, say nothing.
 if ! curl -fsS -m 10 -o /dev/null "$CONTROL_URL" 2>/dev/null; then exit 0; fi
+# ...or it lost its way to RU (any HTTP answer from a neutral address there will do): the Hub's
+# own monitor reports that, and the Hub is not what is down.
+if ! curl -sS -m 10 -o /dev/null "$CONTROL_RU_URL" 2>/dev/null; then exit 0; fi
 # Another exit may be looking too: wait this exit's turn, then look once more.
 sleep "$STAGGER_SEC"
 if hub_ok; then exit 0; fi

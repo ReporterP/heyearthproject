@@ -279,3 +279,61 @@ func TestReapStaleClearsDirs(t *testing.T) {
 		t.Errorf("the work dir keeps %v", left)
 	}
 }
+
+// Review finding: when something else already listens on the SOCKS port (a core a crashed run
+// left behind, any other process), the new core cannot bind — and the fetches would go through
+// that stranger and be stored as the lines' results. The probe must refuse instead.
+func TestProbeRefusesBusyPort(t *testing.T) {
+	r, _, live, _ := stubRunner(t, "socks")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	busy := ln.Addr().(*net.TCPAddr).Port
+	cfg, err := ForWay(fixture(t)[0], "p-hub-tcp", busy, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := serveBytes(t, 200, 70000)
+	results, err := r.Probe(context.Background(), cfg, busy, []Target{{Name: "bulk", URL: srv.URL, MinBytes: 65536}})
+	if err == nil {
+		t.Fatalf("results = %+v, no error: the probe went through whatever listens on the port", results)
+	}
+	if !strings.Contains(err.Error(), "busy") {
+		t.Errorf("err = %v, want it to say the port is busy", err)
+	}
+	waitClosed(t, live, "after a refused probe")
+}
+
+// A dial that succeeds says nothing when the core is already gone: something else answered.
+func TestWaitListeningCoreExited(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	exited := make(chan struct{})
+	close(exited)
+	if err := waitListening(context.Background(), ln.Addr().String(), time.Second, exited); err == nil {
+		t.Fatal("waitListening took a stranger's port for the core that had exited")
+	}
+}

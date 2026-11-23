@@ -14,7 +14,7 @@ import (
 // checked before it reaches app_settings. Everything else has its own page (MTProto, alerts,
 // entries, the Hub's numbers) or is gone (migration 000069).
 type settingRule struct {
-	kind     string // bool | int | text | email | secret | secret_url | host | inn | slug | enum
+	kind     string // bool | int | text | email | secret | secret_url | bot_token | host | inn | slug | enum
 	min, max int
 	values   []string // enum: the allowed values, lower case
 }
@@ -62,7 +62,7 @@ var editableSettings = map[string]settingRule{
 	"alert_email": {kind: "email"},
 	// Сторож вне хаба (cmd/api/watchdog.go): written here, never read back.
 	"watchdog_api_pulse_url": {kind: "secret_url"},
-	"watchdog_bot_token":     {kind: "secret"},
+	"watchdog_bot_token":     {kind: "bot_token"},
 	// Приведи друга
 	"referral_enabled":             {kind: "bool"},
 	"referral_reward_referrer_rub": {kind: "int", min: 0, max: 10000},
@@ -133,6 +133,11 @@ func normalizeSetting(key, value string) (string, error) {
 		if !secretURLRe.MatchString(v) {
 			return "", fmt.Errorf("адрес вида https://…, без пробелов и кавычек")
 		}
+	case "bot_token":
+		// It is written into a file root sources on an exit: nothing but a token may pass.
+		if !botTokenRe.MatchString(v) {
+			return "", fmt.Errorf("токен Telegram-бота: <число>:<буквы, цифры, _ и ->, без пробелов и кавычек")
+		}
 	case "secret":
 		if v == "" {
 			return "", fmt.Errorf("пустой секрет не сохраняется: введите новое значение")
@@ -141,5 +146,8 @@ func normalizeSetting(key, value string) (string, error) {
 	}
 	return v, nil
 }
+
+// botTokenRe is config.hubWatchTokenRe: what the watcher's env file on an exit accepts.
+var botTokenRe = regexp.MustCompile(`^[0-9]{3,20}:[A-Za-z0-9_-]{10,100}$`)
 
 var hostRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$`)

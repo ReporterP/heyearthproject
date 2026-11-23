@@ -141,8 +141,13 @@ func TestBackupVerifyTimer(t *testing.T) {
 // 0.10 — a fallen service is raised by systemd (PRD A4). Only a unit without any restart
 // policy gets the drop-in; the services themselves are never restarted.
 func TestRestartPolicyScript(t *testing.T) {
-	if restartPolicyDropIn != "# Installed by deploy --setup-hygiene (cmd/deploy/ops_hygiene.go)\n[Unit]\nStartLimitIntervalSec=600\nStartLimitBurst=3\n\n[Service]\nRestart=on-failure\nRestartSec=3s\n" {
+	if restartPolicyDropIn != "# Installed by deploy --setup-hygiene (cmd/deploy/ops_hygiene.go)\n[Service]\nRestart=on-failure\nRestartSec=3s\n" {
 		t.Errorf("drop-in: %q", restartPolicyDropIn)
+	}
+	// Review finding: a start limit counts manual restarts too — four `systemctl restart nginx`
+	// in ten minutes (a deploy retried over a dropping SSH) would leave nginx down.
+	if strings.Contains(restartPolicyDropIn, "StartLimit") {
+		t.Error("the drop-in must not set a start limit")
 	}
 	s := renderRestartPolicyScript()
 	for _, want := range []string{

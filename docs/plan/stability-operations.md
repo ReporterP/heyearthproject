@@ -442,7 +442,7 @@ CREATE TABLE probe_streaks (
 
 | Родитель | Глушит |
 |---|---|
-| `db-unreachable` | всё, кроме себя и `hysteria-auth-listener` |
+| `db-unreachable` | только зависимые от базы (`dbDependent` в `alert_catalog.go`): `xray-sync-failed`, `quota-cutoff-failopen`, `synthetic-blind`, `bamboo-probe-blind`, `entries-probe-blind`, `backup-*`, `offsite-backup-stale`, `capacity-buy-more`, `ssh-ciphertexts-unreadable`, `payment-*`, `wallet-*`, `stars-payment-*`, `refund-request-*`, `referral-*`. Правка по ревью фазы (23.11): было «всё, кроме себя и `hysteria-auth-listener`», спека говорит «глушит зависимые» — диск, сертификаты, выходы, входы и Бамбук снаружи при лежащей базе приходят как обычно |
 | `entry-unreachable-external` | `bamboo-unreachable-external`, `synth-*`, `relay-*` |
 | `all-exits-down` | `exit-down-*`, `exit-path-down-*`, `synth-*`, `bamboo-*`, `tg-webproxy-readyz` |
 | `exit-down-<N>` | `exit-path-down-<N>-*` |

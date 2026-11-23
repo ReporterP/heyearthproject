@@ -156,7 +156,7 @@ func watchdogOptionsWith(ctx context.Context, id int, setting func(string) (stri
 		return nil, provision.Refusal(fmt.Errorf("адрес хаба задан не IP-адресом — сторож смотрит на хаб по адресу; задайте адрес в «Серверы → Hub → Адрес хаба»"))
 	}
 	return &provision.WatchdogOptions{
-		Params: config.HubWatchParams{HubAddr: hub, SiteHost: siteHost, ControlURL: config.HubWatchControlURL,
+		Params: config.HubWatchParams{HubAddr: hub, SiteHost: siteHost, ControlURL: config.HubWatchControlURL, ControlRUURL: config.HubWatchControlRUURL,
 			ExitName: fmt.Sprintf("выход %d", id), StaggerSec: watchdogStagger(id)},
 		BotToken: token, ChatID: chat, Record: record,
 	}, nil

@@ -168,3 +168,14 @@ export function buildLine(build, formatTime) {
   if (build.started_at) parts.push(`запущена ${formatTime(build.started_at)}`)
   return parts.join(' · ')
 }
+
+// ruViewLine: what the look from RU networks says, for the «Проверки» tab. Without an alert it
+// says only that: a look that failed (a limit, the provider down) raises nothing, so «no alert»
+// is never worded as «everything opens».
+export function ruViewLine(ruAlerts) {
+  const list = ruAlerts || []
+  if (list.length === 0) {
+    return 'сейчас нет тревог о недоступности из РФ. Тревога поднимается после двух недоступностей подряд; проверка, которая не удалась, ничего не поднимает и не снимает.'
+  }
+  return `активны тревоги — ${list.map(a => a.title).join('; ')}.`
+}

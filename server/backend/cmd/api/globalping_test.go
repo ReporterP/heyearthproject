@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -239,5 +240,37 @@ func TestRUProbeProvider(t *testing.T) {
 	}
 	if got := ruProbeProviderOf("checkhost", errors.New("db down")); got != "globalping" {
 		t.Errorf("unreadable setting: %q, want the default", got)
+	}
+}
+
+// Review finding: a target that is no longer looked at (an entry left the rotation, the
+// subscription domain was removed) keeps its alert open for ever — nothing resolves it.
+func TestGpForgetClosesVanishedTargets(t *testing.T) {
+	states := func() map[string]*loopProbeStreak {
+		return map[string]*loopProbeStreak{"site-unreachable-ru": {}, "relay-5-unreachable-ru": {}, "relay-6-unreachable-ru": {}}
+	}
+	live := map[string]bool{"site-unreachable-ru": true, "entry-unreachable-ru": true, "relay-5-unreachable-ru": true}
+	// after an API restart the streaks are gone, the open alerts are not
+	active := []string{"relay-7-unreachable-ru", "subdomain-unreachable-ru", "disk-usage", "relay-7-unreachable-external", "relay-5-unreachable-ru"}
+
+	st := states()
+	var cleared []string
+	gpForget(st, live, active, true, func(key, _ string) { cleared = append(cleared, key) })
+	slices.Sort(cleared)
+	if want := []string{"relay-6-unreachable-ru", "relay-7-unreachable-ru", "subdomain-unreachable-ru"}; !slices.Equal(cleared, want) {
+		t.Errorf("cleared %v, want %v", cleared, want)
+	}
+	if _, ok := st["relay-6-unreachable-ru"]; ok || len(st) != 2 {
+		t.Errorf("streaks = %v, want only the live targets", st)
+	}
+
+	// the list of entries was not read this time: their keys are left alone
+	st, cleared = states(), nil
+	gpForget(st, map[string]bool{"site-unreachable-ru": true, "entry-unreachable-ru": true}, active, false, func(key, _ string) { cleared = append(cleared, key) })
+	if want := []string{"subdomain-unreachable-ru"}; !slices.Equal(cleared, want) {
+		t.Errorf("entries unknown: cleared %v, want %v", cleared, want)
+	}
+	if len(st) != 3 {
+		t.Errorf("entries unknown: streaks = %v, want the entries' streaks kept", st)
 	}
 }

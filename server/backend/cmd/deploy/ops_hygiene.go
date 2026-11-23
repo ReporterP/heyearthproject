@@ -31,9 +31,10 @@ func renderJournaldScript() string {
 
 // ───────────────────────── Restart=on-failure (PRD A4) ─────────────────────────
 
-// restartPolicyDropIn makes systemd raise a fallen service; three falls in ten minutes stop the
-// attempts (the monitor's alert takes over).
-const restartPolicyDropIn = "# Installed by deploy --setup-hygiene (cmd/deploy/ops_hygiene.go)\n[Unit]\nStartLimitIntervalSec=600\nStartLimitBurst=3\n\n[Service]\nRestart=on-failure\nRestartSec=3s\n"
+// restartPolicyDropIn makes systemd raise a fallen service. It sets no start limit of its own:
+// a limit counts manual restarts too, and a deploy retried over a dropping SSH would leave the
+// service down. systemd's default (5 starts in 10 s) still stops a crash loop.
+const restartPolicyDropIn = "# Installed by deploy --setup-hygiene (cmd/deploy/ops_hygiene.go)\n[Service]\nRestart=on-failure\nRestartSec=3s\n"
 
 // restartPolicyFunc defines ensure_restart_policy <unit>: an installed unit without any restart
 // policy (Restart=no) gets the drop-in under $UNIT_ROOT and RP_CHANGED=1. A unit that has a

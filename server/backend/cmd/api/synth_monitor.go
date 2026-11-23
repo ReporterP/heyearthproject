@@ -46,7 +46,8 @@ const (
 	synthBulkMinBytes   = 64 << 10
 	synthInterval       = 10 * time.Minute
 	synthStartDelay     = 90 * time.Second
-	synthRunBudget      = 6 * time.Minute  // a whole run; what it did not reach is not judged
+	synthRunBudget      = 9 * time.Minute  // a whole run; what it did not reach is not judged
+	synthSaveTimeout    = 15 * time.Second // storing a run, also after the budget is spent
 	synthWayTimeout     = 20 * time.Second // the core's lifetime for one bulk download
 	synthServedTimeout  = 30 * time.Second // … for the two targets of the served config
 	synthKeep           = 14 * 24 * time.Hour
@@ -245,6 +246,7 @@ type synthMonitor struct {
 	raise      func(key string, level AlertLevel, title, details string)
 	resolve    func(key, message string)
 	now        func() time.Time
+	budget     time.Duration // 0: synthRunBudget (tests shorten it)
 }
 
 // run makes one run and returns its id and state (pass | fail | blind).
@@ -258,16 +260,20 @@ func (m *synthMonitor) run(ctx context.Context, trigger string) (int64, string, 
 
 // runLocked is run with m.mu already held.
 func (m *synthMonitor) runLocked(ctx context.Context, trigger string) (int64, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, synthRunBudget)
+	budget := m.budget
+	if budget <= 0 {
+		budget = synthRunBudget
+	}
+	runCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	// Without the streaks nothing can be judged, and without the database nothing stored.
-	prev, err := m.store.loadStreaks(ctx)
+	prev, err := m.store.loadStreaks(runCtx)
 	if err != nil {
 		return 0, "", fmt.Errorf("synthetic: streaks not read: %w", err)
 	}
 	run := synthRunRecord{At: m.now(), Vantage: "outside", Trigger: trigger, SubVersion: m.subVersion()}
-	results, complete, blind := m.collect(ctx)
+	results, complete, blind := m.collect(runCtx)
 
 	var next map[string]streak
 	var verdict synthVerdict
@@ -309,7 +315,10 @@ func (m *synthMonitor) runLocked(ctx context.Context, trigger string) (int64, st
 		m.resolve(synthBlindAlert, "Синтетическая проверка снова видит подписку и выходы.")
 	}
 
-	id, err := m.store.save(ctx, run, results, next)
+	// The budget may be spent by now: what the run saw is stored on a deadline of its own.
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), synthSaveTimeout)
+	defer cancelSave()
+	id, err := m.store.save(saveCtx, run, results, next)
 	if err != nil {
 		log.Printf("[synth] прогон не сохранён: %v", err)
 	}
@@ -389,6 +398,11 @@ lines:
 			var errs []string
 			for _, u := range bulkURLs {
 				out, err := m.probe(ctx, cfg, []synth.Target{{Name: "bulk", URL: u, MinBytes: synthBulkMinBytes}}, synthWayTimeout)
+				if ctx.Err() != nil {
+					// The budget ended inside this probe: whatever it returned says nothing about the way.
+					complete = false
+					break lines
+				}
 				if err != nil {
 					coreErrors++
 					lastCoreErr = err.Error()
@@ -416,6 +430,10 @@ lines:
 		var out []synth.Result
 		if err == nil {
 			out, err = m.probe(ctx, cfg, []synth.Target{{Name: "blocked", URL: blockedURL}, {Name: "ru", URL: ruURL}}, synthServedTimeout)
+			if ctx.Err() != nil {
+				complete = false // cut by the budget: neither target is judged
+				break
+			}
 			if err != nil {
 				coreErrors++
 				lastCoreErr = err.Error()

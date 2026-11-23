@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  pathTone, ageLabel, sortAlerts, impactLabel, groupProbes, feedIcon, actionLabel, levelLabel, buildLine, probeSummary,
+  pathTone, ageLabel, sortAlerts, impactLabel, groupProbes, feedIcon, actionLabel, levelLabel, buildLine, probeSummary, ruViewLine,
 } from './opsModel.js'
 
 test('ageLabel: seconds, minutes, hours, days', () => {
@@ -107,4 +107,15 @@ test('levelLabel and buildLine', () => {
   assert.equal(buildLine({ sha: 'abc123def456', started_at: '2026-11-20T17:41:00Z' }, ts => `[${ts}]`), 'сборка abc123def456 · запущена [2026-11-20T17:41:00Z]')
   assert.equal(buildLine({ sha: 'dev', started_at: '' }, ts => ts), 'сборка dev')
   assert.equal(buildLine(undefined, ts => ts), '')
+})
+
+// Review finding: «no alert» is not «everything opens» — a look that failed raises nothing.
+test('ruViewLine: no alert is said as no alert, never as «всё открывается»', () => {
+  const none = ruViewLine([])
+  assert.match(none, /нет тревог/)
+  assert.doesNotMatch(none, /открыва(ю|е)тся\.?$/)
+  assert.match(none, /не удал(а|о)сь|ничего не поднимает/)
+  assert.equal(ruViewLine(undefined), none)
+  const some = ruViewLine([{ title: 'Сайт не открывается из РФ' }, { title: 'Резервный вход недоступен из РФ' }])
+  assert.equal(some, 'активны тревоги — Сайт не открывается из РФ; Резервный вход недоступен из РФ.')
 })

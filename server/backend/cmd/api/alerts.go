@@ -410,10 +410,13 @@ func (m *alertManager) Resolve(key, message string) {
 	}
 	st.active, st.notified, st.inhibitedBy = false, false, ""
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: kind, Title: st.title, Details: message, At: now}, send: send, inc: inc, recovery: send}
-	// The alerts this one muted that are still active: the owner hears of them now, in one message.
-	released, lines, level := m.releaseLocked(key, now)
+	// The alerts this one muted that are still active: the owner hears of them now, in one
+	// message — but only once the resolve itself is on its way (a dropped one is rolled back,
+	// and the parent goes on muting them).
+	var released, lines []string
+	level := AlertWarn
 	title := st.title
-	m.submitLocked(o, prev)
+	m.submitLockedThen(o, prev, func() { released, lines, level = m.releaseLocked(key, now) })
 	if len(released) > 0 {
 		m.enqueue(alertOutgoing{send: true, release: released, ev: alertEvent{Key: key, Level: level, Kind: "notice", At: now,
 			Title:   "Остаются активны",
@@ -440,13 +443,25 @@ func (m *alertManager) Clear(key, reason string) {
 // order equals the order of state decisions (a resolve can never overtake its raise),
 // and releases mu. With queue == nil (tests) o is delivered synchronously after unlock.
 func (m *alertManager) submitLocked(o alertOutgoing, prev alertState) {
+	m.submitLockedThen(o, prev, nil)
+}
+
+// submitLockedThen is submitLocked that also runs accepted — still under mu — once o is on its
+// way (queued, or about to be delivered in place); a dropped o never runs it.
+func (m *alertManager) submitLockedThen(o alertOutgoing, prev alertState, accepted func()) {
 	if m.queue == nil {
+		if accepted != nil {
+			accepted()
+		}
 		m.mu.Unlock()
 		m.deliver(o)
 		return
 	}
 	select {
 	case m.queue <- o:
+		if accepted != nil {
+			accepted()
+		}
 	default:
 		*m.state[o.ev.Key] = prev // not delivered, not journaled: the next Raise/Resolve retries
 		log.Printf("[alerts] WARN: очередь переполнена, событие %s/%s отброшено, состояние ключа откатено", o.ev.Key, o.ev.Kind)
@@ -479,7 +494,7 @@ func (m *alertManager) deliver(o alertOutgoing) {
 	attempt, journal := m.settle(o, ev, send, errors.Is(sendErr, errAlertsNotConfigured))
 	if (o.ev.Kind == "raise" || o.ev.Kind == "repeat") && !ev.Delivered {
 		if to, due := m.emailDue(o.inc); due {
-			m.sendFallbackEmail(to, ev, o.inc)
+			m.background(func() { m.sendFallbackEmail(to, ev, o.inc) })
 		}
 	}
 	if !journal {

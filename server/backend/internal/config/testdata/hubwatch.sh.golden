@@ -5,6 +5,7 @@ set -u
 HUB_ADDR='203.0.113.1'
 SITE_HOST='site.example.test'
 CONTROL_URL='https://control.example.test/generate_204'
+CONTROL_RU_URL='https://control-ru.example.test/'
 EXIT_NAME='выход 3'
 STAGGER_SEC=15
 STATE=/var/lib/heyearth/hubwatch.state
@@ -44,6 +45,9 @@ now=$(date +%s)
 if [ "$alerted" = 1 ] && [ $((now - last_alert)) -lt "$REPEAT_SEC" ]; then exit 0; fi
 # The exit itself may be the sick one: without a neutral address abroad answering, say nothing.
 if ! curl -fsS -m 10 -o /dev/null "$CONTROL_URL" 2>/dev/null; then exit 0; fi
+# ...or it lost its way to RU (any HTTP answer from a neutral address there will do): the Hub's
+# own monitor reports that, and the Hub is not what is down.
+if ! curl -sS -m 10 -o /dev/null "$CONTROL_RU_URL" 2>/dev/null; then exit 0; fi
 # Another exit may be looking too: wait this exit's turn, then look once more.
 sleep "$STAGGER_SEC"
 if hub_ok; then exit 0; fi

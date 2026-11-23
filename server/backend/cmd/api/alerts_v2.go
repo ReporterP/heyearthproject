@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/url"
@@ -86,6 +87,9 @@ func (m *alertManager) enqueue(o alertOutgoing) {
 	case m.queue <- o:
 	default:
 		log.Printf("[alerts] WARN: очередь переполнена, сообщение «%s» отброшено", o.ev.Title)
+		if len(o.release) > 0 {
+			m.unrelease(o.release) // nobody was told: each alert reports itself at its next raise
+		}
 	}
 }
 
@@ -128,15 +132,27 @@ func (m *alertManager) emailDue(inc *alertIncident) (to string, due bool) {
 		return "", false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if inc.emailed || inc.delivered || inc.failures == 0 || m.now().Sub(inc.firstFailAt) < alertEmailAfter {
+		m.mu.Unlock()
 		return "", false
 	}
+	inc.emailed = true // claimed; the address is read from the database without the lock
+	m.mu.Unlock()
 	if to = strings.TrimSpace(m.emailTo()); to == "" {
+		m.emailFailed(inc)
 		return "", false
 	}
-	inc.emailed = true
 	return to, true
+}
+
+// background runs f beside the delivery worker, so that a slow mail server never holds the
+// queue (without a worker — in tests — in place).
+func (m *alertManager) background(f func()) {
+	if m.queue == nil {
+		f()
+		return
+	}
+	go safely("письмо о тревоге", f)
 }
 
 func (m *alertManager) emailFailed(inc *alertIncident) {
@@ -168,12 +184,17 @@ func alertConsoleLink(key string) string {
 
 // alertEmailAddress is where the second channel writes ("" — nowhere).
 func alertEmailAddress() string {
-	v, err := settingOrEmpty(biz.GetSetting, alertEmailSetting)
+	v, err := dbBounded(alertEmailReadTimeout, func(ctx context.Context) (string, error) {
+		return settingOrEmpty(func(key string) (string, error) { return biz.GetSettingContext(ctx, key) }, alertEmailSetting)
+	})
 	if err != nil {
 		return ""
 	}
 	return v
 }
+
+// alertEmailReadTimeout bounds the read of alert_email: the delivery worker waits for it.
+const alertEmailReadTimeout = 3 * time.Second
 
 // sendAlertEmail sends one plain-text letter through the site's mail settings.
 func sendAlertEmail(to, subject, body string) error {

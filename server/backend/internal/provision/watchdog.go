@@ -117,5 +117,8 @@ func watchdogRecipe(n Node, st *State) (Recipe, error) {
 	if err := st.Exit.Watchdog.Params.Validate(); err != nil {
 		return nil, err
 	}
+	if err := config.ValidateHubWatchCreds(st.Exit.Watchdog.BotToken, st.Exit.Watchdog.ChatID); err != nil {
+		return nil, err
+	}
 	return Recipe{watchdogStep(*st.Exit.Watchdog)}, nil
 }

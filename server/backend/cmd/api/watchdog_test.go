@@ -79,7 +79,7 @@ func TestWatchdogOptions(t *testing.T) {
 	if err != nil || o == nil {
 		t.Fatalf("options: %v, %v", o, err)
 	}
-	want := config.HubWatchParams{HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: config.HubWatchControlURL, ExitName: "выход 3", StaggerSec: 30}
+	want := config.HubWatchParams{HubAddr: "203.0.113.1", SiteHost: "site.example.test", ControlURL: config.HubWatchControlURL, ControlRUURL: config.HubWatchControlRUURL, ExitName: "выход 3", StaggerSec: 30}
 	if o.Params != want || o.BotToken != "123456:AAfake_watchdog_token" || o.ChatID != "-1001234567890" {
 		t.Errorf("options = %+v, want params %+v", o, want)
 	}

@@ -263,10 +263,41 @@ func runGlobalpingProbe() {
 		}
 		gpJudge(context.Background(), st, time.Now(), t, RaiseAlert, ResolveAlert)
 	}
-	for key := range gpStates {
+	var open []string
+	for _, a := range alerts.active() {
+		open = append(open, a.Key)
+	}
+	gpForget(gpStates, live, open, err == nil, ClearAlert)
+}
+
+// gpVanishable: the alert of a target the RU view may stop looking at (the subscription
+// domain, an entry). The site and the Hub are always looked at.
+func gpVanishable(key string) bool {
+	return key == "subdomain-unreachable-ru" || (strings.HasPrefix(key, "relay-") && strings.HasSuffix(key, "-unreachable-ru"))
+}
+
+// gpForget: a target that is no longer looked at loses its streak, and its alert is closed
+// silently — nothing would ever resolve it. open lists the active alerts: after an API restart
+// the streaks are gone and the alerts are not. relaysKnown false — the list of entries was not
+// read this time — leaves the entries' keys alone.
+func gpForget(states map[string]*loopProbeStreak, live map[string]bool, open []string, relaysKnown bool, clearAlert func(key, reason string)) {
+	gone := map[string]bool{}
+	for key := range states {
 		if !live[key] {
-			delete(gpStates, key)
+			gone[key] = true
 		}
+	}
+	for _, key := range open {
+		if !live[key] && gpVanishable(key) {
+			gone[key] = true
+		}
+	}
+	for key := range gone {
+		if !relaysKnown && strings.HasPrefix(key, "relay-") {
+			continue
+		}
+		delete(states, key)
+		clearAlert(key, "цель больше не проверяется из РФ — тревога закрыта без уведомления")
 	}
 }
 
