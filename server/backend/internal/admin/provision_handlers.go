@@ -816,6 +816,38 @@ func MTProxyNodeHandler(w http.ResponseWriter, r *http.Request) {
 	startJob(w, r, id, provision.KindMTProxy)
 }
 
+// WatchdogNodeHandler starts «Поставить сторожа»: the Hub watcher on a working exit, a job of
+// its own (KindWatchdog). It writes a script and a timer and touches neither the tunnels nor
+// the firewall of the exit (impact class К0). The recipe refuses while the watcher bot or the
+// alert chat is not set (409 with its text).
+func WatchdogNodeHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseLastPathSegmentBeforeFinal(r.URL.Path, "watchdog")
+	if !ok {
+		writeAdminError(w, http.StatusBadRequest, "Неверный id сервера")
+		return
+	}
+	if !provisionReady(w) {
+		return
+	}
+	n, ok := loadNodeMeta(w, r.Context(), id)
+	if !ok {
+		return
+	}
+	if n.Role == "relay" {
+		writeAdminError(w, http.StatusBadRequest, "Сторож ставится на выход за рубежом: вход стоит в РФ и видит то же, что хаб")
+		return
+	}
+	if !n.HostKeyConfirmed {
+		writeAdminError(w, http.StatusConflict, hostKeyFirstMsg)
+		return
+	}
+	if n.Lifecycle != "online" {
+		writeAdminError(w, http.StatusConflict, "Сторож ставится только на работающий выход — сначала «Настроить»")
+		return
+	}
+	startJob(w, r, id, provision.KindWatchdog)
+}
+
 type confirmPayload struct {
 	ConfirmName string `json:"confirm_name"`
 	// ConfirmLast: «ОТКЛЮЧИТЬ ВСЕХ», typed to switch off the only working exit (B4).

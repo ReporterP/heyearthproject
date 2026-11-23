@@ -1195,3 +1195,32 @@ func TestSaveNodeOptionsRelayTunnel(t *testing.T) {
 		t.Fatalf("statements: %+v", d.stmts)
 	}
 }
+
+// «Поставить сторожа»: a job of its own on a working exit with a confirmed host key.
+func TestWatchdogNodeHandler(t *testing.T) {
+	p := &fakeProvisioner{}
+	withProvisioning(t, p, provision.Node{ID: 3, Role: "exit", Lifecycle: "online"})
+	path := "/api/admin/servers/3/watchdog"
+	if rec := call(WatchdogNodeHandler, "POST", path, ""); rec.Code != 409 || !strings.Contains(rec.Body.String(), "отпечаток") {
+		t.Errorf("unconfirmed key: %d %s", rec.Code, rec.Body)
+	}
+	NodeJobs = fakeJobs{node: provision.Node{ID: 3, Role: "relay", Lifecycle: "online", HostKeyConfirmed: true}}
+	if rec := call(WatchdogNodeHandler, "POST", path, ""); rec.Code != 400 {
+		t.Errorf("an entry: %d %s", rec.Code, rec.Body)
+	}
+	NodeJobs = fakeJobs{node: provision.Node{ID: 3, Role: "exit", Lifecycle: "pending", HostKeyConfirmed: true}}
+	if rec := call(WatchdogNodeHandler, "POST", path, ""); rec.Code != 409 {
+		t.Errorf("not online: %d %s", rec.Code, rec.Body)
+	}
+	if len(p.kinds) != 0 {
+		t.Fatalf("a job despite the guards: %v", p.kinds)
+	}
+	NodeJobs = fakeJobs{node: provision.Node{ID: 3, Role: "exit", Lifecycle: "online", HostKeyConfirmed: true}}
+	rec := call(WatchdogNodeHandler, "POST", path, "")
+	if rec.Code != 202 || !slices.Equal(p.kinds, []string{provision.KindWatchdog}) || !strings.Contains(rec.Body.String(), `"kind":"watchdog"`) {
+		t.Fatalf("install: %d %s %v", rec.Code, rec.Body, p.kinds)
+	}
+	if rec := call(WatchdogNodeHandler, "POST", "/api/admin/servers/x/watchdog", ""); rec.Code != 400 {
+		t.Errorf("bad id: %d", rec.Code)
+	}
+}

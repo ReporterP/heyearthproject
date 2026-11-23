@@ -57,3 +57,38 @@ func TestNormalizeSetting(t *testing.T) {
 		}
 	}
 }
+
+// The watchdog's addresses and its bot token are written, never read back: whoever reads the
+// settings learns only that they are set.
+func TestWatchdogSettingsWriteOnly(t *testing.T) {
+	plain, set := redactSettings(map[string]string{
+		"watchdog_api_pulse_url": "https://pulse.example.test/ping/0f0f0f0f",
+		"watchdog_bot_token":     "123456:AAfake_watchdog_token",
+		"support_contact":        "@support",
+	})
+	for _, key := range []string{"watchdog_api_pulse_url", "watchdog_bot_token"} {
+		if _, ok := plain[key]; ok {
+			t.Errorf("%s is readable through the settings API", key)
+		}
+		if !set[key] {
+			t.Errorf("%s: secrets_set must say it is set", key)
+		}
+	}
+	if plain["support_contact"] != "@support" {
+		t.Errorf("ordinary settings must stay readable: %v", plain)
+	}
+	if _, set := redactSettings(map[string]string{}); set["watchdog_api_pulse_url"] || set["watchdog_bot_token"] {
+		t.Error("absent settings reported as set")
+	}
+	if v, err := normalizeSetting("watchdog_api_pulse_url", " https://pulse.example.test/ping/0f0f0f0f "); err != nil || v != "https://pulse.example.test/ping/0f0f0f0f" {
+		t.Errorf("a good pulse address: %q, %v", v, err)
+	}
+	for _, bad := range []string{"", "http://pulse.example.test/ping/x", "pulse.example.test", "https://pulse.example.test/ping/a b", "https://pulse.example.test/'x"} {
+		if v, err := normalizeSetting("watchdog_api_pulse_url", bad); err == nil {
+			t.Errorf("pulse address %q accepted as %q", bad, v)
+		}
+	}
+	if _, err := normalizeSetting("watchdog_bot_token", "123456:AAfake_watchdog_token"); err != nil {
+		t.Errorf("bot token: %v", err)
+	}
+}

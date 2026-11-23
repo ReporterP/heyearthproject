@@ -53,10 +53,15 @@ func (e *hubAddrEngine) reprovisionNode(ctx context.Context, id int) (int64, err
 
 // reprovisionNodeWith is reprovisionNode calling onPoll at every poll (an error stops waiting).
 func (e *hubAddrEngine) reprovisionNodeWith(ctx context.Context, id int, onPoll func() error) (int64, error) {
+	return e.runNodeJob(ctx, id, provision.KindReprovision, onPoll)
+}
+
+// runNodeJob starts a job of kind on node id and waits for it (polling, capped).
+func (e *hubAddrEngine) runNodeJob(ctx context.Context, id int, kind string, onPoll func() error) (int64, error) {
 	if e.env.Nodes == nil || e.env.Jobs == nil {
 		return 0, fmt.Errorf("провижн не подключён")
 	}
-	job, err := e.env.Nodes.Start(ctx, id, provision.KindReprovision)
+	job, err := e.env.Nodes.Start(ctx, id, kind)
 	if err != nil {
 		return job, err
 	}
@@ -115,6 +120,12 @@ func (e *hubAddrEngine) stepNodes(ctx context.Context, c hubAddrChange, prev hub
 	if err != nil {
 		return ch, err
 	}
+	// The exits that run the Hub watcher: it is reinstalled with the new address (a failure is
+	// only reported — the watcher also looks at the Hub by the site's name).
+	watched := map[int]bool{}
+	if csv, err := e.env.Setting(watchdogExitsSetting, ""); err == nil {
+		watched = parseWatchdogExits(csv)
+	}
 	var bad []string
 	for _, n := range nodes {
 		r := hubAddrNodeResult{ServerID: n.ID, Name: n.Name, IP: n.IP, Role: n.Role}
@@ -129,6 +140,12 @@ func (e *hubAddrEngine) stepNodes(ctx context.Context, c hubAddrChange, prev hub
 			e.prepareNode(ctx, n, nw, hubAddrs, &r, lg)
 			if r.Status != hubNodeOK {
 				bad = append(bad, n.Name+": "+r.Error)
+			} else if n.Role == "exit" && watched[n.ID] {
+				if _, err := e.runNodeJob(withWatchdogHubAddr(ctx, nw.String()), n.ID, provision.KindWatchdog, nil); err != nil {
+					lg.printf("%s: сторож не переустановлен на новый адрес: %v (он продолжает смотреть на хаб по имени сайта; повторите «Поставить сторожа» после смены)", n.Name, err)
+				} else {
+					lg.printf("%s: сторож переустановлен на новый адрес", n.Name)
+				}
 			}
 		}
 		ch.Nodes = append(ch.Nodes, r)

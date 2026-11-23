@@ -68,6 +68,15 @@ func setupOpsHub(client *ssh.Client, cfg *deployConfig, backupTarget, exitPasswo
 		bc.target = backupTarget // fail2ban still must not whitelist the exit
 	}
 	step("journald + fail2ban", func() error { return setupJournaldFail2ban(client, cfg.deployPort, bc.target) })
+	// The Hub's pulse to the outside watchdog — only when its address is in server/.env.
+	if script, ok := pulseStep(cfg.env.get("WATCHDOG_PULSE_URL", "")); ok {
+		step("hub pulse", func() error {
+			if err := validatePulseURL(strings.TrimSpace(cfg.env.get("WATCHDOG_PULSE_URL", ""))); err != nil {
+				return err
+			}
+			return runOpsScript(client, "hub pulse (setup-ops)", script)
+		})
+	}
 	step("nginx stream timeouts + limits", func() error { return patchNginxStream(client) })
 	step("egress guard", func() error { return installEgressGuard(client) })
 	step("AmneziaWG remains (D7)", func() error { return removeAWGHub(client) })

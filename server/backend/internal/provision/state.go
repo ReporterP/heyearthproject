@@ -71,6 +71,8 @@ type ExitOptions struct {
 	MTProto     *MTProtoOptions // nil: no MTProxy (mtproto_status = 'disabled')
 	// TGMTProxy: the Telegram WEB proxy's MTProxy on the exit (nil: the WEB proxy is off).
 	TGMTProxy *TGExitOptions
+	// Watchdog: the Hub watcher on the exit (nil: not set up). Only a KindWatchdog job installs it.
+	Watchdog *WatchdogOptions
 	NodeAgent func() ([]byte, error)
 	CA        func() (cert, key []byte, err error)
 	// CASigner, when set, signs node certificates instead of CA()'s key (CA() may then return no

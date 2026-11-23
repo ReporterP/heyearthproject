@@ -1036,6 +1036,7 @@ func main() {
 	// The ops feed: which build starts now, which ran before, and whether the Hub just booted.
 	// Here, after every check that can stop the start, so a refused start leaves no record.
 	recordStartEvents()
+	startAPIPulse() // the API's own pulse to the outside watchdog (nothing is sent until its address is set)
 	log.Printf("REST gateway + Admin API on %s", httpAddr)
 	// nginx-facing listener: the only one whose requests may carry trusted proxy headers.
 	log.Fatal(newMainHTTPServer(httpAddr, loadShed(limitPublicBodies(http.DefaultServeMux))).ListenAndServe())

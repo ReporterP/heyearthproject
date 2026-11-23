@@ -239,3 +239,73 @@ func TestDNSTrustAdvances(t *testing.T) {
 		t.Fatal("before the nodes are ready it must be refused")
 	}
 }
+
+// An exit that runs the Hub watcher gets it reinstalled with the address the Hub is moving
+// to; an exit without one and an entry do not.
+func TestHubAddrNodesStepReinstallsWatchdog(t *testing.T) {
+	w := newTestWizard(t)
+	r := withRunner(w)
+	w.relay.out = "SSH_ALLOW_ADDED"
+	w.set[watchdogExitsSetting] = "2"
+	var addrs []string
+	started := 0
+	r.onStart = func(int) {}
+	w.e.env.Nodes = watchdogAddrRecorder{fakeRunner: r, addrs: &addrs, started: &started}
+	id := wizardAt(t, w, hubAddrChecked)
+	if err := w.e.RunStep(context.Background(), id, hubStepNodes); err != nil {
+		t.Fatal(err)
+	}
+	// reprovision of both nodes, then the watchdog job on exit 2 only
+	var watchdogOn []int
+	for i, kind := range r.kinds {
+		if kind == provision.KindWatchdog {
+			watchdogOn = append(watchdogOn, r.started[i])
+			if addrs[i] != tNew {
+				t.Errorf("the watchdog job got the address %q, want the new one %s", addrs[i], tNew)
+			}
+		} else if addrs[i] != "" {
+			t.Errorf("a %s job carries a watchdog address", kind)
+		}
+	}
+	if len(watchdogOn) != 1 || watchdogOn[0] != 2 {
+		t.Fatalf("watchdog jobs on %v (kinds %v on %v), want one on exit 2", watchdogOn, r.kinds, r.started)
+	}
+	if c := w.change(t, id); c.State != hubAddrNodesReady || !strings.Contains(c.Steps[hubStepNodes].Log, "сторож") {
+		t.Fatalf("state %s, log:\n%s", c.State, c.Steps[hubStepNodes].Log)
+	}
+
+	// a failed watchdog job does not stop the address change: the watcher also looks by name
+	w = newTestWizard(t)
+	r = withRunner(w)
+	w.set[watchdogExitsSetting] = "2"
+	w.e.env.Nodes = failingWatchdog{r}
+	id = wizardAt(t, w, hubAddrChecked)
+	if err := w.e.RunStep(context.Background(), id, hubStepNodes); err != nil {
+		t.Fatalf("a failed watchdog reinstall stopped the step: %v", err)
+	}
+	if c := w.change(t, id); c.State != hubAddrNodesReady || !strings.Contains(c.Steps[hubStepNodes].Log, "сторож не переустановлен") {
+		t.Fatalf("state %s, log:\n%s", c.State, c.Steps[hubStepNodes].Log)
+	}
+}
+
+// watchdogAddrRecorder notes the watchdog address each started job carries in its context.
+type watchdogAddrRecorder struct {
+	*fakeRunner
+	addrs   *[]string
+	started *int
+}
+
+func (w watchdogAddrRecorder) Start(ctx context.Context, id int, kind string) (int64, error) {
+	*w.addrs = append(*w.addrs, watchdogHubAddrFrom(ctx))
+	return w.fakeRunner.Start(ctx, id, kind)
+}
+
+// failingWatchdog refuses every watchdog job.
+type failingWatchdog struct{ *fakeRunner }
+
+func (f failingWatchdog) Start(ctx context.Context, id int, kind string) (int64, error) {
+	if kind == provision.KindWatchdog {
+		return 0, errors.New("сторож не настроен")
+	}
+	return f.fakeRunner.Start(ctx, id, kind)
+}

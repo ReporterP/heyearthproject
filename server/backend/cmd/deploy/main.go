@@ -80,6 +80,7 @@ func main() {
 	exitNodeMTProxy := flag.Bool("exit-node-mtproxy", true, "MTProxy на exit (--setup-exit-node; без флага выключатель ноды не меняется, у новой — включён)")
 	sshCmd := flag.String("ssh", "", "выполнить SSH команду на сервере и вернуть результат")
 	setupHygieneFlag := flag.Bool("setup-hygiene", false, "гигиена Hub без перезапуска VPN (класс К0): срок журнала 45 дней / 4 ГБ, Restart=on-failure сервисам без политики, таймер учебного восстановления бэкапа (вс 05:00 МСК), уровень лога Бамбука error (действует со следующего перезапуска hysteria2-server)")
+	setupWatchdogFlag := flag.Bool("setup-watchdog", false, "пульс хаба во внешний сторож (класс К0): таймер раз в минуту открывает адрес WATCHDOG_PULSE_URL из server/.env; адрес хранится на хабе только в /etc/heyearth/pulse.env (600)")
 	setupOpsFlag := flag.Bool("setup-ops", false, "эксплуатация Hub: чистка ufw, ежедневный бэкап (+копия на exit: --backup-target), fail2ban, journald, nginx stream timeout, защита xray API")
 	backupTarget := flag.String("backup-target", "", "IP exit-ноды для копии бэкапа (--setup-ops); пароль: --exit-node-password или EXIT_NODE_SSH_PASSWORD")
 	setupHardeningFlag := flag.Bool("setup-hardening", false, "защита Hub: sysctl (SYN flood, conntrack), автообновления безопасности, лимиты sshd, таблица nft против флуда с одного адреса; изменения sshd и файрвола откатываются сами за 5 мин без подтверждения новым входом")
@@ -123,6 +124,8 @@ func main() {
 		mode = "setup-hysteria2-hub"
 	case *setupHygieneFlag:
 		mode = "setup-hygiene"
+	case *setupWatchdogFlag:
+		mode = "setup-watchdog"
 	case *setupOpsFlag:
 		mode = "setup-ops"
 	case *setupHardeningFlag:
@@ -148,7 +151,7 @@ func main() {
 	case flag.NArg() >= 1 && flag.Arg(0) == "fix-db":
 		mode = "fix-db"
 	default:
-		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hygiene, --setup-hardening, --harden-nodes, --relay-stream ID, --relay-tunnel ID, --path-matrix ID, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
+		log.Fatal("Укажи один из флагов: --main, --update-main, --restart, --site, --admin-web, --vue-site, --deploy-site, --nginx, --setup-xray, --setup-hysteria2-hub, --setup-ops, --setup-hygiene, --setup-watchdog, --setup-hardening, --harden-nodes, --relay-stream ID, --relay-tunnel ID, --path-matrix ID, --stream-proxy-protocol on|off, --ensure-hub-provisioning, --setup-exit-node, --status, --rotate-node-agent-certs. Или: fix-db")
 	}
 
 	repoRoot := findRepoRoot()
@@ -197,6 +200,10 @@ func main() {
 	}
 	if mode == "setup-hygiene" {
 		setupHygiene(client)
+		return
+	}
+	if mode == "setup-watchdog" {
+		setupWatchdog(client, cfg)
 		return
 	}
 	if mode == "setup-ops" {

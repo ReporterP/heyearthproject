@@ -290,6 +290,12 @@ func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Re
 			return nil, nil, err
 		}
 		st.Exit.TGMTProxy = tg
+	case kind == provision.KindWatchdog: // the Hub watcher only: no Hub address list, no tunnels
+		wd, err := watchdogOptions(ctx, n.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		st.Exit.Watchdog = wd
 	case kind == provision.KindDeprovision: // taking a node out of service needs no options
 	case n.Role == "exit":
 		opts, err := apiExitOptions(n)

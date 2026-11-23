@@ -25,6 +25,9 @@ var secretSettingKeys = []string{
 	"yookassa_secret_key", "smtp_password",
 	"hysteria2_obfs_password", "hysteria2_stats_secret", "hub_tunnel_password",
 	"alert_telegram_bot_token", "vless_uuid",
+	// The watchdog outside the Hub: its pulse address and the watcher bot (cmd/api/watchdog.go).
+	// The address is a secret too: whoever knows it can keep the pulse alive in the Hub's place.
+	"watchdog_api_pulse_url", "watchdog_bot_token", "probe_agent_token",
 }
 
 // loadAllSettings is biz.GetAllSettings; tests swap it.

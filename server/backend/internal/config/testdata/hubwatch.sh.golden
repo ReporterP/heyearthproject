@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Installed by the HiEarth Hub (job «watchdog»). DO NOT EDIT: the next install overwrites it.
+# Looks at the Hub from outside once a minute; tells the owner's Telegram chat when it is gone.
+set -u
+HUB_ADDR='203.0.113.1'
+SITE_HOST='site.example.test'
+CONTROL_URL='https://control.example.test/generate_204'
+EXIT_NAME='выход 3'
+STAGGER_SEC=15
+STATE=/var/lib/heyearth/hubwatch.state
+ENV=/etc/heyearth/hubwatch.env
+FAIL_THRESHOLD=3
+REPEAT_SEC=1800
+
+fails=0; oks=0; alerted=0; last_alert=0
+if [ -r "$STATE" ]; then . "$STATE"; fi
+save() {
+  mkdir -p "$(dirname "$STATE")"
+  printf 'fails=%s\noks=%s\nalerted=%s\nlast_alert=%s\n' "$fails" "$oks" "$alerted" "$last_alert" > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"
+}
+# The Hub answers when the site's health check opens on the address this watcher was installed
+# with, or on the one the site's name resolves to now (the Hub's address may have been changed,
+# or a change rolled back, since the install).
+hub_ok() {
+  curl -fsS -m 10 -o /dev/null --resolve "$SITE_HOST:443:$HUB_ADDR" "https://$SITE_HOST/api/v1/health" 2>/dev/null ||
+    curl -fsS -m 10 -o /dev/null "https://$SITE_HOST/api/v1/health" 2>/dev/null
+}
+send() {
+  . "$ENV"
+  curl -fsS -m 15 -o /dev/null --data-urlencode "chat_id=$CHAT_ID" --data-urlencode "text=$1" "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" 2>/dev/null
+}
+
+if hub_ok; then
+  fails=0; oks=$((oks + 1))
+  if [ "$alerted" = 1 ] && [ "$oks" -ge 2 ]; then
+    if send "✅ Хаб снова доступен снаружи (взгляд: $EXIT_NAME)."; then alerted=0; fi
+  fi
+  save
+  exit 0
+fi
+oks=0; fails=$((fails + 1)); save
+if [ "$fails" -lt "$FAIL_THRESHOLD" ]; then exit 0; fi
+now=$(date +%s)
+if [ "$alerted" = 1 ] && [ $((now - last_alert)) -lt "$REPEAT_SEC" ]; then exit 0; fi
+# The exit itself may be the sick one: without a neutral address abroad answering, say nothing.
+if ! curl -fsS -m 10 -o /dev/null "$CONTROL_URL" 2>/dev/null; then exit 0; fi
+# Another exit may be looking too: wait this exit's turn, then look once more.
+sleep "$STAGGER_SEC"
+if hub_ok; then exit 0; fi
+if send "🔴 Хаб недоступен снаружи (взгляд: $EXIT_NAME): $fails проверок подряд сайт не открылся по адресу хаба. Что делать, когда пульта нет: docs/runbooks/hub-down.md"; then
+  alerted=1; last_alert=$(date +%s); save
+fi

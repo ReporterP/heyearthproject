@@ -14,7 +14,7 @@ import (
 // checked before it reaches app_settings. Everything else has its own page (MTProto, alerts,
 // entries, the Hub's numbers) or is gone (migration 000069).
 type settingRule struct {
-	kind     string // bool | int | text | email | secret | host | inn | slug | enum
+	kind     string // bool | int | text | email | secret | secret_url | host | inn | slug | enum
 	min, max int
 	values   []string // enum: the allowed values, lower case
 }
@@ -57,6 +57,9 @@ var editableSettings = map[string]settingRule{
 	// ru_probe_provider: who looks at the entries from RU — globalping (default) | checkhost.
 	"ru_probe_provider": {kind: "enum", values: []string{"globalping", "checkhost"}},
 	"probe_agent_token": {kind: "secret"},
+	// Сторож вне хаба (cmd/api/watchdog.go): written here, never read back.
+	"watchdog_api_pulse_url": {kind: "secret_url"},
+	"watchdog_bot_token":     {kind: "secret"},
 	// Приведи друга
 	"referral_enabled":             {kind: "bool"},
 	"referral_reward_referrer_rub": {kind: "int", min: 0, max: 10000},
@@ -69,6 +72,9 @@ var editableSettings = map[string]settingRule{
 	"b2b_enabled":          {kind: "bool"},
 	"b2b_member_plan":      {kind: "slug"}, // the plan members of an active company get (jzd5.24)
 }
+
+// secretURLRe: an https address that can be put into a script or a request as it is.
+var secretURLRe = regexp.MustCompile("^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]{4,300}$")
 
 var innRe = regexp.MustCompile(`^(\d{10}|\d{12})$`)
 
@@ -119,6 +125,10 @@ func normalizeSetting(key, value string) (string, error) {
 		v = strings.ToLower(v)
 		if !slices.Contains(rule.values, v) {
 			return "", fmt.Errorf("значение: %s", strings.Join(rule.values, " | "))
+		}
+	case "secret_url":
+		if !secretURLRe.MatchString(v) {
+			return "", fmt.Errorf("адрес вида https://…, без пробелов и кавычек")
 		}
 	case "secret":
 		if v == "" {
