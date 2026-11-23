@@ -77,24 +77,34 @@ func flagStateLabel(s string) string {
 	return s
 }
 
-// setFlagState moves the flag to `to`: the setting, one subscription version bump, one feed
-// record. A state outside States is refused; the state already set changes nothing.
-func setFlagState(ctx context.Context, f subFlag, to, by string) error {
+// applyFlagState writes `to` and bumps the subscription version once; it records nothing.
+// A state outside States is refused; the state already set changes nothing (changed=false).
+func applyFlagState(ctx context.Context, f subFlag, to string) (from string, changed bool, err error) {
 	if len(f.States) > 0 && !slices.Contains(f.States, to) {
-		return fmt.Errorf("флаг %s: состояние %q — допустимы %v", f.Key, to, f.States)
+		return "", false, fmt.Errorf("флаг %s: состояние %q — допустимы %v", f.Key, to, f.States)
 	}
-	from, err := flagState(ctx, f)
+	from, err = flagState(ctx, f)
 	if err != nil {
-		return fmt.Errorf("флаг %s: %w", f.Key, err)
+		return "", false, fmt.Errorf("флаг %s: %w", f.Key, err)
 	}
 	if from == to {
-		return nil
+		return from, false, nil
 	}
 	if err := flagSet(ctx, f.Key, to); err != nil {
-		return fmt.Errorf("флаг %s: %w", f.Key, err)
+		return from, false, fmt.Errorf("флаг %s: %w", f.Key, err)
 	}
 	if err := flagBump(ctx); err != nil {
-		return fmt.Errorf("флаг %s записан, версия подписки не поднята: %w", f.Key, err)
+		return from, true, fmt.Errorf("флаг %s записан, версия подписки не поднята: %w", f.Key, err)
+	}
+	return from, true, nil
+}
+
+// setFlagState moves the flag to `to` (applyFlagState) and writes the change to the feed:
+// «<label>: тест → всем», target flag:<key>, К0.
+func setFlagState(ctx context.Context, f subFlag, to, by string) error {
+	from, changed, err := applyFlagState(ctx, f, to)
+	if err != nil || !changed {
+		return err
 	}
 	recordOps(biz.OpsEvent{Kind: "action", Actor: by, Target: "flag:" + f.Key, Impact: biz.ImpactK0, OK: true,
 		Summary: fmt.Sprintf("%s: %s → %s", f.Label, flagStateLabel(from), flagStateLabel(to))})

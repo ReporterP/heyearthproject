@@ -51,6 +51,9 @@ var editableSettings = map[string]settingRule{
 	"xray_revoke_restart": {kind: "enum", values: []string{"off", "night", "now"}},
 	// bamboo_optimise: moving Бамбук to a faster exit — night (quiet window only, default) | off.
 	"bamboo_optimise": {kind: "enum", values: []string{"night", "off"}},
+	// canary_auto_rollback: the guard hour of a subscription flag rolls a change that made things
+	// worse back by itself (A3) — on (default) | off (an alert instead, the flag stays).
+	"canary_auto_rollback": {kind: "enum", values: []string{"on", "off"}},
 	// Синтетический клиент (cmd/api/synth_monitor.go): the timer's switch, and the token a
 	// probe in an operator's network reports with (empty: no intake).
 	"synth_enabled": {kind: "bool"},

@@ -153,6 +153,14 @@ var alertCatalog = []alertEntry{
 		Meaning: "Синтетическая проверка ничего не видит: о строках подписки сейчас нет данных, тревоги по ним не поднимаются и не снимаются.",
 		Usual:   "Нет живого выхода, через который смотреть; у тестового пользователя нет подписки со всеми строками; ядро не запускается.",
 		Actions: []string{"probes.run", "exit.verify"}}},
+	{Prefix: canaryRollbackAlertPrefix, Info: alertInfo{
+		Meaning: "Изменение флага подписки после «всем» ухудшило строки подписки: флаг вернулся в прежнее состояние сам (или, при выключенном автооткате, ждёт отката вручную).",
+		Usual:   "Изменение ломает строку на части клиентов; реже — совпало с поломкой входа или выхода.",
+		Actions: []string{"subscription.rollback", "probes.run"}}},
+	{Key: canaryBlindAlert, Info: alertInfo{
+		Meaning: "Канарейка идёт вслепую: синтетическая проверка ничего не видит, выдержка не засчитывается, страховочный час не откатывает.",
+		Usual:   "Нет живого выхода, через который смотреть; у тестового пользователя нет подписки со всеми строками.",
+		Actions: []string{"probes.run", "subscription.rollback"}}},
 	{Prefix: settingOutsideAlertPrefix, Info: alertInfo{
 		Meaning: "Настройка изменена не через пульт: SQL или другой инструмент. Изменение не прошло ни канарейку, ни аудит.",
 		Usual:   "Ручная правка в базе.",
@@ -303,9 +311,9 @@ func alertInfoFor(key string) alertInfo {
 // exits, the entries, Бамбук from outside) says something of its own and is sent as usual: the
 // VPN lives through a database outage, and a dead exit during one is news.
 var (
-	dbDependentKeys = []string{"xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
+	dbDependentKeys = []string{canaryBlindAlert, "xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
 		"backup-stale", "offsite-backup-stale", "backup-verify-failed", capacityAlertKey, sshCiphertextsAlertKey}
-	dbDependentPrefixes = []string{settingOutsideAlertPrefix, "payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
+	dbDependentPrefixes = []string{settingOutsideAlertPrefix, canaryRollbackAlertPrefix, "payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
 )
 
 func dbDependent(key string) bool {

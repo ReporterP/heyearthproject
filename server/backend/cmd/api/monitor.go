@@ -105,6 +105,10 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, domainCheckEvery, func() {
 		safely("срок домена", checkDomainExpiry)
 	})
+	// The canary of subscription flags (canary_runner.go): a tick a minute while a change runs.
+	go runEvery(2*time.Minute, time.Minute, func() {
+		safely("канарейка", runCanaryTick)
+	})
 	// A15: a watched setting changed outside the console (settings_watch.go).
 	go runEvery(4*time.Minute, 5*time.Minute, func() {
 		safely("мимо пульта", runSettingsWatch)
