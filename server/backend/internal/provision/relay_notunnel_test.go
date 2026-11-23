@@ -161,7 +161,9 @@ func TestTunnelToggleCommitsOnlyOnSuccess(t *testing.T) {
 	if id := f.start(t, KindProvision); f.store.jobs[id].Status != JobSucceeded {
 		t.Fatalf("setup 2:\n%s", f.dump(id))
 	}
-	relayHubTunnelUp = func(context.Context, Remote, *State, RelayOptions) error { return errors.New("GRE не проходит") }
+	relayHubTunnelUp = func(context.Context, Remote, *State, RelayOptions) error {
+		return errors.New("GRE не проходит")
+	}
 	id = f.start(t, KindTunnelOn)
 	if f.store.jobs[id].Status != JobFailed || len(f.hooks.relayTunnel) != 0 {
 		t.Fatalf("a failed tunnel on must not commit the flag: %v\n%s", f.hooks.relayTunnel, f.dump(id))
