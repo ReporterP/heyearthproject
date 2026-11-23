@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/buildmeta"
 	"github.com/heyearth/backend/internal/config"
 	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
@@ -99,7 +100,15 @@ func main() {
 	// 1. Собрать бинарник для Linux
 	fmt.Println("[1/5] Сборка бинарника для Linux...")
 	binaryPath := filepath.Join(backendRoot, binaryName+".bin")
-	cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/api/")
+	// The commit is stamped into the binary: the API reports it on /api/admin/version and in
+	// the ops feed («запущена сборка X, была Y»).
+	stamp, label, gitErr := buildmeta.BuildArgs(backendRoot, time.Now())
+	if gitErr != nil {
+		fmt.Printf("    WARN: коммит не определён (%v) — сборка помечена %q\n", gitErr, label)
+	}
+	fmt.Printf("    Сборка: %s\n", label)
+	buildCmd := append([]string{"build"}, stamp...)
+	cmd := exec.Command("go", append(buildCmd, "-o", binaryPath, "./cmd/api/")...)
 	cmd.Dir = backendRoot
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	cmd.Stdout = os.Stdout

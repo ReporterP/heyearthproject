@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -789,6 +790,7 @@ func httpGateway(srv *server) http.HandlerFunc {
 // ─────────────────────── Main ───────────────────────
 
 func main() {
+	log.Printf("[boot] сборка %s (собрана %s)", buildSHA, cmp.Or(buildTime, "—"))
 	if err := db.InitDB(); err != nil {
 		log.Fatalf("failed to initialize DB: %v", err)
 	}
@@ -1016,6 +1018,7 @@ func main() {
 
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()
+	registerVersionRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()

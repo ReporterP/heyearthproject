@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/buildmeta"
 	"github.com/heyearth/backend/internal/config"
 	sshcrypto "github.com/heyearth/backend/internal/crypto"
 	"github.com/heyearth/backend/internal/provision"
@@ -645,7 +646,13 @@ func buildGoBinary(backendRoot, name, outName string) string {
 	outPath := filepath.Join(backendRoot, ".build", outName)
 	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
 
-	cmd := exec.Command("go", "build", "-o", outPath, "./cmd/"+name)
+	// Stamp the commit (cmd/api reads main.buildSHA / main.buildTime; other binaries ignore it).
+	stamp, label, gitErr := buildmeta.BuildArgs(backendRoot, time.Now())
+	if gitErr != nil {
+		log.Printf("WARN: коммит не определён (%v) — сборка %s помечена %q", gitErr, name, label)
+	}
+	buildCmd := append([]string{"build"}, stamp...)
+	cmd := exec.Command("go", append(buildCmd, "-o", outPath, "./cmd/"+name)...)
 	cmd.Dir = backendRoot
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	cmd.Stdout = os.Stdout
