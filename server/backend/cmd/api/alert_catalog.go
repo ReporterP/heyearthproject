@@ -153,6 +153,10 @@ var alertCatalog = []alertEntry{
 		Meaning: "Синтетическая проверка ничего не видит: о строках подписки сейчас нет данных, тревоги по ним не поднимаются и не снимаются.",
 		Usual:   "Нет живого выхода, через который смотреть; у тестового пользователя нет подписки со всеми строками; ядро не запускается.",
 		Actions: []string{"probes.run", "exit.verify"}}},
+	{Prefix: settingOutsideAlertPrefix, Info: alertInfo{
+		Meaning: "Настройка изменена не через пульт: SQL или другой инструмент. Изменение не прошло ни канарейку, ни аудит.",
+		Usual:   "Ручная правка в базе.",
+		Actions: []string{"subscription.rollback", "hub.status"}}},
 	{Prefix: "synth-way:", Info: alertInfo{
 		Meaning: "Через этот путь подписки данные не идут: объект в 64 КБ не скачивается целиком, хотя соединение может устанавливаться.",
 		Usual:   "Вход или транзит его провайдера теряет потоки; реже — хаб или выход.",
@@ -301,7 +305,7 @@ func alertInfoFor(key string) alertInfo {
 var (
 	dbDependentKeys = []string{"xray-sync-failed", quotaFailOpenAlertKey, synthBlindAlert, bambooBlindAlertKey, entryBlindAlert,
 		"backup-stale", "offsite-backup-stale", "backup-verify-failed", capacityAlertKey, sshCiphertextsAlertKey}
-	dbDependentPrefixes = []string{"payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
+	dbDependentPrefixes = []string{settingOutsideAlertPrefix, "payment-", "wallet-", "stars-payment-", "refund-request-", "referral-"}
 )
 
 func dbDependent(key string) bool {

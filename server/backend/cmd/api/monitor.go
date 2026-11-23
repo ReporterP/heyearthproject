@@ -105,6 +105,10 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, domainCheckEvery, func() {
 		safely("срок домена", checkDomainExpiry)
 	})
+	// A15: a watched setting changed outside the console (settings_watch.go).
+	go runEvery(4*time.Minute, 5*time.Minute, func() {
+		safely("мимо пульта", runSettingsWatch)
+	})
 	// A13: a node that comes back after two minutes and more gets one «verify» job (node_return.go).
 	go runEvery(3*time.Minute, nodeReturnEvery, func() {
 		safely("возврат узлов", checkNodeReturns)
