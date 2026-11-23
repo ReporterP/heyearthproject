@@ -157,3 +157,32 @@ func predictBeforeSwap(c *sftp.Client, client *ssh.Client, apiPath string) {
 		os.Exit(3)
 	}
 }
+
+// noSelfcheckFlag is --no-selfcheck: do not wait for the synthetic «start» run.
+var noSelfcheckFlag bool
+
+// selfCheck waits up to 4 minutes for the synthetic «start» run of the API restarted at since
+// (unix seconds). It returns false on fail or blind: the caller records the deploy, releases the
+// lock and exits 4 — the owner decides on a rollback.
+func selfCheck(client *ssh.Client, since int64) bool {
+	if noSelfcheckFlag {
+		return true
+	}
+	fmt.Println("[selfcheck] Прогон синтетики «start» (до 4 минут)...")
+	state := ""
+	for deadline := time.Now().Add(4 * time.Minute); state == "" && time.Now().Before(deadline); {
+		time.Sleep(15 * time.Second)
+		out, _ := runSSHQuiet(client, deployguard.SelfCheckCmd(since), "")
+		state = deployguard.ParseSelfCheck(out)
+	}
+	switch state {
+	case "pass":
+		fmt.Println("[selfcheck] pass ✓")
+	case "":
+		fmt.Println("[selfcheck] прогон не появился за 4 минуты — посмотрите вкладку «Проверки»")
+	default:
+		fmt.Printf("[selfcheck] %s ✗ — откат решает владелец: выкатите предыдущий коммит main\n", state)
+		return false
+	}
+	return true
+}

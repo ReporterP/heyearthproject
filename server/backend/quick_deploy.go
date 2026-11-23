@@ -42,6 +42,7 @@ const (
 
 func main() {
 	force := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
+	noSelfcheck := flag.Bool("no-selfcheck", false, "не ждать самопроверку после старта (прогон синтетики «start»)")
 	acceptRestart := flag.String("accept-restart", "", "K2|K3: выкатка, которая по предсказанию перезапустит Бамбук (K2) или xray (K3); флаг передаёт только владелец")
 	flag.Parse()
 
@@ -293,6 +294,7 @@ func main() {
 		runCmd(client, "rm -f "+tmpPath)
 		fatalf("swap binary failed: %s", strings.TrimSpace(out))
 	}
+	restartedAt := time.Now().Unix() - 5 // a few seconds of slack between the two clocks
 	runCmd(client, "systemctl restart heyearth-api")
 
 	// The API applies migrations and warms up for 30-40 s. It must be active AND answer
@@ -321,12 +323,38 @@ func main() {
 	xrayOut := runCmd(client, "systemctl is-active xray 2>/dev/null || echo not-installed")
 	fmt.Printf("    Xray: %s\n", strings.TrimSpace(xrayOut))
 
+	// Самопроверка: новый процесс через 90 с после старта прогоняет синтетику (trigger start).
+	// fail или blind — код 4 и команда отката; откатывает владелец, не утилита.
+	if !*noSelfcheck {
+		fmt.Println("[6] Самопроверка: прогон синтетики «start» (до 4 минут)...")
+		state := ""
+		for deadline := time.Now().Add(selfcheckWait); state == "" && time.Now().Before(deadline); {
+			time.Sleep(15 * time.Second)
+			state = deployguard.ParseSelfCheck(runCmd(client, deployguard.SelfCheckCmd(restartedAt)))
+		}
+		switch state {
+		case "pass":
+			fmt.Println("    Самопроверка: pass ✓")
+		case "":
+			fmt.Println("    Самопроверка: прогон не появился за 4 минуты — посмотрите вкладку «Проверки»")
+		default:
+			fmt.Printf("    САМОПРОВЕРКА: %s ✗ — сводка прогона:\n", state)
+			fmt.Println(runCmd(client, `sudo -u postgres psql -At heyearth -c "SELECT summary FROM probe_runs WHERE trigger='start' ORDER BY id DESC LIMIT 1" 2>/dev/null`))
+			fmt.Printf("    Откат (решает владелец): go run ./cmd/deploy --ssh 'cp -p %[1]s.bak %[1]s.rollback && mv -f %[1]s.rollback %[1]s && systemctl restart heyearth-api'\n", remotePath)
+			os.Remove(binaryPath)
+			os.Exit(4)
+		}
+	}
+
 	fmt.Println("\nДеплой завершён!")
 	os.Remove(binaryPath)
 }
 
 // healthWait bounds the wait for the restarted API.
 const healthWait = 90 * time.Second
+
+// selfcheckWait bounds the wait for the synthetic «start» run (it starts 90 s after the API).
+const selfcheckWait = 4 * time.Minute
 
 // dialRetry dials the Hub up to 4 times: the SSH link to it drops now and then.
 func dialRetry(host string, config *ssh.ClientConfig) (*ssh.Client, error) {

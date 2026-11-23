@@ -52,3 +52,21 @@ func TestPredictCmdUsesServiceEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSelfCheck(t *testing.T) {
+	for out, want := range map[string]string{
+		"":                       "",
+		"Nov 24 00:11:23 hub heyearth-api[491257]: 2026/11/24 00:11:23 [synth] прогон 30 (start): pass\n": "pass",
+		"x [synth] прогон 31 (start): fail\n":                                                               "fail",
+		"x [synth] прогон 32 (start): blind\n":                                                              "blind",
+		"x [synth] прогон 33 (start): synthetic run in progress\n":                                          "",
+		"x [synth] прогон 34 (timer): pass\n":                                                               "",
+	} {
+		if got := ParseSelfCheck(out); got != want {
+			t.Errorf("ParseSelfCheck(%q) = %q, want %q", out, got, want)
+		}
+	}
+	if c := SelfCheckCmd(1764000000); !strings.Contains(c, "--since @1764000000") || !strings.Contains(c, "(start)") {
+		t.Errorf("SelfCheckCmd = %q", c)
+	}
+}

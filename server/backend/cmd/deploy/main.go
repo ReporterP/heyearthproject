@@ -96,6 +96,7 @@ func main() {
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	forceDeploy := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
 	acceptRestart := flag.String("accept-restart", "", "K2|K3: выкатка API, которая по предсказанию перезапустит Бамбук (K2) или xray (K3); флаг передаёт только владелец")
+	noSelfcheck := flag.Bool("no-selfcheck", false, "с --update-main: не ждать самопроверку после старта (прогон синтетики «start»)")
 	flag.Parse()
 
 	var mode string
@@ -179,6 +180,7 @@ func main() {
 	validateLocalConfig(mode, cfg)
 	local := guardLocal(mode, repoRoot, *forceDeploy)
 	acceptRestartFlag = *acceptRestart
+	noSelfcheckFlag = *noSelfcheck
 
 	client, err := sshDialHub(cfg)
 	if err != nil {
@@ -186,6 +188,7 @@ func main() {
 	}
 	defer client.Close()
 	gate := guardOpen(client, mode, local, *forceDeploy)
+	selfcheckOK := true
 
 	if mode == "ssh" {
 		out, err := runSSH(client, *sshCmd, false)
@@ -305,6 +308,7 @@ func main() {
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
 	case "update-main":
+		since := time.Now().Unix() - 5
 		uploadNodeProvisioningAssets(sftpClient, client, cfg)
 		doAPI(sftpClient, client, cfg)
 		if cfg.letsEncryptEmail != "" {
@@ -312,6 +316,7 @@ func main() {
 		}
 		seedConnectionSettings(client, cfg)
 		verifyServices(client)
+		selfcheckOK = selfCheck(client, since)
 	case "restart":
 		restartServices(client)
 		verifyServices(client)
@@ -340,6 +345,9 @@ func main() {
 		setupHysteria2Hub(client, cfg)
 	}
 	guardFinish(client, gate, mode, local)
+	if !selfcheckOK {
+		os.Exit(4)
+	}
 }
 
 func validateLocalConfig(mode string, cfg *deployConfig) {

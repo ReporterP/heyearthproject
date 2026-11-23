@@ -105,6 +105,10 @@ func StartMonitor() {
 	go runEvery(5*time.Minute, domainCheckEvery, func() {
 		safely("срок домена", checkDomainExpiry)
 	})
+	// A13: a node that comes back after two minutes and more gets one «verify» job (node_return.go).
+	go runEvery(3*time.Minute, nodeReturnEvery, func() {
+		safely("возврат узлов", checkNodeReturns)
+	})
 	// The synthetic client: a real core through every line of the test user's subscription.
 	startSyntheticMonitor()
 	go runEvery(2*time.Minute, housekeepingInterval, func() {

@@ -2,6 +2,7 @@ package deployguard
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -75,4 +76,30 @@ func AcceptRestart(class, accepted string) bool {
 		return true
 	}
 	return rank(accepted) >= c
+}
+
+// SelfCheckCmd prints the API's journal lines of the synthetic «start» run since the restart
+// (unix seconds): the run the new process makes 90 s after it starts.
+func SelfCheckCmd(sinceUnix int64) string {
+	return fmt.Sprintf(`journalctl -u heyearth-api --since @%d --no-pager 2>/dev/null | grep -F '[synth] прогон' | grep -F '(start)' | tail -n 3`, sinceUnix)
+}
+
+// ParseSelfCheck returns pass | fail | blind of the last «start» run in out, "" when none yet.
+func ParseSelfCheck(out string) string {
+	state := ""
+	for _, line := range strings.Split(out, "\n") {
+		_, rest, ok := strings.Cut(line, "[synth] прогон ")
+		if !ok {
+			continue
+		}
+		_, st, ok := strings.Cut(rest, " (start): ")
+		if !ok {
+			continue
+		}
+		switch st = strings.TrimSpace(st); st {
+		case "pass", "fail", "blind":
+			state = st
+		}
+	}
+	return state
 }
