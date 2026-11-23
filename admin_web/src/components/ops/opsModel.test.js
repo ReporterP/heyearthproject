@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   pathTone, ageLabel, sortAlerts, impactLabel, groupProbes, feedIcon, actionLabel, levelLabel, buildLine, probeSummary, ruViewLine,
+  needsBeforeFetch,
 } from './opsModel.js'
 
 test('ageLabel: seconds, minutes, hours, days', () => {
@@ -118,4 +119,12 @@ test('ruViewLine: no alert is said as no alert, never as «всё открыва
   assert.equal(ruViewLine(undefined), none)
   const some = ruViewLine([{ title: 'Сайт не открывается из РФ' }, { title: 'Резервный вход недоступен из РФ' }])
   assert.equal(some, 'активны тревоги — Сайт не открывается из РФ; Резервный вход недоступен из РФ.')
+})
+
+test('needsBeforeFetch: «что менялось за час до» is asked again after a failed request', () => {
+  assert.equal(needsBeforeFetch(undefined), true, 'never asked')
+  assert.equal(needsBeforeFetch({ loading: true, items: [] }), false, 'a request is under way')
+  assert.equal(needsBeforeFetch({ loading: false, items: [] }), false, 'answered: an empty hour is an answer')
+  assert.equal(needsBeforeFetch({ loading: false, items: [{ summary: 'x' }] }), false)
+  assert.equal(needsBeforeFetch({ loading: false, items: [], error: 'сеть' }), true, 'failed: the next opening asks again')
 })

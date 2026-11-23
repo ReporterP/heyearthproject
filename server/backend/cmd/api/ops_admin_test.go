@@ -131,11 +131,20 @@ func TestOverviewHidesSecrets(t *testing.T) {
 	h := withOverview(t)
 	h.alerts = []activeAlert{{Key: "entry-unreachable-external", Level: AlertCritical, Title: "Вход 203.0.113.7 недоступен",
 		Details: "exit :1090 → 203.0.113.7:443, пользователь 11111111-2222-3333-4444-555555555555", Since: h.now}}
-	h.feed = []biz.FeedItem{{At: h.now, Source: "audit", Kind: "update_setting", Actor: "owner", Target: "server:198.51.100.20", Summary: "адрес 198.51.100.20"}}
+	h.feed = []biz.FeedItem{
+		{At: h.now, Source: "audit", Kind: "update_setting", Actor: "owner", Target: "server:198.51.100.20", Summary: "адрес 198.51.100.20"},
+		// an audit record whose target carries a serialized map: the address sits in a nested value
+		{At: h.now, Source: "audit", Kind: "hub.address", Actor: "owner",
+			Target:  `hub:{"change":{"to":{"ip":"2001:db8:1::2","v4":"192.0.2.44"},"from":"[2001:db8::7]:443"}}`,
+			Summary: `hub.address {"old":{"ip":"2001:db8::9"}}`},
+	}
 	rec, _ := getOverview(t, "")
 	body := rec.Body.String()
 	if regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b`).MatchString(body) {
 		t.Errorf("an address is in the overview:\n%s", body)
+	}
+	if strings.Contains(body, "2001:db8") || strings.Contains(body, "db8:") {
+		t.Errorf("an IPv6 address is in the overview:\n%s", body)
 	}
 	if strings.Contains(body, "2222-3333") {
 		t.Errorf("a full user identifier is in the overview:\n%s", body)

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heyearth/backend/internal/yookassa"
 )
 
 func TestBoardStaleIsUnknown(t *testing.T) {
@@ -146,6 +149,48 @@ func TestBackupVerifyVerdict(t *testing.T) {
 	for _, body := range []string{"", "garbage", "abc success"} {
 		if failed, _ := backupVerifyVerdict(body, now); failed {
 			t.Errorf("%q reported as a failed drill", body)
+		}
+	}
+}
+
+type downGetter struct{ err error }
+
+func (g downGetter) GetPayment(string) (*yookassa.Payment, error) { return nil, g.err }
+
+// The «Оплаты» cell says when the payment provider did not answer in the last pass; a pass
+// that reached it (or had nothing to ask) is ok. A payment the provider does not know (404)
+// is the provider answering.
+func TestPaymentsCellReflectsProvider(t *testing.T) {
+	d := newPEDB(&peRow{id: 1, ykID: "p-1", status: "pending", created: time.Now().Add(-10 * time.Minute)})
+	usePaymentFakes(t, d)
+	prevClient, prevProcess := newPaymentSyncClient, syncProcessPayment
+	t.Cleanup(func() { newPaymentSyncClient, syncProcessPayment = prevClient, prevProcess })
+	syncProcessPayment = func(*yookassa.Payment) error { return nil }
+	cell := func() pathState {
+		for _, p := range healthBoard.Snapshot(time.Now()) {
+			if p.ID == "payments" {
+				return p
+			}
+		}
+		t.Fatal("no payments cell")
+		return pathState{}
+	}
+	for _, tc := range []struct {
+		name   string
+		getter paymentGetter
+		state  string
+		detail string
+	}{
+		{"transport error", downGetter{errors.New("http do: dial tcp: i/o timeout")}, "warn", "провайдер оплат не отвечает"},
+		{"provider 5xx", downGetter{&yookassa.APIError{HTTPStatus: 502}}, "warn", "провайдер оплат не отвечает"},
+		{"provider answers", fakeGetter{}, "ok", "сверка платежей с ЮKassa прошла"},
+		{"unknown payment", fakeGetter{gone: map[string]bool{"p-1": true}}, "ok", "сверка платежей с ЮKassa прошла"},
+	} {
+		g := tc.getter
+		newPaymentSyncClient = func() (paymentGetter, error) { return g, nil }
+		setPaymentsCell(syncPendingPayments())
+		if got := cell(); got.State != tc.state || !strings.Contains(got.Detail, tc.detail) {
+			t.Errorf("%s: cell %s %q, want %s %q", tc.name, got.State, got.Detail, tc.state, tc.detail)
 		}
 	}
 }

@@ -179,3 +179,9 @@ export function ruViewLine(ruAlerts) {
   }
   return `активны тревоги — ${list.map(a => a.title).join('; ')}.`
 }
+
+// needsBeforeFetch: whether «что менялось за час до» of an alert must be requested when its
+// card opens — never asked, or the last request failed (asked again, not remembered as failed).
+export function needsBeforeFetch(entry) {
+  return !entry || (!entry.loading && !!entry.error)
+}

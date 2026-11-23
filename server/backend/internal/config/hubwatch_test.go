@@ -1,6 +1,9 @@
 package config
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +44,7 @@ func TestHubWatchScriptControl(t *testing.T) {
 // The bot token and the chat live in hubwatch.env (0600) on the exit, never in the script.
 func TestHubWatchScriptNoSecrets(t *testing.T) {
 	s := HubWatchScript(hubWatchParams())
-	for _, want := range []string{`. "$ENV"`, "ENV=/etc/heyearth/hubwatch.env", `"https://api.telegram.org/bot$BOT_TOKEN/sendMessage"`, `chat_id=$CHAT_ID`} {
+	for _, want := range []string{`. "$ENV"`, "ENV=/etc/heyearth/hubwatch.env", `url = "https://api.telegram.org/bot%s/sendMessage"`, `"$BOT_TOKEN" "$CHAT_ID"`, `curl -fsS -m 15 -o /dev/null -K -`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
@@ -115,10 +118,16 @@ func hubWatchRunFull(t *testing.T, dir string, pinned, byName, control, controlR
 		}
 		return "7"
 	}
+	args := filepath.ToSlash(filepath.Join(dir, "args"))
+	// The stand-in records every call's arguments (what «ps» shows) and reads a config from
+	// stdin when called with -K - (how the token travels).
 	fake := `curl() {
-  local a text=""
+  local a text="" cfg=""
+  printf '%s\n' "$*" >> '` + args + `'
+  case " $* " in *" -K - "*) cfg=$(cat) ;; esac
   for a in "$@"; do case "$a" in text=*) text="${a#text=}" ;; esac; done
-  case "$*" in
+  if [ -n "$cfg" ]; then text=$(printf '%s\n' "$cfg" | sed -n 's/^data-urlencode = "text=\(.*\)"$/\1/p'); fi
+  case "$* $cfg" in
     *api.telegram.org*) printf '%s\n' "$text" >> '` + sent + `'; return 0 ;;
     *--resolve*"/api/v1/health"*) return ` + flag(pinned) + ` ;;
     *"/api/v1/health"*) return ` + flag(byName) + ` ;;
@@ -156,6 +165,65 @@ func hubWatchDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// The watcher bot's token is never an argument of a process: «ps» on the exit shows arguments
+// to every user. It goes to curl as a config on stdin (curl -K -).
+func TestHubWatchTokenNotInArguments(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	dir := hubWatchDir(t)
+	for i := 0; i < 3; i++ {
+		hubWatchRun(t, dir, false, true)
+	}
+	if sent := hubWatchSent(t, dir); len(sent) != 1 || !strings.Contains(sent[0], "Хаб недоступен снаружи") {
+		t.Fatalf("sent %v, want the alert (the message must still go out)", sent)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "AAfake") || strings.Contains(string(calls), "123456:") {
+		t.Fatalf("the token is in a curl argument:\n%s", calls)
+	}
+}
+
+// The text reaches Telegram as written, quotes and backslashes included: the real curl parses
+// the config the script writes (a local server stands in for the Bot API).
+func TestHubWatchSendRealCurl(t *testing.T) {
+	if !haveBash() {
+		t.Skip("no working bash")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl")
+	}
+	got := make(chan url.Values, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if !strings.HasSuffix(r.URL.Path, "/bot123456:AAfake/sendMessage") {
+			t.Errorf("path %q", r.URL.Path)
+		}
+		got <- r.PostForm
+	}))
+	defer srv.Close()
+	dir := hubWatchDir(t)
+	p := hubWatchParams()
+	p.EnvPath = filepath.ToSlash(filepath.Join(dir, "env"))
+	script := HubWatchScript(p)
+	fn := script[strings.Index(script, "send() {"):]
+	fn = fn[:strings.Index(fn, "\n}\n")+3]
+	fn = strings.Replace(fn, "https://api.telegram.org", srv.URL, 1)
+	text := `🔴 Хаб «недоступен» "q" a\b & x=1 (взгляд: выход 3)`
+	cmd := exec.Command("bash", "-s")
+	cmd.Stdin = strings.NewReader("ENV='" + p.EnvPath + "'\n" + fn + "send '" + strings.ReplaceAll(text, "'", `'\''`) + "'\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("send: %v\n%s", err, out)
+	}
+	form := <-got
+	if form.Get("text") != text || form.Get("chat_id") != "-100123" {
+		t.Fatalf("Telegram got text %q chat %q, want %q -100123", form.Get("text"), form.Get("chat_id"), text)
+	}
 }
 
 func TestHubWatchScriptBehaviour(t *testing.T) {

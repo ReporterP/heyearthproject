@@ -171,12 +171,19 @@ var (
 	opsTokenRe = regexp.MustCompile(`\bbot\d+:[A-Za-z0-9_-]+|\b\d{6,}:[A-Za-z0-9_-]{20,}`)
 	opsUUIDRe  = regexp.MustCompile(`\b([0-9a-fA-F]{8})-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
 	opsIPv4Re  = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	// an IPv6 address: four hex groups and more, or a compressed form with "::" and at least
+	// one group. Clock times (19:11:43) and three-group hex strings stay as they are.
+	opsIPv6Re = regexp.MustCompile(`(?i)\b[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6}::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6}\b)?` +
+		`|::[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6}\b` +
+		`|\b[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){3,7}\b`)
 )
 
-// ScrubOpsText removes what must not reach the feed, an alert or the console: IPv4 addresses,
+// ScrubOpsText removes what must not reach the feed, an alert or the console: IPv4 and IPv6 addresses,
 // bot tokens, and all of a user identifier but its first 8 characters.
 func ScrubOpsText(s string) string {
 	s = opsTokenRe.ReplaceAllString(s, "<токен>")
 	s = opsUUIDRe.ReplaceAllString(s, "$1…")
-	return opsIPv4Re.ReplaceAllString(s, "<адрес>")
+	// IPv4 first: the tail of ::ffff:192.0.2.1 is masked whole, not cut in two by the IPv6 rule
+	s = opsIPv4Re.ReplaceAllString(s, "<адрес>")
+	return opsIPv6Re.ReplaceAllString(s, "<адрес>")
 }

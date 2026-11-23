@@ -12,7 +12,7 @@ import AlertCard from '../components/ops/AlertCard.jsx'
 import OpsFeed from '../components/ops/OpsFeed.jsx'
 import ProbesMatrix from '../components/ops/ProbesMatrix.jsx'
 import WatchdogSettings from '../components/ops/WatchdogSettings.jsx'
-import { buildLine, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
+import { buildLine, needsBeforeFetch, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
 import AlertsPage from './AlertsPage.jsx'
 
 const POLL_MS = 15000
@@ -23,9 +23,10 @@ function NowTab({ data, view, setView }) {
   const alerts = useMemo(() => sortAlerts(data.alerts), [data.alerts])
   const openKey = view.alert
 
-  // «что менялось за час до»: asked once per alert, when its card is opened
+  // «что менялось за час до»: asked when an alert's card is opened — once if it answered,
+  // again at the next opening if it failed
   useEffect(() => {
-    if (!openKey || before[openKey]) return
+    if (!openKey || !needsBeforeFetch(before[openKey])) return
     let cancelled = false
     setBefore(b => ({ ...b, [openKey]: { loading: true, items: [] } }))
     fetchOpsOverview({ before: openKey })

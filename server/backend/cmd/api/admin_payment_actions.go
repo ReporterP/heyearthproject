@@ -246,7 +246,7 @@ func handleAdminSyncAllPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Запускаем синхронно (небольшой batch)
-	syncPendingPayments()
+	setPaymentsCell(syncPendingPayments())
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Синхронизация запущена. Проверьте список платежей."})
 }
 

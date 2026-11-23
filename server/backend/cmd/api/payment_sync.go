@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -46,7 +48,8 @@ func StartPaymentSyncCron() {
 		// Первый прогон через минуту после старта
 		time.Sleep(1 * time.Minute)
 		for {
-			safely("payment-sync", syncPendingPayments)
+			var providerErr error
+			safely("payment-sync", func() { providerErr = syncPendingPayments() })
 			safely("payment-never-created", closeNeverCreatedPayments)
 			safely("wallet-receipts", func() {
 				if walletReceiptsMu.TryLock() {
@@ -58,7 +61,7 @@ func StartPaymentSyncCron() {
 			safely("wallet-refund-release", releaseFailedWalletRefunds)
 			safely("wallet-refund-external", holdExternalWalletRefunds)
 			safely("payment-alerts", syncUnappliedPaymentAlerts)
-			healthBoard.Set("payments", "Оплаты", "ok", "сверка платежей с ЮKassa прошла")
+			setPaymentsCell(providerErr)
 			time.Sleep(paymentSyncInterval)
 		}
 	}()
@@ -124,18 +127,40 @@ var (
 	syncProcessPayment = processPaymentEvent
 )
 
-// syncPendingPayments опрашивает все pending платежи старше 3 минут.
-func syncPendingPayments() {
+// setPaymentsCell puts the result of a payment-sync pass on the health board: «Оплаты» is
+// warn when the provider did not answer in that pass (providerErr from syncPendingPayments).
+func setPaymentsCell(providerErr error) {
+	if providerErr != nil {
+		healthBoard.Set("payments", "Оплаты", "warn", "провайдер оплат не отвечает: "+biz.ScrubOpsText(providerErr.Error()))
+		return
+	}
+	healthBoard.Set("payments", "Оплаты", "ok", "сверка платежей с ЮKassa прошла")
+}
+
+// paymentProviderDown tells a provider that did not answer (a network error, 429, 5xx) from
+// one that answered about a payment (404 for a payment it does not know, 4xx on bad input).
+func paymentProviderDown(err error) bool {
+	var apiErr *yookassa.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.HTTPStatus >= 500 || apiErr.HTTPStatus == http.StatusTooManyRequests
+	}
+	return err != nil
+}
+
+// syncPendingPayments опрашивает все pending платежи старше 3 минут. It returns the first
+// error of a provider that did not answer (paymentProviderDown) — nil when every request was
+// answered or there was nothing to ask.
+func syncPendingPayments() error {
 	client, err := newPaymentSyncClient()
 	if err != nil {
 		// Ключи не заданы — молча выходим (настройки ещё не готовы)
-		return
+		return nil
 	}
 
 	rows, err := db.DB.Query(paymentSyncSelectSQL, paymentSyncMinAge.String(), paymentSyncBatchSize, paymentActivationMaxFailures)
 	if err != nil {
 		log.Printf("[payment-sync] Ошибка выборки pending: %v", err)
-		return
+		return nil
 	}
 	defer rows.Close()
 
@@ -154,15 +179,19 @@ func syncPendingPayments() {
 	}
 
 	if len(pendings) == 0 {
-		return
+		return nil
 	}
 	log.Printf("[payment-sync] Синхронизация %d pending платежей...", len(pendings))
 
 	synced := 0
 	stale := 0
+	var providerErr error
 	for _, p := range pendings {
 		payment, err := client.GetPayment(p.YookassaID)
 		if err != nil {
+			if paymentProviderDown(err) && providerErr == nil {
+				providerErr = err // for the health board; the stale rule below is unchanged
+			}
 			// YooKassa вернула 404 или ошибку — если платёж очень старый, автоматически
 			// помечаем canceled (скорее всего он удалён или никогда не существовал).
 			if time.Since(p.CreatedAt) > paymentStaleThreshold {
@@ -193,6 +222,10 @@ func syncPendingPayments() {
 	if synced > 0 || stale > 0 {
 		log.Printf("[payment-sync] ✓ Синхронизировано: %d, помечено stale: %d", synced, stale)
 	}
+	if providerErr != nil {
+		log.Printf("[payment-sync] провайдер оплат не отвечает: %v", providerErr)
+	}
+	return providerErr
 }
 
 // closeNeverCreatedPayments cancels payments YooKassa never received (see
