@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 101 SQL migrations (000001-000101), applied at API start
+│   │   ├── migrations/            # 102 SQL migrations (000001-000102), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (98)
+# Auto-runs the migrations on startup (102)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -295,10 +295,15 @@ Spec `docs/prd/stability-operations.prd.md`, plan `docs/plan/stability-operation
 - **Alerts**: every key has a catalogue entry (`cmd/api/alert_catalog.go`; a test fails on a new key without one); an alert explained by an active cause is journaled `inhibited`, not sent; 3 incidents in 6 h → `<key>~unstable`; undelivered for 15 min → `alert_email`; digest at 09:00 MSK.
 - **Console** «Операции» (`/operations`, `GET /api/admin/ops/overview`, `/api/admin/ops/probes`): read-only in phase 1; «Алерты» is its «Настройки» tab.
 - **Hygiene** `deploy --setup-hygiene` (К0): journal 45 days / 4 GB, `Restart=on-failure`, weekly restore drill, Bamboo log level (takes effect at the next restart of `hysteria2-server`).
+- **Deploy guard** (phase 2, `internal/deployguard`; `quick_deploy.go`, `quick_admin_web.go`, `cmd/deploy` main/update-main/site/admin-web/vue-site/nginx/setup-*): refuses (exit 2) a dirty tree or a commit off `main` before building, a commit that does not contain the deployed build (`/opt/heyearth/state/deployed.json`; the API without a record — its `[boot] сборка` journal line), a lock held by another deploy (`/opt/heyearth/state/deploy.lock.d`, stale after 30 min — a warning). `--force-deploy "<reason ≥ 10>"` turns refusals into warnings; the reason goes to the feed. Admin/site deploys and `--setup-*` write their feed line through `POST /internal/ops/event` on the loopback listener :8001 (key `/opt/heyearth/state/ops-intake.key`, 0600 root).
+- **Restart prediction**: before the swap the new binary runs on the Hub as `heyearth-api --predict-restarts` (service environment, read-only DB, no migrations) and prints «xray не изменится / перезапустится (К3)», «Бамбук перезапустится (К2)» or «не удалось — считать К3». Above К1 the tool stops (exit 3) unless `--accept-restart K2|K3` — a flag only the owner passes. After the restart the tool waits up to 4 min for the synthetic «start» run: fail/blind → exit 4 with the rollback command (`--no-selfcheck` skips).
+- **A13 / A15**: a node down ≥ 2 min that comes back gets one `verify` job (≤ 1/h per node, `node_return.go`); a watched setting changed without an audit or feed record raises `setting-changed-outside:<key>` (`settings_watch.go`, table `watched_settings` keeps hashes only; «Принять» = `POST /api/admin/ops/settings-watch/ack`).
+- **Subscription flags and the canary** («Операции → Подписка», `sub_flags.go`, `canary*.go`, table `flag_changes`, migration 000102): «На тест» → 30 min soak (synthetic every 5 min) → «Всем» only after PASS (with «Срочное обновление» 24 h) → a guard hour that rolls back by itself on a new failure in two sighted runs (A3, `canary_auto_rollback` on|off); «Без канарейки» needs a reason. One change at a time; blind runs decide nothing.
+- **Client kinds and the synthetic purchase**: hourly the test user's subscription is fetched as Happ, v2rayTun, INCY, Hiddify, Clash (vantage `clients`, `synth-client:<kind>`), and a wallet purchase is made in a transaction that is always rolled back (`synth_purchase.go`, `synth-purchase-failed`; the «Оплаты» cell is the worse of payment sync and this).
 
 ---
 
-## Database (PostgreSQL, 101 migrations)
+## Database (PostgreSQL, 102 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -335,7 +340,7 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 
 - **Entry rotation and API rollback** (since entries-management, migration 000097): an older API publishes every `online` relay, so an entry out of rotation or on `test` would reach everyone. Before rolling the API back below it: `UPDATE servers SET lifecycle_state='offline' WHERE role='relay' AND id IN (SELECT entry_id FROM entry_state WHERE entry_id > 0 AND rotation <> 'all');` (the down migration does the same). An API older than 000096 also sets up the GRE tunnel on every reprovision.
 
-- **Subscription ways change only canary-first** (incident 2026-11-20, `docs/runbooks/subscription-changes.md`): any change of where users' traffic goes (JSON «⚡ Авто»/Бамбук ways, URI lines, entry mode, an entry in or out of rotation, the Hub address) goes to the test user first (`sub_auto_mode=test` + `sub_auto_test_user`, `entry_failover_test_user`), 24 h, then everyone — together with «Срочное обновление» (`subscription_urgent_until`, hourly updates for 24 h). A path becomes mandatory only after `go run ./cmd/deploy --path-matrix <entry id>` says PASS (50 source ports both ways + TLS through an exit); one probe proves nothing — a broken provider link may drop only some 5-tuples.
+- **Subscription ways change only canary-first** (incident 2026-11-20, `docs/runbooks/subscription-changes.md`): any change of where users' traffic goes (JSON «⚡ Авто»/Бамбук ways, URI lines, entry mode, an entry in or out of rotation, the Hub address) goes to the test user first. Subscription flags (`sub_auto_mode`, `sub_direct_by_name`, `sub_json_dns`) only through «Операции → Подписка»: «На тест», a 30-minute synthetic soak, «Всем» after PASS (with «Срочное обновление»), a guard hour with an automatic rollback; «Без канарейки» only with a reason. Entry mode, rotation and the Hub address still go through the test user (`entry_failover_test_user`, rotation `test`) for 24 h, then everyone — together with «Срочное обновление» (`subscription_urgent_until`, hourly updates for 24 h). A path becomes mandatory only after `go run ./cmd/deploy --path-matrix <entry id>` says PASS (50 source ports both ways + TLS through an exit); one probe proves nothing — a broken provider link may drop only some 5-tuples.
 
 - **Direct over IPv6 on Happ desktop** (bug 2026-11-20): Happ's sing-box TUN gives Windows `fd00::1/126` and `::/0` even on a network without IPv6 and accepts every TCP connection at once, so browsers settle on a RU site's AAAA; with `routeOnly:true` the JSON's `geoip:ru` sends that IPv6 address direct and the dial dies (ya.ru, every RU site with AAAA). Fix behind `sub_direct_by_name` (off|test|on, test = `sub_auto_test_user`): sniffing re-addresses by name, routing `IPOnDemand` (plain `routeOnly:false` + AsIs makes `geoip:ru` miss), direct `sockopt.domainStrategy: UseIPv4v6`, MTProto fronting domains in `domainsExcluded` (their SNI is another site). `on` for everyone since 2026-11-20 16:52 MSK (owner's call after the desktop canary; mobile not checked first); `off` is the instant rollback. By name, Бамбук's hysteria2 resolves names on the Hub. Test on a client from the TUN side: Happ's `core\xray.exe`, not the Hub — and check Happ is on the HiEarth subscription. By name, the JSON has no `dns`, so IPOnDemand resolves every name on 80/443 with the device's resolver (on a RU network: the operator's DNS, which the TSPU steers to the national DNS — blocked names like instagram.com get nothing or a stub, and a stub in geoip:ru/private goes direct). `sub_json_dns` (off|test|on, test = `sub_auto_test_user`, default off, only acts by name) adds `dns` = DoH by address through the line's own balancer (first rule `inboundTag: dns-tunnel`); suspected cause of «Instagram dead on Tele2 on every line» (20.11), canary on the owner first.
 
