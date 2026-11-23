@@ -23,26 +23,32 @@ export function Tabs({ tabs, value, onChange, className = '', id, label }) {
     refs.current[next]?.focus()
   }
 
+  // Two elements on purpose: the scroller has no border of its own. A tab's -mb-px lays its
+  // underline over the list's bottom border; were that border on the scrolling element, the
+  // overlap would count as 1px of vertical overflow, and overflow-x:auto turns that into a
+  // vertical scrollbar (always visible on Windows).
   return (
-    <div role="tablist" aria-label={label || 'Вкладки'} aria-orientation="horizontal"
-      className={`flex gap-1 border-b border-default overflow-x-auto ${className}`}>
-      {tabs.map((t, i) => {
-        const active = t.key === value
-        return (
-          <button key={t.key} type="button" role="tab"
-            ref={(el) => { refs.current[i] = el }}
-            id={id ? tabId(id, t.key) : undefined}
-            aria-controls={id ? panelId(id, t.key) : undefined}
-            aria-selected={active} tabIndex={i === roving ? 0 : -1}
-            onClick={() => onChange(t.key)} onKeyDown={(e) => onKeyDown(e, i)}
-            className={`h-8 px-3 -mb-px text-sm whitespace-nowrap border-b-2 transition-colors
-              focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent
-              ${active ? 'border-accent text-primary' : 'border-transparent text-secondary hover:text-primary'}`}>
-            {t.label}
-            {t.count != null && <span className="ml-1.5 font-mono tabular-nums text-xs text-tertiary">{t.count}</span>}
-          </button>
-        )
-      })}
+    <div className={`overflow-x-auto ${className}`}>
+      <div role="tablist" aria-label={label || 'Вкладки'} aria-orientation="horizontal"
+        className="flex gap-1 w-max min-w-full border-b border-default">
+        {tabs.map((t, i) => {
+          const active = t.key === value
+          return (
+            <button key={t.key} type="button" role="tab"
+              ref={(el) => { refs.current[i] = el }}
+              id={id ? tabId(id, t.key) : undefined}
+              aria-controls={id ? panelId(id, t.key) : undefined}
+              aria-selected={active} tabIndex={i === roving ? 0 : -1}
+              onClick={() => onChange(t.key)} onKeyDown={(e) => onKeyDown(e, i)}
+              className={`h-8 px-3 -mb-px text-sm whitespace-nowrap border-b-2 transition-colors
+                focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent
+                ${active ? 'border-accent text-primary' : 'border-transparent text-secondary hover:text-primary'}`}>
+              {t.label}
+              {t.count != null && <span className="ml-1.5 font-mono tabular-nums text-xs text-tertiary">{t.count}</span>}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
