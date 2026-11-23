@@ -8,6 +8,10 @@
 
   --color-border-default: oklch(1 0 0 / 0.08);
   --color-border-strong:  oklch(1 0 0 / 0.14);
+  /* `border-default` / `border-strong` are border COLOURS (Tailwind v4 reads --border-color-*
+     first); the width comes only from `border`, `border-b`, `divide-y` … */
+  --border-color-default: var(--color-border-default);
+  --border-color-strong:  var(--color-border-strong);
 
   --color-text-primary:   oklch(0.97 0.005 260);
   --color-text-secondary: oklch(0.78 0.008 260);
@@ -26,7 +30,10 @@
   --font-mono: "Geist Mono", ui-monospace, monospace;
 
   --radius-default: 0.25rem;
-  --border-width-default: 1px;
+  /* Never name a width variable --border-width-default: it would turn `border-default` into a
+     1 px box on all four sides (theme.test.js). */
+  --border-width-hairline: 1px;
+  --default-border-width: var(--border-width-hairline);
 }
 
 @layer base {
@@ -80,7 +87,7 @@
   --font-sans: "IBM Plex Mono", "JetBrains Mono Variable", monospace;
   --font-mono: "IBM Plex Mono", monospace;
   --radius-default: 0;
-  --border-width-default: 2px;
+  --border-width-hairline: 2px;
 }
 
 :root[data-theme="terminal"] {
@@ -97,7 +104,7 @@
   --font-sans: "JetBrains Mono Variable", monospace;
   --font-mono: "JetBrains Mono Variable", monospace;
   --radius-default: 0.125rem;
-  --border-width-default: 1px;
+  --border-width-hairline: 1px;
 }
 
 /* ============================================================
