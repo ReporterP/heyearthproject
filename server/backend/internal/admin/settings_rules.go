@@ -51,6 +51,10 @@ var editableSettings = map[string]settingRule{
 	"xray_revoke_restart": {kind: "enum", values: []string{"off", "night", "now"}},
 	// bamboo_optimise: moving Бамбук to a faster exit — night (quiet window only, default) | off.
 	"bamboo_optimise": {kind: "enum", values: []string{"night", "off"}},
+	// Синтетический клиент (cmd/api/synth_monitor.go): the timer's switch, and the token a
+	// probe in an operator's network reports with (empty: no intake).
+	"synth_enabled":     {kind: "bool"},
+	"probe_agent_token": {kind: "secret"},
 	// Приведи друга
 	"referral_enabled":             {kind: "bool"},
 	"referral_reward_referrer_rub": {kind: "int", min: 0, max: 10000},

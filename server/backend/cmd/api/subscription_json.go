@@ -353,6 +353,10 @@ func balancedConfig(label, description, prefix, fallback, hub, siteHost string, 
 	return cfg
 }
 
+// autoLineLabel is the main line of the JSON subscription: Берёза and Дуб through every entry
+// (the synthetic client's «every way is down» alert is about this line).
+const autoLineLabel = "⚡ Авто"
+
 // jsonSubscription builds the JSON subscription body of in: «⚡ Авто», then
 // «🎋 Бамбук 1/2» when the plan has Бамбук. nil without VLESS (the caller serves
 // plain URIs). Pure.
@@ -370,7 +374,7 @@ func jsonSubscription(in hubConnectionInputs, d directRouting) []byte {
 			break
 		}
 	}
-	configs := []any{balancedConfig("⚡ Авто", "сам выбирает самый быстрый вход", "p-", fallback, in.mainServerHost, in.siteHost, ways, d)}
+	configs := []any{balancedConfig(autoLineLabel, "сам выбирает самый быстрый вход", "p-", fallback, in.mainServerHost, in.siteHost, ways, d)}
 	for _, b := range bambooJSON {
 		// Бамбук is for Wi-Fi, where the Hub answers: the Hub first.
 		if bw := bambooWays(in, b.quic); len(bw) > 0 {

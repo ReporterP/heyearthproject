@@ -101,6 +101,8 @@ func StartMonitor() {
 		safely("признаки атаки", checkDDoSSignals)
 	})
 	startTGWebMonitor()
+	// The synthetic client: a real core through every line of the test user's subscription.
+	startSyntheticMonitor()
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
 		safely("сертификат", checkSiteCertExpiry)
 		safely("бэкап", checkBackupFreshness)

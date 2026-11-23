@@ -1020,6 +1020,7 @@ func main() {
 	// Admin: Telegram alerts — settings (token masked), test message, event journal
 	registerAlertAdminRoutes()
 	registerVersionRoutes()
+	registerOpsProbeRoutes(apiLimiter)
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()

@@ -53,6 +53,11 @@ func runRetention() {
 	} else if n > 0 {
 		log.Printf("[retention] ops feed: %d records older than 180 days removed", n)
 	}
+	if n, err := purgeProbeRuns(ctx, synthKeep); err != nil {
+		log.Printf("[retention] synthetic runs: %v", err)
+	} else if n > 0 {
+		log.Printf("[retention] synthetic client: %d runs older than 14 days removed", n)
+	}
 	if n, err := biz.CleanupExpiredUserSessions(ctx); err != nil {
 		log.Printf("[retention] sessions: %v", err)
 	} else if n > 0 {
