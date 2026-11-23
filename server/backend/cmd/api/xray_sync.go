@@ -979,20 +979,43 @@ func sortedUnique(s []string) []string {
 // SyncXrayConfig (via syncWithQuota, under xraySyncMu): it neither loads nor
 // records the quota decision itself. A failed read aborts before anything is
 // written: xray keeps its current config and runXraySync alerts.
-func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
+// xrayConfigInputs reads what the generator needs (Reality keys, the database) and changes
+// nothing: applyXrayConfig and the restart prediction (predict.go) share it.
+func xrayConfigInputs() (*xrayRealityKeys, xrayInputs, error) {
 	keys, err := loadRealityKeys()
 	if err != nil {
-		return 0, fmt.Errorf("load reality keys: %w", err)
+		return nil, xrayInputs{}, fmt.Errorf("load reality keys: %w", err)
 	}
 	in, err := xrayDBReads.load(*keys)
 	if err != nil {
-		return 0, fmt.Errorf("xray sync aborted, xray keeps its current config: %w", err)
+		return nil, xrayInputs{}, fmt.Errorf("xray sync aborted, xray keeps its current config: %w", err)
+	}
+	return keys, in, nil
+}
+
+// renderXrayConfig builds the config and its JSON as the sync writes it (no side effects).
+func renderXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, []byte, error) {
+	b, err := buildXrayConfig(in, quota)
+	if err != nil {
+		return b, nil, err
+	}
+	configJSON, err := json.MarshalIndent(b.config, "", "  ")
+	if err != nil {
+		return b, nil, fmt.Errorf("marshal xray config: %w", err)
+	}
+	return b, configJSON, nil
+}
+
+func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
+	keys, in, err := xrayConfigInputs()
+	if err != nil {
+		return 0, err
 	}
 
 	// Persist Reality public key info to app_settings for client consumption
 	persistRealityPublicInfo(keys)
 
-	b, err := buildXrayConfig(in, quota)
+	b, configJSON, err := renderXrayConfig(in, quota)
 	if err != nil {
 		return 0, err
 	}
@@ -1001,12 +1024,6 @@ func applyXrayConfig(quota quotaCutoff) (excluded int, err error) {
 	}
 	// The quota summary (how many were excluded) is logged by finishQuotaSync,
 	// only once this config is in service.
-
-	// Сериализуем конфиг
-	configJSON, err := json.MarshalIndent(b.config, "", "  ")
-	if err != nil {
-		return 0, fmt.Errorf("marshal xray config: %w", err)
-	}
 
 	// Atomic write: tmp file → rename (prevents partial writes on crash/power loss)
 	// Xray requires .json extension for config format detection

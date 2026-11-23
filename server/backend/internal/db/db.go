@@ -74,3 +74,23 @@ func CloseDB() {
 		DB.Close()
 	}
 }
+
+// OpenReadOnly connects WITHOUT running migrations, every transaction read-only on the server
+// (default_transaction_read_only): `heyearth-api --predict-restarts` runs the new build against
+// the database the running build uses, before the swap, and must change nothing.
+func OpenReadOnly() error {
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		connStr = "postgres://postgres:postgres@localhost:5432/heyearth?sslmode=disable"
+	}
+	var err error
+	DB, err = sql.Open("postgres", withReadOnly(withSessionLimits(connStr)))
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	DB.SetMaxOpenConns(4)
+	if err = DB.Ping(); err != nil {
+		return fmt.Errorf("failed to ping db: %w", err)
+	}
+	return nil
+}

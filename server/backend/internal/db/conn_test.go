@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestWithSessionLimits(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -19,6 +22,17 @@ func TestWithSessionLimits(t *testing.T) {
 	for _, c := range cases {
 		if got := withSessionLimits(c.in); got != c.want {
 			t.Errorf("%q:\n got  %q\n want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestWithReadOnly(t *testing.T) {
+	for in, want := range map[string]string{
+		"postgres://u:p@h:5432/heyearth?sslmode=disable": "default_transaction_read_only=on",
+		"host=h dbname=heyearth":                         "host=h dbname=heyearth default_transaction_read_only=on",
+	} {
+		if got := withReadOnly(in); !strings.Contains(got, want) {
+			t.Errorf("withReadOnly(%q) = %q, want it to carry %q", in, got, want)
 		}
 	}
 }

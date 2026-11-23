@@ -791,6 +791,11 @@ func httpGateway(srv *server) http.HandlerFunc {
 // ─────────────────────── Main ───────────────────────
 
 func main() {
+	// The new build answers what it would restart, before the deploy swaps it in (predict.go):
+	// no migrations, no writes, no background loops.
+	if len(os.Args) > 1 && os.Args[1] == predictRestartsFlag {
+		os.Exit(runPredictRestarts())
+	}
 	log.Printf("[boot] сборка %s (собрана %s)", buildSHA, cmp.Or(buildTime, "—"))
 	if err := db.InitDB(); err != nil {
 		log.Fatalf("failed to initialize DB: %v", err)

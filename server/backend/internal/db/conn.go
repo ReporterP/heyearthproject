@@ -50,3 +50,19 @@ func withSessionLimits(connStr string) string {
 	}
 	return out
 }
+
+// withReadOnly adds default_transaction_read_only=on (a run-time parameter lib/pq sends to the
+// server): every statement of the pool runs in a read-only transaction.
+func withReadOnly(connStr string) string {
+	if strings.Contains(connStr, "://") {
+		u, err := url.Parse(connStr)
+		if err != nil {
+			return connStr
+		}
+		q := u.Query()
+		q.Set("default_transaction_read_only", "on")
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+	return connStr + " default_transaction_read_only=on"
+}

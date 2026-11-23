@@ -95,6 +95,7 @@ func main() {
 	pathMatrixID := flag.Int("path-matrix", 0, "ID входа: поточечная проверка пути Hub ↔ вход (50 source port в обе стороны + TLS через выход), вердикт PASS/FAIL; ничего не меняет")
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
 	forceDeploy := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
+	acceptRestart := flag.String("accept-restart", "", "K2|K3: выкатка API, которая по предсказанию перезапустит Бамбук (K2) или xray (K3); флаг передаёт только владелец")
 	flag.Parse()
 
 	var mode string
@@ -177,6 +178,7 @@ func main() {
 
 	validateLocalConfig(mode, cfg)
 	local := guardLocal(mode, repoRoot, *forceDeploy)
+	acceptRestartFlag = *acceptRestart
 
 	client, err := sshDialHub(cfg)
 	if err != nil {
@@ -774,6 +776,7 @@ func doAPI(c *sftp.Client, client *ssh.Client, cfg *deployConfig) {
 	_, _ = runSSH(client, "mkdir -p "+appDir+"/migrations", true)
 
 	apiPath := buildGoBinary(cfg.backendRoot, "api", "heyearth-api")
+	predictBeforeSwap(c, client, apiPath)
 	if err := uploadFile(c, apiPath, appDir+"/heyearth-api"); err != nil {
 		log.Fatal(err)
 	}

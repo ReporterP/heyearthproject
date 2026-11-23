@@ -8,10 +8,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	"github.com/heyearth/backend/internal/deployguard"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -129,4 +131,29 @@ func guardFinish(client *ssh.Client, gate *deployguard.Gate, mode string, local 
 func mustRead(run deployguard.Run) string {
 	out, _ := run(deployguard.ReadRemoteCmd(), nil)
 	return out
+}
+
+// acceptRestartFlag is --accept-restart K2|K3: only the owner passes it (CLAUDE.md, impact classes).
+var acceptRestartFlag string
+
+// predictBeforeSwap uploads the new API next to the running one, asks it what the swap would
+// restart (heyearth-api --predict-restarts: read-only database, no migrations) and prints the
+// answer. Above К1 without --accept-restart the deploy stops with exit 3 before the swap.
+func predictBeforeSwap(c *sftp.Client, client *ssh.Client, apiPath string) {
+	fmt.Println("[api] Предсказание перезапусков (новая сборка, база только на чтение)...")
+	probe := appDir + "/heyearth-api.predict"
+	if err := uploadFile(c, apiPath, probe); err != nil {
+		log.Fatalf("upload for the prediction: %v", err)
+	}
+	out, _ := runSSHQuiet(client, deployguard.PredictCmd(probe), "")
+	_, _ = runSSHQuiet(client, "rm -f "+probe, "")
+	pred := deployguard.ParsePrediction(out)
+	for _, l := range pred.Lines {
+		fmt.Println("    " + l)
+	}
+	fmt.Printf("    Класс выкатки: %s\n", pred.Class)
+	if !deployguard.AcceptRestart(pred.Class, acceptRestartFlag) {
+		fmt.Printf("    СТОП: это %s — запускать может только владелец: флаг --accept-restart %s\n", pred.Class, pred.Class)
+		os.Exit(3)
+	}
 }

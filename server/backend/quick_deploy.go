@@ -42,6 +42,7 @@ const (
 
 func main() {
 	force := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
+	acceptRestart := flag.String("accept-restart", "", "K2|K3: выкатка, которая по предсказанию перезапустит Бамбук (K2) или xray (K3); флаг передаёт только владелец")
 	flag.Parse()
 
 	// Найти корень проекта
@@ -269,6 +270,21 @@ func main() {
 		fmt.Printf("    WARN: tproxy-server не собран: %v — WEB-прокси на Hub не обновится\n", err)
 	} else if err := putArtifact(client, appDir+"/"+tgArtifact, "755", relay); err != nil {
 		fmt.Printf("    WARN: артефакт tproxy-server не выложен: %v\n", err)
+	}
+
+	// 4d. Предсказание перезапусков: новая сборка на хабе, с окружением сервиса, только чтение
+	// базы — что подмена перезапустит. Выше К1 — стоп: такую выкатку запускает только владелец.
+	fmt.Println("[4d] Предсказание перезапусков (новая сборка, база только на чтение)...")
+	pred := deployguard.ParsePrediction(runCmd(client, deployguard.PredictCmd(tmpPath)))
+	for _, l := range pred.Lines {
+		fmt.Println("    " + l)
+	}
+	fmt.Printf("    Класс выкатки: %s\n", pred.Class)
+	if !deployguard.AcceptRestart(pred.Class, *acceptRestart) {
+		runCmd(client, "rm -f "+tmpPath)
+		gate.Release()
+		fmt.Printf("    СТОП: это %s — запускать может только владелец: флаг --accept-restart %s\n", pred.Class, pred.Class)
+		os.Exit(3)
 	}
 
 	// 5. Подменить бинарник атомарно и перезапустить

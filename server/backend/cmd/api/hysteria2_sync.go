@@ -94,33 +94,11 @@ func SyncHysteria2Config() error {
 	if err != nil {
 		return fmt.Errorf("list plans: %w", err)
 	}
-	var maxUp, maxDown int
-	expressActive := false
-	for _, p := range plans {
-		if !p.IsActive || !p.ExpressEnabled {
-			continue
-		}
-		if !containsString(p.AllowedProtocols, "hysteria2") && !containsString(p.AllowedProtocols, "all") {
-			continue
-		}
-		expressActive = true
-		if p.ExpressUpMbps > maxUp {
-			maxUp = p.ExpressUpMbps
-		}
-		if p.ExpressDownMbps > maxDown {
-			maxDown = p.ExpressDownMbps
-		}
-	}
+	maxUp, maxDown, expressActive := hysteria2Limits(plans)
 	if !expressActive {
 		// No plan currently grants Hysteria2 → leave config untouched, log once per sync.
 		log.Println("[hysteria2-sync] no Express-enabled active plans, skipping config write")
 		return nil
-	}
-	if maxUp == 0 {
-		maxUp = 50
-	}
-	if maxDown == 0 {
-		maxDown = 100
 	}
 
 	obfsPassword := biz.GetHysteria2ObfsPassword()
@@ -584,4 +562,31 @@ func StartHysteria2SyncLoop() {
 	}()
 
 	log.Println("[hysteria2-sync] background sync started (every 5 min)")
+}
+
+// hysteria2Limits aggregates the Express-enabled active plans that grant Hysteria2: the global
+// cap is the highest up/down (defaults 50/100 Mbps); active is false when no plan grants it.
+func hysteria2Limits(plans []biz.Plan) (maxUp, maxDown int, active bool) {
+	for _, p := range plans {
+		if !p.IsActive || !p.ExpressEnabled {
+			continue
+		}
+		if !containsString(p.AllowedProtocols, "hysteria2") && !containsString(p.AllowedProtocols, "all") {
+			continue
+		}
+		active = true
+		if p.ExpressUpMbps > maxUp {
+			maxUp = p.ExpressUpMbps
+		}
+		if p.ExpressDownMbps > maxDown {
+			maxDown = p.ExpressDownMbps
+		}
+	}
+	if maxUp == 0 {
+		maxUp = 50
+	}
+	if maxDown == 0 {
+		maxDown = 100
+	}
+	return maxUp, maxDown, active
 }
