@@ -45,11 +45,26 @@ var (
 	opsEventImpacts = []string{ImpactK0, ImpactK1, ImpactK2, ImpactK3}
 )
 
+// CheckOpsEvent tells whether e can be written: a known kind, impact class and a summary.
+// The loopback intake of the deploy tools answers 400 with its error.
+func CheckOpsEvent(e OpsEvent) error {
+	if !slices.Contains(opsEventKinds, e.Kind) {
+		return fmt.Errorf("ops event: unknown kind %q", e.Kind)
+	}
+	if e.Impact != "" && !slices.Contains(opsEventImpacts, e.Impact) {
+		return fmt.Errorf("ops event: unknown impact %q (K0–K3)", e.Impact)
+	}
+	if strings.TrimSpace(e.Summary) == "" {
+		return errors.New("ops event: empty summary")
+	}
+	return nil
+}
+
 // RecordOpsEvent writes e to the feed. The summary and every string in the details are
 // scrubbed first. The caller only logs an error: nothing on the prod path waits for the feed.
 func RecordOpsEvent(ctx context.Context, e OpsEvent) error {
-	if !slices.Contains(opsEventKinds, e.Kind) {
-		return fmt.Errorf("ops event: unknown kind %q", e.Kind)
+	if err := CheckOpsEvent(e); err != nil {
+		return err
 	}
 	if e.Impact == "" {
 		e.Impact = ImpactK0

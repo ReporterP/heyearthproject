@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/heyearth/backend/internal/buildmeta"
 	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/deployguard"
 	"github.com/heyearth/backend/internal/tproxybuild"
 	"golang.org/x/crypto/ssh"
 )
@@ -38,6 +41,9 @@ const (
 )
 
 func main() {
+	force := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
+	flag.Parse()
+
 	// Найти корень проекта
 	_, thisFile, _, _ := runtime.Caller(0)
 	backendRoot := filepath.Dir(thisFile)
@@ -97,6 +103,22 @@ func main() {
 	}
 	host := net.JoinHostPort(deployHost, deployPort)
 
+	// 0. Защита выкатки, локальная часть — до сборки и до подключения к хабу.
+	local := deployguard.LocalState(backendRoot)
+	if v := deployguard.CheckLocal(local); len(v.Refusals) > 0 {
+		if *force == "" {
+			for _, r := range v.Refusals {
+				fmt.Println("ОТКАЗ: " + r)
+			}
+			fmt.Println(`Обход — только осознанно: --force-deploy "<причина, не короче 10 символов>"`)
+			os.Exit(2)
+		}
+		if _, err := v.Force(*force); err != nil {
+			fmt.Println("ОТКАЗ: " + err.Error())
+			os.Exit(2)
+		}
+	}
+
 	// 1. Собрать бинарник для Linux
 	fmt.Println("[1/5] Сборка бинарника для Linux...")
 	binaryPath := filepath.Join(backendRoot, binaryName+".bin")
@@ -139,6 +161,28 @@ func main() {
 	defer func() { client.Close() }()
 	fmt.Println("    Подключено.")
 
+	// Защита выкатки, часть хаба: выкаченная сборка, замок. Отказ — код 2, до загрузки.
+	run := func(cmd string, stdin []byte) (string, error) { return runCmdIn(client, cmd, stdin) }
+	gate, err := deployguard.Open(run, "api", deployguard.Holder(time.Now()), local, *force, time.Now(), os.Stdout)
+	if err != nil {
+		fmt.Println(err)
+		if errors.Is(err, deployguard.ErrRefused) {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+	// from here every way out releases the lock first (log.Fatalf skips defers)
+	fatalf := func(format string, args ...any) {
+		gate.Release()
+		log.Fatalf(format, args...)
+	}
+	if *force != "" {
+		if err := deployguard.Feed(run, deployguard.Event{Kind: "note", Actor: "deploy", Target: "api", Impact: "K1", OK: true,
+			Summary: "выкатка API " + label + " в обход защиты: " + *force}); err != nil {
+			fmt.Printf("    WARN: причина обхода не записана в ленту: %v\n", err)
+		}
+	}
+
 	// 3. Загрузить бинарник через SSH pipe — во временный файл рядом, на место кладёт mv.
 	// Прямой `cat >` в рабочий путь давал "Text file busy" и полузаписанный бинарник при обрыве SSH.
 	fmt.Println("[3/5] Загрузка бинарника через SSH pipe...")
@@ -147,7 +191,7 @@ func main() {
 	tmpPath := fmt.Sprintf("%s.new-%d", remotePath, time.Now().UnixNano())
 	if err := uploadViaPipe(client, binaryPath, tmpPath); err != nil {
 		runCmd(client, "rm -f "+tmpPath)
-		log.Fatalf("upload binary: %v", err)
+		fatalf("upload binary: %v", err)
 	}
 	fmt.Printf("    Загружено за %v\n", time.Since(start).Round(time.Millisecond))
 
@@ -157,7 +201,7 @@ func main() {
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		runCmd(client, "rm -f "+tmpPath)
-		log.Fatalf("read migrations: %v", err)
+		fatalf("read migrations: %v", err)
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -168,11 +212,11 @@ func main() {
 		data, err := os.ReadFile(localPath)
 		if err != nil {
 			runCmd(client, "rm -f "+tmpPath)
-			log.Fatalf("read %s: %v", entry.Name(), err)
+			fatalf("read %s: %v", entry.Name(), err)
 		}
 		if err := uploadContentViaPipe(client, data, remoteMigPath); err != nil {
 			runCmd(client, "rm -f "+tmpPath)
-			log.Fatalf("upload %s: %v (сервис не перезапущен)", entry.Name(), err)
+			fatalf("upload %s: %v (сервис не перезапущен)", entry.Name(), err)
 		}
 	}
 	fmt.Printf("    %d файлов миграций загружено\n", len(entries))
@@ -188,7 +232,7 @@ func main() {
 	ab.Stderr = os.Stderr
 	if err := ab.Run(); err != nil {
 		runCmd(client, "rm -f "+tmpPath)
-		log.Fatalf("build node-agent: %v", err)
+		fatalf("build node-agent: %v", err)
 	}
 	// The WEB proxy's forwarder (phase T) is built the same way, from this repository.
 	fwdPath := filepath.Join(os.TempDir(), fmt.Sprintf("heyearth-tgfwd-%d.bin", os.Getpid()))
@@ -199,7 +243,7 @@ func main() {
 	fb.Stderr = os.Stderr
 	if err := fb.Run(); err != nil {
 		runCmd(client, "rm -f "+tmpPath)
-		log.Fatalf("build tgfwd: %v", err)
+		fatalf("build tgfwd: %v", err)
 	}
 	for _, a := range []struct{ local, remote, mode string }{
 		{agentPath, appDir + "/artifacts/node-agent", "755"},
@@ -209,11 +253,11 @@ func main() {
 		data, err := os.ReadFile(a.local)
 		if err != nil {
 			runCmd(client, "rm -f "+tmpPath)
-			log.Fatalf("read %s: %v", a.local, err)
+			fatalf("read %s: %v", a.local, err)
 		}
 		if err := putArtifact(client, a.remote, a.mode, data); err != nil {
 			runCmd(client, "rm -f "+tmpPath)
-			log.Fatalf("artifact %s: %v (сервис не перезапущен)", a.remote, err)
+			fatalf("artifact %s: %v (сервис не перезапущен)", a.remote, err)
 		}
 	}
 	os.Remove(agentPath)
@@ -231,7 +275,7 @@ func main() {
 	fmt.Println("[5/5] Перезапуск сервиса...")
 	if out := runCmd(client, fmt.Sprintf("chmod +x %[1]s && { [ ! -f %[2]s ] || cp -p %[2]s %[2]s.bak; } && mv -f %[1]s %[2]s && echo SWAPPED", tmpPath, remotePath)); !strings.Contains(out, "SWAPPED") {
 		runCmd(client, "rm -f "+tmpPath)
-		log.Fatalf("swap binary failed: %s", strings.TrimSpace(out))
+		fatalf("swap binary failed: %s", strings.TrimSpace(out))
 	}
 	runCmd(client, "systemctl restart heyearth-api")
 
@@ -248,10 +292,14 @@ func main() {
 		} else {
 			fmt.Printf("    ОТКАТ НЕ УДАЛСЯ: %s\n", strings.TrimSpace(out))
 		}
+		gate.Release()
 		os.Remove(binaryPath)
 		os.Exit(1)
 	}
 	fmt.Println("    heyearth-api: ACTIVE ✓, health 200 ✓")
+	if err := gate.Done(label, time.Now()); err != nil {
+		fmt.Printf("    WARN: выкаченная сборка не записана на хабе (deployed.json): %v\n", err)
+	}
 
 	// Проверить Xray sync
 	xrayOut := runCmd(client, "systemctl is-active xray 2>/dev/null || echo not-installed")
@@ -373,3 +421,18 @@ func runCmd(client *ssh.Client, command string) string {
 // Заглушки для совместимости с зависимостями
 var _ = net.Dial
 var _ = io.Copy
+
+// runCmdIn runs command with stdin (may be nil); the deploy guard writes the lock holder and
+// deployed.json through it.
+func runCmdIn(client *ssh.Client, command string, stdin []byte) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+	if stdin != nil {
+		session.Stdin = bytes.NewReader(stdin)
+	}
+	out, err := session.CombinedOutput(command)
+	return string(out), err
+}

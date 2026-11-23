@@ -18,6 +18,7 @@ import (
 	"github.com/heyearth/backend/internal/admin"
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
+	"github.com/heyearth/backend/internal/deployguard"
 	"github.com/heyearth/backend/internal/email"
 	"github.com/heyearth/backend/internal/middleware"
 	"github.com/heyearth/backend/internal/pb/heyearth_v1"
@@ -828,6 +829,13 @@ func main() {
 	// the tunnel monitor (the Bamboo path does not need xray) and the certificate alarm.
 	StartTunnelHealthMonitor()
 	StartCertExpiryMonitor()
+
+	// The deploy tools' feed intake on the same listener needs its key file (root only).
+	if k, err := ensureOpsIntakeKey(deployguard.IntakeKeyFile); err != nil {
+		log.Printf("[ops] ключ приёма записей ленты от выкатки не создан: %v — приём закрыт", err)
+	} else {
+		opsIntakeKey = k
+	}
 
 	// Auth-only loopback listener for hysteria-server (127.0.0.1:8001). Bound before the
 	// first Hysteria2 sync, which writes this address into /etc/hysteria/server.yaml.

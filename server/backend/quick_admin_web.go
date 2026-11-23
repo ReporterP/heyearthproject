@@ -12,6 +12,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,10 +26,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heyearth/backend/internal/deployguard"
 	"golang.org/x/crypto/ssh"
 )
 
 func main() {
+	force := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
 	site := flag.Bool("site", false, "deploy the site (site/) instead of the admin (admin_web/)")
 	flag.Parse()
 	appDir, webRoot, vhost := "admin_web", "/var/www/heyearth", "admin.hiearth.ru"
@@ -70,6 +73,26 @@ func main() {
 		port = "22"
 	}
 
+	// Защита выкатки, локальная часть — до сборки и до подключения к хабу.
+	component, what := "admin", "выкачена админка"
+	if *site {
+		component, what = "site", "выкачен сайт"
+	}
+	local := deployguard.LocalState(repoRoot)
+	if v := deployguard.CheckLocal(local); len(v.Refusals) > 0 {
+		if *force == "" {
+			for _, r := range v.Refusals {
+				fmt.Println("ОТКАЗ: " + r)
+			}
+			fmt.Println(`Обход — только осознанно: --force-deploy "<причина, не короче 10 символов>"`)
+			os.Exit(2)
+		}
+		if _, err := v.Force(*force); err != nil {
+			fmt.Println("ОТКАЗ: " + err.Error())
+			os.Exit(2)
+		}
+	}
+
 	fmt.Printf("[1/3] Сборка %s...\n", appDir)
 	webDir := filepath.Join(repoRoot, appDir)
 	npm := "npm"
@@ -105,6 +128,31 @@ func main() {
 		log.Fatalf("SSH dial: %v", err)
 	}
 	defer client.Close()
+	run := func(c string, stdin []byte) (string, error) {
+		s, err := client.NewSession()
+		if err != nil {
+			return "", err
+		}
+		defer s.Close()
+		if stdin != nil {
+			s.Stdin = bytes.NewReader(stdin)
+		}
+		out, err := s.CombinedOutput(c)
+		return string(out), err
+	}
+	gate, err := deployguard.Open(run, component, deployguard.Holder(time.Now()), local, *force, time.Now(), os.Stdout)
+	if err != nil {
+		fmt.Println(err)
+		if errors.Is(err, deployguard.ErrRefused) {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+	// from here every way out releases the lock first (log.Fatalf skips defers)
+	fatalf := func(format string, args ...any) {
+		gate.Release()
+		log.Fatalf(format, args...)
+	}
 	stamp := time.Now().Unix()
 	newDir := fmt.Sprintf("%s.new-%d", webRoot, stamp)
 	script := fmt.Sprintf(`set -e
@@ -120,13 +168,13 @@ nginx -t >/dev/null 2>&1 && systemctl reload nginx
 echo "files: $(find %[1]s -type f | wc -l)"`, webRoot, newDir)
 	session, err := client.NewSession()
 	if err != nil {
-		log.Fatalf("SSH session: %v", err)
+		fatalf("SSH session: %v", err)
 	}
 	session.Stdin = bytes.NewReader(archive)
 	out, err := session.CombinedOutput(script)
 	session.Close()
 	if err != nil {
-		log.Fatalf("upload: %v\n%s", err, out)
+		fatalf("upload: %v\n%s", err, out)
 	}
 	fmt.Print("    ", string(out))
 
@@ -135,6 +183,21 @@ echo "files: $(find %[1]s -type f | wc -l)"`, webRoot, newDir)
 	res, _ := check.CombinedOutput("curl -s -o /dev/null -w '%{http_code}' -H 'Host: " + vhost + "' -k https://127.0.0.1:8443/")
 	check.Close()
 	fmt.Printf("    %s: HTTP %s\n", vhost, strings.TrimSpace(string(res)))
+	if strings.TrimSpace(string(res)) != "200" {
+		gate.Release()
+		fmt.Printf("    ВНИМАНИЕ: %s отвечает %s — сборка на хабе не записана\n", vhost, strings.TrimSpace(string(res)))
+		os.Exit(1)
+	}
+	if err := gate.Done(local.SHA, time.Now()); err != nil {
+		fmt.Printf("    WARN: выкаченная сборка не записана на хабе (deployed.json): %v\n", err)
+	}
+	summary := what + " " + local.SHA
+	if *force != "" {
+		summary += " в обход защиты: " + *force
+	}
+	if err := deployguard.Feed(run, deployguard.Event{Kind: "action", Actor: "deploy", Target: component, Impact: "K0", OK: true, Summary: summary}); err != nil {
+		fmt.Printf("    WARN: запись в ленту не сделана: %v\n", err)
+	}
 	fmt.Println("Готово.")
 }
 

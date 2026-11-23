@@ -54,8 +54,15 @@ func newMainHTTPServer(addr string, h http.Handler) *http.Server {
 // hysteria2AuthOnly passes exactly hysteria2AuthPath to auth and answers 404 to every other
 // path. It compares the raw request path itself instead of using a ServeMux, so there is no
 // path cleaning, no redirect and no fallback to http.DefaultServeMux.
+//
+// The one other path is the deploy tools' feed intake (opsIntakePath), guarded by its own key
+// file that only root on the Hub can read (ops_intake.go).
 func hysteria2AuthOnly(auth http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == opsIntakePath {
+			handleOpsIntake(w, r)
+			return
+		}
 		if r.URL.Path != hysteria2AuthPath {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 			return

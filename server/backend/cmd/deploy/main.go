@@ -94,6 +94,7 @@ func main() {
 	relayTunnelCheck := flag.Bool("relay-tunnel-check", false, "с --relay-tunnel: только замер (TCP 2443 и UDP Бамбука с разных source port через выход) и проверка адресов туннеля, без изменений")
 	pathMatrixID := flag.Int("path-matrix", 0, "ID входа: поточечная проверка пути Hub ↔ вход (50 source port в обе стороны + TLS через выход), вердикт PASS/FAIL; ничего не меняет")
 	backupAgeRecipient := flag.String("backup-age-recipient", "", "age-публичный ключ (age1…), которым шифруется копия бэкапа на exit (--setup-ops); приватный ключ хранит владелец офлайн: age-keygen -o backup.key")
+	forceDeploy := flag.String("force-deploy", "", "выкатить в обход защиты (грязное дерево, не main, не потомок выкаченной сборки, чужой замок); причина не короче 10 символов уходит в ленту")
 	flag.Parse()
 
 	var mode string
@@ -175,12 +176,14 @@ func main() {
 	}
 
 	validateLocalConfig(mode, cfg)
+	local := guardLocal(mode, repoRoot, *forceDeploy)
 
 	client, err := sshDialHub(cfg)
 	if err != nil {
 		log.Fatalf("ssh dial: %v", err)
 	}
 	defer client.Close()
+	gate := guardOpen(client, mode, local, *forceDeploy)
 
 	if mode == "ssh" {
 		out, err := runSSH(client, *sshCmd, false)
@@ -200,14 +203,17 @@ func main() {
 	}
 	if mode == "setup-hygiene" {
 		setupHygiene(client)
+		guardFinish(client, gate, mode, local)
 		return
 	}
 	if mode == "setup-watchdog" {
 		setupWatchdog(client, cfg)
+		guardFinish(client, gate, mode, local)
 		return
 	}
 	if mode == "setup-ops" {
 		setupOpsHub(client, cfg, *backupTarget, *exitNodePassword, *exitNodeSSHPort, *backupAgeRecipient, *ddosMode, *sshPassword)
+		guardFinish(client, gate, mode, local)
 		return
 	}
 	if mode == "relay-tunnel" {
@@ -242,6 +248,7 @@ func main() {
 			log.Fatalf("[ops] %d step(s) failed: %s", len(failed), strings.Join(failed, ", "))
 		}
 		fmt.Println("[ops] setup-hardening: all steps OK")
+		guardFinish(client, gate, mode, local)
 		return
 	}
 	if mode == "stream-proxy-protocol" {
@@ -330,6 +337,7 @@ func main() {
 	case "setup-hysteria2-hub":
 		setupHysteria2Hub(client, cfg)
 	}
+	guardFinish(client, gate, mode, local)
 }
 
 func validateLocalConfig(mode string, cfg *deployConfig) {
