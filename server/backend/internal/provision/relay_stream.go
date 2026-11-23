@@ -14,7 +14,7 @@ import (
 )
 
 func (l relayLayout) streamFile(o RelayOptions) (File, error) {
-	c, err := config.RelayNginxConfVia(o.HubIP, str(o.tunnel().hub))
+	c, err := config.RelayNginxConfVia(o.HubIP, o.hubTun())
 	if err != nil {
 		return File{}, err
 	}
@@ -26,7 +26,11 @@ func (l relayLayout) streamFile(o RelayOptions) (File, error) {
 const relayStreamSh = `nginx -t -q -c "$NGINX"
 systemctl enable --quiet nginx
 if systemctl is-active --quiet nginx; then systemctl reload nginx; else systemctl start nginx; fi
-echo "nginx на входе принимает TCP 443 и 80 и передаёт их на Hub через туннель ($TUN_PEER), запасной путь — $HUB"
+if [ "$ROUTE_TO" != "$HUB" ]; then
+  echo "nginx на входе принимает TCP 443 и 80 и передаёт их на Hub через туннель ($TUN_PEER), запасной путь — $HUB"
+else
+  echo "nginx на входе принимает TCP 443 и 80 и передаёт их на Hub $HUB"
+fi
 `
 
 const relayStreamCheckSh = `if ! systemctl is-active --quiet nginx; then echo "RELAY_FAIL nginx не работает"; fi

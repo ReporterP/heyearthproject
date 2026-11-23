@@ -21,9 +21,9 @@ import (
 )
 
 func TestRelayEntriesQuery(t *testing.T) {
-	q := normSQL(relayEntriesQuery)
+	q := normSQL(fmt.Sprintf(relayEntriesQuery, relaysPublished))
 	for _, must := range []string{"FROM SERVERS S LEFT JOIN ENTRY_STATE E ON E.ENTRY_ID = S.ID",
-		"S.ROLE = 'RELAY'", "S.LIFECYCLE_STATE = 'ONLINE'", "ORDER BY S.ID"} {
+		"S.ROLE = 'RELAY'", "S.LIFECYCLE_STATE = 'ONLINE'", "COALESCE(E.ROTATION, 'ALL') = 'ALL'", "ORDER BY S.ID"} {
 		if !strings.Contains(q, must) {
 			t.Errorf("relayEntriesQuery lost %q:\n%s", must, relayEntriesQuery)
 		}
@@ -254,15 +254,15 @@ func entriesAnswer(host *string, hub []driver.Value, relays [][]driver.Value, fa
 			if fail == "relays" {
 				return nil, errEntriesRead
 			}
-			return rowsOf(16, relays...), nil
+			return rowsOf(21, padRelayRows(relays)...), nil
 		case strings.Contains(q, "FROM entry_state e WHERE e.entry_id = 0"):
 			if fail == "hub" {
 				return nil, errEntriesRead
 			}
 			if hub == nil {
-				return rowsOf(11), nil
+				return rowsOf(15), nil
 			}
-			return rowsOf(11, hub), nil
+			return rowsOf(15, append(append([]driver.Value{}, hub...), rotationCols...)), nil
 		}
 		return nil, fmt.Errorf("unexpected query %q", q)
 	}
@@ -475,4 +475,19 @@ func TestSaveEntryCheckArgs(t *testing.T) {
 	if len(calls) != 1 || !calls[0].exec || calls[0].q != entryCheckQueries["udp"] || !reflect.DeepEqual(calls[0].args, want) {
 		t.Fatalf("want the udp upsert with %v, got %+v", want, calls)
 	}
+}
+
+// rotationCols: the entry_state rotation columns of a row in rotation (no reason, never moved).
+var rotationCols = []driver.Value{"all", "", nil, ""}
+
+// padRelayRows turns the rows of the tests (before the tunnel flag and the rotation) into the
+// columns of relayEntriesQuery: relay_tunnel after the lifecycle, the rotation at the end.
+func padRelayRows(rows [][]driver.Value) [][]driver.Value {
+	out := make([][]driver.Value, 0, len(rows))
+	for _, r := range rows {
+		row := append(append([]driver.Value{}, r[:5]...), false)
+		row = append(append(row, r[5:]...), rotationCols...)
+		out = append(out, row)
+	}
+	return out
 }

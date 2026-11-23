@@ -21,6 +21,14 @@ const (
 	// Telegram-прокси» and the reconciler's backfill share the node's job lock (one active job per
 	// node) with every other job instead of running beside them.
 	KindMTProxy = "mtproxy"
+	// KindPathCheck: «Проверить путь» of an entry (read-only, pathcheck.go); KindTunnelCheck:
+	// «Проверить туннель» — a trial GRE tunnel brought up, measured and taken down again.
+	KindPathCheck   = "pathcheck"
+	KindTunnelCheck = "tunnelcheck"
+	// KindTunnelOn / KindTunnelOff: «Включить туннель» / «Выключить туннель» — the relay recipe with the
+	// other choice, which writes servers.relay_tunnel as its last step (only a finished job commits it).
+	KindTunnelOn  = "tunnelon"
+	KindTunnelOff = "tunneloff"
 
 	JobRunning     = "running"
 	JobSucceeded   = "succeeded"
@@ -126,7 +134,7 @@ type Runner struct {
 // ValidKind reports whether k is a job kind.
 func ValidKind(k string) bool {
 	switch k {
-	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy:
+	case KindProvision, KindReprovision, KindDeprovision, KindVerify, KindMTProxy, KindTGMTProxy, KindPathCheck, KindTunnelCheck, KindTunnelOn, KindTunnelOff:
 		return true
 	}
 	return false

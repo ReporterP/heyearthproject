@@ -56,7 +56,23 @@ type Entry struct {
 	Country     string      `json:"country"`
 	Lifecycle   string      `json:"lifecycle"`
 	Health      EntryHealth `json:"health"`
+	// Rotation: who gets the entry in their subscription (EntryRotation*; the Hub is always 'all').
+	Rotation       string     `json:"rotation"`
+	RotationReason string     `json:"rotation_reason"`
+	RotationAt     *time.Time `json:"rotation_at"`
+	RotationBy     string     `json:"rotation_by"`
+	Tunnel         bool       `json:"tunnel"` // servers.relay_tunnel: the relay forwards through its GRE tunnel
 }
+
+// Rotation of a reserve entry (entry_state.rotation, migration 000097).
+const (
+	EntryRotationAll  = "all"  // every user
+	EntryRotationTest = "test" // only the «Тестовый пользователь» of «Входы» (entry_failover_test_user)
+	EntryRotationOff  = "off"  // nobody; the monitor still checks it
+)
+
+// ErrRotationChanged: the entry's rotation is not the one the caller expected (a concurrent change).
+var ErrRotationChanged = errors.New("состояние входа уже изменилось — обновите страницу")
 
 // EntryFailover is the auto-swap state (app_settings entry_failover_*): while Active the main
 // subscription lines point at relay Target. Pinned: the owner sent everyone through Target on
@@ -90,23 +106,35 @@ var (
 const entryStateColumns = `COALESCE(e.address_mode, 'ip'), COALESCE(e.domain, ''),
 	COALESCE(e.ext_status, 'unknown'), e.ext_checked_at, COALESCE(e.ext_error, ''),
 	COALESCE(e.udp_status, 'unknown'), e.udp_checked_at, COALESCE(e.udp_error, ''),
-	COALESCE(e.ru_status, 'unknown'), e.ru_checked_at, COALESCE(e.ru_link, '')`
+	COALESCE(e.ru_status, 'unknown'), e.ru_checked_at, COALESCE(e.ru_link, ''),
+	COALESCE(e.rotation, 'all'), COALESCE(e.rotation_reason, ''), e.rotation_at, COALESCE(e.rotation_by, '')`
 
+// relayEntriesQuery lists relays matching where (relaysPublished etc.), by id.
 const relayEntriesQuery = `
 	SELECT s.id, COALESCE(s.name, ''), s.ip_address, COALESCE(s.country_code, ''), COALESCE(s.lifecycle_state, ''),
-	       ` + entryStateColumns + `
+	       COALESCE(s.relay_tunnel, FALSE), ` + entryStateColumns + `
 	  FROM servers s LEFT JOIN entry_state e ON e.entry_id = s.id
-	 WHERE s.role = 'relay' AND s.lifecycle_state = 'online'
+	 WHERE s.role = 'relay' %s
 	 ORDER BY s.id`
 
-const hubEntryStateQuery = `SELECT ` + entryStateColumns + ` FROM entry_state e WHERE e.entry_id = 0`
+// The relay sets: what the subscription and every user-facing consumer publish (online, in
+// rotation), the same plus the canary entries for the test user, what the monitor checks (every
+// online relay) and what «Входы» shows (every relay).
+const (
+	relaysPublished    = `AND s.lifecycle_state = 'online' AND COALESCE(e.rotation, 'all') = 'all'`
+	relaysWithTest     = `AND s.lifecycle_state = 'online' AND COALESCE(e.rotation, 'all') IN ('all', 'test')`
+	relaysOnline       = `AND s.lifecycle_state = 'online'`
+	relaysEveryState   = ``
+	hubEntryStateQuery = `SELECT ` + entryStateColumns + ` FROM entry_state e WHERE e.entry_id = 0`
+)
 
 func scanEntry(scan func(dest ...any) error, head []any, e *Entry) error {
-	var extAt, udpAt, ruAt sql.NullTime
+	var extAt, udpAt, ruAt, rotAt sql.NullTime
 	dest := append(head, &e.AddressMode, &e.Domain,
 		&e.Health.External, &extAt, &e.Health.ExternalError,
 		&e.Health.UDP, &udpAt, &e.Health.UDPError,
-		&e.Health.RU, &ruAt, &e.Health.RULink)
+		&e.Health.RU, &ruAt, &e.Health.RULink,
+		&e.Rotation, &e.RotationReason, &rotAt, &e.RotationBy)
 	if err := scan(dest...); err != nil {
 		return err
 	}
@@ -116,15 +144,13 @@ func scanEntry(scan func(dest ...any) error, head []any, e *Entry) error {
 		}
 		return &t.Time
 	}
-	e.Health.ExternalAt, e.Health.UDPAt, e.Health.RUAt = ptr(extAt), ptr(udpAt), ptr(ruAt)
+	e.Health.ExternalAt, e.Health.UDPAt, e.Health.RUAt, e.RotationAt = ptr(extAt), ptr(udpAt), ptr(ruAt), ptr(rotAt)
 	e.Address = EntryAddress(e.IP, e.AddressMode, e.Domain)
 	return nil
 }
 
-// ListRelayEntries returns the online relays with their state, by id. A failed read is an error
-// (the subscription answers 503 on it, never a profile without the reserve lines).
-func ListRelayEntries(ctx context.Context) ([]Entry, error) {
-	rows, err := db.DB.QueryContext(ctx, relayEntriesQuery)
+func listRelays(ctx context.Context, where string) ([]Entry, error) {
+	rows, err := db.DB.QueryContext(ctx, fmt.Sprintf(relayEntriesQuery, where))
 	if err != nil {
 		return nil, fmt.Errorf("list relay entries: %w", err)
 	}
@@ -132,7 +158,7 @@ func ListRelayEntries(ctx context.Context) ([]Entry, error) {
 	var out []Entry
 	for rows.Next() {
 		e := Entry{Kind: EntryKindRelay}
-		if err := scanEntry(rows.Scan, []any{&e.ID, &e.Name, &e.IP, &e.Country, &e.Lifecycle}, &e); err != nil {
+		if err := scanEntry(rows.Scan, []any{&e.ID, &e.Name, &e.IP, &e.Country, &e.Lifecycle, &e.Tunnel}, &e); err != nil {
 			return nil, fmt.Errorf("list relay entries: %w", err)
 		}
 		out = append(out, e)
@@ -143,8 +169,36 @@ func ListRelayEntries(ctx context.Context) ([]Entry, error) {
 	return out, nil
 }
 
-// ListEntries returns the Hub (ID 0) followed by the online relays.
-func ListEntries(ctx context.Context) ([]Entry, error) {
+// ListRelayEntries returns the published relays — online and in rotation ('all') — with their
+// state, by id: every user-facing consumer (subscription, tg proxy, check-host, checklist). A
+// failed read is an error (the subscription answers 503 on it, never a profile without the
+// reserve lines).
+func ListRelayEntries(ctx context.Context) ([]Entry, error) { return listRelays(ctx, relaysPublished) }
+
+// ListSubscriptionRelays: the relays of one user's subscription — the published ones, plus the
+// canary entries ('test') when withTest (the user is entry_failover_test_user).
+func ListSubscriptionRelays(ctx context.Context, withTest bool) ([]Entry, error) {
+	if withTest {
+		return listRelays(ctx, relaysWithTest)
+	}
+	return listRelays(ctx, relaysPublished)
+}
+
+// ListEntries returns the Hub (ID 0) followed by the published relays.
+func ListEntries(ctx context.Context) ([]Entry, error) { return listWithHub(ctx, relaysPublished) }
+
+// ListMonitoredEntries: the Hub and every online relay whatever its rotation (the entries
+// monitor checks an entry out of rotation too — the owner sees whether it recovered).
+func ListMonitoredEntries(ctx context.Context) ([]Entry, error) {
+	return listWithHub(ctx, relaysOnline)
+}
+
+// ListAdminEntries: the Hub and every relay in any lifecycle state («Входы»).
+func ListAdminEntries(ctx context.Context) ([]Entry, error) {
+	return listWithHub(ctx, relaysEveryState)
+}
+
+func listWithHub(ctx context.Context, where string) ([]Entry, error) {
 	host, err := entrySetting(ctx, "main_server_host", "")
 	if err != nil {
 		return nil, err
@@ -157,7 +211,8 @@ func ListEntries(ctx context.Context) ([]Entry, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("hub entry state: %w", err)
 	}
-	relays, err := ListRelayEntries(ctx)
+	hub.Rotation = EntryRotationAll
+	relays, err := listRelays(ctx, where)
 	if err != nil {
 		return nil, err
 	}

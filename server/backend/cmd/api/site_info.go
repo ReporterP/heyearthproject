@@ -28,8 +28,10 @@ SELECT DISTINCT UPPER(country_code) FROM servers
    AND COALESCE(country_code, '') <> ''
  ORDER BY 1`
 
-// siteInfoRelayQuery: a working entry in Russia exists.
-const siteInfoRelayQuery = `SELECT EXISTS (SELECT 1 FROM servers WHERE role = 'relay' AND lifecycle_state = 'online')`
+// siteInfoRelayQuery: a published entry exists — online and in rotation (entry_state.rotation 'all';
+// an entry out of rotation or on the canary does not make the site promise mobile networks).
+const siteInfoRelayQuery = `SELECT EXISTS (SELECT 1 FROM servers s LEFT JOIN entry_state e ON e.entry_id = s.id
+	WHERE s.role = 'relay' AND s.lifecycle_state = 'online' AND COALESCE(e.rotation, 'all') = 'all')`
 
 func loadSiteInfo(ctx context.Context) (siteInfo, error) {
 	info := siteInfo{

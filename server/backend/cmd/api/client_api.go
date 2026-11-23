@@ -550,15 +550,17 @@ const directLabel = " · напрямую"
 // loadEntryPlan reads the inputs of planEntries; every read is strict (an
 // error, never "no reserves" / "no failover").
 func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
-	relays, err := withSyncTimeout(biz.ListRelayEntries)
+	testUser, err := subscriptionSetting("entry_failover_test_user", "")
+	if err != nil {
+		return entryPlan{}, err
+	}
+	isTest := userID != "" && testUser == userID
+	// The test user also gets the entries on the canary (rotation 'test').
+	relays, err := withSyncTimeout(func(ctx context.Context) ([]biz.Entry, error) { return biz.ListSubscriptionRelays(ctx, isTest) })
 	if err != nil {
 		return entryPlan{}, err
 	}
 	fo, err := withSyncTimeout(biz.GetEntryFailover)
-	if err != nil {
-		return entryPlan{}, err
-	}
-	testUser, err := subscriptionSetting("entry_failover_test_user", "")
 	if err != nil {
 		return entryPlan{}, err
 	}
@@ -574,7 +576,7 @@ func loadEntryPlan(userID, mainHost string) (entryPlan, error) {
 	if err != nil {
 		return entryPlan{}, err
 	}
-	p := planEntries(mainHost, relays, fo, userID != "" && testUser == userID, urgentInterval(interval, urgent, time.Now()))
+	p := planEntries(mainHost, relays, fo, isTest, urgentInterval(interval, urgent, time.Now()))
 	return applyHubTransition(p, hubTransitionOn(transition)), nil
 }
 

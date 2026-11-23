@@ -521,5 +521,17 @@ func relayTunnel(client *ssh.Client, cfg *deployConfig, id int, apply bool) erro
 	if !strings.Contains(l, "RELAY_TUNNEL_OK") {
 		return fmt.Errorf("вход %d: туннель не включён (см. вывод выше)", id)
 	}
+	// The tunnel is the entry's choice (servers.relay_tunnel): without the flag the next
+	// «Переустановить» from the admin panel would take the tunnel down again.
+	if _, err := q(relayTunnelFlagSQL(id)); err != nil {
+		return fmt.Errorf("вход %d на туннеле, но флаг servers.relay_tunnel не записан — следующая переустановка снимет туннель; запишите его: %s: %w",
+			id, relayTunnelFlagSQL(id), err)
+	}
+	fmt.Printf("[relay-tunnel] servers.relay_tunnel = true для входа %d: переустановка сохранит туннель\n", id)
 	return nil
+}
+
+// relayTunnelFlagSQL marks entry id as one on the tunnel (servers.relay_tunnel).
+func relayTunnelFlagSQL(id int) string {
+	return "update servers set relay_tunnel = true, updated_at = now() where id = " + strconv.Itoa(id) + " and role = 'relay'"
 }

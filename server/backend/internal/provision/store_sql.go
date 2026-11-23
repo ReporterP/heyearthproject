@@ -71,7 +71,8 @@ var ErrNodeNotFound = errors.New("не найдена")
 const nodeMetaColumns = `s.id, COALESCE(s.name, ''), s.role, COALESCE(s.country_code, ''), s.ip_address,
        COALESCE(s.ssh_port, 22), COALESCE(s.ssh_user, 'root'), COALESCE(s.ssh_host_key_fp, ''), COALESCE(s.ssh_host_key, ''),
        s.ssh_host_key_confirmed_at IS NOT NULL,
-       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled`
+       s.lifecycle_state, COALESCE(s.load_weight, 1), s.mtproto_status, s.tunnel_fallback_enabled,
+       COALESCE(s.relay_tunnel, FALSE)`
 
 // nodeMetaQuery: what the admin panel needs to decide about a node — no password, no key.
 const nodeMetaQuery = `SELECT ` + nodeMetaColumns + `
@@ -90,7 +91,7 @@ func scanNodeMeta(row *sql.Row, id int, extra ...any) (Node, error) {
 	var n Node
 	var hostKeyBlob string
 	dest := append([]any{&n.ID, &n.Name, &n.Role, &n.CountryCode, &n.IP, &n.SSHPort, &n.SSHUser, &n.HostKeyFP, &hostKeyBlob,
-		&n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight, &n.MTProtoStatus, &n.FallbackEnabled}, extra...)
+		&n.HostKeyConfirmed, &n.Lifecycle, &n.LoadWeight, &n.MTProtoStatus, &n.FallbackEnabled, &n.RelayTunnel}, extra...)
 	if err := row.Scan(dest...); errors.Is(err, sql.ErrNoRows) {
 		return Node{}, fmt.Errorf("нода %d %w", id, ErrNodeNotFound)
 	} else if err != nil {
@@ -214,6 +215,17 @@ SELECT $1::bigint, (t.ord - 1)::int, t.name, 'pending' FROM unnest($2::text[]) W
 	activateQuery     = `UPDATE servers SET lifecycle_state = 'online', tunnel_status = 'healthy', tunnel_error = '',
        lifecycle_updated_at = NOW(), updated_at = NOW()
  WHERE id = $1 AND lifecycle_state = 'provisioning'`
+	// activateEntryQuery: an entry that goes online through a setup job is a new path for users —
+	// it starts on the canary (rotation 'test', docs/runbooks/subscription-changes.md); one the
+	// owner took out of rotation stays out. Exits have no entry_state row (role filter).
+	activateEntryQuery = `INSERT INTO entry_state (entry_id, rotation, rotation_reason, rotation_at, rotation_by)
+SELECT id, 'test', 'новый вход: сначала тестовый пользователь', NOW(), 'установка' FROM servers WHERE id = $1 AND role = 'relay'
+ON CONFLICT (entry_id) DO UPDATE SET
+  rotation = CASE WHEN entry_state.rotation = 'off' THEN 'off' ELSE 'test' END,
+  rotation_reason = CASE WHEN entry_state.rotation = 'off' THEN entry_state.rotation_reason ELSE EXCLUDED.rotation_reason END,
+  rotation_at = CASE WHEN entry_state.rotation = 'off' THEN entry_state.rotation_at ELSE EXCLUDED.rotation_at END,
+  rotation_by = CASE WHEN entry_state.rotation = 'off' THEN entry_state.rotation_by ELSE EXCLUDED.rotation_by END,
+  updated_at = NOW()`
 	// markMTProtoQuery never overwrites the owner's switch: MTProxy switched off ('disabled')
 	// while a step runs stays off (the hook reports ErrMTProxyDisabled).
 	markMTProtoQuery = `UPDATE servers SET mtproto_status = $1, mtproto_last_check = NOW(),
@@ -476,15 +488,35 @@ func (s *SQLStore) Hooks(requestSync func(), probeAgent func(context.Context, st
 			_, err := s.DB.ExecContext(ctx, forgetTunnelQuery, id)
 			return err
 		},
+		SetRelayTunnel: func(ctx context.Context, id int, on bool) error {
+			res, err := s.DB.ExecContext(ctx, `UPDATE servers SET relay_tunnel = $2, updated_at = NOW() WHERE id = $1 AND role = 'relay'`, id, on)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errors.New("вход не найден — выбор туннеля не сохранён")
+			}
+			return nil
+		},
 		Activate: func(ctx context.Context, id int) error {
-			res, err := s.DB.ExecContext(ctx, activateQuery, id)
+			// One transaction: an entry is never online without its rotation (the subscription
+			// would publish a new entry to everyone).
+			tx, err := s.DB.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tx.Rollback() }()
+			res, err := tx.ExecContext(ctx, activateQuery, id)
 			if err != nil {
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				return errors.New("нода не в состоянии «настраивается» — включение пропущено")
 			}
-			return nil
+			if _, err := tx.ExecContext(ctx, activateEntryQuery, id); err != nil {
+				return err
+			}
+			return tx.Commit()
 		},
 		MarkMTProto: func(ctx context.Context, id int, status string) error {
 			res, err := s.DB.ExecContext(ctx, markMTProtoQuery, status, id)

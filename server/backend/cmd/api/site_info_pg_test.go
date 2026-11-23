@@ -34,6 +34,12 @@ func TestSiteInfoAndB2BSwitch(t *testing.T) {
 	}
 	testpg.MustExec(t, conn, `INSERT INTO servers (id, name, ip_address, role, lifecycle_state, status, is_exit_node) VALUES
 		(305, 'ru', '203.0.113.35', 'relay', 'online', 'online', FALSE)`)
+	// An entry on the canary (or out of rotation) is not a promise to everyone.
+	testpg.MustExec(t, conn, `INSERT INTO entry_state (entry_id, rotation) VALUES (305, 'test')`)
+	if info, err = loadSiteInfo(context.Background()); err != nil || info.MobileReady {
+		t.Fatalf("with an entry on test: %+v %v", info, err)
+	}
+	testpg.MustExec(t, conn, `UPDATE entry_state SET rotation = 'all' WHERE entry_id = 305`)
 	if info, err = loadSiteInfo(context.Background()); err != nil || !info.MobileReady || len(info.ExitCountries) != 2 {
 		t.Fatalf("with an entry: %+v %v", info, err)
 	}

@@ -180,7 +180,7 @@ func TestSQLStoreLoadNode(t *testing.T) {
 	if err := os.WriteFile(hubPath, hubPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	meta := []driver.Value{int64(7), "nl-1", "exit", "NL", "203.0.113.7", int64(2222), "root", fp, blob, true, "pending", int64(3), "unknown", false}
+	meta := []driver.Value{int64(7), "nl-1", "exit", "NL", "203.0.113.7", int64(2222), "root", fp, blob, true, "pending", int64(3), "unknown", false, false}
 	row := func(enc any) []driver.Value {
 		return append(append([]driver.Value{}, meta...), enc)
 	}
@@ -192,9 +192,9 @@ func TestSQLStoreLoadNode(t *testing.T) {
 		}
 		switch norm(q) {
 		case norm(loadNodeQuery):
-			return rows(15, row(enc)), nil
+			return rows(16, row(enc)), nil
 		case norm(nodeMetaQuery):
-			return rows(14, meta), nil
+			return rows(15, meta), nil
 		}
 		return &recRows{}, nil
 	}

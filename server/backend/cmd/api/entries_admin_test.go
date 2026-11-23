@@ -28,9 +28,13 @@ func useEntriesFake(t *testing.T) *entriesFake {
 		entriesList, entriesFailover, entriesSetting, entriesSetSetting, entriesSetMode, entriesBump, entriesHistory, entriesAudit, entriesNow, entriesSetFO = l, fo, s, ss, sm, b, h, a, n, sf
 	})
 	entriesSetFO = func(_ context.Context, st biz.EntryFailover) error { f.fo = append(f.fo, st); return nil }
+	prevJobs, prevStab := entriesJobs, entriesStability
+	t.Cleanup(func() { entriesJobs, entriesStability = prevJobs, prevStab })
+	entriesStability = func(context.Context) (map[int]biz.EntryStability, error) { return map[int]biz.EntryStability{}, nil }
+	entriesJobs = func(context.Context, []int) (map[int]entryChecks, error) { return map[int]entryChecks{}, nil }
 	entriesList = func(context.Context) ([]biz.Entry, error) {
 		return []biz.Entry{{ID: 0, Name: "Hub", Kind: biz.EntryKindHub, Address: "198.51.100.1"},
-			{ID: 5, Name: "Резерв", Kind: biz.EntryKindRelay, Address: "203.0.113.50", Health: biz.EntryHealth{External: biz.EntryHealthy}}}, nil
+			{ID: 5, Name: "Резерв", Kind: biz.EntryKindRelay, Address: "203.0.113.50", Lifecycle: "online", Health: biz.EntryHealth{External: biz.EntryHealthy}}}, nil
 	}
 	entriesFailover = func(context.Context) (biz.EntryFailover, error) {
 		return biz.EntryFailover{Active: true, Target: 5, Since: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}, nil
@@ -210,7 +214,7 @@ func TestAdminEntryMode(t *testing.T) {
 		}
 	}
 	entriesList = func(context.Context) ([]biz.Entry, error) {
-		return []biz.Entry{{ID: 5, Kind: biz.EntryKindRelay, Health: biz.EntryHealth{External: biz.EntryUnhealthy}}}, nil
+		return []biz.Entry{{ID: 5, Kind: biz.EntryKindRelay, Lifecycle: "online", Health: biz.EntryHealth{External: biz.EntryUnhealthy}}}, nil
 	}
 	if rec := put(`{"mode":"relay","target":5}`); rec.Code != http.StatusConflict {
 		t.Errorf("unhealthy target: %d", rec.Code)

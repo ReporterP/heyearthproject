@@ -1,7 +1,7 @@
 import { useEffect, useId, useReducer, useRef, useState } from 'react'
 import { ShieldCheck, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.jsx'
-import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting, fetchPlans, saveEntryMode } from '../../api/admin.js'
+import { probeNode, createNode, preflightNode, provisionNode, updateNodeRouting, fetchPlans, fetchEntries } from '../../api/admin.js'
 import { Dialog, Stepper, Button, Input, Select, Switch, CopyButton, Badge, Skeleton, Spinner, useFocusTrap } from '../ui/index.js'
 import { keyTypeLabel, hostKeyFile, PRIORITY_HINT } from './nodeModel.js'
 import MobileCheckPanel from '../entries/MobileCheckPanel.jsx'
@@ -10,7 +10,7 @@ import { exitCountries, geoHint, countryLabel } from '../servers/serversModel.js
 import {
   wizardSteps, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid, matchPasted,
   pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, routingRequest,
-  closeNeedsConfirm,
+  closeNeedsConfirm, relayFinishText,
 } from './wizardModel.js'
 import JobProgress from './JobProgress.jsx'
 
@@ -323,7 +323,7 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
   const [result, setResult] = useState(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
   const [mobile, setMobile] = useState({ state: 'none' }) // the phone check of a reserve entry
-  const [enabled, setEnabled] = useState('') // '' | done: everyone was sent through this entry
+  const [testUser, setTestUser] = useState(null) // the «Тестовый пользователь» of «Входы» (null: not read yet)
   const uid = useId()
   const ids = {
     title: `${uid}-title`, country: `${uid}-country`, name: `${uid}-name`, ip: `${uid}-ip`, port: `${uid}-port`,
@@ -414,10 +414,12 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
     runPreflight()
   })
 
-  const enableForAll = () => act('enable', async () => {
-    await saveEntryMode('relay', s.serverId)
-    setEnabled('done')
-  })
+  // A new entry starts on the canary: the last words name who gets it now.
+  const relayDone = s.role === 'relay' && result?.status === 'succeeded'
+  useEffect(() => {
+    if (!relayDone || testUser !== null) return
+    fetchEntries().then((d) => setTestUser(d?.failover?.test_user || '')).catch(() => setTestUser(''))
+  }, [relayDone, testUser])
 
   const go = (step) => dispatch({ type: 'go', step })
   const relay = s.role === 'relay'
@@ -491,6 +493,10 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
             {mobile.state === 'fail' && (
               <p className="mt-3 text-xs text-warning">Адрес не проходит: настраивать его для мобильных бессмысленно. Смените IP у хостера, закройте мастер и добавьте сервер заново (старую запись удалите в «Нодах»).</p>
             )}
+            <div className="mt-5 border-t border-default pt-4">
+              <Switch checked={s.tunnel} onChange={(v) => set({ tunnel: v })} label="Туннель до Hub"
+                description="GRE между входом и хабом: все подключения идут к хабу одной парой адресов. Нужен, если у провайдера входа часть потоков до хаба теряется. Обычно не нужен — проверить и включить его можно позже на «Входах»." />
+            </div>
           </>
         )}
         {s.step === 3 && !relay && (
@@ -508,18 +514,11 @@ export default function AddNodeWizard({ initialRole = 'exit', onClose, onOpenNod
             {!result && <p className="text-xs text-tertiary mt-3">Окно можно закрыть: установка продолжится, прогресс — в карточке ноды → «Задачи».</p>}
             {relay && succeeded && (
               <div className="mt-4 rounded border border-accent/30 bg-accent/10 p-3 space-y-2">
-                {enabled ? (
-                  <p className="text-sm text-success">Готово: подписка у всех пользователей теперь ведёт на этот вход. Приложения подхватят её при следующем обновлении (до 4 часов) или сразу — кнопкой обновления подписки.</p>
-                ) : (
-                  <>
-                    <p className="text-sm text-primary">Вход настроен. Последний шаг — перевести на него всех пользователей.</p>
-                    <p className="text-xs text-secondary">Hub останется в подписке строками «· напрямую». Вернуть всё как было можно на странице «Входы» в любой момент.
-                      Если кнопка ответит «не отвечает снаружи» — монитор ещё проверяет вход, подождите 2 минуты.</p>
-                    {can('nodes.provision') && (
-                      <Button onClick={enableForAll} loading={busy === 'enable'} disabled={!!busy}>Включить для всех пользователей</Button>
-                    )}
-                  </>
-                )}
+                {testUser === null
+                  ? <Skeleton className="h-10 w-full" />
+                  : <p className="text-sm text-primary">{relayFinishText({ testUser })}</p>}
+                <p className="text-xs text-secondary">Новый вход — это новый путь для пользователей: сначала сутки у тестового пользователя, потом всем
+                  (со срочным обновлением подписки). Так ошибка провайдера входа не дойдёт до всех сразу.</p>
               </div>
             )}
           </>

@@ -24,30 +24,18 @@ import (
 
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/config"
+	"github.com/heyearth/backend/internal/provision"
 	"golang.org/x/crypto/ssh"
 )
 
+// The groups, floors and the probe are shared with «Проверить путь» of the admin panel
+// (internal/provision pathcheck.go): the CLI and the API judge a path the same way.
 const (
-	pathMatrixTuples  = 50
-	pathMatrixRawPct  = 95 // a raw 5-tuple group below this has a broken link on the way
-	pathMatrixUserPct = 99 // what users get through the entry (TLS via an exit)
+	pathMatrixTuples  = provision.PathTuples
+	pathMatrixRawPct  = provision.PathRawPct
+	pathMatrixUserPct = provision.PathUserPct
+	pathMatrixProbePy = provision.PathProbePy
 )
-
-// pathMatrixProbePy: TCP connects from n fixed source ports; prints "<name> <ok>/<n> <pattern>".
-const pathMatrixProbePy = `import socket, struct, sys, random
-name, host, port, n = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-base = random.randint(20000, 60000 - n)
-out = ""
-for sp in range(base, base + n):
-    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)); s.settimeout(2)
-    try:
-        s.bind(("", sp)); s.connect((host, port)); out += "+"
-    except Exception:
-        out += "-"
-    s.close()
-print("%s %d/%d %s" % (name, out.count("+"), n, out))
-`
 
 // pathMatrixRun is the Hub-side job: $ENTRY, $HUB, $SNI, $SOCKS (an exit's local SOCKS port), $N.
 // An entry on a GRE tunnel (he-r<id> on the Hub, he-hub on the entry; config.RelayTunnelAddrs)
@@ -102,40 +90,7 @@ done
 // pathMatrixVerdict reads the RAW/USER lines of a run: every group must reach its floor, and the
 // run must have as many groups as its EXPECT line says (7 without the line). BACKUP lines (the
 // public path of an entry on a tunnel) are shown, never judged.
-func pathMatrixVerdict(log string) (pass bool, failed []string) {
-	seen, expect := 0, 7
-	for _, l := range strings.Split(log, "\n") {
-		f := strings.Fields(l)
-		if len(f) == 2 && f[0] == "EXPECT" {
-			if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
-				expect = n
-			}
-			continue
-		}
-		if len(f) < 3 || (f[0] != "RAW" && f[0] != "USER") {
-			continue
-		}
-		ok, n, found := strings.Cut(f[2], "/")
-		a, err1 := strconv.Atoi(ok)
-		b, err2 := strconv.Atoi(n)
-		if !found || err1 != nil || err2 != nil || b == 0 {
-			failed = append(failed, f[1]+" (не разобрано)")
-			continue
-		}
-		seen++
-		floor := pathMatrixRawPct
-		if f[0] == "USER" {
-			floor = pathMatrixUserPct
-		}
-		if 100*a < floor*b {
-			failed = append(failed, fmt.Sprintf("%s %d/%d < %d%%", f[1], a, b, floor))
-		}
-	}
-	if seen != expect {
-		failed = append(failed, fmt.Sprintf("групп %d из %d", seen, expect))
-	}
-	return len(failed) == 0, failed
-}
+func pathMatrixVerdict(log string) (pass bool, failed []string) { return provision.PathVerdict(log) }
 
 func pathMatrix(client *ssh.Client, id int) error {
 	q := func(sql string) (string, error) {

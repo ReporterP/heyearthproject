@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   WIZARD_STEPS, INSTALL_STEP, initialWizard, wizardReducer, canGo, parsePort, countryValid,
-  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, wizardSteps,
+  matchPasted, pasteVerdict, canConfirmKey, canCreate, canStart, passwordFlags, probeRequest, createRequest, provisionRequest, wizardSteps, relayFinishText,
   routingRequest, closeNeedsConfirm, normalizePlans,
 } from './wizardModel.js'
 
@@ -339,8 +339,17 @@ test('relay: RU fixed, steps of its own, no exit options in the requests', () =>
   assert.equal(back.role, 'exit')
   assert.equal(back.country, '', 'leaving relay clears RU')
   assert.equal(run(initialWizard(), { type: 'set', patch: { role: 'relay' } }).country, 'RU')
-  assert.deepEqual(provisionRequest({ ...r, plansState: 'ready', planIds: [1] }), {})
+  assert.deepEqual(provisionRequest({ ...r, plansState: 'ready', planIds: [1] }), { relay_tunnel: false }, 'an entry sends only its tunnel choice, off by default')
+  assert.deepEqual(provisionRequest({ ...r, tunnel: true }), { relay_tunnel: true })
+  assert.equal('relay_tunnel' in provisionRequest(initialWizard()), false, 'an exit has no tunnel option')
   assert.equal(routingRequest({ ...r, fallback: false, fallbackStored: true }), null)
   assert.equal(wizardSteps('relay')[3], 'Проверка с телефона')
   assert.equal(wizardSteps('exit')[3], 'Настройки')
+})
+
+test('relayFinishText: a new entry starts on the canary', () => {
+  assert.match(relayFinishText({ testUser: '' }), /задайте «Тестовый пользователь»/)
+  const t = relayFinishText({ testUser: 'canary-user' })
+  assert.match(t, /только тестовый пользователь \(canary-user\)/)
+  assert.match(t, /«Всем»/)
 })

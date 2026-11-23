@@ -339,6 +339,7 @@ func apiRelayOptions(ctx context.Context, n provision.Node) (provision.RelayOpti
 		return provision.RelayOptions{}, provision.Refusal(err)
 	}
 	o.HubIPs = exitHubIPs()
+	o.Tunnel = n.RelayTunnel // the owner's choice per entry (servers.relay_tunnel)
 	return o, nil
 }
 

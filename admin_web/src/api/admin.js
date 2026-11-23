@@ -296,6 +296,12 @@ export function fetchEntriesPreview() {
 export function saveEntryMode(mode, target) {
   return apiFetch('/entries/mode', { method: 'PUT', body: { mode, target: target || 0 } })
 }
+// The entry panel (docs/prd/entries-management.prd.md): rotation off | test | all (confirm_early: «ДОСРОЧНО»),
+// the GRE tunnel on/off (starts «Переустановить»), «Проверить путь» / «Проверить туннель» (jobs).
+export const setEntryRotation = (id, { to, reason = '', confirmEarly = '' }) =>
+  apiFetch(`/entries/${id}/rotation`, { method: 'PUT', body: { to, reason, confirm_early: confirmEarly } })
+export const setEntryTunnel = (id, on) => apiFetch(`/entries/${id}/tunnel`, { method: 'PUT', body: { on } })
+export const startEntryCheck = (id, kind) => apiFetch(`/entries/${id}/${kind}`, { method: 'POST' })
 // «Проверить с телефона»: start a 30-minute test page on the node / read what reached the phones.
 export const startMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`, { method: 'POST' })
 export const fetchMobileCheck = (serverId) => apiFetch(`/servers/${serverId}/mobile-check`)

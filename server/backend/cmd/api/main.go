@@ -818,6 +818,7 @@ func main() {
 	// which funnels through RequestSync.
 	biz.XraySyncFn = RequestXraySync
 	provision.RelayPathVerifier = verifyRelayPath
+	provision.RelayFlowProbe = relayFlowProbe // «Проверить путь»: flows through an exit
 	biz.Hysteria2SyncFn = RequestHysteria2Sync
 
 	// Запускаем фоновую синхронизацию Xray конфига (per-user UUID)

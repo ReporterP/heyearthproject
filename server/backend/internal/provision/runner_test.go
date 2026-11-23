@@ -154,6 +154,7 @@ type fakeHooks struct {
 	syncs        int
 	bumps        int
 	mtproto      []string
+	relayTunnel  []bool // SetRelayTunnel calls
 }
 
 func (f *fakeHooks) Hooks() Hooks {
@@ -190,6 +191,7 @@ func (f *fakeHooks) Hooks() Hooks {
 		MarkMTProto:      func(_ context.Context, _ int, s string) error { f.mtproto = append(f.mtproto, s); return nil },
 		BumpSubscription: func(context.Context) error { f.bumps++; return nil },
 		RequestSync:      func() { f.syncs++ },
+		SetRelayTunnel:   func(_ context.Context, _ int, on bool) error { f.relayTunnel = append(f.relayTunnel, on); return nil },
 	}
 }
 
