@@ -84,7 +84,7 @@ func StartMonitor() {
 		safely("Бамбук-проба", runBambooProbe) // last: the slowest step
 	})
 	go runEvery(5*time.Minute, checkHostInterval, func() {
-		safely("check-host", runCheckHostProbe)
+		safely("взгляд из РФ", runRUProbe) // Globalping, or check-host by ru_probe_provider
 	})
 	// Entries (phase 3): every entry from outside + the failover of the main address. Own goroutine:
 	// per entry up to ~25 s (TLS 15 s + control 10 s), + ~20 s Bamboo per relay.
@@ -109,7 +109,7 @@ func StartMonitor() {
 		safely("копия бэкапа", checkOffsiteBackupFreshness)
 		safely("диск", checkDiskUsage)
 	})
-	log.Printf("[monitor] запущен: БД каждые %v, loop-проба и Бамбук-проба каждые %v, check-host каждые %v, сертификат/бэкап/диск каждые %v",
+	log.Printf("[monitor] запущен: БД каждые %v, loop-проба и Бамбук-проба каждые %v, взгляд из РФ каждые %v, сертификат/бэкап/диск каждые %v",
 		dbHealthInterval, loopProbeInterval, checkHostInterval, housekeepingInterval)
 }
 

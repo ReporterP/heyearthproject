@@ -53,7 +53,9 @@ var editableSettings = map[string]settingRule{
 	"bamboo_optimise": {kind: "enum", values: []string{"night", "off"}},
 	// Синтетический клиент (cmd/api/synth_monitor.go): the timer's switch, and the token a
 	// probe in an operator's network reports with (empty: no intake).
-	"synth_enabled":     {kind: "bool"},
+	"synth_enabled": {kind: "bool"},
+	// ru_probe_provider: who looks at the entries from RU — globalping (default) | checkhost.
+	"ru_probe_provider": {kind: "enum", values: []string{"globalping", "checkhost"}},
 	"probe_agent_token": {kind: "secret"},
 	// Приведи друга
 	"referral_enabled":             {kind: "bool"},
