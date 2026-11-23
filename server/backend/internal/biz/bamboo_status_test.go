@@ -29,7 +29,9 @@ func TestBambooProbeRecord(t *testing.T) {
 // The card shows the exit server.yaml carries: the selector's committed choice, never a proposal
 // of ExpressExit that was not committed; before the selector exists, the persisted app_settings.
 func TestBambooBoundExit(t *testing.T) {
-	since := time.Date(2026, 10, 13, 8, 30, 0, 0, time.FixedZone("MSK", 3*3600))
+	// 03:30 MSK: the proposal an hour later falls into the quiet window, the only time Bamboo
+	// moves to a faster exit.
+	since := time.Date(2026, 10, 13, 3, 30, 0, 0, time.FixedZone("MSK", 3*3600))
 	settings := map[string]string{"hysteria2_bound_exit_id": "2", "hysteria2_bound_exit_since": "2026-10-12T10:00:00Z"}
 	setting := func(k, def string) string {
 		if v, ok := settings[k]; ok {
@@ -47,11 +49,11 @@ func TestBambooBoundExit(t *testing.T) {
 	if !proposal.Switched || proposal.ExitID != 5 {
 		t.Fatalf("setup: want a proposed switch to exit 5, got %+v", proposal)
 	}
-	if b := bambooBoundExit(sel.Current(), true, setting); b != (bambooBound{ID: 3, Since: "2026-10-13T05:30:00Z", RTTms: 80}) {
+	if b := bambooBoundExit(sel.Current(), true, setting); b != (bambooBound{ID: 3, Since: "2026-10-13T00:30:00Z", RTTms: 80}) {
 		t.Fatalf("uncommitted proposal leaked into the status: %+v", b)
 	}
 	sel.Commit(proposal)
-	if b := bambooBoundExit(sel.Current(), true, setting); b != (bambooBound{ID: 5, Since: "2026-10-13T06:30:00Z", RTTms: 20}) {
+	if b := bambooBoundExit(sel.Current(), true, setting); b != (bambooBound{ID: 5, Since: "2026-10-13T01:30:00Z", RTTms: 20}) {
 		t.Fatalf("committed switch: %+v", b)
 	}
 

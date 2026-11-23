@@ -6,13 +6,17 @@
 // its separate auth password was never set.
 //
 // Choice (7yrs): a smoothed RTT of each exit's Hysteria path (EWMA, α = 0.3, fed by every
-// successful monitor probe through UpdateExitRTT) with hysteresis — an optimisation switch at
-// most once per 10 minutes, only to an exit at least 20 % faster and only once both exits have
-// expressMinSamples monitor measurements. A switch is committed (memory + app_settings,
-// ExpressCommit) only after server.yaml carries it. When the current exit loses
-// its Hysteria path the switch is immediate (that is a failover, not an optimisation). With no
-// live exit the choice stays: server.yaml is not rewritten and hysteria2-server is not restarted
-// (traffic cannot pass anyway, and a restart drops every Bamboo session).
+// successful monitor probe through UpdateExitRTT). A switch restarts hysteria2-server and drops
+// every Bamboo session (impact class К2), so there are two kinds:
+//   - failover: the current exit lost its Hysteria path — immediate, at any time;
+//   - optimisation: another exit is faster — only in the quiet window (04:00–05:30 MSK,
+//     InQuietWindow), at most once a night, only to an exit at least 40 % faster, only once both
+//     exits have expressMinSamples monitor measurements, and never with bamboo_optimise=off.
+//     Before 2026-11-23 it ran all day at 20 %: two exits traded places 7 times in two days.
+//
+// A switch is committed (memory + app_settings, ExpressCommit) only after server.yaml carries
+// it. With no live exit the choice stays: server.yaml is not rewritten and hysteria2-server is
+// not restarted (traffic cannot pass anyway, and a restart drops every Bamboo session).
 package biz
 
 import (
@@ -31,7 +35,15 @@ import (
 const (
 	ExpressEWMAAlpha  = 0.3
 	ExpressMinHold    = 10 * time.Minute
-	ExpressMinGainPct = 20
+	ExpressMinGainPct = 40
+	// expressOptimiseGap: at most one optimisation switch a night.
+	expressOptimiseGap = 20 * time.Hour
+	// ExpressOptimiseSetting switches optimisation: night (default) | off.
+	ExpressOptimiseSetting = "bamboo_optimise"
+	// expressLastOptimiseSetting keeps the time of the last optimisation switch (RFC 3339).
+	expressLastOptimiseSetting = "express_last_optimise"
+	// ExpressOptimiseOff is the bamboo_optimise value that stops moves to a faster exit.
+	ExpressOptimiseOff = "off"
 	// ExpressFallbackPort is used while no exit was ever chosen (exit #2's port, as before).
 	ExpressFallbackPort = 1090
 	expressUnmeasured   = 9999.0 // an exit without any RTT sorts last
@@ -56,6 +68,8 @@ type ExpressChoice struct {
 	Since     time.Time // when this exit was chosen
 	Switched  bool      // this Choose changed the exit
 	Reason    string    // why it changed (for the log)
+	// Optimisation: the switch is for speed (a faster exit), not because the current exit died.
+	Optimisation bool
 }
 
 func expressSocksPort(id int) int {
@@ -72,6 +86,32 @@ type ExpressSelector struct {
 	samples map[int]int // Observe calls per exit; the last_rtt_ms seed in Decide does not count
 	current int
 	since   time.Time
+	// optimiseOff: bamboo_optimise=off — never move to a faster exit (failover still works).
+	optimiseOff bool
+	// lastOptimise: when Bamboo last moved for speed; at most one such move a night.
+	lastOptimise time.Time
+}
+
+// SetOptimise applies the bamboo_optimise setting: "off" stops moves to a faster exit; anything
+// else (empty, unknown, "night") is the default — such moves only in the quiet window.
+func (s *ExpressSelector) SetOptimise(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.optimiseOff = strings.EqualFold(strings.TrimSpace(mode), ExpressOptimiseOff)
+}
+
+// SetLastOptimise seeds the time of the last optimisation move (API start).
+func (s *ExpressSelector) SetLastOptimise(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastOptimise = t
+}
+
+// LastOptimise is when Bamboo last moved to a faster exit (zero: never).
+func (s *ExpressSelector) LastOptimise() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastOptimise
 }
 
 // NewExpressSelector starts from the exit chosen at since (0 = none yet; a zero since means the
@@ -146,6 +186,9 @@ func (s *ExpressSelector) Commit(c ExpressChoice) {
 func (s *ExpressSelector) commitLocked(c ExpressChoice) {
 	if c.Switched {
 		s.current, s.since = c.ExitID, c.Since
+		if c.Optimisation {
+			s.lastOptimise = c.Since
+		}
 	}
 }
 
@@ -185,6 +228,7 @@ func (s *ExpressSelector) decideLocked(now time.Time, cands []ExpressCandidate) 
 		}
 	}
 	var reason string
+	optimisation := false
 	switch {
 	case best == 0:
 		return s.keepLocked("нет exit с живым путём Hysteria — выбор не меняется")
@@ -198,10 +242,17 @@ func (s *ExpressSelector) decideLocked(now time.Time, cands []ExpressCandidate) 
 		return s.keepLocked("") // too few measurements for an optimisation switch
 	case s.ewma[best]*100 > s.ewma[s.current]*(100-ExpressMinGainPct):
 		return s.keepLocked("")
+	case s.optimiseOff, !InQuietWindow(now),
+		!s.lastOptimise.IsZero() && now.Sub(s.lastOptimise) < expressOptimiseGap:
+		// The current exit works: a faster one waits for the quiet window (once a night).
+		return s.keepLocked("")
 	default:
-		reason = fmt.Sprintf("exit #%d быстрее на %d%%", best, int(100*(1-s.ewma[best]/s.ewma[s.current])+0.5))
+		reason = fmt.Sprintf("exit #%d быстрее на %d%% (ночное окно)", best, int(100*(1-s.ewma[best]/s.ewma[s.current])+0.5))
+		optimisation = true
 	}
-	return s.choiceLocked(best, now, true, reason)
+	c := s.choiceLocked(best, now, true, reason)
+	c.Optimisation = optimisation
+	return c
 }
 
 // ─────────────── The process-wide selector (DB-backed) ───────────────
@@ -235,9 +286,21 @@ func expressSelector(ctx context.Context) (*ExpressSelector, error) {
 	if err != nil {
 		return nil, err
 	}
+	modeStr, err := read(ExpressOptimiseSetting)
+	if err != nil {
+		return nil, err
+	}
+	lastStr, err := read(expressLastOptimiseSetting)
+	if err != nil {
+		return nil, err
+	}
 	id, _ := strconv.Atoi(idStr)
 	since, _ := time.Parse(time.RFC3339, sinceStr) // absent (pre-phase-1): zero, the hold is over
-	expressSel = NewExpressSelector(id, since)
+	last, _ := time.Parse(time.RFC3339, lastStr)   // absent: never optimised
+	sel := NewExpressSelector(id, since)
+	sel.SetOptimise(modeStr)
+	sel.SetLastOptimise(last)
+	expressSel = sel
 	return expressSel, nil
 }
 
@@ -309,6 +372,12 @@ func ExpressExit() (ExpressChoice, error) {
 	if err != nil {
 		return ExpressChoice{SocksPort: ExpressFallbackPort}, fmt.Errorf("read the bound exit: %w", err)
 	}
+	// The switch is re-read every time: the owner turns it off on the console.
+	mode, err := GetSettingContext(ctx, ExpressOptimiseSetting)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return sel.Current(), fmt.Errorf("read %s: %w", ExpressOptimiseSetting, err)
+	}
+	sel.SetOptimise(mode)
 	cands, err := listExpressCandidates(ctx)
 	if err != nil {
 		return sel.Current(), fmt.Errorf("list exits for Bamboo: %w", err)
@@ -317,8 +386,9 @@ func ExpressExit() (ExpressChoice, error) {
 }
 
 // ExpressCommit makes a switched choice of ExpressExit current and persists it to app_settings
-// (hysteria2_bound_exit_id, hysteria2_bound_exit_since). Memory is committed even when the write
-// fails (the error is returned for the log): server.yaml already carries the new exit.
+// (hysteria2_bound_exit_id, hysteria2_bound_exit_since, and express_last_optimise for a move to
+// a faster exit). Memory is committed even when the write fails (the error is returned for the
+// log): server.yaml already carries the new exit.
 func ExpressCommit(c ExpressChoice) error {
 	if !c.Switched {
 		return nil
@@ -333,10 +403,14 @@ func ExpressCommit(c ExpressChoice) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var errs []error
-	for _, kv := range [][2]string{
+	writes := [][2]string{
 		{"hysteria2_bound_exit_id", strconv.Itoa(c.ExitID)},
 		{"hysteria2_bound_exit_since", c.Since.UTC().Format(time.RFC3339)},
-	} {
+	}
+	if c.Optimisation {
+		writes = append(writes, [2]string{expressLastOptimiseSetting, c.Since.UTC().Format(time.RFC3339)})
+	}
+	for _, kv := range writes {
 		if err := SetSettingContext(ctx, kv[0], kv[1]); err != nil {
 			errs = append(errs, fmt.Errorf("save %s: %w", kv[0], err))
 		}
