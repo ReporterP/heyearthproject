@@ -643,6 +643,9 @@ func syntheticTick(trigger string) {
 	default:
 		log.Printf("[synth] прогон %d (%s): %s", id, trigger, state)
 	}
+	if err == nil {
+		healthBoard.Set("subscription", "Подписка", map[string]string{"pass": "ok", "fail": "warn", "blind": "unknown"}[state], subscriptionBoardDetail(state))
+	}
 	// The Hub itself came up moments before this API: the first run is its self-check.
 	if trigger == "start" && hubBootedAtStart && err == nil {
 		notifyOps("Хаб перезагрузился", bootNoticeText(state))

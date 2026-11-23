@@ -73,6 +73,7 @@ func (m *dbHealthMonitor) run() {
 	now := m.now()
 	err := m.ping()
 	if err == nil {
+		healthBoard.Set("db", "База", "ok", "")
 		m.streak.record(now, true)
 		if m.okLog.allow(now, time.Hour) {
 			m.logf("[monitor] БД отвечает на ping (повтор записи не чаще раза в час)")
@@ -93,6 +94,7 @@ func (m *dbHealthMonitor) run() {
 		m.downSince = now
 	}
 	m.logf("[monitor] БД не отвечает (%d подряд): %v", fails, err)
+	healthBoard.Set("db", "База", map[bool]string{true: "down", false: "warn"}[fails >= dbFailThreshold], fmt.Sprintf("не отвечает, %d проверок подряд", fails))
 	if fails >= dbFailThreshold {
 		m.raise(dbAlertKey, AlertCritical, "База данных недоступна",
 			fmt.Sprintf("PostgreSQL не отвечает на ping (%d проверок подряд, таймаут %v): %v\n"+

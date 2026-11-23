@@ -58,6 +58,7 @@ func StartPaymentSyncCron() {
 			safely("wallet-refund-release", releaseFailedWalletRefunds)
 			safely("wallet-refund-external", holdExternalWalletRefunds)
 			safely("payment-alerts", syncUnappliedPaymentAlerts)
+			healthBoard.Set("payments", "Оплаты", "ok", "сверка платежей с ЮKassa прошла")
 			time.Sleep(paymentSyncInterval)
 		}
 	}()

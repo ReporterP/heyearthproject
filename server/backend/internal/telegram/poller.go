@@ -25,6 +25,8 @@ type Poller struct {
 	Timeout int // long-poll seconds; 0 → 25
 	Logf    func(format string, args ...any)
 	Sleep   func(ctx context.Context, d time.Duration) error
+	// OnPoll, when set, is told how every getUpdates went: nil — Telegram answered.
+	OnPoll func(err error)
 }
 
 // ErrNotConfigured: Bot() returned nil.
@@ -55,6 +57,9 @@ func (p *Poller) sleep(ctx context.Context, d time.Duration) error {
 func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 	bot := p.Bot()
 	if bot == nil {
+		if p.OnPoll != nil {
+			p.OnPoll(ErrNotConfigured)
+		}
 		return 0, ErrNotConfigured
 	}
 	offset, err := p.Store.Load(ctx)
@@ -66,6 +71,9 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 		timeout = 25
 	}
 	ups, err := bot.GetUpdates(ctx, offset, timeout, p.Allowed)
+	if p.OnPoll != nil {
+		p.OnPoll(err)
+	}
 	if err != nil {
 		return 0, err
 	}

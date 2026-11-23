@@ -101,6 +101,10 @@ func StartMonitor() {
 		safely("признаки атаки", checkDDoSSignals)
 	})
 	startTGWebMonitor()
+	// The domain's paid-till date, once a day (the first look five minutes after the start).
+	go runEvery(5*time.Minute, domainCheckEvery, func() {
+		safely("срок домена", checkDomainExpiry)
+	})
 	// The synthetic client: a real core through every line of the test user's subscription.
 	startSyntheticMonitor()
 	go runEvery(2*time.Minute, housekeepingInterval, func() {
@@ -239,6 +243,8 @@ func runLoopProbe() {
 		problems = append(problems, fmt.Sprintf("TLS-вход (SNI %s): %v", sni, err))
 	}
 	if len(problems) == 0 {
+		state, detail := hubRebootNote(time.Now())
+		healthBoard.Set("hub", "Хаб", state, detail)
 		loopProbeState.record(time.Now(), true)
 		if time.Since(loopProbeOKLog) > time.Hour {
 			loopProbeOKLog = time.Now()
@@ -251,6 +257,8 @@ func runLoopProbe() {
 		return
 	}
 	fails := loopProbeState.record(time.Now(), false)
+	healthBoard.Set("hub", "Хаб", map[bool]string{true: "down", false: "warn"}[fails >= loopProbeFailThreshold],
+		fmt.Sprintf("не открывается снаружи, %d проверок подряд", fails))
 	log.Printf("[monitor] loop-проба провалена (%d подряд): %s", fails, strings.Join(problems, "; "))
 	if fails >= loopProbeFailThreshold {
 		RaiseAlert("entry-unreachable-external", AlertCritical, "Вход недоступен снаружи",
@@ -559,6 +567,7 @@ func checkSiteCertExpiry() {
 	notAfter, err := fetchCertNotAfter("127.0.0.1:8443", site)
 	if err != nil {
 		certReadFails++
+		healthBoard.Set("cert", "Сертификат", "unknown", "не удалось прочитать")
 		log.Printf("[monitor] сертификат %s: не удалось прочитать (%d подряд): %v", site, certReadFails, err)
 		if certReadFails >= certReadFailThreshold {
 			RaiseAlert("tls-cert-check-failed", AlertWarn, "Не удаётся проверить сертификат сайта",
@@ -569,10 +578,13 @@ func checkSiteCertExpiry() {
 	}
 	certReadFails = 0
 	ResolveAlert("tls-cert-check-failed", fmt.Sprintf("Сертификат %s снова читается.", site))
+	certLeft := fmt.Sprintf("%d дн.", int(time.Until(notAfter).Hours()/24))
 	if level, title, details, alert := certExpiryAlert(site, notAfter, time.Now()); alert {
+		healthBoard.Set("cert", "Сертификат", map[bool]string{true: "down", false: "warn"}[level == AlertCritical], certLeft)
 		RaiseAlert("tls-cert-expiry", level, title, details)
 		return
 	}
+	healthBoard.Set("cert", "Сертификат", "ok", certLeft)
 	ResolveAlert("tls-cert-expiry", fmt.Sprintf("Сертификат %s продлён: действует до %s.", site, notAfter.In(mskZone).Format("02.01.2006")))
 }
 
@@ -615,6 +627,17 @@ func checkBackupFreshness() {
 	default:
 		ResolveAlert("backup-stale", fmt.Sprintf("Свежий бэкап: %v назад.", time.Since(newest).Round(time.Minute)))
 	}
+	// The board: a fresh backup whose last restore drill failed is a warning too.
+	state, detail := "ok", "последний "+shortAge(time.Since(newest))+" назад"
+	if err != nil || newest.IsZero() || time.Since(newest) > backupMaxAge {
+		state, detail = "down", "свежего бэкапа нет"
+	}
+	if failed, note := backupVerifyNote(time.Now()); failed {
+		state, detail = "warn", note
+	} else if note != "" && state == "ok" {
+		detail += "; " + note
+	}
+	healthBoard.Set("backup", "Бэкап", state, detail)
 }
 
 // ── offsite backup copy (the encrypted copy on the exit, written by heyearth-backup.sh) ──

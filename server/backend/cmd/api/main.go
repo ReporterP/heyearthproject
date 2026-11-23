@@ -1021,6 +1021,7 @@ func main() {
 	registerAlertAdminRoutes()
 	registerVersionRoutes()
 	registerOpsProbeRoutes(apiLimiter)
+	registerOpsOverviewRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()

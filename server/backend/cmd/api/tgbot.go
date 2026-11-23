@@ -240,6 +240,7 @@ func StartTelegram() {
 		(&tg.Poller{Name: "tg-user-poller", Bot: userBot, Store: settingOffset{tgBotOffsetSetting},
 			Handle:  handleUserBotUpdate,
 			Allowed: []string{"message", "callback_query", "my_chat_member", "pre_checkout_query", "inline_query"},
+			OnPoll:  botPollResult,
 			Logf:    log.Printf}).Run(ctx)
 	})
 	runLocked("tg-alert-poller", tgLockAlertPoller, func(ctx context.Context) {

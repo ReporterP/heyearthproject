@@ -100,6 +100,8 @@ type alertState struct {
 	// inhibitedBy: the active alert that explains this one (alert_catalog.go). While it is set
 	// the incident is journaled once as «inhibited» and nothing is sent.
 	inhibitedBy string
+	since       time.Time // when the open incident began
+	details     string    // what its last raise said (the console shows it)
 }
 
 type alertOutgoing struct {
@@ -317,6 +319,9 @@ func (m *alertManager) raise(key string, level AlertLevel, title, details string
 		return
 	}
 	prev := *st
+	if st.active {
+		st.details = details // an open incident keeps the freshest words even when nothing is sent
+	}
 	coolOK := m.cooledDown(st, level, now)
 	kind := ""
 	switch {
@@ -356,7 +361,10 @@ func (m *alertManager) raise(key string, level AlertLevel, title, details string
 	if !(st.active && st.level == AlertCritical) {
 		st.level = level // an active critical key is never downgraded: that would turn every flip into an "escalation"
 	}
-	st.active, st.title = true, title
+	if !st.active {
+		st.since = now
+	}
+	st.active, st.title, st.details = true, title, details
 	if send {
 		st.notified, st.lastSent = true, now
 	}
@@ -617,10 +625,11 @@ func replayAlertEvents(events []alertEvent) map[string]*alertState {
 			if !st.active || st.inc == nil {
 				st.inc = &alertIncident{}
 				st.level = ev.Level
+				st.since = ev.At
 			} else if ev.Level == AlertCritical {
 				st.level = AlertCritical
 			}
-			st.active, st.title = true, ev.Title
+			st.active, st.title, st.details = true, ev.Title, ev.Details
 			switch {
 			case ev.Kind == "suppressed" || ev.Kind == "inhibited":
 				st.notified = false // nobody was told: the next raise decides again

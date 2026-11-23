@@ -124,26 +124,32 @@ type FeedItem struct {
 const opsFeedQuery = `
 	SELECT at, source, kind, actor, target, summary, impact, ok FROM (
 		SELECT at, 'ops' AS source, kind, actor, target, summary, impact, ok
-		  FROM ops_events WHERE at >= $1
+		  FROM ops_events WHERE at >= $1 AND at <= $2
 		UNION ALL
 		SELECT created_at, 'audit', action, admin_username,
 		       concat_ws(':', NULLIF(target_type, ''), NULLIF(target_id, '')), action, '', TRUE
-		  FROM admin_audit_log WHERE created_at >= $1 AND action NOT IN ('admin.login', 'admin.login_failed')
+		  FROM admin_audit_log WHERE created_at >= $1 AND created_at <= $2 AND action NOT IN ('admin.login', 'admin.login_failed')
 		UNION ALL
 		SELECT created_at, 'alert', kind, 'system', alert_key, title, '', kind <> 'raise'
-		  FROM alert_events WHERE created_at >= $1 AND kind IN ('raise', 'resolve', 'cleared')
+		  FROM alert_events WHERE created_at >= $1 AND created_at <= $2 AND kind IN ('raise', 'resolve', 'cleared')
 	) f
 	ORDER BY at DESC
-	LIMIT $2`
+	LIMIT $3`
 
 // ListOpsFeed returns what happened since `since`, newest first: the ops feed, the admins'
 // audit log and the alert journal together. Texts are scrubbed (the audit log and the alert
 // journal are written by older code).
 func ListOpsFeed(ctx context.Context, since time.Time, limit int) ([]FeedItem, error) {
+	return ListOpsFeedBetween(ctx, since, time.Now().Add(time.Minute), limit)
+}
+
+// ListOpsFeedBetween is ListOpsFeed for the window from … to (both inclusive): «what changed
+// in the hour before this alert».
+func ListOpsFeedBetween(ctx context.Context, from, to time.Time, limit int) ([]FeedItem, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.DB.QueryContext(ctx, opsFeedQuery, since, limit)
+	rows, err := db.DB.QueryContext(ctx, opsFeedQuery, from, to, limit)
 	if err != nil {
 		return nil, fmt.Errorf("ops feed: %w", err)
 	}
