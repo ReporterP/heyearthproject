@@ -296,6 +296,14 @@ func apiRecipe(ctx context.Context, n provision.Node, kind string) (provision.Re
 			return nil, nil, err
 		}
 		st.Exit.Watchdog = wd
+	case kind == provision.KindFacts: // read-only: where the facts go
+		id := n.ID
+		st.Facts = &provision.FactsOptions{Record: func(f provision.NodeFacts) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return saveNodeFacts(ctx, id, f)
+		}}
+	case kind == provision.KindReboot || kind == provision.KindAgentRestart: // console jobs: no options
 	case kind == provision.KindDeprovision: // taking a node out of service needs no options
 	case n.Role == "exit":
 		opts, err := apiExitOptions(n)

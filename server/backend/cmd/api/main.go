@@ -889,6 +889,7 @@ func main() {
 	// Console actions (ops_actions.go): close the runs a dead process left, run what is planned for the window.
 	startOpsActions()
 	startSilences()
+	startNodeFacts()
 
 	// Telegram users' bot: update pollers (users' bot + owner replies in the alerts bot) and
 	// the outgoing queue, each in one API instance (advisory locks).
@@ -1043,6 +1044,7 @@ func main() {
 	registerCanaryRoutes()
 	registerOpsActionRoutes()
 	registerSilenceRoutes()
+	registerWorksRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()
