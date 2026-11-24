@@ -100,8 +100,11 @@ type alertState struct {
 	// inhibitedBy: the active alert that explains this one (alert_catalog.go). While it is set
 	// the incident is journaled once as «inhibited» and nothing is sent.
 	inhibitedBy string
-	since       time.Time // when the open incident began
-	details     string    // what its last raise said (the console shows it)
+	// silencedBy: the console silence that holds this incident back (alert_silence.go): journaled
+	// once as «silenced», nothing sent; its resolve is silent too.
+	silencedBy string
+	since      time.Time // when the open incident began
+	details    string    // what its last raise said (the console shows it)
 }
 
 type alertOutgoing struct {
@@ -128,8 +131,9 @@ type alertManager struct {
 	// emailTo() by email, once. nil: no second channel.
 	email    func(to, subject, body string) error
 	emailTo  func() string
-	link     func(key string) string // the alert's card on the console, added to its messages; nil: none
-	flap     *flapTracker            // nil: flapping is not tracked
+	link     func(key string) string                        // the alert's card on the console, added to its messages; nil: none
+	flap     *flapTracker                                   // nil: flapping is not tracked
+	silenced func(key string, now time.Time) (string, bool) // a console silence (alert_silence.go); nil: none
 	state    map[string]*alertState
 	loaded   bool // journal replay succeeded
 	retrying bool // background replay retry running
@@ -151,6 +155,7 @@ func newProdAlertManager() *alertManager {
 		emailTo:   alertEmailAddress,
 		link:      alertConsoleLink,
 		flap:      newFlapTracker(),
+		silenced:  func(key string, now time.Time) (string, bool) { return silenceLive.lookup(key, now) },
 		state:     map[string]*alertState{},
 	}
 	m.startWorker(alertQueueSize)
@@ -354,7 +359,18 @@ func (m *alertManager) raise(key string, level AlertLevel, title, details string
 			st.inhibitedBy = ""
 		}
 	}
-	send := kind != "suppressed" && kind != "inhibited"
+	if (kind == "raise" || kind == "repeat") && m.silenced != nil {
+		if why, ok := m.silenced(key, now); ok {
+			if st.active && st.silencedBy != "" {
+				m.mu.Unlock()
+				return
+			}
+			kind, st.silencedBy, details = "silenced", why, details+" · тишина: "+why
+		} else {
+			st.silencedBy = ""
+		}
+	}
+	send := kind != "suppressed" && kind != "inhibited" && kind != "silenced"
 	if !st.active || st.inc == nil {
 		st.inc = &alertIncident{}
 	}
@@ -408,7 +424,7 @@ func (m *alertManager) Resolve(key, message string) {
 		kind, send = "resolve", true // final decision is taken in the worker, once the raise outcome is known
 		st.lastSent = now
 	}
-	st.active, st.notified, st.inhibitedBy = false, false, ""
+	st.active, st.notified, st.inhibitedBy, st.silencedBy = false, false, "", ""
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: kind, Title: st.title, Details: message, At: now}, send: send, inc: inc, recovery: send}
 	// The alerts this one muted that are still active: the owner hears of them now, in one
 	// message — but only once the resolve itself is on its way (a dropped one is rolled back,
@@ -434,7 +450,7 @@ func (m *alertManager) Clear(key, reason string) {
 		return
 	}
 	prev := *st
-	st.active, st.notified, st.inhibitedBy = false, false, ""
+	st.active, st.notified, st.inhibitedBy, st.silencedBy = false, false, "", ""
 	o := alertOutgoing{ev: alertEvent{Key: key, Level: st.level, Kind: "cleared", Title: st.title, Details: reason, At: m.now()}, inc: st.inc}
 	m.submitLocked(o, prev)
 }

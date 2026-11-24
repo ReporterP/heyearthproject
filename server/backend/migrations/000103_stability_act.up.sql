@@ -47,3 +47,20 @@ CREATE TABLE IF NOT EXISTS exit_service (
     changed_by     TEXT NOT NULL DEFAULT '',
     changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- C5: silences of the console (alert_silence.go) and their journal kind.
+CREATE TABLE IF NOT EXISTS alert_silences (
+    id           BIGSERIAL PRIMARY KEY,
+    pattern      TEXT NOT NULL,
+    reason       TEXT NOT NULL DEFAULT '',
+    created_by   TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    until        TIMESTAMPTZ NOT NULL,
+    ended_at     TIMESTAMPTZ,
+    expiry_noted BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS alert_silences_active_idx ON alert_silences (until) WHERE ended_at IS NULL;
+
+ALTER TABLE alert_events DROP CONSTRAINT IF EXISTS alert_events_kind_check;
+ALTER TABLE alert_events ADD CONSTRAINT alert_events_kind_check
+  CHECK (kind IN ('raise', 'repeat', 'suppressed', 'resolve', 'cleared', 'test', 'inhibited', 'notice', 'digest', 'silenced'));
