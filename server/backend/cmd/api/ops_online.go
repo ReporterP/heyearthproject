@@ -91,6 +91,13 @@ func (o *onlineTracker) count(now time.Time) onlineCounts {
 	return c
 }
 
+// seenSince: user transferred data on kind after t (seen); a read of kind happened after t (fresh).
+func (o *onlineTracker) seenSince(kind, user string, t time.Time) (seen, fresh bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.seen[kind][user].After(t), o.read[kind].After(t)
+}
+
 var onlineLive = newOnlineTracker()
 
 // noteTraffic is what the collectors call after every successful read.

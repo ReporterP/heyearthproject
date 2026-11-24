@@ -61,6 +61,7 @@ type opsAction struct {
 	Affected  func(ctx context.Context, target string) (now, total int, note string, err error) // now < 0: unknown
 	Run       func(ctx context.Context, target, by string, progress func(line string)) error
 	Post      func(ctx context.Context, target string) ([]opsCheck, error)
+	Resume    func(ctx context.Context, r opsRun) ([]opsCheck, error) // HandOver: the next process's checks after
 }
 
 // opsActions is the registry; registerAction fills it at init.
@@ -314,7 +315,7 @@ func (o *opsRunner) execute(a opsAction, r opsRun) {
 		}
 	})
 	if errors.Is(err, errOpsHandOver) {
-		return // the next API process closes it (recoverHandOver)
+		return // the next API process closes it (resumeHandOvers)
 	}
 	if err != nil {
 		msg := biz.ScrubOpsText(err.Error())
@@ -322,24 +323,57 @@ func (o *opsRunner) execute(a opsAction, r opsRun) {
 		o.feed(a, r, false, a.Title+": не удалось — "+msg)
 		return
 	}
-	r.Post = runChecks(ctx, a.Post, r.Target, "проверка после")
-	if bad := badChecks(r.Post); len(bad) > 0 {
-		finish(opsPostFailed, "")
-		o.feed(a, r, false, a.Title+": проверка после не прошла — "+strings.Join(bad, "; "))
-		level := AlertWarn
-		if disruptive(a.Impact) {
-			level = AlertCritical
-		}
-		o.d.raise(opsPostFailedAlertPrefix+a.ID, level, a.Title+": проверка после не прошла",
-			strings.Join(bad, "; ")+". "+a.IfFails)
+	o.closeWithPost(ctx, a, r, runChecks(ctx, a.Post, r.Target, "проверка после"))
+}
+
+// closeWithPost finishes a run by its checks after: ok, or post_failed with an alert.
+func (o *opsRunner) closeWithPost(ctx context.Context, a opsAction, r opsRun, post []opsCheck) {
+	now := o.d.now()
+	r.Post, r.FinishedAt, r.Error = post, &now, ""
+	bad := badChecks(post)
+	r.Status = opsOK
+	if len(bad) > 0 {
+		r.Status = opsPostFailed
+	}
+	if err := o.d.store.save(ctx, r); err != nil {
+		log.Printf("[ops-action] %s #%d: запись итога: %v", a.ID, r.ID, err)
+	}
+	if len(bad) == 0 {
+		o.feed(a, r, true, a.Title+": готово")
 		return
 	}
-	finish(opsOK, "")
-	o.feed(a, r, true, a.Title+": готово")
+	o.feed(a, r, false, a.Title+": проверка после не прошла — "+strings.Join(bad, "; "))
+	level := AlertWarn
+	if disruptive(a.Impact) {
+		level = AlertCritical
+	}
+	o.d.raise(opsPostFailedAlertPrefix+a.ID, level, a.Title+": проверка после не прошла",
+		strings.Join(bad, "; ")+". "+a.IfFails)
 }
 
 // errOpsHandOver: Run asks the next API process to close the run (hub.restart-api, C3).
 var errOpsHandOver = errors.New("завершит следующий процесс")
+
+// resumeHandOvers closes the hand-over runs the previous process started (after recover, at the
+// API start): their Resume waits for what proves the action worked.
+func (o *opsRunner) resumeHandOvers(ctx context.Context) {
+	open, err := o.d.store.open(ctx)
+	if err != nil {
+		log.Printf("[ops-action] передача: %v", err)
+		return
+	}
+	for _, r := range open {
+		a, ok := o.actions[r.Action]
+		if !ok || !a.HandOver || a.Resume == nil {
+			continue
+		}
+		post, err := a.Resume(ctx, r)
+		if err != nil {
+			post = append(post, opsCheck{Name: "проверка после", Detail: biz.ScrubOpsText(err.Error())})
+		}
+		o.closeWithPost(ctx, a, r, post)
+	}
+}
 
 // tick runs what is planned for the window — only inside it (every minute from the monitor).
 func (o *opsRunner) tick(ctx context.Context) {
@@ -774,6 +808,11 @@ func startOpsActions() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	opsLive.recover(ctx)
 	cancel()
+	go safely("передача действия", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		opsLive.resumeHandOvers(ctx)
+	})
 	go runEvery(time.Minute, time.Minute, func() {
 		safely("действия в окно", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
