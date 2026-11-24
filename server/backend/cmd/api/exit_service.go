@@ -30,6 +30,7 @@ import (
 	"github.com/heyearth/backend/internal/biz"
 	"github.com/heyearth/backend/internal/db"
 	"github.com/heyearth/backend/internal/xraydiff"
+	"github.com/lib/pq"
 )
 
 // exitOutBlocked says why exit id cannot leave the balancers ("" — it can).
@@ -205,6 +206,12 @@ func buildExitActions(d exitDeps) []opsAction {
 
 func listExitsOutOfService(ctx context.Context) (map[int]bool, error) {
 	rows, err := db.DB.QueryContext(ctx, `SELECT exit_id FROM exit_service WHERE out_of_service`)
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "42P01" {
+		// No table yet: the restart prediction runs this build against the schema before its
+		// migration 000103 — nothing can be out of service there.
+		return map[int]bool{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

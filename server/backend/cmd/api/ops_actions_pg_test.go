@@ -134,3 +134,14 @@ func TestOpsRunOpenFor(t *testing.T) {
 		t.Fatal("a cancelled run is not open")
 	}
 }
+
+// The restart prediction runs the new build against the old schema (before its migrations): the
+// generator must render without the exit_service table — then no exit is out of service.
+func TestExitsOutOfServiceBeforeTheMigration(t *testing.T) {
+	conn := testpg.Open(t)
+	testpg.MustExec(t, conn, `DROP TABLE exit_service`)
+	out, err := listExitsOutOfService(context.Background())
+	if err != nil || len(out) != 0 {
+		t.Fatalf("no table → nothing out of service, no error: %v %v", out, err)
+	}
+}
