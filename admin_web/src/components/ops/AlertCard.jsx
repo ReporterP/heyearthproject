@@ -1,7 +1,12 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronRight, TriangleAlert, OctagonAlert } from 'lucide-react'
-import { Badge, Card, Spinner } from '../ui/index.js'
+import { Badge, Button, Card, Dialog, Spinner } from '../ui/index.js'
+import { useToast } from '../Toast.jsx'
+import { createOpsSilence, fetchOpsSnapshot } from '../../api/admin.js'
 import { formatDate } from '../../utils/format.js'
 import { actionLabel, levelLabel, impactLabel } from './opsModel.js'
+import { actionKind, actionLink, targetFromKey } from './actionsModel.js'
 
 function since(iso) {
   const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
@@ -13,11 +18,27 @@ function since(iso) {
 
 /**
  * AlertCard — an open incident with its explanation: what happened, what it means for users,
- * what usually causes it, what can be done (text only in phase 1), and — when opened — what
+ * what usually causes it, what can be done (a button for a console action, a link to another
+ * page, else text), «Тишина 1 ч», the A16 snapshot of a critical one, and — when opened — what
  * changed in the hour before it.
- * Props: alert, open, onToggle(), before {loading, error, items} | null.
+ * Props: alert, open, onToggle(), before {loading, error, items} | null, actions (the registry),
+ * onAction(id, target), canSilence.
  */
-export default function AlertCard({ alert, open, onToggle, before }) {
+export default function AlertCard({ alert, open, onToggle, before, actions = [], onAction = () => {}, canSilence = false }) {
+  const toast = useToast()
+  const [silencing, setSilencing] = useState(false)
+  const [snap, setSnap] = useState(null) // { loading, error, data }
+  async function silence() {
+    setSilencing(true)
+    try {
+      await createOpsSilence(alert.key, 60, 'с карточки тревоги')
+      toast.success('Тишина на час: тревога не будет отправляться')
+    } catch (e) { toast.error(e.message) } finally { setSilencing(false) }
+  }
+  async function showSnapshot() {
+    setSnap({ loading: true })
+    try { setSnap({ data: await fetchOpsSnapshot(alert.key) }) } catch (e) { setSnap({ error: e.message }) }
+  }
   const critical = alert.level === 'critical'
   const muted = !!alert.inhibited_by
   const Icon = critical ? OctagonAlert : TriangleAlert
@@ -53,8 +74,24 @@ export default function AlertCard({ alert, open, onToggle, before }) {
             {alert.actions?.length > 0 && (<>
               <dt className="text-tertiary">Что можно сделать</dt>
               <dd className="text-secondary">
-                <ul className="list-disc pl-4 space-y-0.5">
-                  {alert.actions.map(a => <li key={a}>{actionLabel(a)}</li>)}
+                <ul className="flex flex-wrap gap-2">
+                  {alert.actions.map(a => {
+                    const kind = actionKind(a, actions)
+                    if (kind === 'button') {
+                      const reg = actions.find(x => x.id === a)
+                      const target = reg?.target ? targetFromKey(alert.key) : ''
+                      return (
+                        <li key={a}>
+                          <Button size="sm" variant="secondary" disabled={!reg.allowed || (reg.target && !target)}
+                            title={reg.allowed ? '' : `Не хватает права ${reg.perm}`} onClick={() => onAction(a, target)}>
+                            {actionLabel(a)}
+                          </Button>
+                        </li>
+                      )
+                    }
+                    if (kind === 'link') return <li key={a}><Link to={actionLink(a)} className="text-accent hover:underline">{actionLabel(a)}</Link></li>
+                    return <li key={a}>{actionLabel(a)}</li>
+                  })}
                 </ul>
               </dd>
             </>)}
@@ -67,8 +104,27 @@ export default function AlertCard({ alert, open, onToggle, before }) {
             {open ? <ChevronDown aria-hidden="true" className="w-3.5 h-3.5" /> : <ChevronRight aria-hidden="true" className="w-3.5 h-3.5" />}
             что менялось за час до
           </button>
-          <span className="text-[11px] font-mono text-tertiary break-all">{alert.key}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {critical && <Button size="sm" variant="ghost" onClick={showSnapshot}>Снимок</Button>}
+            {canSilence && <Button size="sm" variant="ghost" loading={silencing} onClick={silence}>Тишина 1 ч</Button>}
+            <span className="text-[11px] font-mono text-tertiary break-all">{alert.key}</span>
+          </div>
         </div>
+        <Dialog open={!!snap} onClose={() => setSnap(null)} title="Снимок по тревоге" maxWidth="max-w-2xl">
+          {snap?.loading && <div className="flex justify-center py-6"><Spinner size="sm" /></div>}
+          {snap?.error && <p className="text-sm text-secondary">{snap.error === 'снимка нет' ? 'Снимка ещё нет: автоматика A16 снимает его в течение минуты после критичной тревоги (если правило не выключено).' : snap.error}</p>}
+          {snap?.data && (
+            <div className="flex flex-col gap-3 text-xs">
+              <p className="text-secondary">снят {formatDate(snap.data.at)} · синтетика: {snap.data.data?.synthetic?.state || snap.data.data?.synthetic?.error || '—'}</p>
+              {Object.entries(snap.data.data?.logs || {}).map(([unit, lines]) => (
+                <div key={unit}>
+                  <p className="text-tertiary mb-1">{unit}: ошибок {lines?.length || 0}</p>
+                  {lines?.length > 0 && <pre className="font-mono text-secondary whitespace-pre-wrap break-words border border-default rounded p-2 max-h-40 overflow-auto">{lines.join('\n')}</pre>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Dialog>
         {open && (
           <div id={panelId} className="border-t border-default pt-2">
             {before?.loading && <div className="flex justify-center py-3"><Spinner size="sm" /></div>}

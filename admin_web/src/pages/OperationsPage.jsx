@@ -3,7 +3,7 @@ import { Play, RefreshCw } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { useUrlState } from '../hooks/useUrlState.js'
-import { fetchOpsOverview, fetchOpsProbes, runOpsProbes } from '../api/admin.js'
+import { fetchOpsActions, fetchOpsOverview, fetchOpsProbes, runOpsProbes } from '../api/admin.js'
 import { startPolling } from '../utils/polling.js'
 import { formatDate } from '../utils/format.js'
 import { Button, Card, CardBody, EmptyState, PageHeader, Skeleton, Tabs, TabPanel } from '../components/ui/index.js'
@@ -16,13 +16,14 @@ import FlagsPanel from '../components/ops/FlagsPanel.jsx'
 import WorksTab from '../components/ops/WorksTab.jsx'
 import AutomationTab from '../components/ops/AutomationTab.jsx'
 import IncidentsTab from '../components/ops/IncidentsTab.jsx'
+import ActionConfirm from '../components/ops/ActionConfirm.jsx'
 import { buildLine, needsBeforeFetch, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
 import AlertsPage from './AlertsPage.jsx'
 
 const POLL_MS = 15000
 const TABS_ID = 'ops-tabs'
 
-function NowTab({ data, view, setView }) {
+function NowTab({ data, view, setView, actions, onAction, canSilence }) {
   const [before, setBefore] = useState({})
   const alerts = useMemo(() => sortAlerts(data.alerts), [data.alerts])
   const openKey = view.alert
@@ -48,7 +49,7 @@ function NowTab({ data, view, setView }) {
               description="Когда что-то сломается, здесь появится карточка: что случилось, что это значит и что можно сделать." />
           </Card>
         ) : alerts.map(a => (
-          <AlertCard key={a.key} alert={a} open={openKey === a.key} before={before[a.key] || null}
+          <AlertCard key={a.key} alert={a} open={openKey === a.key} before={before[a.key] || null} actions={actions} onAction={onAction} canSilence={canSilence}
             onToggle={() => setView({ alert: openKey === a.key ? '' : a.key })} />
         ))}
       </section>
@@ -129,6 +130,10 @@ function ProbesTab({ canRun, ruAlerts }) {
 export default function OperationsPage() {
   const { can } = useAuth()
   const [view, setView] = useUrlState({ tab: 'now', alert: '' })
+  const [actions, setActions] = useState([])
+  const [actionReq, setActionReq] = useState(null) // { id, target }
+  useEffect(() => { fetchOpsActions().then(r => setActions(r.actions || []), () => {}) }, [])
+  const openAction = (id, target = '') => setActionReq({ id, target })
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const loadRef = useRef(() => {})
@@ -178,9 +183,9 @@ export default function OperationsPage() {
 
       <Tabs id={TABS_ID} label="Раздел пульта" tabs={tabs} value={tab} onChange={(key) => setView({ tab: key, alert: '' })} />
       <TabPanel tabsId={TABS_ID} tabKey={tab}>
-        {tab === 'now' && (data ? <NowTab data={data} view={view} setView={setView} /> : <Skeleton className="h-64 w-full" />)}
+        {tab === 'now' && (data ? <NowTab data={data} view={view} setView={setView} actions={actions} onAction={openAction} canSilence={can('settings.write')} /> : <Skeleton className="h-64 w-full" />)}
         {tab === 'subscription' && <FlagsPanel canWrite={can('settings.write')} />}
-        {tab === 'works' && <WorksTab canCancel={can('ops.disrupt') || can('settings.write')} />}
+        {tab === 'works' && <WorksTab canCancel={can('ops.disrupt') || can('settings.write')} onAction={openAction} />}
         {tab === 'automation' && <AutomationTab canWrite={can('settings.write')} canArm={can('ops.disrupt')} />}
         {tab === 'incidents' && <IncidentsTab canWrite={can('settings.write')} />}
         {tab === 'probes' && <ProbesTab canRun={can('settings.write')} ruAlerts={ruAlerts} />}
@@ -191,6 +196,7 @@ export default function OperationsPage() {
           </div>
         )}
       </TabPanel>
+      <ActionConfirm request={actionReq} onClose={() => setActionReq(null)} />
     </div>
   )
 }

@@ -82,11 +82,11 @@ export default function WorksTab({ canCancel, onAction }) {
                       <span className="text-primary">{n.name}</span>
                       <span className="ml-2 text-xs text-tertiary">{roleLabel(n.role)}{n.id ? ` #${n.id}` : ''}</span>
                     </Td>
-                    <Td mono>{f?.kernel || '—'}</Td>
-                    <Td mono>{f?.boot_at ? formatDate(f.boot_at) : '—'}</Td>
+                    <Td mono><span className="whitespace-nowrap">{f?.kernel || '—'}</span></Td>
+                    <Td mono><span className="whitespace-nowrap">{f?.boot_at ? formatDate(f.boot_at) : '—'}</span></Td>
                     <Td mono align="right">{f ? f.security_updates : '—'}</Td>
                     <Td mono align="right">{f ? `${f.disk_pct} %` : '—'}</Td>
-                    <Td><span className={age.stale ? 'text-warning' : 'text-secondary'}>{age.label}</span></Td>
+                    <Td><span className={`whitespace-nowrap ${age.stale ? 'text-warning' : 'text-secondary'}`}>{age.label}</span></Td>
                     <Td>
                       {issues.length === 0
                         ? <span className="text-tertiary">—</span>
