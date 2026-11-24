@@ -232,6 +232,7 @@ var permissionCatalog = []permissionCatalogItem{
 	{Key: "news.manage", Name: "News", Description: "Write and publish news to the channel, the bot, the cabinet and Happ"},
 	// Also seeded by migration 000095.
 	{Key: "hub.address", Name: "Hub Address", Description: "Change the Hub's public address: add, check, switch with auto-revert, retire"},
+	{Key: "ops.disrupt", Name: "Disruptive Ops Actions", Description: "Run console actions that drop users' connections (K2/K3) and arm them out of dry-run"},
 }
 
 func ValidateConfig() error {

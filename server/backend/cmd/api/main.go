@@ -886,6 +886,9 @@ func main() {
 	// check-host from RU, site certificate, backups, disk, xray restart storm.
 	StartMonitor()
 
+	// Console actions (ops_actions.go): close the runs a dead process left, run what is planned for the window.
+	startOpsActions()
+
 	// Telegram users' bot: update pollers (users' bot + owner replies in the alerts bot) and
 	// the outgoing queue, each in one API instance (advisory locks).
 	StartTelegram()
@@ -1037,6 +1040,7 @@ func main() {
 	registerOpsOverviewRoutes()
 	registerSettingsWatchRoutes()
 	registerCanaryRoutes()
+	registerOpsActionRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()
