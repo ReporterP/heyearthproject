@@ -13,6 +13,7 @@ import OpsFeed from '../components/ops/OpsFeed.jsx'
 import ProbesMatrix from '../components/ops/ProbesMatrix.jsx'
 import WatchdogSettings from '../components/ops/WatchdogSettings.jsx'
 import FlagsPanel from '../components/ops/FlagsPanel.jsx'
+import WorksTab from '../components/ops/WorksTab.jsx'
 import { buildLine, needsBeforeFetch, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
 import AlertsPage from './AlertsPage.jsx'
 
@@ -147,6 +148,7 @@ export default function OperationsPage() {
   const tabs = [
     { key: 'now', label: 'Сейчас', count: data?.alerts?.length || undefined },
     { key: 'subscription', label: 'Подписка' },
+    { key: 'works', label: 'Работы' },
     { key: 'probes', label: 'Проверки' },
     ...(canSettings ? [{ key: 'settings', label: 'Настройки' }] : []),
   ]
@@ -174,6 +176,7 @@ export default function OperationsPage() {
       <TabPanel tabsId={TABS_ID} tabKey={tab}>
         {tab === 'now' && (data ? <NowTab data={data} view={view} setView={setView} /> : <Skeleton className="h-64 w-full" />)}
         {tab === 'subscription' && <FlagsPanel canWrite={can('settings.write')} />}
+        {tab === 'works' && <WorksTab canCancel={can('ops.disrupt') || can('settings.write')} />}
         {tab === 'probes' && <ProbesTab canRun={can('settings.write')} ruAlerts={ruAlerts} />}
         {tab === 'settings' && canSettings && (
           <div className="space-y-6">

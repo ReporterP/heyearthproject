@@ -413,3 +413,17 @@ export const flagPromote = (key) => apiFetch(`/ops/flags/${encodeURIComponent(ke
 export const flagRollback = (key) => apiFetch(`/ops/flags/${encodeURIComponent(key)}/rollback`, { method: 'POST' })
 export const flagBypass = (key, to, reason) => apiFetch(`/ops/flags/${encodeURIComponent(key)}/bypass`, { method: 'POST', body: { to, reason } })
 export const setOpsUrgent = (hours) => apiFetch('/ops/urgent', { method: 'POST', body: { hours } })
+
+// ── «Операции»: actions, runs, works, silences (stability part C) ──
+export const fetchOpsActions = () => apiFetch('/ops/actions')
+export const previewOpsAction = (id, target = '') => apiFetch(`/ops/actions/${encodeURIComponent(id)}/preview`, { method: 'POST', body: { target } })
+export const runOpsAction = (id, { target = '', confirmToken, typed = '', when = 'now' }) =>
+  apiFetch(`/ops/actions/${encodeURIComponent(id)}/run`, { method: 'POST', body: { target, confirm_token: confirmToken, typed, when } })
+export const setOpsActionMode = (id, mode) => apiFetch(`/ops/actions/${encodeURIComponent(id)}/mode`, { method: 'PUT', body: { mode } })
+export const fetchOpsRuns = (limit = 50) => apiFetch(`/ops/actions/runs?limit=${limit}`)
+export const fetchOpsRun = (id) => apiFetch(`/ops/actions/runs/${id}`)
+export const cancelOpsRun = (id) => apiFetch(`/ops/actions/runs/${id}/cancel`, { method: 'POST' })
+export const fetchOpsWorks = () => apiFetch('/ops/works')
+export const fetchOpsSilences = () => apiFetch('/ops/silences')
+export const createOpsSilence = (pattern, minutes, reason) => apiFetch('/ops/silences', { method: 'POST', body: { pattern, minutes, reason } })
+export const endOpsSilence = (id) => apiFetch(`/ops/silences/${id}`, { method: 'DELETE' })
