@@ -72,7 +72,7 @@ type ExitOptions struct {
 	// TGMTProxy: the Telegram WEB proxy's MTProxy on the exit (nil: the WEB proxy is off).
 	TGMTProxy *TGExitOptions
 	// Watchdog: the Hub watcher on the exit (nil: not set up). Only a KindWatchdog job installs it.
-	Watchdog *WatchdogOptions
+	Watchdog  *WatchdogOptions
 	NodeAgent func() ([]byte, error)
 	CA        func() (cert, key []byte, err error)
 	// CASigner, when set, signs node certificates instead of CA()'s key (CA() may then return no
@@ -102,6 +102,7 @@ type State struct {
 	Hooks Hooks
 	Keys  config.ExitRealityKeys
 	HyPin string                          // the exit's Hysteria2 certificate pin, read by step hy_pin
+	Facts *FactsOptions                   // a facts job: where the read facts go (the API wiring)
 	Begin func(ctx context.Context) error // before the first step (lifecycle → provisioning)
 	Fail  func(ctx context.Context)       // after a failed step (provisioning → failed)
 	Now   func() time.Time

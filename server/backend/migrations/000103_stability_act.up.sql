@@ -64,3 +64,22 @@ CREATE INDEX IF NOT EXISTS alert_silences_active_idx ON alert_silences (until) W
 ALTER TABLE alert_events DROP CONSTRAINT IF EXISTS alert_events_kind_check;
 ALTER TABLE alert_events ADD CONSTRAINT alert_events_kind_check
   CHECK (kind IN ('raise', 'repeat', 'suppressed', 'resolve', 'cleared', 'test', 'inhibited', 'notice', 'digest', 'silenced'));
+
+-- C5/C6: console jobs — facts (read-only), reboot, agentrestart (rule A12).
+ALTER TABLE provision_jobs DROP CONSTRAINT IF EXISTS provision_jobs_kind_check;
+ALTER TABLE provision_jobs ADD CONSTRAINT provision_jobs_kind_check
+  CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy', 'tg_mtproxy', 'pathcheck', 'tunnelcheck', 'tunnelon', 'tunneloff', 'watchdog',
+                  'facts', 'reboot', 'agentrestart'));
+
+-- C5: what a facts job read on each node (server_id 0 — the Hub, collected locally).
+CREATE TABLE IF NOT EXISTS node_facts (
+    server_id             INT PRIMARY KEY,
+    collected_at          TIMESTAMPTZ NOT NULL,
+    kernel                TEXT NOT NULL DEFAULT '',
+    boot_at               TIMESTAMPTZ,
+    reboot_required       BOOLEAN NOT NULL DEFAULT FALSE,
+    reboot_required_since TIMESTAMPTZ,
+    security_updates      INT NOT NULL DEFAULT 0,
+    ssh_password          BOOLEAN NOT NULL DEFAULT FALSE,
+    disk_pct              INT NOT NULL DEFAULT 0
+);

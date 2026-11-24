@@ -1,3 +1,8 @@
+DROP TABLE IF EXISTS node_facts;
+DELETE FROM provision_jobs WHERE kind IN ('facts', 'reboot', 'agentrestart');
+ALTER TABLE provision_jobs DROP CONSTRAINT IF EXISTS provision_jobs_kind_check;
+ALTER TABLE provision_jobs ADD CONSTRAINT provision_jobs_kind_check
+  CHECK (kind IN ('provision', 'reprovision', 'deprovision', 'verify', 'mtproxy', 'tg_mtproxy', 'pathcheck', 'tunnelcheck', 'tunnelon', 'tunneloff', 'watchdog'));
 DELETE FROM alert_events WHERE kind = 'silenced';
 ALTER TABLE alert_events DROP CONSTRAINT IF EXISTS alert_events_kind_check;
 ALTER TABLE alert_events ADD CONSTRAINT alert_events_kind_check

@@ -1250,7 +1250,7 @@ func TestStartRefusalsAreTyped(t *testing.T) {
 	if !IsRefusal(err) || !errors.Is(err, ErrMTProxyDisabled) {
 		t.Fatalf("recipe refusal: %v", err)
 	}
-	if _, err := r.Start(ctx, 7, "reboot"); !IsRefusal(err) {
+	if _, err := r.Start(ctx, 7, "format-disk"); !IsRefusal(err) {
 		t.Fatalf("unknown kind: %v", err)
 	}
 	for name, st := range map[string]failingStore{

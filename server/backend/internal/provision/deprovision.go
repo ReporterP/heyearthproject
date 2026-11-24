@@ -329,6 +329,12 @@ func recipeFor(kind string, n Node, st *State) (Recipe, error) {
 		return tunnelToggleRecipe(n, st, kind == KindTunnelOn)
 	case KindWatchdog:
 		return watchdogRecipe(n, st)
+	case KindFacts:
+		return factsRecipe(n, st)
+	case KindReboot:
+		return rebootRecipe(n)
+	case KindAgentRestart:
+		return agentRestartRecipe(n)
 	}
 	return recipeForSetup(kind, n, st)
 }
