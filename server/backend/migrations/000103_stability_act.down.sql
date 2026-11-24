@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS incidents;
 DROP TABLE IF EXISTS alert_snapshots;
 DROP TABLE IF EXISTS automation_rules;
 DROP TABLE IF EXISTS node_facts;

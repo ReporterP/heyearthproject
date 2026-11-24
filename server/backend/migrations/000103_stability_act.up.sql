@@ -100,3 +100,11 @@ CREATE TABLE IF NOT EXISTS alert_snapshots (
     data      JSONB NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS alert_snapshots_key_idx ON alert_snapshots (alert_key, id DESC);
+
+-- C7: the owner's notes on incidents (incidents themselves are built from alert_events; the key is the start).
+CREATE TABLE IF NOT EXISTS incidents (
+    started_at TIMESTAMPTZ PRIMARY KEY,
+    notes      TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

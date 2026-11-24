@@ -15,6 +15,7 @@ import WatchdogSettings from '../components/ops/WatchdogSettings.jsx'
 import FlagsPanel from '../components/ops/FlagsPanel.jsx'
 import WorksTab from '../components/ops/WorksTab.jsx'
 import AutomationTab from '../components/ops/AutomationTab.jsx'
+import IncidentsTab from '../components/ops/IncidentsTab.jsx'
 import { buildLine, needsBeforeFetch, probeSummary, ruViewLine, sortAlerts } from '../components/ops/opsModel.js'
 import AlertsPage from './AlertsPage.jsx'
 
@@ -150,6 +151,7 @@ export default function OperationsPage() {
     { key: 'now', label: 'Сейчас', count: data?.alerts?.length || undefined },
     { key: 'subscription', label: 'Подписка' },
     { key: 'works', label: 'Работы' },
+    { key: 'incidents', label: 'Журнал' },
     { key: 'automation', label: 'Автоматика' },
     { key: 'probes', label: 'Проверки' },
     ...(canSettings ? [{ key: 'settings', label: 'Настройки' }] : []),
@@ -180,6 +182,7 @@ export default function OperationsPage() {
         {tab === 'subscription' && <FlagsPanel canWrite={can('settings.write')} />}
         {tab === 'works' && <WorksTab canCancel={can('ops.disrupt') || can('settings.write')} />}
         {tab === 'automation' && <AutomationTab canWrite={can('settings.write')} canArm={can('ops.disrupt')} />}
+        {tab === 'incidents' && <IncidentsTab canWrite={can('settings.write')} />}
         {tab === 'probes' && <ProbesTab canRun={can('settings.write')} ruAlerts={ruAlerts} />}
         {tab === 'settings' && canSettings && (
           <div className="space-y-6">

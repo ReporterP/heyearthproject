@@ -1048,6 +1048,7 @@ func main() {
 	registerWorksRoutes()
 	registerAutomationRoutes()
 	registerSnapshotRoutes()
+	registerIncidentRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()

@@ -430,3 +430,16 @@ export const endOpsSilence = (id) => apiFetch(`/ops/silences/${id}`, { method: '
 export const fetchOpsAutomation = () => apiFetch('/ops/automation')
 export const setOpsAutomationMode = (id, mode) => apiFetch(`/ops/automation/${encodeURIComponent(id)}`, { method: 'PUT', body: { mode } })
 export const fetchOpsSnapshot = (key) => apiFetch(`/ops/snapshots?key=${encodeURIComponent(key)}`)
+export const fetchOpsIncidents = () => apiFetch('/ops/incidents')
+export const saveIncidentNotes = (id, notes) => apiFetch(`/ops/incidents/${id}`, { method: 'PATCH', body: { notes } })
+// downloadIncident fetches the Markdown draft of the post-mortem (needs the session) and saves it.
+export async function downloadIncident(id, filename) {
+  const res = await apiFetch(`/ops/incidents/${id}/export.md`, { raw: true })
+  if (!res.ok) throw new Error(`Ошибка ${res.status}`)
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
