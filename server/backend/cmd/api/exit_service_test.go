@@ -187,3 +187,33 @@ func TestExitActionsClass(t *testing.T) {
 		t.Errorf("exit.return: %s %s %q", ret.Impact, requiredPerm(ret), ret.Target)
 	}
 }
+
+// The check «балансировщики»: an exit taken out is in no selector; a returned exit is in them, or
+// it is dead — then it stays out of every selector until its tunnel lives (xray_exits.go) and the
+// return has nothing more to apply.
+func TestExitApplied(t *testing.T) {
+	for _, tc := range []struct {
+		in, healthy, out, want bool
+	}{
+		{in: false, healthy: true, out: true, want: true},
+		{in: true, healthy: true, out: true, want: false},
+		{in: true, healthy: true, out: false, want: true},
+		{in: false, healthy: true, out: false, want: false}, // the sync has not applied it yet
+		{in: false, healthy: false, out: false, want: true}, // returned while dead
+	} {
+		if got := exitApplied(tc.in, tc.healthy, tc.out); got != tc.want {
+			t.Errorf("%+v: %v", tc, got)
+		}
+	}
+	// A dead exit returned to service: no exit is out any more, yet the catch-all names the healthy
+	// ones only — the returned exit is in no selector of the running config.
+	in := baseInputs()
+	in.exitNodes = append(in.exitNodes, exitFixture(5, 1, "unhealthy", true))
+	cfg, _ := genConfig(t, in, quotaCutoff{})
+	if inSel, err := exitInSelectors(cfg, 5); err != nil || inSel {
+		t.Fatalf("a dead exit must be in no selector: %v %v", inSel, err)
+	}
+	if inSel, _ := exitInSelectors(cfg, 2); !inSel {
+		t.Fatal("a healthy exit is in the selectors")
+	}
+}

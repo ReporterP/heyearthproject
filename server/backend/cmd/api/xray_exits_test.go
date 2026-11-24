@@ -176,7 +176,8 @@ func resetExitNotes(t *testing.T) {
 }
 
 // Review Focus 1 → with exits 2, 3 and 20 a plan bound to exit 2 never selects exit-20.*; the
-// catch-all balancer and the observatory take every exit path and nothing else (no probe-vr-*).
+// catch-all balancer takes every healthy exit path, the observatory every exit path (the dead
+// exit 7's too: its outbounds stay), and nothing else (no probe-vr-*).
 func TestXrayExitSelectorsAreExact(t *testing.T) {
 	cfg, b := genConfig(t, exitsInputs(multiExits()...), quotaCutoff{})
 	v := viewOf(t, cfg)
@@ -202,8 +203,10 @@ func TestXrayExitSelectorsAreExact(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("balancer selections:\n got %v\nwant %v", got, want)
 	}
-	if obs := xraySelect(tags, v.Observatory.SubjectSelector); !reflect.DeepEqual(obs, all) {
-		t.Errorf("observatory probes %v, want exactly the exit paths %v", obs, all)
+	withDead := append(slices.Clone(all), "exit-7.hy", "exit-7.vr")
+	sort.Strings(withDead)
+	if obs := xraySelect(tags, v.Observatory.SubjectSelector); !reflect.DeepEqual(obs, withDead) {
+		t.Errorf("observatory probes %v, want exactly the exit paths %v", obs, withDead)
 	}
 	if b.exits != 3 {
 		t.Errorf("routed exits = %d, want 3 (exit 7 is unhealthy)", b.exits)
@@ -709,8 +712,11 @@ func TestXrayExitNotOnlineSkipped(t *testing.T) {
 func TestXrayExitProbes(t *testing.T) {
 	cfg, _ := genConfig(t, exitsInputs(multiExits()...), quotaCutoff{})
 	v := viewOf(t, cfg)
-	if byTag(v.Outbounds, "exit-7.hy") != nil || byTag(v.Outbounds, "exit-7.vr") != nil {
-		t.Fatal("an unhealthy exit must stay out of the routing")
+	if byTag(v.Outbounds, "exit-7.hy") == nil || byTag(v.Outbounds, "exit-7.vr") == nil {
+		t.Fatal("an unhealthy exit keeps its outbounds (its health flip is live, xray_exits_health_test.go)")
+	}
+	if sel := v.balancer(t, "exit-balancer").Selector; !reflect.DeepEqual(sel, []string{"exit-2.", "exit-3.", "exit-20."}) {
+		t.Fatalf("an unhealthy exit stays out of every selector: catch-all %v", sel)
 	}
 	for _, id := range []int{2, 3, 7, 20} {
 		tag := exitProbeTag(id)

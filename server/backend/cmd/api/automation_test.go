@@ -132,10 +132,14 @@ func TestAutoRulesCatalogue(t *testing.T) {
 			t.Errorf("rule %d: %+v", i, r)
 		}
 	}
-	for _, id := range []string{"A1", "A2", "A12", "A14", "A16"} {
-		if r := autoRuleByID(id); r.Builtin {
+	for _, id := range []string{"A1", "A12", "A14", "A16"} {
+		if r := autoRuleByID(id); r.Builtin || !engineRules[id] {
 			t.Errorf("%s is a rule of this engine", id)
 		}
+	}
+	// A2 runs in the tunnel monitor: a dead exit leaves the selectors live (xray_exits_health_test.go).
+	if r := autoRuleByID("A2"); !r.Builtin || r.Setting != "" || engineRules["A2"] || strings.Contains(r.Note, "витрина") {
+		t.Errorf("A2 is built into the tunnel monitor, always on: %+v", r)
 	}
 	for _, id := range []string{"A3", "A6", "A7"} {
 		if r := autoRuleByID(id); !r.Builtin || r.Setting == "" {

@@ -2,8 +2,9 @@ package main
 
 // The automation rules of the console (docs/prd/stability-operations.prd.md, part 6; plan C6):
 // the catalogue A1…A16 for the «Автоматика» tab and the pure decisions of the rules this engine
-// runs itself (A1, A2, A12, A14, A16). The others already run elsewhere («Builtin»): the tab shows
-// them with their switch (a setting) or as always on.
+// runs itself (A1, A12, A14, A16). The others already run elsewhere («Builtin»): the tab shows
+// them with their switch (a setting) or as always on. A2 is the tunnel monitor's: a dead exit
+// leaves the balancers live (xray_exits.go), and comes back by itself once it lives again.
 
 import (
 	"fmt"
@@ -35,10 +36,11 @@ var autoRules = []autoRule{
 	{ID: "A1", Title: "Вход теряет потоки", When: "доля проверок входа за 10 минут ниже 75 % (не меньше 8 проверок) или 3 недоступности подряд",
 		Does:   "выводит вход из ротации, включает «Срочное обновление»",
 		Limits: "не трогает последний здоровый путь; не чаще раза в час на вход; после двух автовыводов за неделю — только тревога; возврат всегда человеком, через тест"},
-	{ID: "A2", Title: "Выход мёртв", When: "оба туннеля выхода не проходят пробы",
-		Does:   "убирает выход из работы",
-		Limits: "не последний выход",
-		Note:   "Сегодня выход с двумя мёртвыми туннелями убирает монитор туннелей перезапуском xray (К3): исходящие нездорового выхода уходят из конфига. Убрать его вживую — отдельная правка генератора (держать исходящие мёртвого выхода, как у выхода «вне работы»). Правило — только витрина."},
+	{ID: "A2", Title: "Выход мёртв", When: "оба туннеля выхода не прошли 3 проверки подряд",
+		Does:    "монитор туннелей убирает выход из всех балансировщиков вживую, без перезапуска xray (открытые соединения целы); после 2 удачных проверок возвращает его сам",
+		Limits:  "последний здоровый выход так не убирается: без здоровых выходов весь трафик, кроме прямых RU-адресов, блокируется, и это перезапуск xray (К3), как раньше",
+		Builtin: true,
+		Note:    "Исходящие мёртвого выхода остаются в конфиге, меняются только селекторы — как у выхода «вне работы». Своего правила у движка нет: вывод «вне работы» держал бы выход и после того, как он ожил, до кнопки человека."},
 	{ID: "A3", Title: "Канарейка: стало хуже после «Всем»", When: "страховочный час после «Всем» показал ухудшение",
 		Does: "откатывает флаг, включает «Срочное обновление»", Limits: "один откат на изменение", Builtin: true, Setting: "canary_auto_rollback"},
 	{ID: "A4", Title: "Сервис упал", When: "xray, Бамбук, nginx, туннель или API остановился",

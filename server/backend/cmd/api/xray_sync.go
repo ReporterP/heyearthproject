@@ -622,6 +622,8 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	// user inbounds (userInboundTags skips them).
 	exitCfg := buildExitConfig(in.exitNodes, settings.muxConcurrency)
 	inbounds = append(inbounds, exitCfg.probeInbounds...)
+	// No healthy exit: the no-exit block below (every user inbound blocked).
+	noExit := len(exitCfg.routes) == 0
 
 	// Every inbound except api-in carries user traffic; the no-exit block rule
 	// must cover all of them (C2: the old shadowsocks and CDN inbounds used to leak).
@@ -645,8 +647,12 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		},
 	}
 
-	// ── Exit-ноды (Spoke outbounds): exit-N.hy / exit-N.vr of healthy exits, then probe-vr-N ──
-	outbounds = append(outbounds, exitCfg.outbounds...)
+	// ── Exit-ноды (Spoke outbounds): exit-N.hy / exit-N.vr of every online exit with a path, dead
+	// ones too (only the balancers follow the health: its flip is live), then probe-vr-N. The
+	// no-exit block carries no exit path, as it always did: entering it restarts xray anyway. ──
+	if !noExit {
+		outbounds = append(outbounds, exitCfg.outbounds...)
+	}
 	outbounds = append(outbounds, exitCfg.probeOutbounds...)
 
 	// ── Direct-routing outbound ──
@@ -753,10 +759,10 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	}
 
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
-	noExit := len(exitCfg.routes) == 0
 	if !noExit {
-		// An exit out of service (exit_service.go, spike C4) leaves every selector and keeps its
-		// outbounds: the change is live (adrules), open connections stay. Never the last one.
+		// A dead exit (exitCfg.dead) and an exit out of service (exit_service.go, spike C4) leave
+		// every selector and keep their outbounds: the change is live (adrules), open connections
+		// stay. The generator never takes the last healthy exit out of service.
 		inService := make([]exitRoute, 0, len(exitCfg.routes))
 		for _, r := range exitCfg.routes {
 			if !in.outOfService[r.id] {
@@ -767,9 +773,9 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 			inService = exitCfg.routes
 		}
 		// Catch-all balancer: every exit path ("exit-" never matches probe-vr-*); with an exit
-		// out of service, the in-service exits by name.
+		// out of service or dead, the healthy in-service exits by name.
 		catchAll := []string{exitAllSelector}
-		if len(inService) < len(exitCfg.routes) {
+		if len(inService) < len(exitCfg.routes) || len(exitCfg.dead) > 0 {
 			catchAll = catchAll[:0]
 			for _, r := range inService {
 				catchAll = append(catchAll, exitSelector(r.id))
@@ -779,7 +785,9 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 			newBalancer("exit-balancer", catchAll, exitFallback(inService), exitCosts(inService)),
 		}
 
-		// Per-plan balancers come from plan_servers and exit health only, never
+		// Per-plan balancers come from plan_servers and exit health only (a dead exit is in no
+		// plan balancer; a plan whose exits are all dead loses its balancer and its plan-*-users
+		// rule — both live for xraydiff), never
 		// from the users: one per plan with at least one healthy exit, in plan-ID
 		// order, whether or not the plan has a user right now. A stable balancer
 		// set keeps every live adrules small (xraydiff applies balancers live since
@@ -868,7 +876,7 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 		routing["rules"] = rules
 	}
 
-	// Observatory: probes every exit path (exit-N.hy / exit-N.vr, never probe-vr-*) for the
+	// Observatory: probes every exit path (exit-N.hy / exit-N.vr, a dead exit's too; never probe-vr-*) for the
 	// leastLoad balancers, which drop the paths it sees dead (see newBalancer). enableConcurrency:
 	// all paths every probeInterval; without it xray probes ONE path per interval (app/observatory
 	// observer.go), i.e. with six paths each would be seen only every three minutes.

@@ -30,7 +30,7 @@ import (
 	"github.com/heyearth/backend/internal/provision"
 )
 
-// engineRules: the rules this engine runs (A2 is a showcase: see its note).
+// engineRules: the rules this engine runs (A2 is built into the tunnel monitor: see its note).
 var engineRules = map[string]bool{"A1": true, "A12": true, "A14": true, "A16": true}
 
 type autoRuleState struct {

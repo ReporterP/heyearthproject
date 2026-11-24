@@ -15,7 +15,7 @@ import (
 
 // ─────────────── Exit paths in the Hub's xray config (node pool, phase 1) ───────────────
 //
-// Every HEALTHY exit N (lifecycle online, tunnel_status healthy) gets up to two outbounds:
+// Every ONLINE exit N with a path gets up to two outbounds, healthy or not:
 //
 //	exit-N.hy  Hysteria: SOCKS 127.0.0.1:(1088+N), served by hysteria2-client-N (UDP to the exit)
 //	exit-N.vr  TCP backup: SOCKS 127.0.0.1:(2088+N), served by heyearth-stls-client-N — ShadowTLS v3
@@ -26,15 +26,21 @@ import (
 // can never match exit-20.*; Beads 07f7) and the catch-all one by "exit-". The order inside an
 // exit (Hysteria first, TCP while Hysteria is dead) and load_weight between exits come from the
 // leastLoad strategy's costs and baselines (exitCosts, exitBaselines); tags are never duplicated.
-// An exit leaves the routing only when the tunnel monitor finds BOTH of its paths dead
-// (tunnel_probe.go).
+// Only the HEALTHY exits (tunnel_status healthy) are in the balancers: an exit whose BOTH paths the
+// tunnel monitor finds dead (tunnel_probe.go) keeps its outbounds and leaves every selector, the
+// costs and the fallbacks. Its health flip is then a balancers-only change (plus plan-* rules when
+// a plan loses its last exit), which xraydiff applies live through adrules — open connections stay,
+// xray is not restarted (spike C4, docs/plan/stability-operations-2.md). Once some exit with
+// outbounds is out of the balancers (dead or out of service, exit_service.go), the catch-all
+// balancer lists the others by name instead of "exit-"; with every exit healthy and in service the
+// config is the one it always was. With no healthy exit at all the config is the no-exit block
+// (xray_sync.go) without any exit path, as before: entering and leaving it restarts xray.
 //
 // Every ONLINE exit with a TCP path, healthy or not, also gets a probe pair outside every
 // selector: the loopback SOCKS inbound probe-vr-N (127.0.0.1:12000+N) routed to the outbound
 // probe-vr-N (the same hop to the ShadowTLS client). The monitor fetches generate_204 through it to judge the
 // TCP path, also while the exit is out of the routing, so its recovery is noticed. The pair
-// depends only on the exit being online, never on its health: health flips restart xray exactly
-// as before (an exit enters or leaves the balancers) and nothing more.
+// depends only on the exit being online, never on its health.
 //
 // Legacy rows: tunnel_protocol vless keeps its old single VLESS outbound (own port, mux, no flow)
 // under exit-N.vr; shadowsocks/socks5/http are no longer generated (phase-1 pre-check: none online).
@@ -248,7 +254,7 @@ func exitProbeInbound(id int) map[string]interface{} {
 	}
 }
 
-// exitRoute is one routed (healthy) exit as the balancers see it.
+// exitRoute is one exit with outbounds as the balancers see it.
 type exitRoute struct {
 	id           int
 	weight       int    // load_weight clamped to 1..10
@@ -258,8 +264,9 @@ type exitRoute struct {
 
 // exitConfig is the exit part of the xray config.
 type exitConfig struct {
-	routes         []exitRoute
-	outbounds      []map[string]interface{} // exit-N.hy / exit-N.vr of the routed exits
+	routes         []exitRoute              // the healthy exits: the balancers' candidates
+	dead           []exitRoute              // online exits with a path, not healthy: outbounds only, outside every selector
+	outbounds      []map[string]interface{} // exit-N.hy / exit-N.vr of every exit of routes and dead, in node order
 	probeOutbounds []map[string]interface{}
 	probeInbounds  []map[string]interface{}
 	probeRules     []map[string]interface{}
@@ -305,8 +312,9 @@ func (l *exitNoteLog) update(nodes []biz.ExitNodeTunnel, notes map[int]string) {
 	l.last = notes
 }
 
-// buildExitConfig builds the exit outbounds of the healthy exits and the probe pairs of every
-// online exit with a TCP path, in node order (ORDER BY id).
+// buildExitConfig builds the exit outbounds of every online exit with a path (healthy or not:
+// only the healthy ones are routes) and the probe pairs of every online exit with a TCP path, in
+// node order (ORDER BY id).
 func buildExitConfig(nodes []biz.ExitNodeTunnel, mux int) exitConfig {
 	var c exitConfig
 	notes := map[int]string{}
@@ -331,16 +339,19 @@ func buildExitConfig(nodes []biz.ExitNodeTunnel, mux int) exitConfig {
 			notes[n.ID] = "TCP-путь (exit-" + strconv.Itoa(n.ID) + ".vr) не строится: " + why
 		}
 		hyTag, vrTag := exitOutboundTags(n.ID)
+		r := exitRoute{id: n.ID, weight: exitWeight(n.LoadWeight), primary: vrTag, hasHy: hy, hasVR: vr}
+		if hy {
+			r.primary = hyTag
+			c.outbounds = append(c.outbounds, exitHyOutbound(n.ID, hyTag))
+		}
+		if vr {
+			c.outbounds = append(c.outbounds, exitVROutbound(n, vrTag, mux))
+		}
+		// The outbounds never depend on the health, the balancers do (see the head of this file).
 		if n.TunnelStatus == "healthy" {
-			r := exitRoute{id: n.ID, weight: exitWeight(n.LoadWeight), primary: vrTag, hasHy: hy, hasVR: vr}
-			if hy {
-				r.primary = hyTag
-				c.outbounds = append(c.outbounds, exitHyOutbound(n.ID, hyTag))
-			}
-			if vr {
-				c.outbounds = append(c.outbounds, exitVROutbound(n, vrTag, mux))
-			}
 			c.routes = append(c.routes, r)
+		} else {
+			c.dead = append(c.dead, r)
 		}
 		if vr {
 			tag := exitProbeTag(n.ID)

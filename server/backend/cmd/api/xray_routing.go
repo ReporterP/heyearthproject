@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -10,7 +11,8 @@ import (
 //   - outbounds[0], xray's default handler, is the blackhole "block";
 //   - every balancer falls back to its first member — an exit our own health
 //     monitor (exitHealth.tick, 3-fail/2-ok hysteresis per path) considers healthy —
-//     or to "block" when it has none; never to a direct/freedom outbound.
+//     or to "block" when it has none; never to a direct/freedom outbound, never to
+//     a path outside its own selector (a dead exit keeps its outbounds);
 //     Falling back to the exit (not block) matters: xray's observatory marks
 //     the only exit "dead" ~37x/day on short probe failures, and block would
 //     turn each of those into a user-visible outage;
@@ -290,8 +292,17 @@ func checkNoDirectLeak(inbounds, outbounds []map[string]interface{}, routing map
 	}
 	for _, b := range balancers {
 		fb, _ := b["fallbackTag"].(string)
-		if fb != xrayBlockTag && !(strings.HasPrefix(fb, "exit-") && outboundTags[fb]) {
+		if fb == xrayBlockTag {
+			continue
+		}
+		if !(strings.HasPrefix(fb, "exit-") && outboundTags[fb]) {
 			return fmt.Errorf("balancer %v has fallbackTag %q, want %q or the tag of an exit outbound", b["tag"], fb, xrayBlockTag)
+		}
+		// A dead exit keeps its outbounds (xray_exits.go): a fallback must be one of the paths the
+		// balancer's own selector takes (xray selectors are tag prefixes).
+		sel, _ := b["selector"].([]string)
+		if !slices.ContainsFunc(sel, func(p string) bool { return p != "" && strings.HasPrefix(fb, p) }) {
+			return fmt.Errorf("balancer %v falls back to %q outside its selector %v", b["tag"], fb, sel)
 		}
 	}
 	if len(balancers) > 0 {

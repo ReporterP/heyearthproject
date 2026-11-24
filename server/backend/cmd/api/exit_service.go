@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,6 +268,16 @@ func liveExitClassify(_ context.Context, out map[int]bool) (xraydiff.Kind, strin
 	return d.Kind, d.Reason, err
 }
 
+// exitApplied: does the running config reflect the exit's mark? An exit taken out is in no
+// selector. A returned one is in them — unless it is not healthy now: a dead exit stays out of
+// every selector until its tunnel lives again (xray_exits.go), so there is nothing to apply.
+func exitApplied(inSelectors, healthy, out bool) bool {
+	if out {
+		return !inSelectors
+	}
+	return inSelectors || !healthy
+}
+
 // exitInSelectors reads the running config file: is exit id in any balancer selector.
 func exitInSelectors(config []byte, id int) (bool, error) {
 	var cfg struct {
@@ -296,13 +307,17 @@ var liveExitDeps = exitDeps{
 	setOut:   setExitOutOfService,
 	classify: liveExitClassify,
 	sync:     RequestXraySync,
-	applied: func(_ context.Context, id int, out bool) (bool, error) {
+	applied: func(ctx context.Context, id int, out bool) (bool, error) {
 		b, err := os.ReadFile(xrayConfigPath)
 		if err != nil {
 			return false, err
 		}
 		in, err := exitInSelectors(b, id)
-		return in != out, err
+		if err != nil || out || in {
+			return exitApplied(in, true, out), err
+		}
+		routed, err := liveRoutedExits(ctx)
+		return exitApplied(in, slices.Contains(routed, id), out), err
 	},
 	xrayPID: func(ctx context.Context) (string, error) {
 		b, err := exec.CommandContext(ctx, "systemctl", "show", "-p", "MainPID", "--value", "xray").Output()

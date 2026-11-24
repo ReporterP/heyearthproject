@@ -3,7 +3,9 @@
     {
       "fallbackTag": "exit-20.hy",
       "selector": [
-        "exit-"
+        "exit-2.",
+        "exit-3.",
+        "exit-20."
       ],
       "strategy": {
         "settings": {
@@ -273,6 +275,30 @@
         ]
       },
       "tag": "exit-3.vr"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 1095
+          }
+        ]
+      },
+      "tag": "exit-7.hy"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 2095
+          }
+        ]
+      },
+      "tag": "exit-7.vr"
     },
     {
       "protocol": "socks",

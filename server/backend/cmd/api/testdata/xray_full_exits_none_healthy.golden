@@ -1,0 +1,601 @@
+{
+  "api": {
+    "services": [
+      "HandlerService",
+      "RoutingService",
+      "StatsService"
+    ],
+    "tag": "api"
+  },
+  "dns": {
+    "disableCache": false,
+    "queryStrategy": "UseIPv4",
+    "servers": [
+      "8.8.8.8",
+      "1.1.1.1"
+    ],
+    "tag": "dns-out"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "server@heyearth",
+            "flow": "xtls-rprx-vision",
+            "id": "server-uuid",
+            "level": 1
+          },
+          {
+            "email": "alice",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-alice",
+            "level": 1
+          },
+          {
+            "email": "bob",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-bob",
+            "level": 1
+          },
+          {
+            "email": "carol",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-carol",
+            "level": 1
+          },
+          {
+            "email": "dave",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-dave",
+            "level": 1
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "dest": "yandex.ru:443",
+          "privateKey": "priv",
+          "serverNames": [
+            "yandex.ru",
+            "www.yandex.ru"
+          ],
+          "shortIds": [
+            "sid",
+            ""
+          ],
+          "show": false,
+          "xver": 0
+        },
+        "security": "reality"
+      },
+      "tag": "vless-reality"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10444,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "server@heyearth",
+            "flow": "xtls-rprx-vision",
+            "id": "server-uuid",
+            "level": 1
+          },
+          {
+            "email": "alice",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-alice",
+            "level": 1
+          },
+          {
+            "email": "bob",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-bob",
+            "level": 1
+          },
+          {
+            "email": "carol",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-carol",
+            "level": 1
+          },
+          {
+            "email": "dave",
+            "flow": "xtls-rprx-vision",
+            "id": "uuid-dave",
+            "level": 1
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "dest": "yandex.ru:443",
+          "privateKey": "priv",
+          "serverNames": [
+            "yandex.ru",
+            "www.yandex.ru"
+          ],
+          "shortIds": [
+            "sid",
+            ""
+          ],
+          "show": false,
+          "xver": 0
+        },
+        "security": "reality",
+        "sockopt": {
+          "acceptProxyProtocol": true
+        }
+      },
+      "tag": "vless-reality-pp"
+    },
+    {
+      "listen": "0.0.0.0",
+      "port": 2443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "server@heyearth",
+            "id": "server-uuid",
+            "level": 1
+          },
+          {
+            "email": "alice",
+            "id": "uuid-alice",
+            "level": 1
+          },
+          {
+            "email": "bob",
+            "id": "uuid-bob",
+            "level": 1
+          },
+          {
+            "email": "carol",
+            "id": "uuid-carol",
+            "level": 1
+          },
+          {
+            "email": "dave",
+            "id": "uuid-dave",
+            "level": 1
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "realitySettings": {
+          "dest": "yandex.ru:443",
+          "privateKey": "priv",
+          "serverNames": [
+            "yandex.ru",
+            "www.yandex.ru"
+          ],
+          "shortIds": [
+            "sid",
+            ""
+          ],
+          "show": false,
+          "xver": 0
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveIdle": 120,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        },
+        "xhttpSettings": {
+          "host": "hiearth.ru",
+          "mode": "auto",
+          "path": "/",
+          "scMaxBufferedPosts": 40,
+          "scMaxEachPostBytes": "10000-15000",
+          "xPaddingBytes": "100-1000"
+        }
+      },
+      "tag": "vless-xhttp"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      },
+      "tag": "api-in"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "ip": "127.0.0.1",
+        "udp": true
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true,
+        "routeOnly": true
+      },
+      "tag": "socks-local"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12002,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-2"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12003,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-3"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12005,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-5"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 12020,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "probe-vr-20"
+    }
+  ],
+  "log": {
+    "access": "none",
+    "loglevel": "warning"
+  },
+  "outbounds": [
+    {
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      },
+      "tag": "block"
+    },
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIP"
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 2090
+          }
+        ]
+      },
+      "tag": "probe-vr-2"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 2091
+          }
+        ]
+      },
+      "tag": "probe-vr-3"
+    },
+    {
+      "mux": {
+        "concurrency": 8,
+        "enabled": true,
+        "xudpConcurrency": 16,
+        "xudpProxyUDP443": "allow"
+      },
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "203.0.113.5",
+            "port": 8443,
+            "users": [
+              {
+                "encryption": "none",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "0123456789abcdef0123456789abcdef0123456789a",
+          "serverName": "github.com",
+          "shortId": "abcd"
+        },
+        "security": "reality",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpKeepAliveInterval": 30,
+          "tcpNoDelay": true
+        }
+      },
+      "tag": "probe-vr-5"
+    },
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 2108
+          }
+        ]
+      },
+      "tag": "probe-vr-20"
+    },
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIP"
+      },
+      "tag": "direct-freedom"
+    },
+    {
+      "protocol": "dns",
+      "tag": "dns-hijack"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "api"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "bufferSize": 256,
+        "connIdle": 3600,
+        "downlinkOnly": 5,
+        "handshake": 4,
+        "statsUserDownlink": true,
+        "statsUserUplink": true,
+        "uplinkOnly": 2
+      },
+      "1": {
+        "bufferSize": 512,
+        "connIdle": 3600,
+        "downlinkOnly": 5,
+        "handshake": 4,
+        "statsUserDownlink": true,
+        "statsUserUplink": true,
+        "uplinkOnly": 2
+      }
+    },
+    "system": {
+      "statsInboundDownlink": true,
+      "statsInboundUplink": true,
+      "statsOutboundDownlink": true,
+      "statsOutboundUplink": true
+    }
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "inboundTag": [
+          "api-in"
+        ],
+        "outboundTag": "api",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "dns-out"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "block",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "127.0.0.0/8",
+          "::1/128",
+          "0.0.0.0/8",
+          "::/128"
+        ],
+        "outboundTag": "block",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "203.0.113.225"
+        ],
+        "outboundTag": "block",
+        "port": "1-79,81-442,444-65535",
+        "type": "field"
+      },
+      {
+        "outboundTag": "block",
+        "protocol": [
+          "bittorrent"
+        ],
+        "type": "field"
+      },
+      {
+        "outboundTag": "block",
+        "port": "5222,5223",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "probe-vr-2"
+        ],
+        "outboundTag": "probe-vr-2",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "probe-vr-3"
+        ],
+        "outboundTag": "probe-vr-3",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "probe-vr-5"
+        ],
+        "outboundTag": "probe-vr-5",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "probe-vr-20"
+        ],
+        "outboundTag": "probe-vr-20",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "domain:ya.ru",
+          "domain:vk.com"
+        ],
+        "outboundTag": "direct-freedom",
+        "ruleTag": "plan-3-direct-domains",
+        "type": "field",
+        "user": [
+          "alice",
+          "bob"
+        ]
+      },
+      {
+        "ip": [
+          "77.88.8.8"
+        ],
+        "outboundTag": "direct-freedom",
+        "ruleTag": "plan-3-direct-ip",
+        "type": "field",
+        "user": [
+          "alice",
+          "bob"
+        ]
+      },
+      {
+        "domain": [
+          "domain:vk.com",
+          "domain:ya.ru"
+        ],
+        "inboundTag": [
+          "socks-local"
+        ],
+        "outboundTag": "direct-freedom",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "socks-local"
+        ],
+        "ip": [
+          "77.88.8.8"
+        ],
+        "outboundTag": "direct-freedom",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "vless-reality",
+          "vless-reality-pp",
+          "vless-xhttp",
+          "socks-local"
+        ],
+        "outboundTag": "dns-hijack",
+        "port": "53",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "vless-reality",
+          "vless-reality-pp",
+          "vless-xhttp",
+          "socks-local"
+        ],
+        "outboundTag": "block",
+        "type": "field"
+      }
+    ]
+  },
+  "stats": {}
+}
