@@ -94,7 +94,7 @@ heyearthproject/
 │   │   │   ├── middleware/        # Rate limiting (token bucket)
 │   │   │   ├── pb/                # Generated protobuf code
 │   │   │   └── yookassa/          # YooKassa client + webhook
-│   │   ├── migrations/            # 102 SQL migrations (000001-000102), applied at API start
+│   │   ├── migrations/            # 103 SQL migrations (000001-000103), applied at API start
 │   │   ├── proto/                 # Protobuf definitions
 │   │   └── certs/                 # mTLS certificates
 │   └── .env                       # Deploy credentials (never commit)
@@ -121,7 +121,7 @@ heyearthproject/
 # Backend — requires PostgreSQL "heyearth" database
 cd server/backend && go run ./cmd/api
 # Serves: HTTP :8000, gRPC :50051
-# Auto-runs the migrations on startup (102)
+# Auto-runs the migrations on startup (103)
 
 # Flutter app — requires FVM
 cd flutter-app && fvm flutter pub get && fvm flutter run
@@ -300,10 +300,16 @@ Spec `docs/prd/stability-operations.prd.md`, plan `docs/plan/stability-operation
 - **A13 / A15**: a node down ≥ 2 min that comes back gets one `verify` job (≤ 1/h per node, `node_return.go`); a watched setting changed without an audit or feed record raises `setting-changed-outside:<key>` (`settings_watch.go`, table `watched_settings` keeps hashes only; «Принять» = `POST /api/admin/ops/settings-watch/ack`).
 - **Subscription flags and the canary** («Операции → Подписка», `sub_flags.go`, `canary*.go`, table `flag_changes`, migration 000102): «На тест» → 30 min soak (synthetic every 5 min) → «Всем» only after PASS (with «Срочное обновление» 24 h) → a guard hour that rolls back by itself on a new failure in two sighted runs (A3, `canary_auto_rollback` on|off); «Без канарейки» needs a reason. One change at a time; blind runs decide nothing.
 - **Client kinds and the synthetic purchase**: hourly the test user's subscription is fetched as Happ, v2rayTun, INCY, Hiddify, Clash (vantage `clients`, `synth-client:<kind>`), and a wallet purchase is made in a transaction that is always rolled back (`synth_purchase.go`, `synth-purchase-failed`; the «Оплаты» cell is the worse of payment sync and this).
+- **Console actions** (phase 3, `ops_actions*.go`, table `ops_action_runs`, migration 000103): every button of «Операции» is an `opsAction` — preview (class and what it means, «заденет сейчас: N» from `onlineNow`, checks before, names of the checks after, the best window, a 2-minute confirmation token, the word for K3) → run (permission, token, word, rate limit, checks before → 422) → feed → checks after (`action-post-failed:<id>`). «В окно» plans it for 04:00 MSK; the minute tick runs it inside the window only. K2/K3 need the permission **`ops.disrupt`** (the owner's role) and ship in **dry-run** («сделал бы» in the feed) until the owner arms them on «Автоматика» (`ops_action_modes`). A run a dead process left `running` is `interrupted` at the next start; `hub.restart-api` / `hub.reboot` are closed by the next process's synthetic «start» run. Registered: K0 `hub.status`, `probes.run`, `backup.run`, `hub.reload-nginx`, `exit.return`; K1 `hub.restart-api`; K2 `hub.restart-tunnels`, `hub.restart-bamboo`, `exit.out-of-service`, `node.reboot`; K3 `hub.restart-xray`, `user.disconnect-now` (word XRAY), `hub.reboot` (word REBOOT).
+- **Exit out of service** (`exit_service.go`, table `exit_service`; spike C4 in `docs/plan/stability-operations-2.md`): the exit leaves every balancer selector, its outbounds stay; `xraydiff` applies a balancers-only change live (`adrules` replaces all balancers), so open connections stay and xray is not restarted. With no exit out the config is byte for byte the old one. Since then `plan_servers` edits are live too.
+- **Silences** (`alert_silence.go`, `alert_silences`): a glob over the alert key (a literal start ≥ 4 characters, ≤ 24 h); a raise under it is journaled `silenced` and sent nowhere, its resolve is silent. «Тишина 1 ч» on an alert card; `node.reboot` silences the node's keys for 30 min.
+- **Node facts and «Работы»** (`node_facts.go`, `internal/provision/facts.go`, `node_facts`): a read-only `facts` job on every working exit and entry at 06:00 MSK and after each verify (the Hub locally); A11 alerts `node-reboot-pending:<id>`, `node-security-updates:<id>`. Job kinds `facts`, `reboot`, `agentrestart`.
+- **Automation** (`automation*.go`, `automation_rules`, «Автоматика»): A1 (an entry losing flows leaves the rotation + urgent update; never the last healthy path, unknown = unhealthy, once an hour, two in a week → only an alert), A12 (restart a mute node-agent, 3 an hour), A14 (vacuum the journal above 85 % disk), A16 (snapshot for a critical alert, `alert_snapshots` 14 days). Every rule starts in dry-run; `on` is the owner's switch. A2 is a showcase: a dead exit still leaves the config with an xray restart (the generator drops a dead exit's outbounds). `TestAutomationNeverDoes` keeps the engine from returning anything to service, switching flags on, restarting xray/Bamboo or rebooting.
+- **Incident journal** («Журнал», `incidents.go`): incidents are built from `alert_events` (critical, or a warning > 30 min; < 10 min apart merge), notes kept by the start (`incidents`), «Разбор .md» exports a post-mortem draft.
 
 ---
 
-## Database (PostgreSQL, 102 migrations)
+## Database (PostgreSQL, 103 migrations)
 
 Key tables: `users`, `user_subscriptions`, `plans`, `plan_servers`, `servers`, `server_metric_samples`, `payments`, `promocodes`, `user_wallets`, `wallet_transactions`, `wallet_receipts`, `referral_rewards`, `traffic_stats` (raw, 45 days) + `traffic_stats_daily` (per Moscow day, kept), `dial_rate_log` (48 h) + `dial_rate_daily` (30 d), `email_log`, `app_settings`, `admin_*`, `tenants`, `user_sessions`, `alert_events`, Telegram: `tg_outbox`, `tg_link_tokens`, `auth_magic_tokens`, `support_tickets`/`support_messages`, `news_posts`, `stars_payments`. Removed 13.11 (backups `*_bak_20261113`): `ssh_keys`, `app_releases`, `user_devices`, `traffic_masking_rules`, `config_test_results`, AWG and pause columns.
 
@@ -339,6 +345,7 @@ go run quick_deploy.go                        # Fast binary deploy (SSH pipe)
 ## Gotchas
 
 - **Entry rotation and API rollback** (since entries-management, migration 000097): an older API publishes every `online` relay, so an entry out of rotation or on `test` would reach everyone. Before rolling the API back below it: `UPDATE servers SET lifecycle_state='offline' WHERE role='relay' AND id IN (SELECT entry_id FROM entry_state WHERE entry_id > 0 AND rotation <> 'all');` (the down migration does the same). An API older than 000096 also sets up the GRE tunnel on every reprovision.
+- **Exit out of service and API rollback** (since 000103): an older API ignores `exit_service`, so an exit «вне работы» comes back into the balancers — and its older `xraydiff` treats that balancer change as structural (an xray restart, К3). Before rolling the API back below 000103: return every exit (`exit.return`) or accept the restart. The down migration drops the table.
 
 - **Subscription ways change only canary-first** (incident 2026-11-20, `docs/runbooks/subscription-changes.md`): any change of where users' traffic goes (JSON «⚡ Авто»/Бамбук ways, URI lines, entry mode, an entry in or out of rotation, the Hub address) goes to the test user first. Subscription flags (`sub_auto_mode`, `sub_direct_by_name`, `sub_json_dns`) only through «Операции → Подписка»: «На тест», a 30-minute synthetic soak, «Всем» after PASS (with «Срочное обновление»), a guard hour with an automatic rollback; «Без канарейки» only with a reason. Entry mode, rotation and the Hub address still go through the test user (`entry_failover_test_user`, rotation `test`) for 24 h, then everyone — together with «Срочное обновление» (`subscription_urgent_until`, hourly updates for 24 h). A path becomes mandatory only after `go run ./cmd/deploy --path-matrix <entry id>` says PASS (50 source ports both ways + TLS through an exit); one probe proves nothing — a broken provider link may drop only some 5-tuples.
 
