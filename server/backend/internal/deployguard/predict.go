@@ -9,7 +9,7 @@ import (
 // Prediction is what `heyearth-api --predict-restarts` prints (cmd/api/predict.go): the new
 // build's own verdict on what the swap would restart, its impact class and the lines to show.
 type Prediction struct {
-	Xray       string   `json:"xray"`   // none | user-only | structural | unknown
+	Xray       string   `json:"xray"` // none | user-only | structural | unknown
 	XrayDetail string   `json:"xray_detail"`
 	Bamboo     string   `json:"bamboo"` // same | changed | unknown
 	Reason     string   `json:"reason"`

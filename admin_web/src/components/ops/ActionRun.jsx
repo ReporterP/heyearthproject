@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CircleCheck, CircleX } from 'lucide-react'
+import { CircleCheck, CircleHelp, CircleX } from 'lucide-react'
 import { fetchOpsRun } from '../../api/admin.js'
 import { formatDate } from '../../utils/format.js'
 import { Badge, Button, Spinner } from '../ui/index.js'
@@ -58,8 +58,8 @@ export default function ActionRun({ runId, onClose }) {
         <ul className="space-y-0.5">
           {run.post.map((c, i) => (
             <li key={i} className="flex items-start gap-1.5">
-              {c.ok ? <CircleCheck aria-hidden="true" className="w-3.5 h-3.5 mt-0.5 text-success shrink-0" /> : <CircleX aria-hidden="true" className="w-3.5 h-3.5 mt-0.5 text-danger shrink-0" />}
-              <span className={c.ok ? 'text-secondary' : 'text-danger'}>{c.name}{c.detail ? ` — ${c.detail}` : ''}</span>
+              {c.ok ? <CircleCheck aria-hidden="true" className="w-3.5 h-3.5 mt-0.5 text-success shrink-0" /> : c.blind ? <CircleHelp aria-hidden="true" className="w-3.5 h-3.5 mt-0.5 text-warning shrink-0" /> : <CircleX aria-hidden="true" className="w-3.5 h-3.5 mt-0.5 text-danger shrink-0" />}
+              <span className={c.ok ? 'text-secondary' : c.blind ? 'text-warning' : 'text-danger'}>{c.name}{c.blind ? ' — не удалось проверить' : ''}{c.detail ? ` — ${c.detail}` : ''}</span>
             </li>
           ))}
         </ul>

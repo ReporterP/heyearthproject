@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/admin"
@@ -44,6 +45,7 @@ type opsCheck struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+	Blind  bool   `json:"blind,omitempty"` // could not look (a blind synthetic run): proves nothing either way
 }
 
 type opsAction struct {
@@ -221,25 +223,36 @@ type opsRunStore interface {
 	lastStart(ctx context.Context, action, target string) (time.Time, error) // real (not dry) starts
 	due(ctx context.Context, now time.Time) ([]opsRun, error)                // scheduled, scheduled_for ≤ now
 	open(ctx context.Context) ([]opsRun, error)                              // running
+	openFor(ctx context.Context, action, target string) (bool, error)        // a running or scheduled run exists
 	mode(ctx context.Context, action string) (string, error)                 // "" — never set
 	setMode(ctx context.Context, action, mode, by string) error
 }
 
 type opsDeps struct {
-	store  opsRunStore
-	record func(biz.OpsEvent)
-	raise  func(key string, level AlertLevel, title, details string)
-	audit  func(r *http.Request, action, targetType, targetID string, details any)
-	who    func(r *http.Request) (name string, perms []string)
-	goRun  func(func())
-	now    func() time.Time
-	secret []byte
+	store   opsRunStore
+	record  func(biz.OpsEvent)
+	raise   func(key string, level AlertLevel, title, details string)
+	resolve func(key, msg string)
+	audit   func(r *http.Request, action, targetType, targetID string, details any)
+	who     func(r *http.Request) (name string, perms []string)
+	goRun   func(func())
+	now     func() time.Time
+	secret  []byte
 }
 
 type opsRunner struct {
 	actions map[string]opsAction
 	d       opsDeps
+	// mu serialises what decides a run's state against another decision: start (open-run guard
+	// and insert), the tick's claim of a planned run, cancel. One API process: enough.
+	mu sync.Mutex
 }
+
+const (
+	opsScheduleExpiry = 6 * time.Hour                 // a planned run missed by more is never run (old approval)
+	opsSweepAfter     = opsRunTimeout + 5*time.Minute // «running» longer than this is dead
+	opsSaveTimeout    = 30 * time.Second
+)
 
 func (o *opsRunner) modeOf(ctx context.Context, a opsAction) string {
 	if m, err := o.d.store.mode(ctx, a.ID); err == nil && (m == opsModeOn || m == opsModeDryRun) {
@@ -263,10 +276,21 @@ func (o *opsRunner) feed(a opsAction, r opsRun, ok bool, summary string) {
 		Summary: summary, Details: map[string]any{"action": a.ID, "run_id": r.ID, "dry_run": r.DryRun}})
 }
 
+// badChecks: the checks that looked and failed (a blind one proves nothing either way).
 func badChecks(cs []opsCheck) []string {
 	var out []string
 	for _, c := range cs {
-		if !c.OK {
+		if !c.OK && !c.Blind {
+			out = append(out, strings.TrimSpace(c.Name+" "+c.Detail))
+		}
+	}
+	return out
+}
+
+func blindChecks(cs []opsCheck) []string {
+	var out []string
+	for _, c := range cs {
+		if !c.OK && c.Blind {
 			out = append(out, strings.TrimSpace(c.Name+" "+c.Detail))
 		}
 	}
@@ -290,17 +314,32 @@ func runChecks(ctx context.Context, f func(context.Context, string) ([]opsCheck,
 	return cs
 }
 
-// execute carries out a run already stored as `running` (or a dry run). It finishes the row.
+// saveFinal writes a run's end with its own deadline: the run's context may be spent.
+func (o *opsRunner) saveFinal(r opsRun) {
+	ctx, cancel := context.WithTimeout(context.Background(), opsSaveTimeout)
+	defer cancel()
+	if err := o.d.store.save(ctx, r); err != nil {
+		log.Printf("[ops-action] %s #%d: запись итога: %v", r.Action, r.ID, err)
+	}
+}
+
+// execute carries out a run already stored as `running` (or a dry run). It finishes the row —
+// also when Run panics.
 func (o *opsRunner) execute(a opsAction, r opsRun) {
 	ctx, cancel := context.WithTimeout(context.Background(), opsRunTimeout)
 	defer cancel()
 	finish := func(status, errText string) {
 		now := o.d.now()
 		r.Status, r.FinishedAt, r.Error = status, &now, errText
-		if err := o.d.store.save(ctx, r); err != nil {
-			log.Printf("[ops-action] %s #%d: запись итога: %v", a.ID, r.ID, err)
-		}
+		o.saveFinal(r)
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[ops-action] %s #%d: сбой: %v", a.ID, r.ID, p)
+			finish(opsFailed, "сбой в действии")
+			o.feed(a, r, false, a.Title+": сбой в действии — результат неизвестен")
+		}
+	}()
 	if r.DryRun {
 		o.feed(a, r, true, "сделал бы: "+a.Title+" (пробный режим)")
 		finish(opsOK, "")
@@ -323,32 +362,39 @@ func (o *opsRunner) execute(a opsAction, r opsRun) {
 		o.feed(a, r, false, a.Title+": не удалось — "+msg)
 		return
 	}
-	o.closeWithPost(ctx, a, r, runChecks(ctx, a.Post, r.Target, "проверка после"))
+	o.closeWithPost(a, r, runChecks(ctx, a.Post, r.Target, "проверка после"))
 }
 
-// closeWithPost finishes a run by its checks after: ok, or post_failed with an alert.
-func (o *opsRunner) closeWithPost(ctx context.Context, a opsAction, r opsRun, post []opsCheck) {
+// closeWithPost finishes a run by its checks after: ok (the alert of an earlier failure is
+// resolved), ok with a blind check (a warning: nothing was proven), or post_failed with an alert.
+func (o *opsRunner) closeWithPost(a opsAction, r opsRun, post []opsCheck) {
 	now := o.d.now()
 	r.Post, r.FinishedAt, r.Error = post, &now, ""
-	bad := badChecks(post)
+	bad, blind := badChecks(post), blindChecks(post)
 	r.Status = opsOK
 	if len(bad) > 0 {
 		r.Status = opsPostFailed
 	}
-	if err := o.d.store.save(ctx, r); err != nil {
-		log.Printf("[ops-action] %s #%d: запись итога: %v", a.ID, r.ID, err)
-	}
-	if len(bad) == 0 {
+	o.saveFinal(r)
+	key := opsPostFailedAlertPrefix + a.ID
+	switch {
+	case len(bad) > 0:
+		o.feed(a, r, false, a.Title+": проверка после не прошла — "+strings.Join(bad, "; "))
+		level := AlertWarn
+		if disruptive(a.Impact) {
+			level = AlertCritical
+		}
+		o.d.raise(key, level, a.Title+": проверка после не прошла", strings.Join(bad, "; ")+". "+a.IfFails)
+	case len(blind) > 0:
+		o.feed(a, r, false, a.Title+": готово, но проверка после не смотрела — "+strings.Join(blind, "; "))
+		o.d.raise(key, AlertWarn, a.Title+": проверка после не смотрела",
+			"Действие выполнено, но проверка после ничего не доказала: "+strings.Join(blind, "; ")+". Посмотрите вкладку «Проверки».")
+	default:
 		o.feed(a, r, true, a.Title+": готово")
-		return
+		if o.d.resolve != nil {
+			o.d.resolve(key, a.Title+": проверка после прошла")
+		}
 	}
-	o.feed(a, r, false, a.Title+": проверка после не прошла — "+strings.Join(bad, "; "))
-	level := AlertWarn
-	if disruptive(a.Impact) {
-		level = AlertCritical
-	}
-	o.d.raise(opsPostFailedAlertPrefix+a.ID, level, a.Title+": проверка после не прошла",
-		strings.Join(bad, "; ")+". "+a.IfFails)
 }
 
 // errOpsHandOver: Run asks the next API process to close the run (hub.restart-api, C3).
@@ -371,13 +417,87 @@ func (o *opsRunner) resumeHandOvers(ctx context.Context) {
 		if err != nil {
 			post = append(post, opsCheck{Name: "проверка после", Detail: biz.ScrubOpsText(err.Error())})
 		}
-		o.closeWithPost(ctx, a, r, post)
+		o.closeWithPost(a, r, post)
 	}
 }
 
-// tick runs what is planned for the window — only inside it (every minute from the monitor).
+// interrupt closes a run nobody is executing any more.
+func (o *opsRunner) interrupt(ctx context.Context, r opsRun, why string) {
+	now := o.d.now()
+	r.Status, r.FinishedAt, r.Error = opsInterrupted, &now, why
+	if err := o.d.store.save(ctx, r); err != nil {
+		log.Printf("[ops-action] #%d: %v", r.ID, err)
+		return
+	}
+	a := o.actions[r.Action]
+	if a.ID == "" {
+		a = opsAction{ID: r.Action, Title: r.Action, Impact: r.Impact}
+	}
+	o.feed(a, r, false, a.Title+": "+why+" — результат неизвестен")
+}
+
+// sweep: a run «running» longer than any action may take is dead (a hand-over one waits 15 min).
+func (o *opsRunner) sweep(ctx context.Context, now time.Time) {
+	open, err := o.d.store.open(ctx)
+	if err != nil {
+		return
+	}
+	for _, r := range open {
+		if r.StartedAt == nil {
+			continue
+		}
+		age := now.Sub(*r.StartedAt)
+		limit := opsSweepAfter
+		if o.actions[r.Action].HandOver {
+			limit = opsHandOverMaxAge
+		}
+		if age > limit {
+			o.interrupt(ctx, r, "не завершилось вовремя")
+		}
+	}
+}
+
+// expire: a planned run whose window passed long ago is never run on that old approval.
+func (o *opsRunner) expire(ctx context.Context, now time.Time) {
+	stale, err := o.d.store.due(ctx, now.Add(-opsScheduleExpiry))
+	if err != nil {
+		return
+	}
+	for _, r := range stale {
+		r.Status, r.FinishedAt, r.Error = opsCancelled, &now, "окно пропущено — не выполнено"
+		if err := o.d.store.save(ctx, r); err != nil {
+			continue
+		}
+		a := o.actions[r.Action]
+		if a.ID == "" {
+			a = opsAction{ID: r.Action, Title: r.Action, Impact: r.Impact}
+		}
+		o.feed(a, r, false, a.Title+": окно пропущено, запланированное отменено")
+	}
+}
+
+// claim moves a planned run to running unless it was cancelled meanwhile.
+func (o *opsRunner) claim(ctx context.Context, r opsRun, dry bool, now time.Time) (opsRun, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fresh, err := o.d.store.get(ctx, r.ID)
+	if err != nil || fresh.Status != opsScheduled {
+		return r, false
+	}
+	r.Status, r.StartedAt, r.DryRun = opsRunning, &now, dry
+	if err := o.d.store.save(ctx, r); err != nil {
+		log.Printf("[ops-action] %s #%d: старт в окне: %v", r.Action, r.ID, err)
+		return r, false
+	}
+	return r, true
+}
+
+// tick (every minute): sweeps dead runs and expired plans always; inside the window runs what is
+// planned — the gap re-checked, the checks before run, a cancel meanwhile honoured.
 func (o *opsRunner) tick(ctx context.Context) {
 	now := o.d.now()
+	o.sweep(ctx, now)
+	o.expire(ctx, now)
 	if !biz.InQuietWindow(now) {
 		return
 	}
@@ -393,19 +513,26 @@ func (o *opsRunner) tick(ctx context.Context) {
 			_ = o.d.store.save(ctx, r)
 			continue
 		}
+		if last, err := o.d.store.lastStart(ctx, a.ID, r.Target); err == nil && rateLimited(last, now, a.MinGap) > 0 {
+			r.Status, r.FinishedAt, r.Error = opsCancelled, &now, "пропущено: действие только что выполнялось"
+			_ = o.d.store.save(ctx, r)
+			o.feed(a, r, true, a.Title+": в окне пропущено — оно только что выполнялось")
+			continue
+		}
 		r.Pre = runChecks(ctx, a.Pre, r.Target, "проверка перед")
 		if bad := badChecks(r.Pre); len(bad) > 0 {
+			if fresh, err := o.d.store.get(ctx, r.ID); err == nil && fresh.Status != opsScheduled {
+				continue // cancelled meanwhile
+			}
 			r.Status, r.FinishedAt, r.Error = opsFailed, &now, "проверка перед не прошла"
 			_ = o.d.store.save(ctx, r)
 			o.feed(a, r, false, a.Title+": в окне не выполнено — проверка перед не прошла: "+strings.Join(bad, "; "))
 			continue
 		}
-		r.Status, r.StartedAt, r.DryRun = opsRunning, &now, o.modeOf(ctx, a) == opsModeDryRun
-		if err := o.d.store.save(ctx, r); err != nil {
-			log.Printf("[ops-action] %s #%d: старт в окне: %v", a.ID, r.ID, err)
+		run, ok := o.claim(ctx, r, o.modeOf(ctx, a) == opsModeDryRun, now)
+		if !ok {
 			continue
 		}
-		run := r
 		o.d.goRun(func() { o.execute(a, run) })
 	}
 }
@@ -423,15 +550,7 @@ func (o *opsRunner) recover(ctx context.Context) {
 		if a.HandOver && r.StartedAt != nil && now.Sub(*r.StartedAt) <= opsHandOverMaxAge {
 			continue // the action this process was started by finishes it
 		}
-		r.Status, r.FinishedAt, r.Error = opsInterrupted, &now, "прервано перезапуском API"
-		if err := o.d.store.save(ctx, r); err != nil {
-			log.Printf("[ops-action] #%d: %v", r.ID, err)
-			continue
-		}
-		if a.ID == "" {
-			a = opsAction{ID: r.Action, Title: r.Action, Impact: r.Impact}
-		}
-		o.feed(a, r, false, a.Title+": прервано перезапуском API — результат неизвестен")
+		o.interrupt(ctx, r, "прервано перезапуском API")
 	}
 }
 
@@ -618,17 +737,33 @@ func (o *opsRunner) handleStart(w http.ResponseWriter, r *http.Request, id strin
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	last, err := o.d.store.lastStart(ctx, a.ID, b.Target)
+	// One open run per (action, target), decided and inserted under the runner's lock: a double
+	// click or a second admin gets 409, never a second K3.
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	open, err := o.d.store.openFor(ctx, a.ID, b.Target)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "база не ответила"})
 		return
 	}
-	if wait := rateLimited(last, now, a.MinGap); wait > 0 {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "слишком часто", "retry_after_sec": int(math.Ceil(wait.Seconds()))})
+	if open {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "это действие уже запланировано или выполняется"})
 		return
 	}
+	window := b.When == "window" && !biz.InQuietWindow(now)
+	if !window { // a planned run re-checks the gap at its time (tick)
+		last, err := o.d.store.lastStart(ctx, a.ID, b.Target)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "база не ответила"})
+			return
+		}
+		if wait := rateLimited(last, now, a.MinGap); wait > 0 {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "слишком часто", "retry_after_sec": int(math.Ceil(wait.Seconds()))})
+			return
+		}
+	}
 	run := opsRun{Action: a.ID, Target: b.Target, StartedBy: name, Impact: a.Impact, Pre: []opsCheck{}, Post: []opsCheck{}, Progress: []string{}}
-	if b.When == "window" && !biz.InQuietWindow(now) {
+	if window {
 		at := nextWindow(now)
 		run.Status, run.ScheduledFor = opsScheduled, &at
 		if run.ID, err = o.d.store.insert(ctx, run); err != nil {
@@ -702,6 +837,8 @@ func (o *opsRunner) handleCancel(w http.ResponseWriter, r *http.Request, s strin
 	if !ok {
 		return
 	}
+	o.mu.Lock() // against the tick claiming the same run
+	defer o.mu.Unlock()
 	run, err := o.d.store.get(r.Context(), id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": errOpsRunNotFound.Error()})
@@ -782,9 +919,10 @@ func liveOpsWho(r *http.Request) (string, []string) {
 }
 
 var opsLive = &opsRunner{actions: opsActions, d: opsDeps{
-	store:  sqlOpsRunStore{},
-	record: func(e biz.OpsEvent) { recordOps(e) },
-	raise:  func(key string, level AlertLevel, title, details string) { RaiseAlert(key, level, title, details) },
+	store:   sqlOpsRunStore{},
+	record:  func(e biz.OpsEvent) { recordOps(e) },
+	raise:   func(key string, level AlertLevel, title, details string) { RaiseAlert(key, level, title, details) },
+	resolve: ResolveAlert,
 	audit: func(r *http.Request, action, targetType, targetID string, details any) {
 		admin.WriteAuditLog(r, action, targetType, targetID, details)
 	},

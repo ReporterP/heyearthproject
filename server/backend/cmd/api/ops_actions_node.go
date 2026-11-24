@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/heyearth/backend/internal/biz"
@@ -27,6 +28,9 @@ const (
 	nodeBackEvery        = time.Minute
 	nodeRebootSilence    = 30 * time.Minute
 )
+
+// nodeRotationMu: one entry at a time between «count the healthy others» and «take it out».
+var nodeRotationMu sync.Mutex
 
 // otherHealthyPaths counts the entries in rotation «all» with a fresh healthy external check,
 // except one. The Hub does not count (mobile networks cut it); unknown or stale is not healthy.
@@ -107,7 +111,21 @@ func buildNodeActions(d nodeOpsDeps) []opsAction {
 				}
 			}
 			if n.Role == "relay" {
-				if err := d.rotateOff(ctx, n.ID, "перезагрузка с пульта: "+by, by); err != nil {
+				// Recount and take out under one lock: two reboots planned for the same window both
+				// passed «before» while the other entry was still healthy.
+				err := func() error {
+					nodeRotationMu.Lock()
+					defer nodeRotationMu.Unlock()
+					entries, err := d.entries(ctx)
+					if err != nil {
+						return err
+					}
+					if otherHealthyPaths(entries, n.ID, d.now()) == 0 {
+						return errors.New("последний здоровый путь: другой вход уже вне ротации — перезагрузка не начата")
+					}
+					return d.rotateOff(ctx, n.ID, "перезагрузка с пульта: "+by, by)
+				}()
+				if err != nil {
 					return fmt.Errorf("вход не выведен из ротации: %w", err)
 				}
 				_ = d.bump(ctx)

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { CircleCheck, CircleX } from 'lucide-react'
 import { previewOpsAction, runOpsAction } from '../../api/admin.js'
 import { Badge, Button, Dialog, Input, Skeleton } from '../ui/index.js'
-import { canRunNow, confirmView } from './actionsModel.js'
+import { canRunNow, canSchedule, confirmView } from './actionsModel.js'
 import ActionRun from './ActionRun.jsx'
 
 /**
@@ -73,14 +73,14 @@ export default function ActionConfirm({ request, onClose }) {
             <p className="text-tertiary text-xs">{v.window}{v.retryAfter > 0 ? ` · повторить можно через ${Math.ceil(v.retryAfter / 60)} мин` : ''}</p>
             {v.word && (
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-tertiary">Чтобы запустить сейчас, введите <span className="font-mono text-primary">{v.word}</span></span>
+                <span className="text-xs text-tertiary">Чтобы запустить или запланировать, введите <span className="font-mono text-primary">{v.word}</span></span>
                 <Input value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" spellCheck={false} className="font-mono" aria-label="Слово подтверждения" />
               </label>
             )}
             {v.missing && <p className="text-warning">{v.missing}</p>}
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
               <Button variant="ghost" onClick={onClose}>Отмена</Button>
-              <Button variant={v.defaultWhen === 'window' ? 'primary' : 'secondary'} disabled={!preview.allowed || !!busy}
+              <Button variant={v.defaultWhen === 'window' ? 'primary' : 'secondary'} disabled={!canSchedule(preview, typed) || !!busy}
                 loading={busy === 'window'} onClick={() => start('window')}>
                 В окно
               </Button>

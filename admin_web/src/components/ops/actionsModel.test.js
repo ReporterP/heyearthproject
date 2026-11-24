@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { actionKind, actionLink, confirmView, canRunNow, targetFromKey } from './actionsModel.js'
+import { actionKind, actionLink, confirmView, canRunNow, canSchedule, targetFromKey } from './actionsModel.js'
 
 const registry = [
   { id: 'hub.restart-xray', impact: 'K3', allowed: true },
@@ -55,4 +55,12 @@ test('targetFromKey: the server id of an alert key', () => {
   assert.equal(targetFromKey('relay-5-unstable'), '5')
   assert.equal(targetFromKey('node-reboot-pending:4'), '4')
   assert.equal(targetFromKey('db-unreachable'), '')
+})
+
+test('canSchedule: planning a K3 needs the word too (the server asks for it); a failed check before does not stop planning', () => {
+  const p = { impact: 'K3', confirm_word: 'XRAY', allowed: true, pre: [{ name: 'x', ok: false }], retry_after_sec: 600 }
+  assert.equal(canSchedule(p, ''), false)
+  assert.equal(canSchedule(p, 'XRAY'), true)
+  assert.equal(canSchedule({ ...p, allowed: false }, 'XRAY'), false)
+  assert.equal(canSchedule({ impact: 'K2', confirm_word: '', allowed: true }, ''), true)
 })

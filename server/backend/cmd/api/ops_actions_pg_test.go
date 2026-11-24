@@ -111,3 +111,26 @@ func TestExitServiceStore(t *testing.T) {
 		t.Fatalf("only exit 3 is out: %v %v", out, err)
 	}
 }
+
+func TestOpsRunOpenFor(t *testing.T) {
+	testpg.Open(t)
+	ctx := context.Background()
+	s := sqlOpsRunStore{}
+	at := time.Now().Add(time.Hour)
+	if open, err := s.openFor(ctx, "hub.restart-xray", ""); err != nil || open {
+		t.Fatalf("fresh: %v %v", open, err)
+	}
+	id, _ := s.insert(ctx, opsRun{Action: "hub.restart-xray", Impact: biz.ImpactK3, Status: opsScheduled, ScheduledFor: &at})
+	if open, _ := s.openFor(ctx, "hub.restart-xray", ""); !open {
+		t.Fatal("a scheduled run is open")
+	}
+	if open, _ := s.openFor(ctx, "hub.restart-xray", "3"); open {
+		t.Fatal("another target is another run")
+	}
+	r, _ := s.get(ctx, id)
+	r.Status = opsCancelled
+	_ = s.save(ctx, r)
+	if open, _ := s.openFor(ctx, "hub.restart-xray", ""); open {
+		t.Fatal("a cancelled run is not open")
+	}
+}

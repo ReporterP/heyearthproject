@@ -140,3 +140,10 @@ func (sqlOpsRunStore) setMode(ctx context.Context, action, mode, by string) erro
 		action, mode, by)
 	return err
 }
+
+func (sqlOpsRunStore) openFor(ctx context.Context, action, target string) (bool, error) {
+	var n int
+	err := db.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM ops_action_runs WHERE action = $1 AND target = $2 AND status IN ('running', 'scheduled')`, action, target).Scan(&n)
+	return n > 0, err
+}

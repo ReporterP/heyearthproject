@@ -53,10 +53,11 @@ type agentState struct {
 }
 
 type autoDeps struct {
-	store  autoStore
-	record func(biz.OpsEvent)
-	raise  func(key string, level AlertLevel, title, details string)
-	now    func() time.Time
+	store   autoStore
+	record  func(biz.OpsEvent)
+	raise   func(key string, level AlertLevel, title, details string)
+	resolve func(key, msg string)
+	now     func() time.Time
 	// A1
 	a1Inputs  func(ctx context.Context) ([]a1Input, error)
 	rotateOff func(ctx context.Context, id int, reason string) error
@@ -143,23 +144,41 @@ func (e *autoEngine) runA1(ctx context.Context, mode autoMode, now time.Time) {
 		log.Printf("[automation] A1: входные данные: %v", err)
 		return
 	}
+	// One removal per tick: the next entry is judged next minute, on fresh health. Within the
+	// tick an entry taken out (or that would be, in dry-run) is no longer a healthy path.
+	removed := map[int]bool{}
 	for _, in := range inputs {
 		if mode == autoDryRun {
 			if t, ok := e.dryA1[in.EntryID]; ok {
 				in.LastAuto = append(in.LastAuto, t)
 			}
 		}
+		paths := make([]pathHealth, len(in.Paths))
+		copy(paths, in.Paths)
+		for i := range paths {
+			if removed[paths[i].ID] {
+				paths[i].Healthy = false
+			}
+		}
+		in.Paths = paths
 		d := a1Decide(in, now)
+		blockedKey := "a1-blocked:" + strconv.Itoa(in.EntryID)
+		if d.Reason == "" || d.Blocked == "" {
+			e.resolve(blockedKey, fmt.Sprintf("Вход %d: автоматика снова может действовать", in.EntryID))
+		}
 		if d.Reason == "" {
 			continue
 		}
 		target := "entry:" + strconv.Itoa(in.EntryID)
 		if d.Blocked != "" {
 			if d.Blocked != "не чаще раза в час на вход" {
-				e.d.raise("a1-blocked:"+strconv.Itoa(in.EntryID), AlertWarn,
+				e.d.raise(blockedKey, AlertWarn,
 					fmt.Sprintf("Вход %d теряет потоки, автоматика его не выводит", in.EntryID),
 					d.Reason+". Не выводит: "+d.Blocked+". Решение — «Входы».")
 			}
+			continue
+		}
+		if len(removed) > 0 {
 			continue
 		}
 		id := in.EntryID
@@ -170,9 +189,16 @@ func (e *autoEngine) runA1(ctx context.Context, mode autoMode, now time.Time) {
 			_ = e.d.bump(ctx)
 			return e.d.urgent(ctx, 24, "automation")
 		})
+		removed[id] = true
 		if mode == autoDryRun {
 			e.dryA1[id] = now
 		}
+	}
+}
+
+func (e *autoEngine) resolve(key, msg string) {
+	if e.d.resolve != nil {
+		e.d.resolve(key, msg)
 	}
 }
 
@@ -185,6 +211,7 @@ func (e *autoEngine) runA12(ctx context.Context, mode autoMode, now time.Time) {
 	for _, a := range agents {
 		if a.AgentOnline {
 			e.misses[a.ID] = 0
+			e.resolve("agent-restarts:"+strconv.Itoa(a.ID), fmt.Sprintf("node-agent выхода %d отвечает", a.ID))
 			continue
 		}
 		e.misses[a.ID]++
@@ -413,10 +440,11 @@ func liveJournalBytes(ctx context.Context) (int64, error) {
 }
 
 var autoLive = newAutoEngine(autoDeps{
-	store:  sqlAutoStore{},
-	record: func(e biz.OpsEvent) { recordOps(e) },
-	raise:  RaiseAlertNoRepeat,
-	now:    time.Now,
+	store:   sqlAutoStore{},
+	record:  func(e biz.OpsEvent) { recordOps(e) },
+	raise:   RaiseAlertNoRepeat,
+	resolve: ResolveAlert,
+	now:     time.Now,
 
 	a1Inputs: liveA1Inputs,
 	rotateOff: func(ctx context.Context, id int, reason string) error {

@@ -62,3 +62,11 @@ export function targetFromKey(key = '') {
   const m = String(key).match(/(?:^|[-:])(\d+)(?:$|[-:.])/)
   return m ? m[1] : ''
 }
+
+// canSchedule: planning for the window needs the permission and, for K3, the word (the server
+// checks both); the checks before and the gap are taken again at the window.
+export function canSchedule(p, typed) {
+  if (!p.allowed) return false
+  if (p.confirm_word && typed !== p.confirm_word) return false
+  return true
+}

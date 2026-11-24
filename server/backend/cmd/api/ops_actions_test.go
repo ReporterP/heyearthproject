@@ -182,6 +182,16 @@ func (m *memRunStore) due(_ context.Context, now time.Time) ([]opsRun, error) {
 	}
 	return out, nil
 }
+func (m *memRunStore) openFor(_ context.Context, action, target string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.runs {
+		if r.Action == action && r.Target == target && (r.Status == opsRunning || r.Status == opsScheduled) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (m *memRunStore) open(_ context.Context) ([]opsRun, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,16 +219,20 @@ func (m *memRunStore) setMode(_ context.Context, action, mode, by string) error 
 }
 
 type opsStand struct {
-	o      *opsRunner
-	store  *memRunStore
-	feed   []biz.OpsEvent
-	raised []string
-	audits []string
-	ran    map[string]int
-	now    time.Time
-	user   string
-	perms  []string
-	mu     sync.Mutex
+	o         *opsRunner
+	store     *memRunStore
+	feed      []biz.OpsEvent
+	raised    []string
+	levels    []AlertLevel
+	audits    []string
+	resolved  []string
+	deferRuns bool
+	pending   []func()
+	ran       map[string]int
+	now       time.Time
+	user      string
+	perms     []string
+	mu        sync.Mutex
 }
 
 func newOpsStand(t *testing.T, actions ...opsAction) *opsStand {
@@ -245,6 +259,7 @@ func newOpsStand(t *testing.T, actions ...opsAction) *opsStand {
 		raise: func(key string, level AlertLevel, title, details string) {
 			s.mu.Lock()
 			s.raised = append(s.raised, key)
+			s.levels = append(s.levels, level)
 			s.mu.Unlock()
 		},
 		audit: func(r *http.Request, action, targetType, targetID string, details any) {
@@ -252,8 +267,19 @@ func newOpsStand(t *testing.T, actions ...opsAction) *opsStand {
 			s.audits = append(s.audits, action)
 			s.mu.Unlock()
 		},
-		who:    func(r *http.Request) (string, []string) { return s.user, s.perms },
-		goRun:  func(f func()) { f() }, // synchronous: the test reads the result at once
+		resolve: func(key, msg string) {
+			s.mu.Lock()
+			s.resolved = append(s.resolved, key)
+			s.mu.Unlock()
+		},
+		who: func(r *http.Request) (string, []string) { return s.user, s.perms },
+		goRun: func(f func()) {
+			if s.deferRuns { // the live goroutine: the run starts after the caller moved on
+				s.pending = append(s.pending, f)
+				return
+			}
+			f() // synchronous: the test reads the result at once
+		},
 		now:    func() time.Time { return s.now },
 		secret: []byte("test-secret-test-secret-test-sec"),
 	}}

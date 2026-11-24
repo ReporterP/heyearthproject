@@ -227,14 +227,14 @@ func TestRestartAPIClosedByTheNextProcess(t *testing.T) {
 	}
 }
 
-func TestRestartAPIBlindStartRunIsPostFailed(t *testing.T) {
+func TestRestartAPIBlindStartRunProvesNothing(t *testing.T) {
 	f := &fakeOpsHub{startRun: "blind"}
 	s := hubStand(t, f)
 	_, out := s.runAction(t, "hub.restart-api", "", "")
 	id := int64(out["run_id"].(float64))
 	s.o.resumeHandOvers(context.Background())
-	if r, _ := s.store.get(context.Background(), id); r.Status != opsPostFailed {
-		t.Fatalf("a blind start run proves nothing: %+v", r)
+	if r, _ := s.store.get(context.Background(), id); r.Status != opsOK || len(s.levels) != 1 || s.levels[0] != AlertWarn {
+		t.Fatalf("a blind start run proves nothing: done, with a warning (review #7): %+v %v", r, s.levels)
 	}
 }
 

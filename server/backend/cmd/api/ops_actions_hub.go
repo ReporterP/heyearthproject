@@ -62,9 +62,9 @@ const (
 func synthCheck(ctx context.Context, d hubDeps) opsCheck {
 	state, summary, err := d.synth(ctx)
 	if err != nil {
-		return opsCheck{Name: "прогон синтетики", Detail: err.Error()}
+		return opsCheck{Name: "прогон синтетики", Blind: true, Detail: err.Error()} // busy or no answer: nothing proven
 	}
-	return opsCheck{Name: "прогон синтетики", OK: state == "pass", Detail: state + ": " + summary}
+	return opsCheck{Name: "прогон синтетики", OK: state == "pass", Blind: state == "blind", Detail: state + ": " + summary}
 }
 
 func affectedBy(d hubDeps, pick func(onlineCounts) (int, bool), note string) func(context.Context, string) (int, int, string, error) {
@@ -175,7 +175,7 @@ func buildHubActions(d hubDeps) []opsAction {
 				for waited := time.Duration(0); waited <= hubResumeWait; waited += hubResumeEvery {
 					state, summary, found, err := d.startRunAfter(ctx, since)
 					if err == nil && found {
-						return []opsCheck{{Name: "прогон синтетики «start»", OK: state == "pass", Detail: state + ": " + summary}}, nil
+						return []opsCheck{{Name: "прогон синтетики «start»", OK: state == "pass", Blind: state == "blind", Detail: state + ": " + summary}}, nil
 					}
 					d.sleep(hubResumeEvery)
 				}

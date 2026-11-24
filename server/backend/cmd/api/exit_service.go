@@ -54,16 +54,17 @@ func exitOutBlocked(routed []int, out map[int]bool, id int) string {
 }
 
 type exitDeps struct {
-	routed   func(ctx context.Context) ([]int, error)        // exits in the routing now (online, healthy)
-	outSet   func(ctx context.Context) (map[int]bool, error) // exit_service
-	setOut   func(ctx context.Context, id int, out bool, reason, by string) error
-	classify func(ctx context.Context, out map[int]bool) (xraydiff.Kind, string, error) // running config → with out
-	sync     func()                                                                     // RequestXraySync
-	applied  func(ctx context.Context, id int, out bool) (bool, error)                  // the running config reflects it
-	xrayPID  func(ctx context.Context) (string, error)
-	synth    func(ctx context.Context) (state, summary string, err error)
-	online   func(now time.Time) onlineCounts
-	sleep    func(time.Duration)
+	routed    func(ctx context.Context) ([]int, error)        // exits in the routing now (online, healthy)
+	outSet    func(ctx context.Context) (map[int]bool, error) // exit_service
+	setOut    func(ctx context.Context, id int, out bool, reason, by string) error
+	classify  func(ctx context.Context, out map[int]bool) (xraydiff.Kind, string, error) // running config → with out
+	sync      func()                                                                     // RequestXraySync
+	applied   func(ctx context.Context, id int, out bool) (bool, error)                  // the running config reflects it
+	xrayPID   func(ctx context.Context) (string, error)
+	synth     func(ctx context.Context) (state, summary string, err error)
+	online    func(now time.Time) onlineCounts
+	sleep     func(time.Duration)
+	xrayStale func() bool // the running xray may differ from its file: its next apply is a restart (nil — never)
 }
 
 const (
@@ -124,7 +125,7 @@ func buildExitActions(d exitDeps) []opsAction {
 			}
 			checks = append(checks, c)
 			state, summary, err := d.synth(ctx)
-			s := opsCheck{Name: "прогон синтетики", OK: err == nil && state == "pass", Detail: state + ": " + summary}
+			s := opsCheck{Name: "прогон синтетики", OK: err == nil && state == "pass", Blind: err != nil || state == "blind", Detail: state + ": " + summary}
 			if err != nil {
 				s.Detail = err.Error()
 			}
@@ -150,6 +151,9 @@ func buildExitActions(d exitDeps) []opsAction {
 				}
 				if why := exitOutBlocked(routed, out, id); why != "" {
 					return []opsCheck{{Name: "не последний выход в работе", Detail: why}}, nil
+				}
+				if d.xrayStale != nil && d.xrayStale() {
+					return []opsCheck{{Name: "не последний выход в работе", OK: true}, {Name: "применится без перезапуска xray", Detail: staleXrayDetail}}, nil
 				}
 				next := map[int]bool{id: true}
 				for k, v := range out {
@@ -185,7 +189,11 @@ func buildExitActions(d exitDeps) []opsAction {
 				if err != nil {
 					return nil, err
 				}
-				return []opsCheck{{Name: "выход вне работы", OK: out[id]}}, nil
+				checks := []opsCheck{{Name: "выход вне работы", OK: out[id]}}
+				if d.xrayStale != nil && d.xrayStale() {
+					checks = append(checks, opsCheck{Name: "применится без перезапуска xray", Detail: staleXrayDetail})
+				}
+				return checks, nil
 			},
 			Run:  change("exit.return", false, "в работе"),
 			Post: post("exit.return", false)},
@@ -300,9 +308,10 @@ var liveExitDeps = exitDeps{
 		b, err := exec.CommandContext(ctx, "systemctl", "show", "-p", "MainPID", "--value", "xray").Output()
 		return strings.TrimSpace(string(b)), err
 	},
-	synth:  liveActionSynth,
-	online: onlineNow,
-	sleep:  time.Sleep,
+	synth:     liveActionSynth,
+	xrayStale: func() bool { return xrayStale.isStale() },
+	online:    onlineNow,
+	sleep:     time.Sleep,
 }
 
 func init() {
@@ -310,3 +319,5 @@ func init() {
 		registerAction(a)
 	}
 }
+
+const staleXrayDetail = "xray ждёт перезапуска (он может отличаться от своего файла): следующая синхронизация перезапустит его для всех (К3)"
