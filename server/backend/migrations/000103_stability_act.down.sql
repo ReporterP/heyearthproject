@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS alert_snapshots;
+DROP TABLE IF EXISTS automation_rules;
 DROP TABLE IF EXISTS node_facts;
 DELETE FROM provision_jobs WHERE kind IN ('facts', 'reboot', 'agentrestart');
 ALTER TABLE provision_jobs DROP CONSTRAINT IF EXISTS provision_jobs_kind_check;

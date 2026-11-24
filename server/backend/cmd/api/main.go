@@ -890,6 +890,7 @@ func main() {
 	startOpsActions()
 	startSilences()
 	startNodeFacts()
+	startAutomation()
 
 	// Telegram users' bot: update pollers (users' bot + owner replies in the alerts bot) and
 	// the outgoing queue, each in one API instance (advisory locks).
@@ -1045,6 +1046,8 @@ func main() {
 	registerOpsActionRoutes()
 	registerSilenceRoutes()
 	registerWorksRoutes()
+	registerAutomationRoutes()
+	registerSnapshotRoutes()
 	registerEntryAdminRoutes()
 	registerHubAddrAdminRoutes()
 	registerTelegramAdminRoutes()

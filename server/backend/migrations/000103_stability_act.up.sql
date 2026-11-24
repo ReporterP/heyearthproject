@@ -83,3 +83,20 @@ CREATE TABLE IF NOT EXISTS node_facts (
     ssh_password          BOOLEAN NOT NULL DEFAULT FALSE,
     disk_pct              INT NOT NULL DEFAULT 0
 );
+
+-- C6: the automation rules' modes and counters (a new rule starts in dry-run) and A16 snapshots.
+CREATE TABLE IF NOT EXISTS automation_rules (
+    id            TEXT PRIMARY KEY,
+    mode          TEXT NOT NULL DEFAULT 'dry-run' CHECK (mode IN ('off', 'dry-run', 'on')),
+    config        JSONB NOT NULL DEFAULT '{}',
+    fired         INT NOT NULL DEFAULT 0,
+    last_fired_at TIMESTAMPTZ,
+    last_summary  TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS alert_snapshots (
+    id        BIGSERIAL PRIMARY KEY,
+    alert_key TEXT NOT NULL,
+    at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    data      JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS alert_snapshots_key_idx ON alert_snapshots (alert_key, id DESC);
