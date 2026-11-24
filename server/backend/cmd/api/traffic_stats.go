@@ -111,6 +111,15 @@ func collectTrafficStats() {
 		}
 	}
 
+	// Who is online now (ops_online.go): every successful read, an empty one too.
+	active := make([]string, 0, len(deltas))
+	for userID, d := range deltas {
+		if d.upload > 0 || d.download > 0 {
+			active = append(active, userID)
+		}
+	}
+	noteTraffic("xray", active, readAt)
+
 	// Soft cutoff guard: a user removed live (rmu) whose open session still
 	// carries traffic forces a restart (xray_revoked.go). Runs before the early
 	// return below so idle watch entries still expire.

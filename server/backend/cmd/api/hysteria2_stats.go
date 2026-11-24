@@ -108,6 +108,12 @@ func collectHysteria2Stats() {
 	deltas := cumulativeDeltas(hysteria2StatsPrev, snap, hysteria2StatsPrimed)
 	if !hysteria2StatsPrimed {
 		log.Printf("[hysteria2-stats] baseline taken: %d users (nothing booked on the first read)", len(snap))
+	} else { // the first read has no deltas: it says nothing about who is online
+		active := make([]string, 0, len(deltas))
+		for uuid := range deltas {
+			active = append(active, uuid)
+		}
+		noteTraffic("bamboo", active, time.Now())
 	}
 	hysteria2StatsPrev, hysteria2StatsPrimed = snap, true
 
