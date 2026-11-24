@@ -278,6 +278,7 @@ type xraySyncReads struct {
 	directPlanIDs  func(ctx context.Context) ([]int, error)
 	directServices func(ctx context.Context) ([]biz.DirectRouteService, error)
 	planServers    func(ctx context.Context) (map[int][]int, error)
+	outOfService   func(ctx context.Context) (map[int]bool, error) // exit_service (exit_service.go); nil — none
 	// hubIPs returns the Hub's own public addresses (hubOwnIPsStrict); setting
 	// reads a host setting strictly ("" when absent).
 	hubIPs func(setting func(key string) (string, error)) ([]string, error)
@@ -290,6 +291,7 @@ var xrayDBReads = xraySyncReads{
 	directPlanIDs:  biz.GetPlanIDsWithDirectRoutesContext,
 	directServices: biz.ListActiveDirectRouteServicesContext,
 	planServers:    biz.ListPlanServersContext,
+	outOfService:   listExitsOutOfService,
 	hubIPs:         hubOwnIPsStrict,
 }
 
@@ -314,6 +316,7 @@ type xrayInputs struct {
 	directPlanIDs  []int                    // active plans with direct_routing_enabled, ascending
 	directServices []biz.DirectRouteService // active services, shared by all those plans
 	planServers    map[int][]int            // plan_servers: plan id → server ids
+	outOfService   map[int]bool             // exits taken out of every balancer selector (outbounds stay)
 	hubIPs         []string
 }
 
@@ -378,6 +381,11 @@ func (r xraySyncReads) load(keys xrayRealityKeys) (xrayInputs, error) {
 	}
 	if in.planServers, err = withSyncTimeout(r.planServers); err != nil {
 		return in, fmt.Errorf("list plan servers: %w", err)
+	}
+	if r.outOfService != nil {
+		if in.outOfService, err = withSyncTimeout(r.outOfService); err != nil {
+			return in, fmt.Errorf("list exits out of service: %w", err)
+		}
 	}
 	if in.hubIPs, err = r.hubIPs(func(key string) (string, error) { return setting(key, "") }); err != nil {
 		return in, fmt.Errorf("hub addresses: %w", err)
@@ -747,21 +755,40 @@ func buildXrayConfig(in xrayInputs, quota quotaCutoff) (xrayBuild, error) {
 	// Если есть здоровые exit-ноды — маршрутизируем через них (балансировка)
 	noExit := len(exitCfg.routes) == 0
 	if !noExit {
-		// Catch-all balancer: every exit path ("exit-" never matches probe-vr-*).
+		// An exit out of service (exit_service.go, spike C4) leaves every selector and keeps its
+		// outbounds: the change is live (adrules), open connections stay. Never the last one.
+		inService := make([]exitRoute, 0, len(exitCfg.routes))
+		for _, r := range exitCfg.routes {
+			if !in.outOfService[r.id] {
+				inService = append(inService, r)
+			}
+		}
+		if len(inService) == 0 {
+			inService = exitCfg.routes
+		}
+		// Catch-all balancer: every exit path ("exit-" never matches probe-vr-*); with an exit
+		// out of service, the in-service exits by name.
+		catchAll := []string{exitAllSelector}
+		if len(inService) < len(exitCfg.routes) {
+			catchAll = catchAll[:0]
+			for _, r := range inService {
+				catchAll = append(catchAll, exitSelector(r.id))
+			}
+		}
 		balancers := []map[string]interface{}{
-			newBalancer("exit-balancer", []string{exitAllSelector}, exitFallback(exitCfg.routes), exitCosts(exitCfg.routes)),
+			newBalancer("exit-balancer", catchAll, exitFallback(inService), exitCosts(inService)),
 		}
 
 		// Per-plan balancers come from plan_servers and exit health only, never
 		// from the users: one per plan with at least one healthy exit, in plan-ID
-		// order, whether or not the plan has a user right now. routing.balancers
-		// is structural for xraydiff, so a balancer created by a plan's first
-		// subscriber (and dropped with its last one) would restart xray for
-		// everyone. A plan without plan_servers rows, or none of them healthy, has
+		// order, whether or not the plan has a user right now. A stable balancer
+		// set keeps every live adrules small (xraydiff applies balancers live since
+		// spike C4; before, a balancer created by a plan's first subscriber restarted
+		// xray for everyone). A plan without plan_servers rows, or none of them healthy, has
 		// no balancer: its users take the catch-all rule. Selectors are
 		// "exit-<id>." per bound exit: a plain "exit-2" would also take exit-20..29.
-		routed := make(map[int]exitRoute, len(exitCfg.routes))
-		for _, r := range exitCfg.routes {
+		routed := make(map[int]exitRoute, len(inService))
+		for _, r := range inService {
 			routed[r.id] = r
 		}
 		planIDs := make([]int, 0, len(in.planServers))

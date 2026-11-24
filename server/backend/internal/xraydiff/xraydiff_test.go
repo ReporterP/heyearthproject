@@ -136,8 +136,23 @@ func TestClassify(t *testing.T) {
 		{name: "catch-all changed", kind: Structural, reasonHas: "routing.rules", mutate: func(c map[string]any) {
 			rules(c)[4].(map[string]any)["balancerTag"] = "plan-3-balancer"
 		}},
-		{name: "balancer changed", kind: Structural, reasonHas: "routing.balancers", mutate: func(c map[string]any) {
+		// adrules without -append replaces every balancer too (spike C4): an exit leaving the
+		// selectors is applied live, open connections stay.
+		{name: "balancer selector changed", kind: UserOnly, routing: true, mutate: func(c map[string]any) {
 			routing(c)["balancers"].([]any)[0].(map[string]any)["selector"] = []any{"exit-1", "exit-2"}
+		}},
+		{name: "plan balancer added", kind: UserOnly, routing: true, mutate: func(c map[string]any) {
+			b := routing(c)["balancers"].([]any)
+			routing(c)["balancers"] = append(b, map[string]any{"tag": "plan-9-balancer", "selector": []any{"exit-2."}})
+		}},
+		{name: "users + balancer", kind: UserOnly, routing: true, rules: []string{"plan-3-users"},
+			ops: []string{"vless-reality+carol", "vless-xhttp+carol"}, mutate: func(c map[string]any) {
+				addCarol(c)
+				routing(c)["balancers"].([]any)[0].(map[string]any)["selector"] = []any{"exit-2."}
+			}},
+		{name: "balancer + exit outbound", kind: Structural, reasonHas: "outbounds", mutate: func(c map[string]any) {
+			routing(c)["balancers"].([]any)[0].(map[string]any)["selector"] = []any{"exit-1", "exit-2"}
+			c["outbounds"] = append(c["outbounds"].([]any), map[string]any{"tag": "exit-2"})
 		}},
 		{name: "exit outbound added", kind: Structural, reasonHas: "outbounds", mutate: func(c map[string]any) {
 			c["outbounds"] = append(c["outbounds"].([]any), map[string]any{"tag": "exit-2"})

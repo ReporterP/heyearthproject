@@ -134,7 +134,7 @@ func TestBuildXrayConfigDiffKinds(t *testing.T) {
 		{"quota cutoff disarmed: nothing changes", base, quotaCutoff{false, userSet("alice")}, xraydiff.None, nil, nil},
 		{"an exit goes down: structural", oneExitLess, none, xraydiff.Structural, nil, nil},
 		{"all exits gone: structural (no-exit block)", noExits, none, xraydiff.Structural, nil, nil},
-		{"plan_servers edited: structural", planServersEdited, none, xraydiff.Structural, nil, nil},
+		{"plan_servers edited: live — balancers travel with adrules (spike C4)", planServersEdited, none, xraydiff.UserOnly, nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

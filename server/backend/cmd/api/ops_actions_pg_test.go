@@ -90,3 +90,24 @@ func TestActionRunRecoveredAfterRestart(t *testing.T) {
 		t.Fatal("the table refuses an unknown mode")
 	}
 }
+
+func TestExitServiceStore(t *testing.T) {
+	testpg.Open(t)
+	ctx := context.Background()
+	if out, err := listExitsOutOfService(ctx); err != nil || len(out) != 0 {
+		t.Fatalf("fresh: %v %v", out, err)
+	}
+	if err := setExitOutOfService(ctx, 3, true, "вне работы: owner", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setExitOutOfService(ctx, 4, true, "вне работы: owner", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setExitOutOfService(ctx, 4, false, "в работе: owner", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := listExitsOutOfService(ctx)
+	if err != nil || len(out) != 1 || !out[3] {
+		t.Fatalf("only exit 3 is out: %v %v", out, err)
+	}
+}

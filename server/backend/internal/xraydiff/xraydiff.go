@@ -1,8 +1,10 @@
 // Package xraydiff classifies the difference between two generated xray configs
 // and builds/parses the `xray api` CLI payloads used to apply user-only changes.
 //
-// UserOnly: only inbounds[*].settings.clients and routing rules whose ruleTag
-// starts with "plan-" differ — applied live via adu/rmu/adrules, no restart.
+// UserOnly: only inbounds[*].settings.clients, routing rules whose ruleTag
+// starts with "plan-" and routing.balancers differ — applied live via
+// adu/rmu/adrules (adrules without -append replaces every rule AND balancer;
+// open connections keep their exit — spike C4, docs/plan/stability-operations-2.md).
 // Structural: anything else differs — `systemctl restart xray`.
 // Pure (no I/O), fully unit-tested.
 package xraydiff
@@ -147,9 +149,10 @@ func Classify(oldJSON, newJSON []byte) (Result, error) {
 	return res, nil
 }
 
+// rulesOf: what one adrules call replaces — the rules and the balancers.
 func rulesOf(cfg map[string]any) any {
 	routing, _ := cfg["routing"].(map[string]any)
-	return routing["rules"]
+	return []any{routing["rules"], routing["balancers"]}
 }
 
 // split separates the user-dependent parts of a config from the rest.
@@ -189,6 +192,8 @@ func split(cfg map[string]any) (parts, error) {
 		p.clients[tag], p.inbounds[tag] = byEmail, in
 	}
 	routing, _ := p.rest["routing"].(map[string]any)
+	// Balancers travel with every adrules (no -append replaces them all): live, compared apart.
+	delete(routing, "balancers")
 	rules, _ := routing["rules"].([]any)
 	if rules == nil {
 		return p, nil

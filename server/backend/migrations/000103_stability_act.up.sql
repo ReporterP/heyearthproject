@@ -38,3 +38,12 @@ INSERT INTO admin_role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM admin_roles r CROSS JOIN admin_permissions p
  WHERE r.role_key = 'super_admin' AND p.permission_key = 'ops.disrupt'
 ON CONFLICT DO NOTHING;
+
+-- C4: an exit out of service leaves every balancer selector (its outbounds stay); applied live.
+CREATE TABLE IF NOT EXISTS exit_service (
+    exit_id        INT PRIMARY KEY,
+    out_of_service BOOLEAN NOT NULL DEFAULT FALSE,
+    reason         TEXT NOT NULL DEFAULT '',
+    changed_by     TEXT NOT NULL DEFAULT '',
+    changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
